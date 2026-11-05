@@ -1,11 +1,18 @@
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ANDROID_CODE_SYNC_ACTIONS, ANDROID_LANE_FREE_ACTIONS } from "../../desktop/src/shared/types/androidEmulator";
-import { REMOTE_WORK_MAX_PATCH_BYTES } from "../../desktop/src/shared/types/remoteWork";
+import {
+  REMOTE_WORK_FILE_CHUNK_BYTES,
+  REMOTE_WORK_FILE_MAX_BYTES,
+  REMOTE_WORK_MAX_PATCH_BYTES,
+  remoteWorkFileTooLargeMessage,
+  type RemoteWorkFileOp,
+} from "../../desktop/src/shared/types/remoteWork";
 import { CliUsageError, asString, isRecord, type JsonObject } from "./cli";
+import { fileSha256 } from "./services/tools/download";
 
 /* ──────────────────────────────────────────────────────────────────────────
    THIS CHAT'S WORK COPY ON ANOTHER MACHINE — `ade shell start --machine`,
@@ -183,7 +190,7 @@ function localCheckout(cwd: string): { top: string; head: string; branch: string
 }
 
 /** The commit and branch of this checkout: enough to make a missing copy there. No index read, no diff. */
-function readLocalHead(cwd: string): JsonObject {
+export function readLocalHead(cwd: string): JsonObject {
   const { head, branch } = localCheckout(cwd);
   return { head, fetchRef: branch, branch };
 }
@@ -228,4 +235,139 @@ function readLocalWorkSource(cwd: string): JsonObject {
     throw patchTooLargeError();
   }
   return { head, fetchRef, branch, ...(patch.length ? { patchBase64: patch.toString("base64") } : {}) };
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   `ade files push|pull --machine <name>`: one file into or out of this chat's
+   work copy there, in chunks over the machine link (the host side is
+   desktop/src/main/services/remoteWork/remoteWorkFiles.ts). Both ends check
+   the sha256, and a file lands under its name only once it is whole.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** One `work_copy_file` step on the other machine, its tool result unwrapped. */
+export type WorkCopyFileCall = (args: JsonObject & { op: RemoteWorkFileOp }) => Promise<unknown>;
+
+export type WorkCopyFileResult = {
+  direction: "push" | "pull";
+  localPath: string;
+  remotePath: string;
+  bytes: number;
+  sha256: string;
+};
+
+const fileTooLarge = (file: string, bytes: number): CliUsageError => new CliUsageError(remoteWorkFileTooLargeMessage(bytes, file));
+
+function answerRecord(value: unknown, step: string): JsonObject {
+  if (!isRecord(value)) throw new Error(`The other machine gave no answer to ${step}.`);
+  return value;
+}
+
+/** A remote path that ends in a separator names a folder there: the file keeps its name. */
+function remoteTargetPath(remotePath: string, localPath: string): string {
+  return /[\\/]$/.test(remotePath) ? `${remotePath}${path.basename(localPath)}` : remotePath;
+}
+
+export async function pushFileToWorkCopy(
+  call: WorkCopyFileCall,
+  input: { localPath: string; remotePath: string; checkout: string },
+): Promise<WorkCopyFileResult> {
+  const localPath = path.resolve(input.localPath);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(localPath);
+  } catch {
+    throw new CliUsageError(`${localPath} does not exist here.`);
+  }
+  if (!stat.isFile()) throw new CliUsageError(`${localPath} is not a file. ade files push copies one file; pack a folder first (tar or zip).`);
+  if (stat.size > REMOTE_WORK_FILE_MAX_BYTES) throw fileTooLarge(localPath, stat.size);
+  const sha256 = await fileSha256(localPath);
+  const begun = answerRecord(await call({
+    op: "push_begin",
+    path: remoteTargetPath(input.remotePath, localPath),
+    size: stat.size,
+    sha256,
+    // Enough to make the copy there when this chat has none yet.
+    remoteWork: readLocalHead(input.checkout),
+  }), "push_begin");
+  const transferId = asString(begun.transferId);
+  if (!transferId) throw new Error("The other machine did not open the push.");
+  const chunkBytes = Math.min(
+    REMOTE_WORK_FILE_CHUNK_BYTES,
+    typeof begun.chunkBytes === "number" && begun.chunkBytes > 0 ? begun.chunkBytes : REMOTE_WORK_FILE_CHUNK_BYTES,
+  );
+  const fd = fs.openSync(localPath, "r");
+  try {
+    const buffer = Buffer.alloc(chunkBytes);
+    let offset = 0;
+    while (offset < stat.size) {
+      const length = fs.readSync(fd, buffer, 0, Math.min(chunkBytes, stat.size - offset), offset);
+      if (length <= 0) throw new CliUsageError(`${localPath} got shorter while it was sent; run the push again.`);
+      await call({ op: "push_chunk", transferId, offset, dataBase64: buffer.subarray(0, length).toString("base64") });
+      offset += length;
+    }
+    const committed = answerRecord(await call({ op: "push_commit", transferId }), "push_commit");
+    // The other end checked the bytes against `sha256`; a file that changed
+    // here while it was read fails there with both hashes named.
+    return {
+      direction: "push",
+      localPath,
+      remotePath: asString(committed.path) ?? input.remotePath,
+      bytes: typeof committed.bytes === "number" ? committed.bytes : stat.size,
+      sha256: asString(committed.sha256) ?? sha256,
+    };
+  } catch (error) {
+    // Best effort: the other machine also drops a push idle for 10 minutes.
+    await call({ op: "push_abort", transferId }).catch(() => undefined);
+    throw error;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+export async function pullFileFromWorkCopy(
+  call: WorkCopyFileCall,
+  input: { remotePath: string; localPath: string },
+): Promise<WorkCopyFileResult> {
+  const stat = answerRecord(await call({ op: "pull_stat", path: input.remotePath }), "pull_stat");
+  const size = typeof stat.size === "number" ? stat.size : -1;
+  const sha256 = asString(stat.sha256) ?? "";
+  const remotePath = asString(stat.path) ?? input.remotePath;
+  if (size < 0 || !sha256) throw new Error("The other machine did not say how big the file is.");
+  if (size > REMOTE_WORK_FILE_MAX_BYTES) throw fileTooLarge(remotePath, size);
+  let localPath = path.resolve(input.localPath);
+  const remoteName = path.basename(remotePath.replace(/\\/g, "/"));
+  if (/[\\/]$/.test(input.localPath) || (fs.existsSync(localPath) && fs.statSync(localPath).isDirectory())) {
+    localPath = path.join(localPath, remoteName);
+  }
+  fs.mkdirSync(path.dirname(localPath), { recursive: true });
+  // Next to the target, so the rename at the end stays on one disk.
+  const tempPath = path.join(path.dirname(localPath), `.${path.basename(localPath)}.ade-pull-${randomUUID()}.part`);
+  const fd = fs.openSync(tempPath, "wx");
+  let closed = false;
+  try {
+    const hash = createHash("sha256");
+    let offset = 0;
+    while (offset < size) {
+      const chunk = answerRecord(await call({ op: "pull_chunk", path: input.remotePath, offset }), "pull_chunk");
+      if (chunk.size !== size) throw new CliUsageError(`${remotePath} changed there while it was copied; run the pull again.`);
+      if (chunk.offset !== offset || typeof chunk.dataBase64 !== "string") throw new Error(`The other machine did not return ${remotePath} at byte ${offset}.`);
+      const bytes = Buffer.from(chunk.dataBase64, "base64");
+      if (!bytes.length || offset + bytes.length > size) throw new Error(`The other machine returned ${remotePath} with the wrong length.`);
+      fs.writeSync(fd, bytes, 0, bytes.length, offset);
+      hash.update(bytes);
+      offset += bytes.length;
+    }
+    fs.closeSync(fd);
+    closed = true;
+    const got = hash.digest("hex");
+    if (got !== sha256) {
+      throw new CliUsageError(`${remotePath} arrived with sha256 ${got}, not ${sha256} (it changed there while it was copied?); nothing was written. Run the pull again.`);
+    }
+    fs.renameSync(tempPath, localPath);
+    return { direction: "pull", localPath, remotePath, bytes: size, sha256 };
+  } catch (error) {
+    if (!closed) fs.closeSync(fd);
+    fs.rmSync(tempPath, { force: true });
+    throw error;
+  }
 }

@@ -349,7 +349,17 @@ export type RemoteRuntimeConnectionStatus = {
    * trusted) says so in `lastErrorInfo` instead.
    */
   reconnectBlocked?: "disconnected" | null;
+  /**
+   * Who brings a failed connection back; only set while `state` is "error".
+   * `reconnecting`: this app retries on its own. `waiting_for_user`: ADE on
+   * the machine went away and this app waits for Reconnect (a dev app after
+   * its bounded retries, or "Reconnect automatically" is off).
+   * `held_elsewhere`: another ADE app on this computer has the link.
+   */
+  recovery?: RemoteRuntimeConnectionRecovery | null;
 };
+
+export type RemoteRuntimeConnectionRecovery = "reconnecting" | "waiting_for_user" | "held_elsewhere";
 
 /** What a call to a machine the person disconnected is told. */
 export const REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE =

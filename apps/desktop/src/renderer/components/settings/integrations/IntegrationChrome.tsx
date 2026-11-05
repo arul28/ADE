@@ -183,6 +183,7 @@ export function IntegrationCard({
   actions,
   children,
   tone,
+  span,
 }: {
   anchor?: string;
   icon: ReactNode;
@@ -194,6 +195,8 @@ export function IntegrationCard({
   children?: ReactNode;
   /** A card that is waiting on the user (a sign-in to finish) draws in the accent. */
   tone?: "focus";
+  /** `full`: the card takes the whole row of the page body (a rich card under two small ones). */
+  span?: "full";
 }) {
   return (
     <section
@@ -201,6 +204,7 @@ export function IntegrationCard({
       id={anchor}
       data-settings-anchor={anchor}
       data-tone={tone}
+      data-span={span}
     >
       <header className="ade-ig-card-head">
         <span className="ade-ig-card-icon" aria-hidden>{icon}</span>

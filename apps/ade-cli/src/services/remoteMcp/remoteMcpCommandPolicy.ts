@@ -47,7 +47,7 @@ const BLOCKED_COMMANDS: ReadonlyMap<string, string> = new Map([
  * access runs these; read-only runs the subset in READ_ONLY_COMMANDS.
  */
 const FULL_ACCESS_COMMANDS: ReadonlySet<string> = new Set([
-  "action", "actions", "ade-browser", "android", "app", "app-control", "apple", "apps", "archive", "archived", "artifact",
+  "action", "actions", "ade-browser", "agent37", "android", "app", "app-control", "apple", "apps", "archive", "archived", "artifact",
   "artifacts", "auth", "auto-update", "automation", "automations", "browser", "built-in-browser",
   "builtin-browser", "chat", "chats", "computer", "computer-use", "config", "cursor", "desk", "diff", "diffs",
   "disk", "doctor", "drafts", "electron", "file", "files", "gh", "git", "github", "harness", "harnesses",
@@ -77,6 +77,8 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   // Connected or not, and as whom; never a credential.
   ["integrations", new Set(["status"])],
   ["integration", new Set(["status"])],
+  // The ready-machine pool: names and states, never the key.
+  ["agent37", new Set(["ready", "status"])],
   ["machines", new Set(["list", "show"])],
   ["projects", new Set(["list"])],
   // `defaults` reads the new-lane defaults; `defaults set` is refused below.
@@ -92,6 +94,8 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
     "list", "inbox", "pending", "read", "show", "status", "launches", "launch-status", "waits", "subagents", "models",
     "linear-issues", "actions", "wait",
   ])],
+  // `ade chat deleted list` reads Recently deleted; `reopen` creates a chat.
+  ["chat deleted", new Set(["list", "ls"])],
   ["terminal", new Set(["list", "read", "active"])],
   ["history", new Set(["list", "show", "commits"])],
   ["drafts", new Set(["list", "show"])],
@@ -128,6 +132,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
 /** Commands whose `<command> <word>` names a nested group, not a subcommand. */
 const NESTED_GROUPS: ReadonlySet<string> = new Set([
   "prs stacks", "github issue", "github app-auth", "automations webhook", "usage budget", "providers accounts",
+  "chat deleted",
 ]);
 
 type RemoteCommandVerdict =
@@ -259,9 +264,9 @@ const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> =
   ["linear_credentials", true],
   ["linear_oauth", true],
   ["jira", new Set(["connect", "disconnect"])],
-  // The connect card and the MCP server card store what the person gives in the account.
+  // The connect card and the MCP server cards change what the account holds.
   ["integration_connect", new Set(["request"])],
-  ["mcp_registry", new Set(["request"])],
+  ["mcp_registry", new Set(["request", "remove"])],
   // Installing the ADE agent in Linear runs an OAuth consent and stores its token.
   ["linear_agent", new Set(["startInstall", "uninstall"])],
   ["ai", new Set([

@@ -29,10 +29,10 @@ function luminance(hex: string): number {
   return 0.2126 * linear(channel(clean, 1)) + 0.7152 * linear(channel(clean, 3)) + 0.0722 * linear(channel(clean, 5));
 }
 
-function pathMark(path: string) {
+function pathMark(path: string, fillRule?: "evenodd") {
   return (size: number) => (
     <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden style={{ display: "block" }}>
-      <path d={path} />
+      <path d={path} fillRule={fillRule} />
     </svg>
   );
 }
@@ -64,7 +64,7 @@ export function mcpCatalogueBrand(entry: McpCatalogueEntry): McpBrand {
     },
     logo: {
       kind: "solid",
-      mark: entry.brand.path ? pathMark(entry.brand.path) : letterMark(entry.name),
+      mark: entry.brand.path ? pathMark(entry.brand.path, entry.brand.fillRule) : letterMark(entry.name),
       face: mono ? "#ffffff" : hex,
       side: `color-mix(in srgb, ${light < 0.06 ? "#52525b" : hex} 45%, #000)`,
     },

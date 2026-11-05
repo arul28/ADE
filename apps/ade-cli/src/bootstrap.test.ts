@@ -103,7 +103,7 @@ describe("createAdeRuntime dispose", () => {
       // caches and their timers) that later runtimes share, so measure the
       // second, once the first one's processes, pipes and sockets are gone.
       const beforeWarmUp = liveResources();
-      (await buildRuntime(runtimeProfile)).dispose();
+      await (await buildRuntime(runtimeProfile)).dispose();
       // Sampled inside vi.waitFor, like the final check, so both see its own timers.
       const before = await vi.waitFor(() => {
         expect(leakedSince(beforeWarmUp).filter((kind) => !kind.startsWith("Timeout"))).toEqual([]);
@@ -112,7 +112,7 @@ describe("createAdeRuntime dispose", () => {
 
       const runtime = await buildRuntime(runtimeProfile);
       expect(leakedSince(before)).not.toEqual([]);
-      runtime.dispose();
+      await runtime.dispose();
 
       expect(() => runtime.db.getJson("probe")).toThrow(/not open/);
       await vi.waitFor(() => expect(leakedSince(before)).toEqual([]), { timeout: 15_000 });

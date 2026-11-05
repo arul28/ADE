@@ -163,6 +163,22 @@ describe("claudeJsonlToChatEvents", () => {
     });
   });
 
+  it("drops Claude request-log records so a turn is not shown twice", () => {
+    // Claude Code logs each API request it sends, and the request body carries
+    // the user's turn again. Read as turns, every prompt appeared twice.
+    const lines = [
+      JSON.stringify({ type: "user", uuid: "user-1", message: { role: "user", content: "fix the build" } }),
+      JSON.stringify({ type: "api-request", uuid: "request-1", message: { role: "user", content: "fix the build" } }),
+      JSON.stringify({ type: "api-request-blob", uuid: "blob-1", message: { role: "user", content: "fix the build" } }),
+    ];
+
+    const events = claudeJsonlToChatEvents(lines, baseOptions);
+
+    const userMessages = events.filter((envelope) => envelope.event.type === "user_message");
+    expect(userMessages).toHaveLength(1);
+    expect(userMessages[0]!.event).toMatchObject({ type: "user_message", text: "fix the build" });
+  });
+
   it("keeps both truncation notices when byte and event caps both apply", () => {
     const lines = Array.from({ length: 6 }, (_, index) => JSON.stringify({
       type: "user",

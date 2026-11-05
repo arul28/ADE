@@ -18,6 +18,7 @@ import {
 import {
   MAC_DESKTOP_DRIVER_OPS,
   MAC_DESKTOP_GESTURE_IN_FLIGHT_CODE,
+  MacDesktopDriverError,
   type MacDesktopDriverClient,
 } from "./macDesktopDriverClient";
 import { createMacDesktopService } from "./macDesktopService";
@@ -638,6 +639,72 @@ describe("Windows Desktop seats, consent and window verbs", () => {
       // Shared, real input: key by key again, and capped.
       await expect(service.type({ laneId: "shared", text: "z".repeat(5_000), mode: "real", chatSessionId: "chat-2" }))
         .rejects.toThrow(/4000/);
+    } finally { service.dispose(); }
+  });
+  // The service-to-driver contract for background input on the main desktop:
+  // which sends may be refused and retried as real input under the lease, and
+  // which are posted anyway (`forceBackground`) with the table row in the reply.
+  it.each([
+    ["a key with no mode is refused, then sent as real input under the lease", "press", {}, ["accessibility", "real"], { mode: "real" }],
+    ["text with no mode is refused, then sent as real input", "type", {}, ["accessibility", "real"], { mode: "real" }],
+    ["a key named accessibility is kept as asked: posted, not retried", "press", { mode: "accessibility" }, ["accessibility"], { mode: "accessibility" }],
+    ["a click at a point is posted anyway", "click", {}, ["real"], { mode: "real" }],
+    ["a scroll at a point is posted anyway", "scroll", {}, ["real"], { mode: "real" }],
+  ] as const)("main desktop, an app that ignores background input: %s", async (_name, action, extra, modes, result) => {
+    const row = { app: "chrome.exe", windowClass: "Chrome_WidgetWin_1", input: "keys" };
+    const { service, driver } = windowsService({
+      ops: {
+        // The driver's table: a posted send to this app is refused unless the
+        // service asked to post anyway; real keys go through.
+        [MAC_DESKTOP_DRIVER_OPS.input]: (payload) => {
+          if (payload.mode === "real" && (payload.command === "press" || payload.command === "type")) return {};
+          const body = payload.payload as Record<string, unknown>;
+          if (body.forceBackground !== true) {
+            throw new MacDesktopDriverError("WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE", "chrome.exe ignores background keys on the main desktop.", row);
+          }
+          return { backgroundRow: row };
+        },
+      },
+    });
+    try {
+      await service.start({ laneId: "shared", seatMode: "shared", sharedDesktopConsent: true });
+      const base = { laneId: "shared", chatSessionId: "chat-1", ...extra };
+      const sent = action === "press" ? service.press({ ...base, key: "a" })
+        : action === "type" ? service.type({ ...base, text: "hi" })
+          : action === "click" ? service.click({ ...base, x: 10, y: 10 })
+            : service.scroll({ ...base, x: 10, y: 10, direction: "down" });
+      await expect(sent).resolves.toMatchObject({ ok: true, ...result });
+      const calls = inputOps(driver, "shared");
+      expect(calls.map((call) => call.payload.mode)).toEqual(modes);
+      // Only a send that cannot be retried as real input asks to post anyway.
+      const retried = modes.length > 1;
+      expect((calls[0]!.payload.payload as Record<string, unknown>).forceBackground).toBe(retried ? undefined : true);
+      // Real input on the user's desktop always carries the lease the chat now holds.
+      for (const call of calls.filter((entry) => entry.payload.mode === "real")) {
+        expect(call.payload.lease).toEqual({ holderId: "chat-1" });
+      }
+      if (retried) expect((await service.getStatus({ laneId: "shared" })).lease?.holderId).toBe("chat-1");
+    } finally { service.dispose(); }
+  });
+
+  it("main desktop: a key named accessibility that the app ignores and cannot be posted stays refused", async () => {
+    const { service, driver } = windowsService({
+      ops: {
+        [MAC_DESKTOP_DRIVER_OPS.input]: () => {
+          throw new MacDesktopDriverError("WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE", "A key chord on the main desktop needs real input (--real).");
+        },
+      },
+    });
+    try {
+      await service.start({ laneId: "shared", seatMode: "shared", sharedDesktopConsent: true });
+      await expect(service.press({ laneId: "shared", key: "s", modifiers: ["control"], mode: "accessibility", chatSessionId: "chat-1" }))
+        .rejects.toMatchObject({ code: "WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE" });
+      expect(inputOps(driver, "shared").map((call) => call.payload.mode)).toEqual(["accessibility"]);
+      // With no mode named, the chord goes as real input at once.
+      driver.overrides[MAC_DESKTOP_DRIVER_OPS.input] = () => ({});
+      await expect(service.press({ laneId: "shared", key: "s", modifiers: ["control"], chatSessionId: "chat-1" }))
+        .resolves.toMatchObject({ ok: true, mode: "real" });
+      expect(inputOps(driver, "shared").map((call) => call.payload.mode)).toEqual(["accessibility", "real"]);
     } finally { service.dispose(); }
   });
 });

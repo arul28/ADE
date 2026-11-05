@@ -104,6 +104,7 @@ extension and releases its handles immediately, including on Windows.
 | `apps/desktop/src/main/services/storage/historyCompression.ts` | Finds inactive old history, gzip-compresses it, verifies byte identity, and only then removes the original; also reinflates before append. Exposes `readHistoryFileSync` / `reinflateHistoryFileSync` so transcript, session, and search readers can read a `.gz` generation transparently. The `.gz` keeps the source's modification time. An optional `minAgeMsFor` hook gives finished chats a shorter idle age and lists them first. |
 | `apps/desktop/src/main/services/storage/legacyChatTranscripts.ts` | `resolveChatTranscriptReadPath` maps a chat row's legacy `<id>.chat.jsonl` path to the dedicated `transcripts/chat/<id>.jsonl` (plain or `.gz`). `removeDuplicateLegacyChatTranscripts` is the doctor step that deletes legacy copies once every event line in them is proven to be in the dedicated file. |
 | `apps/desktop/src/main/services/storage/deletedLaneChats.ts` | Lists chats whose session row and lane are both gone (lane delete removes rows, not files), idle for 7 days, with every file they left. Backs the review-first "Chats from deleted lanes" row and its `deleted_lane_chats` cleanup target. `providerSessionsOfDeletedLaneChats` reads each chat's record for the Claude/Codex session ADE started. Imported chats are skipped, and so are sessions a live chat also names. |
+| `apps/desktop/src/main/services/chat/deletedChats.ts`, `apps/desktop/src/renderer/components/settings/RecentlyDeletedSection.tsx` | Settings › Storage & cleanup › Recently deleted: the `deleted_chats` rows a chat delete or lane delete writes, the agent-copy lookup that keeps a row only while the conversation still exists on this machine, and Reopen through the external-session import. Machine-local (excluded from CRR); rows are hidden rather than removed. See [Recently deleted chats](../chat/README.md#recently-deleted-chats). |
 | `apps/desktop/src/main/services/storage/providerHistory.ts` | `measureProviderHistory` sizes each provider's own session folders on this machine: Claude and Codex across every config home, plus OpenCode, Droid, Cursor, Copilot, Pi and Grok. `listProviderCopiesOfChats` finds the Claude `projects/<cwd>/<id>.jsonl` (plus its `<id>/` side folder) and the Codex rollout for given session ids. |
 | `apps/desktop/src/renderer/components/app/useDeletedChatsReminderBanner.tsx` | The docked reminder shown when chats from deleted lanes pile up: 25 or more chats, or at least 100 MB. It checks 45 s after open and every 6 h through `storage.deletedLaneChatsSummary`. Every answer snoozes it for two weeks per project, in localStorage. |
 | `apps/desktop/src/renderer/components/app/StoragePressureIndicator.tsx` | Quiet top-right warning/critical/exhausted status and entry point to Storage settings. Mounted in `TopBar.tsx` (enabled only when a workspace project is open). |
@@ -947,6 +948,21 @@ file that cannot be removed (Windows locks open files) is reported, and the
 rest still go. A chat is listed only when its row is gone, the lane named in its
 `session_init` header no longer exists, and all its files have been idle for
 7 days. An empty lane table lists nothing.
+
+**Recently deleted chats.** Deleting one chat (not a whole lane) also writes a
+`deleted_chats` row just before the chat's own row goes, naming the agent's own
+copy of the conversation. Settings › Storage & cleanup › Recently deleted lists
+those whose copy is still on this machine, with a conversation preview,
+Reopen, and Remove from list; `ade chat deleted list` and `ade chat deleted
+reopen <id>` reach the same service from the CLI. Reopen continues the
+conversation in its lane, or copies it into a lane the person picks when that
+lane is gone, and refuses one a live or archived chat already holds. A row is
+never deleted: reopening or removing it hides it, so the Claude backfill for
+chats deleted before the list existed cannot bring it back. The table is
+machine-local and excluded from CRR sync, because the copy it names is on this
+machine only. Neither Reopen nor Remove from list deletes the agent's files; a
+cleanup of those is the separate "Chats from deleted lanes" row above. See
+[Recently deleted chats](../chat/README.md#recently-deleted-chats).
 
 Step 6's hooks are awaited individually, so a hook may be `async` — the two
 newest ones are, because they delete in paced batches. Each is invoked through

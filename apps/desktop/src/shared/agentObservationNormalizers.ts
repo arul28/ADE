@@ -186,11 +186,19 @@ export type AgentActionEffectTracker = {
   before: AgentEffectFingerprint | null;
   /** ADE scrolled the target into view itself, so layout is not the action's effect. */
   ignoreLayout: boolean;
+  /**
+   * Even after the scroll, input at the target's center would not land on it
+   * (off screen, clipped by a list, or covered). A click there is not a hit.
+   */
+  targetUnreachable: boolean;
 };
 
 export function createAgentActionEffectTracker(): AgentActionEffectTracker {
-  return { resolved: null, before: null, ignoreLayout: false };
+  return { resolved: null, before: null, ignoreLayout: false, targetUnreachable: false };
 }
+
+/** Actions whose input goes to the target's center point, so they miss when it cannot be reached. */
+const POINT_TARGET_ACTIONS = new Set(["click", "hover"]);
 
 /**
  * Record a raw collector answer as the pre-action state.
@@ -212,6 +220,7 @@ export function noteAgentActionBaseline(
     fingerprint.focus = record.focusKeyAfterLocate as string | null;
   }
   if (record.scrolledIntoView === true) tracker.ignoreLayout = true;
+  if (record.targetReachable === false) tracker.targetUnreachable = true;
   tracker.before = fingerprint;
 }
 
@@ -241,6 +250,14 @@ export function agentActionEffect(
   if (input.action === "wait") return notCheckedEffect("a wait checks a condition; it does not act");
   if (!input.observed) return notCheckedEffect("no observation was taken after the action");
   if (!input.after) return notCheckedEffect("the observation after the action had no element list");
+  // Whatever changed came from the input landing somewhere else (a missed
+  // click still moves focus), so it cannot be read as this target's effect.
+  if (tracker.targetUnreachable && POINT_TARGET_ACTIONS.has(input.action)) {
+    return {
+      status: "unconfirmed",
+      reason: `the target's center was still off screen or covered after ADE scrolled to it, so the ${input.action} may have landed on something else`,
+    };
+  }
   return compareAgentEffectFingerprints(tracker.before, agentDomEffectFingerprint(input.after), {
     ignoreLayout: tracker.ignoreLayout,
     missingReason: "ADE could not read the page before the action",

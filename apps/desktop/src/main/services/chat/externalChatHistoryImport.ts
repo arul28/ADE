@@ -7,7 +7,7 @@ import type {
   CodexWebSearchResult,
   ExternalSessionProvider,
 } from "../../../shared/types";
-import { cleanExternalSessionUserText } from "../externalSessions/discoveryUtils";
+import { cleanExternalSessionUserText, isClaudeRequestLogRecord } from "../externalSessions/discoveryUtils";
 import { codexImageGenerationRefFields } from "../../../shared/codexImageGeneration";
 
 const DEFAULT_MAX_IMPORTED_EVENTS = 2000;
@@ -308,6 +308,7 @@ function claudeRecordToEvents(
   index: number,
   fallbackMs?: number,
 ): AgentChatEventEnvelope[] {
+  if (isClaudeRequestLogRecord(record)) return [];
   const message = isRecord(record.message) ? record.message : record;
   const role = stringOrNull(message.role) ?? stringOrNull(record.type) ?? "";
   const sourceId = sourceRecordId(record, `claude-import:${index}`);

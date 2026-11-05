@@ -1384,6 +1384,9 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // second machine (or a phone) believe the lane owns a device it cannot see.
   "lane_apple_devices",
   "lane_apple_extra_devices",
+  // A deleted chat can only be reopened on the machine that holds its agent's
+  // own copy of the conversation, so the list of them stays on that machine.
+  "deleted_chats",
   // The same for a lane's Android emulator: an AVD is a folder in ONE
   // machine's AVD home.
   "lane_android_devices",
@@ -3425,6 +3428,37 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   db.run("create index if not exists idx_claude_sessions_lane_id on claude_sessions(lane_id)");
   db.run("create index if not exists idx_claude_sessions_updated_at on claude_sessions(updated_at desc)");
+
+  // Chats the user deleted, kept so Settings › Recently deleted can reopen
+  // them from the agent's own copy of the conversation (which ADE never
+  // deletes). `hidden_at` marks a row reopened or removed from the list; the
+  // row stays so the Claude backfill (`deletedChats.ts`) never re-adds it.
+  // Local-only (LOCAL_ONLY_CRR_EXCLUDED_TABLES): the conversation lives on
+  // this machine only.
+  db.run(`
+    create table if not exists deleted_chats (
+      id text primary key,
+      lane_id text,
+      lane_name text,
+      title text,
+      provider text not null,
+      external_provider text not null,
+      external_id text not null,
+      model_id text,
+      reasoning_effort text,
+      instance_id text,
+      config_home text,
+      cwd text,
+      created_at text,
+      last_active_at text,
+      deleted_at text not null,
+      origin text not null,
+      hidden_at text,
+      hidden_reason text,
+      reopened_chat_id text
+    )
+  `);
+  db.run("create index if not exists idx_deleted_chats_deleted_at on deleted_chats(deleted_at desc)");
 
   // Test suite config and history tables.
   db.run(`

@@ -75,6 +75,7 @@ Engine::~Engine() { shutdown(); }
 
 bool Engine::init(std::string* error) {
   if (!uia_.init(error)) return false;
+  uia_.setShieldForeground(mode_ == Mode::Shared);
   watcher_ = std::thread([this] { watchLoop(); });
   return true;
 }

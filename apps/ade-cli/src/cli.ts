@@ -9,6 +9,7 @@ import { pendingCliDelegation } from "./lib/cliDelegationEntry";
 import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
+import type { Agent37ReadyPool } from "../../desktop/src/shared/agent37";
 import {
   setSharedAccountLiveQuotaFetcher,
   setSharedAccountRollupFetcher,
@@ -23,6 +24,7 @@ import {
   createMachineRemoteConnection,
   executePlanAcrossMachines,
   extractMachineTargeting,
+  FREE_TEXT_VALUE_FLAGS,
   flagNamesOutsideFreeText,
   formatMachineFanOut,
   formatMachinesRoster,
@@ -203,6 +205,7 @@ import {
   machineStatusLine,
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import { isRemoteWorkLaneId } from "../../desktop/src/shared/types/remoteWork";
 import { pathsEqual } from "../../desktop/src/main/services/shared/pathCompare";
 import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
 import { trackPtyOutputBacklog } from "../../desktop/src/main/services/pty/ptyOutputFlowControl";
@@ -516,6 +519,7 @@ import {
 import {
   appleLeaseAnswer,
   appleLeaseNotAcquired,
+  formatAppleDeviceDelete,
   formatAppleInstall,
   formatAppleLease,
   formatAppleTests,
@@ -837,6 +841,7 @@ export type FormatterId =
   | "apple-posture"
   | "apple-render"
   | "apple-device-detach"
+  | "apple-device-delete"
   | "apple-device-promote"
   | "apple-tests"
   | "apple-lease"
@@ -904,7 +909,9 @@ export type FormatterId =
   | "terminal-read"
   | "project-secrets"
   | "integrations"
+  | "agent37-ready"
   | "mcp-servers"
+  | "mcp-servers-remove"
   | "history-list"
   | "history-commits"
   | "history-show"
@@ -930,6 +937,7 @@ export type FormatterId =
   | "harness-routes"
   | "harness-test"
   | "archive-list"
+  | "deleted-chats"
   | "archive-summary"
   | "archive-action"
   | "storage-snapshot"
@@ -1507,7 +1515,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
-    $ ade mcp servers | servers add <name>          Read the MCP servers your agents get; ask to add one
+    $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
@@ -2218,6 +2226,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Internal/debug command that runs the brain process in the foreground. Most
   users should use "ade brain start", "ade brain stop", and "ade brain status".
+  A brain started by hand serves only agents unless it is started with
+  "ade --role cto serve"; desktops, phones and the web need that role.
 
   Flags:
     --socket <path>         Local RPC endpoint to listen on.
@@ -2564,6 +2574,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Each call opens a new shell there and syncs the copy again, so put all the
   steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
   The shell runs in the background there; no list on that machine shows it.
+  To move a file, use ade files push|pull --machine <name> (see ade files
+  --help), never base64 or echo inside a shell command.
 
   Provider CLI launches accept --instance for Claude/Codex accounts and
   --preset or --credential for saved harness brains.
@@ -2623,6 +2635,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade files quick-open --workspace <lane> -q app
     $ ade files quick-open --workspace <lane> -q src --include-directories
                                                     Also offer folders; they print with a trailing slash
+
+  On another machine (this chat's work copy there, the one ade shell start
+  --machine uses; paths there are relative to it, / or \\ both work):
+    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (made at your commit if missing)
+    $ ade files pull --machine <name> build/out.log ./logs/          Copy a file back here
+  Up to 256 MiB per file, sent in chunks and checked by sha256. Use these, not
+  base64 in shell commands. A pushed file is a change made there, so the next
+  ade shell start --machine needs --no-sync (keep it) or --discard (drop it).
 `,
   session: `${ADE_BANNER}
   Session lifecycle
@@ -2681,6 +2701,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Start a child on another machine; it wakes you when done.
                                                     --project <name|path|id> picks the project there, --clone
                                                     sets a missing GitHub repo up, "a,b" starts one per machine.
+    $ ade chat create --machine agent37:ready --prompt "…"
+                                                    Start on this project's ready Agent 37 machine (prepared and
+                                                    asleep): ADE wakes it, waits until it is online, then sends.
+                                                    No --lane needed; --json adds readyMachine. See ade agent37 ready.
     $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --text
@@ -2742,6 +2766,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     (--session <subagent>), never one the user raised.
                                                     Clear it when you asked and then kept working anyway, so the
                                                     row stops saying "Needs you" about a question nobody is on.
+    $ ade chat deleted list --text                  Recently deleted chats this machine can still reopen (--query <text>)
+    $ ade chat deleted reopen <id> [--lane <lane>]  Reopen one with its history; a chat whose lane is gone needs --lane
     $ ade chat inbox --text                         Every chat in the project that waits on you, each with its question
                                                     or approval inline and the exact 'chat respond' that answers it
                                                     (--all-machines: every machine on your account)
@@ -3502,7 +3528,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     WINDOWS_DESKTOP_NOT_CONSOLE_SESSION  private unavailable; start --shared
     WINDOWS_DESKTOP_CONSENT_REQUIRED the user did not allow the main desktop
     WINDOWS_DESKTOP_ELEVATED_WINDOW  an admin window holds focus; ask the user to resolve it
-    WINDOWS_DESKTOP_WINDOW_ACTION_FAILED  Windows could not focus or minimize the window
+    WINDOWS_DESKTOP_WINDOW_ACTION_FAILED  Windows could not focus or minimize the window, or an app did not answer in time
+    WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE  main desktop: a key chord cannot be sent in the background; add --real
     MAC_DESKTOP_INPUT_LEASE_REQUIRED Mac / shared seat: ade screen lease
   Setup, takeover and shared consent belong to the user; an agent cannot
   pass --allow-prompt or --consent itself.
@@ -4459,8 +4486,22 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   card at once. If it was your own idea, ask in words first and raise the
   card only after they say yes.
 `,
+  agent37: `${ADE_BANNER}
+  Agent 37 ready machines
+
+  A ready machine is a cloud machine ADE keeps prepared for one project (the
+  repository cloned, its setup run, its services started, signed in) and
+  asleep, so a new chat on it is working in seconds. Asleep it bills only its
+  disk. Turn it on per project in Settings › Integrations › Agent 37.
+
+    $ ade agent37 ready --text                       Projects kept ready and their machines
+    $ ade chat create --machine agent37:ready --prompt "…"
+                                                    Start the chat on this project's ready machine: ADE wakes it,
+                                                    waits until it is online, then sends. The machine is then an
+                                                    ordinary machine of yours, and ADE prepares the next one.
+`,
   "mcp servers": `${ADE_BANNER}
-  ADE MCP servers (Settings › Integrations › MCP servers)
+  ADE MCP servers (ade://settings/mcp.servers)
 
   The MCP servers every agent ADE launches gets, defined once for the
   person's account. Values (tokens, keys) live in the account vault and are
@@ -4488,10 +4529,23 @@ export const HELP_BY_COMMAND: Record<string, string> = {
       Prints {name, added: true, missing, next} | {name, already: true, existing, next} | {name, declined: true}
         | {name, integration, connected, next} (github, linear, atlassian)
 
+  Never guess a server's address. If you do not know the server, say so and
+  ask the person for its link, or offer to search for it; raise the card only
+  with a real URL or command.
+
+  Asking the person to remove one (only when they asked):
+
+    $ ade mcp servers remove stripe --reason "You asked to disconnect Stripe"
+      A card asks them; on yes it leaves their account on every machine, with
+      its saved values and sign-in.
+      Prints {name, removed: true, next} | {name, removed: false, declined: true}
+      GitHub, Linear and Jira are ADE integrations: link
+      ade://settings/integrations.github (or .linear, .jira) instead.
+
   When to ask: if the person named the server ("add the GitHub MCP"), raise
   the card at once. If it was your own idea, ask in words first and raise the
-  card only after they say yes. Once added, your own chat gets the tools only
-  after the person presses Refresh chat; ask them to.
+  card only after they say yes. Your own chat picks up an added or removed
+  server only after the person presses Refresh chat; ask them to.
 `,
   linear: `${ADE_BANNER}
   Linear workflows
@@ -5276,6 +5330,23 @@ export function collectGenericObjectArgs(
     break;
   }
   return input;
+}
+
+/**
+ * The lane this shell runs in, as a default for a command without --lane.
+ * A shell that a chat on another machine started in its work copy here
+ * carries the copy's `remote-work-…` id, which names no ADE lane: a lane
+ * command defaulted to it would fail as "Lane not found", so it says why.
+ */
+function envLaneIdForLaneCommand(): string | null {
+  const laneId = process.env.ADE_LANE_ID?.trim() || null;
+  if (isRemoteWorkLaneId(laneId)) {
+    throw new CliUsageError(
+      "This shell runs in a work copy that a chat on another machine uses here, so it has no ADE lane. "
+      + "Pass --lane <lane> to act on a lane of this machine.",
+    );
+  }
+  return laneId;
 }
 
 function readLaneId(args: string[]): string | null {
@@ -6249,10 +6320,43 @@ function parseCliArgs(argv: string[]): ParsedCli {
       options.json = true;
       continue;
     }
+    assertNotFusedTargetFlag(token, argv[index - 1]);
     command.push(token);
   }
 
   return { options, command };
+}
+
+// The space form only: `--machine=Arul’s Mac Studio` is one valid word.
+const FUSED_TARGET_FLAG = /^--(machine|lane|project|project-root|workspace-root|device|session)\s+\S/;
+/**
+ * Switches `parseCliArgs` takes for itself: never a flag the next word is the
+ * value of. Wins over FREE_TEXT_VALUE_FLAGS: `--text` before a word that starts
+ * with `-` is the output switch, not text.
+ */
+const PARSED_SWITCHES: ReadonlySet<string> = new Set(["--text", "--json", "--compact", "--pretty", "--headless", "--no-socket"]);
+
+/**
+ * `"--machine X --lane Y"` or `"--device iPhone 17 Pro"` quoted as one word (a
+ * script building its flags in one variable) is no flag any command knows, so
+ * commands skipped it and ran on this machine, this lane and this device: the
+ * wrong target with no error, and for `device-delete` the lane's own device.
+ * Only the value of a flag known to take one (`--prompt "--lane …"`) is left
+ * alone; a sentence that starts with a target flag is refused too, since
+ * nothing tells it from flags.
+ */
+function assertNotFusedTargetFlag(token: string, previous: string | undefined): void {
+  if (!FUSED_TARGET_FLAG.test(token)) return;
+  const isValue = previous !== undefined
+    && !previous.includes("=")
+    && !PARSED_SWITCHES.has(previous)
+    && (FREE_TEXT_VALUE_FLAGS.has(previous) || VALUE_CARRIER_FLAGS.has(previous));
+  if (isValue) return;
+  throw new CliUsageError(
+    `"${token}" reached ade as one argument, so its flags would be ignored and the command would run here. `
+      + `Pass each flag and value as its own word: ${token.trim().split(/\s+/).join(" ")}`
+      + ` (in a script, use an array, not one quoted string). Text that starts with a flag goes in a text flag, such as --prompt.`,
+  );
 }
 
 /**
@@ -7563,7 +7667,7 @@ function resolveNewChatLaneArgs(args: string[], prompt: string | null): {
     readFlag(args, ["--auto-create-lane", "--create-lane", "--new-lane"]) ||
     isAutoLaneSelector(laneValue);
   if (!autoCreateLane) {
-    const laneId = laneValue ?? process.env.ADE_LANE_ID ?? null;
+    const laneId = laneValue ?? envLaneIdForLaneCommand();
     if (!laneId) {
       throw new CliUsageError("Provide --lane <lane> or --auto-create-lane.");
     }
@@ -9759,7 +9863,7 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
   return refuseUnknownSubcommand("prs", "pr", sub);
 }
 
-function buildShellPlan(args: string[]): CliPlan {
+function buildShellPlan(args: string[], inWorkCopy = false): CliPlan {
   const sub = firstPositional(args) ?? "start";
   if (sub === "actions")
     return {
@@ -9821,7 +9925,7 @@ function buildShellPlan(args: string[]): CliPlan {
     // app or script can run a command in a project without making a lane.
     // With --machine and no --lane the command runs in this chat's work copy
     // there instead (cliMachineTargeting.ts replaces the lane).
-    const ownLane = laneId ?? (process.env.ADE_LANE_ID?.trim() || null);
+    const ownLane = laneId ?? (inWorkCopy ? null : envLaneIdForLaneCommand());
     const followPlan = wait
       ? {
           followShell: true,
@@ -9841,6 +9945,12 @@ function buildShellPlan(args: string[]): CliPlan {
     const shellStart = { kind: "execute", label: "shell start", formatter: "pty-create", ...followPlan } as const;
     if (ownLane) {
       return { ...shellStart, steps: [actionStep("result", "pty", "create", { ...input, laneId: ownLane })] };
+    }
+    if (inWorkCopy) {
+      // The other machine picks the lane for its work copy, so its lane list
+      // is not read: that round trip was thrown away, and was one more call
+      // that could fail on a flaky link before the shell was even asked for.
+      return { ...shellStart, steps: [actionStep("result", "pty", "create", input)] };
     }
     return {
       ...shellStart,
@@ -11015,6 +11125,39 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
 /** What `ade chat scheduled-work <operation>` can do. */
 const SCHEDULED_WORK_OPERATIONS: ReadonlySet<string> = new Set(["list", "create", "cancel", "status", "pause", "resume"]);
 
+/**
+ * `ade chat deleted`: Settings › Recently deleted. Lists deleted chats whose
+ * conversation the agent still keeps on this machine, and reopens one.
+ * Removing one from the list is the person's, in Settings.
+ */
+function buildChatDeletedPlan(args: string[]): CliPlan {
+  const verb = firstPositional(args) ?? "list";
+  if (verb === "list" || verb === "ls") {
+    const query = readValue(args, ["--query", "--search"]) ?? standalonePositionals(args).join(" ").trim();
+    return {
+      kind: "execute",
+      label: "chat deleted list",
+      formatter: "deleted-chats",
+      steps: [actionStep("result", "chat", "listDeletedChats", query ? { query } : {})],
+    };
+  }
+  if (verb === "reopen" || verb === "restore" || verb === "undo") {
+    const laneId = readLaneId(args);
+    const id = requireValue(firstPositional(args), "deleted chat id (see `ade chat deleted list`)");
+    return {
+      kind: "execute",
+      label: "chat deleted reopen",
+      steps: [actionStep("result", "chat", "reopenDeletedChat", { id, ...(laneId ? { laneId } : {}) })],
+    };
+  }
+  if (verb === "remove" || verb === "rm" || verb === "delete") {
+    throw new CliUsageError(
+      "Remove chats from the list in ADE: Settings › Storage › Recently deleted. The command line can list and reopen them.",
+    );
+  }
+  throw new CliUsageError("chat deleted supports list [--query <text>] or reopen <id> [--lane <lane-id>].");
+}
+
 function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (readFlag(args, ["--personal"])) {
@@ -11034,6 +11177,7 @@ function buildChatPlan(args: string[]): CliPlan {
       steps: [listActionsStep("actions", "chat")],
     };
   if (sub === "inbox") return buildChatInboxPlan();
+  if (sub === "deleted") return buildChatDeletedPlan(args);
   if (sub === "move") {
     // `--note --no-changes` reports the missing note instead of eating
     // `--no-changes` and moving the changes the person asked to leave behind.
@@ -13900,8 +14044,40 @@ function promptPasswordSync(prompt: string): string {
   }
 }
 
-function buildFilesPlan(args: string[]): CliPlan {
+function buildFilesPlan(args: string[], machine: string | null = null): CliPlan {
   const sub = firstPositional(args) ?? "workspaces";
+  if (sub === "push" || sub === "pull") {
+    // One file into or out of this chat's work copy on another machine
+    // (cliRemoteWork.ts sends it in chunks); there is no local form.
+    const usage = sub === "push"
+      ? "ade files push --machine <name> <local file> <path in the work copy there>"
+      : "ade files pull --machine <name> <path in the work copy there> <local file or folder>";
+    if (!machine) {
+      throw new CliUsageError(`ade files ${sub} copies a file ${sub === "push" ? "to" : "from"} another machine: ${usage}. Here, use cp.`);
+    }
+    const first = firstPositional(args);
+    const second = firstPositional(args);
+    if (!first || !second) throw new CliUsageError(`Usage: ${usage}`);
+    const [localPath, remotePath] = sub === "push" ? [path.resolve(first), second] : [path.resolve(second), first];
+    return {
+      kind: "execute",
+      label: `files ${sub}`,
+      steps: [actionCallStep("result", "work_copy_file", {
+        op: sub,
+        // A trailing separator ("out/") is kept: it means "into that folder".
+        localPath: sub === "pull" && /[\\/]$/.test(second) ? `${localPath}${path.sep}` : localPath,
+        remotePath,
+      })],
+      formatText: (result: unknown) => {
+        const record = isRecord(result) ? result : {};
+        const where = asString(record.machine) ?? machine;
+        const bytes = typeof record.bytes === "number" ? record.bytes : 0;
+        return sub === "push"
+          ? `pushed ${bytes} bytes to ${asString(record.remotePath) ?? remotePath} on ${where} · sha256 ${asString(record.sha256) ?? "?"}`
+          : `pulled ${bytes} bytes from ${asString(record.remotePath) ?? remotePath} on ${where} to ${asString(record.localPath) ?? localPath} · sha256 ${asString(record.sha256) ?? "?"}`;
+      },
+    };
+  }
   if (sub === "actions")
     return {
       kind: "execute",
@@ -13913,7 +14089,7 @@ function buildFilesPlan(args: string[]): CliPlan {
   const laneId = readLaneId(args);
   const workspaceId = readValue(args, ["--workspace", "--workspace-id"])
     ?? laneId
-    ?? (process.env.ADE_LANE_ID?.trim() || null);
+    ?? envLaneIdForLaneCommand();
   const withWorkspace = (base: JsonObject = {}) =>
     collectGenericObjectArgs(args, {
       ...base,
@@ -16197,13 +16373,16 @@ function buildIosSimulatorPlan(
     }
     // Same single-owner rule as `stop`: the chat id is what lets a chat delete
     // its own device and not another chat's.
-    return iosAction("Apple device delete", "deviceDelete", {
-      ...(laneId ? { laneId } : {}),
-      ...(udid ? { udid } : {}),
-      ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
-      ...(force ? { force: true } : {}),
-      ...readIgnoreOwnershipArg(args),
-    });
+    return {
+      ...iosAction("Apple device delete", "deviceDelete", {
+        ...(laneId ? { laneId } : {}),
+        ...(udid ? { udid } : {}),
+        ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
+        ...(force ? { force: true } : {}),
+        ...readIgnoreOwnershipArg(args),
+      }),
+      formatter: "apple-device-delete" as const,
+    };
   }
   if (sub === "device-promote") {
     // One of the lane's extras becomes the lane's device, in the lane's queue.
@@ -17466,7 +17645,7 @@ function buildWorkToolsPlan(args: string[]): CliPlan {
     // ADE_LANE_ID) is for the human at a terminal, who is a user client and is
     // therefore the only caller allowed to name another lane.
     const laneId = asString(
-      readValue(args, ["--lane", "--lane-id"]) ?? process.env.ADE_LANE_ID,
+      readValue(args, ["--lane", "--lane-id"]) ?? envLaneIdForLaneCommand(),
     );
     return {
       kind: "execute",
@@ -20033,6 +20212,43 @@ function buildIntegrationsPlan(args: string[]): CliPlan {
   throw new CliUsageError(`Unknown integrations command "${sub}". Use status or connect.`);
 }
 
+function buildAgent37Plan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND.agent37 ?? topLevelHelpText() };
+  }
+  const sub = firstPositional(args) ?? "ready";
+  if (sub === "ready" || sub === "status") {
+    return {
+      kind: "execute",
+      label: "agent37 ready",
+      formatter: "agent37-ready",
+      steps: [actionStep("result", "agent37", "ready_status", {})],
+    };
+  }
+  throw new CliUsageError(`Unknown agent37 command "${sub}". Use: ade agent37 ready.`);
+}
+
+function formatAgent37Ready(value: unknown): string {
+  const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
+  const pool = isRecord(raw) && Array.isArray(raw.projects) ? raw as unknown as Agent37ReadyPool : { projects: [] };
+  if (!pool.projects.length) {
+    return "No project keeps an Agent 37 machine ready. Turn it on in Settings › Integrations › Agent 37.";
+  }
+  const lines: string[] = [];
+  for (const project of pool.projects) {
+    const summary = [
+      project.ready ? `${project.ready} ready` : project.preparing ? "being prepared" : project.keptReady ? "none ready yet" : "turned off",
+      ...(project.inUse ? [`${project.inUse} in use`] : []),
+      ...(project.failure ? [`last prepare failed: ${project.failure}`] : []),
+    ].join(", ");
+    lines.push(`${project.projectName} (${project.identity}): ${summary}`);
+    for (const machine of project.machines) {
+      lines.push(`  ${machine.name ?? machine.instanceId}  ${machine.state}  (${machine.status}, ${machine.instanceId})`);
+    }
+  }
+  return lines.join("\n");
+}
+
 /** `ade mcp servers …`: the MCP registry. `args` are the words after `servers`. */
 function buildMcpServersPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
@@ -20106,7 +20322,28 @@ function buildMcpServersPlan(args: string[]): CliPlan {
       progressNotice: `Asked the user to add the MCP server ${name} in the chat. Waiting for them to add it or decline…`,
     };
   }
-  throw new CliUsageError(`Unknown 'ade mcp servers' command "${sub}". Use list or add.`);
+  if (sub === "remove" || sub === "rm" || sub === "delete") {
+    const reason = readValue(args, ["--reason", "--why", "--message"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
+    const sessionId = readValue(args, ["--session", "--session-id"]);
+    const name = (readValue(args, ["--name"]) ?? firstPositional(args) ?? "").trim();
+    if (!name) throw new CliUsageError("Name the server: ade mcp servers remove <name>");
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : CARD_REQUEST_DEFAULT_TIMEOUT_MS;
+    return {
+      kind: "execute",
+      label: "mcp servers remove",
+      formatter: "mcp-servers-remove",
+      steps: [actionStep("result", "mcp_registry", "remove", {
+        name,
+        ...(reason?.trim() ? { reason: reason.trim() } : {}),
+        timeoutMs,
+        ...(sessionId ? { chatSessionId: sessionId } : {}),
+      })],
+      minTimeoutMs: timeoutMs + 30_000,
+      progressNotice: `Asked the user to remove the MCP server ${name} in the chat. Waiting for them to answer…`,
+    };
+  }
+  throw new CliUsageError(`Unknown 'ade mcp servers' command "${sub}". Use list, add or remove.`);
 }
 
 function buildSecretsPlan(args: string[]): CliPlan {
@@ -22336,7 +22573,7 @@ function hasHelpFlag(
 
 function buildCliPlan(
   command: string[],
-  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json" | "machine">> = {
+  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json" | "machine" | "machineWorkCopy">> = {
     socketPath: null,
     projectRoot: null,
   },
@@ -22695,10 +22932,10 @@ function buildCliPlan(
   if (primary === "lanes" || primary === "lane") return buildLanePlan(args);
   if (primary === "git") return buildGitPlan(args);
   if (primary === "diff" || primary === "diffs") return buildDiffPlan(args);
-  if (primary === "files" || primary === "file") return buildFilesPlan(args);
+  if (primary === "files" || primary === "file") return buildFilesPlan(args, options.machine ?? null);
   if (primary === "search") return buildSearchPlan(args);
   if (primary === "prs" || primary === "pr") return buildPrPlan(args, options.projectRoot ?? null);
-  if (primary === "shell" || primary === "pty") return buildShellPlan(args);
+  if (primary === "shell" || primary === "pty") return buildShellPlan(args, options.machineWorkCopy != null);
   if (primary === "terminal" || primary === "term")
     return buildTerminalPlan(args);
   if (primary === "history") return buildHistoryPlan(args);
@@ -22780,6 +23017,7 @@ function buildCliPlan(
     return buildSecretsPlan(args);
   if (primary === "integrations" || primary === "integration")
     return buildIntegrationsPlan(args);
+  if (primary === "agent37") return buildAgent37Plan(args);
   if (primary === "proxy") return buildProxyPlan(args);
   if (primary === "harness" || primary === "harnesses") return buildHarnessPlan(args);
   if (primary === "providers" || primary === "provider")
@@ -22930,11 +23168,18 @@ function resolveRoots(options: GlobalOptions): {
     options.projectRoot ?? projectFromEnv ?? discovered.projectRoot;
   const projectExplicitlyOverridden =
     options.projectRoot != null || projectFromEnv != null;
+  // A lane terminal carries ADE_PROJECT_ROOT (the main checkout) but no
+  // ADE_WORKSPACE_ROOT, while its cwd is the lane worktree. When the cwd is a
+  // checkout of that same project, the cwd is the workspace: otherwise
+  // `ade shell --machine` read the main checkout's commit and changes. A cwd
+  // in another project never overrides the named one.
+  const cwdIsSameProject = projectExplicitlyOverridden
+    && pathsEqual(realpathIfExists(discovered.projectRoot), realpathIfExists(projectRoot));
 
   const workspaceRoot =
     options.workspaceRoot ??
     workspaceFromEnv ??
-    (projectExplicitlyOverridden ? projectRoot : discovered.workspaceRoot);
+    (projectExplicitlyOverridden && !cwdIsSameProject ? projectRoot : discovered.workspaceRoot);
 
   return { projectRoot, workspaceRoot };
 }
@@ -23941,7 +24186,7 @@ class InProcessJsonRpcClient {
 
   constructor(
     private readonly handler: JsonRpcHandler & { dispose?: () => void },
-    private readonly runtime: { dispose: () => void },
+    private readonly runtime: Pick<AdeRuntime, "dispose">,
     private readonly previousRole: string | undefined,
   ) {}
 
@@ -23956,15 +24201,18 @@ class InProcessJsonRpcClient {
     return await this.handler(request);
   }
 
-  close(): void {
+  /** Settles once the runtime's teardown (and its final database flush) is done. */
+  close(): Promise<void> {
     try {
       this.handler.dispose?.();
     } catch {}
+    let disposed: Promise<void> = Promise.resolve();
     try {
-      this.runtime.dispose();
+      disposed = this.runtime.dispose().catch(() => undefined);
     } catch {}
     if (this.previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
     else process.env.ADE_DEFAULT_ROLE = this.previousRole;
+    return disposed;
   }
 }
 
@@ -25338,7 +25586,7 @@ async function createConnection(
           stopHeadlessTcp?.();
         } catch {}
         restoreRpcUrl();
-        inProcess.close();
+        return inProcess.close();
       },
     };
     roleOwnedByConnection = true;
@@ -25360,7 +25608,7 @@ async function createConnection(
       handler?.dispose?.();
     } catch {}
     try {
-      runtime?.dispose();
+      await runtime?.dispose();
     } catch {}
     restoreRpcUrl();
     restoreRole();
@@ -28019,7 +28267,7 @@ async function runServe(
     }
     projectRegistry.remove(record.projectId);
     const disposeTimer = setImmediate(() => {
-      void scopeRegistry.dispose(record.projectId).then(() => {
+      void scopeRegistry.dispose(record.projectId, "unregister", { rootPath: record.rootPath }).then(() => {
         // The stop just saved its open CLIs to reopen; a removed project keeps none.
         forgetCliSessionsToReopen(record.rootPath);
       }).catch((error) => {
@@ -28568,6 +28816,12 @@ async function runServe(
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
     ...(keepAwakeService ? { keepAwakeService } : {}),
+    // A project removed during a repair's teardown: that teardown already
+    // handed its emulators off, and nothing will re-adopt them.
+    onUnregisterAfterHandOff: async (projectRoot) => {
+      const { stopHandedOffAndroidEmulators } = await import("../../desktop/src/main/services/android/androidEmulatorService");
+      await stopHandedOffAndroidEmulators({ projectRoot, logger: headlessProjectLogger });
+    },
     // An embedded guest can't reach other machines, so it owns no moves (and
     // its chat services never sweep any).
     ...(embedded ? {} : { crossMachineHandoffTransport: () => crossMachineHandoffTransport }),
@@ -29177,7 +29431,9 @@ async function runServe(
     } catch {
       // Best-effort tunnel teardown; the process exit closes sockets anyway.
     }
-    await scopeRegistry.disposeAll();
+    // An exit: each device service hands its devices to the next brain, and
+    // this waits (capped per scope) for the teardowns before the process goes.
+    await scopeRegistry.disposeAll("exit");
     await personalChatScope.dispose();
     try {
       // Scope disposal ends chat sessions, but the shared Cursor one-shot
@@ -32031,6 +32287,24 @@ function formatBytes(bytes: unknown): string {
   return `${rounded} ${units[unitIndex]}`;
 }
 
+function formatDeletedChats(value: unknown): string {
+  if (!isRecord(value)) return JSON.stringify(value, null, 2);
+  const chats = Array.isArray(value.chats) ? value.chats.filter(isRecord) : [];
+  return renderTable(
+    ["ID", "TITLE", "AGENT", "LANE", "DELETED"],
+    chats.map((chat) => [
+      asString(chat.id) ?? "?",
+      cell(chat.title ?? "Untitled chat", 40),
+      cell(chat.provider, 10),
+      chat.laneExists === true ? cell(chat.laneName, 20) : `${cell(chat.laneName ?? "lane", 14)} (deleted)`,
+      cell(chat.deletedAt, 24),
+    ]),
+    "No recently deleted chats.",
+    // An id is pasted back into `ade chat deleted reopen`.
+    { fullColumns: ["ID"] },
+  );
+}
+
 function formatArchiveList(value: unknown): string {
   if (!isRecord(value)) return JSON.stringify(value, null, 2);
   const items = Array.isArray(value.items) ? value.items.filter(isRecord) : [];
@@ -33896,7 +34170,10 @@ function formatApplePosture(value: unknown): string {
     ["held", appleDuoHeldOrientation(posture) ?? posture.orientation],
     ["table mode", posture.tableMode],
     ...appleDuoPictureRows(posture),
-  ]);
+    ["note", result.settled === false
+      ? "Still turning when the wait ran out, so the picture above may be the old one. Run `ade apple posture` in a moment."
+      : null],
+  ], ["note"]);
 }
 
 /**
@@ -35314,7 +35591,7 @@ function formatMcpServers(value: unknown): string {
   }
   if (record.added === true) {
     const missing = Array.isArray(record.missing) && record.missing.length
-      ? ` Not set yet (the person can add them in Settings › Integrations › MCP servers): ${record.missing.join(", ")}.`
+      ? ` Not set yet (the person can add them at ade://settings/mcp.servers): ${record.missing.join(", ")}.`
       : "";
     const next = typeof record.next === "string" && record.next ? record.next : `Added ${cell(record.name)}.`;
     return `${next}${missing}`;
@@ -35322,6 +35599,13 @@ function formatMcpServers(value: unknown): string {
   if (record.already === true) return typeof record.next === "string" ? record.next : `${cell(record.name)} is already in ADE.`;
   if (typeof record.integration === "string" && typeof record.next === "string") return record.next;
   if (record.declined === true) return `The user declined to add the MCP server ${cell(record.name)}.`;
+  return JSON.stringify(value, null, 2);
+}
+
+function formatMcpServerRemove(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  if (record.removed === true) return typeof record.next === "string" ? record.next : `Removed ${cell(record.name)}.`;
+  if (record.declined === true) return `The user kept the MCP server ${cell(record.name)}.`;
   return JSON.stringify(value, null, 2);
 }
 
@@ -36171,6 +36455,8 @@ function formatTextOutput(
       return formatAppleRender(value);
     case "apple-device-detach":
       return formatAppleDeviceDetach(value);
+    case "apple-device-delete":
+      return formatAppleDeviceDelete(value);
     case "apple-tests":
       return formatAppleTests(value);
     case "apple-lease":
@@ -36305,8 +36591,12 @@ function formatTextOutput(
       return formatProjectSecrets(value);
     case "integrations":
       return formatIntegrations(value);
+    case "agent37-ready":
+      return formatAgent37Ready(value);
     case "mcp-servers":
       return formatMcpServers(value);
+    case "mcp-servers-remove":
+      return formatMcpServerRemove(value);
     case "harness-env":
       return formatHarnessEnv(value);
     case "harness-routes":
@@ -36361,6 +36651,8 @@ function formatTextOutput(
       return formatSyncDevices(value);
     case "archive-list":
       return formatArchiveList(value);
+    case "deleted-chats":
+      return formatDeletedChats(value);
     case "archive-summary":
       return formatArchiveSummary(value);
     case "archive-action":

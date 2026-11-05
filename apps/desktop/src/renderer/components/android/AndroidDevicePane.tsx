@@ -110,6 +110,12 @@ export type AndroidDevicePaneProps = {
 
 /** Events in a burst (a boot sends several) become one status read. */
 const EVENT_READ_DELAY_MS = 150;
+/**
+ * Input failures this close together are one burst: a stalled link fails
+ * every queued tap at once, and that is one failure, so one notice and one
+ * Sentry log, not one per tap.
+ */
+const INPUT_FAILED_NOTICE_GAP_MS = 10_000;
 
 type PendingStart =
   /** `look`: the catalog body a new device is made with, for boot on the model. */
@@ -327,13 +333,37 @@ export function AndroidDevicePane({
     if (pickerShown) void readInventory();
   }, [pickerShown, readInventory, laneId, pinKey]);
 
-  const onInputError = useCallback((caught: unknown) => setError(describeAndroidError(caught)), []);
+  // A failed tap, key or swipe is a failure, so an error toast (Details,
+  // Report, a Sentry log), and one per burst: a stalled link fails every
+  // queued input, and one notice says it. The stable id replaces the card in
+  // place; the gap keeps a long burst from raising and logging it again.
+  const inputFailedAtRef = useRef(0);
+  const onInputError = useCallback((caught: unknown) => {
+    const now = Date.now();
+    if (now - inputFailedAtRef.current < INPUT_FAILED_NOTICE_GAP_MS) return;
+    inputFailedAtRef.current = now;
+    const described = describeAndroidError(caught);
+    showToast({
+      id: "android-input-failed",
+      tone: "error",
+      title: "Input didn't reach the device",
+      message: described.sentence,
+      report: {
+        surface: "android_device_input",
+        code: described.code ?? "android_input_failed",
+        technicalDetail: described.detail,
+      },
+    });
+  }, []);
+
+  /** An Inspect, Record or open-file failure: the pane's error line, not the input toast. */
+  const onToolError = useCallback((caught: unknown) => setError(describeAndroidError(caught)), []);
 
   /* ── P1 agent tools on the rail: Inspect, Record and the Tools drawer ──── */
 
   const deviceLive = paneState === "live";
-  const inspect = useAndroidInspect({ laneId, live: deviceLive, runtimePinRef, onInsertDraft, onError: onInputError });
-  const recording = useAndroidRecording({ laneId, live: deviceLive, chatSessionId: sessionId, runtimePinRef, onError: onInputError });
+  const inspect = useAndroidInspect({ laneId, live: deviceLive, runtimePinRef, onInsertDraft, onError: onToolError });
+  const recording = useAndroidRecording({ laneId, live: deviceLive, chatSessionId: sessionId, runtimePinRef, onError: onToolError });
   const recordingTick = useTicker(1000, Boolean(recording.active));
   const [savedDismissedId, setSavedDismissedId] = useState<string | null>(null);
   const savedRecording = recording.saved && recording.saved.id !== savedDismissedId ? recording.saved : null;
@@ -344,8 +374,8 @@ export function AndroidDevicePane({
     const artifactId = saved.proofArtifactIds[0] ?? null;
     if (artifactId && revealProofArtifactRow(artifactId)) return;
     // No proof row in this window: the file itself, when it is on this computer.
-    if (!remoteMachine) void window.ade.app.openPath(saved.path).catch(onInputError);
-  }, [onInputError, recording.saved, remoteMachine]);
+    if (!remoteMachine) void window.ade.app.openPath(saved.path).catch(onToolError);
+  }, [onToolError, recording.saved, remoteMachine]);
   // Inspect boxes and the drawer go with the device: a new lane or a lost device starts them closed.
   const { inspectOn, toggleInspect } = inspect;
   useEffect(() => {
@@ -885,7 +915,7 @@ export function AndroidDevicePane({
               {/* The recording pill takes the live line's place at the bottom while the picture is live. */}
               {recording.active && deviceLive ? null : (
                 <AndroidLiveLine
-                  state={paneState === "live" ? "live" : "lost"}
+                  state={paneState !== "live" ? "lost" : stream.reconnecting ? "reconnecting" : "live"}
                   fps={stream.fps}
                   laneName={laneName}
                   machineName={machineName}

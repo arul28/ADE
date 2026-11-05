@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowClockwise, ArrowSquareOut, Check, CircleNotch, LinkBreak, Plus, Warning } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, CircleNotch, LinkBreak, Warning } from "@phosphor-icons/react";
 import {
   AGENT37_API_KEYS_URL,
   AGENT37_BILLING_URL,
-  describeAgent37TemplateStatus,
   type Agent37Status,
   type Agent37TemplateStatus,
 } from "../../../shared/agent37";
@@ -17,6 +16,8 @@ import {
   type IntegrationFact,
 } from "./integrations/IntegrationChrome";
 import { Banner } from "../ui/notice";
+import { ipcErrorMessage } from "../../lib/format";
+import { Agent37ReadyMachinesCard } from "./Agent37ReadyMachinesCard";
 import { Agent37Mark, AGENT37_NAME } from "../remoteTargets/agent37Brand";
 import { agent37RetryLabel, useAgent37Template } from "../remoteTargets/useAgent37Template";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
@@ -24,50 +25,42 @@ import { openExternalUrl } from "../../lib/openExternal";
 import "./IntegrationsSettings.css";
 
 function errorText(error: unknown, fallback: string): string {
-  const raw = error instanceof Error ? error.message : String(error ?? "");
-  // IPC wraps a main-process throw as "Error invoking remote method '…': Error: <message>".
-  const message = raw.replace(/^Error invoking remote method '[^']*': (?:Error: )?/, "").trim();
-  return message || fallback;
+  return ipcErrorMessage(error) || fallback;
 }
 
-/** The template row: setting up (about N min left), ready, or failed with a reason and Retry. */
+/** The template card: a status tag, one line while building, the reason and Retry when it failed. */
+/**
+ * The template card, only while it needs the person: still being set up (new
+ * machines wait for it) or failed (Retry). A ready template is invisible.
+ */
 function Agent37TemplateCard({ status, loadError, onRetry }: { status: Agent37TemplateStatus | null; loadError: string | null; onRetry: () => void }) {
   // ADE couldn't ask at all: say so, with Retry, rather than "Checking…" forever.
   const state = loadError && !status ? "failed" : status?.state ?? "checking";
-  const icon = state === "ready"
-    ? <Check size={15} weight="bold" />
-    : state === "failed"
-      ? <Warning size={15} weight="fill" />
-      : <CircleNotch size={15} className="animate-spin" />;
-  const title = state === "ready"
-    ? "Machine template ready"
-    : state === "failed"
-      ? "Machine template failed"
-      : state === "building"
-        ? (status?.usable ? "Updating the machine template" : "Setting up the machine template")
-        : "Checking the machine template";
+  if (state !== "failed" && !(state === "building" && status && !status.usable)) return null;
+  const failed = state === "failed";
   return (
     <IntegrationCard
       anchor="agent37-template"
-      icon={icon}
-      title={title}
-      tone={state === "failed" ? "focus" : undefined}
-      hint={`New machines start from ADE's template in your ${AGENT37_NAME} workspace. ADE builds it there when you connect, and again when ADE updates. Building is free.`}
-      actions={state === "failed" ? (
-        <button type="button" className="ade-modern-btn" data-size="sm" onClick={onRetry}>
-          <ArrowClockwise size={12} /> Retry
-        </button>
-      ) : null}
+      icon={failed ? <Warning size={15} weight="fill" /> : <CircleNotch size={15} className="animate-spin" />}
+      title={failed ? "Machine template failed" : "Setting up machines"}
+      badge={failed ? null : (
+        <span className="kit-tag" data-tone="warn">{status?.minutesLeft != null ? `About ${status.minutesLeft} min` : "Building"}</span>
+      )}
+      tone={failed ? "focus" : undefined}
+      hint={failed ? undefined : `New machines can be made once ADE finishes its template in your ${AGENT37_NAME} workspace.`}
     >
-      <p className="ade-ig-note" role="status">
-        {status
-          ? describeAgent37TemplateStatus(status)
-          : loadError
-            ? `ADE couldn't check its machine template: ${loadError}`
-            : "Checking ADE's machine template…"}
-        {state === "failed" && status?.nextRetryAt ? ` ${agent37RetryLabel(status.nextRetryAt)}` : ""}
-        {state === "ready" && status?.adeVersion ? ` It installs ADE ${status.adeVersion}.` : ""}
-      </p>
+      {failed ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "agent37-template-failed",
+            tone: "error",
+            title: "New machines can't be made until this is fixed",
+            detail: `${status?.error ?? loadError ?? "The build failed."}${status?.nextRetryAt ? ` ${agent37RetryLabel(status.nextRetryAt)}` : ""}`,
+            actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: onRetry }],
+          }}
+        />
+      ) : null}
     </IntegrationCard>
   );
 }
@@ -210,9 +203,17 @@ export function Agent37Section() {
           detail: status?.balanceUsd != null ? `$${status.balanceUsd.toFixed(2)} in the wallet` : undefined,
         } : null}
         actions={connected ? (
-          <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" disabled={busy} onClick={() => void disconnect()}>
-            <LinkBreak size={12} /> Disconnect
-          </button>
+          <>
+            <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => openConnectionsPanel("machines")}>
+              Your machines
+            </button>
+            <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" onClick={() => openExternalUrl(AGENT37_BILLING_URL)}>
+              <ArrowSquareOut size={12} /> Wallet
+            </button>
+            <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" disabled={busy} onClick={() => void disconnect()}>
+              <LinkBreak size={12} /> Disconnect
+            </button>
+          </>
         ) : null}
         facts={facts}
       />
@@ -239,24 +240,7 @@ export function Agent37Section() {
         {connected ? (
           <>
             {!status?.error ? <Agent37TemplateCard status={template.status} loadError={template.loadError} onRetry={template.retry} /> : null}
-            <IntegrationCard
-              anchor="agent37-machines"
-              icon={<Plus size={15} weight="bold" />}
-              title="Your machines"
-              hint={`Your ${AGENT37_NAME} machines have their own group in your computers. Each one shows its state, size, price and spend, and its menu has Sleep, Resize, Back up and Delete box.`}
-            >
-              <p className="ade-ig-note">
-                To make one, choose Add computer, then New {AGENT37_NAME} machine. It signs in to your account on its own and shows up ready to connect. Boxes run lanes, agents and a Linux Desktop screen. VMs add the Android emulator and Docker. {AGENT37_NAME} bills each running minute; asleep, only the disk.
-              </p>
-              <div className="ade-ig-step-actions">
-                <button type="button" className="ade-modern-btn" onClick={() => openConnectionsPanel("machines")}>
-                  Open your computers
-                </button>
-                <button type="button" className="ade-modern-btn" onClick={() => openExternalUrl(AGENT37_BILLING_URL)}>
-                  <ArrowSquareOut size={12} /> {AGENT37_NAME} wallet
-                </button>
-              </div>
-            </IntegrationCard>
+            {!status?.error ? <Agent37ReadyMachinesCard status={status} /> : null}
           </>
         ) : (
           <IntegrationCard

@@ -1,5 +1,5 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
-import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37Status, Agent37TemplateStatus } from "../shared/agent37";
+import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus, Agent37Status, Agent37TemplateStatus } from "../shared/agent37";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
@@ -66,6 +66,7 @@ import type {
   AppleScrollResult,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
+  AppleDeviceDeleteResult,
   AppleDeviceDetachArgs,
   AppleDeviceCleanupArgs,
   AppleDeviceCleanupResult,
@@ -300,6 +301,13 @@ import type {
   ExternalSessionDetail,
   ExternalSessionDetailArgs,
   ExternalSessionDetailUpdatedEvent,
+  DeletedChatDetailArgs,
+  DeletedChatListArgs,
+  DeletedChatListResult,
+  DeletedChatRemoveArgs,
+  DeletedChatRemoveResult,
+  DeletedChatReopenArgs,
+  DeletedChatReopenResult,
   ExternalSessionDetailWatchArgs,
   GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
@@ -2741,6 +2749,10 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         delete: (args: AgentChatDeleteArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        listDeleted: (args?: DeletedChatListArgs, pin?: OpenProjectBinding | null) => Promise<DeletedChatListResult>;
+        getDeletedDetail: (args: DeletedChatDetailArgs, pin?: OpenProjectBinding | null) => Promise<ExternalSessionDetail>;
+        reopenDeleted: (args: DeletedChatReopenArgs, pin?: OpenProjectBinding | null) => Promise<DeletedChatReopenResult>;
+        removeDeleted: (args: DeletedChatRemoveArgs, pin?: OpenProjectBinding | null) => Promise<DeletedChatRemoveResult>;
         updateSession: (
           args: AgentChatUpdateSessionArgs,
           pin?: OpenProjectBinding | null,
@@ -3207,7 +3219,7 @@ declare global {
         deviceDelete: (
           args?: AppleDeviceDeleteArgs,
           pin?: OpenProjectBinding | null,
-        ) => Promise<void>;
+        ) => Promise<AppleDeviceDeleteResult>;
         /** The lane gives up its device and the simulator stays installed. */
         deviceDetach: (
           args?: AppleDeviceDetachArgs,
@@ -4678,6 +4690,20 @@ declare global {
         machineAction?: (args: Agent37MachineActionArgs) => Promise<Agent37MachineActionResult | null>;
         onStatusChanged?: (cb: () => void) => () => void;
         onTemplateStatus: (cb: (status: Agent37TemplateStatus) => void) => () => void;
+        /**
+         * Ready machines: per project, one machine prepared and kept asleep
+         * for the next chat. The choice is in the account vault and the pool
+         * on Agent37, so no pin: every computer answers the same.
+         */
+        readyStatus?: () => Promise<Agent37ReadyStatus | null>;
+        readySetProject?: (settings: Partial<Agent37ReadyProjectSettings>) => Promise<Agent37ReadyStatus | null>;
+        readyRemoveProject?: (identity: string) => Promise<Agent37ReadyStatus | null>;
+        readyRetry?: (identity: string) => Promise<Agent37ReadyStatus | null>;
+        /** Takes the project's ready machine and wakes it; the chat then goes to `machineKey` like any machine. */
+        readyClaim?: (originUrl: string) => Promise<Agent37ReadyClaim | null>;
+        /** Gives back a claim no chat used yet: ready again, and asleep. */
+        readyRelease?: (instanceId: string, claimToken: string) => Promise<{ released: boolean } | null>;
+        onReadyStatus?: (cb: (status: Agent37ReadyStatus) => void) => () => void;
       };
       /**
        * The account settings store (the `account_settings` action domain),

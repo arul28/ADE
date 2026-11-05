@@ -13,6 +13,7 @@
  * once. `settingsManifest.test.ts` asserts the anchors and aliases stay live.
  */
 
+import { MCP_CATALOGUE } from "./mcpCatalogue";
 import { PROVIDER_DISPLAY_NAME } from "./providers";
 
 /**
@@ -275,6 +276,24 @@ export type SettingEntry = {
   macOnly?: true;
 };
 
+/** A catalogue tile's anchor on the Integrations home: `#add-mcp-<entry id>`. */
+const MCP_CATALOGUE_ANCHOR_PREFIX = "add-mcp-";
+
+export function mcpCatalogueAnchor(entryId: string): string {
+  return `${MCP_CATALOGUE_ANCHOR_PREFIX}${entryId}`;
+}
+
+/** The settings entry of a catalogue quick setup: `ade://settings/integrations.mcp-<id>`. */
+export function mcpCatalogueSettingsEntryId(entryId: string): string {
+  return `integrations.mcp-${entryId}`;
+}
+
+/** The catalogue entry id an anchor or hash names, or null. */
+export function mcpCatalogueIdFromAnchor(anchorOrHash: string): string | null {
+  const anchor = anchorOrHash.replace(/^#/, "");
+  return anchor.startsWith(MCP_CATALOGUE_ANCHOR_PREFIX) ? anchor.slice(MCP_CATALOGUE_ANCHOR_PREFIX.length) || null : null;
+}
+
 /**
  * Every setting ADE exposes. Order within a tab is the render order.
  */
@@ -335,6 +354,21 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "Found on this computer",
   },
+  // One per quick setup on the Integrations home, so "posthog" finds PostHog.
+  // Its tile carries the anchor; landing on it opens the server's add dialog
+  // (or its row, once added). GitHub, Linear and Jira are their own entries.
+  // Named only by brand: "mcp server" in 70 labels would bury MCP servers
+  // itself in `ade settings find`.
+  ...MCP_CATALOGUE.filter((entry) => !entry.native).map((entry): SettingEntry => ({
+    id: mcpCatalogueSettingsEntryId(entry.id),
+    label: entry.name,
+    keywords: [entry.publisher],
+    tab: "integrations",
+    anchor: mcpCatalogueAnchor(entry.id),
+    scope: "account",
+    web: "hidden",
+    group: "MCP servers",
+  })),
 
   // ── General ──────────────────────────────────────────────────────────────
   // Settings opens here. Its cards read this computer over plain IPC and the
@@ -1302,6 +1336,19 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Archive",
   },
   {
+    id: "storage.recentlyDeleted",
+    label: "Recently deleted chats",
+    keywords: [
+      "deleted chats", "recently deleted", "recover chat", "restore chat", "undo delete", "undelete",
+      "reopen chat", "trash", "bin", "recycle", "deleted", "lost chat", "chat history", "bring back",
+    ],
+    tab: "storage",
+    anchor: "recently-deleted",
+    scope: "machine-repo",
+    web: "machine",
+    group: "Archive",
+  },
+  {
     id: "storage.cleanups",
     label: "Cleanup history",
     keywords: ["cleanup", "freed", "maintenance", "journal", "reclaimed", "storage doctor", "search index", "vacuum", "duplicate transcripts", "database size"],
@@ -1419,7 +1466,11 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "integrations.agent37",
     label: "Agent 37",
-    keywords: ["cloud", "machine", "box", "vm", "linux", "sandbox", "api key", "agent37", "agent 37", "template"],
+    keywords: [
+      "cloud", "machine", "box", "vm", "linux", "sandbox", "api key", "agent37", "agent 37", "template",
+      // The machines themselves live in Your computers; the page header opens it.
+      "sleep", "wake", "resize", "back up", "backup", "delete box", "spending", "cost", "price", "wallet", "box limit", "suspended",
+    ],
     tab: "integrations",
     anchor: "agent37-connection",
     // One workspace key for the account, kept in the account vault.
@@ -1428,11 +1479,12 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Agent37",
   },
   {
-    id: "integrations.agent37-machines",
-    label: "Agent 37 machines",
-    keywords: ["sleep", "wake", "resize", "back up", "backup", "delete box", "remove from ade", "spending", "cost", "price", "wallet", "box limit", "suspended"],
+    id: "integrations.agent37-ready",
+    label: "Agent 37 ready machine",
+    keywords: ["ready machine", "keep a machine ready", "warm", "prepared", "seed", "setup", "docker", "fast start", "cloud chat"],
     tab: "integrations",
-    anchor: "agent37-machines",
+    anchor: "agent37-ready",
+    // Which projects keep a machine ready, in the account vault.
     scope: "account",
     web: "hidden",
     group: "Agent37",
@@ -1695,6 +1747,8 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   diagnostics: "advanced",
   archive: "storage",
   archived: "storage",
+  "recently-deleted": "storage",
+  trash: "storage",
   // Swept into General before; now each has a real home.
   workspace: "location",
   project: "location",
@@ -1742,6 +1796,8 @@ export const LEGACY_TAB_ANCHORS: Readonly<Record<string, string>> = {
   space: "storage",
   archive: "archive",
   archived: "archive",
+  "recently-deleted": "recently-deleted",
+  trash: "recently-deleted",
   diagnostics: "diagnostics",
   "session-lifecycle": "session-lifecycle",
   "project-location": "project-location",

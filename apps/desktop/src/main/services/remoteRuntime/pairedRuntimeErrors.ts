@@ -4,6 +4,7 @@ import type {
   RemoteRuntimeSshHostKeyTrustStatus,
 } from "../../../shared/types/remoteRuntime";
 import type { SyncHelloErrorPayload } from "../../../shared/types/sync";
+import { describeLinkHeldByOtherAdeApp } from "../../../shared/connectionDiagnosis";
 
 export type PairedRuntimeRouteDiagnostic = {
   correlationId: string;
@@ -94,7 +95,7 @@ export function isPairedRuntimeRpcOverBudgetError(error: unknown): boolean {
 export class PairedRuntimeSupersededError extends Error {
   readonly code = "PAIRED_RUNTIME_SUPERSEDED" as const;
 
-  constructor(message = "Another ADE on this computer is using this connection.") {
+  constructor(message = describeLinkHeldByOtherAdeApp(null)) {
     super(message);
     this.name = "PairedRuntimeSupersededError";
   }

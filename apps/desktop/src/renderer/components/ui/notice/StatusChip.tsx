@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { X } from "@phosphor-icons/react";
 import { cn } from "../cn";
+import { HelpHint } from "../HelpHint";
 import { noticeTone, type NoticeTone } from "./noticeTones";
 
 /**
@@ -103,14 +104,16 @@ export function StatusChip({
         </button>
       ))}
       {help ? (
-        <button
-          type="button"
-          aria-label={help}
-          title={help}
-          className="grid h-[16px] w-[16px] shrink-0 cursor-help place-items-center rounded-full text-[9px] font-semibold leading-none text-fg/45 shadow-[inset_0_0_0_1px_currentColor] transition-colors hover:text-fg/80 focus-visible:text-fg/80 focus-visible:outline-none"
-        >
-          ?
-        </button>
+        // A native `title` showed nothing in the composer's status row.
+        <HelpHint
+          text={help}
+          side="top"
+          triggerClassName={(open) => cn(
+            "grid h-[16px] w-[16px] shrink-0 cursor-help place-items-center rounded-full text-[9px] font-semibold leading-none shadow-[inset_0_0_0_1px_currentColor] transition-colors hover:text-fg/80 focus-visible:text-fg/80 focus-visible:outline-none",
+            open ? "text-fg/80" : "text-fg/45",
+          )}
+          tooltipClassName="w-[260px] rounded-lg border border-[var(--color-border)] bg-[var(--color-popup-bg,var(--color-card))] px-2.5 py-2 font-sans text-[11px] leading-[1.5] text-fg/75 shadow-[0_8px_24px_rgba(0,0,0,0.32)]"
+        />
       ) : null}
       {onDismiss ? (
         <button
@@ -125,3 +128,4 @@ export function StatusChip({
     </div>
   );
 }
+

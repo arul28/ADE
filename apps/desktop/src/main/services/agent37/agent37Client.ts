@@ -12,6 +12,12 @@ import { AGENT37_API_BASE_URL, AGENT37_SANDBOX_BASE_URL } from "../../../shared/
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
+/** What the Agent 37 services log through: an `agent37.*` event and its fields, never a key. */
+export type Agent37Logger = {
+  info?(event: string, meta?: Record<string, unknown>): void;
+  warn?(event: string, meta?: Record<string, unknown>): void;
+};
+
 export type Agent37Instance = {
   id: string;
   name: string | null;

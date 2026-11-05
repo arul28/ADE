@@ -1132,6 +1132,12 @@ export type AppleRenderProofResult = {
 export type AppleSetPostureResult = {
   applied: boolean;
   posture: AppleDevicePosture;
+  /**
+   * False when the fold's wait ran out before the guest showed the pose's
+   * panel and picture: `posture` may still be the one it is leaving. Absent
+   * when the fold did not wait (`follow`).
+   */
+  settled?: boolean;
 };
 
 /**
@@ -1874,8 +1880,13 @@ export type AppleLaneDevice = {
   kept?: boolean;
 };
 
-/** How many extra devices one lane may hold beside its own (an iPad next to an iPhone Duo). */
+/**
+ * How many extra devices one lane may hold beside its own (an iPad next to an
+ * iPhone Duo) by default. `ADE_APPLE_LANE_EXTRA_DEVICES` in ADE's environment
+ * raises it, up to `APPLE_LANE_EXTRA_DEVICE_MAX`: each one is a booted simulator.
+ */
 export const APPLE_LANE_EXTRA_DEVICE_LIMIT = 2;
+export const APPLE_LANE_EXTRA_DEVICE_MAX = 8;
 /** `device-create --extra` on a lane that already holds the limit. */
 export const APPLE_EXTRA_DEVICE_LIMIT_CODE = "APPLE_EXTRA_DEVICE_LIMIT";
 /** `device-attach` (or the picker) naming a device that is a lane's extra device. */
@@ -1903,7 +1914,7 @@ export type AppleDeviceCreateArgs = {
    * Make an EXTRA device for the lane instead of its own one: the lane keeps
    * its device, and the new one is booted and reached with `--device`.
    * Deleted with the lane, like the lane's own. At most
-   * `APPLE_LANE_EXTRA_DEVICE_LIMIT` per lane.
+   * `APPLE_LANE_EXTRA_DEVICE_LIMIT` per lane by default.
    */
   extra?: boolean | null;
 };
@@ -2502,6 +2513,18 @@ export type AppleDeviceDeleteArgs = {
   ignoreOwnership?: boolean | null;
   /** Set by the RPC server for agent callers; see `AppleDeviceAttachArgs.agentCaller`. */
   agentCaller?: boolean | null;
+};
+
+/**
+ * What `deviceDelete` did: the device it deleted (an extra, or the lane's
+ * own), `detached` when the lane's device was one the user attached and
+ * `force` only released it, or `deleted: null` when the lane held no device,
+ * with `notFound` the `--device` it was asked for, which the lane does not hold.
+ */
+export type AppleDeviceDeleteResult = {
+  deleted: { udid: string; name: string; extra: boolean } | null;
+  detached?: boolean;
+  notFound?: string;
 };
 
 /**

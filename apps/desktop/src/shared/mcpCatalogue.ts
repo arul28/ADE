@@ -60,8 +60,13 @@ export type McpCatalogueEntry = {
   docsUrl: string;
   brand: {
     hex: string;
-    /** The brand mark, a 24×24 path (Simple Icons, CC0). Absent: the name's first letter. */
+    /**
+     * The brand mark as one 24×24 path: Simple Icons (CC0) where it has the
+     * brand, else the vendor's own logo, scaled to fit. Absent: the name's first letter.
+     */
     path?: string;
+    /** For a mark whose holes need it (a logo with a cut-out). */
+    fillRule?: "evenodd";
   };
   /** ADE has this as an integration; asking for it opens the connect card. */
   native?: ConnectProviderId;

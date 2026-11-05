@@ -170,6 +170,7 @@ function listCopilotCandidates(args: ExternalSessionDiscoveryArgs, lookupId: str
 function copilotRecordFromCandidate(
   candidate: CopilotCandidate,
   scopeRoots: readonly string[] | null | undefined,
+  includeAdeOwned = false,
 ): ExternalSessionDiscoveryRecord | null {
   const window = readJsonlWindow(candidate.eventsPath, candidate.size);
   const start = window.head.find((record) => record.type === "session.start");
@@ -178,7 +179,7 @@ function copilotRecordFromCandidate(
     candidate.workspace.cwd ?? asString(asRecord(startData?.context)?.cwd),
   );
   if (!cwdIsInScope(cwd, scopeRoots)) return null;
-  if (isUnnamedAdeSdkSession(candidate.workspace, window.head)) return null;
+  if (!includeAdeOwned && isUnnamedAdeSdkSession(candidate.workspace, window.head)) return null;
 
   const summary = summarizeNeutralRecords("copilot", {
     head: compact(window.head.map(neutralCopilotRecord)),
@@ -237,6 +238,6 @@ export async function discoverCopilotSessions(
     candidates: listCopilotCandidates(args, lookupId),
     limit: normalizeExternalSessionLimit(args.limit),
     lookupId,
-    read: (candidate) => copilotRecordFromCandidate(candidate, args.scopeRoots),
+    read: (candidate) => copilotRecordFromCandidate(candidate, args.scopeRoots, args.includeAdeOwned === true),
   });
 }

@@ -59,6 +59,7 @@ export type FeatureAnalyticsAction =
   | "secret_requested"
   | "connect_requested"
   | "mcp_server_requested"
+  | "mcp_server_remove_requested"
   | "notification_sent"
   | "music_connected"
   | "spotify_connected"
@@ -327,14 +328,14 @@ export function captureSecretRequestedAnalytics(args: {
 export function captureAgentCardAnalytics(args: {
   analytics: FeatureAnalytics | null | undefined;
   surface: ProductAnalyticsSurface;
-  card: "connect" | "mcp_server";
+  card: "connect" | "mcp_server" | "mcp_server_remove";
   outcome: Extract<FeatureAnalyticsOutcome, "completed" | "kept" | "cancelled" | "failed">;
 }): void {
   captureFeatureUsedAnalytics({
     analytics: args.analytics,
     surface: args.surface,
     feature: "chat",
-    action: args.card === "connect" ? "connect_requested" : "mcp_server_requested",
+    action: args.card === "connect" ? "connect_requested" : args.card === "mcp_server" ? "mcp_server_requested" : "mcp_server_remove_requested",
     outcome: args.outcome,
   });
 }

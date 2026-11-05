@@ -3116,9 +3116,15 @@ finished says the integration is signed in.
 `ade integrations status` (`integration_connect.status`) lists each
 integration with connected or not and the account, never a credential.
 
-The action records how the card ended as `chat/connect_requested`, and
-`mcp_registry.request` records `chat/mcp_server_requested` (see
-[Logging](../../logging.md)).
+The action records how the card ended as `chat/connect_requested`,
+`mcp_registry.request` records `chat/mcp_server_requested`, and
+`mcp_registry.remove` (the removal card, see
+[MCP servers](../onboarding-and-settings/mcp-servers.md#agents-adding-and-removing-servers))
+records `chat/mcp_server_remove_requested` (see [Logging](../../logging.md)).
+
+A bare `ade://` address in an agent's reply is a link in the transcript
+(`remarkBareAdeLinks.ts`), drawn as the same chip as `[…](ade://…)`; the
+sanitized preview renderer (`ChatMarkdown`, plan cards) leaves it as text.
 
 ### Approval vs question
 

@@ -1,4 +1,4 @@
-import { ArrowsOutLineHorizontal, ImageSquare, Shuffle } from "@phosphor-icons/react";
+import { ImageSquare } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
 import picker from "./assets/wallpapers.webp";
@@ -9,12 +9,9 @@ export default function WallpapersAnnouncement({ close }: AnnouncementPageProps)
     <WhatsNewFeature
       close={close}
       place={{ icon: <ImageSquare size={17} weight="fill" />, name: "Appearance" }}
-      headline="New backgrounds, sharp on your screen."
-      sentence="Pick a picture, or let ADE shuffle a new one each launch. Each comes in sizes that fit your display, ultrawide included."
-      marks={[
-        { icon: <Shuffle size={14} weight="bold" />, label: "Shuffle" },
-        { icon: <ArrowsOutLineHorizontal size={14} weight="bold" />, label: "Ultrawide" },
-      ]}
+      headline="Wallpapers made for your screen."
+      sentence="Pick one, or shuffle a new one each launch, in Settings › Appearance."
+      action={{ tipId: "themes", label: "Pick a background" }}
       media={{
         kind: "images",
         width: 1350,

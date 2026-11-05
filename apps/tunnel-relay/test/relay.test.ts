@@ -135,9 +135,9 @@ class FakeState {
   acceptWebSocket(): void {}
 }
 
-function makeDoHarness(): { durable: TunnelDurableObject; state: FakeState; storage: FakeStorage } {
+function makeDoHarness(env: TunnelRelayEnv = {} as TunnelRelayEnv): { durable: TunnelDurableObject; state: FakeState; storage: FakeStorage } {
   const state = new FakeState();
-  const durable = new TunnelDurableObject(state as unknown as DurableObjectState, {} as TunnelRelayEnv);
+  const durable = new TunnelDurableObject(state as unknown as DurableObjectState, env);
   return { durable, state, storage: state.storage };
 }
 
@@ -1124,6 +1124,43 @@ describe("durable socket lifecycle", () => {
 
     expect(pending.closes).toEqual([{ code: CLOSE_HOST_OFFLINE, reason: "host offline" }]);
     expect(established.closes).toEqual([]);
+  });
+
+  it("keeps the ADE MCP account fields an mcp_state frame wrote when the activity stamp is refreshed", async () => {
+    // Every other Durable Object (account, endpoint) answers OK; the names reached are recorded.
+    const reached: string[] = [];
+    const env = {
+      TUNNEL: {
+        idFromName: (name: string) => name as unknown as DurableObjectId,
+        get: (id: DurableObjectId) => ({
+          fetch: async () => {
+            reached.push(id as unknown as string);
+            return new Response(null, { status: 200 });
+          },
+        }),
+      } as unknown as DurableObjectNamespace,
+    } as TunnelRelayEnv;
+    const { durable, state } = makeDoHarness(env);
+    // Quiet for two minutes, so the frame is due an activity write.
+    const staleTs = Date.now() - 2 * 60_000;
+    const control = state.addSocket("control", undefined, staleTs);
+    control.serializeAttachment({ ...(control.deserializeAttachment() as object), machineKey: MACHINE_KEY });
+    const endpointKey = "b".repeat(48);
+
+    await durable.webSocketMessage(control as unknown as WebSocket, JSON.stringify({
+      t: "mcp_state",
+      enabled: true,
+      account: { secret: "x".repeat(40) },
+      endpointKey,
+    }));
+
+    const joined = reached.find((name) => name.startsWith("mcp-account:"))?.slice("mcp-account:".length);
+    expect(joined).toMatch(/^[0-9a-f]{40}$/);
+    const after = control.deserializeAttachment() as Record<string, unknown>;
+    expect(after).toMatchObject({ mcp: true, mcpAccountKey: joined, mcpAccountWant: joined, mcpEndpointKey: endpointKey });
+    expect(after).not.toHaveProperty("mcpAccountRetry");
+    // The activity stamp itself was refreshed in the same frame.
+    expect(after.ts as number).toBeGreaterThan(staleTs);
   });
 
   it("reschedules alarms for data sockets but not for an idle control socket", async () => {

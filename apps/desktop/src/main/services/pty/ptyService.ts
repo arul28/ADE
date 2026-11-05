@@ -51,6 +51,7 @@ import {
 import {
   resolveCliSpawnInvocation,
   shouldUseWindowsCmdWrapper,
+  windowsCommandLineOverLimitMessage,
   windowsTaskkillInvocation,
 } from "../shared/processExecution";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
@@ -62,6 +63,8 @@ import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import { isPtyOutputHeld, onPtyOutputHoldChange } from "./ptyOutputFlowControl";
 import { recordCliSessionsToReopen, type CliReopenEntry } from "./cliReopenAfterRestart";
+import { remoteWorkLaneIdFor } from "../remoteWork/remoteWorkCopyService";
+import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
   setPathEnvValue,
@@ -632,18 +635,36 @@ function withInteractiveTerminalColorEnv(
   return next;
 }
 
+/**
+ * Orchestration identity the host itself may carry (a desktop or brain
+ * started from an agent's shell). A work-copy shell belongs to a chat on
+ * another machine, so none of it is that chat's.
+ */
+const WORK_COPY_FOREIGN_IDENTITY_ENV_KEYS = ["ADE_RUN_ID", "ADE_STEP_ID", "ADE_ATTEMPT_ID", "ADE_OWNER_ID"] as const;
+
 function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
   projectRoot: string;
   laneId: string;
   chatSessionId: string | null;
   ownerSessionId?: string | null;
   spawnLineage?: PtyCreateArgs["spawnLineage"];
+  /**
+   * A shell for a chat on another machine, in its work copy here: the copy's
+   * lane id (`remote-work-…`) and folder, not the primary lane its row is
+   * filed under, so an `ade` call from the shell acts on the copy, never on
+   * this machine's main checkout.
+   */
+  workCopy?: { laneId: string; path: string } | null;
 }): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = {
     ...env,
     ADE_PROJECT_ROOT: args.projectRoot,
-    ADE_LANE_ID: args.laneId,
+    ADE_LANE_ID: args.workCopy?.laneId ?? args.laneId,
   };
+  if (args.workCopy) {
+    next.ADE_WORKSPACE_ROOT = args.workCopy.path;
+    for (const key of WORK_COPY_FOREIGN_IDENTITY_ENV_KEYS) delete next[key];
+  }
   const terminalOwnerSessionId = args.chatSessionId ?? args.ownerSessionId ?? null;
   if (terminalOwnerSessionId) {
     next.ADE_CHAT_SESSION_ID = terminalOwnerSessionId;
@@ -6871,7 +6892,16 @@ export function createPtyService({
         ? effectiveArgs.args.filter((value): value is string => typeof value === "string")
         : [];
 
-      const laneRuntimeEnv = (await getLaneRuntimeEnv?.(laneId)) ?? {};
+      // A shell a chat or terminal on another machine runs in its work copy
+      // here (`pty.create` with `remoteWork`, owned by `remote:<device>:<chat>`
+      // or `remote:<device>:terminal`). Its row sits in the primary lane, but
+      // the primary lane's ports and host name are not the copy's. The copy is
+      // keyed by the whole owner id, as the work copy service keys it.
+      const workCopyOwnerId = args.allowExternalCwd && chatSessionId && parseForeignCallerSessionId(chatSessionId)
+        ? chatSessionId
+        : null;
+      const workCopyShell = workCopyOwnerId != null;
+      const laneRuntimeEnv = workCopyShell ? {} : (await getLaneRuntimeEnv?.(laneId)) ?? {};
       const sessionLinearEnv = getSessionLinearEnv?.({ sessionId, chatSessionId }) ?? {};
       const explicitNoColor = hasEnvKey(effectiveArgs.env ?? {}, "NO_COLOR") || hasEnvKey(laneRuntimeEnv, "NO_COLOR");
       const explicitForceColor = hasEnvKey(effectiveArgs.env ?? {}, "FORCE_COLOR") || hasEnvKey(laneRuntimeEnv, "FORCE_COLOR");
@@ -6907,6 +6937,7 @@ export function createPtyService({
         chatSessionId,
         ownerSessionId: isTrackedAgentCliToolType(toolTypeHint) ? sessionId : null,
         spawnLineage: effectiveSpawnLineage,
+        workCopy: workCopyOwnerId ? { laneId: remoteWorkLaneIdFor(workCopyOwnerId), path: cwd } : null,
       });
       let launchEnv = withInteractiveTerminalColorEnv(
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
@@ -7288,11 +7319,18 @@ export function createPtyService({
         let lastErr: unknown = null;
         let created: IPty | null = null;
         if (directCommand) {
+          // Windows cannot start a command line past its limit, and conpty
+          // does not say so: the spawn hangs, then the fallback below would
+          // type the same line into a shell. Refused here, with the reason.
+          const invocation = resolveCliSpawnInvocation(directCommand, directArgs, launchEnv);
+          const ptyArgs = invocation.windowsVerbatimArguments
+            ? invocation.args.join(" ")
+            : invocation.args;
+          if (process.platform === "win32") {
+            const tooLong = windowsCommandLineOverLimitMessage(invocation.command, ptyArgs);
+            if (tooLong) throw new AdeExpectedError(tooLong, "user");
+          }
           try {
-            const invocation = resolveCliSpawnInvocation(directCommand, directArgs, launchEnv);
-            const ptyArgs = invocation.windowsVerbatimArguments
-              ? invocation.args.join(" ")
-              : invocation.args;
             created = ptyLib.spawn(invocation.command, ptyArgs, opts);
             const hostReady = getPtyHostReadyPromise(created);
             if (hostReady) await hostReady;
@@ -9332,6 +9370,17 @@ export function createPtyService({
         return { disposed: false, reason: "session-mismatch" };
       }
       if (entry.disposed) return { disposed: false, reason: "already-disposed" };
+      // A shell a chat on another machine runs here ends only when someone
+      // stops it or this runtime stops; nobody watches it on this machine, so
+      // the log names the code path that stopped it.
+      if (parseForeignCallerSessionId(entry.chatSessionId)) {
+        logger.info("pty.remote_work_shell_disposed", {
+          ptyId,
+          sessionId: entry.sessionId,
+          chatSessionId: entry.chatSessionId,
+          by: (new Error().stack ?? "").split("\n").slice(2, 7).map((frame) => frame.trim()).join(" < "),
+        });
+      }
       flushPendingPtyOutput(entry);
       entry.processOutputData = null;
       if (entry.piSessionLeaseUpgradeTimer) {

@@ -191,10 +191,11 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getCrossMachineBatchMove",
       "previewCrossMachineHandoff", "resolveSmartLinkPreview", "resolveSmartLinkImage", "resolveSourceFavicons",
       "readTranscript", "readTranscriptPage", "suggestLaneNameFromPrompt",
-      "generateAutoLaneIdentity",
+      "generateAutoLaneIdentity", "listDeletedChats", "getDeletedChatDetail",
     ],
     write: [
       "archiveSession", "cancelDispatchedSteer", "cancelSteer", "createSession", "deleteSession",
+      "reopenDeletedChat", "removeDeletedChats",
       "dispatchSteer", "editSteer", "ensureCtoSession", "moveSteer", "setCodexGoal",
       "setCodexGoalStatus", "clearCodexGoal", "startCodexRealtime", "stopCodexRealtime",
       "resetCodexMemory", "terminateCodexBackgroundTerminal", "interrupt",
@@ -340,9 +341,13 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: ["status"],
     write: ["request"],
   },
+  agent37: {
+    read: ["ready_status"],
+    write: ["claim_ready", "release_ready"],
+  },
   mcp_registry: {
     read: ["list", "chatStatus"],
-    write: ["request"],
+    write: ["request", "remove"],
   },
   account_settings: {
     read: [

@@ -299,12 +299,14 @@ import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
-import { agent37VaultFromStore, buildAgent37ConnectAdapter } from "../agent37/agent37Credential";
+import { agent37VaultFromStore, buildAgent37ConnectAdapter, type Agent37CredentialDeps } from "../agent37/agent37Credential";
+import { buildAgent37ReadyActions } from "../agent37/agent37ReadyActions";
+import { AGENT37_READY_VAULT_KEY, createAgent37ReadySettingsStore } from "../agent37/agent37ReadySettings";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
 import { scanProviderMcpConfigs } from "../mcp/mcpProviderConfigScan";
-import { listMcpRegistry, mcpRegistryVaultFromStore, requestMcpServer, type McpServerRequestDeps } from "../mcp/mcpServerRequest";
+import { listMcpRegistry, mcpRegistryVaultFromStore, requestMcpServer, requestMcpServerRemoval, type McpServerRequestDeps } from "../mcp/mcpServerRequest";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { machineSecretTempFiles } from "../secrets/secretTempFiles";
 import { isClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
@@ -2466,11 +2468,13 @@ function ensureAuthStatusRelayBridges(runtime: AdeRuntime): void {
   const unsubscribePi = addPiAuthStatusListener((event) => push("piAuthStatus", event));
   const unsubscribeCursor = addCursorSdkAuthStatusListener((event) => push("cursorAuthStatus", event));
   const dispose = runtime.dispose;
-  runtime.dispose = () => {
+  // Pass the reason on and return the teardown, so a brain exit still waits
+  // for it and a removed project's devices still stop.
+  runtime.dispose = (reason) => {
     unsubscribeOpenCode();
     unsubscribePi();
     unsubscribeCursor();
-    dispose();
+    return dispose(reason);
   };
 }
 
@@ -4004,6 +4008,15 @@ function agent37MachineStore(): EncryptedFileCredentialStore {
   return agent37MachineCredentialStore;
 }
 
+function agent37CredentialDeps(runtime: AdeRuntime): Agent37CredentialDeps {
+  return {
+    vault: () => (runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore) : null),
+    machineStore: () => agent37MachineStore(),
+    signedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
+    logger: runtime.logger,
+  };
+}
+
 /**
  * The connect card. `status` lists every integration this runtime knows and
  * whether it is connected, never a credential. `request` asks the person in a
@@ -4016,12 +4029,32 @@ function integrationConnectAdapters(runtime: AdeRuntime) {
     linearCredentialService: runtime.linearCredentialService ?? null,
     linearStatus: runtime.linearCredentialService ? () => buildRuntimeLinearConnectionStatus(runtime) : null,
     jiraService: runtime.jiraService ?? null,
-    agent37: buildAgent37ConnectAdapter({
-      vault: () => (runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore) : null),
-      machineStore: () => agent37MachineStore(),
-      signedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
-      logger: runtime.logger,
+    agent37: buildAgent37ConnectAdapter(agent37CredentialDeps(runtime)),
+  });
+}
+
+/** Ready machines for the CLI and agents; the choice is read through the same store the desktop writes. */
+function buildAgent37DomainService(runtime: AdeRuntime): OpaqueService {
+  const settings = createAgent37ReadySettingsStore({
+    vault: () => (runtime.accountAuthService?.getStatus().signedIn === true && runtime.accountVaultStore
+      ? agent37VaultFromStore(runtime.accountVaultStore, AGENT37_READY_VAULT_KEY)
+      : null),
+    machineStore: () => agent37MachineStore(),
+    logger: runtime.logger,
+  });
+  return buildAgent37ReadyActions({
+    credentials: agent37CredentialDeps(runtime),
+    readSettings: async () => (await settings.read()).projects,
+    // A six-hour dedupe, as on the desktop: claims are frequent in a benchmark loop.
+    onClaimed: () => runtime.productAnalyticsService?.capture({
+      event: "ade_feature_used",
+      surface: "api",
+      properties: { feature: "connections", action: "agent37_ready", outcome: "ready_cli" },
+      projectId: null,
+      dedupeKey: "agent37_ready:ready_cli",
+      minimumIntervalMs: 6 * 60 * 60 * 1_000,
     }),
+    logger: runtime.logger,
   });
 }
 
@@ -4087,8 +4120,8 @@ function mcpRegistryDeps(runtime: AdeRuntime): McpServerRequestDeps {
  * this machine (names and set/not-set only, never a value). `request` raises
  * the MCP server card in the caller's own chat and saves the server the way
  * Settings › Integrations › MCP servers does, on the machine that runs the chat.
- * `chatStatus` says which registry servers a chat's running agent lacks
- * (the "Refresh chat" chip).
+ * `remove` asks the same way before it takes one out. `chatStatus` says which
+ * servers a chat's running agent lacks or still has (the "Refresh chat" chip).
  */
 function buildMcpRegistryDomainService(runtime: AdeRuntime): OpaqueService {
   const agentChatService = runtime.agentChatService;
@@ -4115,10 +4148,27 @@ function buildMcpRegistryDomainService(runtime: AdeRuntime): OpaqueService {
               throw error;
             }
           },
+          remove: async (args?: unknown) => {
+            const capture = (outcome: "completed" | "cancelled" | "failed") =>
+              captureAgentCardAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", card: "mcp_server_remove", outcome });
+            try {
+              const result = await requestMcpServerRemoval({
+                ...mcpRegistryDeps(runtime),
+                requestChatInput: (input) => agentChatService.requestChatInput(input),
+              }, args);
+              capture(result.removed ? "completed" : "cancelled");
+              // An account-wide change on every machine: leave a trace of it.
+              if (result.removed) runtime.logger.info("mcp_registry.server_removed", { server: result.name });
+              return result;
+            } catch (error) {
+              capture("failed");
+              throw error;
+            }
+          },
           chatStatus: (args?: { chatSessionId?: unknown; sessionId?: unknown }) => {
             const raw = args?.chatSessionId ?? args?.sessionId;
             const sessionId = typeof raw === "string" ? raw.trim() : "";
-            return sessionId ? agentChatService.mcpRegistryChatStatus(sessionId) : { missing: [] };
+            return sessionId ? agentChatService.mcpRegistryChatStatus(sessionId) : { missing: [], changed: [], removed: [] };
           },
         }
       : {}),
@@ -4225,6 +4275,7 @@ export function getAdeActionDomainServices(
     project_config: toService(runtime.projectConfigService),
     project_secret: toService(buildProjectSecretDomainService(runtime)),
     integration_connect: buildIntegrationConnectDomainService(runtime),
+    agent37: buildAgent37DomainService(runtime),
     mcp_registry: buildMcpRegistryDomainService(runtime),
     account_settings: buildAccountSettingsDomainService(runtime),
     account_vault: buildAccountVaultDomainService(runtime),

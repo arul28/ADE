@@ -1181,9 +1181,11 @@ menu band) or above is ever listed. A panel entry must also be on screen and
 published as an Accessibility window, so an app's reusable hidden panels and
 tooltips do not fill the list. Listings mark them `[panel]` and `[modal panel]`;
 `observe` walks panels first so the element cap cannot cut an alert off behind a
-long document; `press` with no target goes to the newest modal panel, where a
-person's keys would; `park` leaves a panel that already opened on the lane
-display where its app put it.
+long document; `press` with no target goes to the newest modal panel, sheet or
+Open/Save panel, where a person's keys would; `park` leaves a panel that
+already opened on the lane display where its app put it. A `park` of a panel
+that is on screen at layers 1–23 but that its app does not publish through
+Accessibility (a frameless Electron palette) says so, rather than "No window".
 
 A sandboxed app's Open and Save panels get their content from a system
 service (`com.apple.appkit.xpc.openAndSavePanelService`), but on macOS 27 the
@@ -1205,7 +1207,21 @@ parent's walk skips it; `press` with no target reaches it; a background click
 lands on it (it is a lane app's window on the lane's display); a claim of it
 claims its parent; the watcher never parks it alone. A lane app's modal panel
 whose app cannot be read at all is still listed, so the lane can see it is
-blocked.
+blocked, and so is a readable app's layer-8 entry of panel size (240x100 or
+more) that its tree leaves out: FL Studio's Save panel and its "Replace?" alert
+were such entries.
+
+A key posted to the app never reaches the macOS 27 Open and Save panels, whose
+content another process draws: Escape left the panel up and the app modal
+behind it. So a bare Escape or Return with no target, when the app's focused
+window is one of the lane's, presses the dialog's own button through
+Accessibility, the way a person's key would: the newest sheet's first, else the
+window's (its cancel or default button attribute, then the panels' fixed
+`CancelButton` and `OKButton` identifiers, then on a sheet a button titled
+Cancel). The result names it as `pressedButton` (`pressed` in `--text`). Return
+in a multi-line text view, a disabled button, a stalled app, or a dialog with
+no such button posts the key as before. The search reads at most 200 elements
+within `AXTimeouts.dialogButtonSearch` (1.5 s), with short reads.
 
 The 1 s watcher sweep moves a new panel of a lane app onto the lane display the
 same way it moves a window. When it cannot — the window never answers

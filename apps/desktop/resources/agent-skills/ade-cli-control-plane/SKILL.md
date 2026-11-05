@@ -381,12 +381,28 @@ user approves it in every permission mode. Never ask for a key in chat.
   connection covers `ade github`/`ade linear`/`ade jira` and every agent.
 - Any other server works too: describe it (`--url`, or the command line after
   `--`). Its card says Custom, so the user reads what it runs.
+- Never guess an address. For a server you do not know, say so and ask for its
+  link, or offer to search for it. Raise the card only with a real URL or
+  command.
 
 When the user named the server, raise the card at once. When it was your own
 idea, ask in words first. A server the user adds reaches this chat only after
 they press **Refresh chat** above the composer; ask them to. If a server says it
-needs a sign-in, tell them to press **Sign in** on its row in
-Settings › Integrations › MCP servers, then **Refresh chat**.
+needs a sign-in, tell them to press **Sign in** on its row at
+ade://settings/mcp.servers, then **Refresh chat**.
+
+To remove a server the user asks to drop, run
+`ade mcp servers remove <name> --reason "…"`: a card asks them, and on yes the
+server, its saved values and its sign-in are removed from their account. If
+the receipt says the values were not removed, tell them and link
+ade://settings/mcp.servers. Its tools stay in this chat until they press
+**Refresh chat**. (`ade mcp remove` is for apps connected to ADE,
+not these servers.) GitHub, Linear and Jira are ADE integrations: to
+disconnect one, link ade://settings/integrations.github (or `.linear`,
+`.jira`); the user presses Disconnect there.
+
+Name a settings page by its `ade://settings/<id>` link (`ade settings find`
+prints it); the chat shows it as a button. Never write the path out as text.
 
 ## Side chats
 
@@ -415,11 +431,13 @@ ade chat create --machine "Mac mini" --lane <lane there> \
   --provider claude --model anthropic/claude-opus-5 --prompt "…"   # your subagent there
 ade chat read <id> --machine "Mac mini" --text
 ade shell start --machine "Windows PC" --wait -- npm test   # one command there, in this chat's work copy
+ade files push --machine "Windows PC" ./fixture.bin test/   # one file into that work copy (pull copies back)
 ```
 
 - Put all the steps of a task in one `--machine` call (`-- sh -c "npm ci && npm test"`,
   or a script you run once). Each call opens a new shell there and syncs the
-  work copy again. Do not run single commands one call at a time.
+  work copy again. Do not run single commands one call at a time. Move files
+  with `ade files push|pull --machine`, never as base64 inside shell commands.
 
 - The project there defaults to this repository's checkout; pick another with
   `--project <name|path|id>`, add `--clone` to set a missing GitHub repo up,

@@ -50,6 +50,8 @@ export type LoadExternalSessionEventsArgs = {
   importedAt?: number;
   homeDir?: string;
   env?: NodeJS.ProcessEnv;
+  /** Find the session even though ADE ran it (Recently deleted). */
+  includeAdeOwned?: boolean;
 };
 
 export type ExternalSessionEventsPage = {
@@ -238,6 +240,7 @@ export async function loadExternalSessionEvents(
     ?? await discoverExternalSessionRecord(args.provider, args.sessionId, {
       ...(args.homeDir ? { homeDir: args.homeDir } : {}),
       ...(args.env ? { env: args.env } : {}),
+      ...(args.includeAdeOwned ? { includeAdeOwned: true } : {}),
     }).catch(() => null);
   const isImport = args.purpose === "import";
   const maxEvents = Math.max(1, Math.floor(

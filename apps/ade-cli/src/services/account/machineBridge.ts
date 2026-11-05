@@ -40,6 +40,8 @@ import { createRemoteLaunchBudget } from "../../lib/remoteLaunchBudget";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES } from "../sync/syncProtocol";
 import { codedError } from "../../../../desktop/src/shared/codedError";
+import { probeRpcLiveness, type RpcLivenessClient } from "../../../../desktop/src/shared/rpcLiveness";
+import { isRuntimeTransportTimeoutError } from "../../../../desktop/src/shared/runtimeErrors";
 import { AccountMachineDirectoryService } from "./accountMachineDirectoryService";
 import {
   getSignedInAccountAccessToken,
@@ -61,6 +63,13 @@ const DIRECTORY_CACHE_MS = 15_000;
 const DIRECTORY_TIMEOUT_MS = 10_000;
 /** A connection nobody used for this long is closed. */
 const IDLE_CLOSE_MS = 90_000;
+/**
+ * How often a pooled connection that has gone quiet is pinged. A relay drop
+ * can leave a half-open socket that never fires a close: every call on it then
+ * hung until its own timeout, and a chat that kept retrying kept the dead link
+ * alive (2026-11-04, box A to android-test-vm2, fixed only by a brain restart).
+ */
+const HEARTBEAT_INTERVAL_MS = 20_000;
 
 export type RemoteProjectRecord = {
   projectId: string;
@@ -83,7 +92,12 @@ export type PooledConnection = {
   idleTimer: ReturnType<typeof setTimeout> | null;
   /** Calls in flight on this connection; the idle timer only runs at zero. */
   inFlight: number;
+  /** Pings the connection while it is quiet; a missed ping drops it. */
+  heartbeat: ReturnType<typeof setInterval> | null;
 };
+
+/** The liveness `ping` in flight per client, shared by every check that runs meanwhile. */
+const livenessProbes = new WeakMap<RpcLivenessClient, Promise<boolean>>();
 
 type AccountDirectory = Pick<AccountMachineDirectoryService, "listMachines" | "pairListedMachine">;
 
@@ -232,6 +246,8 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
       if (state.connections.get(hostDeviceId) === current) state.connections.delete(hostDeviceId);
       if (state.open.get(entry.machineKey) === entry) state.open.delete(entry.machineKey);
       if (entry.idleTimer) clearTimeout(entry.idleTimer);
+      if (entry.heartbeat) clearInterval(entry.heartbeat);
+      entry.heartbeat = null;
       try { entry.client.close(); } catch {}
     }, () => {
       if (state.connections.get(hostDeviceId) === current) state.connections.delete(hostDeviceId);
@@ -250,6 +266,43 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
     if (entry.inFlight > 0) return;
     entry.idleTimer = setTimeout(() => dropConnection(entry.hostDeviceId, entry), IDLE_CLOSE_MS);
     entry.idleTimer.unref?.();
+  };
+
+  /**
+   * Whether the connection still carries traffic: anything received in the
+   * last few seconds, or an answer to one `ping` (any reply counts, an error
+   * reply from an older brain included). A busy host still answers `ping` from
+   * its event loop; a half-open socket answers nothing.
+   */
+  const stillAnswers = (entry: PooledConnection): Promise<boolean> =>
+    probeRpcLiveness(entry.client, livenessProbes);
+
+  /**
+   * Drop the connection unless it still answers, so the next call redials
+   * instead of riding a socket that died without a close.
+   */
+  const dropIfDead = async (entry: PooledConnection, source: string): Promise<void> => {
+    if (await stillAnswers(entry)) return;
+    logger?.warn(`${options.logPrefix}.connection_dead`, {
+      machineKey: entry.machineKey,
+      source,
+      quietMs: (() => {
+        const at = entry.client.lastInboundAt();
+        return at == null ? null : Date.now() - at;
+      })(),
+    });
+    dropConnection(entry.hostDeviceId, entry);
+  };
+
+  const startHeartbeat = (entry: PooledConnection): void => {
+    entry.heartbeat = setInterval(() => {
+      if (entry.client.isClosed()) {
+        dropConnection(entry.hostDeviceId, entry);
+        return;
+      }
+      void dropIfDead(entry, "heartbeat");
+    }, HEARTBEAT_INTERVAL_MS);
+    entry.heartbeat.unref?.();
   };
 
   const account = (): Pick<AccountAuthService, "getStatus" | "getAccessToken"> =>
@@ -451,10 +504,12 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
       projects: null,
       idleTimer: null,
       inFlight: 0,
+      heartbeat: null,
     };
     client.onDisconnect(() => dropConnection(hostDeviceId, entry));
     state.open.set(machine.machineKey, entry);
     touch(entry);
+    startHeartbeat(entry);
     logger?.info(`${options.logPrefix}.connected`, { machineKey: machine.machineKey });
     return entry;
   };
@@ -498,7 +553,14 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
   /** The target's registered projects, cached per connection for a minute. */
   const listProjects = async (entry: PooledConnection, fresh = false): Promise<RemoteProjectRecord[]> => {
     if (fresh || !entry.projects || Date.now() - entry.projects.at > PROJECTS_CACHE_MS) {
-      const raw = await entry.client.call("projects.list", {}, { timeoutMs: PROJECTS_LIST_TIMEOUT_MS });
+      let raw: unknown;
+      try {
+        raw = await entry.client.call("projects.list", {}, { timeoutMs: PROJECTS_LIST_TIMEOUT_MS });
+      } catch (error) {
+        if (entry.client.isClosed()) dropConnection(entry.hostDeviceId, entry);
+        else if (isRuntimeTransportTimeoutError(error)) await dropIfDead(entry, "projects.list");
+        throw error;
+      }
       entry.projects = { at: Date.now(), records: coerceProjects(raw) };
     }
     return entry.projects.records;
@@ -532,7 +594,12 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
     try {
       return await Promise.race([entry.client.call(method, params, { timeoutMs: timeoutMs + 5_000 }), timedOut]);
     } catch (error) {
-      if (error instanceof MachineCallTimeoutError) throw error;
+      if (error instanceof MachineCallTimeoutError) {
+        // A slow host keeps its connection; a silent one is dropped, so the
+        // next call redials instead of timing out on the same dead socket.
+        await dropIfDead(entry, label);
+        throw error;
+      }
       if (entry.client.isClosed()) {
         dropConnection(entry.hostDeviceId, entry);
         throw new MachineConnectionDroppedError(
@@ -587,9 +654,9 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
   const selectMachine = async (query: string): Promise<AdeAccountMachine> => {
     const trimmed = query.trim();
     if (!trimmed) throw new Error("machine must be a machine id or name.");
-    const pick = (machines: AdeAccountMachine[]): AdeAccountMachine | null => {
+    const pick = (machines: AdeAccountMachine[], exactOnly = false): AdeAccountMachine | null => {
       try {
-        return selectAccountMachine(machines, trimmed);
+        return selectAccountMachine(machines, trimmed, { exactOnly });
       } catch (error) {
         if (error instanceof AmbiguousAccountMachineError) {
           throw new Error(`${errorMessage(error)} Pass the machine id from listMachines.`);
@@ -597,7 +664,10 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
         return null;
       }
     };
-    const cached = pick(await listAccountMachines());
+    // An exact name on the cached read, then on a fresh one, before a loose
+    // match: a machine renamed "Mac Studio" since the cache was read beats the
+    // cached "Arul’s Mac Studio" that "mac studio" only resembles.
+    const cached = pick(await listAccountMachines(), true);
     if (cached?.online) return cached;
     let machines: AdeAccountMachine[];
     try {
@@ -608,7 +678,9 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
       // On a miss, the fresh read's own failure (signed out, directory down) is the answer.
       throw error;
     }
-    const fresh = pick(machines);
+    // An offline exact hit is rechecked exactly: a loose match on the fresh
+    // list could name another machine than the one the cache found.
+    const fresh = pick(machines, cached !== null);
     if (fresh) return fresh;
     if (cached) return cached;
     const known = machines.map((candidate) => `${machineName(candidate)} (${candidate.machineKey})`);

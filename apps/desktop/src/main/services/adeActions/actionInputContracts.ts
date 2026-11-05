@@ -193,6 +193,23 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade integrations status --text",
     },
   },
+  agent37: {
+    ready_status: {
+      description: "List the account's Agent 37 ready machines: per project kept ready (its git identity and name), whether a machine is ready (prepared and asleep), being prepared, or failed, with machine names and states. Reads Agent 37 with the account's key; never returns the key.",
+      input: "no input",
+      example: "ade agent37 ready --text",
+    },
+    claim_ready: {
+      description: "Take this project's ready Agent 37 machine for a new chat: marks it claimed and wakes it (about 1-2 s), then returns {instanceId, machineKey, name, projectPath, laneId, wakeMs, claimToken}. Its ADE comes online a few seconds later; wait for it before sending work there. `ade chat create --machine agent37:ready` does all of this. Throws when there is no ready machine (with whether one is being prepared). A claimed machine bills while awake; give an unused one back with release_ready.",
+      input: "object { originUrl: string }",
+      example: "ade chat create --machine agent37:ready --prompt \"…\"",
+    },
+    release_ready: {
+      description: "Give back a ready machine you claimed in the last 30 minutes and no chat used: it is tagged ready again and put back to sleep. Needs the claimToken claim_ready returned, so it never sleeps a machine another caller claimed. Returns {released: boolean}.",
+      input: "object { instanceId: string, claimToken: string }",
+      example: "ade --role agent actions run agent37.release_ready --input-json '{\"instanceId\":\"o2m461src2\",\"claimToken\":\"<from claim_ready>\"}' --json",
+    },
+  },
   mcp_registry: {
     list: {
       description: "Read the person's MCP setup on this machine: every server in ADE's MCP registry (name, transport, the command and args or the URL, the env variable and header NAMES, on or off for the account / this machine / this project, and whether each value is set here), plus the servers other tools' configs on this machine have that the registry does not, with the tools they come from. Never returns a value.",
@@ -200,12 +217,17 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade mcp servers --text",
     },
     request: {
-      description: "Propose adding one MCP server to the person's ADE registry: an MCP server card opens in this chat showing exactly what runs, and the person approves it (always, in every permission mode) and types any env or header values. ADE saves it to their account and the values to the account vault, on the machine that runs this chat. Returns at once with {already: true} when the registry has the same name, URL, or command line. Otherwise blocks until they add or decline. Returns {name, added: true, missing, next} | {name, added: false, already: true, existing, matchedBy, next} | {name, added: false, declined: true}; a value is never returned, logged, or written to the transcript. source \"imported\" takes a server another tool's config has (by its name, see mcp_registry.list); source \"agent\" describes one: command + args (stdio) or url (http/sse), with envNames or headerNames. After it is added, this chat's agent does not have the tools until the person presses Refresh chat. If the person named the server, raise the card at once; if it was your own idea, ask in words first and raise the card only after a yes.",
+      description: "Propose adding one MCP server to the person's ADE registry: an MCP server card opens in this chat showing exactly what runs, and the person approves it (always, in every permission mode) and types any env or header values. ADE saves it to their account and the values to the account vault, on the machine that runs this chat. Returns at once with {already: true} when the registry has the same name, URL, or command line. Otherwise blocks until they add or decline. Returns {name, added: true, missing, next} | {name, added: false, already: true, existing, matchedBy, next} | {name, added: false, declined: true}; a value is never returned, logged, or written to the transcript. source \"imported\" takes a server another tool's config has (by its name, see mcp_registry.list); source \"agent\" describes one: command + args (stdio) or url (http/sse), with envNames or headerNames. After it is added, this chat's agent does not have the tools until the person presses Refresh chat. Never guess a URL or command: for a server you do not know, ask the person for its link or offer to search. If the person named the server, raise the card at once; if it was your own idea, ask in words first and raise the card only after a yes.",
       input: "object { name: string, reason: string, source?: \"imported\" | \"agent\", transport?: \"stdio\" | \"http\" | \"sse\", command?: string, args?: string[], url?: string, envNames?: string[], headerNames?: string[], timeoutMs?: number }",
       example: "ade mcp servers add github --reason \"To read your PRs\" --env GITHUB_PERSONAL_ACCESS_TOKEN -- npx -y @modelcontextprotocol/server-github",
     },
+    remove: {
+      description: "Propose removing one MCP server from the person's ADE registry: a card in this chat asks them, in every permission mode. On yes it leaves their account on every machine, with its saved values and sign-in. Blocks until they answer. Returns {name, removed: true, next} | {name, removed: false, declined: true}. Only when the person asked for it. This chat's agent keeps the server's tools until the person presses Refresh chat. GitHub, Linear and Jira are ADE integrations, not servers: link their settings page (ade://settings/integrations.github, .linear, .jira) instead.",
+      input: "object { name: string, reason?: string, timeoutMs?: number }",
+      example: "ade mcp servers remove stripe --reason \"You asked to disconnect Stripe\"",
+    },
     chatStatus: {
-      description: "Name the registry servers that are on for one chat but that its running agent did not start with (it loads them after Refresh chat). Empty when the chat has no running agent.",
+      description: "Name the registry servers that are on for one chat but that its running agent did not start with (missing; it loads them after Refresh chat), and the servers it started with that were since removed or turned off (removed; Refresh chat unloads them). Empty when the chat has no running agent.",
       input: "object { chatSessionId: string }",
     },
   },

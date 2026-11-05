@@ -1535,3 +1535,56 @@ describe("ProjectScopeRegistry sync-host phase backoff", () => {
     await scopeRegistry.disposeAll();
   });
 });
+
+describe("ProjectScopeRegistry removal during a close", () => {
+  beforeEach(() => {
+    createAdeRuntimeMock.mockReset();
+  });
+
+  it("turns an in-flight close into a removal and stops handed-off devices exactly once", async () => {
+    const { registry, first } = createRegistry();
+    const runtimeDispose = vi.fn(async (_reason?: string) => {});
+    createAdeRuntimeMock.mockImplementation(async () => ({ dispose: runtimeDispose }));
+    const stopHandedOff = vi.fn(async (_projectRoot: string) => {});
+    const scopeRegistry = new ProjectScopeRegistry(registry, { onUnregisterAfterHandOff: stopHandedOff });
+
+    // A plain close hands devices off for the next runtime and stops nothing.
+    await scopeRegistry.get(first.projectId);
+    await scopeRegistry.dispose(first.projectId, "close");
+    expect(runtimeDispose).toHaveBeenCalledWith("close");
+    expect(stopHandedOff).not.toHaveBeenCalled();
+
+    // A removal arrives while a repair's close is tearing the runtime down.
+    const slowTeardown = deferred<void>();
+    const closeStarted = deferred<void>();
+    runtimeDispose.mockClear();
+    runtimeDispose.mockImplementation(async () => await slowTeardown.promise);
+    runtimeDispose.mockImplementationOnce(async () => {
+      closeStarted.resolve();
+      await slowTeardown.promise;
+    });
+    await scopeRegistry.get(first.projectId);
+    const closing = scopeRegistry.dispose(first.projectId, "close");
+    await closeStarted.promise;
+    let removed = false;
+    const removing = scopeRegistry.dispose(first.projectId, "unregister").then(() => { removed = true; });
+    await Promise.resolve();
+    // The releases still to run hear the stronger reason through the drain.
+    expect(runtimeDispose.mock.calls.map(([reason]) => reason)).toEqual(["close", "unregister"]);
+    // Nothing is stopped, and the removal does not report done, before the teardown ends.
+    expect(stopHandedOff).not.toHaveBeenCalled();
+    expect(removed).toBe(false);
+    slowTeardown.resolve();
+    await Promise.all([closing, removing]);
+    expect(stopHandedOff).toHaveBeenCalledTimes(1);
+    expect(stopHandedOff).toHaveBeenCalledWith(first.rootPath);
+
+    // Registered but not loaded (an earlier brain exit may have handed devices off).
+    await scopeRegistry.dispose(first.projectId, "unregister");
+    expect(stopHandedOff).toHaveBeenCalledTimes(2);
+    expect(stopHandedOff).toHaveBeenLastCalledWith(first.rootPath);
+    // A close of a project that is not loaded stops nothing.
+    await scopeRegistry.dispose(first.projectId, "close");
+    expect(stopHandedOff).toHaveBeenCalledTimes(2);
+  });
+});

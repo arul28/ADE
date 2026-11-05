@@ -377,6 +377,13 @@ async function makeTarGz(sourceDir, outputPath) {
     stdio: ["ignore", "pipe", "inherit"],
   });
   let spawnError = null;
+  // Listen before piping: tar can exit and emit "close" while the pipeline is
+  // still draining, and a listener attached afterwards never fires, which left
+  // the script exiting without its summary.
+  const tarClosed = new Promise((resolve) => {
+    tar.once("close", (code) => resolve(code));
+    tar.once("error", () => resolve(null));
+  });
   tar.once("error", (error) => {
     spawnError = error;
     tar.stdout.destroy(error);
@@ -384,15 +391,16 @@ async function makeTarGz(sourceDir, outputPath) {
   const out = createWriteStream(outputPath, { mode: 0o644 });
   try {
     await pipeline(tar.stdout, createGzip({ level: 9 }), out);
+    const exitCode = await tarClosed;
+    if (exitCode !== 0) {
+      if (spawnError) throw spawnError;
+      throw new Error(`tar exited with status ${exitCode}`);
+    }
   } catch (error) {
     if (spawnError?.code === "ENOENT") {
       throw new Error("The 'tar' command is required to package native runtime dependencies.");
     }
     throw error;
-  }
-  const exitCode = await new Promise((resolve) => tar.once("close", resolve));
-  if (exitCode !== 0) {
-    throw new Error(`tar exited with status ${exitCode}`);
   }
 }
 

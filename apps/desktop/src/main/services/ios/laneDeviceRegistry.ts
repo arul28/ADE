@@ -13,6 +13,7 @@ import {
   APPLE_DEVICE_IS_EXTRA_CODE,
   APPLE_EXTRA_DEVICE_LIMIT_CODE,
   APPLE_LANE_EXTRA_DEVICE_LIMIT,
+  APPLE_LANE_EXTRA_DEVICE_MAX,
   APPLE_RELEASED_DEVICE_GRACE_MS,
   isAdeOwnedLaneDevice,
 } from "../../../shared/types/iosSimulator";
@@ -280,6 +281,16 @@ export type AppleLaneDeviceRelease = {
   releasedAt: string;
   by: "agent" | "user";
 };
+
+/**
+ * `ADE_APPLE_LANE_EXTRA_DEVICES`: how many extra devices one lane may hold, for
+ * a coordinator that gives each helper agent its own simulator. Read from the
+ * environment ADE runs in; anything but a whole number 1-8 keeps the default.
+ */
+function appleLaneExtraDeviceLimit(): number {
+  const raw = Number(process.env.ADE_APPLE_LANE_EXTRA_DEVICES);
+  return Number.isInteger(raw) && raw >= 1 && raw <= APPLE_LANE_EXTRA_DEVICE_MAX ? raw : APPLE_LANE_EXTRA_DEVICE_LIMIT;
+}
 
 /**
  * The lane device's name.
@@ -639,10 +650,12 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     const extra = args.extra === true;
     if (extra) {
       const held = readExtras(laneId);
-      if (held.length >= APPLE_LANE_EXTRA_DEVICE_LIMIT) {
+      const limit = appleLaneExtraDeviceLimit();
+      if (held.length >= limit) {
         throw new Error(
           `${APPLE_EXTRA_DEVICE_LIMIT_CODE}: this lane already has ${held.length} extra devices `
-          + `(${held.map((device) => device.name).join(", ")}). Delete one first: device-delete --device <udid>.`,
+          + `(${held.map((device) => device.name).join(", ")}). Delete one first: device-delete --device <udid>. `
+          + `The limit is ${limit}; ADE_APPLE_LANE_EXTRA_DEVICES in ADE's environment raises it (up to ${APPLE_LANE_EXTRA_DEVICE_MAX}).`,
         );
       }
     } else {

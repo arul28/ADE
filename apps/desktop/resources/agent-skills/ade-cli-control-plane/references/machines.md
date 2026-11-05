@@ -26,6 +26,13 @@ ade shell clean --machine "Windows PC"            # delete the work copy when do
   simulator that machine already has (a new one only when none is free).
   `--no-sync` builds the copy as it is; `--discard` throws away unpushed work there first.
   `launch`, `install` and `test` sync the copy first; taps and screenshots use it as it is.
+- To move one file (a fixture, a build log, a screenshot), use
+  `ade files push --machine "Windows PC" ./local.bin test/fixtures/` and
+  `ade files pull --machine "Windows PC" build/out.log ./logs/`. Paths there
+  are relative to the work copy; up to 256 MiB, checked by sha256. Never send a
+  file as base64 or `echo` inside shell commands: that takes several shells per
+  file. A pushed file counts as work made there, so the next shell needs
+  `--no-sync` (keep it) or `--discard` (drop it).
 - Git moves code between the machines. To keep work you did there, commit and
   push from there (`ade shell start --machine … --no-sync -- git push origin HEAD:<branch>`),
   then pull here. A sync refuses while the copy holds unpushed work; `--no-sync`

@@ -479,7 +479,11 @@ export function connectionStateLabel(
   if (connection?.state === "connected" || (!connection && connectedFallback))
     return "Connected";
   if (connection?.state === "connecting") return "Connecting";
-  if (connection?.state === "error") return "Connection failed";
+  if (connection?.state === "error") {
+    if (connection.recovery === "reconnecting") return "Reconnecting";
+    if (connection.recovery === "held_elsewhere") return "In use by another ADE app";
+    return "Connection failed";
+  }
   return "Not connected";
 }
 

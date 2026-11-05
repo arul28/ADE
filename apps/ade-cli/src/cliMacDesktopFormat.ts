@@ -28,6 +28,7 @@ import {
   MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
   MAC_DESKTOP_USER_HAS_CONTROL_CODE,
   MAC_DESKTOP_WINDOW_NOT_FOUND_CODE,
+  WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE_CODE,
   WINDOWS_DESKTOP_CANCELLED_CODE,
   WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE,
   WINDOWS_DESKTOP_ELEVATED_WINDOW_CODE,
@@ -162,6 +163,10 @@ const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: strin
   [
     WINDOWS_DESKTOP_ELEVATED_WINDOW_CODE,
     "Ask the user to close or minimize the administrator window on the lane's screen, or stop the program that opens it at sign-in. Do not close it yourself; it may be a service they need.",
+  ],
+  [
+    WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE_CODE,
+    "A key chord or a Shift key cannot be sent in the background on the main desktop. Send it again with --real (the window comes forward for it), or leave the mode out and ADE chooses.",
   ],
   [
     WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE,
@@ -728,6 +733,9 @@ export function formatMacDesktopAction(value: unknown): string {
       ["ok", result.ok ?? true],
       ["action", result.action],
       ["mode", result.mode],
+      // A bare Escape or Return on a dialog presses its button rather than
+      // posting the key: name the button, so the agent knows what it chose.
+      ["pressed", typeof result.pressedButton === "string" ? `${result.pressedButton} (the dialog's button for this key)` : null],
       ["waited", typeof result.waitedMs === "number" ? `${result.waitedMs}ms` : null],
     ]),
   ].join("\n");

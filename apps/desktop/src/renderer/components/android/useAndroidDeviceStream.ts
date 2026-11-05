@@ -8,9 +8,9 @@ import { androidStreamLeaseKey, androidStreamLeases } from "./androidStreamLease
 import type { AndroidStreamState } from "./androidDeviceState";
 
 /**
- * The Android pane's live view: an address, a token, a first-frame watchdog
- * and a reconnect, the same shape as `useAppleDeviceStream` (which also
- * watches for a stall; Android does not, see the watchdog below).
+ * The Android pane's live view: an address, a token, a first-frame watchdog,
+ * a stall check and a reconnect, the same shape as `useAppleDeviceStream`.
+ * The stall check differs from Apple's, see `reconnecting` below.
  *
  * Android differs in two ways that make it smaller:
  *
@@ -25,6 +25,8 @@ import type { AndroidStreamState } from "./androidDeviceState";
 const ANDROID_FIRST_FRAME_TIMEOUT_MS = 6_000;
 /** How often the status strip re-reads fps, only while the picture is on screen. */
 const STREAM_METRICS_POLL_MS = 3_000;
+/** No frame for this long, with a sign the link is at fault, reads as "Reconnecting". */
+const ANDROID_FRAME_STALL_MS = 3_000;
 
 /** The lease this viewer holds: the lane's stream on one machine, and the run it joined. */
 type AndroidHeldLease = {
@@ -57,6 +59,11 @@ export type AndroidDeviceStream = {
   height: number | null;
   /** Frames per second from the brain, while live. */
   fps: number | null;
+  /**
+   * Live, but frames stopped reaching this window while the link looks at
+   * fault. Flips only on transitions, never per frame.
+   */
+  reconnecting: boolean;
   gaveUp: boolean;
   handleReaderStatus: (status: H264StreamStatus, error: string | null) => void;
   handleDimensions: (size: { width: number; height: number }) => void;
@@ -84,8 +91,20 @@ export function useAndroidDeviceStream({
   const [size, setSize] = useState<{ width: number | null; height: number | null }>({ width: null, height: null });
   const [fps, setFps] = useState<number | null>(null);
   const [reconnectNonce, setReconnectNonce] = useState(0);
+  const [reconnecting, setReconnectingRaw] = useState(false);
+  const reconnectingRef = useRef(false);
+  const setReconnecting = useCallback((next: boolean) => {
+    if (reconnectingRef.current === next) return;
+    reconnectingRef.current = next;
+    setReconnectingRaw(next);
+  }, []);
 
   const sawFrameRef = useRef(false);
+  const lastFrameAtRef = useRef(0);
+  /** When the fps read now in flight was sent; 0 when none is. */
+  const statusReadSinceRef = useRef(0);
+  /** The last fps read failed: the brain could not be reached. */
+  const statusReadFailedRef = useRef(false);
   const connectedAtRef = useRef(0);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
@@ -186,13 +205,16 @@ export function useAndroidDeviceStream({
     };
   }, [avdName, hidden, laneId, leaseRef, reconnectNonce, releaseLease, runtimePinRef, setState, wanted]);
 
+  // Called per drawn frame: refs only, and a state write only on a transition.
   const noteFrame = useCallback(() => {
+    lastFrameAtRef.current = Date.now();
     if (!sawFrameRef.current) {
       sawFrameRef.current = true;
       noteRecovered();
     }
+    setReconnecting(false);
     setState("live");
-  }, [noteRecovered, setState]);
+  }, [noteRecovered, setReconnecting, setState]);
 
   const handleReaderStatus = useCallback((next: H264StreamStatus, nextError: string | null) => {
     if (next === "error") {
@@ -222,9 +244,10 @@ export function useAndroidDeviceStream({
     if (!wanted || (state !== "starting" && state !== "live")) return undefined;
     const timer = window.setInterval(() => {
       const now = Date.now();
-      // After the first frame, silence is not a stall: a still screen may send
-      // nothing. A lost stream ends the reader or arrives as
-      // `android.stream.state`, and both recover above.
+      // After the first frame, silence alone is not a stall: a still screen
+      // may send nothing. A lost stream ends the reader or arrives as
+      // `android.stream.state`, and both recover above; a link that stalls
+      // under an open stream is `reconnecting`, below.
       if (sawFrameRef.current) return;
       const connectedAt = connectedAtRef.current;
       if (connectedAt > 0 && now - connectedAt > ANDROID_FIRST_FRAME_TIMEOUT_MS) {
@@ -235,23 +258,82 @@ export function useAndroidDeviceStream({
     return () => window.clearInterval(timer);
   }, [scheduleRecover, setState, state, wanted]);
 
-  // fps for the status strip: a slow read while the picture is live and on screen.
+  /*
+   * "Reconnecting": live, but the picture froze because the link did.
+   *
+   * Silence alone cannot say that. scrcpy encodes from a virtual display, and
+   * whether a still screen keeps producing frames is up to the device's
+   * encoder, so "no frame for 3 s" may just be a still screen. So silence
+   * counts only with a second sign that the link, not the screen, went quiet:
+   *
+   * - the brain reports frames (fps > 0 over its last 2 s) that never got
+   *   here, which is the stream breaking between the brain and this window;
+   * - the brain itself cannot be reached: the fps read failed, or has hung
+   *   past the stall time, which is what a relay stall looks like (remote
+   *   calls wait ~25 s, then fail).
+   *
+   * The first frame that arrives clears it in `noteFrame`. So does a read that
+   * answers with fps 0: the link is back and the brain has nothing to send,
+   * so the silence is a still screen again.
+   *
+   * `hostFps` is a fresh read's fps; null when there is none to go on.
+   */
+  const checkStall = useCallback((hostFps: number | null) => {
+    if (stateRef.current !== "live" || !sawFrameRef.current) return;
+    if (reconnectingRef.current) {
+      if (hostFps === 0) setReconnecting(false);
+      return;
+    }
+    const now = Date.now();
+    if (now - lastFrameAtRef.current < ANDROID_FRAME_STALL_MS) return;
+    const readSince = statusReadSinceRef.current;
+    const linkSilent = statusReadFailedRef.current
+      || (readSince > 0 && now - readSince >= ANDROID_FRAME_STALL_MS);
+    if (linkSilent || (hostFps != null && hostFps > 0)) setReconnecting(true);
+  }, [setReconnecting]);
+
+  // fps for the status strip: a slow read while the picture is live and on
+  // screen. It doubles as the link check above, so one read at a time: a
+  // stalled link gets one hung read, not a pile of them.
   useEffect(() => {
     const api = window.ade?.androidEmulator;
-    if (!wanted || state !== "live" || !laneId || !api) return undefined;
+    if (!wanted || state !== "live" || !laneId || !api) {
+      setReconnecting(false);
+      statusReadFailedRef.current = false;
+      return undefined;
+    }
     let cancelled = false;
     const timer = window.setInterval(() => {
+      if (statusReadSinceRef.current > 0) {
+        checkStall(null);
+        return;
+      }
+      statusReadSinceRef.current = Date.now();
       void api.getStreamStatus({ laneId }, runtimePinRef.current)
         .then((next) => {
-          if (!cancelled) setFps((current) => (current === next.fps ? current : next.fps));
+          if (cancelled) return;
+          statusReadSinceRef.current = 0;
+          statusReadFailedRef.current = false;
+          setFps((current) => (current === next.fps ? current : next.fps));
+          checkStall(next.fps);
         })
-        .catch(() => {});
+        .catch(() => {
+          if (cancelled) return;
+          statusReadSinceRef.current = 0;
+          statusReadFailedRef.current = true;
+          checkStall(null);
+        });
     }, STREAM_METRICS_POLL_MS);
+    // A hung read is noticed between polls too, so the line turns within ~1 s
+    // of the stall time rather than at the next 3 s poll.
+    const stallTimer = window.setInterval(() => checkStall(null), 1_000);
     return () => {
       cancelled = true;
+      statusReadSinceRef.current = 0;
       window.clearInterval(timer);
+      window.clearInterval(stallTimer);
     };
-  }, [laneId, runtimePinRef, state, wanted]);
+  }, [checkStall, laneId, runtimePinRef, setReconnecting, state, wanted]);
 
   return {
     state,
@@ -261,6 +343,7 @@ export function useAndroidDeviceStream({
     width: size.width,
     height: size.height,
     fps,
+    reconnecting,
     gaveUp,
     handleReaderStatus,
     handleDimensions,

@@ -65,31 +65,7 @@
   text-wrap: pretty;
 }
 
-.ade-wnf-action.kit-btn { margin-top: 24px; }
-
-/* What it works with: quiet chips, each with its own mark (a brand's colour where it has one). */
-.ade-wnf-marks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 20px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.ade-wnf-mark {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 10px 0 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--color-fg);
-  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-fg) 9%, transparent);
-}
-.ade-wnf-mark-icon { display: inline-flex; color: var(--kit-text-2); }
+.ade-wnf-action.kit-btn { margin-top: 22px; }
 
 /* The picture's half. Container units let every kind fit it at its own ratio. */
 .ade-wnf-media {
@@ -143,6 +119,10 @@ video.ade-wnf-plate {
   width: min(100cqw, (100cqh - 22px) * var(--wnf-ratio, 1.4));
   overflow: hidden;
 }
+/* Room for a step line as well as the dots. */
+.ade-wnf-crossfade:has(.ade-wnf-shot-caption) .ade-wnf-stack {
+  width: min(100cqw, (100cqh - 52px) * var(--wnf-ratio, 1.4));
+}
 .ade-wnf-stack img,
 .ade-wnf-stack video {
   position: absolute;
@@ -154,6 +134,14 @@ video.ade-wnf-plate {
   transition: opacity 900ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .ade-wnf-stack [data-active="true"] { opacity: 1; }
+/* A slide's step line, under the picture. */
+.ade-wnf-shot-caption {
+  margin: -2px 0 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-fg);
+  text-align: center;
+}
 .ade-wnf-shots {
   display: flex;
   gap: 6px;

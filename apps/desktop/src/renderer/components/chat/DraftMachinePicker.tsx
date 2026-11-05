@@ -3,6 +3,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useState } from "react";
 
 import { DevinLogo } from "../shared/ProviderLogos";
+import { Agent37Mark } from "../remoteTargets/agent37Brand";
 import { cn } from "../ui/cn";
 import { MENU_ITEM_CLASS, MENU_SCROLL_CLASS, POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -18,7 +19,7 @@ export type DraftMachineOption = {
    */
   kind?: "machine" | "cloud";
   /** Which provider's mark a cloud entry wears; generic cloud icon when unset. */
-  cloudProvider?: "cursor" | "devin";
+  cloudProvider?: "cursor" | "devin" | "agent37";
   /** Set to render the row disabled with this sentence as its tooltip. */
   unavailableReason?: string | null;
 };
@@ -28,6 +29,9 @@ const CLOUD_VIOLET = "#A78BFA";
 function machineIcon(option: DraftMachineOption) {
   if (option.kind === "cloud" && option.cloudProvider === "devin") {
     return <DevinLogo size={12} className="shrink-0 rounded-[2px]" />;
+  }
+  if (option.kind === "cloud" && option.cloudProvider === "agent37") {
+    return <Agent37Mark size={12} />;
   }
   return option.kind === "cloud" ? (
     <CloudArrowUp size={12} weight="fill" className="shrink-0" style={{ color: CLOUD_VIOLET }} aria-hidden />

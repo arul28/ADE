@@ -807,6 +807,13 @@ import type {
   ExternalSessionImportResult,
   ExternalSessionSummary,
   ExternalSessionDetail,
+  DeletedChatDetailArgs,
+  DeletedChatListArgs,
+  DeletedChatListResult,
+  DeletedChatRemoveArgs,
+  DeletedChatRemoveResult,
+  DeletedChatReopenArgs,
+  DeletedChatReopenResult,
   ExternalSessionDetailArgs,
   ExternalSessionDetailUpdatedEvent,
   ProviderInstance,
@@ -2645,14 +2652,12 @@ export function registerIpc({
   };
 
   const ensureIosSimulator = (): NonNullable<AppContext["iosSimulatorService"]> => {
-    const ctx = getCtx();
-    const service = ctx.iosSimulatorService;
+    const service = getCtx().iosSimulatorService;
     if (!service) {
-      const message = "iOS Simulator service is not available.";
-      // Expected only in the no-project window, which has no simulator
-      // service. A project context without one is a wiring bug: report it.
-      if (!ctx.projectId) throw new AdeExpectedError(message, "environment");
-      throw new Error(message);
+      // Expected, not a wiring bug: the no-project window has no simulator
+      // service, and a project's simulator runs in its ADE brain, so this
+      // window builds none. The text is matched by EXPECTED_OUTCOME_PATTERNS.
+      throw new AdeExpectedError("iOS Simulator service is not available.", "environment");
     }
     return service;
   };
@@ -2688,7 +2693,10 @@ export function registerIpc({
   const ensureMacDesktop = (): MacDesktopServiceApi => {
     const service = getCtx().macDesktopService;
     if (!service) {
-      throw new Error("Mac Desktop is not available on this machine.");
+      // Expected, not a wiring bug: off macOS there is no Mac Desktop, and a
+      // project's runs in its ADE brain, so this window builds none. The text
+      // is matched by EXPECTED_OUTCOME_PATTERNS.
+      throw new AdeExpectedError("Mac Desktop is not available on this machine.", "environment");
     }
     return service;
   };
@@ -9450,6 +9458,18 @@ export function registerIpc({
     await ctx.agentChatService.deleteSession(arg);
   });
 
+  ipcMain.handle(IPC.agentChatListDeleted, async (_event, arg: DeletedChatListArgs): Promise<DeletedChatListResult> =>
+    ensureAgentChatContext().agentChatService.listDeletedChats(arg ?? {}));
+
+  ipcMain.handle(IPC.agentChatGetDeletedDetail, async (_event, arg: DeletedChatDetailArgs): Promise<ExternalSessionDetail> =>
+    ensureAgentChatContext().agentChatService.getDeletedChatDetail(arg));
+
+  ipcMain.handle(IPC.agentChatReopenDeleted, async (_event, arg: DeletedChatReopenArgs): Promise<DeletedChatReopenResult> =>
+    ensureAgentChatContext().agentChatService.reopenDeletedChat(arg));
+
+  ipcMain.handle(IPC.agentChatRemoveDeleted, async (_event, arg: DeletedChatRemoveArgs): Promise<DeletedChatRemoveResult> =>
+    ensureAgentChatContext().agentChatService.removeDeletedChats(arg));
+
   // One archive across lanes, chats, and shells (Settings → Archive). Built
   // from the window's own services; a runtime-bound window never reaches these
   // handlers because the preload routes `archive.*` to the runtime action.
@@ -12402,6 +12422,18 @@ export function registerIpc({
         properties: { feature: "connections", action: "agent37_machine_action", outcome },
         projectId: null,
         dedupeKey: `agent37_machine_action:${outcome}`,
+        minimumIntervalMs: 6 * 60 * 60 * 1_000,
+      });
+    },
+    // Ready machines: the switch, each prepare's outcome, picker claims. A
+    // six-hour dedupe per outcome: at most 20 accepted events a day.
+    recordReady: (outcome) => {
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: "agent37_ready", outcome },
+        projectId: null,
+        dedupeKey: `agent37_ready:${outcome}`,
         minimumIntervalMs: 6 * 60 * 60 * 1_000,
       });
     },

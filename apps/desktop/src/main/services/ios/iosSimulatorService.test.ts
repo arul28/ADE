@@ -3626,7 +3626,8 @@ describe("iosSimulatorService boot contract", () => {
       await service.deviceStart({ laneId: "lane-a", create: { runtime: "iOS 26.3", deviceType: "iPhone 17 Pro" } });
       calls.length = 0;
 
-      await service.deviceDelete({ laneId: "lane-a", ignoreOwnership: true });
+      const deleted = await service.deviceDelete({ laneId: "lane-a", ignoreOwnership: true });
+      expect(deleted.deleted).toMatchObject({ udid: "device-created", extra: false });
 
       // One shutdown, not the power path's plus a raw one from the registry.
       expect(calls.filter((call) => call === "xcrun simctl shutdown device-created")).toHaveLength(1);
@@ -3636,6 +3637,10 @@ describe("iosSimulatorService boot contract", () => {
       const deleteAt = calls.indexOf("xcrun simctl delete device-created");
       expect(deleteAt).toBeGreaterThan(shutdownAt);
       expect((await service.deviceList({ laneId: "lane-a", installed: false })).lane).toBeNull();
+      // A second delete finds nothing, and names what it was asked for.
+      expect(await service.deviceDelete({ laneId: "lane-a", ignoreOwnership: true })).toEqual({ deleted: null });
+      expect(await service.deviceDelete({ laneId: "lane-a", udid: "device-created", ignoreOwnership: true }))
+        .toEqual({ deleted: null, notFound: "device-created" });
     } finally {
       dispose();
     }
@@ -3672,7 +3677,8 @@ describe("iosSimulatorService boot contract", () => {
       expect(calls).not.toContain("xcrun simctl shutdown device-created-2");
 
       // device-delete --device deletes the extra and leaves the lane's own device.
-      await service.deviceDelete({ laneId: "lane-a", udid: extra.udid, ignoreOwnership: true });
+      expect(await service.deviceDelete({ laneId: "lane-a", udid: extra.udid, ignoreOwnership: true }))
+        .toEqual({ deleted: { udid: extra.udid, name: extra.name, extra: true } });
       expect(calls).toContain("xcrun simctl delete device-created-2");
       expect(calls).not.toContain("xcrun simctl delete device-created");
       const after = await service.deviceList({ laneId: "lane-a", installed: false });

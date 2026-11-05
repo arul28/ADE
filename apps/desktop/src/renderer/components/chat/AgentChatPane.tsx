@@ -396,7 +396,8 @@ import {
 } from "../lanes/CreateLaneDialogHost";
 import { peekNewLaneDefaultsCached, useNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { describeAutoCreateStart } from "../lanes/laneStartOptions";
-import { autoLaneMachine } from "../lanes/laneMachines";
+import { autoLaneMachine, originUrlForBinding } from "../lanes/laneMachines";
+import { AGENT37_READY_MACHINE_ID, useAgent37ReadyDraftMachine } from "./useAgent37ReadyDraftMachine";
 import { autoPickSummary } from "../lanes/machineLoadText";
 import { useMachinePlacement } from "../lanes/useMachinePlacement";
 import { chatLaunchLaneStart } from "../../../shared/chatLaunch";
@@ -16472,6 +16473,26 @@ export function AgentChatPane({
     (option) => option.id === THIS_MACHINE_ID,
   );
   const draftMachineRecoveryAvailable = draftMachineUnavailable && canUseThisComputerForDraft;
+  const laneMachineOptionIds = useMemo(() => laneMachineOptions.map((option) => option.id), [laneMachineOptions]);
+  const selectReadyMachine = useCallback((machineId: string) => {
+    keepLaneOnMachine(null);
+    handleDraftMachineChange(machineId);
+  }, [handleDraftMachineChange, keepLaneOnMachine]);
+  // This project's ready Agent 37 machine (prepared and asleep): picking it
+  // wakes it while the person types, then selects it like any machine.
+  const {
+    option: agent37ReadyOption,
+    choose: chooseAgent37ReadyMachine,
+    abandon: abandonAgent37ReadyMachine,
+    waking: agent37ReadyWaking,
+  } = useAgent37ReadyDraftMachine({
+    enabled: showDraftLaunchControls,
+    originUrl: originUrlForBinding(projectBinding),
+    pickerOpened: draftMachinePickerOpened,
+    connectedMachineIds: laneMachineOptionIds,
+    onMachineReady: selectReadyMachine,
+    onNotice: setError,
+  });
   /**
    * Cursor Cloud rides in the machine picker because "where does this run" is one question. It
    * appears whenever Cursor is connected and this draft could launch there; picking it is cloud
@@ -16486,12 +16507,19 @@ export function AgentChatPane({
           unavailableReason: "This machine is disconnected. Choose This computer to continue.",
         }
       : null;
+    const readyOption = agent37ReadyOption
+      ? {
+          ...agent37ReadyOption,
+          unavailableReason: parallelChatMode ? "Parallel models runs locally." : agent37ReadyOption.unavailableReason,
+        }
+      : null;
     const machines: DraftMachineOption[] = [
       ...(unavailableMachine ? [unavailableMachine] : []),
       ...laneMachineOptions.map((option) => ({
         id: option.id,
         name: option.name,
       })),
+      ...(readyOption ? [readyOption] : []),
     ];
     if (!cursorCloudCanLaunch && !devinCloudCanLaunch) return machines;
     const withLocal = machines.length
@@ -16529,6 +16557,7 @@ export function AgentChatPane({
         : []),
     ];
   }, [
+    agent37ReadyOption,
     boundLaneMachineId,
     cursorCloudCanLaunch,
     cursorCloudUnavailableReason,
@@ -16544,13 +16573,22 @@ export function AgentChatPane({
     const machine = autoLaneMachine(placedDraftMachines);
     return machine ? { machineId: machine.id, summary: autoPickSummary(machine) } : null;
   }, [placedDraftMachines]);
-  const draftShelfMachineValue = cursorCloudMode
-    ? CURSOR_CLOUD_MACHINE_ID
-    : devinCloudMode
-      ? DEVIN_CLOUD_MACHINE_ID
-      : selectedDraftMachineId;
+  const draftShelfMachineValue = agent37ReadyWaking
+    ? AGENT37_READY_MACHINE_ID
+    : cursorCloudMode
+      ? CURSOR_CLOUD_MACHINE_ID
+      : devinCloudMode
+        ? DEVIN_CLOUD_MACHINE_ID
+        : selectedDraftMachineId;
   const handleDraftShelfMachineChange = useCallback((nextMachineId: string) => {
     cancelWorkDraftLaneRequest(workDraftProjectStateKey);
+    if (nextMachineId === AGENT37_READY_MACHINE_ID) {
+      setCursorCloudMode(false);
+      setDevinCloudMode(false);
+      void chooseAgent37ReadyMachine();
+      return;
+    }
+    abandonAgent37ReadyMachine();
     if (nextMachineId === CURSOR_CLOUD_MACHINE_ID) {
       setError(null);
       setDevinCloudMode(false);
@@ -16569,7 +16607,7 @@ export function AgentChatPane({
     setDevinCloudMode(false);
     keepLaneOnMachine(null);
     handleDraftMachineChange(nextMachineId);
-  }, [handleDraftMachineChange, keepLaneOnMachine, setCursorCloudMode, workDraftProjectStateKey]);
+  }, [abandonAgent37ReadyMachine, chooseAgent37ReadyMachine, handleDraftMachineChange, keepLaneOnMachine, setCursorCloudMode, workDraftProjectStateKey]);
   // A draft opened in a cloud lane (from the sidebar, a deeplink) is on that
   // cloud: the lane has no other machine.
   useEffect(() => {

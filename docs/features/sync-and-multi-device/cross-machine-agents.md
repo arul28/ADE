@@ -28,7 +28,15 @@ ade usage limits --machine "Mac mini" --text      # that machine's accounts and 
 ade usage limits --all-machines --text            # every machine's accounts in one table
 ```
 
-`--machine` takes a machine key or an unambiguous display name. On the other
+`--machine` takes a machine key or an unambiguous display name. A name that
+matches no machine exactly is tried again with case, accents and apostrophes
+folded ("Arul's Mac Studio" finds "Arul’s Mac Studio"), then, for two words or
+more, as whole words inside a name ("mac studio"); only a unique match counts,
+and an exact name on a fresh directory read wins over a loose one on the
+cache (`selectAccountMachine`, `machineBridge.selectMachine`). A target flag
+quoted into one word with its value (`"--machine X --lane Y"`, built in one
+shell variable) is refused before anything runs, since it would otherwise be
+ignored and the command would run here. On the other
 machine the project is, in order: `--project <name|path|id>` (`--machine-project`
 for commands that already use `--project`, such as `ade apple`), else the
 checkout of this repository matched by normalized git origin. `--personal`
@@ -82,7 +90,11 @@ machine keeps a **work copy** for the chat
 git worktree under `<project>/.ade/remote-work/`, detached at the chat's commit,
 with the chat's uncommitted changes applied as one binary patch. It is created
 on the first command; nothing is installed in advance, and ignored files
-(installed deps, build output) survive between runs.
+(installed deps, build output) survive between runs. A first command waits at
+most 20 s for a new copy (`prepareWithin`); a copy still being made answers
+`work_copy_preparing` ("run the command again in a minute") and goes on in the
+background, and the next call joins it. A make that failed is that next call's
+error only when it is for the same commit.
 
 - **Background work.** The shell is archived as soon as `pty.create` returns
   (`adeRpcServer.ts`, the `remoteWork` branch of `pty.create`), so no list on
@@ -93,7 +105,8 @@ on the first command; nothing is installed in advance, and ignored files
   are told to put all their steps in one call: each call is a new shell and a
   new sync.
 - **Git moves code.** The CLI (`cliRemoteWork.ts`, `readLocalWorkSource`)
-  sends the commit, the remote branch that holds it, and the patch as bytes
+  reads the checkout the command runs from (a lane worktree wins over the
+  project root the environment names, `resolveRoots` in `cli.ts`) and sends the commit, the remote branch that holds it, and the patch as bytes
   (base64, 16 MiB at most), made with fixed diff options so the user's diff
   settings cannot break it. A commit that is not on origin is refused here:
   "Push it first". `--no-sync` and `--discard` are read only for a shell start
@@ -111,7 +124,22 @@ on the first command; nothing is installed in advance, and ignored files
 - **Limits.** Submodules are not initialised in a copy. Untracked files that
   are not ignored travel in the patch, so a large one must be committed or
   ignored. The copy follows the chat's commit, not a branch: commit and push
-  from there with `git push origin HEAD:<branch>`.
+  from there with `git push origin HEAD:<branch>`. A file the patch creates
+  that the host's git ignores (global excludes, `.git/info/exclude`) is left
+  by `git clean -fd`, so the sync deletes the patch's new paths inside the copy
+  before it applies.
+- **Files.** `ade files push --machine <name> <local> <remote>` and
+  `ade files pull --machine <name> <remote> <local>` move one file to or from
+  the chat's work copy there (`remoteWorkFiles.ts`, hidden tool
+  `work_copy_file`; limits in `shared/types/remoteWork.ts`): 4 MiB chunks,
+  256 MiB per file, checked by size and sha256, written to a temp file beside
+  the target and renamed into place. The remote path is relative to the copy;
+  absolute paths, drive letters, `..`, `:`, a first segment `.git`, a segment
+  ending in a dot or a space, Windows device names, and links that lead out of
+  the copy are refused on every OS. Only a caller from another machine
+  (`remote:<device>:<chat>`) can use it, and only on its own copy. A pushed
+  file that git does not ignore blocks the next default sync like any change
+  made there.
 - **The run.** The command runs once in that machine's shell, started clean
   and not interactive (`remoteRunOnceShellLaunch` in `ptyService.ts`: the
   saved terminal shell or Automatic, `-c` on macOS and Linux; on Windows
@@ -121,7 +149,18 @@ on the first command; nothing is installed in advance, and ignored files
   its shell, leading `NAME=value` words included; a `-c "<line>"` command goes
   to the shell as written. The shell ends with the command's exit code. `--wait` streams the output
   and exits with that code. The shell is owned by the caller's foreign id, so
-  only that chat reads, writes or stops it (`ade terminal … --machine`).
+  only that chat reads, writes or stops it (`ade terminal … --machine`). On
+  Windows a command whose command line would pass 32,767 characters (the
+  `-EncodedCommand` form more than doubles a script) is refused before the
+  copy syncs (`command_too_long`); put the script in a file in the copy.
+- **Its environment.** A shell a caller from another machine starts in a work
+  copy gets `ADE_LANE_ID=remote-work-<hash>` and `ADE_WORKSPACE_ROOT=<copy>`,
+  no lane ports or host name, and none of the host's orchestration ids;
+  `ADE_CHAT_SESSION_ID` stays the caller's `remote:` id so `ade` calls from it
+  act as that chat. Lane commands there without `--lane` say the shell has no
+  ADE lane (`envLaneIdForLaneCommand`). A terminal whose terminal host process
+  dies prints why, and each stop of such a shell logs
+  `pty.remote_work_shell_disposed`.
 - **Cleanup.** `ade shell clean --machine <name>`; a week unused; the source
   chat deleted or archived on its own machine; a low disk deletes other idle
   copies, oldest first, before a new copy is refused. The brain sweeps every
@@ -130,7 +169,10 @@ on the first command; nothing is installed in advance, and ignored files
   `chats.locate` (which says `archived` when the project is running there);
   silence never deletes. The week-unused, low-disk and archived-chat cleanups
   keep a copy that holds work nobody pushed (an archived chat can come back);
-  a deleted chat's copy goes with it. A copy in use is never deleted. An unreadable
+  a deleted chat's copy goes with it. A copy in use is never deleted, and the
+  week-unused and low-disk cleanups also keep a copy whose simulator or
+  emulator is in use (`registerRemoteWorkDeviceCheck`); a gone or archived
+  chat still releases it under the rules above. An unreadable
   `copies.json` stops every change rather than being read as empty.
 - **The simulator.** `ade apple … --machine <name>` with no `--lane` uses the
   work copy as its lane there: the lane id is `remote-work-<hash>`
@@ -267,6 +309,15 @@ the trust boundary, as it is for the person's own desktop.
   connection per paired device, and the identity a connection initializes with
   is the identity of every call on it). One hop only: a request that came from
   another machine is never relayed to a third.
+- **Dead links redial.** A relay drop can leave a pooled connection half open:
+  no close ever arrives, and every call on it used to time out until the brain
+  restarted. The pool pings a quiet connection every 20 s, and a call that
+  times out checks it once (`probeRpcLiveness` in `shared/rpcLiveness.ts`, the
+  same check the desktop's pool uses: recent traffic, else one `ping` with a
+  15 s deadline; any reply counts). A connection that does not answer is
+  dropped and logged as `<prefix>.connection_dead`, so the next call dials
+  again; a busy host that answers keeps its connection. A connection unused
+  for 90 s still closes.
 - **Identity.** Each request carries a claim `remoteCaller` (calling chat,
   machine key and name, permission level). The target binds it to the paired
   device it authenticated: the caller becomes `remote:<device>:<chat>`

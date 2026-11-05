@@ -80,7 +80,7 @@ import { machineNameForBinding } from "../shared/machineIdentity";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
-import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37Status, Agent37TemplateStatus } from "../shared/agent37";
+import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus, Agent37Status, Agent37TemplateStatus } from "../shared/agent37";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -496,6 +496,13 @@ import type {
   ExternalSessionDetail,
   ExternalSessionDetailArgs,
   ExternalSessionDetailUpdatedEvent,
+  DeletedChatDetailArgs,
+  DeletedChatListArgs,
+  DeletedChatListResult,
+  DeletedChatRemoveArgs,
+  DeletedChatRemoveResult,
+  DeletedChatReopenArgs,
+  DeletedChatReopenResult,
   ExternalSessionDetailWatchArgs,
   GitActionResult,
   GitCherryPickArgs,
@@ -1009,6 +1016,7 @@ import type {
   AppleScrollResult,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
+  AppleDeviceDeleteResult,
   AppleDeviceDetachArgs,
   AppleDeviceCleanupArgs,
   AppleDeviceCleanupResult,
@@ -8647,6 +8655,23 @@ const adeBridge = {
       );
       agentChatSummaryCache.clear();
     },
+    // Settings › Recently deleted. Every call goes to the machine that holds
+    // the chat's conversation: the list, its preview, reopen and remove.
+    listDeleted: async (args: DeletedChatListArgs = {}, pin?: OpenProjectBinding | null): Promise<DeletedChatListResult> =>
+      callPinnedOrBoundRuntimeActionOr<DeletedChatListResult>(pin, "chat", "listDeletedChats", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatListDeleted, args)),
+    getDeletedDetail: async (args: DeletedChatDetailArgs, pin?: OpenProjectBinding | null): Promise<ExternalSessionDetail> =>
+      callPinnedOrBoundRuntimeActionOr<ExternalSessionDetail>(pin, "chat", "getDeletedChatDetail", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetDeletedDetail, args)),
+    reopenDeleted: async (args: DeletedChatReopenArgs, pin?: OpenProjectBinding | null): Promise<DeletedChatReopenResult> => {
+      const result = await callPinnedOrBoundRuntimeActionOr<DeletedChatReopenResult>(pin, "chat", "reopenDeletedChat", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatReopenDeleted, args));
+      agentChatSummaryCache.clear();
+      return result;
+    },
+    removeDeleted: async (args: DeletedChatRemoveArgs, pin?: OpenProjectBinding | null): Promise<DeletedChatRemoveResult> =>
+      callPinnedOrBoundRuntimeActionOr<DeletedChatRemoveResult>(pin, "chat", "removeDeletedChats", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatRemoveDeleted, args)),
     updateSession: async (
       args: AgentChatUpdateSessionArgs,
       pin?: OpenProjectBinding | null,
@@ -9756,7 +9781,7 @@ const adeBridge = {
     deviceDelete: (
       args: AppleDeviceDeleteArgs = {},
       pin?: OpenProjectBinding | null,
-    ): Promise<void> =>
+    ): Promise<AppleDeviceDeleteResult> =>
       callIosSimulatorMutation(pin, "deviceDelete", args, IPC.iosSimulatorDeviceDelete),
 
     /** The lane gives up its device; the simulator stays installed. */
@@ -12952,6 +12977,20 @@ const adeBridge = {
       ipcRenderer.on(IPC.agent37TemplateStatus, listener);
       return () => ipcRenderer.removeListener(IPC.agent37TemplateStatus, listener);
     },
+    readyStatus: (): Promise<Agent37ReadyStatus | null> => ipcRenderer.invoke(IPC.agent37ReadyStatus),
+    readySetProject: (settings: Partial<Agent37ReadyProjectSettings>): Promise<Agent37ReadyStatus | null> =>
+      ipcRenderer.invoke(IPC.agent37ReadySetProject, { settings }),
+    readyRemoveProject: (identity: string): Promise<Agent37ReadyStatus | null> =>
+      ipcRenderer.invoke(IPC.agent37ReadyRemoveProject, { identity }),
+    readyRetry: (identity: string): Promise<Agent37ReadyStatus | null> => ipcRenderer.invoke(IPC.agent37ReadyRetry, { identity }),
+    readyClaim: (originUrl: string): Promise<Agent37ReadyClaim | null> => ipcRenderer.invoke(IPC.agent37ReadyClaim, { originUrl }),
+    readyRelease: (instanceId: string, claimToken: string): Promise<{ released: boolean } | null> =>
+      ipcRenderer.invoke(IPC.agent37ReadyRelease, { instanceId, claimToken }),
+    onReadyStatus: (cb: (status: Agent37ReadyStatus) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, status: Agent37ReadyStatus) => cb(status);
+      ipcRenderer.on(IPC.agent37ReadyStatusChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.agent37ReadyStatusChanged, listener);
+    },
   },
   /**
    * The account settings store. Every method resolves to an
@@ -13000,7 +13039,7 @@ const adeBridge = {
     signOut: (args: { server: string }): Promise<McpRegistryResult<null>> =>
       ipcRenderer.invoke(IPC.mcpRegistrySignOut, args),
     /**
-     * Registry servers a chat's running agent did not start with, read on the
+     * Registry servers a chat's running agent lacks or still has after a removal, read on the
      * chat's machine (`pin`, else the tab's runtime). Nothing without a runtime.
      */
     chatStatus: (args: { chatSessionId: string }, pin?: OpenProjectBinding | null): Promise<McpRegistryChatStatus> =>

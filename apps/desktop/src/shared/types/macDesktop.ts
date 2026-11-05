@@ -23,7 +23,7 @@
 import type { AgentActionTraceEntry, AgentFrame, ComputerUseActionEffect } from "./agentObservation";
 import { PROJECT_SECRET_REQUEST_METADATA_KEY } from "../projectSecretRequest";
 import { INTEGRATION_CONNECT_METADATA_KEY } from "../integrationConnect";
-import { MCP_SERVER_REQUEST_METADATA_KEY } from "../mcpServerRequest";
+import { MCP_SERVER_REMOVE_METADATA_KEY, MCP_SERVER_REQUEST_METADATA_KEY } from "../mcpServerRequest";
 import { MCP_APP_TOOL_CALL_METADATA_KEY } from "../mcpApp";
 
 // ---------------------------------------------------------------------------
@@ -79,6 +79,15 @@ export const WINDOWS_DESKTOP_CANCELLED_CODE = "WINDOWS_DESKTOP_CANCELLED" as con
 export const WINDOWS_DESKTOP_ELEVATED_WINDOW_CODE = "WINDOWS_DESKTOP_ELEVATED_WINDOW" as const;
 export const WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE = "WINDOWS_DESKTOP_WINDOW_ACTION_FAILED" as const;
 /**
+ * The main desktop posts input to a parked lane window in the background, and
+ * the window's app is known to ignore that kind of posted input (Chromium and
+ * Electron, WPF, WinUI, Tk, GTK, LibreOffice), or a key needs a modifier. The
+ * service answers it for keys and text by sending them as real input; a
+ * click, scroll or drag (no real path on a parked window) is sent with
+ * `forceBackground` and posted anyway (`macDesktopBackgroundInput.ts`).
+ */
+export const WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE_CODE = "WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE" as const;
+/**
  * Service-enforced, not driver-produced: a `shared` seat was asked for without
  * the user's consent. The driver also refuses it, but the service is the
  * boundary that must not let an agent turn the user's own desktop into a lane
@@ -112,6 +121,7 @@ export type MacDesktopErrorCode =
   | typeof WINDOWS_DESKTOP_CANCELLED_CODE
   | typeof WINDOWS_DESKTOP_ELEVATED_WINDOW_CODE
   | typeof WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE
+  | typeof WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE_CODE
   | typeof WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE;
 
 /**
@@ -137,6 +147,7 @@ export const MAC_DESKTOP_ANSWER_CODES: ReadonlySet<string> = new Set<string>([
   MAC_DESKTOP_LEASE_HELD_BY_OTHER_CODE,
   MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE,
   MAC_DESKTOP_RECORDING_NOT_RUNNING_CODE,
+  WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE_CODE,
 ]);
 
 /** The one sentence every non-macOS rejection carries. */
@@ -771,6 +782,12 @@ export type MacDesktopActionResult = {
    * was resolved against and the one taken after the action.
    */
   effect: ComputerUseActionEffect;
+  /**
+   * A bare Escape or Return on a lane dialog presses the dialog's own Cancel
+   * or default button (a key posted to the app never reaches some panels);
+   * this is that button's title. Absent when the key was posted.
+   */
+  pressedButton?: string;
 };
 
 /**
@@ -1964,7 +1981,7 @@ export const MAC_DESKTOP_INPUT_LEASE_METADATA_KEY = "macDesktopInputLease" as co
 /**
  * True for a pending-input card only the user may answer: the shared-seat
  * consent, the real-input lease, the private secret card, the connect card,
- * the MCP server card, and an MCP App's tool call. The answer IS the permission (or the secret), so an agent caller
+ * the MCP server cards (add and remove), and an MCP App's tool call. The answer IS the permission (or the secret), so an agent caller
  * (session-bound, unbound, or the CTO's tools) is refused.
  */
 export function isUserOnlyConsentCard(providerMetadata: Record<string, unknown> | null | undefined): boolean {
@@ -1973,7 +1990,8 @@ export function isUserOnlyConsentCard(providerMetadata: Record<string, unknown> 
     || providerMetadata?.[MCP_APP_TOOL_CALL_METADATA_KEY] === true
     || isNonNullRecord(providerMetadata?.[PROJECT_SECRET_REQUEST_METADATA_KEY])
     || isNonNullRecord(providerMetadata?.[INTEGRATION_CONNECT_METADATA_KEY])
-    || isNonNullRecord(providerMetadata?.[MCP_SERVER_REQUEST_METADATA_KEY]);
+    || isNonNullRecord(providerMetadata?.[MCP_SERVER_REQUEST_METADATA_KEY])
+    || isNonNullRecord(providerMetadata?.[MCP_SERVER_REMOVE_METADATA_KEY]);
 }
 
 function isNonNullRecord(value: unknown): boolean {

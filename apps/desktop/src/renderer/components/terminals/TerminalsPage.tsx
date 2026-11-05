@@ -46,7 +46,7 @@ import {
 } from "./SessionContextMenu";
 import { moveSessionOnBoard } from "./sessionBoardMoveUi";
 import { SessionBulkContextMenu, type BulkLaneIntent } from "./SessionBulkContextMenu";
-import { showToast } from "../app/toast/toastStore";
+import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
 import type { ContextMenuState } from "../ui/ContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import type {
@@ -97,7 +97,7 @@ import {
   useRootAppStore,
   type WorkDraftKind,
 } from "../../state/appStore";
-import { ADE_OPEN_BUILT_IN_BROWSER_EVENT, openExternalUrl } from "../../lib/openExternal";
+import { ADE_OPEN_BUILT_IN_BROWSER_EVENT, navigateToAppTarget, openExternalUrl } from "../../lib/openExternal";
 import {
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
@@ -692,6 +692,51 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     },
   );
 
+  // After a delete: Undo reopens the chat on the machine it was deleted from
+  // (the same pin), and the link opens Settings › Recently deleted there.
+  const showDeletedChatToast = useLatestCallback(
+    (session: TerminalSessionSummary, label: string, pin: OpenProjectBinding | null) => {
+      const toastId = `chat-deleted:${session.id}`;
+      const undo = () => {
+        void window.ade.agentChat.reopenDeleted({ id: session.id }, pin)
+          .then(async (result) => {
+            invalidateSessionListCache();
+            // The select handler loads the seconds-old chat, then opens it.
+            window.dispatchEvent(new CustomEvent("ade:work:select-session", {
+              detail: { sessionId: result.chatSessionId, laneId: result.laneId, ...(pin ? { binding: pin } : {}) },
+            }));
+            showToast({ id: toastId, tone: "success", title: "Chat reopened", message: label });
+          })
+          .catch((error: unknown) => {
+            showToast({
+              id: toastId,
+              tone: "error",
+              title: "Couldn't reopen that chat",
+              message: formatSessionActionError(error, "Reopen"),
+              actions: [{ label: "Recently deleted", onClick: openRecentlyDeleted }],
+            });
+          });
+      };
+      const openRecentlyDeleted = () => navigateToAppTarget({
+        kind: "settings",
+        entryId: "storage.recentlyDeleted",
+        ...(pin ? { machineId: machineIdForBinding(pin) } : {}),
+      });
+      showToast({
+        id: toastId,
+        tone: "info",
+        title: "Chat deleted",
+        message: label,
+        // Long enough to notice the mistake and press Undo.
+        durationMs: READABLE_TOAST_DURATION_MS,
+        actions: [
+          { label: "Undo", onClick: undo },
+          { label: "Recently deleted", onClick: openRecentlyDeleted },
+        ],
+      });
+    },
+  );
+
   const handleDeleteChat = useCallback(
     async (
       session: TerminalSessionSummary,
@@ -704,7 +749,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         message: (
           <>
             <span className="line-clamp-2 break-words font-medium text-fg/80" title={label}>{label}</span>
-            <span className="block whitespace-nowrap">Its saved history is removed for good.</span>
+            <span className="block whitespace-nowrap">You can bring it back from Recently deleted.</span>
           </>
         ),
         icon: <Trash size={16} weight="duotone" />,
@@ -737,6 +782,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           work.closeTab(session.id);
           setContextMenu((current) => (current?.session.id === session.id ? null : current));
           setInfoPopover((current) => (current?.session.id === session.id ? null : current));
+          showDeletedChatToast(session, label, pin ?? null);
           // Refresh is post-delete housekeeping; a failure here must not be
           // reported as "Delete failed" because the delete itself succeeded.
           await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
@@ -752,7 +798,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           setDeletingSessionId((current) => (current === session.id ? null : current));
         });
     },
-    [resolveSessionRuntimePin, work],
+    [resolveSessionRuntimePin, showDeletedChatToast, work],
   );
 
   const handleDeleteSession = useCallback(

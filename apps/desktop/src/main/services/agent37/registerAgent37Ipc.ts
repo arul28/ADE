@@ -7,12 +7,16 @@ import {
   AGENT37_DEFAULT_TEMPLATE,
   agent37StillStartingMessage,
   describeAgent37TemplateStatus,
+  isAgent37InstanceId,
   type Agent37CreateMachineArgs,
   type Agent37CreateProgress,
   type Agent37MachineActionArgs,
   type Agent37MachineActionKind,
   type Agent37MachineActionResult,
   type Agent37MachinesResult,
+  type Agent37ReadyClaim,
+  type Agent37ReadyProjectSettings,
+  type Agent37ReadyStatus,
   type Agent37Status,
   type Agent37TemplateStatus,
 } from "../../../shared/agent37";
@@ -42,6 +46,10 @@ import {
 } from "./agent37MachineCreator";
 import { createAgent37Client } from "./agent37Client";
 import { createAgent37Machines } from "./agent37Machines";
+import { claimAgent37ReadyMachine, releaseAgent37ReadyMachine } from "./agent37ReadyClaim";
+import { createAgent37ReadyKeeper } from "./agent37ReadyMachines";
+import { AGENT37_READY_VAULT_KEY, createAgent37ReadySettingsStore } from "./agent37ReadySettings";
+import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import {
   createAgent37PendingCreateStore,
   readAgent37BoxSignedIn,
@@ -211,6 +219,8 @@ export function registerAgent37Ipc(args: {
   renameMachine: (machineKey: string, name: string) => Promise<unknown>;
   /** Takes a machine off the ADE account (what Delete box does once the box is gone). */
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
+  /** Ready machines: the per-project switch, each prepare's outcome, picker claims (analytics; coarse outcome only). */
+  recordReady?: (outcome: "enabled" | "disabled" | "completed" | "failed" | "ready_picker") => void;
   /** One coarse product fact per finished create (analytics; never the box or the error). */
   recordMachineCreate?: (outcome: "completed" | "partial" | "cancelled" | "failed") => void;
   /** One coarse product fact per box action that worked (analytics; never the box). */
@@ -275,11 +285,60 @@ export function registerAgent37Ipc(args: {
   }, STARTUP_CHECK_DELAY_MS);
   startupTimer.unref?.();
 
-  const machines = createAgent37Machines({
-    client: async () => {
-      const saved = await readAgent37Key(credentials);
-      return saved ? createAgent37Client({ apiKey: saved.key }) : null;
+  const machineCreatorDeps: Parameters<typeof createAgent37Machine>[0] = {
+    client: () => requireAgent37Client(credentials),
+    getAccountToken,
+    directoryBaseUrl,
+    listAccountMachines: args.listAccountMachines,
+    renameMachine: args.renameMachine,
+    approveInWindow: (window) => openAgent37ApprovalWindow(window, logger),
+    templateName,
+    templateNotReady: () => {
+      const template = builder.status();
+      if (template.template !== templateName() || template.usable) return null;
+      if (template.state === "building" || template.state === "failed") return describeAgent37TemplateStatus(template);
+      return null;
     },
+    onTemplateMissing: () => void builder.ensure(),
+    pendingCreates,
+    logger,
+  };
+
+  const savedClient = async () => {
+    const saved = await readAgent37Key(credentials);
+    return saved ? createAgent37Client({ apiKey: saved.key }) : null;
+  };
+
+  // Ready machines: prepared here (the sign-in needs this app's window),
+  // claimed here or by any brain. The choice is the account's.
+  const readyKeeper = createAgent37ReadyKeeper({
+    client: savedClient,
+    settings: createAgent37ReadySettingsStore({
+      vault: () => (credentials.signedIn() ? agent37VaultFromBridge(args.vaultBridge, AGENT37_READY_VAULT_KEY) : null),
+      machineStore: getMachineStore,
+      logger,
+    }),
+    createMachine: (requestId, machine, onProgress, options) =>
+      createAgent37Machine(machineCreatorDeps, requestId, machine, onProgress, options),
+    removeAccountMachine: args.removeAccountMachine,
+    // This computer and this app's data folder: a development copy beside the installed one is another preparer.
+    preparerId: readyPreparerId(logger),
+    templateAdeVersion: () => {
+      const template = builder.status();
+      return template.template === templateName() && template.state === "ready" ? template.adeVersion : null;
+    },
+    onStatus: (status) => sendToAllWindows(IPC.agent37ReadyStatusChanged, status),
+    onPrepared: (outcome) => args.recordReady?.(outcome),
+    logger,
+  });
+  // After the template check, off the boot path; it reads every couple of minutes only while a project is on.
+  readyKeeper.start(STARTUP_CHECK_DELAY_MS + 10_000);
+  // A prepare cut short by a quit deletes its machine on the way out (best
+  // effort); what a quit still leaves, this copy deletes at its next start.
+  app.once("will-quit", () => readyKeeper.stop());
+
+  const machines = createAgent37Machines({
+    client: savedClient,
     removeAccountMachine: args.removeAccountMachine,
     logger,
   });
@@ -345,6 +404,60 @@ export function registerAgent37Ipc(args: {
     return result;
   });
 
+  /** A project's identity from the renderer, normalized like every stored one. */
+  const requireReadyIdentity = (value: unknown): string => {
+    const identity = normalizeGitRemoteIdentity(typeof value === "string" ? value : null);
+    if (!identity) throw new Error("Which project?");
+    return identity;
+  };
+
+  ipcMain.handle(IPC.agent37ReadyStatus, async (event): Promise<Agent37ReadyStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyStatus)) return null;
+    return await readyKeeper.refresh();
+  });
+
+  ipcMain.handle(IPC.agent37ReadySetProject, async (event, arg: { settings?: Partial<Agent37ReadyProjectSettings> }): Promise<Agent37ReadyStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadySetProject)) return null;
+    const wasOn = readyKeeper.status().projects.some((project) => project.settings.identity === normalizeGitRemoteIdentity(arg?.settings?.identity));
+    const status = await readyKeeper.setProject(arg?.settings ?? {});
+    if (!wasOn) args.recordReady?.("enabled");
+    return status;
+  });
+
+  ipcMain.handle(IPC.agent37ReadyRemoveProject, async (event, arg: { identity?: unknown }): Promise<Agent37ReadyStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyRemoveProject)) return null;
+    const status = await readyKeeper.removeProject(requireReadyIdentity(arg?.identity));
+    args.recordReady?.("disabled");
+    return status;
+  });
+
+  ipcMain.handle(IPC.agent37ReadyRetry, async (event, arg: { identity?: unknown }): Promise<Agent37ReadyStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyRetry)) return null;
+    return await readyKeeper.retry(requireReadyIdentity(arg?.identity));
+  });
+
+  ipcMain.handle(IPC.agent37ReadyClaim, async (event, arg: { originUrl?: unknown }): Promise<Agent37ReadyClaim | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyClaim)) return null;
+    const identity = normalizeGitRemoteIdentity(typeof arg?.originUrl === "string" ? arg.originUrl : null);
+    if (!identity) throw new Error("This project has no git origin, so it has no ready machine.");
+    const claim = await claimAgent37ReadyMachine(await requireAgent37Client(credentials), identity, { logger });
+    args.recordReady?.("ready_picker");
+    // The pool is one short: make the next one.
+    void readyKeeper.refresh();
+    sendToAllWindows(IPC.agent37StatusChanged);
+    return claim;
+  });
+
+  ipcMain.handle(IPC.agent37ReadyRelease, async (event, arg: { instanceId?: unknown; claimToken?: unknown }): Promise<{ released: boolean } | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyRelease)) return null;
+    const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
+    const claimToken = typeof arg?.claimToken === "string" ? arg.claimToken : "";
+    if (!isAgent37InstanceId(instanceId) || !claimToken) return { released: false };
+    const released = await releaseAgent37ReadyMachine(await requireAgent37Client(credentials), instanceId, claimToken, { logger });
+    if (released) void readyKeeper.refresh();
+    return { released };
+  });
+
   const creates = new Map<string, AbortController>();
 
   ipcMain.handle(IPC.agent37CancelCreate, async (event, arg: { requestId?: unknown }): Promise<{ cancelled: boolean }> => {
@@ -377,28 +490,11 @@ export function registerAgent37Ipc(args: {
         }
       };
       void createAgent37Machine(
-        {
-          client: () => requireAgent37Client(credentials),
-          getAccountToken,
-          directoryBaseUrl,
-          listAccountMachines: args.listAccountMachines,
-          renameMachine: args.renameMachine,
-          approveInWindow: (window) => openAgent37ApprovalWindow(window, logger),
-          templateName,
-          templateNotReady: () => {
-            const template = builder.status();
-            if (template.template !== templateName() || template.usable) return null;
-            if (template.state === "building" || template.state === "failed") return describeAgent37TemplateStatus(template);
-            return null;
-          },
-          onTemplateMissing: () => void builder.ensure(),
-          pendingCreates,
-          logger,
-        },
+        machineCreatorDeps,
         requestId,
         arg?.machine as Agent37CreateMachineArgs,
         send,
-        controller.signal,
+        { signal: controller.signal },
       ).then(
         (result) => {
           args.recordMachineCreate?.(result.joined ? "completed" : "partial");
@@ -432,6 +528,30 @@ export function registerAgent37Ipc(args: {
       return { started: true };
     },
   );
+}
+
+/**
+ * This copy of ADE as a preparer of ready machines: a random id kept in its
+ * own data folder, so it survives restarts and a hostname change, and a
+ * development copy beside the installed one (another data folder) is another
+ * preparer. Unreadable or unwritable, it is a fresh id for this run: then a
+ * leftover is cleaned up as stale instead of at once.
+ */
+function readyPreparerId(logger: Logger): string {
+  const file = path.join(app.getPath("userData"), "agent37-ready-preparer-id");
+  try {
+    const saved = fs.readFileSync(file, "utf8").trim();
+    if (/^[a-z0-9-]{8,64}$/.test(saved)) return saved;
+  } catch {
+    // None yet.
+  }
+  const id = randomUUID();
+  try {
+    fs.writeFileSync(file, id, { mode: 0o600 });
+  } catch (error) {
+    logger.warn("agent37.ready_preparer_id_not_saved", { error: error instanceof Error ? error.message : String(error) });
+  }
+  return id;
 }
 
 /** Long enough that the boot path, the brain and the vault are settled first. */

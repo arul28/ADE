@@ -43,6 +43,16 @@ person is using.
   (`machineAction`: Sleep, Wake, Resize, Back up, Delete box), each refusal
   mapped to a sentence and a blocker. Also `recordAgent37MachineKey`, which
   tags a box with its ADE machine key when it joins.
+- `agent37ReadyMachines.ts` — ready machines: the keeper that prepares one
+  machine per project and keeps it asleep, and the setup job it hands the box.
+- `agent37ReadySettings.ts` — the per-project choice (account vault, else
+  this computer's `agent37.ready.v1`), shared by the desktop and the brain.
+- `agent37ReadyClaim.ts` — claiming a ready machine (tag it `claimed`, wake
+  it) and giving an unused claim back. No window and no Electron, so the
+  brain uses it too.
+- `agent37ReadyActions.ts` — the `agent37` action domain on a brain
+  (`ready_status`, `claim_ready`, `release_ready`) behind `ade agent37 ready`
+  and `ade chat create --machine agent37:ready`.
 - `registerAgent37Ipc.ts` — the `ade.agent37.*` IPC handlers, the hidden
   approval window, the template-build record store (account vault with a
   per-computer fallback), and the startup check 20 s after boot.
@@ -61,6 +71,10 @@ person is using.
   rows): which rows move to the group, its head and banners, the fact line on
   each card, which account row is which box, and the box menu with its
   confirmations and the resize picker.
+- `apps/desktop/src/renderer/components/settings/Agent37ReadyMachinesCard.tsx`
+  and `components/chat/useAgent37ReadyDraftMachine.ts` — the Ready machine
+  card on the Agent 37 page, and the "Agent 37 · ready" row in the new-chat
+  machine picker.
 - `infra/agent37/` — the template's Dockerfile and entrypoint (shipped in the
   app as the `agent37-template` resource) and a manual build script.
 - `apps/ade-cli/src/services/sync/hostInstanceGuard.ts` — the copied-home
@@ -210,6 +224,80 @@ three days at the current rate shows a warning in the group.
 None of these calls take a pin: the key is the account's, and the calls go
 from this desktop's main process to Agent 37. The settings search finds the
 card as **Agent 37 machines** (Settings › Integrations › Agent 37).
+
+## Ready machines
+
+A ready machine is one ADE keeps prepared for a project and asleep: the
+repository cloned, the person's setup run, its services started, signed in.
+A new chat on it wakes it (Agent 37 answers in about a second) and is working
+in seconds, which is what a prepared seed is in other products. Asleep it
+bills only its disk. Turn it on per project on the Agent 37 page (Ready
+machine: box or VM, size, setup commands); the card shows what it costs
+asleep and awake, the step it is on while preparing, and Retry after a
+failure.
+
+- **The pool lives on Agent 37.** Each machine's metadata says which project
+  it is for (`ade_ready_for`, the git identity `github.com/owner/repo`) and
+  where it is: `preparing`, `ready`, `claimed`, or `failed`. Every computer,
+  the brain and the CLI read the same answer without talking to each other.
+- **Preparing runs in the desktop** (`agent37ReadyMachines.ts`), because
+  signing a new machine in uses the approval window. It makes the machine
+  with the New Agent 37 machine flow, then writes a setup job to
+  `$ADE_HOME/ready/job.sh`: clone over HTTPS, `ade projects add`, wait for
+  Docker on a VM, the person's commands. The template's entrypoint runs the
+  job, so what it starts is part of the entrypoint's process tree and
+  survives sleep. Then ADE tags the machine `ready` and sleeps it.
+- **Claiming** (`agent37ReadyClaim.ts`) tags the oldest ready machine
+  `claimed` with a claim token and wakes it. From then on it is an ordinary
+  machine of the person's, never touched by the keeper, and the next pass
+  prepares the next one. A claim nothing used (the person picked another
+  machine or closed the draft mid-wake, the connect timed out, or the CLI
+  failed before sending) is given back: `ready` again, and asleep. Only the
+  holder of the claim token can give it back, so one caller never sleeps a
+  machine another caller's chat is on.
+- **Starting the chat.** In the new-chat picker, "Agent 37 · ready" claims
+  and wakes the machine as soon as it is picked, so the wake overlaps the
+  typing, then pairs, connects and selects it like any machine. From the CLI,
+  `ade chat create --machine agent37:ready` claims through this computer's
+  brain, waits until ADE shows the machine online (a machine still shown
+  offline refuses work at once, "Nothing was sent") and a harmless call
+  through it succeeds, for up to two minutes, then sends the chat once. With
+  no `--lane` the chat starts in the project's primary lane there (recorded
+  on the machine at setup). `--json` adds `readyMachine` (name, machine key,
+  instance id, lane id, wake, online and sent times). `ade agent37 ready
+  --json` reports each project's pool.
+- **Money.** A failed prepare deletes its machine and is recorded with the
+  project's choice (and in memory, if the choice can't be saved), so no
+  computer and no restart tries again on its own; Retry does. Turning a
+  project off deletes its unclaimed machine and its account row, but only
+  when the account answered with the choice: a choice read from this
+  computer alone deletes only machines this copy of ADE made. A machine
+  still `preparing` that this copy started before it quit (`ade_ready_by`, a
+  random id in the app's data folder) is deleted on the next pass; anyone
+  else's after an hour. A machine Agent 37 reports as failed is deleted. Each
+  machine is read again right before a delete or a sleep, so a claim that
+  landed meanwhile is never touched. A quit stops a prepare in flight and
+  deletes its machine on the way out.
+- **Versions.** Ready machines record the ADE release their template
+  installed (`ade_ready_ade`); once the template moves to a newer release,
+  an unclaimed older one is replaced. Packaged builds pin the template to
+  their own version (a beta app bakes its beta).
+- **Fresh, not forked.** A fork of a warm VM took 167 s (it copies the disk,
+  boots fresh and comes up signed out by design); a cold bring-up of the same
+  Supabase stack took 93 s. So the next machine is made fresh.
+
+The template runs Docker on a VM: `docker-ce` with compose and buildx, started
+by the entrypoint as root through one sudoers rule
+(`ade-entrypoint.sh --start-dockerd`), after it loads the netfilter modules
+the VM kernel ships unloaded (without them dockerd can't make its NAT chain
+and exits). Its data is under `/home/node/.docker-data`, and the socket's
+group is `node`. A sandboxed box (gVisor) has no Docker and skips it. The
+entrypoint also sets `IS_SANDBOX=1` (Claude Code refuses full-auto as root
+otherwise) and `ADE_SUSPEND_GAP_TICK_MS=1000` (the brain notices a wake within
+a second and reconnects).
+
+Nothing here takes a pin: the choice is the account's, the pool is Agent
+37's, and the chat goes to the claimed machine through its own connection.
 
 ## The copied-home guard
 

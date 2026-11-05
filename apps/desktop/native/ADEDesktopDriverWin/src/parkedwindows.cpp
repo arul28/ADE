@@ -55,6 +55,7 @@ void ParkedWindowsRecord::loadLocked() {
       entry.created = std::stoull(item["created"].str("0"));
       entry.home = {static_cast<LONG>(item["left"].asInt()), static_cast<LONG>(item["top"].asInt()),
                     static_cast<LONG>(item["right"].asInt()), static_cast<LONG>(item["bottom"].asInt())};
+      entry.shielded = item["shielded"].asBool();
       // Handles exceed a double's exact range on 64-bit: kept as decimal strings.
       entries_[std::stoull(item["hwnd"].str("0"))] = entry;
     }
@@ -64,7 +65,7 @@ void ParkedWindowsRecord::loadLocked() {
   }
 }
 
-void ParkedWindowsRecord::writeLocked() {
+void ParkedWindowsRecord::writeLocked(bool flush) {
   const auto target = file();
   if (entries_.empty()) { DeleteFileW(target.c_str()); return; }
   if (!ensureDir(joinPath(home_, L"windows-desktop"))) return;
@@ -73,7 +74,7 @@ void ParkedWindowsRecord::writeLocked() {
     windows.push(Json::Object{{"hwnd", std::to_string(hwnd)}, {"pid", static_cast<int64_t>(entry.pid)},
         {"created", std::to_string(entry.created)}, {"left", static_cast<int64_t>(entry.home.left)},
         {"top", static_cast<int64_t>(entry.home.top)}, {"right", static_cast<int64_t>(entry.home.right)},
-        {"bottom", static_cast<int64_t>(entry.home.bottom)}});
+        {"bottom", static_cast<int64_t>(entry.home.bottom)}, {"shielded", entry.shielded}});
   }
   const auto temp = target + L".tmp";
   {
@@ -82,7 +83,7 @@ void ParkedWindowsRecord::writeLocked() {
     out.close();
     if (!out) { DeleteFileW(temp.c_str()); logLine("parked-windows: record not written"); return; }
   }
-  if (!MoveFileExW(temp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+  if (!MoveFileExW(temp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | (flush ? MOVEFILE_WRITE_THROUGH : 0))) {
     logLine("parked-windows: record not written error=" + std::to_string(GetLastError()));
     DeleteFileW(temp.c_str());
   }
@@ -94,8 +95,24 @@ void ParkedWindowsRecord::add(HWND hwnd, const RECT& home) {
   if (!pid || !created) return;  // Nothing a later host could match it by.
   std::lock_guard<std::mutex> lock(mutex_);
   loadLocked();
-  entries_[handleKey(hwnd)] = Entry{pid, created, home};
+  // A window re-parked while a shield holds it keeps its crash marker.
+  const auto existing = entries_.find(handleKey(hwnd));
+  const bool shielded = existing != entries_.end() && existing->second.shielded;
+  entries_[handleKey(hwnd)] = Entry{pid, created, home, shielded};
   writeLocked();
+}
+
+void ParkedWindowsRecord::setShielded(HWND hwnd, bool shielded) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  loadLocked();
+  auto it = entries_.find(handleKey(hwnd));
+  if (it == entries_.end()) {
+    if (shielded) logLine("parked-windows: a shielded window is not recorded; a driver that dies now leaves it disabled");
+    return;
+  }
+  if (it->second.shielded == shielded) return;
+  it->second.shielded = shielded;
+  writeLocked(false);
 }
 
 void ParkedWindowsRecord::remove(HWND hwnd) {
@@ -110,6 +127,13 @@ int ParkedWindowsRecord::restoreLocked(const std::map<uint64_t, Entry>& entries)
     const HWND hwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(key));
     // Exactly the window that was parked: same handle, process and start.
     if (!IsWindow(hwnd) || windowPid(hwnd) != entry.pid || ticksOf(processCreationTime(entry.pid)) != entry.created) continue;
+    // A driver that died inside a shielded UI Automation call left the app
+    // disabled. EnableWindow waits on the app's thread, so a hung one is
+    // skipped (logged) rather than holding this host.
+    if (entry.shielded) {
+      if (IsHungAppWindow(hwnd)) logLine("parked-windows: a shielded window is not responding; left disabled");
+      else EnableWindow(hwnd, TRUE);
+    }
     const RECT target = releaseTargetFor(hwnd, &entry.home);
     // Asynchronous: a hung app's window still moves, and this never waits on it.
     SetWindowPos(hwnd, nullptr, target.left, target.top, target.right - target.left, target.bottom - target.top,
