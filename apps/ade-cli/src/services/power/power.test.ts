@@ -30,6 +30,7 @@ import {
   type SuspendGapDetector,
 } from "./suspendGapDetector";
 import { createBrainKeepAwakeService } from "./brainKeepAwakeService";
+import { agent37KeepAwakePaths, createAgent37KeepAwake } from "./agent37KeepAwake";
 
 // The brain's power surface as one contract: reading what the hardware says
 // (machinePowerReader), noticing a suspend nobody announced (suspendGapDetector),
@@ -798,5 +799,53 @@ describe("createBrainKeepAwakeService", () => {
     await poll();
     expect(child?.kill).toHaveBeenCalledTimes(1);
     expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("agent37 keep awake", () => {
+  // Agent 37 sleeps a machine after its idle timer; the brain keeps it awake
+  // only by reaching the machine's own wake URL. A missed ping while work runs
+  // freezes that work; a ping for the wrong machine keeps another one billing.
+  it("pings this machine's wake URL while work runs, never a copied disk's, and counts an unreadable state as busy", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-a37-keepawake-"));
+    const paths = agent37KeepAwakePaths(home);
+    fs.mkdirSync(paths.dir, { recursive: true });
+    const writeWake = (instanceId: string) =>
+      fs.writeFileSync(paths.wakeUrl, JSON.stringify({ instanceId, url: "https://wake-abc.agent37.app" }));
+    const pinged: string[] = [];
+    let busy: boolean | "throws" = true;
+    const keepAwake = createAgent37KeepAwake({
+      env: { AGENT37_INSTANCE_ID: "thisbox001" },
+      adeHome: home,
+      readBusy: async () => {
+        if (busy === "throws") throw new Error("activity read failed");
+        return { busy, reasons: busy ? ["chat"] : [] };
+      },
+      fetch: async (url) => {
+        pinged.push(url);
+        return { status: 502 };
+      },
+    });
+    try {
+      writeWake("sourcebox1"); // the disk was forked from another machine
+      await keepAwake.tick();
+      expect(pinged).toEqual([]);
+
+      writeWake("thisbox001");
+      await keepAwake.tick();
+      expect(pinged).toEqual(["https://wake-abc.agent37.app"]);
+      expect(JSON.parse(fs.readFileSync(paths.state, "utf8"))).toMatchObject({ v: 1, busy: true, hasWakeUrl: true });
+
+      busy = false;
+      await keepAwake.tick();
+      expect(pinged).toHaveLength(1);
+
+      busy = "throws";
+      await keepAwake.tick();
+      expect(pinged).toHaveLength(2);
+    } finally {
+      keepAwake.dispose();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });

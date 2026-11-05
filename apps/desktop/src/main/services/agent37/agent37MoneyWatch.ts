@@ -43,7 +43,10 @@ export function startAgent37MoneyWatch(deps: {
     const result = await deps.machines.list();
     if (result.state !== "ok") return;
     const now = Date.now();
-    const instances = await client.listInstances().catch(() => []);
+    const instances = await client.listInstances().catch((error: unknown) => {
+      deps.logger.warn("agent37.money_watch_list_failed", { error: error instanceof Error ? error.message : String(error) });
+      return [];
+    });
     const enabled = await enableAgent37SleepWherePending(client, instances.filter((instance) => {
       const box = result.machines.find((machine) => machine.instanceId === instance.id);
       return box?.madeByAde === true;

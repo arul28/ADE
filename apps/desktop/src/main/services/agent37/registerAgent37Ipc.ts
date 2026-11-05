@@ -237,7 +237,7 @@ export function registerAgent37Ipc(args: {
   /** One coarse product fact per finished create (analytics; never the box or the error). */
   recordMachineCreate?: (outcome: "completed" | "partial" | "cancelled" | "failed") => void;
   /** One coarse product fact per box action that worked (analytics; never the box). */
-  recordMachineAction?: (action: Agent37MachineActionKind) => void;
+  recordMachineAction?: (action: Agent37MachineActionKind | "copy" | "move") => void;
   logger: Logger;
 }): void {
   const { logger } = args;
@@ -614,6 +614,7 @@ export function registerAgent37Ipc(args: {
         name: typeof arg?.name === "string" ? arg.name : null,
         shape: typeof arg?.shape === "string" ? arg.shape as Agent37ShapeId : null,
       }, send, { signal });
+      args.recordMachineAction?.("copy");
       return { message: `${result.name} is ready: a copy with the same files.`, result };
     });
   });
@@ -633,6 +634,7 @@ export function registerAgent37Ipc(args: {
         machineKey: typeof arg?.machineKey === "string" ? arg.machineKey : null,
         shape: typeof arg?.shape === "string" ? arg.shape as Agent37ShapeId : null,
       }, send, { signal });
+      args.recordMachineAction?.("move");
       return {
         message: result.sourceDeleted
           ? `${result.name} is now a ${to === "vm" ? "VM" : "box"}, with all its files.`

@@ -317,9 +317,14 @@ export async function moveAgent37Machine(
     // and take the half-made new one away.
     logger.warn?.("agent37.machine_move_failed", { sourceId: source.id, instanceId: target.instanceId, error: getErrorMessage(error) });
     // The brackets keep pkill from matching this command's own shell.
-    await client.exec(source.id, 'pkill -f "python3 /tmp/ade-move-serve[.]py"; rm -f "$ADE_HOME/brain.paused"', { timeoutMs: 30_000 }).catch(() => null);
+    await client.exec(source.id, 'pkill -f "python3 /tmp/ade-move-serve[.]py"; rm -f "$ADE_HOME/brain.paused"', { timeoutMs: 30_000 })
+      // The entrypoint clears a pause two hours old, so a box this misses comes back on its own.
+      .catch((unpause: unknown) => logger.warn?.("agent37.machine_move_unpause_failed", { sourceId: source.id, error: getErrorMessage(unpause) }));
     await deleteAgent37InstanceConfirmed(client, target.instanceId, { logger, sleep });
-    if (target.machineKey) await deps.removeAccountMachine(target.machineKey).catch(() => null);
+    if (target.machineKey) {
+      await deps.removeAccountMachine(target.machineKey)
+        .catch((removal: unknown) => logger.warn?.("agent37.machine_move_row_left", { error: getErrorMessage(removal) }));
+    }
     throw new Error(`ADE couldn't move ${sourceName}: ${getErrorMessage(error)} ${sourceName} is as it was, and the new machine was deleted.`);
   }
 
@@ -338,7 +343,10 @@ export async function moveAgent37Machine(
       .catch((error: unknown) => logger.warn?.("agent37.machine_move_unpause_failed", { sourceId: source.id, error: getErrorMessage(error) }));
   }
   const sourceKey = args.machineKey ?? source.metadata[AGENT37_MACHINE_KEY_METADATA] ?? null;
-  if (sourceDeleted && sourceKey) await deps.removeAccountMachine(sourceKey).catch(() => null);
+  if (sourceDeleted && sourceKey) {
+    await deps.removeAccountMachine(sourceKey)
+      .catch((removal: unknown) => logger.warn?.("agent37.machine_move_row_left", { error: getErrorMessage(removal) }));
+  }
   let renamed = target.renamed;
   if (target.machineKey && sourceDeleted) {
     renamed = await deps.renameMachine(target.machineKey, sourceName).then(() => true, () => false);

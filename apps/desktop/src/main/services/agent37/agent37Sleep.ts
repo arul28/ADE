@@ -247,7 +247,13 @@ export function createAgent37BudgetStore(deps: {
   return {
     async read() {
       const vault = deps.vault();
-      const got = vault ? await vault.get().catch(() => ({ ok: false as const })) : { ok: false as const };
+      const got = vault
+        ? await vault.get().catch((error: unknown) => {
+          // This computer's copy answers instead.
+          deps.logger?.warn?.("agent37.budget_account_read_failed", { error: getErrorMessage(error) });
+          return { ok: false as const };
+        })
+        : { ok: false as const };
       const fromAccount = got.ok ? parseBudget(got.value) : null;
       if (fromAccount) return fromAccount;
       return parseBudget(local()?.getSync(AGENT37_BUDGET_MACHINE_CREDENTIAL_KEY)) ?? { monthlyCapUsd: AGENT37_DEFAULT_MONTHLY_CAP_USD };
@@ -268,7 +274,12 @@ export function createAgent37BudgetStore(deps: {
         deps.logger?.warn?.("agent37.budget_local_write_failed", { error: getErrorMessage(error) });
       }
       const vault = deps.vault();
-      const saved = vault ? await vault.set(raw).catch(() => false) : false;
+      const saved = vault
+        ? await vault.set(raw).catch((error: unknown) => {
+          deps.logger?.warn?.("agent37.budget_account_write_failed", { error: getErrorMessage(error) });
+          return false;
+        })
+        : false;
       if (!saved && !savedHere) throw new Error("ADE couldn't save the cap to your account or this computer. Try again.");
       return next;
     },

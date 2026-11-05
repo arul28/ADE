@@ -12403,7 +12403,7 @@ export function registerIpc({
       });
     },
     // Which box actions people take from ADE. One prefixed outcome per action
-    // and a six-hour dedupe each: at most 20 accepted events a day.
+    // and a six-hour dedupe each: at most 32 accepted events a day.
     recordMachineAction: (action) => {
       const outcome = `box_${action}`;
       productAnalyticsService?.capture({
