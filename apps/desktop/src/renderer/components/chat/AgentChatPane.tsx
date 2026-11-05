@@ -16484,6 +16484,7 @@ export function AgentChatPane({
     option: agent37ReadyOption,
     choose: chooseAgent37ReadyMachine,
     abandon: abandonAgent37ReadyMachine,
+    waking: agent37ReadyWaking,
   } = useAgent37ReadyDraftMachine({
     enabled: showDraftLaunchControls,
     originUrl: originUrlForBinding(projectBinding),
@@ -16572,11 +16573,13 @@ export function AgentChatPane({
     const machine = autoLaneMachine(placedDraftMachines);
     return machine ? { machineId: machine.id, summary: autoPickSummary(machine) } : null;
   }, [placedDraftMachines]);
-  const draftShelfMachineValue = cursorCloudMode
-    ? CURSOR_CLOUD_MACHINE_ID
-    : devinCloudMode
-      ? DEVIN_CLOUD_MACHINE_ID
-      : selectedDraftMachineId;
+  const draftShelfMachineValue = agent37ReadyWaking
+    ? AGENT37_READY_MACHINE_ID
+    : cursorCloudMode
+      ? CURSOR_CLOUD_MACHINE_ID
+      : devinCloudMode
+        ? DEVIN_CLOUD_MACHINE_ID
+        : selectedDraftMachineId;
   const handleDraftShelfMachineChange = useCallback((nextMachineId: string) => {
     cancelWorkDraftLaneRequest(workDraftProjectStateKey);
     if (nextMachineId === AGENT37_READY_MACHINE_ID) {

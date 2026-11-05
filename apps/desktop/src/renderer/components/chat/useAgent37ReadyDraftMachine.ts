@@ -115,11 +115,8 @@ export function useAgent37ReadyDraftMachine({
         name: wakingName ? `Waking ${wakingName}…` : "Agent 37 · ready",
         kind: "cloud",
         cloudProvider: "agent37",
-        unavailableReason: wakingName
-          ? "Waking the ready machine."
-          : project.state === "ready"
-            ? null
-            : project.message,
+        // While waking it is the selection, never an unavailable one.
+        unavailableReason: wakingName || project.state === "ready" ? null : project.message,
       }
     : null;
 
@@ -132,6 +129,8 @@ export function useAgent37ReadyDraftMachine({
     }
     const attempt = ++attemptRef.current;
     const startedAt = Date.now();
+    // Shown as the choice from the pick on, so picking any machine cancels it.
+    setWakingName("the ready machine");
     const stillWanted = () => attemptRef.current === attempt;
     onNotice({ message: "Waking this project's ready machine on Agent 37…", kind: "status" });
     try {
@@ -140,6 +139,7 @@ export function useAgent37ReadyDraftMachine({
         claimingRef.current = false;
       });
       if (!claim) {
+        setWakingName(null);
         onNotice(null);
         return;
       }
@@ -192,5 +192,6 @@ export function useAgent37ReadyDraftMachine({
     if (!enabled) abandon();
   }, [abandon, enabled]);
 
-  return { option, choose, abandon };
+  /** While waking, the picker shows this row as the choice, so picking any machine (even the previous one) cancels it. */
+  return { option, choose, abandon, waking: wakingName != null || pendingTargetId != null };
 }
