@@ -853,6 +853,7 @@ export class AmbiguousAccountMachineError extends Error {
 export function selectAccountMachine(
   machines: AdeAccountMachine[],
   query: string,
+  options: { folded?: boolean } = {},
 ): AdeAccountMachine {
   const needle = query.trim().toLowerCase();
   if (!needle) throw new Error("Machine selection is required.");
@@ -881,5 +882,41 @@ export function selectAccountMachine(
     );
     throw new AmbiguousAccountMachineError(`Machine name '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
   }
+
+  // No exact name: try again with typing differences folded away (macOS names
+  // carry a curly apostrophe, "Arul’s Mac Studio", that nobody types), then as
+  // whole words inside a name, so a saved `--machine "mac studio"` still finds
+  // the machine after it was renamed "Arul’s Mac Studio". Only a unique hit
+  // counts, and words inside a name need two of them: one word ("mac") names
+  // too many machines to route a command on. `folded: false` is the exact pass
+  // alone, for a caller that tries a fresh list before a loose match.
+  const folded = options.folded === false ? "" : foldMachineName(query);
+  if (folded) {
+    const names = (machine: AdeAccountMachine) =>
+      [machine.customName, machine.name].map((name) => foldMachineName(name ?? "")).filter(Boolean);
+    const passes = [(name: string) => name === folded];
+    if (folded.includes(" ")) passes.push((name: string) => ` ${name} `.includes(` ${folded} `));
+    for (const matches of passes) {
+      const hits = machines.filter((machine) => names(machine).some(matches));
+      if (hits.length === 1) return hits[0]!;
+      if (hits.length > 1) {
+        const choices = hits.map(
+          (machine) => `${accountMachineDisplayName(machine) ?? "Unnamed machine"} (${machine.machineKey})`,
+        );
+        throw new AmbiguousAccountMachineError(`Machine name '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
+      }
+    }
+  }
   throw new Error(`Account machine not found: ${query}`);
+}
+
+/** A machine name as words: lowercase, no accents, any quote or punctuation run as one space. */
+function foldMachineName(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/\p{M}+/gu, "")
+    .toLowerCase()
+    .replace(/['‘’`´]/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
 }

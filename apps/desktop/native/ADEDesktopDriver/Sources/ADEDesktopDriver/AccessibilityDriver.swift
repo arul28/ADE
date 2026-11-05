@@ -640,6 +640,87 @@ final class AccessibilityDriver {
         return Self.perform(button, kAXPressAction)
     }
 
+    /// The app's focused window, through Accessibility.
+    func focusedWindow(pid: pid_t) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXFocusedWindowAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID()
+        else { return nil }
+        return (value as! AXUIElement)
+    }
+
+    /// Escape and Return on a dialog, worked the way a person's key works
+    /// them: the dialog's Cancel or default button, pressed. A key posted to
+    /// the app never reaches a panel whose content another process draws
+    /// (the Open and Save panels on macOS 27), so Escape left the panel up and
+    /// the app modal behind it. A sheet on the window ("Replace?" on a Save
+    /// panel) takes the key first, as it does for a person: while it is up
+    /// the window under it answers nothing. Answers the button's title, or nil
+    /// when there is no such enabled button and the key is posted.
+    func pressDialogButton(in window: AXUIElement, pid: pid_t, key: String) -> String? {
+        let name = key.lowercased()
+        let cancel = name == "escape" || name == "esc"
+        guard cancel || name == "return" || name == "enter" else { return nil }
+        // Return in a multi-line text view is a new line, as it is for a person.
+        if !cancel, Self.focusedRole(pid: pid) == kAXTextAreaRole { return nil }
+        let sheets = Self.children(of: window).filter {
+            WindowControl.stringAttribute($0, kAXRoleAttribute) == "AXSheet"
+        }
+        // The newest sheet is the one on top.
+        let dialog = sheets.last ?? window
+        guard let button = Self.dialogButton(in: dialog, cancel: cancel, isSheet: !sheets.isEmpty) else { return nil }
+        var enabled: CFTypeRef?
+        if AXUIElementCopyAttributeValue(button, kAXEnabledAttribute as CFString, &enabled) == .success,
+           (enabled as? Bool) == false {
+            return nil
+        }
+        guard Self.perform(button, kAXPressAction) else { return nil }
+        return WindowControl.stringAttribute(button, kAXTitleAttribute) ?? (cancel ? "Cancel" : "OK")
+    }
+
+    /// The role of the app's focused element, through Accessibility.
+    private static func focusedRole(pid: pid_t) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID()
+        else { return nil }
+        return WindowControl.stringAttribute(value as! AXUIElement, kAXRoleAttribute)
+    }
+
+    /// The dialog's button for Escape (cancel) or Return (default): its own
+    /// attribute (an alert, a sheet), then the Open and Save panels' fixed
+    /// identifiers, `CancelButton` and `OKButton`, which hold in every
+    /// language. An alert sheet's Cancel has neither, so on a sheet Escape
+    /// also takes a button titled Cancel.
+    private static func dialogButton(in dialog: AXUIElement, cancel: Bool, isSheet: Bool) -> AXUIElement? {
+        var value: CFTypeRef?
+        let attribute = cancel ? kAXCancelButtonAttribute : kAXDefaultButtonAttribute
+        if AXUIElementCopyAttributeValue(dialog, attribute as CFString, &value) == .success,
+           let value, CFGetTypeID(value) == AXUIElementGetTypeID() {
+            return (value as! AXUIElement)
+        }
+        let identifier = cancel ? "CancelButton" : "OKButton"
+        // The panels keep their buttons near the top of the tree, before
+        // the file browser's hundreds of rows: a shallow, capped walk.
+        var queue: [(AXUIElement, Int)] = [(dialog, 0)]
+        var visited = 0
+        var titled: AXUIElement?
+        while !queue.isEmpty, visited < 200 {
+            let (element, depth) = queue.removeFirst()
+            visited += 1
+            if WindowControl.stringAttribute(element, kAXRoleAttribute) == kAXButtonRole {
+                if WindowControl.stringAttribute(element, "AXIdentifier") == identifier { return element }
+                if cancel, isSheet, titled == nil,
+                   WindowControl.stringAttribute(element, kAXTitleAttribute)?.lowercased() == "cancel" {
+                    titled = element
+                }
+            }
+            guard depth < 3 else { continue }
+            queue.append(contentsOf: children(of: element).map { ($0, depth + 1) })
+        }
+        return titled
+    }
+
     /// One key, by name, to one process.
     func press(pid: pid_t, key: String, modifiers: [String]) throws {
         guard let keyCode = KeyCodes.code(for: key) else {

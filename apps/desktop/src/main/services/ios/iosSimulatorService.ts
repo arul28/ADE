@@ -212,7 +212,7 @@ import { appleDeviceTypeSupportsDuo, appleOrientationFamily, isAppleDeviceOrient
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelayForService";
 import { SIMCTL_MISSING } from "../../../shared/xcodeToolchain";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 
 const execFile = promisify(execFileCallback);
 
@@ -7100,7 +7100,21 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // so the next `--device` command finds it ready.
     if (device.extra) {
       args.captureAnalytics?.("extra_device_created");
-      await bootExtraDevice(device);
+      // The device exists and holds an extra slot whether or not it booted, so
+      // a failed boot names it: otherwise the agent tries again, meets the
+      // limit, and cannot tell which device to delete.
+      await bootExtraDevice(device).catch((error: unknown) => {
+        const reason = (error instanceof Error ? error.message : String(error)).trim().replace(/[.\s]+$/, "");
+        const counts = "It still counts toward the lane's extras.";
+        // The not-booted refusal already names the device and the way out.
+        const message = reason.includes(device.udid)
+          ? `${reason}. ${counts}`
+          : `Made the extra device ${device.name} (${device.udid}), but it did not boot: ${reason || "no reason given"}. `
+            + `${counts} Any command with --device ${device.udid} boots it again; `
+            + `device-delete --device ${device.udid} removes it.`;
+        // Keeps the boot failure's own mark: a simctl that broke is still reported.
+        throw carryExpected(error, new Error(message, { cause: error }));
+      });
     }
     return device;
   };
@@ -7931,7 +7945,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           if (AGENT_EXTRA_DEVICE_REFUSED_ACTIONS.has(action)) {
             throw new AdeExpectedError(
               `${APPLE_DEVICE_IS_EXTRA_CODE}: ios_simulator.${action} runs on the lane's own device (its live view, claim, `
-              + `recordings and builds), not on the extra device ${extra.name}. On an extra, use screenshot, snapshot, tap, `
+              + `recordings, app log and builds), not on the extra device ${extra.name}. On an extra, use screenshot, snapshot, tap, `
               + "rotate, relaunch and the other per-device commands with --device; delete it with device-delete --device <udid>. "
               + (action === "launch"
                 ? `To build and install the lane's app on ${extra.name} (and start it), run: ade apple install --device ${extra.udid} --launch. `

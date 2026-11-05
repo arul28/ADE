@@ -1,6 +1,7 @@
 import type {
   AppleDeviceDeleteArgs,
   AppleDeviceDeleteInstalledArgs,
+  AppleDeviceDeleteResult,
   AppleDeviceDetachArgs,
   AppleDevicePromoteArgs,
   AppleDevicePromoteResult,
@@ -206,9 +207,9 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
    * so the registry delete names the udid read here and does nothing when the
    * lane holds another device by then.
    */
-  const deviceDelete = async (deleteArgs: AppleDeviceDeleteArgs = {}): Promise<void> => {
+  const deviceDelete = async (deleteArgs: AppleDeviceDeleteArgs = {}): Promise<AppleDeviceDeleteResult> => {
     const runtime = deps.requireLaneScope(deleteArgs);
-    await deps.serializeDeviceLifecycle(runtime, async () => {
+    return deps.serializeDeviceLifecycle(runtime, async (): Promise<AppleDeviceDeleteResult> => {
       // `device-delete --device <udid|name>` naming one of the lane's extra devices.
       const extra = deps.laneDevices.findExtra(runtime.key, deleteArgs.udid ?? null);
       if (extra) {
@@ -218,17 +219,18 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
         await deps.laneDevices.deviceDeleteExtra({ laneId: extra.laneId, udid: extra.udid });
         deps.invalidateDeviceList();
         deps.invalidateStatus(runtime);
-        return;
+        return { deleted: { udid: extra.udid, name: extra.name, extra: true } };
       }
       const laneDevice = deps.laneDevices.get(runtime.key);
-      if (!laneDevice) return;
+      if (!laneDevice) return { deleted: null };
+      const deleted = { udid: laneDevice.udid, name: laneDevice.name, extra: false };
       assertExpectedDevice(laneDevice, deleteArgs.udid);
       deps.assertSessionOwner(runtime, { chatSessionId: deleteArgs.chatSessionId, ignoreOwnership: deleteArgs.ignoreOwnership });
       if (laneDevice.origin === "attached") {
         // Refused before the stream stops, so the owner keeps a working view.
         if (!deleteArgs.force) throw new AppleDeviceAttachedNotDeletableError(laneDevice);
         await detachStep(runtime, deleteArgs.agentCaller);
-        return;
+        return { deleted, detached: true };
       }
       // Whatever was driving it stops first: deleting a simulator out from
       // under a running stream leaves the reader waiting on bytes that never come.
@@ -239,6 +241,7 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
       // The lane's binding changed ("Choose another device"): every surface
       // that shows the lane's device re-reads now rather than on its next poll.
       deps.emit({ type: "apple.device.state", laneId: runtime.key, udid: laneDevice.udid, phase: "released" });
+      return { deleted };
     });
   };
 

@@ -245,12 +245,15 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
       previous = posture;
       posture = await readPosture(deviceUdid);
     }
+    // Read before the fallback below fills in the panel: a fold that ran out
+    // of time answers with what it last saw, and says so.
+    const done = !applied || !posture.supported || settled(posture, previous);
     // A fold whose reads never named the panel it lands on: the panel the
     // pose lights is the best fallback for the screenshots that follow.
     if (applied && expected?.screenId != null && typeof posture.activeScreenId !== "number") {
       notePosture(deviceUdid, { ...posture, supported: true, activeScreenId: expected.screenId });
     }
-    return { applied, posture };
+    return { applied, posture, settled: done };
   };
 
   /**

@@ -236,7 +236,17 @@ extension DriverRuntime {
                     return ["resolvedIndex": resolvedIndex]
                 }
             case .keys:
-                break
+                // A bare Escape or Return on a lane dialog presses its button;
+                // see `pressDialogButton`. Only when the app's focused window
+                // is one of this lane's: never a dialog on the user's screen.
+                if resolvedIndex == .null, modifiers.isEmpty,
+                   let focused = accessibility.focusedWindow(pid: pid),
+                   laneWindows.contains(where: { window in
+                       windows.axWindow(for: window).map { CFEqual($0, focused) } ?? false
+                   }),
+                   let pressed = accessibility.pressDialogButton(in: focused, pid: pid, key: key) {
+                    return ["resolvedIndex": resolvedIndex, "pressedButton": .string(pressed)]
+                }
             }
             try accessibility.press(pid: pid, key: key, modifiers: modifiers)
             return ["resolvedIndex": resolvedIndex]
@@ -578,11 +588,16 @@ extension DriverRuntime {
     /// Where a key with no target goes: an app-modal panel or alert when one
     /// is up on the lane, because that is where a person's keys would go and
     /// the app ignores its other windows until it closes; else the lane's
-    /// first window.
+    /// first window. A sheet and the system Open/Save panel count as modal at
+    /// any layer: an Open panel at layer 0 lost Escape to the app's main
+    /// window and stayed up, with the app modal behind it.
     static func keyTarget(in laneWindows: [DesktopWindow]) -> DesktopWindow? {
         let visible = laneWindows.filter { !$0.minimized }
-        return visible.last { $0.layer >= WindowLayerPolicy.modalPanel }
-            ?? laneWindows.first
+        return visible.last {
+            $0.layer >= WindowLayerPolicy.modalPanel
+                || $0.sheetOf != nil
+                || WindowLayerPolicy.isOpenSavePanelService(bundleId: $0.bundleId)
+        } ?? laneWindows.first
     }
 
     /// The frontmost lane window under `point` (see

@@ -81,7 +81,8 @@ only the iPhone Duo, so `--device-type "iPad Pro 11-inch (M5)"` lands on 27.0.
 ### Extra devices
 
 A lane may hold up to two EXTRA devices beside its own
-(`APPLE_LANE_EXTRA_DEVICE_LIMIT`), for a second model in the same piece of work:
+(`APPLE_LANE_EXTRA_DEVICE_LIMIT`; `ADE_APPLE_LANE_EXTRA_DEVICES` in ADE's
+environment raises it, up to 8), for a second model in the same piece of work:
 an iPad next to an iPhone Duo. `device-create --extra` makes one (an empty ADE
 device named `ADE · <lane> · <model>`) and boots it. Extras are their own
 local-only table, `lane_apple_extra_devices` (keyed by udid), and their marker
@@ -1084,7 +1085,7 @@ forwarded.
 | `uninstall` | `uninstallApp` | `--bundle-id`, `--device`, `--force` |
 | `status-bar` | `setStatusBar`, or `clearStatusBar` with `--clear` | `--time`, `--data-network`, `--wifi-bars`, `--cellular-bars`, `--battery-level`, `--battery-state`, `--clear`, `--device` |
 | `app-state` | `getAppState` | `--bundle-id`, `--device` |
-| `log-start` (`logs-start`) | `startEventLog` | `--device`, `--bundle-id` (required), `--subsystem`, `--process`, `--force` |
+| `log-start` (`logs-start`) | `startEventLog` | `--device` (the lane's own device only; an extra refuses, as the lane keeps one app log), `--bundle-id` (required), `--subsystem`, `--process`, `--force` |
 | `log-stop` (`logs-stop`) | `stopEventLog` | `--force` |
 | `log` (`logs`) | `getEventLog` | `--device`, `--since`, `--limit` |
 | `find-element` (`find`) | `findElement` | `--ref`, `--identifier`, `--label`, `--text`, `--role`, `--index`, `--device`, `--lane`, `--project` |
@@ -1571,7 +1572,7 @@ recording. With no `outDir` the bundle lands in
 | `IOS_SIMULATOR_LAUNCH_IN_PROGRESS` | Wait, or `ade --socket apple shutdown --force --text`. |
 | `IOS_SIMULATOR_LANE_NOT_RESOLVED` | Pass `--project-root`. |
 | `IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT` | `--out` must be inside the build root (the lane worktree); a relative path resolves there. |
-| `APPLE_EXTRA_DEVICE_LIMIT` | The lane holds two extra devices. `device-delete --device <udid>` one first. |
+| `APPLE_EXTRA_DEVICE_LIMIT` | The lane holds its limit of extra devices (two, or `ADE_APPLE_LANE_EXTRA_DEVICES`). `device-delete --device <udid>` one first. |
 | `APPLE_DEVICE_IS_EXTRA` | That simulator is a lane's extra device; drive it with `--device`, do not attach it. |
 | Push banners on screenshots | The simulator is signed in and paired, so it gets the machine's real pushes. Capture on an unpaired device (a fresh lane or extra device) or sign the app out. |
 | Several agents on one device | Take turns with `apple lease` (the lane device hint tells every agent about it). |

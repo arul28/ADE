@@ -109,19 +109,29 @@ public enum WindowLayerPolicy {
     ///
     /// An unreadable lane app's modal panel (layer 8) is still listed: it
     /// blocks the app, and a lane that cannot see it cannot say why nothing
-    /// answers. Other unreadable surfaces (tooltips, popover chrome, reused
-    /// hidden panels) stay out.
+    /// answers. So is a readable lane app's layer-8 entry of panel size
+    /// (`isPanelSized`) that its Accessibility tree leaves out: FL Studio's
+    /// Save panel and its "Replace?" alert were such entries, and the app sat
+    /// blocked with nothing in `observe` to show why. Other surfaces
+    /// (tooltips, popover chrome, reused hidden panels) stay out.
     public static func panelAdmission(
         layer: Int,
         axKnown: Bool,
         isAXWindow: Bool,
         sheetParent: UInt32?,
-        ownerIsLaneApp: Bool
+        ownerIsLaneApp: Bool,
+        isPanelSized: Bool = false
     ) -> PanelAdmission {
         if isAXWindow { return .window }
         if let sheetParent { return .sheet(parent: sheetParent) }
-        if !axKnown, layer == modalPanel, ownerIsLaneApp { return .window }
+        if layer == modalPanel, ownerIsLaneApp, !axKnown || isPanelSized { return .window }
         return .none
+    }
+
+    /// Big enough to be a modal panel or an alert (the smallest `NSAlert` is
+    /// about 260x120 points), not a tooltip or a popover's chrome.
+    public static func isPanelSized(_ frame: CGRect) -> Bool {
+        frame.width >= 240 && frame.height >= 100
     }
 
     /// Whether an entry could be a sheet, before its app is asked: a sheet

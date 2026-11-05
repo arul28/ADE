@@ -1132,6 +1132,12 @@ export type AppleRenderProofResult = {
 export type AppleSetPostureResult = {
   applied: boolean;
   posture: AppleDevicePosture;
+  /**
+   * False when the fold's wait ran out before the guest showed the pose's
+   * panel and picture: `posture` may still be the one it is leaving. Absent
+   * when the fold did not wait (`follow`).
+   */
+  settled?: boolean;
 };
 
 /**
@@ -2502,6 +2508,16 @@ export type AppleDeviceDeleteArgs = {
   ignoreOwnership?: boolean | null;
   /** Set by the RPC server for agent callers; see `AppleDeviceAttachArgs.agentCaller`. */
   agentCaller?: boolean | null;
+};
+
+/**
+ * What `deviceDelete` did: the device it deleted (an extra, or the lane's
+ * own), `detached` when the lane's device was one the user attached and
+ * `force` only released it, or `deleted: null` when the lane held no device.
+ */
+export type AppleDeviceDeleteResult = {
+  deleted: { udid: string; name: string; extra: boolean } | null;
+  detached?: boolean;
 };
 
 /**

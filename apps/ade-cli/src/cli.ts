@@ -820,6 +820,7 @@ export type FormatterId =
   | "apple-posture"
   | "apple-render"
   | "apple-device-detach"
+  | "apple-device-delete"
   | "apple-device-promote"
   | "apple-tests"
   | "apple-lease"
@@ -6111,10 +6112,29 @@ function parseCliArgs(argv: string[]): ParsedCli {
       options.json = true;
       continue;
     }
+    assertNotFusedTargetFlag(token, argv[index - 1]);
     command.push(token);
   }
 
   return { options, command };
+}
+
+// The space form only: `--machine=Arul’s Mac Studio` is one valid word.
+const FUSED_TARGET_FLAG = /^--(machine|lane|project|project-root|workspace-root|device|session)\s+\S/;
+
+/**
+ * `"--machine X --lane Y"` quoted as one word (a script building its flags in
+ * one variable) is no flag any command knows, so commands skipped it and ran
+ * on this machine, this lane and this device: the wrong target, with no error.
+ * A token that is the value of the flag before it is left alone.
+ */
+function assertNotFusedTargetFlag(token: string, previous: string | undefined): void {
+  if (!FUSED_TARGET_FLAG.test(token) || previous?.startsWith("-")) return;
+  throw new CliUsageError(
+    `"${token}" reached ade as one argument, so its flags would be ignored and the command would run here. `
+      + `Pass each flag and value as its own word: ${token.trim().split(/\s+/).join(" ")}`
+      + ` (in a script, use an array, not one quoted string).`,
+  );
 }
 
 /**
@@ -16059,13 +16079,16 @@ function buildIosSimulatorPlan(
     }
     // Same single-owner rule as `stop`: the chat id is what lets a chat delete
     // its own device and not another chat's.
-    return iosAction("Apple device delete", "deviceDelete", {
-      ...(laneId ? { laneId } : {}),
-      ...(udid ? { udid } : {}),
-      ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
-      ...(force ? { force: true } : {}),
-      ...readIgnoreOwnershipArg(args),
-    });
+    return {
+      ...iosAction("Apple device delete", "deviceDelete", {
+        ...(laneId ? { laneId } : {}),
+        ...(udid ? { udid } : {}),
+        ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
+        ...(force ? { force: true } : {}),
+        ...readIgnoreOwnershipArg(args),
+      }),
+      formatter: "apple-device-delete" as const,
+    };
   }
   if (sub === "device-promote") {
     // One of the lane's extras becomes the lane's device, in the lane's queue.
@@ -33713,6 +33736,29 @@ function formatAppleDeviceDetach(value: unknown): string {
   ].join("\n");
 }
 
+/** `device-delete`: which device went, or that the lane had none. */
+function formatAppleDeviceDelete(value: unknown): string {
+  // An ADE from before the answer named the device sends nothing back.
+  if (!isRecord(value)) return "Done. Run ade apple device-list --text to see the devices this lane holds now.";
+  const deleted = isRecord(value.deleted) ? value.deleted : null;
+  if (!deleted) return "This lane had no Apple device, so nothing was deleted.";
+  const name = asString(deleted.name) ?? asString(deleted.udid) ?? "The device";
+  const summary = value.detached === true
+    ? `Released ${name} from this lane; the user attached it, so the simulator stays installed.`
+    : deleted.extra === true
+    ? `Deleted the extra device ${name}; the lane's own device is unchanged.`
+    : `Deleted ${name}, this lane's device; the lane has no device now. ade apple start gives it a new one.`;
+  return [
+    summary,
+    "",
+    renderKeyValues("ADE Apple device delete", [
+      ["udid", deleted.udid],
+      ["device", deleted.name],
+      ["extra", deleted.extra === true],
+    ]),
+  ].join("\n");
+}
+
 /** `device-promote`: which device the lane has now, and what became of the old one. */
 function formatAppleDevicePromote(value: unknown): string {
   const result = isRecord(value) ? value : {};
@@ -33758,6 +33804,9 @@ function formatApplePosture(value: unknown): string {
     ["held", appleDuoHeldOrientation(posture) ?? posture.orientation],
     ["table mode", posture.tableMode],
     ...appleDuoPictureRows(posture),
+    ...(result.settled === false
+      ? [["note", "Still turning when the wait ran out, so the picture above may be the old one. Run `ade apple posture` in a moment."] as [string, unknown]]
+      : []),
   ]);
 }
 
@@ -36033,6 +36082,8 @@ function formatTextOutput(
       return formatAppleRender(value);
     case "apple-device-detach":
       return formatAppleDeviceDetach(value);
+    case "apple-device-delete":
+      return formatAppleDeviceDelete(value);
     case "apple-tests":
       return formatAppleTests(value);
     case "apple-lease":
