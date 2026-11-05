@@ -327,12 +327,20 @@ export function killWindowsProcessTree(
   return false;
 }
 
+const WINDOWS_TASKKILL_TIMEOUT_MS = 15_000;
+
 /**
  * {@link killWindowsProcessTree} without blocking the event loop.
  *
- * Same trusted `taskkill /T /F` invocation and `windowsHide`. For code that
- * kills on a startup path, where a synchronous `taskkill` per pid stalls
- * everything else the process has to do.
+ * Same trusted `taskkill /T /F` invocation and `windowsHide`. A synchronous
+ * `taskkill` held the brain for up to 10.8 s per kill on Windows (61 of them in
+ * three days of one PC's logs), so the brain's kills wait here instead.
+ * Resolves true when `taskkill` exits 0.
+ *
+ * `execFile`, not the off-thread spawner, on purpose: `execFile` starts the
+ * process before it returns, so a kill issued as the brain shuts down still
+ * runs to the end after the brain exits. The spawner would start it on a
+ * later turn of the event loop that an exiting process never reaches.
  */
 export function killWindowsProcessTreeAsync(
   pid: number,
@@ -349,7 +357,7 @@ export function killWindowsProcessTreeAsync(
       execFile(
         invocation.command,
         invocation.args,
-        { encoding: "utf8", windowsHide: true, timeout: 15_000 },
+        { encoding: "utf8", windowsHide: true, timeout: WINDOWS_TASKKILL_TIMEOUT_MS },
         (error, stdout, stderr) => {
           if (!error) {
             resolve(true);
@@ -369,6 +377,14 @@ export function killWindowsProcessTreeAsync(
   });
 }
 
+function killChildDirectly(child: Pick<ChildProcess, "kill">, signal: NodeJS.Signals): boolean {
+  try {
+    return child.kill(signal);
+  } catch {
+    return false;
+  }
+}
+
 export function terminateProcessTree(
   child: Pick<ChildProcess, "kill" | "pid" | "exitCode" | "signalCode">,
   signal: NodeJS.Signals = "SIGTERM",
@@ -379,24 +395,43 @@ export function terminateProcessTree(
     // field means "not tracked", and reading it as "already exited" refuses the
     // kill and leaks the tree.
     if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) return false;
+    if (typeof child.pid !== "number") return killChildDirectly(child, signal);
     // `taskkill` exiting 0 means the kill was dispatched, not that every
     // descendant is gone, so it cannot stand in for signaling the child we
     // actually hold. Run both: the tree kill reaches grandchildren that
     // `child.kill()` (a `TerminateProcess` on the leader) never would, and the
     // direct kill covers a `taskkill` that reported success without acting.
-    const treeKilled = typeof child.pid === "number"
-      && killWindowsProcessTree(child.pid, onWindowsTaskkillFailure);
-    let childKilled = false;
-    try {
-      childKilled = child.kill(signal);
-    } catch {
-      childKilled = false;
-    }
-    return treeKilled || childKilled;
+    //
+    // In that order, and the direct kill only once `taskkill` is done: once the
+    // leader is gone, `taskkill /T` can no longer find its descendants. The
+    // wait is asynchronous (it used to be a `spawnSync` that held the event
+    // loop for up to 10.8 s), so the answer is "the kill is under way": true
+    // for a live child, as `child.kill()` answered before for one.
+    void terminateProcessTreeAsync(child, signal, onWindowsTaskkillFailure);
+    return true;
   }
   try {
     return child.kill(signal);
   } catch {
     return false;
   }
+}
+
+/**
+ * {@link terminateProcessTree} for a caller that must not move on until both
+ * kills ran, such as a process about to exit (an exit before the direct kill
+ * would skip it). Resolves to whether either kill reported success; on POSIX
+ * it is the same single `child.kill()`.
+ */
+export async function terminateProcessTreeAsync(
+  child: Pick<ChildProcess, "kill" | "pid" | "exitCode" | "signalCode">,
+  signal: NodeJS.Signals = "SIGTERM",
+  onWindowsTaskkillFailure?: (detail: ProcessTreeFailureDetail) => void,
+): Promise<boolean> {
+  if (process.platform !== "win32" || typeof child.pid !== "number") {
+    return terminateProcessTree(child, signal, onWindowsTaskkillFailure);
+  }
+  if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) return false;
+  const treeKilled = await killWindowsProcessTreeAsync(child.pid, onWindowsTaskkillFailure);
+  return killChildDirectly(child, signal) || treeKilled;
 }

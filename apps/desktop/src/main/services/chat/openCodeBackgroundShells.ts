@@ -153,8 +153,8 @@ export function createOpenCodeBackgroundShells(args: {
   emit: (event: ScheduledWorkEvent) => void;
   /** The turn the chat is in now, so a row lands in it. */
   currentTurnId: () => string | null;
-  /** Stop a shell's process and its children. */
-  killProcessTree: (pid: number) => void;
+  /** Stop a shell's process and its children; settles once the kill has run. */
+  killProcessTree: (pid: number) => void | Promise<unknown>;
   isProcessAlive: (pid: number) => boolean;
   /** A kill a teardown could not confirm. */
   onKillUnconfirmed?: (shellId: string, reason: string) => void;
@@ -218,7 +218,9 @@ export function createOpenCodeBackgroundShells(args: {
     if (info.status !== "running") return { gone: true };
     const pid = info.pid;
     if (typeof pid !== "number") return { gone: false, reason: "OpenCode reported no process id for this command." };
-    args.killProcessTree(pid);
+    // On Windows the tree kill is an asynchronous `taskkill`: wait for it, so
+    // its run time does not count against the confirmation budget below.
+    await args.killProcessTree(pid);
     for (let waited = 0; args.isProcessAlive(pid); waited += STOP_CONFIRM_POLL_MS) {
       if (waited >= STOP_CONFIRM_TIMEOUT_MS) return { gone: false, reason: "The command was still running after ADE stopped it." };
       await sleep(STOP_CONFIRM_POLL_MS);

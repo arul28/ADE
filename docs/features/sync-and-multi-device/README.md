@@ -3465,6 +3465,19 @@ install. Three mechanisms, each in a different layer, keep that from happening:
   mirrored to a `.bak` sibling, an unreadable file is distinguished from an
   absent one, and a machine key is preserved from whichever copy still holds it.
   A new identity is minted only when both copies yield nothing.
+- **Reading it never blocks the brain.** The brain reads the identity, the
+  relay preference and `sync-device-id` on hot paths (every Attention build,
+  every account-directory publish), and on Windows one synchronous read of a
+  file under `~/.ade/secrets` waited up to 22 s behind an antivirus scan. Each
+  process reads them once and keeps them in memory (`FileStampedMemo`,
+  `apps/ade-cli/src/lib/fileStampedMemo.ts`; `machineIdFile.ts` for the id
+  files), re-checking with one async `stat` per read. A write in the process
+  (a rotation, a repair, a relay toggle) is what every store reads next; a
+  write by another process is seen once that check lands, normally the next
+  read. The credential store is the exception: it holds rotating tokens
+  several processes coordinate through, so `getSync` keeps a synchronous
+  `stat` per call (a `stat` is not scanned) and only moves its expiry re-read
+  off the event loop.
 - **Rotations are budgeted and the budget is persisted.** Two per rolling 24
   hours, counted in the identity file itself so a crash loop cannot mint one row
   per boot. A machine that spends the budget stops minting and says so — "This

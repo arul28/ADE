@@ -5,12 +5,12 @@
  * Import from here instead of re-declaring locally.
  */
 
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import { nonAsarFs } from "./nonAsarFs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { isWindowsCmdCommandNotFound, resolveCliSpawnInvocation, windowsTaskkillCommand } from "./processExecution";
+import { isWindowsCmdCommandNotFound, resolveCliSpawnInvocation, terminateProcessTree } from "./processExecution";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { containsSecretToken, redactSecretTokens } from "../../../shared/secretTokenShapes";
 import { writeFileAtomic } from "../state/durableFile";
@@ -176,30 +176,10 @@ export function signalChildProcessTree(child: KillableChildProcess, signal: Node
   // cannot police, so only an explicit non-null value counts as proof the pid
   // was reaped.
   if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) return false;
+  // The tree first, the child once `taskkill` is done, without blocking the
+  // event loop: the same Windows kill as `terminateProcessTree`.
+  if (process.platform === "win32") return terminateProcessTree(child, signal);
   const pid = child.pid ?? null;
-
-  if (process.platform === "win32") {
-    let treeSignaled = false;
-    if (isValidPid(pid)) {
-      const taskkillArgs = ["/PID", String(pid), "/T", "/F"];
-      try {
-        const result = spawnSync(windowsTaskkillCommand(), taskkillArgs, {
-          stdio: "ignore",
-          windowsHide: true,
-        });
-        treeSignaled = !result.error && result.status === 0;
-      } catch {
-        // taskkill may be unavailable; the direct child signal below still runs.
-      }
-    }
-    let childSignaled = false;
-    try {
-      childSignaled = child.kill(signal);
-    } catch {
-      childSignaled = false;
-    }
-    return treeSignaled || childSignaled;
-  }
 
   if (isValidPid(pid)) {
     try {

@@ -361,6 +361,7 @@ import type { CtoActionCaller } from "./adeRpcServer";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
 import { shouldIsolateEmbeddedProviderLogins } from "../../desktop/src/shared/providerLoginIsolation";
 import { createWebhookRemoteSource } from "../../desktop/src/main/services/automations/webhookAutomationFactory";
+import { readMachineIdFile } from "./services/sync/machineIdFile";
 
 /** One warm-runtime budget for every project scope this brain opens. */
 const chatRuntimeBudget = createChatRuntimeBudget();
@@ -1419,13 +1420,9 @@ export async function createAdeRuntime(args: {
       syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
       "sync-device-id",
     );
-    const readSyncDeviceId = (): string | null => {
-      try {
-        return fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
-      } catch {
-        return null;
-      }
-    };
+    // Read for every Attention build: served from memory, re-checked off
+    // the event loop.
+    const readSyncDeviceId = (): string | null => readMachineIdFile(syncDeviceIdPath);
     const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
     let projectSecretServiceForAccount: ReturnType<typeof createProjectSecretService> | null = null;
     let linearCredentialServiceForAccount: ReturnType<typeof createLinearCredentialService> | null = null;

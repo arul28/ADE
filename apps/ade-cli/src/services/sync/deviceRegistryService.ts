@@ -20,6 +20,7 @@ import { copiedProjectHostMarkerPath } from "./hostInstanceGuard";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { nowIso, safeJsonParse, toOptionalString, uniqueStrings } from "../../../../desktop/src/main/services/shared/utils";
 import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
+import { rememberMachineIdFile } from "./machineIdFile";
 
 type DeviceRegistryServiceArgs = {
   db: AdeDb;
@@ -69,17 +70,23 @@ let networkInterfacesCache: { expiresAt: number; value: ReturnType<typeof os.net
 export function readOrCreateLocalDeviceId(deviceIdPath: string, legacyPath?: string): string {
   fs.mkdirSync(path.dirname(deviceIdPath), { recursive: true });
   const shared = fs.existsSync(deviceIdPath) ? fs.readFileSync(deviceIdPath, "utf8").trim() : "";
-  if (shared) return shared;
+  if (shared) {
+    rememberMachineIdFile(deviceIdPath, shared);
+    return shared;
+  }
   const legacy = legacyPath && legacyPath !== deviceIdPath && fs.existsSync(legacyPath)
     ? fs.readFileSync(legacyPath, "utf8").trim()
     : "";
   const candidate = legacy || randomUUID();
   try {
     fs.writeFileSync(deviceIdPath, `${candidate}\n`, { flag: "wx" });
+    rememberMachineIdFile(deviceIdPath, candidate);
     return candidate;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    return fs.readFileSync(deviceIdPath, "utf8").trim();
+    const winner = fs.readFileSync(deviceIdPath, "utf8").trim();
+    rememberMachineIdFile(deviceIdPath, winner);
+    return winner;
   }
 }
 

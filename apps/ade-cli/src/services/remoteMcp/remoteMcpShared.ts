@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { ProjectRegistry } from "../projects/projectRegistry";
@@ -20,6 +19,7 @@ import { accountMachineDisplayName } from "../../../../desktop/src/shared/accoun
 import { readChatLaunchDefaults } from "../../../../desktop/src/main/services/chat/chatLaunchDefaults";
 import { createRemoteMcpService, type RemoteMcpService } from "./remoteMcpService";
 import { remoteMcpAdeVersion } from "./remoteMcpAccount";
+import { readMachineIdFile } from "../sync/machineIdFile";
 
 /**
  * The machine's one ADE MCP service. Machine-level like the relay
@@ -60,13 +60,7 @@ export function getSharedRemoteMcpService(logger?: RemoteMcpLogger): RemoteMcpSe
     return status.signedIn ? status.userId?.trim() || null : null;
   };
   const deviceIdPath = path.join(layout.secretsDir, "sync-device-id");
-  const deviceId = (): string | null => {
-    try {
-      return fs.readFileSync(deviceIdPath, "utf8").trim() || null;
-    } catch {
-      return null;
-    }
-  };
+  const deviceId = (): string | null => readMachineIdFile(deviceIdPath);
   // Built like the runtime's (accountRuntimeLifecycle); whichever comes first
   // creates the machine's store and the other joins it.
   const relayClient = createPushRelayClient({
