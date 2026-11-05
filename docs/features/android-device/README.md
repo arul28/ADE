@@ -159,6 +159,14 @@ A small line at the foot of the picture says the stream state, the frame rate,
 the lane and, for another machine, its name. For example:
 `Live · 52 fps · lane checkout-flow · on windows`.
 
+It reads "Reconnecting…" with a grey dot when no frame has arrived for 3 s
+and either the emulator's machine reports frames this window did not get, or
+that machine cannot be reached (its frame-rate read failed or has hung for
+3 s). A still screen may send no frames, so silence alone never counts. The
+next frame, or a read that says the screen is still, turns it back to Live.
+A tap, key or swipe that fails shows one error toast per stall
+("Input didn't reach the device").
+
 ### Closing the tab
 
 Closing the tab, or moving to another tool, gives back the pane's hold on the
@@ -226,6 +234,15 @@ keeps a created AVD on disk.
   progress finishes by itself and reads as Starting until it is done. A
   service that the desktop runs in its own process does not hand off: when it
   closes, it stops every emulator that ADE started for the project.
+- **Removal.** A project removed from the brain's project list has no next
+  brain to adopt its emulators, so they stop: the runtime's teardown carries
+  the reason (`"exit"`, `"close"` or `"unregister"`, `RuntimeDisposeReason`)
+  and the service stops instead of handing off on `"unregister"`. A removal
+  that arrives during another teardown of the project, or for a project that
+  is not loaded or failed to boot, stops what an earlier teardown handed off
+  (`stopHandedOffAndroidEmulators`, wired as the project registry's
+  `onUnregisterAfterHandOff`). The brain's teardown waits for each step, 3 s
+  each and 5 s in all, before its database closes.
 - **Start-up cleanup.** When the service starts, it releases the device of
   each lane that was archived or deleted while no brain ran. Then it stops
   each emulator that ADE started and that no lane holds. Lanes that are still

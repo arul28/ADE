@@ -411,22 +411,31 @@ describe("RemoteConnectionService", () => {
       }),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
-    const service = new RemoteConnectionService(registry, pool);
-    await service.connect(remote.id, { explicit: true });
+    vi.useFakeTimers();
+    try {
+      const service = new RemoteConnectionService(registry, pool);
+      await service.connect(remote.id, { explicit: true });
 
-    evicted!(remote.id, new Error("Remote ADE service connection closed.", { cause: new PairedRuntimeSupersededError() }));
+      evicted!(remote.id, new Error("Remote ADE service connection closed.", { cause: new PairedRuntimeSupersededError() }));
 
-    const status = service.snapshot().connections[0]!;
-    expect(status.state).toBe("error");
-    expect(status.lastError).toMatch(/another ADE on this computer is using the connection to studio/i);
-    expect(status.lastError).toMatch(/connect to use it here/i);
-    await expect(service.connect(remote.id)).rejects.toThrow(/manually disconnected/);
-    expect(pool.connect).toHaveBeenCalledTimes(1);
-    // Nothing was written to the saved machine: the hold lives in memory only.
-    expect(registry.update).not.toHaveBeenCalledWith(remote.id, expect.objectContaining({ manuallyDisconnectedAt: expect.any(Number) }));
+      const status = service.snapshot().connections[0]!;
+      expect(status.state).toBe("error");
+      expect(status.recovery).toBe("held_elsewhere");
+      // The person has to know which machine is held elsewhere.
+      expect(status.lastError).toContain(remote.name);
+      // Well past every reconnect and host-return window: nothing reconnects on its own.
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
+      expect(pool.connect).toHaveBeenCalledTimes(1);
+      await expect(service.connect(remote.id)).rejects.toThrow(/manually disconnected/);
+      expect(pool.connect).toHaveBeenCalledTimes(1);
+      // Nothing was written to the saved machine: the hold lives in memory only.
+      expect(registry.update).not.toHaveBeenCalledWith(remote.id, expect.objectContaining({ manuallyDisconnectedAt: expect.any(Number) }));
 
-    await service.connect(remote.id, { explicit: true });
-    expect(pool.connect).toHaveBeenCalledTimes(2);
+      await service.connect(remote.id, { explicit: true });
+      expect(pool.connect).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refreshes a machine's version and warnings when a background call reconnects it", async () => {

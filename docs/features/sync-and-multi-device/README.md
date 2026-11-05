@@ -665,7 +665,12 @@ Runtime support files outside `services/sync/`:
   work copy a chat on another machine runs commands in here: a hidden git
   worktree per chat, its guarded sync, and its cleanups (see
   [cross-machine agents](cross-machine-agents.md)). `apps/ade-cli/src/cliRemoteWork.ts`
-  builds what a `--machine` call sends for it.
+  builds what a `--machine` call sends for it, and moves `ade files push|pull`
+  chunks; `remoteWork/remoteWorkFiles.ts` is the host side of those transfers.
+- `apps/desktop/src/shared/rpcLiveness.ts` — whether a connection that went
+  quiet still answers (`probeRpcLiveness`), shared by the desktop's
+  `remoteConnectionPool.ts` and the brains' machine link pool
+  (`apps/ade-cli/src/services/account/machineBridge.ts`).
 - `apps/desktop/src/main/services/state/crsqliteExtension.ts` and
   `apps/ade-cli/scripts/package-native-deps.mjs` — loadable cr-sqlite for every
   published runtime (`darwin-*`, `linux-*`, `win32-x64`). The packager copies the
