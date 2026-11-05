@@ -901,7 +901,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           area: "drive" as const,
           severity: "warning" as const,
           title: share === "wsl" ? "This project is on a WSL share" : "This project is on a network share",
-          detail: "ADE keeps its database in the project's .ade folder, and file locks don't work reliably over a share, so ADE can stop with \"database is locked\". Clone the project to a folder on this computer's own drive and open that copy.",
+          detail: "ADE can stop with \"database is locked\" here. Close the project, copy its whole folder to this computer's own drive, and open the copy — your changes and ADE's chats come with it.",
         }];
       }),
       run("drive", "The drive is the one ADE expects", async () => {
