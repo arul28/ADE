@@ -690,6 +690,9 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
     /** True while a recording holds the lane's stream. */
     isRecording: sessions.isRecording,
 
+    /** The lane's emulator booted: per-boot device setup (Chrome's first run) runs again. */
+    onDeviceBooted: (laneId: string): void => apps.forgetBoot(laneId),
+
     /** The lane's stream is about to stop (the device stopped or crashed): end its recording first. */
     async onStreamEnding(laneId: string): Promise<void> {
       await sessions.finishQuietly(laneId, "device-off", "android.recording_device_off_failed");
