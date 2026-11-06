@@ -4605,7 +4605,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const updateTailnetDiscoveryStatus = (
     next: SyncTailnetDiscoveryStatus,
   ): void => {
+    const previous = tailnetDiscoveryStatus;
     tailnetDiscoveryStatus = next;
+    // Only a real change notifies. The state change starts a role refresh that
+    // publishes discovery again, so an unchanged "unavailable" or "disabled"
+    // answer (a dev machine with Tailscale Serve off) used to loop: about a
+    // thousand device-row writes a second, tens of GB of WAL in an hour.
+    if (
+      previous.state === next.state
+      && previous.servicePort === next.servicePort
+      && previous.target === next.target
+      && previous.error === next.error
+      && previous.stderr === next.stderr
+    ) {
+      return;
+    }
     setTimeout(() => {
       if (!disposed) args.onStateChanged?.();
     }, 0);

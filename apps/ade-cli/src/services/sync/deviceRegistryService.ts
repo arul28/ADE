@@ -18,6 +18,9 @@ import { mapPlatform } from "./syncProtocol";
 import { readTailscaleLocalStatus } from "./tailscaleLocalStatus";
 import { copiedProjectHostMarkerPath } from "./hostInstanceGuard";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
+
+/** How long a local device row that changed nothing but its `last_seen_at` is left as is. */
+const LOCAL_DEVICE_LAST_SEEN_REFRESH_MS = 30_000;
 import { nowIso, safeJsonParse, toOptionalString, uniqueStrings } from "../../../../desktop/src/main/services/shared/utils";
 import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
 import { rememberMachineIdFile } from "./machineIdFile";
@@ -397,10 +400,27 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
     return mapDeviceRow(args.db.get<DeviceRow>("select * from devices where device_id = ? limit 1", [record.deviceId]))!;
   };
 
+  const localDeviceRowUnchanged = (
+    existing: SyncDeviceRecord,
+    next: Omit<SyncDeviceRecord, "createdAt" | "updatedAt">,
+  ): boolean => {
+    const lastSeenMs = existing.lastSeenAt ? Date.parse(existing.lastSeenAt) : Number.NaN;
+    if (!Number.isFinite(lastSeenMs) || Date.now() - lastSeenMs >= LOCAL_DEVICE_LAST_SEEN_REFRESH_MS) return false;
+    return existing.siteId === next.siteId
+      && existing.name === next.name
+      && existing.platform === next.platform
+      && existing.deviceType === next.deviceType
+      && existing.lastHost === next.lastHost
+      && existing.lastPort === next.lastPort
+      && existing.tailscaleIp === next.tailscaleIp
+      && JSON.stringify(existing.ipAddresses) === JSON.stringify(next.ipAddresses)
+      && JSON.stringify(existing.metadata) === JSON.stringify(next.metadata);
+  };
+
   const ensureLocalDevice = (): SyncDeviceRecord => {
     const existing = mapDeviceRow(args.db.get<DeviceRow>("select * from devices where device_id = ? limit 1", [localDeviceId]));
     const defaults = localSyncDeviceDefaults();
-    return upsertDeviceRecord({
+    const next = {
       deviceId: localDeviceId,
       siteId: localSiteId,
       // Prefer the freshly-resolved OS device name (ComputerName on macOS) so a
@@ -418,7 +438,14 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
         ...(existing?.metadata ?? {}),
         ...defaults.metadata,
       },
-    });
+    };
+    // Every role refresh, host start and discovery publish calls this. A row
+    // that would change only its `last_seen_at`, written moments ago, is not
+    // written again: each write is a replicated commit with clock-table rows,
+    // and a refresh loop turned it into about a thousand commits a second.
+    // Peers call a brain gone after minutes, so a 30 s stamp is fresh enough.
+    if (existing && localDeviceRowUnchanged(existing, next)) return existing;
+    return upsertDeviceRecord(next);
   };
 
   const listDevices = (): SyncDeviceRecord[] => {
