@@ -129,9 +129,21 @@ class AccountMachineHelloRejectedError extends Error {
 }
 
 /**
+ * The host refused to issue an adoption challenge. `hostCode` is the code it
+ * sent with the refusal, when it sent one.
+ */
+class AccountChallengeRefusedError extends Error {
+  constructor(message: string, readonly hostCode: string | null) {
+    super(message);
+    this.name = "AccountChallengeRefusedError";
+  }
+}
+
+/**
  * What a host before #2050 answers a sealed adoption with when no project on
  * it hosts sync (`sealed_adoption_unavailable`); newer hosts serve the
- * challenge everywhere. Older hosts sent only these words.
+ * challenge everywhere. Hosts that sent the code are classified by it; the
+ * oldest sent only these words.
  */
 const SEALED_ADOPTION_UNAVAILABLE_CODE = "sealed_adoption_unavailable";
 const SEALED_ADOPTION_UNAVAILABLE_REASON =
@@ -167,6 +179,8 @@ type AccountMachineAdoptionFailure = {
   route: AccountMachineAdoptionRoute;
   reason: string;
   helloCode: SyncHelloErrorPayload["code"] | null;
+  /** The code a host sent with a refused adoption challenge. */
+  hostCode: string | null;
 };
 
 function emitAccountMachineAdoptionStage(
@@ -196,6 +210,7 @@ function logAccountRouteFailure(
     route: failure.route.kind,
     classification: classifyAccountMachineAdoptionFailure(failure),
     ...(failure.helloCode ? { helloCode: failure.helloCode } : {}),
+    ...(failure.hostCode ? { hostCode: failure.hostCode } : {}),
     durationMs,
     reason: boundedInlineText(failure.reason, 200),
   });
@@ -237,8 +252,10 @@ function classifyAccountMachineAdoptionFailure(
       break;
   }
 
+  // The host's version, not the account: before the sign-in words below.
+  if (failure.hostCode === SEALED_ADOPTION_UNAVAILABLE_CODE) return "protocol";
   const reason = failure.reason;
-  // Before the sign-in words below: the host's version, not the account.
+  // A host old enough to send only the sentence.
   if (reason === SEALED_ADOPTION_UNAVAILABLE_REASON) return "protocol";
   if (/timed? out|timeout/i.test(reason)) return "timeout";
   // Adoption is how a stale pairing gets repaired, so a host that says the
@@ -1107,6 +1124,7 @@ export class DesktopPairedMachineStore {
           route,
           reason: error instanceof Error ? error.message : String(error),
           helloCode: null,
+          hostCode: null,
         };
         failures.push(failure);
         logAccountRouteFailure(options.logger, failure, Date.now() - routeStartedAt);
@@ -1157,13 +1175,15 @@ export class DesktopPairedMachineStore {
             // next route instead of aborting adoption with a misleading
             // "older ADE" identity error.
             const refusal = challengeEnvelope.payload as { message?: unknown; code?: unknown } | null;
-            const hostMessage = refusal?.code === SEALED_ADOPTION_UNAVAILABLE_CODE
+            const hostCode = typeof refusal?.code === "string" && refusal.code.trim() ? refusal.code.trim() : null;
+            const hostMessage = hostCode === SEALED_ADOPTION_UNAVAILABLE_CODE
               ? SEALED_ADOPTION_UNAVAILABLE_REASON
               : refusal?.message;
-            throw new Error(
+            throw new AccountChallengeRefusedError(
               typeof hostMessage === "string" && hostMessage.trim()
                 ? boundedInlineText(hostMessage, 200)
                 : "The machine declined the account adoption challenge.",
+              hostCode,
             );
           }
           const challenge = challengeEnvelope.payload as
@@ -1386,6 +1406,7 @@ export class DesktopPairedMachineStore {
           helloCode: error instanceof AccountMachineHelloRejectedError
             ? error.helloCode
             : null,
+          hostCode: error instanceof AccountChallengeRefusedError ? error.hostCode : null,
         };
         failures.push(failure);
         logAccountRouteFailure(options.logger, failure, Date.now() - routeStartedAt);
@@ -1400,6 +1421,7 @@ export class DesktopPairedMachineStore {
         host: accountMachineAdoptionRouteHost(failure.route),
         failure: classifyAccountMachineAdoptionFailure(failure),
         ...(failure.helloCode ? { helloCode: failure.helloCode } : {}),
+        ...(failure.hostCode ? { hostCode: failure.hostCode } : {}),
         reason: boundedInlineText(failure.reason, 200),
       })),
       omittedAttemptCount: Math.max(0, failures.length - MAX_ROUTE_ATTEMPTS),

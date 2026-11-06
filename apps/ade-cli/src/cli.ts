@@ -30601,9 +30601,9 @@ async function runServe(
   });
   const stopParentMonitor = monitorRuntimeParentProcess(finish);
   const stopIdleMonitor = monitorRuntimeIdleExit(states, finish);
-  // A dev or test brain nobody manages (no service, no parent, a scratch
-  // ADE home) leaves once its parent is gone and it has had nothing to do
-  // for a while, stopping the emulators it started on the way out.
+  // A brain a dev or test launcher marked (no service, no parent, not the
+  // installed home) leaves once its launcher is gone and it has had nothing
+  // to do for a while, stopping the emulators it started on the way out.
   const stopUnmanagedIdleMonitor = await (async () => {
     const [unmanaged, { isStartedByRuntimeService }, { ADE_RUNTIME_SERVICE_NAME }] = await Promise.all([
       import("./services/runtime/unmanagedBrainIdleExit"),

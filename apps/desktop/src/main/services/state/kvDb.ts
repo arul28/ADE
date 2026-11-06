@@ -5131,17 +5131,6 @@ export async function openKvDb(
     try {
       const db = await openKvDbOnce(dbPath, logger, options);
       if (attempt > 1) logger.info("db.open_busy_settled", { attempt });
-      // Open databases, for the brain's write-ahead-log sampling (`dbActivity.ts`).
-      noteDbOpened(dbPath);
-      const close = db.close;
-      let closed = false;
-      db.close = () => {
-        if (!closed) {
-          closed = true;
-          noteDbClosed(dbPath);
-        }
-        close();
-      };
       return db;
     } catch (error) {
       if (!isSqliteBusyOrLockedError(error)) {
@@ -5843,6 +5832,9 @@ async function openKvDbOnce(
     },
   };
 
+  // Open databases, for the brain's write-ahead-log sampling (`dbActivity.ts`).
+  noteDbOpened(dbPath);
+  let closed = false;
   return {
     getJson: <T,>(key: string): T | null => {
       const raw = getString(key);
@@ -5862,6 +5854,10 @@ async function openKvDbOnce(
       getRow(db, "pragma wal_checkpoint(TRUNCATE)");
     },
     close: () => {
+      if (!closed) {
+        closed = true;
+        noteDbClosed(dbPath);
+      }
       stopExportHelper(true);
       closeDatabase(db);
     },

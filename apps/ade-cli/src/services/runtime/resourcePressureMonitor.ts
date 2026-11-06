@@ -22,7 +22,7 @@ import type { ProductAnalyticsCapture } from "../../../../desktop/src/shared/typ
 /*
  * Resource-pressure episodes: the machine running short of memory or swap, a
  * project database's write-ahead log ballooning, or the brain itself pinning a
- * core. On 2026-11-06 a Mac froze with no ADE signal at all; this is the signal.
+ * core: the signal a machine that froze would otherwise leave none of.
  *
  * It rides the brain loop watchdog's existing five-minute sample
  * (`BRAIN_MEMORY_SAMPLE_INTERVAL_MS`), in the machine brain only. Per tick:
@@ -213,16 +213,19 @@ export function readResourcePressureRecord(runtimeDir: string): ResourcePressure
   }
 }
 
-export function memoryOf(signals: HostMemorySignals): ResourcePressureMemory {
+/** The memory facts kept for a sample and a report; a signal not read is null. */
+export function memoryOf(
+  signals: Pick<HostMemorySignals, "totalMb" | "availableMb"> & Partial<ResourcePressureMemory>,
+): ResourcePressureMemory {
   return {
     totalMb: signals.totalMb,
     availableMb: signals.availableMb,
-    pressure: signals.pressure,
-    swapUsedMb: signals.swapUsedMb,
-    swapTotalMb: signals.swapTotalMb,
-    commitUsedMb: signals.commitUsedMb,
-    commitLimitMb: signals.commitLimitMb,
-    psiSomeAvg10: signals.psiSomeAvg10,
+    pressure: signals.pressure ?? null,
+    swapUsedMb: signals.swapUsedMb ?? null,
+    swapTotalMb: signals.swapTotalMb ?? null,
+    commitUsedMb: signals.commitUsedMb ?? null,
+    commitLimitMb: signals.commitLimitMb ?? null,
+    psiSomeAvg10: signals.psiSomeAvg10 ?? null,
   };
 }
 
@@ -239,18 +242,7 @@ export async function readTickMemory(
     if (platform === "win32") {
       const totalMb = Math.round(os.totalmem() / (1024 * 1024));
       const availableMb = Math.round(os.freemem() / (1024 * 1024));
-      if (totalMb > 0 && availableMb / totalMb >= WINDOWS_FULL_READ_SHARE) {
-        return {
-          totalMb,
-          availableMb,
-          pressure: null,
-          swapUsedMb: null,
-          swapTotalMb: null,
-          commitUsedMb: null,
-          commitLimitMb: null,
-          psiSomeAvg10: null,
-        };
-      }
+      if (totalMb > 0 && availableMb / totalMb >= WINDOWS_FULL_READ_SHARE) return memoryOf({ totalMb, availableMb });
     }
     return memoryOf(await read({ platform, pagingSampleMs: 0 }));
   } catch {

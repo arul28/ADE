@@ -1,5 +1,8 @@
 import { execFile, execFileSync } from "node:child_process";
 
+/** A start time read twice can differ by rounding (`lstart` has whole seconds); a second is generous. */
+export const PROCESS_START_TIME_TOLERANCE_MS = 1_000;
+
 /**
  * OS-reported start time of a live pid, in epoch milliseconds, or null when the
  * platform cannot tell.

@@ -54,12 +54,7 @@ function cleanModel(value: string | null | undefined): string | null {
 
 /** The maker's model name. One `sysctl`, one file, or one `reg` read. Never throws. */
 export async function readMachineHardware(platform: NodeJS.Platform = process.platform): Promise<DiagnosticMachineHardware> {
-  const cpus = os.cpus();
-  const base = {
-    cpuModel: cpus[0]?.model?.trim().replace(/\s+/g, " ") || null,
-    cpuCount: cpus.length,
-    ramGb: Math.round(os.totalmem() / 1024 ** 3),
-  };
+  const base = basicMachineHardware();
   let model: string | null = null;
   try {
     if (platform === "darwin") {
@@ -80,7 +75,7 @@ export async function readMachineHardware(platform: NodeJS.Platform = process.pl
   } catch {
     model = null;
   }
-  return { model, ...base };
+  return { ...base, model };
 }
 
 /**

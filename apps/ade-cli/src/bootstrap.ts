@@ -234,7 +234,6 @@ import { createMacDesktopLogger } from "../../desktop/src/main/services/macDeskt
 import { createAndroidEmulatorService } from "../../desktop/src/main/services/android/androidEmulatorService";
 import {
   AndroidEmulatorOwnersStore,
-  isAdoptableAdeHome,
   machineAndroidEmulatorOwnersPath,
 } from "../../desktop/src/main/services/android/androidEmulatorOwners";
 import {
@@ -294,6 +293,7 @@ import {
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import {
   brainLogPath,
+  isAdoptableAdeHome,
   resolveMachineAdeLayout,
   resolveMachineEndpointNames,
   resolveReachableMachineDesktopBridgeSocketPath,

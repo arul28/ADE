@@ -104,8 +104,6 @@ export default defineConfig([
         ...(options.define ?? {}),
         __ADE_VERSION__: JSON.stringify(version),
         __ADE_UNRELEASED_VERSION__: JSON.stringify(unreleasedVersion),
-        // The desktop code this bundle carries reads the same answer.
-        __ADE_RELEASE_BUILD__: JSON.stringify(!unreleasedVersion),
         __ADE_POSTHOG_PROJECT_TOKEN__: JSON.stringify(posthogProjectToken),
         __ADE_POSTHOG_HOST__: JSON.stringify(process.env.ADE_POSTHOG_HOST?.trim() ?? ""),
       };

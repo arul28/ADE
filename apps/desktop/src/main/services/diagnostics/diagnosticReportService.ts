@@ -19,6 +19,8 @@ import {
   collectMachineHealth,
   readMachineHardware,
   readMachineKeyFingerprint,
+  type DiagnosticMachineHardware,
+  type DiagnosticMachineHealth,
 } from "../../../../../ade-cli/src/services/diagnostics/machineHealth";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { readVolumeSpace } from "../storage/volume";
@@ -105,6 +107,10 @@ export type DiagnosticReportDeps = {
   diagnoseProject?: (projectRoot: string) => Promise<unknown>;
   /** Deadline for each optional step above. Test seam; defaults to 8s. */
   stepTimeoutMs?: number;
+  /** The machine-health section: live (`sysctl`, `ps`, `footprint`; PowerShell on Windows) by default. */
+  readMachineHealth?: (runtimeDir: string) => Promise<DiagnosticMachineHealth>;
+  /** The hardware line (the model from `sysctl`, `/sys` or the registry) by default. */
+  readMachineHardware?: () => Promise<DiagnosticMachineHardware>;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
 };
@@ -209,8 +215,11 @@ export async function collectDiagnosticReport(
       : Promise.resolve(null),
     // Off the main thread like everything above: a `sysctl`, a `ps` and a
     // `footprint` on macOS, PowerShell on Windows.
-    bestEffortStep(() => collectMachineHealth({ runtimeDir: machineLayout.runtimeDir, live: true }), deps.stepTimeoutMs),
-    bestEffortStep(() => readMachineHardware(), deps.stepTimeoutMs),
+    bestEffortStep(
+      () => (deps.readMachineHealth ?? ((runtimeDir) => collectMachineHealth({ runtimeDir, live: true })))(machineLayout.runtimeDir),
+      deps.stepTimeoutMs,
+    ),
+    bestEffortStep(() => (deps.readMachineHardware ?? readMachineHardware)(), deps.stepTimeoutMs),
   ]);
 
   // Only what lives under Electron's userData is added here. The project's

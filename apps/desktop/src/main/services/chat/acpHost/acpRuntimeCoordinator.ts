@@ -267,24 +267,29 @@ export class AcpModeUnsupportedError extends Error {
   }
 }
 
-/** `session/set_mode` for a session whose agent has no `session/set_config_option`. */
+/**
+ * `session/set_mode` for a session whose agent has no `session/set_config_option`.
+ * `unsupported` when the agent has no `session/set_mode` either or refused
+ * the mode (invalid params); any other failure is the call's own.
+ */
 async function applyAcpModeWithoutConfigOption<TSteer>(
   runtime: AcpRuntimeState<TSteer>,
   modeId: string,
   args: { sessionId: string; logger: Logger },
-): Promise<boolean> {
-  if (runtime.session.initialModeId === modeId) return true;
+): Promise<{ applied: true } | { applied: false; unsupported: boolean; error: unknown }> {
+  if (runtime.session.initialModeId === modeId) return { applied: true };
   try {
     await runtime.session.setMode(modeId);
     runtime.currentModeId = modeId;
-    return true;
+    return { applied: true };
   } catch (error) {
     args.logger.warn("agent_chat.acp_set_mode_fallback_failed", {
       sessionId: args.sessionId,
       provider: runtime.provider,
       error: getErrorMessage(error),
     });
-    return false;
+    const unsupported = error instanceof AcpRpcError && (error.isMethodNotFound || error.code === -32602);
+    return { applied: false, unsupported, error };
   }
 }
 
@@ -545,13 +550,16 @@ export async function createAcpRuntime<TSteer>(
       // A build without `session/set_config_option` (-32601) still takes the
       // mode through the standard `session/set_mode`, or needs nothing when
       // its session already runs in that mode. Only a mode it cannot take at
-      // all fails closed, and that is the build's answer, not a broken agent.
+      // all (no `set_mode` either, or the mode refused) fails closed as the
+      // build's answer; a `set_mode` that failed any other way is reported.
       const methodMissing = caught instanceof AcpRpcError && caught.isMethodNotFound;
-      const applied = methodMissing && await applyAcpModeWithoutConfigOption(runtime, nativeModeValue, {
-        sessionId: args.owner.session.id,
-        logger: args.logger,
-      });
-      const error = methodMissing ? new AcpModeUnsupportedError(args.dialect.displayName, caught) : caught;
+      const fallback = methodMissing
+        ? await applyAcpModeWithoutConfigOption(runtime, nativeModeValue, { sessionId: args.owner.session.id, logger: args.logger })
+        : null;
+      const applied = fallback?.applied === true;
+      const error = fallback && !fallback.applied
+        ? fallback.unsupported ? new AcpModeUnsupportedError(args.dialect.displayName, caught) : fallback.error
+        : caught;
       if (!applied && args.dialect.modeSetupRequired) {
         // A failed mode setup must never fall through to onReady: the agent may
         // now be running with a broader posture than the user selected.

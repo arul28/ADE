@@ -177,6 +177,13 @@ describe("the emulator sweep", () => {
       stopped: null,
       after: { ownerGoneAt: minutesAgo(3) },
     }],
+    ["keeps a pinned emulator whose installed-home brain is gone, past any grace, for its adopter", {
+      ownerPid: deadPid(),
+      ownerAdoptable: true,
+      ownerHome: "/elsewhere/.ade",
+      ownerGoneAt: minutesAgo(60),
+      pinned: true,
+    }, {}, { stopped: null, after: { pinned: true, ownerGoneAt: minutesAgo(60) } }],
     ["adopts one a brain on its own adopting home left (a restart)", { ownerPid: deadPid(), ownerAdoptable: true, lastUsedAt: minutesAgo(2) }, { selfAdoptable: true }, {
       stopped: null,
       after: { ownerGoneAt: null },
@@ -229,5 +236,64 @@ describe("the emulator sweep", () => {
     } finally {
       leave();
     }
+  });
+
+  const sweepWith = (extra: Partial<Parameters<typeof createAndroidEmulatorLifecycle>[0]>) => {
+    const stops: Array<{ avdName: string; pid: number }> = [];
+    const lifecycle = createAndroidEmulatorLifecycle({
+      store,
+      self: { brainPid: LIVE, brainStartedAtMs: null, adeHome: path.join(root, "home-self"), adoptable: false },
+      discoveryDirs: [discovery],
+      idleMs: 20 * 60_000,
+      now: () => nowMs,
+      readStartTimes: async () => new Map(),
+      stopEmulator: async (_record, emulator) => {
+        stops.push({ avdName: emulator.avdName, pid: emulator.pid });
+      },
+      ...extra,
+    });
+    return { lifecycle, stops };
+  };
+
+  // The person pins the emulator after the sweep read the file and before
+  // the stop is taken: the stop reads the record again and leaves it.
+  it("never stops an emulator pinned after the sweep looked", async () => {
+    discoveryFile(LIVE, AVD, PORT);
+    store.update((data) => {
+      data.emulators.push(record({ lastUsedAt: minutesAgo(90) }));
+    });
+    const { lifecycle, stops } = sweepWith({});
+    const leave = lifecycle.register({
+      projectRoot: "/projects/app",
+      isBusy: () => false,
+      stopIdle: async () => {
+        lifecycle.setPinned(AVD, true);
+        return "not_found";
+      },
+    });
+    try {
+      await lifecycle.sweep();
+      expect(stops).toEqual([]);
+      expect(store.read().emulators[0]).toMatchObject({ pinned: true, stopping: null });
+    } finally {
+      leave();
+    }
+  });
+
+  // Windows has no start times, and a crashed emulator's discovery file stays
+  // behind: once Windows hands its pid to another program, only the image
+  // name tells them apart. A kill there takes another program's process tree.
+  it.each<[string, string, Array<{ avdName: string; pid: number }>]>([
+    ["never stops a pid Windows handed to another program", "chrome.exe", []],
+    ["stops the emulator while its pid is still qemu", "qemu-system-x86_64.exe", [{ avdName: AVD, pid: LIVE }]],
+  ])("on Windows, %s", async (_label, image, expected) => {
+    discoveryFile(LIVE, AVD, PORT);
+    store.update((data) => {
+      data.emulators.push(record({ lastUsedAt: minutesAgo(90) }));
+    });
+    const { lifecycle, stops } = sweepWith({ platform: "win32", readProcessImages: async () => new Map([[LIVE, image]]) });
+    await lifecycle.sweep();
+    expect(stops).toEqual(expected);
+    if (expected.length === 0) expect(store.read().emulators).toEqual([]);
   });
 });

@@ -53,10 +53,12 @@ import { RuntimeRpcClient, type RuntimeRpcTransport } from "../remoteRuntime/run
 import { coerceProjects } from "../remoteRuntime/remoteBootstrap";
 import type { Logger } from "../logging/logger";
 import { getRuntimeServiceStatus, type ServiceManagerStatusResult } from "../../../../../ade-cli/src/serviceManager";
-import { ADE_RUNTIME_SERVICE_NAME as RUNTIME_SERVICE_NAME } from "../../../../../ade-cli/src/serviceManager/common";
+import { ADE_RUNTIME_SERVICE_NAME as RUNTIME_SERVICE_NAME, isPidAlive } from "../../../../../ade-cli/src/serviceManager/common";
+import { readWindowsServicePidRecord } from "../../../../../ade-cli/src/serviceManager/installWindows";
 import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { buildPackagedRuntimeNodePath, type PackagedRuntimeNodePathOptions } from "../runtime/packagedNodePath";
 import { readLastFailure } from "../runtime/lastFailureStore";
+import { withTimeout } from "../shared/withTimeout";
 import { readProcessStartTimeMs } from "../processes/processStartTime";
 import { askOlderBrainToShutDown, decideOlderBrainRetirement } from "./olderBrainRetirement";
 import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
@@ -218,6 +220,12 @@ const LOCAL_RUNTIME_SERVICE_STATUS_TIMEOUT_MS = 15_000;
 // connected to the machine service's own brain a snapshot is kept for the long
 // window instead; see `serviceHealthReadMaxAgeMs`.
 const SERVICE_HEALTH_READ_MAX_AGE_MS = 2_000;
+/**
+ * An unreadable service status is read once more after this long before the
+ * window falls back to a brain of its own: a cold PowerShell or a supervisor
+ * between two restarts reads as "unreadable" for a moment.
+ */
+const SERVICE_STATUS_UNREADABLE_RECHECK_MS = 3_000;
 const SERVICE_HEALTH_STEADY_MAX_AGE_MS = 5 * 60_000;
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
@@ -3391,6 +3399,39 @@ export class LocalRuntimeConnectionPool {
     }
   }
 
+  /**
+   * "The service status could not be read" before a fallback: read it once
+   * more after `SERVICE_STATUS_UNREADABLE_RECHECK_MS`, and keep that reason
+   * only if it is still unreadable, nothing owns the socket, and no service
+   * brain for this channel is running or starting (the Windows supervisor's
+   * pid record). Otherwise the reason the second read gives, or none. Bounded
+   * by the wait plus one status read.
+   */
+  private async recheckUnreadableServiceStatus(socketPath: string): Promise<AppFallbackReason | null> {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, SERVICE_STATUS_UNREADABLE_RECHECK_MS);
+    });
+    this.assertNotDisposed();
+    const reread = await withTimeout(this.refreshServiceHealth(0).then(() => true), LOCAL_RUNTIME_SERVICE_STATUS_TIMEOUT_MS + 1_000);
+    const reason = reread
+      ? appFallbackReason({ serviceInstall: this.serviceInstallStatus, serviceHealth: this.serviceHealthStatus })
+      : "service_status_unreadable";
+    if (reason !== "service_status_unreadable") return reason;
+    if (await probeSocketHasOwner(socketPath)) return null;
+    if (process.platform === "win32") {
+      const record = readWindowsServicePidRecord();
+      const live = record && (isPidAlive(record.supervisorPid) || (record.runtimePid != null && isPidAlive(record.runtimePid)));
+      if (live) {
+        this.logger.info("local_runtime.app_fallback_skipped_service_alive", {
+          supervisorPid: record.supervisorPid,
+          runtimePid: record.runtimePid,
+        });
+        return null;
+      }
+    }
+    return reason;
+  }
+
   private async createConnection(): Promise<LocalRuntimeConnection> {
     const layout = resolveMachineAdeLayout();
     const socketPath = machineRuntimeSocketPathToDial();
@@ -3432,10 +3473,13 @@ export class LocalRuntimeConnectionPool {
     if (isPrimaryMachineRuntimeSocketPath(socketPath, layout.socketPath)) {
       const lastFailure = readLastFailure({ kind: "machine" });
       await this.refreshServiceHealth(0);
-      const fallbackReason = appFallbackReason({
+      let fallbackReason = appFallbackReason({
         serviceInstall: this.serviceInstallStatus,
         serviceHealth: this.serviceHealthStatus,
       });
+      if (fallbackReason === "service_status_unreadable" && this.options.preferServiceRepair) {
+        fallbackReason = await this.recheckUnreadableServiceStatus(socketPath);
+      }
       if (
         this.options.preferServiceRepair
         && fallbackReason

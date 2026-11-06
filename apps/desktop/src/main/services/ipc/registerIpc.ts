@@ -1089,6 +1089,7 @@ import type { ConfigReloadService } from "../projects/configReloadService";
 import type { createProjectScaffoldService } from "../projects/projectScaffoldService";
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
+import { withTimeout } from "../shared/withTimeout";
 import { createComputerUseArtifactPath, toProjectArtifactUri } from "../computerUse/localComputerUse";
 import { prepareMcpAppDocument, prepareSceneDocument } from "../scenes/sceneDocumentStore";
 import {
@@ -2887,19 +2888,15 @@ export function registerIpc({
    */
   const builtInBrowserRemoteRequestClaims = createRemoteRequestClaims();
 
+  // The scheme and the sender kind only: a page name can be a local file's.
   const describeUntrustedSender = (hasWindow: boolean, senderUrl: string | null | undefined): string => {
     let scheme = "no url";
-    let page = "";
     try {
-      if (senderUrl) {
-        const url = new URL(senderUrl);
-        scheme = url.protocol.replace(/:$/, "") || "unknown";
-        if (url.protocol === "file:") page = ` ${url.pathname.split("/").pop() ?? ""}`;
-      }
+      if (senderUrl) scheme = new URL(senderUrl).protocol.replace(/:$/, "") || "unknown";
     } catch {
       scheme = "unparsable url";
     }
-    return `${hasWindow ? "window" : "no window"}, ${scheme}${page}`;
+    return `${hasWindow ? "window" : "no window"}, ${scheme}`;
   };
 
   const guardBuiltInBrowserIpc = (
@@ -5445,29 +5442,20 @@ export function registerIpc({
       const force = arg?.force === true;
       let phase = "start";
       const startedAt = Date.now();
-      let budgetTimer: ReturnType<typeof setTimeout> | null = null;
       try {
         const read = buildGlobalAiStatus({ force, onPhase: (next) => { phase = next; } });
         // A forced refresh has its own, longer IPC deadline for the probes.
         if (force) return await read;
-        read.catch(() => undefined);
-        return await Promise.race([
-          read,
-          new Promise<AiSettingsStatus>((resolve) => {
-            budgetTimer = setTimeout(() => {
-              // Which step was still running, for the next report of a slow machine.
-              ctx.logger.warn("ai.get_status.global_slow", { phase, budgetMs: GLOBAL_AI_STATUS_BUDGET_MS, elapsedMs: Date.now() - startedAt });
-              resolve(getUnavailableAiStatus());
-            }, GLOBAL_AI_STATUS_BUDGET_MS);
-          }),
-        ]);
+        const status = await withTimeout(read, GLOBAL_AI_STATUS_BUDGET_MS);
+        if (status) return status;
+        // Which step was still running, for the next report of a slow machine.
+        ctx.logger.warn("ai.get_status.global_slow", { phase, budgetMs: GLOBAL_AI_STATUS_BUDGET_MS, elapsedMs: Date.now() - startedAt });
+        return getUnavailableAiStatus();
       } catch (error) {
         ctx.logger.warn("ai.get_status.global_fallback_failed", {
           error: getErrorMessage(error),
         });
         return getUnavailableAiStatus();
-      } finally {
-        if (budgetTimer) clearTimeout(budgetTimer);
       }
     }
     try {

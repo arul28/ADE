@@ -252,7 +252,17 @@ update window and repair throttle: `local_runtime.update_window_started` /
 `local_runtime.service_repair_throttled`. They record why a repair or connect
 was held back during an update transaction and carry no paths or versions
 beyond the bounded fields already in `local-runtime.jsonl`; none is a PostHog
-event.
+event. When the service status cannot be read (`service_status_unreadable`),
+the pool re-reads it once after 3 s and starts its own no-sync brain only if it
+is still unreadable, nothing owns the socket, and (on Windows) no supervisor or
+brain for the channel is alive; otherwise it logs
+`local_runtime.app_fallback_skipped_service_alive` and waits for the service.
+
+Pairing with another machine logs `account.pair.route_failed` per route tried.
+A challenge the other machine refuses carries that machine's `hostCode` (for
+example `sealed_adoption_unavailable` from a host too old to finish the
+sign-in), and the failure is classified by that code, so the user is told to
+update ADE there rather than to check their account.
 
 When isolated recovery finds a strictly older brain on the machine socket
 (`olderBrainRetirement.ts`), the pool writes

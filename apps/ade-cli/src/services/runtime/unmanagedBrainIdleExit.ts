@@ -1,28 +1,34 @@
 import fs from "node:fs";
-import { isAdoptableAdeHome } from "../../../../desktop/src/main/services/android/androidEmulatorOwners";
+import { isTruthyEnvFlag } from "../../../../desktop/src/shared/doNotTrack";
+import { isAdoptableAdeHome } from "../projects/machineLayout";
+import { DEV_TEST_MACHINE_ENV } from "../sync/devTestMachine";
 
 /**
- * Brains nobody manages leave once they sit idle.
+ * Dev and test brains leave once nobody runs them and they sit idle.
  *
  * A brain started by a launcher on an ephemeral socket exits after
  * `ADE_RUNTIME_IDLE_EXIT_MS` (the CLI sets it); a desktop's brain exits with
  * its parent (`ADE_RUNTIME_PARENT_PID`); the installed service brain is
- * restarted by its service manager and never idles out. A brain that is none
- * of these (a dev or test machine's brain, an `ade serve` a test harness
- * started on a scratch `ADE_HOME`) had nothing to end it: on 2026-11-06 such
- * brains sat for a day and a half after their harness was gone, parent
- * launchd, no clients, and the emulators they started ran on with them.
+ * restarted by its service manager and never idles out. A brain a dev or
+ * test launcher started (a dev machine's, a dev desktop's) had nothing to
+ * end it once its launcher was gone, and the emulators it started ran on
+ * with it.
  *
  * Such a brain now exits after `UNMANAGED_BRAIN_IDLE_EXIT_MS` with nothing to
  * do, once its parent is gone. Its emulators stop on the way out: a brain on
  * a home that does not adopt does not hand them off.
  *
- * Never for: the installed app's ADE home (`~/.ade`, `~/.ade-alpha`, whoever
- * started the brain there), a brain its service manager started (launchd's
- * job label in `XPC_SERVICE_NAME`, a systemd unit's `INVOCATION_ID`, the
- * Windows supervisor's pid record), a desktop's brain, or a brain with any
- * explicit `ADE_RUNTIME_IDLE_EXIT_MS` (that setting, `0` included, is the
- * caller's answer).
+ * Only a brain its launcher marked: `ADE_DEV_BRAIN=1` (`scripts/dev-shared.mjs`,
+ * `scripts/dev-machine.mjs`), `--dev-test-machine` (`ADE_DEV_TEST_MACHINE`),
+ * or the dev launcher's own socket variable. A brain on a custom home that
+ * nothing marked (`nohup ade serve`, cron, a cloud box) runs until stopped.
+ *
+ * Never for, even when marked: the installed app's ADE home (`~/.ade`,
+ * `~/.ade-alpha`), a brain its service manager started (launchd's job label
+ * in `XPC_SERVICE_NAME`, a systemd unit's `INVOCATION_ID`, the Windows
+ * supervisor's pid record), a desktop's brain, or a brain with any explicit
+ * `ADE_RUNTIME_IDLE_EXIT_MS` (that setting, `0` included, is the caller's
+ * answer).
  */
 
 /** How long a brain nobody manages may sit with nothing to do. */
@@ -57,8 +63,16 @@ export function startedByServiceManager(facts: Pick<UnmanagedBrainFacts, "env" |
   return true;
 }
 
+/** Whether a dev or test launcher marked this brain as its own. */
+export function startedByDevLauncher(env: NodeJS.ProcessEnv): boolean {
+  return isTruthyEnvFlag(env.ADE_DEV_BRAIN)
+    || env[DEV_TEST_MACHINE_ENV] === "1"
+    || Boolean(env.ADE_DEV_RUNTIME_SOCKET_PATH?.trim());
+}
+
 /** The idle limit for this brain, or null when something else manages its life. */
 export function unmanagedBrainIdleExitMs(facts: UnmanagedBrainFacts): number | null {
+  if (!startedByDevLauncher(facts.env)) return null;
   if (facts.env.ADE_RUNTIME_IDLE_EXIT_MS !== undefined) return null;
   if (facts.env.ADE_RUNTIME_PARENT_PID?.trim()) return null;
   if (isAdoptableAdeHome(facts.adeHome)) return null;

@@ -11,6 +11,9 @@ import { lastFailurePathForMachine } from "../../../desktop/src/main/services/ru
 
 export const BRAIN_STARTS_FILE = "brain-starts.json";
 
+/** Why another ADE process ended a brain on purpose. */
+export type BrainStopper = "forced_stop" | "service_reinstall";
+
 export type BrainStart = {
   pid: number;
   at: string;
@@ -22,7 +25,7 @@ export type BrainStart = {
    * stop after a shutdown request, or a service reinstall. Absent when the
    * brain stopped itself or nobody knows.
    */
-  stoppedBy?: string;
+  stoppedBy?: BrainStopper | string;
   /** Counts toward a loop (see `brainRestartLoop.ts`). */
   counted: boolean;
   buildFlipFlop: boolean;
@@ -43,7 +46,11 @@ export type BrainStartsState = {
  * `pid` that is not marked yet; a pid with no start here (a supervisor, a
  * brain from before the record) changes nothing.
  */
-export function markBrainStoppedBy(pid: number, by: string, runtimeDir: string = path.dirname(lastFailurePathForMachine())): void {
+export function markBrainStoppedBy(
+  pid: number,
+  by: BrainStopper,
+  runtimeDir: string = path.dirname(lastFailurePathForMachine()),
+): void {
   if (!Number.isInteger(pid) || pid <= 0) return;
   const startsPath = path.join(runtimeDir, BRAIN_STARTS_FILE);
   if (!fs.existsSync(startsPath)) return;

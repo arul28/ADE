@@ -457,9 +457,9 @@ function matchesPrefix(name: string, prefixes: readonly string[]): boolean {
 
 /**
  * The real memory of the processes named by pid or whose executable starts
- * with one of `namePrefixes`. One `ps` plus one `footprint` on macOS, one
- * `ps` plus a small file read per process on Linux, one PowerShell call on
- * Windows. A process that cannot be read is left out. Never throws.
+ * with one of `namePrefixes`. One `ps` listing plus `realMemoryFor` on macOS
+ * and Linux, one PowerShell call on Windows. A process that cannot be read is
+ * left out. Never throws.
  */
 export async function readProcessMemory(options: {
   pids?: readonly number[];
@@ -471,7 +471,6 @@ export async function readProcessMemory(options: {
   const platform = options.platform ?? process.platform;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const run = options.deps?.run ?? defaultRun;
-  const readFile = options.deps?.readFile ?? defaultReadFile;
   const wanted = new Set((options.pids ?? []).filter((pid) => Number.isInteger(pid) && pid > 0));
   const prefixes = options.namePrefixes ?? [];
 
@@ -486,24 +485,41 @@ export async function readProcessMemory(options: {
     return text ? parseWindowsProcessMemoryRows(text) : [];
   }
 
-  const psPath = platform === "darwin" ? "/bin/ps" : "ps";
-  const listing = await run(psPath, ["-axo", "pid=,rss=,comm="], timeoutMs);
+  const listing = await run(platform === "darwin" ? "/bin/ps" : "ps", ["-axo", "pid=,rss=,comm="], timeoutMs);
   const rows = listing ? parsePsMemoryRows(listing) : [];
-  const picked = rows.filter((row) => wanted.has(row.pid) || matchesPrefix(row.name, prefixes));
-  if (picked.length === 0) return [];
+  return realMemoryFor(
+    rows.filter((row) => wanted.has(row.pid) || matchesPrefix(row.name, prefixes)),
+    { platform, timeoutMs, deps: options.deps },
+  );
+}
 
+/**
+ * The real memory of processes a `ps` already listed (macOS, Linux): one
+ * `footprint` on macOS, a small file read per process on Linux, the RSS
+ * elsewhere. A caller with its own listing passes its rows here instead of
+ * listing again. Never throws.
+ */
+export async function realMemoryFor(
+  rows: ReadonlyArray<{ pid: number; rssMb: number; name: string }>,
+  options: { platform?: NodeJS.Platform; timeoutMs?: number; deps?: Pick<HostMemoryReadDeps, "run" | "readFile"> } = {},
+): Promise<ProcessMemory[]> {
+  const platform = options.platform ?? process.platform;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const run = options.deps?.run ?? defaultRun;
+  const readFile = options.deps?.readFile ?? defaultReadFile;
+  if (rows.length === 0) return [];
   if (platform === "linux") {
-    return Promise.all(picked.map(async (row) => {
+    return Promise.all(rows.map(async (row) => {
       const status = await readFile(`/proc/${row.pid}/status`);
       const real = status ? parseLinuxProcStatusMemory(status) : null;
       return { pid: row.pid, name: row.name, mb: Math.max(row.rssMb, real ?? 0) };
     }));
   }
   if (platform === "darwin") {
-    const footprintArgs = picked.flatMap((row) => ["-p", String(row.pid)]);
+    const footprintArgs = rows.flatMap((row) => ["-p", String(row.pid)]);
     const text = await run("/usr/bin/footprint", [...footprintArgs, "--noCategories", "-f", "bytes"], timeoutMs);
     const footprints = text ? parseDarwinFootprint(text) : new Map<number, number>();
-    return picked.map((row) => ({ pid: row.pid, name: row.name, mb: Math.max(row.rssMb, footprints.get(row.pid) ?? 0) }));
+    return rows.map((row) => ({ pid: row.pid, name: row.name, mb: Math.max(row.rssMb, footprints.get(row.pid) ?? 0) }));
   }
-  return picked.map((row) => ({ pid: row.pid, name: row.name, mb: row.rssMb }));
+  return rows.map((row) => ({ pid: row.pid, name: row.name, mb: row.rssMb }));
 }

@@ -399,11 +399,10 @@ window until the next one. The source is the brain, not the pane
 ### The memory guard (P2)
 
 Before a boot, the brain decides on what the machine has already committed,
-not on a free-memory snapshot (`androidMemoryGuard.ts`). On 2026-11-06 a 36 GB
-Mac froze with five emulators running (7.6–9.7 GB each) while
-`kern.memorystatus_level` still read 41% free: macOS had pushed the emulators
-into 15 GB of swap. A start is refused with `ANDROID_LOW_MEMORY` when any one
-of these holds:
+not on a free-memory snapshot (`androidMemoryGuard.ts`): a machine already
+pushing the emulators into swap still reads as having memory free
+(`hostMemorySignals.ts` has the measured case). A start is refused with
+`ANDROID_LOW_MEMORY` when any one of these holds:
 
 1. **Pressure.** The OS says memory is under pressure, warn or worse. macOS:
    `kern.memorystatus_vm_pressure_level` (1 normal, 2 warn, 4 critical).
@@ -624,22 +623,34 @@ An emulator runs only as long as something is going to use it
   does. A brain on a dev or test home does not hand off on exit: it stops its
   emulators, and nothing adopts them. One that crashed is stopped by any
   brain's sweep after a grace: 2 minutes for a scratch home, 10 for the
-  installed app's home (its service can take minutes to come back).
+  installed app's home (its service can take minutes to come back). A pinned
+  emulator on the installed app's home is never stopped this way: it waits
+  for a brain on that home to adopt it. A stop re-reads the record just
+  before it is taken, and is called off when the record changed since the
+  sweep looked (pinned, adopted, used).
 - **The sweep.** Each brain sweeps 30 s after its first Android service
   starts and then every 5 minutes, on unref'd timers. A sweep reads the owner
   file and the discovery folders, and only when there are records runs one
-  `ps` for start times (none on Windows). It stops nothing that has no
-  record, and nothing whose discovery file no longer names the recorded AVD,
-  port and pid; a record whose emulator is gone is dropped.
+  `ps` for start times (on Windows, one `tasklist` for image names instead).
+  It stops nothing that has no record, and nothing whose discovery file no
+  longer names the recorded AVD, port and pid; a record whose emulator is
+  gone is dropped. Windows has no start times to compare and keeps a crashed
+  emulator's discovery file, so there a pid counts as the emulator only while
+  its image is `qemu-system-*` or `emulator*`.
 - **Stopping.** `adb -s emulator-<port> emu kill`, then (only if qemu has not
   exited after 20 s, and only after checking the discovery file again) SIGTERM,
-  then SIGKILL. On Windows, `taskkill /T`, then `taskkill /T /F`. Every stop
+  then SIGKILL. On Windows, `taskkill /T`, then `taskkill /T /F`, each only
+  after `tasklist` shows the pid is still an emulator's image; a user's stop
+  goes through the same checks. Every stop
   logs `android.emulator_stopped` with its reason: `user`, `released`,
   `lane_released`, `idle`, `owner_gone`, `orphan` or `project_closed`.
-- **Brains nobody manages.** A brain that no service manager, desktop or
-  launcher manages, on a scratch home, exits after 30 minutes with no
-  clients, no chat or terminal work and no synced device once its parent is
-  gone (`unmanagedBrainIdleExit.ts`), and stops its emulators on the way out.
+- **Dev and test brains.** A brain a dev or test launcher marked
+  (`ADE_DEV_BRAIN=1`, `--dev-test-machine`, the dev launcher's socket
+  variable), on a home other than the installed app's, exits after 30
+  minutes with no clients, no chat or terminal work and no synced device
+  once its parent is gone (`unmanagedBrainIdleExit.ts`), and stops its
+  emulators on the way out. A brain nothing marked (`nohup`, cron, a cloud
+  box) never idles out.
 
 ## Agents: `ade android`
 
@@ -995,8 +1006,10 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/main/services/android/androidMemoryGuard.ts`, `androidCrashWatch.ts` | P2: the memory guard (the decision before each start: pressure, paging, the emulators' budget, available memory, and the boots in flight), and the crash-buffer reader behind the crash pin. |
 | `apps/desktop/src/main/services/machineStats/hostMemorySignals.ts` | The machine's memory signals per OS (pressure, available, swap, commit, PSI, the paging rate) and the real memory of chosen processes. Shared with the brain's resource-pressure sampling. |
 | `apps/desktop/src/main/services/android/androidEmulatorOwners.ts`, `androidEmulatorSweep.ts` | The machine's owner file (`~/.ade/android/emulator-owners.json`) and the sweep's decision for one record; the lifecycle of one brain (owner records, last used, the pin, the guard's cross-brain ledger, the sweep). |
+| `apps/desktop/src/main/services/android/androidEmulatorUse.ts` | One service as the lifecycle sees it: the calls that count as use, busy, the idle stop through the lane's queue, the pin, and emulators taken in from before the owner file. |
+| `apps/desktop/src/main/services/android/androidEmulatorImage.ts` | Which processes are emulators by image name (memory guard, process groups), and the Windows `tasklist` check before a kill. |
 | `apps/desktop/src/main/services/device/deviceMaintenance.ts` | The timers, idle limit and touch throttle that the Apple devices' upkeep and the Android sweep share. |
-| `apps/ade-cli/src/services/runtime/unmanagedBrainIdleExit.ts` | The idle exit of a brain nobody manages (a dev or test brain on a scratch home). |
+| `apps/ade-cli/src/services/runtime/unmanagedBrainIdleExit.ts` | The idle exit of a brain a dev or test launcher marked, once its launcher is gone. |
 | `apps/desktop/src/main/services/android/androidAgentSuite.ts`, `androidJdk.ts` | The agent verbs (elements, apps, logcat, proof, lease), and the JDK that Gradle runs with. |
 | `apps/desktop/src/main/services/android/androidSystemImages.ts`, `apps/desktop/src/shared/types/androidEmulatorImages.ts` | P3: the system image list, install (on the guided install's job) and removal, and their types. |
 | `apps/desktop/src/main/services/android/androidInstrumentationTests.ts`, `apps/desktop/src/shared/types/androidEmulatorInstrumentation.ts` | P3: `ade android test`: the Gradle run, the JUnit XML and Gradle-output readers, and their types. |

@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { withExclusiveFileLockSync } from "../../../../../ade-cli/src/lib/exclusiveFileLock";
-import { adeHomeForChannel, isMachineAdeHome } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { ExclusiveFileLockTimeoutError, withExclusiveFileLockSync } from "../../../../../ade-cli/src/lib/exclusiveFileLock";
 import { deviceIdleMsFromEnv } from "../device/deviceMaintenance";
+import { PROCESS_START_TIME_TOLERANCE_MS } from "../processes/processStartTime";
+import { pathsEqual } from "../shared/pathCompare";
 import { writeFileAtomic } from "../state/durableFile";
 import { sameAvdName } from "./androidAvds";
 
@@ -11,17 +12,15 @@ import { sameAvdName } from "./androidAvds";
  * Who owns each emulator ADE started on this machine, in one file every
  * brain reads: the installed one, a dev brain and a test brain on a
  * throwaway ADE home alike. That is what lets an emulator outlive its brain
- * only as long as something is still going to use it.
- *
- * On 2026-11-06 a Mac froze with five emulators running. Brains on throwaway
- * test homes had handed theirs off on exit to a "next brain" that never
- * came, and the emulators ran on for a day and a half. Each project's own
- * `started-emulators.json` (`androidEmulatorProcess.ts`) cannot see that:
- * it lives in one project on one ADE home. This file does, so:
+ * only as long as something is still going to use it. Each project's own
+ * `started-emulators.json` (`androidEmulatorProcess.ts`) cannot: it lives
+ * in one project on one ADE home, so an emulator a test brain handed off to
+ * a "next brain" that never came ran on unseen. This file sees it, so:
  *
  * - an emulator whose brain is gone is adopted by a live brain on the same
  *   ADE home (a restart or an update), or stopped after a grace when no
- *   brain on that home can adopt it (a test or dev home never adopts);
+ *   brain on that home can adopt it (a test or dev home never adopts); a
+ *   pinned one on a home that adopts waits for its adopter however long;
  * - an emulator nobody used for `ANDROID_EMULATOR_IDLE_MS` is stopped,
  *   unless the person pinned it ("Keep running");
  * - an emulator with no record here is never stopped: it is the user's, or
@@ -51,8 +50,6 @@ const BOOTING_RECORD_MAX_AGE_MS = 10 * 60_000;
 const STOP_CLAIM_MAX_AGE_MS = 2 * 60_000;
 /** A boot reservation older than this is a start that never released it. */
 const RESERVATION_MAX_AGE_MS = 10 * 60_000;
-/** A start time read twice can differ by rounding; a second is generous (as `brainHomeRegistry`). */
-const START_TIME_TOLERANCE_MS = 1_000;
 
 /** The idle limit, from `ADE_ANDROID_IDLE_STOP_MINUTES` when set; 0 = never. */
 export function androidEmulatorIdleMs(env: NodeJS.ProcessEnv = process.env): number {
@@ -64,23 +61,13 @@ export function machineAndroidEmulatorOwnersPath(home = os.homedir()): string {
   return path.join(home, ".ade", "android", "emulator-owners.json");
 }
 
-/**
- * Whether a brain on this ADE home may adopt the emulators another brain on
- * it left: the user's default home or a packaged channel's (`~/.ade`,
- * `~/.ade-alpha`). Any other home is a test or dev copy, and its emulators
- * stop once its brain is gone.
- */
-export function isAdoptableAdeHome(adeHome: string): boolean {
-  return isMachineAdeHome(adeHome) || isMachineAdeHome(adeHome, adeHomeForChannel("alpha"));
-}
-
 /** The brain that owns an emulator. */
 export type AndroidEmulatorOwner = {
   brainPid: number;
   /** The OS start time of `brainPid` (POSIX), so a reused pid never passes for the brain. Null on Windows. */
   brainStartedAtMs: number | null;
   adeHome: string;
-  /** A brain on this home adopts what another brain on it left (`isAdoptableAdeHome`). */
+  /** A brain on this home adopts what another brain on it left (`isAdoptableAdeHome`, `machineLayout.ts`). */
   adoptable: boolean;
 };
 
@@ -125,7 +112,7 @@ export type AndroidEmulatorOwnerRecord = {
   pinned: boolean;
   /** When a sweep first found the owner brain gone; cleared when a brain adopts it. */
   ownerGoneAt: string | null;
-  /** A brain is stopping it now, so a second brain does not. */
+  /** A brain is stopping it now, so a second brain does not (`canClaimStop`). */
   stopping: { brainPid: number; at: string } | null;
 };
 
@@ -247,7 +234,7 @@ export class AndroidEmulatorOwnersStore {
         return result;
       }, { waitMs: 2_000, label: "the Android emulator owner file", staleAfterMs: 30_000 });
     } catch (error) {
-      this.onError?.(/Timed out waiting/u.test(String((error as Error)?.message)) ? "lock" : "write", error);
+      this.onError?.(error instanceof ExclusiveFileLockTimeoutError ? "lock" : "write", error);
       return null;
     }
   }
@@ -303,9 +290,7 @@ function msSince(iso: string | null, nowMs: number): number {
 
 /** Same ADE home, compared as the OS compares paths. */
 export function sameAdeHome(a: string, b: string, platform: NodeJS.Platform = process.platform): boolean {
-  const left = path.resolve(a);
-  const right = path.resolve(b);
-  return platform === "darwin" || platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+  return pathsEqual(path.resolve(a), path.resolve(b), platform);
 }
 
 /**
@@ -331,6 +316,8 @@ export function decideAndroidEmulatorSweep(record: AndroidEmulatorOwnerRecord, f
   // The owner brain is gone. A brain on its home that adopts takes it over.
   if (facts.self.adoptable && sameAdeHome(record.owner.adeHome, facts.self.adeHome)) return { kind: "adopt" };
   if (!record.ownerGoneAt) return { kind: "mark_owner_gone" };
+  // The person asked to keep it, and a brain on its home will come back for it.
+  if (record.pinned && record.owner.adoptable) return { kind: "keep", why: "pinned" };
   const grace = record.owner.adoptable ? ANDROID_ADOPTABLE_OWNER_GONE_GRACE_MS : ANDROID_OWNER_GONE_GRACE_MS;
   return msSince(record.ownerGoneAt, facts.nowMs) >= grace ? { kind: "stop", reason: "owner_gone" } : { kind: "keep", why: "grace" };
 }
@@ -338,7 +325,27 @@ export function decideAndroidEmulatorSweep(record: AndroidEmulatorOwnerRecord, f
 /** Whether a record's process facts still describe it: same pid, same start time when both are known. */
 export function sameStartTime(recorded: number | null, actual: number | null | undefined): boolean {
   if (recorded == null || actual == null) return true;
-  return Math.abs(actual - recorded) <= START_TIME_TOLERANCE_MS;
+  return Math.abs(actual - recorded) <= PROCESS_START_TIME_TOLERANCE_MS;
+}
+
+/**
+ * Whether `self` may take the stop of this record now: nobody claimed it,
+ * the claim carries this brain's pid, its claimer is gone, or the claim is
+ * older than `STOP_CLAIM_MAX_AGE_MS`.
+ */
+export function canClaimStop(
+  record: Pick<AndroidEmulatorOwnerRecord, "stopping">,
+  self: Pick<AndroidEmulatorOwner, "brainPid">,
+  nowMs: number,
+  isPidAlive: (pid: number) => boolean,
+): boolean {
+  const claim = record.stopping;
+  if (!claim) return true;
+  // This brain's own claim, or (another start time) a dead brain's whose pid
+  // this one now holds: either way no other live brain is stopping it.
+  if (claim.brainPid === self.brainPid) return true;
+  if (msSince(claim.at, nowMs) >= STOP_CLAIM_MAX_AGE_MS) return true;
+  return !isPidAlive(claim.brainPid);
 }
 
 /** A record without a qemu pid that is too old to still be booting. */

@@ -9,6 +9,7 @@ import { killWindowsProcessTreeAsync, terminateProcessTree } from "../shared/pro
 import { runAdb, runAdbText } from "./adb";
 import { readAndroidAvd, sameAvdName } from "./androidAvds";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
+import { androidEmulatorPidCheck } from "./androidEmulatorImage";
 import { androidUserHome, parseAndroidIni, type AndroidEnv } from "./androidSdk";
 import { sleep } from "../shared/utils";
 
@@ -648,8 +649,9 @@ export type AndroidStopResult = {
  * does not, ends the process: SIGTERM, then SIGKILL (on Windows, which has no
  * signals, `taskkill /T`, then `taskkill /T /F`), each only after checking
  * it is still this emulator (its discovery file names the same AVD, console
- * port and pid), so a reused pid is never killed. The caller makes sure ADE
- * started it.
+ * port and pid, and on Windows, where a crashed emulator's file stays, the
+ * pid's image is an emulator's), so a reused pid is never killed. The caller
+ * makes sure ADE started it.
  */
 export async function stopAndroidEmulator(input: StopAndroidEmulatorInput): Promise<AndroidStopResult> {
   const startedAt = Date.now();
@@ -661,8 +663,9 @@ export async function stopAndroidEmulator(input: StopAndroidEmulatorInput): Prom
     const launcher = input.launcherPid;
     if (!launcher || launcher === input.pid) return;
     // The Windows launcher exits right after qemu; a launcher still there is
-    // ADE's own child, so it may be ended.
-    if (!(await waitForExit(launcher, 5_000))) {
+    // ADE's own `emulator`, so it may be ended. A pid that now names another
+    // program (a launcher recorded by an earlier brain) is left alone.
+    if (!(await waitForExit(launcher, 5_000)) && (await androidEmulatorPidCheck(launcher)) === "emulator") {
       try {
         process.kill(launcher);
       } catch {
@@ -671,7 +674,8 @@ export async function stopAndroidEmulator(input: StopAndroidEmulatorInput): Prom
     }
   };
 
-  if (!isProcessAlive(input.pid)) {
+  // A pid Windows has handed to another program: this emulator is gone.
+  if (!isProcessAlive(input.pid) || (await androidEmulatorPidCheck(input.pid)) === "other") {
     await launcherGone();
     return done("already-exited");
   }
@@ -687,7 +691,7 @@ export async function stopAndroidEmulator(input: StopAndroidEmulatorInput): Prom
     // Checked before each pass: a pid freed during a wait can be reused, and
     // `taskkill /T` would take the whole tree of whatever holds it now.
     if (!isProcessAlive(input.pid)) break;
-    if (!stillThisEmulator()) {
+    if (!stillThisEmulator() || (await androidEmulatorPidCheck(input.pid)) !== "emulator") {
       throw new Error(`Emulator ${input.serial} did not exit, and pid ${input.pid} no longer matches its discovery file; ADE will not kill it.`);
     }
     if (process.platform === "win32") {

@@ -4,7 +4,6 @@ import path from "node:path";
 import type {
   AndroidAvd,
   AndroidEmulatorEvent,
-  AndroidEmulatorServiceApi as AndroidServiceMethods,
   AndroidEmulatorServiceApi,
   AndroidEmulatorStatus,
   AndroidLaneDevice,
@@ -32,11 +31,10 @@ import { createAndroidDeviceSettings } from "./androidDeviceSettings";
 import { createAndroidInput } from "./androidInput";
 import { createAndroidCrashWatch } from "./androidCrashWatch";
 import { createAndroidLaneStreams } from "./androidLaneStreams";
-import { openStartedEmulators, stopAdeStartedEmulators } from "./androidHandedOffEmulators";
+import { openStartedEmulators, reconcileStartedEmulators, stopAdeStartedEmulators } from "./androidHandedOffEmulators";
 import { reserveAndroidMemoryForStart } from "./androidMemoryGuard";
-import type { AndroidEmulatorOwnerRecord, AndroidEmulatorStopReason } from "./androidEmulatorOwners";
-import type { AndroidIdleStopAnswer } from "./androidEmulatorSweep";
-import { createPerKeyThrottle } from "../device/deviceMaintenance";
+import type { AndroidEmulatorStopReason } from "./androidEmulatorOwners";
+import { createAndroidEmulatorUse } from "./androidEmulatorUse";
 import type { AppleStreamOwningService } from "../ios/appleStreamRelayForService";
 import { takeAndroidScreenshot } from "./androidScreenshot";
 import { createAndroidRenderBroker } from "./androidRender";
@@ -59,53 +57,6 @@ import { ANDROID_BOOT_TIMEOUT_MS, type AndroidEmulatorServiceDeps, type AndroidL
 
 /** The project-removal stop moved with the state file; the CLI keeps importing it from here. */
 export { stopHandedOffAndroidEmulators } from "./androidHandedOffEmulators";
-
-/**
- * The calls that count as using the lane's emulator: driving it, streaming,
- * installing, capturing, recording, reading its log, a lease. Each one moves
- * the emulator's idle clock, and while one is in flight (a Gradle build, a
- * test run, a lease wait) the emulator counts as busy. Status reads do not:
- * a pane that only looks must not keep an emulator alive forever.
- */
-const ANDROID_USE_METHODS = [
-  "start",
-  "startStream",
-  "sendTouch",
-  "tap",
-  "swipe",
-  "sendKey",
-  "sendText",
-  "rotate",
-  "screenshot",
-  "installApp",
-  "launchApp",
-  "terminateApp",
-  "uninstallApp",
-  "openUrl",
-  "longPress",
-  "drag",
-  "scroll",
-  "getScreenSnapshot",
-  "findElement",
-  "tapElement",
-  "fillElement",
-  "waitForElement",
-  "assertVisible",
-  "readLog",
-  "recordStart",
-  "recordStop",
-  "captureProofBundle",
-  "deviceLease",
-  "setLocation",
-  "setAppearance",
-  "setPermission",
-  "setDeviceSetting",
-  "setPosture",
-  "runInstrumentationTests",
-] as const satisfies readonly (keyof AndroidServiceMethods)[];
-
-/** A lane's use is passed to the lifecycle at most this often; the lifecycle writes the file once a minute. */
-const LANE_TOUCH_EVERY_MS = 15_000;
 
 /*
  * The lane's Android emulator: one per brain, composing the phase A modules
@@ -154,9 +105,6 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   const lifetime = new AbortController();
   /** The brain's emulator lifecycle: owner records, the idle clock, the pin, the sweep. */
   const lifecycle = deps.emulatorLifecycle ?? null;
-  /** Calls in flight that count as use, by lane (`ANDROID_USE_METHODS`). */
-  const useInFlight = new Map<string, number>();
-  const laneTouchThrottle = createPerKeyThrottle(LANE_TOUCH_EVERY_MS, () => now().getTime());
   let lastSdkKey: string | null = null;
   let disposed = false;
 
@@ -307,13 +255,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       state: derived,
       error: derived === "crashed" || derived === "off" ? error : null,
       appCrash: derived === "booted" ? crashWatch.latest(laneId) : null,
-      ...(lifecycle
-        ? {
-          // Only an emulator ADE started is ever stopped by ADE, so only it has a pin.
-          keepRunning: running?.startedByAde ? lifecycle.recordFor(device.avdName)?.pinned ?? false : null,
-          idleStopMinutes: lifecycle.idleMs > 0 ? Math.round(lifecycle.idleMs / 60_000) : null,
-        }
-        : {}),
+      ...use.laneStatusFields(device.avdName, running?.startedByAde ?? null),
     };
   };
 
@@ -353,18 +295,6 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   /* ---------- stop ---------- */
 
-  /**
-   * One emulator ADE started stopped: its machine-wide owner record goes and
-   * the stop is logged once, with why (`android.emulator_stopped`).
-   */
-  const noteStopped = (emulator: Pick<AndroidDiscoveredEmulator, "avdName" | "consolePort">, reason: AndroidEmulatorStopReason, laneId: string | null) => {
-    if (lifecycle) {
-      lifecycle.noteStopped({ avdName: emulator.avdName, consolePort: emulator.consolePort, reason, laneId });
-      return;
-    }
-    logger?.info("android.emulator_stopped", { reason, avdName: emulator.avdName, consolePort: emulator.consolePort, laneId });
-  };
-
   /** Stops one running emulator ADE started; the stop forgets it in the state file. */
   const stopEmulator = async (
     emulator: AndroidDiscoveredEmulator,
@@ -383,7 +313,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       registry,
       discoveryDirs,
     });
-    noteStopped(emulator, reason, laneId);
+    use.noteStopped(emulator, reason, laneId);
     return result;
   };
 
@@ -557,17 +487,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       });
       state.launch = launch;
       // The machine-wide owner record: this brain owns it from now on.
-      lifecycle?.recordLaunch({
-        avdName: launch.avdName,
-        consolePort: launch.consolePort,
-        launcherPid: launch.launcherPid,
-        adbPath: ready.adbPath,
-        laneId,
-        projectRoot: deps.projectRoot ?? null,
-        chatSessionId: owner.chatSessionId,
-        guestRamMb: owner.guestRamMb,
-        costMb: owner.costMb,
-      });
+      const { avdName, consolePort, launcherPid } = launch;
+      lifecycle?.recordLaunch({ ...owner, avdName, consolePort, launcherPid, adbPath: ready.adbPath, laneId, projectRoot: deps.projectRoot ?? null });
       // A stop that came while the launch was still picking ports.
       if (state.stopRequested) throw new AndroidEmulatorFailure("ANDROID_NOT_RUNNING", "The emulator was stopped while it was starting.");
       const startedAt = Date.now();
@@ -782,139 +703,40 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     return Boolean(device && runningFor(device.avdName));
   });
 
-  /* ---------- the lifecycle: use, busy, the idle stop, the pin ---------- */
+  /* ---------- the lifecycle: use, busy, the idle stop, the pin (`androidEmulatorUse.ts`) ---------- */
 
-  /** The lane's emulator in use here now: a boot or stop, a stream, a recording, a lease, a call in flight. */
-  const laneBusy = (laneId: string): boolean => {
-    const state = lanes.get(laneId);
-    return Boolean(state?.transient || state?.streamSerial)
-      || agent.isRecording(laneId)
-      || agent.isLeased(laneId)
-      || (useInFlight.get(laneId) ?? 0) > 0;
+  /** Running emulators the project's state file lists as ADE's. */
+  const startedHere = () => discovered().filter((emulator) => registry.owns(emulator));
+  const locateAdb = () => {
+    const located = locateAndroidSdk({ settingPath: readSdkSettingPath(), env, platform, home });
+    return located ? androidSdkPaths(located.root, platform).adb : null;
   };
-
-  /** Something used the lane's emulator: move its idle clock. Throttled; never throws. */
-  const touchLane = (laneId: string): void => {
-    if (!lifecycle || !laneTouchThrottle.take(laneId)) return;
-    try {
-      const device = deps.laneDevices.get(laneId);
-      if (device) lifecycle.touch(device.avdName);
-    } catch (error) {
-      logger?.debug("android.touch_failed", { laneId, error: getErrorMessage(error) });
-    }
-  };
-
-  /**
-   * The sweep found one of this service's emulators idle: stop it through the
-   * lane's queue, unless it was used since the sweep looked.
-   */
-  const stopIdleEmulator = async (record: AndroidEmulatorOwnerRecord, idleMs: number): Promise<AndroidIdleStopAnswer> => {
-    const laneId = record.laneId;
-    const holds = () => {
-      const device = deps.laneDevices.get(laneId);
-      const emulator = device && sameAvdName(device.avdName, record.avdName) ? runningFor(device.avdName) : null;
-      return device && emulator && ownsEmulator(emulator) ? device : null;
-    };
-    if (disposed || !holds()) return "not_found";
-    return serialize(laneId, async (): Promise<AndroidIdleStopAnswer> => {
-      const device = holds();
-      if (!device) return "not_found";
-      const lastHere = lifecycle?.lastUsedHereMs(record.avdName) ?? null;
-      if (laneBusy(laneId) || (lastHere !== null && now().getTime() - lastHere < idleMs)) return "busy";
+  const use = createAndroidEmulatorUse({
+    lifecycle,
+    laneDevices: deps.laneDevices,
+    projectRoot: deps.projectRoot ?? null,
+    logger,
+    now,
+    isDisposed: () => disposed,
+    busyHere: (laneId) => {
+      const state = lanes.get(laneId);
+      return Boolean(state?.transient || state?.streamSerial) || agent.isRecording(laneId) || agent.isLeased(laneId);
+    },
+    ownedRunning: (avdName) => {
+      const emulator = runningFor(avdName);
+      return emulator && ownsEmulator(emulator) ? emulator : null;
+    },
+    startedHere,
+    describe: (avdName) => ({ adbPath: locateAdb(), guestRamMb: readAndroidAvd(androidAvdHome(env, home), avdName)?.ramMb ?? null }),
+    serialize,
+    stopIdleLocked: async (laneId, device) => {
       const state = laneState(laneId);
       await stopLocked(state, device, { refuseForeign: false, reason: "idle" });
       state.error = null;
       await emitDeviceState(laneId);
-      return "stopped";
-    });
-  };
-
-  /**
-   * Emulators ADE started before the machine's owner file existed (an
-   * upgrade with emulators running) are taken in as they run, with a fresh
-   * idle clock, so they stop when idle like any other.
-   */
-  const adoptUnrecordedEmulators = () => {
-    if (!lifecycle) return;
-    for (const emulator of discovered()) {
-      if (!registry.owns(emulator) || lifecycle.recordFor(emulator.avdName)) continue;
-      const laneId = deps.laneDevices.holder(emulator.avdName);
-      if (!laneId) continue;
-      const located = locateAndroidSdk({ settingPath: readSdkSettingPath(), env, platform, home });
-      const avd = readAndroidAvd(androidAvdHome(env, home), emulator.avdName);
-      lifecycle.recordLaunch({
-        avdName: emulator.avdName,
-        consolePort: emulator.consolePort,
-        launcherPid: emulator.pid,
-        pid: emulator.pid,
-        adbPath: located ? androidSdkPaths(located.root, platform).adb : null,
-        laneId,
-        projectRoot: deps.projectRoot ?? null,
-        chatSessionId: null,
-        guestRamMb: avd?.ramMb ?? null,
-        costMb: 0,
-      });
-      void lifecycle.recordBooted({ avdName: emulator.avdName, consolePort: emulator.consolePort, pid: emulator.pid }).catch(() => undefined);
-      logger?.info("android.emulator_taken_in", { laneId, avdName: emulator.avdName, serial: emulator.serial });
-    }
-  };
-
-  const unregisterLifecycle = lifecycle?.register({
-    projectRoot: deps.projectRoot ?? null,
-    isBusy: laneBusy,
-    stopIdle: stopIdleEmulator,
+    },
     onAutoStopped: () => deps.captureAnalytics?.("emulator_auto_stopped"),
-    logger,
-  }) ?? null;
-
-  /* ---------- start-up reconcile ---------- */
-
-  /**
-   * Runs once when the service starts. A lane archived or deleted while no
-   * brain ran (or a chat's work copy deleted then) left its row (the release
-   * keeps a running AVD's row) and maybe its emulator: stop that emulator and
-   * release the AVD by the normal rules.
-   * Then an emulator ADE started that no lane holds at all is stopped.
-   * Lanes that are still active keep their emulators: those are re-adopted.
-   */
-  const reconcile = async (): Promise<void> => {
-    // Cheap reads first (the lane rows, the discovery files, the state file):
-    // a brain start with nothing to reconcile never reads the SDK, which would
-    // run `emulator -accel-check` once per project.
-    // A chat's work copy counts as a lane while the copy exists.
-    const endedLanes = (deps.laneDevices.list?.() ?? []).filter((device) => {
-      const liveness = laneLiveness(device.laneId);
-      return liveness !== null && liveness !== "active";
-    });
-    const orphans = () => discovered().filter((emulator) =>
-      registry.owns(emulator) && deps.laneDevices.holder(emulator.avdName) === null);
-    adoptUnrecordedEmulators();
-    if (endedLanes.length === 0 && orphans().length === 0) return;
-    const located = locateAndroidSdk({ settingPath: readSdkSettingPath(), env, platform, home });
-    if (!located || disposed) return;
-    const adbPath = androidSdkPaths(located.root, platform).adb;
-    let changed = false;
-    for (const device of endedLanes) {
-      await serialize(device.laneId, async () => {
-        const result = await endLaneLocked(device);
-        changed = true;
-        logger?.info("android.reconcile.released", { laneId: device.laneId, avdName: device.avdName, ...result });
-      }).catch((error: unknown) => {
-        logger?.warn("android.reconcile.release_failed", { laneId: device.laneId, error: getErrorMessage(error) });
-      });
-    }
-    for (const emulator of orphans()) {
-      if (disposed) return;
-      await stopEmulator(emulator, adbPath, "orphan", null).then(
-        () => {
-          changed = true;
-          logger?.info("android.reconcile.stopped_orphan", { serial: emulator.serial, avdName: emulator.avdName });
-        },
-        (error: unknown) => logger?.warn("android.reconcile.stop_failed", { serial: emulator.serial, error: getErrorMessage(error) }),
-      );
-    }
-    if (changed) emit({ type: "android.inventory.changed" });
-  };
+  });
 
   /* ---------- the API ---------- */
 
@@ -1012,12 +834,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         // ADE never stops an emulator it did not start, so it has nothing to
         // pin; without a lifecycle nothing stops it either. The status says so
         // (`keepRunning: null`).
-        if (lifecycle && ownsEmulator(emulator)) {
-          if (!lifecycle.recordFor(device.avdName)) adoptUnrecordedEmulators();
-          if (lifecycle.setPinned(device.avdName, args.keepRunning)) {
-            logger?.info("android.keep_running_set", { laneId, avdName: device.avdName, keepRunning: args.keepRunning });
-          }
-        }
+        if (ownsEmulator(emulator)) use.setKeepRunning(laneId, device.avdName, args.keepRunning);
         return emitDeviceState(laneId);
       });
     },
@@ -1099,7 +916,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       if (disposed) return;
       disposed = true;
       // First, so a sweep never asks a service that is going away.
-      unregisterLifecycle?.();
+      use.dispose();
       renders.dispose();
       setup.dispose();
       crashWatch.dispose();
@@ -1136,7 +953,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
           logger,
           launcherPidFor: (emulator) =>
             [...lanes.values()].find((state) => state.launch?.consolePort === emulator.consolePort)?.launch?.launcherPid ?? null,
-          onStopped: (emulator) => noteStopped(emulator, "project_closed", deps.laneDevices.holder(emulator.avdName)),
+          onStopped: (emulator) => use.noteStopped(emulator, "project_closed", deps.laneDevices.holder(emulator.avdName)),
         });
       }
       lanes.clear();
@@ -1154,44 +971,26 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       };
     },
   };
-  // Each call that uses the lane's emulator moves its idle clock, and keeps it
-  // busy while it runs.
-  if (lifecycle) {
-    const methods = service as unknown as Record<string, (args: unknown) => unknown>;
-    for (const name of ANDROID_USE_METHODS) {
-      const original = methods[name];
-      if (typeof original !== "function") continue;
-      methods[name] = (args: unknown) => {
-        const laneId = typeof (args as { laneId?: unknown } | null)?.laneId === "string"
-          ? (args as { laneId: string }).laneId.trim()
-          : "";
-        if (!laneId) return original.call(service, args);
-        touchLane(laneId);
-        useInFlight.set(laneId, (useInFlight.get(laneId) ?? 0) + 1);
-        const done = () => {
-          const left = (useInFlight.get(laneId) ?? 1) - 1;
-          if (left > 0) useInFlight.set(laneId, left);
-          else useInFlight.delete(laneId);
-        };
-        let result: unknown;
-        try {
-          result = original.call(service, args);
-        } catch (error) {
-          done();
-          throw error;
-        }
-        if (result && typeof (result as Promise<unknown>).then === "function") return (result as Promise<unknown>).finally(done);
-        done();
-        return result;
-      };
-    }
-  }
-  // After construction returns, so a caller's first call is not held up by it;
-  // lane steps still queue behind it through `serialize`.
+  // The start-up reconcile, after construction returns, so a caller's first
+  // call is not held up by it; lane steps still queue behind it through `serialize`.
   setTimeout(() => {
-    void reconcile().catch((error: unknown) => {
+    void reconcileStartedEmulators({
+      laneDevices: deps.laneDevices,
+      laneLiveness,
+      startedHere,
+      takeIn: use.adoptUnrecordedEmulators,
+      locateAdb,
+      isDisposed: () => disposed,
+      serialize,
+      endLaneLocked,
+      stopOrphan: (emulator, adbPath) => stopEmulator(emulator, adbPath, "orphan", null),
+      logger,
+    }).then((changed) => {
+      if (changed) emit({ type: "android.inventory.changed" });
+    }, (error: unknown) => {
       logger?.warn("android.reconcile_failed", { error: getErrorMessage(error) });
     });
   }, 0);
-  return service;
+  // Each call that uses the lane's emulator moves its idle clock, and keeps it busy while it runs.
+  return use.track(service);
 }

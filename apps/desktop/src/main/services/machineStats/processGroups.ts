@@ -1,14 +1,14 @@
 import path from "node:path";
-import { readProcessMemory, runHostTool, type HostMemoryReadDeps } from "./hostMemorySignals";
+import { realMemoryFor, runHostTool, type HostMemoryReadDeps } from "./hostMemorySignals";
 import { windowsPowerShellCommand } from "../shared/processExecution";
+import { isAndroidEmulatorImage, isAndroidQemuImage } from "../android/androidEmulatorImage";
 
 /*
  * What is using this machine, in the few groups a triage needs: ADE's own
  * processes split into the installed brain, a developer's brain, and the
  * desktop app; Android emulators; iOS simulators; and everything else as one
- * sum. On 2026-11-06 a Mac froze with no ADE signal at all, and the question
- * nobody could answer afterwards was "was it ADE, the emulators, or something
- * else?".
+ * sum. It answers "was it ADE, the emulators, or something else?" for a
+ * machine that ran short of memory.
  *
  * Privacy: command lines are read only to sort a process into a group, here,
  * and never leave this module. The answer is group names, counts, MB and CPU
@@ -16,10 +16,10 @@ import { windowsPowerShellCommand } from "../shared/processExecution";
  * application beyond its share of "other".
  *
  * One listing per call (`ps` with the command line, or one PowerShell CIM read
- * on Windows), plus the real-memory read `readProcessMemory` makes for ADE's
- * and the emulators' pids (macOS `footprint`: RSS under-reports an emulator
- * about fourfold). A caller asks only when it needs the answer: a resource
- * pressure episode, a diagnostic report.
+ * on Windows), plus the real-memory read (`realMemoryFor`) of ADE's and the
+ * emulators' rows of that listing (macOS `footprint`: RSS under-reports an
+ * emulator about fourfold). A caller asks only when it needs the answer: a
+ * resource pressure episode, a diagnostic report.
  */
 
 export type ProcessGroupName =
@@ -56,6 +56,8 @@ export type ProcessGroupSnapshot = {
 };
 
 type ListedProcess = { pid: number; rssMb: number; cpuPercent: number | null; command: string };
+/** A listed process, sorted into its group once. */
+type ClassifiedProcess = ListedProcess & { exe: string; group: ProcessGroupName };
 
 /** A source checkout's CLI: `apps/ade-cli/{src,dist}/…`, as `isSourceCheckoutRuntimeModule` reads it. */
 const SOURCE_CHECKOUT_CLI = /(?:^|[/\\])apps[/\\]ade-cli[/\\](?:src|dist)[/\\]/i;
@@ -77,11 +79,8 @@ function executableName(command: string): string {
 }
 
 /** Which group one process belongs to, from its command line. Pure. */
-export function classifyProcessCommand(command: string): ProcessGroupName {
-  const exe = executableName(command);
-  if (/^qemu-system/.test(exe) || /^emulator(?:64)?(?:-|$)/.test(exe) || /[/\\]emulator[/\\]qemu[/\\]/i.test(command)) {
-    return "android_emulator";
-  }
+export function classifyProcessCommand(command: string, exe = executableName(command)): ProcessGroupName {
+  if (isAndroidEmulatorImage(exe) || /[/\\]emulator[/\\]qemu[/\\]/i.test(command)) return "android_emulator";
   if (exe === "launchd_sim" || exe === "simulator" || /[/\\]CoreSimulator[/\\]|[/\\]Simulator\.app[/\\]/i.test(command)) {
     return "ios_simulator";
   }
@@ -129,16 +128,24 @@ const WINDOWS_PROCESS_SCRIPT = [
     + " \"$($_.ProcessId)`t$($_.WorkingSetSize)`t$($_.PrivatePageCount)`t$c\" }",
 ].join("; ");
 
-/** Groups listed processes; pure, so the sorting rules are testable on captured listings. */
+/** Each listed process with its executable name and group. */
+export function classifyProcesses(rows: readonly ListedProcess[]): ClassifiedProcess[] {
+  return rows.map((row) => {
+    const exe = executableName(row.command);
+    return { ...row, exe, group: classifyProcessCommand(row.command, exe) };
+  });
+}
+
+/** Groups classified processes; pure, so the sorting rules are testable on captured listings. */
 export function groupProcesses(
-  rows: readonly ListedProcess[],
+  rows: readonly ClassifiedProcess[],
   realMbByPid: ReadonlyMap<number, number> = new Map(),
 ): ProcessGroupSnapshot {
   const totals = new Map<ProcessGroupName, { count: number; mb: number; cpu: number | null }>();
   let emulatorCount = 0;
   for (const row of rows) {
-    const group = classifyProcessCommand(row.command);
-    if (group === "android_emulator" && /qemu-system/i.test(row.command)) emulatorCount += 1;
+    const group = row.group;
+    if (group === "android_emulator" && isAndroidQemuImage(row.exe)) emulatorCount += 1;
     const entry = totals.get(group) ?? { count: 0, mb: 0, cpu: row.cpuPercent === null ? null : 0 };
     entry.count += 1;
     entry.mb += realMbByPid.get(row.pid) ?? row.rssMb;
@@ -175,16 +182,14 @@ export async function readProcessGroups(options: {
       const text = await run(windowsPowerShellCommand(platform), ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_PROCESS_SCRIPT], timeoutMs + 5_000);
       if (!text) return null;
       // The working set and private bytes are already the real figure on Windows.
-      return groupProcesses(parseWindowsProcessCommandRows(text));
+      return groupProcesses(classifyProcesses(parseWindowsProcessCommandRows(text)));
     }
     const listing = await run(platform === "darwin" ? "/bin/ps" : "ps", ["-axww", "-o", "pid=,rss=,pcpu=,args="], timeoutMs);
     if (!listing) return null;
-    const rows = parsePsCommandRows(listing);
+    const rows = classifyProcesses(parsePsCommandRows(listing));
     // Real memory only for the groups a reader acts on; `other` stays RSS.
-    const measured = rows.filter((row) => classifyProcessCommand(row.command) !== "other").map((row) => row.pid);
-    const real = measured.length
-      ? await readProcessMemory({ pids: measured, platform, timeoutMs, deps: options.deps })
-      : [];
+    const measured = rows.filter((row) => row.group !== "other").map((row) => ({ pid: row.pid, rssMb: row.rssMb, name: row.exe }));
+    const real = await realMemoryFor(measured, { platform, timeoutMs, deps: options.deps });
     return groupProcesses(rows, new Map(real.map((entry) => [entry.pid, entry.mb])));
   } catch {
     return null;

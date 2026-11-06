@@ -8,16 +8,16 @@ import {
   type ProcessMemory,
 } from "../machineStats/hostMemorySignals";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
+import { ANDROID_QEMU_IMAGE_PREFIX } from "./androidEmulatorImage";
 
 /*
- * The memory guard (plan §5): before a boot, refuse a start that would push
- * the machine into swap. The person can start it anyway (`force`).
+ * The memory guard: before a boot, refuse a start that would push the
+ * machine into swap. The person can start it anyway (`force`).
  *
  * It decides on what the machine has committed, not on a free-memory
- * snapshot. On 2026-11-06 a 36 GB Mac froze with five emulators running
- * (7.6–9.7 GB each): `kern.memorystatus_level` still said 41% free, because
- * macOS had already pushed the emulators into 15 GB of swap. So a start is
- * refused when ANY of these holds:
+ * snapshot (a machine already swapping still reads as having memory free;
+ * `hostMemorySignals.ts` says why). So a start is refused when ANY of these
+ * holds:
  *
  * 1. the OS says memory is under pressure (warn or worse;
  *    `hostMemorySignals.ts` reads it per OS);
@@ -64,7 +64,7 @@ export const ANDROID_PAGING_REFUSE_MB_PER_S = 4;
 /** How long the start samples the swap-out rate. */
 export const ANDROID_PAGING_SAMPLE_MS = 2_000;
 /** Every emulator's qemu, whichever SDK or tool started it (`-headless` included). */
-export const ANDROID_EMULATOR_PROCESS_PREFIXES = ["qemu-system-"] as const;
+export const ANDROID_EMULATOR_PROCESS_PREFIXES = [ANDROID_QEMU_IMAGE_PREFIX] as const;
 
 /** What one start costs, and where the number came from. */
 export type AndroidStartCost = { costMb: number; guestRamMb: number; overheadMb: number; measured: boolean };

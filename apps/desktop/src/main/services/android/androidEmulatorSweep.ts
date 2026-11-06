@@ -14,8 +14,10 @@ import {
   stopAndroidEmulator,
   type AndroidDiscoveredEmulator,
 } from "./androidEmulatorProcess";
+import { isAndroidEmulatorImage, readWindowsProcessImages } from "./androidEmulatorImage";
 import {
   androidEmulatorIdleMs,
+  canClaimStop,
   decideAndroidEmulatorSweep,
   isDeadBootingRecord,
   isSameEmulator,
@@ -27,6 +29,7 @@ import {
   type AndroidEmulatorOwnersStore,
   type AndroidEmulatorProcessState,
   type AndroidEmulatorStopReason,
+  type AndroidSweepFacts,
   type AndroidSweepVerdict,
 } from "./androidEmulatorOwners";
 import type { AndroidMemoryLedger } from "./androidMemoryGuard";
@@ -41,8 +44,9 @@ import type { AndroidMemoryLedger } from "./androidMemoryGuard";
  * `ANDROID_SWEEP_EVERY_MS`, on unref'd timers (the Apple devices' upkeep
  * shares them, `device/deviceMaintenance.ts`). One sweep reads the owner
  * file and the emulators' discovery folders, and only when there are records
- * runs one `ps` for the start times of the pids it checks. Then, record by
- * record (`decideAndroidEmulatorSweep`):
+ * runs one `ps` for the start times of the pids it checks (on Windows, which
+ * has none, one `tasklist`: a discovery pid counts only while its image is an
+ * emulator's). Then, record by record (`decideAndroidEmulatorSweep`):
  *
  * - an emulator this brain owns that its service is using is touched; one
  *   unused for the idle limit and not pinned is stopped, through its
@@ -52,7 +56,8 @@ import type { AndroidMemoryLedger } from "./androidMemoryGuard";
  * - a record whose emulator is gone is dropped.
  *
  * An emulator with no record is never stopped, and nothing is stopped
- * unless its discovery file still names the recorded AVD, port and pid.
+ * unless its discovery file still names the recorded AVD, port and pid, and
+ * the record, read again as the stop is claimed, still decides a stop.
  *
  * Node built-ins and relative imports only, so it runs under `tsx`.
  */
@@ -72,7 +77,9 @@ export type AndroidIdleStopAnswer =
   /** The service is using it after all (a call arrived since the sweep looked). */
   | "busy"
   /** The project's lanes do not hold this emulator any more: the sweep stops it itself. */
-  | "not_found";
+  | "not_found"
+  /** Its record changed since the sweep looked (pinned now): left alone. */
+  | "kept";
 
 /** One project's Android service, as the sweep sees it. */
 export type AndroidEmulatorLifecycleParticipant = {
@@ -123,6 +130,8 @@ export type AndroidEmulatorLifecycleConfig = {
   now?: () => number;
   platform?: NodeJS.Platform;
   readStartTimes?: (pids: readonly number[]) => Promise<Map<number, number>>;
+  /** Windows: the image name by pid (`tasklist`); null when it could not be read. */
+  readProcessImages?: (pids: readonly number[]) => Promise<Map<number, string> | null>;
   isPidAlive?: (pid: number) => boolean;
   /** Stops one emulator the sweep verified, with no service (`stopAndroidEmulator` by default). */
   stopEmulator?: (record: AndroidEmulatorOwnerRecord, emulator: AndroidDiscoveredEmulator) => Promise<unknown>;
@@ -142,6 +151,7 @@ export function createAndroidEmulatorLifecycle(config: AndroidEmulatorLifecycleC
   const discoveryDirs = () => config.discoveryDirs ?? androidDiscoveryDirs(platform);
   const isPidAlive = config.isPidAlive ?? isProcessAlive;
   const readStartTimes = config.readStartTimes ?? ((pids: readonly number[]) => readProcessStartTimesMs(pids, platform));
+  const readProcessImages = config.readProcessImages ?? readWindowsProcessImages;
   const participants = new Set<AndroidEmulatorLifecycleParticipant>();
   /** The configured logger, else the newest service's: the lifecycle outlives any one project. */
   const log = (): Logger | null => config.logger ?? [...participants].reverse().find((entry) => entry.logger)?.logger ?? null;
@@ -373,17 +383,30 @@ export function createAndroidEmulatorLifecycle(config: AndroidEmulatorLifecycleC
   };
   const stopEmulator = config.stopEmulator ?? defaultStop;
 
-  /** Takes the stop of one record, unless another brain is already on it. */
-  const claimStop = (record: AndroidEmulatorOwnerRecord): boolean => config.store.update((data) => {
-    const current = data.emulators.find((entry) => isSameEmulator(entry, record));
-    if (!current) return false;
-    if (current.stopping && current.stopping.brainPid !== config.self.brainPid && isPidAlive(current.stopping.brainPid)
-      && now() - Date.parse(current.stopping.at) < 2 * 60_000) {
-      return false;
-    }
-    current.stopping = { brainPid: config.self.brainPid, at: iso() };
-    return true;
-  }) === true;
+  /**
+   * Takes the stop of one record, unless another brain is already on it or
+   * the record as it stands now no longer decides this stop: the person
+   * pinned it, a brain adopted it or came back, or it was used, since the
+   * sweep read the file.
+   */
+  const claimStop = (record: AndroidEmulatorOwnerRecord, facts: AndroidSweepFacts, reason: AndroidEmulatorStopReason): boolean =>
+    config.store.update((data) => {
+      const current = data.emulators.find((entry) => isSameEmulator(entry, record));
+      if (!current || !canClaimStop(current, config.self, now(), isPidAlive)) return false;
+      const self = isSelf(current.owner);
+      const participant = self ? participantFor(current.projectRoot) : null;
+      const verdict = decideAndroidEmulatorSweep({ ...current, stopping: null }, {
+        ...facts,
+        nowMs: now(),
+        ownedBySelf: self,
+        // Same owner: what the sweep read. Another owner: alive while its pid is.
+        ownerAlive: self || (current.owner.brainPid === record.owner.brainPid ? facts.ownerAlive : isPidAlive(current.owner.brainPid)),
+        busyHere: participant ? participant.isBusy(current.laneId) : null,
+      });
+      if (verdict.kind !== "stop" || verdict.reason !== reason) return false;
+      current.stopping = { brainPid: config.self.brainPid, at: iso() };
+      return true;
+    }) === true;
 
   const releaseClaim = (record: AndroidEmulatorOwnerRecord): void => {
     config.store.update((data) => {
@@ -397,7 +420,7 @@ export function createAndroidEmulatorLifecycle(config: AndroidEmulatorLifecycleC
   const runSweep = async (options: { dryRun: boolean }): Promise<AndroidSweepReport> => {
     const started = now();
     const data = config.store.read();
-    const running = readAndroidDiscoveryFiles(discoveryDirs());
+    let running = readAndroidDiscoveryFiles(discoveryDirs());
     const report: AndroidSweepReport = {
       at: new Date(started).toISOString(),
       dryRun: options.dryRun,
@@ -424,8 +447,25 @@ export function createAndroidEmulatorLifecycle(config: AndroidEmulatorLifecycleC
     }
     if (platform !== "win32" && pids.size > 0) report.spawned += 1;
     const startTimes = await readStartTimes([...pids]);
+    // Windows has no start times, and a crashed emulator's discovery file
+    // stays: once its pid belongs to another program, the file still names
+    // it. There a pid is the emulator only while its image is an emulator's;
+    // with no image list, nothing is verified and nothing is stopped.
+    let imagesUnread = false;
+    if (platform === "win32" && running.length > 0) {
+      report.spawned += 1;
+      const images = await readProcessImages(running.map((entry) => entry.pid));
+      imagesUnread = images === null;
+      running = images ? running.filter((entry) => isAndroidEmulatorImage(images.get(entry.pid))) : running;
+    }
 
-    type Planned = { record: AndroidEmulatorOwnerRecord; verdict: AndroidSweepVerdict; emulator: AndroidDiscoveredEmulator | null; entry: AndroidSweepReportEntry };
+    type Planned = {
+      record: AndroidEmulatorOwnerRecord;
+      facts: AndroidSweepFacts;
+      verdict: AndroidSweepVerdict;
+      emulator: AndroidDiscoveredEmulator | null;
+      entry: AndroidSweepReportEntry;
+    };
     const planned: Planned[] = [];
     for (const record of data.emulators) {
       let emulator: AndroidDiscoveredEmulator | null = null;
@@ -433,7 +473,8 @@ export function createAndroidEmulatorLifecycle(config: AndroidEmulatorLifecycleC
       if (record.pid !== null) {
         emulator = running.find((entry) => isSameEmulator(record, entry) && entry.pid === record.pid) ?? null;
         const sameProcess = sameStartTime(record.pidStartedAtMs, startTimes.get(record.pid));
-        if (emulator && sameProcess) state = "running";
+        if (emulator && imagesUnread) state = "unverified";
+        else if (emulator && sameProcess) state = "running";
         else if (!emulator && isPidAlive(record.pid) && sameProcess && record.pidStartedAtMs !== null) state = "unverified";
         else state = "gone";
         if (state !== "running") emulator = null;
@@ -445,14 +486,15 @@ export function createAndroidEmulatorLifecycle(config: AndroidEmulatorLifecycleC
         // never claim the user's emulator on the same default port).
         const launcherAlive = isPidAlive(record.launcherPid);
         emulator = launcherAlive ? running.find((entry) => isSameEmulator(record, entry)) ?? null : null;
-        state = emulator ? "running" : launcherAlive ? "booting" : "gone";
+        state = emulator ? (imagesUnread ? "unverified" : "running") : launcherAlive ? "booting" : "gone";
+        if (state !== "running") emulator = null;
       }
       if (emulator) claimed.add(emulator.pid);
       const self = isSelf(record.owner);
       const ownerAlive = self || (isPidAlive(record.owner.brainPid)
         && sameStartTime(record.owner.brainStartedAtMs, startTimes.get(record.owner.brainPid)));
       const participant = self ? participantFor(record.projectRoot) : null;
-      const verdict = decideAndroidEmulatorSweep(record, {
+      const facts: AndroidSweepFacts = {
         nowMs: started,
         emulator: state,
         ownerAlive,
@@ -460,10 +502,12 @@ export function createAndroidEmulatorLifecycle(config: AndroidEmulatorLifecycleC
         self: { adeHome: config.self.adeHome, adoptable: config.self.adoptable },
         busyHere: participant ? participant.isBusy(record.laneId) : null,
         idleMs,
-      });
+      };
+      const verdict = decideAndroidEmulatorSweep(record, facts);
       const lastUsed = Date.parse(record.lastUsedAt);
       planned.push({
         record,
+        facts,
         verdict,
         emulator,
         entry: {
@@ -537,6 +581,7 @@ export function createAndroidEmulatorLifecycle(config: AndroidEmulatorLifecycleC
             log()?.warn("android.idle_stop_failed", { avdName: item.record.avdName, error: getErrorMessage(error) });
             return "failed" as const;
           });
+          if (answer === "kept") continue;
           if (answer === "stopped" || answer === "busy" || answer === "failed") {
             item.entry.outcome = answer;
             if (answer === "busy") touch(item.record.avdName);
@@ -544,7 +589,7 @@ export function createAndroidEmulatorLifecycle(config: AndroidEmulatorLifecycleC
           }
         }
       }
-      if (!claimStop(item.record)) continue;
+      if (!claimStop(item.record, item.facts, reason)) continue;
       try {
         await stopEmulator(item.record, item.emulator);
         noteStopped({ avdName: item.record.avdName, consolePort: item.record.consolePort, reason, laneId: item.record.laneId, known: item.record });

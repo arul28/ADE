@@ -21,7 +21,7 @@ type CodedError = Error & { code?: string };
  * this stops with a retry error instead of guessing: `/user/repos` would put
  * an organization's repository under the user's personal account.
  *
- * No owner keeps the personal route on any write credential, as before.
+ * With no owner the route is the personal one, on any write credential.
  */
 export async function resolveGithubCreateRepositoryRoute(args: {
   owner: string | null | undefined;
