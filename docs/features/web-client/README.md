@@ -80,7 +80,17 @@ Build and static host:
   deployment's entry graph is discovered immediately. `img-src` allowlists the Clerk image CDNs and
   Clerk's Google Storage profile-image path used by the account client.
 - `apps/desktop/src/renderer/webclient/public/_redirects` - SPA fallback:
-  `/* /index.html 200`.
+  `/* /index.html 200`. A static file wins over this rewrite.
+- `apps/desktop/src/renderer/webclient/public/_worker.js` and `_routes.json` -
+  a Pages worker for `/assets/*` only. A deploy removes the old build's chunks,
+  and the SPA fallback would answer a removed chunk with `index.html`, as 200
+  and with the one-year immutable cache. The worker answers it with a 404 and
+  `Cache-Control: no-store` instead. An open tab from the old build then gets a
+  plain load failure, and `lib/staleChunkReload.ts` reloads it once. The worker
+  sets the `/assets/*` cache headers itself. If its own code throws, it
+  returns the static answer unchanged. `_headers` and `_redirects` still apply to every other path.
+  `npx wrangler@4 pages dev apps/desktop/dist/web-client` runs it on this
+  machine.
 
 Browser sync client:
 
@@ -1038,8 +1048,8 @@ Tests:
   exception that is watch-only: its status and frames are served, and driving
   calls reject (see `adapter/appControl.ts`).
 - **Build output shape matters.** Cloudflare Pages serves from the output root;
-  `_headers`, `_redirects`, and `index.html` must sit directly inside
-  `apps/desktop/dist/web-client`.
+  `_headers`, `_redirects`, `_routes.json`, `_worker.js`, and `index.html`
+  must sit directly inside `apps/desktop/dist/web-client`.
 
 ## Architecture
 

@@ -9,7 +9,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Cloudflare Pages serves the site from the outDir root: the entry must be
- * index.html, and _headers/_redirects (CSP + SPA fallback) must sit beside it.
+ * index.html, and _headers/_redirects (CSP + SPA fallback) must sit beside it,
+ * with _worker.js/_routes.json (a 404 for a removed `/assets/*` file).
  * The entry html lives at src/renderer/webclient.html (sibling of the desktop
  * renderer's index.html), so rename it and copy the Pages config on close.
  */
@@ -22,7 +23,7 @@ function cloudflarePagesOutput(): Plugin {
     closeBundle() {
       const entry = path.join(outDir, "webclient.html");
       if (fs.existsSync(entry)) fs.renameSync(entry, path.join(outDir, "index.html"));
-      for (const name of ["_headers", "_redirects"]) {
+      for (const name of ["_headers", "_redirects", "_routes.json", "_worker.js"]) {
         const source = path.join(pagesDir, name);
         if (fs.existsSync(source)) fs.copyFileSync(source, path.join(outDir, name));
       }
