@@ -7450,8 +7450,9 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
   // Sign-ins the phone and the hosted web client run on THIS machine: an agent
   // CLI's own login (Grok, Devin, Muse, Copilot, Droid, Kimi) and
   // Antigravity's. The same runners as the desktop's `ai.cliLogin*` and
-  // `ai.antigravitySignIn*` actions; the person starts them, so a viewer only
-  // reads their status.
+  // `ai.antigravitySignIn*` actions. All are a controller's: a running
+  // sign-in's status carries its link and device code, as an account sign-in's
+  // does (`providerAccounts.loginStatus`).
   // Loaded at first use, as the desktop's actions load them.
   const cliLoginRunner = async () =>
     (await import("../../../../desktop/src/main/services/ai/machineAgentCliLoginRunner")).getMachineAgentCliLoginRunner();
@@ -7459,13 +7460,16 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
   const invalidateReadinessAfterSignIn = () => {
     try {
       args.aiIntegrationService?.invalidateProviderReadinessCaches();
-    } catch {
+    } catch (error) {
       // A freshness step; the sign-in itself already landed.
+      args.logger.warn("ai.cli_login_cache_invalidation_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   };
   register("ai.cliLoginStart", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
     (await cliLoginRunner()).start(payload as unknown as AgentCliLoginStartArgs), "runtime");
-  register("ai.cliLoginStatus", { viewerAllowed: true }, async (payload) => {
+  register("ai.cliLoginStatus", { viewerAllowed: false, controllerAllowed: true }, async (payload) => {
     const status = (await cliLoginRunner()).status(requireString(payload.loginId, "ai.cliLoginStatus requires loginId."));
     if (status.state === "succeeded") invalidateReadinessAfterSignIn();
     return status;
@@ -7477,7 +7481,7 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     ), "runtime");
   register("ai.cliLoginCancel", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
     (await cliLoginRunner()).cancel(requireString(payload.loginId, "ai.cliLoginCancel requires loginId.")), "runtime");
-  register("ai.antigravitySignInStatus", { viewerAllowed: true }, async () => {
+  register("ai.antigravitySignInStatus", { viewerAllowed: false, controllerAllowed: true }, async () => {
     const state = await (await antigravitySignIn()).getAntigravitySignInState();
     if (state.phase === "succeeded") invalidateReadinessAfterSignIn();
     return state;

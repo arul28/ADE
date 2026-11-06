@@ -683,6 +683,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `chat` | `secret_requested` | `completed` (saved), `kept`, `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the secret's name, value, reason, or chat |
 | `chat` | `connect_requested` | `completed` (connected), `kept` (already connected), `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the integration's account, the key, or the chat |
 | `chat` | `mcp_server_requested` | `completed` (added), `kept` (already in ADE), `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the server's name, its command or URL, a key, or the chat |
+| `chat` | `provider_sign_in` | `completed`, `cancelled`, `failed` | coarse provider family (`other` for the CLIs outside it); never the account, link, code, machine, or chat |
 | `chat` | `mcp_server_remove_requested` | `completed` (removed), `cancelled` (kept), `failed` (unanswered in time or the request failed) | omitted; never the server's name, its command or URL, or the chat |
 | `home` | `tab_opened` | `tab_browser`, `tab_music` | omitted; never a URL, tab, song, or page |
 | `home` | `widget_added` | `widget_<type>` (one per home widget type) | omitted; never the layout, a preset name, or a widget's settings |
@@ -1274,6 +1275,22 @@ case is four accepted events per installation per day, inside the existing
 `ade_feature_used` 140-per-day / 30-per-minute limits and the shared 200-event
 ceiling. No ceiling was raised. The dashboard spec is deliberately untouched: no
 card asks this yet.
+
+A chat's sign-in card (a provider signed out on the chat's machine) records
+the existing `ade_feature_used` event with `feature: "chat"`,
+`action: "provider_sign_in"` and `source: "renderer_route"`, once per attempt
+when it ends: `outcome: "completed"` once the machine reads the login back,
+`cancelled` for Cancel or a card closed mid-sign-in, and `failed` when the
+sign-in could not start or finish. `provider` is the coarse family (`claude`,
+`codex`, `cursor`, `droid`, `muse`; Copilot, Grok, Kimi, Devin and Antigravity
+report `other`). It is emitted from the renderer (`ProviderSignInCard.tsx`)
+because the host's sign-in runners also serve Settings, so only the card knows
+a chat asked. Polls, codes, links, the account, the machine and the chat never
+cross. Worst case is one per sign-in a person starts; a per-outcome
+`chat_provider_sign_in_<outcome>` key with a 10-minute minimum interval counts
+repeated tries once, inside the existing `ade_feature_used` limits, and no
+ceiling was raised. The dashboard spec is untouched. The phone's card records nothing; its 7-feature-event daily budget is
+kept for the surfaces it already counts.
 
 Running a shell code block from a chat reply records the existing
 `ade_feature_used` event with `feature: "chat"` and `source: "renderer_route"`:

@@ -187,6 +187,17 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "automations.list",
   "automations.saveDraft",
   "automations.deleteRule",
+  // A chat's sign-in card on the phone: an agent CLI's or Antigravity's own
+  // sign-in on the chat's machine. Optional: an older host answers the card
+  // with "cannot do this from the phone yet".
+  "ai.cliLoginStart",
+  "ai.cliLoginStatus",
+  "ai.cliLoginSubmitCode",
+  "ai.cliLoginCancel",
+  "ai.antigravitySignInStart",
+  "ai.antigravitySignInStatus",
+  "ai.antigravitySignInComplete",
+  "ai.antigravitySignInCancel",
   // Cursor Cloud watch/open. iOS and the web client presence-gate inbound
   // sync on these; optional so an older phone against a newer host does not
   // go limited, and an older host simply omits the actions.

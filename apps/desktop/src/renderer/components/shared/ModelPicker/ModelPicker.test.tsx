@@ -1888,8 +1888,8 @@ describe("ModelPicker", () => {
     await user.click(screen.getByRole("button", { name: /Select model/i }));
     expect(screen.getByRole("tab", { name: "Pi" })).toBeTruthy();
     await user.click(screen.getByRole("tab", { name: "Pi" }));
-    expect(screen.getByText("Connect Pi")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Log in to Pi" }));
+    expect(screen.getAllByText("Set up Pi").length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: "Set up" }));
     expect(onOpenSignIn).toHaveBeenCalledWith("pi");
   });
 

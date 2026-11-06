@@ -3814,6 +3814,24 @@ through `ProviderAccountSignInSheet`: it starts the host's login, polls
 cancels it. Everything is a thin relay — the provider CLI still runs on the
 machine, and the login lands in that account's config home there.
 
+A chat whose turn stopped because its agent is signed out on the chat's
+machine (`errorInfo.agentCli.category == "unauthenticated"`, read into
+`WorkChatEnvelope.signedOutAgent`) shows one calm transcript line ("Muse Code
+was signed out", "signed in again" once a later turn works,
+`workSignInRecoveredIds`) and `WorkProviderSignInCard` in the composer's place
+(`WorkProviderSignIn.swift`). The card runs the provider's own sign-in on the
+chat machine's connection (`WorkSessionDestinationView.providerSignInHost`:
+the remote chat's `MachineConnection` or `SyncService`, never this phone's
+primary machine for another machine's chat) through `providerAccounts.login*`,
+`ai.cliLogin*` (Kimi with a region picker) or `ai.antigravitySignIn*`. It opens
+http(s) links in Safari once, copies the device code, sends a pasted code
+back, and when the machine reads the login back it resends the last message
+with its files. Not now hides it for that failure; a read-only quick look of
+another project's chat shows none. A host too old for the `ai.*` sign-in
+commands answers with the connection's "cannot do this from the phone yet"
+error on the card. The phone shows the card only after a failed send, not
+before one.
+
 `WorkModelPickerSheet` shows the same Claude authentication affordance
 as desktop when Claude-family models are unavailable: a compact
 `Login to Claude` action opens a primary-lane terminal by calling

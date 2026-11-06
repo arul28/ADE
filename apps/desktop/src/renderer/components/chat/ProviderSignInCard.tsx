@@ -36,6 +36,34 @@ import { CardBannerButtons, CardError, CardFieldInput, CardReceipt, cardEscapeHa
 import "./providerSignInCard.css";
 
 const POLL_MS = 1_000;
+const SIGN_IN_ANALYTICS_INTERVAL_MS = 10 * 60_000;
+const ANALYTICS_PROVIDERS = new Set(["claude", "codex", "cursor", "droid", "opencode", "pi", "muse"]);
+
+/**
+ * How one sign-in from the card ended (`docs/logging.md`, `chat` /
+ * `provider_sign_in`). Emitted here because the card is the only place that
+ * knows a chat asked for it; the host runners also serve Settings. One event
+ * per attempt, the provider's coarse family only.
+ */
+function captureSignInOutcome(provider: string, outcome: "completed" | "cancelled" | "failed"): void {
+  try {
+    void window.ade?.analytics?.capture({
+      event: "ade_feature_used",
+      properties: {
+        feature: "chat",
+        action: "provider_sign_in",
+        outcome,
+        provider: ANALYTICS_PROVIDERS.has(provider) ? provider : "other",
+        source: "renderer_route",
+      },
+      // Repeated tries in a row count once per outcome.
+      dedupeKey: `chat_provider_sign_in_${outcome}`,
+      minimumIntervalMs: SIGN_IN_ANALYTICS_INTERVAL_MS,
+    }).catch(() => undefined);
+  } catch {
+    // Analytics never blocks a sign-in.
+  }
+}
 
 type SignInKind = "account" | "cli" | "cursor" | "antigravity" | "settings";
 
@@ -178,6 +206,13 @@ function useProviderSignInFlow(args: {
   /** The running login on the machine, to read, answer and stop. */
   const loginRef = useRef<{ id: string; live: boolean } | null>(null);
   const openedRef = useRef<string | null>(null);
+  /** An attempt started and not yet counted as ended (analytics). */
+  const attemptOpenRef = useRef(false);
+  const endAttempt = useCallback((outcome: "completed" | "cancelled" | "failed") => {
+    if (!attemptOpenRef.current) return;
+    attemptOpenRef.current = false;
+    captureSignInOutcome(provider, outcome);
+  }, [provider]);
 
   // The link opens in the browser in front of the person, once per sign-in,
   // unless the machine's own sign-in already opened it on this computer.
@@ -222,9 +257,16 @@ function useProviderSignInFlow(args: {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
+      // Gone mid-flow (Not now, another chat): that attempt was cancelled.
+      endAttempt("cancelled");
       stopOnHost();
     };
-  }, [stopOnHost]);
+  }, [endAttempt, stopOnHost]);
+
+  useEffect(() => {
+    if (flow.phase === "done") endAttempt("completed");
+    else if (flow.phase === "failed") endAttempt("failed");
+  }, [endAttempt, flow.phase]);
 
   const applyAntigravity = useCallback((seq: number, next: Awaited<ReturnType<NonNullable<typeof window.ade.ai.antigravitySignInStatus>>> | null) => {
     if (!next || seq !== seqRef.current || !aliveRef.current) return;
@@ -251,6 +293,7 @@ function useProviderSignInFlow(args: {
     stopOnHost();
     const seq = ++seqRef.current;
     openedRef.current = null;
+    attemptOpenRef.current = true;
     setSubmitError(null);
     setFlow({ ...IDLE, phase: "starting" });
     const p = pinRef.current;
@@ -380,11 +423,12 @@ function useProviderSignInFlow(args: {
   }, [applyAntigravity, applyHost, kind]);
 
   const cancel = useCallback(() => {
+    endAttempt("cancelled");
     stopOnHost();
     seqRef.current += 1;
     setSubmitError(null);
     setFlow(IDLE);
-  }, [stopOnHost]);
+  }, [endAttempt, stopOnHost]);
 
   return { flow, submitError, start, submitCode, cancel };
 }
