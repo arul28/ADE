@@ -7809,28 +7809,38 @@ export function registerIpc({
     return lanes.find((lane) => lane.id === laneId)?.worktreePath ?? null;
   };
 
+  // A leftover folder belongs to the project whose delete left it, named by
+  // `rootPath` (the window may show another tab by now). Only a project ADE
+  // knows; never a path the renderer made up. Without one, the active tab.
+  const leftoverProjectRoot = (rootPath: unknown): string | null =>
+    typeof rootPath === "string" && rootPath.trim() ? resolveAllowedProjectRoot(rootPath) : null;
+
+  /** That project's runtime answer for a leftover-folder action, then its in-process lane service. */
+  const leftoverLaneTarget = async (
+    event: { sender: Electron.WebContents },
+    projectRoot: string | null,
+    action: "getLeftoverWorktree" | "deleteLeftoverWorktree",
+    laneId: string,
+  ) => {
+    const call = (pool: LocalRuntimeConnectionPool, rootPath: string) =>
+      pool.callActionForRoot(rootPath, { domain: "lane", action, args: { laneId } });
+    const fromRuntime = projectRoot
+      ? (localRuntimeConnectionPool ? await call(localRuntimeConnectionPool, projectRoot) : null)
+      : await tryLocalRuntimeSync(event, call);
+    const ctx = projectRoot ? getProjectContext?.(projectRoot) ?? null : getCtx();
+    return { runtimeResult: fromRuntime?.result, laneService: ctx?.laneService ?? null };
+  };
+
   const readLeftoverWorktree = async (
     event: { sender: Electron.WebContents },
     laneId: string,
-    projectRoot?: string | null,
+    projectRoot: string | null,
   ): Promise<LaneDeleteLeftoverWorktree | null> => {
-    // `projectRoot` is the project whose delete left the folder; the window
-    // may show another tab by now.
-    const getLeftover = (pool: LocalRuntimeConnectionPool, rootPath: string) =>
-      pool.callActionForRoot(rootPath, {
-        domain: "lane",
-        action: "getLeftoverWorktree",
-        args: { laneId },
-      });
-    const fromRuntime = projectRoot
-      ? (localRuntimeConnectionPool ? await getLeftover(localRuntimeConnectionPool, projectRoot) : null)
-      : await tryLocalRuntimeSync(event, getLeftover);
-    const runtimeLeftover = fromRuntime?.result;
-    if (runtimeLeftover && typeof runtimeLeftover === "object" && typeof (runtimeLeftover as LaneDeleteLeftoverWorktree).path === "string") {
-      return runtimeLeftover as LaneDeleteLeftoverWorktree;
+    const { runtimeResult, laneService } = await leftoverLaneTarget(event, projectRoot, "getLeftoverWorktree", laneId);
+    if (runtimeResult && typeof runtimeResult === "object" && typeof (runtimeResult as LaneDeleteLeftoverWorktree).path === "string") {
+      return runtimeResult as LaneDeleteLeftoverWorktree;
     }
-    const ctx = projectRoot ? getProjectContext?.(projectRoot) ?? null : getCtx();
-    return ctx?.laneService?.getLeftoverWorktree(laneId) ?? null;
+    return laneService?.getLeftoverWorktree(laneId) ?? null;
   };
 
   ipcMain.handle(IPC.lanesRevealWorktree, async (event, arg: { laneId: string }): Promise<void> => {
@@ -7841,36 +7851,22 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.lanesRevealLeftoverWorktree, async (event, arg: { laneId: string; rootPath?: string }): Promise<void> => {
-    // Only a project ADE knows; never a path the renderer made up.
-    const rootPath = typeof arg?.rootPath === "string" && arg.rootPath.trim()
-      ? resolveAllowedProjectRoot(arg.rootPath)
-      : null;
-    const leftover = await readLeftoverWorktree(event, arg.laneId, rootPath);
+    const leftover = await readLeftoverWorktree(event, arg.laneId, leftoverProjectRoot(arg?.rootPath));
     if (!leftover?.path) throw new Error("That folder is no longer available to reveal.");
     if (!fs.existsSync(leftover.path)) throw new Error("That folder is no longer on disk.");
     shell.showItemInFolder(leftover.path);
   });
 
   ipcMain.handle(IPC.lanesDeleteLeftoverWorktree, async (event, arg: { laneId: string; rootPath?: string }): Promise<{ removed: boolean }> => {
-    // Only a project ADE knows; never a path the renderer made up.
-    const projectRoot = typeof arg?.rootPath === "string" && arg.rootPath.trim()
-      ? resolveAllowedProjectRoot(arg.rootPath)
-      : null;
-    const deleteLeftover = (pool: LocalRuntimeConnectionPool, rootPath: string) =>
-      pool.callActionForRoot(rootPath, {
-        domain: "lane",
-        action: "deleteLeftoverWorktree",
-        args: { laneId: arg.laneId },
-      });
-    const fromRuntime = projectRoot
-      ? (localRuntimeConnectionPool ? await deleteLeftover(localRuntimeConnectionPool, projectRoot) : null)
-      : await tryLocalRuntimeSync(event, deleteLeftover);
-    if (fromRuntime?.result && typeof fromRuntime.result === "object") {
-      return fromRuntime.result as { removed: boolean };
-    }
-    const service = (projectRoot ? getProjectContext?.(projectRoot) ?? null : getCtx())?.laneService;
-    if (!service) throw new Error("That folder is no longer waiting to be deleted.");
-    return service.deleteLeftoverWorktree(arg.laneId);
+    const { runtimeResult, laneService } = await leftoverLaneTarget(
+      event,
+      leftoverProjectRoot(arg?.rootPath),
+      "deleteLeftoverWorktree",
+      arg.laneId,
+    );
+    if (runtimeResult && typeof runtimeResult === "object") return runtimeResult as { removed: boolean };
+    if (!laneService) throw new Error("That folder is no longer waiting to be deleted.");
+    return laneService.deleteLeftoverWorktree(arg.laneId);
   });
 
   ipcMain.handle(IPC.lanesOpenFolder, async (event, arg: { laneId: string }): Promise<void> => {

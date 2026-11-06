@@ -59,7 +59,7 @@ const ERROR_KIND_WORDS: Readonly<Partial<Record<ToolErrorKind, string>>> = {
   integrity: "the download did not match ADE's checksum",
   "disk-space": "not enough free disk space",
   extract: "the download could not be unpacked",
-  "lock-timeout": "another ADE was still installing it",
+  "lock-timeout": "the install lock was never released",
   filesystem: "it could not be written to disk",
 };
 
@@ -67,16 +67,16 @@ function failureReason(errorKind: string | null): string {
   return (errorKind && ERROR_KIND_WORDS[errorKind as ToolErrorKind]) ?? errorKind ?? "unknown error";
 }
 
-/**
- * The sentence for a tool that is not ready, or null when it is. Downloading,
- * failed (with the typed kind and a retry hint), not available for this
- * machine's platform, or not downloaded yet.
- */
 /** A wait on the install lock that timed out while a live process on this machine still held it. */
 function isLiveLockTimeout(status: PinnedToolStatus): boolean {
   return status.errorKind === "lock-timeout" && status.lockHolderLive === true;
 }
 
+/**
+ * The sentence for a tool that is not ready, or null when it is. Downloading,
+ * failed (with the typed kind and a retry hint), not available for this
+ * machine's platform, or not downloaded yet.
+ */
 export function pinnedToolBlocker(label: string, status: PinnedToolStatus): string | null {
   switch (status.state) {
     case "ready":

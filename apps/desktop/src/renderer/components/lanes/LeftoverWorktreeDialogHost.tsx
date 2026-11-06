@@ -22,14 +22,14 @@ type LeftoverPrompt = LaneDeleteLeftoverWorktree & {
   rootPath: string | null;
 };
 
-/**
- * After a lane delete leaves an external folder on disk, ask once what to do
- * with it. Close keeps the folder. Delete folder removes that directory only.
- */
 function leftoverArgs(prompt: LeftoverPrompt): { laneId: string; rootPath?: string } {
   return prompt.rootPath ? { laneId: prompt.laneId, rootPath: prompt.rootPath } : { laneId: prompt.laneId };
 }
 
+/**
+ * After a lane delete leaves an external folder on disk, ask once what to do
+ * with it. Close keeps the folder. Delete folder removes that directory only.
+ */
 export function LeftoverWorktreeDialogHost(): JSX.Element | null {
   const [queue, setQueue] = useState<LeftoverPrompt[]>([]);
   const [error, setError] = useState<string | null>(null);
