@@ -4898,9 +4898,15 @@ export function scopeAndroidAdeActionArgs(
     device: "Android emulator",
     missingLaneMessage: androidMissingLaneMessage(action),
   });
-  const { chatSessionId: _callerChat, ...rest } = androidArgs;
+  const { chatSessionId: _callerChat, agentCaller: _agentCaller, ...rest } = androidArgs;
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-  return { ...rest, ...(laneId ? { laneId } : {}), ...(callerChatSessionId ? { chatSessionId: callerChatSessionId } : {}) };
+  return {
+    ...rest,
+    ...(laneId ? { laneId } : {}),
+    ...(callerChatSessionId ? { chatSessionId: callerChatSessionId } : {}),
+    // Parity, as Apple's: an agent's `device-cleanup --power-off-idle` reaches its own lane only.
+    ...(action === "deviceCleanup" ? { agentCaller: true } : {}),
+  };
 }
 
 /**
@@ -4924,8 +4930,8 @@ export async function scopeUnboundAndroidAdeActionArgs(
     requestedLaneId: asOptionalTrimmedString(androidArgs.laneId),
     missingLaneMessage: androidMissingLaneMessage(action),
   });
-  const { chatSessionId: _callerChat, ...rest } = androidArgs;
-  return { ...rest, ...(laneId ? { laneId } : {}) };
+  const { chatSessionId: _callerChat, agentCaller: _agentCaller, ...rest } = androidArgs;
+  return { ...rest, ...(laneId ? { laneId } : {}), ...(action === "deviceCleanup" ? { agentCaller: true } : {}) };
 }
 
 /**
@@ -5144,8 +5150,14 @@ const ANDROID_AGENT_DRIVING_ACTIONS = new Set([
   "scroll",
   "sendKey",
   "sendText",
+  // Parity: a key press, a relaunch and a pick drive the emulator too.
+  "pressKey",
+  "relaunchApp",
+  "selectPoint",
   "rotate",
   "setPosture",
+  // Parity: a window layout moves apps on the lane's screen.
+  "windowLayout",
   "openUrl",
   "launchApp",
   "tapElement",

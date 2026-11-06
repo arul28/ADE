@@ -478,7 +478,7 @@ struct LiveInspectStage: View {
   /// A phone's screen gets a phone's corners; a window or a desktop keeps a
   /// small radius.
   private func cornerRadius(for rect: CGRect) -> CGFloat {
-    model.surface == .simulator ? min(rect.width, rect.height) * 0.09 : 8
+    model.surface.isPhoneScreen ? min(rect.width, rect.height) * 0.09 : 8
   }
 
   private func selectionBox(_ frame: CGRect) -> some View {

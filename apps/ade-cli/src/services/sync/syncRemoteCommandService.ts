@@ -6694,7 +6694,15 @@ function registerAppleRemoteCommands({ args, register }: RemoteCommandRegistrati
 function registerAndroidRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   const service = args.androidDeviceService;
   if (!service) return;
-  for (const entry of createAndroidRemoteCommandHandlers({ service, streamRelay: args.androidStreamRelay ?? null })) {
+  const entries = createAndroidRemoteCommandHandlers({
+    service,
+    streamRelay: args.androidStreamRelay ?? null,
+    resolveChatTitle: args.agentChatService
+      ? async (chatSessionId) =>
+        (await args.agentChatService?.getSessionSummary(chatSessionId))?.title ?? null
+      : undefined,
+  });
+  for (const entry of entries) {
     register(entry.action, entry.policy, async (payload) => entry.handler(payload));
   }
 }

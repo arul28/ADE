@@ -11,6 +11,8 @@ import type {
   AndroidSetDeviceSettingArgs,
   AndroidSwipeArgs,
 } from "./androidEmulator";
+import type { DemoArtifactMetadata } from "../demoVideo/demoContract";
+import type { AndroidInputRecordArgs } from "./androidEmulatorRecording";
 
 /* ──────────────────────────────────────────────────────────────────────────
    P1 AGENT SUITE (android-agent): `ade android` at the level of `ade apple`.
@@ -120,7 +122,8 @@ export type AndroidInstallResult = {
   outputTail: string[];
 };
 
-export type AndroidLaunchArgs = AndroidInstallArgs & {
+/** Parity: launch arguments and intent extras ride on `launchApp` too (`androidEmulatorControl.ts`). */
+export type AndroidLaunchArgs = AndroidInstallArgs & import("./androidEmulatorControl").AndroidLaunchExtrasArgs & {
   /** An installed package to start; with `apkPath` or `gradle` the installed one is used. */
   packageName?: string | null;
   /** `.MainActivity` or `com.example/.MainActivity`; default = the launcher activity. */
@@ -140,7 +143,7 @@ export type AndroidLaunchResult = {
 
 export type AndroidPackageArgs = AndroidLaneArgs & { packageName: string };
 
-export type AndroidOpenUrlArgs = AndroidLaneArgs & { url: string };
+export type AndroidOpenUrlArgs = AndroidLaneArgs & AndroidInputRecordArgs & { url: string };
 
 /* ---------- input ---------- */
 
@@ -149,7 +152,7 @@ export const ANDROID_LONG_PRESS_DEFAULT_MS = 1_000;
 export const ANDROID_LONG_PRESS_MIN_MS = 100;
 export const ANDROID_LONG_PRESS_MAX_MS = 5_000;
 
-export type AndroidLongPressArgs = AndroidLaneArgs & { x: number; y: number; durationMs?: number | null };
+export type AndroidLongPressArgs = AndroidLaneArgs & AndroidInputRecordArgs & { x: number; y: number; durationMs?: number | null };
 
 /**
  * A press that holds before it moves: drag and drop, reorder. A swipe moves
@@ -160,7 +163,7 @@ export type AndroidDragArgs = AndroidSwipeArgs;
 export const ANDROID_SCROLL_DIRECTIONS = ["up", "down", "left", "right"] as const;
 export type AndroidScrollDirection = (typeof ANDROID_SCROLL_DIRECTIONS)[number];
 
-export type AndroidScrollArgs = AndroidLaneArgs & {
+export type AndroidScrollArgs = AndroidLaneArgs & AndroidInputRecordArgs & {
   /** The way the content moves: `down` shows what is below. */
   direction: AndroidScrollDirection;
   /** Distance in device pixels; default half the screen. */
@@ -242,12 +245,12 @@ export type AndroidElementQuery = {
 
 export type AndroidElementQueryArgs = AndroidLaneArgs & { query: AndroidElementQuery };
 
-export type AndroidTapElementArgs = AndroidElementQueryArgs & {
+export type AndroidTapElementArgs = AndroidElementQueryArgs & AndroidInputRecordArgs & {
   /** Hold the press this long: a long press on the element. */
   holdMs?: number | null;
 };
 
-export type AndroidFillElementArgs = AndroidElementQueryArgs & {
+export type AndroidFillElementArgs = AndroidElementQueryArgs & AndroidInputRecordArgs & {
   text: string;
   /** Tap the field first so the keyboard targets it. Default true. */
   focusFirst?: boolean | null;
@@ -349,8 +352,9 @@ export const ANDROID_CRASH_STACK_MAX_CHARS = 12_000;
 /* ---------- recordings ---------- */
 
 /**
- * One file of a recording. A rotation changes the picture's size, and one MP4
- * track keeps one size, so a rotation starts a new segment.
+ * One file of a recording. While it records, a rotation changes the picture's
+ * size and starts a new part; at the stop the parts are joined into one
+ * video (`androidDemoRecording.ts`), so a stopped recording lists one file.
  */
 export type AndroidRecordingSegment = {
   path: string;
@@ -361,7 +365,19 @@ export type AndroidRecordingSegment = {
   frames: number;
 };
 
-export type AndroidRecordingStopReason = "requested" | "cap" | "device-off" | "stream-failed" | "released" | "chat-ended";
+export type AndroidRecordingStopReason =
+  | "requested"
+  | "cap"
+  | "device-off"
+  | "stream-failed"
+  | "released"
+  | "chat-ended"
+  /** The agent turn that started an automatic recording ended. */
+  | "turn-end"
+  /** Nothing happened on the recording for two minutes. */
+  | "idle"
+  /** The raw file reached its size limit, or the disk is almost full. */
+  | "disk";
 
 export type AndroidRecording = {
   id: string;
@@ -378,10 +394,24 @@ export type AndroidRecording = {
   bytes: number | null;
   active: boolean;
   stopReason: AndroidRecordingStopReason | null;
-  /** One per segment that was filed. */
+  /** The proof row it was filed as (one per recording). Empty when not filed. */
   proofArtifactIds: string[];
   /** Why it holds no video, when it does not. */
   lastError: string | null;
+  /** `auto`: an agent's input started it, and its turn's end stops it. Absent on older sidecars (manual). */
+  mode?: "auto" | "manual";
+  /** Started with `--plain`: filed as recorded, with no demo treatment. */
+  plain?: boolean;
+  /** Tap rings and typed-text badges were on when it started (the machine preferences). */
+  overlays?: boolean;
+  /** Real time the video covers; `durationMs` is the video's own length. */
+  wallDurationMs?: number | null;
+  /** Still time left out of the video. */
+  idleCutMs?: number | null;
+  /** The wall-clock cap it stops at. */
+  maxDurationMs?: number | null;
+  /** How the demo was made, once it stopped. */
+  demo?: DemoArtifactMetadata | null;
 };
 
 /** No recording runs longer than this (Apple's cap); `maxSeconds` may ask for less. */
@@ -391,12 +421,18 @@ export type AndroidRecordStartArgs = AndroidLaneArgs & {
   chatSessionId?: string | null;
   label?: string | null;
   maxSeconds?: number | null;
+  /** File it as recorded, with no demo treatment (`record-start --plain`). */
+  plain?: boolean | null;
+  /** Zoom in on each tap in the demo (`record-start --zoom`). */
+  zoom?: boolean | null;
 };
 
 export type AndroidRecordStopArgs = AndroidLaneArgs & {
   chatSessionId?: string | null;
   /** Delete the video instead of keeping and filing it. */
   discard?: boolean;
+  /** Keep it (the default); wins over `discard`. */
+  keep?: boolean;
   /** False = keep the files but file no proof (a `--machine` caller files them itself). */
   proof?: boolean;
 };

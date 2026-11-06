@@ -34,6 +34,8 @@ type AndroidHeldLease = {
   epoch: number;
   pin: OpenProjectBinding | null;
   laneId: string;
+  /** The lane's machine is not this one: the brain counts this viewer as remote. */
+  remoteViewer: boolean;
 };
 
 export type UseAndroidDeviceStreamArgs = {
@@ -59,6 +61,8 @@ export type AndroidDeviceStream = {
   height: number | null;
   /** Frames per second from the brain, while live. */
   fps: number | null;
+  /** The bit rate the brain's encoder sent lately, in kbit/s, while live. */
+  bitrateKbps: number | null;
   /**
    * Live, but frames stopped reaching this window while the link looks at
    * fault. Flips only on transitions, never per frame.
@@ -90,6 +94,7 @@ export function useAndroidDeviceStream({
   const [token, setToken] = useState<string | null>(null);
   const [size, setSize] = useState<{ width: number | null; height: number | null }>({ width: null, height: null });
   const [fps, setFps] = useState<number | null>(null);
+  const [bitrateKbps, setBitrateKbps] = useState<number | null>(null);
   const [reconnectNonce, setReconnectNonce] = useState(0);
   const [reconnecting, setReconnectingRaw] = useState(false);
   const reconnectingRef = useRef(false);
@@ -115,7 +120,10 @@ export function useAndroidDeviceStream({
     // A remount took the lane's stream up again in the meantime: theirs now.
     heldAgain: (lease) => androidStreamLeases.count(lease.key) > 0,
     stop: (lease) => {
-      void window.ade?.androidEmulator?.stopStream({ laneId: lease.laneId }, lease.pin).catch(() => {});
+      void window.ade?.androidEmulator?.stopStream(
+        { laneId: lease.laneId, ...(lease.remoteViewer ? { remoteViewer: true } : {}) },
+        lease.pin,
+      ).catch(() => {});
     },
   });
 
@@ -166,11 +174,15 @@ export function useAndroidDeviceStream({
     const pin = runtimePinRef.current;
     const bound = useAppStore.getState().projectBinding;
     const leaseKey = androidStreamLeaseKey({ pin, bound, laneId });
+    // A viewer of another machine's emulator is a remote viewer there: while
+    // nobody on that machine watches, its encoder runs at the remote cap.
+    const remoteViewer = (pin ?? bound)?.kind === "remote";
     if (leaseRef.current && leaseRef.current.key !== leaseKey) releaseLease();
     if (!leaseRef.current) {
       const { epoch } = androidStreamLeases.acquire(leaseKey, () => null);
-      leaseRef.current = { key: leaseKey, epoch, pin, laneId };
+      leaseRef.current = { key: leaseKey, epoch, pin, laneId, remoteViewer };
     }
+    const viewerArgs = leaseRef.current.remoteViewer ? { remoteViewer: true } : {};
 
     let cancelled = false;
     sawFrameRef.current = false;
@@ -179,7 +191,7 @@ export function useAndroidDeviceStream({
 
     const run = async () => {
       // `startStream` joins a running stream; it mints the viewer's token.
-      const status = await api.startStream({ laneId }, runtimePinRef.current);
+      const status = await api.startStream({ laneId, ...viewerArgs }, runtimePinRef.current);
       if (cancelled) return;
       if (!status.running || !status.transport) {
         throw new Error("The emulator's stream did not start.");
@@ -192,6 +204,7 @@ export function useAndroidDeviceStream({
       setToken(status.transport.token);
       setSize({ width: status.transport.width || null, height: status.transport.height || null });
       setFps(status.fps);
+      setBitrateKbps(status.bitrateKbps ?? null);
     };
 
     void run().catch((caught: unknown) => {
@@ -309,12 +322,17 @@ export function useAndroidDeviceStream({
         return;
       }
       statusReadSinceRef.current = Date.now();
-      void api.getStreamStatus({ laneId }, runtimePinRef.current)
+      void api.getStreamStatus(
+        { laneId, ...(leaseRef.current?.remoteViewer ? { remoteViewer: true } : {}) },
+        runtimePinRef.current,
+      )
         .then((next) => {
           if (cancelled) return;
           statusReadSinceRef.current = 0;
           statusReadFailedRef.current = false;
           setFps((current) => (current === next.fps ? current : next.fps));
+          const kbps = next.bitrateKbps ?? null;
+          setBitrateKbps((current) => (current === kbps ? current : kbps));
           checkStall(next.fps);
         })
         .catch(() => {
@@ -333,7 +351,7 @@ export function useAndroidDeviceStream({
       window.clearInterval(timer);
       window.clearInterval(stallTimer);
     };
-  }, [checkStall, laneId, runtimePinRef, setReconnecting, state, wanted]);
+  }, [checkStall, laneId, leaseRef, runtimePinRef, setReconnecting, state, wanted]);
 
   return {
     state,
@@ -343,6 +361,7 @@ export function useAndroidDeviceStream({
     width: size.width,
     height: size.height,
     fps,
+    bitrateKbps,
     reconnecting,
     gaveUp,
     handleReaderStatus,

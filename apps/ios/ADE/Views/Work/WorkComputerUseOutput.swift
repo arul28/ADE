@@ -248,3 +248,55 @@ func cuReadUserBrowser(_ parsed: CUOutput) -> (browser: String?, host: String?)?
     ?? parsed.values["machine"] ?? parsed.values["host"] ?? cuReadString(parsed.json?["machine"])
   return (browser, host.map { cuClip($0, 40) })
 }
+
+// MARK: - Android (desktop `computerUseActionOutput.ts`, the Android section)
+
+/// Profile words that read as one token in capitals: `pixel_9_xl` is "Pixel 9 XL".
+private let cuAndroidUpperWords: Set<String> = ["xl", "tv", "api", "fe", "se"]
+
+/// A person's name for an AVD folder name: `ade_ab12cd34_pixel_9_pro` reads
+/// "Pixel 9 Pro". Any other AVD name reads with its underscores as spaces.
+func cuAndroidAvdDisplayName(_ avdName: String) -> String {
+  let trimmed = avdName.trimmingCharacters(in: .whitespacesAndNewlines)
+  // A `_2` that tells two AVDs apart stays: it cannot be told from a model number.
+  let bare = trimmed.replacingOccurrences(of: #"^ade_[A-Za-z0-9]+_"#, with: "", options: .regularExpression)
+  let words = cuSplit(#"[_\s]+"#, bare).filter { !$0.isEmpty }
+  if words.isEmpty { return trimmed }
+  return words.map { word in
+    cuAndroidUpperWords.contains(word.lowercased()) ? word.uppercased() : word.prefix(1).uppercased() + word.dropFirst()
+  }.joined(separator: " ")
+}
+
+/// The Android emulator a command's output names, and its API level.
+func cuReadAndroidDevice(_ parsed: CUOutput) -> (name: String?, os: String?) {
+  let json = parsed.json
+  let lane = (json?["lane"] as? [String: Any]) ?? json
+  let avd = lane?["avd"] as? [String: Any]
+  let device = (lane?["device"] as? [String: Any]) ?? (json?["device"] as? [String: Any])
+  let displayName = cuReadString(avd?["displayName"]) ?? parsed.values["name"]
+  let avdName = cuReadString(device?["avdName"]) ?? cuReadString(avd?["name"]) ?? parsed.values["avd"]
+  var name: String?
+  if let displayName, displayName != avdName {
+    name = displayName
+  } else if let folder = displayName ?? avdName {
+    name = cuAndroidAvdDisplayName(folder)
+  }
+  let apiLevel = (avd?["apiLevel"] as? Int).map(String.init) ?? parsed.values["api"]
+  let os = apiLevel.flatMap { cuTests(#"^\d+$"#, $0) ? "API \($0)" : nil }
+  return (name.map { cuClip($0, 40) }, os)
+}
+
+/// The element an `ade android` element verb acted on, from its text output.
+func cuReadAndroidElementName(_ output: String) -> String? {
+  for rawLine in cuSplit(#"\r?\n"#, output) {
+    let line = rawLine.trimmingCharacters(in: .whitespaces)
+    guard cuTests(#"^(?:Tapped|Filled|Found|Visible:)\s+\S+\s+"|^\S+\s+".*"\s+is on screen\b"#, line) else { continue }
+    if let name = cuQuotedName(line) { return name }
+  }
+  return nil
+}
+
+/// A fill whose field does not show the text afterwards.
+func cuReadAndroidFillUnseen(_ parsed: CUOutput, output: String) -> Bool {
+  cuReadString(parsed.json?["typed"]) == "not-seen" || cuTests(#"\bthe field does NOT show the text\b"#, output)
+}

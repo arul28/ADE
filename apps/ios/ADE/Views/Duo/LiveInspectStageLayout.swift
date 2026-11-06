@@ -193,6 +193,7 @@ private extension LiveInspectSurface {
   var placeholderPixelSize: CGSize {
     switch self {
     case .simulator: return CGSize(width: 1206, height: 2622)
+    case .android: return CGSize(width: 1080, height: 2424)
     case .appControl, .macDesktop: return CGSize(width: 1600, height: 1000)
     }
   }

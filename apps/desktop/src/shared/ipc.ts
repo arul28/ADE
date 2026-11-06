@@ -696,6 +696,9 @@ export const IPC = {
   androidEmulatorCancelSdkInstall: "ade.androidEmulator.cancelSdkInstall",
   androidEmulatorGetSdkInstallState: "ade.androidEmulator.getSdkInstallState",
   androidEmulatorSetSdkPath: "ade.androidEmulator.setSdkPath",
+  // Rec: the machine's Android preferences (Settings › Android devices).
+  androidEmulatorGetMachinePreferences: "ade.androidEmulator.getMachinePreferences",
+  androidEmulatorSetMachinePreferences: "ade.androidEmulator.setMachinePreferences",
   androidEmulatorEvent: "ade.androidEmulator.event",
   appControlGetStatus: "ade.appControl.getStatus",
   appControlLaunch: "ade.appControl.launch",

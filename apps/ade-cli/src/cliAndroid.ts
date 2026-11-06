@@ -18,10 +18,14 @@ import { ANDROID_CATALOG_IDS } from "../../desktop/src/shared/androidDeviceCatal
 import {
   ANDROID_EMULATOR_DOMAIN,
   ANDROID_HARDWARE_KEYS,
+  ANDROID_KEY_MODIFIERS,
+  ANDROID_NAMED_KEYCODES,
   ANDROID_ORIENTATIONS,
   ANDROID_RENDER_ANGLE_IDS,
   ANDROID_RENDER_BACKGROUNDS,
   ANDROID_SDK_PERSON_ONLY_ACTIONS,
+  androidKeyCode,
+  splitAndroidKeyCombo,
   type AndroidErrorCode,
   type AndroidHardwareKey,
 } from "../../desktop/src/shared/types/androidEmulator";
@@ -48,6 +52,7 @@ import {
 } from "./cli";
 import { record } from "./cliAndroidFormat";
 import { buildAndroidSuitePlan } from "./cliAndroidSuite";
+import { buildAndroidDevicePlan } from "./cliAndroidDevice";
 
 /* ──────────────────────────────────────────────────────────────────────────
    ANDROID EMULATOR — `ade android`.
@@ -89,6 +94,9 @@ export const ANDROID_VALUE_FLAGS: readonly string[] = [
   "--direction",
   "--display-size",
   "--duration-ms",
+  // Parity: `launch`/`relaunch --extra key=value` (typed) and `--extra-string key=value`, repeatable.
+  "--extra",
+  "--extra-string",
   "--folder",
   // `preview --fqn <name>`, repeatable.
   "--fqn",
@@ -101,6 +109,8 @@ export const ANDROID_VALUE_FLAGS: readonly string[] = [
   "--label",
   "--lane",
   "--latitude",
+  // Parity: `launch --launch-arg <am word>`, repeatable (`ade apple`'s spelling).
+  "--launch-arg",
   "--layout-bounds",
   "--level",
   "--lighting",
@@ -135,12 +145,23 @@ export const ANDROID_VALUE_FLAGS: readonly string[] = [
   "--y",
 ];
 
-const ANDROID_VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set(ANDROID_VALUE_FLAGS);
-const ANDROID_SDK_VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set(ANDROID_VALUE_FLAGS.filter((flag) => flag !== "--wait"));
+/**
+ * Parity (device track): the value flags of `accessibility`, `status-bar` and
+ * `window` (cliAndroidDevice.ts). Literals: see that file's cycle note.
+ */
+const ANDROID_DEVICE_VALUE_FLAGS: readonly string[] = [
+  "--option", "--time", "--data-network", "--wifi-bars", "--cellular-bars", "--battery-level", "--battery-state",
+  "--with", "--size", "--move",
+];
+
+const ANDROID_VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([...ANDROID_VALUE_FLAGS, ...ANDROID_DEVICE_VALUE_FLAGS]);
+const ANDROID_SDK_VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([...ANDROID_VALUE_FLAGS, ...ANDROID_DEVICE_VALUE_FLAGS].filter((flag) => flag !== "--wait"));
 
 /** The element query flags, `ade apple`'s (`--text` is the element's text). */
 const ANDROID_QUERY_FLAGS = ["--ref", "--identifier", "--label", "--text", "--role", "--index"] as const;
 const ANDROID_INSTALL_FLAGS = ["--apk", "--gradle", "--module", "--variant"] as const;
+/** Launch arguments and intent extras, on `launch` and `relaunch`; `-- <words>` too. */
+const ANDROID_LAUNCH_EXTRA_FLAGS = ["--extra", "--extra-string", "--launch-arg"] as const;
 /** `ade android settings`: one setting per call; `--battery` and `--charging` together are one. */
 export const ANDROID_SETTINGS_FLAGS = [
   "--text-size", "--display-size", "--animations", "--show-taps", "--layout-bounds",
@@ -164,18 +185,27 @@ const ANDROID_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
   start: ["--force"],
   stop: [],
   "device-detach": ["--keep"],
-  screenshot: ["--out", "--caption"],
+  screenshot: ["--out", "--caption", "--no-proof"],
   tap: ["--x", "--y"],
   swipe: ["--duration-ms"],
   button: ["--name"],
   rotate: [],
-  type: ["--value"],
+  type: ["--value", "--submit"],
+  // Parity: one key with modifiers held (`key a --ctrl`, or `key ctrl+a`).
+  key: ["--shift", "--ctrl", "--control", "--alt", "--option", "--meta", "--cmd", "--command"],
   // `ade apple render`'s spellings, so one render verb reads the same on both.
   render: ["--angles", "--angle", "--lighting", "--background", "--no-shadow", "--video", "--turntable", "--sheet", "--contact-sheet"],
   // P1 agent suite.
   apps: [],
   install: [...ANDROID_INSTALL_FLAGS],
-  launch: ["--package", "--activity", ...ANDROID_INSTALL_FLAGS],
+  launch: ["--package", "--activity", ...ANDROID_INSTALL_FLAGS, ...ANDROID_LAUNCH_EXTRA_FLAGS],
+  relaunch: ["--package", "--activity", ...ANDROID_LAUNCH_EXTRA_FLAGS],
+  "app-state": ["--package"],
+  foreground: ["--package", "--wait"],
+  frame: ["--out"],
+  inspect: ["--x", "--y", "--ref", "--screenshot"],
+  select: ["--x", "--y", "--ref"],
+  "device-cleanup": ["--power-off-idle", "--dry-run"],
   terminate: ["--package"],
   uninstall: ["--package"],
   "open-url": ["--url"],
@@ -189,12 +219,30 @@ const ANDROID_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
   "wait-for-element": [...ANDROID_QUERY_FLAGS, "--timeout-ms", "--gone"],
   "assert-visible": [...ANDROID_QUERY_FLAGS],
   log: ["--package", "--level", "--since", "--lines"],
-  "record-start": ["--label", "--max-seconds"],
-  "record-stop": ["--discard"],
+  // `ade apple`'s recording flags: `--plain` (or `--keep-idle`) files it as recorded, `--zoom` zooms on each tap.
+  "record-start": ["--label", "--max-seconds", "--plain", "--keep-idle", "--zoom"],
+  "record-stop": ["--discard", "--keep"],
+  // `ade android auto-record on|off|status`: whether an agent's input on this lane starts a recording.
+  "auto-record": [],
   "record-list": [],
   "record-delete": ["--id"],
   lease: ["--wait", "--ttl", "--holder", "--token"],
-  location: ["--latitude", "--longitude"],
+  location: ["--latitude", "--longitude", "--clear", "--reset"],
+  // Parity (device track, cliAndroidDevice.ts), under each spelling.
+  accessibility: ["--on", "--off", "--option"],
+  a11y: ["--on", "--off", "--option"],
+  "status-bar": ["--clear", "--reset", "--time", "--data-network", "--wifi-bars", "--cellular-bars", "--battery-level", "--battery-state"],
+  "play-store-shots": ["--no-proof"],
+  "store-shots": ["--no-proof"],
+  "app-store-shots": ["--no-proof"],
+  window: [
+    "--package", "--with", "--size", "--move", "--split", "--left", "--right", "--top", "--bottom", "--swap",
+    "--freeform", "--free", "--fill", "--full", "--full-screen", "--close",
+  ],
+  windows: [
+    "--package", "--with", "--size", "--move", "--split", "--left", "--right", "--top", "--bottom", "--swap",
+    "--freeform", "--free", "--fill", "--full", "--full-screen", "--close",
+  ],
   appearance: [],
   // P3 fold.
   fold: ["--angle"],
@@ -209,6 +257,21 @@ const ANDROID_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
   // P1 setup: each `sdk` verb's own flags are checked again below.
   sdk: ["--folder", "--with-cli", "--accept-license", "--wait", "--id", "--clear", "--image", "--installed"],
 };
+
+/**
+ * The input verbs that take `--no-record` (`ade apple`'s): this call does not
+ * start an automatic recording. A recording that runs still shows it.
+ */
+const ANDROID_NO_RECORD_VERBS: ReadonlySet<string> = new Set([
+  "tap", "swipe", "button", "type", "key", "open-url", "long-press", "drag", "scroll", "tap-element", "fill-element",
+  "select",
+]);
+
+/** The service methods those verbs call: `noRecord` goes into their args. */
+const ANDROID_NO_RECORD_METHODS: ReadonlySet<string> = new Set([
+  "tap", "swipe", "sendKey", "pressKey", "sendText", "openUrl", "longPress", "drag", "scroll", "tapElement", "fillElement",
+  "selectPoint",
+]);
 
 /** `ade apple`'s button names (hyphens), each to the service's key. */
 const ANDROID_BUTTONS: ReadonlyMap<string, AndroidHardwareKey> = new Map(
@@ -309,7 +372,11 @@ export function androidEmulatorErrorHint(message: string): string | null {
       return "Only the user installs or removes Android system images, in the ADE desktop app: the device picker's System images. "
         + "Ask the user. `ade android sdk images --text` shows what is installed and what is available.";
     }
-    return personOnly[1] === "setSdkPath"
+    if (personOnly[1] === "setMachinePreferences") {
+      return "Only the user changes this machine's Android preferences (tap rings, key badges, auto-record, the storage warning, the remote bitrate), "
+        + "in the ADE desktop app: Settings › Android devices. Ask the user. To stop auto-record in this lane: ade android auto-record off.";
+    }
+        return personOnly[1] === "setSdkPath"
       ? "Only the user picks this machine's Android SDK folder, in the ADE desktop app: Settings › Android devices. Ask the user."
       : "Only the user installs the Android SDK and accepts Google's licences, in the ADE desktop app: "
         + "the setup card in the Android tool, or Settings › Android devices. Ask the user.";
@@ -353,12 +420,18 @@ export function readStroke(rest: readonly string[], verb: string): { fromX: numb
 
 export function buildAndroidPlan(args: string[], options: { remote?: boolean } = {}): CliPlan {
   const sub = firstStandalonePositional(args, ANDROID_VALUE_CARRIER_FLAGS) ?? "status";
+  // `launch … -- <am words>`: everything after `--` is the launch's, as `ade apple launch -- <args>`.
+  // Taken out first, so no flag reader sees a word meant for `am start`.
+  const fence = sub === "launch" || sub === "relaunch" ? args.indexOf("--") : -1;
+  // `--text`/`--json` after the words are the output mode, never `am` options (`launch … -- -f 0x10 --text`).
+  const launchPassthrough = fence >= 0 ? args.splice(fence).slice(1).filter((word) => word !== "--text" && word !== "--json") : [];
   // `sdk install --wait` is a switch, `lease --wait <s>` takes seconds.
   const carriers = sub === "sdk" ? ANDROID_SDK_VALUE_CARRIER_FLAGS : ANDROID_VALUE_CARRIER_FLAGS;
   const positionals = (): string[] => standalonePositionals(args, carriers);
   const verbFlags = ANDROID_VERB_FLAGS[sub];
   if (verbFlags) {
-    const unknown = androidFlagNames(args, carriers).find((name) => name !== "--lane" && !verbFlags.includes(name));
+    const unknown = androidFlagNames(args, carriers).find((name) =>
+      name !== "--lane" && !verbFlags.includes(name) && !(name === "--no-record" && ANDROID_NO_RECORD_VERBS.has(sub)));
     if (unknown) {
       throw new CliUsageError(`android ${sub} does not take ${unknown}. Run 'ade android --help'.`);
     }
@@ -374,6 +447,7 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
   const claimArgs = readToolClaimArgs(args);
   const laneClaim = (): JsonObject => (claimArgs.laneId ? { laneId: claimArgs.laneId } : {});
   const callerRootArgs = proofCallerRootArgs();
+  const noRecord = ANDROID_NO_RECORD_VERBS.has(sub) && readFlag(args, ["--no-record"]);
   const androidAction = (
     label: string,
     method: string,
@@ -384,11 +458,13 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
     // Read before the step is built, so a timeout added to the shared table
     // reaches the CLI without a second edit.
     const minTimeoutMs = localRuntimeActionTimeoutMs(ANDROID_EMULATOR_DOMAIN, method);
+    // `--no-record` on an input verb: this call starts no automatic recording.
+    const recordPayload = noRecord && ANDROID_NO_RECORD_METHODS.has(method) ? { ...payload, noRecord: true } : payload;
     return {
       kind: "execute",
       label,
       formatter,
-      steps: [actionStep("result", ANDROID_EMULATOR_DOMAIN, method, payload, callerRootArgs)],
+      steps: [actionStep("result", ANDROID_EMULATOR_DOMAIN, method, recordPayload, callerRootArgs)],
       ...(minTimeoutMs > 30_000 ? { minTimeoutMs: minTimeoutMs + 15_000 } : {}),
       ...extra,
     };
@@ -487,10 +563,13 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
   if (sub === "screenshot") {
     const outPath = androidOutPath(readValue(args, ["--out"]), options.remote === true);
     const caption = readValue(args, ["--caption"]);
+    // `--no-proof`: write the PNG, file nothing (as `ade apple screenshot --no-proof`).
+    const noProof = readFlag(args, ["--no-proof"]);
     return androidAction("android screenshot", "screenshot", {
       ...laneClaim(),
       ...(outPath ? { outPath } : {}),
       ...(caption ? { caption } : {}),
+      ...(noProof ? { proof: false } : {}),
     }, "android-screenshot", { shapeResult: withAsked(caption ? { caption } : {}) });
   }
   if (sub === "tap") {
@@ -523,21 +602,60 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
     });
   }
   if (sub === "rotate") {
-    const orientation = requireValue(positionals()[0] ?? null, "the orientation (portrait or landscape)").toLowerCase();
+    // `ade apple rotate`'s names; `landscape` is `landscape-right`.
+    const orientation = requireValue(positionals()[0] ?? null, "the orientation (portrait, portrait-upside-down, landscape-left or landscape-right)").toLowerCase();
     if (!(ANDROID_ORIENTATIONS as readonly string[]).includes(orientation)) {
-      throw new CliUsageError(`android rotate: unknown orientation '${orientation}'. Use ${ANDROID_ORIENTATIONS.join(" or ")}.`);
+      throw new CliUsageError(`android rotate: unknown orientation '${orientation}'. Use ${ANDROID_ORIENTATIONS.join(", ")}.`);
     }
     return androidAction("android rotate", "rotate", { ...laneClaim(), orientation }, "android-action", {
       shapeResult: withAsked({ ...laneClaim(), action: "rotate", orientation }),
     });
   }
   if (sub === "type") {
+    // `--submit` presses Enter after the text (`ade apple type --submit`); with no text, Enter alone.
+    const submit = readFlag(args, ["--submit"]);
+    const raw = readValue(args, ["--value"]) ?? positionals()[0] ?? null;
     // Typed exactly as given: a leading or trailing space is part of the text.
-    const text = requireTypedText(readValue(args, ["--value"]) ?? positionals()[0] ?? null, "text");
-    return androidAction("android type", "sendText", { ...laneClaim(), text }, "android-action", {
-      shapeResult: withAsked({ ...laneClaim(), action: "type", characters: text.length }),
+    const text = submit && (raw == null || raw === "") ? "" : requireTypedText(raw, "text");
+    return androidAction("android type", "sendText", { ...laneClaim(), text, ...(submit ? { submit: true } : {}) }, "android-action", {
+      shapeResult: withAsked({ ...laneClaim(), action: "type", characters: text.length, ...(submit ? { submit: true } : {}) }),
     });
   }
+  if (sub === "key") {
+    // One key, modifiers held around it: `key a --ctrl` or `key ctrl+a`.
+    // The modifier flags are read first, so none is taken as the key name.
+    const flagModifiers = ([
+      ["shift", ["--shift"]],
+      ["ctrl", ["--ctrl", "--control"]],
+      ["alt", ["--alt", "--option"]],
+      ["meta", ["--meta", "--cmd", "--command"]],
+    ] as const).filter(([, names]) => readFlag(args, [...names])).map(([modifier]) => modifier);
+    const combo = requireValue(positionals()[0] ?? null, "the key (return, tab, escape, a letter, ctrl+a, …)");
+    const { key, modifiers: comboModifiers } = splitAndroidKeyCombo(combo);
+    const modifiers = [...new Set([...comboModifiers.map((name) => (name === "cmd" || name === "command" ? "meta" : name === "control" ? "ctrl" : name === "option" ? "alt" : name)), ...flagModifiers])];
+    const badModifier = modifiers.find((name) => ANDROID_KEY_MODIFIERS[name] === undefined);
+    if (badModifier !== undefined) {
+      throw new CliUsageError(`android key: unknown modifier '${badModifier}'. Modifiers: ${Object.keys(ANDROID_KEY_MODIFIERS).join(", ")}.`);
+    }
+    if (androidKeyCode(key) === null) {
+      throw new CliUsageError(
+        `android key: unknown key '${key || "(none)"}'. Valid keys: ${Object.keys(ANDROID_NAMED_KEYCODES).join(", ")}, `
+          + "or one letter or digit (key a --ctrl). Modifiers: --shift, --ctrl, --alt, --meta (or --cmd).",
+      );
+    }
+    return androidAction(`android key ${combo}`, "pressKey", {
+      ...laneClaim(),
+      key,
+      ...(modifiers.length ? { modifiers } : {}),
+    }, "android-action", { shapeResult: withAsked({ ...laneClaim(), action: "key", key: [...modifiers, key].join("+") }) });
+  }
+  const device = buildAndroidDevicePlan(sub, args, {
+    positionals,
+    laneClaim,
+    chatSessionId: claimArgs.chatSessionId ?? null,
+    androidAction,
+  });
+  if (device) return device;
   const suite = buildAndroidSuitePlan(sub, args, {
     remote,
     positionals,
@@ -545,6 +663,7 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
     laneClaim,
     chatSessionId: claimArgs.chatSessionId ?? null,
     androidAction,
+    launchPassthrough,
   });
   if (suite) return suite;
   throw new CliUsageError(`Unknown android subcommand '${sub}'. Run 'ade android --help'.`);

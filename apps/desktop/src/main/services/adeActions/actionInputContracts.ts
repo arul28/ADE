@@ -1182,13 +1182,13 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run android_emulator.getStreamStatus --input-json '{\"laneId\":\"lane-1\"}' --json",
     },
     tap: {
-      description: "Tap one point on the lane's emulator, in device pixels (the screenshot's pixels).",
-      input: "object { laneId: string, x: number, y: number }",
+      description: "Tap one point on the lane's emulator, in device pixels (the screenshot's pixels). An agent's input starts an automatic recording when none runs (noRecord: true for this call only; so do every input action's).",
+      input: "object { laneId: string, x: number, y: number, noRecord?: boolean }",
       example: "ade android tap 540 1200 --json",
     },
     swipe: {
       description: "Swipe from one point to another on the lane's emulator, in device pixels.",
-      input: "object { laneId: string, fromX: number, fromY: number, toX: number, toY: number, durationMs?: number }",
+      input: "object { laneId: string, fromX: number, fromY: number, toX: number, toY: number, durationMs?: number, noRecord?: boolean }",
       example: "ade android swipe 540 1800 540 600 --duration-ms 300 --json",
     },
     sendKey: {
@@ -1197,14 +1197,55 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade android button back --json",
     },
     rotate: {
-      description: "Lock the lane's emulator screen to portrait or landscape. Apps that fix their orientation, such as the home screen, keep it.",
-      input: "object { laneId: string, orientation: \"portrait\" | \"landscape\" }",
-      example: "ade android rotate landscape --json",
+      description: "Lock the lane's emulator screen to an orientation, with ade apple rotate's names (landscape is landscape-right: the device turned a quarter to the left). Apps that fix their orientation, such as the home screen, keep it.",
+      input: "object { laneId: string, orientation: \"portrait\" | \"portrait-upside-down\" | \"landscape-left\" | \"landscape-right\" | \"landscape\" }",
+      example: "ade android rotate portrait-upside-down --json",
     },
     sendText: {
-      description: "Type text into the focused field on the lane's emulator.",
-      input: "object { laneId: string, text: string }",
-      example: "ade android type \"hello\" --json",
+      description: "Type text into the focused field on the lane's emulator. submit true presses Enter after it (with no text, Enter alone), as ade apple type --submit.",
+      input: "object { laneId: string, text: string, submit?: boolean, noRecord?: boolean }",
+      example: "ade android type \"hello\" --submit --json",
+    },
+    // Parity (`androidEmulatorControl.ts`).
+    pressKey: {
+      description: "Press one real key on the lane's emulator, with modifiers held around it: Enter, Tab, Delete, Escape, arrows, Home/End (line start and end), Page up/down, Space, F1-F12, or one letter or digit. key may be a combo (ctrl+a). Goes through the live view when one runs, else adb (a combo over adb needs Android 12 or later).",
+      input: "object { laneId: string, key: string, modifiers?: Array<\"shift\" | \"ctrl\" | \"alt\" | \"meta\" | \"cmd\">, noRecord?: boolean }",
+      example: "ade android key a --ctrl --json",
+    },
+    relaunchApp: {
+      description: "Force-stop an app and start it again (its launcher activity, or the named one), with new launch arguments and intent extras when given.",
+      input: "object { laneId: string, packageName: string, activity?: string, arguments?: string[], extras?: Array<{ key: string, type: \"string\" | \"int\" | \"long\" | \"float\" | \"bool\", value: string }> }",
+      example: "ade android relaunch --package com.example.app --extra debug=true --json",
+    },
+    getAppState: {
+      description: "Read an app's state on the lane's emulator: installed, running, in front, its pid and version.",
+      input: "object { laneId: string, packageName: string }",
+      example: "ade android app-state --package com.android.settings --json",
+    },
+    getForegroundApp: {
+      description: "Read the app in front of the lane's emulator (null on the home screen). waitMs (up to 30000) keeps asking until an app is in front; with packageName, until that app is, and a wait that runs out refuses with ANDROID_WAIT_TIMEOUT.",
+      input: "object { laneId: string, waitMs?: number, packageName?: string }",
+      example: "ade android foreground --package com.android.chrome --wait 10 --json",
+    },
+    frame: {
+      description: "Write one PNG of the lane's emulator screen now, on the machine that runs it. Never filed as proof (screenshot files proof). outPath must be inside the lane's worktree; omitted = a file under the ADE data folder.",
+      input: "object { laneId: string, outPath?: string }",
+      example: "ade android frame --json",
+    },
+    inspectPoint: {
+      description: "Read the element under a point (device pixels) as the chat composer's context packet: resource id, class, text, bounds, nearby elements, and the source file and line when ADE finds the element's id, testTag or text in the lane's worktree. includeScreenshot adds a PNG crop of the element. ref aims at one element instead.",
+      input: "object { laneId: string, x: number, y: number, ref?: string, includeScreenshot?: boolean }",
+      example: "ade android inspect 540 1200 --json",
+    },
+    selectPoint: {
+      description: "Pick the element under a point, as the person's Inspect does: the same packet as inspectPoint, always with the crop; with no element under it, the point itself.",
+      input: "object { laneId: string, x: number, y: number, ref?: string, noRecord?: boolean }",
+      example: "ade android select 540 1200 --json",
+    },
+    deviceCleanup: {
+      description: "Run the Android device cleanup pass now: release the devices of lanes that ended, stop emulators ADE started that no lane holds, forget lane rows whose AVD is gone, and list ADE AVDs no lane holds (never deleted). powerOffIdle also stops idle ADE emulators now (an agent: its own lane's only). dryRun reports and changes nothing.",
+      input: "object { laneId?: string, powerOffIdle?: boolean, dryRun?: boolean }",
+      example: "ade android device-cleanup --dry-run --json",
     },
     screenshot: {
       description: "Write a PNG of the lane's emulator screen, on the machine that runs it, and file it in the calling chat's proof drawer (proof false skips that). outPath defaults to a file under the ADE data folder.",
@@ -1229,7 +1270,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     launchApp: {
       description: "Start an app's launcher activity (or the named one) and wait for it to draw. With apkPath or gradle it installs first.",
-      input: "object { laneId: string, packageName?: string, activity?: string, apkPath?: string, gradle?: { module?, variant? } }",
+      input: "object { laneId: string, packageName?: string, activity?: string, apkPath?: string, gradle?: { module?, variant? }, arguments?: string[], extras?: Array<{ key, type: \"string\" | \"int\" | \"long\" | \"float\" | \"bool\", value }> }",
       example: "ade android launch --package com.example.app --json",
     },
     terminateApp: {
@@ -1298,14 +1339,34 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade android log --package com.example.app --level warn --lines 100 --json",
     },
     recordStart: {
-      description: "Record the lane's emulator screen to MP4 from its live stream, up to maxSeconds (300 at most).",
-      input: "object { laneId: string, chatSessionId?: string, label?: string, maxSeconds?: number }",
+      description: "Record the lane's emulator screen from its live stream, up to maxSeconds (300 at most). At the stop it becomes a demo (still time cut, tap rings, typed-text badges, step captions, under 10 MB); plain keeps it as recorded; zoom zooms in on each tap. A start while an automatic recording runs converts it to manual.",
+      input: "object { laneId: string, chatSessionId?: string, label?: string, maxSeconds?: number, plain?: boolean, zoom?: boolean }",
       example: "ade android record-start --label \"Sign-in flow\" --json",
     },
     recordStop: {
-      description: "Stop the lane's recording and file the video in the calling chat's proof drawer (proof false keeps it a file; discard drops it).",
-      input: "object { laneId: string, chatSessionId?: string, discard?: boolean, proof?: boolean }",
+      description: "Stop the lane's recording, make its demo, and file the one video in the calling chat's proof drawer (proof false keeps it a file; discard drops it; keep wins over discard).",
+      input: "object { laneId: string, chatSessionId?: string, discard?: boolean, keep?: boolean, proof?: boolean }",
       example: "ade android record-stop --json",
+    },
+    getAutoRecord: {
+      description: "Read whether an agent's input on this lane starts an automatic recording: the lane's switch, the machine's \"Record agent input\" preference, and both together.",
+      input: "object { laneId: string }",
+      example: "ade android auto-record status --json",
+    },
+    setAutoRecord: {
+      description: "Turn this lane's auto-record on or off (kept in the project). Off: an agent's input starts no recording; one already running still runs.",
+      input: "object { laneId: string, enabled: boolean }",
+      example: "ade android auto-record off --json",
+    },
+    getMachinePreferences: {
+      description: "Read this machine's Android preferences (tapRings, keyBadges, autoRecordAgentInput, recordingsWarnBytes, remoteBitrateKbpsCap) and the bytes of this project's Android recordings here.",
+      input: "object {}",
+      example: "ade actions run android_emulator.getMachinePreferences --json",
+    },
+    setMachinePreferences: {
+      description: "Change some of this machine's Android preferences; the others stay. Numbers are clamped (bitrate 100-20000 kbit/s, warning 1-100 GiB). User-only: Settings › Android devices sends it. Emits android.preferences.changed.",
+      input: "object { tapRings?: boolean, keyBadges?: boolean, autoRecordAgentInput?: boolean, recordingsWarnBytes?: number, remoteBitrateKbpsCap?: number }",
+      example: "Desktop app only: Settings › Android devices. A terminal is refused.",
     },
     recordList: {
       description: "List the lane's recordings, the running one first.",
@@ -1368,14 +1429,39 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade android permission grant camera --package com.example.app --json",
     },
     getDeviceSettings: {
-      description: "Read the emulator's text and display size, developer switches, battery, radios and the app in front.",
-      input: "object { laneId: string, fields?: \"all\" | \"foreground\" }",
+      description: "Read the emulator's text and display size, developer switches, accessibility switches, status bar override, battery, radios, the last location ADE set, the display's orientation and the app in front. fields foreground reads only the app in front; orientation only the display's turn.",
+      input: "object { laneId: string, fields?: \"all\" | \"foreground\" | \"orientation\" }",
       example: "ade actions run android_emulator.getDeviceSettings --input-json '{\"laneId\":\"<lane>\"}'",
     },
     setDeviceSetting: {
-      description: "Change one emulator setting (text or display size, animations, show taps, layout bounds, battery, Wi-Fi, mobile data, airplane mode) and read the settings back.",
-      input: "object { laneId: string, setting: { kind: \"text-size\", value: \"small\" | \"default\" | \"large\" | \"largest\" } | { kind: \"display-size\", value: \"small\" | \"default\" | \"large\" | \"larger\" } | { kind: \"animations\", off: boolean } | { kind: \"show-taps\" | \"layout-bounds\" | \"wifi\" | \"mobile-data\" | \"airplane\", on: boolean } | { kind: \"battery\", level?: 0-100, charging?: boolean } }",
+      description: "Change one emulator setting (text or display size, animations, show taps, layout bounds, battery, Wi-Fi, mobile data, airplane mode, or an accessibility switch) and read the settings back.",
+      input: "object { laneId: string, setting: { kind: \"text-size\", value: \"small\" | \"default\" | \"large\" | \"largest\" } | { kind: \"display-size\", value: \"small\" | \"default\" | \"large\" | \"larger\" } | { kind: \"animations\", off: boolean } | { kind: \"show-taps\" | \"layout-bounds\" | \"wifi\" | \"mobile-data\" | \"airplane\", on: boolean } | { kind: \"battery\", level?: 0-100, charging?: boolean } | { kind: \"accessibility\", option: \"increase-contrast\" | \"bold-text\" | \"invert-colors\" | \"grayscale\" | \"color-correction\" | \"talkback\", on: boolean } }",
       example: "ade actions run android_emulator.setDeviceSetting --input-json '{\"laneId\":\"<lane>\",\"setting\":{\"kind\":\"airplane\",\"on\":true}}'",
+    },
+    setStatusBar: {
+      description: "Override the emulator's status bar for screenshots (SystemUI demo mode): the time (9:41 by default), Wi-Fi or a mobile network with its bars, the battery, no notification icons. Read back as statusBarOverridden in getDeviceSettings.",
+      input: "object { laneId: string, time?: \"H:MM\", dataNetwork?: \"wifi\" | \"5g\" | \"lte\" | \"4g\" | \"3g\" | \"e\" | \"g\", wifiBars?: 0-4, cellularBars?: 0-4, batteryLevel?: 0-100, batteryState?: \"charging\" | \"charged\" | \"discharging\" }",
+      example: "ade android status-bar --time 9:41 --json",
+    },
+    clearStatusBar: {
+      description: "End the emulator's status bar override (SystemUI demo mode off).",
+      input: "object { laneId: string }",
+      example: "ade android status-bar --clear --json",
+    },
+    clearLocation: {
+      description: "Clear the location ADE set: the emulator has no 'no location', so its GPS goes back to the point a cold boot uses (37.4219983, -122.084).",
+      input: "object { laneId: string }",
+      example: "ade android location --clear --json",
+    },
+    storeScreenshots: {
+      description: "Google Play screenshots of the lane's emulator, filed as proof: on a foldable, the cover screen shut (phone slot) and the inner screen open (large-screen slot), with the hinge put back after; on any other device, its one screen. Each PNG is 9:16 or 16:9 with no alpha, short side 1080 px or more, long side 3840 px or less, the screen centred on black.",
+      input: "object { laneId: string, chatSessionId?: string, proof?: boolean }",
+      example: "ade android play-store-shots --json",
+    },
+    windowLayout: {
+      description: "Lay out the windows of a large emulator screen (a tablet, or a foldable open), as ade apple window: status lists the app windows; split puts packageName beside withPackage (or the app in front); left, right, top, bottom put an app on that side of a split screen; swap changes the sides over; freeform opens an app in a free window; size and move change a free window; fill makes it full screen; close removes it. applied is false, with a reason, when the window did not end where asked.",
+      input: "object { laneId: string, action?: \"status\" | \"split\" | \"left\" | \"right\" | \"top\" | \"bottom\" | \"swap\" | \"freeform\" | \"size\" | \"move\" | \"fill\" | \"close\", packageName?: string, withPackage?: string, width?: number, height?: number, x?: number, y?: number }",
+      example: "ade android window split --package com.android.settings --with com.android.chrome --json",
     },
     requestRender: {
       description: "Ask a desktop window that shows the lane's Android device in 3D to draw stills (and, when asked, a turntable video and a contact sheet), and file them as proof in the calling chat's drawer. Fails when no window shows the device.",

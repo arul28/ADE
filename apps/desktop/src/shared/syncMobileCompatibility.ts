@@ -333,6 +333,7 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "android.recordList",
   "android.recordStart",
   "android.recordStop",
+  "android.inspectSnapshot",
   // Draft and auto-merge toggles. The phone hides each control until the
   // host advertises the action, so an older host stays "full".
   "prs.setDraft",

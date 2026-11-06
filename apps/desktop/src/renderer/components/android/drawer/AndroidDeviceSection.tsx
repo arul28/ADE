@@ -1,9 +1,11 @@
 import {
+  ANDROID_ACCESSIBILITY_LABELS,
+  ANDROID_ACCESSIBILITY_OPTIONS,
   ANDROID_DISPLAY_SIZES,
   ANDROID_TEXT_SIZES,
   type AndroidDeviceSetting,
 } from "../../../../shared/types/androidEmulator";
-import { DrawerMenu, Row, Subhead, SwitchRow } from "../../ui/drawerPrimitives";
+import { DRAWER_BUTTON, DRAWER_GHOST_BUTTON, DrawerMenu, Row, Subhead, SwitchRow } from "../../ui/drawerPrimitives";
 import type { AndroidDrawerContext } from "./androidDrawerState";
 
 /*
@@ -11,6 +13,19 @@ import type { AndroidDrawerContext } from "./androidDrawerState";
  * size are the two accessibility sizes a person tests against; the three
  * switches are the developer options an Android developer turns on most.
  */
+
+/**
+ * Apple's screenshot status bar (`APPLE_STATUS_BAR_DEMO`) on Android: 9:41,
+ * full Wi-Fi, a full battery that is not charging. The service fills in the
+ * same values when a field is left out.
+ */
+export const ANDROID_STATUS_BAR_DEMO = {
+  time: "9:41",
+  dataNetwork: "wifi",
+  wifiBars: 4,
+  batteryLevel: 100,
+  batteryState: "charged",
+} as const;
 
 /** Sends one setting through the drawer's serialized `act`. */
 export function deviceSettingSetter(ctx: AndroidDrawerContext) {
@@ -67,6 +82,51 @@ export function AndroidDeviceSection({ ctx }: { ctx: AndroidDrawerContext }) {
         disabled={disabled}
         onChange={(on) => { void set({ kind: "layout-bounds", on }); }}
       />
+
+      <Subhead label="Accessibility" />
+      {ANDROID_ACCESSIBILITY_OPTIONS.map((option) => {
+        const reported = settings?.accessibility?.[option];
+        // Null: this image does not have it (TalkBack on most Google APIs images).
+        const missing = reported === null;
+        return (
+          <SwitchRow
+            key={option}
+            label={missing ? `${ANDROID_ACCESSIBILITY_LABELS[option]} (not on this image)` : ANDROID_ACCESSIBILITY_LABELS[option]}
+            checked={reported ?? undefined}
+            disabled={disabled || missing || settings?.accessibility === undefined}
+            onChange={(on) => { void set({ kind: "accessibility", option, on }); }}
+          />
+        );
+      })}
+
+      <Subhead label="Status bar" />
+      <Row label={settings?.statusBarOverridden ? "Overridden" : "Device's own"}>
+        <button
+          type="button"
+          className={DRAWER_BUTTON}
+          disabled={disabled}
+          onClick={() => {
+            void ctx.actions.act(() => window.ade.androidEmulator.setStatusBar(
+              { laneId: ctx.laneId, ...ANDROID_STATUS_BAR_DEMO },
+              ctx.pinRef.current,
+            ));
+          }}
+        >
+          9:41
+        </button>
+        <button
+          type="button"
+          // Named for a screen reader: the Location rows have their own Clear.
+          aria-label="Clear status bar"
+          className={DRAWER_GHOST_BUTTON}
+          disabled={disabled || !settings?.statusBarOverridden}
+          onClick={() => {
+            void ctx.actions.act(() => window.ade.androidEmulator.clearStatusBar({ laneId: ctx.laneId }, ctx.pinRef.current));
+          }}
+        >
+          Clear
+        </button>
+      </Row>
     </>
   );
 }

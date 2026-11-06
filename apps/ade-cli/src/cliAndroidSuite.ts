@@ -16,6 +16,7 @@ import {
   ANDROID_PERMISSIONS,
   ANDROID_SCROLL_DIRECTIONS,
   ANDROID_TEXT_SIZES,
+  parseAndroidIntentExtra,
 } from "../../desktop/src/shared/types/androidEmulator";
 import {
   CliUsageError,
@@ -23,6 +24,7 @@ import {
   isRecord,
   readFlag,
   readNumberOption,
+  readOptionalNumberOption,
   readRepeatedValues,
   readValue,
   requireTypedText,
@@ -81,6 +83,8 @@ export function buildAndroidSuitePlan(
     laneClaim: () => JsonObject;
     chatSessionId: string | null;
     androidAction: AndroidActionBuilder;
+    /** `launch`/`relaunch … -- <words>`, taken out of `args` before any flag was read. */
+    launchPassthrough?: readonly string[];
   },
 ): CliPlan | null {
   const { remote, positionals, laneClaim, androidAction } = ctx;
@@ -117,6 +121,21 @@ export function buildAndroidSuitePlan(
     if (index != null) query.index = index;
     return query;
   };
+  /** `--launch-arg <word>` and `-- <words>` (`am start` options), then `--extra`/`--extra-string key=value`. */
+  const readLaunchExtras = (): JsonObject => {
+    const words = [...readRepeatedValues(args, ["--launch-arg"]), ...(ctx.launchPassthrough ?? [])];
+    const extras: JsonObject[] = [];
+    for (const [flag, forceString] of [["--extra", false], ["--extra-string", true]] as const) {
+      for (const raw of readRepeatedValues(args, [flag])) {
+        try {
+          extras.push(parseAndroidIntentExtra(raw, forceString));
+        } catch (error) {
+          throw usage(`${flag}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+    return { ...(words.length ? { arguments: words } : {}), ...(extras.length ? { extras } : {}) };
+  };
   const elementResult = { exitCodeFromResult: (result: unknown) => (record(result).ok === false ? 1 : 0) };
 
   if (sub === "apps") return androidAction("android apps", "listApps", laneClaim(), "android-apps");
@@ -129,6 +148,7 @@ export function buildAndroidSuitePlan(
     const packageName = readPackage(false);
     const activity = readValue(args, ["--activity"]);
     const source = readInstallSource(false);
+    const launchExtras = readLaunchExtras();
     if (!packageName && !source.apkPath && !source.gradle) {
       throw usage("pass --package <name>, or --gradle / --apk <path> to install the app and open it.");
     }
@@ -137,7 +157,60 @@ export function buildAndroidSuitePlan(
       ...source,
       ...(packageName ? { packageName } : {}),
       ...(activity ? { activity } : {}),
+      ...launchExtras,
     }, "android-launch", source.gradle ? { progressNotice: "Building the lane's app with Gradle, then opening it…" } : {});
+  }
+  // Parity with `ade apple`: relaunch, app-state, foreground, frame, inspect, select, device-cleanup.
+  if (sub === "relaunch") {
+    const packageName = readPackage(true)!;
+    const activity = readValue(args, ["--activity"]);
+    return androidAction("android relaunch", "relaunchApp", {
+      ...laneClaim(),
+      packageName,
+      ...(activity ? { activity } : {}),
+      ...readLaunchExtras(),
+    }, "android-launch");
+  }
+  if (sub === "app-state") {
+    const packageName = readValue(args, ["--package"]) ?? positionals()[0] ?? null;
+    if (!packageName) throw usage("pass the package: `ade android app-state <package>` (`ade android apps --text` lists them).");
+    return androidAction("android app-state", "getAppState", { ...laneClaim(), packageName }, "android-app-state");
+  }
+  if (sub === "foreground") {
+    // `--wait [seconds]`: ask again until an app (or `--package`) is in front; bare is 10 s, as `ade apple`.
+    const waitSeconds = readOptionalNumberOption(args, ["--wait"], 10);
+    const packageName = readValue(args, ["--package"]);
+    if (waitSeconds != null && (waitSeconds < 0 || waitSeconds > 30)) throw usage("--wait is 0 to 30 seconds.");
+    return androidAction("android foreground", "getForegroundApp", {
+      ...laneClaim(),
+      ...(packageName ? { packageName } : {}),
+      ...(waitSeconds ? { waitMs: Math.round(waitSeconds * 1000) } : {}),
+    }, "android-foreground");
+  }
+  if (sub === "frame") {
+    const outPath = androidOutPath(readValue(args, ["--out"]), remote);
+    return androidAction("android frame", "frame", { ...laneClaim(), ...(outPath ? { outPath } : {}) }, "android-frame");
+  }
+  if (sub === "inspect" || sub === "select") {
+    const { x, y } = readPoint(args, positionals(), sub);
+    const ref = readValue(args, ["--ref"]);
+    const includeScreenshot = sub === "inspect" && readFlag(args, ["--screenshot"]);
+    return androidAction(`android ${sub}`, sub === "inspect" ? "inspectPoint" : "selectPoint", {
+      ...laneClaim(),
+      x,
+      y,
+      ...(ref ? { ref } : {}),
+      ...(includeScreenshot ? { includeScreenshot: true } : {}),
+    }, "android-inspect");
+  }
+  if (sub === "device-cleanup") {
+    const powerOffIdle = readFlag(args, ["--power-off-idle"]);
+    const dryRun = readFlag(args, ["--dry-run"]);
+    return androidAction("android device-cleanup", "deviceCleanup", {
+      ...laneClaim(),
+      ...(powerOffIdle ? { powerOffIdle: true } : {}),
+      ...(dryRun ? { dryRun: true } : {}),
+    }, "android-cleanup");
   }
   if (sub === "terminate" || sub === "uninstall") {
     const packageName = readPackage(true)!;
@@ -239,15 +312,34 @@ export function buildAndroidSuitePlan(
     const label = readValue(args, ["--label"]);
     const maxSeconds = readNumberOption(args, ["--max-seconds"]);
     if (maxSeconds != null && maxSeconds <= 0) throw usage("--max-seconds must be greater than 0.");
+    // `ade apple`'s flags: a plain recording is filed as recorded; zoom zooms in on each tap in the demo.
+    const plain = readFlag(args, ["--plain", "--keep-idle"]);
+    const zoom = readFlag(args, ["--zoom"]);
+    if (plain && zoom) throw usage("takes --plain or --zoom, not both: a plain recording has no zoom.");
     return androidAction("android record-start", "recordStart", {
       ...laneClaim(),
       ...(label ? { label } : {}),
       ...(maxSeconds == null ? {} : { maxSeconds }),
+      ...(plain ? { plain: true } : {}),
+      ...(zoom ? { zoom: true } : {}),
     }, "android-recording");
   }
   if (sub === "record-stop") {
+    const keep = readFlag(args, ["--keep"]);
     const discard = readFlag(args, ["--discard"]);
-    return androidAction("android record-stop", "recordStop", { ...laneClaim(), ...(discard ? { discard: true } : {}) }, "android-recording");
+    if (keep && discard) throw usage("use --keep or --discard, not both.");
+    return androidAction("android record-stop", "recordStop", {
+      ...laneClaim(),
+      ...(keep ? { keep: true } : {}),
+      ...(discard ? { discard: true } : {}),
+    }, "android-recording", { progressNotice: "Stopping the recording and making its demo video…" });
+  }
+  if (sub === "auto-record") {
+    // `ade apple auto-record`'s words: on, off, or status (the default).
+    const word = (positionals()[0] ?? "status").toLowerCase();
+    if (word === "status") return androidAction("android auto-record", "getAutoRecord", laneClaim(), "android-auto-record");
+    if (word !== "on" && word !== "off") throw usage("takes on, off or status.");
+    return androidAction("android auto-record", "setAutoRecord", { ...laneClaim(), enabled: word === "on" }, "android-auto-record");
   }
   if (sub === "record-list") return androidAction("android record-list", "recordList", laneClaim(), "android-recordings");
   if (sub === "record-delete") {

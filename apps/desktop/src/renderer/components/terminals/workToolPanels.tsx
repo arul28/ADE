@@ -713,6 +713,7 @@ function WorkAndroidDevice({
   noPicker,
   panelSessionId,
   canInsertContext,
+  onAddIosContext,
   onInsertDraft,
 }: WorkToolPanelProps & { laneName: string | null; noPicker?: string | null }) {
   const mountScope = useWorkToolMountScope(runtimePin);
@@ -746,6 +747,8 @@ function WorkAndroidDevice({
       machineName={runtimePin ? pinnedMachineName : null}
       noPicker={noPicker ?? null}
       sessionId={panelSessionId}
+      // Parity with Apple's Inspect: the element goes in as a context chip (crop, source file:line).
+      onAddContext={canInsertContext ? onAddIosContext : undefined}
       onInsertDraft={canInsertContext ? onInsertDraft : undefined}
     />
   );

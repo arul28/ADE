@@ -11,8 +11,11 @@ import type {
   AndroidRunningEmulator,
   AndroidSdkStatus,
 } from "../../../shared/types/androidEmulator";
-import { getErrorMessage } from "../shared/utils";
-import { readAndroidAvd, sameAvdName } from "./androidAvds";
+import { getErrorMessage, sleep } from "../shared/utils";
+import { listAndroidAvds, readAdeAvdLaneId, readAndroidAvd, sameAvdName } from "./androidAvds";
+import { runDeviceScript } from "./androidDeviceShell";
+import { createAndroidInspect } from "./androidInspect";
+import { androidIdlePowerOffMs as androidIdlePowerOffMsFromEnv, createAndroidLaneMaintenance, parseDeviceIdleMs } from "./androidLaneMaintenance";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 import {
   androidDiscoveryDirs,
@@ -39,6 +42,7 @@ import { createAndroidRenderBroker } from "./androidRender";
 import { createAndroidSdkSetup, createAndroidSdkSettingStore } from "./androidSdkSetup";
 import { createAndroidSystemImages } from "./androidSystemImages";
 import {
+  androidAvdHome,
   androidSdkPaths,
   locateAndroidSdk,
   readAndroidSdkStatus,
@@ -46,8 +50,16 @@ import {
   type ReadyAndroidSdk,
 } from "./androidSdk";
 import { createAndroidPosture } from "./androidPosture";
+import { createAndroidStoreShots } from "./androidStoreShots";
+import { createAndroidWindows } from "./androidWindows";
 import { createAndroidComposePreviews } from "./androidComposePreviews";
 import { createAndroidStreamHub } from "./androidStream";
+import { createAndroidMachinePreferenceStore } from "./androidMachinePreferences";
+import { createDemoEngineSet } from "../demoVideo/demoEngines";
+import type { Logger } from "../logging/logger";
+
+/** For the demo engines when the service has no logger. */
+const silentLogger: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 import { isRemoteWorkLaneId } from "../remoteWork/remoteWorkCopyService";
 import { createAndroidLaneScope } from "./androidWorkCopy";
 import { ANDROID_BOOT_TIMEOUT_MS, type AndroidEmulatorServiceDeps, type AndroidLaneState as LaneState } from "./androidEmulatorServiceDeps";
@@ -80,6 +92,8 @@ export { stopHandedOffAndroidEmulators } from "./androidHandedOffEmulators";
 /** The service, plus the lane streams as the brain's stream relay drives them (phone and web viewers). */
 export type AndroidEmulatorService = AndroidEmulatorServiceApi & {
   streamRelaySource: AppleStreamOwningService;
+  /** The machine's remote viewer cap in kbit/s: the relay's ceiling for pacing. */
+  streamRemoteBitrateKbpsCap: () => number;
 };
 
 export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): AndroidEmulatorService {
@@ -174,6 +188,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   /* ---------- the SDK, read on use ---------- */
 
   const sdkSettings = createAndroidSdkSettingStore(deps.sdkSettingsFile);
+  /** The machine preferences, for the remote viewer cap (read per use; cached on the file's mtime). */
+  const streamPreferences = createAndroidMachinePreferenceStore(deps.sdkSettingsFile);
   const readSdkSettingPath = deps.readSdkSettingPath ?? (() => sdkSettings.read());
   const readSdk = async (options: { forceAccelCheck?: boolean } = {}): Promise<AndroidSdkStatus> => {
     const sdk = await readAndroidSdkStatus({ settingPath: readSdkSettingPath(), env, platform, home, forceAccelCheck: options.forceAccelCheck });
@@ -250,6 +266,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       state: derived,
       error: derived === "crashed" || derived === "off" ? error : null,
       appCrash: derived === "booted" ? crashWatch.latest(laneId) : null,
+      // Parity: "ADE powered it off after 31 min idle", until the next start.
+      poweredOff: derived === "off" ? maintenance.poweredOffRecord(laneId) : null,
     };
   };
 
@@ -282,8 +300,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     emit,
     logger,
     onStreamEnding: (laneId) => agent.onStreamEnding(laneId),
-    isRecording: (laneId) => agent.isRecording(laneId),
     onRemoteViewerStarted: () => deps.captureAnalytics?.("remote_viewed"),
+    remoteBitrateKbpsCap: () => streamPreferences.read().remoteBitrateKbpsCap,
   });
   const { stopLaneStream, liveStreamSerial } = laneStreams;
 
@@ -452,6 +470,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         totalMs: Date.now() - startedAt,
       });
       state.transient = null;
+      maintenance.started(laneId);
+      agent.onDeviceBooted(laneId);
       watchExit(state, launch);
       crashWatch.ensure(laneId, { serial: launch.serial, adbPath: ready.adbPath });
       return await emitDeviceState(laneId);
@@ -539,6 +559,11 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     logger,
     now,
     onRecordingChanged: (laneId, recording) => emit({ type: "android.recording.state", laneId, recording }),
+    // Rec: the demo step (Swift on macOS, ffmpeg everywhere, ADE's own ffmpeg when the machine has none).
+    demoEngines: deps.demoEngines ?? createDemoEngineSet({ logger: logger ?? silentLogger }),
+    readPreferences: () => streamPreferences.read(),
+    readSetting: deps.readSetting ?? null,
+    writeSetting: deps.writeSetting ?? null,
   });
 
   /* ---------- the Tools drawer's device settings (`androidDeviceSettings.ts`) ---------- */
@@ -560,6 +585,27 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     now: () => now().getTime(),
   });
 
+  /* ---------- parity: Play Store screenshots and window layout (`androidStoreShots.ts`, `androidWindows.ts`) ---------- */
+
+  const storeShots = createAndroidStoreShots({
+    requireBooted,
+    posture,
+    fileShot: (laneId, shot, chatSessionId, caption) => agent.fileScreenshot(laneId, shot, chatSessionId, caption),
+    dataDir: deps.dataDir,
+    signal: lifetime.signal,
+    logger,
+    now,
+    sleep,
+  });
+
+  const windows = createAndroidWindows({
+    requireBooted,
+    onScreenChanged: (laneId) => agent.invalidateUi(laneId),
+    signal: lifetime.signal,
+    sleep,
+    now: () => now().getTime(),
+  });
+
   /* ---------- P3 Compose previews, with no emulator (`androidComposePreviews.ts`) ---------- */
 
   const composePreviews = createAndroidComposePreviews({
@@ -577,13 +623,83 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   });
 
   /** P0 input, each call also ending the lane's cached UI tree (the screen changes). */
+  /*
+   * Rec: an agent's input may start an automatic recording first, and every
+   * input is drawn on a recording that runs (`androidAutoRecord.ts`). The
+   * live finger (`sendTouch`) is always the person's: it never starts one.
+   * Typed text with no element named shows no badge: ADE cannot tell what
+   * field has focus, and it may be a password.
+   */
+  const { autoRecord } = agent;
+  const chatOf = (args: { chatSessionId?: string | null }) => args.chatSessionId ?? null;
   const input: typeof rawInput = {
-    sendTouch: async (args) => { agent.invalidateUi(args.laneId); await rawInput.sendTouch(args); },
-    tap: async (args) => { agent.invalidateUi(args.laneId); await rawInput.tap(args); },
-    swipe: async (args) => { agent.invalidateUi(args.laneId); await rawInput.swipe(args); },
-    sendKey: async (args) => { agent.invalidateUi(args.laneId); await rawInput.sendKey(args); },
-    sendText: async (args) => { agent.invalidateUi(args.laneId); await rawInput.sendText(args); },
-    rotate: async (args) => { agent.invalidateUi(args.laneId); await rawInput.rotate(args); },
+    sendTouch: async (args) => {
+      agent.invalidateUi(args.laneId);
+      const atMs = Date.now();
+      await rawInput.sendTouch(args);
+      for (const event of args.events ?? []) {
+        if (event.action === "down") autoRecord.note({ laneId: args.laneId, chatSessionId: null, kind: "tap", x: event.x, y: event.y, atMs, source: "user" });
+      }
+    },
+    tap: async (args) => {
+      agent.invalidateUi(args.laneId);
+      await autoRecord.beforeInput(args.laneId, args);
+      const atMs = Date.now();
+      await rawInput.tap(args);
+      autoRecord.note({ laneId: args.laneId, chatSessionId: chatOf(args), kind: "tap", x: args.x, y: args.y, atMs, source: args.source });
+    },
+    swipe: async (args) => {
+      agent.invalidateUi(args.laneId);
+      await autoRecord.beforeInput(args.laneId, args);
+      const atMs = Date.now();
+      await rawInput.swipe(args);
+      autoRecord.note({
+        laneId: args.laneId, chatSessionId: chatOf(args), kind: "drag", x: args.fromX, y: args.fromY, to: { x: args.toX, y: args.toY },
+        atMs, seconds: (Date.now() - atMs) / 1000, source: args.source,
+      });
+    },
+    sendKey: async (args) => {
+      agent.invalidateUi(args.laneId);
+      await autoRecord.beforeInput(args.laneId, args);
+      const atMs = Date.now();
+      await rawInput.sendKey(args);
+      autoRecord.note({ laneId: args.laneId, chatSessionId: chatOf(args), kind: "key", label: `[${String(args.key).replace(/_/gu, "-")}]`, atMs, source: args.source });
+    },
+    sendText: async (args) => {
+      agent.invalidateUi(args.laneId);
+      await autoRecord.beforeInput(args.laneId, args);
+      const text = typeof args.text === "string" ? args.text : "";
+      const typed = text
+        ? await autoRecord.typePaced(args.laneId, text, (piece) => rawInput.sendText({ laneId: args.laneId, text: piece }))
+        : { atMs: Date.now(), seconds: 0 };
+      if (args.submit === true) await rawInput.sendText({ laneId: args.laneId, text: "", submit: true });
+      if (text) {
+        autoRecord.note({ laneId: args.laneId, chatSessionId: chatOf(args), kind: "type", atMs: typed.atMs, ...(typed.seconds ? { seconds: typed.seconds } : {}), source: args.source });
+      }
+      if (args.submit === true) autoRecord.note({ laneId: args.laneId, chatSessionId: chatOf(args), kind: "key", label: "[enter]", source: args.source });
+    },
+    // Parity: `ade android key` (named keys with modifiers).
+    pressKey: async (args) => {
+      agent.invalidateUi(args.laneId);
+      await autoRecord.beforeInput(args.laneId, args);
+      const atMs = Date.now();
+      const result = await rawInput.pressKey(args);
+      autoRecord.note({ laneId: args.laneId, chatSessionId: chatOf(args), kind: "key", label: `[${result.key}]`, atMs, source: args.source });
+      return result;
+    },
+    rotate: async (args) => {
+      agent.invalidateUi(args.laneId);
+      await rawInput.rotate(args);
+      agent.recordings.forgetScreenSize(args.laneId);
+      // Parity: a half turn keeps the video's shape, so viewers learn the turn here.
+      await deviceSettings.getDeviceSettings(args.laneId, "orientation").then((read) => {
+        if (read.orientation) {
+          emit({ type: "android.device.orientation", laneId: args.laneId, orientation: read.orientation });
+        }
+      }).catch((error: unknown) => {
+        logger?.warn("android.orientation_read_failed", { laneId: args.laneId, error: getErrorMessage(error) });
+      });
+    },
   };
 
   /* ---------- devices (`androidDeviceInventory.ts`) ---------- */
@@ -618,6 +734,95 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     },
   });
   const { endLaneLocked } = inventory;
+
+  /* ---------- parity: idle power-off and the cleanup pass (`androidLaneMaintenance.ts`) ---------- */
+
+  /** Lanes with an instrumentation test run in progress: never idle. */
+  const testsRunning = new Set<string>();
+
+  /** The AVD folder when it can be read now; null keeps the pass from forgetting rows on an unmounted drive. */
+  const readableAvdHome = (): string | null => {
+    const avdHome = androidAvdHome(env, home);
+    try {
+      fs.readdirSync(avdHome);
+      return avdHome;
+    } catch {
+      return null;
+    }
+  };
+
+  const maintenance = createAndroidLaneMaintenance({
+    listRows: () => deps.laneDevices.list?.() ?? [],
+    laneLiveness,
+    discovered,
+    ownsEmulator,
+    holder: (avdName) => deps.laneDevices.holder(avdName),
+    runningFor,
+    avdHome: readableAvdHome,
+    avdExists: (avdHome, avdName) => readAndroidAvd(avdHome, avdName) !== null,
+    adeAvds: async () => {
+      const avdHome = readableAvdHome();
+      if (!avdHome) return [];
+      return listAndroidAvds(avdHome).filter((avd) => avd.adeCreated).map((avd) => ({ avdName: avd.name, markerLaneId: readAdeAvdLaneId(avd) }));
+    },
+    endLane: async (device) => {
+      await serialize(device.laneId, async () => {
+        const current = deps.laneDevices.get(device.laneId);
+        if (!current || !sameAvdName(current.avdName, device.avdName)) return;
+        const result = await endLaneLocked(current);
+        logger?.info("android.cleanup.released", { laneId: device.laneId, avdName: device.avdName, ...result });
+      });
+      emit({ type: "android.device.state", laneId: device.laneId, state: "none" });
+    },
+    stopOrphan: async (emulator) => {
+      const { adbPath } = await requireSdk({ emulator: false });
+      await stopEmulator(emulator, adbPath);
+      logger?.info("android.cleanup.stopped_orphan", { serial: emulator.serial, avdName: emulator.avdName });
+    },
+    forgetRow: (device) => {
+      deps.laneDevices.forget(device.laneId, device.avdName);
+      logger?.info("android.cleanup.forgot_row", { laneId: device.laneId, avdName: device.avdName });
+    },
+    isBusy: (laneId) => {
+      const state = lanes.get(laneId);
+      return Boolean(state?.transient || state?.streamSerial || agent.isRecording(laneId) || agent.isLeased(laneId) || testsRunning.has(laneId));
+    },
+    deviceIdleMs: async (laneId) => {
+      const booted = await requireBooted(laneId);
+      const result = await runDeviceScript(
+        booted,
+        "dumpsys power | grep -m1 -oE 'mLastUserActivityTime=[0-9]+'; echo \"uptime=$(cut -d' ' -f1 /proc/uptime)\"",
+        { timeoutMs: 10_000, signal: lifetime.signal },
+      );
+      return parseDeviceIdleMs(result.stdout);
+    },
+    powerOff: async (device) => {
+      const laneId = device.laneId;
+      await serialize(laneId, async () => {
+        const state = laneState(laneId);
+        // Something started using it while the pass waited for the queue.
+        if (state.transient || state.streamSerial) throw new Error("The emulator came into use, so ADE left it running.");
+        const current = deps.laneDevices.get(laneId);
+        if (!current || !sameAvdName(current.avdName, device.avdName)) return;
+        await stopLocked(state, current, { refuseForeign: false });
+        state.error = null;
+      });
+      await emitDeviceState(laneId);
+    },
+    onChanged: () => emit({ type: "android.inventory.changed" }),
+    ...(deps.idlePowerOffMs != null ? { idleMs: deps.idlePowerOffMs } : { idleMs: androidIdlePowerOffMsFromEnv(env) }),
+    logger,
+  });
+
+  /* ---------- parity: Inspect at a point (`androidInspect.ts`) ---------- */
+
+  const inspect = createAndroidInspect({
+    snapshot: (laneId) => agent.api.getScreenSnapshot({ laneId, fresh: true }),
+    captureScreen: (laneId) => captureLaneScreen(laneId, null),
+    laneRoot,
+    logger,
+    now,
+  });
 
   /** A chat's work copy here was deleted: give its device back. */
   const releaseGoneWorkCopy = (laneId: string) => {
@@ -724,12 +929,32 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   const service: AndroidEmulatorService = {
     streamRelaySource: laneStreams.relaySource,
+    streamRemoteBitrateKbpsCap: laneStreams.remoteBitrateKbpsCap,
 
     getSdkSetupPlan: setup.getSdkSetupPlan,
     installSdk: setup.installSdk,
     cancelSdkInstall: setup.cancelSdkInstall,
     getSdkInstallState: setup.getSdkInstallState,
     setSdkPath: setup.setSdkPath,
+
+    /* Rec: the machine preferences and the lane's auto-record switch. */
+    async getMachinePreferences() {
+      return { preferences: streamPreferences.read(), recordingsBytes: agent.recordings.totalBytes() };
+    },
+    async setMachinePreferences(args) {
+      const preferences = streamPreferences.write(args ?? {});
+      logger?.info("android.preferences_set", { keys: Object.keys(args ?? {}) });
+      emit({ type: "android.preferences.changed", preferences });
+      return { preferences, recordingsBytes: agent.recordings.totalBytes() };
+    },
+    async getAutoRecord(args) {
+      return agent.autoRecord.getAutoRecord(requireLaneId(args?.laneId));
+    },
+    async setAutoRecord(args) {
+      const laneId = requireLaneId(args?.laneId);
+      if (typeof args.enabled !== "boolean") throw new Error("auto-record needs on or off.");
+      return agent.autoRecord.setAutoRecord(laneId, args.enabled);
+    },
     listSystemImages: systemImages.listSystemImages,
     installSystemImage: systemImages.installSystemImage,
     removeSystemImage: systemImages.removeSystemImage,
@@ -794,11 +1019,68 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     },
 
     ...agent.api,
-    runInstrumentationTests: (args) => agent.runInstrumentationTests(args),
+    runInstrumentationTests: async (args) => {
+      const laneId = typeof args?.laneId === "string" ? args.laneId.trim() : "";
+      if (laneId) testsRunning.add(laneId);
+      try {
+        return await agent.runInstrumentationTests(args);
+      } finally {
+        if (laneId) testsRunning.delete(laneId);
+      }
+    },
+
+    /* ---------- parity: frame, Inspect, the cleanup pass ---------- */
+
+    async frame(args) {
+      const laneId = requireLaneId(args.laneId);
+      const streamRunning = liveStreamSerial(laneId) !== null;
+      // The device's own capture: the brain decodes no video, and Apple's
+      // `frame` is also a capture of the screen. It is never filed as proof.
+      const shot = await captureLaneScreen(laneId, args.outPath?.trim() || null);
+      return { laneId, filePath: shot.path, width: shot.width, height: shot.height, capturedAt: shot.capturedAt, streamRunning };
+    },
+
+    inspectPoint: (args) => inspect(args, { crop: args.includeScreenshot === true }),
+
+    async selectPoint(args) {
+      const result = await inspect(args, { crop: true });
+      if (result.item) return result;
+      // Nothing under the point: the point itself, as Apple's coordinate fallback.
+      const x = Math.round(Number(args.x));
+      const y = Math.round(Number(args.y));
+      return {
+        element: null,
+        source: "coordinate-fallback",
+        item: {
+          kind: "ios_element",
+          id: `android-point-${x}-${y}-${now().getTime()}`,
+          componentId: "Android emulator point",
+          sourceFile: null,
+          sourceLine: null,
+          frame: { x, y, width: 1, height: 1 },
+          metadata: {
+            contextSurface: "android-emulator",
+            androidInspectPacketVersion: 1,
+            sourceConfidence: "none",
+            selectedElement: { source: "coordinate", screenshotFrame: { x, y, width: 1, height: 1 } },
+            note: "No element of the UI tree was under the point; this keeps the selected point.",
+          },
+          accessibilityIdentifier: null,
+          selectedAt: now().toISOString(),
+        },
+      };
+    },
+
+    deviceCleanup: (args) => maintenance.runCleanup(args ?? {}),
     ...deviceSettings.verbs,
     ...posture,
     ...composePreviews,
-    getDeviceSettings: (args) => deviceSettings.getDeviceSettings(requireLaneId(args.laneId), args.fields === "foreground" ? "foreground" : "all"),
+    ...storeShots,
+    ...windows,
+    getDeviceSettings: (args) => deviceSettings.getDeviceSettings(
+      requireLaneId(args.laneId),
+      args.fields === "foreground" || args.fields === "orientation" ? args.fields : "all",
+    ),
     setDeviceSetting: async (args) => {
       const laneId = requireLaneId(args.laneId);
       await deviceSettings.setDeviceSetting(laneId, args.setting);
@@ -856,6 +1138,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     async dispose(options) {
       if (disposed) return;
       disposed = true;
+      maintenance.stop();
       renders.dispose();
       setup.dispose();
       crashWatch.dispose();
@@ -909,6 +1192,28 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       };
     },
   };
+  /*
+   * Parity: every call that acts on a lane's emulator (an agent's or a
+   * viewer's) restarts that lane's idle clock. The reads a pane or the mini
+   * player polls do not, or an open window would keep an emulator up forever;
+   * the viewer's stream counts by itself while it runs.
+   */
+  const NOT_USE = new Set<string>([
+    "getStatus", "listDevices", "getStreamStatus", "deviceLeaseStatus", "recordList", "getAutoRecord",
+    "getMachinePreferences", "getSdkSetupPlan", "getSdkInstallState", "listSystemImages", "deviceCleanup",
+    "stop", "stopForLane", "releaseDevice", "dispose", "onEvent", "releaseIfOwnedBy", "streamRemoteBitrateKbpsCap",
+  ]);
+  const record = service as unknown as Record<string, unknown>;
+  for (const [name, value] of Object.entries(record)) {
+    if (typeof value !== "function" || NOT_USE.has(name)) continue;
+    const method = value as (...callArgs: unknown[]) => unknown;
+    record[name] = (...callArgs: unknown[]) => {
+      const laneId = (callArgs[0] as { laneId?: unknown } | null | undefined)?.laneId;
+      if (typeof laneId === "string" && laneId.trim()) maintenance.touch(laneId.trim());
+      return method(...callArgs);
+    };
+  }
+  maintenance.start();
   // After construction returns, so a caller's first call is not held up by it;
   // lane steps still queue behind it through `serialize`.
   setTimeout(() => {

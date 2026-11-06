@@ -25,6 +25,11 @@ import {
   serializeAppleDevicePreferences,
   type AppleDevicePreferences,
 } from "../../shared/appleDeviceSettings";
+import {
+  DEFAULT_ANDROID_DEVICE_PREFERENCES,
+  normalizeAndroidDevicePreferences,
+  type AndroidDevicePreferences,
+} from "../../shared/androidDevicePresentation";
 import { GIT_UNTRUSTED_FOLDER_CODE, parseCodedErrorMessage } from "../lib/codedError";
 import { RECOVERY_COPY, toAdeRecoveryErrorCode, type AdeRecoveryErrorCode, type ProjectDataProblem } from "../../shared/types/recovery";
 import { defaultLaneId, pickRestoredLaneId } from "../lib/laneSelection";
@@ -1100,6 +1105,11 @@ type PersistedUserPreferences = {
    * blob so the keys match `docs/plans/apple-device-env-contracts.md`.
    */
   appleDevice: AppleDevicePreferences;
+  /**
+   * Android emulator presentation in the Android pane (this computer only).
+   * Persisted under `android` in the blob, as `appleDevice` is under `apple`.
+   */
+  androidDevice: AndroidDevicePreferences;
   /** Set true the first time the user changes the chat font size; locks the
    *  large-screen auto-size so it never overrides their choice again. */
   userOverrodeChatFontSize: boolean;
@@ -1163,6 +1173,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
         (parsed as { apple?: unknown; appleDevice?: unknown }).apple
           ?? (parsed as { appleDevice?: unknown }).appleDevice,
       ),
+      androidDevice: normalizeAndroidDevicePreferences((parsed as { android?: unknown }).android),
       userOverrodeChatFontSize: parsed.userOverrodeChatFontSize === true,
     };
   } catch {
@@ -1215,16 +1226,18 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     chatShellGeometry: "default",
     harnessPresets: [],
     appleDevice: { ...DEFAULT_APPLE_DEVICE_PREFERENCES },
+    androidDevice: { ...DEFAULT_ANDROID_DEVICE_PREFERENCES },
     userOverrodeChatFontSize: false,
   };
 }
 
 function persistUserPreferences(prefs: PersistedUserPreferences) {
   try {
-    const { appleDevice, ...rest } = prefs;
+    const { appleDevice, androidDevice, ...rest } = prefs;
     window.localStorage.setItem(USER_PREFERENCES_STORAGE_KEY, JSON.stringify({
       ...rest,
       apple: serializeAppleDevicePreferences(appleDevice),
+      android: { realisticBody: androidDevice.realisticBody },
     }));
   } catch {
     // ignore
@@ -1256,6 +1269,7 @@ function persistUserPreferencesFrom(state: {
   chatShellGeometry: ChatShellGeometry;
   harnessPresets: HarnessPreset[];
   appleDevice: AppleDevicePreferences;
+  androidDevice: AndroidDevicePreferences;
   userOverrodeChatFontSize: boolean;
 }) {
   persistUserPreferences({
@@ -1286,6 +1300,7 @@ function persistUserPreferencesFrom(state: {
     // the rows carried through unread are cast in for the write only.
     harnessPresets: withUnreadableHarnessPresets(state.harnessPresets) as HarnessPreset[],
     appleDevice: state.appleDevice,
+    androidDevice: state.androidDevice,
     userOverrodeChatFontSize: state.userOverrodeChatFontSize,
   });
 }
@@ -1561,6 +1576,7 @@ export type AppState = {
   /** Saved harness presets, newest edit last. See `shared/harnessPresets.ts`. */
   harnessPresets: HarnessPreset[];
   appleDevice: AppleDevicePreferences;
+  androidDevice: AndroidDevicePreferences;
   /**
    * Root-store only (not copied into project stores): read it with
    * `useRootAppStore` and write it with `updateStarPill`.
@@ -1732,6 +1748,7 @@ export type AppState = {
     next: HarnessPreset[] | ((prev: HarnessPreset[]) => HarnessPreset[]),
   ) => void;
   setAppleDevicePreferences: (next: Partial<AppleDevicePreferences>) => void;
+  setAndroidDevicePreferences: (next: Partial<AndroidDevicePreferences>) => void;
   /** Resets only theme + chat font size (narrow restore — per product spec). */
   resetThemeAndChatFontDefaults: () => void;
   setTerminalPreferences: (
@@ -2190,6 +2207,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   chatShellGeometry: initialUserPreferences.chatShellGeometry,
   harnessPresets: initialUserPreferences.harnessPresets,
   appleDevice: initialUserPreferences.appleDevice,
+  androidDevice: initialUserPreferences.androidDevice,
   starPill: readPersistedStarPillPrefs(),
   providerMode: "guest",
   availableModels: [...MODEL_REGISTRY].filter((m) => !m.deprecated),
@@ -2812,6 +2830,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const appleDevice = normalizeAppleDevicePreferences({ ...prev.appleDevice, ...next });
       persistUserPreferencesFrom({ ...prev, appleDevice });
       return { appleDevice };
+    }),
+  setAndroidDevicePreferences: (next) =>
+    set((prev) => {
+      const androidDevice = normalizeAndroidDevicePreferences({ ...prev.androidDevice, ...next });
+      persistUserPreferencesFrom({ ...prev, androidDevice });
+      return { androidDevice };
     }),
   resetThemeAndChatFontDefaults: () =>
     set((prev) => {
@@ -3781,6 +3805,7 @@ export function createProjectAppStore(
     chatShellGeometry: rootState.chatShellGeometry,
     harnessPresets: rootState.harnessPresets,
     appleDevice: rootState.appleDevice,
+    androidDevice: rootState.androidDevice,
     smartTooltipsEnabled: rootState.smartTooltipsEnabled,
     launchPromptClipboardEnabled: rootState.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: rootState.launchPromptClipboardNoticeEnabled,
@@ -3804,6 +3829,7 @@ export function createProjectAppStore(
     setChatShellGeometry: rootState.setChatShellGeometry,
     setHarnessPresets: rootState.setHarnessPresets,
     setAppleDevicePreferences: rootState.setAppleDevicePreferences,
+    setAndroidDevicePreferences: rootState.setAndroidDevicePreferences,
     resetThemeAndChatFontDefaults: rootState.resetThemeAndChatFontDefaults,
     setSmartTooltipsEnabled: rootState.setSmartTooltipsEnabled,
     setLaunchPromptClipboardEnabled: rootState.setLaunchPromptClipboardEnabled,

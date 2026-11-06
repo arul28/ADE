@@ -17,6 +17,16 @@ import type { AndroidEmulatorImagesServiceApi } from "./androidEmulatorImages";
 import type { AndroidEmulatorInstrumentationServiceApi } from "./androidEmulatorInstrumentation";
 import type { AndroidEmulatorPreviewServiceApi } from "./androidEmulatorPreviews";
 import type { RuntimeDisposeReason } from "./runtimeLifecycle";
+import type {
+  AndroidEmulatorRecordingServiceApi,
+  AndroidInputRecordArgs,
+  AndroidMachinePreferences,
+  AndroidMachinePreferencesResult,
+} from "./androidEmulatorRecording";
+import type { AndroidEmulatorControlServiceApi, AndroidPowerOffRecord } from "./androidEmulatorControl";
+import { ANDROID_CONTROL_ACTIONS } from "./androidEmulatorControl";
+import type { AndroidEmulatorDeviceServiceApi, AndroidOrientationEvent } from "./androidEmulatorDevice";
+import { ANDROID_DEVICE_ACTIONS, ANDROID_ROTATE_ORIENTATIONS } from "./androidEmulatorDevice";
 
 /**
  * The Android panel's product facts (`ade_feature_used`, `action: "android_device"`):
@@ -176,6 +186,8 @@ export type AndroidLaneDeviceStatus = {
   error: AndroidEmulatorError | null;
   /** P2 crash pin: the lane's app's last crash while the emulator runs. Absent from a brain before P2. */
   appCrash?: AndroidAppCrash | null;
+  /** Parity: why ADE powered the emulator off (idle timer or cleanup), until the next start. */
+  poweredOff?: AndroidPowerOffRecord | null;
 };
 
 /**
@@ -198,6 +210,10 @@ export type AndroidStreamStatus = {
   transport: AndroidStreamTransport | null;
   /** Frames per second over the last few seconds, when running. */
   fps: number | null;
+  /** The bit rate the encoder sent over the last few seconds, in kbit/s, when running. */
+  bitrateKbps?: number | null;
+  /** The encoder's bit rate setting now, in kbit/s: lower while only remote viewers read. */
+  capKbps?: number | null;
 };
 
 /** One touch event in device pixels. */
@@ -355,23 +371,38 @@ export type AndroidStartStreamArgs = AndroidLaneArgs & {
   maxSize?: number | null;
   bitRateBps?: number | null;
   maxFps?: number | null;
+  /**
+   * The viewer is on another machine (a desktop pinned to this one). It
+   * counts as a remote viewer: while no viewer on this machine and no
+   * recording holds the stream, the encoder runs at the machine's remote
+   * bitrate cap. Pass it on the stop and the status read too.
+   */
+  remoteViewer?: boolean | null;
 };
 
-export type AndroidTouchArgs = AndroidLaneArgs & { events: AndroidTouchEvent[] };
-export type AndroidTapArgs = AndroidLaneArgs & { x: number; y: number };
-export type AndroidSwipeArgs = AndroidLaneArgs & {
+/** `stopStream` and `getStreamStatus`: `remoteViewer` names the viewer that started it. */
+export type AndroidStreamViewerArgs = AndroidLaneArgs & { remoteViewer?: boolean | null };
+
+export type AndroidTouchArgs = AndroidLaneArgs & AndroidInputRecordArgs & { events: AndroidTouchEvent[] };
+export type AndroidTapArgs = AndroidLaneArgs & AndroidInputRecordArgs & { x: number; y: number };
+export type AndroidSwipeArgs = AndroidLaneArgs & AndroidInputRecordArgs & {
   fromX: number;
   fromY: number;
   toX: number;
   toY: number;
   durationMs?: number | null;
 };
-export type AndroidKeyArgs = AndroidLaneArgs & { key: AndroidHardwareKey };
-export type AndroidOrientation = "portrait" | "landscape";
-export const ANDROID_ORIENTATIONS: readonly AndroidOrientation[] = ["portrait", "landscape"];
+export type AndroidKeyArgs = AndroidLaneArgs & AndroidInputRecordArgs & { key: AndroidHardwareKey };
+/** Parity: `ade apple rotate`'s four names, and `landscape` (= `landscape-right`) for older callers. */
+export type AndroidOrientation = (typeof ANDROID_ROTATE_ORIENTATIONS)[number];
+export const ANDROID_ORIENTATIONS: readonly AndroidOrientation[] = ANDROID_ROTATE_ORIENTATIONS;
 /** Locks the display to this orientation (auto-rotate off). An app that fixes its own orientation keeps it. */
 export type AndroidRotateArgs = AndroidLaneArgs & { orientation: AndroidOrientation };
-export type AndroidTextArgs = AndroidLaneArgs & { text: string };
+export type AndroidTextArgs = AndroidLaneArgs & AndroidInputRecordArgs & {
+  text: string;
+  /** Parity (`type --submit`): press Enter after the text, as `ade apple type --submit`. */
+  submit?: boolean | null;
+};
 
 export type AndroidScreenshotArgs = AndroidLaneArgs & {
   /** Absolute path to write the PNG to; omitted = a file under the ADE data folder. */
@@ -400,6 +431,8 @@ export type AndroidEmulatorEvent =
   | { type: "android.stream.state"; laneId: string; running: boolean }
   | { type: "android.inventory.changed" }
   | { type: "android.sdk.changed" }
+  /** The machine's Android preferences changed (`setMachinePreferences`). */
+  | { type: "android.preferences.changed"; preferences: AndroidMachinePreferences }
   | { type: "android.sdk.install"; install: AndroidSdkInstallState }
   /** A recording started or ended; `recording.active` says which. */
   | { type: "android.recording.state"; laneId: string; recording: AndroidRecording }
@@ -407,6 +440,8 @@ export type AndroidEmulatorEvent =
   | { type: "android.app.crashed"; laneId: string; crash: AndroidAppCrash }
   /** P3 fold: the hinge moved (from any viewer or an agent). */
   | { type: "android.device.posture"; laneId: string; posture: AndroidPosture }
+  /** Parity: the display turned (a rotate from any caller). */
+  | AndroidOrientationEvent
   | AndroidRenderRequestEvent;
 
 export type AndroidEmulatorServiceApi = {
@@ -425,9 +460,9 @@ export type AndroidEmulatorServiceApi = {
   deleteDevice(args: { avdName: string }): Promise<{ deleted: boolean }>;
   /** Mints the loopback stream token: viewers only, never a session-bound agent. */
   startStream(args: AndroidStartStreamArgs): Promise<AndroidStreamStatus>;
-  stopStream(args: AndroidLaneArgs): Promise<AndroidStreamStatus>;
+  stopStream(args: AndroidStreamViewerArgs): Promise<AndroidStreamStatus>;
   /** Redacted: `transport` is always null here. */
-  getStreamStatus(args: AndroidLaneArgs): Promise<AndroidStreamStatus>;
+  getStreamStatus(args: AndroidStreamViewerArgs): Promise<AndroidStreamStatus>;
   sendTouch(args: AndroidTouchArgs): Promise<void>;
   tap(args: AndroidTapArgs): Promise<void>;
   swipe(args: AndroidSwipeArgs): Promise<void>;
@@ -447,7 +482,8 @@ export type AndroidEmulatorServiceApi = {
   dispose(options?: { reason?: RuntimeDisposeReason }): Promise<void>;
   onEvent(listener: (event: AndroidEmulatorEvent) => void): () => void;
 } & AndroidEmulatorLookServiceApi & AndroidEmulatorAgentServiceApi & AndroidEmulatorSetupServiceApi & AndroidEmulatorPostureServiceApi
-  & AndroidEmulatorImagesServiceApi & AndroidEmulatorInstrumentationServiceApi & AndroidEmulatorPreviewServiceApi;
+  & AndroidEmulatorImagesServiceApi & AndroidEmulatorInstrumentationServiceApi & AndroidEmulatorPreviewServiceApi
+  & AndroidEmulatorRecordingServiceApi & AndroidEmulatorControlServiceApi & AndroidEmulatorDeviceServiceApi;
 
 /**
  * P1 agent suite (android-agent): the actions `ade android` adds for agents.
@@ -475,6 +511,9 @@ export const ANDROID_AGENT_SUITE_ACTIONS = [
   "recordStop",
   "recordList",
   "recordDelete",
+  // Rec: the lane's auto-record switch (`ade android auto-record`).
+  "getAutoRecord",
+  "setAutoRecord",
   "deviceLease",
   "deviceLeaseRelease",
   "deviceLeaseStatus",
@@ -519,6 +558,12 @@ export const ANDROID_AGENT_ACTIONS = [
   // P3: the system image list (a read; install and remove are the person's), and instrumentation tests.
   "listSystemImages",
   "runInstrumentationTests",
+  // Rec: the machine preferences (a read; the write is the person's).
+  "getMachinePreferences",
+  // Parity: keys, relaunch, app state, the app in front, frame, Inspect, the cleanup pass.
+  ...ANDROID_CONTROL_ACTIONS,
+  // Parity: status bar, Clear location, Play Store screenshots, window layout.
+  ...ANDROID_DEVICE_ACTIONS,
 ] as const;
 export type AndroidAgentAction = (typeof ANDROID_AGENT_ACTIONS)[number];
 
@@ -536,6 +581,8 @@ export const ANDROID_SDK_PERSON_ONLY_ACTIONS = [
   // P3 system images: a download with a licence, and a removal that can leave AVDs without an image.
   "installSystemImage",
   "removeSystemImage",
+  // Rec: the machine's Android preferences (Settings › Android devices).
+  "setMachinePreferences",
 ] as const;
 export type AndroidSdkPersonOnlyAction = (typeof ANDROID_SDK_PERSON_ONLY_ACTIONS)[number];
 
@@ -578,6 +625,10 @@ export const ANDROID_LANE_FREE_ACTIONS = [
   "getSdkInstallState",
   // P3: the machine's system images.
   "listSystemImages",
+  // Parity: the cleanup pass is about the machine's lanes (an agent's is pinned to its lane).
+  "deviceCleanup",
+  // Rec: the machine's Android preferences.
+  "getMachinePreferences",
   ...ANDROID_SDK_PERSON_ONLY_ACTIONS,
 ] as const;
 
@@ -609,13 +660,17 @@ export type AndroidEmulatorPreloadApi = {
   releaseDevice(args: AndroidReleaseDeviceArgs, pin?: Pin): Promise<{ released: boolean; deletedAvd: string | null }>;
   deleteDevice(args: { avdName: string }, pin?: Pin): Promise<{ deleted: boolean }>;
   startStream(args: AndroidStartStreamArgs, pin?: Pin): Promise<AndroidStreamStatus>;
-  stopStream(args: AndroidLaneArgs, pin?: Pin): Promise<AndroidStreamStatus>;
-  getStreamStatus(args: AndroidLaneArgs, pin?: Pin): Promise<AndroidStreamStatus>;
+  stopStream(args: AndroidStreamViewerArgs, pin?: Pin): Promise<AndroidStreamStatus>;
+  getStreamStatus(args: AndroidStreamViewerArgs, pin?: Pin): Promise<AndroidStreamStatus>;
   sendTouch(args: AndroidTouchArgs, pin?: Pin): Promise<void>;
   sendKey(args: AndroidKeyArgs, pin?: Pin): Promise<void>;
   sendText(args: AndroidTextArgs, pin?: Pin): Promise<void>;
   rotate(args: AndroidRotateArgs, pin?: Pin): Promise<void>;
   screenshot(args: AndroidScreenshotArgs, pin?: Pin): Promise<AndroidScreenshot>;
+  /** Rec: the machine's Android preferences, on the machine the pin names (Settings › Android devices). */
+  getMachinePreferences(args?: Record<string, never>, pin?: Pin): Promise<AndroidMachinePreferencesResult>;
+  /** Rec: person-only; a partial write keeps the other fields and the SDK folder. */
+  setMachinePreferences(args: Partial<AndroidMachinePreferences>, pin?: Pin): Promise<AndroidMachinePreferencesResult>;
   /**
    * Turns a loopback stream URL from another machine into one this renderer
    * can open (the remote loopback forward iOS and Mac Desktop use).
@@ -645,4 +700,7 @@ export * from "./androidEmulatorPosture";
 export * from "./androidEmulatorImages";
 export * from "./androidEmulatorInstrumentation";
 export * from "./androidEmulatorPreviews";
+export * from "./androidEmulatorRecording";
+export * from "./androidEmulatorControl";
+export * from "./androidEmulatorDevice";
 

@@ -23,14 +23,20 @@ export type AndroidLaneDeviceCard = {
   laneId: string;
   name: string;
   state: Exclude<AndroidLaneDeviceStatus["state"], "none">;
+  /** The AVD folder name, for the card menu. */
+  avdName: string;
+  /** `created` = ADE made it for this lane (Delete removes it); `attached` = the user's own AVD. */
+  origin: "created" | "attached";
 };
 
 export function useAndroidLaneDeviceCard(args: {
   laneId: string | null;
   runtimePin: OpenProjectBinding | null;
   enabled: boolean;
+  /** Bump to read again now: the card menu's refresh after it acts (the web client may get no event). */
+  refreshKey?: unknown;
 }): AndroidLaneDeviceCard | null {
-  const { laneId, runtimePin, enabled } = args;
+  const { laneId, runtimePin, enabled, refreshKey } = args;
   const [card, setCard] = useState<AndroidLaneDeviceCard | null>(null);
   const pinRef = useRef(runtimePin);
   pinRef.current = runtimePin;
@@ -60,7 +66,7 @@ export function useAndroidLaneDeviceCard(args: {
       if (cancelled) return;
       const lane = status.lane;
       setCard(lane?.device && lane.state !== "none"
-        ? { laneId, name: androidLaneDeviceName(lane), state: lane.state }
+        ? { laneId, name: androidLaneDeviceName(lane), state: lane.state, avdName: lane.device.avdName, origin: lane.device.origin }
         : null);
     };
     void read();
@@ -84,7 +90,15 @@ export function useAndroidLaneDeviceCard(args: {
       unsubscribe?.();
     };
     // Keyed on the machine, not the pin object.
-  }, [enabled, laneId, pinKey]);
+  }, [enabled, laneId, pinKey, refreshKey]);
 
-  return card && card.laneId === laneId ? card : null;
+  return androidLaneDeviceForLane(card, laneId);
+}
+
+/** Only the reading FOR this lane: a menu on the last lane's reading would act on the wrong lane's device. */
+export function androidLaneDeviceForLane(
+  card: AndroidLaneDeviceCard | null,
+  laneId: string | null,
+): AndroidLaneDeviceCard | null {
+  return card && laneId && card.laneId === laneId ? card : null;
 }

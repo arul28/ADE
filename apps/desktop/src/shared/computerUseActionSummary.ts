@@ -2,7 +2,8 @@
  * What a computer-use shell command did, in words a reader can follow.
  *
  * Agents drive screens through the ADE CLI from their own shell tool
- * (`ade screen click …`, `ade browser fill …`, `"$ADE_CLI_PATH" apple tap …`).
+ * (`ade screen click …`, `ade browser fill …`, `"$ADE_CLI_PATH" apple tap …`,
+ * `ade android tap-element …`).
  * The transcript used to show those as generic shell rows. This module reads
  * the command and its output and returns a small structured summary — the verb,
  * the element actually hit, the app, the surface, and whether the screen
@@ -32,6 +33,9 @@ import {
   clip,
   parseOutput,
   PROOF_ID,
+  readAndroidDevice,
+  readAndroidElementName,
+  readAndroidFillUnseen,
   readAppleDevice,
   readString,
   readUserBrowser,
@@ -45,6 +49,7 @@ export type ComputerUseSurfaceKind =
   | "ade_browser"
   | "user_browser"
   | "apple_device"
+  | "android_device"
   | "proof";
 
 export type ComputerUseActionOutcome =
@@ -59,7 +64,7 @@ export type ComputerUseActionOutcome =
 
 export type ComputerUseActionSummary = {
   surface: ComputerUseSurfaceKind;
-  /** Canonical CLI domain: `screen`, `app-control`, `browser`, `apple`, `proof`. */
+  /** Canonical CLI domain: `screen`, `app-control`, `browser`, `apple`, `android`, `proof`. */
   domain: ComputerUseDomain;
   /** Canonical verb, e.g. `click`, `type`, `proof`. */
   verb: string;
@@ -85,7 +90,7 @@ export type ComputerUseActionSummary = {
   browserName: string | null;
   /** Machine label for the user's browser: "studio-mac". */
   hostLabel: string | null;
-  /** Apple device, when the command or its output named it. */
+  /** Apple device or Android emulator, when the command or its output named it. */
   device: { name: string | null; os: string | null } | null;
   /** Which lane screen the command named: `ade mac-desktop` or `ade windows-desktop`; null for `ade screen`. */
   screenProduct: "mac" | "windows" | null;
@@ -112,7 +117,7 @@ export type ComputerUseActionPlace = {
   kind: "app" | "site" | "other";
 };
 
-export type ComputerUseDomain = "screen" | "app-control" | "browser" | "apple" | "proof";
+export type ComputerUseDomain = "screen" | "app-control" | "browser" | "apple" | "android" | "proof";
 
 export type ComputerUseCommandInput = {
   command: string | readonly string[] | null | undefined;
@@ -142,6 +147,7 @@ const DOMAIN_ALIASES: Readonly<Record<string, ComputerUseDomain>> = {
   "ios-sim": "apple",
   ios: "apple",
   simulator: "apple",
+  android: "android",
   proof: "proof",
   computer: "proof",
   "computer-use": "proof",
@@ -528,12 +534,244 @@ function resolveVerb(invocation: ParsedInvocation): { key: string; spec: VerbSpe
   if ((first === "observe" || first === "snapshot") && invocation.domain === "browser") {
     return { key: first, spec: { past: "Read", progressive: "Reading", infinitive: "read", target: "page", passive: true } };
   }
+  if (invocation.domain === "android") return resolveAndroidVerb(first, invocation);
   // `apple start` names the device, which later rows in the run borrow.
   if (first === "start" && invocation.domain === "apple") {
     return { key: "start", spec: { past: "Started", progressive: "Starting", infinitive: "start", target: "none", passive: true } };
   }
   const spec = VERBS[first];
   return spec ? { key: first, spec } : null;
+}
+
+/* ── Android ─────────────────────────────────────────────────────────────── */
+
+const passiveSpec = (past: string, progressive: string, infinitive: string, target: VerbSpec["target"] = "none"): VerbSpec => (
+  { past, progressive, infinitive, target, passive: true }
+);
+
+/**
+ * `ade android` verbs that read as an action row, by the word typed. Each
+ * `ade apple` twin keeps its `VERBS` entry; these are the words only Android
+ * has, or that read another way on an emulator. A verb missing here and
+ * from `VERBS` (`status`, `apps`, `devices`, `lease`, `sdk`, `show`, the
+ * recording list) keeps its plain shell row.
+ */
+const ANDROID_VERBS: Readonly<Record<string, VerbSpec>> = {
+  // The lifecycle verbs name the emulator, which later rows in the run borrow.
+  start: passiveSpec("Started", "Starting", "start"),
+  stop: passiveSpec("Stopped", "Stopping", "stop"),
+  "device-create": passiveSpec("Created", "Creating", "create"),
+  "device-attach": passiveSpec("Attached", "Attaching", "attach"),
+  "device-detach": passiveSpec("Released", "Releasing", "release"),
+  "find-element": passiveSpec("Found", "Finding", "find", "element"),
+  "fill-element": VERBS.fill!,
+  drag: { past: "Dragged", progressive: "Dragging", infinitive: "drag", target: "none" },
+  rotate: { past: "Rotated to", progressive: "Rotating to", infinitive: "rotate to", target: "none" },
+  install: { past: "Installed", progressive: "Installing", infinitive: "install", target: "app" },
+  uninstall: { past: "Uninstalled", progressive: "Uninstalling", infinitive: "uninstall", target: "app" },
+  "app-state": passiveSpec("Checked", "Checking", "check", "app"),
+  location: { past: "Set the location to", progressive: "Setting the location to", infinitive: "set the location to", target: "none" },
+  appearance: { past: "Switched to", progressive: "Switching to", infinitive: "switch to", target: "none" },
+  fold: { past: "Set the hinge to", progressive: "Setting the hinge to", infinitive: "set the hinge to", target: "none" },
+  posture: passiveSpec("Read the hinge of", "Reading the hinge of", "read the hinge of"),
+  settings: { past: "Set", progressive: "Setting", infinitive: "set", target: "none" },
+  permission: { past: "Granted", progressive: "Granting", infinitive: "grant", target: "none" },
+  "proof-bundle": { past: "Filed a proof bundle", progressive: "Filing a proof bundle", infinitive: "file a proof bundle", target: "caption" },
+  preview: { past: "Rendered Compose previews", progressive: "Rendering Compose previews", infinitive: "render Compose previews", target: "none" },
+  test: { past: "Ran tests", progressive: "Running tests", infinitive: "run tests", target: "none" },
+  render: passiveSpec("Rendered", "Rendering", "render"),
+  log: passiveSpec("Read the log of", "Reading the log of", "read the log of"),
+  inspect: passiveSpec("Inspected", "Inspecting", "inspect", "element"),
+  frame: passiveSpec("Took a frame of", "Taking a frame of", "take a frame of", "page"),
+  foreground: { past: "Switched to", progressive: "Switching to", infinitive: "switch to", target: "app" },
+  select: passiveSpec("Picked", "Picking", "pick", "element"),
+};
+
+/**
+ * Verbs shared with the other surfaces, by the word typed, to the `VERBS`
+ * entry they read as. Every other word not in `ANDROID_VERBS` keeps its
+ * shell row.
+ */
+const ANDROID_SHARED_VERBS = new Set([
+  "tap", "tap-element", "long-press", "swipe", "scroll", "type", "key", "button", "launch", "relaunch",
+  "terminate", "open-url", "snapshot", "screenshot", "wait-for-element", "assert-visible",
+  "record-start", "record-stop",
+]);
+
+function resolveAndroidVerb(first: string, invocation: ParsedInvocation): { key: string; spec: VerbSpec } | null {
+  // `preview list` and `settings` with no setting are reads.
+  if (first === "preview" && invocation.positionals[0] === "list") {
+    return { key: "preview list", spec: passiveSpec("Listed Compose previews", "Listing Compose previews", "list Compose previews") };
+  }
+  if (first === "settings" && !androidSettingChange(invocation)) {
+    return { key: "settings", spec: passiveSpec("Read the settings of", "Reading the settings of", "read the settings of") };
+  }
+  if (first === "permission" && invocation.positionals[0]?.toLowerCase() === "revoke") {
+    return { key: "permission", spec: { past: "Revoked", progressive: "Revoking", infinitive: "revoke", target: "none" } };
+  }
+  if (first === "auto-record") {
+    const word = invocation.positionals[0]?.toLowerCase() ?? "status";
+    if (word !== "on" && word !== "off") return { key: first, spec: passiveSpec("Checked auto-record", "Checking auto-record", "check auto-record") };
+    return { key: first, spec: { past: `Turned ${word} auto-record`, progressive: `Turning ${word} auto-record`, infinitive: `turn ${word} auto-record`, target: "none" } };
+  }
+  // `fill-element` is a fill: one canonical verb for the icon and the words.
+  if (first === "fill-element") return { key: "fill", spec: ANDROID_VERBS["fill-element"]! };
+  const own = ANDROID_VERBS[first];
+  if (own) return { key: first, spec: own };
+  if (!ANDROID_SHARED_VERBS.has(first)) return null;
+  const spec = VERBS[first];
+  return spec ? { key: first, spec } : null;
+}
+
+/** The setting `ade android settings` changed, as words: "text size to large". Null for a read. */
+function androidSettingChange(invocation: ParsedInvocation): string | null {
+  // In the CLI's order, not the typed order: the iOS port reads an unordered map.
+  for (const flag of ANDROID_SETTING_FLAGS) {
+    const value = invocation.flags.get(flag);
+    if (typeof value === "string" && value.trim()) return `${flag.slice(2).replace(/-/g, " ")} to ${value.trim()}`;
+  }
+  return null;
+}
+
+/** `ade android key`'s modifier flags, in the CLI's order, and the name each reads as. */
+const ANDROID_KEY_MODIFIERS: ReadonlyArray<readonly [string, string]> = [
+  ["--shift", "Shift"], ["--ctrl", "Ctrl"], ["--control", "Ctrl"], ["--alt", "Alt"],
+  ["--option", "Alt"], ["--meta", "Meta"], ["--cmd", "Meta"], ["--command", "Meta"],
+];
+
+/** `ade android settings`' one-setting flags (`ANDROID_SETTINGS_FLAGS` in the CLI), in its order. */
+const ANDROID_SETTING_FLAGS = ([
+  "--text-size", "--display-size", "--animations", "--show-taps", "--layout-bounds",
+  "--battery", "--charging", "--wifi", "--data", "--airplane",
+] as const);
+
+/** Package names whose last word is not the app's name. */
+const ANDROID_KNOWN_APPS: Readonly<Record<string, string>> = {
+  "com.android.chrome": "Chrome",
+  "com.android.vending": "Play Store",
+  "com.google.android.gm": "Gmail",
+  "com.google.android.youtube": "YouTube",
+  "com.google.android.dialer": "Phone",
+  "com.google.android.apps.messaging": "Messages",
+  "com.google.android.apps.photos": "Photos",
+  "com.google.android.apps.nexuslauncher": "Home",
+};
+
+function appNameFromPackage(packageName: string | null): string | null {
+  if (!packageName) return null;
+  return ANDROID_KNOWN_APPS[packageName.toLowerCase()] ?? appNameFromBundleId(packageName);
+}
+
+/** A stroke's way, as the finger moves: from y 1500 to y 500 is "up". */
+function strokeDirection(positionals: readonly string[]): string | null {
+  const [x1, y1, x2, y2] = positionals.slice(0, 4).map(Number);
+  if ([x1, y1, x2, y2].some((value) => value === undefined || !Number.isFinite(value))) return null;
+  const dx = x2! - x1!;
+  const dy = y2! - y1!;
+  if (dx === 0 && dy === 0) return null;
+  return Math.abs(dy) >= Math.abs(dx) ? (dy < 0 ? "up" : "down") : (dx < 0 ? "left" : "right");
+}
+
+/**
+ * The target of an `ade android` verb whose words differ from the shared
+ * reading (`--package` for the app, `--name` for a button, a stroke's way).
+ * Undefined hands the verb to `describeTarget`.
+ */
+function androidTarget(verbKey: string, invocation: ParsedInvocation, parsed: ParsedOutput, output: string): TargetShape | undefined {
+  const shape = (target: string | null, quoted = false, direction: string | null = null): TargetShape => (
+    { target, quoted, direction, point: false }
+  );
+  const [first, second] = invocation.positionals;
+  switch (verbKey) {
+    case "tap-element":
+    case "fill":
+    case "find-element":
+    case "wait-for-element":
+    case "assert-visible": {
+      const named = parsed.hitName ?? readAndroidElementName(output)
+        ?? flagValue(invocation, "--label", "--text", "--identifier");
+      if (named) return shape(named, true);
+      // `fill-element --ref e3 "hello"`: no name, so the text typed.
+      if (verbKey === "fill") return shape(flagValue(invocation, "--value") ?? first ?? null, true);
+      return undefined;
+    }
+    case "long-press": {
+      const x = flagValue(invocation, "--x") ?? first ?? null;
+      const y = flagValue(invocation, "--y") ?? second ?? null;
+      if (x && y && NUMBER.test(x) && NUMBER.test(y)) {
+        return { target: `${Math.round(Number(x))}, ${Math.round(Number(y))}`, quoted: false, direction: null, point: true };
+      }
+      return shape(null);
+    }
+    case "swipe":
+      return shape(null, false, strokeDirection(invocation.positionals));
+    case "button":
+      return shape(first ?? flagValue(invocation, "--name", "--key"), true);
+    case "key": {
+      // `key --shift a`: the parser cannot know a modifier takes no value, so
+      // the key may sit in the last modifier's slot.
+      const modifiers = ANDROID_KEY_MODIFIERS.filter(([flag]) => invocation.flags.has(flag));
+      const stuck = modifiers.map(([flag]) => invocation.flags.get(flag)).find((value): value is string => typeof value === "string");
+      const key = first ?? flagValue(invocation, "--name", "--key") ?? stuck ?? null;
+      const names = [...new Set(modifiers.map(([, name]) => name))];
+      return shape(key ? [...names, key].join("+") : null, true);
+    }
+    case "inspect":
+    case "select": {
+      if (parsed.hitName) return shape(parsed.hitName, true);
+      const x = flagValue(invocation, "--x");
+      const y = flagValue(invocation, "--y");
+      if (x && y && NUMBER.test(x) && NUMBER.test(y)) {
+        return { target: `${Math.round(Number(x))}, ${Math.round(Number(y))}`, quoted: false, direction: null, point: true };
+      }
+      return shape(flagValue(invocation, "--ref"));
+    }
+    case "rotate":
+    case "appearance":
+      return shape(first ? `${first.toLowerCase()}${verbKey === "appearance" ? " mode" : ""}` : null);
+    case "launch":
+    case "relaunch":
+    case "terminate":
+    case "uninstall":
+    case "app-state":
+    case "foreground": {
+      const packageName = flagValue(invocation, "--package") ?? first ?? readString(parsed.json?.packageName);
+      return shape(appNameFromPackage(packageName) ?? (verbKey === "launch" ? "the app" : null));
+    }
+    case "install": {
+      const apk = flagValue(invocation, "--apk");
+      const installed = appNameFromPackage(readString(parsed.json?.packageName));
+      return shape(installed ?? (apk ? apk.split(/[\\/]/).pop() ?? apk : "the app"));
+    }
+    case "location": {
+      const latitude = flagValue(invocation, "--latitude") ?? first ?? null;
+      const longitude = flagValue(invocation, "--longitude") ?? second ?? null;
+      return shape(latitude && longitude ? `${latitude}, ${longitude}` : null);
+    }
+    case "fold": {
+      const word = flagValue(invocation, "--angle") ?? first ?? null;
+      return shape(word ? (NUMBER.test(word) ? `${word}°` : word.toLowerCase() === "half" ? "half open" : word.toLowerCase()) : null);
+    }
+    case "settings":
+      return shape(androidSettingChange(invocation));
+    case "permission": {
+      const permission = second ? `${second} permission` : null;
+      return shape(permission);
+    }
+    case "record-start":
+    case "record-stop":
+    case "proof-bundle":
+      return shape(flagValue(invocation, "--label", "--caption"), true);
+    case "preview":
+      return shape(flagValue(invocation, "--fqn")?.split(".").pop() ?? null, true);
+    case "test": {
+      const className = flagValue(invocation, "--class")?.split(".").pop() ?? null;
+      const method = flagValue(invocation, "--method");
+      return shape(className ? (method ? `${className}.${method}` : className) : null, true);
+    }
+    default:
+      return undefined;
+  }
 }
 
 /* ── Field readers ───────────────────────────────────────────────────────── */
@@ -583,6 +821,7 @@ function surfaceFor(domain: ComputerUseDomain): ComputerUseSurfaceKind {
     case "app-control": return "app_control";
     case "browser": return "ade_browser";
     case "apple": return "apple_device";
+    case "android": return "android_device";
     case "proof": return "proof";
   }
 }
@@ -884,6 +1123,8 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
   else if (input.status === "running" && !parsed.effect) outcome = "running";
   else if (parsed.effect === "observed") outcome = "observed";
   else if (parsed.effect === "unconfirmed" || parsed.effect === "waiting") outcome = "unconfirmed";
+  // `ade android fill-element`: the field does not show the text afterwards.
+  else if (domain === "android" && verb.key === "fill" && readAndroidFillUnseen(parsed, output)) outcome = "unconfirmed";
   else outcome = "not_checked";
   // A filed proof prints its id. A call that exits 0 without one did not file
   // it: the exit code can be a later command's in the same call. No output at
@@ -908,7 +1149,9 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
     : null;
   const reason = outcome === "failed"
     ? failureReason
-    : outcome === "unconfirmed" ? missingProof ?? parsed.effectReason : null;
+    : outcome === "unconfirmed"
+      ? missingProof ?? parsed.effectReason ?? (domain === "android" && verb.key === "fill" ? "The field does not show the text." : null)
+      : null;
 
   /* Surface and browser. */
   let surface = surfaceFor(domain);
@@ -944,21 +1187,30 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
     appName = parsed.values.get("app name")
       ?? readString(json?.appName)
       ?? appNameFromBundleId(flagValue(invocation, "--bundle-id", "--bundle") ?? parsed.values.get("active app") ?? null);
+  } else if (domain === "android") {
+    appName = parsed.values.get("app name")
+      ?? readString(json?.appName)
+      ?? appNameFromPackage(flagValue(invocation, "--package") ?? readString(json?.packageName));
   } else if (surface === "user_browser" && browserName) {
     appName = browserName;
   }
   if (appName) appName = clip(appName, 48);
 
   /* Target and the words around it. */
-  const device = domain === "apple" ? readAppleDevice(
+  const device = domain === "apple"
+    ? readAppleDevice(
       flagValue(invocation, "--device-type", "--device-name", "--simulator"),
       flagValue(invocation, "--runtime"),
       output,
-    ) : null;
-  // `apple start` names the device it booted.
-  const shape: TargetShape = verb.key === "start" && domain === "apple"
-    ? { target: device?.name ?? null, quoted: false, direction: null, point: false }
-    : describeTarget(spec, verb.key, invocation, parsed, appName);
+    )
+    : domain === "android" ? readAndroidDevice(parsed) : null;
+  // `apple start` and the Android lifecycle verbs name the device.
+  const namesDevice = (verb.key === "start" && domain === "apple")
+    || (domain === "android" && ANDROID_LIFECYCLE_VERBS.has(verb.key));
+  const shape: TargetShape = namesDevice
+    ? { target: device?.name ?? (domain === "android" ? "the emulator" : null), quoted: false, direction: null, point: false }
+    : (domain === "android" ? androidTarget(verb.key, invocation, parsed, output) : undefined)
+      ?? describeTarget(spec, verb.key, invocation, parsed, appName);
   let target = shape.target ? clip(shape.target) : null;
   let targetQuoted = shape.quoted;
   const at = shape.point ? " at" : "";
@@ -972,7 +1224,7 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
   } else if (domain === "browser") {
     const host = urlHost(parsed.values.get("url") ?? readString(readRecord(json?.observation)?.url) ?? readString(json?.url) ?? parsed.openedUrl);
     if (host && host !== target) place = { preposition: "on", label: host, kind: "site" };
-  } else if (domain === "screen" || domain === "app-control" || domain === "apple") {
+  } else if (domain === "screen" || domain === "app-control" || domain === "apple" || domain === "android") {
     // `screen open` happens on the lane screen, which "using …" names.
     const opensApp = domain === "screen" && verb.key === "open";
     if (!opensApp && appName && appName !== target) place = { preposition: "in", label: appName, kind: "app" };
@@ -1028,6 +1280,9 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
 export function launchesAppControl(verb: string, domain: string): boolean {
   return domain === "app-control" && (verb === "launch" || verb === "open");
 }
+
+/** `ade android` verbs whose object is the emulator itself. */
+const ANDROID_LIFECYCLE_VERBS = new Set(["start", "stop", "device-create", "device-attach", "device-detach"]);
 
 /** Verbs that file one proof record and print its id. */
 const FILES_PROOF = new Set(["proof", "proof capture", "proof attach"]);

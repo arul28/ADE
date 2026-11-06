@@ -23,7 +23,9 @@ import {
 } from "@phosphor-icons/react";
 import type { AndroidCatalogColor } from "../../../shared/androidDeviceCatalog";
 import type { AndroidHardwareKey } from "../../../shared/types/androidEmulator";
+import type { DeviceOrientation } from "../../../shared/types/deviceOrientation";
 import { cn } from "../ui/cn";
+import { APPLE_ORIENTATION_CHOICES, appleOrientationIconDegrees, appleOrientationLabel } from "../apple/appleDeviceState";
 import { DEVICE_RAIL_COMPACT_WIDTH, DeviceRail, RailButton, RailDivider, RailMenu } from "../device/DeviceRail";
 import {
   MENU_CONTENT_CLASS,
@@ -41,8 +43,13 @@ export type AndroidDeviceRailProps = {
   inputConnected: boolean;
   screenshotPending: boolean;
   onKey: (key: AndroidHardwareKey) => void;
-  /** Toggles portrait and landscape; absent shows the button disabled. */
-  onRotate?: (() => void) | undefined;
+  /** Which way up the device is now, as `ade android rotate` names it. */
+  orientation?: DeviceOrientation;
+  /** Turns the device to one of the four orientations; absent shows the menu disabled. */
+  onOrientation?: ((orientation: DeviceOrientation) => void) | undefined;
+  /** Files Google Play screenshots (both screens of a foldable) as proof. */
+  onStoreScreenshots?: (() => void) | undefined;
+  storeScreenshotsPending?: boolean;
   onScreenshot: () => void;
   /** Absent when the lane's device is not this pane's to change. */
   onSwitchDevice?: (() => void) | undefined;
@@ -90,7 +97,10 @@ export function AndroidDeviceRail({
   inputConnected,
   screenshotPending,
   onKey,
-  onRotate,
+  orientation = "portrait",
+  onOrientation,
+  onStoreScreenshots,
+  storeScreenshotsPending = false,
   onScreenshot,
   onSwitchDevice,
   onPowerOff,
@@ -154,14 +164,14 @@ export function AndroidDeviceRail({
       </RailMenu>
       {compact ? null : (
         <>
-          <RailButton
-            label="Rotate"
-            description="Portrait or landscape. The home screen stays portrait; apps that allow rotation turn."
-            disabled={keysDisabled || !onRotate}
-            onClick={() => onRotate?.()}
+          <RailMenu
+            label={`Orientation: ${appleOrientationLabel(orientation)}`}
+            disabled={keysDisabled || !onOrientation}
+            icon={<DeviceMobile size={16} style={{ transform: `rotate(${appleOrientationIconDegrees(orientation)}deg)` }} />}
           >
-            <DeviceMobile size={16} style={{ transform: "rotate(90deg)" }} />
-          </RailButton>
+            <div className={MENU_LABEL_CLASS}>Orientation</div>
+            {orientationItems(orientation, onOrientation)}
+          </RailMenu>
           {onToggleInspect ? (
             <RailButton
               label="Inspect elements"
@@ -281,10 +291,9 @@ export function AndroidDeviceRail({
         {compact ? (
           <>
             {/* A short pane drops these two from the rail; they live here instead. */}
-            <DropdownMenu.Item className={MENU_ITEM_CLASS} disabled={keysDisabled || !onRotate} onSelect={() => onRotate?.()}>
-              <DeviceMobile size={14} style={{ transform: "rotate(90deg)" }} />
-              Rotate
-            </DropdownMenu.Item>
+            <div className={MENU_LABEL_CLASS}>Orientation: {appleOrientationLabel(orientation)}</div>
+            {keysDisabled ? null : orientationItems(orientation, onOrientation)}
+            <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
             <DropdownMenu.Item className={MENU_ITEM_CLASS} disabled={keysDisabled || screenshotPending} onSelect={onScreenshot}>
               <Camera size={14} />
               Save screenshot
@@ -304,6 +313,19 @@ export function AndroidDeviceRail({
             <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
           </>
         ) : null}
+        {onStoreScreenshots ? (
+          <>
+            <DropdownMenu.Item
+              className={MENU_ITEM_CLASS}
+              disabled={keysDisabled || storeScreenshotsPending}
+              onSelect={onStoreScreenshots}
+            >
+              <Camera size={14} />
+              {storeScreenshotsPending ? "Taking Play Store screenshots…" : "Play Store screenshots"}
+            </DropdownMenu.Item>
+            <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+          </>
+        ) : null}
         <DropdownMenu.Item className={cn(MENU_ITEM_CLASS, "text-[var(--color-error)]")} onSelect={onPowerOff}>
           <Power size={14} />
           Power off
@@ -311,4 +333,23 @@ export function AndroidDeviceRail({
       </RailMenu>
     </DeviceRail>
   );
+}
+
+/** The four orientations, the current one checked (Apple's menu). */
+function orientationItems(
+  orientation: DeviceOrientation,
+  onOrientation: ((orientation: DeviceOrientation) => void) | undefined,
+) {
+  return APPLE_ORIENTATION_CHOICES.map((choice) => (
+    <DropdownMenu.Item
+      key={choice}
+      className={MENU_ITEM_CLASS}
+      disabled={!onOrientation}
+      aria-checked={choice === orientation}
+      onSelect={() => onOrientation?.(choice)}
+    >
+      {choice === orientation ? <Check size={14} weight="bold" /> : <span className="w-[14px]" aria-hidden="true" />}
+      {appleOrientationLabel(choice)}
+    </DropdownMenu.Item>
+  ));
 }

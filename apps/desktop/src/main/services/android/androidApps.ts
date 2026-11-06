@@ -1,3 +1,4 @@
+import { createAndroidChromeSetup } from "./androidChromeSetup";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -226,6 +227,8 @@ async function readUpdateTimes(adbPath: string, serial: string, signal: AbortSig
 
 export function createAndroidApps(deps: AndroidAppsDeps) {
   const { platform, signal, logger } = deps;
+  // Chrome's first-run screens, out of the way before Chrome opens a page (`androidChromeSetup.ts`).
+  const chrome = createAndroidChromeSetup({ signal, logger });
 
   const laneRootOrRefuse = (laneId: string, what: string): string => {
     const root = deps.laneRoot(laneId);
@@ -457,7 +460,13 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
     },
 
     /** Starts the app's launcher activity (or the named one) and waits for it to draw (`am start -W`). */
-    async start(laneId: string, packageName: string, activity: string | null): Promise<{ activity: string; totalTimeMs: number | null }> {
+    async start(
+      laneId: string,
+      packageName: string,
+      activity: string | null,
+      /** Parity: extra `am start` words (launch arguments and `--es`/`--ei` extras), each one device word. */
+      extraWords: readonly string[] = [],
+    ): Promise<{ activity: string; totalTimeMs: number | null }> {
       let component: string | null;
       if (activity) {
         const trimmed = activity.trim();
@@ -475,7 +484,8 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
             : `${packageName} is not installed on this lane's emulator. Install it first (ade android install), or check the name with ade android apps.`,
         );
       }
-      const result = await shell(laneId, ["am", "start", "-W", "-n", component], 60_000);
+      await chrome.beforeLaunch(laneId, await deps.requireBooted(laneId), packageName);
+      const result = await shell(laneId, ["am", "start", "-W", "-n", component, ...extraWords], 60_000);
       if (/Error:|Exception|does not exist/u.test(result.text)) {
         throw new AndroidEmulatorFailure("ANDROID_APP_NOT_FOUND", `The emulator could not start ${component}: ${tail(result.text, 3).join(" ")}`);
       }
@@ -511,7 +521,11 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
       return removed;
     },
 
+    /** The lane's emulator booted again: Chrome's first-run setup runs once more. */
+    forgetBoot: (laneId: string) => chrome.forget(laneId),
+
     async openUrl(laneId: string, url: string): Promise<void> {
+      await chrome.beforeOpenUrl(laneId, await deps.requireBooted(laneId), url);
       const result = await shell(laneId, ["am", "start", "-W", "-a", "android.intent.action.VIEW", "-d", url], 60_000);
       if (/Error:|No Activity found|unable to resolve/iu.test(result.text)) {
         throw new AndroidEmulatorFailure("ANDROID_APP_NOT_FOUND", `No app on the emulator opens ${url}: ${tail(result.text, 2).join(" ")}`);

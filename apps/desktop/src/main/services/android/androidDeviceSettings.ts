@@ -1,14 +1,27 @@
 import type {
+  AndroidAccessibilityOption,
   AndroidAppearanceArgs,
   AndroidDeviceSetting,
   AndroidDeviceSettings,
   AndroidDisplaySize,
   AndroidEmulatorAgentServiceApi,
+  AndroidEmulatorDeviceServiceApi,
   AndroidLocationArgs,
+  AndroidStatusBarArgs,
+  AndroidStatusBarResult,
   AndroidPermissionArgs,
   AndroidTextSize,
 } from "../../../shared/types/androidEmulator";
-import { ANDROID_PERMISSIONS } from "../../../shared/types/androidEmulator";
+import {
+  ANDROID_ACCESSIBILITY_LABELS,
+  ANDROID_ACCESSIBILITY_OPTIONS,
+  ANDROID_DEFAULT_LOCATION,
+  ANDROID_PERMISSIONS,
+  ANDROID_STATUS_BAR_NETWORKS,
+  androidOrientationFor,
+  isAndroidAccessibilityOption,
+} from "../../../shared/types/androidEmulator";
+import type { DeviceOrientation } from "../../../shared/types/deviceOrientation";
 import { assertPackageName } from "./androidApps";
 import { runDeviceScript, runDeviceShell, runEmulatorConsole, type BootedDevice } from "./androidDeviceShell";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
@@ -61,6 +74,37 @@ const FOCUS_LINES = [
   "echo \"home=$(cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null | tail -n 1)\"",
 ].join("; ");
 
+/** TalkBack's package and service, the same on Play and Google APIs images that have it. */
+const TALKBACK_PACKAGE = "com.google.android.marvin.talkback";
+const TALKBACK_SERVICE = `${TALKBACK_PACKAGE}/${TALKBACK_PACKAGE}.TalkBackService`;
+
+/** `font_weight_adjustment` for Bold text, as Settings writes it. */
+const BOLD_TEXT_WEIGHT = 300;
+/** Daltonizer modes: grayscale (monochromacy) and deuteranomaly (the Settings default for correction). */
+const DALTONIZER_GRAYSCALE = 0;
+const DALTONIZER_CORRECTION = 12;
+
+const ACCESSIBILITY_KEYS = [
+  "high_text_contrast_enabled",
+  "font_weight_adjustment",
+  "accessibility_display_inversion_enabled",
+  "accessibility_display_daltonizer_enabled",
+  "accessibility_display_daltonizer",
+  "enabled_accessibility_services",
+  "accessibility_enabled",
+] as const;
+
+/**
+ * How the display is turned: the window manager's rotation (0 to 3), the
+ * natural size and the boot id. The boot id ties ADE's location record to
+ * one boot of the emulator.
+ */
+const ORIENTATION_LINES = [
+  "echo \"rotation=$(dumpsys window | grep -m1 -oE 'mRotation=[0-9]' | cut -d= -f2)\"",
+  "wm size | sed 's/^/size:/'",
+  "echo \"boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\"",
+].join("; ");
+
 const READ_SCRIPT = [
   "echo \"night=$(cmd uimode night 2>/dev/null)\"",
   "echo \"font=$(settings get system font_scale)\"",
@@ -72,6 +116,11 @@ const READ_SCRIPT = [
   "echo \"wifi=$(settings get global wifi_on)\"",
   "echo \"data=$(settings get global mobile_data)\"",
   "echo \"airplane=$(settings get global airplane_mode_on)\"",
+  // Parity: the accessibility switches and demo mode, one `settings list` each.
+  `settings list secure | grep -E '^(${ACCESSIBILITY_KEYS.join("|")})=' | sed 's/^/secure:/'`,
+  "settings list global | grep -E '^sysui_tuner_demo_on=' | sed 's/^/global:/'",
+  `echo "talkback=$(pm path ${TALKBACK_PACKAGE} 2>/dev/null | head -n 1)"`,
+  ORIENTATION_LINES,
   FOCUS_LINES,
 ].join("; ");
 
@@ -160,6 +209,7 @@ function androidPermissionName(value: string): string {
 
 const SETTING_KINDS: ReadonlySet<string> = new Set<AndroidDeviceSetting["kind"]>([
   "text-size", "display-size", "animations", "show-taps", "layout-bounds", "battery", "wifi", "mobile-data", "airplane",
+  "accessibility",
 ]);
 
 /** A device setting from a caller, checked for its shape; `write` checks each value. */
@@ -169,6 +219,9 @@ export function readAndroidDeviceSetting(value: unknown): AndroidDeviceSetting {
   }
   const kind = (value as { kind: string }).kind;
   if (!SETTING_KINDS.has(kind)) throw new Error(`Unknown setting kind "${kind}".`);
+  if (kind === "accessibility" && !isAndroidAccessibilityOption((value as { option?: unknown }).option)) {
+    throw new Error(`accessibility option must be one of ${ANDROID_ACCESSIBILITY_OPTIONS.join(", ")}.`);
+  }
   return value as AndroidDeviceSetting;
 }
 
@@ -196,6 +249,11 @@ function parseAndroidDeviceSettings(laneId: string, text: string): AndroidDevice
       continue;
     }
     if (line.startsWith("focus:")) continue;
+    if (line.startsWith("size:")) {
+      const match = /(Physical|Override) size:\s*(\d+)x(\d+)/u.exec(line);
+      if (match) values.set(`size.${match[1]}`, `${match[2]}x${match[3]}`);
+      continue;
+    }
     const eq = line.indexOf("=");
     if (eq > 0) values.set(line.slice(0, eq), line.slice(eq + 1));
   }
@@ -237,6 +295,78 @@ function parseAndroidDeviceSettings(laneId: string, text: string): AndroidDevice
       airplane: settingFlag(values.get("airplane"), false),
     },
     foregroundPackage: parseAndroidForeground(text).foregroundPackage,
+    accessibility: parseAccessibility(values),
+    statusBarOverridden: settingFlag(values.get("global:sysui_tuner_demo_on"), false),
+    location: null,
+    orientation: parseOrientation(values),
+  };
+}
+
+/** The accessibility switches from the `secure:` lines; TalkBack is null on an image without it. */
+function parseAccessibility(values: Map<string, string>): Record<AndroidAccessibilityOption, boolean | null> {
+  const secure = (key: string) => values.get(`secure:${key}`);
+  const daltonizerOn = settingFlag(secure("accessibility_display_daltonizer_enabled"), false);
+  const mode = settingNumber(secure("accessibility_display_daltonizer"), DALTONIZER_CORRECTION);
+  const weight = settingNumber(secure("font_weight_adjustment"), 0);
+  const hasTalkBack = (values.get("talkback") ?? "").trim().startsWith("package:");
+  const services = (secure("enabled_accessibility_services") ?? "").split(":").map((entry) => entry.trim());
+  const talkbackOn = services.some((entry) => entry === TALKBACK_SERVICE || entry.startsWith(`${TALKBACK_PACKAGE}/`));
+  return {
+    "increase-contrast": settingFlag(secure("high_text_contrast_enabled"), false),
+    "bold-text": weight === null ? null : weight >= BOLD_TEXT_WEIGHT,
+    "invert-colors": settingFlag(secure("accessibility_display_inversion_enabled"), false),
+    grayscale: daltonizerOn === null ? null : daltonizerOn && mode === DALTONIZER_GRAYSCALE,
+    "color-correction": daltonizerOn === null ? null : daltonizerOn && mode !== DALTONIZER_GRAYSCALE && mode !== -1,
+    talkback: hasTalkBack ? talkbackOn : null,
+  };
+}
+
+/** The display's turn from the `rotation=` and `size:` lines; the override size wins, as on the screen. */
+function parseOrientation(values: Map<string, string>): DeviceOrientation | null {
+  const rotation = settingNumber(values.get("rotation"), null);
+  const size = values.get("size.Override") ?? values.get("size.Physical");
+  if (rotation === null || !size) return null;
+  const [width, height] = size.split("x").map(Number);
+  return androidOrientationFor(rotation, Number(width) > Number(height));
+}
+
+/** The boot id from the read (`boot=`), or null. */
+function parseBootId(text: string): string | null {
+  return /^boot=([0-9a-f-]{8,})\s*$/mu.exec(text)?.[1] ?? null;
+}
+
+/** `setStatusBar`'s fields, checked, with the screenshot values for each one left out. */
+export function readStatusBar(args: Partial<AndroidStatusBarArgs>): {
+  time: string; hhmm: string; network: string; wifiBars: number; cellularBars: number; batteryLevel: number; charging: boolean;
+} {
+  const time = (typeof args.time === "string" && args.time.trim()) || "9:41";
+  const clock = /^(\d{1,2}):(\d{2})$/u.exec(time);
+  if (!clock || Number(clock[1]) > 23 || Number(clock[2]) > 59) throw new Error("time must be H:MM or HH:MM (24-hour), like 9:41.");
+  const network = (typeof args.dataNetwork === "string" && args.dataNetwork.trim().toLowerCase()) || "wifi";
+  if (!(ANDROID_STATUS_BAR_NETWORKS as readonly string[]).includes(network)) {
+    throw new Error(`dataNetwork must be one of ${ANDROID_STATUS_BAR_NETWORKS.join(", ")}.`);
+  }
+  const bars = (value: unknown, name: string): number => {
+    if (value === undefined || value === null) return 4;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 4) throw new Error(`${name} must be a whole number from 0 to 4.`);
+    return value;
+  };
+  const level = args.batteryLevel ?? 100;
+  if (typeof level !== "number" || !Number.isInteger(level) || level < 0 || level > 100) {
+    throw new Error("batteryLevel must be a whole number from 0 to 100.");
+  }
+  const state = args.batteryState ?? null;
+  if (state !== null && state !== "charging" && state !== "charged" && state !== "discharging") {
+    throw new Error("batteryState must be charging, charged or discharging.");
+  }
+  return {
+    time,
+    hhmm: `${clock[1]!.padStart(2, "0")}${clock[2]}`,
+    network,
+    wifiBars: bars(args.wifiBars, "wifiBars"),
+    cellularBars: bars(args.cellularBars, "cellularBars"),
+    batteryLevel: level,
+    charging: state === "charging",
   };
 }
 
@@ -258,13 +388,88 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
     }
   };
 
+  /*
+   * One accessibility switch. Grayscale and color correction share the
+   * daltonizer: turning one on sets its mode; turning one off ends the
+   * daltonizer only while that mode is the one in use.
+   */
+  const writeAccessibility = async (booted: BootedDevice, option: AndroidAccessibilityOption, on: boolean) => {
+    const label = ANDROID_ACCESSIBILITY_LABELS[option];
+    const daltonizerOff = (mode: "grayscale" | "correction") => {
+      const test = mode === "grayscale" ? `= "${DALTONIZER_GRAYSCALE}"` : `!= "${DALTONIZER_GRAYSCALE}"`;
+      return `if [ "$(settings get secure accessibility_display_daltonizer)" ${test} ]; then settings put secure accessibility_display_daltonizer_enabled 0; fi`;
+    };
+    switch (option) {
+      case "increase-contrast":
+        return apply(booted, [`settings put secure high_text_contrast_enabled ${on ? 1 : 0}`], label);
+      case "bold-text":
+        return apply(booted, [`settings put secure font_weight_adjustment ${on ? BOLD_TEXT_WEIGHT : 0}`], label);
+      case "invert-colors":
+        return apply(booted, [`settings put secure accessibility_display_inversion_enabled ${on ? 1 : 0}`], label);
+      case "grayscale":
+      case "color-correction": {
+        const mode = option === "grayscale" ? DALTONIZER_GRAYSCALE : DALTONIZER_CORRECTION;
+        return apply(booted, on
+          ? [`settings put secure accessibility_display_daltonizer ${mode}`, "settings put secure accessibility_display_daltonizer_enabled 1"]
+          : [daltonizerOff(option === "grayscale" ? "grayscale" : "correction")], label);
+      }
+      case "talkback": {
+        const read = await shell(booted, [
+          `pm path ${TALKBACK_PACKAGE} 2>/dev/null | head -n 1`,
+          "echo \"services=$(settings get secure enabled_accessibility_services)\"",
+        ].join("; "));
+        if (!read.stdout.includes("package:")) {
+          throw new Error("This emulator's system image has no TalkBack app. Google Play images have it; most Google APIs images do not.");
+        }
+        const current = (/^services=(.*)$/mu.exec(read.stdout)?.[1] ?? "").trim();
+        const others = current === "null" ? [] : current.split(":").map((entry) => entry.trim())
+          .filter((entry) => entry && !entry.startsWith(`${TALKBACK_PACKAGE}/`));
+        const next = on ? [...others, TALKBACK_SERVICE] : others;
+        // An empty list is written as "" so Android reads "no services".
+        return apply(booted, [
+          `settings put secure enabled_accessibility_services ${next.length ? next.join(":") : "\"\""}`,
+          `settings put secure accessibility_enabled ${next.length ? 1 : 0}`,
+        ], label);
+      }
+      default:
+        throw new Error(`Unknown accessibility option "${String(option)}".`);
+    }
+  };
+
   const consolePower = (booted: BootedDevice, args: string[]) =>
     runEmulatorConsole(booted, ["power", ...args], `The emulator console did not take "power ${args.join(" ")}"`, { signal });
 
-  const read = async (laneId: string, fields: "all" | "foreground"): Promise<AndroidDeviceSettings> => {
+  /**
+   * The last location ADE set, per lane, with the boot it was set on. The
+   * emulator cannot report its location (the console has no "geo get"), so
+   * this record is what the drawer shows, as Apple's; a new boot ends it.
+   */
+  const locations = new Map<string, { bootId: string | null; latitude: number; longitude: number }>();
+
+  const readBootId = async (booted: BootedDevice) =>
+    parseBootId((await shell(booted, "echo \"boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\"")).stdout);
+
+  const read = async (laneId: string, fields: "all" | "foreground" | "orientation"): Promise<AndroidDeviceSettings> => {
     const booted = await deps.requireBooted(laneId);
-    const result = await shell(booted, fields === "foreground" ? FOCUS_LINES : READ_SCRIPT, 20_000);
-    return parseAndroidDeviceSettings(laneId, result.stdout);
+    const script = fields === "foreground" ? FOCUS_LINES : fields === "orientation" ? ORIENTATION_LINES : READ_SCRIPT;
+    const result = await shell(booted, script, 20_000);
+    const settings = parseAndroidDeviceSettings(laneId, result.stdout);
+    if (fields !== "all") return settings;
+    const placed = locations.get(laneId);
+    const bootId = parseBootId(result.stdout);
+    if (placed && placed.bootId !== null && bootId !== null && placed.bootId !== bootId) locations.delete(laneId);
+    const current = locations.get(laneId);
+    return { ...settings, location: current ? { latitude: current.latitude, longitude: current.longitude } : null };
+  };
+
+  /** SystemUI demo mode: each command is one broadcast; `sysui_demo_allowed` must be 1 first. */
+  const demo = (command: string, extras: Record<string, string> = {}) =>
+    ["am broadcast -a com.android.systemui.demo -e command", command,
+      ...Object.entries(extras).flatMap(([key, value]) => ["-e", key, value]), ">/dev/null"].join(" ");
+
+  const statusBarState = async (booted: BootedDevice, laneId: string, time: string | null): Promise<AndroidStatusBarResult> => {
+    const text = (await shell(booted, "settings get global sysui_tuner_demo_on")).stdout.trim();
+    return { laneId, overridden: text === "1", time };
   };
 
   const write = async (laneId: string, value: unknown): Promise<void> => {
@@ -330,6 +535,9 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
       case "airplane":
         await apply(booted, [`cmd connectivity airplane-mode ${bool(setting.on, "on") ? "enable" : "disable"}`], "airplane mode");
         break;
+      case "accessibility":
+        await writeAccessibility(booted, setting.option, bool(setting.on, "on"));
+        break;
       default:
         throw new Error(`Unknown setting kind "${(setting as { kind: string }).kind}".`);
     }
@@ -337,7 +545,8 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
   };
 
   /** The agent verbs that change the device. */
-  const verbs: Pick<AndroidEmulatorAgentServiceApi, "setLocation" | "setAppearance" | "setPermission"> = {
+  const verbs: Pick<AndroidEmulatorAgentServiceApi, "setLocation" | "setAppearance" | "setPermission">
+    & Pick<AndroidEmulatorDeviceServiceApi, "clearLocation" | "setStatusBar" | "clearStatusBar"> = {
     async setLocation(args: AndroidLocationArgs) {
       const laneId = requireLaneId(args?.laneId);
       const latitude = finiteNumber(args.latitude, "latitude");
@@ -347,7 +556,53 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
       const booted = await deps.requireBooted(laneId);
       // The emulator console takes longitude first.
       await runEmulatorConsole(booted, ["geo", "fix", String(longitude), String(latitude)], "The emulator did not take the location", { signal });
+      locations.set(laneId, { bootId: await readBootId(booted).catch(() => null), latitude, longitude });
       return { laneId, latitude, longitude };
+    },
+
+    // Parity: Apple's Clear location. The emulator has no "no location", so
+    // the GPS goes back to where a cold boot puts it, and ADE's record ends.
+    async clearLocation(args) {
+      const laneId = requireLaneId(args?.laneId);
+      const booted = await deps.requireBooted(laneId);
+      const { latitude, longitude } = ANDROID_DEFAULT_LOCATION;
+      await runEmulatorConsole(booted, ["geo", "fix", String(longitude), String(latitude)], "The emulator did not take the location", { signal });
+      locations.delete(laneId);
+      return { laneId, latitude, longitude, cleared: true as const };
+    },
+
+    // Parity: Apple's status bar override, as SystemUI demo mode.
+    async setStatusBar(args: AndroidStatusBarArgs) {
+      const laneId = requireLaneId(args?.laneId);
+      const bar = readStatusBar(args);
+      const booted = await deps.requireBooted(laneId);
+      const wifi = bar.network === "wifi";
+      await apply(booted, [
+        "settings put global sysui_demo_allowed 1",
+        // The tuner switch is what SystemUI reads for "in demo mode", and what the read reports.
+        "settings put global sysui_tuner_demo_on 1",
+        demo("enter"),
+        demo("clock", { hhmm: bar.hhmm }),
+        demo("battery", { level: String(bar.batteryLevel), plugged: bar.charging ? "true" : "false" }),
+        demo("network", wifi
+          ? { wifi: "show", level: String(bar.wifiBars), fully: "true" }
+          : { wifi: "hide" }),
+        // Wi-Fi hides the mobile icon: SystemUI keeps a stale type label (3G) on it in demo mode.
+        demo("network", wifi
+          ? { mobile: "hide" }
+          : { mobile: "show", datatype: bar.network, level: String(bar.cellularBars), fully: "true" }),
+        demo("notifications", { visible: "false" }),
+      ], "the status bar");
+      deps.onScreenChanged(laneId);
+      return statusBarState(booted, laneId, bar.time);
+    },
+
+    async clearStatusBar(args) {
+      const laneId = requireLaneId(args?.laneId);
+      const booted = await deps.requireBooted(laneId);
+      await apply(booted, [demo("exit"), "settings put global sysui_tuner_demo_on 0"], "the status bar");
+      deps.onScreenChanged(laneId);
+      return statusBarState(booted, laneId, null);
     },
 
     async setAppearance(args: AndroidAppearanceArgs) {
@@ -381,7 +636,7 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
   };
 
   return {
-    getDeviceSettings: (laneId: string, fields: "all" | "foreground" = "all") => read(laneId, fields),
+    getDeviceSettings: (laneId: string, fields: "all" | "foreground" | "orientation" = "all") => read(laneId, fields),
     setDeviceSetting: write,
     verbs,
   };

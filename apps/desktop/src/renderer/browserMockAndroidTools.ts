@@ -6,7 +6,7 @@ import type {
   AndroidRecording,
   AndroidUiSnapshot,
 } from "../shared/types/androidEmulator";
-import { ANDROID_FOLD_POSE_ANGLES } from "../shared/types/androidEmulator";
+import { ANDROID_DEFAULT_LOCATION, ANDROID_FOLD_POSE_ANGLES } from "../shared/types/androidEmulator";
 
 /*
  * The browser preview's Tools drawer, Inspect and Record: a fake emulator
@@ -70,6 +70,14 @@ export function createMockAndroidTools({ fail }: { fail: boolean }): MockToolsAp
     layoutBounds: false,
     battery: { level: 100, charging: true },
     network: { wifi: true, mobileData: true, airplane: false },
+    // Parity (device track): the accessibility switches, demo mode, location.
+    accessibility: {
+      "increase-contrast": false, "bold-text": false, "invert-colors": false,
+      grayscale: false, "color-correction": false, talkback: null,
+    },
+    statusBarOverridden: false,
+    location: null,
+    orientation: "portrait",
   };
   const read = (laneId: string): AndroidDeviceSettings => ({ ...settings, laneId, foregroundPackage: foreground });
   // The fold: the Pixel Fold's ranges (shut below 30°, open from 150°) and screens.
@@ -95,7 +103,20 @@ export function createMockAndroidTools({ fail }: { fail: boolean }): MockToolsAp
     elements: [],
   });
 
+  /** Rec: each lane's auto-record switch, in memory. */
+  const autoRecordOff = new Set<string>();
+  const autoRecordState = (laneId: string) => {
+    const lane = !autoRecordOff.has(laneId);
+    return { laneId, lane, machine: true, enabled: lane };
+  };
+
   return {
+    getAutoRecord: async ({ laneId }) => delay(autoRecordState(laneId)),
+    setAutoRecord: async ({ laneId, enabled }) => {
+      if (enabled) autoRecordOff.delete(laneId);
+      else autoRecordOff.add(laneId);
+      return delay(autoRecordState(laneId));
+    },
     listApps: async ({ laneId }) => delay({ laneId, apps }),
     installApp: async ({ laneId, apkPath }) => change("the install", () => ({
       laneId,
@@ -143,7 +164,40 @@ export function createMockAndroidTools({ fail }: { fail: boolean }): MockToolsAp
       if (index >= 0) recordings.splice(index, 1);
       return delay({ laneId, id, deleted: index >= 0 });
     },
-    setLocation: async ({ laneId, latitude, longitude }) => change("the location", () => ({ laneId, latitude, longitude })),
+    setLocation: async ({ laneId, latitude, longitude }) => change("the location", () => {
+      settings = { ...settings, location: { latitude, longitude } };
+      return { laneId, latitude, longitude };
+    }),
+    // Parity verbs (device track).
+    clearLocation: async ({ laneId }) => change("the location", () => {
+      settings = { ...settings, location: null };
+      return { laneId, ...ANDROID_DEFAULT_LOCATION, cleared: true as const };
+    }),
+    setStatusBar: async ({ laneId, time }) => change("the status bar", () => {
+      settings = { ...settings, statusBarOverridden: true };
+      return { laneId, overridden: true, time: time ?? "9:41" };
+    }),
+    clearStatusBar: async ({ laneId }) => change("the status bar", () => {
+      settings = { ...settings, statusBarOverridden: false };
+      return { laneId, overridden: false, time: null };
+    }),
+    storeScreenshots: async ({ laneId }) => change("the Play Store screenshots", () => ({
+      laneId,
+      foldable: true,
+      shots: [
+        { display: "cover" as const, slot: "phone" as const, width: 1364, height: 2424, screenWidth: 1080, screenHeight: 2424, filePath: "/Users/mock/.ade/android/screenshots/lane-play-cover.png", proofArtifactId: "mock-proof-cover" },
+        { display: "inner" as const, slot: "large-screen" as const, width: 3826, height: 2152, screenWidth: 2076, screenHeight: 2152, filePath: "/Users/mock/.ade/android/screenshots/lane-play-inner.png", proofArtifactId: "mock-proof-inner" },
+      ],
+    })),
+    windowLayout: async ({ laneId, action, packageName }) => change("the window", () => ({
+      laneId,
+      action: action ?? "status",
+      screen: { width: 2076, height: 2152 },
+      packageName: action === "status" || action === "swap" ? null : packageName ?? foreground,
+      windows: [],
+      applied: true,
+      reason: null,
+    })),
     setAppearance: async ({ laneId, appearance }) => change("the appearance", () => {
       settings = { ...settings, appearance };
       return { laneId, appearance };
@@ -197,6 +251,14 @@ export function createMockAndroidTools({ fail }: { fail: boolean }): MockToolsAp
         case "wifi": settings = { ...settings, network: { ...settings.network, wifi: setting.on } }; break;
         case "mobile-data": settings = { ...settings, network: { ...settings.network, mobileData: setting.on } }; break;
         case "airplane": settings = { ...settings, network: { ...settings.network, airplane: setting.on } }; break;
+        case "accessibility": {
+          const next = { ...settings.accessibility!, [setting.option]: setting.on };
+          // Grayscale and color correction share the daltonizer.
+          if (setting.on && setting.option === "grayscale") next["color-correction"] = false;
+          if (setting.on && setting.option === "color-correction") next.grayscale = false;
+          settings = { ...settings, accessibility: next };
+          break;
+        }
       }
       return read(laneId);
     }),
@@ -214,5 +276,30 @@ export function createMockAndroidTools({ fail }: { fail: boolean }): MockToolsAp
       }));
       return delay({ laneId, packageName: packageName ?? null, pids: [4321], lines, truncated: false, cursor: lines.at(-1)?.time ?? since ?? null }, 120);
     },
+    // Parity verbs (agent track).
+    pressKey: async ({ key, modifiers }) => change("the key", () => ({ ok: true as const, key: [...(modifiers ?? []), key].join("+"), via: "adb" as const })),
+    relaunchApp: async ({ laneId, packageName }) => change("the relaunch", () => {
+      foreground = packageName;
+      return { laneId, packageName, activity: `${packageName}/.MainActivity`, install: null, totalTimeMs: 640 };
+    }),
+    getAppState: async ({ laneId, packageName }) => {
+      const installed = apps.some((app) => app.packageName === packageName);
+      return delay({
+        laneId, packageName, installed, running: foreground === packageName, foreground: foreground === packageName,
+        pid: foreground === packageName ? 4321 : null, versionName: installed ? "1.0" : null, versionCode: installed ? 1 : null,
+        checkedAt: new Date().toISOString(),
+      });
+    },
+    getForegroundApp: async ({ laneId }) => delay(foreground
+      ? { laneId, packageName: foreground, activity: `${foreground}/.MainActivity`, pid: 4321, checkedAt: new Date().toISOString(), waitedMs: null }
+      : null),
+    frame: async ({ laneId }) => change("the frame", () => ({
+      laneId, filePath: "/tmp/ade-mock-android-frame.png", width: 1080, height: 2400, capturedAt: new Date().toISOString(), streamRunning: false,
+    })),
+    inspectPoint: async () => delay({ item: null, source: "none" as const, element: null }),
+    selectPoint: async () => delay({ item: null, source: "none" as const, element: null }),
+    deviceCleanup: async ({ dryRun }) => delay({
+      dryRun: dryRun === true, released: [], stoppedOrphans: [], forgottenRows: [], poweredOff: [], unheld: [], errors: [], idlePowerOffMinutes: 30,
+    }),
   };
 }

@@ -25,6 +25,7 @@ import type { Logger } from "../logging/logger";
 import { getErrorMessage, sleep } from "../shared/utils";
 import { runAdb } from "./adb";
 import { assertPackageName, createAndroidApps } from "./androidApps";
+import { androidLaunchWords, createAndroidAppState } from "./androidAppState";
 import { createAndroidInstrumentationTests } from "./androidInstrumentationTests";
 import { locateAndroidJdk } from "./androidJdk";
 import { runAdbOutput, runDeviceScript, runDeviceShell, type BootedDevice } from "./androidDeviceShell";
@@ -32,6 +33,10 @@ import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 import { isLogcatCursor, logcatArgs, parseLogcatDump, parsePackageUid, parsePidof } from "./androidLogcat";
 import { fileAndroidCaptureAsProof, type AndroidArtifactFiler } from "./androidProof";
 import { createAndroidRecordingSessions } from "./androidRecordingSession";
+import { createAndroidAutoRecord } from "./androidAutoRecord";
+import type { DemoEngineSet } from "../demoVideo/demoEngines";
+import { demoTypedLabelForField, demoUrlHost } from "../demoVideo/demoTrackTargets";
+import type { AndroidMachinePreferences } from "../../../shared/types/androidEmulator";
 import { androidLaneFolderName, containAndroidOutPath, writeAndroidFileNoFollow } from "./androidScreenshot";
 import type { AndroidStreamHub } from "./androidStream";
 import { createAndroidUiSnapshots, elementActionResult, readElementQuery } from "./androidUiSnapshot";
@@ -96,6 +101,13 @@ export type AndroidAgentSuiteDeps = {
   now: () => Date;
   /** A recording started or ended (by anyone): the panes read their Record button again. */
   onRecordingChanged?: (laneId: string, recording: AndroidRecording) => void;
+  /** Rec: the engines that turn a stopped recording into its demo. */
+  demoEngines?: DemoEngineSet | null;
+  /** Rec: the machine preferences (overlays, auto-record), read at use. */
+  readPreferences: () => AndroidMachinePreferences;
+  /** Rec: the project's KV, for the lane's auto-record switch. */
+  readSetting?: (<T>(key: string) => T | null) | null;
+  writeSetting?: ((key: string, value: unknown) => void) | null;
   /** One coarse product fact for an app installed or a new lease. */
   captureAnalytics?: (outcome: "app_installed" | "device_leased" | "tests_run") => void;
 };
@@ -156,6 +168,8 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
     captureAnalytics: deps.captureAnalytics,
   });
 
+  const appState = createAndroidAppState({ requireBooted: deps.requireBooted, assertPackageName, signal, now });
+
   const ui = createAndroidUiSnapshots({
     requireBooted: deps.requireBooted,
     sdkRoot,
@@ -178,6 +192,19 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
     logger,
     now,
     onRecordingChanged: deps.onRecordingChanged,
+    demoEngines: deps.demoEngines ?? null,
+    readPreferences: deps.readPreferences,
+    screenSize: (laneId) => screenSize(laneId),
+    deviceName: (laneId) => deps.laneDevices.get(laneId)?.avdName ?? null,
+  });
+
+  // Rec: an agent's input starts a recording; every input is drawn on one (`androidAutoRecord.ts`).
+  const autoRecord = createAndroidAutoRecord({
+    sessions,
+    readPreferences: deps.readPreferences,
+    readSetting: deps.readSetting ?? null,
+    writeSetting: deps.writeSetting ?? null,
+    logger,
   });
 
   /* ---------- input ---------- */
@@ -228,7 +255,7 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
   const api: Omit<
     AndroidEmulatorAgentServiceApi,
     "releaseIfOwnedBy" | "getDeviceSettings" | "setDeviceSetting" | "setLocation" | "setAppearance" | "setPermission"
-  > = {
+  > & Pick<AndroidEmulatorServiceApi, "relaunchApp" | "getAppState" | "getForegroundApp"> = {
     async listApps(args) {
       const laneId = laneOf(args);
       return { laneId, apps: await apps.listApps(laneId) };
@@ -249,6 +276,8 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       const wantsInstall = Boolean(args.apkPath?.trim() || args.gradle);
       const install = wantsInstall ? await apps.install(laneId, { apkPath: args.apkPath ?? null, gradle: args.gradle ?? null }) : null;
       if (install) deps.captureAnalytics?.("app_installed");
+      // Checked before anything installs or starts: a bad extra refuses the whole launch.
+      const launchWords = androidLaunchWords(args);
       const named = args.packageName?.trim() || null;
       const packageName = named ? assertPackageName(named) : install?.packageName ?? null;
       if (!packageName) {
@@ -256,10 +285,24 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
           ? "The build installed, but ADE could not read its package name. Pass --package <name> to launch it."
           : "launch needs --package <name>, or --apk / --gradle to install and launch.");
       }
-      const started = await apps.start(laneId, packageName, args.activity ?? null);
+      const started = await apps.start(laneId, packageName, args.activity ?? null, launchWords);
       ui.invalidate(laneId);
       return { laneId, packageName, activity: started.activity, install, totalTimeMs: started.totalTimeMs };
     },
+
+    /** Parity (`ade apple relaunch`): force-stop, then the same start as `launch`, with new extras when given. */
+    async relaunchApp(args) {
+      const laneId = laneOf(args);
+      const packageName = assertPackageName(args.packageName);
+      const launchWords = androidLaunchWords(args);
+      await apps.terminate(laneId, packageName);
+      const started = await apps.start(laneId, packageName, args.activity ?? null, launchWords);
+      ui.invalidate(laneId);
+      return { laneId, packageName, activity: started.activity, install: null, totalTimeMs: started.totalTimeMs };
+    },
+
+    getAppState: (args) => appState.getAppState(args),
+    getForegroundApp: (args) => appState.getForegroundApp(args),
 
     async terminateApp(args) {
       const laneId = laneOf(args);
@@ -281,7 +324,10 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       const laneId = laneOf(args);
       const url = typeof args.url === "string" ? args.url.trim() : "";
       if (!/^[A-Za-z][A-Za-z0-9+.-]*:\S+$/u.test(url)) throw new Error("url must be a full URL with a scheme (https://…, myapp://…).");
+      await autoRecord.beforeInput(laneId, args);
+      const atMs = Date.now();
       await apps.openUrl(laneId, url);
+      autoRecord.note({ laneId, chatSessionId: args.chatSessionId ?? null, kind: "navigate", label: demoUrlHost(url) ?? url.split(":")[0], atMs, source: args.source });
       ui.invalidate(laneId);
       return { laneId, url };
     },
@@ -291,7 +337,10 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       const x = finiteNumber(args.x, "x");
       const y = finiteNumber(args.y, "y");
       const durationMs = clampNumber(args.durationMs, ANDROID_LONG_PRESS_DEFAULT_MS, ANDROID_LONG_PRESS_MIN_MS, ANDROID_LONG_PRESS_MAX_MS);
+      await autoRecord.beforeInput(laneId, args);
+      const atMs = Date.now();
       await longPressAt(laneId, x, y, durationMs);
+      autoRecord.note({ laneId, chatSessionId: args.chatSessionId ?? null, kind: "tap", x, y, atMs, seconds: durationMs / 1000, source: args.source });
     },
 
     async drag(args) {
@@ -302,6 +351,11 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       const toY = finiteNumber(args.toY, "toY");
       const durationMs = clampNumber(args.durationMs, DRAG_DEFAULT_MS, 50, 10_000);
       ui.invalidate(laneId);
+      await autoRecord.beforeInput(laneId, args);
+      autoRecord.note({
+        laneId, chatSessionId: args.chatSessionId ?? null, kind: "drag", x: fromX, y: fromY, to: { x: toX, y: toY },
+        atMs: Date.now(), seconds: (DRAG_HOLD_MS + durationMs) / 1000, source: args.source,
+      });
       const serial = deps.liveStreamSerial(laneId);
       if (serial) {
         // Hold first, so the item lifts (a list reorder, an icon), then move.
@@ -349,6 +403,8 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       // 70% of the screen; a longer scroll is several strokes.
       const sign = direction === "down" || direction === "right" ? -1 : 1;
       const stroke = Math.round(axis * 0.7);
+      await autoRecord.beforeInput(laneId, args);
+      const scrolledAtMs = Date.now();
       let left = amount;
       while (left > 0) {
         const step = Math.min(left, stroke);
@@ -361,6 +417,10 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
           : { laneId, fromX: from, fromY: anchorY, toX: to, toY: anchorY, durationMs: SCROLL_STROKE_MS });
       }
       ui.invalidate(laneId);
+      autoRecord.note({
+        laneId, chatSessionId: args.chatSessionId ?? null, kind: "scroll", x: anchorX, y: anchorY,
+        atMs: scrolledAtMs, seconds: (Date.now() - scrolledAtMs) / 1000, source: args.source,
+      });
     },
 
     async getScreenSnapshot(args) {
@@ -378,8 +438,11 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       const laneId = laneOf(args);
       const { picked, element } = await ui.find(laneId, readElementQuery(args), false);
       const holdMs = args.holdMs == null ? null : clampNumber(args.holdMs, ANDROID_LONG_PRESS_DEFAULT_MS, ANDROID_LONG_PRESS_MIN_MS, ANDROID_LONG_PRESS_MAX_MS);
+      await autoRecord.beforeInput(laneId, args);
+      const atMs = Date.now();
       if (holdMs) await longPressAt(laneId, element.center.x, element.center.y, holdMs);
       else await deps.input.tap({ laneId, x: element.center.x, y: element.center.y });
+      autoRecord.note({ laneId, chatSessionId: args.chatSessionId ?? null, kind: "tap", x: element.center.x, y: element.center.y, atMs, source: args.source });
       ui.invalidate(laneId);
       return elementActionResult("tap", picked);
     },
@@ -390,7 +453,12 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       if (!text) throw new Error("fill needs the text to type (--value).");
       const query = readElementQuery(args);
       const { picked, element } = await ui.find(laneId, query, false);
-      if (args.focusFirst !== false) await deps.input.tap({ laneId, x: element.center.x, y: element.center.y });
+      await autoRecord.beforeInput(laneId, args);
+      if (args.focusFirst !== false) {
+        const tappedAtMs = Date.now();
+        await deps.input.tap({ laneId, x: element.center.x, y: element.center.y });
+        autoRecord.note({ laneId, chatSessionId: args.chatSessionId ?? null, kind: "tap", x: element.center.x, y: element.center.y, atMs: tappedAtMs, source: args.source });
+      }
       // Replace what the field holds: go to its end and delete back. A hint
       // reads as text in the tree too; extra deletes in an empty field are harmless.
       const existing = Math.min(FILL_CLEAR_MAX, element.text?.length ?? 0);
@@ -402,7 +470,15 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
           signal,
         });
       }
-      await deps.input.sendText({ laneId, text });
+      const typed = await autoRecord.typePaced(laneId, text, (piece) => deps.input.sendText({ laneId, text: piece }));
+      // A password field never shows its text in a video; nor does a field whose name suggests a secret.
+      const label = element.password
+        ? undefined
+        : demoTypedLabelForField(text, [element.label, element.identifier, element.resourceId, element.text]);
+      autoRecord.note({
+        laneId, chatSessionId: args.chatSessionId ?? null, kind: "type",
+        ...(label ? { label } : {}), atMs: typed.atMs, ...(typed.seconds ? { seconds: typed.seconds } : {}), source: args.source,
+      });
       ui.invalidate(laneId);
       if (element.password) return elementActionResult("fill", picked, { typed: "unknown", typedDetail: "A password field does not show its text, so ADE cannot check it." });
       // Read the field back: a keyboard that dropped characters reads as not-seen.
@@ -642,6 +718,9 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
   return {
     api,
     invalidateUi: ui.invalidate,
+    /** Rec: the lane's recordings, for the service's own input verbs, the turn end and the storage count. */
+    recordings: sessions,
+    autoRecord,
 
     /** P3: `ade android test`. The run leaves the screen changed, so the UI tree is read again after it. */
     async runInstrumentationTests(args: Parameters<typeof instrumentation.runInstrumentationTests>[0]) {
@@ -690,6 +769,12 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
     /** True while a recording holds the lane's stream. */
     isRecording: sessions.isRecording,
 
+    /** The lane's emulator booted: per-boot device setup (Chrome's first run) runs again. */
+    onDeviceBooted: (laneId: string): void => apps.forgetBoot(laneId),
+
+    /** Parity (idle power-off): an agent holds the lane's lease now. */
+    isLeased: (laneId: string): boolean => leases.status(laneId).held,
+
     /** The lane's stream is about to stop (the device stopped or crashed): end its recording first. */
     async onStreamEnding(laneId: string): Promise<void> {
       await sessions.finishQuietly(laneId, "device-off", "android.recording_device_off_failed");
@@ -724,6 +809,7 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
     },
 
     async dispose(): Promise<void> {
+      autoRecord.dispose();
       await sessions.dispose();
       leases.dispose();
       ui.clear();

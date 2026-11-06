@@ -39,6 +39,12 @@ export type DisplayLayout = {
   rotation: number;
   rawLandscape: boolean;
   aspect: number;
+  /**
+   * The device is upside down and its frames already come turned the right
+   * way up (Android's scrcpy turns them), so the texture turns a half turn
+   * back. Apple's frames come in the panel's own shape, so this stays unset.
+   */
+  flipped?: boolean;
 };
 
 /**
@@ -159,6 +165,7 @@ export function displayLayout(
   orientation: DeviceOrientation,
   pixelSize: { width: number; height: number },
   canvas: HTMLCanvasElement | null,
+  framesUpright = false,
 ): DisplayLayout {
   const decoded = canvasHasDecoded(canvas) ? canvas : null;
   const width = decoded?.width || pixelSize.width || 390;
@@ -169,6 +176,7 @@ export function displayLayout(
     rotation: orientationZ(orientation),
     rawLandscape: width > height,
     aspect: long > 0 ? short / long : 9 / 19.5,
+    flipped: framesUpright && orientation === "portrait-upside-down" && width <= height,
   };
 }
 
@@ -260,6 +268,7 @@ export function portraitUvToTextureUv(
       ? { u: 1 - vFromBottom, v: u }
       : { u: vFromBottom, v: 1 - u };
   }
+  if (layout.flipped) return { u: 1 - u, v: 1 - vFromBottom };
   return { u, v: vFromBottom };
 }
 
@@ -385,4 +394,116 @@ export function createImportedBody(
       disposeImportedSubtree(asset, texture);
     },
   };
+}
+
+/**
+ * The bare-screen look ("Realistic body" off in Settings): the view draws only
+ * the live panels, each with a thin dark edge behind it, so the picture still
+ * reads as a device. Every other mesh of the body is hidden, not removed, so
+ * the switch works in place and the camera, the orbit, touch on the glass and
+ * renders stay as they are. The hidden meshes still count for the camera's
+ * framing (`Box3.setFromObject` reads hidden meshes too), so the shot does not
+ * jump when the switch changes.
+ *
+ * A foldable keeps its two panels: each half gets its own edge, and the hinge
+ * between them shows as the gap between two edges. Apple's Duo model also
+ * keeps its cover panel on the back of one half.
+ */
+const BARE_EDGE_WIDTH = 0.022;
+const BARE_EDGE_COLOR = 0x2b2d31;
+
+type BareScreenState = {
+  hidden: Mesh[];
+  edges: Mesh[];
+  material: Material;
+};
+
+const bareScreenStates = new WeakMap<DeviceBody, BareScreenState>();
+
+/** A copy of a panel's geometry, grown by `BARE_EDGE_WIDTH` on every side in the panel's plane. */
+function edgeGeometryFor(THREE: ThreeNS, panel: Mesh): BufferGeometry {
+  const geometry = panel.geometry.clone();
+  geometry.deleteAttribute("uv");
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox!;
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  panel.updateWorldMatrix(true, false);
+  const worldScale = panel.getWorldScale(new THREE.Vector3());
+  const extents = [size.x, size.y, size.z];
+  const scales = [Math.abs(worldScale.x) || 1, Math.abs(worldScale.y) || 1, Math.abs(worldScale.z) || 1];
+  // The panel's plane is its two longest local axes; the third is its normal.
+  const normalAxis = extents.indexOf(Math.min(...extents));
+  const factor = extents.map((extent, axis) => {
+    if (axis === normalAxis || extent <= 0) return 1;
+    return 1 + (2 * BARE_EDGE_WIDTH) / (extent * scales[axis]!);
+  });
+  geometry.translate(-center.x, -center.y, -center.z);
+  geometry.scale(factor[0]!, factor[1]!, factor[2]!);
+  geometry.translate(center.x, center.y, center.z);
+  return geometry;
+}
+
+function isAncestorOfPanel(object: Object3D, panels: ReadonlySet<Object3D>): boolean {
+  let found = false;
+  object.traverse((child) => {
+    if (child !== object && panels.has(child)) found = true;
+  });
+  return found;
+}
+
+/**
+ * Show the body bare (`bare` true) or whole. Safe to call again with the same
+ * value. Call `releaseBareScreen` before the body is disposed.
+ */
+export function setBodyBareScreen(THREE: ThreeNS, body: DeviceBody, bare: boolean): void {
+  const current = bareScreenStates.get(body);
+  if (!bare) {
+    if (current) releaseBareScreen(body);
+    return;
+  }
+  if (current) return;
+  const panels = new Set<Object3D>(body.panels);
+  const hidden: Mesh[] = [];
+  body.root.traverse((object) => {
+    const mesh = object as Mesh;
+    if (!mesh.isMesh || panels.has(mesh) || !mesh.visible) return;
+    // A mesh that carries a panel as its child stays: hiding it would hide the panel.
+    if (isAncestorOfPanel(mesh, panels)) return;
+    mesh.visible = false;
+    hidden.push(mesh);
+  });
+  // Coplanar with the panel and pushed back in depth, so the live picture
+  // always wins where the two overlap (the panel's own offset is −4/−8).
+  const material = new THREE.MeshBasicMaterial({
+    color: BARE_EDGE_COLOR,
+    toneMapped: false,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: 2,
+    polygonOffsetUnits: 4,
+  });
+  const edges: Mesh[] = [];
+  for (const panel of body.panels) {
+    const edge = new THREE.Mesh(edgeGeometryFor(THREE, panel), material);
+    edge.name = "device-bare-edge";
+    edge.renderOrder = 0;
+    edge.raycast = () => undefined;
+    panel.add(edge);
+    edges.push(edge);
+  }
+  bareScreenStates.set(body, { hidden, edges, material });
+}
+
+/** Undo `setBodyBareScreen`: show the body's meshes again and free the edges. */
+export function releaseBareScreen(body: DeviceBody): void {
+  const state = bareScreenStates.get(body);
+  if (!state) return;
+  bareScreenStates.delete(body);
+  for (const mesh of state.hidden) mesh.visible = true;
+  for (const edge of state.edges) {
+    edge.removeFromParent();
+    edge.geometry.dispose();
+  }
+  state.material.dispose();
 }

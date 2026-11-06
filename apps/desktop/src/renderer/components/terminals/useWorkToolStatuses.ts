@@ -546,6 +546,8 @@ export function useWorkToolStatuses(args: {
    * events, but the hosted web client does not, so this covers that client.
    */
   appleDeviceRefreshKey?: unknown;
+  /** The same for the lane's Android emulator, after the card menu acts. */
+  androidDeviceRefreshKey?: unknown;
   /**
    * Commands the owning chat's current turn runs on other machines
    * (`ade shell start --machine`). Counted with the attached shells when the
@@ -567,8 +569,10 @@ export function useWorkToolStatuses(args: {
    * nothing to offer.
    */
   appleDevice: AppleLaneDeviceCard | null;
+  /** The lane's Android emulator, for the card's action menu. Null when the lane holds none. */
+  androidDevice: AndroidLaneDeviceCard | null;
 } {
-  const { enabled, laneId, lane, runtimePin, terminalOwnerSessionId, prSessionId = null, activeTool = null, appleDeviceRefreshKey, remoteShellCount = 0 } = args;
+  const { enabled, laneId, lane, runtimePin, terminalOwnerSessionId, prSessionId = null, activeTool = null, appleDeviceRefreshKey, androidDeviceRefreshKey, remoteShellCount = 0 } = args;
 
   const [browserErrors, setBrowserErrors] = useState<WorkToolErrorsByTab>(EMPTY_WORK_TOOL_ERRORS);
   const [prCount, setPrCount] = useState<number | null>(null);
@@ -641,7 +645,7 @@ export function useWorkToolStatuses(args: {
     refreshKey: appleDeviceRefreshKey,
   });
   // The lane's Android emulator: every host can run one, so no platform gate.
-  const androidDevice = useAndroidLaneDeviceCard({ laneId, runtimePin, enabled: enabled && !offline });
+  const androidDevice = useAndroidLaneDeviceCard({ laneId, runtimePin, enabled: enabled && !offline, refreshKey: androidDeviceRefreshKey });
 
   useEffect(() => {
     if (!enabled || offline || !canBrowser) setBrowserErrors(EMPTY_WORK_TOOL_ERRORS);
@@ -764,5 +768,6 @@ export function useWorkToolStatuses(args: {
     loading: enabled && !settled,
     appControlSession,
     appleDevice,
+    androidDevice,
   };
 }

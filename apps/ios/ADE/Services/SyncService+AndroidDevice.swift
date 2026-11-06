@@ -23,6 +23,64 @@ struct AndroidDeviceStatus: Codable, Equatable {
   /// True when this brain serves `android.streamTicket`. False on a brain with
   /// no stream relay: the phone shows the status only, with no live picture.
   var liveView: Bool?
+  /// The lane's recording while the emulator runs; nil from an older host or
+  /// when none runs. Drives the menu's recording dot.
+  var recording: AndroidDeviceStatusRecording?
+  /// Who holds the emulator's lease (`ade android lease`); nil when nobody
+  /// does. Drives the owner ribbon and the "an agent is driving" hand-back.
+  var owner: AndroidDeviceStatusOwner?
+}
+
+struct AndroidDeviceStatusRecording: Codable, Equatable {
+  var active: Bool?
+  var id: String?
+  var startedAt: String?
+  var chatSessionId: String?
+}
+
+struct AndroidDeviceStatusOwner: Codable, Equatable {
+  /// The lease's holder: a chat id for an agent, else the name it gave.
+  var holder: String?
+  /// Set when the holder is a chat the host knows.
+  var chatSessionId: String?
+  /// The chat's title, resolved by the host; nil when it has none yet.
+  var chatTitle: String?
+  var expiresAt: String?
+}
+
+/// The lane's emulator hinge, as `android.invoke getPosture` answers it.
+struct AndroidDevicePosture: Codable, Equatable {
+  /// False on a device with no hinge.
+  var supported: Bool?
+  /// 0 is shut, 180 is flat.
+  var angle: Double?
+  /// `closed`, `half-open` or `open`.
+  var state: String?
+}
+
+/// The holder of the emulator's lease, when it is not the chat this viewer was
+/// opened from: that one is the person's own agent, not someone else's.
+func androidDeviceForeignOwner(_ owner: AndroidDeviceStatusOwner?, viewerChatSessionId: String?) -> AndroidDeviceStatusOwner? {
+  guard let owner, let holder = owner.holder?.trimmingCharacters(in: .whitespacesAndNewlines), !holder.isEmpty else { return nil }
+  if let viewer = viewerChatSessionId, !viewer.isEmpty, owner.chatSessionId == viewer || holder == viewer { return nil }
+  return owner
+}
+
+/// How the ribbon names a lease holder: the chat's title, else "an agent".
+func androidDeviceOwnerLabel(_ owner: AndroidDeviceStatusOwner?) -> String? {
+  guard let owner, owner.holder?.isEmpty == false else { return nil }
+  if let title = owner.chatTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { return title }
+  return "an agent"
+}
+
+/// The hinge angle that mirrors the phone in the hand onto a foldable
+/// emulator. The inner display keeps it open no less than 70°, as the
+/// simulator's rule; the front screen shuts it (0°), which shows the
+/// emulator's cover screen. Nil on a phone that does not fold.
+func androidFoldAngle(isInnerDisplay: Bool, hingeAngle: Double?, phoneFolds: Bool) -> Double? {
+  guard phoneFolds else { return nil }
+  if isInnerDisplay { return min(180, max(70, (hingeAngle ?? 180).rounded())) }
+  return 0
 }
 
 struct AndroidDeviceStatusDevice: Codable, Equatable {
@@ -232,6 +290,45 @@ extension SyncService {
     ["android.input", "android.invoke"].allSatisfy { action in
       laneCommandDescriptor(action, laneId: laneId)?.policy.allowsPhone == true
     }
+  }
+
+  /// Whether the lane's machine serves the frozen inspect view of its emulator.
+  func supportsAndroidLiveInspect(laneId: String) -> Bool {
+    laneCommandDescriptor("android.inspectSnapshot", laneId: laneId)?.policy.allowsPhone == true
+  }
+
+  /// The emulator's hinge. A rigid device answers `supported: false`.
+  func fetchAndroidPosture(laneId: String) async throws -> AndroidDevicePosture {
+    try decode(
+      try await invokeAndroid(laneId: laneId, method: "getPosture", methodArgs: [:], timeoutNanoseconds: Self.androidInputTimeoutNanoseconds),
+      as: AndroidDevicePosture.self
+    )
+  }
+
+  /// Moves the emulator's hinge to `angle` (0–180) or a named `pose`
+  /// (`open`, `half`, `closed`). The host waits until Android shows the
+  /// screen that goes with it.
+  func setAndroidPosture(laneId: String, angle: Double?, pose: String?) async throws {
+    var methodArgs: [String: Any] = [:]
+    if let angle { methodArgs["angle"] = angle }
+    if let pose { methodArgs["pose"] = pose }
+    _ = try await invokeAndroid(laneId: laneId, method: "setPosture", methodArgs: methodArgs, timeoutNanoseconds: 20_000_000_000)
+  }
+
+  /// One `android.invoke` call on the lane's machine. The nested `laneId` is
+  /// the plain id; `sendCommand` routes by the namespaced top-level one.
+  private func invokeAndroid(laneId: String, method: String, methodArgs: [String: Any], timeoutNanoseconds: UInt64) async throws -> Any {
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    try requireAndroidControl(laneId: trimmed)
+    var nested = methodArgs
+    nested["laneId"] = workParseRemoteLaneId(trimmed)?.laneId ?? trimmed
+    return try await sendCommand(
+      action: "android.invoke",
+      args: ["laneId": trimmed, "method": method, "args": nested],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: timeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
   }
 
   /// The lane's emulator, as one snapshot. A poll behind a viewer or a chip,

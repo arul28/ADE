@@ -319,3 +319,77 @@ export function readAppleDevice(
   }
   return name || os ? { name, os } : null;
 }
+
+/* ── Android ─────────────────────────────────────────────────────────────── */
+
+/** Profile words that read as one token in capitals: `pixel_9_xl` is "Pixel 9 XL". */
+const ANDROID_UPPER_WORDS = new Set(["xl", "tv", "api", "fe", "se"]);
+
+/**
+ * A person's name for an AVD folder name. ADE names the AVDs it makes
+ * `ade_<short lane id>_<profile>`, so `ade_ab12cd34_pixel_9_pro` reads "Pixel 9
+ * Pro". A `_2` that tells two such AVDs apart stays: it cannot be told from a
+ * model number (`pixel_9`). Any other AVD name reads with its underscores as spaces.
+ */
+export function androidAvdDisplayName(avdName: string): string {
+  const bare = avdName.trim().replace(/^ade_[A-Za-z0-9]+_/, "");
+  const words = bare.split(/[_\s]+/).filter(Boolean);
+  if (words.length === 0) return avdName.trim();
+  return words
+    .map((word) => (ANDROID_UPPER_WORDS.has(word.toLowerCase())
+      ? word.toUpperCase()
+      : `${word.charAt(0).toUpperCase()}${word.slice(1)}`))
+    .join(" ");
+}
+
+/** The shown name when it was set, else the folder name in words. */
+function androidShownName(displayName: string | null, avdName: string | null): string | null {
+  if (displayName && displayName !== avdName) return displayName;
+  const name = displayName ?? avdName;
+  return name ? androidAvdDisplayName(name) : null;
+}
+
+/**
+ * The Android emulator a command's output names, and its API level. Read from
+ * the lane device the lifecycle verbs print (`--json`: `avd.displayName`,
+ * `device.avdName`; text: the `name` and `avd` rows) and from the lease
+ * answer (`device.avdName`). Most input verbs print no device: the run layout
+ * then borrows the device an earlier row named.
+ */
+export function readAndroidDevice(parsed: ParsedOutput): { name: string | null; os: string | null } | null {
+  const json = parsed.json;
+  const lane = readRecord(json?.lane) ?? json;
+  const avd = readRecord(lane?.avd);
+  const device = readRecord(lane?.device) ?? readRecord(json?.device);
+  const displayName = readString(avd?.displayName) ?? parsed.values.get("name") ?? null;
+  const avdName = readString(device?.avdName) ?? readString(avd?.name) ?? parsed.values.get("avd") ?? null;
+  const name = androidShownName(displayName, avdName);
+  const apiLevel = typeof avd?.apiLevel === "number" ? String(avd.apiLevel) : parsed.values.get("api") ?? null;
+  const os = apiLevel && /^\d+$/.test(apiLevel) ? `API ${apiLevel}` : null;
+  return name || os ? { name: name ? clip(name, 40) : null, os } : null;
+}
+
+/** The element lines `ade android tap-element` and its siblings print: `Tapped e5 "Sign in" at (540, 1200).` */
+const ANDROID_ELEMENT_LINE = /^(?:Tapped|Filled|Found|Visible:)\s+\S+\s+"|^\S+\s+".*"\s+is on screen\b/;
+
+/**
+ * The element an `ade android` element verb acted on, from its text output.
+ * Its `--json` result (`match.element`) is read by `parseOutput` already.
+ */
+export function readAndroidElementName(output: string): string | null {
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!ANDROID_ELEMENT_LINE.test(line)) continue;
+    const name = readQuotedName(line);
+    if (name) return name;
+  }
+  return null;
+}
+
+/**
+ * A fill whose field does not show the text afterwards (`typed: "not-seen"`,
+ * or the text line saying so): the keys went in, and ADE saw no change.
+ */
+export function readAndroidFillUnseen(parsed: ParsedOutput, output: string): boolean {
+  return readString(parsed.json?.typed) === "not-seen" || /\bthe field does NOT show the text\b/.test(output);
+}

@@ -380,7 +380,7 @@ export function planCamera(
   pictureScale: number,
 ): DemoCameraKey[] {
   return planFocusCamera(track, timeline, pictureScale)
-    ?? (track?.surface === "apple"
+    ?? (track?.surface === "apple" || track?.surface === "android"
       ? planPhoneCamera(track, timeline)
       : planSceneCamera(track, analysis, timeline, pictureScale));
 }

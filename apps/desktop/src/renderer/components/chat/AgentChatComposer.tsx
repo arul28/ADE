@@ -678,7 +678,7 @@ function iosContextDisplayLabel(item: IosElementContextItem): string {
   for (const value of [metadata.label, metadata.value, item.componentId, metadata.role, metadata.elementType]) {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
-  return "iOS element";
+  return metadata.contextSurface === "android-emulator" ? "Android element" : "iOS element";
 }
 
 function iosContextSourceDescription(item: IosElementContextItem): string {

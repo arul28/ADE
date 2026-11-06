@@ -61,6 +61,9 @@ struct AndroidDeviceViewer: View {
   /// One switch for both viewers: the person asked for the readout, not for
   /// one kind of device.
   @AppStorage("ade.appleViewer.showsSpeed") private var showsSpeed = false
+  /// The frozen inspect view, over everything, until its Close resumes the
+  /// stream. The simulator viewer's Live Inspect, on the emulator's UI tree.
+  @State private var inspect: LiveInspectMarkupModel?
 
   private static let keyboardBarHeight: CGFloat = 60
 
@@ -154,6 +157,15 @@ struct AndroidDeviceViewer: View {
     // emulator (its own gesture navigation), not this app.
     .defersSystemGestures(on: controlling ? .all : [])
     .persistentSystemOverlays(presentation.isFullScreen && controlling ? .hidden : .automatic)
+    .animation(.easeOut(duration: 0.18), value: inspect != nil)
+    .fullScreenCover(isPresented: Binding(
+      get: { inspect != nil },
+      set: { presented in if !presented, inspect != nil { exitInspect() } }
+    )) {
+      if let inspect {
+        LiveInspectStage(model: inspect, onClose: exitInspect)
+      }
+    }
   }
 
   /// The stream's lifetime.
@@ -199,7 +211,10 @@ struct AndroidDeviceViewer: View {
       }
       .onChange(of: scenePhase) { _, phase in
         // `.inactive` counts as away, as on the simulator viewer: nobody is
-        // looking, so the stream pauses and Control ends.
+        // looking, so the stream pauses and Control ends. While inspecting
+        // the stream is already stopped: coming back must not restart it
+        // behind the frozen picture.
+        guard inspect == nil else { return }
         model.setVisible(phase == .active)
       }
       .onChange(of: model.mode) { _, mode in
@@ -212,7 +227,20 @@ struct AndroidDeviceViewer: View {
             model.touch(.end, at: held.last)
           }
           tracker.gesture = nil
+        } else if let angle = foldAngle {
+          model.mirrorFold(angle: angle)
         }
+      }
+      // The phone in the hand folds: mirror it into a foldable emulator while
+      // controlling, as the simulator viewer does for a Duo.
+      .onChange(of: duo.hasFold || duo.hingeAngle != nil, initial: true) { _, folds in
+        if folds { AndroidDeviceViewerModel.phoneFolds = true }
+      }
+      .onChange(of: foldAngle) { _, angle in
+        if let angle { model.mirrorFold(angle: angle) }
+      }
+      .onChange(of: model.deviceFolds) { _, folds in
+        if folds, let angle = foldAngle { model.mirrorFold(angle: angle) }
       }
       .onChange(of: presentation) { _, _ in updateIdleTimer() }
       .onChange(of: model.notice) { _, notice in
@@ -223,6 +251,16 @@ struct AndroidDeviceViewer: View {
         model.stop()
         UIApplication.shared.isIdleTimerDisabled = false
       }
+  }
+
+  /// The hinge angle the phone in the hand asks for, or nil on a phone that
+  /// does not fold.
+  private var foldAngle: Double? {
+    androidFoldAngle(
+      isInnerDisplay: duo.hasFold,
+      hingeAngle: duo.hingeAngle,
+      phoneFolds: AndroidDeviceViewerModel.phoneFolds || duo.hasFold || duo.hingeAngle != nil
+    )
   }
 
   /// The screen stays awake while the emulator has it: full screen, or while
@@ -477,7 +515,7 @@ struct AndroidDeviceViewer: View {
 
   private var menuPanel: some View {
     LiveStageMenuPanel {
-      LiveStageMenuHeader(title: deviceName, detail: ribbon)
+      LiveStageMenuHeader(title: deviceName, detail: ribbon, recording: model.status?.recording?.active == true)
 
       if let crash = model.status?.appCrash, crash.id != nil {
         Text(crashLine(crash))
@@ -514,6 +552,17 @@ struct AndroidDeviceViewer: View {
           .accessibilityLabel("Hardware buttons")
         }
         .padding(.vertical, 2)
+        if model.deviceFolds {
+          // The hinge, for a foldable emulator: the desktop rail's fold dock.
+          HStack(spacing: 6) {
+            LiveStageMenuTile(title: "Open", systemImage: "rectangle.split.2x1", isOn: hingeIs("open")) { model.setHinge("open") }
+            LiveStageMenuTile(title: "Half", systemImage: "book", isOn: hingeIs("half")) { model.setHinge("half") }
+            LiveStageMenuTile(title: "Closed", systemImage: "rectangle.portrait", isOn: hingeIs("closed")) { model.setHinge("closed") }
+          }
+          .padding(.vertical, 2)
+          .accessibilityElement(children: .contain)
+          .accessibilityLabel("Hinge")
+        }
       } else {
         LiveStageMenuRow(
           title: "Take control",
@@ -541,6 +590,14 @@ struct AndroidDeviceViewer: View {
         }
         LiveStageMenuTile(title: "Speed", systemImage: "speedometer", isOn: showsSpeed) {
           showsSpeed.toggle()
+        }
+        if canInspect {
+          LiveStageMenuTile(title: "Inspect", systemImage: "viewfinder") {
+            menuOpen = false
+            beginInspect()
+          }
+          .accessibilityHint("Freezes the picture so you can pick an element and add it to the chat")
+          .accessibilityIdentifier("AndroidViewer.Inspect")
         }
       }
       .padding(.vertical, 2)
@@ -574,6 +631,50 @@ struct AndroidDeviceViewer: View {
     }
   }
 
+  /// Whether the hinge reads as `pose` now (open 180°, half about 90°, closed 0°).
+  private func hingeIs(_ pose: String) -> Bool {
+    guard let angle = model.posture?.angle else { return false }
+    switch pose {
+    case "open": return angle >= 170
+    case "half": return angle > 10 && angle < 170
+    default: return angle <= 10
+    }
+  }
+
+  /// Inspect freezes the picture and hands it to the markup model. Kept apart
+  /// from Control: inspecting is not a way to drive the emulator.
+  private var canInspect: Bool {
+    inspect == nil
+      && model.health.phase == .streaming
+      && syncService.supportsAndroidLiveInspect(laneId: laneId)
+  }
+
+  /// Freezes the live picture, then stops the stream: one still and the
+  /// element list come from `android.inspectSnapshot`, and no frame moves
+  /// under the finger while it is inspected.
+  private func beginInspect() {
+    guard canInspect else { return }
+    ADEHaptics.light()
+    let next = LiveInspectMarkupModel(surface: .android, laneId: laneId, chatSessionId: chatSessionId)
+    next.begin(plan: .android, using: syncService)
+    inspect = next
+    model.endControl()
+    model.stop()
+  }
+
+  /// Leaves inspect and reconnects the stream with a fresh ticket. Something
+  /// added to the chat from full screen goes back to the chat, where it waits
+  /// in the draft; over the pane the chat is already beside it.
+  private func exitInspect() {
+    guard let finished = inspect else { return }
+    inspect = nil
+    if finished.attachedCount > 0, presentation.isFullScreen, let stageClose {
+      stageClose()
+      return
+    }
+    Task { await model.start() }
+  }
+
   /// The keys a finger on the screen cannot press, the same set as the
   /// desktop rail.
   private var hardwareButtonsMenuContent: some View {
@@ -596,11 +697,15 @@ struct AndroidDeviceViewer: View {
     return "\(name) crashed."
   }
 
-  /// "Watching · Running · on <machine>".
+  /// "Watching · owned by <chat> · on <machine>": the sentence that stops a
+  /// viewer from mistaking an emulator an agent is driving for an idle one.
   private var ribbon: String {
     var parts = [controlling ? "Controlling" : "Watching"]
     if let state = androidDeviceState(model.status), state != "booted" {
       parts.append(androidDeviceStateLabel(state))
+    }
+    if let owner = androidDeviceOwnerLabel(model.status?.owner) {
+      parts.append("owned by \(owner)")
     }
     if let machine = model.machineName {
       parts.append("on \(machine)")

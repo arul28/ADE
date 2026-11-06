@@ -30,6 +30,7 @@ import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { createAndroidStreamServer, type AndroidStreamServer } from "./androidStreamServer";
 import {
   encodeHardwareKeyPress,
+  encodeKeyCombo,
   encodeInjectText,
   encodeInjectTouch,
   encodeResetVideo,
@@ -110,6 +111,8 @@ type DeviceStream = {
   lastConfigPacket: ScrcpyVideoPacket | null;
   /** Readers of the raw packets (a recording). Kept across a session restart. */
   packetTaps: Set<(packet: ScrcpyVideoPacket) => void>;
+  /** A bit rate change in flight (`recap`), so two changes run one after the other. */
+  recapping: Promise<boolean> | null;
 };
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -333,6 +336,7 @@ export function createAndroidStreamHub() {
         // A stream that failed and starts again keeps its taps: a recording
         // on it goes on with the new stream's packets.
         packetTaps: existing?.packetTaps ?? new Set(),
+        recapping: null,
       };
       devices.set(args.serial, device);
       const server = ensureStreamServer(args.logger ?? null);
@@ -370,6 +374,47 @@ export function createAndroidStreamHub() {
     },
 
     stopStream,
+
+    /**
+     * Gives the running stream a new bit rate (`null` puts the default back).
+     * scrcpy cannot change its encoder's rate while it runs, so this ends
+     * the session and opens a new one on the same transport: every viewer
+     * keeps its URL and gets the new run's config and keyframe after a short
+     * gap. It never starts a stream. Answers false when no stream runs.
+     */
+    async recap(serial: string, bitRate: number | null): Promise<boolean> {
+      const device = devices.get(serial);
+      if (!device || device.stopped || device.failure) return false;
+      if (device.starting) await device.starting.catch(() => undefined);
+      const wanted = bitRate ?? undefined;
+      const previous = device.recapping ?? Promise.resolve();
+      const run = previous.then(async () => {
+        if (device.stopped || devices.get(serial) !== device) return false;
+        if ((device.args.bitRate ?? ANDROID_STREAM_DEFAULTS.bitRate) === (wanted ?? ANDROID_STREAM_DEFAULTS.bitRate)) {
+          return true;
+        }
+        device.args = { ...device.args, bitRate: wanted };
+        const session = device.session;
+        device.session = null;
+        // A planned stop: `handleSessionEnd` sees "stopped" and does not restart it.
+        await session?.stop();
+        if (device.stopped || devices.get(serial) !== device) return false;
+        await openSession(device);
+        device.args.logger?.info("android.stream_recapped", { serial, bitRate: wanted ?? ANDROID_STREAM_DEFAULTS.bitRate });
+        return true;
+      });
+      const tracked: Promise<boolean> = run.catch(() => false).finally(() => {
+        if (device.recapping === tracked) device.recapping = null;
+      });
+      device.recapping = tracked;
+      try {
+        return await run;
+      } catch (error) {
+        // The new session did not open: treat it like a crash, which restarts it.
+        handleSessionEnd(device, { reason: "server-exited", message: getErrorMessage(error), serverLog: serverLogOf(error) });
+        return false;
+      }
+    },
 
     /**
      * Hands every raw packet of the running stream to `tap` (a recording), first
@@ -428,6 +473,12 @@ export function createAndroidStreamHub() {
       await session.control.send(encodeHardwareKeyPress(key));
     },
 
+    /** Parity: one key code with modifiers (`encodeKeyCombo`), on the control socket. */
+    async sendKeyCombo(serial: string, keycode: number, modifiers: ReadonlyArray<{ keycode: number; meta: number }>): Promise<void> {
+      const { session } = runningDevice(serial);
+      await session.control.send(encodeKeyCombo(keycode, modifiers));
+    },
+
     /**
      * Types text into the focused field. The server types it with the virtual
      * keyboard's key map, so characters that map has no keys for (most non-ASCII)
@@ -449,6 +500,8 @@ export function createAndroidStreamHub() {
         backend: running ? "scrcpy" : null,
         transport: running && device ? transportOf(device) : null,
         fps: running ? metrics?.fps ?? null : null,
+        bitrateKbps: running && metrics ? Math.round((metrics.bytesPerSecond * 8) / 1000) : null,
+        capKbps: running && device ? Math.round((device.args.bitRate ?? ANDROID_STREAM_DEFAULTS.bitRate) / 1000) : null,
       };
     },
 

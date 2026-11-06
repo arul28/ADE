@@ -3366,6 +3366,7 @@ export type SyncRemoteCommandAction =
   | "android.recordList"
   | "android.recordStart"
   | "android.recordStop"
+  | "android.inspectSnapshot"
   | "deeplinks.open";
 
 export type SyncRemoteCommandPolicy = {

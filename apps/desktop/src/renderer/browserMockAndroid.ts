@@ -54,6 +54,7 @@ import {
 import { createMockAndroidSetup } from "./browserMockAndroidSetup";
 import { createMockAndroidTools } from "./browserMockAndroidTools";
 import { createMockAndroidImages } from "./browserMockAndroidImages";
+import { createMockAndroidPreferences } from "./browserMockAndroidPreferences";
 import { androidCatalogColor, androidCatalogEntry, resolveAndroidCatalogProfile } from "../shared/androidDeviceCatalog";
 
 type Scenario = "live" | "picker" | "setup" | "noaccel" | "starting" | "off" | "crashed" | "unsupported";
@@ -331,6 +332,8 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
     ...setup,
     ...tools,
     ...systemImages.api,
+    // Settings › Android devices: each machine's preferences, in memory.
+    ...createMockAndroidPreferences({ emit }),
     getStatus: async (args, pin) => delay(status(args?.laneId ?? null, pin?.kind === "remote"), 60),
     listDevices: async (args) => {
       if (args?.laneId) laneId = args.laneId;

@@ -311,6 +311,14 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["android_emulator.deviceLease", ANDROID_EMULATOR_LEASE_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["android_emulator.recordStart", ANDROID_EMULATOR_UI_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["android_emulator.readLog", ANDROID_EMULATOR_UI_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // Parity: see the local table (localRuntimeTimeoutPolicy.ts).
+  ["android_emulator.deviceCleanup", ANDROID_EMULATOR_LIFECYCLE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["android_emulator.relaunchApp", ANDROID_EMULATOR_UI_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["android_emulator.getForegroundApp", ANDROID_EMULATOR_UI_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["android_emulator.inspectPoint", ANDROID_EMULATOR_UI_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["android_emulator.selectPoint", ANDROID_EMULATOR_UI_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["android_emulator.storeScreenshots", ANDROID_EMULATOR_UI_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["android_emulator.windowLayout", ANDROID_EMULATOR_UI_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["android_emulator.recordStop", ANDROID_EMULATOR_RECORD_STOP_REMOTE_TRANSPORT_TIMEOUT_MS],
 ]);
 const CONNECT_FAILURE_BASE_BACKOFF_MS = 3_000;

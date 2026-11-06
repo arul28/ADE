@@ -30,6 +30,11 @@ export type CloseWorkToolForRealArgs = {
   /** The chat the tool was attached to, for ownership-aware stop calls. */
   chatSessionId?: string | null;
   runtimePin?: OpenProjectBinding | null;
+  /**
+   * Android only: the person chose "Close and shut down", so the emulator
+   * powers off too. Without it the emulator keeps running.
+   */
+  powerOff?: boolean;
 };
 
 function logCloseFailure(tool: WorkSidebarTab, error: unknown): void {
@@ -45,7 +50,7 @@ function logCloseFailure(tool: WorkSidebarTab, error: unknown): void {
  */
 export function closeWorkToolForReal(
   tool: WorkSidebarTab,
-  { laneId, chatSessionId = null, runtimePin = null }: CloseWorkToolForRealArgs,
+  { laneId, chatSessionId = null, runtimePin = null, powerOff = false }: CloseWorkToolForRealArgs,
 ): void {
   const pin = runtimePin ?? undefined;
   switch (tool) {
@@ -79,11 +84,31 @@ export function closeWorkToolForReal(
       return;
     }
     case "android": {
-      // The emulator keeps running after its tab closes (it is the lane's,
-      // and booting one is slow), but a tab close is not a minimize: nothing
-      // floats, and a player already floating goes with the tab.
+      // A tab close is not a minimize: nothing floats, and a player already
+      // floating goes with the tab.
       suppressAndroidMiniPlayerHandoff();
       retakeAndroidMiniPlayer({ laneId, runtimePin });
+      // The close runs after the dialog, so the pane can unmount after the
+      // suppress flag clears (seen live under load): the handoff then floats
+      // the player again. Take it back once the unmount has had its turn.
+      window.setTimeout(() => retakeAndroidMiniPlayer({ laneId, runtimePin }), 300);
+      // "Keep running" (the default) leaves the emulator up: it is the lane's,
+      // a boot is slow, and the brain's idle power-off stops an ADE-made one
+      // nobody uses. The question was asked upstream, in
+      // `useWorkSidebarTool.closeTool`, because Cancel keeps the tab.
+      const android = window.ade?.androidEmulator;
+      if (!powerOff || !laneId || !android?.stop) return;
+      // "Close and shut down": the stream first, then the emulator, the order
+      // Apple's close uses. A stream stop that fails is no reason to keep the
+      // emulator running, so the stop follows it either way. `stop` powers
+      // off only an emulator ADE started; the lane keeps its device, so the
+      // pane's next visit shows "off" with Start.
+      const stopStream = android.stopStream
+        ? android.stopStream({ laneId }, pin).then(() => undefined).catch((error) => logCloseFailure(tool, error))
+        : Promise.resolve();
+      void stopStream
+        .then(() => android.stop({ laneId }, pin))
+        .catch((error) => logCloseFailure(tool, error));
       return;
     }
     case "ios": {

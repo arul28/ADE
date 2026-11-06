@@ -1,16 +1,16 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { OpenProjectBinding } from "../../../shared/types";
+import type { IosElementContextItem, OpenProjectBinding } from "../../../shared/types";
 import type {
   AndroidDeviceInventory,
   AndroidEmulatorStatus,
   AndroidHardwareKey,
   AndroidLaneDeviceStatus,
-  AndroidOrientation,
   AndroidRenderRequestEvent,
 } from "../../../shared/types/androidEmulator";
 import { useAppStore } from "../../state/appStore";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { isInParkedSurface } from "../../lib/parkedSurface";
+import type { DeviceOrientation } from "../../../shared/types/deviceOrientation";
 import { cn } from "../ui/cn";
 import { Banner, type NoticeAction } from "../ui/notice";
 import { showToast } from "../app/toast/toastStore";
@@ -68,6 +68,7 @@ import { useAndroidPaneFloat } from "./useAndroidPaneFloat";
 import { useAndroidStorageActions } from "./useAndroidStorageActions";
 import { AndroidQuickChips } from "./AndroidQuickChips";
 import { AndroidCrashPin } from "./AndroidCrashPin";
+import { subscribeAndroidPickerRequests, takeAndroidPickerRequest } from "./androidPickerRequests";
 import type { AndroidDrawerGroupId } from "./drawer/androidDrawerState";
 import { presetDeviceDrawerGroup } from "../device/deviceDrawerState";
 
@@ -115,6 +116,8 @@ export type AndroidDevicePaneProps = {
   sessionId?: string | null;
   /** Puts an inspected element into the chat's draft. Absent hides "Insert into chat". */
   onInsertDraft?: ((text: string) => void) | undefined;
+  /** Puts an inspected element into the composer as a context chip (crop, source); used before `onInsertDraft`. */
+  onAddContext?: ((item: IosElementContextItem) => void) | undefined;
   className?: string;
 };
 
@@ -147,6 +150,7 @@ export function AndroidDevicePane({
   onRequestSetup,
   sessionId = null,
   onInsertDraft,
+  onAddContext,
   className,
 }: AndroidDevicePaneProps) {
   const api = window.ade?.androidEmulator ?? null;
@@ -171,6 +175,9 @@ export function AndroidDevicePane({
   const [error, setError] = useState<AndroidErrorDescription | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [screenshotPending, setScreenshotPending] = useState(false);
+  const [storeShotsPending, setStoreShotsPending] = useState(false);
+  /** Which way up the device is (the brain's read, then every rotate's event); null until read. */
+  const [orientation, setOrientation] = useState<DeviceOrientation | null>(null);
   const [noAccelDismissed, setNoAccelDismissed] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   /** The setup card, asked for from the picker when the host has no setup flow of its own. */
@@ -276,6 +283,16 @@ export function AndroidDevicePane({
     void readStatus();
   }, [laneId, pinKey, readStatus]);
 
+  // The tool card menu's "Choose another device": after the reset above, so
+  // an ask made before this pane mounted still opens the picker.
+  useEffect(() => {
+    const take = () => {
+      if (takeAndroidPickerRequest(laneId, runtimePinRef.current)) setPickerRequested(true);
+    };
+    take();
+    return subscribeAndroidPickerRequests(take);
+  }, [laneId, pinKey]);
+
   const laneState = status?.lane?.state ?? "none";
   const pickerShownRef = useRef(false);
   /** `ade android render` events go to the render hook (set below, read through this ref). */
@@ -288,6 +305,10 @@ export function AndroidDevicePane({
       if (event.type === "android.stream.state") return; // the stream hook's
       if (event.type === "android.render.request") {
         renderRequestRef.current(event);
+        return;
+      }
+      if (event.type === "android.device.orientation") {
+        if (event.laneId === laneIdRef.current) setOrientation(event.orientation);
         return;
       }
       if (event.type === "android.device.state" && event.laneId !== laneIdRef.current) {
@@ -372,7 +393,7 @@ export function AndroidDevicePane({
   /* ── P1 agent tools on the rail: Inspect, Record and the Tools drawer ──── */
 
   const deviceLive = paneState === "live";
-  const inspect = useAndroidInspect({ laneId, live: deviceLive, runtimePinRef, onInsertDraft, onError: onToolError });
+  const inspect = useAndroidInspect({ laneId, live: deviceLive, runtimePinRef, onInsertDraft, onAddContext, onError: onToolError });
   const recording = useAndroidRecording({ laneId, live: deviceLive, chatSessionId: sessionId, runtimePinRef, onError: onToolError });
   const recordingTick = useTicker(1000, Boolean(recording.active));
   const [savedDismissedId, setSavedDismissedId] = useState<string | null>(null);
@@ -517,27 +538,56 @@ export function AndroidDevicePane({
     if (laneState === "off" || laneState === "crashed") start();
   }, [laneState, start]);
 
-  /**
-   * The orientation this pane last asked for. The brain has no read of it,
-   * and the stream's shape cannot stand in: the home screen stays portrait
-   * whatever is sent, so a second click would ask for landscape again.
+  /*
+   * Which way up the device is. The brain reads it from the display (the
+   * home screen of a phone stays portrait, so the video's shape cannot say),
+   * after the device changes and whenever the video changes shape; a rotate
+   * from any caller pushes `android.device.orientation`.
    */
-  const orientationRef = useRef<AndroidOrientation | null>(null);
+  const streamShape = stream.width && stream.height ? `${stream.width}x${stream.height}` : null;
   useEffect(() => {
-    orientationRef.current = null;
+    setOrientation(null);
   }, [laneId, pinKey, avdName]);
-  const streamLandscape = Boolean(stream.width && stream.height && stream.width > stream.height);
-  const rotate = useCallback(() => {
+  useEffect(() => {
+    if (!api?.getDeviceSettings || !streamShape) return undefined;
+    let cancelled = false;
+    void api.getDeviceSettings({ laneId, fields: "orientation" }, runtimePinRef.current)
+      .then((settings) => {
+        if (!cancelled && settings.orientation) setOrientation(settings.orientation);
+      })
+      .catch((caught: unknown) => {
+        // The rail keeps the last orientation it knew; the next shape change reads again.
+        console.warn("[android] orientation read failed", describeAndroidError(caught));
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Keyed on the machine, not the pin object (CLAUDE.md "key effects on pin?.key").
+  }, [api, laneId, pinKey, streamShape]);
+  const rotate = useCallback((next: DeviceOrientation) => {
     if (!api) return;
-    const current = orientationRef.current ?? (streamLandscape ? "landscape" : "portrait");
-    const next: AndroidOrientation = current === "landscape" ? "portrait" : "landscape";
-    orientationRef.current = next;
+    const before = orientation;
+    setOrientation(next);
     // The new size reaches the view with the stream's next config record (~1 s).
     void api.rotate({ laneId, orientation: next }, runtimePinRef.current).catch((caught: unknown) => {
-      orientationRef.current = current;
+      setOrientation(before);
       setError(describeAndroidError(caught));
     });
-  }, [api, laneId, streamLandscape]);
+  }, [api, laneId, orientation]);
+
+  const storeScreenshots = useCallback(() => {
+    if (!api?.storeScreenshots) return;
+    setStoreShotsPending(true);
+    void api.storeScreenshots({ laneId, chatSessionId: sessionId }, runtimePinRef.current)
+      .then((result) => showToast({
+        id: "android-store-shots",
+        tone: "success",
+        title: result.shots.length === 1 ? "Play Store screenshot saved" : `${result.shots.length} Play Store screenshots saved`,
+        message: result.shots.map((shot) => `${shot.display === "screen" ? shot.slot : `${shot.display} screen`} ${shot.width}×${shot.height}`).join(" · "),
+      }))
+      .catch((caught: unknown) => setError(describeAndroidError(caught)))
+      .finally(() => setStoreShotsPending(false));
+  }, [api, laneId, sessionId]);
 
   const screenshot = useCallback(() => {
     if (!api) return;
@@ -851,6 +901,7 @@ export function AndroidDevicePane({
             boot={bootOnModel ? boot : null}
             viewNonce={viewNonce}
             fold={posture.stageFold}
+            orientation={orientation}
             rendererRef={renders.rendererRef}
             onThreeUnavailable={handleThreeUnavailable}
             className={cn("bg-transparent", paneState === "video-lost" && "opacity-40")}
@@ -887,7 +938,10 @@ export function AndroidDevicePane({
                 inputConnected={androidInputAllowed(paneState)}
                 screenshotPending={screenshotPending}
                 onKey={pressKey}
-                onRotate={rotate}
+                orientation={orientation ?? "portrait"}
+                onOrientation={rotate}
+                onStoreScreenshots={api?.storeScreenshots ? storeScreenshots : undefined}
+                storeScreenshotsPending={storeShotsPending}
                 onScreenshot={screenshot}
                 onSwitchDevice={noPicker ? undefined : () => setPickerRequested(true)}
                 onPowerOff={powerOff}
@@ -931,6 +985,7 @@ export function AndroidDevicePane({
                 <AndroidLiveLine
                   state={paneState !== "live" ? "lost" : stream.reconnecting ? "reconnecting" : "live"}
                   fps={stream.fps}
+                  bitrateKbps={stream.bitrateKbps}
                   laneName={laneName}
                   machineName={machineName}
                 />

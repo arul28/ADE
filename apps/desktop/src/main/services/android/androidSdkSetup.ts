@@ -13,6 +13,7 @@ import { getErrorMessage } from "../shared/utils";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { androidSdkInstaller, buildAndroidSdkSetupPlan, type AndroidSdkInstallDeps } from "./androidSdkInstall";
 import { locateAndroidSdk, readAndroidSdkStatus } from "./androidSdk";
+import { writeAndroidSettingsFileKeys } from "./androidMachinePreferences";
 
 /*
  * The service side of the guided SDK install and of "Use mine…".
@@ -43,11 +44,8 @@ export function createAndroidSdkSettingStore(file: string | null | undefined) {
     },
     write(sdkPath: string | null): void {
       if (!file) throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", "This ADE cannot save an SDK folder.");
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      const body: AndroidSettingsFile = { sdkPath, updatedAt: new Date().toISOString() };
-      const temp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(temp, `${JSON.stringify(body, null, 2)}\n`, "utf8");
-      fs.renameSync(temp, file);
+      // Merged into the file: its other keys (the machine `preferences`) stay.
+      writeAndroidSettingsFileKeys(file, { sdkPath });
       cache = null;
     },
   };

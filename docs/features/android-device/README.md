@@ -291,8 +291,9 @@ The rail floats on the right edge, in Apple's place and size. The order:
 - **Back**, **Home**, **Recents**.
 - A divider.
 - **Power and volume** ▾: Power, Volume up, Volume down.
-- **Rotate**: toggles portrait and landscape. The home screen stays portrait;
-  apps that allow rotation turn.
+- **Orientation** ▾: names the current orientation and lists all four
+  (Apple's menu). The home screen of a phone stays portrait; apps that allow
+  rotation turn. The 3D body turns with the device, upside down too.
 - **Inspect**: boxes over every element of the screen (see
   [Inspect](#inspect)).
 - **Save screenshot**, **Render** (the Render sheet), **Record** (red while a
@@ -301,7 +302,7 @@ The rail floats on the right edge, in Apple's place and size. The order:
 - **Device tools**: opens the [Tools drawer](#the-tools-drawer).
 - **Maximize**, where the pane provides it.
 - **More** ⋯: the device name and profile, **Switch device…**, the body
-  colour, **Reset view**, and **Power off**.
+  colour, **Reset view**, **Play Store screenshots**, and **Power off**.
 
 Below 360 px of pane width the rail keeps the navigation keys, Power, Device
 tools, Maximize and More. The other controls move into More.
@@ -312,8 +313,15 @@ Inspect reads the UI tree once (`getScreenSnapshot`, fresh) and draws a box
 for each element, in 3D and in flat. Touch is off while Inspect is on, so a
 box cannot go stale under the pointer. Click an element to see its card: ref,
 role, identifier, text, what it takes, and bounds. **Insert into chat** puts
-one line in the chat's draft, with the `ade android tap-element --ref …`
-command. **Copy** copies that command. Inspect goes off when the device stops
+a context chip in the composer, as Apple's Inspect does: the brain on the
+lane's machine (the pin) runs `inspectPoint`, which crops the element and
+looks for its source in the lane's Kotlin, Java and XML (`androidInspect.ts`:
+an exact match for a test tag, `@+id/…` or `R.id.…`, and candidates for the
+shown text; 1.5 s and 4000 files at most). The chip is Apple's
+`ios_element` packet with `metadata.contextSurface: "android-emulator"`, so
+the composer, the saved crop and the prompt packet are the same code. Where
+no chip can go, it puts one line in the draft, with the
+`ade android tap-element --ref …` command. **Copy** copies that command. Inspect goes off when the device stops
 being live. The overlay is the shared `device/DeviceInspectOverlay.tsx`, which
 the Apple pane also uses.
 
@@ -337,10 +345,10 @@ group reads from the device.
 
 | Group | Controls |
 |---|---|
-| Device | Text size and Display size (Small, Default, Large, Largest or Larger), Animations off, Show taps, Show layout bounds. |
-| App | The app in front (read every 2 s while the group is open), **Build & run** (Gradle), **Relaunch**, **Stop**, **Uninstall**, **Start an app**, **Open** a link, **Install** an APK, **Run tests** (P3, instrumentation tests), and Permissions. |
+| Device | Text size and Display size (Small, Default, Large, Largest or Larger), Animations off, Show taps, Show layout bounds. **Accessibility**: High contrast text, Bold text, Color inversion, Grayscale, Color correction and TalkBack, each read back from the device ("not on this image" when the image does not have it). **Status bar**: **9:41** (demo mode) and **Clear**. |
+| App | The app in front (read every 2 s while the group is open), **Build & run** (Gradle), **Relaunch**, **Stop**, **Uninstall**, **Start an app**, **Open** a link, **Install** an APK, **Run tests** (P3, instrumentation tests), **Windows** (Split, Swap sides, Free window, Full screen, Close; for the typed package or the app in front), and Permissions. |
 | Capture | The lane's recordings, newest first: **Open in proof**, and a ⋯ menu with Show in Finder (not for another machine's files) and Delete. A running recording shows as one line at the top. |
-| Emulator | Appearance, Location (presets or a typed point), Battery level and Charging, Airplane mode, Wi-Fi, Mobile data. |
+| Emulator | Appearance, Location (presets or a typed point, and **Clear**), Battery level and Charging, Airplane mode, Wi-Fi, Mobile data. |
 | Logs | Logcat for the lane's app (P2): the newest package ADE installed for the lane, else the app in front, or **Whole device**. A level filter (All, Info, Warn, Error), a text filter, **Pause**, **Clear**, **Copy** and **Send to chat** (the newest 80 lines into the chat's draft). |
 | Previews | P3: Compose previews. A module box (`app` by default), **Find previews**, a check box for each `@Preview`, and **Render**. The images show as thumbnails; a click opens the proof row ([Compose previews](#compose-previews-p3)). |
 
@@ -556,6 +564,37 @@ keeps a created AVD on disk.
 A desktop that does not run the project's runtime in its own process does not
 build an Android service. So one service owns a project's emulators.
 
+### Idle power-off and the cleanup pass
+
+`androidLaneMaintenance.ts`, as Apple's lane device maintenance:
+
+- **Idle power-off.** An emulator ADE made (`origin: "created"`) and started
+  powers off after 30 min with no use (`ADE_ANDROID_IDLE_POWER_OFF_MINUTES`; 0
+  turns it off). Use is any service call for the lane except the reads, a
+  viewer or a recording on its stream, a held lease, running tests, and input
+  on the device itself (`dumpsys power` `mLastUserActivityTime`). The service
+  start counts as use, so a brain restart or a hand-off never reads as idle.
+  An emulator the user attached, or one ADE did not start, is never powered
+  off. The lane keeps its device; `status` shows `poweredOff` (when, and the
+  idle minutes) until the next start.
+- **Cleanup.** 60 s after the service starts, then every 15 min: release the
+  device of each ended lane, stop each emulator ADE started that no lane
+  holds (by its process tree, so Windows too), forget each lane row whose AVD
+  is gone from disk, and list ADE-made AVDs that no lane holds (never deleted:
+  the marker does not name the project). `deviceCleanup` (`ade android
+  device-cleanup`) runs the same pass now; `--dry-run` reports and changes
+  nothing; `--power-off-idle` also powers off idle emulators now. An agent's
+  `--power-off-idle` reaches only its own lane (the RPC server sets
+  `agentCaller`).
+- **Chrome's first run.** Before the first `open-url` whose `http(s)` URL
+  opens in Chrome (`cmd package resolve-activity`), and before `launch
+  --package com.android.chrome`, ADE makes Chrome skip "Welcome to Chrome"
+  and the notifications prompt, with no root: `am set-debug-app
+  --persistent`, the flags file `/data/local/tmp/chrome-command-line`
+  (`--disable-fre --no-default-browser-check --no-first-run`), and `pm grant
+  … POST_NOTIFICATIONS`. A first-run screen already up is force-stopped. Once
+  per boot per lane, best effort (`androidChromeSetup.ts`).
+
 ## Agents: `ade android`
 
 `ade android` uses the verb and flag names of `ade apple` where the job is
@@ -577,7 +616,7 @@ any flag that a verb does not take.
 | `tap <x> <y>` (or `--x`, `--y`) | Tap a point. |
 | `swipe <x1> <y1> <x2> <y2> [--duration-ms <ms>]` | Swipe from one point to another (default 300 ms). |
 | `button <name>` (or `--name`) | `back`, `home`, `recents`, `power`, `volume-up`, `volume-down`. |
-| `rotate portrait\|landscape` | Lock the display to that orientation (auto-rotate off). An app that fixes its own orientation keeps it. |
+| `rotate portrait\|portrait-upside-down\|landscape-left\|landscape-right` | Lock the display to that orientation (auto-rotate off, `user_rotation` 0 to 3, mapped for a tablet whose natural shape is landscape). `landscape` is `landscape-right`. An app that fixes its own orientation keeps it. Each rotate pushes `android.device.orientation`, so a viewer draws the device turned the right way. |
 | `type <text>` (or `--value`) | Type into the focused field, exactly as given. |
 | `show` | Show the emulator to the user in the tools pane (also `ade ui show android`). |
 | `actions` | List the `android_emulator` actions. |
@@ -590,10 +629,14 @@ any flag that a verb does not take.
 | `snapshot [--fresh]` | The screen's element tree: ref, role, name, center and what each element takes. |
 | `find-element`, `tap-element [--hold-ms]`, `fill-element --value <text> [--no-focus]`, `wait-for-element [--timeout-ms] [--gone]`, `assert-visible` | Element verbs. The query is `--ref`, `--identifier`, `--label`, `--text`, `--role`, `--index`, as in `ade apple`. |
 | `log [--package] [--level] [--since <cursor>] [--lines <n>]` | Logcat, for one app (by pid, else by uid) or all. |
-| `record-start [--label] [--max-seconds]`, `record-stop [--discard]`, `record-list`, `record-delete --id <id>` | Record the screen to MP4, from the stream the live view uses. |
+| `record-start [--label] [--max-seconds] [--plain\|--zoom]`, `record-stop [--discard\|--keep]`, `record-list`, `record-delete --id <id>`, `auto-record on\|off\|status` | Record the screen to MP4, from the stream the live view uses, and file it as a demo video. `--no-record` on an input verb starts no automatic recording. |
 | `settings`, or one of `--text-size`, `--display-size`, `--animations on\|off`, `--show-taps`, `--layout-bounds`, `--battery <0-100>` and `--charging on\|off`, `--wifi`, `--data`, `--airplane` | Read the emulator's settings, or change one. A change answers with a fresh read. |
 | `lease [--wait <s>] [--ttl <s>] [--holder <name>]`, `lease renew\|release --token <t>`, `lease status` | Take turns on the lane's emulator (the shared device lease). |
-| `location <lat> <lon>`, `appearance light\|dark`, `permission grant\|revoke <permission> --package <name>` | Emulator controls (`adb emu geo fix`, `cmd uimode night`, `pm grant`). |
+| `location <lat> <lon>`, `location --clear`, `appearance light\|dark`, `permission grant\|revoke <permission> --package <name>` | Emulator controls (`adb emu geo fix`, `cmd uimode night`, `pm grant`). The emulator has no "no location", so `--clear` moves the GPS back to its default point (37.4219983, -122.084). ADE keeps the last location per lane and boot; `settings` reads it. |
+| `accessibility <option> on\|off` | `increase-contrast` (high contrast text), `bold-text` (`font_weight_adjustment`, API 31+), `invert-colors`, `grayscale` and `color-correction` (the daltonizer; one turns the other off), `talkback` (only on an image that has TalkBack; null otherwise). `settings` reads each back from the device. |
+| `status-bar [--time] [--data-network] [--wifi-bars] [--cellular-bars] [--battery-level] [--battery-state]`, `status-bar --clear` | SystemUI demo mode: a clean status bar for screenshots (default 9:41, full bars, full battery, no notification icons). `settings` reads `statusBarOverridden`. |
+| `play-store-shots [--no-proof]` | Google Play screenshots: each screen padded onto a black 9:16 or 16:9 canvas at Play's sizes (short side 1080 or more, long side 3840 or less). A foldable gives two: the cover screen shut (phone slot) and the inner screen open (large-screen slot), and its hinge goes back after. Filed as proof. |
+| `window status\|split\|left\|right\|top\|bottom\|swap\|freeform\|size\|move\|fill\|close [--package] [--with] [--size WxH] [--move X,Y]` | Split screen (WMShell), free windows (`enable_freeform_support`, `am task resize`), full screen and close, on a large screen. Android splits a portrait screen top and bottom and a landscape one left and right; the other sides are refused. The answer lists the windows; exits 1 when the change did not happen. |
 | `proof-bundle [--out <dir>] [--caption] [--package] [--no-elements]` | A screenshot, the elements, a log tail and a meta file, filed as proof. |
 | `fold open\|half\|closed\|<angle>` (or `--angle <0-180>`), `posture` | P3: fold a foldable AVD and wait for the screen to swap, or read the hinge ([Fold](#fold-p3)). |
 | `preview list [--module <m>] [--all]`, `preview [--module <m>] [--fqn <name>]… [--no-proof]` | P3: list a module's Compose `@Preview` functions, or render them to PNG with no emulator ([Compose previews](#compose-previews-p3)). Exits 1 when a preview has no image. |
@@ -626,10 +669,47 @@ permissions) in `androidDeviceSettings.ts`.
   viewer has it open) and writes H.264 into MP4 with no re-encode. Frames
   come only when the screen changes, so the file has a variable frame rate.
   The last frame is held until the stop, so a still screen lasts as long as
-  it did. When the screen turns, the size changes and the recording goes on
-  in a new part (`<id>-2.mp4`). Each part is filed as proof. A recording
-  stops at `--max-seconds` (default and most 300), when the emulator stops,
-  when the lane lets the device go, and when its chat ends.
+  it did. When the screen turns, the size changes and the recorder starts a
+  new part (`<id>-2.mp4`). The stop joins the parts into one video on a
+  canvas that holds each part (system ffmpeg, else the Swift renderer on
+  macOS, else ADE's own ffmpeg), and moves the tap points onto it. A
+  recording stops at `--max-seconds` (default and most 300), after 2 minutes
+  with no change, when the raw file gets too large or the disk too full,
+  when the emulator stops, when the lane lets the device go, and when its
+  chat ends.
+- **Demo.** The stop sends the video through `produceDemoVideo` (demo surface
+  `android`, `androidRecordingSession.ts` and `androidDemoRecording.ts`): the
+  idle cut, tap rings, typed-text badges, `ade proof step` chapters and
+  captions, `--zoom`, and the fit under 10 MB. The engines are Swift on macOS
+  and ffmpeg elsewhere (ADE downloads its own; `prepare()` starts the
+  download when the recording starts). The render has 150 s. When no engine
+  renders, the render fails or the time ends, ADE files the video as it was
+  recorded, at any size, and says why. Only the demo file and its sidecar
+  stay in `<project>/.ade/android/recordings/<lane>`. `--plain` skips the
+  overlays and the idle cut. One recording gives one proof row.
+- **Overlays.** Every agent input path notes the demo track: tap,
+  long-press, drag, swipe, scroll, tap-element, fill-element, type, key,
+  button and open-url (the badge is the URL host). Typed text shows only
+  when the field is named and is not a password (the UI node's `password`
+  flag, and the name rule of `demoTypedLabelForField`). Text typed into the
+  focused field with no element named shows no badge. The machine
+  preferences `tapRings` and `keyBadges` are read when the input is noted.
+- **Auto-record.** An agent's input starts a recording when none runs (the
+  pane stamps its input `source: "user"`, which never starts one). It does
+  not start with `--no-record`, with the lane switch off (`auto-record off`,
+  KV key `android.autoRecord.lane.<lane>`), or with the machine preference
+  `autoRecordAgentInput` off. The input waits at most 5 s for the start. An
+  automatic recording stops when the agent's turn ends (the same hook as
+  Apple's) and after 2 minutes with no change. `record-start` keeps a running
+  automatic one as a manual one. With `--machine`, the turn end does not reach
+  the other machine; the idle stop ends it there.
+- **Machine preferences.** `getMachinePreferences` (read) answers
+  `{preferences, recordingsBytes}`; `setMachinePreferences` (only the person,
+  a partial patch) answers the same and emits `android.preferences.changed`.
+  The fields are `tapRings`, `keyBadges`, `autoRecordAgentInput` (all on by
+  default), `recordingsWarnBytes` (5 GiB, 1–100 GiB) and
+  `remoteBitrateKbpsCap` (2500, 100–20000 kbit/s). They are kept in
+  `~/.ade/android/settings.json` under `preferences`, beside `sdkPath`.
 - **Proof.** `screenshot`, `record-stop` and `proof-bundle` file proof to the
   chat (and the lane). With `--machine`, the other machine writes the files
   and the caller's machine reads them back and files them in the caller's
@@ -654,6 +734,29 @@ again after it resolves symlinks.
 
 `start`, `device-create` and `device-attach` print a progress line while the
 AVD boots. These lifecycle calls have a 4-minute timeout.
+
+Parity with `ade apple`:
+
+- `key <name>`: one key (`ANDROID_NAMED_KEYCODES`: return, tab, escape,
+  delete, arrows, home, end, page keys, f1-f12, a letter or digit) with
+  modifiers (`key ctrl+a`, or `--shift --ctrl --alt --meta`). Through scrcpy
+  when a stream runs, else `adb shell input keyevent`, or `input
+  keycombination` for modifiers (Android 12+). `button` still sends the
+  hardware keys.
+- `type --submit` presses Enter after the text.
+- `launch` and `relaunch` take intent extras (`--extra key=value`, typed as
+  bool, int, long, float or string; `--extra-string` keeps a string) and `am
+  start` words (`--launch-arg`, or `-- <words>`; `-n` and `--user` are
+  refused). `relaunch` force-stops, then starts.
+- `app-state <package>`: installed, running, in front, pid and version.
+  `foreground [--package] [--wait <s>]`: the app in front (the home screen
+  is no app); with `--package` a timeout is `ANDROID_WAIT_TIMEOUT`.
+- `frame`: one screencap PNG, never filed as proof, with `streamRunning`.
+  The brain has no H.264 decoder, so it is the device's screencap as Apple's
+  is the helper's screenshot.
+- `inspect <x> <y>` and `select <x> <y>`: the element under a point as the
+  composer's chip packet (`select` always crops, and counts as input).
+- `device-cleanup` (above).
 
 ### Instrumentation tests (P3)
 
@@ -736,6 +839,11 @@ the web and the phone) and never for a session-bound agent:
 - `sendTouch`, the live touch stream.
 - `deleteDevice`, which deletes an ADE AVD that no lane holds.
 
+Apple lets an agent start its stream; Android keeps `startStream` and
+`stopStream` for viewers on purpose: `startStream` hands back the loopback
+stream token, and it is in `ADE_ACTION_SECRET_BEARING`. An agent reads
+`getStreamStatus` (no token) and uses `frame` or `screenshot`.
+
 `ANDROID_PERSON_ONLY_ACTIONS` are the user's alone, from the desktop app, as
 Apple's `APPLE_USER_ONLY_ACTIONS` are (`ADE_ACTION_USER_ONLY`): an agent, an
 automation and a terminal are all refused.
@@ -764,11 +872,17 @@ P2 adds the remote live view. `android.streamTicket` (viewer-allowed) issues a
 ticket on the brain's stream relay (the Apple relay, with a second router for
 Android on the same `/apple/stream/<ticket>` path). It never boots the
 emulator: an emulator that is not booted answers `ANDROID_NOT_RUNNING`. The
-relay starts the stream when the viewer's socket attaches and stops only the
-streams it started. A local stop while a remote viewer watches hands the
-stream to the relay. `android.input` takes kind `touch` (down, move and up
+relay starts the stream when the viewer's socket attaches. The relay is one
+holder of the lane's stream, beside the local viewer, a recording and a
+desktop on another machine; the stream stops when the last holder lets go
+(see [Remote viewers](#remote-viewers)). `android.input` takes kind `touch` (down, move and up
 events in device pixels, at most 64 a call) for the viewer's live finger.
 `android.status` carries `liveView` (the brain serves tickets) and `appCrash`.
+While the emulator runs it also carries `recording` (the active recording)
+and `owner` (the lease holder, with the chat's title when the host knows the
+chat). `android.inspectSnapshot` (controller-only) answers one screenshot
+(inline PNG, no proof row) and the UI tree's elements in the shape of
+`apple.invoke getScreenSnapshot`, for the phone's Live Inspect.
 
 The hosted web client's `androidEmulator` namespace
 (`webclient/adapter/androidDevice.ts`) uses these commands. Reads go through
@@ -784,9 +898,25 @@ chips show the emulator while the lane has one, also when it is off, so the
 viewer can offer **Start**. Start and input need `android.invoke` and
 `android.input` at the controller role; a phone at the viewer role can only
 watch. The emulator sends no frames while its screen is still, so the viewer
-does not treat a still picture as a dead stream. The phone viewer does not
-fold yet: the host has the posture actions (P3), but the phone does not
-send them.
+does not treat a still picture as a dead stream.
+
+The phone viewer matches the Simulator viewer:
+
+- **Recording dot and owner ribbon.** The menu header shows a red dot while a
+  recording runs, and the ribbon reads "Watching · owned by <chat>" while an
+  agent holds the emulator's lease.
+- **An agent is driving.** When an agent takes the lease while the phone
+  controls, the viewer hands control back ("<chat> is driving the emulator
+  now. You're watching.") and refuses Take control until the lease ends. The
+  chat the viewer was opened from does not count.
+- **Fold.** On a phone that folds, controlling a foldable emulator mirrors the
+  phone's hinge with `setPosture` (the inner display holds it open at 70° or
+  more; the front screen shuts it). The menu has Open, Half and Closed hinge
+  tiles for a foldable emulator.
+- **Live Inspect.** Inspect freezes the picture with
+  `android.inspectSnapshot`, lets the person pick an element and mark it up,
+  and adds the element's packet (ref, resource id, text, class, frame) and the
+  picture to the chat's draft.
 
 ## Another machine
 
@@ -871,6 +1001,52 @@ Other numbers from the same machine (plan §9): one running phone emulator uses
 about 2.9 GB of working set. After a rotate, the new size reaches the view
 with the stream's next config record, about 1 s later.
 
+### Remote viewers
+
+A viewer on another machine reads the emulator at the machine's remote cap
+(Settings › Android devices, `remoteBitrateKbpsCap` in the machine
+preferences, 2500 kbit/s by default). A viewer on the emulator's own machine
+is never capped. This is the same rule as Apple's
+`apple.remoteBitrateKbpsCap`. Remote viewers are a phone or a web tab through
+the stream relay, and a desktop pinned to the machine (it passes
+`remoteViewer` on `startStream`, `stopStream` and `getStreamStatus`).
+
+The emulator has only a software encoder, so ADE runs **one encode per
+emulator, never two** (`androidLaneStreams.ts`). The lane's stream has
+holders: the local viewer, a recording, the relay, and a remote desktop. Its
+rate follows them:
+
+- A local viewer or a recording holds it: full rate (4 Mbps). The local
+  picture and the recording are never capped.
+- Only remote viewers hold it: the remote cap. When a paced viewer stalls, the
+  relay's pacing (`appleStreamPacing.ts`) lowers the cap to 60% (at most once
+  every 2 s, not below 400 kbit/s). After 15 s with no stall it raises it by a
+  quarter every 10 s, back to the cap.
+
+scrcpy cannot change a running encoder's rate. So a rate change ends the scrcpy
+session and opens a new one on the same transport (`AndroidStreamHub.recap`).
+Each viewer keeps its URL and gets the new run's config and keyframe after a
+gap of about 0.5–1 s (we measured 0.5–0.8 s on an idle emulator and 3.7 s on
+one with a busy system UI). A local viewer that joins a capped stream gets
+full rate before its first frame. A recording that starts on a capped stream
+also gets full rate before its first packet. A remote viewer that joins a
+stream a local viewer already watches gets that full-rate stream; the relay
+still skips frames for a viewer that falls behind.
+
+Why not a second encode for remote viewers: it doubles the encoder's CPU
+while both kinds of viewer watch. That is too much on a 4 vCPU Linux host
+(Agent 37), where the emulator already shares the CPU with its own software
+encoder. A cheaper second encode at a lower size would also need a second
+input path and a second keyframe cache. One encode keeps the cost of one
+viewer, wherever it is. The trade-off: while someone on the machine watches
+or records, remote viewers get the full-rate stream with frame skipping, not
+the cap.
+
+The desktop's live line shows the received bit rate for a viewer on another
+machine (`● Live · 30 fps · 1.8 Mbit/s · on <machine>`). `getStreamStatus`
+answers `bitrateKbps` (sent over the last 2 s) and `capKbps` (the encoder's
+setting now).
+
 A stream that ends by itself (the server crashed, the system UI restarted)
 starts again on the same transport, so a viewer keeps its URL. After 3
 restarts in 60 s it stays down, and `status` says why.
@@ -905,6 +1081,7 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/main/services/android/scrcpyServer.ts`, `scrcpyVideo.ts`, `scrcpyControl.ts` | The scrcpy session, video records and control messages. |
 | `apps/desktop/src/main/services/android/androidActionDomain.ts` | The `android_emulator` action domain. |
 | `apps/desktop/src/main/services/android/androidMemoryGuard.ts`, `androidCrashWatch.ts` | P2: the RAM guard (the check before each start, with the machine-wide count of boots in flight), and the crash-buffer reader behind the crash pin. |
+| `apps/desktop/src/shared/types/androidEmulatorControl.ts`, `apps/desktop/src/main/services/android/androidAppState.ts`, `androidInspect.ts`, `androidLaneMaintenance.ts`, `androidChromeSetup.ts` | Parity with `ade apple`: the key names and modifiers, intent extras, app state and the app in front, Inspect's packet and source search, the idle power-off and cleanup pass, and Chrome's first run. |
 | `apps/desktop/src/main/services/android/androidAgentSuite.ts`, `androidJdk.ts` | The agent verbs (elements, apps, logcat, proof, lease), and the JDK that Gradle runs with. |
 | `apps/desktop/src/main/services/android/androidSystemImages.ts`, `apps/desktop/src/shared/types/androidEmulatorImages.ts` | P3: the system image list, install (on the guided install's job) and removal, and their types. |
 | `apps/desktop/src/main/services/android/androidInstrumentationTests.ts`, `apps/desktop/src/shared/types/androidEmulatorInstrumentation.ts` | P3: `ade android test`: the Gradle run, the JUnit XML and Gradle-output readers, and their types. |
@@ -913,7 +1090,8 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/main/services/android/androidComposePreviews.ts`, `apps/desktop/src/shared/types/androidEmulatorPreviews.ts` | P3: `ade android preview`: the Android CLI runs, the module check, the proof filing, and their types. |
 | `apps/desktop/src/main/services/android/androidUiSnapshot.ts`, `androidUiTree.ts` | The UI tree (the Android CLI, or uiautomator), its cache, and the element queries. |
 | `apps/desktop/src/main/services/android/androidRecordingSession.ts`, `androidRecording.ts` | The lane's recording sessions, and the MP4 writer and store. |
-| `apps/desktop/src/main/services/android/androidDeviceSettings.ts` | The Tools drawer's settings read and its changes, the app in front, and location, appearance and permissions. |
+| `apps/desktop/src/main/services/android/androidDeviceSettings.ts` | The Tools drawer's settings read and its changes (accessibility too), the app in front, the orientation, location and Clear location, the status bar (demo mode), appearance and permissions. |
+| `apps/desktop/src/main/services/android/androidStoreShots.ts`, `androidWindows.ts`, `apps/desktop/src/shared/types/androidEmulatorDevice.ts`, `apps/ade-cli/src/cliAndroidDevice.ts` | Parity: Play Store screenshots, the window layout, their types, and the CLI verbs for accessibility, status bar, Clear location, Play Store screenshots and windows. |
 | `apps/desktop/src/main/services/android/androidDeviceShell.ts`, `androidProof.ts` | Device shell, adb and emulator console helpers, and the proof filer. |
 | `apps/desktop/src/main/services/android/adb.ts`, `androidEmulatorErrors.ts` | The adb runner and the coded errors. |
 | `apps/desktop/src/renderer/components/android/AndroidDevicePane.tsx` | The pane: picker, stage, rail, drawer, strips and live line. |

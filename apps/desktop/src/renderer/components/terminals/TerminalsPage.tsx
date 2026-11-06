@@ -25,6 +25,7 @@ import { AppleDeviceMiniPlayer } from "../apple/AppleDeviceMiniPlayer";
 import { AndroidDeviceMiniPlayer } from "../android/AndroidDeviceMiniPlayer";
 import { useWorkShowRequests } from "./useWorkShowRequests";
 import { AppleShutdownConfirmHost } from "../apple/AppleShutdownConfirm";
+import { AndroidShutdownConfirmHost } from "../android/AndroidShutdownConfirm";
 import { MacDesktopStopConfirmHost } from "../chat/MacDesktopStopConfirm";
 import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
 import { useRemoteDeviceTabs } from "./useRemoteDeviceTabs";
@@ -1869,6 +1870,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               renders nothing until something asks.
             */}
             <AppleShutdownConfirmHost />
+            <AndroidShutdownConfirmHost />
             {/* The Mac Desktop tab's "Stop Mac Desktop?", for the same reason. */}
             <MacDesktopStopConfirmHost />
           </div>

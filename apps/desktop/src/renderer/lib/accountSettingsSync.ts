@@ -225,6 +225,18 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
     "account",
     { perDevice: true },
   ),
+  // Android's 3D body is per computer too, kept as Apple's is. The other
+  // Android device choices are not here: they belong to the machine that runs
+  // the emulator and live in its brain (`AndroidMachinePreferences`).
+  pref(
+    "android.realisticBody",
+    (state) => state.androidDevice.realisticBody,
+    (state, value) => {
+      if (typeof value === "boolean") state.setAndroidDevicePreferences({ realisticBody: value });
+    },
+    "account",
+    { perDevice: true },
+  ),
 ] as const;
 
 export type AccountSettingsApi = {

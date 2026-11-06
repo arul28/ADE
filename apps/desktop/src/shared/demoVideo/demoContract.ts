@@ -65,7 +65,7 @@ export const DEMO_ACTION_MAX_SECONDS = 10;
 // The track: what the brain logs while a recording runs
 // ---------------------------------------------------------------------------
 
-export type DemoSurface = "apple" | "mac-desktop" | "app-control" | "browser";
+export type DemoSurface = "apple" | "android" | "mac-desktop" | "app-control" | "browser";
 
 /** A rectangle in normalized source coordinates: x, y, width, height, each 0..1. */
 export type DemoRect = [number, number, number, number];
