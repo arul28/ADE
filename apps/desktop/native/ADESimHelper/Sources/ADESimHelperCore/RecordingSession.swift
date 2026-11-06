@@ -71,10 +71,15 @@ actor RecordingSession {
     private let fps: Int
     private let overlaysEnabled: Bool
     private let accent: RecordingOverlay.Colour
-    private let metrics: DeviceMetrics
 
     private var unsubscribe: (@Sendable () async -> Void)?
     private var pacer: Task<Void, Never>?
+
+    /// Quarter turns clockwise that make the live panel's framebuffer upright
+    /// — the pane's `appleScreenRotation`. `DeviceSession` sets it at the
+    /// start and again on every fold, so the file shows what a viewer of the
+    /// live stream sees rather than the raw framebuffer.
+    private var screenTurns = 0
 
     private var latestJPEG: Data?
     private var decoded: (payload: Data, image: CGImage)?
@@ -113,14 +118,12 @@ actor RecordingSession {
         fps: Int,
         overlays: Bool,
         accent: RecordingOverlay.Colour,
-        metrics: DeviceMetrics,
         idleCompression: Bool = true
     ) {
         self.path = path
         self.fps = min(max(fps, 1), 60)
         self.overlaysEnabled = overlays
         self.accent = accent
-        self.metrics = metrics
         self.idle = IdleGapCompressor(enabled: idleCompression)
     }
 
@@ -190,18 +193,27 @@ actor RecordingSession {
         )
     }
 
+    /// Tell the recorder how the live panel stands, in quarter turns
+    /// clockwise. Called before the first frame and again on every fold or
+    /// turn; any integer is accepted and folded into 0...3.
+    func setScreenTurns(_ turns: Int) {
+        screenTurns = ((turns % 4) + 4) % 4
+    }
+
     /// True while the pacer is running — used by `DeviceSession` to answer
     /// "is this device recording" without a second piece of state.
     var isRunning: Bool { !stopped && unsubscribe != nil }
 
     // MARK: - Overlay input
 
-    func noteTap(point: DevicePoint) {
+    /// `normalized` is a 0..1 fraction of the panel that was showing when the
+    /// tap landed. `DeviceSession` converts it, because its metrics follow a
+    /// fold and these do not.
+    func noteTap(normalized: CGPoint) {
         // Input is activity even with overlays off: the moment around a tap is
         // what a reviewer wants to see.
         noteActivity()
         guard overlaysEnabled else { return }
-        let normalized = metrics.normalize(point)
         timeline.addTap(x: Double(normalized.x), y: Double(normalized.y), at: Self.now())
     }
 
@@ -243,7 +255,12 @@ actor RecordingSession {
         guard let image = decode(jpeg) else { return }
 
         if writer == nil {
-            guard prepareWriter(width: image.width, height: image.height) else { return }
+            // The upright size, not the framebuffer's: a recording that starts
+            // on the Duo's inner panel is a landscape picture in a portrait
+            // buffer, and sizing the file from the buffer would letterbox it
+            // for its whole length.
+            let size = uprightSize(of: image)
+            guard prepareWriter(width: Int(size.width), height: Int(size.height)) else { return }
             sessionStartedAt = now
         }
         guard
@@ -454,17 +471,88 @@ actor RecordingSession {
         // The cost is that CoreGraphics y grows upward while the wire's y
         // grows downward, so every overlay converts once, at the call site,
         // through `flipY`.
-        context.interpolationQuality = .none
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        // The writer's size is fixed by the first frame, and a fold mid-
+        // recording hands us the other panel, at its own size and on its own
+        // side. Turn it upright and fit it into the frame instead of
+        // stretching it into one: an unfolded Duo used to land sideways AND
+        // squashed. The bars are painted every time, because a buffer out of
+        // the pool still holds the frame it was last used for.
+        let canvas = CGRect(x: 0, y: 0, width: width, height: height)
+        let picture = Self.fit(uprightSize(of: image), in: canvas)
+        context.interpolationQuality = picture == canvas && screenTurns == 0 ? .none : .medium
+        if picture != canvas {
+            context.setFillColor(gray: 0, alpha: 1)
+            context.fill(canvas)
+        }
+        if screenTurns == 0 {
+            context.draw(image, in: picture)
+        } else {
+            // Turn about the picture's centre, then draw the framebuffer's own
+            // box into the turned space. The angle is negative because this
+            // context treats memory row 0 as the top (see the note above), so
+            // its positive direction is the opposite of the clockwise quarter
+            // turns `appleScreenRotation` counts.
+            let box = screenTurns % 2 == 1
+                ? CGSize(width: picture.height, height: picture.width)
+                : CGSize(width: picture.width, height: picture.height)
+            context.saveGState()
+            context.translateBy(x: picture.midX, y: picture.midY)
+            context.rotate(by: -Double(screenTurns) * .pi / 2)
+            context.draw(image, in: CGRect(
+                x: -box.width / 2, y: -box.height / 2, width: box.width, height: box.height
+            ))
+            context.restoreGState()
+        }
 
         guard overlaysEnabled, !timeline.isEmpty else { return buffer }
-        drawRings(in: context, width: width, height: height, at: time)
-        drawBadge(in: context, width: width, height: height, at: time)
+        drawRings(in: context, picture: picture, at: time)
+        drawBadge(in: context, picture: picture, at: time)
         return buffer
     }
 
-    private func drawRings(in context: CGContext, width: Int, height: Int, at time: TimeInterval) {
-        let shortSide = Double(min(width, height))
+    /// A framebuffer's size once the panel's turn is applied — the picture as
+    /// a viewer sees it, which is what the file is sized and framed by.
+    private func uprightSize(of image: CGImage) -> CGSize {
+        screenTurns % 2 == 1
+            ? CGSize(width: image.height, height: image.width)
+            : CGSize(width: image.width, height: image.height)
+    }
+
+    /// The largest centred rect inside `canvas` with the picture's proportions.
+    ///
+    /// Exactly `canvas` when the sizes already match, which is every frame of
+    /// every recording that does not change panel — so the common path draws
+    /// the same pixels it always did.
+    private static func fit(_ picture: CGSize, in canvas: CGRect) -> CGRect {
+        guard picture.width > 0, picture.height > 0 else { return canvas }
+        let scale = min(canvas.width / picture.width, canvas.height / picture.height)
+        let size = CGSize(width: picture.width * scale, height: picture.height * scale)
+        return CGRect(
+            x: canvas.minX + (canvas.width - size.width) / 2,
+            y: canvas.minY + (canvas.height - size.height) / 2,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    /// A tap's framebuffer fraction, in the upright picture's own space.
+    ///
+    /// Both are top-down. A ring is recorded against the panel the tap landed
+    /// on, and the picture is drawn turned, so without this a tap after a fold
+    /// draws its ring a quarter turn away from the finger.
+    private func upright(x: Double, y: Double) -> (x: Double, y: Double) {
+        switch screenTurns {
+        case 1: return (1 - y, x)
+        case 2: return (1 - x, 1 - y)
+        case 3: return (y, 1 - x)
+        default: return (x, y)
+        }
+    }
+
+    /// Decorations are placed in `picture`, not in the frame: a letterboxed
+    /// fold would otherwise put a tap ring in the black bar beside the device.
+    private func drawRings(in context: CGContext, picture: CGRect, at time: TimeInterval) {
+        let shortSide = min(picture.width, picture.height)
         for ring in timeline.rings {
             let progress = RecordingOverlay.progress(
                 age: time - ring.startedAt,
@@ -472,9 +560,10 @@ actor RecordingSession {
             )
             let radius = RecordingOverlay.ringRadius(progress: progress, frameShortSide: shortSide)
             // `ring.y` is a top-down fraction, CoreGraphics is bottom-up.
+            let point = upright(x: ring.x, y: ring.y)
             let centre = CGPoint(
-                x: ring.x * Double(width),
-                y: (1 - ring.y) * Double(height)
+                x: picture.minX + point.x * picture.width,
+                y: picture.minY + (1 - point.y) * picture.height
             )
 
             let ringAlpha = RecordingOverlay.ringOpacity(progress: progress)
@@ -502,7 +591,7 @@ actor RecordingSession {
         }
     }
 
-    private func drawBadge(in context: CGContext, width: Int, height: Int, at time: TimeInterval) {
+    private func drawBadge(in context: CGContext, picture: CGRect, at time: TimeInterval) {
         guard let badge = timeline.badge else { return }
         let progress = RecordingOverlay.progress(
             age: time - badge.startedAt,
@@ -511,7 +600,7 @@ actor RecordingSession {
         let alpha = RecordingOverlay.badgeOpacity(progress: progress)
         guard alpha > 0.01 else { return }
 
-        let shortSide = Double(min(width, height))
+        let shortSide = min(picture.width, picture.height)
         let fontSize = max(shortSide * 0.032, 12)
         let font = CTFontCreateWithName("Menlo-Bold" as CFString, fontSize, nil)
         let attributes: [CFString: Any] = [
@@ -528,13 +617,13 @@ actor RecordingSession {
         let textWidth = CTLineGetTypographicBounds(line, nil, nil, nil)
 
         let padX = fontSize * 0.7
-        let pillWidth = min(textWidth + padX * 2, Double(width) * 0.92)
+        let pillWidth = min(textWidth + padX * 2, picture.width * 0.92)
         let pillHeight = fontSize * 1.75
         // Above the home indicator, not on it: a badge that sits on the gesture
         // bar is unreadable on every modern device. CoreGraphics y is measured
         // from the bottom, so this inset is the pill's distance from it.
-        let pillY = Double(height) * 0.10
-        let pillX = (Double(width) - pillWidth) / 2
+        let pillY = picture.minY + picture.height * 0.10
+        let pillX = picture.minX + (picture.width - pillWidth) / 2
         let pill = CGRect(x: pillX, y: pillY, width: pillWidth, height: pillHeight)
 
         context.setFillColor(red: 0.04, green: 0.05, blue: 0.07, alpha: alpha * 0.82)

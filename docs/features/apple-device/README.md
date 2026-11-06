@@ -685,7 +685,12 @@ one second. A recording that starts its own capture (`record-start` with no
 live view, the headless agent case) does the same before its first frame and
 then starts the posture watcher: a capture engine starts on the device's
 largest surface, which on a folded Duo is the dark inner panel, so without it
-the whole file came out black at the inner panel's size.
+the whole file came out black at the inner panel's size. A fold *during* a
+recording is followed too: `AVAssetWriter` fixes the frame size at the first
+frame, so the other panel is turned upright by its own quarter turn (the same
+`appleScreenRotation` the live view uses) and fitted inside that frame rather
+than stretched into it, with the overlays placed on the picture rather than
+the frame. A recording that never changes panel is drawn exactly as before.
 
 **Apple's Duo skill.** The Duo menu's **Add Apple's Duo skill to this lane**
 (`addDuoSkill`, `ade apple duo-skill`) exports Xcode's agent skills

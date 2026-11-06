@@ -278,9 +278,12 @@ public actor DeviceSession {
             fps: fps,
             overlays: overlays,
             accent: RecordingOverlay.parseColour(accentColor) ?? RecordingOverlay.defaultAccent,
-            metrics: metrics,
             idleCompression: idleCompression
         )
+        // Before `start`, which begins the pacer and the frame consumer: a
+        // frame composited with the turn still at zero would be drawn sideways
+        // and, worse, would fix the file's size for the whole recording.
+        if await isFoldable() { await session.setScreenTurns(await readScreenTurns(nil)) }
         do {
             try await session.start(engine: engine)
         } catch {
@@ -323,7 +326,11 @@ public actor DeviceSession {
     /// recording — ADE sends these alongside every injected input and should
     /// not have to track whether a recording is live.
     public func overlayTap(point: DevicePoint) async {
-        await recording?.noteTap(point: point)
+        // Normalised here, against the panel showing now: the recording holds
+        // no metrics of its own, so a tap after a fold lands on the panel the
+        // viewer is looking at rather than the one the recording started on.
+        guard let recording else { return }
+        await recording.noteTap(normalized: metrics.normalize(point))
     }
 
     public func overlayText(_ text: String) async {
@@ -372,6 +379,17 @@ public actor DeviceSession {
             let live = await DevicePosture.displays(udid: udid).first(where: \.active)
         else { return }
         _ = await applyActiveScreen(live.screenID)
+    }
+
+    /// Tell a running recording how the live panel stands now.
+    ///
+    /// Separate from `applyActiveScreen` because the panel does not have to
+    /// change for the answer to: a Duo turned in the hand reports a new
+    /// orientation for the same screen, and a recording that kept the old turn
+    /// would write the rest of the file on its side.
+    public func refreshRecordingScreenTurns() async {
+        guard let recording, await isFoldable() else { return }
+        await recording.setScreenTurns(await readScreenTurns(nil))
     }
 
     /// The panel CoreDevice reports active: capture it, route input to it, and
