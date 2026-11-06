@@ -1,13 +1,5 @@
 import type { AndroidSdkInstallState } from "../../../shared/types/androidEmulator";
 
-/** `16 MB`, `2.2 GB`: decimal units, as Google's download pages print them. */
-export function formatAndroidBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 MB";
-  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(bytes >= 1e10 ? 0 : 1)} GB`;
-  if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1e3))} KB`;
-}
-
 /** `40 s left`, `3 min left`, or null before the speed is known. */
 export function formatAndroidTimeLeft(seconds: number | null): string | null {
   if (seconds === null || !Number.isFinite(seconds)) return null;

@@ -40,6 +40,7 @@ import {
   ANDROID_TILE_FOCUS_RING,
   type AndroidCatalogCreateOptions,
 } from "./AndroidCatalogGrid";
+import { formatAndroidBytes } from "../../../shared/androidFormat";
 
 /**
  * The Android pane's front door, in the Apple picker's place and classes:
@@ -411,7 +412,7 @@ function AvdCard({
 
 function sizeLabel(bytes: number | null): string | null {
   if (bytes == null || !Number.isFinite(bytes) || bytes <= 0) return null;
-  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1e6))} MB`;
+  return formatAndroidBytes(bytes);
 }
 
 function AvdMenu({

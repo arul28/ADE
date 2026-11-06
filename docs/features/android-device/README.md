@@ -938,6 +938,7 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/renderer/webclient/adapter/androidDevice.ts`, `streamTicket.ts` | P2: the hosted web client's `androidEmulator` namespace, and the relay ticket helpers it shares with `appleDevice.ts` (one ticket for each stream URL). |
 | `apps/ios/ADE/Views/Work/AndroidDeviceViewer.swift`, `AndroidDeviceViewerModel.swift`, `apps/ios/ADE/Services/SyncService+AndroidDevice.swift` | P2: the phone viewer, its control model, and the `android.*` commands it sends. The stream itself is `AppleStreamSession.swift`, and the touch rules are `LiveStageTouch` in `LiveStageChrome.swift`, both shared with the simulator viewer. |
 | `apps/desktop/src/renderer/components/terminals/useRemoteDeviceTabs.ts` | The tab that joins the open pane for a remote device use (iOS and Android). |
+| `apps/desktop/src/shared/androidFormat.ts` | `formatAndroidBytes`: decimal sizes (`2.8 GB`), shared by the desktop and the `ade android` CLI so a size reads the same in both. |
 | `apps/ade-cli/src/cliAndroid.ts`, `cliAndroidSuite.ts`, `cliAndroidFormat.ts` | `ade android` plans and error hints (P0 verbs in `cliAndroid.ts`; the P1 agent, P3 and `sdk` verbs in `cliAndroidSuite.ts`), and its text formatters. The help page is in `cli.ts`. |
 | `apps/ade-cli/src/services/sync/androidRemoteCommands.ts` | The `android.*` remote commands a phone or a web tab sends. |
 | `apps/desktop/resources/android/` | The scrcpy server jar, its licence and its README. |
