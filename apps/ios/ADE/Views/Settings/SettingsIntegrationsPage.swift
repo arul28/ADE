@@ -1,4 +1,7 @@
+import OSLog
 import SwiftUI
+
+private let settingsIntegrationsLog = Logger(subsystem: "com.ade.ios", category: "SettingsIntegrations")
 
 /// Settings › Integrations: what the connected machine is connected to, in the
 /// desktop's order (`integrations/IntegrationsHome.tsx`): GitHub, Linear,
@@ -183,6 +186,7 @@ struct SettingsIntegrationsPage: View {
       github = IntegrationSummary(github: status)
       githubRepo = status.repo.map { "\($0.owner)/\($0.name)" }
     } catch {
+      settingsIntegrationsLog.warning("GitHub status read failed: \(error.localizedDescription, privacy: .public)")
       github = .couldNotCheck
     }
   }
@@ -198,6 +202,7 @@ struct SettingsIntegrationsPage: View {
     do {
       jira = IntegrationSummary(jira: try await syncService.fetchJiraSettingsStatus())
     } catch {
+      settingsIntegrationsLog.warning("Jira status read failed: \(error.localizedDescription, privacy: .public)")
       jira = .couldNotCheck
     }
   }
@@ -212,9 +217,12 @@ struct SettingsIntegrationsPage: View {
       )
     } catch {
       // The same test the Agent 37 pane uses for "no key on the account".
-      agent37 = error.localizedDescription.localizedCaseInsensitiveContains("connect agent 37")
-        ? .notConnected
-        : IntegrationSummary(label: "Couldn't reach Agent 37", tone: .warn)
+      if error.localizedDescription.localizedCaseInsensitiveContains("connect agent 37") {
+        agent37 = .notConnected
+      } else {
+        settingsIntegrationsLog.warning("Agent 37 status read failed: \(error.localizedDescription, privacy: .public)")
+        agent37 = IntegrationSummary(label: "Couldn't reach Agent 37", tone: .warn)
+      }
     }
   }
 }

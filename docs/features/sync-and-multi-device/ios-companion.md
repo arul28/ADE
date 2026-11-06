@@ -612,7 +612,11 @@ apps/ios/
 │   │   │                            # HubComposerFleetDestination (composer
 │   │   │                            #   destinations on other live machines),
 │   │   │                            # HubScreen+ChatNavigation (chat open +
-│   │   │                            #   cross-project quick look). HubComponents
+│   │   │                            #   cross-project quick look),
+│   │   │                            # HubHeaderRow (the header row and its
+│   │   │                            #   tiers: on the Duo's outer display it
+│   │   │                            #   sits in the band beside the clock, with
+│   │   │                            #   the machines as one glyph). HubComponents
 │   │   │                            #   gives the projectless Chats button a
 │   │   │                            #   small count badge for personal chats
 │   │   │                            #   awaiting input and an equivalent
@@ -877,9 +881,17 @@ apps/ios/
 │   │   │                            # CreatePrWizardView,
 │   │   │                            # PrTargetBranchPickerDropdown,
 │   │   │                            # PrDetailOverviewPreviews (preview fixtures)
-│   │   ├── Settings/                # ConnectionSettingsView (connection header
-│   │   │                            #   plus Account, Preferences, repository,
-│   │   │                            #   and this-device groups),
+│   │   ├── Settings/                # ConnectionSettingsView (the settings
+│   │   │                            #   list, grouped like the desktop: General,
+│   │   │                            #   You, App, Project, System; each page has
+│   │   │                            #   back and close), SettingsRoute (the
+│   │   │                            #   pages, their titles and subtitles, and
+│   │   │                            #   SettingsPageCopy with the shared save
+│   │   │                            #   helper), SettingsGeneralPage,
+│   │   │                            #   SettingsChatPage, SettingsProvidersPage,
+│   │   │                            #   SettingsIntegrationsPage,
+│   │   │                            #   SettingsLanesPage (read and write the
+│   │   │                            #   desktop's settings through the machine),
 │   │   │                            # SettingsMachinesSection
 │   │   │                            #   (reachable-machine list: top 3 + See all),
 │   │   │                            # SettingsMachineRenameSheet (account-wide
@@ -1228,6 +1240,12 @@ iPhone are `compact` and use the same views stacked, never an older design.
   the live stage over the pane or the whole display, never inside the chat,
   so it survives folding and placement changes; placement is per posture and
   remembered. See [Apple device: the phone](../apple-device/README.md#the-phone-watch-and-control).
+- **Settings.** Held landscape on the inner display, Settings shows the
+  list and the picked page side by side (`DuoSettingsSplit`): two stacks,
+  not a `NavigationSplitView`, because the split keeps a pushed page on top
+  when another row is picked. A pick rebuilds the page column, and the page
+  is built from the row's title, so it shows current values. The settings
+  rows and page shell are in `ADEKitSettings.swift`.
 - **Lists and details.** Lanes, PRs and Files use `DuoSplitScaffold`: list
   column and detail side by side when wide, the list behind the detail
   (with a Back chevron) on a phone.
