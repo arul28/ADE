@@ -264,6 +264,12 @@ public actor DeviceSession {
         if engine == nil {
             _ = try await startCapture(fps: fps, scale: 1, bitrateKbps: nil)
             captureOwnedByRecording = true
+            // The engine starts on the largest surface, which on a folded
+            // foldable is the dark inner panel: every frame of the file would
+            // be black, at a size nobody is looking at. The runtime starts
+            // the posture watcher after this, so a fold mid-recording still
+            // moves the capture with it.
+            await followLivePanel()
         }
         guard let engine else { throw SessionError.notCapturing }
 
@@ -327,10 +333,15 @@ public actor DeviceSession {
     // MARK: - Foldables
 
     /// The CoreDevice input path, for a device with a hinge; nil for every other device.
-    private func foldableInput() async -> FoldableInput? {
+    ///
+    /// `forceRecheck` skips the "no" window for a caller that cannot live with
+    /// a stale answer. It costs nothing for a device CoreDevice has already
+    /// answered about — the bridge caches a successful yes or no and only the
+    /// failed question is asked again.
+    private func foldableInput(forceRecheck: Bool = false) async -> FoldableInput? {
         if let foldable { return foldable }
         let now = ContinuousClock.now
-        if let checkedAt = foldableCheckedAt, now - checkedAt < Self.foldableRecheckInterval { return nil }
+        if !forceRecheck, let checkedAt = foldableCheckedAt, now - checkedAt < Self.foldableRecheckInterval { return nil }
         foldableCheckedAt = now
         if await CoreDeviceBridge.shared.supportsHingeAngle(udid: udid) {
             foldable = FoldableInput(udid: udid)
@@ -340,6 +351,27 @@ public actor DeviceSession {
 
     public func isFoldable() async -> Bool {
         await foldableInput() != nil
+    }
+
+    /// Point a capture that is not following the posture watcher yet at the
+    /// panel CoreDevice reports active.
+    ///
+    /// A capture engine starts on the device's largest surface, which on a
+    /// folded Duo is the dark inner panel, so anything that starts reading
+    /// frames before the watcher is behind it — a screenshot right after a
+    /// fold, a recording that starts its own capture — has to ask once.
+    /// A no-op for a device with no hinge.
+    private func followLivePanel() async {
+        // A fresh hinge question, not the cached "no": CoreDevice can fail it
+        // for a Duo that is still coming up, and a recording that accepts that
+        // answer writes its whole file on the dark panel — the runtime's own
+        // `isFoldable()` then skips the posture watcher too, so nothing later
+        // in the recording puts it right.
+        guard
+            await foldableInput(forceRecheck: true) != nil,
+            let live = await DevicePosture.displays(udid: udid).first(where: \.active)
+        else { return }
+        _ = await applyActiveScreen(live.screenID)
     }
 
     /// The panel CoreDevice reports active: capture it, route input to it, and
@@ -606,11 +638,7 @@ public actor DeviceSession {
         // panel before the posture watcher moved the capture to it, and the
         // old panel then sends nothing. Follow the live panel now rather than
         // time out on the dark one (ledger #2).
-        if await isFoldable(),
-           let live = await DevicePosture.displays(udid: udid).first(where: \.active),
-           live.screenID != activeScreenID {
-            _ = await applyActiveScreen(live.screenID)
-        }
+        await followLivePanel()
 
         let jpeg = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
             Task {

@@ -348,6 +348,10 @@ public actor SimHelperRuntime {
                     accentColor: accentColor,
                     idleCompression: idleCompression
                 )
+                // A foldable records its active panel (`startRecording`
+                // picked it), so keep following folds for the length of the
+                // recording, the way `capture-start` does.
+                if await session.isFoldable() { _ = await watchPosture(udid: udid) }
                 // Echoed so ADE can tell this helper from an older one, which
                 // ignores the field and records at wall-clock time.
                 emit(.ok(id: id, payload: ["path": path, "idleCompression": idleCompression]))
