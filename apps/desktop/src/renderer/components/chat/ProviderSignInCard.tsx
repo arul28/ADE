@@ -18,8 +18,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowSquareOut, Check, Copy, SpinnerGap } from "@phosphor-icons/react";
-import type { OpenProjectBinding } from "../../../shared/types";
-import type { KimiLoginRegion } from "../../../shared/types";
+import type { KimiLoginRegion, OpenProjectBinding } from "../../../shared/types";
 import { isAntigravitySignInRunning } from "../../../shared/types/config";
 import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import { settingsEntryById } from "../../../shared/settingsManifest";
@@ -115,6 +114,14 @@ type Flow = {
   email: string | null;
   message: string | null;
 };
+
+/**
+ * A sign-in that comes back to the machine's localhost finishes only in a
+ * browser on that machine; from another screen Codex asks for its device code.
+ */
+function browserOnHost(runsHere: boolean): boolean {
+  return runsHere && !isWebClientMode();
+}
 
 const IDLE: Flow = { phase: "idle", url: null, deviceCode: null, awaitingCode: false, email: null, message: null };
 
@@ -250,10 +257,7 @@ function useProviderSignInFlow(args: {
           });
           account = created.instance;
         }
-        // A sign-in that comes back to the machine's localhost cannot finish
-        // from another screen; Codex then asks for its device code.
-        const browserOnHost = runsHere && !isWebClientMode();
-        const next = await api.loginStart({ id: account.id, ...(browserOnHost ? {} : { deviceAuth: true }) });
+        const next = await api.loginStart({ id: account.id, ...(browserOnHost(runsHere) ? {} : { deviceAuth: true }) });
         applyHost(seq, next, true);
         return;
       }
@@ -451,6 +455,7 @@ export function ProviderSignInComposer({
       return;
     }
     setCode("");
+    setCopied(false);
     start(need.provider === "kimi" ? { kimiRegion: region } : undefined);
   }, [need.provider, onOpenSettings, region, spec.kind, start]);
 
@@ -462,7 +467,7 @@ export function ProviderSignInComposer({
     : spec.kind === "settings"
       ? `${spec.label} has no sign-in on ${machineName} yet. Set it up there, then send.`
       : `${spec.label} isn't signed in on ${machineName} yet.`;
-  const codexDeviceHint = need.provider === "codex" && !runsHere && flow.phase === "failed"
+  const codexDeviceHint = need.provider === "codex" && !browserOnHost(runsHere) && flow.phase === "failed"
     ? " If ChatGPT refused the code, turn on device code sign-in in ChatGPT's security settings, then try again."
     : "";
   const shownError = flow.phase === "failed" && flow.message ? `${flow.message}${codexDeviceHint}` : flow.message;

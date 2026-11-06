@@ -421,6 +421,12 @@ extension WorkSessionDestinationView {
     syncService.routedRemoteMachineChat(sessionId)?.machineKey ?? syncService.focusedMachineKey ?? "focused"
   }
 
+  /// The sign-in card may run here: a same-machine quick look at another
+  /// project's chat stays read-only until it activates, like its composer.
+  var providerSignInAllowed: Bool {
+    !(isCrossProject && !isRemoteMachineChat)
+  }
+
   /// The chat machine's connection, where a signed-out agent signs in again;
   /// nil for a chat on a machine the phone has no connection to, which must
   /// never sign in this one instead.
@@ -432,7 +438,10 @@ extension WorkSessionDestinationView {
 
   /// The chat's machine, by name, for the sign-in card.
   var providerSignInMachineName: String {
-    syncService.remoteChatConnection(for: sessionId)?.hostName ?? syncService.hostName ?? "this computer"
+    if let remote = syncService.remoteChatConnection(for: sessionId) { return remote.hostName ?? "its computer" }
+    // Another machine's chat with no connection to it: never this one's name.
+    if syncService.isRemoteMachineChat(sessionId: sessionId) { return "its computer" }
+    return syncService.hostName ?? "this computer"
   }
 
   /// Reads the chat machine's accounts for the account row, or nil when the

@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import type { IPty } from "node-pty";
 import type * as NodePty from "node-pty";
 import { stripAnsi } from "../../../shared/ansiStrip";
+import { captureProblem } from "../../../shared/sentry/capture";
 import { ensureNodePtySpawnHelperExecutable } from "../pty/nodePtySpawnHelper";
 import {
   killWindowsProcessTree,
@@ -53,7 +54,14 @@ function loadPty(): typeof NodePty {
 export function spawnLoginPty(command: string, args: string[], env: NodeJS.ProcessEnv): IPty {
   // The same repair a terminal makes first: a helper that lost its execute
   // bit fails every sign-in with "posix_spawnp failed".
-  ensureNodePtySpawnHelperExecutable();
+  const spawnHelperRepair = ensureNodePtySpawnHelperExecutable();
+  if (spawnHelperRepair.status === "failed") {
+    captureProblem("A sign-in's terminal helper could not be made executable", {
+      tags: { area: "cli_login_pty" },
+      extra: { path: spawnHelperRepair.path ?? "", error: spawnHelperRepair.error },
+      fingerprint: ["cli-login-pty", "spawn-helper-chmod-failed"],
+    });
+  }
   const invocation = resolveCliSpawnInvocation(command, args, env);
   // A cmd.exe wrapper carries one pre-quoted command line; node-pty must not
   // quote it again.

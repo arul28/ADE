@@ -777,6 +777,8 @@ struct WorkChatSessionView: View {
   /// Re-requests the transcript after a failed load. When nil the failure state
   /// renders without a Retry button rather than offering a dead control.
   var onRetryTranscript: (() -> Void)? = nil
+  /// False for a read-only quick look: no sign-in card there.
+  var providerSignInAllowed: Bool = true
   /// The connection to the chat's machine, where a signed-out agent signs in
   /// again. Nil when the phone cannot reach that machine.
   var providerSignInHost: ProviderAccountsHost? = nil
@@ -908,21 +910,33 @@ struct WorkChatSessionView: View {
   /// The failed turn whose signed-out agent the sign-in card is for, unless
   /// the person said not now to that one.
   var shownProviderSignInFailureId: String? {
-    guard !isStreamingTurn, !isPersonalChat,
+    guard providerSignInAllowed, !isStreamingTurn, !isPersonalChat,
           let id = workLatestSignInFailure(transcript, provider: chatSummaryContext.provider),
           id != dismissedSignInFailureId else { return nil }
     return id
   }
 
-  /// The turn that stopped on the sign-in sends again by itself.
+  /// The turn that stopped on the sign-in sends again by itself, with the
+  /// files it carried (the machine still holds them).
   func resendAfterSignIn() {
-    let lastUserText = transcript.reversed().lazy.compactMap { envelope -> String? in
-      guard case .userMessage(let text, _, _, _, _, _) = envelope.event,
-            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-      return text
+    let last = transcript.reversed().lazy.compactMap { envelope -> (String, [AgentChatFileRef])? in
+      guard case .userMessage(let text, let attachments, _, _, _, _) = envelope.event,
+            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || attachments?.isEmpty == false
+      else { return nil }
+      return (text, attachments ?? [])
     }.first
-    guard let lastUserText else { return }
-    Task { @MainActor in _ = await onSend(lastUserText, [], .queue) }
+    guard let last else { return }
+    let (text, refs) = last
+    let attachments = refs.map { ref in
+      WorkChatInputAttachment(
+        filename: workChatAttachmentDisplayName(ref),
+        mimeType: ref.type == "image" ? "image/jpeg" : "application/octet-stream",
+        kind: workChatAttachmentRefKind(ref),
+        hostRef: ref,
+        state: .ready
+      )
+    }
+    Task { @MainActor in _ = await onSend(text, attachments, .queue) }
   }
 
   var shouldShowInterruptControl: Bool {

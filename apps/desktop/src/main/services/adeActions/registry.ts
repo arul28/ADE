@@ -3805,7 +3805,8 @@ function buildExternalSessionsDomainService(runtime: AdeRuntime): OpaqueService 
 }
 
 export function buildProviderInstancesDomainService(
-  runtime: Pick<AdeRuntime, "productAnalyticsService" | "usageTrackingService">,
+  runtime: Pick<AdeRuntime, "productAnalyticsService" | "usageTrackingService">
+    & Partial<Pick<AdeRuntime, "aiIntegrationService" | "logger">>,
 ): OpaqueService {
   // Machine-local by nature: the registry names directories on THIS machine, so
   // the store is reached through its own ADE-home accessor rather than through
@@ -3903,7 +3904,21 @@ export function buildProviderInstancesDomainService(
       };
     },
     loginStatus(args: unknown) {
-      return { login: getMachineProviderLoginRunner().status(String((isRecord(args) ? args.loginId : "") ?? "")) };
+      const login = getMachineProviderLoginRunner().status(String((isRecord(args) ? args.loginId : "") ?? ""));
+      // Signing in unlocks models, and a turn that failed on the sign-in left
+      // the provider marked signed out: drop both, or the next send (a chat's
+      // automatic resend) is refused. The IPC handler does the same.
+      if (login.state === "succeeded") {
+        try {
+          runtime.aiIntegrationService?.invalidateProviderReadinessCaches();
+        } catch (error) {
+          runtime.logger?.warn("provider_instances.login_cache_invalidation_failed", {
+            provider: login.provider,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      return { login };
     },
     loginSubmitCode(args: unknown) {
       const input = isRecord(args) ? args : {};

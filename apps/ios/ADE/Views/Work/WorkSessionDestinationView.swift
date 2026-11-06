@@ -2478,6 +2478,7 @@ struct WorkSessionDestinationView: View {
       onRetryTranscript: {
         thread.retry()
       },
+      providerSignInAllowed: providerSignInAllowed,
       providerSignInHost: providerSignInHost,
       providerSignInMachineName: providerSignInMachineName,
       providerSignInInstanceId: composerChatSummary?.instanceId,

@@ -150,8 +150,10 @@ final class WorkProviderSignInController: ObservableObject {
   }
 
   var signingIn: Bool { phase == .starting || phase == .waiting || phase == .verifying }
+  /// The phone has a connection to the chat's machine to sign in on.
+  var canReachMachine: Bool { host != nil }
 
-  func start() async {
+  func start(kimiRegion: String = "global") async {
     guard let host, !signingIn else { return }
     await stopOnHost()
     attempt += 1
@@ -179,7 +181,7 @@ final class WorkProviderSignInController: ObservableObject {
         apply(state: login.state, loginId: login.loginId, url: login.url, deviceCode: login.deviceCode, awaitingCode: login.awaitingCode, message: login.message)
       case .cli:
         var args: [String: Any] = ["provider": provider]
-        if provider == "kimi" { args["kimiRegion"] = "global" }
+        if provider == "kimi" { args["kimiRegion"] = kimiRegion }
         let raw = try await host.runProviderAccountsCommand("ai.cliLoginStart", args: args)
         guard current == attempt else { return }
         applyCli(raw)
@@ -366,6 +368,7 @@ struct WorkProviderSignInCard: View {
   @StateObject private var controller: WorkProviderSignInController
   @State private var code = ""
   @State private var copied = false
+  @State private var kimiRegion = "global"
 
   init(
     provider: String,
@@ -419,7 +422,14 @@ struct WorkProviderSignInCard: View {
         .fixedSize(horizontal: false, vertical: true)
 
       if controller.kind != .settings {
-        actionRow
+        if controller.canReachMachine {
+          actionRow
+        } else {
+          Text("The phone can't reach \(machineName) right now. Reconnect to it to sign in.")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+            .fixedSize(horizontal: false, vertical: true)
+        }
       }
 
       if let message = controller.message, !message.isEmpty {
@@ -498,9 +508,17 @@ struct WorkProviderSignInCard: View {
         }
       }
     } else {
+      if provider.lowercased() == "kimi" && !controller.signingIn {
+        Picker("Kimi account region", selection: $kimiRegion) {
+          Text("kimi.ai").tag("global")
+          Text("kimi.com (China)").tag("mainland-cn")
+        }
+        .pickerStyle(.segmented)
+      }
       HStack(spacing: 12) {
         Button {
-          Task { await controller.start() }
+          copied = false
+          Task { await controller.start(kimiRegion: kimiRegion) }
         } label: {
           HStack(spacing: 6) {
             if controller.signingIn || controller.phase == .done {

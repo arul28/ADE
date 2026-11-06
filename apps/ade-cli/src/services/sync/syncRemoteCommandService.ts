@@ -6594,6 +6594,8 @@ function registerProviderAccountRemoteCommands({ args, register }: RemoteCommand
   const domain = buildProviderInstancesDomainService({
     productAnalyticsService: args.productAnalyticsService,
     usageTrackingService: args.usageTrackingService,
+    aiIntegrationService: args.aiIntegrationService,
+    logger: args.logger,
   });
   for (const entry of createProviderAccountRemoteCommandHandlers(domain)) {
     register(entry.action, entry.policy, entry.handler, "runtime");

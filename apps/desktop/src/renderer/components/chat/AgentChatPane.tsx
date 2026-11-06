@@ -16726,11 +16726,14 @@ export function AgentChatPane({
     if (!need) return;
     // Hide at once; the status re-read below confirms it.
     setDismissedSignInKey(need.key);
-    void refreshAvailableModels({ force: true });
-    // The turn that stopped on the sign-in sends again by itself.
-    if (need.reason === "failed-turn" && selectedSessionId) {
-      void resendLastUserMessage(selectedSessionId, null, { afterSignIn: true });
-    }
+    void (async () => {
+      // The forced re-read also clears the machine's signed-out mark, so the
+      // turn that stopped on the sign-in sends again only after it.
+      await refreshAvailableModels({ force: true }).catch(() => undefined);
+      if (need.reason === "failed-turn" && selectedSessionId) {
+        void resendLastUserMessage(selectedSessionId, null, { afterSignIn: true });
+      }
+    })();
   }, [providerSignInShown, refreshAvailableModels, resendLastUserMessage, selectedSessionId]);
   const openSignInSettings = useCallback(() => {
     if (!providerSignInShown) return;
@@ -19538,7 +19541,7 @@ export function AgentChatPane({
                     ) : null}
                     {appPanelOpen ? (
                       <div className="shrink-0 border-t border-fg/[0.06]">
-                                          {composerStatusStrip}
+                        {composerStatusStrip}
                         {takeoverBanner}
                         {stalledTurnBanner}
                         {crossMachineMoveBanner}

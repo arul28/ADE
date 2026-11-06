@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import { AdeExpectedError } from "../../../shared/expectedError";
-import { ensureNodePtySpawnHelperExecutable } from "./nodePtySpawnHelper";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -64,6 +63,7 @@ import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import { isPtyOutputHeld, onPtyOutputHoldChange } from "./ptyOutputFlowControl";
 import { recordCliSessionsToReopen, type CliReopenEntry } from "./cliReopenAfterRestart";
+import { ensureNodePtySpawnHelperExecutable } from "./nodePtySpawnHelper";
 import { remoteWorkLaneIdFor } from "../remoteWork/remoteWorkCopyService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import {
@@ -273,7 +273,6 @@ export function materializeRuntimeCliLaunch(
     ...(options.spawnLineage ? { spawnLineage: options.spawnLineage } : {}),
   });
 }
-
 
 /** Interactive agent TUIs often hide useful text in an alt-screen, so titles come from the first submitted user prompt instead of startup output. */
 const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex", "cursor-cli", "droid", "opencode", "pi", "muse"]);
@@ -552,7 +551,6 @@ function setsOwnTermProgram(env: NodeJS.ProcessEnv, hostEnv: NodeJS.ProcessEnv =
   if (!hasEnvKey(env, "TERM_PROGRAM")) return false;
   return env.TERM_PROGRAM !== hostEnv.TERM_PROGRAM;
 }
-
 
 function withInteractiveTerminalColorEnv(
   env: NodeJS.ProcessEnv,
@@ -9537,5 +9535,3 @@ export function createPtyService({
   };
   return service;
 }
-
-export { ensureNodePtySpawnHelperExecutable, type NodePtySpawnHelperExecutableResult } from "./nodePtySpawnHelper";
