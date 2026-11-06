@@ -15,8 +15,9 @@ import { isWebClientMode } from "./webClientMode";
 const RELOAD_STAMP_KEY = "ade:stale-chunk-reload-at";
 const RELOAD_GUARD_MS = 60_000;
 
-// The host answers a missing chunk with the app's index.html (the SPA
-// fallback), so Safari fails on the MIME type, not the fetch (ADE-WEB-6).
+// The host's `/assets/*` worker answers a missing chunk with a 404. Before
+// it, the host sent the app's index.html (the SPA fallback), and Safari failed
+// on the MIME type, not the fetch (ADE-WEB-6); a browser can still hold that.
 const CHUNK_LOAD_FAILURE =
   /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module|Unable to preload CSS for|is not a valid JavaScript MIME type|Expected a JavaScript(?:-or-Wasm)? module script/i;
 
