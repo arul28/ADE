@@ -2853,6 +2853,8 @@ export type SyncRemoteCommandAction =
   | "lanes.listUnregisteredWorktrees"
   | "lanes.adoptAttached"
   | "lanes.rename"
+  | "lanes.renameBranch"
+  | "lanes.checkBranchName"
   | "lanes.updateAppearance"
   | "lanes.archive"
   | "lanes.unarchive"

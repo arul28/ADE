@@ -442,7 +442,8 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     });
   }
 
-  // ── Manage: last, because both entries open a surface that can delete.
+  // ── Manage: last, because Manage lane and its batch form open a surface
+  // that can delete (Rename branch only renames).
   const manage: LaneMenuEntry[] = [];
   if (lane && !isPrimary && lane.laneType === "worktree") {
     manage.push({

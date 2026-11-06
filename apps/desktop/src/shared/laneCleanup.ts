@@ -8,7 +8,7 @@ import { DEFAULT_CLEAN_BUILD_OUTPUT_AFTER_DAYS, type StorageLifecyclePolicy } fr
  */
 
 /** `freeUpSpaceAfterDays` when no file sets it: ask after two weeks, as the archive reminder always did. */
-export const DEFAULT_FREE_UP_SPACE_AFTER_DAYS = 14;
+const DEFAULT_FREE_UP_SPACE_AFTER_DAYS = 14;
 
 /** The archive reminder's and the stale-lane label's line when their rule is off. */
 const FALLBACK_STALE_DAYS = 14;
@@ -56,27 +56,47 @@ export function staleLaneDays(config: LaneCleanupConfig | null | undefined): num
 }
 
 /**
- * An archived lane whose folder is due to be freed up: archived at least
- * `freeUpSpaceAfterDays` ago. Computed, never stored, so changing the setting
- * moves every lane at once.
+ * Archived at least `days` days ago; never when `days` is 0 (the rule is off).
+ * Computed, never stored, so changing a setting moves every lane at once.
  */
-export function isFreeUpSpaceDue(
+export function archivedForDays(
   archivedAt: string | null | undefined,
-  policy: StorageLifecyclePolicy,
+  days: number,
   nowMs: number = Date.now(),
 ): boolean {
-  if (!archivedAt || policy.freeUpSpaceAfterDays <= 0) return false;
+  if (!archivedAt || days <= 0) return false;
   const archivedMs = Date.parse(archivedAt);
-  return Number.isFinite(archivedMs) && nowMs - archivedMs >= policy.freeUpSpaceAfterDays * DAY_MS;
+  return Number.isFinite(archivedMs) && nowMs - archivedMs >= days * DAY_MS;
 }
 
-/** An archived lane due for the automatic delete. */
-export function isAutoDeleteDue(
-  archivedAt: string | null | undefined,
+/**
+ * Where an archived lane stands on "Free up space", read the same way by the
+ * cleanup check, the storage page and Settings → Archive.
+ *
+ * - `due`: archived `freeUpSpaceAfterDays` ago and its folder is still there.
+ * - `waiting`: due, and a removal that found files in use is being retried.
+ * - `failed`: the last removal failed; it waits for a person.
+ * - `not_due`: anything else (not archived, the primary lane, the folder
+ *   already gone or freed up, not old enough, the rule off).
+ *
+ * Without `reclaimState` and `pendingRemoval`, only `due` or `not_due`.
+ */
+export type LaneFreeUpStatus = "not_due" | "due" | "waiting" | "failed";
+
+export function laneFreeUpStatus(
+  lane: {
+    archivedAt: string | null | undefined;
+    laneType: string;
+    folderPresent: boolean;
+    reclaimState?: string | null;
+    pendingRemoval?: boolean;
+  },
   policy: StorageLifecyclePolicy,
   nowMs: number = Date.now(),
-): boolean {
-  if (!archivedAt || policy.deleteArchivedAfterDays <= 0) return false;
-  const archivedMs = Date.parse(archivedAt);
-  return Number.isFinite(archivedMs) && nowMs - archivedMs >= policy.deleteArchivedAfterDays * DAY_MS;
+): LaneFreeUpStatus {
+  if (!lane.archivedAt || lane.laneType === "primary") return "not_due";
+  if (lane.reclaimState === "failed") return "failed";
+  if (lane.reclaimState === "reclaimed" || !lane.folderPresent) return "not_due";
+  if (!archivedForDays(lane.archivedAt, policy.freeUpSpaceAfterDays, nowMs)) return "not_due";
+  return lane.pendingRemoval ? "waiting" : "due";
 }

@@ -16,9 +16,7 @@ import type { AppResourceUsageSnapshot } from "../../../../shared/types";
 import { DELETED_LANE_CHATS_ITEM_ID } from "../../../../shared/types/storage";
 import type { ResourcePressureLevel } from "../../../lib/resourcePressure";
 import { COLORS } from "../../lanes/laneDesignTokens";
-import { formatBytes } from "../../../lib/format";
 import { formatStorageBytes } from "../../../../shared/formatting";
-export { formatBytes } from "../../../lib/format";
 export { formatStorageBytes } from "../../../../shared/formatting";
 
 /**
@@ -220,8 +218,8 @@ export function groupLaneItems(items: StorageItem[]): {
 // ===========================================================================
 
 /** Approximate size label, e.g. "~1.2 GB". Used for estimates the doctor will reclaim. */
-export function formatApproxBytes(bytes: number): string {
-  return `~${formatBytes(bytes)}`;
+export function formatApproxBytes(bytes: number, platform?: StoragePlatform): string {
+  return `~${formatStorageBytes(bytes, platform)}`;
 }
 
 /** The daemon-provided safe reclaim estimate, clamped to a positive number. */
@@ -340,13 +338,14 @@ export function ledgerLabel(ledgerId: string): string {
 /** One humanized line per maintenance action, largest reclaim first. */
 export function maintenanceActionLines(
   report: MaintenanceRunReport,
+  platform?: StoragePlatform,
 ): Array<{ ledgerId: string; label: string; detail: string; failed: boolean }> {
   return [...report.actions]
     .sort((a, b) => b.bytesReclaimed - a.bytesReclaimed)
     .map((action) => ({
       ledgerId: action.ledgerId,
       label: ledgerLabel(action.ledgerId),
-      detail: maintenanceActionDetail(action),
+      detail: maintenanceActionDetail(action, platform),
       failed: Boolean(action.error),
     }));
 }
@@ -371,10 +370,10 @@ export function maintenanceOutcome(report: MaintenanceRunReport, platform: Stora
   };
 }
 
-function maintenanceActionDetail(action: MaintenanceAction): string {
+function maintenanceActionDetail(action: MaintenanceAction, platform: StoragePlatform): string {
   if (action.error) return "couldn't finish";
   if (action.skippedReason) return "nothing to do";
-  if (action.bytesReclaimed > 0) return `reclaimed ${formatBytes(action.bytesReclaimed)}`;
+  if (action.bytesReclaimed > 0) return `reclaimed ${formatStorageBytes(action.bytesReclaimed, platform)}`;
   if (action.itemsAffected > 0) {
     return `${action.itemsAffected} ${action.itemsAffected === 1 ? "item" : "items"}`;
   }
@@ -416,10 +415,10 @@ export function formatRunClock(iso: string, now: Date = new Date()): string {
 }
 
 /** Headline for a maintenance run, e.g. "Yesterday 03:12 · reclaimed 481 MB". */
-export function maintenanceHeadline(report: MaintenanceRunReport, now?: Date): string {
+export function maintenanceHeadline(report: MaintenanceRunReport, now?: Date, platform?: StoragePlatform): string {
   const when = formatRunClock(report.finishedAt || report.startedAt, now);
   const reclaimed = report.reclaimedBytes > 0
-    ? `reclaimed ${formatBytes(report.reclaimedBytes)}`
+    ? `reclaimed ${formatStorageBytes(report.reclaimedBytes, platform)}`
     : "nothing to reclaim";
   return when ? `${when} · ${reclaimed}` : reclaimed;
 }

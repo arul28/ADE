@@ -4301,6 +4301,18 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     args.laneService.rename(parseRenameLaneArgs(payload));
     return { ok: true };
   });
+  register("lanes.renameBranch", { viewerAllowed: true }, async (payload) => {
+    const branchName = asTrimmedString(payload.branchName);
+    return args.laneService.renameBranch({
+      laneId: requireString(payload.laneId, "lanes.renameBranch requires laneId."),
+      ...(branchName ? { branchName } : {}),
+      ...(payload.dryRun === true ? { dryRun: true } : {}),
+    });
+  });
+  register("lanes.checkBranchName", { viewerAllowed: true }, async (payload) =>
+    args.laneService.checkBranchName({
+      name: requireString(payload.name, "lanes.checkBranchName requires name."),
+    }));
   register("lanes.updateAppearance", { viewerAllowed: true, queueable: true }, async (payload) => {
     args.laneService.updateAppearance(parseUpdateLaneAppearanceArgs(payload));
     return { ok: true };

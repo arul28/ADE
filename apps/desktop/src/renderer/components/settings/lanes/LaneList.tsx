@@ -64,7 +64,7 @@ export function LaneList({
   const [showAll, setShowAll] = React.useState(false);
   const [archiving, setArchiving] = React.useState(false);
   const reclaim = useLaneReclaim(pin, onChanged);
-  const { bytes: formatBytes } = useStorageBytes();
+  const { bytes: storageBytes } = useStorageBytes();
 
   const sizes = React.useMemo(() => sizeIndex(laneItems), [laneItems]);
   const sizeOf = React.useCallback(
@@ -109,7 +109,7 @@ export function LaneList({
     const count = selectedLanes.length;
     const confirmed = await confirmDialog({
       title: count === 1 ? `Archive ${selectedLanes[0]!.name}?` : `Archive ${count} lanes?`,
-      message: `${selectedBytes > 0 ? `Frees about ${formatBytes(selectedBytes)}. ` : ""}Their folders are removed; branches, chats and history are kept. You can restore any of them from the archive below.`,
+      message: `${selectedBytes > 0 ? `Frees about ${storageBytes(selectedBytes)}. ` : ""}Their folders are removed; branches, chats and history are kept. You can restore any of them from the archive below.`,
       confirmLabel: count === 1 ? "Archive lane" : `Archive ${count} lanes`,
     });
     if (!confirmed) return;
@@ -155,7 +155,7 @@ export function LaneList({
       tone: archived.length === 0 ? (failed.length > 0 ? "error" : "warning") : lines.length > 0 ? "warning" : "success",
       title: archived.length === 0
         ? "No lanes were archived"
-        : `Archived ${archived.length === 1 ? archived[0] : `${archived.length} lanes`}${freed > 0 ? `, freed ${formatBytes(freed)}` : ""}`,
+        : `Archived ${archived.length === 1 ? archived[0] : `${archived.length} lanes`}${freed > 0 ? `, freed ${storageBytes(freed)}` : ""}`,
       message: lines.length > 0 ? lines.join("\n") : "Branches and chats were kept.",
       durationMs: lines.length > 0 ? READABLE_TOAST_DURATION_MS : undefined,
     });
@@ -212,7 +212,7 @@ export function LaneList({
                 onClick={() => void archiveSelected()}
               >
                 {archiving ? <ArrowClockwise size={13} className="animate-spin" /> : <Archive size={13} />}
-                {`Archive ${selected.size === 1 ? "1 lane" : `${selected.size} lanes`}${selectedBytes > 0 ? ` · frees ${formatBytes(selectedBytes)}` : ""}`}
+                {`Archive ${selected.size === 1 ? "1 lane" : `${selected.size} lanes`}${selectedBytes > 0 ? ` · frees ${storageBytes(selectedBytes)}` : ""}`}
               </button>
             </>
           ) : null}

@@ -15,7 +15,7 @@ import { nonAsarFs } from "../shared/nonAsarFs";
 import { createLaneWorktreeLockService, LaneWorktreeLockedError } from "../lanes/laneWorktreeLockService";
 import { measureTree } from "./diskUsage";
 import { isDirectChildFolder, sameFolder } from "../shared/sameFolder";
-import { DELETING_TRASH_NAME, deletingTrashName } from "../shared/deletingTrash";
+import { deletingTrashName, isInUseError, removeTrashInBackground, sweepDeletingTrash } from "../shared/deletingTrash";
 import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
 import { gitLongPathArgs } from "../git/gitLongPaths";
 
@@ -189,10 +189,6 @@ function isSameOrWithin(parent: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
-// Shared with reclaim and the storage page: a lane git reports through a
-// junction or with another drive-letter case is still the lane.
-const isDirectChild = isDirectChildFolder;
-
 /** True when `target`, or any folder between `anchor` and it, is a link (or is missing). */
 async function hasLinkOnPath(anchor: string, target: string): Promise<boolean> {
   const root = path.resolve(anchor);
@@ -214,6 +210,16 @@ function gitRelToAbs(root: string, rel: string): string {
 
 function nulList(text: string): string[] {
   return text.split("\0").filter((entry) => entry.length > 0);
+}
+
+/**
+ * A failure likely gone by the next run: a file held open (EBUSY anywhere;
+ * EPERM / EACCES too on Windows, where a held file reads that way). Elsewhere
+ * those two mean the files aren't ours to remove, and stay that way.
+ */
+function isBriefHold(error: unknown): boolean {
+  const code = errorCode(error);
+  return code === "EBUSY" || (process.platform === "win32" && isInUseError(error));
 }
 
 /** A plain reason a folder could not be removed. */
@@ -408,14 +414,6 @@ async function removeFolder(folder: string, deadline: number): Promise<void> {
   }
 }
 
-/** What a folder held open by another program fails to rename or remove with. */
-const IN_USE_CODES = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"]);
-
-function isInUseError(error: unknown): boolean {
-  const code = errorCode(error);
-  return Boolean(code && IN_USE_CODES.has(code));
-}
-
 /**
  * The folder as it was when its removal failed. A failed folder is tried
  * again only once this changes (a reinstall, a build, the folder replaced),
@@ -425,16 +423,13 @@ function folderFingerprint(stat: fs.Stats): string {
   return `${stat.ino}:${Math.floor(stat.mtimeMs)}`;
 }
 
-const backgroundRemovals = new Set<string>();
-
 /** Removes a folder already moved out of the lane, off this process; a failure waits for the next sweep. */
-function removeTrashInBackground(trashPath: string, logger: Logger): void {
-  if (backgroundRemovals.has(trashPath)) return;
-  backgroundRemovals.add(trashPath);
-  void removeTreeOffProcess(trashPath)
-    .then(() => logger.info("storage.build_output_trash_removed", { path: trashPath }))
-    .catch((error) => logger.warn("storage.build_output_trash_remove_failed", { path: trashPath, error: errorMessage(error) }))
-    .finally(() => backgroundRemovals.delete(trashPath));
+function removeBuildTrashInBackground(trashPath: string, logger: Logger): void {
+  removeTrashInBackground(trashPath, {
+    remove: removeTreeOffProcess,
+    logger,
+    events: { done: "storage.build_output_trash_removed", failed: "storage.build_output_trash_remove_failed" },
+  });
 }
 
 /**
@@ -442,21 +437,12 @@ function removeTrashInBackground(trashPath: string, logger: Logger): void {
  * ADE's own `.ade-deleting-` names with no git checkout inside (a renamed
  * lane folder still known to git is not trash).
  */
-async function sweepBuildOutputTrash(worktreesDir: string, logger: Logger): Promise<void> {
-  let names: string[];
-  try {
-    names = await nonAsarFs.promises.readdir(worktreesDir);
-  } catch {
-    return;
-  }
-  for (const name of names) {
-    if (!DELETING_TRASH_NAME.test(name) || !name.includes(BUILD_TRASH_MARK)) continue;
-    const trashPath = path.join(worktreesDir, name);
-    const stat = await lstatOrNull(trashPath);
-    if (!stat?.isDirectory() || stat.isSymbolicLink()) continue;
-    if (await lstatOrNull(path.join(trashPath, ".git"))) continue;
-    removeTrashInBackground(trashPath, logger);
-  }
+function sweepBuildOutputTrash(worktreesDir: string, logger: Logger): Promise<void> {
+  return sweepDeletingTrash(worktreesDir, {
+    accept: (name) => name.includes(BUILD_TRASH_MARK),
+    keep: async (trashPath) => Boolean(await lstatOrNull(path.join(trashPath, ".git"))),
+    removeInBackground: (trashPath) => removeBuildTrashInBackground(trashPath, logger),
+  });
 }
 
 /** In a trash name, between the lane folder and the build folder: `.<lane>~build~<folder>.ade-deleting-<hex>`. */
@@ -481,7 +467,7 @@ async function moveBuildFolderOut(candidate: Candidate, worktree: VerifiedWorktr
     deletingTrashName(`${path.basename(worktree.root)}${BUILD_TRASH_MARK}${candidate.rel.split("/").join("~")}`),
   );
   await nonAsarFs.promises.rename(candidate.abs, trashPath);
-  removeTrashInBackground(trashPath, logger);
+  removeBuildTrashInBackground(trashPath, logger);
   return true;
 }
 
@@ -582,7 +568,7 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
   /** The lane's folder, proven to be its own git checkout under `.ade/worktrees`. */
   const verifyWorktree = async (worktreePath: string): Promise<VerifiedWorktree | null> => {
     const root = path.resolve(worktreePath);
-    if (!isDirectChild(worktreesDir, root)) return null;
+    if (!isDirectChildFolder(worktreesDir, root)) return null;
     if (sameFolder(root, projectRoot)) return null;
     if (await hasLinkOnPath(projectRoot, root)) return null;
     const rootStat = await lstatOrNull(root);
@@ -728,6 +714,8 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
     idleSince: number;
     deadline: number;
     probe: { dirs: string[]; supported: boolean };
+    /** A manual cleanup: try again a folder that failed before and hasn't changed. */
+    force: boolean;
   }): Promise<{ removed: number; freed: number; failed: number; inUse: number }> => {
     const { lane, projectId, runId, idleSince, deadline } = args;
     const outcome = { removed: 0, freed: 0, failed: 0, inUse: 0 };
@@ -783,7 +771,7 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
         const check = await inspectFolder(worktree, candidate.rel, idleSince, candidate);
         if (!("candidate" in check)) continue;
         const candidateStat = await lstatOrNull(candidate.abs);
-        if (candidateStat && failedUnchanged(projectId, lane.id, candidate.rel, candidateStat)) {
+        if (!args.force && candidateStat && failedUnchanged(projectId, lane.id, candidate.rel, candidateStat)) {
           options.logger.debug("storage.build_output_folder_skipped", { laneId: lane.id, folder: candidate.rel, reason: "failed_unchanged" });
           continue;
         }
@@ -829,7 +817,11 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
             bytes: freed,
             partial: before.truncated || after.truncated,
             error: reason,
-            fingerprint: afterStat ? folderFingerprint(afterStat) : null,
+            // Held open is brief: tried again on the next run even unchanged.
+            // Any other failure waits for the folder to change, including a
+            // permission error off Windows (root-owned files a Docker build
+            // left), which would fail the same way every day.
+            fingerprint: afterStat && !isBriefHold(error) ? folderFingerprint(afterStat) : null,
           });
           options.logger.warn("storage.build_output_remove_failed", {
             laneId: lane.id,
@@ -869,7 +861,7 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
     const idleSince = startedAt - idleDays * DAY_MS;
     const runId = randomUUID();
     const lanes = options.listLanes()
-      .filter((lane) => lane.lane_type === "worktree" && !lane.is_edit_protected && isDirectChild(worktreesDir, lane.worktree_path))
+      .filter((lane) => lane.lane_type === "worktree" && !lane.is_edit_protected && isDirectChildFolder(worktreesDir, lane.worktree_path))
       .map((lane) => ({ lane, activity: options.latestLaneActivityMs(lane.id, lane.created_at) }))
       // Longest idle first, so a run cut short by its budget did the most good.
       .sort((left, right) => left.activity - right.activity)
@@ -891,7 +883,7 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
         break;
       }
       try {
-        const outcome = await sweepLane({ lane, projectId, runId, idleSince, deadline, probe });
+        const outcome = await sweepLane({ lane, projectId, runId, idleSince, deadline, probe, force: opts.force });
         removed += outcome.removed;
         freed += outcome.freed;
         failed += outcome.failed;
@@ -924,8 +916,8 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
 
   /**
    * Checks idle lanes and removes their build output. Joins a run already in
-   * flight. `force` (a manual cleanup) ignores the once-a-day pacing, never
-   * the safety rules.
+   * flight. `force` (a manual cleanup) ignores the once-a-day pacing and
+   * tries again folders that failed before, never the safety rules.
    */
   const sweep = (opts: { force?: boolean } = {}): Promise<MaintenanceStepResult> => {
     if (flight) return flight;

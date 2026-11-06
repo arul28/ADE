@@ -72,7 +72,7 @@ export function useLaneReclaim(
     } finally {
       setBusy(false);
     }
-  }, [alreadyArchived, confirm, discardDirty, onDone, pin, risk]);
+  }, [alreadyArchived, confirm, discardDirty, onDone, pin, risk, storageBytes]);
 
   const dialog = risk ? (
     <ReclaimConfirmDialog

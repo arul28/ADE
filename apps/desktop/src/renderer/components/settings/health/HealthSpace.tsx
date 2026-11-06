@@ -150,7 +150,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
     } finally {
       setCompressing(false);
     }
-  }, [compressNow, notify, pin, refreshAfterChange]);
+  }, [compressNow, notify, pin, refreshAfterChange, storageBytes]);
 
   const reclaim = useLaneReclaim(pin, refreshAfterChange);
 

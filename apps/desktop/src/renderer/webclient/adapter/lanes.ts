@@ -1,9 +1,11 @@
 import {
   LANES_INVALIDATED_LANE_ID,
   type ArchiveAndReclaimLaneResult,
+  type LaneBranchNameCheck,
   type LaneLifecycleEvent,
   type LaneListSnapshot,
   type NewLaneDefaultsSnapshot,
+  type RenameLaneBranchResult,
   type ResolveLaneBranchDriftResult,
   type RestoreLaneResult,
 } from "../../../shared/types";
@@ -95,12 +97,15 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       guardPin("rename", pin);
       await call("lanes.rename", args, undefined, false);
     },
-    renameBranch: async () => {
-      throw new Error("Renaming a lane's branch is not available from the web client yet. Use the desktop app on that machine.");
+    // Neither answer may come from a cache: a branch can be pushed, or a
+    // name taken, a moment later.
+    renameBranch: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("renameBranch", pin);
+      return commands.call<RenameLaneBranchResult>("lanes.renameBranch", asRecord(args), mutation);
     },
-    // No sync command yet: the dialog then lets the lane's machine check the name when it creates the lane.
-    checkBranchName: async () => {
-      throw new Error("Checking a branch name is not available from the web client yet.");
+    checkBranchName: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("checkBranchName", pin);
+      return commands.call<LaneBranchNameCheck>("lanes.checkBranchName", asRecord(args), mutation);
     },
     updateAppearance: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("updateAppearance", pin);

@@ -2067,6 +2067,31 @@ function coerceGithubConfig(value: unknown): ProjectConfigFile["github"] {
   return Object.keys(github).length ? github : undefined;
 }
 
+/**
+ * `ade.yaml` is committed, so whatever it says applies on every
+ * collaborator's machine. The rules that remove things on their own (the
+ * automatic delete, its branch delete, and automatic free-up, which also
+ * removes ignored files such as `.env.local`) count only from `local.yaml`,
+ * where Settings saves them. A shared `freeUpSpaceMode: auto` reads as "ask".
+ */
+function mergeLaneCleanup(
+  shared?: LaneCleanupConfig,
+  local?: LaneCleanupConfig,
+): LaneCleanupConfig | undefined {
+  if (!shared && !local) return undefined;
+  const {
+    deleteArchivedAfterDays: _sharedDeleteAfter,
+    deleteLocalBranchOnAutoDelete: _sharedDeleteBranch,
+    freeUpSpaceMode: sharedFreeUpMode,
+    ...sharedSafe
+  } = shared ?? {};
+  return {
+    ...sharedSafe,
+    ...(sharedFreeUpMode ? { freeUpSpaceMode: "ask" as const } : {}),
+    ...(local ?? {}),
+  };
+}
+
 function mergeGithubConfig(
   shared?: ProjectConfigFile["github"],
   local?: ProjectConfigFile["github"],
@@ -2531,12 +2556,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(local.git ?? {})
       }
     : undefined;
-  const mergedLaneCleanup = shared.laneCleanup || local.laneCleanup
-    ? {
-        ...(shared.laneCleanup ?? {}),
-        ...(local.laneCleanup ?? {}),
-      }
-    : undefined;
+  const mergedLaneCleanup = mergeLaneCleanup(shared.laneCleanup, local.laneCleanup);
 
   const mergedAi = mergeAiConfig(shared.ai, local.ai);
   const mergedLinearSync = mergeLinearSync(shared.linearSync, local.linearSync);

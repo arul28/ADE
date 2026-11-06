@@ -59,6 +59,7 @@ import type {
 } from "../shared/types/appControl";
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
+import { renderLaneBranchPrefix } from "../shared/laneBranchName";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
 import {
@@ -3966,8 +3967,9 @@ const MOCK_LIVE_PR_FILES: Record<string, any[]> = {};
 })();
 
 // ── New lane defaults (one set per account per repo) ─────────
-const MOCK_NEW_LANE_DEFAULTS = {
-  defaults: { start: { from: "default", on: "remote" }, templateId: null, branchPattern: "ade/{slug}" },
+// `let`: a save keeps its result, so the next save and the next read see it.
+let MOCK_NEW_LANE_DEFAULTS = {
+  defaults: { start: { from: "default", on: "remote" } as any, templateId: null as string | null, branchPattern: "ade/{slug}" },
   scope: { kind: "account-repo", repo: "github.com/acme/app" },
   defaultBranch: "main",
   primaryBranch: "main",
@@ -7181,12 +7183,22 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         activeWork: [],
       }),
       rename: resolvedArg(undefined),
-      renameBranch: async (args: { laneId: string; branchName?: string; dryRun?: boolean }) => ({
-        branchRef: args.dryRun ? "ade/mock-branch" : args.branchName ?? "ade/mock-branch",
-        renamed: !args.dryRun,
-        blocked: null,
-      }),
-      checkBranchName: async (args: { name: string }) => ({ branchName: args.name.trim(), problem: null }),
+      renameBranch: async (args: { laneId: string; branchName?: string; dryRun?: boolean }) => {
+        const lane = MOCK_LANES.find((entry) => entry.id === args.laneId);
+        const current = String(lane?.branchRef ?? "ade/mock-branch");
+        if (args.dryRun || !args.branchName || !lane) return { branchRef: current, renamed: false, blocked: null };
+        lane.branchRef = args.branchName;
+        return { branchRef: args.branchName, renamed: true, blocked: null };
+      },
+      checkBranchName: async (args: { name: string }) => {
+        const branchName = args.name.trim();
+        const taken = MOCK_LANES.find((entry) =>
+          String(entry.branchRef ?? "").toLowerCase() === branchName.toLowerCase());
+        return {
+          branchName,
+          problem: taken ? `Branch "${taken.branchRef}" already exists. Choose a different branch name.` : null,
+        };
+      },
       updateAppearance: resolvedArg(undefined),
       archive: resolvedArg(undefined),
       archiveAndReclaim: resolvedArg({
@@ -7323,11 +7335,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onEnvEvent: noop,
       listTemplates: resolved([]),
       getTemplate: resolvedArg(null),
-      getNewLaneDefaults: resolvedArg(MOCK_NEW_LANE_DEFAULTS),
-      setNewLaneDefaults: async (args: { defaults: any }) => ({
-        ...MOCK_NEW_LANE_DEFAULTS,
-        defaults: { ...MOCK_NEW_LANE_DEFAULTS.defaults, ...args.defaults },
-      }),
+      getNewLaneDefaults: async () => MOCK_NEW_LANE_DEFAULTS,
+      setNewLaneDefaults: async (args: { defaults: any }) => {
+        const defaults = { ...MOCK_NEW_LANE_DEFAULTS.defaults, ...args.defaults };
+        MOCK_NEW_LANE_DEFAULTS = {
+          ...MOCK_NEW_LANE_DEFAULTS,
+          defaults,
+          branchPrefix: renderLaneBranchPrefix(defaults.branchPattern, MOCK_NEW_LANE_DEFAULTS.branchUser),
+        };
+        return MOCK_NEW_LANE_DEFAULTS;
+      },
       getDefaultTemplate: resolvedArg(null),
       setDefaultTemplate: resolvedArg(undefined),
       applyTemplate: resolvedArg({

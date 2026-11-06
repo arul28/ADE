@@ -27,7 +27,7 @@ import {
   type ArchivedItem,
 } from "../../../shared/types/archive";
 import { emptyArchiveCounts, isArchiveStale } from "../../../shared/archive";
-import { archiveStaleDays, isFreeUpSpaceDue, resolveLaneCleanupPolicy } from "../../../shared/laneCleanup";
+import { archiveStaleDays, laneFreeUpStatus, resolveLaneCleanupPolicy } from "../../../shared/laneCleanup";
 import type { LaneCleanupConfig } from "../../../shared/types/config";
 
 type LaneRuntimeDependencies = Parameters<typeof restoreUnarchivedLaneRuntime>[0];
@@ -137,7 +137,8 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
   const readLaneCleanup = (): LaneCleanupConfig | undefined => {
     try {
       return deps.projectConfigService?.getEffective().laneCleanup;
-    } catch {
+    } catch (error) {
+      deps.logger?.warn("archive.lane_cleanup_read_failed", { error: errorMessage(error) });
       return undefined;
     }
   };
@@ -177,7 +178,7 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
         sizeBytes: worktreePresent ? knownBytes.get(lane.id) ?? null : null,
         worktreePresent,
         branchRef: lane.branchRef || null,
-        ...(lane.laneType !== "primary" && worktreePresent && isFreeUpSpaceDue(lane.archivedAt, policy, nowMs)
+        ...(laneFreeUpStatus({ archivedAt: lane.archivedAt, laneType: lane.laneType, folderPresent: worktreePresent }, policy, nowMs) === "due"
           ? { freeUpDue: true }
           : {}),
         ...(freeUpError ? { freeUpError } : {}),

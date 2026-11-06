@@ -1,3 +1,5 @@
+import type { LaneFreeUpSpaceMode } from "./config";
+
 export type DiskPressureState = "normal" | "warning" | "critical" | "exhausted";
 
 export type DiskPressureSnapshot = {
@@ -51,7 +53,7 @@ export type StorageItem = {
    * An archived lane's folder removal: `kept` (a removal found files in use
    * and tries again), `reclaimed` (removed), `failed`. Whether a folder is
    * due to be freed up is not stored; it follows from `archived_at` and the
-   * setting (`isFreeUpSpaceDue`).
+   * setting (`laneFreeUpStatus`).
    */
   reclaimState?: "kept" | "reclaimed" | "failed";
   /**
@@ -171,11 +173,11 @@ export type StorageLifecycleSnapshot = {
 export type StorageLifecyclePolicy = {
   archiveIdleAfterDays: number;
   freeUpSpaceAfterDays: number;
-  freeUpSpaceMode: "ask" | "auto";
+  freeUpSpaceMode: LaneFreeUpSpaceMode;
   deleteArchivedAfterDays: number;
   deleteLocalBranchOnAutoDelete: boolean;
-  /** Days a lane sits idle before its build output is removed; 0 = off. Absent on older builds. */
-  cleanBuildOutputAfterDays?: number;
+  /** Days a lane sits idle before its build output is removed; 0 = off. */
+  cleanBuildOutputAfterDays: number;
 };
 
 /** One lane in the archive rules' last check. */

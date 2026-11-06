@@ -4,7 +4,7 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { nonAsarFs } from "../shared/nonAsarFs";
 import { measureTree } from "./diskUsage";
-import { isDirectChildFolder as isDirectChild, sameFolder } from "../shared/sameFolder";
+import { isDirectChildFolder, sameFolder } from "../shared/sameFolder";
 
 /**
  * Each lane folder's full size, measured in the background and kept in the
@@ -55,10 +55,6 @@ export type LaneSizePassResult = {
   durationMs: number;
   aborted: boolean;
 };
-
-// Same folder: resolved, without case on Windows, and by real path when the
-// spellings still differ (see `shared/sameFolder`).
-export { sameFolder };
 
 export function createLaneSizeMeasurer(options: {
   db: AdeDb;
@@ -135,9 +131,13 @@ export function createLaneSizeMeasurer(options: {
     const startedAt = Date.now();
     const result: LaneSizePassResult = { measured: 0, skipped: 0, bytes: 0, durationMs: 0, aborted: false };
     if (!projectId) return result;
-    const lanes = options.listLanes().filter((lane) => isDirectChild(options.worktreesDir, lane.worktree_path));
+    const lanes = options.listLanes().filter((lane) => isDirectChildFolder(options.worktreesDir, lane.worktree_path));
     const known = read(lanes);
-    const changedAt = await options.changedAtByLane?.(lanes).catch(() => null) ?? null;
+    const changedAt = await options.changedAtByLane?.(lanes).catch((error) => {
+      // Without it, a lane whose build output was removed keeps its older size until it ages out.
+      options.logger.warn("storage.lane_sizes_changed_at_failed", { error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }) ?? null;
     // Never measured first, then the oldest measurement.
     const due = lanes
       .map((lane) => {
@@ -216,8 +216,9 @@ export function createLaneSizeMeasurer(options: {
           options.db.run("delete from local_lane_size_measurements where lane_id = ?", [row.lane_id]);
         }
       }
-    } catch {
-      // Best effort.
+    } catch (error) {
+      // Best effort: a stale row is never read for a lane that is gone.
+      options.logger.warn("storage.lane_sizes_prune_failed", { error: error instanceof Error ? error.message : String(error) });
     }
     result.durationMs = Date.now() - startedAt;
     return result;

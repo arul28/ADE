@@ -98,6 +98,7 @@ function finishedLaneFacts() {
     lastCommitAtMs: null,
     prMerged: false,
     prOpen: false,
+    mergedPrHasHead: false,
   };
 }
 

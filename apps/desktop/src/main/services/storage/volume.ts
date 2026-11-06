@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { StorageVolumeRootKind, StorageVolumeSnapshot } from "../../../shared/types/storage";
+import type { Logger } from "../logging/logger";
 
 export function readVolumeSpace(dirPath: string): { freeBytes: number; totalBytes: number } | null {
   try {
@@ -34,11 +35,21 @@ const IMPORTANT_USAGE_SCRIPT = [
 /**
  * macOS: each path's volume "available for important usage", in one short
  * `osascript` run. Null for a path it could not read, or all null on any
- * failure; the caller keeps statfs then.
+ * failure (logged); the caller keeps statfs then.
  */
-function readImportantUsageBytes(paths: string[]): Promise<Array<number | null>> {
+function readImportantUsageBytes(
+  paths: string[],
+  logger?: Pick<Logger, "warn"> | null,
+): Promise<Array<number | null>> {
   const none = paths.map(() => null);
   if (process.platform !== "darwin" || paths.length === 0) return Promise.resolve(none);
+  const failed = (reason: string, error?: unknown) => {
+    logger?.warn("storage.volume_important_usage_failed", {
+      reason,
+      ...(error === undefined ? {} : { error: error instanceof Error ? error.message : String(error) }),
+    });
+    return none;
+  };
   return new Promise((resolve) => {
     try {
       execFile(
@@ -46,18 +57,18 @@ function readImportantUsageBytes(paths: string[]): Promise<Array<number | null>>
         ["-l", "JavaScript", "-e", IMPORTANT_USAGE_SCRIPT, ...paths],
         { timeout: IMPORTANT_USAGE_TIMEOUT_MS, maxBuffer: 64 * 1024 },
         (error, stdout) => {
-          if (error) return resolve(none);
+          if (error) return resolve(failed("osascript_failed", error));
           try {
             const parsed: unknown = JSON.parse(String(stdout).trim());
-            if (!Array.isArray(parsed) || parsed.length !== paths.length) return resolve(none);
+            if (!Array.isArray(parsed) || parsed.length !== paths.length) return resolve(failed("unexpected_output"));
             resolve(parsed.map((value) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null)));
-          } catch {
-            resolve(none);
+          } catch (parseError) {
+            resolve(failed("unparseable_output", parseError));
           }
         },
       );
-    } catch {
-      resolve(none);
+    } catch (spawnError) {
+      resolve(failed("spawn_failed", spawnError));
     }
   });
 }
@@ -84,6 +95,7 @@ async function volumeKey(dirPath: string): Promise<string | null> {
  */
 export async function readStorageVolumes(
   roots: Array<{ kind: StorageVolumeRootKind; path: string }>,
+  logger?: Pick<Logger, "warn"> | null,
 ): Promise<StorageVolumeSnapshot[]> {
   const byKey = new Map<string, StorageVolumeSnapshot & { probePath: string }>();
   for (const root of roots) {
@@ -108,7 +120,7 @@ export async function readStorageVolumes(
     });
   }
   const volumes = [...byKey.values()];
-  const important = await readImportantUsageBytes(volumes.map((volume) => volume.probePath));
+  const important = await readImportantUsageBytes(volumes.map((volume) => volume.probePath), logger);
   return volumes.map(({ probePath: _probePath, ...volume }, index) => {
     const available = important[index];
     if (available == null || available <= volume.freeBytes) return volume;

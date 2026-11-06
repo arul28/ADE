@@ -5,6 +5,7 @@ import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLane
 import { CreateLaneDialog, type CreateLaneMode, type CreateLaneSetupStep } from "./CreateLaneDialog";
 import { DEFAULT_LANE_START, plainLaneStartBranch, type LaneStart } from "../../../shared/laneStart";
 import { startSourceBranch } from "./laneStartOptions";
+import { loadLaneStartMenuData } from "./useLaneStartMenuData";
 import { getNewLaneDefaultsCached, saveNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { linearIssueLaneName, resolveLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import { branchNameProblem, renderLaneBranchName, renderLaneBranchPrefix } from "../../../shared/laneBranchName";
@@ -404,27 +405,12 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     const defaultsRead = getNewLaneDefaultsCached({ projectRoot: getActiveProjectRoot(), pin, force: true });
     setCreateBranchesLoading(Boolean(primary));
     if (primary) {
-      window.ade.git.listBranches({ laneId: primary.id }, ...pinArg(pin))
-        .then((branches) => {
-          if (current()) setCreateBranches(branches);
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (current()) setCreateBranchesLoading(false);
-        });
-
-      // Capture git user.name so the picker can resolve `mine` / `author:me`.
-      window.ade.git.getUserIdentity({ laneId: primary.id }, ...pinArg(pin))
-        .then((identity) => {
-          if (current()) setCreateGitUserName(identity?.name ?? "");
-        })
-        .catch(() => setCreateGitUserName(""));
-
-      // Lazily attach open-PR metadata. Repo-wide (GitHub), so the tab's
-      // machine answers it for every target. Fail-soft.
-      window.ade.prs.listOpenForRepo()
-        .then(setCreateBranchPullRequests)
-        .catch(() => setCreateBranchPullRequests([]));
+      loadLaneStartMenuData(primary.id, pin, current, {
+        setBranches: setCreateBranches,
+        setBranchesLoading: setCreateBranchesLoading,
+        setGitUserName: setCreateGitUserName,
+        setPullRequests: setCreateBranchPullRequests,
+      });
     }
     Promise.all([
       defaultsRead,
@@ -640,13 +626,18 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       const check = await window.ade.lanes.checkBranchName({ name: branchName }, ...pinArg(pin));
       setCreateBranchProblem(check.problem);
       return !check.problem;
-    } catch {
-      // An older brain can't check; creating the lane still refuses a taken name.
+    } catch (error) {
+      // An older brain can't check (and a dropped connection can't either);
+      // creating the lane still refuses a taken name.
+      console.warn("create_lane.branch_name_check_failed", error);
       return true;
     }
   }, []);
 
-  const handleCreateSubmit = useCallback(async () => {
+  // Enter and the Create button can both fire while the branch-name check is
+  // still out, before `createBusy` is set: one submit at a time.
+  const submittingRef = useRef(false);
+  const submitCreate = useCallback(async () => {
     // Configure-for-chat: validate like a create, then hand the recipe back
     // instead of creating. The composer owns the deferred creation.
     if (behavior === "configure-for-chat") {
@@ -828,6 +819,15 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     selectedMachineId,
     machineTargets,
   ]);
+  const handleCreateSubmit = useCallback(async () => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    try {
+      await submitCreate();
+    } finally {
+      submittingRef.current = false;
+    }
+  }, [submitCreate]);
 
   // Stops the git checkout of the create in flight. A create that has not
   // reached git yet, or is past it, cannot stop; the button then comes back.

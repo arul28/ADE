@@ -9,7 +9,8 @@ import type {
 import { DEFAULT_ARCHIVE_STALE_DAYS } from "../../../shared/types/archive";
 import { archiveKindCountParts, archiveKindPlural, emptyArchiveCounts, isArchiveStale } from "../../../shared/archive";
 import type { TerminalToolType } from "../../../shared/types/sessions";
-import { formatBytes, relativeWhen } from "../../lib/format";
+import { relativeWhen } from "../../lib/format";
+import { useStorageBytes } from "./storage/useStorageBytes";
 import { confirmDialog } from "../ui/dialog";
 import { showToast } from "../app/toast/toastStore";
 import { LaneChip, LaneLogoMark, laneDisplayColor } from "../terminals/LaneChip";
@@ -172,8 +173,9 @@ function ArchiveRow({
   onFreeUp: () => void;
   onDelete: () => void;
 }) {
+  const { bytes: storageBytes } = useStorageBytes();
   const meta: string[] = [relativeWhen(item.archivedAt)];
-  if (item.sizeBytes != null && item.sizeBytes > 0) meta.push(formatBytes(item.sizeBytes));
+  if (item.sizeBytes != null && item.sizeBytes > 0) meta.push(storageBytes(item.sizeBytes));
   const freed = item.kind === "lane" && item.worktreePresent === false;
   if (freed) meta.push("space freed, Restore recreates its folder");
   else if (item.kind === "lane" && item.freeUpError) meta.push(`couldn't free up space: ${item.freeUpError}`);
@@ -219,13 +221,14 @@ function ArchiveRow({
 }
 
 function GroupHeader({ title, items, action }: { title: string; items: ArchivedItem[]; action?: React.ReactNode }) {
+  const { bytes: storageBytes } = useStorageBytes();
   const bytes = totalBytes(items);
   return (
     <div className="ade-ar-group">
       <span className="kit-eyebrow">{title}</span>
       <span className="ade-ar-group-count kit-num">
         {items.length}
-        {bytes > 0 ? ` · ${formatBytes(bytes)}` : ""}
+        {bytes > 0 ? ` · ${storageBytes(bytes)}` : ""}
       </span>
       <span style={{ flex: 1 }} />
       {action}
@@ -260,6 +263,7 @@ async function deleteInBatches(
 
 export function ArchiveSection() {
   const { pin } = useSettingsMachineScope();
+  const { bytes: storageBytes } = useStorageBytes();
   const [items, setItems] = React.useState<ArchivedItem[] | null>(null);
   // The host's line between recent and old: its "Free up space after" setting.
   const [staleDays, setStaleDays] = React.useState(DEFAULT_ARCHIVE_STALE_DAYS);
@@ -510,7 +514,7 @@ export function ArchiveSection() {
                 <span className="ade-modern-stat-sub">
                   {items ? (() => {
                     const bytes = totalBytes(all.filter((item) => item.kind === kind));
-                    return bytes > 0 ? `${formatBytes(bytes)} on disk` : "Archived";
+                    return bytes > 0 ? `${storageBytes(bytes)} on disk` : "Archived";
                   })() : "Loading…"}
                 </span>
               </div>
@@ -518,14 +522,14 @@ export function ArchiveSection() {
             <div className="ade-modern-stat">
               <span className="kit-eyebrow">On disk</span>
               <span className="ade-modern-stat-value">
-                <span className="kit-stat kit-num">{items ? formatBytes(allBytes) : "–"}</span>
+                <span className="kit-stat kit-num">{items ? storageBytes(allBytes) : "–"}</span>
               </span>
               <div className="kit-meter" data-level={staleBytes > 0 ? "warn" : undefined} aria-hidden>
                 <span style={{ width: `${allBytes > 0 ? Math.max(2, (staleBytes / allBytes) * 100) : 0}%` }} />
               </div>
               <span className="ade-modern-stat-sub">
                 {staleAll.length > 0
-                  ? `${formatBytes(staleBytes)} older than ${staleDays} days`
+                  ? `${storageBytes(staleBytes)} older than ${staleDays} days`
                   : `Nothing older than ${staleDays} days`}
               </span>
             </div>

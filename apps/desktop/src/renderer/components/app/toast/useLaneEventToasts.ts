@@ -6,7 +6,8 @@ import {
   type RebaseRunEventPayload,
 } from "../../../../shared/types";
 import { isChatLaunchLane } from "../../../state/chatLaunchStore";
-import { useAppStore } from "../../../state/appStore";
+import { localProjectBindingForRoot, useAppStore } from "../../../state/appStore";
+import { arePathsEqual } from "../../../lib/pathUtils";
 import { READABLE_TOAST_DURATION_MS, showToast } from "./toastStore";
 
 /**
@@ -53,11 +54,19 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
         }
         // The archive rules archived it, not a person: say why, and offer Undo.
         if (event.type === "lane-archived" && event.autoArchive) {
-          // Lifecycle events arrive from the machine this tab is bound to, so
-          // that is where the lane lives. Taken now: Undo must still go there
-          // after the person switches to a tab bound to another machine, and
-          // stays unpinned (the tab's own route) while it is the same one.
-          const origin = useAppStore.getState().projectBinding;
+          // Undo goes to the lane's own project. A remote machine's events
+          // come only through the active tab's runtime pump, so that tab is
+          // where its lane lives, however that machine spells its folder. A
+          // local project's events reach every window that has it open,
+          // background tabs included, so a lane from a project the active
+          // local tab is not on is sent to its folder on this computer. Taken now,
+          // so Undo still goes there after a tab switch, and stays unpinned
+          // (the tab's own route) while that tab is the same one.
+          const active = useAppStore.getState().projectBinding;
+          const root = event.autoArchive.projectRoot;
+          const origin = root && active?.kind !== "remote" && !(active?.rootPath && arePathsEqual(active.rootPath, root))
+            ? localProjectBindingForRoot(root, root)
+            : active;
           const laneId = event.laneId;
           const laneName = event.laneName;
           showToast({

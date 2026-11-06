@@ -729,9 +729,11 @@ export type LaneLifecycleEvent = {
   adoptedByAgent?: boolean;
   /**
    * `lane-archived` by the archive rules rather than by a person: why, in a
-   * few plain words ("idle 3 days", "PR merged"). The notice offers Undo.
+   * few plain words ("idle 3 days", "PR merged"). The notice offers Undo,
+   * sent to `projectRoot`: a local project's events reach every window that
+   * has it open, background tabs included.
    */
-  autoArchive?: { reason: string };
+  autoArchive?: { reason: string; projectRoot?: string };
 };
 
 export type LaneDeleteRisk = {

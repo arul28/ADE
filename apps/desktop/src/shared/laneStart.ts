@@ -44,8 +44,6 @@ export type NewLaneDefaults = {
 };
 
 export const LANE_START_FROM_VALUES: readonly LaneStartFrom[] = ["default", "primary", "branch"];
-/** The starts a project can save as its default. */
-export const LANE_START_DEFAULT_FROM_VALUES: readonly LaneStartFrom[] = ["default", "primary", "branch"];
 export const LANE_START_ON_VALUES: readonly LaneStartOn[] = ["remote", "local", "uncommitted"];
 
 export const DEFAULT_LANE_START: LaneStart = { from: "default", on: "remote" };
@@ -78,7 +76,7 @@ export function normalizeLaneStart(value: unknown): LaneStart | null {
 
 /** A start a project may save as its default as it is: anything but a copy of uncommitted changes. */
 export function isSavableDefaultLaneStart(start: LaneStart): boolean {
-  return (LANE_START_DEFAULT_FROM_VALUES as readonly string[]).includes(start.from) && start.on !== "uncommitted";
+  return (LANE_START_FROM_VALUES as readonly string[]).includes(start.from) && start.on !== "uncommitted";
 }
 
 /** A start as it is saved: `uncommitted` (saved by older versions) reads as `local`. */

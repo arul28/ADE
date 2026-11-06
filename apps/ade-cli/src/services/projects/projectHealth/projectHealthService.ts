@@ -13,6 +13,7 @@ import type {
   ProjectLaneStaleReason,
 } from "../../../../../desktop/src/shared/types/projectHealth";
 import { formatBytes } from "../../../../../desktop/src/shared/formatting";
+import { staleLaneDays } from "../../../../../desktop/src/shared/laneCleanup";
 import { isChatToolType } from "../../../../../desktop/src/shared/sessionSpawnNesting";
 import { listAppleDeviceMarkers } from "../../../../../desktop/src/main/services/ios/appleDeviceMarker";
 import {
@@ -130,8 +131,6 @@ export function createProjectHealthTurnStateReader(
 }
 
 const REPORT_CACHE_MS = 30_000;
-/** A lane with no activity for this long, and no open PR, counts as stale, unless the archive rule says otherwise. */
-const STALE_AFTER_DAYS = 14;
 const DAY_MS = 24 * 60 * 60_000;
 /** A git lock file older than this with no git running is a leftover from a crash. */
 const STALE_LOCK_MS = 10 * 60_000;
@@ -474,9 +473,10 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
   const staleAfterDays = (): number => {
     try {
       const days = deps.staleAfterDays?.();
-      return typeof days === "number" && Number.isFinite(days) && days > 0 ? Math.floor(days) : STALE_AFTER_DAYS;
+      return typeof days === "number" && Number.isFinite(days) && days > 0 ? Math.floor(days) : staleLaneDays(undefined);
     } catch {
-      return STALE_AFTER_DAYS;
+      // No rule to read: the stale-lane line every other surface uses.
+      return staleLaneDays(undefined);
     }
   };
   let cached: { at: number; report: Promise<ProjectHealthReport> } | null = null;

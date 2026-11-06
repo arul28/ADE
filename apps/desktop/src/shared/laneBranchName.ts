@@ -12,15 +12,12 @@
  */
 
 export const DEFAULT_LANE_BRANCH_PATTERN = "ade/{slug}";
-export const LANE_BRANCH_SLUG_TOKEN = "{slug}";
-export const LANE_BRANCH_USER_TOKEN = "{user}";
+const LANE_BRANCH_SLUG_TOKEN = "{slug}";
+const LANE_BRANCH_USER_TOKEN = "{user}";
 /** Longest rendered branch name. Windows keeps each ref as a file under `.git/refs`. */
 export const LANE_BRANCH_NAME_MAX_CHARS = 100;
 const LANE_BRANCH_PATTERN_MAX_CHARS = 60;
 const SLUG_MAX_CHARS = 60;
-
-/** The branch ADE made for an auto-create lane before patterns existed. */
-const LEGACY_TEMPORARY_BRANCH_RE = /^ade\/[0-9a-f]{8}$/u;
 
 // Device names Windows refuses as a file name, with or without an extension.
 const WINDOWS_RESERVED_SEGMENT_RE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu;
@@ -121,15 +118,14 @@ export function temporaryLaneBranchName(prefix: string, hex: string): string {
   return `${prefix}${hex.toLowerCase().replace(/[^0-9a-f]/g, "").slice(0, 8)}`;
 }
 
-/** Shaped like the current pattern's placeholder. Alone this is not proof: see the brain's marker. */
-export function looksLikeTemporaryLaneBranch(branch: string, prefix: string): boolean {
-  if (!branch.startsWith(prefix)) return false;
-  return /^[0-9a-f]{8}$/u.test(branch.slice(prefix.length));
-}
-
-/** ADE's own placeholder from before patterns: `ade/<8 hex>`. */
-export function isLegacyTemporaryLaneBranch(branch: string): boolean {
-  return LEGACY_TEMPORARY_BRANCH_RE.test(branch);
+/**
+ * Shaped like a placeholder in any pattern: it ends in its 8 hex characters.
+ * Alone this is not proof (see the brain's marker), and it doesn't look at the
+ * prefix: the pattern, or git's user name in it, may have changed since the
+ * placeholder was made.
+ */
+export function looksLikeTemporaryLaneBranch(branch: string): boolean {
+  return /(?:^|[^0-9a-f])[0-9a-f]{8}$/u.test(branch);
 }
 
 /**

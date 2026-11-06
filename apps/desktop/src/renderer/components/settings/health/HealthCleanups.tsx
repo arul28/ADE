@@ -1,7 +1,6 @@
 import React from "react";
 import { CaretDown } from "@phosphor-icons/react";
 import {
-  DEFAULT_CLEAN_BUILD_OUTPUT_AFTER_DAYS,
   type LaneBuildOutputSummary,
   type MaintenanceRunReport,
   type StorageLifecycleRunReport,
@@ -10,6 +9,7 @@ import type { LaneCleanupConfig, LaneFreeUpSpaceMode } from "../../../../shared/
 import { resolveLaneCleanupPolicy } from "../../../../shared/laneCleanup";
 import { ModernRow, ModernRows, ModernSection, SettingsNumber, SettingsSegmented, SettingsToggle } from "../primitives";
 import { showToast } from "../../app/toast/toastStore";
+import { Banner } from "../../ui/notice";
 import { relativeWhen } from "../../../lib/format";
 import {
   cleanupPartsLine,
@@ -70,7 +70,7 @@ function CleanupHistory({ runs, loading }: { runs: MaintenanceRunReport[]; loadi
             {(showAll ? runs : runs.slice(0, INITIAL_RUNS)).map((run, index) => {
               const parts = cleanupRunParts(run);
               const breakdown = cleanupPartsLine(parts, platform);
-              const failures = maintenanceActionLines(run).filter((line) => line.failed);
+              const failures = maintenanceActionLines(run, platform).filter((line) => line.failed);
               return (
                 <li key={runKey(run, index)} className="ade-health-run">
                   <div className="ade-health-run-main">
@@ -137,18 +137,25 @@ function LifecycleLastRun({ run }: { run: StorageLifecycleRunReport }) {
     <div>
       <p className="ade-modern-muted">
         Last run {relativeWhen(when)}: {parts.join("; ")}.
-        {run.error ? <span style={{ color: "var(--kit-warn)" }}> {run.error}</span> : null}
       </p>
+      {run.error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "lane-lifecycle-run-error",
+            tone: "error",
+            title: "The last check couldn't finish",
+            detail: run.error,
+          }}
+        />
+      ) : null}
       {lanes.length > 0 ? (
         <ul className="ade-modern-rows ade-health-runlist">
           {lanes.map((lane) => (
             <li key={lane.laneId} className="ade-health-run">
               <div className="ade-health-run-main">
                 <span className="ade-health-run-when">{lane.laneName}</span>
-                <span
-                  className={lane.outcome === "failed" ? undefined : "ade-modern-muted"}
-                  style={lane.outcome === "failed" ? { color: "var(--kit-warn)" } : undefined}
-                >
+                <span className={lane.outcome === "failed" ? "ade-modern-warn" : "ade-modern-muted"}>
                   {lane.detail}
                 </span>
               </div>
@@ -166,7 +173,10 @@ function LifecycleLastRun({ run }: { run: StorageLifecycleRunReport }) {
   );
 }
 
-type DayKey = keyof Pick<LaneCleanupConfig, "archiveIdleAfterDays" | "freeUpSpaceAfterDays" | "deleteArchivedAfterDays">;
+type DayKey = keyof Pick<
+  LaneCleanupConfig,
+  "archiveIdleAfterDays" | "freeUpSpaceAfterDays" | "deleteArchivedAfterDays" | "cleanBuildOutputAfterDays"
+>;
 
 /** "Reset" beside a rule set on this machine; a rule without it uses the project's shared value. */
 function ResetButton({ onClick }: { onClick: () => void }) {
@@ -209,6 +219,9 @@ function policyFields(value: LaneCleanupConfig, effectiveValue: LaneCleanupConfi
             suffix="days"
             sentinelLabel="Off"
             sentinelValue={0}
+            // Saved on blur or Enter, never mid-typing: on the way from 30 to
+            // 60, "Delete after 3 days" must not reach the brain.
+            commitOnBlur
             onChange={(next) => onChange({ ...value, [key]: Math.max(0, Math.floor(next)) })}
           />
         </>
@@ -384,8 +397,8 @@ function BuildOutputPolicy({
   onChange: (value: LaneCleanupConfig) => void;
 }) {
   const { measured: storageMeasured } = useStorageBytes();
-  const local = value.cleanBuildOutputAfterDays;
-  const days = local ?? effectiveValue.cleanBuildOutputAfterDays ?? DEFAULT_CLEAN_BUILD_OUTPUT_AFTER_DAYS;
+  const { shown, dayField } = policyFields(value, effectiveValue, onChange);
+  const days = shown.cleanBuildOutputAfterDays;
   const lanes = summary?.lanes ?? [];
   const freed = summary && (summary.totalFreedBytes > 0 || summary.totalPartial)
     ? `Freed ${storageMeasured(summary.totalFreedBytes, summary.totalPartial)}${summary.since ? ` since ${new Date(summary.since).toLocaleDateString()}` : ""}`
@@ -393,7 +406,6 @@ function BuildOutputPolicy({
   const status = days <= 0
     ? "Off. ADE keeps build output in idle lanes."
     : `On. ${freed}${summary?.lastCheckAt ? `; last check ${relativeWhen(summary.lastCheckAt)}` : ""}.`;
-  const label = "Remove after";
   return (
     <ModernSection
       group="Cleanups"
@@ -403,34 +415,11 @@ function BuildOutputPolicy({
       actions={busy ? <span className="ade-modern-muted">Saving…</span> : undefined}
     >
       <ModernRows>
-        <ModernRow
-          title={label}
-          hint="Days a lane sits idle first. A reinstall or build brings the folders back."
-          control={(
-            <>
-              {local != null ? (
-                <button
-                  type="button"
-                  className="ade-modern-btn"
-                  data-variant="link"
-                  style={{ fontSize: 11.5 }}
-                  onClick={() => onChange({ ...value, cleanBuildOutputAfterDays: undefined })}
-                >
-                  Reset
-                </button>
-              ) : null}
-              <SettingsNumber
-                ariaLabel={label}
-                value={days}
-                min={0}
-                suffix="days"
-                sentinelLabel="Off"
-                sentinelValue={0}
-                onChange={(next) => onChange({ ...value, cleanBuildOutputAfterDays: Math.max(0, Math.floor(next)) })}
-              />
-            </>
-          )}
-        />
+        {dayField(
+          "cleanBuildOutputAfterDays",
+          "Remove after",
+          "Days a lane sits idle first. A reinstall or build brings the folders back.",
+        )}
       </ModernRows>
       {lanes.length > 0 ? (
         <ul className="ade-modern-rows ade-health-runlist">
@@ -484,8 +473,10 @@ export function HealthCleanups({ data, show }: { data: HealthData; show: "histor
     }
   }, [loadStorage, savePolicy]);
 
-  // Rules save as you edit, debounced so typing "120" doesn't write 1, 12,
-  // then 120. Leaving the tab saves a pending edit instead of dropping it.
+  // Rules save shortly after each change (a day field changes on blur or
+  // Enter, not per keystroke), debounced so quick toggles write once. Leaving
+  // the tab saves a pending change instead of dropping it; a day field still
+  // being typed in was never committed, so it is not saved.
   const commit = React.useCallback((next: LaneCleanupConfig) => {
     setPolicy(next);
     if (pending.current) clearTimeout(pending.current.timer);
@@ -503,7 +494,7 @@ export function HealthCleanups({ data, show }: { data: HealthData; show: "histor
     if (!queued) return;
     clearTimeout(queued.timer);
     pending.current = null;
-    void savePolicy(queued.value).catch(() => undefined);
+    void savePolicy(queued.value).catch((error: unknown) => console.warn("lane_cleanup_rules.unmount_save_failed", error));
   }, [savePolicy]);
 
   return show === "history" ? (

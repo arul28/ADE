@@ -7,7 +7,9 @@ import { useAutoUpdateSnapshot } from "../../app/useAutoUpdateSnapshot";
 import { UpdateTrackChip } from "../../app/ChannelBadge";
 import { MachineAvatar, machineFormFactor, useMachineColor } from "../../remoteTargets/MachineIdentity";
 import { FreeSpaceMeter } from "../health/healthCharts";
-import { formatBytes, freeSpaceLevel } from "../storage/storageView";
+import { formatBytes } from "../../../lib/format";
+import { formatStorageBytes } from "../../../../shared/formatting";
+import { freeSpaceLevel } from "../storage/storageView";
 import { machineSectionAvailable, settingsMachinePageFor, type SettingsMachinePage } from "../SettingsMachinesNav";
 import type { MachineStats } from "../../../../shared/types/machineStats";
 import { useMachineStatsMap, type MachineStatsRequest } from "../../../state/machineStats";
@@ -154,6 +156,8 @@ function MachineListRow({
   const status = presence(machine, local);
   const target = fact?.connected && machine.online ? machineUpdateTargetVersion(fact.connected, known) : null;
   const os = machine.isThisMachine ? osLabel(local?.info?.platform) : platformWord(fact?.platform);
+  // Disk sizes in the machine's own file manager's units (Finder vs Explorer).
+  const diskPlatform = machine.isThisMachine ? local?.info?.platform : fact?.platform;
   const pressure = local?.pressure ?? (stats?.disk ? { freeBytes: stats.disk.freeBytes, totalBytes: stats.disk.totalBytes } : null);
   const busy = stats?.cpu.busyPercent ?? null;
   const builds = stats?.builds?.reduce((sum, build) => sum + build.count, 0) ?? 0;
@@ -196,8 +200,8 @@ function MachineListRow({
           </span>
         ) : null}
         {pressure && pressure.totalBytes > 0 ? (
-          <span className="ade-mx-row-disk" title={`${formatBytes(pressure.freeBytes)} free`}>
-            <span className="kit-num">{formatBytes(pressure.freeBytes)} disk free</span>
+          <span className="ade-mx-row-disk" title={`${formatStorageBytes(pressure.freeBytes, diskPlatform)} free`}>
+            <span className="kit-num">{formatStorageBytes(pressure.freeBytes, diskPlatform)} disk free</span>
             <FreeSpaceMeter freeBytes={pressure.freeBytes} totalBytes={pressure.totalBytes} level={freeSpaceLevel(pressure.freeBytes, pressure.totalBytes)} />
           </span>
         ) : null}

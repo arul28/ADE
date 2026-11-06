@@ -634,12 +634,13 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       lane = await deps.laneService.create(
         {
           name: record.snapshot.laneName,
-          // A configured lane derives its branch from the user's name (or
-          // takes the one they typed); an auto-create lane gets a placeholder
-          // branch in the project's pattern and is renamed after.
-          ...(laneIsAutoNamed(record)
-            ? { autoNamedBranch: true }
-            : config?.branchName ? { branchName: config.branchName } : {}),
+          // A branch the user typed is kept, even when the lane's name is
+          // left to ADE; otherwise a configured lane derives its branch from
+          // its name, and an auto-create lane gets a placeholder branch in
+          // the project's pattern that is renamed once the lane is named.
+          ...(config?.branchName
+            ? { branchName: config.branchName }
+            : laneIsAutoNamed(record) ? { autoNamedBranch: true } : {}),
           ...(start ? { start } : {}),
           ...(config?.linearIssue ? { linearIssue: config.linearIssue } : {}),
         },

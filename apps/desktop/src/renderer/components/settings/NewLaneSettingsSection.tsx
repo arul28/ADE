@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Desktop, UserCircle } from "@phosphor-icons/react";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { ModernRow, ModernRows, ModernSection, SavedFlash, SettingsSelect, SettingsTextField, useSavedFlash } from "./primitives";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
-import { pinArg } from "../../state/laneMachineRouting";
 import { saveNewLaneDefaults, useNewLaneDefaultsState } from "../../lib/newLaneDefaultsCache";
 import { Banner } from "../ui/notice";
 import { laneStartSentence, sameLaneStart, type LaneStart } from "../../../shared/laneStart";
@@ -13,10 +12,10 @@ import {
   renderLaneBranchName,
   renderLaneBranchPrefix,
 } from "../../../shared/laneBranchName";
-import type { BranchPullRequest, LaneSummary, NewLaneDefaultsSnapshot, NewLaneSettingsScope } from "../../../shared/types";
-import type { LaneBranchOption } from "../lanes/laneUtils";
+import type { NewLaneDefaultsSnapshot, NewLaneSettingsScope } from "../../../shared/types";
 import { startSourceBranch } from "../lanes/laneStartOptions";
 import { LaneStartBranchField, LaneStartOnSwitch } from "../lanes/LaneStartPicker";
+import { useLaneStartMenuData } from "../lanes/useLaneStartMenuData";
 import "./machineSettings.css";
 
 /** The patterns most projects want; anything else is "Custom". `{user}` needs a git user name to show. */
@@ -48,59 +47,8 @@ export function NewLaneSettingsSection() {
   const [pending, setPending] = useState<LaneStart | null>(null);
   const start = pending ?? snapshot?.defaults.start ?? null;
 
-  // The branch menu's data, read the way the New lane dialog reads it: that
-  // machine's lanes (who has which branch open), its branches through the
-  // primary lane, git's user name for "mine", and the repo's open PRs.
-  const [lanes, setLanes] = useState<LaneSummary[]>([]);
-  const [branches, setBranches] = useState<LaneBranchOption[]>([]);
-  const [branchesLoading, setBranchesLoading] = useState(true);
-  const [pullRequests, setPullRequests] = useState<BranchPullRequest[]>([]);
-  const [gitUserName, setGitUserName] = useState("");
-  useEffect(() => {
-    let cancelled = false;
-    setBranchesLoading(true);
-    void window.ade.lanes.list({ includeStatus: false }, pin)
-      .then((next) => {
-        if (cancelled) return;
-        const list = Array.isArray(next) ? next : [];
-        setLanes(list);
-        const primary = list.find((lane) => lane.laneType === "primary");
-        if (!primary) {
-          setBranchesLoading(false);
-          return;
-        }
-        void window.ade.git.listBranches({ laneId: primary.id }, ...pinArg(pin))
-          .then((found) => {
-            if (!cancelled) setBranches(found);
-          })
-          .catch(() => {})
-          .finally(() => {
-            if (!cancelled) setBranchesLoading(false);
-          });
-        void window.ade.git.getUserIdentity({ laneId: primary.id }, ...pinArg(pin))
-          .then((identity) => {
-            if (!cancelled) setGitUserName(identity?.name ?? "");
-          })
-          .catch(() => {});
-      })
-      .catch((error) => {
-        console.warn("new_lane_settings.lanes_load_failed", error);
-        if (!cancelled) setBranchesLoading(false);
-      });
-    // Repo-wide (GitHub): the tab's machine answers it for any target. Only
-    // decoration for the menu, so a host without it never blocks the page.
-    void Promise.resolve()
-      .then(() => window.ade.prs.listOpenForRepo())
-      .then((next) => {
-        if (!cancelled) setPullRequests(next);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-    // Keyed on the pin's identity, not the object.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pin?.key]);
+  // The branch menu's data, read the way the New lane dialog reads it.
+  const { lanes, branches, branchesLoading, pullRequests, gitUserName } = useLaneStartMenuData(pin);
 
   const save = useCallback(async (next: LaneStart) => {
     if (!snapshot) return;
@@ -163,9 +111,7 @@ export function NewLaneSettingsSection() {
         <ModernRows>
           <ModernRow
             title="Start from"
-            hint={sourceBranch
-              ? laneStartSentence(start, sourceBranch, "New lanes")
-              : <span className="ade-nl-warn">The primary lane has no branch checked out, so new lanes can't start from it.</span>}
+            hint={sourceBranch ? laneStartSentence(start, sourceBranch, "New lanes") : undefined}
             control={(
               <div className="ade-nl-start">
                 <LaneStartBranchField
@@ -184,7 +130,19 @@ export function NewLaneSettingsSection() {
                 <LaneStartOnSwitch start={start} onChange={pick} disabled={pending !== null} />
               </div>
             )}
-          />
+          >
+            {sourceBranch ? null : (
+              <Banner
+                layout="inline"
+                model={{
+                  id: "new-lane-start-no-branch",
+                  tone: "warning",
+                  title: "The primary lane has no branch checked out.",
+                  detail: "New lanes can't start from it until it's on a branch.",
+                }}
+              />
+            )}
+          </ModernRow>
           <BranchPatternRow snapshot={snapshot} flash={flash} fail={fail} />
         </ModernRows>
       </ModernSection>
@@ -210,11 +168,17 @@ function BranchPatternRow({
   const user = snapshot.branchUser ?? null;
   const saved = snapshot.defaults.branchPattern ?? DEFAULT_LANE_BRANCH_PATTERN;
   const presets = patternPresets(user);
+  // An older brain answers without `branchPrefix` and ignores a saved
+  // pattern while reporting success, so the row can't be edited there.
+  const supported = snapshot.branchPrefix !== undefined;
   const savedIsPreset = presets.some((preset) => preset.value === saved);
   const [custom, setCustom] = useState(!savedIsPreset);
   const [draft, setDraft] = useState(saved);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // Enter saves, and the blur that follows would save again before `saving`
+  // renders: one save at a time.
+  const savingRef = useRef(false);
   useEffect(() => {
     setDraft(saved);
     setError(null);
@@ -225,12 +189,13 @@ function BranchPatternRow({
   const example = problem ? null : renderLaneBranchName(renderLaneBranchPrefix(shown, user), "Fix login bug");
 
   const persist = async (pattern: string) => {
-    if (pattern === saved || saving) return;
+    if (!supported || pattern === saved || savingRef.current) return;
     const invalid = laneBranchPatternProblem(pattern);
     if (invalid) {
       setError(invalid);
       return;
     }
+    savingRef.current = true;
     setSaving(true);
     try {
       // The lane's machine also refuses a prefix that clashes with a branch it has.
@@ -242,6 +207,7 @@ function BranchPatternRow({
       setError(message);
       fail(message);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -250,7 +216,9 @@ function BranchPatternRow({
     <ModernRow
       anchor="new-lane-branch-pattern"
       title="Branch names"
-      hint={error || (custom && problem)
+      hint={!supported
+        ? "The machine that owns this project needs a newer ADE to change branch names."
+        : error || (custom && problem)
         ? <span className="ade-nl-warn">{error ?? problem}</span>
         : <>“Fix login bug” becomes <code className="ade-nl-code">{example}</code></>}
       control={(
@@ -258,7 +226,7 @@ function BranchPatternRow({
           ariaLabel="Branch names"
           value={custom ? CUSTOM_PATTERN : saved}
           options={presets}
-          disabled={saving}
+          disabled={saving || !supported}
           style={{ width: 240 }}
           onChange={(value) => {
             setError(null);
@@ -273,7 +241,7 @@ function BranchPatternRow({
         />
       )}
     >
-      {custom ? (
+      {custom && supported ? (
         <div className="ade-nl-custom">
           <SettingsTextField
             value={draft}

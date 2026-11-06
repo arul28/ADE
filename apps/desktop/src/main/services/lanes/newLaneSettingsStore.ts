@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ACCOUNT_SCOPE_ALL, accountRepoScopeKey } from "../../../shared/accountSettingsScope";
-import { DEFAULT_LANE_BRANCH_PATTERN } from "../../../shared/laneBranchName";
+import { DEFAULT_LANE_BRANCH_PATTERN, normalizeLaneBranchPattern } from "../../../shared/laneBranchName";
 import {
   DEFAULT_LANE_START,
   normalizeNewLaneDefaults,
@@ -77,6 +77,10 @@ export function legacyNewLaneSettingsFromConfig(snapshot: ProjectConfigSnapshot)
 }
 
 const DEFAULTS_KEY = "lanes.newLaneDefaults";
+// The branch pattern has a key of its own: a brain from before patterns
+// writes the whole `DEFAULTS_KEY` object back in its old shape
+// (`{ start, templateId }`), which would drop the pattern for every machine.
+const BRANCH_PATTERN_KEY = "lanes.newLaneBranchPattern";
 const TEMPLATES_KEY = "lanes.templates";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -178,12 +182,19 @@ export function createNewLaneSettingsStore(args: {
 
     getDefaults(): NewLaneDefaults {
       const stored = read(DEFAULTS_KEY);
-      return stored === undefined || stored === null ? legacyDefaults() : normalizeNewLaneDefaults(stored);
+      const defaults = stored === undefined || stored === null ? legacyDefaults() : normalizeNewLaneDefaults(stored);
+      // Its own key first, then the copy in the combined object (saved
+      // before the key existed), then the default.
+      const pattern = read(BRANCH_PATTERN_KEY);
+      return typeof pattern === "string" ? { ...defaults, branchPattern: normalizeLaneBranchPattern(pattern) } : defaults;
     },
 
     setDefaults(next: NewLaneDefaults): NewLaneDefaults {
       const normalized = normalizeNewLaneDefaults(next);
+      // The combined object keeps its `branchPattern` too, for brains that
+      // read the pattern from there.
       write(DEFAULTS_KEY, normalized);
+      write(BRANCH_PATTERN_KEY, normalized.branchPattern);
       return normalized;
     },
 

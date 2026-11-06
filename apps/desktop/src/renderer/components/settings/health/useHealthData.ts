@@ -152,7 +152,11 @@ export function useHealthData(
   // While the background lane measurement runs, re-read only the snapshot now
   // and then (the brain answers from its cache with the live progress), so the
   // page shows "3 of 18" and then the measured sizes. Stops when it finishes.
+  // A failed read tries again on the same beat (a brain restart, a remote
+  // machine that dropped for a moment), so the page never sticks on
+  // "Measuring lanes" with Check again disabled.
   const laneSizingRunning = Boolean(storage.snapshot?.laneSizing?.running);
+  const [laneSizingRetry, setLaneSizingRetry] = React.useState(0);
   React.useEffect(() => {
     if (!wantStorage || !laneSizingRunning) return;
     let cancelled = false;
@@ -161,13 +165,16 @@ export function useHealthData(
       void window.ade.storage.getSnapshot({}, pin).then((snap) => {
         if (cancelled || request !== storageRequest.current) return;
         setStorage((current) => ({ ...current, snapshot: snap }));
-      }).catch(() => undefined);
+      }).catch((error: unknown) => {
+        console.warn("storage.lane_sizing_poll_failed", error);
+        if (!cancelled) setLaneSizingRetry((count) => count + 1);
+      });
     }, LANE_SIZING_REFRESH_MS);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [laneSizingRunning, storage.snapshot, pin?.key, wantStorage]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [laneSizingRunning, laneSizingRetry, storage.snapshot, pin?.key, wantStorage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadDiagnostics = React.useCallback(async () => {
     if (!wantDiagnostics) return;
