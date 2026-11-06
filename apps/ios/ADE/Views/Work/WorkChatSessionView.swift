@@ -928,11 +928,12 @@ struct WorkChatSessionView: View {
   }
 
   /// What the before-send read depends on: the provider and the machine's
-  /// connection. Nil where no card could show.
+  /// connection, so a connection that comes up after the chat opened reads
+  /// again. Nil where no card could show.
   var providerSignInStatusKey: String? {
     guard providerSignInAllowed, !isPersonalChat, let host = providerSignInHost,
           workProviderSignInKind(chatSummaryContext.provider) != .settings else { return nil }
-    return "\(ObjectIdentifier(host)):\(chatSummaryContext.provider)"
+    return "\(ObjectIdentifier(host)):\(chatSummaryContext.provider):\(host.providerAccountsConnected)"
   }
 
   /// Reads the agent's login on the chat's machine, once per chat and machine.
@@ -2109,6 +2110,10 @@ struct WorkChatSessionView: View {
       }
     }
     .padding(.horizontal, compactComposer ? 12 : 16)
+    // Whether the sign-in card stands in for the composer before a send.
+    .task(id: providerSignInStatusKey) {
+      await refreshProviderSignedOutBeforeSend()
+    }
     // A prompt left open when the chat goes away would strand its send
     // forever; answer it for the person.
     .onDisappear { handoffSendGate.answer(.cancel) }
@@ -2572,9 +2577,6 @@ struct WorkChatSessionView: View {
         // `syncWeakLinkChatSubscriptionMaxBytes`). Once it is on screen, the next
         // older page loads in the background into the paging buffer, so scrolling
         // up reveals rows that are already here: no wait, no jump, no gap.
-        .task(id: providerSignInStatusKey) {
-          await refreshProviderSignedOutBeforeSend()
-        }
         .task(id: weakLinkPrefetchKey) {
           guard weakLinkPrefetchKey != nil else { return }
           try? await Task.sleep(nanoseconds: 600_000_000)
