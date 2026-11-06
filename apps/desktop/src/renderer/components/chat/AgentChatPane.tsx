@@ -7161,8 +7161,16 @@ export function AgentChatPane({
     && activeProviderConnection
     && !activeProviderConnection.runtimeAvailable
     // ADE's copy is there and only the login is missing: the sign-in card in
-    // the composer says that, with the button that fixes it.
-    && !(activeProviderConnection.runtimeDetected && !activeProviderConnection.authAvailable)
+    // the composer says that, with the button that fixes it. Where that card
+    // cannot show (a personal chat, a subagent's view, a provider signed in
+    // from Settings), the banner keeps saying it.
+    && !(
+      activeProviderConnection.runtimeDetected
+      && !activeProviderConnection.authAvailable
+      && providerSignInKnownBeforeSend(activeProviderConnection.provider)
+      && !personalScope
+      && !subagentView
+    )
     && (
       activeProviderConnection.blocker
       || activeProviderConnection.provider === "cursor"
@@ -16730,9 +16738,9 @@ export function AgentChatPane({
       // The forced re-read also clears the machine's signed-out mark, so the
       // turn that stopped on the sign-in sends again only after it.
       await refreshAvailableModels({ force: true }).catch(() => undefined);
-      if (need.reason === "failed-turn" && selectedSessionId) {
-        void resendLastUserMessage(selectedSessionId, null, { afterSignIn: true });
-      }
+      if (need.reason !== "failed-turn" || !selectedSessionId) return;
+      const failure = await resendLastUserMessage(selectedSessionId, null, { afterSignIn: true });
+      if (typeof failure === "string") setError({ message: `Signed in, but the message did not send again: ${failure}`, kind: "status" });
     })();
   }, [providerSignInShown, refreshAvailableModels, resendLastUserMessage, selectedSessionId]);
   const openSignInSettings = useCallback(() => {

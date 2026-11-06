@@ -123,6 +123,17 @@ function browserOnHost(runsHere: boolean): boolean {
   return runsHere && !isWebClientMode();
 }
 
+/** A sign-in page link the card may open: http(s) only, whatever a CLI printed. */
+function signInPageUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const protocol = new URL(url).protocol;
+    return protocol === "https:" || protocol === "http:" ? url : null;
+  } catch {
+    return null;
+  }
+}
+
 const IDLE: Flow = { phase: "idle", url: null, deviceCode: null, awaitingCode: false, email: null, message: null };
 
 function startFailure(err: unknown, machineName: string): string {
@@ -158,6 +169,8 @@ function useProviderSignInFlow(args: {
 }) {
   const { provider, kind, pin, runsHere, machineName, instanceId } = args;
   const [flow, setFlow] = useState<Flow>(IDLE);
+  /** A pasted code the machine refused; kept apart so the next poll keeps it up. */
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const pinRef = useRef(pin);
   pinRef.current = pin;
   const aliveRef = useRef(true);
@@ -168,7 +181,8 @@ function useProviderSignInFlow(args: {
 
   // The link opens in the browser in front of the person, once per sign-in,
   // unless the machine's own sign-in already opened it on this computer.
-  const openOnce = useCallback((loginId: string, url: string | null, hostOpensIt: boolean) => {
+  const openOnce = useCallback((loginId: string, rawUrl: string | null, hostOpensIt: boolean) => {
+    const url = signInPageUrl(rawUrl);
     if (!url || openedRef.current === loginId) return;
     openedRef.current = loginId;
     if (hostOpensIt && runsHere) return;
@@ -185,7 +199,7 @@ function useProviderSignInFlow(args: {
         : next.state === "verifying" ? "verifying"
         : live ? "waiting"
         : "failed",
-      url: next.url,
+      url: signInPageUrl(next.url),
       deviceCode: next.deviceCode ?? null,
       awaitingCode: next.awaitingCode,
       email: next.email ?? null,
@@ -223,7 +237,7 @@ function useProviderSignInFlow(args: {
         : live ? "waiting"
         : next.phase === "idle" ? "idle"
         : "failed",
-      url: next.authorizationUrl,
+      url: signInPageUrl(next.authorizationUrl),
       deviceCode: null,
       // On this computer Google returns to the agent by itself; elsewhere the
       // address the browser ends on is pasted back.
@@ -237,6 +251,7 @@ function useProviderSignInFlow(args: {
     stopOnHost();
     const seq = ++seqRef.current;
     openedRef.current = null;
+    setSubmitError(null);
     setFlow({ ...IDLE, phase: "starting" });
     const p = pinRef.current;
     const fail = (err: unknown) => {
@@ -310,7 +325,7 @@ function useProviderSignInFlow(args: {
     const seq = seqRef.current;
     const timer = window.setInterval(() => {
       void read(pinRef.current).then((status) => {
-        const url = status?.loginUrl ?? null;
+        const url = signInPageUrl(status?.loginUrl);
         if (!url || seq !== seqRef.current || !aliveRef.current) return;
         openOnce(`cursor:${seq}`, url, true);
         setFlow((prev) => (prev.phase === "waiting" ? { ...prev, url } : prev));
@@ -347,6 +362,7 @@ function useProviderSignInFlow(args: {
     if (!open?.live || !trimmed) return;
     const seq = seqRef.current;
     const p = pinRef.current;
+    setSubmitError(null);
     try {
       if (kind === "account") {
         const next = await pinnedProviderInstances(p)?.loginSubmitCode?.({ loginId: open.id, code: trimmed });
@@ -359,17 +375,18 @@ function useProviderSignInFlow(args: {
       }
     } catch (err) {
       if (seq !== seqRef.current || !aliveRef.current) return;
-      setFlow((prev) => ({ ...prev, message: providerActionMessage(err, "That code was not accepted.") }));
+      setSubmitError(providerActionMessage(err, "That code was not accepted."));
     }
   }, [applyAntigravity, applyHost, kind]);
 
   const cancel = useCallback(() => {
     stopOnHost();
     seqRef.current += 1;
+    setSubmitError(null);
     setFlow(IDLE);
   }, [stopOnHost]);
 
-  return { flow, start, submitCode, cancel };
+  return { flow, submitError, start, submitCode, cancel };
 }
 
 /** The provider's flat mark: its brand logo where it has one, else ADE's. */
@@ -427,7 +444,7 @@ export function ProviderSignInComposer({
 }) {
   const spec = providerSignInSpec(need.provider) ?? { label: need.provider, via: need.provider, kind: "settings" as const };
   const brand = providerBrand(spec.brandId ?? need.provider);
-  const { flow, start, submitCode, cancel } = useProviderSignInFlow({
+  const { flow, submitError, start, submitCode, cancel } = useProviderSignInFlow({
     provider: need.provider,
     kind: spec.kind,
     pin,
@@ -470,7 +487,8 @@ export function ProviderSignInComposer({
   const codexDeviceHint = need.provider === "codex" && !browserOnHost(runsHere) && flow.phase === "failed"
     ? " If ChatGPT refused the code, turn on device code sign-in in ChatGPT's security settings, then try again."
     : "";
-  const shownError = flow.phase === "failed" && flow.message ? `${flow.message}${codexDeviceHint}` : flow.message;
+  const shownError = submitError
+    ?? (flow.phase === "failed" && flow.message ? `${flow.message}${codexDeviceHint}` : flow.message);
 
   return (
     <div

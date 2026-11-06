@@ -121,6 +121,13 @@ func workLatestSignInFailure(_ transcript: [WorkChatEnvelope], provider: String?
   return nil
 }
 
+/// A sign-in page link the card may open: http(s) only, whatever a CLI printed.
+func workSignInPageURL(_ url: String?) -> URL? {
+  guard let url, let link = URL(string: url), let scheme = link.scheme?.lowercased(),
+        scheme == "https" || scheme == "http" else { return nil }
+  return link
+}
+
 /// One sign-in on the chat's machine, whichever host flow the provider uses.
 @MainActor
 final class WorkProviderSignInController: ObservableObject {
@@ -233,28 +240,49 @@ final class WorkProviderSignInController: ObservableObject {
   }
 
   /// Stops the machine's sign-in when the card goes away mid-flow, so its CLI
-  /// does not hold on until its timeout.
+  /// does not hold on until its timeout, and leaves the card ready to start
+  /// again if SwiftUI shows this same card later.
   func close() {
     attempt += 1
-    pollTask?.cancel()
-    guard signingIn else { return }
-    Task { await stopOnHost() }
+    let wasSigningIn = signingIn
+    let stop = detachLogin()
+    phase = .idle
+    url = nil
+    deviceCode = nil
+    awaitingCode = false
+    guard wasSigningIn, let stop else { return }
+    Task { await stop() }
   }
 
   private func stopOnHost() async {
+    guard signingIn, let stop = detachLogin() else {
+      pollTask?.cancel()
+      pollTask = nil
+      return
+    }
+    await stop()
+  }
+
+  /// Takes the running login off the card and returns the call that stops it
+  /// on the machine. Bound to that login's id, so it cannot stop a sign-in
+  /// started after it.
+  private func detachLogin() -> (() async -> Void)? {
     pollTask?.cancel()
     pollTask = nil
-    guard let host, let loginId, signingIn else { return }
+    guard let host, let loginId else { return nil }
     self.loginId = nil
-    switch kind {
-    case .account:
-      _ = try? await ProviderAccountsClient(host: host).cancelLogin(loginId: loginId)
-    case .cli:
-      _ = try? await host.runProviderAccountsCommand("ai.cliLoginCancel", args: ["loginId": loginId])
-    case .antigravity:
-      _ = try? await host.runProviderAccountsCommand("ai.antigravitySignInCancel", args: ["flowId": loginId])
-    case .settings:
-      break
+    let kind = self.kind
+    return {
+      switch kind {
+      case .account:
+        _ = try? await ProviderAccountsClient(host: host).cancelLogin(loginId: loginId)
+      case .cli:
+        _ = try? await host.runProviderAccountsCommand("ai.cliLoginCancel", args: ["loginId": loginId])
+      case .antigravity:
+        _ = try? await host.runProviderAccountsCommand("ai.antigravitySignInCancel", args: ["flowId": loginId])
+      case .settings:
+        break
+      }
     }
   }
 
@@ -353,7 +381,7 @@ final class WorkProviderSignInController: ObservableObject {
 
   /// The sign-in page opens in Safari once per sign-in.
   private func openOnce(loginId: String, url: String?) {
-    guard let url, openedLoginId != loginId, let link = URL(string: url) else { return }
+    guard let link = workSignInPageURL(url), openedLoginId != loginId else { return }
     openedLoginId = loginId
     UIApplication.shared.open(link)
   }
@@ -453,7 +481,7 @@ struct WorkProviderSignInCard: View {
   private var actionRow: some View {
     if controller.phase == .waiting && controller.awaitingCode {
       VStack(alignment: .leading, spacing: 8) {
-        if let url = controller.url, let link = URL(string: url) {
+        if let link = workSignInPageURL(controller.url) {
           Link(destination: link) {
             Label(linkHost.map { "Open \($0)" } ?? "Open the sign-in page", systemImage: "arrow.up.right.square")
               .font(.footnote.weight(.semibold))
@@ -497,7 +525,7 @@ struct WorkProviderSignInCard: View {
         }
         .accessibilityLabel("Copy the code \(deviceCode)")
         HStack(spacing: 12) {
-          if let url = controller.url, let link = URL(string: url) {
+          if let link = workSignInPageURL(controller.url) {
             Link(destination: link) {
               Label(linkHost.map { "Enter it on \($0)" } ?? "Open the sign-in page", systemImage: "arrow.up.right.square")
                 .font(.footnote.weight(.semibold))

@@ -251,7 +251,8 @@ export function ProviderSetupBanner({ family, onOpenSignIn }: ProviderSetupBanne
           id: `model-picker-setup:${family}`,
           tone: "info",
           icon: <ProviderLogo family={family} size={13} />,
-          title: `Sign in to ${label}`,
+          // "Sign in" only where there is an account to sign in to; the rest set up.
+          title: PROVIDER_COPY[family]?.title ?? `Set up ${label}`,
         }}
         style={{ margin: "0 2px" }}
       />

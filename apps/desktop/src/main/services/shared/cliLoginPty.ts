@@ -61,6 +61,10 @@ export function spawnLoginPty(command: string, args: string[], env: NodeJS.Proce
       extra: { path: spawnHelperRepair.path ?? "", error: spawnHelperRepair.error },
       fingerprint: ["cli-login-pty", "spawn-helper-chmod-failed"],
     });
+    // The spawn would only fail with "posix_spawnp failed"; say what is wrong.
+    throw new Error(
+      `ADE's terminal helper (${spawnHelperRepair.path ?? "node-pty spawn-helper"}) is not executable and could not be fixed: ${spawnHelperRepair.error}`,
+    );
   }
   const invocation = resolveCliSpawnInvocation(command, args, env);
   // A cmd.exe wrapper carries one pre-quoted command line; node-pty must not
