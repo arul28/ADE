@@ -23,7 +23,7 @@
 
 import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
-import type { Agent37TemplateStatus } from "../../../shared/agent37";
+import type { Agent37TemplateProgress, Agent37TemplateStatus } from "../../../shared/agent37";
 import { compareUpdateVersions } from "../../../shared/updateVersions";
 import { Agent37Error, type Agent37Client, type Agent37Template } from "./agent37Client";
 
@@ -79,9 +79,8 @@ export type Agent37TemplateBuilderDeps = {
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 };
 
-const POLL_MS = 10_000;
-/** What a build usually takes, end to end; only feeds "about N min left". */
-const TYPICAL_BUILD_MS = 6 * 60_000;
+/** Also how often the step a person sees can move. */
+const POLL_MS = 5_000;
 /** Agent37 times a build out at 45 min; past this a record is stale. */
 const BUILD_RECORD_TTL_MS = 50 * 60_000;
 /** A build still `created` this long after it was made will never start. */
@@ -111,10 +110,14 @@ export function readAgent37TemplateMarker(description: string | null): { adeVers
 /**
  * Whether an existing template is good enough for this ADE.
  *
- * A release build replaces a template that ADE did not build (no marker),
- * one from older template files, or one from an older ADE release; a newer
- * one (built by a newer ADE elsewhere) is kept. A non-release build never
- * replaces an existing template.
+ * A release build replaces a template that ADE did not build (no marker), or
+ * one from an older ADE release. A template from a newer release (built by a
+ * newer ADE on another computer of the account) is kept whatever its files: an
+ * older ADE must never put its older template back, or two computers on
+ * different releases would replace each other's template on every start. Same
+ * release, different files only happens between development builds of the
+ * same version, and the files win. A non-release build never replaces an
+ * existing template.
  */
 export function agent37TemplateIsCurrent(
   template: Pick<Agent37Template, "description">,
@@ -123,9 +126,70 @@ export function agent37TemplateIsCurrent(
   if (want.adeVersion == null) return true;
   const marker = readAgent37TemplateMarker(template.description);
   if (!marker) return false;
-  if (marker.contextHash !== want.contextHash) return false;
   if (marker.adeVersion === "latest") return false;
-  return compareUpdateVersions(marker.adeVersion, want.adeVersion) >= 0;
+  const order = compareUpdateVersions(marker.adeVersion, want.adeVersion);
+  if (order !== 0) return order > 0;
+  return marker.contextHash === want.contextHash;
+}
+
+/** The four steps a person sees while the template builds. */
+const TEMPLATE_PROGRESS_LABELS = [
+  "Installing the desktop and browser",
+  "Installing ADE",
+  "Adding Docker and Android tools",
+  "Saving the machine image",
+] as const;
+
+/** One Dockerfile step as BuildKit's plain log names it: `#7 [4/8] RUN …`. */
+export type Agent37BuildLogStep = { index: number; total: number; text: string };
+
+const BUILD_LOG_STEP = /^#\d+ \[(?:[^\]\s]+ )?(\d+)\/(\d+)\] (.+)$/;
+const BUILD_LOG_EXPORT = /^#\d+ (?:exporting|writing image|naming to|pushing|exporting layers)/i;
+
+/**
+ * Reads one chunk of the build log: the last Dockerfile step it names, and
+ * whether the build reached exporting the image. Lines BuildKit prints for a
+ * running step (`#7 12.3 …`) carry no step and are skipped.
+ */
+export function readAgent37BuildLog(chunk: string): { step: Agent37BuildLogStep | null; exporting: boolean } {
+  let step: Agent37BuildLogStep | null = null;
+  let exporting = false;
+  for (const raw of chunk.split(/\r?\n/)) {
+    const line = raw.trim();
+    const match = BUILD_LOG_STEP.exec(line);
+    if (match) {
+      step = { index: Number(match[1]), total: Number(match[2]), text: match[3]! };
+      continue;
+    }
+    if (BUILD_LOG_EXPORT.test(line)) exporting = true;
+  }
+  return { step, exporting };
+}
+
+/**
+ * Where a build is, in the four steps a person sees. `status` is Agent 37's
+ * build status; `step` the last Dockerfile step the log named; `exporting`
+ * whether the log reached exporting the image. Null before anything is known.
+ */
+export function agent37TemplateProgress(
+  status: string,
+  step: Agent37BuildLogStep | null,
+  exporting: boolean,
+): Agent37TemplateProgress | null {
+  const at = (index: number): Agent37TemplateProgress => ({
+    step: index + 1,
+    steps: TEMPLATE_PROGRESS_LABELS.length,
+    label: TEMPLATE_PROGRESS_LABELS[index]!,
+  });
+  // Built: Agent 37 is copying the image into its storage, then publishing it.
+  if (status === "ingesting" || status === "succeeded" || exporting) return at(3);
+  if (!step) return status === "building" ? at(0) : null;
+  const text = step.text;
+  if (/^COPY\b|chmod 755 \/usr\/local\/bin\/ade-entrypoint/.test(text)) return at(3);
+  // The Android step starts by installing Java (default-jre-headless) for sdkmanager.
+  if (/android|sdkmanager|commandlinetools|default-jre-headless|download\.docker\.com|docker-ce/i.test(text)) return at(2);
+  if (/install\.sh|ADE_VERSION|ade --version/.test(text)) return at(1);
+  return at(0);
 }
 
 /** The Dockerfile with the ADE release pinned (install.sh takes the release tag). */
@@ -252,15 +316,36 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
     if (!signal.aborted) publish(next);
   };
 
-  const minutesLeft = (startedAt: number) =>
-    Math.max(1, Math.ceil((startedAt + TYPICAL_BUILD_MS - now()) / 60_000));
-
-  /** Polls one build to its end. Resolves on success; throws `BuildFailed` on failure. */
+  /**
+   * Polls one build to its end through its log, so the status names the step
+   * it is on. Resolves on success; throws `BuildFailed` on failure.
+   */
   async function follow(client: Agent37Client, buildId: string, startedAt: number, usable: boolean, signal: AbortSignal) {
-    set(signal, { state: "building", usable, startedAt, minutesLeft: minutesLeft(startedAt), error: null, nextRetryAt: null });
+    set(signal, { state: "building", usable, startedAt, minutesLeft: null, progress: null, error: null, nextRetryAt: null });
+    let offset = 0;
+    let lastStep: Agent37BuildLogStep | null = null;
+    let exporting = false;
+    let shown: Agent37TemplateProgress | null = null;
     for (;;) {
       if (signal.aborted) return;
-      const build = await client.getTemplateBuild(buildId);
+      // The log endpoint answers the build too. A log that can't be read
+      // (an older API, a hiccup) only costs the step name, never the build.
+      let build: Awaited<ReturnType<Agent37Client["getTemplateBuild"]>>;
+      const read = await client.getTemplateBuildLog(buildId, offset).catch((error: unknown) => {
+        deps.logger?.warn?.("agent37.template_build_log_failed", { buildId, error: plainReason(error) });
+        return undefined;
+      });
+      if (read === undefined) {
+        build = await client.getTemplateBuild(buildId);
+      } else if (read === null) {
+        build = null;
+      } else {
+        build = read.build;
+        offset = read.offset;
+        const chunk = readAgent37BuildLog(read.data);
+        if (chunk.step) lastStep = chunk.step;
+        if (chunk.exporting) exporting = true;
+      }
       if (!build) throw new BuildFailed("Agent 37 lost track of the template build.");
       if (build.status === "succeeded") return;
       if (build.status === "failed") throw new BuildFailed(buildFailureMessage(build.errorCode, build.errorMessage));
@@ -269,7 +354,12 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
         throw new BuildFailed("the template build was never started.");
       }
       if (now() - startedAt > BUILD_RECORD_TTL_MS) throw new BuildFailed("the template build didn't finish in time.");
-      set(signal, { minutesLeft: minutesLeft(startedAt) });
+      // Steps only move forward: BuildKit reprints cached steps quickly at the start.
+      const next = agent37TemplateProgress(build.status, lastStep, exporting);
+      if (next && (!shown || next.step > shown.step)) {
+        shown = next;
+        set(signal, { progress: next });
+      }
       await sleep(POLL_MS, signal);
     }
   }
@@ -279,7 +369,7 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
     const client = await deps.client();
     const template = deps.templateName();
     if (!client) {
-      set(signal, { template, state: "idle", usable: false, startedAt: null, minutesLeft: null, error: null, nextRetryAt: null });
+      set(signal, { template, state: "idle", usable: false, startedAt: null, minutesLeft: null, progress: null, error: null, nextRetryAt: null });
       return;
     }
     if (status.state !== "building") set(signal, { template, state: "checking" });
@@ -297,6 +387,7 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
         adeVersion: readAgent37TemplateMarker(existing.description)?.adeVersion ?? deps.adeVersion,
         startedAt: null,
         minutesLeft: null,
+        progress: null,
         error: null,
         nextRetryAt: null,
       });
@@ -349,7 +440,7 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
     // Claim it before the slow part, so another computer that checks now waits on this one.
     await deps.records.write(ours);
     deps.logger?.info?.("agent37.template_build_started", { template, buildId: build.id, adeVersion: bakedVersion, contextHash, usable });
-    set(signal, { state: "building", usable, startedAt, minutesLeft: minutesLeft(startedAt), error: null, nextRetryAt: null });
+    set(signal, { state: "building", usable, startedAt, minutesLeft: null, progress: null, error: null, nextRetryAt: null });
 
     // The vault has no compare-and-set, so two computers can claim at once.
     // Read the record back after a moment: when another computer's claim for
@@ -445,7 +536,7 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
     }
     await deps.records.clear();
     deps.logger?.info?.("agent37.template_build_succeeded", { template, revision: published?.revision ?? null });
-    set(signal, { state: "ready", usable: true, adeVersion: bakedVersion, startedAt: null, minutesLeft: null, error: null, nextRetryAt: null });
+    set(signal, { state: "ready", usable: true, adeVersion: bakedVersion, startedAt: null, minutesLeft: null, progress: null, error: null, nextRetryAt: null });
   }
 
   async function loop(signal: AbortSignal) {
@@ -465,6 +556,7 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
           error: reason,
           startedAt: null,
           minutesLeft: null,
+          progress: null,
           nextRetryAt: delay == null ? null : now() + delay,
         });
         if (delay == null) return;
@@ -501,7 +593,7 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
     /** The key was removed: stop following. A build already on Agent37 keeps going there. */
     reset: () => {
       cancel();
-      publish({ template: deps.templateName(), state: "idle", usable: false, startedAt: null, minutesLeft: null, error: null, nextRetryAt: null });
+      publish({ template: deps.templateName(), state: "idle", usable: false, startedAt: null, minutesLeft: null, progress: null, error: null, nextRetryAt: null });
     },
   };
 }

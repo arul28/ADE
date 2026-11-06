@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AGENT37_READY_WAKE_WAIT_MS, type Agent37ReadyProjectStatus } from "../../../shared/agent37";
+import { AGENT37_JOIN_WATCH_MS, AGENT37_READY_WAKE_WAIT_MS, type Agent37CreateMachineResult, type Agent37ReadyProjectStatus, type Agent37Status } from "../../../shared/agent37";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { captureError } from "../../../shared/sentry/capture";
 import { ipcErrorMessage } from "../../lib/format";
@@ -7,6 +7,8 @@ import type { DraftMachineOption } from "./DraftMachinePicker";
 
 /** The picker row for this project's ready Agent 37 machine. */
 export const AGENT37_READY_MACHINE_ID = "__ade_agent37_ready__";
+/** The picker row that makes a new Agent 37 machine for this chat (no ready machine for the project). */
+export const AGENT37_NEW_MACHINE_ID = "__ade_agent37_new__";
 
 const CONNECT_RETRY_MS = 1_500;
 /** A connected machine shows up among the picker's machines within a moment; past this it isn't coming. */
@@ -48,6 +50,10 @@ export function useAgent37ReadyDraftMachine({
   /** The machine being woken, by name, until it is selected or given back. */
   const [wakingName, setWakingName] = useState<string | null>(null);
   const [pendingTargetId, setPendingTargetId] = useState<string | null>(null);
+  /** Agent 37's connection, read once the picker opens: the row shows only while a key works. */
+  const [agent37Status, setAgent37Status] = useState<Agent37Status | null>(null);
+  /** The New Agent 37 machine form is open. */
+  const [creating, setCreating] = useState(false);
   const attemptRef = useRef(0);
   const claimingRef = useRef(false);
   /** The claim not yet selected: what `abandon` gives back. */
@@ -67,6 +73,20 @@ export function useAgent37ReadyDraftMachine({
       off?.();
     };
   }, [bridge, enabled, identity, pickerOpened]);
+
+  useEffect(() => {
+    if (!enabled || !pickerOpened || !bridge?.getStatus) return;
+    let cancelled = false;
+    const read = () => {
+      void bridge.getStatus().then((next) => { if (!cancelled) setAgent37Status(next); }, () => undefined);
+    };
+    read();
+    const off = bridge.onStatusChanged?.(read);
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, [bridge, enabled, pickerOpened]);
 
   // Selected once its connection shows up among the picker's machines; from
   // then on it is the person's machine, never given back from here.
@@ -109,6 +129,7 @@ export function useAgent37ReadyDraftMachine({
     giveBack();
   }, [giveBack]);
 
+  const agent37Connected = agent37Status?.connected === true && !agent37Status.error;
   const option: DraftMachineOption | null = project
     ? {
         id: AGENT37_READY_MACHINE_ID,
@@ -118,7 +139,58 @@ export function useAgent37ReadyDraftMachine({
         // While waking it is the selection, never an unavailable one.
         unavailableReason: wakingName || project.state === "ready" ? null : project.message,
       }
-    : null;
+    : agent37Connected || wakingName
+      ? {
+          // No ready machine for this project: make one for this chat.
+          id: AGENT37_NEW_MACHINE_ID,
+          name: wakingName ? `Connecting to ${wakingName}…` : "New Agent 37 machine",
+          kind: "cloud",
+          cloudProvider: "agent37",
+          unavailableReason: null,
+        }
+      : null;
+
+  /** "New Agent 37 machine": open the create form. */
+  const chooseNew = useCallback(() => {
+    if (wakingName) return;
+    setCreating(true);
+  }, [wakingName]);
+
+  /**
+   * The form made the machine and it signed in to the account: pair with it
+   * and connect, then select it once the picker lists it. A machine that
+   * signed in but isn't listed yet gets retried until the join window ends.
+   */
+  const onNewMachineCreated = useCallback(async (result: Agent37CreateMachineResult) => {
+    setCreating(false);
+    if (!result.machineKey) {
+      onNotice({ message: `${result.name} is still starting. It shows under Your computers once it's ready.`, kind: "status" });
+      return;
+    }
+    const attempt = ++attemptRef.current;
+    const stillWanted = () => attemptRef.current === attempt;
+    const startedAt = Date.now();
+    setWakingName(result.name);
+    onNotice({ message: `${result.name} is signed in. Connecting…`, kind: "status" });
+    let lastError: unknown = null;
+    while (stillWanted() && Date.now() - startedAt < AGENT37_JOIN_WATCH_MS) {
+      try {
+        const paired = await window.ade.account.pairMachine(result.machineKey);
+        const connected = await window.ade.remoteRuntime.connect(paired.targetId);
+        if (connected && stillWanted()) {
+          setPendingTargetId(paired.targetId);
+          return;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, CONNECT_RETRY_MS * 2));
+    }
+    if (!stillWanted()) return;
+    setWakingName(null);
+    const reason = lastError ? ipcErrorMessage(lastError) : "";
+    onNotice({ message: `ADE made ${result.name} but couldn't connect to it yet${reason ? `: ${reason}` : "."} Connect it under Your computers.`, kind: "status" });
+  }, [onNotice]);
 
   const choose = useCallback(async () => {
     if (!originUrl || !bridge?.readyClaim || wakingName) return;
@@ -193,5 +265,15 @@ export function useAgent37ReadyDraftMachine({
   }, [abandon, enabled]);
 
   /** While waking, the picker shows this row as the choice, so picking any machine (even the previous one) cancels it. */
-  return { option, choose, abandon, waking: wakingName != null || pendingTargetId != null };
+  return {
+    option,
+    choose,
+    chooseNew,
+    abandon,
+    waking: wakingName != null || pendingTargetId != null,
+    /** The New Agent 37 machine form, open; the pane renders it. */
+    create: creating && agent37Status?.connected
+      ? { status: agent37Status, onCreated: onNewMachineCreated, onClose: () => setCreating(false) }
+      : null,
+  };
 }

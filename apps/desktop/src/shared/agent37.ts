@@ -509,6 +509,8 @@ export type Agent37MachinesResult = {
   usageAvailable: boolean;
   /** This month against the cap. */
   spending: Agent37Spending;
+  /** This UTC month per machine, and what deleted machines spent (see `Agent37MonthSpend`). */
+  month?: Agent37MonthSpend | null;
   /** A plain sentence for `key_refused` and `unreachable`. */
   message: string | null;
 };
@@ -579,6 +581,14 @@ export function agent37ResizeBody(
  */
 export type Agent37TemplateState = "idle" | "checking" | "building" | "ready" | "failed";
 
+export type Agent37TemplateProgress = {
+  /** 1-based. */
+  step: number;
+  steps: number;
+  /** "Installing ADE", "Saving the machine image". */
+  label: string;
+};
+
 export type Agent37TemplateStatus = {
   template: string;
   state: Agent37TemplateState;
@@ -593,6 +603,12 @@ export type Agent37TemplateStatus = {
   startedAt: number | null;
   /** A rough estimate while building. */
   minutesLeft: number | null;
+  /**
+   * Where the running build is, read from Agent 37's build log: step `step` of
+   * `steps`, with a plain label. Null while nothing is building or before the
+   * log says anything.
+   */
+  progress?: Agent37TemplateProgress | null;
   /** A plain reason when `failed`. */
   error: string | null;
   /** Epoch ms of the next automatic try, while `failed`. */
@@ -605,10 +621,10 @@ export function describeAgent37TemplateStatus(status: Agent37TemplateStatus): st
     case "ready":
       return "ADE's machine template is ready.";
     case "building": {
-      const left = status.minutesLeft != null ? `, about ${status.minutesLeft} min left` : "";
+      const step = status.progress ? ` Step ${status.progress.step} of ${status.progress.steps}: ${status.progress.label}.` : "";
       return status.usable
-        ? `Updating ADE's machine template${left}. New machines use the current one until then.`
-        : `Setting up ADE's machine template in your Agent 37 workspace${left}.`;
+        ? `Updating ADE's machine template. New machines use the current one until then.${step}`
+        : `Getting Agent 37 ready for ADE. This happens once.${step}`;
     }
     case "failed":
       return `ADE couldn't set up its machine template: ${status.error ?? "the build failed."}`;
@@ -796,3 +812,82 @@ export function describeAgent37ReadyCost(kind: Agent37MachineKind, shape: Agent3
   return `Asleep it costs about ${formatAgent37Usd(agent37ReadyIdleMonthlyUsd(shape))} a month (its disk). `
     + `A chat on it costs ${formatAgent37HourlyPrice(agent37HourlyUsd(kind, shape))} while it's awake.`;
 }
+
+/*
+ * Settings › Integrations › Agent 37: the page's own links, the month's spend
+ * per machine, and the small helpers its cards share. Kept apart from the
+ * template, ready and create contracts above.
+ */
+
+/** Agent 37's own list of the workspace's machines. */
+export const AGENT37_DASHBOARD_URL = "https://www.agent37.com/dashboard/cloud/instances";
+
+/**
+ * This UTC month on Agent 37 (settled hourly), for the machines card: what each
+ * listed machine spent and what sleeping saved it, and what machines that are
+ * gone (listed in the usage, absent from the workspace) spent before they went.
+ */
+export type Agent37MonthSpend = {
+  /** Epoch ms of the month's first instant (UTC). */
+  sinceMs: number;
+  byInstance: Record<string, { spentUsd: number; savedUsd: number | null }>;
+  deletedSpentUsd: number;
+  deletedCount: number;
+};
+
+/** "owner/repo" from a git identity like `github.com/owner/repo`; the identity itself when it has no such tail. */
+export function agent37RepoLabel(identity: string | null | undefined): string | null {
+  const trimmed = identity?.trim();
+  if (!trimmed) return null;
+  const parts = trimmed.replace(/\.git$/i, "").split("/").filter(Boolean);
+  return parts.length >= 3 ? parts.slice(-2).join("/") : trimmed;
+}
+
+/** The lockfiles a ready machine's setup can be guessed from, best first. */
+const AGENT37_SETUP_BY_LOCKFILE: ReadonlyArray<readonly [string, string]> = [
+  ["pnpm-lock.yaml", "pnpm install --frozen-lockfile"],
+  ["bun.lockb", "bun install"],
+  ["bun.lock", "bun install"],
+  ["yarn.lock", "yarn install --frozen-lockfile"],
+  ["package-lock.json", "npm ci"],
+];
+
+/** A setup command for a repo whose top folder holds these files, or null. */
+export function agent37SetupSuggestion(fileNames: readonly string[]): string | null {
+  const names = new Set(fileNames);
+  for (const [lockfile, command] of AGENT37_SETUP_BY_LOCKFILE) {
+    if (names.has(lockfile)) return command;
+  }
+  return null;
+}
+
+/*
+ * Claude on cloud machines. A new cloud machine has no Claude sign-in, and
+ * signing in on each one is a step per machine. Instead the person signs in
+ * once on this computer with Claude Code's own `claude setup-token` (a
+ * long-lived subscription token made for headless machines), ADE keeps the
+ * token in the person's account, and gives it to every new Agent 37 machine as
+ * `CLAUDE_CODE_OAUTH_TOKEN`. This is the way Agent 37's own docs sign Claude
+ * Code in on a machine.
+ */
+
+export type Agent37ClaudeTokenSignInState = "idle" | "running" | "saving" | "succeeded" | "failed" | "cancelled";
+
+export type Agent37ClaudeTokenStatus = {
+  /** A token is kept in the account, so new machines start signed in to Claude. */
+  saved: boolean;
+  /** When it was saved, epoch ms. */
+  savedAt: number | null;
+  /** The account could not be read, so `saved` is unknown. */
+  unknown: boolean;
+  /** The sign-in running on this computer, if any. */
+  signIn: {
+    state: Agent37ClaudeTokenSignInState;
+    /** The link Claude Code printed; ADE opens it in the browser too. */
+    url: string | null;
+    /** Claude Code is asking for the code shown in the browser. */
+    awaitingCode: boolean;
+    /** Why it failed, in one sentence. */
+    message: string | null;
+  } | null;
+};

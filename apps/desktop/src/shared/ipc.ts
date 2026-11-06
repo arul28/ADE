@@ -1155,6 +1155,13 @@ export const IPC = {
   agent37WakeMachine: "ade.agent37.wakeMachine",
   agent37CopyMachine: "ade.agent37.copyMachine",
   agent37MoveMachine: "ade.agent37.moveMachine",
+  /** Claude for cloud machines: the person's long-lived token, given to every new Agent 37 machine. */
+  agent37ClaudeTokenStatus: "ade.agent37.claudeTokenStatus",
+  agent37ClaudeTokenStart: "ade.agent37.claudeTokenStart",
+  agent37ClaudeTokenSubmitCode: "ade.agent37.claudeTokenSubmitCode",
+  agent37ClaudeTokenCancel: "ade.agent37.claudeTokenCancel",
+  agent37ClaudeTokenRemove: "ade.agent37.claudeTokenRemove",
+  agent37ClaudeTokenChanged: "agent37:claudeTokenChanged",
 
   /**
    * The account settings store, reached through the brain's `account_settings`

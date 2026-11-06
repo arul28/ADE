@@ -80,7 +80,7 @@ import { machineNameForBinding } from "../shared/machineIdentity";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
-import type { Agent37Budget, Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus, Agent37Status, Agent37TemplateStatus, Agent37WakeForUseResult } from "../shared/agent37";
+import type { Agent37ClaudeTokenStatus, Agent37Budget, Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus, Agent37Status, Agent37TemplateStatus, Agent37WakeForUseResult } from "../shared/agent37";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -12999,6 +12999,17 @@ const adeBridge = {
       const listener = (_event: Electron.IpcRendererEvent, status: Agent37TemplateStatus) => cb(status);
       ipcRenderer.on(IPC.agent37TemplateStatus, listener);
       return () => ipcRenderer.removeListener(IPC.agent37TemplateStatus, listener);
+    },
+    claudeTokenStatus: (): Promise<Agent37ClaudeTokenStatus | null> => ipcRenderer.invoke(IPC.agent37ClaudeTokenStatus),
+    claudeTokenStart: (): Promise<Agent37ClaudeTokenStatus | null> => ipcRenderer.invoke(IPC.agent37ClaudeTokenStart),
+    claudeTokenSubmitCode: (code: string): Promise<Agent37ClaudeTokenStatus | null> =>
+      ipcRenderer.invoke(IPC.agent37ClaudeTokenSubmitCode, { code }),
+    claudeTokenCancel: (): Promise<Agent37ClaudeTokenStatus | null> => ipcRenderer.invoke(IPC.agent37ClaudeTokenCancel),
+    claudeTokenRemove: (): Promise<Agent37ClaudeTokenStatus | null> => ipcRenderer.invoke(IPC.agent37ClaudeTokenRemove),
+    onClaudeTokenChanged: (cb: () => void): (() => void) => {
+      const listener = () => cb();
+      ipcRenderer.on(IPC.agent37ClaudeTokenChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.agent37ClaudeTokenChanged, listener);
     },
     readyStatus: (): Promise<Agent37ReadyStatus | null> => ipcRenderer.invoke(IPC.agent37ReadyStatus),
     readySetProject: (settings: Partial<Agent37ReadyProjectSettings>): Promise<Agent37ReadyStatus | null> =>
