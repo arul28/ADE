@@ -329,16 +329,15 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
     for (;;) {
       if (signal.aborted) return;
       // The log endpoint answers the build too. A log that can't be read
-      // (an older API, a hiccup) only costs the step name, never the build.
+      // (an older API, a hiccup, a 404 before the log exists) only costs the
+      // step name, never the build: the build itself says if it is gone.
       let build: Awaited<ReturnType<Agent37Client["getTemplateBuild"]>>;
       const read = await client.getTemplateBuildLog(buildId, offset).catch((error: unknown) => {
         deps.logger?.warn?.("agent37.template_build_log_failed", { buildId, error: plainReason(error) });
         return undefined;
       });
-      if (read === undefined) {
+      if (read == null) {
         build = await client.getTemplateBuild(buildId);
-      } else if (read === null) {
-        build = null;
       } else {
         build = read.build;
         offset = read.offset;
