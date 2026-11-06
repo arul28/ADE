@@ -27,6 +27,7 @@ import { createCoalescingReadCache } from "../infra/coalescingReadCache";
 import { createProjectState } from "../infra/projectState";
 import { isAdeAvailable, isAdeUnavailableError } from "../../../lib/adeAvailability";
 import { FILE_DELETE_TIMEOUT_MS } from "../../../../shared/removeTreeTimeouts";
+import { connectSentry, type SentryApi } from "../../../../shared/sentry/capture";
 
 const project: ProjectInfo = {
   rootPath: "/repo",
@@ -2261,6 +2262,134 @@ describe("createAdeWebAdapter", () => {
       ],
     });
     adapter.dispose();
+  });
+
+  describe("Report issue", () => {
+    const CRASH = {
+      surface: "page_crash",
+      headline: "Couldn't open /Users/arul/Projects/photon for arul@example.com",
+      technicalDetail: "'text/html' is not a valid JavaScript MIME type.",
+      sentryEventId: "crash-event",
+    };
+
+    /** The web client's Sentry SDK: it answers each send later, through `afterSendEvent`. */
+    function webSentry(answer: { statusCode?: number }) {
+      const hooks = new Set<(event: { event_id?: string }, response: { statusCode?: number }) => void>();
+      const feedback: Array<{ associatedEventId?: string; tags?: Record<string, string> }> = [];
+      const api: SentryApi = {
+        withScope: (callback) => callback({ setTag() {}, setExtras() {}, setFingerprint() {}, setLevel() {}, setUser() {} }),
+        captureException: () => "newest-event",
+        addBreadcrumb: () => undefined,
+        lastEventId: () => "newest-event",
+        captureFeedback: (params) => {
+          feedback.push(params);
+          const id = `feedback-${feedback.length}`;
+          void Promise.resolve().then(() => {
+            // Another event's answer first: only the note's own answer counts.
+            for (const hook of [...hooks]) hook({ event_id: "newest-event" }, { statusCode: 200 });
+            for (const hook of [...hooks]) hook({ event_id: id }, answer);
+          });
+          return id;
+        },
+        getClient: () => ({
+          on: (_hook, callback) => {
+            hooks.add(callback);
+            return () => hooks.delete(callback);
+          },
+        }),
+        logger: { warn() {}, error() {} },
+      };
+      connectSentry(api);
+      return { feedback, hooks };
+    }
+
+    function stubBrowser(open: (url: string) => { opener: unknown } | null) {
+      const stored = new Map<string, string>();
+      vi.stubGlobal("window", {
+        localStorage: {
+          getItem: (key: string) => stored.get(key) ?? null,
+          setItem: (key: string, value: string) => stored.set(key, value),
+        },
+        location: { pathname: "/work" },
+        open: vi.fn(open),
+      });
+      vi.stubGlobal("navigator", {
+        userAgent: "Safari",
+        clipboard: { writeText: vi.fn(async () => undefined) },
+      });
+      fake.descriptors = ["analytics.capture"].map((action) => ({
+        action,
+        scope: "runtime" as const,
+        policy: { viewerAllowed: true },
+      }));
+      fake.commandResults.set("analytics.capture", { accepted: true, reason: "accepted" });
+    }
+
+    function recordedOutcome(outcome: string) {
+      return expect.objectContaining({
+        action: "analytics.capture",
+        args: expect.objectContaining({
+          event: "ade_feature_used",
+          surface: "web",
+          properties: { feature: "connections", action: "issue_report", outcome },
+        }),
+      });
+    }
+
+    function diagnosticsOf(adapter: ReturnType<typeof createAdeWebAdapter>) {
+      const diagnostics = adapter.ade.diagnostics;
+      if (!diagnostics) throw new Error("the web client has no diagnostics namespace");
+      return diagnostics;
+    }
+
+    afterEach(() => connectSentry(null as never));
+
+    it.each([
+      ["Sentry stored the note", { statusCode: 200 }, true],
+      ["the transport failed (an ad blocker, no network)", {}, false],
+      ["Sentry refused the note", { statusCode: 429 }, false],
+    ])("gives a reference only once %s", async (_case, answer, delivered) => {
+      stubBrowser(() => null);
+      const sentry = webSentry(answer);
+      const adapter = createAdeWebAdapter(fake.asClient());
+
+      const sendManual = diagnosticsOf(adapter).sendManual;
+      if (!sendManual) throw new Error("sendManual is missing while Sentry runs");
+      const result = await sendManual(CRASH);
+
+      expect(result.ok).toBe(delivered);
+      // The note opens beside the crash the screen showed, not the newest event.
+      expect(sentry.feedback[0]?.associatedEventId).toBe("crash-event");
+      if (result.ok) {
+        // The reference is what support searches for, so it is the one Sentry holds.
+        expect(result.reference).toMatch(/^[0-9a-f]{8}$/);
+        expect(sentry.feedback[0]?.tags?.["report.reference"]).toBe(result.reference);
+      }
+      expect(sentry.hooks.size).toBe(0);
+      await vi.waitFor(() => expect(fake.commandCalls).toContainEqual(recordedOutcome(delivered ? "success" : "failed")));
+    });
+
+    it("opens the GitHub issue with no path or email in its public title, and says when the tab was blocked", async () => {
+      stubBrowser(() => null);
+      const adapter = createAdeWebAdapter(fake.asClient());
+
+      const blocked = await diagnosticsOf(adapter).openIssue(CRASH);
+      const title = new URL(blocked.issueUrl).searchParams.get("title") ?? "";
+      expect(title).toMatch(/^Web: /);
+      expect(title).not.toMatch(/\/Users\/arul|arul@example\.com/);
+      expect(blocked.report).not.toMatch(/\/Users\/arul|arul@example\.com/);
+      expect(blocked.copied).toBe(true);
+      expect(blocked.opened).toBe(false);
+      await vi.waitFor(() => expect(fake.commandCalls).toContainEqual(recordedOutcome("failed")));
+
+      const tab = { opener: {} as unknown };
+      stubBrowser(() => tab);
+      const opened = await diagnosticsOf(createAdeWebAdapter(fake.asClient())).openIssue(CRASH);
+      expect(opened.opened).toBe(true);
+      // The issue page cannot reach back into the client.
+      expect(tab.opener).toBeNull();
+      await vi.waitFor(() => expect(fake.commandCalls).toContainEqual(recordedOutcome("opened")));
+    });
   });
 
   it("captures web analytics at runtime scope by default with a durable browser-local opt-out", async () => {

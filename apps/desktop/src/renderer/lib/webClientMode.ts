@@ -15,6 +15,13 @@ declare global {
   }
 }
 
+declare const __ADE_WEB_VERSION__: string | undefined;
+
+/** The desktop version the hosted web client was built from; null outside a web-client build. */
+export function webClientVersion(): string | null {
+  return typeof __ADE_WEB_VERSION__ === "string" && __ADE_WEB_VERSION__ ? __ADE_WEB_VERSION__ : null;
+}
+
 /** True when the renderer is running as the hosted browser web client. */
 export function isWebClientMode(): boolean {
   return typeof window !== "undefined" && window.__adeWebClient === true;

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { FAILURE_CODE_PATTERN } from "../../../shared/diagnosticsUpload";
+import { FAILURE_CODE_PATTERN, MAX_DIAGNOSTIC_REPORTS_PER_DAY } from "../../../shared/diagnosticsUpload";
 import { doNotTrackRequested } from "../../../shared/doNotTrack";
 import { writeFileAtomic } from "../state/durableFile";
 
@@ -53,7 +53,7 @@ export const MAX_AUTO_DIAGNOSTICS_PER_WINDOW = 3;
  * promise about what the computer does on its own. A manual send is a person
  * asking for help about a report they can read first.
  */
-export const MAX_MANUAL_DIAGNOSTICS_PER_WINDOW = 5;
+export const MAX_MANUAL_DIAGNOSTICS_PER_WINDOW = MAX_DIAGNOSTIC_REPORTS_PER_DAY;
 
 /**
  * The ledger code every manual send is filed under.

@@ -130,10 +130,12 @@ extension and releases its handles immediately, including on Windows.
 | `apps/ade-cli/src/lib/externalLinks.ts` | `normalizeExternalUrl` / `openExternalUrl` for general URLs: allows only `http(s)` and `mailto:`. `normalizeEditorExternalUrl` / `openEditorExternalUrl` is a separate allowlist for SSH editor URLs (`vscode:` / `vscode-insiders:` / `vscodium:` with host `vscode-remote` and path `/ssh-remote+…`, plus `zed://ssh/…`). Opens through the platform helper (`open` / `rundll32` via the trusted-tool resolver / `xdg-open`), and falls back to Electron's `shell.openExternal` only when actually running inside Electron — a static `electron` import crashes headless startup. |
 | `apps/desktop/src/shared/diagnosticsUpload.ts` | The one diagnostics upload client, shared by the desktop main process (`autoDiagnosticsService`) and the CLI: `uploadDiagnosticReport`, the `DiagnosticUploadFailure` vocabulary and its one-sentence copy, `resolveDiagnosticsUploadBaseUrl`, and `diagnosticReference` (the first 8 characters of the returned id — a full uuid is unreadable over a phone call). It lives in `shared/` because that is the only tree the renderer, the main process and the CLI can all import (Vite refuses to serve files outside `apps/desktop`), and it is deliberately free of Node built-ins and `import.meta` so the identical module loads in all three. It posts the report's exact bytes and transforms nothing: the thing that is sent has to be the thing that was shown. |
 | `apps/desktop/src/shared/types/diagnostics.ts` | The `DiagnosticSurface` / request / payload contract shared by main, preload and renderer. |
-| `apps/desktop/src/renderer/components/app/ReportIssueButton.tsx` | The button itself, on every error surface. One press assembles, saves, copies, and opens the issue; it reports what actually happened rather than claiming success. |
+| `apps/desktop/src/renderer/components/app/ReportIssueButton.tsx` | The button and its result line, on every error surface. One press sends the report to ADE where the surface can send (else it opens the GitHub issue with the report copied); the line reports what actually happened rather than claiming success. |
+| `apps/desktop/src/renderer/components/app/ReportIssueFooter.tsx` | The last row of the recovery screen and the two crash boundaries: a rule, Report issue with one hint line, and on a crash card "ADE got an error report automatically" once Sentry confirms it has the crash (`confirmSentryDelivery`). |
+| `apps/desktop/src/renderer/webclient/adapter/diagnostics.ts` | Report issue in the hosted web client: the report goes to the web client's Sentry as User Feedback, and Open GitHub issue opens the issue page from the browser. See *Diagnostic reports* below. |
 | `apps/desktop/src/renderer/components/settings/DiagnosticsSharingSection.tsx` | The one report control in Settings → System → Advanced (`general.diagnostics-sharing`, anchored `#diagnostics-sharing`, `web: "hidden"` because the report is built on this machine). It is **Send a report to ADE**, with no toggle. It hides the button on a preload that predates it. |
 | `apps/desktop/src/renderer/components/app/toast/useAutoDiagnosticsToast.ts` | The renderer half of the delivery contract: subscribes, asks for the outstanding notices (`IPC.diagnosticsFlushAutoSent`), raises the *"A diagnostic report was sent to ADE"* toast with **View**, and only then acknowledges it (`IPC.diagnosticsAckAutoSent`). Mounted from `AppShell.tsx`. |
-| `apps/desktop/src/renderer/components/app/errorSurfaceKit.tsx` | Shared parts for the full-screen error surfaces, built on the surface kit (`.kit-card`, `.kit-tag`, `.kit-btn`) — `ErrorSurfaceCard`, `WhatToDo`, `TechnicalDetailsFold`, `ERROR_PRIMARY_BUTTON` — so the recovery screen, the renderer/page boundaries and the CTO wake failure keep the raw text behind a fold and the plain-language account on top, and read on light themes and over a picture. |
+| `apps/desktop/src/renderer/components/app/errorSurfaceKit.tsx` | Shared parts for the full-screen error surfaces, built on the surface kit (`.kit-card`, `.kit-tag`, `.kit-btn`) — `ErrorSurfaceCard`, `TechnicalDetailsFold`, `ERROR_PRIMARY_BUTTON` — so the recovery screen, the renderer/page boundaries and the CTO wake failure keep the raw text behind a fold and the plain-language account on top, and read on light themes and over a picture. |
 | `apps/desktop/src/renderer/components/chat/ChatContinuityRecoveryCard.tsx` | The continuity notice as the chat draws it: a quiet "Reconnecting…" line while ADE recovers by itself, a quiet "Reconnected" line after, and only when that failed an inline `Banner` with one recommended action ("Try again") and "Start a new chat". `AgentChatMessageList` renders it in place of a plain notice chip when a `system_notice` event's `detail.kind` is `"continuity_recovery"`; `foldSelfHealedFailures` in `selfHealedFailureLines.ts` keeps only the newest notice per lost thread, hides the hand-off message, and drops the failed turns once the thread is back (a "not found" error is dropped only when the next continuity notice after it is a thread that came back). |
 | `apps/desktop/src/renderer/components/settings/StorageSection.tsx` | Project → Storage & cleanup → Space: storage dashboard, plain-language lane cleanup rules, last/next safety-scan status, and a review table for archived lanes, orphaned worktrees, DerivedData, and build output with ownership, age, blocked reasons, and reclaim estimates. Archive & Reclaim has a typed confirmation and explains exactly what stays and what restore recreates. The page also keeps the category totals, Health & diagnostics strip, project-database breakdown, cleanup preview, recent-cleanups journal, and manual history compression; storage accounting includes ADE temporary files. |
 | `apps/desktop/src/renderer/components/settings/storage/StorageDiagnostics.tsx` | The "Health & diagnostics" strip: four tiles — database size (with a journal-fed sparkline + trend arrow), background-service resident memory, slow responses in 24 h (from `getRuntimeHealth`), and last cleanup — plus the overall health chip. Deep-linked as `#diagnostics` from the top-bar load pill. |
@@ -1168,7 +1170,8 @@ into this strip via `#/settings?tab=storage#diagnostics`.
 Every error surface — the project recovery screen, the renderer and page error
 boundaries, the update-transaction notice, the brain Repair control, and the
 Connections pane's publish-failure line — carries a **Report issue** button
-(`renderer/components/app/ReportIssueButton.tsx`). One press assembles a
+(`renderer/components/app/ReportIssueButton.tsx`). One press sends the
+redacted report to ADE (below). Its **Open GitHub issue** link assembles the same
 redacted Markdown report, saves it, copies it to the clipboard, and opens a
 prefilled GitHub new-issue page for `arul28/ADE` in the default browser. The URL
 carries only a short stub: GitHub rejects issue URLs somewhere north of 8 KB, so
@@ -1388,6 +1391,25 @@ as opaque: it never parses, indexes or echoes a report, which is what lets it
 accept anonymous uploads at all, and it bounds one identity (Clerk user, else a
 hash of the caller address) to five uploads a UTC day.
 
+**The hosted web client** has neither a main process nor logs to collect, and
+the account directory refuses an upload from a browser page on another site. Its
+Report issue (`renderer/webclient/adapter/diagnostics.ts`) sends a smaller
+report as Sentry User Feedback to the web client's own project, `ade-web`,
+which already holds the crash with its stack, screen and release. The report
+holds the surface, the screen's headline and technical detail (free-text
+scrub), the code, the web version, the browser, the path and the time, at most
+2,000 characters. The note links to the crash the screen captured
+(`sentryEventId` in the request) and carries a random 8-character reference as
+its `report.reference` tag. The reference shows only after Sentry answers 2xx
+for the note (`confirmSentryDelivery` in `shared/sentry/capture.ts`), so an ad
+blocker or a lost connection reads as "ADE couldn't send the report." with
+**Try again**. A browser sends at most 5 a day (`MAX_DIAGNOSTIC_REPORTS_PER_DAY`,
+kept in `localStorage`). Where the web client's Sentry does not run (Do Not
+Track, an analytics opt-out, a non-production build) the button opens the
+GitHub issue with the report copied, and a tab the browser blocked says so
+instead of claiming it opened. The web client has no automatic diagnostic
+report: its crash boundaries' Sentry capture is the automatic report there.
+
 #### Auto-send
 
 Nobody presses the button. A person looking at an error screen has to notice the
@@ -1402,7 +1424,7 @@ the two populations stay separable on the server.
 | Trigger | Where | `failureCode` |
 | --- | --- | --- |
 | Recovery diagnosis reached a terminal state | `main/services/runtime/projectRecoveryService.ts` (`diagnose`, via `onTerminalDiagnosis`) | the `AdeRecoveryErrorCode` — `disk_full`, `brain_crash_looping`, … |
-| Renderer crash | `renderer/components/app/RendererErrorBoundary.tsx` (`componentDidCatch`, via `IPC.diagnosticsAutoReport`) | `renderer_crash` |
+| Renderer or page crash | `renderer/components/app/RendererErrorBoundary.tsx` and `PageErrorBoundary.tsx` (`componentDidCatch`, via `IPC.diagnosticsAutoReport`, once per boundary) | `renderer_crash`, `page_crash` |
 | Post-update transaction failed | `main/main.ts`, beside `autoUpdate.transaction_failed` | `update_<step>` |
 | Desktop started its own brain because the service manager refused it | `main/main.ts` `onRuntimeStatusChange`, once per `appFallback.since` | `app_fallback_<reason>` |
 | Pairing auto-recovery gave up | `ade-cli/.../machinePairingAutoRecovery.ts` (`onGaveUp`, wired in `cli.ts`; the same hook records `recoveryGaveUpAt` in publisher health, so the desktop also shows a lasting banner and does not depend on this report) | the refusal code, or `snapshot_failed` |

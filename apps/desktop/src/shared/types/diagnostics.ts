@@ -27,6 +27,11 @@ export type DiagnosticReportRequestPayload = {
   /** The technical text the screen already exposed behind its details fold. */
   technicalDetail?: string | null;
   projectRoot?: string | null;
+  /**
+   * The Sentry event of the crash the screen shows, when it was captured. The
+   * web client links its report to it; the desktop main process ignores it.
+   */
+  sentryEventId?: string | null;
 };
 
 /**

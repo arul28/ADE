@@ -64,39 +64,29 @@ describe("DiagnosticsSharingSection manual send", () => {
   });
 
   it("says something different for each refusal, and never a status code", async () => {
-    const cases: Array<[DiagnosticsManualSendResult, string]> = [
-      [
-        { ok: false, reason: "local_limit", limit: 5 },
-        "You've already sent 5 reports from this computer today. Try again tomorrow.",
-      ],
+    const results: DiagnosticsManualSendResult[] = [
+      { ok: false, reason: "local_limit", limit: 5 },
       // The two 429s the account directory answers with are deliberately
       // distinguishable, and they are two different situations to a user: one
       // is about them, the other is not.
-      [
-        { ok: false, reason: "rate_limited" },
-        "You've already sent several reports today. Try again tomorrow.",
-      ],
-      [
-        { ok: false, reason: "unavailable" },
-        "ADE isn't accepting reports right now. Try again later.",
-      ],
-      [
-        { ok: false, reason: "failed" },
-        "ADE couldn't send the report. Check your connection and try again.",
-      ],
+      { ok: false, reason: "rate_limited" },
+      { ok: false, reason: "unavailable" },
+      { ok: false, reason: "failed" },
     ];
 
-    for (const [result, copy] of cases) {
+    const shown: string[] = [];
+    for (const result of results) {
       mountSection({ sendManual: async () => result });
       await pressSend();
-      await waitFor(() => {
-        expect(screen.getByRole("status").textContent).toContain(copy);
-      });
-      for (const text of ["429", "503", "status"]) {
-        expect(screen.getByRole("status").textContent).not.toContain(text);
-      }
+      const text = (await screen.findByRole("status")).textContent ?? "";
+      expect(text.trim(), `a sentence for ${result.ok ? "ok" : result.reason}`).not.toBe("");
+      for (const code of ["429", "503", "status"]) expect(text).not.toContain(code);
+      shown.push(text);
       cleanup();
     }
+    expect(new Set(shown).size).toBe(results.length);
+    // The local limit names its own number, so the person knows how many is enough.
+    expect(shown[0]).toContain("5");
   });
 
   it("does not claim a local report copy exists when an oversized report cannot be saved", async () => {

@@ -250,7 +250,6 @@ function UpdateSwapNotice({
           title: result.failureMessage ?? "The update didn't finish installing.",
           extra: (
             <ReportIssueButton
-              variant="ghost"
               context={{
                 surface: "update_transaction",
                 headline: result.failureMessage,

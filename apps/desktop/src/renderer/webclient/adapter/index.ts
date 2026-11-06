@@ -7,6 +7,7 @@ import { createAccountNamespace, createAccountSettingsNamespace } from "./accoun
 import { createAgentChatNamespace } from "./agentChat";
 import { createArchiveNamespace } from "./archive";
 import { createChatLaunchNamespace } from "./chatLaunch";
+import { createDiagnosticsNamespace } from "./diagnostics";
 import { createAnalyticsNamespace } from "./analytics";
 import { createAttentionNamespace } from "./attention";
 import { createAppNamespace, webKeepAwakeMethods, webUpdateMethods } from "./app";
@@ -109,13 +110,15 @@ export function createAdeWebAdapter(
   const { git, diff, conflicts } = createGitNamespaces(infra);
   const misc = createMiscNamespaces(infra);
   const accountClient = providedAccountClient ?? new BrowserAccountClient();
+  const analytics = createAnalyticsNamespace(infra);
 
   const surface = {
     app: createAppNamespace(infra),
     account: createAccountNamespace(accountClient),
     accountSettings: createAccountSettingsNamespace(),
     attention: createAttentionNamespace(infra, accountClient),
-    analytics: createAnalyticsNamespace(infra),
+    analytics,
+    diagnostics: createDiagnosticsNamespace(analytics),
     project: createProjectNamespace(infra),
     remoteRuntime: createRemoteRuntimeNamespace(infra),
     lanes: createLanesNamespace(infra),

@@ -27,7 +27,7 @@ import {
   TechnicalDetailsFold,
   type ErrorSurfaceTone,
 } from "./errorSurfaceKit";
-import { ReportIssueButton } from "./ReportIssueButton";
+import { ReportIssueFooter } from "./ReportIssueFooter";
 import { ResetAdeButton } from "./ResetAdeDialog";
 import { canRestartAde, clearRestartStamp, restartAde, restartedAdeRecently } from "./restartAde";
 import { isAdeAvailable } from "../../lib/adeAvailability";
@@ -148,7 +148,6 @@ const RUNG_HINT = {
   retry: "Opens the project again.",
   restart: "Quits and reopens ADE.",
   reset: "Removes everything ADE put on this computer. Your code stays.",
-  report: "Sends ADE what went wrong and gives you a reference.",
 } as const;
 
 /**
@@ -579,9 +578,6 @@ export function ProjectRecoveryScreen() {
   const startFreshAvailable = Boolean(diagnosis) && !projectFolderMissing
     && isAdeAvailable(window.ade?.recovery?.startFresh);
   const restartAvailable = canRestartAde();
-  // Report issue renders nothing on a preload without the diagnostics bridge;
-  // its hint must not be left standing alone.
-  const reportAvailable = isAdeAvailable(window.ade?.diagnostics?.openIssue);
 
   const technicalText = [
     diagnosis?.technicalDetail,
@@ -780,29 +776,16 @@ export function ProjectRecoveryScreen() {
                 </p>
               ) : null}
 
-              {reportAvailable ? (
-                <>
-                  <hr className="kit-rule" style={{ marginTop: 18 }} />
-                  {/* The last rung: when nothing above worked, tell ADE. The hint
-                      steps aside once the button reports its own result. */}
-                  <div className="group/report mt-3 flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <ReportIssueButton
-                      variant="ghost"
-                      showDisclosure={false}
-                      context={{
-                        surface: "project_recovery",
-                        headline: heroHeadline,
-                        code,
-                        technicalDetail: technicalText,
-                        projectRoot: rootPath,
-                      }}
-                    />
-                    <span className="text-[12px] text-(color:--kit-text-3) group-has-[[role=status]]/report:hidden">
-                      {RUNG_HINT.report}
-                    </span>
-                  </div>
-                </>
-              ) : null}
+              {/* The last rung: when nothing above worked, tell ADE. */}
+              <ReportIssueFooter
+                context={{
+                  surface: "project_recovery",
+                  headline: heroHeadline,
+                  code,
+                  technicalDetail: technicalText,
+                  projectRoot: rootPath,
+                }}
+              />
             </>
           ) : null}
         </ErrorSurfaceCard>

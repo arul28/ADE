@@ -121,24 +121,6 @@ export function ErrorSurfaceCard({
 }
 
 /**
- * A short "what to do" list. Kept plain: no icons, no emphasis —
- * these read as instructions, and decoration makes them read as decoration.
- */
-export function WhatToDo({ title, steps }: { title: string; steps: readonly ReactNode[] }) {
-  if (steps.length === 0) return null;
-  return (
-    <div className="mt-5 text-[12.5px] leading-relaxed text-(color:--kit-text-2)">
-      <p className="font-medium text-fg">{title}</p>
-      <ul className="mt-1.5 flex list-disc flex-col gap-1 pl-4 marker:text-(color:--kit-text-3)">
-        {steps.map((step, index) => (
-          <li key={index}>{step}</li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-/**
  * The only place raw internals are allowed to appear. Collapsed by default so
  * the surface stays readable, with a Copy affordance because the next thing
  * people do with it is paste it somewhere.

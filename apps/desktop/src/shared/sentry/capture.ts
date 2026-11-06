@@ -38,14 +38,23 @@ type SentryScope = {
 
 type LogAttributes = Record<string, unknown>;
 
+/** The client hook that says how a send went; `statusCode` is absent when the transport failed. */
+type SentryClient = {
+  on?(
+    hook: "afterSendEvent",
+    callback: (event: { event_id?: string }, response: { statusCode?: number } | undefined) => void,
+  ): (() => void) | void;
+};
+
 /** The part of a Sentry SDK this file uses; every SDK ADE loads has it. */
 export type SentryApi = {
   withScope(callback: (scope: SentryScope) => void): unknown;
+  /** Returns the event id. */
   captureException(error: unknown, hint?: { mechanism?: { type: string; handled: boolean } }): unknown;
   addBreadcrumb(breadcrumb: { category: string; message: string; level: SentryLevel; data?: Record<string, unknown> }): unknown;
   /** Absent in the renderer SDK, whose events leave through main. */
   flush?(timeoutMs?: number): PromiseLike<boolean>;
-  /** User Feedback; used from main only (`main/sentry/userFeedback.ts`). */
+  /** User Feedback: main's "Send a report" note, and the web client's Report issue. */
   captureFeedback?(params: {
     message: string;
     source?: string;
@@ -53,6 +62,7 @@ export type SentryApi = {
     tags?: Record<string, string>;
   }): string;
   lastEventId?(): string | undefined;
+  getClient?(): SentryClient | undefined;
   logger: {
     /** Optional: release-health lines only (`logBridge.ts`). */
     info?(message: string, attributes?: LogAttributes): unknown;
@@ -61,7 +71,14 @@ export type SentryApi = {
   };
 };
 
+/** Longest User Feedback message ADE sends; Sentry keeps a few thousand characters. */
+export const SENTRY_FEEDBACK_MAX_CHARS = 2_000;
+
+/** How long `confirmSentryDelivery` waits for the transport before it answers no. */
+const DELIVERY_TIMEOUT_MS = 10_000;
+
 let sentry: SentryApi | null = null;
+let resolveUserId: (() => string | null | undefined) | null = null;
 
 /** Called once by the module that ran `Sentry.init` in this process. */
 export function connectSentry(api: SentryApi): void {
@@ -72,11 +89,38 @@ export function isSentryActive(): boolean {
   return sentry !== null;
 }
 
-/** Report a failure that has an error object. Non-errors are wrapped so they keep a stack. */
-export function captureError(error: unknown, context?: CaptureContext): void {
+/**
+ * Where events get their pseudonymous user: the same id PostHog sends as
+ * `distinct_id` (the hashed ADE account once signed in, else the install's
+ * random id), so one person can be followed across both. Read at send time,
+ * so sign-in and sign-out need no wiring of their own. Null when the user has
+ * product analytics off; the event then carries no user.
+ *
+ * Kept here rather than beside `beforeSend` (`eventFilter.ts`) so a caller
+ * that sends User Feedback, which skips `beforeSend`, does not load the filter.
+ */
+export function setSentryUserResolver(resolver: (() => string | null | undefined) | null): void {
+  resolveUserId = resolver;
+}
+
+/** The user `beforeSend` puts on an event; for events that skip it (User Feedback). */
+export function resolveSentryUserId(): string | null {
+  try {
+    return resolveUserId?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Report a failure that has an error object. Non-errors are wrapped so they
+ * keep a stack. Returns the event id, or null where Sentry is not running.
+ */
+export function captureError(error: unknown, context?: CaptureContext): string | null {
   const api = sentry;
-  if (!api) return;
+  if (!api) return null;
   const value = error instanceof Error ? error : new Error(typeof error === "string" ? error : safeDescribe(error));
+  let eventId: string | null = null;
   api.withScope((scope) => {
     for (const [key, tag] of Object.entries(context?.tags ?? {})) {
       if (tag !== undefined && tag !== null) scope.setTag(key, String(tag));
@@ -84,7 +128,42 @@ export function captureError(error: unknown, context?: CaptureContext): void {
     if (context?.extra) scope.setExtras(context.extra);
     if (context?.fingerprint?.length) scope.setFingerprint(context.fingerprint);
     if (context?.level) scope.setLevel(context.level);
-    api.captureException(value, { mechanism: { type: "ade", handled: context?.handled ?? true } });
+    const id = api.captureException(value, { mechanism: { type: "ade", handled: context?.handled ?? true } });
+    eventId = typeof id === "string" && id ? id : null;
+  });
+  return eventId;
+}
+
+/**
+ * Whether an event this process captured actually left: true once the
+ * transport answers 2xx for it. The desktop renderer's transport answers when
+ * main has the event; the web client's, when Sentry does. False when a filter
+ * dropped it (`beforeSend`, the budget), the send failed (offline, an ad
+ * blocker, a rate limit), or no answer came in time. For copy that tells a
+ * person ADE has their report, which must not be said on a guess.
+ */
+export function confirmSentryDelivery(eventId: string | null, timeoutMs = DELIVERY_TIMEOUT_MS): Promise<boolean> {
+  const client = sentry?.getClient?.();
+  if (!eventId || !client?.on) return Promise.resolve(false);
+  const on = client.on.bind(client);
+  return new Promise((resolve) => {
+    let settled = false;
+    let unsubscribe: (() => void) | void = undefined;
+    const finish = (delivered: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe?.();
+      resolve(delivered);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    // The send is always asynchronous, so subscribing after the capture
+    // cannot miss its answer.
+    unsubscribe = on("afterSendEvent", (event, response) => {
+      if (event?.event_id !== eventId) return;
+      const status = response?.statusCode;
+      finish(typeof status === "number" && status >= 200 && status < 300);
+    });
   });
 }
 
@@ -131,6 +210,8 @@ export function captureUserFeedback(args: {
   message: string;
   source: string;
   userId?: string | null;
+  /** The event the note is about; the newest event this process reported when absent. */
+  associatedEventId?: string | null;
   tags?: Record<string, string>;
   onError?: (error: unknown) => void;
 }): string | null {
@@ -143,8 +224,8 @@ export function captureUserFeedback(args: {
       feedbackId = api.captureFeedback?.({
         message: args.message,
         source: args.source,
-        // The newest event this process reported, so the note opens beside it.
-        associatedEventId: api.lastEventId?.() || undefined,
+        // The note opens beside its event in Sentry.
+        associatedEventId: args.associatedEventId || api.lastEventId?.() || undefined,
         tags: args.tags,
       }) ?? null;
     });

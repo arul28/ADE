@@ -292,7 +292,6 @@ export function ProviderDetailPage({
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                 <CopyReportButton report={diagnosticReport} label="Copy diagnostics" />
                 <ReportIssueButton
-                  variant="ghost"
                   context={{ surface: "provider_settings", headline: `${descriptor.label} provider`, code: `provider_${descriptor.id}`, technicalDetail: diagnosticReport }}
                 />
               </div>

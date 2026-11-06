@@ -1,34 +1,36 @@
 import React from "react";
 import { ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
 import { logRendererDebugEvent } from "../../lib/debugLog";
-import { captureError } from "../../../shared/sentry/capture";
+import { captureError, confirmSentryDelivery } from "../../../shared/sentry/capture";
 import {
   ERROR_PRIMARY_BUTTON,
   ErrorSurfaceCard,
   TechnicalDetailsFold,
-  WhatToDo,
 } from "./errorSurfaceKit";
-import { ReportIssueButton } from "./ReportIssueButton";
+import { ReportIssueFooter } from "./ReportIssueFooter";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { reloadForStaleChunk } from "../../lib/staleChunkReload";
+
+const RENDERER_CRASH_HEADLINE = "ADE needs to reload this window";
 
 type RendererErrorBoundaryState = {
   hasError: boolean;
   message: string;
+  /** This crash's Sentry event, once captured. */
+  crashEventId: string | null;
+  /** Sentry confirmed it has this crash. */
+  errorReportReceived: boolean;
 };
-
-const WHAT_TO_DO: readonly string[] = [
-  "Reload ADE. Everything reopens where it was.",
-  "If it happens again on the same screen, choose Report issue — that tells us which screen and what broke.",
-];
 
 export class RendererErrorBoundary extends React.Component<{ children: React.ReactNode }, RendererErrorBoundaryState> {
   state: RendererErrorBoundaryState = {
     hasError: false,
-    message: ""
+    message: "",
+    crashEventId: null,
+    errorReportReceived: false,
   };
 
-  static getDerivedStateFromError(error: unknown): RendererErrorBoundaryState {
+  static getDerivedStateFromError(error: unknown): Partial<RendererErrorBoundaryState> {
     return {
       hasError: true,
       message: error instanceof Error ? error.message : String(error)
@@ -36,24 +38,28 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
   }
 
   /**
-   * One automatic report per crash, not per re-render. `componentDidCatch` is
-   * React's once-per-caught-error hook (`getDerivedStateFromError` can run
-   * twice under StrictMode), and this flag covers a boundary that catches again
-   * after a failed recovery.
+   * One capture and one automatic report per crash, not per re-render.
+   * `componentDidCatch` is React's once-per-caught-error hook
+   * (`getDerivedStateFromError` can run twice under StrictMode), and this flag
+   * covers a boundary that catches again after a failed recovery.
    */
-  private autoReported = false;
+  private crashHandled = false;
 
   componentDidCatch(error: unknown, info: React.ErrorInfo): void {
     // Web client after a deploy: a lazy screen's old chunk is gone. The page
     // reloads into the new build; nothing here is broken.
     if (reloadForStaleChunk(error)) return;
-    if (!this.autoReported) {
-      this.autoReported = true;
-      captureError(error, {
+    if (!this.crashHandled) {
+      this.crashHandled = true;
+      const crashEventId = captureError(error, {
         handled: false,
         level: "fatal",
         tags: { boundary: "root", route: window.location.hash || window.location.pathname },
         extra: { componentStack: info.componentStack ?? null },
+      });
+      this.setState({ crashEventId });
+      void confirmSentryDelivery(crashEventId).then((received) => {
+        if (received) this.setState({ errorReportReceived: true });
       });
       // Main owns the setting and the budget; this is a request, and its answer
       // is deliberately uninteresting to a screen that is already broken.
@@ -61,8 +67,11 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
         void window.ade.diagnostics.autoReport({
           surface: "renderer_crash",
           code: "renderer_crash",
-          headline: "ADE needs to reload this window",
-        }).catch(() => undefined);
+          headline: RENDERER_CRASH_HEADLINE,
+        }).catch((reason: unknown) => logRendererDebugEvent("renderer.auto_report_failed", {
+          surface: "renderer_crash",
+          error: reason instanceof Error ? reason.message : String(reason),
+        }));
       }
     }
     // Keep renderer crashes visible in devtools logs and avoid a blank screen.
@@ -89,16 +98,14 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
           <div className="w-full max-w-[520px]">
             <ErrorSurfaceCard
               icon={<WarningCircle size={14} weight="bold" aria-hidden="true" />}
-              headline="ADE needs to reload this window"
+              headline={RENDERER_CRASH_HEADLINE}
               body={
                 <>
                   Something went wrong while drawing the app. Your project, chats and files are
-                  safe — this is only the window.
+                  safe — reloading reopens everything where it was.
                 </>
               }
             >
-              <WhatToDo title="What to do" steps={WHAT_TO_DO} />
-
               <div className="mt-5 flex flex-wrap items-center gap-2">
                 <button
                   type="button"
@@ -109,18 +116,17 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
                   Reload ADE
                 </button>
               </div>
-            </ErrorSurfaceCard>
 
-            <div className="mt-4">
-              <ReportIssueButton
-                variant="secondary"
+              <ReportIssueFooter
+                errorReportReceived={this.state.errorReportReceived}
                 context={{
                   surface: "renderer_crash",
-                  headline: "ADE needs to reload this window",
+                  headline: RENDERER_CRASH_HEADLINE,
                   technicalDetail: this.state.message || null,
+                  sentryEventId: this.state.crashEventId,
                 }}
               />
-            </div>
+            </ErrorSurfaceCard>
 
             <TechnicalDetailsFold
               text={this.state.message || "No error message was recorded."}

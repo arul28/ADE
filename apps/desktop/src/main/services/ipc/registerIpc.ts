@@ -5187,8 +5187,8 @@ export function registerIpc({
    *
    * `projectRoot` is deliberately NOT taken from the payload. It selects which
    * project's log directory gets read into the report, and a renderer is the
-   * one participant here that must not choose that — the only caller
-   * (`RendererErrorBoundary`) never sends one anyway. Main uses the project it
+   * one participant here that must not choose that — the callers (the window
+   * and page crash boundaries) never send one anyway. Main uses the project it
    * already has open, or none. The manual `openIssue` path is unchanged: there
    * a person is choosing to file about the screen they are looking at.
    */

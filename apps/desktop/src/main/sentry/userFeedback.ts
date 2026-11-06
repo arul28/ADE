@@ -9,12 +9,11 @@
  * skips `beforeSend`, so the text is scrubbed here (secrets, emails, paths)
  * and the user set here, to the same pseudonymous id every other event carries.
  */
-import { captureUserFeedback, isSentryActive } from "../../shared/sentry/capture";
-import { resolveSentryUserId } from "../../shared/sentry/eventFilter";
+import { captureUserFeedback, isSentryActive, resolveSentryUserId, SENTRY_FEEDBACK_MAX_CHARS } from "../../shared/sentry/capture";
 import { scrubFreeText, scrubString } from "../../shared/sentry/scrub";
 
 /** Longest note sent. */
-export const USER_FEEDBACK_MAX_CHARS = 2_000;
+export const USER_FEEDBACK_MAX_CHARS = SENTRY_FEEDBACK_MAX_CHARS;
 
 /** A "Try again" within this window resends the report, not the note. */
 const RETRY_WINDOW_MS = 10 * 60_000;

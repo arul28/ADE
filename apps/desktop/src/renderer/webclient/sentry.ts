@@ -8,13 +8,12 @@
  * wiring. The browser's Do Not Track setting is honoured.
  */
 import * as Sentry from "@sentry/react";
-import { connectSentry } from "../../shared/sentry/capture";
+import { connectSentry, setSentryUserResolver } from "../../shared/sentry/capture";
 import { resolveReleaseChannel } from "../../shared/packageChannel";
 import { SENTRY_DATA_COLLECTION, SENTRY_DSNS, sentryCommonTags, sentryReleaseName } from "../../shared/sentry/config";
-import { createSentryEventHooks, setSentryUserResolver } from "../../shared/sentry/eventFilter";
+import { createSentryEventHooks } from "../../shared/sentry/eventFilter";
 import { isAdeUnavailableError } from "../lib/adeAvailability";
-
-declare const __ADE_WEB_VERSION__: string | undefined;
+import { webClientVersion } from "../lib/webClientMode";
 
 export function initWebClientSentry(): void {
   const devOptIn = new URLSearchParams(window.location.search).get("ade_sentry_dev") === "1";
@@ -23,7 +22,7 @@ export function initWebClientSentry(): void {
   // An analytics opt-out recorded in an earlier build covers error tracking too.
   if (window.localStorage?.getItem("ade:web-product-analytics-enabled") === "false") return;
   const hooks = createSentryEventHooks();
-  const version = typeof __ADE_WEB_VERSION__ === "string" ? __ADE_WEB_VERSION__ : null;
+  const version = webClientVersion();
   Sentry.init({
     dsn: SENTRY_DSNS.web,
     release: sentryReleaseName(version),

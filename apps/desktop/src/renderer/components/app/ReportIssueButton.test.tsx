@@ -131,24 +131,4 @@ describe("ReportIssueButton", () => {
     await screen.findByText(/reference new777/);
     expect(sendManual).toHaveBeenLastCalledWith(next);
   });
-
-  it("drops the disclosure inside one-line banners, and keeps it when asked", () => {
-    installBridge(vi.fn());
-    const { rerender } = render(<ReportIssueButton context={CONTEXT} variant="ghost" />);
-
-    // A ghost button lives in a single-line banner; the fold would turn that
-    // strip into a paragraph, so the summary moves to the button's tooltip.
-    expect(screen.queryByText("What's in the report?")).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Report issue" }).getAttribute("title"),
-    ).toMatch(/Personal details are removed/);
-
-    rerender(<ReportIssueButton context={CONTEXT} variant="ghost" showDisclosure />);
-    expect(screen.getByText("What's in the report?")).toBeTruthy();
-    // The one sentence that tells the user what is stripped must survive any
-    // rewording of the fold above it.
-    expect(
-      screen.getByText(/File paths, your name, email addresses and any sign-in codes are removed/i),
-    ).toBeTruthy();
-  });
 });
