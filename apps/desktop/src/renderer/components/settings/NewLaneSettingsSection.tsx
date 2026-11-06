@@ -16,7 +16,16 @@ import type { NewLaneDefaultsSnapshot, NewLaneSettingsScope } from "../../../sha
 import { startSourceBranch } from "../lanes/laneStartOptions";
 import { LaneStartBranchField, LaneStartOnSwitch } from "../lanes/LaneStartPicker";
 import { useLaneStartMenuData } from "../lanes/useLaneStartMenuData";
+import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 import "./machineSettings.css";
+
+/** Which kind of pattern a project chose, for analytics: never its text. */
+function patternKind(pattern: string): "pattern_ade" | "pattern_user" | "pattern_none" | "pattern_custom" {
+  if (pattern === DEFAULT_LANE_BRANCH_PATTERN) return "pattern_ade";
+  if (pattern === "{user}/{slug}") return "pattern_user";
+  if (pattern === "{slug}") return "pattern_none";
+  return "pattern_custom";
+}
 
 /** The patterns most projects want; anything else is "Custom". `{user}` needs a git user name to show. */
 const CUSTOM_PATTERN = "__custom__";
@@ -57,6 +66,7 @@ export function NewLaneSettingsSection() {
       // Only the start: the brain merges, so a template picked since this
       // snapshot was read is kept.
       await saveNewLaneDefaults({ projectRoot, pin, defaults: { start: next } });
+      captureLaneSetupAnalytics({ action: "start_default_changed", outcome: `start_${next.from}` });
       flash();
     } catch (error) {
       fail(error instanceof Error ? error.message : String(error));
@@ -200,6 +210,7 @@ function BranchPatternRow({
     try {
       // The lane's machine also refuses a prefix that clashes with a branch it has.
       await saveNewLaneDefaults({ projectRoot, pin, defaults: { branchPattern: pattern } });
+      captureLaneSetupAnalytics({ action: "branch_pattern_changed", outcome: patternKind(pattern) });
       setError(null);
       flash();
     } catch (err) {

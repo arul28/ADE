@@ -60,6 +60,10 @@ import {
 } from "../../../../../ade-cli/src/services/tools";
 import { afterEach, describe, expect, it, test, vi } from "vitest";
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 let previousCursorToolsRoot: string | undefined;
 let temporaryCursorToolsRoot: string | undefined;
 afterEach(() => {
@@ -2977,6 +2981,9 @@ describe("createAgentChatService", () => {
     });
 
     it("appends only the slash commands and skills Claude cannot discover itself", async () => {
+      // The bundled skills come from this checkout. A shell inside an ADE chat
+      // exports the installed app's skill roots, which would answer instead.
+      vi.stubEnv("ADE_AGENT_SKILLS_DIRS", "");
       // `.claude/` is Claude Code's own root and this session sets
       // `settingSources: ["user","project","local"]`, so Claude already lists
       // these two. Repeating them spent system-prompt budget to say what the

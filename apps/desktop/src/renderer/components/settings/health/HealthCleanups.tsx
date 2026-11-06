@@ -20,6 +20,7 @@ import {
 } from "../storage/storageView";
 import { CleanupRunChart, type RunColumn } from "./healthCharts";
 import { useStorageBytes } from "../storage/useStorageBytes";
+import { captureLaneSetupAnalytics } from "../../../lib/laneSetupAnalytics";
 import type { HealthData } from "./useHealthData";
 
 const TRIGGER_LABEL: Record<MaintenanceRunReport["trigger"], string> = {
@@ -229,6 +230,26 @@ function policyFields(value: LaneCleanupConfig, effectiveValue: LaneCleanupConfi
     />
   );
   return { shown, dayField };
+}
+
+/**
+ * The automatic rules a save turned on or off, as coarse lane facts (never a
+ * day count): archive idle lanes, free up space on its own, delete archived
+ * lanes. `before` is what was in force when the page loaded.
+ */
+function captureRuleSwitches(before: LaneCleanupConfig | null | undefined, next: LaneCleanupConfig): void {
+  const was = resolveLaneCleanupPolicy(before);
+  const now = resolveLaneCleanupPolicy({ ...(before ?? {}), ...stripUnset(next) });
+  const switched = (on: boolean, wasOn: boolean, action: "auto_archive_changed" | "auto_free_up_changed" | "auto_delete_changed") => {
+    if (on !== wasOn) captureLaneSetupAnalytics({ action, outcome: on ? "enabled" : "disabled" });
+  };
+  switched(now.archiveIdleAfterDays > 0, was.archiveIdleAfterDays > 0, "auto_archive_changed");
+  switched(
+    now.freeUpSpaceMode === "auto" && now.freeUpSpaceAfterDays > 0,
+    was.freeUpSpaceMode === "auto" && was.freeUpSpaceAfterDays > 0,
+    "auto_free_up_changed",
+  );
+  switched(now.deleteArchivedAfterDays > 0, was.deleteArchivedAfterDays > 0, "auto_delete_changed");
 }
 
 function stripUnset(value: LaneCleanupConfig): LaneCleanupConfig {
@@ -461,17 +482,19 @@ export function HealthCleanups({ data, show }: { data: HealthData; show: "histor
   const pending = React.useRef<{ timer: ReturnType<typeof setTimeout>; value: LaneCleanupConfig } | null>(null);
   const { savePolicy, setPolicy, loadStorage } = data;
 
+  const effectivePolicy = data.storage.effectivePolicy;
   const save = React.useCallback(async (next: LaneCleanupConfig) => {
     setBusy(true);
     try {
       await savePolicy(next);
+      captureRuleSwitches(effectivePolicy, next);
       void loadStorage({ force: true, silent: true });
     } catch (err) {
       showToast({ tone: "error", title: "Couldn't save the archive rules", message: err instanceof Error ? err.message : String(err) });
     } finally {
       setBusy(false);
     }
-  }, [loadStorage, savePolicy]);
+  }, [effectivePolicy, loadStorage, savePolicy]);
 
   // Rules save shortly after each change (a day field changes on blur or
   // Enter, not per keystroke), debounced so quick toggles write once. Leaving

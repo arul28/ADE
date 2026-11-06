@@ -32,6 +32,13 @@ function gitResult(exitCode = 0, stdout = "", stderr = "") {
   return { exitCode, stdout, stderr };
 }
 
+/** A git command without leading `-c key=value` pairs (Windows adds `-c core.longpaths=true`). */
+function withoutConfigFlags(command: string[]): string[] {
+  let start = 0;
+  while (command[start] === "-c") start += 2;
+  return command.slice(start);
+}
+
 function seed(db: AdeDb, root: string, options: { status?: "active" | "archived"; worktreePath?: string } = {}) {
   const projectId = "project-storage";
   const worktreesDir = path.join(root, ".ade", "worktrees");
@@ -80,7 +87,8 @@ function installGitStub(args: {
     mutationSignalled = true;
     await args.onWorktreeMutation?.();
   };
-  vi.mocked(runGit).mockImplementation(async (command: string[], options?: { cwd?: string }) => {
+  vi.mocked(runGit).mockImplementation(async (gitArgs: string[], options?: { cwd?: string }) => {
+    const command = withoutConfigFlags(gitArgs);
     if (command[0] === "rev-parse" && command.includes("--show-toplevel")) {
       if (!options?.cwd || !fs.existsSync(options.cwd)) return gitResult(1, "", "missing");
       return gitResult(0, `${options?.cwd ?? ""}\n`);
@@ -186,6 +194,28 @@ describe("lane storage lifecycle", () => {
     expect(onArchived).not.toHaveBeenCalled();
     expect(fs.existsSync(worktreePath)).toBe(true);
     expect(db.get<{ status: string }>("select status from lanes where id = ?", ["12345678-lane"])?.status).toBe("active");
+    db.close();
+  });
+
+  it("counts commits only the folder's checked-out HEAD has as unsaved work, so automatic cleanup keeps the lane", async () => {
+    const { db, service, worktreePath } = await fixture();
+    fs.mkdirSync(worktreePath, { recursive: true });
+    installGitStub();
+    const stubbed = vi.mocked(runGit).getMockImplementation()!;
+    // The lane's branch is all pushed, but an agent left the folder on a
+    // detached HEAD with two commits no remote has.
+    vi.mocked(runGit).mockImplementation(async (command, options) => {
+      if (command[0] === "rev-list" && command[1] === "--count" && command[2] === "HEAD") {
+        return gitResult(0, options?.cwd === worktreePath ? "2\n" : "0\n");
+      }
+      return stubbed(command, options);
+    });
+
+    const facts = await service.getAutoArchiveFacts("12345678-lane");
+
+    expect(facts.worktreeUsable).toBe(true);
+    expect(facts.hasBranch).toBe(true);
+    expect(facts.unpushedCommitCount).toBe(2);
     db.close();
   });
 
@@ -431,12 +461,21 @@ describe("lane storage lifecycle", () => {
     fs.mkdirSync(worktreePath, { recursive: true });
     fs.writeFileSync(path.join(worktreePath, "file.bin"), "data");
     installGitStub();
+    // The removal fails where each platform does it: macOS and Linux remove
+    // the folder in place, Windows moves it aside first.
     vi.mocked(removeTreeOffProcess).mockImplementation(async (target) => {
       if (path.resolve(target) !== path.resolve(worktreePath)) return removeTreeForReal(target);
       expect(onArchived).toHaveBeenCalledTimes(1);
       throw Object.assign(new Error("disk is busy"), { code: "EIO" });
     });
-    vi.mocked(runGit).mockImplementation(async (command: string[], options?: { cwd?: string }) => {
+    const realRename = fs.promises.rename;
+    vi.spyOn(fs.promises, "rename").mockImplementation(async (from, to) => {
+      if (path.resolve(String(from)) !== path.resolve(worktreePath)) return realRename(from, to);
+      expect(onArchived).toHaveBeenCalledTimes(1);
+      throw Object.assign(new Error("disk is busy"), { code: "EIO" });
+    });
+    vi.mocked(runGit).mockImplementation(async (gitArgs: string[], options?: { cwd?: string }) => {
+      const command = withoutConfigFlags(gitArgs);
       if (command[0] === "worktree" && command[1] === "remove") return gitResult(1, "", "remove failed");
       if (command[0] === "worktree" && command[1] === "prune") return gitResult(0);
       if (command[0] === "rev-parse" && command.includes("--show-toplevel")) return gitResult(0, `${options?.cwd}\n`);
@@ -546,7 +585,8 @@ describe("lane storage lifecycle", () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     let removeStarted!: () => void;
     const started = new Promise<void>((resolve) => { removeStarted = resolve; });
-    installGitStub({ onRemove: async () => { removeStarted(); await gate; } });
+    // Paused mid-removal: `worktree remove` here, `worktree prune` after Windows moved the checkout aside.
+    installGitStub({ onWorktreeMutation: async () => { removeStarted(); await gate; } });
 
     const first = service.archiveAndReclaim({ laneId: "12345678-lane", confirmation: "RECLAIM" });
     await started;
@@ -582,7 +622,8 @@ describe("lane storage lifecycle", () => {
       const gate = new Promise<void>((resolve) => { release = resolve; });
       let removeStarted!: () => void;
       const started = new Promise<void>((resolve) => { removeStarted = resolve; });
-      installGitStub({ onRemove: async () => { removeStarted(); await gate; } });
+      // Paused mid-removal: `worktree remove` here, `worktree prune` after Windows moved the checkout aside.
+      installGitStub({ onWorktreeMutation: async () => { removeStarted(); await gate; } });
 
       const reclaim = service.archiveAndReclaim({
         laneId: "12345678-lane",
@@ -677,7 +718,7 @@ describe("lane storage lifecycle", () => {
 
     expect(db.get("select id from lanes where id = ?", ["12345678-lane"])).toBeNull();
     expect(fs.existsSync(worktreePath)).toBe(false);
-    const gitCalls = vi.mocked(runGit).mock.calls.map(([command]) => command.slice(0, 2).join(" "));
+    const gitCalls = vi.mocked(runGit).mock.calls.map(([command]) => withoutConfigFlags(command).slice(0, 2).join(" "));
     if (process.platform === "win32") {
       expect(gitCalls).toContain("worktree prune");
       expect(gitCalls).not.toContain("worktree remove");

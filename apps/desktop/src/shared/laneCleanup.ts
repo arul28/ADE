@@ -95,8 +95,10 @@ export function laneFreeUpStatus(
   nowMs: number = Date.now(),
 ): LaneFreeUpStatus {
   if (!lane.archivedAt || lane.laneType === "primary") return "not_due";
-  if (lane.reclaimState === "failed") return "failed";
+  // A folder already gone has nothing left to free, whatever an earlier try
+  // recorded (removed by hand, or moved aside on Windows before it failed).
   if (lane.reclaimState === "reclaimed" || !lane.folderPresent) return "not_due";
+  if (lane.reclaimState === "failed") return "failed";
   if (!archivedForDays(lane.archivedAt, policy.freeUpSpaceAfterDays, nowMs)) return "not_due";
   return lane.pendingRemoval ? "waiting" : "due";
 }

@@ -3,6 +3,7 @@ import type { LaneReclaimRisk, OpenProjectBinding } from "../../../../shared/typ
 import { showToast } from "../../app/toast/toastStore";
 import { ReclaimConfirmDialog } from "../storage/ReclaimConfirmDialog";
 import { useStorageBytes } from "../storage/useStorageBytes";
+import { captureLaneSetupAnalytics } from "../../../lib/laneSetupAnalytics";
 
 const RECLAIM_TOAST_ID = "settings-lane-reclaim";
 
@@ -63,11 +64,13 @@ export function useLaneReclaim(
               : `Archived ${risk.laneName}, freed ${storageBytes(result.reclaimedBytes)}`,
             message: "The branch and chats were kept. Restore it from the archive.",
           });
+      if (alreadyArchived) captureLaneSetupAnalytics({ action: "space_freed", outcome: "completed" });
       setRisk(null);
       setConfirm("");
       setDiscardDirty(false);
       onDone();
     } catch (err) {
+      if (alreadyArchived) captureLaneSetupAnalytics({ action: "space_freed", outcome: "failed" });
       showToast({ id: RECLAIM_TOAST_ID, tone: "error", title: err instanceof Error ? err.message : "Could not archive this lane" });
     } finally {
       setBusy(false);

@@ -1808,6 +1808,13 @@ describe("laneService delete outside .ade/worktrees", () => {
     return { ...rest, parentDir, worktreePath };
   }
 
+  /** "worktree prune" from `-c core.longpaths=true worktree prune`: the command, not its config flags. */
+  const gitSubcommand = (gitArgs: string[]): string => {
+    let start = 0;
+    while (gitArgs[start] === "-c") start += 2;
+    return gitArgs.slice(start, start + 2).join(" ");
+  };
+
   it("renames a Windows worktree aside and lets git prune it, instead of git removing it file by file", async () => {
     const originalPlatform = process.platform;
     const { db, service, parentDir, worktreePath } = await setupInOwnParent({
@@ -1823,7 +1830,7 @@ describe("laneService delete outside .ade/worktrees", () => {
 
       await service.delete({ laneId: "lane-external", deleteBranch: false });
 
-      const gitCalls = vi.mocked(runGit).mock.calls.map(([gitArgs]) => gitArgs.slice(0, 2).join(" "));
+      const gitCalls = vi.mocked(runGit).mock.calls.map(([gitArgs]) => gitSubcommand(gitArgs));
       expect(gitCalls).toContain("worktree prune");
       expect(gitCalls).not.toContain("worktree remove");
       expect(fs.existsSync(worktreePath)).toBe(false);
@@ -1863,7 +1870,7 @@ describe("laneService delete outside .ade/worktrees", () => {
       );
 
       // The rename really happened first: the prune only runs on that path.
-      expect(vi.mocked(runGit).mock.calls.map(([gitArgs]) => gitArgs.slice(0, 2).join(" "))).toContain(
+      expect(vi.mocked(runGit).mock.calls.map(([gitArgs]) => gitSubcommand(gitArgs))).toContain(
         "worktree prune",
       );
       expect(fs.existsSync(path.join(worktreePath, "work.txt"))).toBe(true);

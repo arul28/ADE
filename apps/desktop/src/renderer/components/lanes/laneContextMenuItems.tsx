@@ -36,6 +36,7 @@ import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
 import { LaneEmojiPicker } from "./LaneEmojiPicker";
 import { promptDialog } from "../ui/dialog";
 import { branchNameProblem } from "../../../shared/laneBranchName";
+import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 
 export function LaneMenuGlyph({ icon: Icon }: { icon: Icon }) {
   return (
@@ -511,11 +512,18 @@ async function renameLaneBranch(
       validate: (value) => (value.trim() === current ? null : branchNameProblem(value)),
     }))?.trim();
     if (!next || next === current) return;
-    const result = await window.ade.lanes.renameBranch({ laneId: lane.id, branchName: next }, runtimePin);
+    let result: Awaited<ReturnType<typeof window.ade.lanes.renameBranch>>;
+    try {
+      result = await window.ade.lanes.renameBranch({ laneId: lane.id, branchName: next }, runtimePin);
+    } catch (error) {
+      captureLaneSetupAnalytics({ action: "branch_renamed", outcome: "failed" });
+      throw error;
+    }
     if (result.blocked) {
       showToast({ title: `Can't rename ${result.branchRef}`, message: result.blocked, tone: "warning" });
       return;
     }
+    captureLaneSetupAnalytics({ action: "branch_renamed", outcome: "completed" });
     await onRenamed?.();
   } catch (error) {
     showToast({ title: "Couldn't rename the branch", message: errorText(error), tone: "error" });

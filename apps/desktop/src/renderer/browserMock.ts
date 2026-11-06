@@ -60,6 +60,7 @@ import type {
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
 import { renderLaneBranchPrefix } from "../shared/laneBranchName";
+import { branchNameFromLaneRef } from "../shared/laneBaseResolution";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
 import {
@@ -7185,18 +7186,20 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       rename: resolvedArg(undefined),
       renameBranch: async (args: { laneId: string; branchName?: string; dryRun?: boolean }) => {
         const lane = MOCK_LANES.find((entry) => entry.id === args.laneId);
-        const current = String(lane?.branchRef ?? "ade/mock-branch");
+        // Bare names, as the real API answers: never `refs/heads/…`.
+        const current = branchNameFromLaneRef(String(lane?.branchRef ?? "ade/mock-branch"));
         if (args.dryRun || !args.branchName || !lane) return { branchRef: current, renamed: false, blocked: null };
         lane.branchRef = args.branchName;
         return { branchRef: args.branchName, renamed: true, blocked: null };
       },
       checkBranchName: async (args: { name: string }) => {
         const branchName = args.name.trim();
-        const taken = MOCK_LANES.find((entry) =>
-          String(entry.branchRef ?? "").toLowerCase() === branchName.toLowerCase());
+        const taken = MOCK_LANES
+          .map((entry) => branchNameFromLaneRef(String(entry.branchRef ?? "")))
+          .find((name) => name && name.toLowerCase() === branchName.toLowerCase());
         return {
           branchName,
-          problem: taken ? `Branch "${taken.branchRef}" already exists. Choose a different branch name.` : null,
+          problem: taken ? `Branch "${taken}" already exists. Choose a different branch name.` : null,
         };
       },
       updateAppearance: resolvedArg(undefined),

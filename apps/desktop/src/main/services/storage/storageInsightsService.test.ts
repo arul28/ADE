@@ -1513,6 +1513,101 @@ describe("storageMaintenanceJournal", () => {
     service.dispose();
     fixture.cleanup();
   });
+
+  /** An idle lane and the archive rules, with the lane's facts as given; whether it was archived. */
+  async function archiveScanWith(facts: ReturnType<typeof finishedLaneFacts>): Promise<boolean> {
+    const fixture = await makeStorageFixture();
+    const { projectRoot, adeHome, db } = fixture;
+    const worktreePath = path.join(projectRoot, ".ade", "worktrees", "lane-a");
+    writeSized(path.join(worktreePath, "file.bin"), 16);
+    seedLane(db, { id: "lane-a", name: "lane-a", worktreePath });
+    const archive = vi.fn(async () => undefined);
+    const service = createStorageInsightsService({
+      projectRoot,
+      adeHome,
+      db,
+      logger,
+      projectId: "project-1",
+      laneService: {
+        list: vi.fn(async () => [{
+          id: "lane-a", name: "lane-a", laneType: "worktree" as const, worktreePath, isEditProtected: false, status: { dirty: false },
+        }]),
+        getAutoArchiveFacts: vi.fn(async () => facts),
+        getLiveWorkCounts: NOTHING_RUNNING,
+        archive,
+      },
+      projectConfigService: { get: () => ({ effective: { laneCleanup: { archiveIdleAfterDays: 1 } } }) },
+    });
+    try {
+      await service.runLifecycleScanNow();
+      return archive.mock.calls.length > 0;
+    } finally {
+      service.dispose();
+      fixture.cleanup();
+    }
+  }
+
+  // A PR in review keeps a lane whatever an earlier PR did, and a squash
+  // merge counts as done although GitHub deleted the commits' only remote copy.
+  it.each([
+    ["merged work, everything pushed", {}, true],
+    ["no commits of its own (a new lane sits on its base)", { hasOwnCommits: false }, false],
+    ["commits no remote has", { unpushedCommitCount: 2 }, false],
+    ["a merged PR, then a follow-up PR still open", { prMerged: true, prOpen: true }, false],
+    ["squash-merged: the merged PR's head is the branch, its commits on no remote", {
+      prMerged: true, mergedPrHasHead: true, mergedIntoBase: false, unpushedCommitCount: 3,
+    }, true],
+    ["a merged PR, then commits made after it", { prMerged: true, mergedIntoBase: false, unpushedCommitCount: 1 }, false],
+  ])("auto-archive decides from the lane's facts: %s", async (_case, overrides, archived) => {
+    expect(await archiveScanWith({ ...finishedLaneFacts(), ...overrides })).toBe(archived);
+  });
+
+  // Deleting an archived lane loses its folder for good (and its local branch
+  // when asked): only on proof nothing is lost, and never the remote branch.
+  it.each([
+    ["clean and merged", {}, true],
+    ["uncommitted files", { dirty: true }, false],
+    ["commits no remote has (on its branch or its checked-out HEAD)", { unpushedCommitCount: 1 }, false],
+    ["its PR still open", { prOpen: true }, false],
+    ["squash-merged with the merged head checked out", { prMerged: true, mergedPrHasHead: true, unpushedCommitCount: 2 }, true],
+  ])("auto-delete of an archived lane: %s", async (_case, overrides, deleted) => {
+    const fixture = await makeStorageFixture();
+    const { projectRoot, adeHome, db } = fixture;
+    const worktreePath = path.join(projectRoot, ".ade", "worktrees", "lane-old");
+    writeSized(path.join(worktreePath, "file.bin"), 16);
+    seedLane(db, { id: "lane-old", name: "lane-old", worktreePath, archivedAt: "2026-01-01T00:00:00.000Z" });
+    const remove = vi.fn(async () => undefined);
+    const archiveAndReclaim = vi.fn(async () => ({ keptForRetry: false }));
+    const service = createStorageInsightsService({
+      projectRoot,
+      adeHome,
+      db,
+      logger,
+      projectId: "project-1",
+      laneService: {
+        list: vi.fn(async () => []),
+        getAutoArchiveFacts: vi.fn(async () => ({ ...finishedLaneFacts(), ...overrides })),
+        getLiveWorkCounts: NOTHING_RUNNING,
+        archive: vi.fn(async () => undefined),
+        delete: remove,
+        archiveAndReclaim,
+      } as any,
+      projectConfigService: {
+        get: () => ({ effective: { laneCleanup: { deleteArchivedAfterDays: 7, deleteLocalBranchOnAutoDelete: true } } }),
+      },
+    });
+    try {
+      await service.runLifecycleScanNow();
+      expect(remove.mock.calls.length > 0).toBe(deleted);
+      for (const [args] of remove.mock.calls as unknown as Array<[{ laneId: string; deleteRemoteBranch?: boolean; force?: boolean }]>) {
+        expect(args).toMatchObject({ laneId: "lane-old", deleteRemoteBranch: false, force: false });
+      }
+      expect(archiveAndReclaim).not.toHaveBeenCalled();
+    } finally {
+      service.dispose();
+      fixture.cleanup();
+    }
+  });
 });
 
 describe("storageLedger", () => {
