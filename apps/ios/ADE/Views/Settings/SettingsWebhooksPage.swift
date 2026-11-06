@@ -164,7 +164,7 @@ struct SettingsWebhooksPage: View {
         } else if !automations.isEmpty {
           Section {
             ForEach(automations) { automation in
-              SettingsNavigationLink {
+              NavigationLink {
                 WebhookAutomationDetailPage(syncService: syncService, automation: automation)
               } label: {
                 WebhookAutomationRow(automation: automation)
@@ -317,6 +317,7 @@ struct WebhookAutomationDetailPage: View {
     .adeSettingsList()
     .navigationTitle(automation.ruleName)
     .navigationBarTitleDisplayMode(.inline)
+    .settingsPageClose()
     .refreshable { await load() }
     .task { await load() }
     .sheet(item: $openDelivery) { delivery in

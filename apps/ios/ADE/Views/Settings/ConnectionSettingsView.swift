@@ -38,6 +38,8 @@ struct ConnectionSettingsView: View {
         settingsChrome(settingsList)
       } landing: {
         generalPage
+      } page: { title in
+        page(SettingsRoute.allCases.first { $0.title == title } ?? .general)
       }
     } else {
       NavigationStack {
@@ -149,7 +151,7 @@ struct ConnectionSettingsView: View {
   private var pairingOnlyGroup: some View {
     VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
       ADESettingsSection("Connection") {
-        connectionHeader
+        connectionStatus.adeKitCard()
       }
 
       SettingsPairingSection(
@@ -159,9 +161,7 @@ struct ConnectionSettingsView: View {
     }
   }
 
-  private var connectionHeader: some View { connectionStatus(framed: true) }
-
-  private func connectionStatus(framed: Bool) -> some View {
+  private var connectionStatus: some View {
     SettingsConnectionHeader(
       snapshot: presentationModel.connectionSnapshot,
       onDisconnect: { syncService.disconnectForUserConnectionChange() },
@@ -173,8 +173,7 @@ struct ConnectionSettingsView: View {
           pinPreset = .discover(host)
         }
       },
-      onWake: wakeAsleepMachine,
-      framed: framed
+      onWake: wakeAsleepMachine
     )
   }
 
@@ -194,7 +193,7 @@ struct ConnectionSettingsView: View {
               ADESettingsSidebarGroupLabel(text: title)
             }
             ForEach(routes) { route in
-              ADESettingsLink(title: route.title, symbol: route.symbol, value: rowValue(route), sidebar: true) {
+              ADESettingsSidebarLink(title: route.title, symbol: route.symbol, value: rowValue(route)) {
                 page(route)
               }
             }
@@ -228,12 +227,6 @@ struct ConnectionSettingsView: View {
     switch route {
     case .appearance: return colorSchemeChoice.label
     case .machines:
-      let machines = settingsMachines(
-        syncService: syncService,
-        account: account,
-        fleet: machineFleet,
-        hidden: HiddenMachineStore.shared
-      )
       let live = machineController.liveCount(machines)
       return live > 0 ? "\(live) live" : nil
     default: return nil
@@ -250,14 +243,14 @@ struct ConnectionSettingsView: View {
     case .providers: SettingsProvidersPage(syncService: syncService)
     case .integrations: SettingsIntegrationsPage(syncService: syncService)
     case .notifications:
-      ADESettingsPage(title: "Notifications", subtitle: SettingsRoute.notifications.subtitle) {
+      ADESettingsPage(route: .notifications) {
         SettingsPushDeliverySection(
           snapshot: presentationModel.pushDeliverySnapshot,
           pushService: PushNotificationService.shared
         )
       }
     case .appearance:
-      ADESettingsPage(title: "Appearance", subtitle: SettingsRoute.appearance.subtitle) { SettingsAppearanceSection() }
+      ADESettingsPage(route: .appearance) { SettingsAppearanceSection() }
     case .lanes: SettingsLanesPage(syncService: syncService)
     case .machines: machinesPage
     case .advanced: advancedPage
@@ -269,24 +262,29 @@ struct ConnectionSettingsView: View {
   private var generalPage: some View {
     SettingsGeneralPage(
       syncService: syncService,
-      machines: settingsMachines(
-        syncService: syncService,
-        account: account,
-        fleet: machineFleet,
-        hidden: HiddenMachineStore.shared
-      ),
+      machines: machines,
       onSignIn: { signInPresented = true },
       accountPage: { AnyView(SettingsAccountPage(onSignIn: { signInPresented = true })) },
       machinesPage: { AnyView(machinesPage) },
       advancedPage: { AnyView(advancedPage) },
-      connection: { AnyView(connectionStatus(framed: false)) }
+      connection: { AnyView(connectionStatus) }
+    )
+  }
+
+  /// Every machine Settings lists: connected, signed in, or saved.
+  private var machines: [SettingsMachine] {
+    settingsMachines(
+      syncService: syncService,
+      account: account,
+      fleet: machineFleet,
+      hidden: HiddenMachineStore.shared
     )
   }
 
   /// Machines: the connected set and the rest of the account's machines, then
   /// the ways to add one.
   private var machinesPage: some View {
-    ADESettingsPage(title: "Machines") {
+    ADESettingsPage(route: .machines) {
       SettingsMachineSections(
         syncService: syncService,
         controller: machineController,
@@ -302,7 +300,7 @@ struct ConnectionSettingsView: View {
   /// Advanced: how the phone reaches its machine, why a notification did or
   /// did not arrive, and this phone's build and ids.
   private var advancedPage: some View {
-    ADESettingsPage(title: "Advanced", subtitle: SettingsRoute.advanced.subtitle) {
+    ADESettingsPage(route: .advanced) {
       SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot, content: .connection)
       ADESettingsSection("Notifications") {
         ADESettingsRows {
@@ -772,7 +770,7 @@ struct SettingsAccountPage: View {
   @State private var confirmSignOut = false
 
   var body: some View {
-    ADESettingsPage(title: "Account") {
+    ADESettingsPage(route: .account) {
       if let identity = account.identity, account.phase == .signedIn {
         ADESettingsRows {
           HStack(spacing: 14) {
@@ -820,33 +818,19 @@ struct SettingsAccountPage: View {
 }
 
 /// The root list's account row: avatar, name and email, opening Account. A
-/// row like `ADESettingsLink`, so on the Duo's two columns it fills the right
-/// column instead of pushing.
+/// sidebar row, so on the Duo's two columns it fills the right column
+/// instead of pushing.
 private struct SettingsAccountHeaderLink<Destination: View>: View {
   let identity: AccountIdentity
   @ViewBuilder var destination: () -> Destination
-  @Environment(\.duoSettingsSelection) private var splitSelection
-  @Environment(\.duoSettingsShow) private var splitShow
-
-  private static var title: String { SettingsRoute.account.title }
 
   var body: some View {
-    Group {
-      if let splitShow {
-        Button { splitShow(Self.title, AnyView(destination())) } label: { label }
-      } else {
-        SettingsNavigationLink { destination() } label: { label }
-      }
-    }
-    .buttonStyle(ADEKitRowButtonStyle(shape: .sidebar))
-    .background {
-      if splitSelection?.wrappedValue == Self.title {
-        RoundedRectangle(cornerRadius: 9, style: .continuous).fill(ADEColor.accent.opacity(0.16))
-      }
+    ADESettingsPageLink(title: SettingsRoute.account.title, shape: .sidebar, destination: destination) { _, pushes in
+      label(pushes: pushes)
     }
   }
 
-  private var label: some View {
+  private func label(pushes: Bool) -> some View {
     HStack(spacing: 12) {
       AccountAvatar(identity: identity)
       VStack(alignment: .leading, spacing: 2) {
@@ -863,7 +847,7 @@ private struct SettingsAccountHeaderLink<Destination: View>: View {
         }
       }
       Spacer(minLength: 8)
-      if splitShow == nil {
+      if pushes {
         ADESettingsChevron()
       }
     }

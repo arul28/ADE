@@ -20,7 +20,7 @@ struct SettingsProvidersPage: View {
   private var machine: String { syncService.machineDisplayName }
 
   var body: some View {
-    ADESettingsPage(title: "Providers", subtitle: SettingsRoute.providers.subtitle) {
+    ADESettingsPage(route: .providers) {
       if !connected {
         ADESettingsNotice(message: SettingsPageCopy.connectMachine)
       } else if !syncService.supportsRemoteAction("ai.getStatus") {
@@ -73,7 +73,7 @@ struct SettingsProvidersPage: View {
     } else {
       ADESettingsSection("Providers", hint: "Checking \(machine). This can take up to 30 seconds.", symbol: "cpu", tint: .accent) {
         ADESettingsRows {
-          ADESettingsRow(title: "Checking providers…") { ProgressView() }
+          ADESettingsLoadingRow(title: "Checking providers…")
         }
       }
     }

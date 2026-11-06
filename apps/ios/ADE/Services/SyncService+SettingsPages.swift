@@ -6,22 +6,6 @@ import Foundation
 // ones act on the phone's active project there, the same values the desktop
 // Settings page for that tab reads and writes.
 
-// MARK: - Shared copy
-
-/// The notices every machine-backed Settings page shows the same way.
-enum SettingsPageCopy {
-  static let connectMachine = "Connect a machine to change these."
-  static let openProject = "Open a project to change these."
-
-  static func updateADE(on machine: String) -> String {
-    "Update ADE on \(machine) to change this here."
-  }
-
-  static func queued(on machine: String) -> String {
-    "Saved. It reaches \(machine) when it reconnects."
-  }
-}
-
 // MARK: - Writes
 
 /// How a settings write ended: applied on the machine, or held in the phone's
@@ -128,7 +112,6 @@ struct SettingsAiStatus: Decodable, Equatable {
   struct ClaudeAvailability: Decodable, Equatable {
     struct Binary: Decodable, Equatable {
       var present: Bool?
-      var version: String?
     }
     struct Auth: Decodable, Equatable {
       var ready: Bool?
@@ -159,6 +142,15 @@ struct SettingsAiStatus: Decodable, Equatable {
   var opencodeBinaryInstalled: Bool?
   var opencodeInventoryError: String?
   var piInstallation: PiInstallation?
+
+  /// The providers found on the machine and how many of them are signed in,
+  /// as the desktop's General page counts them. Nil when the machine sent no
+  /// connections.
+  var signInCounts: (detected: Int, signedIn: Int)? {
+    guard let providerConnections else { return nil }
+    let detected = providerConnections.values.filter { $0.runtimeDetected == true }
+    return (detected.count, detected.filter { $0.runtimeAvailable == true }.count)
+  }
 }
 
 // MARK: - Integrations
@@ -167,7 +159,6 @@ struct SettingsAiStatus: Decodable, Equatable {
 struct SettingsGitHubStatus: Decodable, Equatable {
   var connected: Bool?
   var userLogin: String?
-  var authSource: String?
   var credentialStoreUnreadable: Bool?
   /// Present when ADE found a token but could not finish checking it (a JSON
   /// null decodes as nil).
@@ -181,28 +172,10 @@ struct SettingsGitHubStatus: Decodable, Equatable {
 
 /// `jira.getConnectionStatus`, the fields the Integrations card shows.
 struct SettingsJiraStatus: Decodable, Equatable {
-  struct Failure: Decodable, Equatable {
-    var reason: String?
-    var message: String?
-  }
   var connected: Bool
   var siteUrl: String?
-  var email: String?
-  var error: Failure?
-}
-
-// MARK: - Lanes (`lanes.getNewLaneDefaults`)
-
-/// `lanes.getNewLaneDefaults` with the git user name the branch pattern
-/// presets show (`branchUser`, which `NewLaneDefaultsSnapshot` leaves out).
-struct SettingsNewLaneDefaults: Decodable, Equatable {
-  var defaults: NewLaneDefaults
-  var scope: NewLaneSettingsScope?
-  var defaultBranch: String
-  var primaryBranch: String?
-  /// Absent on a brain that ignores a saved branch pattern.
-  var branchPrefix: String?
-  var branchUser: String?
+  /// Present when the saved connection failed its last check.
+  var error: RemoteJSONValue?
 }
 
 // MARK: - SyncService
@@ -219,19 +192,19 @@ extension SyncService {
       disconnectOnTimeout: false,
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
-    if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
-      return .queued
-    }
-    return .applied
+    return isQueued(response) ? .queued : .applied
+  }
+
+  /// The phone's answer for a command it held to send later.
+  private func isQueued(_ response: Any) -> Bool {
+    (response as? [String: Any])?["queued"] as? Bool == true
   }
 
   // Chat
 
   func fetchProjectChatConfig() async throws -> SettingsProjectChatConfig {
     let raw = try await sendCommand(action: "projectConfig.get", args: [:], disconnectOnTimeout: false)
-    if let payload = raw as? [String: Any], payload["queued"] as? Bool == true {
-      throw QueuedRemoteCommandError(action: "projectConfig.get")
-    }
+    if isQueued(raw) { throw QueuedRemoteCommandError(action: "projectConfig.get") }
     return SettingsProjectChatConfig(snapshot: raw)
   }
 
@@ -247,8 +220,8 @@ extension SyncService {
   func fetchJevZenState() async -> String? {
     guard supportsRemoteAction("ai.jevStatus") else { return nil }
     guard let raw = try? await sendCommand(action: "ai.jevStatus", args: [:], disconnectOnTimeout: false),
-          let payload = raw as? [String: Any],
-          payload["queued"] as? Bool != true
+          !isQueued(raw),
+          let payload = raw as? [String: Any]
     else { return nil }
     return payload["zen"] as? String
   }
@@ -259,10 +232,9 @@ extension SyncService {
   /// little longer so the host's own timeout message arrives first.
   ///
   /// The machine files `ai.getStatus` under a project, but the providers it
-  /// reports are the machine's own. On the hub no project is open, so the
-  /// command names one the machine has open, as the desktop does from any page.
+  /// reports are the machine's own (`machineWideTarget`).
   func fetchAiSettingsStatus() async throws -> SettingsAiStatus {
-    let fallback = activeProject == nil ? settingsMachineWideProject : nil
+    let fallback = machineWideTarget
     return try await sendDecodableCommand(
       action: "ai.getStatus",
       args: [:],
@@ -274,10 +246,13 @@ extension SyncService {
     )
   }
 
-  /// A project open on the machine, for a machine-wide read the brain files
-  /// under a project. Prefers one already open there.
-  private var settingsMachineWideProject: MobileProjectSummary? {
-    projects.first { $0.isOpen == true && $0.isAvailable } ?? projects.first { $0.isAvailable }
+  /// The project to name on a machine-wide read the brain files under a
+  /// project (`ai.getStatus`, `usage.getAdeStats`) while the phone has none
+  /// open, as on the hub. Only one already open there: naming a closed one
+  /// would make the brain start that project just to answer.
+  var machineWideTarget: MobileProjectSummary? {
+    guard activeProject == nil else { return nil }
+    return projects.first { $0.isOpen == true && $0.isAvailable }
   }
 
   // Integrations
@@ -303,15 +278,6 @@ extension SyncService {
   }
 
   // Lanes
-
-  func fetchSettingsNewLaneDefaults() async throws -> SettingsNewLaneDefaults {
-    try await sendDecodableCommand(
-      action: "lanes.getNewLaneDefaults",
-      args: [:],
-      disconnectOnTimeout: false,
-      as: SettingsNewLaneDefaults.self
-    )
-  }
 
   /// Saves only the fields given; the brain merges them into the rest.
   func saveNewLaneDefaults(start: LaneStart? = nil, branchPattern: String? = nil) async throws -> SettingsWriteOutcome {

@@ -229,7 +229,7 @@ struct ProviderAccountsScreen: View {
           HStack { ProgressView(); Spacer() }.adeSettingsListRow()
         }
         ForEach(store.accounts) { account in
-          SettingsNavigationLink {
+          NavigationLink {
             ProviderAccountDetailPage(
               machine: machine,
               store: store,
@@ -540,6 +540,7 @@ struct ProviderAccountDetailPage: View {
     }
     .navigationTitle("")
     .navigationBarTitleDisplayMode(.inline)
+    .settingsPageClose()
   }
 
   private func content(_ account: ProviderAccount) -> some View {

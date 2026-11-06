@@ -56,6 +56,7 @@
 		E2000000000000000000A600 /* ProviderAccountsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A600 /* ProviderAccountsStore.swift */; };
 		E20000000000000000000F30 /* ADEFlat.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F30 /* ADEFlat.swift */; };
 		E20000000000000000000F3A /* ADEKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F3A /* ADEKit.swift */; };
+		5E77000000000000000B0008 /* ADEKitSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0008 /* ADEKitSettings.swift */; };
 		E20000000000000000000092 /* LinearSVGPath.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000092 /* LinearSVGPath.swift */; };
 		E20000000000000000000093 /* LinearLaunchModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000093 /* LinearLaunchModel.swift */; };
 		E20000000000000000000094 /* LinearPaneStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000094 /* LinearPaneStore.swift */; };
@@ -286,6 +287,7 @@
 		AC8100000000000000000001 /* ProjectHostRecoveryScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC8000000000000000000001 /* ProjectHostRecoveryScreen.swift */; };
 		AC8100000000000000000002 /* ProjectHostRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC8000000000000000000002 /* ProjectHostRecoveryTests.swift */; };
 		E20000000000000000000051 /* HubComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000051 /* HubComponents.swift */; };
+		5E77000000000000000B0009 /* HubHeaderRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0009 /* HubHeaderRow.swift */; };
 		E20000000000000000000054 /* HubActivityState.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000054 /* HubActivityState.swift */; };
 		E20000000000000000000055 /* HubRosterFilterBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000055 /* HubRosterFilterBar.swift */; };
 		E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000052 /* HubScreen+ChatNavigation.swift */; };
@@ -560,6 +562,7 @@
 		D2000000000000000000A600 /* ProviderAccountsStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProviderAccountsStore.swift; path = ADE/Services/ProviderAccountsStore.swift; sourceTree = "<group>"; };
 		D20000000000000000000F30 /* ADEFlat.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEFlat.swift; path = ADE/Views/Components/ADEFlat.swift; sourceTree = "<group>"; };
 		D20000000000000000000F3A /* ADEKit.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEKit.swift; path = ADE/Views/Components/ADEKit.swift; sourceTree = "<group>"; };
+		5E77000000000000000A0008 /* ADEKitSettings.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEKitSettings.swift; path = ADE/Views/Components/ADEKitSettings.swift; sourceTree = "<group>"; };
 		D20000000000000000000092 /* LinearSVGPath.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearSVGPath.swift; path = ADE/Views/Linear/LinearSVGPath.swift; sourceTree = "<group>"; };
 		D20000000000000000000093 /* LinearLaunchModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearLaunchModel.swift; path = ADE/Views/Linear/LinearLaunchModel.swift; sourceTree = "<group>"; };
 		D20000000000000000000094 /* LinearPaneStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearPaneStore.swift; path = ADE/Views/Linear/LinearPaneStore.swift; sourceTree = "<group>"; };
@@ -777,6 +780,7 @@
 		AC8000000000000000000001 /* ProjectHostRecoveryScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProjectHostRecoveryScreen.swift; path = ADE/Views/Hub/ProjectHostRecoveryScreen.swift; sourceTree = "<group>"; };
 		AC8000000000000000000002 /* ProjectHostRecoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProjectHostRecoveryTests.swift; path = ADETests/ProjectHostRecoveryTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000051 /* HubComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubComponents.swift; path = ADE/Views/Hub/HubComponents.swift; sourceTree = "<group>"; };
+		5E77000000000000000A0009 /* HubHeaderRow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubHeaderRow.swift; path = ADE/Views/Hub/HubHeaderRow.swift; sourceTree = "<group>"; };
 		D20000000000000000000054 /* HubActivityState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubActivityState.swift; path = ADE/Views/Hub/HubActivityState.swift; sourceTree = "<group>"; };
 		D20000000000000000000055 /* HubRosterFilterBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubRosterFilterBar.swift; path = ADE/Views/Hub/HubRosterFilterBar.swift; sourceTree = "<group>"; };
 		D20000000000000000000052 /* HubScreen+ChatNavigation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "HubScreen+ChatNavigation.swift"; path = "ADE/Views/Hub/HubScreen+ChatNavigation.swift"; sourceTree = "<group>"; };
@@ -1112,6 +1116,7 @@
 				A1000000000000000000001A /* ADEHaptics.swift */,
 				D20000000000000000000F30 /* ADEFlat.swift */,
 				D20000000000000000000F3A /* ADEKit.swift */,
+				5E77000000000000000A0008 /* ADEKitSettings.swift */,
 				D2000000000000000000DE03 /* WebAuthPresentationAnchor.swift */,
 				C10000000000000000000011 /* ADEMobilePrimitives.swift */,
 				C1000000000000000000A001 /* MachineRowView.swift */,
@@ -1187,6 +1192,7 @@
 				D20000000000000000000F03 /* HubMachineSections.swift */,
 				AC8000000000000000000001 /* ProjectHostRecoveryScreen.swift */,
 				D20000000000000000000051 /* HubComponents.swift */,
+				5E77000000000000000A0009 /* HubHeaderRow.swift */,
 				D20000000000000000000054 /* HubActivityState.swift */,
 				D20000000000000000000055 /* HubRosterFilterBar.swift */,
 				D20000000000000000000052 /* HubScreen+ChatNavigation.swift */,
@@ -2189,6 +2195,7 @@
 				E20000000000000000000F03 /* HubMachineSections.swift in Sources */,
 				AC8100000000000000000001 /* ProjectHostRecoveryScreen.swift in Sources */,
 				E20000000000000000000051 /* HubComponents.swift in Sources */,
+				5E77000000000000000B0009 /* HubHeaderRow.swift in Sources */,
 				E20000000000000000000054 /* HubActivityState.swift in Sources */,
 				E20000000000000000000055 /* HubRosterFilterBar.swift in Sources */,
 				E20000000000000000000052 /* HubScreen+ChatNavigation.swift in Sources */,
@@ -2277,6 +2284,7 @@
 				B1000000000000000000001A /* ADEHaptics.swift in Sources */,
 				E20000000000000000000F30 /* ADEFlat.swift in Sources */,
 				E20000000000000000000F3A /* ADEKit.swift in Sources */,
+				5E77000000000000000B0008 /* ADEKitSettings.swift in Sources */,
 				E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */,
 				889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */,
 				56223CC3AF5A01B710CDC4CF /* WorkTabView.swift in Sources */,

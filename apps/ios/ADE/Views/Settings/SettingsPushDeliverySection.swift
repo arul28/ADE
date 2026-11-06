@@ -114,13 +114,7 @@ struct SettingsPushDeliverySection: View {
     }
 
     private func toggleRow(_ title: String, hint: String?, isOn: Binding<Bool>) -> some View {
-        ADESettingsRow(title: title, hint: hint) {
-            Toggle("", isOn: isOn)
-                .labelsHidden()
-                .tint(ADEColor.accent)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(title)
+        ADESettingsToggleRow(title: title, hint: hint, isOn: isOn)
     }
 
     /// What stands between this phone and its first push, with the fix.

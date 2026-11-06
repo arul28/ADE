@@ -483,7 +483,7 @@ struct SettingsUsagePage: View {
       let total = model.models.reduce(0) { $0 + ($1.costUsd ?? 0) }
       VStack(spacing: 0) {
         ForEach(model.models.prefix(12)) { entry in
-          SettingsNavigationLink {
+          NavigationLink {
             SettingsUsageModelDetailScreen(syncService: syncService, provider: entry.provider, model: entry.model, preset: rangeRaw)
           } label: {
             SettingsUsageBreakdownRowView(
@@ -827,6 +827,7 @@ struct SettingsUsageModelDetailScreen: View {
     .background(ADEColor.pageBackground.ignoresSafeArea())
     .navigationTitle(model)
     .navigationBarTitleDisplayMode(.inline)
+    .settingsPageClose()
     .task { await load() }
   }
 

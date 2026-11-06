@@ -1,6 +1,10 @@
 import SwiftUI
 
 struct MobileAccessGateView: View {
+  #if DEBUG
+  /// Whether this launch's `-adePairingLink` argument was handed over.
+  @MainActor private static var launchPairingLinkUsed = false
+  #endif
   let accountConfigured: Bool
   let accountLoading: Bool
   let accountSignedIn: Bool
@@ -197,9 +201,14 @@ struct MobileAccessGateView: View {
       #if DEBUG
       // `-adePairingLink <url>`: a pairing link handed in at launch, for a
       // simulator whose Safari keeps the link instead of opening the app.
-      if syncService.requestedPairingQrNavigation == nil,
-         let raw = UserDefaults.standard.string(forKey: "adePairingLink"), !raw.isEmpty {
-        syncService.requestedPairingQrNavigation = PairingQrNavigationRequest(raw: raw)
+      // Used once per launch: the gate shows again after a sign-out, and the
+      // link is spent by then.
+      if !Self.launchPairingLinkUsed {
+        Self.launchPairingLinkUsed = true
+        if syncService.requestedPairingQrNavigation == nil,
+           let raw = UserDefaults.standard.string(forKey: "adePairingLink"), !raw.isEmpty {
+          syncService.requestedPairingQrNavigation = PairingQrNavigationRequest(raw: raw)
+        }
       }
       #endif
       if syncService.requestedPairingQrNavigation != nil {

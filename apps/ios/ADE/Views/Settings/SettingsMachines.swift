@@ -524,7 +524,7 @@ struct SettingsMachineSections: View {
   }
 
   private func row(_ machine: SettingsMachine) -> some View {
-    SettingsNavigationLink {
+    NavigationLink {
       SettingsMachinePage(syncService: syncService, controller: controller, machineId: machine.id)
     } label: {
       SettingsMachineRow(
@@ -801,7 +801,7 @@ struct SettingsMachinePageContent: View {
             ADESettingsRows {
               ForEach(inventory.providers, id: \.provider) { provider in
                 if let page = actions.accountsPage, let kind = ProviderAccountProvider(rawValue: provider.provider) {
-                  SettingsNavigationLink { page(kind) } label: { accountCountRow(provider, link: true) }
+                  NavigationLink { page(kind) } label: { accountCountRow(provider, link: true) }
                     .buttonStyle(ADEKitRowButtonStyle())
                 } else {
                   accountCountRow(provider, link: false)

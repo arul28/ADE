@@ -24,7 +24,7 @@ struct SettingsIntegrationsPage: View {
   private var hasProject: Bool { syncService.activeProjectId != nil }
 
   var body: some View {
-    ADESettingsPage(title: "Integrations", subtitle: SettingsRoute.integrations.subtitle) {
+    ADESettingsPage(route: .integrations) {
       if !connected {
         ADESettingsNotice(message: SettingsPageCopy.connectMachine)
       } else {
@@ -50,11 +50,7 @@ struct SettingsIntegrationsPage: View {
 
   private var githubSection: some View {
     ADESettingsSection("GitHub", hint: "Open, review and merge pull requests, follow checks, and work on issues.", symbol: "chevron.left.forwardslash.chevron.right", tint: .slate) {
-      if !syncService.supportsRemoteAction("github.getStatus") {
-        ADESettingsNotice(message: SettingsPageCopy.updateADE(on: machine))
-      } else if !hasProject {
-        ADESettingsNotice(message: SettingsPageCopy.openProject, tone: .neutral)
-      } else {
+      projectStatus(readBy: "github.getStatus") {
         ADESettingsRows {
           statusRow(github, connectHint: "Connect on your computer.")
           if let githubRepo {
@@ -87,11 +83,7 @@ struct SettingsIntegrationsPage: View {
 
   private var linearSection: some View {
     ADESettingsSection("Linear", hint: "Start lanes from Linear issues, link them to PRs, and let your team assign work to ADE.", symbol: "circle.lefthalf.striped.horizontal", tint: .violet) {
-      if !syncService.supportsRemoteAction("cto.getLinearConnectionStatus") {
-        ADESettingsNotice(message: SettingsPageCopy.updateADE(on: machine))
-      } else if !hasProject {
-        ADESettingsNotice(message: SettingsPageCopy.openProject, tone: .neutral)
-      } else {
+      projectStatus(readBy: "cto.getLinearConnectionStatus") {
         ADESettingsRows {
           statusRow(linear, connectHint: canManageLinear ? nil : "Connect on your computer.")
           if canManageLinear && linearChecked {
@@ -111,11 +103,7 @@ struct SettingsIntegrationsPage: View {
 
   private var jiraSection: some View {
     ADESettingsSection("Jira", hint: "Bring a Jira Cloud site's issues into ADE and tie them to this project.", symbol: "square.stack.3d.up", tint: .blue) {
-      if !syncService.supportsRemoteAction("jira.getConnectionStatus") {
-        ADESettingsNotice(message: SettingsPageCopy.updateADE(on: machine))
-      } else if !hasProject {
-        ADESettingsNotice(message: SettingsPageCopy.openProject, tone: .neutral)
-      } else {
+      projectStatus(readBy: "jira.getConnectionStatus") {
         ADESettingsRows {
           statusRow(jira, connectHint: "Connect on your computer.")
         }
@@ -154,6 +142,19 @@ struct SettingsIntegrationsPage: View {
 
   // MARK: - Rows
 
+  /// A card whose status the machine reads in the open project: a notice
+  /// when the machine is too old for `action` or no project is open.
+  @ViewBuilder
+  private func projectStatus<Content: View>(readBy action: String, @ViewBuilder content: () -> Content) -> some View {
+    if !syncService.supportsRemoteAction(action) {
+      ADESettingsNotice(message: SettingsPageCopy.updateADE(on: machine))
+    } else if !hasProject {
+      ADESettingsNotice(message: SettingsPageCopy.openProject, tone: .neutral)
+    } else {
+      content()
+    }
+  }
+
   /// The card's status line. `connectHint` shows under it while not connected.
   private func statusRow(_ summary: IntegrationSummary, connectHint: String?) -> some View {
     ADESettingsRow(title: "Status", hint: summary == .notConnected ? connectHint : nil) {
@@ -179,14 +180,7 @@ struct SettingsIntegrationsPage: View {
     guard hasProject, syncService.supportsRemoteAction("github.getStatus") else { return }
     do {
       let status = try await syncService.fetchGitHubSettingsStatus()
-      if status.connected == true {
-        let login = status.userLogin?.trimmingCharacters(in: .whitespacesAndNewlines)
-        github = IntegrationSummary(label: login?.isEmpty == false ? "Connected as \(login!)" : "Connected", tone: .ok)
-      } else if status.needsAttention {
-        github = .needsAttention
-      } else {
-        github = .notConnected
-      }
+      github = IntegrationSummary(github: status)
       githubRepo = status.repo.map { "\($0.owner)/\($0.name)" }
     } catch {
       github = .couldNotCheck
@@ -202,18 +196,7 @@ struct SettingsIntegrationsPage: View {
   private func loadJira() async {
     guard hasProject, syncService.supportsRemoteAction("jira.getConnectionStatus") else { return }
     do {
-      let status = try await syncService.fetchJiraSettingsStatus()
-      if status.error != nil {
-        jira = .needsAttention
-      } else if status.connected {
-        let site = status.siteUrl?
-          .replacingOccurrences(of: "https://", with: "")
-          .replacingOccurrences(of: "http://", with: "")
-          .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        jira = IntegrationSummary(label: site?.isEmpty == false ? "Connected to \(site!)" : "Connected", tone: .ok)
-      } else {
-        jira = .notConnected
-      }
+      jira = IntegrationSummary(jira: try await syncService.fetchJiraSettingsStatus())
     } catch {
       jira = .couldNotCheck
     }
@@ -245,6 +228,36 @@ struct IntegrationSummary: Equatable {
   static let notConnected = IntegrationSummary(label: "Not connected", tone: .neutral)
   static let needsAttention = IntegrationSummary(label: "Needs attention", tone: .warn)
   static let couldNotCheck = IntegrationSummary(label: "Couldn't check", tone: .neutral)
+
+  /// "Connected as arul28", or why not.
+  init(github status: SettingsGitHubStatus) {
+    if status.connected == true {
+      let login = status.userLogin?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      self.init(label: login.isEmpty ? "Connected" : "Connected as \(login)", tone: .ok)
+    } else {
+      self = status.needsAttention ? .needsAttention : .notConnected
+    }
+  }
+
+  /// "Connected to acme.atlassian.net", or why not.
+  init(jira status: SettingsJiraStatus) {
+    if status.error != nil {
+      self = .needsAttention
+    } else if status.connected {
+      let site = (status.siteUrl ?? "")
+        .replacingOccurrences(of: "https://", with: "")
+        .replacingOccurrences(of: "http://", with: "")
+        .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+      self.init(label: site.isEmpty ? "Connected" : "Connected to \(site)", tone: .ok)
+    } else {
+      self = .notConnected
+    }
+  }
+
+  init(label: String, tone: ADEKitTone) {
+    self.label = label
+    self.tone = tone
+  }
 }
 
 /// The Linear pane's connect screen, pushed from Settings with a store of its own.

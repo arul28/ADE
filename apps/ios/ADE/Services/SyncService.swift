@@ -14633,12 +14633,17 @@ final class SyncService: ObservableObject {
     laneDeletionFailure = nil
   }
 
-  func fetchLaneTemplates() async throws -> [LaneTemplate] {
-    try await sendDecodableCommand(action: "lanes.listTemplates", as: [LaneTemplate].self)
+  func fetchLaneTemplates(disconnectOnTimeout: Bool = true) async throws -> [LaneTemplate] {
+    try await sendDecodableCommand(
+      action: "lanes.listTemplates",
+      args: [:],
+      disconnectOnTimeout: disconnectOnTimeout,
+      as: [LaneTemplate].self
+    )
   }
 
-  func fetchDefaultLaneTemplateId() async throws -> String? {
-    let raw = try await sendCommand(action: "lanes.getDefaultTemplate", args: [:])
+  func fetchDefaultLaneTemplateId(disconnectOnTimeout: Bool = true) async throws -> String? {
+    let raw = try await sendCommand(action: "lanes.getDefaultTemplate", args: [:], disconnectOnTimeout: disconnectOnTimeout)
     if raw is NSNull { return nil }
     return raw as? String
   }
@@ -14650,9 +14655,20 @@ final class SyncService: ObservableObject {
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil
   ) async -> NewLaneDefaultsSnapshot? {
-    try? await sendDecodableCommand(
+    try? await loadNewLaneDefaults(targetProjectId: targetProjectId, targetProjectRootPath: targetProjectRootPath)
+  }
+
+  /// `fetchNewLaneDefaults` that says why it failed, for Settings, which
+  /// shows the reason and never drops the connection on a slow answer.
+  func loadNewLaneDefaults(
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil,
+    disconnectOnTimeout: Bool = true
+  ) async throws -> NewLaneDefaultsSnapshot {
+    try await sendDecodableCommand(
       action: "lanes.getNewLaneDefaults",
       args: [:],
+      disconnectOnTimeout: disconnectOnTimeout,
       targetProjectId: targetProjectId,
       targetProjectRootPath: targetProjectRootPath,
       as: NewLaneDefaultsSnapshot.self
@@ -23336,11 +23352,15 @@ final class SyncService: ObservableObject {
         ]
       )
     }
+    // Filed under a project on the machine; any open one finds its usage.
+    let fallback = machineWideTarget
     return try await sendDecodableCommand(
       action: "usage.getAdeStats",
       args: adeUsageStatsCommandArgs(preset: preset, force: force),
       disconnectOnTimeout: false,
       timeoutNanoseconds: 8_000_000_000,
+      targetProjectId: fallback?.id,
+      targetProjectRootPath: fallback?.rootPath,
       as: MobileAdeUsageStats.self
     )
   }

@@ -1,4 +1,7 @@
+import OSLog
 import SwiftUI
+
+private let settingsGeneralLog = Logger(subsystem: "com.ade.ios", category: "SettingsGeneral")
 
 // Settings › General, where Settings opens. The desktop's General page
 // (`GeneralPage.tsx`) on the phone, in the same order: what needs attention,
@@ -28,7 +31,7 @@ struct SettingsGeneralPage: View {
   private var primary: SettingsMachine? { machines.first(where: \.isPrimary) }
 
   var body: some View {
-    ADESettingsPage(title: SettingsRoute.general.title) {
+    ADESettingsPage(route: .general) {
       if !attentionItems.isEmpty {
         SettingsAttentionStrip(items: attentionItems)
       }
@@ -133,11 +136,7 @@ struct SettingsGeneralPage: View {
 
   // MARK: Providers
 
-  private var providerCounts: (detected: Int, signedIn: Int)? {
-    guard let connections = aiStatus?.providerConnections else { return nil }
-    let detected = connections.values.filter { $0.runtimeDetected == true }
-    return (detected.count, detected.filter { $0.runtimeAvailable == true }.count)
-  }
+  private var providerCounts: (detected: Int, signedIn: Int)? { aiStatus?.signInCounts }
 
   /// The desktop's line, word for word, about the machine's providers.
   private var providerLine: String {
@@ -164,8 +163,8 @@ struct SettingsGeneralPage: View {
     if let version = appUpdateAdvisor.availableVersion {
       items.append(.init(text: "ADE \(version) is out for this \(UIDevice.current.model)", tone: .warn))
     }
-    if !connected, primary != nil {
-      items.append(.init(text: "Not connected to \(primary?.name ?? "your machine")", tone: .crit))
+    if !connected, let primary {
+      items.append(.init(text: "Not connected to \(primary.name)", tone: .crit))
     }
     if connected, syncService.hostCompatibilityMode == .limited, let name = primary?.name {
       items.append(.init(text: "\(name) runs an older ADE", tone: .warn))
@@ -185,22 +184,32 @@ struct SettingsGeneralPage: View {
   /// This week's tokens and the machine's providers, both from the machine the
   /// phone works on. Each is optional: an older machine answers neither.
   private func load() async {
-    guard connected else {
-      aiStatus = nil
-      weekTotals = nil
-      return
-    }
+    // Another machine's numbers never stay up while this one's load.
+    aiStatus = nil
+    weekTotals = nil
+    aiLoading = false
+    guard connected else { return }
     // Tokens first: they answer at once, the provider check can take 30 s.
     if syncService.supportsRemoteAction("usage.getAdeStats") {
-      let week = try? await syncService.fetchAdeUsageStats(preset: "7d")
-      guard !Task.isCancelled else { return }
-      weekTotals = week.map { $0.daily.map { $0.totalTokens ?? 0 } }
+      do {
+        let week = try await syncService.fetchAdeUsageStats(preset: "7d")
+        guard !Task.isCancelled else { return }
+        weekTotals = week.daily.map { $0.totalTokens ?? 0 }
+      } catch {
+        guard !Task.isCancelled else { return }
+        settingsGeneralLog.warning("This week's usage read failed: \(error.localizedDescription, privacy: .public)")
+      }
     }
     if syncService.supportsRemoteAction("ai.getStatus") {
       aiLoading = true
-      let status = try? await syncService.fetchAiSettingsStatus()
-      guard !Task.isCancelled else { return }
-      aiStatus = status
+      do {
+        let status = try await syncService.fetchAiSettingsStatus()
+        guard !Task.isCancelled else { return }
+        aiStatus = status
+      } catch {
+        guard !Task.isCancelled else { return }
+        settingsGeneralLog.warning("Provider status read failed: \(error.localizedDescription, privacy: .public)")
+      }
       aiLoading = false
     }
   }
@@ -214,7 +223,7 @@ struct SettingsCardHeadLink: View {
   let destination: () -> AnyView
 
   var body: some View {
-    SettingsNavigationLink {
+    NavigationLink {
       destination()
     } label: {
       HStack(spacing: 4) {
@@ -430,13 +439,12 @@ struct SettingsAdeHeroCard: View {
         }
         Rectangle().fill(ADEKit.rule).frame(height: 0.75)
       }
-      if machines.first(where: \.isPrimary).map({ _ in compatibility == .limited }) == true,
-         let name = machines.first(where: \.isPrimary)?.name {
+      if compatibility == .limited, let name = machines.first(where: \.isPrimary)?.name {
         ADESettingsNotice(message: "\(name) runs an older ADE, so some things here stay read-only. Update ADE on it to use everything.")
           .padding(ADEKit.inset)
         Rectangle().fill(ADEKit.rule).frame(height: 0.75)
       }
-      SettingsNavigationLink {
+      NavigationLink {
         advancedPage()
       } label: {
         HStack(spacing: 10) {

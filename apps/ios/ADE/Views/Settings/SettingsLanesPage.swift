@@ -13,7 +13,7 @@ struct SettingsLanesPage: View {
   let syncService: SyncService
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
 
-  @State private var defaults: SettingsNewLaneDefaults?
+  @State private var defaults: NewLaneDefaultsSnapshot?
   @State private var defaultsError: String?
   @State private var savingStart = false
   @State private var branchPickerPresented = false
@@ -36,7 +36,7 @@ struct SettingsLanesPage: View {
   private var machine: String { syncService.machineDisplayName }
 
   var body: some View {
-    ADESettingsPage(title: "Lanes", subtitle: SettingsRoute.lanes.subtitle) {
+    ADESettingsPage(route: .lanes) {
       if !connected {
         ADESettingsNotice(message: SettingsPageCopy.connectMachine)
       } else if syncService.activeProjectId == nil {
@@ -68,7 +68,7 @@ struct SettingsLanesPage: View {
   private var canWriteDefaults: Bool { syncService.supportsRemoteAction("lanes.setNewLaneDefaults") }
 
   /// Who the setting follows: the account for this repository, or one computer.
-  private func scopeHint(_ snapshot: SettingsNewLaneDefaults) -> String {
+  private func scopeHint(_ snapshot: NewLaneDefaultsSnapshot) -> String {
     let uses = "Auto-create lane and ade lanes create use these. You can change both when you make a lane."
     guard let scope = snapshot.scope else { return uses }
     if scope.kind == "account-repo" {
@@ -115,7 +115,7 @@ struct SettingsLanesPage: View {
     } else {
       ADESettingsSection("New lanes", symbol: "plus.square.on.square", tint: .green) {
         ADESettingsRows {
-          ADESettingsRow(title: "Loading…") { ProgressView() }
+          ADESettingsLoadingRow()
         }
       }
     }
@@ -123,7 +123,7 @@ struct SettingsLanesPage: View {
 
   /// The branch the saved start points at: the default branch, the primary
   /// lane's branch, or the one picked.
-  private func sourceBranch(_ snapshot: SettingsNewLaneDefaults) -> String {
+  private func sourceBranch(_ snapshot: NewLaneDefaultsSnapshot) -> String {
     let start = snapshot.defaults.start
     switch start.from {
     case .default: return plainLaneStartBranch(snapshot.defaultBranch)
@@ -132,7 +132,7 @@ struct SettingsLanesPage: View {
     }
   }
 
-  private func startFromRow(_ snapshot: SettingsNewLaneDefaults) -> some View {
+  private func startFromRow(_ snapshot: NewLaneDefaultsSnapshot) -> some View {
     let start = snapshot.defaults.start
     let source = sourceBranch(snapshot)
     let defaultBranch = plainLaneStartBranch(snapshot.defaultBranch)
@@ -170,13 +170,13 @@ struct SettingsLanesPage: View {
             .tag(LaneStart.From.branch)
         }
       } label: {
-        SettingsMenuLabel(text: current)
+        ADESettingsMenuLabel(text: current)
       }
       .disabled(!canWriteDefaults || savingStart)
     }
   }
 
-  private func onRow(_ snapshot: SettingsNewLaneDefaults) -> some View {
+  private func onRow(_ snapshot: NewLaneDefaultsSnapshot) -> some View {
     let start = snapshot.defaults.start
     return VStack(alignment: .leading, spacing: 8) {
       Text("On")
@@ -217,7 +217,7 @@ struct SettingsLanesPage: View {
   }
 
   @ViewBuilder
-  private func branchNamesRows(_ snapshot: SettingsNewLaneDefaults) -> some View {
+  private func branchNamesRows(_ snapshot: NewLaneDefaultsSnapshot) -> some View {
     let user = snapshot.branchUser
     let saved = snapshot.defaults.branchPattern ?? Self.defaultPattern
     let presets = patternPresets(user: user)
@@ -226,12 +226,12 @@ struct SettingsLanesPage: View {
     let savedPreset = presets.first(where: { $0.value == saved })
     let showsCustom = customPattern || savedPreset == nil
     let shown = showsCustom ? patternDraft.trimmingCharacters(in: .whitespaces) : saved
-    let problem = Self.patternProblem(shown)
+    let problem = laneBranchPatternProblem(shown)
     ADESettingsRow(
       title: "Branch names",
       hint: snapshot.branchPrefix == nil
         ? "The machine that owns this project needs a newer ADE to change branch names."
-        : patternError ?? problem ?? "“Fix login bug” becomes \(Self.example(pattern: shown, user: user))"
+        : patternError ?? problem ?? "“Fix login bug” becomes \(laneBranchPatternExample(shown, user: user))"
     ) {
       Menu {
         Picker("Branch names", selection: Binding(
@@ -253,7 +253,7 @@ struct SettingsLanesPage: View {
           Text("Custom…").tag(Self.customTag)
         }
       } label: {
-        SettingsMenuLabel(text: showsCustom ? "Custom" : savedPreset?.label ?? saved)
+        ADESettingsMenuLabel(text: showsCustom ? "Custom" : savedPreset?.label ?? saved)
       }
       .disabled(!supported || savingPattern)
     }
@@ -279,26 +279,6 @@ struct SettingsLanesPage: View {
       .padding(.horizontal, ADEKit.inset)
       .padding(.vertical, 11)
     }
-  }
-
-  /// Why a pattern can't be saved, or nil (`laneBranchPatternProblem` on the
-  /// desktop). The machine also refuses a prefix that clashes with a branch.
-  private static func patternProblem(_ pattern: String) -> String? {
-    let trimmed = pattern.trimmingCharacters(in: .whitespaces)
-    guard trimmed.hasSuffix("{slug}") else { return "End the pattern with {slug}, the lane name." }
-    guard trimmed.count <= 60 else { return "Keep the pattern under 60 characters." }
-    let literal = String(trimmed.dropLast("{slug}".count)).replacingOccurrences(of: "{user}", with: "user")
-    if literal.contains("{") || literal.contains("}") { return "Use only {user} and {slug} in the pattern." }
-    return nil
-  }
-
-  /// "ade/fix-login-bug": the pattern's prefix with `{user}` filled in, then the lane name.
-  private static func example(pattern: String, user: String?) -> String {
-    let prefix = String(pattern.dropLast("{slug}".count))
-    let userSlug = laneBranchSlug(user ?? "")
-    var rendered = prefix.replacingOccurrences(of: "{user}", with: userSlug.isEmpty ? "user" : userSlug)
-    while rendered.hasPrefix("/") { rendered.removeFirst() }
-    return rendered + laneBranchSlug("Fix login bug")
   }
 
   // MARK: - Template
@@ -337,7 +317,7 @@ struct SettingsLanesPage: View {
         )
       } else {
         ADESettingsRows {
-          ADESettingsRow(title: "Loading templates…") { ProgressView() }
+          ADESettingsLoadingRow(title: "Loading templates…")
         }
       }
     }
@@ -360,7 +340,7 @@ struct SettingsLanesPage: View {
             }
           }
         } label: {
-          SettingsMenuLabel(text: current)
+          ADESettingsMenuLabel(text: current)
         }
         .disabled(savingTemplate)
       }
@@ -383,7 +363,7 @@ struct SettingsLanesPage: View {
     guard syncService.supportsRemoteAction("lanes.getNewLaneDefaults") else { return }
     defaultsError = nil
     do {
-      let snapshot = try await syncService.fetchSettingsNewLaneDefaults()
+      let snapshot = try await syncService.loadNewLaneDefaults(disconnectOnTimeout: false)
       // A save in flight keeps what the person just picked.
       if !savingStart && !savingPattern {
         defaults = snapshot
@@ -398,10 +378,12 @@ struct SettingsLanesPage: View {
     guard syncService.supportsRemoteAction("lanes.listTemplates") else { return }
     templatesError = nil
     do {
-      let loaded = try await syncService.fetchLaneTemplates()
-      let defaultId = try? await syncService.fetchDefaultLaneTemplateId()
+      let loaded = try await syncService.fetchLaneTemplates(disconnectOnTimeout: false)
       templates = loaded
-      if !savingTemplate { defaultTemplateId = defaultId }
+      // A failed read keeps the default shown so far rather than "None".
+      if let defaultId = try? await syncService.fetchDefaultLaneTemplateId(disconnectOnTimeout: false), !savingTemplate {
+        defaultTemplateId = defaultId
+      }
     } catch {
       if templates == nil { templatesError = SyncUserFacingError.message(for: error) }
     }
@@ -419,14 +401,13 @@ struct SettingsLanesPage: View {
     savingStart = true
     Task {
       defer { savingStart = false }
-      do {
-        if try await syncService.saveNewLaneDefaults(start: next) == .queued {
-          toast = ADEToastMessage(text: SettingsPageCopy.queued(on: machine), kind: .info)
-        }
-      } catch {
-        defaults?.defaults.start = previous
-        toast = ADEToastMessage(text: "Couldn't save where new lanes start. \(SyncUserFacingError.message(for: error))", kind: .failure)
-      }
+      toast = await SettingsPageCopy.commit(
+        failure: "Couldn't save where new lanes start.",
+        on: machine,
+        revert: { _ in defaults?.defaults.start = previous }
+      ) {
+        try await syncService.saveNewLaneDefaults(start: next)
+      } ?? toast
     }
   }
 
@@ -437,7 +418,7 @@ struct SettingsLanesPage: View {
       customPattern = false
       return
     }
-    if let problem = Self.patternProblem(pattern) {
+    if let problem = laneBranchPatternProblem(pattern) {
       patternError = problem
       return
     }
@@ -445,22 +426,25 @@ struct SettingsLanesPage: View {
     savingPattern = true
     Task {
       defer { savingPattern = false }
-      do {
-        if try await syncService.saveNewLaneDefaults(branchPattern: pattern) == .queued {
-          toast = ADEToastMessage(text: SettingsPageCopy.queued(on: machine), kind: .info)
+      var failed = false
+      toast = await SettingsPageCopy.commit(
+        failure: "Couldn't save branch names.",
+        on: machine,
+        revert: { reason in
+          failed = true
+          defaults?.defaults.branchPattern = previous
+          patternError = reason
         }
-        patternError = nil
-        customPattern = false
-        // The machine fills `{user}` into the prefix it reports; read it back
-        // once this save no longer holds the row.
-        savingPattern = false
-        await loadDefaults()
-      } catch {
-        defaults?.defaults.branchPattern = previous
-        let message = SyncUserFacingError.message(for: error)
-        patternError = message
-        toast = ADEToastMessage(text: "Couldn't save branch names. \(message)", kind: .failure)
-      }
+      ) {
+        try await syncService.saveNewLaneDefaults(branchPattern: pattern)
+      } ?? toast
+      guard !failed else { return }
+      patternError = nil
+      customPattern = false
+      // The machine fills `{user}` into the prefix it reports; read it back
+      // once this save no longer holds the row.
+      savingPattern = false
+      await loadDefaults()
     }
   }
 
@@ -471,15 +455,18 @@ struct SettingsLanesPage: View {
     savingTemplate = true
     Task {
       defer { savingTemplate = false }
-      do {
-        if try await syncService.setDefaultLaneTemplate(templateId) == .queued {
-          toast = ADEToastMessage(text: SettingsPageCopy.queued(on: machine), kind: .info)
+      var failed = false
+      toast = await SettingsPageCopy.commit(
+        failure: "Couldn't change the template.",
+        on: machine,
+        revert: { _ in
+          failed = true
+          defaultTemplateId = previous
         }
-        defaults?.defaults.templateId = templateId
-      } catch {
-        defaultTemplateId = previous
-        toast = ADEToastMessage(text: "Couldn't change the template. \(SyncUserFacingError.message(for: error))", kind: .failure)
-      }
+      ) {
+        try await syncService.setDefaultLaneTemplate(templateId)
+      } ?? toast
+      if !failed { defaults?.defaults.templateId = templateId }
     }
   }
 }
@@ -505,17 +492,7 @@ private struct SettingsLaneBranchPicker: View {
   }
 
   private var items: [Item] {
-    var seen = Set<String>()
-    var result: [Item] = []
-    let all = branches ?? []
-    for branch in all where !branch.isRemote {
-      let plain = plainLaneStartBranch(branch.name)
-      if !plain.isEmpty, seen.insert(plain).inserted { result.append(Item(id: plain, isRemote: false)) }
-    }
-    for branch in all where branch.isRemote {
-      let plain = plainLaneStartBranch(branch.name)
-      if !plain.isEmpty, plain != "HEAD", seen.insert(plain).inserted { result.append(Item(id: plain, isRemote: true)) }
-    }
+    let result = laneStartBranchChoices(branches ?? []).map { Item(id: $0.name, isRemote: $0.branch.isRemote) }
     let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? result : result.filter { $0.id.localizedCaseInsensitiveContains(trimmed) }
   }
@@ -528,7 +505,7 @@ private struct SettingsLaneBranchPicker: View {
         ADESettingsNotice(message: loadError, actionTitle: "Try again", action: { Task { await load() } })
       } else if branches == nil {
         ADESettingsRows {
-          ADESettingsRow(title: "Loading branches…") { ProgressView() }
+          ADESettingsLoadingRow(title: "Loading branches…")
         }
       } else {
         ADESettingsSection("Branches", hint: "New lanes branch off the one you pick.", symbol: "arrow.triangle.branch", tint: .accent) {
@@ -578,24 +555,5 @@ private struct SettingsLaneBranchPicker: View {
     } catch {
       loadError = "Couldn't list the branches. \(SyncUserFacingError.message(for: error))"
     }
-  }
-}
-
-/// A menu control's face in a settings row: the current choice and the
-/// up-down chevron, as `SettingsProviderAccounts` draws its machine menu.
-struct SettingsMenuLabel: View {
-  let text: String
-
-  var body: some View {
-    HStack(spacing: 5) {
-      Text(text)
-        .font(.system(size: 14))
-        .foregroundStyle(ADEColor.textSecondary)
-        .lineLimit(1)
-      Image(systemName: "chevron.up.chevron.down")
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-    }
-    .contentShape(Rectangle())
   }
 }

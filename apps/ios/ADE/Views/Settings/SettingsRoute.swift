@@ -94,3 +94,40 @@ enum SettingsRouteGroup: CaseIterable {
     }
   }
 }
+
+// MARK: - Shared page copy
+
+/// The notices and save toasts every machine-backed Settings page shows the
+/// same way.
+enum SettingsPageCopy {
+  static let connectMachine = "Connect a machine to change these."
+  static let openProject = "Open a project to change these."
+
+  static func updateADE(on machine: String) -> String {
+    "Update ADE on \(machine) to change this here."
+  }
+
+  static func queued(on machine: String) -> String {
+    "Saved. It reaches \(machine) when it reconnects."
+  }
+
+  /// Runs one optimistic save and returns the toast it ends with: none when
+  /// the machine applied it, a note when the phone holds it until the machine
+  /// is back, or `failure` and the reason after `revert` (given the reason)
+  /// puts the control back.
+  @MainActor
+  static func commit(
+    failure: String,
+    on machine: String,
+    revert: (_ reason: String) -> Void,
+    _ write: () async throws -> SettingsWriteOutcome
+  ) async -> ADEToastMessage? {
+    do {
+      return try await write() == .queued ? ADEToastMessage(text: queued(on: machine), kind: .info) : nil
+    } catch {
+      let reason = SyncUserFacingError.message(for: error)
+      revert(reason)
+      return ADEToastMessage(text: "\(failure) \(reason)", kind: .failure)
+    }
+  }
+}

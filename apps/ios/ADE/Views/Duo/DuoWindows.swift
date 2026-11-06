@@ -188,64 +188,62 @@ struct DuoActivityStateMenu: View {
 /// Settings held landscape on the inner display: Apple Settings' two columns,
 /// the settings list on the left and the page a row opens on the right. A book
 /// fold puts each on its own page. Held upright it is the phone's stack.
-struct DuoSettingsSplit<Sidebar: View, Landing: View>: View {
-  /// Closes Settings. The split puts its close button on the page column, the
-  /// trailing stack, so held landscape iOS puts it at the top of the edge bar
-  /// under the thumb; the list column carries none.
+struct DuoSettingsSplit<Sidebar: View, Landing: View, Page: View>: View {
+  /// Closes Settings. Its button sits on the page column, the trailing stack,
+  /// so held landscape iOS puts it at the top of the edge bar under the
+  /// thumb; the list column carries none.
   let onClose: () -> Void
   /// The row the landing page belongs to, drawn selected until another row
   /// is picked.
   var landingTitle: String?
   @ViewBuilder var sidebar: () -> Sidebar
   @ViewBuilder var landing: () -> Landing
+  /// The page for a picked row's title. Built on every pass, not kept from
+  /// the tap, so the page shows what its values are now.
+  @ViewBuilder var page: (String) -> Page
 
   /// The row whose page fills the right column; nil while the landing page
   /// shows. Rows read it through `\.duoSettingsSelection`.
   @State private var selection: String?
-  /// That row's page. Each pick replaces the right column's whole stack, so
-  /// a page the last one pushed never lingers under the new one.
-  @State private var page: AnyView?
-  /// The right column's pushes. Cleared on each pick: a page pushed under the
-  /// last row would otherwise stay on top of the new row's page.
-  @State private var detailPath: [SettingsPushedPage] = []
+  /// Counts the picks; each one rebuilds the right column's stack.
+  @State private var picks = 0
 
   var body: some View {
     DuoLocalFoldReader { fold, size, landscape in
       if landscape {
-        NavigationSplitView(columnVisibility: .constant(.all)) {
-          sidebar()
-            .navigationSplitViewColumnWidth(sidebarWidth(fold: fold, size: size))
-            .toolbar(removing: .sidebarToggle)
-            .environment(\.duoSettingsSelection, selectionBinding)
-            .environment(\.duoSettingsShow, { title, view in
-              detailPath = []
-              selection = title
-              page = view
-            })
-            // The list column carries no Close (its page column does), and
-            // its rows hand their pages over rather than push.
-            .environment(\.settingsClose, nil)
-            .environment(\.settingsPagePath, false)
-        } detail: {
-          // Every page in this column, and every page it pushes, carries
-          // Close (`settingsPageClose`).
-          NavigationStack(path: $detailPath) {
-            Group {
-              if let page {
-                page
-              } else {
-                landing()
-              }
-            }
-            .navigationDestination(for: SettingsPushedPage.self) { $0.view }
+        // Two stacks side by side, not a `NavigationSplitView`: the split
+        // owns its page column's pushes and keeps one on top across a new
+        // stack, so a picked row could not replace a pushed page.
+        HStack(spacing: 0) {
+          NavigationStack {
+            sidebar()
+              // A small title, as a split view's list column has.
+              .navigationBarTitleDisplayMode(.inline)
+              .environment(\.duoSettingsSelection, selectionBinding)
+              .environment(\.duoSettingsShow, { title in
+                selection = title
+                picks += 1
+              })
           }
-          .id(selection ?? "")
+          // The list column carries no Close (its page column does), and
+          // its rows hand their pages over rather than push.
+          .environment(\.settingsClose, nil)
+          .frame(width: sidebarWidth(fold: fold, size: size))
+          Rectangle().fill(ADEKit.rule).frame(width: 0.75).ignoresSafeArea()
+          // Every page in this column, and every page it pushes, carries
+          // Close (`settingsPageClose`). A pick gives the stack a new
+          // identity, so a page the last row pushed goes with it, even when
+          // the same row is picked again.
+          NavigationStack {
+            if let selection {
+              page(selection)
+            } else {
+              landing()
+            }
+          }
+          .id(picks)
+          .environment(\.settingsClose, onClose)
         }
-        .navigationSplitViewStyle(.balanced)
-        // On the split view, not the page column's stack: a page that column
-        // pushes takes its environment from here.
-        .environment(\.settingsClose, onClose)
-        .environment(\.settingsPagePath, true)
       } else {
         NavigationStack {
           sidebar()
@@ -273,9 +271,9 @@ struct DuoSettingsSplit<Sidebar: View, Landing: View>: View {
 extension EnvironmentValues {
   /// The two-column Settings window's selected row (by title). Nil outside it.
   @Entry var duoSettingsSelection: Binding<String?>? = nil
-  /// Shows a row's page in the two-column Settings window's right column.
-  /// Nil outside its list column, where rows push as usual.
-  @Entry var duoSettingsShow: ((String, AnyView) -> Void)? = nil
+  /// Shows the page for a row's title in the two-column Settings window's
+  /// right column. Nil outside its list column, where rows push as usual.
+  @Entry var duoSettingsShow: ((String) -> Void)? = nil
 }
 
 extension EnvironmentValues {

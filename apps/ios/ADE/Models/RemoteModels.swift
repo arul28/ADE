@@ -720,7 +720,10 @@ struct NewLaneDefaultsSnapshot: Codable, Equatable {
   var defaultBranch: String
   var primaryBranch: String?
   /// The branch pattern's prefix with `{user}` filled in on the host (`ade/`, `arul-sharma/`, "").
+  /// Absent on a brain that ignores a saved branch pattern.
   var branchPrefix: String?
+  /// The host's git user name, for the `{user}` branch pattern preset.
+  var branchUser: String?
 }
 
 struct DeviceMarker: Codable, Identifiable, Equatable, Hashable {

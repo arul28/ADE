@@ -21,6 +21,8 @@ struct SettingsChatPage: View {
 
   @State private var config: SettingsProjectChatConfig?
   @State private var configError: String?
+  /// The `ai.chat` keys with a save out: the `SettingsChatKey` raw values and
+  /// `modelHintKey`.
   @State private var savingKeys: Set<String> = []
   /// What turning the model hint back on restores.
   @State private var lastHintMode: SettingsModelHintMode = .modelAndEffort
@@ -36,7 +38,7 @@ struct SettingsChatPage: View {
   }
 
   var body: some View {
-    ADESettingsPage(title: "Chat", subtitle: SettingsRoute.chat.subtitle) {
+    ADESettingsPage(route: .chat) {
       if !connected {
         ADESettingsNotice(message: SettingsPageCopy.connectMachine)
       } else {
@@ -57,20 +59,13 @@ struct SettingsChatPage: View {
     ADESettingsSection("Speed & spend", hint: "The paid faster tier. Saved to your account, so every computer follows it.", symbol: "bolt.fill", tint: .amber) {
       if syncService.supportsRemoteAction("chat.setFastModeEnabled") {
         ADESettingsRows {
-          ADESettingsRow(
+          ADESettingsToggleRow(
             title: "Allow Fast mode",
-            hint: "About 2× cost (Ultrafast up to 8×). Chats start at Standard; turn Fast on per chat."
-          ) {
-            Toggle("", isOn: Binding(
-              get: { fastModeEnabled },
-              set: { setFastMode($0) }
-            ))
-            .labelsHidden()
-            .tint(ADEColor.warning)
-            .disabled(fastModeSaving)
-          }
-          .accessibilityElement(children: .combine)
-          .accessibilityLabel("Allow Fast mode")
+            hint: "About 2× cost (Ultrafast up to 8×). Chats start at Standard; turn Fast on per chat.",
+            isOn: Binding(get: { fastModeEnabled }, set: { setFastMode($0) }),
+            tint: ADEColor.warning,
+            disabled: fastModeSaving
+          )
         }
       } else {
         ADESettingsNotice(message: SettingsPageCopy.updateADE(on: machine))
@@ -112,7 +107,7 @@ struct SettingsChatPage: View {
         ADESettingsNotice(message: SettingsPageCopy.updateADE(on: machine))
       }
     } else if let config {
-      nextPromptSection(config)
+      nextPromptSection
       if zen != nil {
         smartDecisionsSection(config)
       }
@@ -129,13 +124,13 @@ struct SettingsChatPage: View {
     } else {
       ADESettingsSection("Agent behavior", symbol: "sparkles", tint: .violet) {
         ADESettingsRows {
-          ADESettingsRow(title: "Loading…") { ProgressView() }
+          ADESettingsLoadingRow()
         }
       }
     }
   }
 
-  private func nextPromptSection(_ config: SettingsProjectChatConfig) -> some View {
+  private var nextPromptSection: some View {
     ADESettingsSection(
       "Next prompt",
       hint: "A guess at your next message in an empty prompt box. Saved in \(projectName) on \(machine).",
@@ -219,21 +214,13 @@ struct SettingsChatPage: View {
 
   @ViewBuilder
   private func modelHintRows(_ config: SettingsProjectChatConfig) -> some View {
-    let saving = savingKeys.contains("modelHintMode")
-    ADESettingsRow(
+    let saving = savingKeys.contains(Self.modelHintKey)
+    ADESettingsToggleRow(
       title: "Model and effort hint",
-      hint: "Suggests a model and effort beside the composer's pickers for a new chat, from how you picked for similar ones."
-    ) {
-      Toggle("", isOn: Binding(
-        get: { config.modelHintMode != .off },
-        set: { saveModelHint($0 ? lastHintMode : .off) }
-      ))
-      .labelsHidden()
-      .tint(ADEColor.accent)
-      .disabled(saving)
-    }
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("Model and effort hint")
+      hint: "Suggests a model and effort beside the composer's pickers for a new chat, from how you picked for similar ones.",
+      isOn: Binding(get: { config.modelHintMode != .off }, set: { saveModelHint($0 ? lastHintMode : .off) }),
+      disabled: saving
+    )
     if config.modelHintMode != .off {
       VStack(alignment: .leading, spacing: 8) {
         Text("Suggest")
@@ -280,17 +267,12 @@ struct SettingsChatPage: View {
   }
 
   private func toggleRow(_ title: String, hint: String?, key: SettingsChatKey) -> some View {
-    ADESettingsRow(title: title, hint: hint) {
-      Toggle("", isOn: Binding(
-        get: { config?.isOn(key) ?? key.defaultOn },
-        set: { save(key, $0) }
-      ))
-      .labelsHidden()
-      .tint(ADEColor.accent)
-      .disabled(config == nil || savingKeys.contains(key.rawValue))
-    }
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(title)
+    ADESettingsToggleRow(
+      title: title,
+      hint: hint,
+      isOn: Binding(get: { config?.isOn(key) ?? key.defaultOn }, set: { save(key, $0) }),
+      disabled: config == nil || savingKeys.contains(key.rawValue)
+    )
   }
 
   // MARK: - Loading and saving
@@ -315,7 +297,7 @@ struct SettingsChatPage: View {
         for key in SettingsChatKey.allCases where savingKeys.contains(key.rawValue) {
           merged.set(key, current.isOn(key))
         }
-        if savingKeys.contains("modelHintMode") { merged.modelHintMode = current.modelHintMode }
+        if savingKeys.contains(Self.modelHintKey) { merged.modelHintMode = current.modelHintMode }
       }
       config = merged
       if merged.modelHintMode != .off { lastHintMode = merged.modelHintMode }
@@ -333,32 +315,33 @@ struct SettingsChatPage: View {
     savingKeys.insert(key.rawValue)
     Task {
       defer { savingKeys.remove(key.rawValue) }
-      do {
-        if try await syncService.updateProjectChatConfig([key.rawValue: value]) == .queued {
-          toast = ADEToastMessage(text: SettingsPageCopy.queued(on: machine), kind: .info)
-        }
-      } catch {
-        config?.set(key, !value)
-        toast = ADEToastMessage(text: "Couldn't save the setting. \(SyncUserFacingError.message(for: error))", kind: .failure)
-      }
+      toast = await SettingsPageCopy.commit(
+        failure: "Couldn't save the setting.",
+        on: machine,
+        revert: { _ in config?.set(key, !value) }
+      ) {
+        try await syncService.updateProjectChatConfig([key.rawValue: value])
+      } ?? toast
     }
   }
 
+  /// The `ai.chat` key of Jev's model and effort hint.
+  private static let modelHintKey = "modelHintMode"
+
   private func saveModelHint(_ next: SettingsModelHintMode) {
-    guard let previous = config?.modelHintMode, previous != next, !savingKeys.contains("modelHintMode") else { return }
+    guard let previous = config?.modelHintMode, previous != next, !savingKeys.contains(Self.modelHintKey) else { return }
     config?.modelHintMode = next
     if next != .off { lastHintMode = next }
-    savingKeys.insert("modelHintMode")
+    savingKeys.insert(Self.modelHintKey)
     Task {
-      defer { savingKeys.remove("modelHintMode") }
-      do {
-        if try await syncService.updateProjectChatConfig(["modelHintMode": next.rawValue]) == .queued {
-          toast = ADEToastMessage(text: SettingsPageCopy.queued(on: machine), kind: .info)
-        }
-      } catch {
-        config?.modelHintMode = previous
-        toast = ADEToastMessage(text: "Couldn't save the setting. \(SyncUserFacingError.message(for: error))", kind: .failure)
-      }
+      defer { savingKeys.remove(Self.modelHintKey) }
+      toast = await SettingsPageCopy.commit(
+        failure: "Couldn't save the setting.",
+        on: machine,
+        revert: { _ in config?.modelHintMode = previous }
+      ) {
+        try await syncService.updateProjectChatConfig([Self.modelHintKey: next.rawValue])
+      } ?? toast
     }
   }
 }
