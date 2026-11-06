@@ -155,7 +155,7 @@ describe("createAgentChatService", () => {
     }
   });
 
-  it("puts a spawn tree in one PR family, including the chats the linked chat spawned", async () => {
+  it("gives a PR to the chats above the one that opened it, and to no others", async () => {
     const db = await openKvDb(path.join(tmpRoot, "spawn-family.db"), { debug() {}, info() {}, warn() {}, error() {} } as any);
     const now = new Date().toISOString();
     let service: ReturnType<typeof createAgentChatService> | undefined;
@@ -176,12 +176,16 @@ describe("createAgentChatService", () => {
       const leaf = await createChat(middle.id);
       const unrelated = await createChat();
 
-      // A PR the middle chat opens belongs to the chats above it, beside it and
-      // below it: a family follows the whole tree, not just the way up.
-      const family = chatService.getChatFamilySessionIds(middle.id);
-      expect(family).toEqual(expect.arrayContaining([root.id, sibling.id, leaf.id]));
-      expect(family).not.toContain(middle.id);
-      expect(family).not.toContain(unrelated.id);
+      // A PR the middle chat opens belongs to the chats supervising it, and
+      // to nobody else: not the chat beside it, not the one below it, and
+      // not itself. Walking the whole tree instead gave every chat in it
+      // every PR any of them opened, across every lane they sat on.
+      expect(chatService.getChatAncestorSessionIds(middle.id)).toEqual([root.id]);
+      // The full chain, nearest first, for a chat two levels down.
+      expect(chatService.getChatAncestorSessionIds(leaf.id)).toEqual([middle.id, root.id]);
+      // The chat that started the tree answers to nobody.
+      expect(chatService.getChatAncestorSessionIds(root.id)).toEqual([]);
+      expect(chatService.getChatAncestorSessionIds(middle.id)).not.toContain(unrelated.id);
     } finally {
       service?.forceDisposeAll();
       db.close();

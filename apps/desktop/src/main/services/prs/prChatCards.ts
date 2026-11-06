@@ -533,17 +533,33 @@ export async function emitPrCardsForChange(args: {
   const { pr } = change;
   if (!pr.laneId) return 0;
 
+  /**
+   * A finished PR has nothing live left to report. CI still completes on the
+   * merge commit, GitHub still recomputes "behind base", and a review can
+   * still land, so without this a merged PR goes on posting cards into a
+   * thread whose work is over. The merged card itself is the exception: it is
+   * the one that says so. Reopening makes the PR live again.
+   *
+   * A draft counts as live. Its CI runs and its reviews land like any other
+   * PR's, and those are exactly the moments its chat wants; only
+   * `becameMergeReady` stays `open`-only, because a draft is never ready.
+   */
+  const live = pr.state === "open" || pr.state === "draft";
+
   const checksChanged =
-    change.previousChecksStatus != null
+    live
+    && change.previousChecksStatus != null
     && change.previousChecksStatus !== pr.checksStatus
     && pr.checksStatus !== "none";
   const reviewChanged =
-    change.previousReviewStatus != null
+    live
+    && change.previousReviewStatus != null
     && change.previousReviewStatus !== pr.reviewStatus
     && (pr.reviewStatus === "approved" || pr.reviewStatus === "changes_requested");
-  const conflictsAppeared = change.previousMergeConflicts !== true && pr.mergeConflicts === true;
+  const conflictsAppeared = live && change.previousMergeConflicts !== true && pr.mergeConflicts === true;
   const fellBehind =
-    Math.max(0, change.previousBehindBaseBy ?? 0) === 0
+    live
+    && Math.max(0, change.previousBehindBaseBy ?? 0) === 0
     && Math.max(0, pr.behindBaseBy ?? 0) > 0;
   const wasMergeReady =
     change.previousState === "open"
@@ -605,16 +621,31 @@ export async function emitPrCardsForChange(args: {
   const laneSessions = await chat.listSessions(pr.laneId, { includeArchived: false });
   remember(laneSessions);
   await resolveById(linkedIds);
-  const ordinarySessions = selectPrCardSessions([...listedById.values()], [...linkedIds]);
-  // Links only from chats on other lanes (a stack coordinator) are references,
-  // so the PR's own lane still gets its cards, as an unlinked PR's would.
-  if (linkedIds.size > 0 && claimingSessionIds(pr).length === 0) {
-    const dismissed = new Set(dismissedSessionIds(pr));
-    const laneChat = selectPrCardSessions(
-      laneSessions.filter((session) => !linkedIds.has(session.sessionId) && !dismissed.has(session.sessionId)),
-    )[0];
-    if (laneChat) ordinarySessions.push(laneChat);
-  }
+  /**
+   * A card only ever lands on the PR's own lane.
+   *
+   * A chat is linked to every PR opened anywhere in its spawn tree
+   * (`linkPrToChatFamily`), and those relatives sit on other lanes. That link
+   * is worth keeping — it is how a chat offers you its subagent's PR — but it
+   * is a reference, not a reason to interrupt. Routing cards by it put one
+   * lane's CI into two other lanes' threads, each of which then showed more
+   * foreign PRs than its own.
+   *
+   * `claimingSessionIds` is already the links minus the cross-lane ones, so
+   * the claim list is the same-lane list; drawing from the lane's own
+   * sessions as well keeps that true even for a session whose lane the edge
+   * query could not read, and means a chat that dropped this PR is skipped
+   * whether or not anything claimed it.
+   */
+  const claimIds = claimingSessionIds(pr);
+  const dismissed = new Set(dismissedSessionIds(pr));
+  // One pool, the PR's own lane, so neither branch can reach another lane's
+  // chat however the links read. Claimed: every chat that claimed it.
+  // Unclaimed: the lane's most recent chat, as an unlinked PR always had.
+  const laneCandidates = laneSessions.filter((session) => !dismissed.has(session.sessionId));
+  const ordinarySessions = claimIds.length > 0
+    ? selectPrCardSessions(laneCandidates, claimIds)
+    : selectPrCardSessions(laneCandidates);
   if (stackLanded || stackLinkedIds.size > 0) {
     remember((await Promise.all([...laneIds].map((laneId) => chat.listSessions(laneId, { includeArchived: false })))).flat());
   }

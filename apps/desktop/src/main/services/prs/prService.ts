@@ -1385,11 +1385,15 @@ export function createPrService({
   const hasChatSessionDismissal = chatLinks.hasChatSessionDismissal;
   const linkPrToChatSession = chatLinks.linkPrToChatSession;
   /**
-   * Link a PR to a chat and then to every chat in its spawn tree, so the
-   * chat that started a subagent shows the PR the subagent opened (and the
-   * other way round). The family only follows a link that was allowed: it
-   * comes from the chat that was just linked, never from the caller. Family
-   * members may sit on other lanes; a spawn tree is one piece of work.
+   * Link a PR to a chat and then to that chat's ancestors, so the chat that
+   * started a subagent shows the PR the subagent opened. One direction only:
+   * a subagent does not inherit its parent's PRs, and siblings do not see
+   * each other's. The chain only follows a link that was allowed: it comes
+   * from the chat that was just linked, never from the caller.
+   *
+   * An ancestor usually sits on another lane, so these links are marked
+   * cross-lane and carry no chat cards — they are references, and
+   * `prChatCards` keeps cards on the PR's own lane.
    */
   const linkPrToChatFamily = (
     linkArgs: Parameters<typeof linkPrToChatSession>[0],
@@ -1400,7 +1404,7 @@ export function createPrService({
     const sessionId = resolveCanonicalChatSessionId(String(linkArgs.sessionId ?? "")) ?? "";
     let relatives: string[] = [];
     try {
-      relatives = sessionId ? agentChatService?.getChatFamilySessionIds?.(sessionId) ?? [] : [];
+      relatives = sessionId ? agentChatService?.getChatAncestorSessionIds?.(sessionId) ?? [] : [];
     } catch (error) {
       logger.warn("prs.chat_family_lookup_failed", { prId, sessionId, error: getErrorMessage(error) });
     }
