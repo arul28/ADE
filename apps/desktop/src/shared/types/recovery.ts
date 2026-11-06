@@ -69,6 +69,13 @@ export type ProjectRecoveryDiagnosis = {
      */
     | "storage_unreadable"
     /**
+     * The drive under the project stopped answering while ADE opened its data
+     * (SQLite's "disk I/O error"): disconnected, asleep or full. Nothing in the
+     * files is known to be wrong, so no repair is offered; Try again once the
+     * drive answers.
+     */
+    | "drive_unreadable"
+    /**
      * The project's .ade folder or its database was moved or deleted. Nothing
      * is repaired automatically: the person puts it back, or starts fresh.
      */
@@ -226,6 +233,15 @@ export const RECOVERY_COPY: Record<RecoveryState, {
       "Then choose Try again.",
     ],
   },
+  drive_unreadable: {
+    headline: "ADE can't read this project's data from its drive",
+    body: "The drive stopped answering while ADE opened the project.",
+    canAutoRepair: false,
+    steps: [
+      "Check that the drive is connected, awake and has free space.",
+      "Then choose Try again.",
+    ],
+  },
   data_missing: {
     headline: "This project's ADE data is missing",
     body: "Your code is safe. Only ADE's lanes and chat history for it are gone.",
@@ -363,8 +379,8 @@ export function stateForCode(code: AdeRecoveryErrorCode): ProjectRecoveryDiagnos
     case "db_integrity":
     case "migration_incomplete":
     case "migration_unknown_state": return "db_repair_needed";
-    case "storage_read_failed":
-    case "storage_io_failed": return "storage_unreadable";
+    case "storage_read_failed": return "storage_unreadable";
+    case "storage_io_failed": return "drive_unreadable";
     case "db_busy": return "project_busy";
     case "project_data_missing": return "data_missing";
     case "db_path_changed": return "data_replaced";

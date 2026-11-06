@@ -15,6 +15,7 @@
  */
 import { isToolError, type ToolErrorKind } from "./errors";
 import { type ToolResolution, type ToolsContext, tryResolvePreviousTool, tryResolveTool } from "./install";
+import { isToolLockHolderLive } from "./lock";
 import { findToolTargetPin, loadToolsManifest } from "./manifest";
 import {
   pinnedToolFetchAllowed,
@@ -149,12 +150,15 @@ export function getPinnedToolStatus(name: string, context: ToolsContext = {}): P
   if (downloading) return { ...withPin, state: "downloading" };
   const failure = pinnedToolLastFailure(name);
   if (failure) {
+    // Checked again now, not as it was at the timeout: a holder that has
+    // since exited makes this an ordinary failed download.
+    const lockHolderLive = failure.lockHolder ? isToolLockHolderLive(failure.lockHolder) : failure.lockHolderLive;
     return {
       ...withPin,
       state: "failed",
       errorKind: failure.kind,
       error: failure.message,
-      ...(failure.lockHolderLive !== undefined ? { lockHolderLive: failure.lockHolderLive } : {}),
+      ...(lockHolderLive !== undefined ? { lockHolderLive } : {}),
     };
   }
   return withPin;

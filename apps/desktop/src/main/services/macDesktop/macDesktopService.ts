@@ -142,6 +142,7 @@ import {
 } from "../linuxDesktop/linuxDesktopSetup";
 import {
   linuxScreenFailureCause,
+  linuxScreenFailureDetail,
   logLinuxHostReport,
   reportLinuxScreenProblem,
   reportLinuxSetupOutcome,
@@ -1437,7 +1438,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
           // stderr lines, scrubbed): the report used to carry none.
           if (isLinuxSeat) {
             const cause = linuxScreenFailureCause(error);
-            reportLinuxScreenProblem("helper_start_failed", cause, cause.code ?? "");
+            reportLinuxScreenProblem("helper_start_failed", cause, linuxScreenFailureDetail(cause));
           }
         });
       } else if (driverLifecycle.isDriverRunning()) {

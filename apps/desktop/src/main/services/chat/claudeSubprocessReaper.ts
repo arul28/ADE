@@ -8,7 +8,7 @@ import type { Logger } from "../logging/logger";
 import { killWindowsProcessTreeAsync, resolveCliSpawnInvocation } from "../shared/processExecution";
 import { signalProcessGroup } from "../shared/utils";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
-import { scrubFreeTextThenCut } from "../../../shared/sentry/scrub";
+import { scrubFreeText } from "../../../shared/sentry/scrub";
 import { moveClaudeMcpConfigOffArgv, pruneStaleClaudeMcpConfigFiles, removeClaudeMcpConfigFiles } from "./claudeMcpConfigFile";
 
 /**
@@ -72,6 +72,24 @@ function keepTrailingWholeLines(text: string, maxChars: number): string {
   if (text[text.length - maxChars - 1] === "\n") return kept;
   const newline = kept.indexOf("\n");
   return newline === -1 ? "" : kept.slice(newline + 1);
+}
+
+const PRIVATE_KEY_BEGIN = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
+const PRIVATE_KEY_END = /-----END [A-Z ]*PRIVATE KEY-----/;
+
+/**
+ * `text` without a private key whose BEGIN line fell outside the kept tail:
+ * everything through the first END line that has no BEGIN before it. The
+ * scrubber recognizes a key by its BEGIN line, so the body left behind would
+ * otherwise read as ordinary lines.
+ */
+function dropKeyWithoutBegin(text: string): string {
+  const end = PRIVATE_KEY_END.exec(text);
+  if (!end) return text;
+  const begin = text.search(PRIVATE_KEY_BEGIN);
+  if (begin !== -1 && begin < end.index) return text;
+  const lineEnd = text.indexOf("\n", end.index);
+  return lineEnd === -1 ? "" : text.slice(lineEnd + 1);
 }
 
 /**
@@ -772,14 +790,17 @@ export function createClaudeSubprocessReaper(args: {
      * bounded, for a runtime-failed report. Null when it wrote nothing.
      */
     stderrTail: (sessionId: string): string | null => {
-      const lines = (stderrTailBySession.get(sessionId) ?? "")
+      // The whole kept text is scrubbed as free text before it is split or
+      // cut: a private key spans lines, and its pattern runs from the BEGIN
+      // line to the END line. A home path or an email never reaches a report.
+      const kept = dropKeyWithoutBegin(stderrTailBySession.get(sessionId) ?? "");
+      const lines = scrubFreeText(kept, { maxLength: STDERR_TAIL_MAX_CHARS })
         .split(/\r?\n/)
         .filter((line) => line.trim().length > 0)
         .slice(-STDERR_TAIL_REPORT_LINES);
       if (!lines.length) return null;
-      // Line by line, as free text: a home path or an email in a line never reaches a report.
       return lines
-        .map((line) => scrubFreeTextThenCut(line, STDERR_TAIL_LINE_CHARS))
+        .map((line) => (line.length > STDERR_TAIL_LINE_CHARS ? `${line.slice(0, STDERR_TAIL_LINE_CHARS)}…` : line))
         .join("\n")
         .slice(-STDERR_TAIL_REPORT_CHARS);
     },

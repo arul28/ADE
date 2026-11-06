@@ -57,6 +57,14 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+/** The process a lock names, kept on a `lock-timeout` so a later read can check it again. */
+export type ToolLockHolder = { pid: number; host: string };
+
+/** Whether `holder` is a process on this machine that is still running; another host's PID says nothing here. */
+export function isToolLockHolderLive(holder: ToolLockHolder): boolean {
+  return holder.host === os.hostname() && isProcessAlive(holder.pid);
+}
+
 function readLockRecord(lockPath: string): LockRecord | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(lockPath, "utf8")) as unknown;
@@ -184,8 +192,8 @@ export async function acquireToolLock(options: ToolLockOptions): Promise<ToolLoc
         + `${record ? ` (pid ${record.pid} on ${record.host})` : ""} to finish installing agent tools.`,
         {
           kind: "lock-timeout",
-          // Only a holder on this machine can be checked; another host's PID says nothing here.
-          lockHolderLive: record != null && record.host === os.hostname() && isProcessAlive(record.pid),
+          lockHolderLive: record != null && isToolLockHolderLive(record),
+          ...(record ? { lockHolder: { pid: record.pid, host: record.host } } : {}),
         },
       );
     }

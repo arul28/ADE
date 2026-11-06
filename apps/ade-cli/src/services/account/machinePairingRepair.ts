@@ -32,7 +32,8 @@ export type MachinePairingPushTarget = {
  * there is no live gate to disagree with it.
  */
 export type MachinePairingPushStore = {
-  isMachineRevoked(): boolean;
+  /** Null while the store cannot read its file. */
+  isMachineRevoked(): boolean | null;
   clearMachineRevoked(): void;
 };
 

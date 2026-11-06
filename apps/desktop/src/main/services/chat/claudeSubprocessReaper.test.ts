@@ -154,6 +154,39 @@ describe("createClaudeSubprocessReaper", () => {
     expect(tail).not.toContain("CUTSECRETVALUE");
     expect(tail).not.toContain("abcdefghijklmnopqrstuvwxyz0123");
     expect(reaper.stderrTail("chat-unknown")).toBeNull();
+
+    // A private key spans lines. Its body goes whether the key arrives whole
+    // or the kept buffer cut its BEGIN line off (only the body and END remain).
+    const keyBody = [
+      "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7",
+      "Zb1kq2vXyLm9TfP0nQe8sR3uWcYdHaJ4oG6iE5tKxN7MlBpVrSgU",
+    ];
+    const keyTail = (sessionId: string, written: string): string => {
+      const keyChild = Object.assign(createProcess(4322), { stderr: new PassThrough() });
+      const keyReaper = createClaudeSubprocessReaper({
+        logger: createLogger(),
+        platform: "darwin",
+        spawnProcess: vi.fn(() => keyChild) as any,
+      });
+      keyReaper.spawnClaudeCodeProcess({
+        command: "/bin/claude",
+        args: [],
+        cwd: "/tmp/lane",
+        env: {},
+        signal: new AbortController().signal,
+      }, { sessionId, sdkSessionId: null, laneId: "lane-1", cwd: "/tmp/lane" });
+      keyChild.stderr.write(written);
+      return keyReaper.stderrTail(sessionId) ?? "";
+    };
+    const keyLines = `${keyBody.join("\n")}\n-----END PRIVATE KEY-----\nafter the key\n`;
+    const filler = `${"A".repeat(60)}\n`.repeat(70);
+    for (const keptTail of [
+      keyTail("chat-key", `before the key\n-----BEGIN PRIVATE KEY-----\n${keyLines}`),
+      keyTail("chat-key-cut", `-----BEGIN PRIVATE KEY-----\n${filler}${keyLines}`),
+    ]) {
+      expect(keptTail).toContain("after the key");
+      for (const bodyLine of [...keyBody, "A".repeat(60)]) expect(keptTail).not.toContain(bodyLine);
+    }
   });
 
   it("spawns through the hook and records process metadata", () => {

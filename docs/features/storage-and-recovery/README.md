@@ -355,11 +355,16 @@ no repair on purpose: rewriting files ADE cannot read would risk the user's
 work, and the same failure also arrives from a failing disk or a dropped network
 mount. The recovery screen states the remedy as a condition ("if the folder is
 in iCloud Drive, Dropbox or OneDrive, move it…"), lists moving the folder as a
-prerequisite, and leaves Try again as the only action. `storage_io_failed`
-(SQLite's "disk I/O error" while the project database opens: the drive is not
-answering, is full, or was removed) maps to the same diagnosis. SQLite's
-corruption-flavoured I/O sub-codes (short read, checksum mismatch) and out of
-memory are not counted as a drive fault.
+prerequisite, and leaves Try again as the only action.
+
+`storage_io_failed` (SQLite's "disk I/O error" while the project database
+opens: the drive is not answering, is full, or was removed) maps to its own
+diagnosis, `drive_unreadable`: no repair, and the screen says to check that
+the drive is connected, awake and has free space, then Try again. Its remedy
+is the drive, not the folder's location, so it does not share
+`storage_unreadable`'s cloud-folder copy. SQLite's corruption-flavoured I/O
+sub-codes (short read, checksum mismatch) and out of memory are not counted as
+a drive fault.
 
 `db_busy` (another ADE process holds the project database's lock past the
 open's retries; `openKvDb` reruns the whole open up to three times, a second

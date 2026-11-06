@@ -17,7 +17,9 @@ export function isSqliteBusyOrLockedError(error: unknown): boolean {
   const code = (error as { errcode?: unknown } | null)?.errcode;
   // Extended result codes (SQLITE_BUSY_SNAPSHOT, ...) carry the primary in the low byte.
   if (typeof code === "number" && [SQLITE_BUSY, SQLITE_LOCKED].includes(code & 0xff)) return true;
-  return /database (?:table )?is locked|busy/i.test(sqliteMessage(error));
+  // SQLite's own phrases only: a bare "busy" would also match a path in a
+  // file-system error (`/Users/a/busy-app/...`), which a retry cannot fix.
+  return /database (?:table )?is locked|\bSQLITE_(?:BUSY|LOCKED)(?:_[A-Z]+)?\b/i.test(sqliteMessage(error));
 }
 
 const SQLITE_IOERR = 10;

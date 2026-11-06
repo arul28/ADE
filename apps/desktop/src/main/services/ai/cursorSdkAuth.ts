@@ -292,6 +292,9 @@ export async function loginCursorSdk(): Promise<CursorSdkLoginResult> {
   emit({ providerId: "cursor", state: "pending" });
 
   let timedOut = false;
+  // A flow that timed out, was cancelled or was replaced is over: an SDK that
+  // keeps calling back must not open a browser or announce a new link for it.
+  const flowEnded = (): boolean => activeLogin !== flow || timedOut || abort.signal.aborted;
   try {
     // Rejects at the cutoff even if the SDK ignores the abort and never settles.
     const result = await withDeadline(
@@ -304,13 +307,14 @@ export async function loginCursorSdk(): Promise<CursorSdkLoginResult> {
           // Windows/Linux) rather than the SDK's process-spawn default, so SSH
           // sessions and Windows hosts open the same way ADE opens other URLs.
           openBrowser: (url) => {
+            if (flowEnded()) return;
             void hooks.openLoginUrl(url).catch(() => {
               // URL is still delivered via onLoginUrl / the renderer event.
             });
           },
           onLoginUrl: (url) => {
             const trimmed = url.trim();
-            if (!trimmed) return;
+            if (!trimmed || flowEnded()) return;
             flow.loginUrl = trimmed;
             emit({ providerId: "cursor", state: "pending", url: trimmed });
           },

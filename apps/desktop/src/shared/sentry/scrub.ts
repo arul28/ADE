@@ -110,13 +110,21 @@ export function scrubFreeText(input: string, options?: { maxLength?: number }): 
 }
 
 /**
+ * How much of its input {@link scrubFreeTextThenCut} scrubs before cutting.
+ * Far past any cut it is asked for, so the patterns see the text around the
+ * cut point (the default 4,000-char bound would truncate first and leave a
+ * secret there half matched), while a runaway input stays bounded.
+ */
+const SCRUB_THEN_CUT_MAX_INPUT = 64_000;
+
+/**
  * {@link scrubFreeText}, then cut to `maxLength`. Scrubbing first means a
  * secret, email or path that straddles the cut is replaced whole, never left
  * as a prefix too short for its pattern to match. For process output (stderr
  * lines, error messages) bound for a report.
  */
 export function scrubFreeTextThenCut(input: string, maxLength: number): string {
-  const scrubbed = scrubFreeText(input);
+  const scrubbed = scrubFreeText(input, { maxLength: Math.max(maxLength, SCRUB_THEN_CUT_MAX_INPUT) });
   return scrubbed.length > maxLength ? `${scrubbed.slice(0, maxLength)}…` : scrubbed;
 }
 

@@ -38,8 +38,16 @@ const inFlight = new Map<string, Promise<ToolError | null>>();
 /** When each tool's last on-demand download failed; an offline machine must not retry on every status refresh. */
 const lastFailureAt = new Map<string, number>();
 const FAILED_FETCH_BACKOFF_MS = 2 * 60_000;
+/** A tracked download's failure. `lockHolder` is the process a `lock-timeout` waited on. */
+export type PinnedToolFailure = {
+  kind: ToolErrorKind;
+  message: string;
+  lockHolderLive?: boolean;
+  lockHolder?: { pid: number; host: string };
+};
+
 /** The last tracked download of each tool that failed, until one succeeds. */
-const lastFailure = new Map<string, { kind: ToolErrorKind; message: string; lockHolderLive?: boolean }>();
+const lastFailure = new Map<string, PinnedToolFailure>();
 /** Bytes so far of each tracked download that reports progress. */
 const progressByTool = new Map<string, { receivedBytes: number | null; totalBytes: number | null }>();
 
@@ -67,7 +75,7 @@ export function pinnedToolFetchAllowed(name: string, context: ToolsContext = {})
 }
 
 /** The last failed download of `name` in this process, cleared by the next success. */
-export function pinnedToolLastFailure(name: string): { kind: ToolErrorKind; message: string; lockHolderLive?: boolean } | null {
+export function pinnedToolLastFailure(name: string): PinnedToolFailure | null {
   return lastFailure.get(name) ?? null;
 }
 
@@ -138,6 +146,7 @@ export function trackPinnedToolFetch(name: string, run: () => Promise<unknown>):
         kind: failure.kind,
         message: failure.message,
         ...(failure.lockHolderLive !== undefined ? { lockHolderLive: failure.lockHolderLive } : {}),
+        ...(failure.lockHolder ? { lockHolder: failure.lockHolder } : {}),
       });
       settle(failure);
     } finally {

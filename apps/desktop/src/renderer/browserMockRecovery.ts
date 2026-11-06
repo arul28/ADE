@@ -51,6 +51,7 @@ const STATE_CODE: Partial<Record<RecoveryState, AdeRecoveryErrorCode>> = {
   insufficient_headroom: "insufficient_headroom",
   db_repair_needed: "db_integrity",
   storage_unreadable: "storage_read_failed",
+  drive_unreadable: "storage_io_failed",
   data_missing: "project_data_missing",
   data_replaced: "db_path_changed",
   brain_not_installed: "brain_not_installed",

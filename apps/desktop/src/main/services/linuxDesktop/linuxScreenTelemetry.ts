@@ -13,6 +13,7 @@
  * `linuxScreenFailureCause`), package names and host facts only.
  */
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { captureProblem, sendSentryLog } from "../../../shared/sentry/capture";
 import { scrubFreeTextThenCut } from "../../../shared/sentry/scrub";
@@ -152,6 +153,18 @@ export function linuxScreenFailureCause(error: unknown): LinuxScreenFailureCause
     } : {}),
     ...(stderrTail.length > 0 ? { stderrTail } : {}),
   };
+}
+
+/**
+ * The dedupe detail for a failure: its code and a short hash of its scrubbed
+ * reason, so two causes with one code (or none) are reported once each, not
+ * once between them. Digits are folded first, so a pid, port or timeout in
+ * the message does not make every occurrence a new cause.
+ */
+export function linuxScreenFailureDetail(cause: LinuxScreenFailureCause): string {
+  const reason = cause.reason?.replace(/\d+/g, "#") ?? "";
+  const hash = reason ? createHash("sha256").update(reason).digest("hex").slice(0, 8) : "";
+  return [cause.code ?? "", hash].filter(Boolean).join(":");
 }
 
 /**

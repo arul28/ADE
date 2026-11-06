@@ -898,8 +898,10 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
       });
     },
 
-    listUserMessages(): StoredUserMessage[] {
-      return [...loadForStartupRead()?.userMessages ?? []];
+    /** Null while the file cannot be read: unknown, not "no messages". */
+    listUserMessages(): StoredUserMessage[] | null {
+      const file = loadForStartupRead();
+      return file ? [...file.userMessages] : null;
     },
 
     /** Replace the stored messages (already pruned by the caller), oldest first. */
@@ -952,9 +954,13 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
       };
     },
 
-    /** Has the account owner removed this machine? Terminal until re-paired. */
-    isMachineRevoked(): boolean {
-      return loadForStartupRead()?.machineRevokedAt != null;
+    /**
+     * Has the account owner removed this machine? Terminal until re-paired.
+     * Null while the file cannot be read: unknown, not "still on the account".
+     */
+    isMachineRevoked(): boolean | null {
+      const file = loadForStartupRead();
+      return file ? file.machineRevokedAt != null : null;
     },
 
     /**
