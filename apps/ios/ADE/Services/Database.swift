@@ -3837,7 +3837,7 @@ final class DatabaseService {
   private func blobHexValue(_ statement: OpaquePointer, index: Int32) -> String? {
     guard let bytes = sqlite3_column_blob(statement, index) else { return nil }
     let count = Int(sqlite3_column_bytes(statement, index))
-    return Data(bytes: bytes, count: count).map { String(format: "%02x", $0) }.joined()
+    return UnsafeRawBufferPointer(start: bytes, count: count).adeLowercaseHex
   }
 
   private func stringValue(_ statement: OpaquePointer, index: Int32) -> String? {
@@ -3948,7 +3948,10 @@ final class DatabaseService {
     """)
     try run("create unique index if not exists idx_crsql_changes_unique on crsql_changes([table], pk, cid, db_version, site_id, cl, seq)")
     try run("create index if not exists idx_crsql_changes_version on crsql_changes(db_version, cl, seq)")
-    try run("create index if not exists idx_crsql_changes_table_pk on crsql_changes([table], pk)")
+    // `idx_crsql_changes_unique` leads with ([table], pk), so it already serves
+    // every per-row lookup; a second index on that prefix only added a B-tree
+    // write to every synced change (ADE-IOS-1C).
+    try run("drop index if exists idx_crsql_changes_table_pk")
   }
 
   private func registerInternalFunctions() throws {
@@ -4240,7 +4243,7 @@ final class DatabaseService {
         }
         try insertRow(finalRow!, in: tableInfo)
       } else {
-        try updateRow(finalRow!, in: tableInfo)
+        try updateRow(finalRow!, in: tableInfo, existing: existingRow)
       }
     }
   }
@@ -4773,9 +4776,22 @@ final class DatabaseService {
     }
   }
 
-  private func updateRow(_ row: [String: SyncScalarValue], in tableInfo: SyncTableInfo) throws {
+  /// Writes only the columns whose value differs from `existing`, and skips
+  /// the statement when none does. The host re-sends rows whose values did not
+  /// move (status pings, re-hydrated snapshots), and rewriting each one with
+  /// every index on the table was a large part of the phone's sync disk writes
+  /// (MetricKit disk-write reports past 1 GB a day, ADE-IOS-1C).
+  private func updateRow(
+    _ row: [String: SyncScalarValue],
+    in tableInfo: SyncTableInfo,
+    existing: [String: SyncScalarValue]? = nil
+  ) throws {
     let pkCols = Set(tableInfo.primaryKeyColumns)
-    let orderedColumns = tableInfo.columns.map(\.name).filter { !pkCols.contains($0) && row[$0] != nil }
+    let orderedColumns = tableInfo.columns.map(\.name).filter { column in
+      guard !pkCols.contains(column), let value = row[column] else { return false }
+      guard let existing, let current = existing[column] else { return true }
+      return current != value
+    }
     guard !orderedColumns.isEmpty else { return }
     let assignments = orderedColumns.map { "\(quoteIdentifier($0)) = ?" }.joined(separator: ", ")
     let whereClause = tableInfo.primaryKeyColumns.map { "\(quoteIdentifier($0)) = ?" }.joined(separator: " and ")
@@ -4831,6 +4847,22 @@ final class DatabaseService {
       return nil
     }
     throw sqliteError(sqliteMessage(db), code: result)
+  }
+}
+
+extension Sequence where Element == UInt8 {
+  /// Lowercase hex, two digits per byte. `String(format: "%02x")` per byte
+  /// runs Foundation's format parser and builds an NSString for every byte;
+  /// this runs once per synced change row and on the push-token paths.
+  var adeLowercaseHex: String {
+    let digits = Array("0123456789abcdef".utf8)
+    var out: [UInt8] = []
+    out.reserveCapacity(underestimatedCount * 2)
+    for byte in self {
+      out.append(digits[Int(byte >> 4)])
+      out.append(digits[Int(byte & 0x0f)])
+    }
+    return String(decoding: out, as: UTF8.self)
   }
 }
 

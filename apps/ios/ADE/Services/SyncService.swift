@@ -3091,8 +3091,17 @@ enum SyncUserFacingError {
     guard !rawMessage.isEmpty else {
       return "Something interrupted sync. Reconnect to the machine and try again."
     }
+    // Request timeouts carry copy written for people already, and they fire
+    // in bursts on the main actor (every pending request at once when the app
+    // resumes), so they skip the phrase scan below (ADE-IOS-1R).
+    if isSyncRequestTimeoutError(error) {
+      return rawMessage
+    }
 
-    let lowered = rawMessage.lowercased()
+    // Every phrase sits near the start of a message; a host error that carries
+    // a long body (a stack, a JSON dump) is scanned only that far.
+    let scanned = rawMessage.utf8.count > 4_096 ? String(rawMessage.prefix(4_096)) : rawMessage
+    let lowered = scanned.lowercased()
     if lowered.contains("timed out waiting for host to sync project data") {
       return "Timed out waiting for the machine to sync project data. Try reconnecting."
     }
@@ -9606,9 +9615,18 @@ final class SyncService: ObservableObject {
   /// True when the "iPhone isn't on Tailscale" hint should show on connection
   /// surfaces (Hub blank states, Settings header). See
   /// `syncShouldShowTailscaleOffHint` for the gating rationale.
+  ///
+  /// View bodies read this on every render, so it reads only the active
+  /// profile — never `loadProfile()`, which decodes, migrates Keychain tokens
+  /// and can save a fallback machine (a publish inside a view update) — and it
+  /// asks the Keychain for the token last, after the cheap gates that already
+  /// rule the hint out (a fatal main-thread hang, ADE-IOS-1V).
   var tailscaleOffHintVisible: Bool {
-    guard let profile = activeHostProfile ?? loadProfile(),
-          tokenForProfile(profile) != nil else {
+    guard let profile = activeHostProfile,
+          !phoneHasTailnetInterface,
+          connectionHealth.transport != .connected,
+          profileHasTailnetRoute(profile),
+          relayFallbackCandidates(for: profile).isEmpty else {
       return false
     }
     // Any live discovery hit means the current network already reaches the
@@ -9617,13 +9635,14 @@ final class SyncService: ObservableObject {
     let machineDiscoveredNearby = discoveredHosts.contains { host in
       matchesDiscoveredHost(host, profile: profile)
     }
+    guard !machineDiscoveredNearby, tokenForProfile(profile) != nil else { return false }
     return syncShouldShowTailscaleOffHint(
       transport: connectionHealth.transport,
       hasSavedMachine: true,
-      savedMachineHasTailnetRoute: profileHasTailnetRoute(profile),
-      phoneHasTailnetInterface: phoneHasTailnetInterface,
-      machineDiscoveredNearby: machineDiscoveredNearby,
-      hasRelayCandidate: !relayFallbackCandidates(for: profile).isEmpty
+      savedMachineHasTailnetRoute: true,
+      phoneHasTailnetInterface: false,
+      machineDiscoveredNearby: false,
+      hasRelayCandidate: false
     )
   }
 
@@ -23270,7 +23289,8 @@ final class SyncService: ObservableObject {
       // request, then actively probe the transport; only a probe that hears
       // nothing back tears the socket down.
       markConnectionLoadStrained()
-      resolve(requestId: requestId, result: .failure(SyncUserFacingError.error(from: policy.error)))
+      // `resolve` maps the error for the caller.
+      resolve(requestId: requestId, result: .failure(policy.error))
       syncChatLog.notice(
         "request_timeout_probe_scheduled requestId=\(requestId, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public)"
       )
