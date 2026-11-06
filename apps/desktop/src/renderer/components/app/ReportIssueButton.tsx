@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
@@ -7,26 +7,36 @@ import type {
 import { describeManualSendFailure } from "../../../shared/diagnosticsUpload";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { isAdeAvailable } from "../../lib/adeAvailability";
-import {
-  ERROR_DISCLOSURE_CARET,
-  ERROR_PRIMARY_BUTTON,
-  ERROR_SECONDARY_BUTTON,
-} from "./errorSurfaceKit";
-
-export type ReportIssueVariant = "primary" | "secondary" | "ghost";
+import { isWebClientMode } from "../../lib/webClientMode";
 
 /** The inline actions inside the result line: text links, not buttons in a row. */
 const REPORT_LINK_BUTTON =
   "font-medium text-fg/75 underline decoration-fg/25 underline-offset-2 transition-colors hover:text-fg disabled:no-underline disabled:opacity-60";
 
-const VARIANT_CLASS: Record<ReportIssueVariant, string> = {
-  primary: ERROR_PRIMARY_BUTTON,
-  secondary: ERROR_SECONDARY_BUTTON,
-  // Not the kit's ghost: this one rides inside one-line banners, where the
-  // full-height button shape would turn a strip into a bar.
-  ghost:
-    "inline-flex h-[22px] items-center justify-center rounded-md px-2 text-[11px] font-medium text-fg/60 transition-colors hover:bg-fg/[0.06] hover:text-fg/85 disabled:opacity-60",
-};
+/**
+ * Not the kit's ghost: this button rides in one-line banners and in the last
+ * row of a failure card, where the full-height button shape would turn a strip
+ * into a bar.
+ */
+const REPORT_BUTTON =
+  "inline-flex h-[22px] items-center justify-center rounded-md px-2 text-[11px] font-medium text-fg/60 transition-colors hover:bg-fg/[0.06] hover:text-fg/85 disabled:opacity-60";
+
+/** A failure in the result line: the kit's warning colour, which also reads on light themes. */
+const REPORT_WARN_TEXT = "text-(color:--kit-warn)";
+
+/** What the button does when it cannot send: any hint about sending would be false. */
+const GITHUB_PATH_HINT = "Opens a GitHub issue with the report.";
+
+/**
+ * What the report carries, for a tooltip. The web client's report has no logs:
+ * a browser has none to collect.
+ */
+export function reportContentsTitle(canSend: boolean): string {
+  const verb = canSend ? "Sends ADE" : "Collects";
+  return isWebClientMode()
+    ? `${verb} your ADE version, your browser and what went wrong here. Personal details are removed.`
+    : `${verb} your ADE version, what went wrong here, and the last part of ADE's logs. Personal details are removed.`;
+}
 
 /**
  * The send behind "Report issue", for a surface that places the button and its
@@ -68,17 +78,18 @@ export function useIssueReport(context: DiagnosticReportRequestPayload) {
   const bridge = typeof window !== "undefined" ? window.ade?.diagnostics : undefined;
   // `isAdeAvailable`, not truthiness: a member the web client lacks is a
   // stand-in whose every call rejects, and a button that can only fail is
-  // worse than none.
-  const canOpenIssue = isAdeAvailable(bridge?.openIssue);
-  const canSend = isAdeAvailable(bridge?.sendManual);
+  // worse than none. On web `sendManual` appears once Sentry has loaded.
+  const bridgeOpenIssue = isAdeAvailable(bridge?.openIssue) ? bridge.openIssue : null;
+  const bridgeSend = isAdeAvailable(bridge?.sendManual) ? bridge.sendManual : null;
+  const canSend = bridgeSend !== null;
 
   const openIssue = useCallback(async () => {
-    if (!canOpenIssue || !bridge?.openIssue || opening) return;
+    if (!bridgeOpenIssue || opening) return;
     const generation = generationRef.current;
     setOpening(true);
     setIssueFailed(false);
     try {
-      const payload = await bridge.openIssue(context);
+      const payload = await bridgeOpenIssue(context);
       if (generationRef.current === generation) setIssue(payload);
     } catch {
       if (generationRef.current === generation) {
@@ -89,10 +100,10 @@ export function useIssueReport(context: DiagnosticReportRequestPayload) {
       // A newer press already freed the button; a stale reply leaves it be.
       if (generationRef.current === generation) setOpening(false);
     }
-  }, [bridge, canOpenIssue, context, opening]);
+  }, [bridgeOpenIssue, context, opening]);
 
   const send = useCallback(async () => {
-    if (!canSend || !bridge?.sendManual || sending) return;
+    if (!bridgeSend || sending) return;
     const generation = ++generationRef.current;
     setSending(true);
     // An issue still opening for the earlier press no longer owns the button.
@@ -102,14 +113,14 @@ export function useIssueReport(context: DiagnosticReportRequestPayload) {
     setIssueFailed(false);
     let result: DiagnosticsManualSendResult;
     try {
-      result = await bridge.sendManual(context);
+      result = await bridgeSend(context);
     } catch {
       result = { ok: false, reason: "failed" };
     }
     if (generationRef.current !== generation) return;
     setSent(result);
     setSending(false);
-  }, [bridge, canSend, context, sending]);
+  }, [bridgeSend, context, sending]);
 
   const run = useCallback(async () => {
     if (canSend) {
@@ -123,7 +134,7 @@ export function useIssueReport(context: DiagnosticReportRequestPayload) {
   }, [canSend, openIssue, send]);
 
   return {
-    available: canOpenIssue,
+    available: bridgeOpenIssue !== null,
     canSend,
     sending,
     opening,
@@ -144,34 +155,33 @@ export type IssueReportState = ReturnType<typeof useIssueReport>;
  * Every error screen's escape hatch: build a redacted diagnostic report about
  * this screen and send it to ADE, with a GitHub issue as the fallback.
  *
- * The send happens in the main process (`diagnostics.sendManual` with this
- * screen's context): the renderer's CSP does not allow a request to the account
- * directory, and main already owns the report builder, the redaction and the
- * per-device daily budget. The GitHub issue opens only when the person asks
- * for it, through `openIssue`, which also puts the report on the clipboard.
+ * On desktop the send happens in the main process (`diagnostics.sendManual`
+ * with this screen's context): the renderer's CSP does not allow a request to
+ * the account directory, and main already owns the report builder, the
+ * redaction and the per-device daily budget. The web client sends its own,
+ * smaller report as Sentry User Feedback (`webclient/adapter/diagnostics.ts`).
+ * The GitHub issue opens only when the person asks for it, through
+ * `openIssue`, which also puts the report on the clipboard.
  *
- * A preload without `sendManual` gets the older behaviour: open the GitHub
- * issue with the report copied.
+ * Without `sendManual` (an older preload, or the web client with Sentry off)
+ * the button opens the GitHub issue with the report copied.
  *
  * Deliberately self-contained — one import and one element per host screen —
  * so the error surfaces can be redesigned without untangling it.
  */
 export function ReportIssueButton({
   context,
-  variant = "secondary",
   className,
-  showDisclosure,
+  hint,
 }: {
   context: DiagnosticReportRequestPayload;
-  variant?: ReportIssueVariant;
   className?: string;
   /**
-   * Whether to render the "What's in the report?" fold. On a full surface it
-   * belongs (people deserve to know before they send anything); inside a
-   * one-line banner it turns a strip into a paragraph, so ghost hides it by
-   * default. Pass explicitly to override either way.
+   * One short line after the button that says what pressing it does, shown
+   * until the button has a result to show. On the GitHub path the button
+   * says so instead.
    */
-  showDisclosure?: boolean;
+  hint?: string;
 }) {
   const state = useIssueReport(context);
   const { canSend, sending, opening, sent, issue, issueFailed, run } = state;
@@ -180,75 +190,39 @@ export function ReportIssueButton({
   // worse than offering nothing on a screen that is already failing.
   if (!state.available) return null;
 
-  const isGhost = variant === "ghost";
-  const disclosed = showDisclosure ?? !isGhost;
-
   return (
     <span className={className}>
-      <span className="inline-flex flex-wrap items-center gap-2">
+      <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
         <button
           type="button"
           onClick={() => void run()}
           disabled={sending || (!canSend && opening)}
-          className={VARIANT_CLASS[variant]}
-          title={
-            disclosed
-              ? undefined
-              : `${canSend ? "Sends ADE" : "Collects"} your ADE version, what went wrong here, and the last part of ADE's logs. Personal details are removed.`
-          }
+          className={REPORT_BUTTON}
+          title={reportContentsTitle(canSend)}
         >
           {sending ? "Sending report…" : !canSend && opening ? "Preparing report…" : "Report issue"}
         </button>
 
         {sent || issue || issueFailed ? (
-          <ReportIssueResult state={state} className={isGhost ? "text-[11px] " : "text-[12px] "} />
+          <ReportIssueResult state={state} className="text-[11px] " />
+        ) : hint ? (
+          <span className="text-[12px] text-(color:--kit-text-3)">{canSend ? hint : GITHUB_PATH_HINT}</span>
         ) : null}
       </span>
-
-      {disclosed ? (
-        <details className="group mt-2 block">
-          <summary
-            className={
-              (isGhost ? "text-[11px] " : "text-[12px] ")
-              + "inline-flex cursor-pointer select-none list-none items-center gap-1.5 text-fg/45"
-              + " transition-colors marker:content-none hover:text-fg/70"
-              + " [&::-webkit-details-marker]:hidden"
-            }
-          >
-            {ERROR_DISCLOSURE_CARET}
-            What's in the report?
-          </summary>
-          <ul
-            className={
-              (isGhost ? "text-[11px] " : "text-[12px] ")
-              + "mt-1.5 flex list-disc flex-col gap-0.5 pl-4 leading-relaxed text-fg/50"
-            }
-          >
-            <li>Your ADE version and what kind of computer this is</li>
-            <li>What went wrong on this screen</li>
-            <li>Whether ADE's background service is running, and free storage</li>
-            <li>The last part of ADE's own logs</li>
-            <li>An install code so we can match this to our error reports</li>
-          </ul>
-          <p
-            className={
-              (isGhost ? "text-[11px] " : "text-[12px] ")
-              + "mt-1.5 leading-relaxed text-fg/45"
-            }
-          >
-            File paths, your name, email addresses and any sign-in codes are removed
-            before the report is created. {canSend
-              ? "Pressing Report issue sends the report to ADE. Nothing else leaves this computer unless you open the GitHub issue."
-              : "Nothing leaves this computer unless you post the GitHub issue."}
-          </p>
-        </details>
-      ) : null}
     </span>
   );
 }
 
-/** A failure in the result line: the kit's warning colour, which also reads on light themes. */
-const REPORT_WARN_TEXT = "text-(color:--kit-warn)";
+/** What to do with the report once the GitHub path ran. */
+function issueInstruction(issue: DiagnosticReportPayload): string {
+  if (issue.opened === false) {
+    return issue.copied ? "Report copied, but the GitHub issue didn't open." : "The GitHub issue didn't open.";
+  }
+  if (issue.copied) return "Report copied — paste it into the GitHub issue that just opened.";
+  return issue.filePath
+    ? "Report saved — copy it and paste it into the GitHub issue."
+    : "Copy the report and paste it into the GitHub issue.";
+}
 
 /** What happened after "Report issue": the reference, copy, retry, the GitHub fallback. */
 export function ReportIssueResult({
@@ -264,95 +238,59 @@ export function ReportIssueResult({
   const { sent, issue, issueFailed, sending, opening, copied, copy, send, openIssue } = state;
   if (!sent && !issue && !issueFailed) return null;
   const sentReport = sent?.ok ? sent.report : undefined;
-  // One status at a time. Once the person has taken the GitHub path, its
-  // outcome replaces the offer to open it, and a failed send it answered is
-  // dropped, so two failures never run together in one line.
-  const githubDone = Boolean(issue || issueFailed);
-  const sendLine = sent && (sent.ok || !githubDone) ? sent : null;
+  // One failure at a time: once the person turns to GitHub, a failed send
+  // leaves the line, so two failures never run together.
+  const sendLine = sent && (sent.ok || (!issue && !issueFailed)) ? sent : null;
+  const link = (label: string, onClick: () => void, disabled = false) => (
+    <button type="button" onClick={onClick} disabled={disabled} className={REPORT_LINK_BUTTON}>
+      {label}
+    </button>
+  );
+
+  // Each part is one status with its own action; parts are joined with " · ".
+  const parts: ReactNode[] = [];
+  if (sendLine) {
+    parts.push(sendLine.ok ? `${sentLabel} ${sendLine.reference}` : (
+      <>
+        <span className={REPORT_WARN_TEXT}>{describeManualSendFailure(sendLine)}</span>
+        {sendLine.reason === "failed" || sendLine.reason === "unavailable"
+          ? <>{" "}{link("Try again", () => void send(), sending)}</>
+          : null}
+      </>
+    ));
+  }
+  if (sentReport) parts.push(link(copied ? "Copied" : "Copy report", () => void copy(sentReport)));
+  // The GitHub link stays until an issue has actually opened.
+  if (sendLine && !issueFailed && issue?.opened !== true) {
+    parts.push(link(opening ? "Opening…" : "Open GitHub issue", () => void openIssue(), opening));
+  }
+  if (issue) {
+    parts.push(
+      <>
+        {issueInstruction(issue)}
+        {/* After a send, "Copy report" already copies. */}
+        {sentReport ? null : <>{" "}{link(copied ? "Copied" : issue.copied ? "Copy again" : "Copy report", () => void copy(issue.report))}</>}
+      </>,
+    );
+  }
+  if (issueFailed) {
+    parts.push(
+      <>
+        <span className={REPORT_WARN_TEXT}>ADE couldn't prepare the report.</span>
+        {" "}
+        {link(opening ? "Opening…" : "Try again", () => void openIssue(), opening)}
+      </>,
+    );
+  }
+
   return (
     <span className={(className ?? "") + "text-fg/60"} role="status">
-      {sendLine ? (
-        <span className={sendLine.ok ? undefined : REPORT_WARN_TEXT}>
-          {sendLine.ok ? `${sentLabel} ${sendLine.reference}` : describeManualSendFailure(sendLine)}
-        </span>
-      ) : null}
-      {sentReport ? (
-        <>
-          {" · "}
-          <button
-            type="button"
-            onClick={() => void copy(sentReport)}
-            className={REPORT_LINK_BUTTON}
-          >
-            {copied ? "Copied" : "Copy report"}
-          </button>
-        </>
-      ) : null}
-      {sendLine && !sendLine.ok && (sendLine.reason === "failed" || sendLine.reason === "unavailable") ? (
-        <>
-          {" "}
-          <button
-            type="button"
-            onClick={() => void send()}
-            disabled={sending}
-            className={REPORT_LINK_BUTTON}
-          >
-            Try again
-          </button>
-        </>
-      ) : null}
-      {sendLine && !githubDone ? (
-        <>
-          {" · "}
-          <button
-            type="button"
-            onClick={() => void openIssue()}
-            disabled={opening}
-            className={REPORT_LINK_BUTTON}
-          >
-            {opening ? "Opening…" : "Open GitHub issue"}
-          </button>
-        </>
-      ) : null}
-      {issue ? (
-        <>
-          {sendLine ? " · " : null}
-          {issue.copied
-            ? "Report copied — paste it into the GitHub issue that just opened."
-            : issue.filePath
-              ? "Report saved — copy it and paste it into the GitHub issue."
-              : "Copy the report and paste it into the GitHub issue."}
-          {/* After a send, "Copy report" already copies; this one is for
-              the GitHub path, or a send that returned no report. */}
-          {sentReport ? null : (
-            <>
-              {" "}
-              <button
-                type="button"
-                onClick={() => void copy(issue.report)}
-                className={REPORT_LINK_BUTTON}
-              >
-                {copied ? "Copied" : issue.copied ? "Copy again" : "Copy report"}
-              </button>
-            </>
-          )}
-        </>
-      ) : null}
-      {issueFailed ? (
-        <>
-          {sendLine ? " · " : null}
-          <span className={REPORT_WARN_TEXT}>ADE couldn't prepare the report.</span>
-          {" "}
-          <button
-            type="button"
-            onClick={() => void openIssue()}
-            disabled={opening}
-            className={REPORT_LINK_BUTTON}
-          >
-            {opening ? "Opening…" : "Try again"}
-          </button>
-        </>
-      ) : null}
+      {parts.map((part, index) => (
+        <Fragment key={index}>
+          {index > 0 ? " · " : null}
+          {part}
+        </Fragment>
+      ))}
     </span>
   );
 }

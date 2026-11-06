@@ -3,18 +3,24 @@ import type {
   DiagnosticReportRequestPayload,
   DiagnosticsManualSendResult,
 } from "../../../shared/types/diagnostics";
-import { diagnosticReference } from "../../../shared/diagnosticsUpload";
-import { captureUserFeedback, isSentryActive } from "../../../shared/sentry/capture";
-import { resolveSentryUserId } from "../../../shared/sentry/eventFilter";
+import { MAX_DIAGNOSTIC_REPORTS_PER_DAY } from "../../../shared/diagnosticsUpload";
+import { ADE_GITHUB_URL } from "../../../shared/productLinks";
+import {
+  captureUserFeedback,
+  confirmSentryDelivery,
+  isSentryActive,
+  resolveSentryUserId,
+  SENTRY_FEEDBACK_MAX_CHARS,
+} from "../../../shared/sentry/capture";
 import { scrubFreeText, scrubString } from "../../../shared/sentry/scrub";
+import { webClientVersion } from "../../lib/webClientMode";
+import type { AdeNamespace } from "./types";
 
-declare const __ADE_WEB_VERSION__: string | undefined;
-
-/** Where the desktop files its issues too (`DIAGNOSTIC_ISSUE_REPO` in the CLI's report builder). */
-const ISSUE_REPO = "arul28/ADE";
-/** Sentry stores a feedback message of a few thousand characters; the desktop caps a note at 2,000. */
-const REPORT_MAX_CHARS = 2_000;
+/** A report sent with no screen behind it; the desktop's equivalent is `settings_manual`. */
+const MANUAL_SURFACE = "web_manual";
 const DETAIL_MAX_CHARS = 1_200;
+const SENDS_KEY = "ade:web-report-sends";
+const DAY_MS = 24 * 60 * 60 * 1_000;
 
 /**
  * "Report issue" in the hosted web client.
@@ -24,36 +30,49 @@ const DETAIL_MAX_CHARS = 1_200;
  * collect, and the directory refuses uploads from another site's page. What
  * the web client does have is its own Sentry (`ade-web`), which already holds
  * the crash with its stack, screen and release. So the report goes there as
- * User Feedback, beside the crash event, and its id is the reference.
+ * User Feedback beside the crash event, under a reference it is tagged with.
  *
- * `sendManual` exists only while Sentry runs (production, no Do Not Track, no
- * analytics opt-out); otherwise the button opens the GitHub issue instead.
- * The automatic report is the crash boundary's own Sentry capture, so
- * `autoReport` has nothing more to do here.
+ * `sendManual` is a getter because the web client's Sentry loads after the
+ * first paint and only where the person allows it (production, no Do Not
+ * Track, no analytics opt-out). Until then it is absent and the button opens
+ * the GitHub issue instead. There is no `autoReport`: the crash boundary's own
+ * Sentry capture is the automatic report here, and the boundaries skip the
+ * call when the member is missing.
  */
-export function createDiagnosticsNamespace() {
+export function createDiagnosticsNamespace(): AdeNamespace<"diagnostics"> {
   return {
     get sendManual() {
       return isSentryActive() ? sendManual : undefined;
     },
     openIssue,
-    autoReport: async (_context: DiagnosticReportRequestPayload): Promise<void> => undefined,
   };
 }
 
 async function sendManual(context?: DiagnosticReportRequestPayload): Promise<DiagnosticsManualSendResult> {
   const report = buildWebReport(context);
+  if (sendsToday().length >= MAX_DIAGNOSTIC_REPORTS_PER_DAY) {
+    return { ok: false, reason: "local_limit", limit: MAX_DIAGNOSTIC_REPORTS_PER_DAY, report };
+  }
+  // Ours, not Sentry's event id: support finds the note by this tag, and an
+  // event id prefix is not searchable.
+  const reference = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
   const feedbackId = captureUserFeedback({
     message: report,
     source: "report_issue",
     userId: resolveSentryUserId(),
+    associatedEventId: context?.sentryEventId,
     tags: {
-      "report.surface": scrubString(context?.surface ?? "web_manual"),
+      "report.surface": scrubString(context?.surface ?? MANUAL_SURFACE),
+      "report.reference": reference,
       ...(context?.code ? { "report.code": scrubString(context.code) } : {}),
     },
+    onError: (error) => console.warn("[ade-web] report feedback failed", error),
   });
-  if (!feedbackId) return { ok: false, reason: "failed", report };
-  return { ok: true, reference: diagnosticReference(feedbackId), reportPath: "", report };
+  // The reference is only worth showing once Sentry has the note: an ad
+  // blocker or a dropped connection must read as a failed send.
+  if (!(await confirmSentryDelivery(feedbackId))) return { ok: false, reason: "failed", report };
+  recordSend();
+  return { ok: true, reference, reportPath: "", report };
 }
 
 async function openIssue(context: DiagnosticReportRequestPayload): Promise<DiagnosticReportPayload> {
@@ -65,20 +84,33 @@ async function openIssue(context: DiagnosticReportRequestPayload): Promise<Diagn
   const copying: Promise<boolean> = navigator.clipboard
     ? navigator.clipboard.writeText(report).then(() => true, () => false)
     : Promise.resolve(false);
-  let opened = false;
-  try {
-    // `noopener` makes window.open return null, so a blocked tab looks the same as an open one.
-    window.open(issueUrl, "_blank", "noopener,noreferrer");
-    opened = true;
-  } catch {
-    opened = false;
-  }
-  const copied = await copying;
-  return { report, filePath: "", issueUrl, installId: "", copied, opened };
+  // No `noopener` in the features: with it the call returns null either way,
+  // and a blocked tab must not read as an open one. The opener is cut by hand.
+  const tab = window.open(issueUrl, "_blank");
+  if (tab) tab.opener = null;
+  return { report, filePath: "", issueUrl, installId: "", copied: await copying, opened: Boolean(tab) };
 }
 
-function webVersion(): string {
-  return typeof __ADE_WEB_VERSION__ === "string" && __ADE_WEB_VERSION__ ? __ADE_WEB_VERSION__ : "unknown";
+/** Delivered sends in the last day, from this browser. */
+function sendsToday(): number[] {
+  try {
+    const stored: unknown = JSON.parse(window.localStorage.getItem(SENDS_KEY) ?? "[]");
+    const now = Date.now();
+    return Array.isArray(stored)
+      ? stored.filter((at): at is number => typeof at === "number" && now - at < DAY_MS)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function recordSend(): void {
+  try {
+    window.localStorage.setItem(SENDS_KEY, JSON.stringify([...sendsToday(), Date.now()]));
+  } catch (error) {
+    // Storage off: the cap is only as good as this browser allows.
+    console.warn("[ade-web] report send count not saved", error);
+  }
 }
 
 /**
@@ -89,25 +121,29 @@ function webVersion(): string {
  */
 function buildWebReport(context?: DiagnosticReportRequestPayload): string {
   const detail = context?.technicalDetail?.trim();
-  const freeText = (text: string, maxLength: number) => scrubFreeText(text, { maxLength });
   const lines = [
     "ADE web report",
     "",
-    `- Surface: ${scrubString(context?.surface ?? "web_manual")}`,
-    ...(context?.headline ? [`- What went wrong: ${freeText(context.headline, 300)}`] : []),
+    `- Surface: ${scrubString(context?.surface ?? MANUAL_SURFACE)}`,
+    ...(context?.headline ? [`- What went wrong: ${scrubFreeText(context.headline, { maxLength: 300 })}`] : []),
     ...(context?.code ? [`- Code: ${scrubString(context.code)}`] : []),
-    `- ADE web version: ${webVersion()}`,
-    `- Browser: ${typeof navigator === "undefined" ? "unknown" : navigator.userAgent}`,
+    `- ADE web version: ${webClientVersion() ?? "unknown"}`,
+    `- Browser: ${navigator.userAgent}`,
     `- Screen: ${scrubString(window.location.pathname)}`,
     `- Time: ${new Date().toISOString()}`,
-    ...(detail ? ["", "Technical detail:", freeText(detail, DETAIL_MAX_CHARS)] : []),
+    ...(detail ? ["", "Technical detail:", scrubFreeText(detail, { maxLength: DETAIL_MAX_CHARS })] : []),
   ];
-  return lines.join("\n").slice(0, REPORT_MAX_CHARS);
+  return lines.join("\n").slice(0, SENTRY_FEEDBACK_MAX_CHARS);
 }
 
+/**
+ * The web cut of the desktop's issue link (`buildDiagnosticIssueUrl` in the
+ * CLI's report builder): no platform or install id, which a browser does not
+ * have. The title is a public GitHub field, so it gets the free-text scrub.
+ */
 function buildIssueUrl(context: DiagnosticReportRequestPayload): string {
-  const url = new URL(`https://github.com/${ISSUE_REPO}/issues/new`);
-  url.searchParams.set("title", `Web: ${scrubString(context.headline ?? context.surface).slice(0, 120)}`);
+  const url = new URL(`${ADE_GITHUB_URL}/issues/new`);
+  url.searchParams.set("title", `Web: ${scrubFreeText(context.headline || context.surface).slice(0, 120)}`);
   url.searchParams.set("labels", "bug");
   url.searchParams.set("body", [
     "<!-- Paste the report from your clipboard below. -->",
@@ -117,8 +153,8 @@ function buildIssueUrl(context: DiagnosticReportRequestPayload): string {
     "",
     "---",
     "",
-    `- Surface: ${context.surface}`,
-    `- ADE web version: ${webVersion()}`,
+    `- Surface: ${scrubString(context.surface)}`,
+    `- ADE web version: ${webClientVersion() ?? "unknown"}`,
     "",
     "Paste the report from your clipboard here:",
     "",

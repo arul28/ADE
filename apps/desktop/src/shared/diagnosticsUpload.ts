@@ -45,6 +45,14 @@ export const DIAGNOSTICS_UPLOAD_PATH = "/diagnostics/upload";
  */
 export const MAX_DIAGNOSTIC_UPLOAD_BYTES = 512 * 1024;
 
+/**
+ * Mirror of `MAX_DIAGNOSTIC_UPLOADS_PER_DAY` in the Worker: the reports one
+ * sender may send in a day. The desktop's manual budget
+ * (`MAX_MANUAL_DIAGNOSTICS_PER_WINDOW`) and the web client's Report issue both
+ * hold to it, so neither refuses a report the server would have taken.
+ */
+export const MAX_DIAGNOSTIC_REPORTS_PER_DAY = 5;
+
 const DEFAULT_UPLOAD_TIMEOUT_MS = 20_000;
 
 /**
@@ -231,8 +239,9 @@ export async function uploadDiagnosticReport(
 
 /**
  * One short sentence per manual-send outcome, and never a status code. Shared
- * by Settings' "Send a report to ADE" and every error screen's "Report issue",
- * which both send through the main process.
+ * by Settings' "Send a report to ADE" and every error screen's "Report issue".
+ * On desktop both send through the main process; the web client sends its
+ * Report issue as Sentry User Feedback and answers in the same shape.
  *
  * The two refusals a person can act on differently are deliberately worded
  * differently: `rate_limited` is the account directory saying THIS computer has

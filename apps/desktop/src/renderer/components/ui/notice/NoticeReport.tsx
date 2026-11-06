@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { CaretRight, Check, PaperPlaneTilt } from "@phosphor-icons/react";
 import { forwardSignalToSentry } from "../../../../shared/sentry/logBridge";
-import { ReportIssueResult, useIssueReport, type IssueReportState } from "../../app/ReportIssueButton";
+import { reportContentsTitle, ReportIssueResult, useIssueReport, type IssueReportState } from "../../app/ReportIssueButton";
 import type { NoticeAction } from "./NoticeParts";
 
 /**
@@ -124,7 +124,7 @@ export function useNoticeFailure(notice: {
         disabled: sentOk,
         title: sentOk
           ? "Sent to ADE"
-          : `${state.canSend ? "Send" : "Copy"} this error to ADE, with your ADE version and the last part of its logs. Personal details are removed.`,
+          : reportContentsTitle(state.canSend),
         onClick: () => void state.run(),
       }
     : null;

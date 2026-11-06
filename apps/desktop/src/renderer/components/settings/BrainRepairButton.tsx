@@ -56,7 +56,6 @@ export function BrainRepairButton({
         {/* One import, one element: the surrounding surfaces own their own
             layout, so this only ever appends after the failure line. */}
         <ReportIssueButton
-          variant="ghost"
           context={{
             surface: "brain_repair",
             headline: "Repair didn't finish",

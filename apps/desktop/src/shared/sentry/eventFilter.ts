@@ -5,6 +5,7 @@
  * can all take it.
  */
 import { expectedErrorKind } from "../expectedError";
+import { resolveSentryUserId } from "./capture";
 import { applySentryDiagnostics, type DiagnosticEvent, type DiagnosticHint } from "./diagnostics";
 import { createEventLimiter, eventBudgetKey, FATAL_SENTRY_BUDGET, isIgnoredEvent, type SentryBudget } from "./guardrails";
 import { forwardLogToSentry } from "./logBridge";
@@ -21,18 +22,8 @@ import {
 
 type FilterableEvent = ScrubbableEvent & Parameters<typeof eventBudgetKey>[0] & DiagnosticEvent & SentryMirrorEvent & { type?: string; level?: string };
 
-let resolveUserId: (() => string | null | undefined) | null = null;
-
-/**
- * Where events get their pseudonymous user: the same id PostHog sends as
- * `distinct_id` (the hashed ADE account once signed in, else the install's
- * random id), so one person can be followed across both. Read at send time,
- * so sign-in and sign-out need no wiring of their own. Null when the user has
- * product analytics off; the event then carries no user.
- */
-export function setSentryUserResolver(resolver: (() => string | null | undefined) | null): void {
-  resolveUserId = resolver;
-}
+// The user resolver lives in `capture.ts`; re-exported for the processes that install it here.
+export { resolveSentryUserId, setSentryUserResolver } from "./capture";
 
 /**
  * Receives each error event `beforeSend` admitted, after the budget and the
@@ -74,15 +65,6 @@ let mirrorEvent: SentryEventMirror | null = null;
 
 export function setSentryEventMirror(mirror: SentryEventMirror | null): void {
   mirrorEvent = mirror;
-}
-
-/** The user `beforeSend` puts on an event; for events that skip it (User Feedback). */
-export function resolveSentryUserId(): string | null {
-  try {
-    return resolveUserId?.() ?? null;
-  } catch {
-    return null;
-  }
 }
 
 /** Whether the SDK caught this exception itself (an uncaught error or unhandled rejection). */

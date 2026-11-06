@@ -301,7 +301,6 @@ export function BrainDownNotice({ result }: { result: UpdateTransactionResult | 
       // installer's own words travel in the report, never in the banner.
       extra: (
         <ReportIssueButton
-          variant="ghost"
           context={{
             surface: "update_transaction",
             headline: title,
