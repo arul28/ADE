@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 
 /**
  * OS-reported start time of a live pid, in epoch milliseconds, or null when the
@@ -37,4 +37,41 @@ export function readProcessStartTimeMs(
   // `ps` pads the day of month ("Aug  6"); Date.parse rejects the double space.
   const startedAtMs = Date.parse(raw.trim().replace(/\s+/g, " "));
   return Number.isFinite(startedAtMs) ? startedAtMs : null;
+}
+
+/**
+ * {@link readProcessStartTimeMs} for several pids in one `ps`, without
+ * blocking the event loop: a periodic sweep that checks a handful of
+ * processes spawns once, not once per pid. A pid that is gone (or every pid,
+ * on Windows) is absent from the answer.
+ */
+export function readProcessStartTimesMs(
+  pids: readonly number[],
+  platform: NodeJS.Platform = process.platform,
+): Promise<Map<number, number>> {
+  const wanted = [...new Set(pids.filter((pid) => Number.isInteger(pid) && pid > 0))];
+  if (platform === "win32" || wanted.length === 0) return Promise.resolve(new Map());
+  return new Promise((resolve) => {
+    execFile(
+      "/bin/ps",
+      ["-o", "pid=,lstart=", "-p", wanted.join(",")],
+      {
+        encoding: "utf8",
+        timeout: 2_000,
+        maxBuffer: 256 * 1024,
+        env: { ...process.env, LC_ALL: "C", LANG: "C" },
+      },
+      // `ps` exits 1 when one of the pids is gone; the rest are still printed.
+      (_error, stdout) => {
+        const times = new Map<number, number>();
+        for (const line of String(stdout ?? "").split("\n")) {
+          const match = /^\s*(\d+)\s+(.+?)\s*$/u.exec(line);
+          if (!match) continue;
+          const startedAtMs = Date.parse(match[2]!.replace(/\s+/g, " "));
+          if (Number.isFinite(startedAtMs)) times.set(Number(match[1]), startedAtMs);
+        }
+        resolve(times);
+      },
+    );
+  });
 }

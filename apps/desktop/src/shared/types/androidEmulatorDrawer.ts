@@ -95,7 +95,9 @@ export type AndroidToolsPreloadAction =
   | "runInstrumentationTests"
   // P3: the Previews group.
   | "listComposePreviews"
-  | "renderComposePreviews";
+  | "renderComposePreviews"
+  // The rail's "Keep running".
+  | "setKeepRunning";
 
 /** What one service method answers, without the promise. */
 export type AndroidServiceResult<K extends keyof AndroidEmulatorServiceApi> = Awaited<ReturnType<AndroidEmulatorServiceApi[K]>>;

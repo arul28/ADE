@@ -625,7 +625,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "listSystemImages",
     ],
     write: [
-      "createDevice", "attachDevice", "start", "stop", "releaseDevice", "deleteDevice",
+      "createDevice", "attachDevice", "start", "stop", "setKeepRunning", "releaseDevice", "deleteDevice",
       "startStream", "stopStream", "sendTouch", "tap", "swipe", "sendKey", "sendText",
       "rotate", "screenshot",
       // P1 look.

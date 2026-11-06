@@ -37,6 +37,9 @@ export const ANDROID_DEVICE_ANALYTICS_OUTCOMES = [
   // P3: a fold the emulator settled, and a Compose preview render that wrote an image.
   "device_folded",
   "previews_rendered",
+  // ADE stopped an emulator by itself: nobody used it for the idle limit, or
+  // the brain that started it was gone and nothing adopted it.
+  "emulator_auto_stopped",
 ] as const;
 export type AndroidDeviceAnalyticsOutcome = (typeof ANDROID_DEVICE_ANALYTICS_OUTCOMES)[number];
 
@@ -176,6 +179,15 @@ export type AndroidLaneDeviceStatus = {
   error: AndroidEmulatorError | null;
   /** P2 crash pin: the lane's app's last crash while the emulator runs. Absent from a brain before P2. */
   appCrash?: AndroidAppCrash | null;
+  /**
+   * "Keep running": true when the person pinned the running emulator, so
+   * ADE's idle stop leaves it alone; false when ADE stops it after
+   * `idleStopMinutes` unused. Null when it is not running, or ADE did not
+   * start it (ADE never stops those). Absent from an older brain.
+   */
+  keepRunning?: boolean | null;
+  /** How long ADE lets an unpinned emulator sit unused before it stops it; null when the idle stop is off. */
+  idleStopMinutes?: number | null;
 };
 
 /**
@@ -313,8 +325,15 @@ export type AndroidDeviceInventory = {
 
 export type AndroidLaneArgs = { laneId: string };
 
-/** `start`. `force` boots even when the RAM guard says the machine has too little free memory. */
-export type AndroidStartArgs = AndroidLaneArgs & { force?: boolean };
+/**
+ * `start`. `force` boots even when the memory guard says the machine has too
+ * little memory. `chatSessionId` (stamped by the RPC server for an agent)
+ * goes into the emulator's owner record.
+ */
+export type AndroidStartArgs = AndroidLaneArgs & { force?: boolean; chatSessionId?: string | null };
+
+/** `setKeepRunning`: pin the lane's running emulator so ADE's idle stop leaves it alone, or unpin it. */
+export type AndroidKeepRunningArgs = AndroidLaneArgs & { keepRunning: boolean };
 
 /** `listDevices`. `measureSizes` (P1 look, Storage) walks each AVD folder for `sizeBytes`. */
 export type AndroidListDevicesArgs = { laneId?: string | null; measureSizes?: boolean };
@@ -420,6 +439,8 @@ export type AndroidEmulatorServiceApi = {
   start(args: AndroidStartArgs): Promise<AndroidLaneDeviceStatus>;
   /** Stop the lane's emulator if ADE started it. */
   stop(args: AndroidLaneArgs): Promise<AndroidLaneDeviceStatus>;
+  /** "Keep running": pin or unpin the lane's running emulator against ADE's idle stop. */
+  setKeepRunning(args: AndroidKeepRunningArgs): Promise<AndroidLaneDeviceStatus>;
   releaseDevice(args: AndroidReleaseDeviceArgs): Promise<{ released: boolean; deletedAvd: string | null }>;
   /** Delete an ADE-created AVD that no lane holds. User-only. */
   deleteDevice(args: { avdName: string }): Promise<{ deleted: boolean }>;
@@ -501,6 +522,8 @@ export const ANDROID_AGENT_ACTIONS = [
   "attachDevice",
   "start",
   "stop",
+  // "Keep running": the pin against ADE's idle stop.
+  "setKeepRunning",
   "releaseDevice",
   "getStreamStatus",
   "tap",

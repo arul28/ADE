@@ -14,6 +14,7 @@ import {
   Palette,
   PictureInPicture,
   Power,
+  PushPin,
   Record,
   SlidersHorizontal,
   SpeakerHigh,
@@ -49,6 +50,10 @@ export type AndroidDeviceRailProps = {
   onPowerOff: () => void;
   /** Floats the emulator over the chat; absent for another machine's work copy. */
   onFloat?: (() => void) | undefined;
+  /** "Keep running": the pin against ADE's idle stop. Absent when ADE never stops this emulator. */
+  keepRunning?: boolean | null;
+  idleStopMinutes?: number | null;
+  onToggleKeepRunning?: (() => void) | undefined;
   /** The shared preview / maximize controls every screen tool carries. */
   extraControls?: ReactNode;
   /* P1 look. Each is absent where it does not apply. */
@@ -95,6 +100,9 @@ export function AndroidDeviceRail({
   onSwitchDevice,
   onPowerOff,
   onFloat,
+  keepRunning = null,
+  idleStopMinutes = null,
+  onToggleKeepRunning,
   extraControls,
   mode = "flat",
   onMode,
@@ -240,6 +248,20 @@ export function AndroidDeviceRail({
             <PictureInPicture size={14} />
             Float over chat
           </DropdownMenu.Item>
+        ) : null}
+        {onToggleKeepRunning ? (
+          <DropdownMenu.CheckboxItem
+            className={MENU_ITEM_CLASS}
+            checked={keepRunning === true}
+            onCheckedChange={() => onToggleKeepRunning()}
+            title={idleStopMinutes
+              ? `ADE stops an emulator nobody used for ${idleStopMinutes} min. Keep this one running.`
+              : "Keep this emulator running."}
+          >
+            <PushPin size={14} />
+            <span className="min-w-0 flex-1">Keep running</span>
+            {keepRunning ? <Check size={12} /> : null}
+          </DropdownMenu.CheckboxItem>
         ) : null}
         {colors && colors.length > 1 && onColor ? (
           <DropdownMenu.Sub>

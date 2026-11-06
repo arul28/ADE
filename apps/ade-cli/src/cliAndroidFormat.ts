@@ -44,6 +44,12 @@ function laneDeviceLines(lane: JsonObject): string[] {
       ["screen", avd?.lcdWidth && avd?.lcdHeight ? `${avd.lcdWidth}x${avd.lcdHeight}` : null],
       ["serial", running?.serial],
       ["booted", yesNo(running?.booted)],
+      // Null: not running, or not ADE's (ADE never stops those).
+      ["keep running", lane.keepRunning === true
+        ? "yes"
+        : lane.keepRunning === false
+          ? typeof lane.idleStopMinutes === "number" ? `no (ADE stops it after ${lane.idleStopMinutes} min unused)` : "no"
+          : null],
     ]),
   ];
   if (error) {

@@ -46,6 +46,8 @@ export async function stopAdeStartedEmulators(args: {
   logger: Logger | null;
   /** The launcher process this run kept for an emulator, if any. */
   launcherPidFor?: (emulator: AndroidDiscoveredEmulator) => number | null;
+  /** One emulator stopped (the machine's owner record goes with it). */
+  onStopped?: (emulator: AndroidDiscoveredEmulator) => void;
 }): Promise<void> {
   for (const emulator of readAndroidDiscoveryFiles(args.discoveryDirs)) {
     if (!args.registry.owns(emulator)) continue;
@@ -58,7 +60,7 @@ export async function stopAdeStartedEmulators(args: {
       launcherPid: args.launcherPidFor?.(emulator) ?? null,
       registry: args.registry,
       discoveryDirs: args.discoveryDirs,
-    }).catch((error: unknown) => {
+    }).then(() => args.onStopped?.(emulator), (error: unknown) => {
       args.logger?.warn("android.dispose_stop_failed", { serial: emulator.serial, error: getErrorMessage(error) });
     });
   }

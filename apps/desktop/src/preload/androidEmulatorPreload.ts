@@ -160,6 +160,8 @@ export function createAndroidEmulatorBridge(deps: AndroidEmulatorBridgeDeps): An
     runInstrumentationTests: runtimeOnly("runInstrumentationTests"),
     listComposePreviews: runtimeOnly("listComposePreviews"),
     renderComposePreviews: runtimeOnly("renderComposePreviews"),
+    // The rail's "Keep running", on the emulator's machine.
+    setKeepRunning: runtimeOnly("setKeepRunning"),
     /**
      * Turn the host's loopback stream URL into one this desktop can open. Not a
      * routed action: the forward is built by this process.

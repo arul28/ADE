@@ -229,6 +229,16 @@ import {
 } from "../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "../../desktop/src/main/services/macDesktop/macDesktopLogger";
 import { createAndroidEmulatorService } from "../../desktop/src/main/services/android/androidEmulatorService";
+import {
+  AndroidEmulatorOwnersStore,
+  isAdoptableAdeHome,
+  machineAndroidEmulatorOwnersPath,
+} from "../../desktop/src/main/services/android/androidEmulatorOwners";
+import {
+  createAndroidEmulatorLifecycle,
+  type AndroidEmulatorLifecycle,
+} from "../../desktop/src/main/services/android/androidEmulatorSweep";
+import { readProcessStartTimeMs } from "../../desktop/src/main/services/processes/processStartTime";
 import { createAndroidStreamHub } from "../../desktop/src/main/services/android/androidStream";
 import { resolveScrcpyServerJarPath } from "../../desktop/src/main/services/android/scrcpyServer";
 import { sqlAndroidLaneDeviceRepo } from "../../desktop/src/main/services/android/androidLaneRelease";
@@ -610,6 +620,34 @@ const currentModulePath =
 
 /** One Android stream hub (the emulators' live pictures) for every project this brain runs. */
 const androidStreamHub = createAndroidStreamHub();
+
+/**
+ * One emulator lifecycle for every project this brain runs: the machine's
+ * owner file (`~/.ade/android/emulator-owners.json`, shared by every brain on
+ * the machine, whatever its ADE home), the idle and owner-gone sweep, the
+ * pin. Built with the first project's Android service.
+ */
+let androidEmulatorLifecycle: AndroidEmulatorLifecycle | null = null;
+function sharedAndroidEmulatorLifecycle(machineId: () => string | null, logger: Logger): AndroidEmulatorLifecycle {
+  if (androidEmulatorLifecycle) return androidEmulatorLifecycle;
+  const adeHome = resolveMachineAdeLayout().adeDir;
+  const warned = new Set<string>();
+  androidEmulatorLifecycle = createAndroidEmulatorLifecycle({
+    store: new AndroidEmulatorOwnersStore(machineAndroidEmulatorOwnersPath(), (op, error) => {
+      if (warned.has(op)) return;
+      warned.add(op);
+      logger.warn("android.emulator_owners_file_failed", { op, error: error instanceof Error ? error.message : String(error) });
+    }),
+    self: {
+      brainPid: process.pid,
+      brainStartedAtMs: readProcessStartTimeMs(process.pid),
+      adeHome,
+      adoptable: isAdoptableAdeHome(adeHome),
+    },
+    machineId,
+  });
+  return androidEmulatorLifecycle;
+}
 
 if (
   !isSourceCheckoutRuntimeModule(currentModulePath)
@@ -2322,10 +2360,15 @@ export async function createAdeRuntime(args: {
             return null;
           }
         },
-        // This brain's exits are restarts (an update, a service restart, a
-        // project repair): the lanes' emulators keep running and the next
-        // brain re-adopts them, as Mac Desktop hands its apps off.
-        handOffOnDispose: true,
+        // On the installed app's ADE home this brain's exits are restarts (an
+        // update, a service restart, a project repair): the lanes' emulators
+        // keep running and the next brain re-adopts them, as Mac Desktop
+        // hands its apps off. A dev or test brain on any other home has no
+        // next brain, so it stops its emulators on the way out.
+        handOffOnDispose: isAdoptableAdeHome(resolveMachineAdeLayout().adeDir),
+        // Owner records, the idle stop, the pin and the cross-brain memory
+        // ledger, shared by this brain's projects.
+        emulatorLifecycle: sharedAndroidEmulatorLifecycle(readSyncDeviceId, logger),
         // The machine's SDK choice ("Use mine…", a chosen install folder), shared by every project.
         sdkSettingsFile: path.join(resolveMachineAdeLayout().adeDir, "android", "settings.json"),
         // P1: screenshots, recordings, proof bundles and renders file

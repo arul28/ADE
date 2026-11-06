@@ -5,6 +5,7 @@ import type {
 } from "../../../shared/types/androidEmulator";
 import type { Logger } from "../logging/logger";
 import type { AndroidEmulatorLaunch } from "./androidEmulatorProcess";
+import type { AndroidEmulatorLifecycle } from "./androidEmulatorSweep";
 import type { AndroidLaneDeviceRepo } from "./androidLaneRelease";
 import type { AndroidArtifactFiler } from "./androidProof";
 import type { AndroidEnv } from "./androidSdk";
@@ -65,6 +66,15 @@ export type AndroidEmulatorServiceDeps = {
    * project there stops every emulator ADE started for it.
    */
   handOffOnDispose?: boolean;
+  /**
+   * The brain's emulator lifecycle (`androidEmulatorSweep.ts`), one per
+   * process: the machine-wide owner record of each emulator this service
+   * starts, the "last used" clock and the pin, the sweep that stops idle and
+   * abandoned emulators, and the memory guard's count of other brains'
+   * boots. Absent (tests, the desktop's in-process copy): none of that, and
+   * the guard counts this process's boots only.
+   */
+  emulatorLifecycle?: AndroidEmulatorLifecycle | null;
   now?: () => Date;
   onEvent?: (event: AndroidEmulatorEvent) => void;
   /**

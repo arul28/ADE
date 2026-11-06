@@ -3573,8 +3573,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                    Hold an existing AVD no other lane holds (--no-start)
     $ ade android start --text                     Boot the lane's AVD (waits for boot completed).
                                                    Refused with ANDROID_LOW_MEMORY when the machine
-                                                   would swap; --force boots anyway (ask the user first)
+                                                   is short of memory or swapping, or its emulators
+                                                   would pass half of its memory; --force boots
+                                                   anyway (ask the user first)
     $ ade android stop --text                      Stop it; the lane keeps its AVD
+    $ ade android keep-running on|off --text       ADE stops an emulator nobody used for 20 min;
+                                                   "on" keeps the lane's running one up
     $ ade android device-detach --text             Stop it and let the AVD go. An AVD ADE made
                                                    for the lane is deleted; --keep keeps it.
                                                    The user's own AVD is never deleted.
@@ -30578,6 +30582,45 @@ async function runServe(
   });
   const stopParentMonitor = monitorRuntimeParentProcess(finish);
   const stopIdleMonitor = monitorRuntimeIdleExit(states, finish);
+  // A dev or test brain nobody manages (no service, no parent, a scratch
+  // ADE home) leaves once its parent is gone and it has had nothing to do
+  // for a while, stopping the emulators it started on the way out.
+  const stopUnmanagedIdleMonitor = await (async () => {
+    const [unmanaged, { isStartedByRuntimeService }, { ADE_RUNTIME_SERVICE_NAME }] = await Promise.all([
+      import("./services/runtime/unmanagedBrainIdleExit"),
+      import("./serviceManager"),
+      import("./serviceManager/common"),
+    ]);
+    const idleExitMs = unmanaged.unmanagedBrainIdleExitMs({
+      env: process.env,
+      platform: process.platform,
+      adeHome: layout.adeDir,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      windowsSupervised: process.platform === "win32" ? isStartedByRuntimeService() : null,
+    });
+    return unmanaged.monitorUnmanagedBrainIdleExit({
+      idleExitMs,
+      isOrphaned: () => unmanaged.isOrphanedProcess({ ppid: process.ppid, platform: process.platform, isPidAlive }),
+      isBusy: async () => {
+        if (hasActiveHeadlessConnections(states)) return true;
+        const activity = await readMachineRuntimeActivitySummary({ projectRegistry, scopeRegistry, personalChatScope });
+        if (!activity.idle || (activity.activeAgentCliSessions ?? 0) > 0) return true;
+        // A phone or a desktop syncing with this brain is using it too.
+        const activeProjectId = scopeRegistry.getActiveSyncHostProjectId();
+        const scope = activeProjectId ? await scopeRegistry.getIfBooted(activeProjectId)?.catch(() => null) ?? null : null;
+        const sync = await scope?.runtime.syncService?.getStatus({ includeTransferReadiness: false }).catch(() => null) ?? null;
+        return Array.isArray(sync?.connectedPeers) && sync.connectedPeers.length > 0;
+      },
+      onIdle: (idleMs) => {
+        headlessProjectLogger.info("brain.unmanaged_idle_exit", {
+          adeHome: layout.adeDir,
+          socketPath,
+          idleMinutes: Math.round(idleMs / 60_000),
+        });
+        finish();
+      },
+    });
+  })().catch(() => () => {});
   try {
     await new Promise<void>((resolve) => {
       if (done) {
@@ -30600,6 +30643,7 @@ async function runServe(
   } finally {
     stopParentMonitor();
     stopIdleMonitor();
+    stopUnmanagedIdleMonitor();
     stopSocketOwnershipMonitor();
   }
 

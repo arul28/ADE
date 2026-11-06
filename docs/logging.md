@@ -1400,14 +1400,21 @@ was filed as proof), `device_leased` (an agent took a new lease with
 system image install from the device picker finished and put the image in
 place), `tests_run` (an instrumentation test run ran at least one test,
 passed or failed), `device_folded` (a fold of a foldable AVD that the
-emulator settled), or `previews_rendered` (a Compose preview render wrote at
-least one image). A failed, refused
-or no-op call emits nothing; the guard's own refusal is not an event. Nothing
+emulator settled), `previews_rendered` (a Compose preview render wrote at
+least one image), or `emulator_auto_stopped` (ADE stopped an emulator by
+itself: nobody used it for the idle limit, or the brain that started it was
+gone and no brain adopted it). A failed, refused
+or no-op call emits nothing; the guard's own refusal is not an event (it is
+the `android.start_low_memory` log line, with the reason and the numbers).
+Every emulator stop also writes the operational log line
+`android.emulator_stopped` with its reason (`user`, `released`,
+`lane_released`, `idle`, `owner_gone`, `orphan`, `project_closed`) and the
+AVD name; that stays in the local log and Sentry Logs, never PostHog. Nothing
 finer crosses: no SDK path, AVD, package, APK, angle, lane, chat, machine,
 memory size, image, test class, test count, module, or preview name. A hinge
 drag sends one fold when it is released, never per frame. A per-outcome
 `work_android_device:<outcome>` key with a 24-hour minimum interval bounds this
-to at most ten accepted events per installation per UTC day, inside the same
+to at most eleven accepted events per installation per UTC day, inside the same
 `ade_feature_used` limits; no ceiling was raised. The dashboard spec is
 untouched.
 

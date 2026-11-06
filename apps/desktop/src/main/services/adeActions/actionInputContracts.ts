@@ -1161,14 +1161,19 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade android device-attach --avd Pixel_9_API_36 --json",
     },
     start: {
-      description: "Boot the lane's AVD and wait until Android reports boot completed. No-op when it is already booted.",
-      input: "object { laneId: string }",
+      description: "Boot the lane's AVD and wait until Android reports boot completed. No-op when it is already booted. Refused with ANDROID_LOW_MEMORY when the machine is under memory pressure, swapping, or its emulators would pass half of its memory; force boots anyway.",
+      input: "object { laneId: string, force?: boolean }",
       example: "ade android start --json",
     },
     stop: {
       description: "Stop the lane's emulator, if ADE started it. The lane keeps its AVD.",
       input: "object { laneId: string }",
       example: "ade android stop --json",
+    },
+    setKeepRunning: {
+      description: "Pin the lane's running emulator (\"Keep running\") so ADE does not stop it after 20 minutes unused, or unpin it. Answers the lane's device status.",
+      input: "object { laneId: string, keepRunning: boolean }",
+      example: "ade android keep-running on --json",
     },
     releaseDevice: {
       description:

@@ -152,8 +152,18 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
       avdName: requiredString(args, "avdName", "attachDevice"),
       start: optionalBoolean(args, "start"),
     }),
-    start: (args?: unknown) => service.start({ ...laneArgs(args, "start"), ...(readBoolean(args, "force") === true ? { force: true } : {}) }),
+    start: (args?: unknown) => service.start({
+      ...laneArgs(args, "start"),
+      ...(readBoolean(args, "force") === true ? { force: true } : {}),
+      // Set by the RPC server for an agent: the chat named in the emulator's owner record.
+      chatSessionId: optionalString(args, "chatSessionId"),
+    }),
     stop: (args?: unknown) => service.stop(laneArgs(args, "stop")),
+    setKeepRunning: (args?: unknown) => {
+      const keepRunning = readBoolean(args, "keepRunning");
+      if (keepRunning == null) throw new Error("androidEmulator.setKeepRunning requires keepRunning (true or false).");
+      return service.setKeepRunning({ ...laneArgs(args, "setKeepRunning"), keepRunning });
+    },
     releaseDevice: (args?: unknown) => service.releaseDevice({
       ...laneArgs(args, "releaseDevice"),
       deleteCreated: optionalBoolean(args, "deleteCreated"),
