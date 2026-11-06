@@ -2447,6 +2447,9 @@ describe("product analytics producers", () => {
     ["star_prompt", "star_prompt_clicked", "prompt_second"],
     ["star_prompt", "star_prompt_dismissed", "prompt_first"],
     ["star_prompt", "repo_starred", "prompt_second"],
+    ["chat", "provider_sign_in", "completed"],
+    ["chat", "provider_sign_in", "cancelled"],
+    ["chat", "provider_sign_in", "failed"],
   ])("keeps the renderer fact %s / %s / %s unchanged and nothing private", (feature, action, outcome) => {
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
       feature,

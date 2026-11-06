@@ -7144,7 +7144,20 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.providerInstancesLoginStatus, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
-    return getMachineProviderLoginRunner().status(providerLoginString(providerInstanceArgs(arg).loginId, "id"));
+    const login = getMachineProviderLoginRunner().status(providerLoginString(providerInstanceArgs(arg).loginId, "id"));
+    // The action-path twin explains why: the next send must not meet the
+    // signed-out mark a failed turn left.
+    if (login.state === "succeeded") {
+      try {
+        getCtx().aiIntegrationService?.invalidateProviderReadinessCaches();
+      } catch (error) {
+        getCtx().logger.warn("provider_instances.login_cache_invalidation_failed", {
+          provider: login.provider,
+          error: getErrorMessage(error),
+        });
+      }
+    }
+    return login;
   });
 
   ipcMain.handle(IPC.providerInstancesLoginSubmitCode, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {

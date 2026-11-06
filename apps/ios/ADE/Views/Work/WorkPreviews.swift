@@ -513,9 +513,17 @@ func workPreviewChatSessionView(
   reasoningEffortChange: AgentChatReasoningEffortChange? = nil,
   transcript: [WorkChatEnvelope] = WorkPreviewData.transcript,
   isSideChat: Bool = false,
-  onOpenSideChat: (() -> Void)? = nil
+  onOpenSideChat: (() -> Void)? = nil,
+  provider: String? = nil,
+  providerSignInHost: ProviderAccountsHost? = nil,
+  providerSignInMachineName: String? = nil
 ) -> WorkChatSessionView {
   var summary = WorkPreviewData.chatSummary
+  if let provider {
+    summary.provider = provider
+    summary.model = provider
+    summary.modelId = nil
+  }
   if isSideChat {
     summary.sessionId = "preview-side-chat"
     summary.title = "Side chat"
@@ -603,6 +611,8 @@ func workPreviewChatSessionView(
     previewLaneTools: laneTools
   )
   view.onOpenSideChat = onOpenSideChat
+  view.providerSignInHost = providerSignInHost
+  if let providerSignInMachineName { view.providerSignInMachineName = providerSignInMachineName }
   return view
 }
 
@@ -1531,6 +1541,12 @@ enum ADEPreviewScreen: String, CaseIterable {
   case sideChat = "side-chat"
   /// The same main chat with the panel down: the chip and the label.
   case sideChatMain = "side-chat-main"
+  /// A Muse chat whose turn stopped because Muse is signed out on its
+  /// machine: the sign-in card in the composer's place. See
+  /// `WorkProviderSignInPreviewMachine`.
+  case chatSignIn = "chat-signin"
+  /// The same chat after the sign-in: the message went again and was answered.
+  case chatSignInRecovered = "chat-signin-recovered"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1754,6 +1770,10 @@ struct ADEPreviewScreenHost: View {
       WorkSideChatPreviewHost(panelPresented: true)
     case .sideChatMain:
       WorkSideChatPreviewHost(panelPresented: false)
+    case .chatSignIn:
+      WorkProviderSignInPreviewHost()
+    case .chatSignInRecovered:
+      WorkProviderSignInPreviewHost(recovered: true)
     }
   }
 }
@@ -2785,6 +2805,93 @@ struct WorkPreviewTranscriptList: UIViewRepresentable {
       cell.contentConfiguration = UIHostingConfiguration { row }.margins(.horizontal, 16)
       return cell
     }
+  }
+}
+/// `chat-signin`: the turn stopped on Muse's sign-in, so the card stands in
+/// for the composer. Continue runs the sign-in on a stand-in machine that
+/// hands out a device code and reads the login back after a while.
+private struct WorkProviderSignInPreviewHost: View {
+  var recovered = false
+  @StateObject private var machine = WorkProviderSignInPreviewMachine()
+
+  private static let recoveredTranscript: [WorkChatEnvelope] = {
+    let sessionId = WorkPreviewData.chatSummary.sessionId
+    let stamp = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-60))
+    return transcript + [
+      WorkChatEnvelope(sessionId: sessionId, timestamp: stamp, sequence: 3, event: .userMessage(text: "Tidy up the onboarding copy on the welcome screen", attachments: nil, turnId: "turn-2", steerId: nil, deliveryState: nil, processed: true)),
+      WorkChatEnvelope(sessionId: sessionId, timestamp: stamp, sequence: 4, event: .assistantText(text: "I shortened the welcome headline and cut the second paragraph.", turnId: "turn-2", itemId: "a2")),
+    ]
+  }()
+
+  private static let transcript: [WorkChatEnvelope] = {
+    let sessionId = WorkPreviewData.chatSummary.sessionId
+    let stamp = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-180))
+    var failure = WorkChatEnvelope(
+      sessionId: sessionId,
+      timestamp: stamp,
+      sequence: 2,
+      event: .error(
+        message: "Muse is not signed in. Run `muse login` to sign in.",
+        detail: nil,
+        category: "auth",
+        turnId: "turn-1",
+        title: "Authentication issue",
+        nextAction: ""
+      )
+    )
+    failure.signedOutAgent = "muse"
+    return [
+      WorkChatEnvelope(sessionId: sessionId, timestamp: stamp, sequence: 1, event: .userMessage(text: "Tidy up the onboarding copy on the welcome screen", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: true)),
+      failure,
+    ]
+  }()
+
+  var body: some View {
+    NavigationStack {
+      workPreviewChatSessionView(
+        transcript: recovered ? Self.recoveredTranscript : Self.transcript,
+        provider: "muse",
+        providerSignInHost: machine,
+        providerSignInMachineName: "Studio Mac"
+      )
+    }
+  }
+}
+
+/// A machine that answers the CLI sign-in commands the way `muse login` does:
+/// a device code at once, then signed in about 25 seconds after the start.
+@MainActor
+private final class WorkProviderSignInPreviewMachine: ObservableObject, ProviderAccountsHost {
+  private var startedAt: Date?
+
+  var supportsProviderAccounts: Bool { true }
+  var canChangeProviderAccounts: Bool { true }
+  var providerAccountsConnected: Bool { true }
+
+  func runProviderAccountsCommand(_ action: String, args: [String: Any]) async throws -> Any {
+    switch action {
+    case "ai.cliLoginStart":
+      startedAt = Date()
+      return login(state: "running")
+    case "ai.cliLoginStatus":
+      let elapsed = startedAt.map { Date().timeIntervalSince($0) } ?? 0
+      return login(state: elapsed > 25 ? "succeeded" : "running")
+    case "ai.cliLoginCancel":
+      startedAt = nil
+      return login(state: "cancelled")
+    default:
+      return [String: Any]()
+    }
+  }
+
+  private func login(state: String) -> [String: Any] {
+    [
+      "loginId": "preview-muse-login",
+      "state": state,
+      "url": "https://auth.meta.com/oauth/device/?code=JGGQ-JHCT",
+      "deviceCode": "JGGQ-JHCT",
+      "awaitingCode": false,
+    ]
   }
 }
 #endif

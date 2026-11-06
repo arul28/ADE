@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { CHAT_AUTH_RECOVERED_EVENT } from "./AgentCliAuthCard";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import type {
   AgentChatApprovalDecision,
@@ -616,11 +617,13 @@ describe("AgentChatMessageList transcript rendering", () => {
       expect(status.closest(".ade-chat-message-card-user")).toBeNull();
     });
 
-    it("draws no status line for plain, optimistic-queued, or spawn-prompt messages", () => {
+    it("draws no status line for plain, optimistic-queued, spawn-prompt, or turn-opening Muse messages", () => {
       renderMessageList([
         userMessage({}),
         { ...userMessage({ deliveryState: "queued" }), timestamp: "2026-03-17T10:00:01.000Z" },
         { ...userMessage({ deliveryState: "delivered", processed: true, messageId: "subagent:a:spawn-prompt" }), timestamp: "2026-03-17T10:00:02.000Z" },
+        // Muse stamps a message's own turn id as its steer id; it opened that turn.
+        { ...userMessage({ steerId: "turn-1", deliveryState: "delivered" }), timestamp: "2026-03-17T10:00:03.000Z" },
       ]);
       expect(screen.queryByTestId("user-message-status")).toBeNull();
     });
@@ -1930,7 +1933,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(rendered.container.textContent).not.toContain("Reconnecting to Claude");
   });
 
-  it("renders unauthenticated agent CLI errors as a re-login card", () => {
+  it("records an unauthenticated agent CLI error as one quiet line that turns to signed in again", () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1953,10 +1956,22 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ], { sessionId: "session-1" });
 
-    expect(screen.getByText("Claude Code is logged out")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /retry turn/i })).toBeTruthy();
-    expect(screen.getByText("Details")).toBeTruthy();
+    const receipt = screen.getByTestId("provider-sign-in-receipt");
+    expect(within(receipt).queryByText(/signed in again/)).toBeNull();
+    // The provider's own words stay, folded under Details; no error chrome.
+    expect(within(receipt).getByText("Details")).toBeTruthy();
+    expect(within(receipt).getByText(/Invalid authentication credentials/)).toBeTruthy();
     expect(screen.queryByText("Error")).toBeNull();
+
+    // Another chat recovering leaves this line alone; its own chat flips it.
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CHAT_AUTH_RECOVERED_EVENT, { detail: { sessionId: "other-session" } }));
+    });
+    expect(within(screen.getByTestId("provider-sign-in-receipt")).queryByText(/signed in again/)).toBeNull();
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CHAT_AUTH_RECOVERED_EVENT, { detail: { sessionId: "session-1" } }));
+    });
+    expect(within(screen.getByTestId("provider-sign-in-receipt")).getByText(/signed in again/)).toBeTruthy();
   });
 
   it("renders Claude plan usage warning as a compact non-error notice", () => {

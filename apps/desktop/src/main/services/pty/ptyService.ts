@@ -63,6 +63,7 @@ import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import { isPtyOutputHeld, onPtyOutputHoldChange } from "./ptyOutputFlowControl";
 import { recordCliSessionsToReopen, type CliReopenEntry } from "./cliReopenAfterRestart";
+import { ensureNodePtySpawnHelperExecutable } from "./nodePtySpawnHelper";
 import { remoteWorkLaneIdFor } from "../remoteWork/remoteWorkCopyService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import {
@@ -272,12 +273,6 @@ export function materializeRuntimeCliLaunch(
     ...(options.spawnLineage ? { spawnLineage: options.spawnLineage } : {}),
   });
 }
-
-export type NodePtySpawnHelperExecutableResult =
-  | { status: "skipped"; reason: "non_darwin" | "unsupported_arch" | "package_root_unresolved" }
-  | { status: "already_executable"; path: string }
-  | { status: "chmod_applied"; path: string }
-  | { status: "failed"; path?: string; error: string };
 
 /** Interactive agent TUIs often hide useful text in an alt-screen, so titles come from the first submitted user prompt instead of startup output. */
 const CLI_USER_TITLE_TOOL_TYPES = new Set<TerminalToolType>(["claude", "codex", "cursor-cli", "droid", "opencode", "pi", "muse"]);
@@ -555,63 +550,6 @@ function hasEnvKey(env: NodeJS.ProcessEnv, key: string): boolean {
 function setsOwnTermProgram(env: NodeJS.ProcessEnv, hostEnv: NodeJS.ProcessEnv = process.env): boolean {
   if (!hasEnvKey(env, "TERM_PROGRAM")) return false;
   return env.TERM_PROGRAM !== hostEnv.TERM_PROGRAM;
-}
-
-function resolveNodePtyPrebuildDir(platform: NodeJS.Platform, arch: string): string | null {
-  if (platform !== "darwin") return null;
-  if (arch === "arm64") return "darwin-arm64";
-  if (arch === "x64") return "darwin-x64";
-  return null;
-}
-
-function resolveNodePtyPackageRoot(): string | null {
-  try {
-    if (typeof require !== "function" || typeof require.resolve !== "function") return null;
-    return path.dirname(require.resolve("node-pty/package.json"));
-  } catch {
-    return null;
-  }
-}
-
-export function ensureNodePtySpawnHelperExecutable({
-  packageRoot,
-  platform = process.platform,
-  arch = process.arch,
-}: {
-  packageRoot?: string | null;
-  platform?: NodeJS.Platform;
-  arch?: string;
-} = {}): NodePtySpawnHelperExecutableResult {
-  if (platform !== "darwin") {
-    return { status: "skipped", reason: "non_darwin" };
-  }
-
-  const prebuildDir = resolveNodePtyPrebuildDir(platform, arch);
-  if (!prebuildDir) {
-    return { status: "skipped", reason: "unsupported_arch" };
-  }
-
-  const root = packageRoot?.trim() || resolveNodePtyPackageRoot();
-  if (!root) {
-    return { status: "skipped", reason: "package_root_unresolved" };
-  }
-
-  const helperPath = path.join(root, "prebuilds", prebuildDir, "spawn-helper");
-  try {
-    const stat = fs.statSync(helperPath);
-    const mode = typeof stat.mode === "number" ? stat.mode : 0;
-    if ((mode & 0o111) !== 0) {
-      return { status: "already_executable", path: helperPath };
-    }
-    fs.chmodSync(helperPath, mode | 0o111);
-    return { status: "chmod_applied", path: helperPath };
-  } catch (err) {
-    return {
-      status: "failed",
-      path: helperPath,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
 }
 
 function withInteractiveTerminalColorEnv(

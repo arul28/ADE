@@ -222,6 +222,7 @@ import { ChatUserMinimap } from "./ChatUserMinimap";
 import { promptHistoryEventKey } from "./chatPromptHistory";
 import { buildDrawnRowKeyIndex, resolveDrawnRowKey } from "./chatDrawnRowIndex";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
+import { ProviderSignInReceipt } from "./ProviderSignInCard";
 import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
 import { VoiceSessionCard } from "./VoiceSessionCard";
 import { TurnFailureLine } from "./TurnFailureLine";
@@ -4471,28 +4472,22 @@ function renderEvent(
     const renderAgentCliAuthCard = () => agentCliInfo ? (
       <AgentCliAuthCard
         agentCli={agentCliInfo}
-        laneId={options?.laneId}
         chatSessionId={options?.sessionId}
         runtimeName={options?.runtimeName}
-        onRevealTerminal={options?.onRevealChatTerminal}
       />
     ) : null;
-    // A logged-out runtime is recoverable, not a crash — lead with the calm
-    // re-login card and tuck the raw 401 behind a Details disclosure instead of
-    // the loud red error chrome. (The "missing CLI" card keeps the red frame.)
+    // A signed-out provider is recoverable, not a crash. The sign-in card sits
+    // in the composer's place; the transcript keeps one line, with the
+    // provider's own words folded under Details.
     if (agentCliInfo?.category === "unauthenticated") {
       return (
-        <div
-          className={cn(
-            GLASS_CARD_CLASS,
-            "group p-0",
-            agentCliInfo.agent === "claude" ? "border-[#d97757]/12" : "border-amber-400/12",
-          )}
-          style={SURFACE_INLINE_CARD_STYLE}
-        >
-          <div className="p-4 pt-3">
-            {renderAgentCliAuthCard()}
-            <details className="mt-2">
+        <ProviderSignInReceipt
+          provider={agentCliInfo.agent}
+          displayName={agentCliInfo.displayName}
+          machineName={options?.runtimeName?.trim() || "This computer"}
+          sessionId={options?.sessionId ?? null}
+          details={(
+            <details>
               <summary className="cursor-pointer list-none font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-muted-fg/40 transition-colors hover:text-muted-fg/65">
                 Details
               </summary>
@@ -4503,8 +4498,8 @@ function renderEvent(
                 <MessageCopyButton value={errorCopyValue} className="shrink-0" />
               </div>
             </details>
-          </div>
-        </div>
+          )}
+        />
       );
     }
     return (

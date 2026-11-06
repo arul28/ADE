@@ -302,15 +302,21 @@ from that branch with `ade lanes create --name <n> --from <branch> --on local`. 
 ADE runs its own pinned copy of every agent and downloads it on demand
 ([agent tools cache](../onboarding-and-settings/agent-tools-cache.md)); nothing
 asks the user to install a CLI. When a chat targets a provider whose copy is not
-downloaded yet on the chat's machine, or is unauthenticated, the chat surfaces
-an inline `AgentCliAuthCard`. The card is built by `classifyAgentCliError` from
-`apps/ade-cli/src/services/agentRegistry.ts`. A missing copy gets Download/Retry
-(`ai.pinnedToolDownload`); a logged-out one gets a tracked terminal action for
-login, which runs the pinned binary.
+downloaded yet on the chat's machine, or is signed out, the error carries an
+`agentCli` payload built by `classifyAgentCliError` from
+`apps/ade-cli/src/services/agentRegistry.ts`. A missing copy gets the inline
+`AgentCliAuthCard` with Download/Retry (`ai.pinnedToolDownload`). A signed-out
+one gets the sign-in card in the composer's place (`ProviderSignInCard.tsx`,
+and `WorkProviderSignIn.swift` on the phone), which runs the provider's own
+sign-in through the host's login runners (`providerInstances.login*`,
+`ai.cliLogin*`, `ai.antigravitySignIn*`, Cursor's login) and resends the turn
+once the machine reads the login back. See
+[chat README › Inline agent download, and the sign-in card](../chat/README.md).
 
 The important invariant is runtime locality: both act on the chat's machine
-(`useChatRuntimeScope().pin`), so a remote chat downloads and signs in on that
-remote machine, not locally.
+(`useChatRuntimeScope().pin` on desktop, the chat machine's connection on the
+phone), so a remote chat downloads and signs in on that remote machine, not
+locally. A login is never copied between machines.
 
 **Pi is the exception: it signs in inside ADE.** Settings → Providers drives
 Pi's own `ModelRuntime.login` through `piAuthService.ts` and renders whatever Pi

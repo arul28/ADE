@@ -1224,6 +1224,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       if type == "system_notice" {
         parsed.continuityNotice = workContinuityNotice(from: remoteJSONValue(from: eventDict["detail"]))
       }
+      if type == "error" {
+        parsed.signedOutAgent = workSignedOutAgent(remoteJSONValue(from: eventDict["errorInfo"]))
+      }
       return parsed
     }
     .sorted(by: workChatEnvelopeOrderedBefore)

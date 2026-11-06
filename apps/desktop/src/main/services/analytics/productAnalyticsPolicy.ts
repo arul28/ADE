@@ -407,6 +407,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // chat, the lane, the machine, or the exit code.
   "code_block_run",
   "code_block_output_sent",
+  // How a chat's sign-in card ended for a provider signed out on the chat's
+  // machine: signed in, cancelled, or failed. Once per attempt; never the
+  // account, the link, the code, the machine, or the chat.
+  "provider_sign_in",
   // Lane setup choices made in the renderer: template setup, hiding its prompt,
   // and starting package updates. Never the lane, package details, or errors.
   "template_setup_started",

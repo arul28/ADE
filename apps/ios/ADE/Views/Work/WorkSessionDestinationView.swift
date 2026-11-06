@@ -2478,6 +2478,10 @@ struct WorkSessionDestinationView: View {
       onRetryTranscript: {
         thread.retry()
       },
+      providerSignInAllowed: providerSignInAllowed,
+      providerSignInHost: providerSignInHost,
+      providerSignInMachineName: providerSignInMachineName,
+      providerSignInInstanceId: composerChatSummary?.instanceId,
       onTakeOverSubagent: canWriteSpawnKind ? takeOverSubagent : nil,
       onKeepReportingSubagent: canWriteSpawnKind ? keepReportingSubagent : nil,
       threadComments: threadCommentsForView,

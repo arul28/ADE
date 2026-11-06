@@ -1,14 +1,6 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { ArrowClockwise, CheckCircle, CopySimple, DownloadSimple, Play, Terminal, Warning } from "@phosphor-icons/react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowClockwise, CheckCircle, DownloadSimple, Terminal } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-/**
- * The sign-in terminal loads when someone opens it, not with every chat: it
- * brings the settings-side provider code with it.
- */
-const ProviderSignInModal = lazy(() => import("../settings/providers/ProviderSignInModal")
-  .then((module) => ({ default: module.ProviderSignInModal })));
-import { acpLoginCommand } from "../settings/providers/acpProviders";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { pinnedToolLine, usePinnedToolStatus } from "../../hooks/usePinnedToolStatus";
 
@@ -20,13 +12,14 @@ export type AgentCliAuthCardInfo = {
 };
 
 /**
- * Dispatched when the user clicks "Retry turn" on a logged-out card — the chat
- * pane that owns the session listens for it and resends the last user message.
+ * Dispatched when the user clicks "Retry turn" on the card — the chat pane
+ * that owns the session listens for it and resends the last user message.
  */
 export const CHAT_RETRY_AUTH_TURN_EVENT = "ade:chat:retry-auth-turn";
 /**
- * Dispatched by the chat pane when a turn succeeds again — visible logged-out
- * cards for that session collapse into a quiet "Reconnected" confirmation.
+ * Dispatched by the chat pane when a turn succeeds again — a visible card for
+ * that session collapses into a quiet confirmation, and a signed-out line in
+ * the transcript reads "signed in again".
  */
 export const CHAT_AUTH_RECOVERED_EVENT = "ade:chat:auth-recovered";
 /**
@@ -35,183 +28,38 @@ export const CHAT_AUTH_RECOVERED_EVENT = "ade:chat:auth-recovered";
  */
 export const CHAT_AUTH_RETRY_REJECTED_EVENT = "ade:chat:retry-auth-rejected";
 
-// Claude logs out far more often than the other CLIs, so its recovery card wears
-// Claude's terracotta rather than the generic amber — it reads as "Claude", not a
-// random error. Other agents keep the amber treatment.
-type AccentTokens = {
-  cardBorder: string;
-  cardBg: string;
-  iconChip: string;
-  title: string;
-  label: string;
-  runButton: string;
-};
+const BUTTON_CLASS =
+  "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] transition-colors disabled:pointer-events-none disabled:opacity-45";
+const AMBER_BUTTON_CLASS =
+  "border-amber-300/20 bg-amber-300/[0.08] text-amber-100/82 hover:border-amber-300/35 hover:bg-amber-300/[0.12]";
 
-const AMBER_ACCENT: AccentTokens = {
-  cardBorder: "border-amber-300/14",
-  cardBg: "bg-amber-300/[0.045]",
-  iconChip: "border-amber-300/15 bg-amber-300/[0.08] text-amber-200",
-  title: "text-amber-100/90",
-  label: "text-muted-fg/45",
-  runButton:
-    "border-amber-300/20 bg-amber-300/[0.08] text-amber-100/82 hover:border-amber-300/35 hover:bg-amber-300/[0.12]",
-};
-
-const CLAUDE_ACCENT: AccentTokens = {
-  cardBorder: "border-[#d97757]/16",
-  cardBg: "bg-[#d97757]/[0.06]",
-  iconChip: "border-[#d97757]/22 bg-[#d97757]/[0.12] text-tone-[#f3b79b]",
-  title: "text-tone-[#f5cbb6]",
-  label: "text-[#d97757]/65",
-  runButton:
-    "border-[#d97757]/28 bg-[#d97757]/[0.12] text-tone-[#ffd9c6] hover:border-[#d97757]/45 hover:bg-[#d97757]/[0.18]",
-};
-
-function CommandCopyButton({ command, label }: { command: string; label: string }) {
-  const { copy, copied } = useCopyToClipboard();
-
-  return (
-    <button
-      type="button"
-      onClick={() => void copy(command)}
-      className="inline-flex items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.04] px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] text-fg/58 transition-colors hover:border-amber-300/25 hover:bg-amber-300/[0.07] hover:text-amber-100"
-      title={copied ? "Copied" : `Copy ${label}`}
-    >
-      <CopySimple size={12} weight={copied ? "fill" : "regular"} aria-hidden />
-      {copied ? "Copied" : label}
-    </button>
-  );
-}
-
-function ShellRunButton({
-  command,
-  initialInput,
-  label,
-  laneId,
-  chatSessionId,
-  accent,
-  onRevealTerminal,
-  onLaunched,
-}: {
-  command: string;
-  initialInput?: string;
-  label: string;
-  laneId?: string | null;
-  chatSessionId?: string | null;
-  accent: AccentTokens;
-  onRevealTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
-  onLaunched?: () => void;
-}) {
-  const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // The CLI that needs the login is the one on the chat's machine.
-  const runtimePin = useChatRuntimeScope().pin;
-  const disabled = running || !window.ade?.pty?.create || (!laneId && !window.ade?.lanes?.list);
-
-  const handleRun = useCallback(() => {
-    if (disabled) return;
-    setRunning(true);
-    setError(null);
-    const terminalLabel = label.replace(/^Run\s+/i, "").replace(/^Log in to\s+/i, "") || label;
-    void (async () => {
-      const resolvedLaneId = laneId ?? (await window.ade.lanes.list({
-        includeArchived: false,
-        includeStatus: false,
-      }, runtimePin))[0]?.id ?? null;
-      if (!resolvedLaneId) {
-        throw new Error("No active lane is available for this project.");
-      }
-      return window.ade.pty.create({
-        laneId: resolvedLaneId,
-        ...(chatSessionId ? { chatSessionId } : {}),
-        cols: 100,
-        rows: 28,
-        title: terminalLabel,
-        tracked: true,
-        toolType: "shell",
-        startupCommand: command,
-        ...(initialInput ? { initialInput, initialInputDelayMs: 1_200 } : {}),
-      }, runtimePin);
-    })()
-      .then((created) => {
-        onRevealTerminal?.({
-          terminalId: created.sessionId,
-          ptyId: created.ptyId,
-          label: terminalLabel,
-        });
-        onLaunched?.();
-      })
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => setRunning(false));
-  }, [chatSessionId, command, disabled, initialInput, label, laneId, onLaunched, onRevealTerminal, runtimePin]);
-
-  return (
-    <div className="flex flex-col items-end gap-1">
-      <button
-        type="button"
-        onClick={handleRun}
-        disabled={disabled}
-        className={cn(
-          "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] transition-colors disabled:pointer-events-none disabled:opacity-45",
-          accent.runButton,
-        )}
-        title={!laneId && !window.ade?.lanes?.list ? "Open a project to run this command" : label}
-      >
-        <Play size={12} weight={running ? "fill" : "bold"} aria-hidden />
-        {running ? "Opening" : label}
-      </button>
-      {error ? (
-        <div className="max-w-[22rem] text-right font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-red-200/70">
-          {error}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
+/**
+ * The card for a chat whose agent ADE has not downloaded to the chat's
+ * machine yet: where that download stands there, Download/Retry, and Retry
+ * turn once it has landed. A signed-out agent has no card here; its sign-in
+ * card takes the composer's place (`ProviderSignInCard.tsx`).
+ */
 export function AgentCliAuthCard({
   agentCli,
-  laneId,
   chatSessionId,
   runtimeName,
-  onRevealTerminal,
 }: {
   agentCli: AgentCliAuthCardInfo;
-  laneId?: string | null;
   chatSessionId?: string | null;
   runtimeName?: string | null;
-  onRevealTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
 }) {
-  const missing = agentCli.category === "missing";
-  // The agent runs on the chat's machine, so its sign-in and shell commands
-  // run there, in the chat's lane on that machine.
-  const chatScope = useChatRuntimeScope();
-  const runtimePin = chatScope.pin;
-  const chatLaneId = chatScope.laneId ?? laneId ?? null;
-  const accent = agentCli.agent === "claude" ? CLAUDE_ACCENT : AMBER_ACCENT;
-
-  const [loginStarted, setLoginStarted] = useState(false);
-  const [signInOpen, setSignInOpen] = useState(false);
+  // The agent runs on the chat's machine, so its download is read and started there.
+  const runtimePin = useChatRuntimeScope().pin;
   const [retrying, setRetrying] = useState(false);
-  // The ACP providers can sign in without leaving the chat: the login is a
-  // terminal flow, and ADE can host that terminal in a dialog. The other agents
-  // keep the "open a terminal in Work" affordance they already had.
-  const embeddedSignInCommand = missing ? null : acpLoginCommand(agentCli.agent);
   const [resolved, setResolved] = useState(false);
   const retryResetTimerRef = useRef<number | null>(null);
-  // "Missing" means ADE's pinned copy is not on the chat's machine yet: read
-  // where its download stands there, and offer Download/Retry there.
-  const pinnedTool = usePinnedToolStatus(agentCli.agent, runtimePin, { enabled: missing });
-  // Retry needs a session to resend the last message into, and for the
-  // "missing" variant a copy that has landed on the chat's machine.
-  const canRetry = Boolean(chatSessionId) && (!missing || pinnedTool.status?.state === "ready");
+  const pinnedTool = usePinnedToolStatus(agentCli.agent, runtimePin, { enabled: true });
+  // Retry needs a session to resend the last message into, and a copy that
+  // has landed on the chat's machine.
+  const canRetry = Boolean(chatSessionId) && pinnedTool.status?.state === "ready";
 
   useEffect(() => () => {
-    if (retryResetTimerRef.current != null) {
-      window.clearTimeout(retryResetTimerRef.current);
-    }
+    if (retryResetTimerRef.current != null) window.clearTimeout(retryResetTimerRef.current);
   }, []);
 
   const clearRetrying = useCallback(() => {
@@ -222,56 +70,41 @@ export function AgentCliAuthCard({
     setRetrying(false);
   }, []);
 
-  // A later turn for this session succeeded — collapse to a quiet confirmation.
   useEffect(() => {
     if (!chatSessionId) return undefined;
-    const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: string | null }>).detail;
-      if (detail?.sessionId && detail.sessionId === chatSessionId) {
-        clearRetrying();
-        setResolved(true);
-      }
+    const onRecovered = (event: Event) => {
+      if ((event as CustomEvent<{ sessionId?: string | null }>).detail?.sessionId !== chatSessionId) return;
+      clearRetrying();
+      setResolved(true);
     };
-    window.addEventListener(CHAT_AUTH_RECOVERED_EVENT, handler);
-    return () => window.removeEventListener(CHAT_AUTH_RECOVERED_EVENT, handler);
-  }, [chatSessionId, clearRetrying]);
-
-  useEffect(() => {
-    if (!chatSessionId) return undefined;
-    const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: string | null }>).detail;
-      if (detail?.sessionId && detail.sessionId === chatSessionId) {
-        clearRetrying();
-      }
+    const onRejected = (event: Event) => {
+      if ((event as CustomEvent<{ sessionId?: string | null }>).detail?.sessionId === chatSessionId) clearRetrying();
     };
-    window.addEventListener(CHAT_AUTH_RETRY_REJECTED_EVENT, handler);
-    return () => window.removeEventListener(CHAT_AUTH_RETRY_REJECTED_EVENT, handler);
+    window.addEventListener(CHAT_AUTH_RECOVERED_EVENT, onRecovered);
+    window.addEventListener(CHAT_AUTH_RETRY_REJECTED_EVENT, onRejected);
+    return () => {
+      window.removeEventListener(CHAT_AUTH_RECOVERED_EVENT, onRecovered);
+      window.removeEventListener(CHAT_AUTH_RETRY_REJECTED_EVENT, onRejected);
+    };
   }, [chatSessionId, clearRetrying]);
 
   const handleRetry = useCallback(() => {
     if (!chatSessionId || retrying) return;
     setRetrying(true);
-    window.dispatchEvent(new CustomEvent(CHAT_RETRY_AUTH_TURN_EVENT, {
-      detail: { sessionId: chatSessionId },
-    }));
-    // The card unmounts/collapses once the resend produces fresh events; clear the
-    // spinner defensively in case the resend is rejected (still logged out).
-    if (retryResetTimerRef.current != null) {
-      window.clearTimeout(retryResetTimerRef.current);
-    }
+    window.dispatchEvent(new CustomEvent(CHAT_RETRY_AUTH_TURN_EVENT, { detail: { sessionId: chatSessionId } }));
+    // The resend produces fresh events; clear the spinner in case it is refused.
+    if (retryResetTimerRef.current != null) window.clearTimeout(retryResetTimerRef.current);
     retryResetTimerRef.current = window.setTimeout(() => {
       retryResetTimerRef.current = null;
       setRetrying(false);
     }, 4_000);
   }, [chatSessionId, retrying]);
 
-  // Once a subsequent turn succeeds, the logged-out state is history — collapse
-  // the whole card into a quiet confirmation instead of leaving a scary panel.
   if (resolved) {
     return (
       <div className="mt-3 inline-flex items-center gap-2 rounded-[calc(var(--chat-radius-card)-6px)] border border-emerald-400/18 bg-emerald-400/[0.06] px-3 py-1.5 text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-emerald-100/85">
         <CheckCircle size={14} weight="fill" aria-hidden />
-        Reconnected to {agentCli.displayName}
+        {agentCli.displayName} is ready
       </div>
     );
   }
@@ -279,35 +112,24 @@ export function AgentCliAuthCard({
   // Machines are always named absolutely — "this machine" has no fixed referent
   // once a chat's machine can change underneath it.
   const installLocation = runtimeName?.trim() ? runtimeName.trim() : "This computer";
-  const title = missing
-    ? `${agentCli.displayName} is not on ${installLocation} yet`
-    : `${agentCli.displayName} is logged out`;
-  const body = missing
-    ? `ADE runs its own copy of ${agentCli.displayName} and downloads it for ${installLocation}. Once it is there, sign in if needed and retry the chat.`
-    : `Log back in on ${installLocation} to continue this chat.`;
-  const pinnedLine = missing && pinnedTool.status
-    ? pinnedToolLine(pinnedTool.status, { machineName: installLocation })
-    : null;
+  const pinnedLine = pinnedTool.status ? pinnedToolLine(pinnedTool.status, { machineName: installLocation }) : null;
 
   return (
-    <div className={cn("mt-3 overflow-hidden rounded-[calc(var(--chat-radius-card)-6px)] border", accent.cardBorder, accent.cardBg)}>
+    <div className="mt-3 overflow-hidden rounded-[calc(var(--chat-radius-card)-6px)] border border-amber-300/14 bg-amber-300/[0.045]">
       <div className="flex items-start gap-3 p-3">
-        <div className={cn("flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border", accent.iconChip)}>
-          {missing ? <Terminal size={15} weight="bold" aria-hidden /> : <Warning size={15} weight="bold" aria-hidden />}
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-amber-300/15 bg-amber-300/[0.08] text-amber-200">
+          <Terminal size={15} weight="bold" aria-hidden />
         </div>
         <div className="min-w-0 flex-1">
-          <div className={cn("font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-semibold", accent.title)}>
-            {title}
+          <div className="font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-semibold text-amber-100/90">
+            {agentCli.displayName} is not on {installLocation} yet
           </div>
           <div className="mt-1 text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/66">
-            {body}
+            ADE runs its own copy of {agentCli.displayName} and downloads it for {installLocation}. Once it is there, retry the chat.
           </div>
           <div className="mt-3 grid gap-2">
             {pinnedLine && pinnedTool.status ? (
               <div className="grid gap-1.5">
-                <div className={cn("font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", accent.label)}>
-                  Download
-                </div>
                 <div className="flex flex-wrap items-center gap-2 rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2">
                   <span
                     className={cn(
@@ -322,10 +144,7 @@ export function AgentCliAuthCard({
                       type="button"
                       onClick={() => void pinnedTool.download()}
                       disabled={pinnedTool.starting}
-                      className={cn(
-                        "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] transition-colors disabled:pointer-events-none disabled:opacity-45",
-                        accent.runButton,
-                      )}
+                      className={cn(BUTTON_CLASS, AMBER_BUTTON_CLASS)}
                     >
                       <DownloadSimple size={12} weight="bold" aria-hidden />
                       {pinnedTool.starting ? "Starting" : pinnedLine.action === "retry" ? "Retry" : "Download"}
@@ -339,73 +158,14 @@ export function AgentCliAuthCard({
                 ) : null}
               </div>
             ) : null}
-            <div className={cn("grid gap-1.5", missing ? "" : "mt-0")}>
-              <div className={cn("font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", accent.label)}>
-                Authenticate
-              </div>
-              {!agentCli.authCommand ? (
-                // An agent with no terminal login (Antigravity): ADE signs it in
-                // from Settings, on the machine that runs this chat.
-                <div className="rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2 text-[length:calc(var(--chat-font-size)*11/14)] text-fg/78">
-                  Sign in from Settings &gt; Providers &gt; {agentCli.displayName} on {installLocation}, then retry this turn.
-                </div>
-              ) : (
-              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2">
-                <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/78">
-                  {agentCli.authCommand}
-                </code>
-                {embeddedSignInCommand ? (
-                  <button
-                    type="button"
-                    onClick={() => setSignInOpen(true)}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] transition-colors",
-                      accent.runButton,
-                    )}
-                  >
-                    <Play size={12} weight="bold" aria-hidden />
-                    Sign in
-                  </button>
-                ) : (
-                  <ShellRunButton
-                    command={agentCli.authCommand}
-                    {...(agentCli.agent === "pi" ? { initialInput: "/login\n" } : {})}
-                    label={agentCli.agent === "claude"
-                      ? "Log in to Claude"
-                      : agentCli.agent === "pi"
-                        ? "Log in to Pi"
-                        : agentCli.agent === "muse"
-                          ? "Log in to Muse"
-                          : "Run auth"}
-                    laneId={chatLaneId}
-                    chatSessionId={chatSessionId}
-                    accent={accent}
-                    onRevealTerminal={onRevealTerminal}
-                    onLaunched={() => setLoginStarted(true)}
-                  />
-                )}
-                <CommandCopyButton command={agentCli.authCommand} label="Copy auth" />
-              </div>
-              )}
-            </div>
             {canRetry ? (
-              <div className="flex items-center justify-end gap-2">
-                {loginStarted ? (
-                  <span className="font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">
-                    Logged in? Resend your message.
-                  </span>
-                ) : null}
+              <div className="flex items-center justify-end">
                 <button
                   type="button"
                   onClick={handleRetry}
                   disabled={retrying}
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] transition-colors disabled:pointer-events-none disabled:opacity-55",
-                    loginStarted
-                      ? "border-emerald-400/40 bg-emerald-400/[0.12] text-emerald-100 shadow-[0_0_18px_rgba(52,211,153,0.16)] hover:border-emerald-400/55 hover:bg-emerald-400/[0.18]"
-                      : "border-fg/[0.1] bg-fg/[0.04] text-fg/70 hover:border-fg/[0.18] hover:bg-fg/[0.07] hover:text-fg",
-                  )}
-                  title="Re-check authentication and resend the last message"
+                  className={cn(BUTTON_CLASS, "border-emerald-400/40 bg-emerald-400/[0.12] text-emerald-100 hover:border-emerald-400/55 hover:bg-emerald-400/[0.18]")}
+                  title="Resend the last message"
                 >
                   <ArrowClockwise size={12} weight="bold" className={retrying ? "animate-spin" : undefined} aria-hidden />
                   {retrying ? "Retrying" : "Retry turn"}
@@ -415,28 +175,6 @@ export function AgentCliAuthCard({
           </div>
         </div>
       </div>
-      {signInOpen && embeddedSignInCommand ? (
-        <Suspense fallback={null}>
-        <ProviderSignInModal
-          providerId={agentCli.agent}
-          providerLabel={agentCli.displayName}
-          command={embeddedSignInCommand}
-          laneId={chatLaneId}
-          runtimePin={runtimePin}
-          onClose={() => setSignInOpen(false)}
-          // Signing in does not resend anything on its own: the retry button
-          // above is the one place a turn is re-dispatched, and it now reads as
-          // the obvious next step.
-          onSignedIn={() => setLoginStarted(true)}
-          checkSignedIn={async () => {
-            const status = await window.ade?.ai?.getStatus?.({ force: true }, runtimePin);
-            const connection = (status?.providerConnections as Record<string, { authAvailable?: boolean }> | undefined)
-              ?.[agentCli.agent];
-            return connection?.authAvailable === true;
-          }}
-        />
-        </Suspense>
-      ) : null}
     </div>
   );
 }

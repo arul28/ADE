@@ -5,6 +5,7 @@ import { compactFirstOffer } from "../../../shared/compactFirst";
 import { latestCompactionKeyOf, useCompactFirst } from "./useCompactFirst";
 import { toneText, fgTint } from "../lanes/laneDesignTokens";
 import { compareTextInsensitive } from "../../../shared/formatting";
+import { isQueuedSteer } from "../../../shared/chatUserMessageStatus";
 import { useNavigate } from "react-router-dom";
 import {
   keepEmptyArray,
@@ -343,7 +344,6 @@ import { isCodexMemoryResetDraft } from "../../../shared/codexComposerCommands";
 import { ChatActionsDrawerPanel } from "./ChatActionsDrawerPanel";
 import { ChatAccountNote } from "./ChatAccountNote";
 import { ChatHandoffDialogs } from "./ChatHandoffDialogs";
-import { CursorRuntimeNotice } from "./CursorRuntimeNotice";
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
 import { deriveChatSources } from "../../../shared/chatSources";
 import {
@@ -367,8 +367,7 @@ import {
 } from "./chatSessionRetention";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { cardShowsOwnError, readNativeInputCard } from "../../../shared/nativeInputCards";
-import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
-import type { ComposerClaudeSignInTarget } from "./ComposerClaudeSignIn";
+import { ProviderSignInComposer, providerSettingsEntryId, providerSignInKnownBeforeSend, type ProviderSignInNeed } from "./ProviderSignInCard";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
@@ -386,7 +385,7 @@ import {
   workRuntimeScopeKey,
   type LaneBindingSource,
 } from "../../lib/chatMachineRouting";
-import { shouldShowClaudeChatLoginPrompt } from "../../lib/claudeAuthPrompt";
+import { latestChatSignInFailure } from "../../lib/claudeAuthPrompt";
 import { takeAgentChatDraftHandoff } from "../../lib/agentChatDraftHandoff";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { armLaneBranchDriftWarning, LaneBranchComposerChip } from "../lanes/LaneBranchDrift";
@@ -440,7 +439,7 @@ import {
 } from "../../../shared/crossMachineHandoff";
 import { showToast } from "../app/toast/toastStore";
 import { summarizeInlineText } from "./chatTranscriptRows";
-import { navigateUrlInAdeBrowser, openExternalUrl } from "../../lib/openExternal";
+import { navigateToAppTarget, navigateUrlInAdeBrowser, openExternalUrl } from "../../lib/openExternal";
 import { isAddressedToThisDesktop } from "../../lib/desktopClient";
 import { openCloudAgentsPanel } from "../../lib/cloudAgentsEvents";
 import {
@@ -1181,8 +1180,6 @@ const ChatAppControlPanel = lazy(() => import("./ChatAppControlPanel")
   .then((module) => ({ default: module.ChatAppControlPanel })));
 const ChatTerminalDrawer = lazy(() => import("./ChatTerminalDrawer")
   .then((module) => ({ default: module.ChatTerminalDrawer })));
-const ComposerClaudeSignIn = lazy(() => import("./ComposerClaudeSignIn")
-  .then((module) => ({ default: module.ComposerClaudeSignIn })));
 const RewindFilesConfirmDialog = lazy(() => import("./RewindFilesConfirmDialog")
   .then((module) => ({ default: module.RewindFilesConfirmDialog })));
 const CrossMachineHandoffModal = lazy(() => import("./CrossMachineHandoffModal")
@@ -2872,7 +2869,7 @@ export function isMatchingOptimisticUserMessage(
 ): boolean {
   if (committed.sessionId !== optimistic.sessionId) return false;
   if (committed.event.type !== "user_message" || optimistic.event.type !== "user_message") return false;
-  if (committed.event.steerId || optimistic.event.steerId) return false;
+  if (isQueuedSteer(committed.event) || optimistic.event.steerId) return false;
   if (userMessageVisibleText(committed.event) !== userMessageVisibleText(optimistic.event)) return false;
 
   return (
@@ -4353,9 +4350,6 @@ export function AgentChatPane({
     }));
   }, [crossMachineLanesByMachineId, laneCacheByProject, lanes, openProjectBindings, projectBinding]);
   const navigate = useNavigate();
-  const openAiProvidersSettings = useCallback(() => {
-    navigate(settingsRouteFor("agents.providers"));
-  }, [navigate]);
   /* The harnesses tab's empty state has one way forward and this is it. Routed
      through the manifest rather than a literal `?harnesses=1`, so the page can
      move without stranding the CTA. */
@@ -4812,7 +4806,6 @@ export function AgentChatPane({
   const handoffErrorClearTimerRef = useRef<number | null>(null);
   const [deletingChatSessionId, setDeletingChatSessionId] = useState<string | null>(null);
   const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseSnapshotState | null>(null);
-  const [claudeSignInTarget, setClaudeSignInTarget] = useState<ComposerClaudeSignInTarget | null>(null);
   const [chatActionsOpen, setChatActionsOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).chatActionsOpen,
   );
@@ -7167,6 +7160,17 @@ export function AgentChatPane({
     && !turnActive
     && activeProviderConnection
     && !activeProviderConnection.runtimeAvailable
+    // ADE's copy is there and only the login is missing: the sign-in card in
+    // the composer says that, with the button that fixes it. Where that card
+    // cannot show (a personal chat, a subagent's view, a provider signed in
+    // from Settings), the banner keeps saying it.
+    && !(
+      activeProviderConnection.runtimeDetected
+      && !activeProviderConnection.authAvailable
+      && providerSignInKnownBeforeSend(activeProviderConnection.provider)
+      && !personalScope
+      && !subagentView
+    )
     && (
       activeProviderConnection.blocker
       || activeProviderConnection.provider === "cursor"
@@ -7240,14 +7244,6 @@ export function AgentChatPane({
     localRuntimeNotice,
     localRuntimeState?.endpoint,
   ]);
-  const [cursorRuntimeNoticeDismissed, setCursorRuntimeNoticeDismissed] = useState(false);
-  const cursorRuntimeBlocked = Boolean(
-    cliRuntimeBlocked && activeProviderConnection?.provider === "cursor",
-  );
-  const showCursorRuntimePopup = cursorRuntimeBlocked && !cursorRuntimeNoticeDismissed;
-  useEffect(() => {
-    if (!cliRuntimeBlocked) setCursorRuntimeNoticeDismissed(false);
-  }, [cliRuntimeBlocked]);
 
   const surfaceMode = presentation?.mode ?? "standard";
   const identitySessionSettingsBusy = isPersistentIdentitySurface && sessionMutationKind !== null;
@@ -7287,18 +7283,12 @@ export function AgentChatPane({
     : null) ?? selectedSession?.provider ?? sessionProvider;
   /** `/usage` opens Claude's usage sheet: a Claude chat outside personal chats. */
   const claudeUsageAvailable = Boolean(selectedSessionId) && sessionProvider === "claude" && !personalScope;
-  const showClaudeLoginPrompt = useMemo(() => shouldShowClaudeChatLoginPrompt({
-    provider: selectedSession?.provider ?? sessionProvider,
+  // The chat's last turn stopped on its provider being signed out.
+  const chatSignInFailure = useMemo(() => latestChatSignInFailure({
+    provider: selectedSession?.provider ?? null,
     events: selectedEventsForDisplay,
     turnActive,
-    authAvailable: providerConnections?.claude?.authAvailable === true,
-  }), [
-    providerConnections?.claude?.authAvailable,
-    selectedEventsForDisplay,
-    selectedSession?.provider,
-    sessionProvider,
-    turnActive,
-  ]);
+  }), [selectedEventsForDisplay, selectedSession?.provider, turnActive]);
   // Provider-agnostic context-usage for the composer dial. Codex pushes a live
   // Reduce provider telemetry across compaction boundaries before flattening it
   // into the shared dial view-model. Exact post-compaction snapshots win;
@@ -8244,44 +8234,25 @@ export function AgentChatPane({
     };
   }, [isPersonalPane, projectBinding, projectRoot]);
 
-  // The picker greys Claude out from the composer machine's status, so its
-  // "Login to Claude" signs in that same machine, with Settings' own flow.
+  // The picker's "Sign in" opens that provider's Settings page on the machine
+  // the composer runs on, which is the machine the picker greyed it out for.
+  // A chat already signed out shows its sign-in card in the composer.
   const openProviderSignIn = useCallback((
     family?: ProviderFamily,
     signInTarget?: readonly unknown[] | OpenProjectBinding | null,
   ) => {
-    if (family !== "anthropic") {
-      openAiProvidersSettings();
-      return;
-    }
     const hasExplicitTarget = signInTarget === null
       || (typeof signInTarget === "object" && !Array.isArray(signInTarget));
-    const explicitBinding = hasExplicitTarget
+    const scope = resolveAiStatusRuntimeScope();
+    const pin = hasExplicitTarget
       ? signInTarget as OpenProjectBinding | null
-      : undefined;
-    // A personal pane has no project machine; it signs in the tab's machine.
-    const scope = hasExplicitTarget
-      ? explicitBinding ? { runtimePin: explicitBinding } : null
-      : resolveAiStatusRuntimeScope();
-    if (!scope && !isPersonalPane) {
-      setError({ message: hasExplicitTarget
-        ? "The selected handoff machine is not available for sign-in. Open a project on that machine first."
-        : "Pick a machine for this chat before signing in to Claude.", kind: "status" });
-      return;
-    }
-    // A null pin means the tab's own machine; Settings pins that one too when
-    // it is another computer.
-    const pin = scope?.runtimePin ?? (projectBinding?.kind === "remote" ? projectBinding : null);
-    const machineId = machineIdForBinding(pin);
-    setClaudeSignInTarget({
-      // Each click is a fresh sign-in, even for the same machine.
-      openId: Date.now(),
-      pin,
-      machineId,
-      isThisMachine: machineId === THIS_MACHINE_ID,
-      machineName: pin?.kind === "remote" ? pin.runtimeName : THIS_MACHINE_NAME,
+      : scope?.runtimePin ?? (projectBinding?.kind === "remote" ? projectBinding : null);
+    navigateToAppTarget({
+      kind: "settings",
+      entryId: providerSettingsEntryId(family ?? null),
+      machineId: machineIdForBinding(pin ?? projectBinding ?? null),
     });
-  }, [isPersonalPane, openAiProvidersSettings, projectBinding, resolveAiStatusRuntimeScope]);
+  }, [projectBinding, resolveAiStatusRuntimeScope]);
 
   const shouldRefreshOpenCodeInventoryForStatus = useCallback(() => {
     const selectedModelProvider = modelId.trim()
@@ -8394,10 +8365,6 @@ export function AgentChatPane({
     shouldRefreshOpenCodeInventoryForStatus,
     modelCatalogScopeKey,
   ]);
-  const closeClaudeSignIn = useCallback((changed: boolean) => {
-    setClaudeSignInTarget(null);
-    if (changed) void refreshAvailableModels({ force: true });
-  }, [refreshAvailableModels]);
 
   useEffect(() => {
     let active = true;
@@ -16726,6 +16693,91 @@ export function AgentChatPane({
     [activeComposerRuntimeBinding, projectBinding?.key],
   );
   const composerModelCatalogScopeKey = activeComposerRuntimeBinding?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
+  // The sign-in card: the composer's provider is signed out on the composer's
+  // machine. Before a send, from the status the picker already reads for that
+  // machine (no extra probe per send); after a turn stopped on its sign-in,
+  // from that turn's error. It runs the sign-in on that machine
+  // (`composerRuntimePin`, null for the tab's own) and takes the composer's place.
+  const signInProvider = selectedSessionId ? (selectedSession?.provider ?? null) : sessionProvider;
+  const signInConnection = signInProvider
+    ? (aiStatus?.providerConnections as Record<string, AiProviderConnectionStatus | undefined> | undefined)?.[signInProvider] ?? null
+    : null;
+  const providerSignInNeed = useMemo<(ProviderSignInNeed & { key: string }) | null>(() => {
+    if (!signInProvider || turnActive || subagentView || personalScope) return null;
+    const machineKey = activeComposerRuntimeBinding?.key ?? "tab";
+    if (chatSignInFailure && chatSignInFailure.provider === signInProvider) {
+      return { provider: signInProvider, reason: "failed-turn", key: `${machineKey}:${chatSignInFailure.eventKey}` };
+    }
+    if (
+      providerSignInKnownBeforeSend(signInProvider)
+      && signInConnection?.runtimeDetected === true
+      && signInConnection.authAvailable === false
+      // A login ADE cannot see but the machine still runs with (Muse keeps its
+      // own in the macOS Keychain) is not a missing one.
+      && signInConnection.runtimeAvailable === false
+    ) {
+      return { provider: signInProvider, reason: "no-login", key: `${machineKey}:${signInProvider}:no-login` };
+    }
+    return null;
+  }, [activeComposerRuntimeBinding?.key, chatSignInFailure, personalScope, signInConnection, signInProvider, subagentView, turnActive]);
+  // Not now hides this card until a different reason (another failed turn,
+  // another machine) brings one back.
+  const [dismissedSignInKey, setDismissedSignInKey] = useState<string | null>(null);
+  const providerSignInShown = providerSignInNeed && providerSignInNeed.key !== dismissedSignInKey
+    ? providerSignInNeed
+    : null;
+  const signInMachineName = selectedSessionId ? chatMachineName : draftMachineDisplayName;
+  const signInRunsHere = !isWebClientMode()
+    && machineIdForBinding(activeComposerRuntimeBinding ?? projectBinding ?? null) === THIS_MACHINE_ID;
+  const handleProviderSignedIn = useCallback(() => {
+    const need = providerSignInShown;
+    if (!need) return;
+    // Hide at once; the status re-read below confirms it.
+    setDismissedSignInKey(need.key);
+    void (async () => {
+      // The forced re-read also clears the machine's signed-out mark, so the
+      // turn that stopped on the sign-in sends again only after it.
+      await refreshAvailableModels({ force: true }).catch(() => undefined);
+      if (need.reason !== "failed-turn" || !selectedSessionId) return;
+      const failure = await resendLastUserMessage(selectedSessionId, null, { afterSignIn: true });
+      if (typeof failure === "string") setError({ message: `Signed in, but the message did not send again: ${failure}`, kind: "status" });
+    })();
+  }, [providerSignInShown, refreshAvailableModels, resendLastUserMessage, selectedSessionId]);
+  const openSignInSettings = useCallback(() => {
+    if (!providerSignInShown) return;
+    navigateToAppTarget({
+      kind: "settings",
+      entryId: providerSettingsEntryId(providerSignInShown.provider),
+      machineId: machineIdForBinding(activeComposerRuntimeBinding ?? projectBinding ?? null),
+    });
+  }, [activeComposerRuntimeBinding, projectBinding, providerSignInShown]);
+  useEffect(() => {
+    if (!providerSignInNeed) setDismissedSignInKey(null);
+  }, [providerSignInNeed]);
+  const signInAccountEmail = signInConnection?.accountEmail?.trim() || null;
+  const providerSignInCard = useMemo(() => (providerSignInShown ? (
+    <ProviderSignInComposer
+      key={providerSignInShown.key}
+      need={providerSignInShown}
+      pin={composerRuntimePin}
+      runsHere={signInRunsHere}
+      machineName={signInMachineName}
+      instanceId={selectedSession?.instanceId ?? null}
+      accountEmail={signInAccountEmail}
+      onSignedIn={handleProviderSignedIn}
+      onDismiss={() => setDismissedSignInKey(providerSignInShown.key)}
+      onOpenSettings={openSignInSettings}
+    />
+  ) : null), [
+    composerRuntimePin,
+    handleProviderSignedIn,
+    openSignInSettings,
+    providerSignInShown,
+    selectedSession?.instanceId,
+    signInAccountEmail,
+    signInMachineName,
+    signInRunsHere,
+  ]);
   // Layout effect, not effect: this publishes the machine the model memos above
   // read from, so running it after paint would show one frame of the previous
   // machine's model list when the composer switches machines. Setting the same
@@ -17670,7 +17722,6 @@ export function AgentChatPane({
   const chatHeaderTrailingActions = cachedForRender(headerSlotCacheRef.current, "trailing", [
     chatTerminalVisible,
     selectedSessionId,
-    showClaudeLoginPrompt,
     laneId,
     renderedChatRuntimePin,
     revealChatTerminal,
@@ -17692,16 +17743,6 @@ export function AgentChatPane({
     deletingChatSessionId,
   ], () => (
     <>
-      {chatTerminalVisible && selectedSessionId ? (
-        <ClaudeLoginPromptButton
-          visible={showClaudeLoginPrompt}
-          storageKey={`chat:${selectedSessionId}`}
-          laneId={laneId}
-          chatSessionId={selectedSessionId}
-          runtimePin={renderedChatRuntimePin}
-          onRevealTerminal={revealChatTerminal}
-        />
-      ) : null}
       {iosSimulatorSessionChip && !effectiveIosSimulatorOpen && laneToolsVisible && iosSimulatorAvailable ? (
         <IosSimulatorRunningPill
           deviceName={iosSimulatorSessionChip.deviceName}
@@ -18119,24 +18160,6 @@ export function AgentChatPane({
     </div>
   );
 
-  // While Claude is logged out, keep a re-login affordance pinned just above the
-  // composer so it stays reachable even when the inline transcript card has
-  // scrolled out of view. Reuses the self-contained login pill (styled + own
-  // dismiss); it hides itself once the session reconnects. Only shown when the
-  // chat header login pill is absent so the two never double up.
-  const chatHeaderLoginPromptVisible = !compactShell && !hideSurfaceHeader && chatTerminalVisible && Boolean(selectedSessionId);
-  const authStickyBar = showClaudeLoginPrompt && selectedSessionId && !chatHeaderLoginPromptVisible ? (
-    <div className="mb-1.5 flex justify-start px-0.5">
-      <ClaudeLoginPromptButton
-        visible
-        storageKey={`composer-auth:${selectedSessionId}`}
-        laneId={laneId}
-        chatSessionId={selectedSessionId}
-        runtimePin={renderedChatRuntimePin}
-        onRevealTerminal={revealChatTerminal}
-      />
-    </div>
-  ) : null;
   const lifecyclePill = hasComposerLifecyclePill && composerSessionId ? (
     <ChatLifecyclePill sessionId={composerSessionId} runtimePin={renderedChatRuntimePin} />
   ) : null;
@@ -18578,6 +18601,7 @@ export function AgentChatPane({
             onRemoveAppControlContext={removeAppControlContext}
             onRemoveBuiltInBrowserContext={removeBuiltInBrowserContext}
             onOpenAiSettings={openProviderSignIn}
+            replacementCard={providerSignInCard}
             onOpenLinearSettings={openLinearSettings}
             launchPromptClipboardEnabled={launchPromptClipboardEnabled}
             launchPromptClipboardNoticeEnabled={launchPromptClipboardNoticeEnabled}
@@ -19054,7 +19078,6 @@ export function AgentChatPane({
           </div>
         );
       })}
-      {authStickyBar}
       {composerStatusStrip}
       {takeoverBanner}
       {stalledTurnBanner}
@@ -19253,7 +19276,7 @@ export function AgentChatPane({
             }}
           />
         ) : null}
-        {mergedRuntimeBanner?.kind === "cli-only" && !cursorRuntimeBlocked ? (
+        {mergedRuntimeBanner?.kind === "cli-only" ? (
           <CliRuntimeBanner
             logoFamily={cliRuntimeLogoFamily}
             title={mergedRuntimeBanner.cliTitle}
@@ -19268,21 +19291,14 @@ export function AgentChatPane({
           />
         ) : null}
         {mergedRuntimeBanner?.kind === "merged" ? (
-          cursorRuntimeBlocked ? (
-            <LocalRuntimeNoticeBanner
-              notice={mergedRuntimeBanner.localNotice}
-              endpoint={mergedRuntimeBanner.localEndpoint}
-            />
-          ) : (
-            <CliRuntimeBanner
-              logoFamily={cliRuntimeLogoFamily}
-              title={mergedRuntimeBanner.cliTitle}
-              body={mergedRuntimeBanner.cliBody}
-              localNotice={mergedRuntimeBanner.localNotice}
-              localEndpoint={mergedRuntimeBanner.localEndpoint}
-              onDismiss={dismissCliRuntimeNotice}
-            />
-          )
+          <CliRuntimeBanner
+            logoFamily={cliRuntimeLogoFamily}
+            title={mergedRuntimeBanner.cliTitle}
+            body={mergedRuntimeBanner.cliBody}
+            localNotice={mergedRuntimeBanner.localNotice}
+            localEndpoint={mergedRuntimeBanner.localEndpoint}
+            onDismiss={dismissCliRuntimeNotice}
+          />
         ) : null}
 
         <div className="relative min-h-0 flex-1 overflow-hidden">
@@ -19340,12 +19356,6 @@ export function AgentChatPane({
                         selectedSyncPending ? "opacity-70" : "opacity-0",
                       )}
                     />
-                    {showCursorRuntimePopup ? (
-                      <CursorRuntimeNotice
-                        onOpenSettings={() => navigate(settingsRouteFor("agents.provider.cursor"))}
-                        onDismiss={() => setCursorRuntimeNoticeDismissed(true)}
-                      />
-                    ) : null}
                     {cloudConversationPending ? (
                       <div
                         data-testid="cursor-cloud-connecting"
@@ -19539,7 +19549,6 @@ export function AgentChatPane({
                     ) : null}
                     {appPanelOpen ? (
                       <div className="shrink-0 border-t border-fg/[0.06]">
-                        {authStickyBar}
                         {composerStatusStrip}
                         {takeoverBanner}
                         {stalledTurnBanner}
@@ -19922,11 +19931,6 @@ export function AgentChatPane({
             turnActive={turnActive}
             onApplyEffort={handleReasoningEffortChange}
           />
-        </Suspense>
-      ) : null}
-      {claudeSignInTarget ? (
-        <Suspense fallback={null}>
-          <ComposerClaudeSignIn key={claudeSignInTarget.openId} target={claudeSignInTarget} onClose={closeClaudeSignIn} />
         </Suspense>
       ) : null}
       {importBrowserMounted && onImportedSession && importTargetLane ? (

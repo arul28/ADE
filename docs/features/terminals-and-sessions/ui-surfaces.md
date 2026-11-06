@@ -724,7 +724,7 @@ structured resume metadata is present.
 
 Claude CLI surfaces whose recent preview/transcript reports `Please run
 /login` or a 401 invalid-credentials error show the same dismissible
-`Login to Claude` CTA used by Claude chat headers. It creates a tracked
+`Login to Claude` CTA (`ClaudeLoginPromptButton`). It creates a tracked
 shell PTY in the session's lane and runs `claude auth login`; the Work
 tab selects that PTY so the user can finish the interactive login.
 

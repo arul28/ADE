@@ -627,6 +627,8 @@ struct WorkChatSessionView: View {
   /// The transcript's frame in the chat column's space. It extends under the
   /// header and the composer; the insets are derived from how far.
   @State var transcriptFrameInColumn: CGRect = .zero
+  /// A sign-in card the person dismissed, by the failed turn it was for.
+  @State var dismissedSignInFailureId: String?
   @State var bottomChromeMinY: CGFloat = 0
   @State var transcriptSafeInsets = EdgeInsets()
   /// The transcript's handle on its own `UICollectionView`. Replaces the
@@ -775,6 +777,15 @@ struct WorkChatSessionView: View {
   /// Re-requests the transcript after a failed load. When nil the failure state
   /// renders without a Retry button rather than offering a dead control.
   var onRetryTranscript: (() -> Void)? = nil
+  /// False for a read-only quick look: no sign-in card there.
+  var providerSignInAllowed: Bool = true
+  /// The connection to the chat's machine, where a signed-out agent signs in
+  /// again. Nil when the phone cannot reach that machine.
+  var providerSignInHost: ProviderAccountsHost? = nil
+  /// The chat's machine, by name, for the sign-in card.
+  var providerSignInMachineName: String = "this computer"
+  /// The Claude or Codex account the chat runs as; nil is the machine's default.
+  var providerSignInInstanceId: String? = nil
   var onTakeOverSubagent: (@MainActor () async -> Void)? = nil
   var onKeepReportingSubagent: (@MainActor () async -> Void)? = nil
   /// The chat's pending thread comments. Empty on a host that predates them.
@@ -895,6 +906,38 @@ struct WorkChatSessionView: View {
   /// session row (all fed in as overlays). Drives the activity indicator, the
   /// composer stop button, and the streaming-markdown fast path.
   var isStreamingTurn: Bool { frame?.isStreamingTurn ?? false }
+
+  /// The failed turn whose signed-out agent the sign-in card is for, unless
+  /// the person said not now to that one.
+  var shownProviderSignInFailureId: String? {
+    guard providerSignInAllowed, !isStreamingTurn, !isPersonalChat,
+          let id = workLatestSignInFailure(transcript, provider: chatSummaryContext.provider),
+          id != dismissedSignInFailureId else { return nil }
+    return id
+  }
+
+  /// The turn that stopped on the sign-in sends again by itself, with the
+  /// files it carried (the machine still holds them).
+  func resendAfterSignIn() {
+    let last = transcript.reversed().lazy.compactMap { envelope -> (String, [AgentChatFileRef])? in
+      guard case .userMessage(let text, let attachments, _, _, _, _) = envelope.event,
+            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || attachments?.isEmpty == false
+      else { return nil }
+      return (text, attachments ?? [])
+    }.first
+    guard let last else { return }
+    let (text, refs) = last
+    let attachments = refs.map { ref in
+      WorkChatInputAttachment(
+        filename: workChatAttachmentDisplayName(ref),
+        mimeType: ref.type == "image" ? "image/jpeg" : "application/octet-stream",
+        kind: workChatAttachmentRefKind(ref),
+        hostRef: ref,
+        state: .ready
+      )
+    }
+    Task { @MainActor in _ = await onSend(text, attachments, .queue) }
+  }
 
   var shouldShowInterruptControl: Bool {
     isStreamingTurn && timelineSnapshot.transcriptHasInterruptibleActivity
@@ -1932,83 +1975,100 @@ struct WorkChatSessionView: View {
           .transition(.opacity)
       }
 
-      WorkChatComposerCard(
-        chatSummary: chatSummaryContext,
-        contextMeter: composerContextMeter,
-        compactFirstOffer: composerCompactFirstOffer,
-        compactFirstChoice: $compactFirstChoice,
-        onCompactContext: { [onSend, $errorMessage] in
-          Task { @MainActor in
-            // Most send failures set their own message; the rest (a send
-            // already in flight) would otherwise fail silently.
-            if await !onSend("/compact", [], .queue), $errorMessage.wrappedValue == nil {
-              $errorMessage.wrappedValue = "Couldn’t start compacting. Try again."
+      if let signInFailureId = shownProviderSignInFailureId {
+        // The chat's agent is signed out on its machine: the sign-in card
+        // takes the composer's place until the machine reads the login back.
+        WorkProviderSignInCard(
+          provider: chatSummaryContext.provider,
+          machineName: providerSignInMachineName,
+          host: providerSignInHost,
+          instanceId: providerSignInInstanceId,
+          onSignedIn: {
+            dismissedSignInFailureId = signInFailureId
+            resendAfterSignIn()
+          },
+          onDismiss: { dismissedSignInFailureId = signInFailureId }
+        )
+        .id(signInFailureId)
+      } else {
+        WorkChatComposerCard(
+          chatSummary: chatSummaryContext,
+          contextMeter: composerContextMeter,
+          compactFirstOffer: composerCompactFirstOffer,
+          compactFirstChoice: $compactFirstChoice,
+          onCompactContext: { [onSend, $errorMessage] in
+            Task { @MainActor in
+              // Most send failures set their own message; the rest (a send
+              // already in flight) would otherwise fail silently.
+              if await !onSend("/compact", [], .queue), $errorMessage.wrappedValue == nil {
+                $errorMessage.wrappedValue = "Couldn’t start compacting. Try again."
+              }
             }
+          },
+          sessionId: session.id,
+          isPersonalChat: isPersonalChat,
+          laneId: session.laneId,
+          dictationTargetId: "work-chat:\(session.id)",
+          awaitingInputGate: hasPendingInputGate,
+          composerPlaceholder: composerPlaceholderText,
+          canCompose: canCompose,
+          canAttach: canAttach,
+          canSend: canSend && !composerSettingMutationInFlight,
+          attachmentsAvailable: attachmentsAvailable,
+          canUploadAttachments: isLive && attachmentsAvailable,
+          sending: sending && !sendWillQueue,
+          settingsMutationInFlight: composerSettingMutationInFlight,
+          codexFastModeOverride: pendingCodexFastMode,
+          composerDraftRestore: composerDraftRestore,
+          draftPersistenceKey: WorkComposerDraftStore.chatKey(sessionId: session.id),
+          compact: compactComposer,
+          liveRedirectOnlySends: liveRedirectOnlySends,
+          // Show Stop while a live turn has current transcript activity. The
+          // broader live hint can lag after `done`; this stricter gate keeps the
+          // composer from showing Stop after the completed-turn separator appears.
+          showInterrupt: shouldShowInterruptControl,
+          activeSendModesAvailable: activeSendModesAvailable,
+          queueAwareStopAvailable: queueAwareStopAvailable,
+          interruptInFlight: actionInFlight,
+          onInterrupt: { mode in
+            await runSessionAction {
+              await onInterrupt(mode)
+            }
+          },
+          onOpenModelPicker: !chatSummaryContext.isAvailable
+            || chatSummaryContext.isSideChat
+            || (isPersonalChat && (
+              !personalModelCatalogAvailable || !personalSessionUpdatesAvailable
+            ))
+            ? nil
+            : { modelPickerPresented = true },
+          onSelectRuntimeMode: !chatSummaryContext.isAvailable
+            || chatSummaryContext.isSideChat
+            || (isPersonalChat && !personalSessionUpdatesAvailable)
+            ? nil
+            : { mode in
+            runComposerSettingMutation {
+              await onSelectRuntimeMode(mode)
+            }
+          },
+          onSend: onSend,
+          onSendWithCompaction: onSendWithCompaction,
+          onSent: {
+            transcriptScroller.scrollToLatest(animated: true, reason: "composer-sent")
+          },
+          hasSendableThreadComments: hasSendableThreadComments,
+          sendGate: crossMachineSendGate
+        )
+        .overlay(alignment: .topTrailing) {
+          // No row to sit in: the button floats where the row would be, over
+          // the thread, without reserving the band.
+          if !pillRow.shown, jumpToLatestVisible {
+            // An explicit offset rather than an alignment guide: the guide was
+            // dropped through the conditional overlay content and left the
+            // button sitting on top of the composer's send button.
+            jumpToLatestButton
+              .offset(y: -(WorkJumpToLatestPill.diameter + 10))
           }
-        },
-        sessionId: session.id,
-        isPersonalChat: isPersonalChat,
-        laneId: session.laneId,
-        dictationTargetId: "work-chat:\(session.id)",
-        awaitingInputGate: hasPendingInputGate,
-        composerPlaceholder: composerPlaceholderText,
-        canCompose: canCompose,
-        canAttach: canAttach,
-        canSend: canSend && !composerSettingMutationInFlight,
-        attachmentsAvailable: attachmentsAvailable,
-        canUploadAttachments: isLive && attachmentsAvailable,
-        sending: sending && !sendWillQueue,
-        settingsMutationInFlight: composerSettingMutationInFlight,
-        codexFastModeOverride: pendingCodexFastMode,
-        composerDraftRestore: composerDraftRestore,
-        draftPersistenceKey: WorkComposerDraftStore.chatKey(sessionId: session.id),
-        compact: compactComposer,
-        liveRedirectOnlySends: liveRedirectOnlySends,
-        // Show Stop while a live turn has current transcript activity. The
-        // broader live hint can lag after `done`; this stricter gate keeps the
-        // composer from showing Stop after the completed-turn separator appears.
-        showInterrupt: shouldShowInterruptControl,
-        activeSendModesAvailable: activeSendModesAvailable,
-        queueAwareStopAvailable: queueAwareStopAvailable,
-        interruptInFlight: actionInFlight,
-        onInterrupt: { mode in
-          await runSessionAction {
-            await onInterrupt(mode)
-          }
-        },
-        onOpenModelPicker: !chatSummaryContext.isAvailable
-          || chatSummaryContext.isSideChat
-          || (isPersonalChat && (
-            !personalModelCatalogAvailable || !personalSessionUpdatesAvailable
-          ))
-          ? nil
-          : { modelPickerPresented = true },
-        onSelectRuntimeMode: !chatSummaryContext.isAvailable
-          || chatSummaryContext.isSideChat
-          || (isPersonalChat && !personalSessionUpdatesAvailable)
-          ? nil
-          : { mode in
-          runComposerSettingMutation {
-            await onSelectRuntimeMode(mode)
-          }
-        },
-        onSend: onSend,
-        onSendWithCompaction: onSendWithCompaction,
-        onSent: {
-          transcriptScroller.scrollToLatest(animated: true, reason: "composer-sent")
-        },
-        hasSendableThreadComments: hasSendableThreadComments,
-        sendGate: crossMachineSendGate
-      )
-      .overlay(alignment: .topTrailing) {
-        // No row to sit in: the button floats where the row would be, over
-        // the thread, without reserving the band.
-        if !pillRow.shown, jumpToLatestVisible {
-          // An explicit offset rather than an alignment guide: the guide was
-          // dropped through the conditional overlay content and left the
-          // button sitting on top of the composer's send button.
-          jumpToLatestButton
-            .offset(y: -(WorkJumpToLatestPill.diameter + 10))
         }
       }
     }

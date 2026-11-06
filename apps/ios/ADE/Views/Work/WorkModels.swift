@@ -2343,6 +2343,10 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   /// event keeps `detail` as text; this is the part the self-healed-failure fold
   /// and the quiet reconnect lines read.
   var continuityNotice: WorkContinuityNotice?
+  /// Set on an `error` whose `errorInfo.agentCli` says the chat's agent is
+  /// signed out (category `unauthenticated`): the agent id, e.g. `claude`.
+  /// The event keeps only the presented text; the sign-in card reads this.
+  var signedOutAgent: String?
   /// Raw fields intentionally kept beside the normalized event so the broad
   /// WorkChatEvent associated-value surface does not need to grow just for
   /// subagent classification.

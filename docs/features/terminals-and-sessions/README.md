@@ -1512,8 +1512,7 @@ Renderer surfaces:
   - The contract (toggle-on-the-same-key, the claim order, Windows labels) is
     in `docs/design/keyboard.md`.
 - `apps/desktop/src/renderer/components/work/ClaudeLoginPromptButton.tsx` —
-  dismissible Claude auth recovery CTA. Chat headers render it after a
-  Claude SDK auth error; CLI headers render it when a Claude terminal
+  dismissible Claude auth recovery CTA. CLI headers render it when a Claude terminal
   preview contains the `Please run /login` / 401 invalid-credentials
   failure. The action creates a tracked shell PTY in the same lane
   (and same chat drawer when there is a chat owner) running

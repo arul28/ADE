@@ -917,6 +917,17 @@ func workUnfinishedTurnBody(provider: String?) -> String {
   return "\(provider) stopped this turn before it could finish."
 }
 
+/// The agent an error says is signed out: `errorInfo.agentCli` with category
+/// `unauthenticated` (the host's classification, the same the desktop reads).
+func workSignedOutAgent(_ errorInfo: RemoteJSONValue?) -> String? {
+  guard case .object(let fields)? = errorInfo,
+        case .object(let cli)? = fields["agentCli"],
+        case .string(let category)? = cli["category"], category == "unauthenticated",
+        case .string(let agent)? = cli["agent"] else { return nil }
+  let trimmed = agent.trimmingCharacters(in: .whitespacesAndNewlines)
+  return trimmed.isEmpty ? nil : trimmed
+}
+
 /// `errorInfo.provider` is the label the host already attaches when it knows
 /// which provider failed.
 func workErrorInfoProvider(_ errorInfo: RemoteJSONValue?) -> String? {

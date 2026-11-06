@@ -382,9 +382,9 @@ vi.mock("../../utils/codexComputerUse", () => ({
   resolveCodexComputerUseMcpConfig: mocks.resolveCodexComputerUseMcpConfig,
 }));
 
+import { ensureNodePtySpawnHelperExecutable } from "./nodePtySpawnHelper";
 import {
   createPtyService,
-  ensureNodePtySpawnHelperExecutable,
   isPiExecutableCommand,
   materializeRuntimeCliLaunch,
   piForkParentIdFromCommand,

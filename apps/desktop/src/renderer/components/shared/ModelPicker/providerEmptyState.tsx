@@ -1,4 +1,4 @@
-import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../../shared/providers";
+import { PROVIDER_DISPLAY_NAME } from "../../../../shared/providers";
 
 import type { AuthType, ProviderFamily } from "../../../../shared/modelRegistry";
 import { PROVIDER_REMEDIATION } from "../../../../shared/providerRemediation";
@@ -27,17 +27,17 @@ type ProviderCopy = {
 const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   anthropic: {
     title: "Sign in to Claude",
-    body: "Open a Claude login terminal on the primary lane, then complete the browser sign-in.",
-    primary: { label: "Login to Claude", action: { kind: "open-settings" } },
+    body: "Sign in with your Claude account to use Claude models here.",
+    primary: { label: "Sign in", action: { kind: "open-settings" } },
     secondary: {
       label: "Claude Code docs",
       action: { kind: "open-external", url: PROVIDER_REMEDIATION.claude.docsUrl },
     },
   },
   openai: {
-    title: "Sign in to OpenAI Codex",
-    body: "Sign in to Codex to use OpenAI GPT models. ADE downloads its own pinned Codex for this machine.",
-    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    title: "Sign in to Codex",
+    body: "Sign in with ChatGPT to use OpenAI models here.",
+    primary: { label: "Sign in", action: { kind: "open-settings" } },
     secondary: {
       label: "Codex CLI docs",
       action: { kind: "open-external", url: PROVIDER_REMEDIATION.codex.docsUrl },
@@ -45,26 +45,26 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   },
   muse: {
     title: "Sign in to Muse Code",
-    body: "Sign in with your Meta account (`" + MUSE_LOGIN_COMMAND + "`) or set META_API_KEY to use Muse models. ADE runs its own pinned copy of Muse.",
-    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    body: "Sign in with your Meta account to use Muse models here.",
+    primary: { label: "Sign in", action: { kind: "open-settings" } },
     secondary: {
       label: "Muse Code docs",
       action: { kind: "open-external", url: PROVIDER_REMEDIATION.muse.docsUrl },
     },
   },
   cursor: {
-    title: "Connect Cursor",
-    body: "Add a Cursor API key in Settings to discover Cursor SDK models.",
-    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    title: "Sign in to Cursor",
+    body: "Sign in with your Cursor account to use Cursor models here.",
+    primary: { label: "Sign in", action: { kind: "open-settings" } },
     secondary: {
       label: "Get Cursor API key",
       action: { kind: "open-external", url: PROVIDER_REMEDIATION.cursor.docsUrl },
     },
   },
   factory: {
-    title: "Set up Droid",
-    body: "Sign in to Factory or set FACTORY_API_KEY to discover Droid models. ADE downloads its own pinned Droid for this machine.",
-    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    title: "Sign in to Droid",
+    body: "Sign in with your Factory account to use Droid models here.",
+    primary: { label: "Sign in", action: { kind: "open-settings" } },
     secondary: {
       label: "Droid quickstart",
       action: { kind: "open-external", url: PROVIDER_REMEDIATION.droid.docsUrl },
@@ -72,8 +72,8 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   },
   opencode: {
     title: "Set up OpenCode",
-    body: "OpenCode surfaces 75+ models from Anthropic, Google, Mistral, DeepSeek, and more. ADE downloads its own pinned OpenCode for this machine; connect providers in Settings.",
-    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    body: "Connect a model provider in OpenCode to use its models here.",
+    primary: { label: "Set up", action: { kind: "open-settings" } },
     secondary: {
       label: "OpenCode site",
       action: { kind: "open-external", url: PROVIDER_REMEDIATION.opencode.docsUrl },
@@ -99,44 +99,44 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
   },
   qwen: {
     title: "Set up Qwen Code",
-    body: "ADE downloads its own pinned Qwen Code for this machine. Configure Qwen the way it documents (`qwen --auth-type=openai` or `qwen --auth-type=openai-responses`); ADE reuses ~/.qwen and does not write it. Point Qwen at an OpenAI-compatible key (OPENAI_API_KEY, optional OPENAI_BASE_URL for a local proxy).",
-    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    body: "Add your Qwen key to use Qwen models here.",
+    primary: { label: "Set up", action: { kind: "open-settings" } },
     secondary: {
       label: "Qwen Code docs",
       action: { kind: "open-external", url: "https://github.com/QwenLM/qwen-code" },
     },
   },
   moonshot: {
-    title: "Set up Kimi",
-    body: "Sign in with `kimi login` (`--region global` for kimi.ai, `--region mainland-cn` for kimi.com). ADE runs its own pinned Kimi Code, reuses ~/.kimi-code, and does not write it.",
-    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    title: "Sign in to Kimi",
+    body: "Sign in with your Kimi account to use Kimi models here.",
+    primary: { label: "Sign in", action: { kind: "open-settings" } },
     secondary: {
       label: "Kimi Code docs",
       action: { kind: "open-external", url: "https://github.com/MoonshotAI/kimi-code" },
     },
   },
   xai: {
-    title: "Set up Grok",
-    body: "Sign in with `grok login`, or set XAI_API_KEY. ADE runs its own pinned Grok CLI, uses GROK_HOME when set, and defaults to ~/.grok.",
-    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    title: "Sign in to Grok",
+    body: "Sign in with your xAI account to use Grok models here.",
+    primary: { label: "Sign in", action: { kind: "open-settings" } },
     secondary: {
       label: "Grok CLI docs",
       action: { kind: "open-external", url: "https://docs.x.ai/docs/grok-cli" },
     },
   },
   "github-copilot": {
-    title: "Set up GitHub Copilot",
-    body: "Sign in once with `copilot login` or `gh auth login`. ADE runs Copilot itself, reuses that login, and does not write ~/.copilot.",
-    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    title: "Sign in to GitHub Copilot",
+    body: "Sign in with GitHub to use Copilot models here.",
+    primary: { label: "Sign in", action: { kind: "open-settings" } },
     secondary: {
       label: "Copilot CLI docs",
       action: { kind: "open-external", url: "https://github.com/github/copilot-cli" },
     },
   },
   pi: {
-    title: "Connect Pi",
-    body: "Use Pi’s native /login flow or configure a provider in your Pi profile. ADE keeps Pi credentials in Pi’s own profile.",
-    primary: { label: "Log in to Pi", action: { kind: "open-settings" } },
+    title: "Set up Pi",
+    body: "Sign Pi in to a model provider to use its models here.",
+    primary: { label: "Set up", action: { kind: "open-settings" } },
     secondary: {
       label: "Pi documentation",
       action: { kind: "open-external", url: PROVIDER_REMEDIATION.pi.docsUrl },
@@ -235,7 +235,6 @@ export type ProviderSetupBannerProps = {
 export function ProviderSetupBanner({ family, onOpenSignIn }: ProviderSetupBannerProps) {
   if (!onOpenSignIn) return null;
   const label = PROVIDER_DISPLAY_LABELS[family] ?? family;
-  const claude = family === "anthropic";
   // The whole row is the click target (the picker's sticky "set up" row), so
   // the Banner sits inside one bare button rather than carrying its own action.
   return (
@@ -252,7 +251,8 @@ export function ProviderSetupBanner({ family, onOpenSignIn }: ProviderSetupBanne
           id: `model-picker-setup:${family}`,
           tone: "info",
           icon: <ProviderLogo family={family} size={13} />,
-          title: claude ? "Login to Claude" : `Set up ${label}`,
+          // "Sign in" only where there is an account to sign in to; the rest set up.
+          title: PROVIDER_COPY[family]?.title ?? `Set up ${label}`,
         }}
         style={{ margin: "0 2px" }}
       />

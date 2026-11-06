@@ -3604,7 +3604,13 @@ describe("web-reachable settings and lane-risk commands", () => {
       for (const action of ["providerAccounts.list", "providerAccounts.getSettings"]) {
         expect(descriptor(action)).toMatchObject({ scope: "runtime", policy: { viewerAllowed: true } });
       }
-      for (const action of ["providerAccounts.setDefault", "providerAccounts.loginStart", "providerAccounts.loginStatus"]) {
+      for (const action of [
+        "providerAccounts.setDefault", "providerAccounts.loginStart", "providerAccounts.loginStatus",
+        // An agent CLI's or Antigravity's sign-in from the phone: its status
+        // carries the link and device code too.
+        "ai.cliLoginStart", "ai.cliLoginStatus", "ai.cliLoginSubmitCode", "ai.cliLoginCancel",
+        "ai.antigravitySignInStart", "ai.antigravitySignInStatus", "ai.antigravitySignInComplete", "ai.antigravitySignInCancel",
+      ]) {
         expect(descriptor(action)).toMatchObject({
           scope: "runtime",
           policy: { viewerAllowed: false, controllerAllowed: true },

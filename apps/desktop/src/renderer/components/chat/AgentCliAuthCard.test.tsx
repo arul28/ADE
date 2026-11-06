@@ -22,35 +22,13 @@ const missingCli: AgentCliAuthCardInfo = {
   authCommand: "codex login",
 };
 
-const unauthenticatedCli: AgentCliAuthCardInfo = {
-  ...missingCli,
-  category: "unauthenticated",
-};
-
-const unauthenticatedClaude: AgentCliAuthCardInfo = {
-  agent: "claude",
-  displayName: "Claude Code",
-  category: "unauthenticated",
-  authCommand: "claude auth login",
-};
-
-function installAdeStub() {
+function installAdeStub(state: "missing" | "ready" = "missing") {
   globalThis.window.ade = {
-    pty: {
-      create: vi.fn().mockResolvedValue({
-        sessionId: "terminal-auth-1",
-        ptyId: "pty-auth-1",
-        pid: 1234,
-      }),
-    },
-    lanes: {
-      list: vi.fn().mockResolvedValue([{ id: "lane-default", name: "Main" }]),
-    },
     ai: {
       pinnedToolStatus: vi.fn().mockResolvedValue({
         provider: "codex",
         label: "Codex",
-        state: "missing",
+        state,
         fetchAllowed: true,
         downloading: false,
         version: "1.0.0",
@@ -75,17 +53,17 @@ describe("AgentCliAuthCard", () => {
   });
 
   it("downloads the pinned provider copy from the chat card", async () => {
-    render(<AgentCliAuthCard agentCli={missingCli} laneId="lane-1" chatSessionId="chat-1" />);
+    render(<AgentCliAuthCard agentCli={missingCli} chatSessionId="chat-1" />);
 
     fireEvent.click(await screen.findByRole("button", { name: /download/i }));
 
     await waitFor(() => {
       expect(window.ade.ai.pinnedToolDownload).toHaveBeenCalledWith({ provider: "codex" }, null);
     });
-    expect(window.ade.pty.create).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /retry turn/i })).toBeNull();
   });
 
-  it("runs a chat's commands on the chat's own machine and lane, not the pane's", async () => {
+  it("reads and downloads on the chat's own machine, not the pane's", async () => {
     const studio: OpenProjectBinding = {
       kind: "remote",
       key: "remote:studio:project-1",
@@ -98,51 +76,18 @@ describe("AgentCliAuthCard", () => {
 
     render(
       <ChatRuntimeScopeProvider pin={studio} binding={studio} laneId="studio-lane" sessionId="chat-remote">
-        <AgentCliAuthCard agentCli={unauthenticatedCli} laneId="pane-lane" chatSessionId="chat-remote" />
+        <AgentCliAuthCard agentCli={missingCli} chatSessionId="chat-remote" runtimeName="Mac Studio" />
       </ChatRuntimeScopeProvider>,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /run auth/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /download/i }));
 
     await waitFor(() => {
-      expect(window.ade.pty.create).toHaveBeenCalledTimes(1);
+      expect(window.ade.ai.pinnedToolDownload).toHaveBeenCalledTimes(1);
     });
-    const [args, pin] = vi.mocked(window.ade.pty.create).mock.calls[0]!;
-    expect(pin).toBe(studio);
-    expect(args).toMatchObject({ laneId: "studio-lane", chatSessionId: "chat-remote", startupCommand: "codex login" });
-    expect(window.ade.lanes.list).not.toHaveBeenCalled();
-  });
-
-  it("opens auth commands in the chat PTY context", async () => {
-    const onRevealTerminal = vi.fn();
-
-    render(
-      <AgentCliAuthCard
-        agentCli={unauthenticatedCli}
-        laneId="lane-1"
-        chatSessionId="chat-1"
-        onRevealTerminal={onRevealTerminal}
-      />,
-    );
-
-    expect(screen.queryByText("npm install -g @openai/codex")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: /run auth/i }));
-
-    await waitFor(() => {
-      expect(window.ade.pty.create).toHaveBeenCalledWith(expect.objectContaining({
-        laneId: "lane-1",
-        chatSessionId: "chat-1",
-        title: "auth",
-        toolType: "shell",
-        startupCommand: "codex login",
-      }), null);
-    });
-    expect(onRevealTerminal).toHaveBeenCalledWith({
-      terminalId: "terminal-auth-1",
-      ptyId: "pty-auth-1",
-      label: "auth",
-    });
+    const ai = window.ade.ai!;
+    expect(vi.mocked(ai.pinnedToolDownload!).mock.calls[0]).toEqual([{ provider: "codex" }, studio]);
+    expect(vi.mocked(ai.pinnedToolStatus!).mock.calls.every((call) => (call as unknown[]).includes(studio))).toBe(true);
   });
 
   it("names the machine where the provider copy will be downloaded", () => {
@@ -158,34 +103,36 @@ describe("AgentCliAuthCard", () => {
     expect(screen.queryByText(/this machine/i)).toBeNull();
   });
 
-  it("labels the Claude login action and surfaces a Retry that resends the turn", () => {
+  it("offers Retry once the copy has landed, and it resends the chat's turn", async () => {
+    installAdeStub("ready");
     const retrySpy = vi.fn();
     window.addEventListener(CHAT_RETRY_AUTH_TURN_EVENT, retrySpy);
     try {
-      render(<AgentCliAuthCard agentCli={unauthenticatedClaude} laneId="lane-1" chatSessionId="chat-7" />);
+      render(<AgentCliAuthCard agentCli={missingCli} chatSessionId="chat-7" />);
 
-      expect(screen.getByText("Claude Code is logged out")).toBeTruthy();
-      expect(screen.getByRole("button", { name: /log in to claude/i })).toBeTruthy();
-
-      fireEvent.click(screen.getByRole("button", { name: /retry turn/i }));
+      fireEvent.click(await screen.findByRole("button", { name: /retry turn/i }));
 
       expect(retrySpy).toHaveBeenCalledTimes(1);
       const event = retrySpy.mock.calls[0][0] as CustomEvent<{ sessionId?: string }>;
       expect(event.detail.sessionId).toBe("chat-7");
+      expect(screen.getByRole("button", { name: /retrying/i })).toBeTruthy();
     } finally {
       window.removeEventListener(CHAT_RETRY_AUTH_TURN_EVENT, retrySpy);
     }
   });
 
-  it("does not offer Retry without a session to resend into", () => {
-    render(<AgentCliAuthCard agentCli={unauthenticatedClaude} laneId="lane-1" />);
+  it("does not offer Retry without a session to resend into", async () => {
+    installAdeStub("ready");
+    render(<AgentCliAuthCard agentCli={missingCli} />);
+    await waitFor(() => expect(window.ade.ai.pinnedToolStatus).toHaveBeenCalled());
     expect(screen.queryByRole("button", { name: /retry turn/i })).toBeNull();
   });
 
-  it("clears the retry spinner when the pane rejects the retry", () => {
-    render(<AgentCliAuthCard agentCli={unauthenticatedClaude} laneId="lane-1" chatSessionId="chat-7" />);
+  it("clears the retry spinner when the pane rejects the retry", async () => {
+    installAdeStub("ready");
+    render(<AgentCliAuthCard agentCli={missingCli} chatSessionId="chat-7" />);
 
-    fireEvent.click(screen.getByRole("button", { name: /retry turn/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /retry turn/i }));
     expect(screen.getByRole("button", { name: /retrying/i })).toBeTruthy();
 
     fireEvent(window, new CustomEvent(CHAT_AUTH_RETRY_REJECTED_EVENT, { detail: { sessionId: "chat-7" } }));
@@ -193,24 +140,17 @@ describe("AgentCliAuthCard", () => {
     expect(screen.getByRole("button", { name: /retry turn/i })).toBeTruthy();
   });
 
-  it("collapses to a reconnected confirmation when the session recovers", () => {
-    render(<AgentCliAuthCard agentCli={unauthenticatedClaude} laneId="lane-1" chatSessionId="chat-7" />);
+  it.each([
+    ["its own session", "chat-7", true],
+    ["a different session", "other-session", false],
+  ])("collapses on a recovered event for %s only", async (_label, sessionId, collapses) => {
+    installAdeStub("ready");
+    render(<AgentCliAuthCard agentCli={missingCli} chatSessionId="chat-7" />);
+    await screen.findByRole("button", { name: /retry turn/i });
 
-    expect(screen.getByText("Claude Code is logged out")).toBeTruthy();
+    fireEvent(window, new CustomEvent(CHAT_AUTH_RECOVERED_EVENT, { detail: { sessionId } }));
 
-    fireEvent(window, new CustomEvent(CHAT_AUTH_RECOVERED_EVENT, { detail: { sessionId: "chat-7" } }));
-
-    expect(screen.queryByText("Claude Code is logged out")).toBeNull();
-    expect(screen.getByText(/Reconnected to Claude Code/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /retry turn/i }) === null).toBe(collapses);
+    expect(screen.queryByText(/Codex is ready/) !== null).toBe(collapses);
   });
-
-  it("ignores reconnected events for a different session", () => {
-    render(<AgentCliAuthCard agentCli={unauthenticatedClaude} laneId="lane-1" chatSessionId="chat-7" />);
-
-    fireEvent(window, new CustomEvent(CHAT_AUTH_RECOVERED_EVENT, { detail: { sessionId: "other-session" } }));
-
-    expect(screen.getByText("Claude Code is logged out")).toBeTruthy();
-    expect(screen.queryByText(/Reconnected to Claude Code/i)).toBeNull();
-  });
-
 });

@@ -1773,7 +1773,7 @@ describe("AgentChatPane remote startup", () => {
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^Cursor$/i }));
-    expect(await screen.findByText("Connect Cursor")).toBeTruthy();
+    expect((await screen.findAllByText("Sign in to Cursor")).length).toBeGreaterThan(0);
     fireEvent.keyDown(document, { key: "Escape" });
 
     vi.mocked(window.ade.ai.getStatus).mockClear();
@@ -1800,7 +1800,7 @@ describe("AgentChatPane remote startup", () => {
     fireEvent.click(await screen.findByRole("tab", { name: /^Cursor$/i }));
 
     await waitFor(() => {
-      expect(screen.queryByText("Connect Cursor")).toBeNull();
+      expect(screen.queryAllByText("Sign in to Cursor")).toHaveLength(0);
     });
     expect(screen.queryByRole("button", { name: /Set up Cursor/i })).toBeNull();
 
@@ -1886,7 +1886,7 @@ describe("AgentChatPane remote startup", () => {
       fireEvent.click(trigger);
       fireEvent.click(await screen.findByRole("tab", { name: /^Cursor$/i }));
       await waitFor(() => {
-        expect(screen.queryByText("Connect Cursor")).toBeNull();
+        expect(screen.queryAllByText("Sign in to Cursor")).toHaveLength(0);
       });
     } finally {
       vi.useRealTimers();
@@ -4740,6 +4740,12 @@ describe("AgentChatPane submit recovery", () => {
       ...committed,
       event: { ...committedUserEvent, steerId: "steer-1", deliveryState: "delivered" },
     }, optimistic)).toBe(false);
+    // Muse marks every message with its own turn as the steer id: still the
+    // same first message, so the stand-in bubble yields to it.
+    expect(isMatchingOptimisticUserMessage({
+      ...committed,
+      event: { ...committedUserEvent, turnId: "turn-9", steerId: "turn-9", deliveryState: "delivered" },
+    }, optimistic)).toBe(true);
     expect(isMatchingOptimisticUserMessage({
       ...committed,
       event: { ...committedUserEvent, attachments: [{ path: "docs/other.md", type: "file" }] },
@@ -6340,7 +6346,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(cursorCloudListAgents).not.toHaveBeenCalled();
   });
 
-  it("shows the Claude login prompt when the loaded chat history contains auth notices", async () => {
+  it("puts the sign-in card in the composer's place when the loaded history ends on a Claude auth failure", async () => {
     const session = buildSession("session-1", {
       provider: "claude",
       model: "claude-sonnet-5",
@@ -6386,7 +6392,15 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    expect(await screen.findByRole("button", { name: "Login to Claude" })).toBeTruthy();
+    const card = await screen.findByTestId("provider-sign-in-composer");
+    expect(card.getAttribute("data-provider")).toBe("claude");
+    expect(screen.getByTestId("provider-sign-in-start")).toBeTruthy();
+    expect(screen.queryByRole("textbox")).toBeNull();
+
+    // Not now gives the composer back for this failure.
+    fireEvent.click(screen.getByTestId("provider-sign-in-decline"));
+    await waitFor(() => expect(screen.queryByTestId("provider-sign-in-composer")).toBeNull());
+    expect(await screen.findByRole("textbox")).toBeTruthy();
   });
 
   it("keeps model handoff local until the next message is sent", async () => {
@@ -10889,7 +10903,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }), null);
   });
 
-  it("keeps the Claude login prompt pinned in compact grid tiles", async () => {
+  it("shows the sign-in card in a compact grid tile whose turn stopped on a signed-out agent", async () => {
     const session = buildSession("grid-claude-auth", {
       provider: "claude",
       model: "claude-sonnet-5",
@@ -10933,7 +10947,9 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole("button", { name: "Login to Claude" })).toBeTruthy();
+    const card = await screen.findByTestId("provider-sign-in-composer");
+    expect(card.getAttribute("data-provider")).toBe("claude");
+    expect(screen.getByTestId("provider-sign-in-start")).toBeTruthy();
   });
 
   it("streams live events into visible inactive grid tiles without requiring focus", async () => {

@@ -1135,7 +1135,7 @@ implements a two-layer transform:
      side-by-side grids; `ade_card` rows
      (PR/CI/review/merge/conflict, proof, quota, and any variant this build
      does not know); errors (`TurnFailureLine` /
-     `AgentCliAuthCard`); continuity-recovery and reset-credit notices; error,
+     `AgentCliAuthCard` / the `ProviderSignInReceipt` line); continuity-recovery and reset-credit notices; error,
      sign-in (`auth`), provider-health, thread-error, and limit-reached usage
      notices; interrupt receipts and queue-recovery cards; model-switch/handoff
      dividers; cloud status/artifact rows; completion reports; generated
