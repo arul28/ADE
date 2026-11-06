@@ -77642,45 +77642,33 @@ export function createAgentChatService(args: {
       return lineage?.orchestrationParentSessionId?.trim() || null;
     },
     /**
-     * Every chat in this chat's spawn tree, other than itself: its parents up
-     * to the chat that started the tree, and every chat spawned under that one.
-     * A PR one of them opens belongs to all of them. Parents come from each
-     * chat's own lineage; children only from chats loaded on this machine.
+     * This chat's ancestors: its parent, that chat's parent, up to the chat
+     * that started the tree. Not its children and not its siblings.
+     *
+     * The direction is the point. A chat that spawned a subagent wants the
+     * PR the subagent opened — it is supervising that work. The reverse is
+     * not true: a subagent has no use for its parent's other PRs, and two
+     * subagents of one parent have nothing to do with each other. Walking
+     * the whole tree gave every chat in it every PR any of them opened, so
+     * three chats across three lanes each carried six PRs.
      */
-    getChatFamilySessionIds: (sessionId: string): string[] => {
+    getChatAncestorSessionIds: (sessionId: string): string[] => {
       const id = sessionId.trim();
       if (!id) return [];
-      const family = new Set<string>([id]);
-      let root = id;
-      // No fixed depth: `family.has` ends a cycle, and a real tree ends at a
-      // chat with no parent.
+      const seen = new Set<string>([id]);
+      const ancestors: string[] = [];
+      let current = id;
+      // No fixed depth: `seen` ends a cycle, and a real tree ends at a chat
+      // with no parent.
       for (;;) {
-        const lineage = managedSessions.get(root)?.session ?? readPersistedState(root);
+        const lineage = managedSessions.get(current)?.session ?? readPersistedState(current);
         const parentId = lineage?.orchestrationParentSessionId?.trim();
-        if (!parentId || family.has(parentId)) break;
-        family.add(parentId);
-        root = parentId;
+        if (!parentId || seen.has(parentId)) break;
+        seen.add(parentId);
+        ancestors.push(parentId);
+        current = parentId;
       }
-      const childrenByParent = new Map<string, string[]>();
-      for (const managed of managedSessions.values()) {
-        if (managed.deleted) continue;
-        const parentId = managed.session.orchestrationParentSessionId?.trim();
-        if (!parentId) continue;
-        childrenByParent.set(parentId, [...(childrenByParent.get(parentId) ?? []), managed.session.id]);
-      }
-      // Walk down from every chat already known to be in the family, not just
-      // the root: the chat that was linked is seeded above, and its own children
-      // hang under it.
-      const queue = [...family];
-      while (queue.length > 0) {
-        for (const childId of childrenByParent.get(queue.shift()!) ?? []) {
-          if (family.has(childId)) continue;
-          family.add(childId);
-          queue.push(childId);
-        }
-      }
-      family.delete(id);
-      return [...family];
+      return ancestors;
     },
     previewCrossMachineHandoff: (previewArgs: AgentChatPreviewCrossMachineHandoffArgs) =>
       requireCrossMachineHandoff().preview(previewArgs),

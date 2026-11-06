@@ -3979,8 +3979,14 @@ function renderEvent(
     const spawnCompletion = spawnCompletionNoticeOf(event);
     if (spawnCompletion) {
       // One quiet line, not a pill: background news about other chats. The
-      // row pipeline keeps only each child's newest notice (with the count of
-      // turns it stands for) and puts neighbours on the same line.
+      // row pipeline keeps only each child's newest notice and puts
+      // neighbours on the same line.
+      //
+      // No turn tally. A child that takes thirty turns is not thirty times
+      // the news, and "×30" read as a pile of unread events rather than one
+      // chat getting on with it. The line stays, because a child that never
+      // reports back in prose has nothing else to say it finished; the count
+      // is still on the row for ordering and identity, just not on screen.
       const entries = [
         { key: envelope.key, notice: spawnCompletion, repeatCount: envelope.repeatCount ?? 1 },
         ...(envelope.spawnCompletionSiblings ?? []),
@@ -4005,9 +4011,6 @@ function renderEvent(
           <span className="min-w-0 truncate">{label}</span>
           {entry.notice.childMachineName ? (
             <span className="shrink-0 text-fg/30">· on {entry.notice.childMachineName}</span>
-          ) : null}
-          {entry.repeatCount > 1 ? (
-            <span className="shrink-0 tabular-nums text-fg/30" title={`${entry.repeatCount} turns`}>×{entry.repeatCount}</span>
           ) : null}
           {entry.notice.childSessionId ? <CaretRight size={9} className="shrink-0 text-fg/30" aria-hidden /> : null}
         </button>

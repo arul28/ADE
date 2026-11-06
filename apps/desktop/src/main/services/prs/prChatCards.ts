@@ -533,17 +533,29 @@ export async function emitPrCardsForChange(args: {
   const { pr } = change;
   if (!pr.laneId) return 0;
 
+  /**
+   * A closed PR has nothing live left to report. CI still finishes on the
+   * merge commit, GitHub still recomputes "behind base", and a review can
+   * still land, so without this a merged PR goes on posting cards into a
+   * thread whose work is finished. The merged card itself is the exception:
+   * it is the one that says the work is over. Reopening makes it live again.
+   */
+  const live = pr.state === "open";
+
   const checksChanged =
-    change.previousChecksStatus != null
+    live
+    && change.previousChecksStatus != null
     && change.previousChecksStatus !== pr.checksStatus
     && pr.checksStatus !== "none";
   const reviewChanged =
-    change.previousReviewStatus != null
+    live
+    && change.previousReviewStatus != null
     && change.previousReviewStatus !== pr.reviewStatus
     && (pr.reviewStatus === "approved" || pr.reviewStatus === "changes_requested");
-  const conflictsAppeared = change.previousMergeConflicts !== true && pr.mergeConflicts === true;
+  const conflictsAppeared = live && change.previousMergeConflicts !== true && pr.mergeConflicts === true;
   const fellBehind =
-    Math.max(0, change.previousBehindBaseBy ?? 0) === 0
+    live
+    && Math.max(0, change.previousBehindBaseBy ?? 0) === 0
     && Math.max(0, pr.behindBaseBy ?? 0) > 0;
   const wasMergeReady =
     change.previousState === "open"
@@ -605,16 +617,29 @@ export async function emitPrCardsForChange(args: {
   const laneSessions = await chat.listSessions(pr.laneId, { includeArchived: false });
   remember(laneSessions);
   await resolveById(linkedIds);
-  const ordinarySessions = selectPrCardSessions([...listedById.values()], [...linkedIds]);
-  // Links only from chats on other lanes (a stack coordinator) are references,
-  // so the PR's own lane still gets its cards, as an unlinked PR's would.
-  if (linkedIds.size > 0 && claimingSessionIds(pr).length === 0) {
-    const dismissed = new Set(dismissedSessionIds(pr));
-    const laneChat = selectPrCardSessions(
-      laneSessions.filter((session) => !linkedIds.has(session.sessionId) && !dismissed.has(session.sessionId)),
-    )[0];
-    if (laneChat) ordinarySessions.push(laneChat);
-  }
+  /**
+   * A card only ever lands on the PR's own lane.
+   *
+   * A chat is linked to every PR opened anywhere in its spawn tree
+   * (`linkPrToChatFamily`), and those relatives sit on other lanes. That link
+   * is worth keeping — it is how a chat offers you its subagent's PR — but it
+   * is a reference, not a reason to interrupt. Routing cards by it put one
+   * lane's CI into two other lanes' threads, each of which then showed more
+   * foreign PRs than its own.
+   *
+   * `claimingSessionIds` is already the links minus the cross-lane ones, so
+   * the claim list is the same-lane list; filtering the pool by `laneId` as
+   * well keeps that true even for a session whose lane the edge query could
+   * not read.
+   */
+  const claimIds = new Set(claimingSessionIds(pr));
+  const dismissed = new Set(dismissedSessionIds(pr));
+  const onPrLane = (session: AgentChatSessionSummary) => session.laneId === pr.laneId;
+  const ordinarySessions = claimIds.size > 0
+    ? selectPrCardSessions([...listedById.values()].filter(onPrLane), [...claimIds])
+    // No chat claimed it, so fall back to the lane's own most recent chat, as
+    // an unlinked PR always has — minus any that explicitly dropped this PR.
+    : selectPrCardSessions(laneSessions.filter((session) => !dismissed.has(session.sessionId)));
   if (stackLanded || stackLinkedIds.size > 0) {
     remember((await Promise.all([...laneIds].map((laneId) => chat.listSessions(laneId, { includeArchived: false })))).flat());
   }
