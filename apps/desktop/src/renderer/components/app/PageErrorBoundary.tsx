@@ -2,37 +2,50 @@ import React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { WarningCircle } from "@phosphor-icons/react";
 import { logRendererDebugEvent } from "../../lib/debugLog";
-import { captureError } from "../../../shared/sentry/capture";
+import { captureError, isSentryActive } from "../../../shared/sentry/capture";
 import {
   ERROR_PRIMARY_BUTTON,
   ERROR_SECONDARY_BUTTON,
   ErrorSurfaceCard,
   TechnicalDetailsFold,
-  WhatToDo,
 } from "./errorSurfaceKit";
-import { ReportIssueButton } from "./ReportIssueButton";
-import { reloadForStaleChunk } from "../../lib/staleChunkReload";
+import { CrashReportFooter } from "./CrashReportFooter";
+import { isAdeAvailable } from "../../lib/adeAvailability";
+import { isChunkLoadFailure, reloadForStaleChunk } from "../../lib/staleChunkReload";
 
 /**
  * Per-route error boundary. One screen failing to draw must never take the
  * window with it, and the way out of a broken screen must actually leave it.
  */
 
-const pageCrashSteps = (goHomeLabel: string): readonly string[] => [
-  `${goHomeLabel} — the rest of ADE keeps running.`,
-  "Come back to this screen. If it breaks again, choose Report issue so we can see what happened here.",
-];
+const PAGE_CRASH_HEADLINE = "Something went wrong on this screen";
 
-type PageErrorBoundaryState = { hasError: boolean; message: string };
+type PageErrorBoundaryState = {
+  hasError: boolean;
+  message: string;
+  /** A lazy screen's file failed to load, so Try again has to reload the page. */
+  chunkFailure: boolean;
+  /** The crash went to Sentry; set once `componentDidCatch` has sent it. */
+  autoReported: boolean;
+};
+
+const CLEAR_STATE: PageErrorBoundaryState = { hasError: false, message: "", chunkFailure: false, autoReported: false };
 
 class PageErrorBoundaryInner extends React.Component<
   { children: React.ReactNode; onGoHome: () => void; goHomeLabel: string },
   PageErrorBoundaryState
 > {
-  state: PageErrorBoundaryState = { hasError: false, message: "" };
+  state: PageErrorBoundaryState = CLEAR_STATE;
 
-  static getDerivedStateFromError(error: unknown): PageErrorBoundaryState {
-    return { hasError: true, message: error instanceof Error ? error.message : String(error) };
+  /** One automatic diagnostic report per boundary, however often the screen breaks again. */
+  private autoReportRequested = false;
+
+  static getDerivedStateFromError(error: unknown): Partial<PageErrorBoundaryState> {
+    return {
+      hasError: true,
+      message: error instanceof Error ? error.message : String(error),
+      chunkFailure: isChunkLoadFailure(error),
+    };
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
@@ -44,6 +57,19 @@ class PageErrorBoundaryInner extends React.Component<
       tags: { boundary: "page", route: window.location.hash || window.location.pathname },
       extra: { componentStack: errorInfo.componentStack ?? null },
     });
+    if (isSentryActive()) this.setState({ autoReported: true });
+    // Desktop: ask main for the diagnostic report with ADE's logs, as the
+    // window boundary does. Main owns the setting and the budget (one per
+    // failure code a day); the web client's Sentry capture above is its report.
+    if (!this.autoReportRequested && isAdeAvailable(window.ade?.diagnostics?.autoReport)) {
+      this.autoReportRequested = true;
+      void window.ade.diagnostics.autoReport({
+        surface: "page_crash",
+        code: "page_crash",
+        headline: PAGE_CRASH_HEADLINE,
+        technicalDetail: error?.message ?? null,
+      }).catch(() => undefined);
+    }
     logRendererDebugEvent("renderer.page_boundary_crash", {
       message: error?.message ?? String(error),
       route: window.location.hash || window.location.pathname,
@@ -54,6 +80,7 @@ class PageErrorBoundaryInner extends React.Component<
 
   render() {
     if (this.state.hasError) {
+      const { chunkFailure, autoReported, message } = this.state;
       return (
         <div className="h-full w-full overflow-y-auto text-fg">
           {/* Min-height row rather than `items-center` on the scroller: a card
@@ -62,14 +89,9 @@ class PageErrorBoundaryInner extends React.Component<
           <div className="w-full max-w-[520px]">
             <ErrorSurfaceCard
               icon={<WarningCircle size={14} weight="bold" aria-hidden="true" />}
-              headline="Something went wrong on this screen"
-              body="The rest of ADE is still running, and your project, chats and files are safe."
+              headline={PAGE_CRASH_HEADLINE}
+              body="The rest of ADE is still running — your project, chats and files are safe."
             >
-              <WhatToDo
-                title="What to do"
-                steps={pageCrashSteps(this.props.goHomeLabel)}
-              />
-
               <div className="mt-5 flex flex-wrap items-center gap-2">
                 {/* Leaving first: this screen just failed to draw, so
                     re-rendering it usually fails the same way. Leaving is the
@@ -80,7 +102,7 @@ class PageErrorBoundaryInner extends React.Component<
                   type="button"
                   className={ERROR_PRIMARY_BUTTON}
                   onClick={() => {
-                    this.setState({ hasError: false, message: "" });
+                    this.setState(CLEAR_STATE);
                     this.props.onGoHome();
                   }}
                 >
@@ -89,26 +111,32 @@ class PageErrorBoundaryInner extends React.Component<
                 <button
                   type="button"
                   className={ERROR_SECONDARY_BUTTON}
-                  onClick={() => this.setState({ hasError: false, message: "" })}
+                  onClick={() => {
+                    // A lazy screen remembers that its file failed to load, so
+                    // drawing it again fails again; a reload fetches it anew.
+                    if (chunkFailure) {
+                      window.location.reload();
+                      return;
+                    }
+                    this.setState(CLEAR_STATE);
+                  }}
                 >
                   Try again
                 </button>
               </div>
-            </ErrorSurfaceCard>
 
-            <div className="mt-4">
-              <ReportIssueButton
-                variant="secondary"
+              <CrashReportFooter
+                autoReported={autoReported}
                 context={{
                   surface: "page_crash",
-                  headline: "Something went wrong on this screen",
-                  technicalDetail: this.state.message || null,
+                  headline: PAGE_CRASH_HEADLINE,
+                  technicalDetail: message || null,
                 }}
               />
-            </div>
+            </ErrorSurfaceCard>
 
             <TechnicalDetailsFold
-              text={this.state.message || "No error message was recorded."}
+              text={message || "No error message was recorded."}
               className="mt-4"
             />
           </div>

@@ -263,6 +263,10 @@ export function describeManualSendFailure(result: Extract<DiagnosticsManualSendR
         ? "This report is too big to send. It's saved on this computer — open it and attach it to a GitHub issue."
         : "This report is too big to send, and ADE couldn't save a copy on this computer.";
     default:
-      return "ADE couldn't send the report. Check your connection and try again.";
+      // `failed` covers more than the network (the bridge threw, the service
+      // is absent, a send was already running), so the sentence does not
+      // guess at a cause. The retry is the surface's own (a "Try again" link,
+      // or Settings' send button).
+      return "ADE couldn't send the report.";
   }
 }

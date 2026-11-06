@@ -1,34 +1,31 @@
 import React from "react";
 import { ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
 import { logRendererDebugEvent } from "../../lib/debugLog";
-import { captureError } from "../../../shared/sentry/capture";
+import { captureError, isSentryActive } from "../../../shared/sentry/capture";
 import {
   ERROR_PRIMARY_BUTTON,
   ErrorSurfaceCard,
   TechnicalDetailsFold,
-  WhatToDo,
 } from "./errorSurfaceKit";
-import { ReportIssueButton } from "./ReportIssueButton";
+import { CrashReportFooter } from "./CrashReportFooter";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { reloadForStaleChunk } from "../../lib/staleChunkReload";
 
 type RendererErrorBoundaryState = {
   hasError: boolean;
   message: string;
+  /** The crash went to Sentry; set once `componentDidCatch` has sent it. */
+  autoReported: boolean;
 };
-
-const WHAT_TO_DO: readonly string[] = [
-  "Reload ADE. Everything reopens where it was.",
-  "If it happens again on the same screen, choose Report issue — that tells us which screen and what broke.",
-];
 
 export class RendererErrorBoundary extends React.Component<{ children: React.ReactNode }, RendererErrorBoundaryState> {
   state: RendererErrorBoundaryState = {
     hasError: false,
-    message: ""
+    message: "",
+    autoReported: false,
   };
 
-  static getDerivedStateFromError(error: unknown): RendererErrorBoundaryState {
+  static getDerivedStateFromError(error: unknown): Partial<RendererErrorBoundaryState> {
     return {
       hasError: true,
       message: error instanceof Error ? error.message : String(error)
@@ -41,20 +38,21 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
    * twice under StrictMode), and this flag covers a boundary that catches again
    * after a failed recovery.
    */
-  private autoReported = false;
+  private autoReportRequested = false;
 
   componentDidCatch(error: unknown, info: React.ErrorInfo): void {
     // Web client after a deploy: a lazy screen's old chunk is gone. The page
     // reloads into the new build; nothing here is broken.
     if (reloadForStaleChunk(error)) return;
-    if (!this.autoReported) {
-      this.autoReported = true;
+    if (!this.autoReportRequested) {
+      this.autoReportRequested = true;
       captureError(error, {
         handled: false,
         level: "fatal",
         tags: { boundary: "root", route: window.location.hash || window.location.pathname },
         extra: { componentStack: info.componentStack ?? null },
       });
+      if (isSentryActive()) this.setState({ autoReported: true });
       // Main owns the setting and the budget; this is a request, and its answer
       // is deliberately uninteresting to a screen that is already broken.
       if (isAdeAvailable(window.ade?.diagnostics?.autoReport)) {
@@ -93,12 +91,10 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
               body={
                 <>
                   Something went wrong while drawing the app. Your project, chats and files are
-                  safe — this is only the window.
+                  safe — reloading reopens everything where it was.
                 </>
               }
             >
-              <WhatToDo title="What to do" steps={WHAT_TO_DO} />
-
               <div className="mt-5 flex flex-wrap items-center gap-2">
                 <button
                   type="button"
@@ -109,18 +105,16 @@ export class RendererErrorBoundary extends React.Component<{ children: React.Rea
                   Reload ADE
                 </button>
               </div>
-            </ErrorSurfaceCard>
 
-            <div className="mt-4">
-              <ReportIssueButton
-                variant="secondary"
+              <CrashReportFooter
+                autoReported={this.state.autoReported}
                 context={{
                   surface: "renderer_crash",
                   headline: "ADE needs to reload this window",
                   technicalDetail: this.state.message || null,
                 }}
               />
-            </div>
+            </ErrorSurfaceCard>
 
             <TechnicalDetailsFold
               text={this.state.message || "No error message was recorded."}

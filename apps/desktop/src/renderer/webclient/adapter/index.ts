@@ -7,6 +7,7 @@ import { createAccountNamespace, createAccountSettingsNamespace } from "./accoun
 import { createAgentChatNamespace } from "./agentChat";
 import { createArchiveNamespace } from "./archive";
 import { createChatLaunchNamespace } from "./chatLaunch";
+import { createDiagnosticsNamespace } from "./diagnostics";
 import { createAnalyticsNamespace } from "./analytics";
 import { createAttentionNamespace } from "./attention";
 import { createAppNamespace, webKeepAwakeMethods, webUpdateMethods } from "./app";
@@ -116,6 +117,7 @@ export function createAdeWebAdapter(
     accountSettings: createAccountSettingsNamespace(),
     attention: createAttentionNamespace(infra, accountClient),
     analytics: createAnalyticsNamespace(infra),
+    diagnostics: createDiagnosticsNamespace(),
     project: createProjectNamespace(infra),
     remoteRuntime: createRemoteRuntimeNamespace(infra),
     lanes: createLanesNamespace(infra),
