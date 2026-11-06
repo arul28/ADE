@@ -417,6 +417,12 @@ function createViewer(
       const blit = mirrorFrame();
       if (blit.resized) rebuildTexture();
       else if (texture && blit.drawn) texture.needsUpdate = true;
+      // The decoder resizes the canvas a frame after the stream says its new
+      // size, so a turn's layout can be measured from the old shape. When the
+      // frame's shape stops matching the layout, lay it out again.
+      if (blit.resized && source && source.width > 0 && source.height > 0 && (source.width > source.height) !== layout.rawLandscape) {
+        sync(getProps());
+      }
       const now = performance.now();
       if (motion.advance(now, reducedMotionPreferred())) {
         applyPose();

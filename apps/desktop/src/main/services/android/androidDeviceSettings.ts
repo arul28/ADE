@@ -23,7 +23,7 @@ import {
 } from "../../../shared/types/androidEmulator";
 import type { DeviceOrientation } from "../../../shared/types/deviceOrientation";
 import { assertPackageName } from "./androidApps";
-import { runDeviceScript, runDeviceShell, runEmulatorConsole, type BootedDevice } from "./androidDeviceShell";
+import { DEFAULT_DISPLAY_DUMP, runDeviceScript, runDeviceShell, runEmulatorConsole, type BootedDevice } from "./androidDeviceShell";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 
 /*
@@ -100,7 +100,7 @@ const ACCESSIBILITY_KEYS = [
  * one boot of the emulator.
  */
 const ORIENTATION_LINES = [
-  "echo \"rotation=$(dumpsys window | grep -m1 -oE 'mRotation=[0-9]' | cut -d= -f2)\"",
+  `echo "rotation=$(${DEFAULT_DISPLAY_DUMP} | grep -m1 -oE 'mRotation=[0-9]' | cut -d= -f2)"`,
   "wm size | sed 's/^/size:/'",
   "echo \"boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\"",
 ].join("; ");

@@ -6501,7 +6501,10 @@ async function runTool(args: {
     if (isUserOnlyAdeAction(domain, action) && !mayUseUserOnlyActions(session)) {
       // Deleting a simulator is the user's call, made from the device picker.
       scopeAccessDenied(
-        domain === "android_emulator" && ANDROID_SDK_PERSON_ONLY.has(action)
+        domain === "android_emulator" && action === "setMachinePreferences"
+          ? `${domain}.${action} is limited to user clients: only the user changes this machine's Android preferences, `
+            + "in the ADE desktop app (Settings › Android devices)"
+          : domain === "android_emulator" && ANDROID_SDK_PERSON_ONLY.has(action)
           ? `${domain}.${action} is limited to user clients: only the user installs the Android SDK and accepts Google's licences, `
             + "in the ADE desktop app (the setup card in the Android tool, or Settings › Android devices)"
           : `${domain}.${action} is limited to user clients`,

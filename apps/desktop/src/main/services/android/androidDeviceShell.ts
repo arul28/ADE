@@ -25,6 +25,15 @@ function deviceShellLine(words: readonly string[]): string {
   return words.map(deviceShellQuote).join(" ");
 }
 
+/**
+ * `dumpsys window displays`, cut to the default display (id 0). A viewer's
+ * scrcpy stream adds a virtual display that dumps first (seen as display 10,
+ * 986x1024 at 1 dpi, on API 37), so a plain `grep -m1` read that display's
+ * rotation and size. Toybox `sed` only, so it runs on every image.
+ */
+export const DEFAULT_DISPLAY_DUMP =
+  "dumpsys window displays | sed -e 's/mDisplayId=0$/mDisplayId=0 /' | sed -n '/Display: mDisplayId=0 /,/Display: mDisplayId=[1-9]/p'";
+
 /** The lane's booted emulator: what every device command needs. */
 export type BootedDevice = { serial: string; adbPath: string };
 

@@ -223,6 +223,8 @@ const ANDROID_ACTION_DETAIL: Readonly<Record<string, (result: JsonObject) => str
   uninstall: (result) => String(result.packageName),
   "open-url": (result) => String(result.url),
   location: (result) => `${result.latitude}, ${result.longitude}`,
+  // Parity: the emulator has no "no location"; the GPS goes back to its default point.
+  "location-clear": (result) => `(GPS back to the default point ${result.latitude}, ${result.longitude})`,
   appearance: (result) => String(result.appearance),
   permission: (result) => `${String(result.grant)} ${String(result.permission ?? "")} for ${String(result.packageName)}`,
   "record-delete": (result) => String(result.id),
@@ -468,6 +470,9 @@ export function formatAndroidRecording(value: unknown): string {
     ].join("\n");
   }
   const segments = records(recording.segments);
+  if (recording.active === false && segments.length === 0 && !asString(recording.lastError) && recording.stopReason === "requested" && !recording.bytes) {
+    return `Recording ${String(recording.id)} discarded: no file is kept and nothing is filed.`;
+  }
   const ids = Array.isArray(recording.proofArtifactIds) ? recording.proofArtifactIds.filter((id): id is string => typeof id === "string") : [];
   const demo = record(recording.demo);
   const wallDurationMs = typeof recording.wallDurationMs === "number" ? recording.wallDurationMs : null;

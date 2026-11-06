@@ -11,7 +11,7 @@ import {
 } from "../../../shared/types/androidEmulator";
 import { sleep } from "../shared/utils";
 import { runAdb } from "./adb";
-import { runAdbOutput } from "./androidDeviceShell";
+import { DEFAULT_DISPLAY_DUMP, runAdbOutput } from "./androidDeviceShell";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 import { asStreamFailure, type AndroidStreamHub } from "./androidStream";
 import { ANDROID_HARDWARE_KEYCODES } from "./scrcpyControl";
@@ -234,7 +234,7 @@ export function createAndroidInput(deps: AndroidInputDeps): AndroidInputApi {
       // turns: stop once the window manager has kept another rotation a moment.
       const lockedAt = Date.now();
       while (Date.now() - lockedAt < ROTATE_SETTLE_MS && !signal.aborted) {
-        const current = /mRotation=(\d)/u.exec((await shell(["dumpsys window | grep -m1 -oE 'mRotation=[0-9]'"])).text)?.[1] ?? null;
+        const current = /mRotation=(\d)/u.exec((await shell([`${DEFAULT_DISPLAY_DUMP} | grep -m1 -oE 'mRotation=[0-9]'`])).text)?.[1] ?? null;
         if (current === rotation) {
           const header = /(\d+)\s+(\d+)/u.exec((await shell(["screencap 2>/dev/null | head -c 8 | od -An -tu4"])).text);
           if (!header || (Number(header[1]) > Number(header[2])) === wantLandscape) return;

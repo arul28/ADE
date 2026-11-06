@@ -8,7 +8,7 @@ import {
   type AndroidWindowMode,
 } from "../../../shared/types/androidEmulator";
 import { assertPackageName } from "./androidApps";
-import { runDeviceScript, type BootedDevice } from "./androidDeviceShell";
+import { DEFAULT_DISPLAY_DUMP, runDeviceScript, type BootedDevice } from "./androidDeviceShell";
 import { requireLaneId } from "./androidEmulatorErrors";
 import { createAndroidLaneQueue } from "./androidLaneQueue";
 
@@ -22,8 +22,15 @@ import { createAndroidLaneQueue } from "./androidLaneQueue";
  *   "fullscreen", so a task smaller than the screen and not free is split.
  * - Split screen is the window manager shell's own command
  *   (`dumpsys activity service SystemUIService WMShell splitscreen …`):
- *   `moveToSideStage <task> <0|1>` (0 is top or left), `switchSplitPosition`,
- *   `exitSplitScreen <task>`. The task behind the moved one fills the other side.
+ *   `moveToSideStage <task> <0|1>` (0 is top or left) and
+ *   `exitSplitScreen <task>` (Android 14 has none: an app opened full screen
+ *   ends the split there). The front task fills the other side, so the
+ *   moved task is put just behind it first (moving the front task itself
+ *   fails on API 34). A task that is already split is never moved (SystemUI throws and
+ *   restarts on API 37): the split ends first. `switchSplitPosition` does
+ *   nothing on API 37, so a swap is an end and a new split. Android 15+ splits
+ *   a large screen left and right even when it is portrait
+ *   (`mIsLeftRightSplit` in the shell's dump); older images split by shape.
  * - A free window is `am start --windowingMode 5` (after
  *   `enable_freeform_support`), and `am task resize` sizes and moves it.
  *   `am start --windowingMode 1` makes it full screen again.
@@ -37,8 +44,16 @@ import { createAndroidLaneQueue } from "./androidLaneQueue";
 const WMSHELL = "dumpsys activity service SystemUIService WMShell";
 const WINDOWING_FULLSCREEN = 1;
 const WINDOWING_FREEFORM = 5;
-/** How long an action waits for the window manager to finish its change. */
-const SETTLE_MS = 3_000;
+const SPLIT_BUSY = "Android is still ending the split screen, so ADE did not move a window (a move then restarts SystemUI and closes both apps). Try again in a moment.";
+/**
+ * How long an action waits for the window manager to finish its change. A
+ * split takes about 4 s to show on an API 34 emulator (under 1 s on API 37).
+ */
+const SETTLE_MS = 6_000;
+/** How long the end of a split may take before ADE refuses to move a window. */
+const END_SPLIT_MS = 10_000;
+/** How long the home screen may take to cover a split (Android 14's way out of it). */
+const HOME_MS = 3_000;
 const POLL_MS = 150;
 /** Pixels a frame may be off and still count as where it was asked. */
 const TOLERANCE = 4;
@@ -94,7 +109,8 @@ export function parseStackList(text: string, screen: { width: number; height: nu
     tasks.push({
       taskId: Number(task[1]),
       packageName: task[2]!,
-      activity: activity.startsWith(".") ? `${task[2]}${activity}` : activity,
+      // The component as `am start -n` takes it: package/class.
+      activity: `${task[2]}/${activity.startsWith(".") ? `${task[2]}${activity}` : activity}`,
       mode,
       frame,
       visible: task[8] === "true",
@@ -124,13 +140,16 @@ export function createAndroidWindows(deps: AndroidWindowsDeps) {
   const run = async (booted: BootedDevice, script: string, what: string) => {
     const result = await sh(booted, script);
     if (result.exitCode !== 0 || /Exception|Error:|Unknown command|Bad argument|not supported/iu.test(result.text)) {
-      throw new Error(`The emulator did not ${what}: ${result.text.split(/\r?\n/u).find((line) => line.trim())?.slice(0, 240) || `exit ${result.exitCode}`}`);
+      // `am` prints "Exception occurred while executing 'start':" and the real cause on a later line.
+      const lines = result.text.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+      const cause = lines.find((line) => /(Exception|Error)\b.*:/u.test(line) && !/^Exception occurred while executing/u.test(line)) ?? lines[0];
+      throw new Error(`The emulator did not ${what}: ${cause?.slice(0, 240) || `exit ${result.exitCode}`}`);
     }
     return result;
   };
 
   const list = async (booted: BootedDevice) => {
-    const result = await sh(booted, "dumpsys window displays | grep -m1 -oE 'cur=[0-9]+x[0-9]+'; echo ---; am stack list");
+    const result = await sh(booted, `${DEFAULT_DISPLAY_DUMP} | grep -m1 -oE 'cur=[0-9]+x[0-9]+'; echo ---; am stack list`);
     const [head = "", body = ""] = result.stdout.split("---");
     const screen = parseScreenSize(head);
     const tasks = parseStackList(body, screen).filter((task) => !task.home);
@@ -146,26 +165,64 @@ export function createAndroidWindows(deps: AndroidWindowsDeps) {
     return text;
   };
 
-  /** The app's front task, opening the app when it has none. */
-  const taskOf = async (booted: BootedDevice, packageName: string, mode?: number): Promise<ListedTask> => {
+  /**
+   * Brings the app to the front full screen, as a tap on its icon does (its
+   * own task comes back), opening it when it has none. Only a window that is
+   * not full screen gets `--windowingMode 1`: that flag can open a new task.
+   */
+  const toFront = async (booted: BootedDevice, packageName: string) => {
     const found = (await list(booted)).tasks.find((task) => task.packageName === packageName);
-    if (found && mode === undefined) return found;
-    const component = found?.activity ?? await launcherOf(booted, packageName);
-    await run(booted, `am start -W${mode === undefined ? "" : ` --windowingMode ${mode}`} -n ${component} >/dev/null`, `open ${packageName}`);
-    const opened = (await list(booted)).tasks.find((task) => task.packageName === packageName);
-    if (!opened) throw new Error(`${packageName} did not open a window.`);
-    return opened;
+    const component = await launcherOf(booted, packageName);
+    const mode = found && found.mode !== "fullscreen" ? ` --windowingMode ${WINDOWING_FULLSCREEN}` : "";
+    await run(booted, `am start -W${mode} -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n ${component} >/dev/null`, `open ${packageName}`);
   };
 
   /** Waits until `done` holds on the list, or the settle time runs out; answers the last list. */
-  const settle = async (booted: BootedDevice, done: (tasks: ListedTask[]) => boolean) => {
-    const deadline = now() + SETTLE_MS;
+  const settle = async (booted: BootedDevice, done: (tasks: ListedTask[]) => boolean, waitMs = SETTLE_MS) => {
+    const deadline = now() + waitMs;
     let state = await list(booted);
     while (!done(state.tasks) && now() < deadline && !signal.aborted) {
       await deps.sleep(POLL_MS);
       state = await list(booted);
     }
     return state;
+  };
+
+  /**
+   * Ends the split screen with `keepTaskId` on top, the other side behind it.
+   * `moveToSideStage` on a task that is already split throws in SystemUI
+   * ("taskId is in split", API 37) and SystemUI restarts, closing both apps,
+   * so every move ends the split first.
+   */
+  const endSplit = async (booted: BootedDevice, keepTaskId: number) => {
+    const keep = (await list(booted)).tasks.find((task) => task.taskId === keepTaskId);
+    const rootId = keep?.rootId;
+    const exit = await run(booted, `${WMSHELL} splitscreen exitSplitScreen ${keepTaskId}`, "end the split screen");
+    if (/Invalid command/u.test(exit.stdout) && keep) {
+      // Android 14 and older have no exitSplitScreen. There an app opened
+      // full screen from the home screen leaves the split (opened while the
+      // split shows, it does nothing). Each app of the split opens full
+      // screen, the kept one last, so it ends on top. (Some apps, Chrome
+      // among them, come back in a new task: callers find apps by package.)
+      const mates = (await list(booted)).tasks.filter((task) => task.mode === "split" && task.rootId === rootId && task.packageName !== keep.packageName);
+      await run(booted, "input keyevent KEYCODE_HOME", "go to the home screen");
+      await settle(booted, (tasks) => !tasks.some((task) => task.visible && task.mode === "split"), HOME_MS);
+      for (const mate of mates) await toFront(booted, mate.packageName);
+      await toFront(booted, keep.packageName);
+    }
+    // Done when neither side of this split is split any more (a hidden split
+    // pair elsewhere, behind a full-screen app, is not this one).
+    const ended = (tasks: ListedTask[]) => !tasks.some((task) => task.mode === "split" && (task.taskId === keepTaskId || (rootId !== undefined && task.rootId === rootId)));
+    const state = await settle(booted, ended, END_SPLIT_MS);
+    if (!ended(state.tasks)) throw new Error(SPLIT_BUSY);
+    return state;
+  };
+
+  /** `moveToSideStage`, never on a task that is still split (that restarts SystemUI). */
+  const moveToSide = async (booted: BootedDevice, taskId: number, position: 0 | 1, what: string) => {
+    const current = (await list(booted)).tasks.find((task) => task.taskId === taskId);
+    if (current?.mode === "split") throw new Error(SPLIT_BUSY);
+    await run(booted, `${WMSHELL} splitscreen moveToSideStage ${taskId} ${position} >/dev/null`, what);
   };
 
   const layout = async (laneId: string, args: AndroidWindowLayoutArgs): Promise<AndroidWindowLayoutResult> => {
@@ -189,13 +246,20 @@ export function createAndroidWindows(deps: AndroidWindowsDeps) {
     if (action === "swap") {
       const split = initial.tasks.filter((task) => task.mode === "split" && task.visible);
       if (split.length < 2) return answer(initial, null, false, "No split screen is showing.");
-      const before = new Map(split.map((task) => [task.taskId, task.frame]));
-      await run(booted, `${WMSHELL} splitscreen switchSplitPosition >/dev/null`, "swap the split screen");
+      // `switchSplitPosition` does nothing on API 37, so the swap ends the
+      // split with the first side on top and moves the second side to the start.
+      const [first, second] = [...split].sort((a, b) => a.frame.x + a.frame.y - (b.frame.x + b.frame.y)) as [ListedTask, ListedTask];
+      const ended = await endSplit(booted, first.taskId);
+      // Found again by package: on Android 14 an app can come back in a new task.
+      const secondNow = ended.tasks.find((task) => task.packageName === second.packageName);
+      if (!secondNow) return answer(ended, null, false, `${second.packageName} closed when the split ended.`);
+      await moveToSide(booted, secondNow.taskId, 0, "swap the split screen");
       deps.onScreenChanged(laneId);
-      const moved = (tasks: ListedTask[]) => tasks.some((task) => {
-        const was = before.get(task.taskId);
-        return was !== undefined && (!near(was.x, task.frame.x) || !near(was.y, task.frame.y));
-      });
+      const moved = (tasks: ListedTask[]) => {
+        const swapped = tasks.find((task) => task.packageName === second.packageName && task.mode === "split");
+        const other = tasks.find((task) => task.packageName === first.packageName && task.mode === "split");
+        return Boolean(swapped && other && swapped.mode === "split" && other.mode === "split" && near(swapped.frame.x, 0) && near(swapped.frame.y, 0));
+      };
       const state = await settle(booted, moved);
       return moved(state.tasks) ? answer(state, null, true) : answer(state, null, false, "The two sides did not change over.");
     }
@@ -209,27 +273,73 @@ export function createAndroidWindows(deps: AndroidWindowsDeps) {
     const portrait = screen ? screen.height > screen.width : true;
 
     if (action === "split" || action === "left" || action === "right" || action === "top" || action === "bottom") {
-      const side = action === "split" ? (portrait ? "bottom" : "right") : action;
-      if (portrait && (side === "left" || side === "right")) {
-        return answer(initial, packageName, false, "This screen is portrait, so Android splits it top and bottom. Use top or bottom.");
+      // A large screen (a foldable open) splits left and right even when it
+      // is portrait (Android 15+, `mIsLeftRightSplit`); older images split by
+      // the screen's shape.
+      const flag = /mIsLeftRightSplit=(true|false)/u.exec(
+        (await sh(booted, `${WMSHELL} | grep -m1 -oE 'mIsLeftRightSplit=(true|false)'`)).stdout,
+      )?.[1];
+      const leftRight = flag ? flag === "true" : !portrait;
+      const side = action === "split" ? (leftRight ? "right" : "bottom") : action;
+      if (!leftRight && (side === "left" || side === "right")) {
+        return answer(initial, packageName, false, "Android splits this screen top and bottom. Use top or bottom.");
       }
-      if (!portrait && (side === "top" || side === "bottom")) {
-        return answer(initial, packageName, false, "This screen is landscape, so Android splits it left and right. Use left or right.");
+      if (leftRight && (side === "top" || side === "bottom")) {
+        return answer(initial, packageName, false, "Android splits this screen left and right. Use left or right.");
       }
       const withPackage = args.withPackage?.trim() ? assertPackageName(args.withPackage.trim()) : null;
       if (withPackage === packageName) return answer(initial, packageName, false, "Name two different apps to split.");
-      // The other side is the task behind: open the partner first, then the app.
-      if (withPackage) await taskOf(booted, withPackage, WINDOWING_FULLSCREEN);
-      const task = withPackage || named ? await taskOf(booted, packageName, WINDOWING_FULLSCREEN) : await taskOf(booted, packageName);
       const position = side === "left" || side === "top" ? 0 : 1;
-      await run(booted, `${WMSHELL} splitscreen moveToSideStage ${task.taskId} ${position} >/dev/null`, "split the screen");
+      const atStartOf = (frame: AndroidWindowFrame) => (leftRight ? near(frame.x, 0) : near(frame.y, 0));
+      const splitNow = initial.tasks.filter((entry) => entry.mode === "split" && entry.visible);
+      const mineNow = splitNow.find((entry) => entry.packageName === packageName)
+        ?? initial.tasks.find((entry) => entry.packageName === packageName && entry.mode === "split");
+      // The other side shares this app's root task; with no root to go by, the other visible side.
+      const partnerNow = mineNow
+        ? initial.tasks.find((entry) => entry !== mineNow && entry.mode === "split" && entry.rootId === mineNow.rootId)
+          ?? splitNow.find((entry) => entry !== mineNow)
+        : undefined;
+      if (mineNow && partnerNow && (!withPackage || partnerNow.packageName === withPackage)
+        && (position === 0) === atStartOf(mineNow.frame)) {
+        return answer(initial, packageName, true); // already there
+      }
+      // A move of a task that is already split crashes SystemUI, so the split ends first.
+      let task: ListedTask;
+      if (mineNow && partnerNow && (!withPackage || partnerNow.packageName === withPackage)) {
+        // Same two apps, other side: the partner stays on top and fills the
+        // other side again when this app moves (the swap's way).
+        const ended = await endSplit(booted, partnerNow.taskId);
+        const mineAgain = ended.tasks.find((entry) => entry.packageName === packageName);
+        if (!mineAgain) return answer(ended, packageName, false, `${packageName} closed when the split ended.`);
+        task = mineAgain;
+      } else {
+        if (mineNow || splitNow.length > 0) await endSplit(booted, (mineNow ?? splitNow[0]!).taskId);
+        // The front app fills the other side, and the moved app must be behind
+        // it (moving the front app itself fails on API 34: "didn't receive 2
+        // tasks in transition"). So the app comes up first, then the partner
+        // over it: the named one, or the front-most other app.
+        const partnerPackage = withPackage
+          ?? (await list(booted)).tasks.find((entry) => entry.packageName !== packageName)?.packageName
+          ?? null;
+        if (!partnerPackage) {
+          return answer(await list(booted), packageName, false, "No other app is open to fill the other side. Name one with withPackage (--with).");
+        }
+        // An app already open full screen is only covered (opening it again
+        // would give Chrome a second task).
+        const own = (await list(booted)).tasks.find((entry) => entry.packageName === packageName);
+        if (own?.mode !== "fullscreen") await toFront(booted, packageName);
+        await toFront(booted, partnerPackage);
+        const behind = (await list(booted)).tasks.find((entry) => entry.packageName === packageName);
+        if (!behind) throw new Error(`${packageName} did not open a window.`);
+        task = behind;
+      }
+      await moveToSide(booted, task.taskId, position, "split the screen");
       deps.onScreenChanged(laneId);
       const placed = (tasks: ListedTask[]) => {
         const mine = tasks.find((entry) => entry.taskId === task.taskId);
         if (!mine || mine.mode !== "split" || !screen) return false;
         const other = tasks.some((entry) => entry.taskId !== task.taskId && entry.mode === "split" && entry.visible);
-        const atStart = portrait ? near(mine.frame.y, 0) : near(mine.frame.x, 0);
-        return other && (position === 0 ? atStart : !atStart);
+        return other && (position === 0) === atStartOf(mine.frame);
       };
       const state = await settle(booted, placed);
       return placed(state.tasks)
@@ -240,6 +350,8 @@ export function createAndroidWindows(deps: AndroidWindowsDeps) {
     if (action === "freeform") {
       const support = (await sh(booted, "settings get global enable_freeform_support")).stdout.trim();
       if (support !== "1") await run(booted, "settings put global enable_freeform_support 1", "allow free windows");
+      const splitTask = initial.tasks.find((task) => task.packageName === packageName && task.mode === "split");
+      if (splitTask) await endSplit(booted, splitTask.taskId);
       const component = initial.tasks.find((task) => task.packageName === packageName)?.activity ?? await launcherOf(booted, packageName);
       await run(booted, `am start -W --windowingMode ${WINDOWING_FREEFORM} -n ${component} >/dev/null`, `open ${packageName} in a free window`);
       deps.onScreenChanged(laneId);
@@ -261,6 +373,9 @@ export function createAndroidWindows(deps: AndroidWindowsDeps) {
       const want = action === "size"
         ? { x, y, width: whole(args.width, "width"), height: whole(args.height, "height") }
         : { x: whole(args.x, "x", true), y: whole(args.y, "y", true), width, height };
+      if (screen && (want.x + want.width > screen.width || want.y + want.height > screen.height)) {
+        return answer(initial, packageName, false, `That frame runs past the ${screen.width}x${screen.height} screen. Choose a smaller size or a point nearer the top left.`);
+      }
       await run(booted, `am task resize ${task.taskId} ${want.x} ${want.y} ${want.x + want.width} ${want.y + want.height}`, "resize the window");
       deps.onScreenChanged(laneId);
       const landed = (tasks: ListedTask[]) => {
@@ -276,14 +391,19 @@ export function createAndroidWindows(deps: AndroidWindowsDeps) {
 
     if (action === "fill") {
       if (task.mode === "split") {
-        await run(booted, `${WMSHELL} splitscreen exitSplitScreen ${task.taskId} >/dev/null`, "end the split screen");
+        await endSplit(booted, task.taskId);
       } else if (task.mode !== "fullscreen" && task.activity) {
         await run(booted, `am start -W --windowingMode ${WINDOWING_FULLSCREEN} -n ${task.activity} >/dev/null`, "make the window full screen");
       }
       deps.onScreenChanged(laneId);
-      const full = (tasks: ListedTask[]) => tasks.some((entry) => entry.taskId === task.taskId && entry.mode === "fullscreen");
+      // Some apps (Chrome) open a new task for the new mode, so the app counts, not the task id.
+      const full = (tasks: ListedTask[]) => tasks.some((entry) => (entry.taskId === task.taskId || entry.packageName === packageName) && entry.mode === "fullscreen" && entry.visible);
       const state = await settle(booted, full);
-      return full(state.tasks) ? answer(state, packageName, true) : answer(state, packageName, false, "The window is not full screen.");
+      if (full(state.tasks)) return answer(state, packageName, true);
+      const still = state.tasks.find((entry) => entry.taskId === task.taskId);
+      return answer(state, packageName, false, still?.mode === "freeform"
+        ? "Android kept the free window (Android 14 and older do not change the mode of an open window). Close it with the close action and open the app again."
+        : "The window is not full screen.");
     }
 
     // close: a split task shares its root with the other side, so the split ends first.

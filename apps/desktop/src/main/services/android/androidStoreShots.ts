@@ -48,6 +48,15 @@ const PLAY_MIN_SHORT_SIDE = 1080;
 const PLAY_MAX_SIDE = 3840;
 /** A fold needs a moment after it settles before apps finish their new layout. */
 const LAYOUT_SETTLE_MS = 600;
+/**
+ * How long a fold may take to put the other screen in the capture. The
+ * posture read can call a fold settled before `screencap` follows it (seen
+ * once on a Pixel 9 Pro Fold AVD: the cover shot came out the inner screen).
+ */
+const SCREEN_SWAP_TIMEOUT_MS = 6_000;
+const SCREEN_SWAP_POLL_MS = 200;
+/** How long the lock screen may take to go after `wm dismiss-keyguard`. */
+const UNLOCK_TIMEOUT_MS = 3_000;
 
 export type AndroidStoreShotsDeps = {
   requireBooted: (laneId: string) => Promise<BootedDevice>;
@@ -205,6 +214,56 @@ export function createAndroidStoreShots(deps: AndroidStoreShotsDeps) {
     return parseRawScreencap(result.stdout);
   };
 
+  /** The capture's size only: the 16-byte header, so a poll costs no frame. */
+  const captureSize = async (booted: BootedDevice): Promise<{ width: number; height: number } | null> => {
+    const result = await runAdb(booted.adbPath, ["exec-out", "screencap 2>/dev/null | head -c 16"], {
+      serial: booted.serial,
+      timeoutMs: 10_000,
+      signal,
+    });
+    const data = result.stdout;
+    if (data.length < 8) return null;
+    return { width: data.readUInt32LE(0), height: data.readUInt32LE(4) };
+  };
+
+  /** One screen size, turned or not, is the same screen. */
+  const sameScreen = (a: { width: number; height: number } | null, b: { width: number; height: number } | null) =>
+    Boolean(a && b && Math.min(a.width, a.height) === Math.min(b.width, b.height) && Math.max(a.width, a.height) === Math.max(b.width, b.height));
+
+  /** Waits until the capture is no longer `previous`'s screen; refuses a shot of the wrong screen. */
+  const awaitScreenSwap = async (booted: BootedDevice, previous: { width: number; height: number } | null, display: string) => {
+    if (!previous) return;
+    const deadline = deps.now().getTime() + SCREEN_SWAP_TIMEOUT_MS;
+    for (;;) {
+      if (!sameScreen(await captureSize(booted), previous)) return;
+      if (deps.now().getTime() >= deadline || signal.aborted) {
+        throw new Error(`The emulator still showed the other screen ${SCREEN_SWAP_TIMEOUT_MS / 1000} s after the fold, so no ${display} screen shot was taken. Try again.`);
+      }
+      await deps.sleep(SCREEN_SWAP_POLL_MS);
+    }
+  };
+
+  /**
+   * A fold shows the lock screen (seen on a Pixel 9 Pro Fold AVD when it
+   * shuts), and a Play shot of the lock screen is no use. `wm dismiss-keyguard`
+   * (API 26+) takes it away when the device has no screen lock; with one, the
+   * call refuses rather than file the lock screen.
+   */
+  const dismissLockScreen = async (booted: BootedDevice) => {
+    const showing = async () => /isKeyguardShowing=true/u.test(
+      (await runDeviceScript(booted, "dumpsys window | grep -m1 -o 'isKeyguardShowing=[a-z]*'", { timeoutMs: 10_000, signal })).stdout,
+    );
+    if (!(await showing())) return;
+    await runDeviceScript(booted, "wm dismiss-keyguard", { timeoutMs: 10_000, signal });
+    const deadline = deps.now().getTime() + UNLOCK_TIMEOUT_MS;
+    while (await showing()) {
+      if (deps.now().getTime() >= deadline || signal.aborted) {
+        throw new Error("The emulator showed its lock screen after the fold and has a screen lock, so the app cannot be shown. Unlock it (or remove the screen lock) and try again.");
+      }
+      await deps.sleep(SCREEN_SWAP_POLL_MS);
+    }
+  };
+
   /** The slot for a device that does not fold: its smallest width in dp. */
   const slotFor = async (booted: BootedDevice, frame: RawFrame): Promise<AndroidStoreShotSlot> => {
     const text = (await runDeviceScript(booted, "wm density", { timeoutMs: 15_000, signal })).stdout;
@@ -260,13 +319,19 @@ export function createAndroidStoreShots(deps: AndroidStoreShotsDeps) {
     }
     const shots: AndroidStoreShot[] = [];
     try {
+      // The screen in front before each fold: a shot is taken only once the capture is the other one.
+      let previous = before.state === "closed" ? null : await captureSize(booted);
       for (const [display, pose, slot] of [["cover", "closed", "phone"], ["inner", "open", "large-screen"]] as const) {
         const folded = await deps.posture.setPosture({ laneId, pose });
         if (!folded.settled) {
           deps.logger?.warn("android.store_shots_fold_unsettled", { laneId, pose });
         }
+        await awaitScreenSwap(booted, previous, display);
+        await dismissLockScreen(booted);
         await deps.sleep(LAYOUT_SETTLE_MS);
-        shots.push(await write(laneId, args, await capture(booted), display, slot));
+        const frame = await capture(booted);
+        previous = { width: frame.width, height: frame.height };
+        shots.push(await write(laneId, args, frame, display, slot));
       }
     } finally {
       if (before.angle !== null) {

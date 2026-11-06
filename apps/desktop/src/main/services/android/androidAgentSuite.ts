@@ -28,7 +28,7 @@ import { assertPackageName, createAndroidApps } from "./androidApps";
 import { androidLaunchWords, createAndroidAppState } from "./androidAppState";
 import { createAndroidInstrumentationTests } from "./androidInstrumentationTests";
 import { locateAndroidJdk } from "./androidJdk";
-import { runAdbOutput, runDeviceScript, runDeviceShell, type BootedDevice } from "./androidDeviceShell";
+import { DEFAULT_DISPLAY_DUMP, runAdbOutput, runDeviceScript, runDeviceShell, type BootedDevice } from "./androidDeviceShell";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 import { isLogcatCursor, logcatArgs, parseLogcatDump, parsePackageUid, parsePidof } from "./androidLogcat";
 import { fileAndroidCaptureAsProof, type AndroidArtifactFiler } from "./androidProof";
@@ -241,7 +241,7 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
     let width = Number(size[1]);
     let height = Number(size[2]);
     // `wm size` is the natural orientation; the screen may be turned.
-    const rotationText = (await runDeviceScript(booted, "dumpsys window | grep -m1 -oE 'mRotation=[0-9]'", { timeoutMs: 15_000, signal })).text;
+    const rotationText = (await runDeviceScript(booted, `${DEFAULT_DISPLAY_DUMP} | grep -m1 -oE 'mRotation=[0-9]'`, { timeoutMs: 15_000, signal })).text;
     const rotation = /mRotation=(\d)/u.exec(rotationText)?.[1];
     if (rotation === "1" || rotation === "3") [width, height] = [height, width];
     return { width, height };
@@ -482,12 +482,28 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       ui.invalidate(laneId);
       if (element.password) return elementActionResult("fill", picked, { typed: "unknown", typedDetail: "A password field does not show its text, so ADE cannot check it." });
       // Read the field back: a keyboard that dropped characters reads as not-seen.
-      await sleep(300);
       try {
-        const after = await ui.snapshot(laneId, { fresh: true });
-        const same = after.elements.find((candidate) =>
-          (element.resourceId && candidate.resourceId === element.resourceId) || candidate.path === element.path) ?? null;
-        const seen = Boolean(same?.text?.includes(text));
+        const isTextField = (candidate: { className?: string | null; role?: string | null }) =>
+          /EditText|TextField/iu.test(candidate.className ?? candidate.role ?? "");
+        const readBack = async () => {
+          const after = await ui.snapshot(laneId, { fresh: true });
+          const same = after.elements.find((candidate) =>
+            (element.resourceId && candidate.resourceId === element.resourceId) || candidate.path === element.path) ?? null;
+          if (same?.text?.includes(text)) return { same, seen: true };
+          // A web field (Chrome, a WebView) has no resource id, and its tree path
+          // and place move when the page reflows (google.com lifts its box to the
+          // top and opens suggestions). A text field that now shows the text is it.
+          const moved = after.elements.find((candidate) => isTextField(candidate) && Boolean(candidate.text?.includes(text))) ?? null;
+          return { same: moved ?? same, seen: moved !== null };
+        };
+        await sleep(300);
+        let read = await readBack();
+        // A web page under load can show the text a moment later: one more read.
+        if (!read.seen && !element.resourceId) {
+          await sleep(1_000);
+          read = await readBack();
+        }
+        const { same, seen } = read;
         return elementActionResult("fill", picked, {
           typed: seen ? "verified" : "not-seen",
           typedDetail: seen ? null : `The field now reads ${JSON.stringify(same?.text ?? null)}. Characters the emulator keyboard has no key for (most non-ASCII) are skipped.`,

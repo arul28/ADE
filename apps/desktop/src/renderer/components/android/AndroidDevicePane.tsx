@@ -576,7 +576,7 @@ export function AndroidDevicePane({
   }, [api, laneId, orientation]);
 
   const storeScreenshots = useCallback(() => {
-    if (!api?.storeScreenshots) return;
+    if (!api) return;
     setStoreShotsPending(true);
     void api.storeScreenshots({ laneId, chatSessionId: sessionId }, runtimePinRef.current)
       .then((result) => showToast({
@@ -940,7 +940,7 @@ export function AndroidDevicePane({
                 onKey={pressKey}
                 orientation={orientation ?? "portrait"}
                 onOrientation={rotate}
-                onStoreScreenshots={api?.storeScreenshots ? storeScreenshots : undefined}
+                onStoreScreenshots={api ? storeScreenshots : undefined}
                 storeScreenshotsPending={storeShotsPending}
                 onScreenshot={screenshot}
                 onSwitchDevice={noPicker ? undefined : () => setPickerRequested(true)}

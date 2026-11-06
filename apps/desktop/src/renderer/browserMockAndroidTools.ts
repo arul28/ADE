@@ -298,8 +298,8 @@ export function createMockAndroidTools({ fail }: { fail: boolean }): MockToolsAp
     })),
     inspectPoint: async () => delay({ item: null, source: "none" as const, element: null }),
     selectPoint: async () => delay({ item: null, source: "none" as const, element: null }),
-    deviceCleanup: async ({ dryRun }) => delay({
-      dryRun: dryRun === true, released: [], stoppedOrphans: [], forgottenRows: [], poweredOff: [], unheld: [], errors: [], idlePowerOffMinutes: 30,
+    deviceCleanup: async (args) => delay({
+      dryRun: args?.dryRun === true, released: [], stoppedOrphans: [], forgottenRows: [], poweredOff: [], unheld: [], errors: [], idlePowerOffMinutes: 30,
     }),
   };
 }

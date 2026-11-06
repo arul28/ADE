@@ -332,7 +332,7 @@ export function buildAndroidSuitePlan(
       ...laneClaim(),
       ...(keep ? { keep: true } : {}),
       ...(discard ? { discard: true } : {}),
-    }, "android-recording", { progressNotice: "Stopping the recording and making its demo video…" });
+    }, "android-recording", discard ? {} : { progressNotice: "Stopping the recording and making its demo video…" });
   }
   if (sub === "auto-record") {
     // `ade apple auto-record`'s words: on, off, or status (the default).

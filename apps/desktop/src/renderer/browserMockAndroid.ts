@@ -414,7 +414,9 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
     },
     rotate: async (args) => {
       rotations.push(args.orientation);
-      window.setTimeout(() => { mockOrientation = args.orientation; }, 900);
+      // The mock streams a shape: an upside-down turn is still portrait.
+      const shape = args.orientation === "portrait" || args.orientation === "portrait-upside-down" ? "portrait" : "landscape";
+      window.setTimeout(() => { mockOrientation = shape; }, 900);
     },
     screenshot: async () => delay({
       path: "/Users/mock/.ade/android/screenshots/ade_lane_medium_phone-1.png",

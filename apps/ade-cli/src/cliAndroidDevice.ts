@@ -101,6 +101,8 @@ export function buildAndroidDevicePlan(
 
   if (sub === "status-bar") {
     if (readFlag(args, ["--clear", "--reset"])) {
+      const setters = ["--time", "--data-network", "--wifi-bars", "--cellular-bars", "--battery-level", "--battery-state"];
+      if (args.some((arg) => setters.includes(arg.split("=")[0]!))) throw usage("--clear takes no other flags; set the bar or clear it, not both.");
       return androidAction("android status-bar", "clearStatusBar", laneClaim(), "android-status-bar");
     }
     const time = readValue(args, ["--time"]);
@@ -127,6 +129,7 @@ export function buildAndroidDevicePlan(
   }
 
   if (sub === "location" && readFlag(args, ["--clear", "--reset"])) {
+    if (positionals().length > 0) throw usage("--clear takes no coordinates; set a point or clear it, not both.");
     return androidAction("android location", "clearLocation", laneClaim(), "android-action", {
       shapeResult: withAsked({ action: "location-clear" }),
     });

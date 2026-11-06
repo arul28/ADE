@@ -193,9 +193,10 @@ export type AndroidStoreScreenshotsResult = {
  * - `status`: list the app windows, front first.
  * - `split`: two apps side by side: `packageName` beside `withPackage` (or
  *   beside the app in front). `left`, `right`, `top`, `bottom`: put the app
- *   (or the app in front) on that side of a split screen. Android splits a
- *   portrait screen top and bottom, a landscape one left and right; the side
- *   that does not fit the screen's shape is refused.
+ *   (or the app in front) on that side of a split screen. Android picks the
+ *   direction: left and right on a landscape screen and on a large screen
+ *   (Android 15+, a foldable open), top and bottom otherwise. A side that does
+ *   not fit is refused.
  * - `swap`: change the two sides over.
  * - `freeform`: open the app in a free window (Android turns on
  *   `enable_freeform_support` first when it is off). `size` and `move`
@@ -239,6 +240,7 @@ export type AndroidWindowMode = "fullscreen" | "split" | "freeform" | "pip" | "o
 export type AndroidWindow = {
   taskId: number;
   packageName: string;
+  /** The top activity as a component (`package/class`), as `am start -n` takes it. */
   activity: string | null;
   mode: AndroidWindowMode;
   frame: AndroidWindowFrame;

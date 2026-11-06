@@ -342,5 +342,12 @@ export function createAndroidLaneStreams<S extends AndroidLaneStreamState>(deps:
 
     /** The machine's remote cap, for the relay's ceiling. */
     remoteBitrateKbpsCap: machineCapKbps,
+
+    /**
+     * Someone uses the stream: a viewer here, a recording, or a remote viewer.
+     * A stream with none of them (kept up after the last one left) is not use,
+     * so the idle power-off does not wait on it.
+     */
+    held: (laneId: string): boolean => fullRateHeld(laneId) || remoteHeld(laneId),
   };
 }

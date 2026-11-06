@@ -785,7 +785,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     },
     isBusy: (laneId) => {
       const state = lanes.get(laneId);
-      return Boolean(state?.transient || state?.streamSerial || agent.isRecording(laneId) || agent.isLeased(laneId) || testsRunning.has(laneId));
+      // A stream counts only while someone holds it (a viewer or a recording), not when it is merely up.
+      return Boolean(state?.transient || laneStreams.held(laneId) || agent.isRecording(laneId) || agent.isLeased(laneId) || testsRunning.has(laneId));
     },
     deviceIdleMs: async (laneId) => {
       const booted = await requireBooted(laneId);
@@ -801,7 +802,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       await serialize(laneId, async () => {
         const state = laneState(laneId);
         // Something started using it while the pass waited for the queue.
-        if (state.transient || state.streamSerial) throw new Error("The emulator came into use, so ADE left it running.");
+        if (state.transient || laneStreams.held(laneId)) throw new Error("The emulator came into use, so ADE left it running.");
         const current = deps.laneDevices.get(laneId);
         if (!current || !sameAvdName(current.avdName, device.avdName)) return;
         await stopLocked(state, current, { refuseForeign: false });
