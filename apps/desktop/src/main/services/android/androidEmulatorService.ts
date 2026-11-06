@@ -452,6 +452,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         totalMs: Date.now() - startedAt,
       });
       state.transient = null;
+      agent.onDeviceBooted(laneId);
       watchExit(state, launch);
       crashWatch.ensure(laneId, { serial: launch.serial, adbPath: ready.adbPath });
       return await emitDeviceState(laneId);
