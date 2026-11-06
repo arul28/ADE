@@ -264,6 +264,17 @@ public actor DeviceSession {
         if engine == nil {
             _ = try await startCapture(fps: fps, scale: 1, bitrateKbps: nil)
             captureOwnedByRecording = true
+            // A fresh engine starts on the device's largest surface, which on
+            // a folded foldable is the dark inner panel: every frame of the
+            // file would be black, at a size nobody is looking at. Follow the
+            // live panel before the first frame is written, the way
+            // `screenshot` and `capture-start` do. The runtime starts the
+            // posture watcher after this, so a fold mid-recording still moves
+            // the capture with it.
+            if await isFoldable(),
+               let live = await DevicePosture.displays(udid: udid).first(where: \.active) {
+                _ = await applyActiveScreen(live.screenID)
+            }
         }
         guard let engine else { throw SessionError.notCapturing }
 
