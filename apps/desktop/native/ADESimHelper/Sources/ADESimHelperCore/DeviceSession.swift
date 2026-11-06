@@ -264,17 +264,12 @@ public actor DeviceSession {
         if engine == nil {
             _ = try await startCapture(fps: fps, scale: 1, bitrateKbps: nil)
             captureOwnedByRecording = true
-            // A fresh engine starts on the device's largest surface, which on
-            // a folded foldable is the dark inner panel: every frame of the
-            // file would be black, at a size nobody is looking at. Follow the
-            // live panel before the first frame is written, the way
-            // `screenshot` and `capture-start` do. The runtime starts the
-            // posture watcher after this, so a fold mid-recording still moves
-            // the capture with it.
-            if await isFoldable(),
-               let live = await DevicePosture.displays(udid: udid).first(where: \.active) {
-                _ = await applyActiveScreen(live.screenID)
-            }
+            // The engine starts on the largest surface, which on a folded
+            // foldable is the dark inner panel: every frame of the file would
+            // be black, at a size nobody is looking at. The runtime starts
+            // the posture watcher after this, so a fold mid-recording still
+            // moves the capture with it.
+            await followLivePanel()
         }
         guard let engine else { throw SessionError.notCapturing }
 
@@ -351,6 +346,22 @@ public actor DeviceSession {
 
     public func isFoldable() async -> Bool {
         await foldableInput() != nil
+    }
+
+    /// Point a capture that is not following the posture watcher yet at the
+    /// panel CoreDevice reports active.
+    ///
+    /// A capture engine starts on the device's largest surface, which on a
+    /// folded Duo is the dark inner panel, so anything that starts reading
+    /// frames before the watcher is behind it — a screenshot right after a
+    /// fold, a recording that starts its own capture — has to ask once.
+    /// A no-op for a device with no hinge.
+    private func followLivePanel() async {
+        guard
+            await isFoldable(),
+            let live = await DevicePosture.displays(udid: udid).first(where: \.active)
+        else { return }
+        _ = await applyActiveScreen(live.screenID)
     }
 
     /// The panel CoreDevice reports active: capture it, route input to it, and
@@ -617,11 +628,7 @@ public actor DeviceSession {
         // panel before the posture watcher moved the capture to it, and the
         // old panel then sends nothing. Follow the live panel now rather than
         // time out on the dark one (ledger #2).
-        if await isFoldable(),
-           let live = await DevicePosture.displays(udid: udid).first(where: \.active),
-           live.screenID != activeScreenID {
-            _ = await applyActiveScreen(live.screenID)
-        }
+        await followLivePanel()
 
         let jpeg = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
             Task {
