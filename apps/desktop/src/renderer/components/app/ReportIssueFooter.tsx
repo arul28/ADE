@@ -28,7 +28,8 @@ export function ReportIssueFooter({
     : SEND_HINT;
   return (
     <>
-      <hr className="kit-rule mt-[18px]" />
+      {/* Inline: `.kit-rule` sets `margin: 0`, which wins over a utility class. */}
+      <hr className="kit-rule" style={{ marginTop: 18 }} />
       <div className="mt-3 flex flex-col gap-1 text-[12px] text-(color:--kit-text-3)">
         {errorReportReceived ? <p>ADE got an error report automatically.</p> : null}
         {/* The button's own padding is pulled back so its label lines up with the text above. */}
