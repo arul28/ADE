@@ -378,7 +378,10 @@ struct WorkModelChipEditorBar: View {
     .shadow(color: Color.black.opacity(0.12), radius: 14, y: 4)
     .id(segment)
     .transition(.opacity.combined(with: .move(edge: .bottom)))
+    // A pick of the value already set rewrites nothing, so the step change is
+    // what clears it; otherwise the next part would light an id it lacks.
     .onChange(of: chip) { _, _ in pending = nil }
+    .onChange(of: segment) { _, _ in pending = nil }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("Work.Chat.Composer.ModelChipEditor.\(segment.rawValue)")
   }
