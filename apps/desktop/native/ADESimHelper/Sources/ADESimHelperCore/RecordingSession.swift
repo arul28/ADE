@@ -193,6 +193,9 @@ actor RecordingSession {
         )
     }
 
+    /// Tell the recorder how the live panel stands, in quarter turns
+    /// clockwise. Called before the first frame and again on every fold or
+    /// turn; any integer is accepted and folded into 0...3.
     func setScreenTurns(_ turns: Int) {
         screenTurns = ((turns % 4) + 4) % 4
     }
