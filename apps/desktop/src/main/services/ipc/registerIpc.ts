@@ -1585,11 +1585,20 @@ function redactedCliAuthFromStatuses(
     }));
 }
 
-async function buildGlobalAiStatus(args?: { force?: boolean }): Promise<AiSettingsStatus> {
+/**
+ * How long the no-project status read may take before the window gets the
+ * "unavailable" status instead of an IPC timeout. A cold Windows machine took
+ * all 30 s here; the read keeps going and fills the cache for the next call.
+ */
+const GLOBAL_AI_STATUS_BUDGET_MS = 20_000;
+
+async function buildGlobalAiStatus(args?: { force?: boolean; onPhase?: (phase: string) => void }): Promise<AiSettingsStatus> {
+  args?.onPhase?.("cli_auth");
   const cliStatuses = await detectCliAuthStatuses({
     force: args?.force === true,
     skipAuthProbe: args?.force !== true,
   });
+  args?.onPhase?.("provider_connections");
   // No live sign-in probe here, but ADE's own Copilot runtime still counts as
   // installed; the disk check answers for the sign-in.
   const providerConnections = await buildProviderConnections(cliStatuses, {
@@ -2878,6 +2887,21 @@ export function registerIpc({
    */
   const builtInBrowserRemoteRequestClaims = createRemoteRequestClaims();
 
+  const describeUntrustedSender = (hasWindow: boolean, senderUrl: string | null | undefined): string => {
+    let scheme = "no url";
+    let page = "";
+    try {
+      if (senderUrl) {
+        const url = new URL(senderUrl);
+        scheme = url.protocol.replace(/:$/, "") || "unknown";
+        if (url.protocol === "file:") page = ` ${url.pathname.split("/").pop() ?? ""}`;
+      }
+    } catch {
+      scheme = "unparsable url";
+    }
+    return `${hasWindow ? "window" : "no window"}, ${scheme}${page}`;
+  };
+
   const guardBuiltInBrowserIpc = (
     event: IpcMainInvokeEvent,
     channel: string,
@@ -2885,13 +2909,19 @@ export function registerIpc({
   ): BrowserWindow => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || !isTrustedAdeRendererSender(event)) {
+      const refusal = "Built-in browser is only available to the ADE renderer.";
+      // A window closing while its last calls (a preview's stop) are in
+      // flight: nothing is left to serve, so the refusal is its answer.
+      if (event.sender.isDestroyed() || win?.isDestroyed()) throw new AdeExpectedError(refusal, "user");
       const senderUrl = event.senderFrame?.url || event.sender.getURL();
       getCtx().logger.warn("ipc.built_in_browser.untrusted_sender", {
         channel,
         windowId: win?.id ?? null,
         senderUrl: senderUrl || null,
       });
-      throw new Error("Built-in browser is only available to the ADE renderer.");
+      // Which sender it was, without its path, so a report says whether ADE's
+      // own renderer was refused (a defect) or another page asked.
+      throw new Error(`${refusal} (sender: ${describeUntrustedSender(win != null, senderUrl)})`);
     }
     assertBuiltInBrowserRateLimit(event, channel, limit);
     return win;
@@ -5412,13 +5442,32 @@ export function registerIpc({
     const ctx = getCtx();
     const aiIntegrationService = ctx.aiIntegrationService;
     if (!aiIntegrationService) {
+      const force = arg?.force === true;
+      let phase = "start";
+      const startedAt = Date.now();
+      let budgetTimer: ReturnType<typeof setTimeout> | null = null;
       try {
-        return await buildGlobalAiStatus({ force: arg?.force === true });
+        const read = buildGlobalAiStatus({ force, onPhase: (next) => { phase = next; } });
+        // A forced refresh has its own, longer IPC deadline for the probes.
+        if (force) return await read;
+        read.catch(() => undefined);
+        return await Promise.race([
+          read,
+          new Promise<AiSettingsStatus>((resolve) => {
+            budgetTimer = setTimeout(() => {
+              // Which step was still running, for the next report of a slow machine.
+              ctx.logger.warn("ai.get_status.global_slow", { phase, budgetMs: GLOBAL_AI_STATUS_BUDGET_MS, elapsedMs: Date.now() - startedAt });
+              resolve(getUnavailableAiStatus());
+            }, GLOBAL_AI_STATUS_BUDGET_MS);
+          }),
+        ]);
       } catch (error) {
         ctx.logger.warn("ai.get_status.global_fallback_failed", {
           error: getErrorMessage(error),
         });
         return getUnavailableAiStatus();
+      } finally {
+        if (budgetTimer) clearTimeout(budgetTimer);
       }
     }
     try {

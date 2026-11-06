@@ -212,7 +212,7 @@ import { appleDeviceTypeSupportsDuo, appleOrientationFamily, isAppleDeviceOrient
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelayForService";
 import { SIMCTL_MISSING } from "../../../shared/xcodeToolchain";
-import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
+import { AdeExpectedError, carryExpected, markExpected } from "../../../shared/expectedError";
 
 const execFile = promisify(execFileCallback);
 
@@ -3012,6 +3012,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       simctlMissingAt = 0;
       return appleInstalledSimulatorsFrom(parseSimctlDevices(stdout));
     } catch (error) {
+      // Killed at the deadline: the bare "Command failed" said nothing. The
+      // Mac's simulator service stopped answering, not ADE.
+      if ((error as { killed?: unknown } | null)?.killed === true) {
+        throw markExpected(new Error(
+          "The Mac's simulator service did not answer `xcrun simctl list devices` within 30 s. Quit Simulator, then try again.",
+          { cause: error },
+        ), "environment");
+      }
       if (!SIMCTL_MISSING.test(error instanceof Error ? error.message : String(error))) throw error;
       if (!simctlMissingAt) args.logger.info("apple.simctl_missing", { hint: "Xcode is not installed" });
       simctlMissingAt = Date.now();

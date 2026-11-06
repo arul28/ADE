@@ -64,7 +64,7 @@ export type LocalRuntimeStatus = {
   appFallback?: {
     reason: "service_not_registered" | "service_not_running" | "service_install_failed"
       | "predecessor_exit" | "replacement_pid" | "replacement_responsive"
-      | "background_item_blocked" | "launchd_register";
+      | "background_item_blocked" | "launchd_register" | "service_status_unreadable";
     since: string;
   } | null;
   versionSkew: {

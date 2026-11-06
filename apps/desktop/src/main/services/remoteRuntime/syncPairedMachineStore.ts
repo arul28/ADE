@@ -128,6 +128,15 @@ class AccountMachineHelloRejectedError extends Error {
   }
 }
 
+/**
+ * What a host before #2050 answers a sealed adoption with when no project on
+ * it hosts sync (`sealed_adoption_unavailable`); newer hosts serve the
+ * challenge everywhere. Older hosts sent only these words.
+ */
+const SEALED_ADOPTION_UNAVAILABLE_CODE = "sealed_adoption_unavailable";
+const SEALED_ADOPTION_UNAVAILABLE_REASON =
+  "This machine cannot finish that sign-in here. Pair with a code, or open a project on it and try again.";
+
 const HOST_IDENTITY_VERIFICATION_ERROR =
   "Host identity verification failed — the machine may be running an older ADE.";
 const ADOPT_CHANNEL_UPDATE_REQUIRED_ERROR =
@@ -229,6 +238,8 @@ function classifyAccountMachineAdoptionFailure(
   }
 
   const reason = failure.reason;
+  // Before the sign-in words below: the host's version, not the account.
+  if (reason === SEALED_ADOPTION_UNAVAILABLE_REASON) return "protocol";
   if (/timed? out|timeout/i.test(reason)) return "timeout";
   // Adoption is how a stale pairing gets repaired, so a host that says the
   // pairing is the problem is naming the very thing this flow fixes.
@@ -267,17 +278,20 @@ function dominantAccountMachineAdoptionFailure(
   return ACCOUNT_ADOPTION_FAILURE_PRECEDENCE.find((failure) => seen.has(failure)) ?? "unknown";
 }
 
+/** The host said it is not signed in to the account (or needs one for the relay). */
+function accountMachineTargetIsSignedOut(failure: AccountMachineAdoptionFailure): boolean {
+  return failure.helloCode === "account_not_signed_in"
+    || failure.helloCode === "relay_account_required"
+    || /not signed in|signed out/i.test(failure.reason);
+}
+
 function accountMachineAdoptionFailureMessage(
   machine: AdeAccountMachine,
   failures: readonly AccountMachineAdoptionFailure[],
 ): string {
   const machineName = accountMachineDisplayName(machine) ?? "that computer";
   const dominant = dominantAccountMachineAdoptionFailure(failures);
-  const targetIsSignedOut = failures.some((failure) =>
-    failure.helloCode === "account_not_signed_in"
-    || failure.helloCode === "relay_account_required"
-    || /not signed in|signed out/i.test(failure.reason)
-  );
+  const targetIsSignedOut = failures.some(accountMachineTargetIsSignedOut);
 
   if (dominant === "authentication" && targetIsSignedOut) {
     return `Could not connect to ${machineName}. ${machineName} is not signed in to the same ADE account. `
@@ -1142,7 +1156,10 @@ export class DesktopPairedMachineStore {
             // either — so surface the host's real reason and fall through to the
             // next route instead of aborting adoption with a misleading
             // "older ADE" identity error.
-            const hostMessage = (challengeEnvelope.payload as { message?: unknown } | null)?.message;
+            const refusal = challengeEnvelope.payload as { message?: unknown; code?: unknown } | null;
+            const hostMessage = refusal?.code === SEALED_ADOPTION_UNAVAILABLE_CODE
+              ? SEALED_ADOPTION_UNAVAILABLE_REASON
+              : refusal?.message;
             throw new Error(
               typeof hostMessage === "string" && hostMessage.trim()
                 ? boundedInlineText(hostMessage, 200)
@@ -1394,11 +1411,21 @@ export class DesktopPairedMachineStore {
     // answer; the message tells the user what to do. Only when every route
     // failed that way: one that reached the host and then failed here (a save
     // refused, an unknown error) is still ADE's.
-    const allNetwork = failures.length > 0 && failures.every((attempt) => {
-      const kind = classifyAccountMachineAdoptionFailure(attempt);
-      return kind === "timeout" || kind === "unreachable";
-    });
-    throw allNetwork ? markExpected(failure, "network") : failure;
+    const kinds = failures.map(classifyAccountMachineAdoptionFailure);
+    const isNetwork = (kind: RemoteRuntimeConnectionAttemptFailure) => kind === "timeout" || kind === "unreachable";
+    if (kinds.length > 0 && kinds.every(isNetwork)) throw markExpected(failure, "network");
+    // The host answered and said why, with the next step: an older ADE there
+    // (an update, or a host that cannot adopt without a project), or a
+    // computer signed out of the account. Every other route only failed to
+    // reach it. A verification the host could not complete stays reported.
+    const answered = kinds.filter((kind) => !isNetwork(kind));
+    const allAnswered = (kind: RemoteRuntimeConnectionAttemptFailure) => answered.length > 0 && answered.every((each) => each === kind);
+    if (allAnswered("protocol")) throw markExpected(failure, "environment");
+    if (allAnswered("authentication") && failures.every((attempt) =>
+      isNetwork(classifyAccountMachineAdoptionFailure(attempt)) || accountMachineTargetIsSignedOut(attempt))) {
+      throw markExpected(failure, "user");
+    }
+    throw failure;
   }
 
   private read(): DesktopPairedMachinesFile {

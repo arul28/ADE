@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -5940,9 +5940,10 @@ export function createPtyService({
 
     const throwMissingResumeTarget = (): never => {
       const displayName = resumeProviderDisplayName(provider);
-      throw ptySendPreDeliveryError(
+      // An answer: the CLI ended before it named a session, so there is nothing to resume.
+      throw markExpected(ptySendPreDeliveryError(
         `${displayName} exited before ADE could capture a concrete resume target. Start a new ${displayName} session.`,
-      );
+      ), "user");
     };
     let resolvedSession = session;
     let storedResumeTargetId = resumeTargetIdForProvider(resolvedSession, provider);

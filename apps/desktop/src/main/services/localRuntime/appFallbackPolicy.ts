@@ -40,5 +40,10 @@ export function appFallbackReason(
   if (status.serviceHealth.state === "not_installed") return "service_not_registered";
   if (install.state === "failed") return "service_install_failed";
   if (install.state === "installed" && status.serviceHealth.running === false) return "service_not_running";
+  // The service manager could not be asked at all (its status command timed
+  // out or is missing, as on a Windows machine whose service brain died):
+  // repair already failed, and a no-sync brain on an unowned socket is the
+  // only way the window works. `startAppFallback` still refuses an owned socket.
+  if (status.serviceHealth.state === "unsupported") return "service_status_unreadable";
   return null;
 }

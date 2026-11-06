@@ -10,6 +10,7 @@ import {
   resolveReachableMachineRuntimeSocketPath,
 } from "../services/projects/machineLayout";
 import { requestAdeRuntimeShutdown } from "./runtimeShutdownRequest";
+import { markBrainStoppedBy } from "../sentry/brainStartsFile";
 import { buildPackagedRuntimeNodeModulePaths } from "../../../desktop/src/main/services/runtime/packagedNodePath";
 
 /**
@@ -1000,6 +1001,14 @@ export async function terminatePidGracefullyAsync(
   deps: TerminatePidDeps = {},
 ): Promise<PidStopOutcome> {
   if (!pid || pid <= 0 || pid === process.pid) return "stopped";
+  const outcome = await terminatePidOnPlatformAsync(pid, deps);
+  // A brain this stop had to force could not record its own orderly stop;
+  // without this its next start reads it as a crash (`brainRestartLoop.ts`).
+  if (outcome === "killed") markBrainStoppedBy(pid, "forced_stop");
+  return outcome;
+}
+
+async function terminatePidOnPlatformAsync(pid: number, deps: TerminatePidDeps): Promise<PidStopOutcome> {
   if ((deps.platform ?? process.platform) === "win32") {
     return terminateWindowsPidGracefullyAsync(pid, deps);
   }

@@ -122,6 +122,8 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /This chat requires an explicit continuity recovery action before another turn can be sent/,
   new RegExp(`^${escapeRegExp(PENDING_INPUT_SEND_BLOCKED_MESSAGE)}`),
   /^Wait for the current response to finish before /,
+  // `turn_in_flight` refusals (marked where thrown now; older brains send only the text).
+  /^(?:turn_in_flight: )?(?:Turn is already active\.$|A turn is running\. Stop it first)/,
   /^This chat is still responding\. Wait for the turn to end/,
   /\bis still owned by another ADE runtime\. Stop it from that runtime/,
   // Lane rules the user is told about.
@@ -258,6 +260,8 @@ const EXPECTED_OUTCOME_CODES: ReadonlySet<string> = new Set([
   "storage_read_failed",
   "storage_io_failed",
   "db_busy",
+  // A chat refusing a send or restart while its turn runs; the caller waits or stops it.
+  "turn_in_flight",
 ]);
 
 /**

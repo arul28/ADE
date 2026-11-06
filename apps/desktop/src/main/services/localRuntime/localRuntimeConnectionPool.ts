@@ -447,6 +447,10 @@ export function buildLocalRuntimeNodeEnv(
 
 type RuntimeOutputStreamName = "stdout" | "stderr";
 
+/** The last stderr of each brain this process spawned, for a boot that fails before it answers. */
+const spawnedRuntimeStderrTails = new WeakMap<ChildProcess, string>();
+const SPAWNED_RUNTIME_STDERR_TAIL_CHARS = 400;
+
 export function createLocalRuntimeOutputLogger(args: {
   logger: Logger;
   socketPath: string;
@@ -3483,8 +3487,12 @@ export class LocalRuntimeConnectionPool {
       const reportDetail = lastFailure?.detail
         ? ` Last recorded failure: ${lastFailure.detail}`
         : "";
+      // What the service manager said, so a report shows why no fallback ran.
+      const install = this.serviceInstallStatus;
+      const serviceDetail = ` Service: install ${install.state}${install.failureStep ? ` at ${install.failureStep}` : ""}, `
+        + `health ${this.serviceHealthStatus.state}${this.serviceHealthStatus.running == null ? "" : `, running ${this.serviceHealthStatus.running}`}.`;
       throw codedRecoveryError(
-        `ADE's background service could not open this project. Technical details: ${message}${crashLoopDetail}${reportDetail}`,
+        `ADE's background service could not open this project. Technical details: ${message}${serviceDetail}${crashLoopDetail}${reportDetail}`,
         recoveryCode,
       );
     }
@@ -4048,9 +4056,14 @@ export class LocalRuntimeConnectionPool {
     let lastError: Error | null = null;
     while (Date.now() < deadline) {
       if (child.exitCode != null || child.signalCode != null) {
+        // How it ended and the last thing it wrote: a brain that dies at boot
+        // says why only there.
+        const stderrTail = spawnedRuntimeStderrTails.get(child)?.trim();
         throw new Error(
-          `Spawned ADE runtime PID ${child.pid ?? "unknown"} exited before becoming ready.` +
-          (lastError ? ` Last connection error: ${lastError.message}` : ""),
+          `Spawned ADE runtime PID ${child.pid ?? "unknown"} exited before becoming ready ` +
+          `(${child.signalCode ? `signal ${child.signalCode}` : `exit code ${child.exitCode}`}).` +
+          (lastError ? ` Last connection error: ${lastError.message}` : "") +
+          (stderrTail ? ` Last output: ${stderrTail}` : ""),
         );
       }
       const remainingMs = Math.max(1, deadline - Date.now());
@@ -4127,6 +4140,10 @@ export class LocalRuntimeConnectionPool {
     const stderrLogger = createLocalRuntimeOutputLogger({ ...outputBase, stream: "stderr" });
     child.stdout?.on("data", stdoutLogger.push);
     child.stderr?.on("data", stderrLogger.push);
+    child.stderr?.on("data", (chunk: Buffer | string) => {
+      const text = `${spawnedRuntimeStderrTails.get(child) ?? ""}${String(chunk)}`;
+      spawnedRuntimeStderrTails.set(child, text.slice(-SPAWNED_RUNTIME_STDERR_TAIL_CHARS));
+    });
     const flushOutput = (): void => {
       stdoutLogger.flush();
       stderrLogger.flush();

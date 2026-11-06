@@ -2,7 +2,12 @@ import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../s
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, type WebContents } from "electron";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
 import { reportsAsPackagedRelease } from "./sentry/releaseBuild";
-import { configureOutboundProxyFromEnv, trustSystemCertificates } from "./services/shared/outboundNetwork";
+import {
+  configureOutboundProxyFromEnv,
+  systemCertificateReadInFlight,
+  trustSystemCertificates,
+  whenSystemCertificateReadSettles,
+} from "./services/shared/outboundNetwork";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import { flushSentry } from "../shared/sentry/capture";
 import { registerSentryDiagnosticAttachment, registerSentryDiagnosticContext } from "../shared/sentry/diagnostics";
@@ -774,6 +779,8 @@ let startupProjectOpen: Promise<void> | null = null;
 const STARTUP_PROJECT_WINDOW_WAIT_MS = 20_000;
 /** How long a dev window waits to clear its cache before it loads anyway. */
 const DEV_CACHE_CLEAR_WAIT_MS = 3_000;
+/** How long an exit waits for the OS trust store read still on its worker. */
+const SYSTEM_CA_READ_EXIT_WAIT_MS = 2_000;
 
 /**
  * Makes `ade` exist for a user who never opens Settings. Every guard that
@@ -1194,24 +1201,35 @@ async function createWindow(args: {
     args.onCloseRequested?.(win, event);
   });
 
+  // A window being torn down (quit destroys windows) can emit these with its
+  // webContents already gone: null, or destroyed.
+  const windowUrl = (): string | null => {
+    const contents = win.isDestroyed() ? null : win.webContents;
+    return contents && !contents.isDestroyed() ? contents.getURL() : null;
+  };
+
   win.on("unresponsive", () => {
     args.logger?.warn("window.unresponsive", {
       windowId: win.id,
-      url: win.webContents.getURL(),
+      url: windowUrl(),
     });
   });
 
   win.on("responsive", () => {
     args.logger?.info("window.responsive", {
       windowId: win.id,
-      url: win.webContents.getURL(),
+      url: windowUrl(),
     });
   });
 
   const rendererRecoveryBudget = createRendererCrashRecoveryBudget();
 
   win.webContents.on("render-process-gone", (_event, details) => {
-    args.logger?.error("window.render_process_gone", {
+    // `killed` is the renderer ended from outside (SIGTERM on macOS, Windows
+    // ending it at sign-out or shutdown, 0xC000013A): logged, recovered, not
+    // an issue. A crash, an OOM or a failed launch stays one.
+    const level = details.reason === "killed" ? "warn" : "error";
+    args.logger?.[level]("window.render_process_gone", {
       windowId: win.id,
       reason: details.reason,
       exitCode: details.exitCode,
@@ -8788,11 +8806,22 @@ app.whenReady().then(async () => {
     destroyWindowsForExit();
     runImmediateProcessCleanup("process_exit_finalize");
     recordMainExit(shutdownReason ?? "finalize", exitCode);
-    if (app.isReady()) {
-      app.exit(exitCode);
+    const exitNow = (): void => {
+      if (app.isReady()) {
+        app.exit(exitCode);
+        return;
+      }
+      process.exit(exitCode);
+    };
+    // Node frees its cached system certificates on exit; a quit in the first
+    // second, while the OS trust store read still runs on its worker, freed
+    // them under it and crashed (ADE-DESKTOP-9H). That read takes well under a
+    // second, so the exit waits for it, bounded.
+    if (systemCertificateReadInFlight()) {
+      void whenSystemCertificateReadSettles(SYSTEM_CA_READ_EXIT_WAIT_MS).then(exitNow);
       return;
     }
-    process.exit(exitCode);
+    exitNow();
   };
 
   const requestAppShutdown = (args: {

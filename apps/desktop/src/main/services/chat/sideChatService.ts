@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import {
   SIDE_CHAT_UNSUPPORTED_MESSAGE,
   SIDE_CHAT_WAIT_FOR_TURN_MESSAGE,
@@ -233,7 +234,7 @@ export function createSideChatService<
     if (provider === "claude") {
       const runtime = deps.claude.ensureRuntime(parent);
       const sourceSdkSessionId = deps.claude.writtenSessionId(runtime);
-      if (!sourceSdkSessionId) throw new Error(needsHistory);
+      if (!sourceSdkSessionId) throw new AdeExpectedError(needsHistory, "user");
       let resumeAt: string | null = null;
       if (busy) {
         // The running turn's own prompt: a turn a queued steer started has
@@ -260,7 +261,7 @@ export function createSideChatService<
           throw deps.turnInFlightError(SIDE_CHAT_WAIT_FOR_TURN_MESSAGE);
         }
         const cut = claudeSideChatCut(transcript, runningText.text);
-        if (cut.kind === "no_finished_turn") throw new Error(needsHistory);
+        if (cut.kind === "no_finished_turn") throw new AdeExpectedError(needsHistory, "user");
         if (cut.kind === "cut") resumeAt = cut.uuid;
       }
       return async (created) => {
@@ -279,7 +280,7 @@ export function createSideChatService<
     const failure = (refusal: ChatProviderForkFailure): unknown => {
       switch (refusal.kind) {
         case "no_history":
-          return new Error(needsHistory);
+          return new AdeExpectedError(needsHistory, "user");
         case "start_failed":
           return refusal.error;
         case "not_started":

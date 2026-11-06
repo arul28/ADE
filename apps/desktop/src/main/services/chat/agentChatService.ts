@@ -1395,6 +1395,7 @@ import {
   acpDialectFor,
   acpHasTranscript,
   acpInvocationKey,
+  AcpModeUnsupportedError,
   buildAcpPromptBlocks,
   createAcpRuntime,
   ensureQwenAdeSkillDefaultsFile,
@@ -1490,7 +1491,7 @@ import {
   type PiSdkPooled,
 } from "./piSdkPool";
 import { piSdkMcpServersFromCaller, type PiSdkMcpInit, type PiSdkUiRequestPayload } from "./piSdkProtocol";
-import { acquirePiSessionLease, type PiSessionLease } from "./piSessionLease";
+import { acquirePiSessionLease, PiSessionLeaseConflictError, type PiSessionLease } from "./piSessionLease";
 import { recordPiSessionOwner } from "./piSessionOwnership";
 import { classifyPiSessionFile, piSessionStoreForEnvironment, resolvePiSessionFile } from "./piSessionStore";
 import { piModelDescriptorsFromInventory, probePiProfileInventory, resolvePiInstallation } from "../ai/piInstallation";
@@ -8172,7 +8173,8 @@ function parseAutoLaneIdentity(raw: unknown): { laneTitle: string | null; branch
 const TURN_IN_FLIGHT_ERROR_CODE = "turn_in_flight";
 
 function turnInFlightError(message: string): Error & { code: typeof TURN_IN_FLIGHT_ERROR_CODE } {
-  return codedError(message, TURN_IN_FLIGHT_ERROR_CODE);
+  // An answer: the caller waits for the turn or stops it, nothing failed.
+  return markExpected(codedError(message, TURN_IN_FLIGHT_ERROR_CODE), "user");
 }
 
 /**
@@ -36552,6 +36554,8 @@ export function createAgentChatService(args: {
           managed.seededAcpSessionId = undefined;
         },
         onOpenFailed: (error) => {
+          // An agent build that cannot take ADE's mode works otherwise; the chat says why.
+          if (error instanceof AcpModeUnsupportedError) return;
           const message = error instanceof Error ? error.message : String(error);
           recordAcpAuthProbeResult(
             provider,
@@ -38467,7 +38471,8 @@ export function createAgentChatService(args: {
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
       const message = error instanceof Error ? error.message : String(error);
-      reportProviderRuntimeFailure("pi", message);
+      // Another writer holding the session is the user's to resolve; Pi itself is fine.
+      if (!(error instanceof PiSessionLeaseConflictError)) reportProviderRuntimeFailure("pi", message);
       emitChatEvent(managed, { type: "error", message, turnId: setupTurnId });
       emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId: setupTurnId });
       emitChatEvent(managed, {

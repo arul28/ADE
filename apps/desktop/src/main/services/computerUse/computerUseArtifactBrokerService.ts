@@ -664,10 +664,11 @@ export function createComputerUseArtifactBrokerService(args: {
       }
 
       if (!isImportableArtifactFile(absolutePath)) {
-        throw new Error(
+        throw new AdeExpectedError(
           `Artifact file type is not importable as proof: ${absolutePath}. `
           + `Proof must be an image, video, browser trace, or log `
           + `(${[...IMPORTABLE_ARTIFACT_EXTENSIONS].join(", ")}).`,
+          "user",
         );
       }
 
@@ -1680,8 +1681,9 @@ export function createComputerUseArtifactBrokerService(args: {
         );
       }
       if (source.status === "missing") {
-        throw new Error(
+        throw new AdeExpectedError(
           `The original file for "${record.title}" no longer exists, so it cannot be recovered. Remove the record instead.`,
+          "user",
         );
       }
       const sourcePath = source.path;
@@ -1694,7 +1696,7 @@ export function createComputerUseArtifactBrokerService(args: {
       // Recovery re-imports bytes from a surviving lane worktree, so it is an
       // import like any other and gets the same file-type gate.
       if (!isImportableArtifactFile(sourcePath)) {
-        throw new Error(`Artifact file type is not importable as proof: ${sourcePath}`);
+        throw new AdeExpectedError(`Artifact file type is not importable as proof: ${sourcePath}`, "user");
       }
       const extension = inferArtifactExtension({ path: sourcePath }, record.kind);
       const targetPath = createComputerUseArtifactPath(projectRoot, record.title, extension);

@@ -419,8 +419,8 @@ export function ThreadCommentLayer({
     };
     // The button is portaled to <body>, so moving onto it leaves the root.
     const onLeave = (event: PointerEvent) => {
-      const next = event.relatedTarget as Element | null;
-      if (next?.closest?.("[data-thread-comment-row-button]")) return;
+      const next = event.relatedTarget;
+      if (next instanceof Element && next.closest("[data-thread-comment-row-button]")) return;
       setRowButton(null);
     };
     const onScroll = () => setRowButton(null);
@@ -676,8 +676,9 @@ export function ThreadCommentLayer({
                 };
               })()}
               onPointerLeave={(event) => {
-                const next = event.relatedTarget as Element | null;
-                if (!next?.closest("tbody tr")) setRowButton(null);
+                // A pointer leaving the window (or onto a text node) has no Element to test.
+                const next = event.relatedTarget;
+                if (!(next instanceof Element) || !next.closest("tbody tr")) setRowButton(null);
               }}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => startFromRow(rowButton.row)}
