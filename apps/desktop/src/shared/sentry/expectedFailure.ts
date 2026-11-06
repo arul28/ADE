@@ -135,6 +135,9 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // to make one. Marked where it is thrown now (shared/expectedError.ts); the
   // text stays for older brains, whose errors arrive without the mark.
   /^This lane has no Apple device yet\. /,
+  // A lane screen whose display went away (closed, or unplugged) before the
+  // stream started: the caller is told; ScreenCaptureKit lists no such display.
+  /\bMAC_DESKTOP_DISPLAY_UNAVAILABLE: /,
   // The web client while its computer reconnects or the user switches project.
   /^Reconnecting to this computer\. Try again when connected\.$/,
   /^Project connection changed\.$/,

@@ -3103,6 +3103,7 @@ export async function createAdeRuntime(args: {
       secretService: automationSecretService,
       githubService: headlessLinearServices.githubService,
       getAccountAccessToken,
+      subscribeToSignIn: (listener) => accountAuthService.onSignedIn(listener),
       listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
       ingressCursorStore: createKvIngressCursorStore(db),
       webhooks: {

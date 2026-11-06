@@ -76,6 +76,12 @@ type AutomationIngressServiceArgs = {
     getAppUserTokenForRelay: () => Promise<string>;
   } | null;
   getAccountAccessToken?: () => Promise<string | null>;
+  /**
+   * The ADE account's sign-in notice (`accountAuthService.onSignedIn`). A
+   * sign-in ends the relay's pause after a refused poll: the new account token
+   * may be what the relay was waiting for.
+   */
+  subscribeToSignIn?: (listener: () => void) => () => void;
   listRules: () => AutomationRule[];
   // Cursor persistence fallback. REQUIRED when automationService is null —
   // without it the relay cursor would silently reset on every restart
@@ -112,7 +118,7 @@ const GITHUB_RELAY_POLL_BACKOFF_CAP_MS = 15 * 60_000;
  * A second 401 in a row: the relay refuses this machine's credentials for the
  * repository (signed out, or the ADE GitHub App is not on it), and another poll
  * cannot change that. Polling stops for this long, or until an explicit
- * `pollNow` (the user repairing the connection).
+ * `pollNow` or a sign-in to ADE (the user repairing the connection).
  */
 const GITHUB_RELAY_UNAUTHORIZED_RETRY_MS = 6 * 60 * 60_000;
 /**
@@ -502,6 +508,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   let relayPollCooldownUntilMs = 0;
   let relayPollFailureCount = 0;
   let relayPollUnauthorizedCount = 0;
+  let unsubscribeSignIn: (() => void) | null = null;
   /** A poll failing on the same cause as the last one logs at info. */
   const relayPollFailures = createRepeatedFailureGate();
   let subscriptionLoggedState: "connected" | "disconnected" | null = null;
@@ -1493,7 +1500,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         status: authRefused ? "disabled" : "error",
         lastPolledAt: new Date().toISOString(),
         lastError: authRefused
-          ? "The GitHub relay refused this machine's credentials for this repository. Sign in to ADE again, or install the ADE GitHub App on the repository, then retry."
+          ? "The GitHub relay refused this machine's credentials for this repository. Sign in to ADE again (ADE then retries on its own), or install the ADE GitHub App on the repository and retry."
           : error instanceof Error ? error.message : String(error),
       });
     }
@@ -1522,12 +1529,38 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     return await pollInFlight;
   };
 
+  /**
+   * An explicit poll (the user authorized the GitHub App, or signed in to ADE)
+   * bypasses every cooldown. The "logged once" latch is released with it: a
+   * repair that did not take is a new fact, and the log line saying so must not
+   * be suppressed by the failure it replaced.
+   */
+  const pollAfterRepair = async (): Promise<void> => {
+    hostedAuthPendingUntilMs = 0;
+    hostedAuthPendingLogged = false;
+    clearRelayPollRetryTimer();
+    relayPollCooldownUntilMs = 0;
+    relayPollFailureCount = 0;
+    relayPollUnauthorizedCount = 0;
+    // An explicit poke is the user asking for freshness: leave idle decay.
+    noteRelayActivity();
+    await pollGithubRelayOnce();
+  };
+
   return {
     async start() {
       if (started && !stopped) return;
       started = true;
       stopped = false;
       relayPollGeneration += 1;
+      unsubscribeSignIn ??= args.subscribeToSignIn?.(() => {
+        if (!started || stopped) return;
+        void pollAfterRepair().catch((error) => {
+          args.logger.warn("automations.github_relay_sign_in_poll_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }) ?? null;
       // A fresh lifecycle starts responsive; decay is re-earned by silence.
       lastRelayActivityAtMs = Date.now();
       // The local webhook server exists to receive automation webhooks; in
@@ -1583,26 +1616,14 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       return args.automationService?.listIngressEvents(limit) ?? [];
     },
 
-    async pollNow() {
-      // Explicit polls (e.g. right after the user authorizes the GitHub App)
-      // bypass the auth-pending cooldown. The "logged once" latch is released
-      // with it: a repair that did not take is a new fact, and the log line
-      // saying so must not be suppressed by the failure it replaced.
-      hostedAuthPendingUntilMs = 0;
-      hostedAuthPendingLogged = false;
-      clearRelayPollRetryTimer();
-      relayPollCooldownUntilMs = 0;
-      relayPollFailureCount = 0;
-      relayPollUnauthorizedCount = 0;
-      // An explicit poke is the user asking for freshness: leave idle decay.
-      noteRelayActivity();
-      await pollGithubRelayOnce();
-    },
+    pollNow: pollAfterRepair,
 
     stop() {
       stopped = true;
       started = false;
       relayPollGeneration += 1;
+      unsubscribeSignIn?.();
+      unsubscribeSignIn = null;
       githubRelayHealthy = false;
       relayPollCooldownUntilMs = 0;
       relayPollFailureCount = 0;

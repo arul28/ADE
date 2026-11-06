@@ -44,14 +44,43 @@ function setProviderRuntimeHealth(next: ProviderRuntimeHealth): void {
   reportHealthTransition(previous ?? null, next);
 }
 
-/** Providers whose runtime failure this process already sent to Sentry. */
-const reportedRuntimeFailures = new Set<ProviderRuntimeHealthProvider>();
+/**
+ * What kind of failure a runtime message names, from a closed list. One
+ * provider fails for unrelated reasons (a refused flag, a missing session, a
+ * spawn the machine could not do), and each is its own Sentry issue. The
+ * message itself can hold paths and ids, so only the kind is a key.
+ */
+const RUNTIME_FAILURE_KINDS: ReadonlyArray<readonly [kind: string, pattern: RegExp]> = [
+  ["root-refused", /\bcannot be used with root\b/i],
+  // Before `session-missing`: an ACP method name can start with `session/`.
+  ["method-missing", /\bmethod not found\b|\(-32601\)/i],
+  ["session-missing", /\bno conversation found\b|\bsession\b.*\bnot found\b/i],
+  ["turn-active", /\bturn already active\b/i],
+  ["owned-elsewhere", /\balready owned by another\b/i],
+  ["timeout", /\bdid not answer within\b|\btimed out\b/i],
+  ["spawn-failed", /\bfailed to spawn\b|\bspawn \S+ E[A-Z]+\b|\bcould not start\b/i],
+  ["exited", /\bexited with code\b/i],
+];
+
+/** An ACP request names its method (`ACP session/new did not answer …`). */
+const ACP_METHOD = /\bACP ([a-z_]+(?:\/[a-z_]+)?) /i;
+
+function runtimeFailureKind(message: string | null): string {
+  const text = message ?? "";
+  const kind = RUNTIME_FAILURE_KINDS.find(([, pattern]) => pattern.test(text))?.[0] ?? "other";
+  if (kind !== "timeout") return kind;
+  const method = ACP_METHOD.exec(text)?.[1]?.toLowerCase();
+  return method ? `timeout:${method}` : kind;
+}
+
+/** Provider and failure kinds this process already sent to Sentry. */
+const reportedRuntimeFailures = new Set<string>();
 
 /**
  * A provider that stops working is the failure users notice first and report
  * least: the chat just says it cannot start. The app shows every transition.
- * Sentry gets the first runtime failure per provider per process, as a
- * warning: most are the machine (a CLI that will not start there, a probe
+ * Sentry gets the first runtime failure of each kind per provider per
+ * process, as a warning: most are the machine (a CLI that will not start there, a probe
  * that timed out) rather than ADE, and a provider that flaps on one machine
  * was an error event, and an alert, each time. Later ones are Sentry Logs.
  * A recovery leaves a breadcrumb. Auth failures are only logged, since
@@ -69,14 +98,16 @@ function reportHealthTransition(previous: ProviderRuntimeHealth | null, next: Pr
     forwardLogToSentry("warn", `provider.${next.provider}.auth_failed`, { message: next.message ?? null });
     return;
   }
-  if (reportedRuntimeFailures.has(next.provider)) {
-    forwardLogToSentry("warn", `provider.${next.provider}.runtime_failed`, { message: next.message ?? null });
+  const kind = runtimeFailureKind(next.message);
+  const reportKey = `${next.provider}:${kind}`;
+  if (reportedRuntimeFailures.has(reportKey)) {
+    forwardLogToSentry("warn", `provider.${next.provider}.runtime_failed`, { message: next.message ?? null, kind });
     return;
   }
-  reportedRuntimeFailures.add(next.provider);
+  reportedRuntimeFailures.add(reportKey);
   captureProblem(`Provider ${next.provider} ${next.state}: ${next.message ?? "no message"}`, {
-    tags: { provider: next.provider, "provider.state": next.state },
-    fingerprint: ["provider", next.provider, next.state],
+    tags: { provider: next.provider, "provider.state": next.state, "provider.failure": kind },
+    fingerprint: ["provider", next.provider, next.state, kind],
     level: "warning",
   });
 }

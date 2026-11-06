@@ -5318,6 +5318,7 @@ app.whenReady().then(async () => {
       secretService: automationSecretService,
       githubService,
       getAccountAccessToken,
+      subscribeToSignIn: (listener) => accountAuthService.onSignedIn(listener),
       listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
       ingressCursorStore: createKvIngressCursorStore(db),
       webhooks: {
