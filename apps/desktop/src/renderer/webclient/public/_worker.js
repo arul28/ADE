@@ -10,8 +10,8 @@
  * a rollback brings the file back. This worker answers it with a 404 that is
  * never cached.
  *
- * Pages applies `_headers` only to static responses, so the worker sets the
- * headers that `/assets/*` needs itself.
+ * Pages documents `_headers` for static responses, not for a worker's, so
+ * the worker sets the headers that `/assets/*` needs itself.
  */
 
 const ASSET_HEADERS = {
@@ -36,6 +36,8 @@ export default {
         },
       });
     }
+    // A 304 or a redirect goes back as it came; only a file gets the cache.
+    if (!response.ok) return response;
     const headers = new Headers(response.headers);
     for (const [name, value] of Object.entries(ASSET_HEADERS)) headers.set(name, value);
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
