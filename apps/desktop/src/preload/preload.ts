@@ -3752,7 +3752,13 @@ function rememberLaneDeleteOrigin(laneId: string, binding: OpenProjectBinding | 
 
 function withLaneDeleteOrigin(event: LaneDeleteEvent): LaneDeleteEvent {
   const laneId = event?.progress?.laneId;
-  if (!laneId || !laneDeleteOrigins.has(laneId)) return event;
+  if (!laneId || !laneDeleteOrigins.has(laneId)) {
+    // Only an origin this preload recorded is trusted: a paired runtime that
+    // sent its own could point Delete folder at a project on this machine.
+    return event && typeof event === "object" && "origin" in event
+      ? { ...event, origin: undefined }
+      : event;
+  }
   return { ...event, origin: laneDeleteOrigins.get(laneId) ?? null };
 }
 

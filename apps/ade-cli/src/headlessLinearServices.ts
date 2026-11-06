@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createGithubIssueOps } from "../../desktop/src/main/services/github/githubIssueOps";
 import { markExpectedGithubFailure } from "../../desktop/src/main/services/github/githubExpectedFailure";
+import { assertGithubRepositoryOwner, resolveGithubCreateRepositoryRoute } from "../../desktop/src/main/services/github/githubCreateRepositoryRoute";
 import { createRepeatedFailureGate } from "../../desktop/src/main/services/logging/repeatedFailure";
 import { resolveGithubRepoRef } from "../../desktop/src/main/services/github/githubSshAlias";
 import { gitPushError } from "../../desktop/src/main/services/git/gitPushFailure";
@@ -1422,6 +1423,12 @@ export function createHeadlessGitHubService(
     query?: Record<string, string | number | boolean | undefined | null>;
     body?: unknown;
     token?: string;
+    /**
+     * Send only on the stored credential with this token (keeping its source,
+     * cooldowns and accounting), never falling back to another one. For a
+     * request whose meaning depends on which account sends it.
+     */
+    credentialToken?: string;
     accept?: string;
     capability?: GithubOperationCredentialCapability;
     repo?: GitHubRepoRef;
@@ -1440,7 +1447,7 @@ export function createHeadlessGitHubService(
       : githubOperationCredentialCandidates(
           (await readCredentialInventoryAsync()).candidates,
           capability,
-        );
+        ).filter((candidate) => !args.credentialToken || candidate.token === args.credentialToken);
     // An issue write uses the App only when its installation grants
     // `Issues: write`; otherwise it would 403 on every edit (see
     // `githubIssueWriteAccess.ts`).
@@ -1899,25 +1906,23 @@ export function createHeadlessGitHubService(
       body.description = args.description.trim();
     }
     const owner = asString(args.owner).trim();
-    // As the desktop's `createRepository`: `/orgs/{owner}/repos` takes only an
-    // organization, and the publish dialog fills `owner` with the connected
-    // login, so a personal publish sent there got GitHub's bare "Not Found".
-    // The org route is taken only for an owner positively known to differ from
-    // that login; an unverified token keeps the personal route.
+    // As the desktop's `createRepository` (one helper for both): the route
+    // depends on whether `owner` is the checked credential's own login, the
+    // request goes out on that credential, and an unverifiable login stops
+    // rather than falling back to `/user/repos` under the wrong account.
     const writeAuth = owner ? await readTokenAsync("write") : null;
-    const authenticatedLogin = writeAuth?.token
-      ? ((await validateToken(
-          writeAuth.token,
-          accountingTokenSource(writeAuth.source),
-        ).catch(() => ({ userLogin: null as string | null }))).userLogin?.trim() || null)
-      : null;
-    const useOrgRoute = owner.length > 0
-      && authenticatedLogin != null
-      && owner.toLowerCase() !== authenticatedLogin.toLowerCase();
+    const route = await resolveGithubCreateRepositoryRoute({
+      owner,
+      name: args.name,
+      token: writeAuth?.token ?? null,
+      readLogin: async (token) =>
+        (await validateToken(token, accountingTokenSource(writeAuth?.source ?? "none"))).userLogin,
+    });
     const { data } = await apiRequest<Record<string, unknown>>({
       method: "POST",
-      path: useOrgRoute ? `/orgs/${encodeURIComponent(owner)}/repos` : "/user/repos",
+      path: route.path,
       body,
+      ...(route.credentialToken ? { credentialToken: route.credentialToken } : {}),
     });
     const identity = repoIdentityFromGitHubResponse(data, owner, args.name);
     return {
@@ -2666,6 +2671,8 @@ export function createHeadlessGitHubService(
           defaultBranch: existing.defaultBranch,
         };
       }
+      // Never push anywhere but the owner the user picked.
+      assertGithubRepositoryOwner(requestedOwner, created);
 
       const cleanupLocalOrigin = async (): Promise<void> => {
         await runGitHeadlessAsync(projectRoot, ["remote", "remove", "origin"], 8_000);

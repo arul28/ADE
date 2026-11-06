@@ -4,7 +4,7 @@ import { createSentryEventHooks, setSentryUserResolver } from "./eventFilter";
 import { codedError } from "../codedError";
 import { AdeExpectedError } from "../expectedError";
 import { isExpectedOutcome } from "./expectedFailure";
-import { scrubFreeTextThenCut } from "./scrub";
+import { scrubFreeTextThenCut, scrubOutputTail } from "./scrub";
 
 type TestEvent = Record<string, any>;
 
@@ -204,7 +204,7 @@ describe("createSentryEventHooks", () => {
     expect(isExpectedOutcome(codedError("The project folder is gone.", "project_corrupt"))).toBe(false);
   });
 
-  it("scrubs process output whole before cutting it, so a secret across the default 4,000-char bound goes", () => {
+  it("scrubs process output whole before cutting it, so a secret across the default 4,000-char bound goes and a tail keeps its newest line", () => {
     // The URL's password runs from char 3,988 to 4,000 and its `@` is past 4,000.
     const line = `${"x".repeat(3_975)} https://ade:hunter2secret@host.example/status`;
     const reported = scrubFreeTextThenCut(line, 4_100);
@@ -216,6 +216,9 @@ describe("createSentryEventHooks", () => {
       const long = `${"x".repeat(prefix)} https://ade:hunter2secret@host.example/status`;
       expect(scrubFreeTextThenCut(long, 64_000)).not.toMatch(/hunter|ade:/);
     }
+    // A short path grows into `[path]`; the newest line of a tail still comes whole.
+    expect(scrubOutputTail("/a/b\nfatal: final error", { maxLines: 5, lineChars: 200 }))
+      .toEqual(["[path]", "fatal: final error"]);
   });
 
   // Last in the file: it turns diagnostics on for the rest of this process.

@@ -2771,6 +2771,28 @@ describe("githubService.publishCurrentProject", () => {
 	    expect(String(createRepoCall?.[0])).not.toContain("/orgs/");
 	  });
 
+	  it("creates nothing and asks for a retry when the signed-in account cannot be checked for a requested owner", async () => {
+	    runGitMock.mockResolvedValue({ exitCode: 1, stdout: "", stderr: "fatal: No such remote 'origin'" });
+	    // GET /user never answers, so whether `acme-inc` is this account or an
+	    // org is unknown. `/user/repos` would put the org's repo in the personal
+	    // account, so the publish must stop instead.
+	    mockFetch.mockImplementation((rawUrl: string) => {
+	      if (new URL(rawUrl).pathname === "/user") return Promise.reject(new TypeError("fetch failed"));
+	      return Promise.resolve(jsonResponse(201, {
+	        owner: { login: "alice" },
+	        name: "proj",
+	        full_name: "alice/proj",
+	        clone_url: "https://github.com/alice/proj.git",
+	      }));
+	    });
+
+	    await expect(
+	      makeService().publishCurrentProject({ owner: "acme-inc", name: "proj", isPrivate: true }),
+	    ).rejects.toMatchObject({ code: "github_owner_unverified", message: expect.stringMatching(/try again/i) });
+	    expect(mockFetch.mock.calls.some(([rawUrl]) => String(rawUrl).includes("/repos"))).toBe(false);
+	    expect(runGitMock.mock.calls.map((c) => c[0])).toEqual([["remote", "get-url", "origin"]]);
+	  });
+
   it("returns state=remote_added when the project has no commits yet", async () => {
     runGitMock
       .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" }) // get-url origin

@@ -226,7 +226,10 @@ export function scrubOutputTail(text: string, options: { maxLines: number; lineC
       kept = lineEnd === -1 ? "" : kept.slice(lineEnd + 1);
     }
   }
-  return scrubFreeTextThenCut(kept, Math.max(kept.length, 1))
+  // Scrubbed whole with no cut: a replacement can be longer than what it
+  // replaced (a short path becomes `[path]`), and a cut after it would drop the
+  // end of the newest line. The line limits below apply from the end.
+  return scrubFreeText(kept, { maxLength: Math.max(kept.length, 1) })
     .split(/\r?\n/)
     .filter((line) => line.trim().length > 0)
     .slice(-options.maxLines)

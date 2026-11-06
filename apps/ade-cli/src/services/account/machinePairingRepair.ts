@@ -195,9 +195,25 @@ export async function repairMachinePairing(
   if (input.push) {
     input.push.clearMachineRevocation();
     pushRestored = true;
-  } else if (input.pushStore?.isMachineRevoked()) {
-    input.pushStore.clearMachineRevoked();
-    pushRestored = true;
+  } else if (input.pushStore) {
+    // Read again: the file may have become unreadable during the publish, and
+    // a skipped clear must not be reported as a finished repair.
+    const storedNow = input.pushStore.isMachineRevoked();
+    if (storedNow === null) {
+      input.logger?.warn?.("account.machine_repair_push_unreadable", { wasRevoked, published: true });
+      return {
+        repaired: false,
+        wasRevoked,
+        published: true,
+        pushRestored: false,
+        state: "push_state_unreadable",
+        reason: "ADE can't read this computer's Activity settings right now, so it can't turn delivery back on. Try again in a moment.",
+      };
+    }
+    if (storedNow) {
+      input.pushStore.clearMachineRevoked();
+      pushRestored = true;
+    }
   }
 
   input.logger?.info?.("account.machine_repaired", { wasRevoked, pushRestored });

@@ -8,6 +8,7 @@ import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { getMachineMainLogger } from "../logging/machineLogger";
 import { markExpectedGithubFailure } from "./githubExpectedFailure";
+import { assertGithubRepositoryOwner, resolveGithubCreateRepositoryRoute } from "./githubCreateRepositoryRoute";
 import { runGit } from "../git/git";
 import { gitPushError } from "../git/gitPushFailure";
 import type {
@@ -1504,6 +1505,12 @@ export function createGithubService({
     query?: Record<string, string | number | boolean | undefined | null>;
     body?: unknown;
     token?: string;
+    /**
+     * Send only on the stored credential with this token (keeping its source,
+     * cooldowns and accounting), never falling back to another one. For a
+     * request whose meaning depends on which account sends it.
+     */
+    credentialToken?: string;
     capability?: GithubOperationCredentialCapability;
     repo?: GitHubRepoRef;
     /**
@@ -1527,7 +1534,7 @@ export function createGithubService({
       : githubOperationCredentialCandidates(
           (await readCredentialInventory()).candidates,
           capability,
-        );
+        ).filter((candidate) => !args.credentialToken || candidate.token === args.credentialToken);
     // An issue write uses the App only when its installation grants
     // `Issues: write`; otherwise it would 403 on every edit (see
     // `githubIssueWriteAccess.ts`).
@@ -2523,28 +2530,23 @@ export function createGithubService({
       body.description = args.description.trim();
     }
     const owner = asString(args.owner).trim();
-    // GitHub's `/orgs/{owner}/repos` route only accepts organization owners; a
-    // personal account (the authenticated user's own login) must use
-    // `/user/repos`. The renderer now populates `owner` from the connected
-    // login, so detect that case and avoid the org route for personal publishes.
+    // The route depends on whether `owner` is the credential's own login (the
+    // publish dialog fills it with the connected login), and the request goes
+    // out on the credential that was checked. An unverifiable login stops here
+    // rather than falling back to `/user/repos` under the wrong account.
     const writeAuth = owner ? await readAuthToken("write") : null;
-    const authenticatedLogin = writeAuth
-      ? ((await validateToken(
-          writeAuth.token ?? "",
-          accountingTokenSource(writeAuth.source),
-        ).catch(() => ({ userLogin: null as string | null }))).userLogin?.trim() || null)
-      : null;
-    // Only take the org route when we POSITIVELY resolved the authenticated
-    // login and it differs from `owner`. If token validation failed (transient
-    // network error / rate limit), `authenticatedLogin` is null and we must not
-    // assume an org — fall back to `/user/repos`, since `owner` is almost always
-    // the pre-populated personal login. Routing a personal publish through the
-    // org-only endpoint would hard-fail.
-    const useOrgRoute = owner.length > 0 && authenticatedLogin != null && owner.toLowerCase() !== authenticatedLogin.toLowerCase();
+    const route = await resolveGithubCreateRepositoryRoute({
+      owner,
+      name: args.name,
+      token: writeAuth?.token ?? null,
+      readLogin: async (token) =>
+        (await validateToken(token, accountingTokenSource(writeAuth?.source ?? "none"))).userLogin,
+    });
     const { data } = await apiRequest<Record<string, unknown>>({
       method: "POST",
-      path: useOrgRoute ? `/orgs/${encodeURIComponent(owner)}/repos` : "/user/repos",
+      path: route.path,
       body,
+      ...(route.credentialToken ? { credentialToken: route.credentialToken } : {}),
     });
     const identity = repoIdentityFromGitHubResponse(data, owner, args.name);
     return {
@@ -2650,6 +2652,8 @@ export function createGithubService({
         defaultBranch: existing.defaultBranch,
       };
     }
+    // Never push anywhere but the owner the user picked.
+    assertGithubRepositoryOwner(requestedOwner, created);
 
     // After createRepository succeeds, the GitHub repo exists. If we then
     // fail to add the local origin or push to it, we must remove the local
