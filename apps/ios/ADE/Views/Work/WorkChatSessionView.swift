@@ -630,9 +630,11 @@ struct WorkChatSessionView: View {
   /// A sign-in card the person dismissed, by the failed turn (or the
   /// before-send reason) it was for.
   @State var dismissedSignInFailureId: String?
-  /// The chat's machine says its agent has no login, read when the chat opens
-  /// (desktop reads the same status for its before-send card).
-  @State var providerSignedOutBeforeSend = false
+  /// The machine and provider (`providerSignInStatusKey`) whose agent the
+  /// machine says has no login, read when the chat opens (desktop reads the
+  /// same status for its before-send card). Keyed, so another provider's or
+  /// machine's answer never stands in while a new read runs.
+  @State var providerSignedOutBeforeSendKey: String?
   @State var bottomChromeMinY: CGFloat = 0
   @State var transcriptSafeInsets = EdgeInsets()
   /// The transcript's handle on its own `UICollectionView`. Replaces the
@@ -919,8 +921,8 @@ struct WorkChatSessionView: View {
     let shown: (key: String, reason: WorkProviderSignInReason)
     if let id = workLatestSignInFailure(transcript, provider: chatSummaryContext.provider) {
       shown = (id, .failedTurn)
-    } else if providerSignedOutBeforeSend {
-      shown = ("\(chatSummaryContext.provider):no-login", .noLogin)
+    } else if let key = providerSignedOutBeforeSendKey, key == providerSignInStatusKey {
+      shown = ("\(key):no-login", .noLogin)
     } else {
       return nil
     }
@@ -940,14 +942,12 @@ struct WorkChatSessionView: View {
   /// Best effort: an older or unreachable machine shows no card before a send,
   /// and the card still comes after a send that fails.
   func refreshProviderSignedOutBeforeSend() async {
-    guard providerSignInStatusKey != nil, let host = providerSignInHost, host.providerAccountsConnected else {
-      providerSignedOutBeforeSend = false
-      return
-    }
+    guard let key = providerSignInStatusKey, let host = providerSignInHost, host.providerAccountsConnected else { return }
     let provider = chatSummaryContext.provider
     let status = try? await host.runProviderAccountsCommand("ai.getStatus", args: [:])
     guard !Task.isCancelled else { return }
-    providerSignedOutBeforeSend = status.map { workProviderSignedOutBeforeSend($0, provider: provider) } ?? false
+    let signedOut = status.map { workProviderSignedOutBeforeSend($0, provider: provider) } ?? false
+    providerSignedOutBeforeSendKey = signedOut ? key : nil
   }
 
   /// The turn that stopped on the sign-in sends again by itself, with the
@@ -2020,7 +2020,7 @@ struct WorkChatSessionView: View {
           reason: signIn.reason,
           onSignedIn: {
             dismissedSignInFailureId = signIn.key
-            providerSignedOutBeforeSend = false
+            providerSignedOutBeforeSendKey = nil
             // Nothing was sent before a no-login card, so nothing sends again.
             if signIn.reason == .failedTurn { resendAfterSignIn() }
           },
