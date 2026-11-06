@@ -810,6 +810,84 @@ describe("automationIngressService", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
+  function createRefusedRelayService(fetchSpy: { mock: { calls: unknown[] } }) {
+    const signInListeners = new Set<() => void>();
+    const created = createAutomationIngressService({
+      logger: makeLogger() as never,
+      automationService: null,
+      secretService: { getSecret: () => null } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
+      },
+      listRules: () => [],
+      ingressCursorStore: { get: () => null, set: () => {} },
+      webSocketFactory: makeWebSocketHarness().factory,
+      subscribeToSignIn: (listener) => {
+        signInListeners.add(listener);
+        return () => signInListeners.delete(listener);
+      },
+    });
+    expect(fetchSpy.mock.calls, "setup precondition").toHaveLength(0);
+    return {
+      service: created,
+      signInListeners,
+      signIn: () => {
+        for (const listener of signInListeners) listener();
+      },
+    };
+  }
+
+  it("pauses the GitHub relay after a second refused poll until the person signs in, and stops listening when stopped", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-01T12:00:00.000Z"));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("refused", { status: 401 }));
+    const relay = createRefusedRelayService(fetchSpy);
+    service = relay.service;
+
+    await service.start();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    // Paused: an hour of poll ticks sends nothing.
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    relay.signIn();
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3));
+
+    service.stop();
+    expect(relay.signInListeners.size).toBe(0);
+  });
+
+  it("reruns a repair that arrives while the refusing poll is still in flight", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-01T12:00:00.000Z"));
+    const pending: Array<(response: Response) => void> = [];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise<Response>((resolve) => {
+      pending.push(resolve);
+    }));
+    const relay = createRefusedRelayService(fetchSpy);
+    service = relay.service;
+
+    const firstPoll = service.start();
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    pending[0]!(new Response("refused", { status: 401 }));
+    await firstPoll;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(pending).toHaveLength(2);
+
+    // The second refusal starts the pause, but the sign-in came while it ran.
+    relay.signIn();
+    pending[1]!(new Response("refused", { status: 401 }));
+    await vi.waitFor(() => expect(pending).toHaveLength(3));
+    pending[2]!(new Response(JSON.stringify({ events: [], nextCursor: null, hasMore: false }), {
+      headers: { "content-type": "application/json" },
+    }));
+    await vi.waitFor(() => expect(service?.isGithubRelayHealthy()).toBe(true));
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
   it("drains hosted repo pages oldest-first and persists each completed page cursor", async () => {
     const cursors = new Map<string, string | null>([["github-relay", "seq:2"]]);
     const setIngressCursor = vi.fn(({ source, cursor }: { source: string; cursor: string | null }) => {
