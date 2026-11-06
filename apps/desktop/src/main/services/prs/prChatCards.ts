@@ -534,13 +534,17 @@ export async function emitPrCardsForChange(args: {
   if (!pr.laneId) return 0;
 
   /**
-   * A closed PR has nothing live left to report. CI still finishes on the
+   * A finished PR has nothing live left to report. CI still completes on the
    * merge commit, GitHub still recomputes "behind base", and a review can
    * still land, so without this a merged PR goes on posting cards into a
-   * thread whose work is finished. The merged card itself is the exception:
-   * it is the one that says the work is over. Reopening makes it live again.
+   * thread whose work is over. The merged card itself is the exception: it is
+   * the one that says so. Reopening makes the PR live again.
+   *
+   * A draft counts as live. Its CI runs and its reviews land like any other
+   * PR's, and those are exactly the moments its chat wants; only
+   * `becameMergeReady` stays `open`-only, because a draft is never ready.
    */
-  const live = pr.state === "open";
+  const live = pr.state === "open" || pr.state === "draft";
 
   const checksChanged =
     live

@@ -508,10 +508,13 @@ describe("PR chat cards", () => {
     { name: "every linked Work chat", links: { chatSessionIds: ["newer", "older"] }, expected: ["newer", "older"] },
     {
       // A stack coordinator on another lane linked the PR. That link is a
-      // reference, so the PR's own lane still gets its newest chat.
-      name: "the linking chat on another lane plus the PR's own lane chat",
+      // reference — it is how one chat offers you another's PR — and a
+      // reference is not a reason to interrupt, so the card goes to the PR's
+      // own lane and the coordinator's thread stays its own. The stack-landed
+      // card still reaches it; only the per-PR traffic stops.
+      name: "the PR's own lane chat, never the linking chat on another lane",
       links: { chatSessionIds: ["coordinator"], crossLaneChatSessionIds: ["coordinator"] },
-      expected: ["coordinator", "newer"],
+      expected: ["newer"],
     },
     {
       name: "only a same-lane linker, never the lane fallback",
