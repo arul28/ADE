@@ -58,18 +58,21 @@ const RUNTIME_FAILURE_KINDS: ReadonlyArray<readonly [kind: string, pattern: RegE
   ["turn-active", /\bturn already active\b/i],
   ["owned-elsewhere", /\balready owned by another\b/i],
   ["timeout", /\bdid not answer within\b|\btimed out\b/i],
-  ["spawn-failed", /\bfailed to spawn\b|\bspawn \S+ E[A-Z]+\b|\bcould not start\b/i],
+  ["spawn-failed", /\bfailed to spawn\b|\bcould not start\b/i],
+  // Node's `spawn <path> EAGAIN`: the path can hold spaces (`C:\Program Files\…`),
+  // and Windows can say `UNKNOWN`. Case-sensitive, so a word such as "error" is not a code.
+  ["spawn-failed", /\bspawn\b.*\b(?:E[A-Z]{2,}|UNKNOWN)\b/],
   ["exited", /\bexited with code\b/i],
 ];
 
-/** An ACP request names its method (`ACP session/new did not answer …`). */
-const ACP_METHOD = /\bACP ([a-z_]+(?:\/[a-z_]+)?) /i;
+/** ADE's own ACP timeout names the method it sent (`ACP session/new did not answer within …`). */
+const ACP_TIMEOUT_METHOD = /\bACP ([a-z_]+(?:\/[a-z_]+)?) did not answer within\b/i;
 
 function runtimeFailureKind(message: string | null): string {
   const text = message ?? "";
   const kind = RUNTIME_FAILURE_KINDS.find(([, pattern]) => pattern.test(text))?.[0] ?? "other";
   if (kind !== "timeout") return kind;
-  const method = ACP_METHOD.exec(text)?.[1]?.toLowerCase();
+  const method = ACP_TIMEOUT_METHOD.exec(text)?.[1]?.toLowerCase();
   return method ? `timeout:${method}` : kind;
 }
 
@@ -80,9 +83,10 @@ const reportedRuntimeFailures = new Set<string>();
  * A provider that stops working is the failure users notice first and report
  * least: the chat just says it cannot start. The app shows every transition.
  * Sentry gets the first runtime failure of each kind per provider per
- * process, as a warning: most are the machine (a CLI that will not start there, a probe
- * that timed out) rather than ADE, and a provider that flaps on one machine
- * was an error event, and an alert, each time. Later ones are Sentry Logs.
+ * process, as a warning: most are the machine (a CLI that will not start
+ * there, a probe that timed out) rather than ADE, and a provider that flaps
+ * on one machine was an error event, and an alert, each time. Later ones are
+ * Sentry Logs.
  * A recovery leaves a breadcrumb. Auth failures are only logged, since
  * signing out is not a bug.
  */

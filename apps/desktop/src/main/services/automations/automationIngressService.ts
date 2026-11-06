@@ -491,6 +491,11 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   let relayPollRetryTimer: NodeJS.Timeout | null = null;
   let pollInFlight: Promise<void> | null = null;
   let pollRerunRequested = false;
+  /**
+   * A repair came while a poll ran. That poll sent the credentials from before
+   * the repair, so its refusal must not start the pause the repair ended.
+   */
+  let repairedDuringPoll = false;
   let pollAbortController: AbortController | null = null;
   let relayPollGeneration = 0;
   let started = false;
@@ -921,6 +926,16 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       void pollGithubRelayOnce();
     }, delayMs);
     relayPollRetryTimer.unref?.();
+  };
+
+  /** Every cooldown and failure count a repair ends. */
+  const clearRelayPollBackoff = (): void => {
+    hostedAuthPendingUntilMs = 0;
+    hostedAuthPendingLogged = false;
+    clearRelayPollRetryTimer();
+    relayPollCooldownUntilMs = 0;
+    relayPollFailureCount = 0;
+    relayPollUnauthorizedCount = 0;
   };
 
   const clearSubscriptionReconnectTimer = (): void => {
@@ -1519,6 +1534,10 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         } catch (error) {
           if (!(error instanceof GithubRelayPollSupersededError)) throw error;
         }
+        if (repairedDuringPoll) {
+          repairedDuringPoll = false;
+          clearRelayPollBackoff();
+        }
       } while (pollRerunRequested && !stopped && Date.now() >= relayPollCooldownUntilMs);
     })().finally(() => {
       pollInFlight = null;
@@ -1536,12 +1555,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
    * be suppressed by the failure it replaced.
    */
   const pollAfterRepair = async (): Promise<void> => {
-    hostedAuthPendingUntilMs = 0;
-    hostedAuthPendingLogged = false;
-    clearRelayPollRetryTimer();
-    relayPollCooldownUntilMs = 0;
-    relayPollFailureCount = 0;
-    relayPollUnauthorizedCount = 0;
+    clearRelayPollBackoff();
+    if (pollInFlight) repairedDuringPoll = true;
     // An explicit poke is the user asking for freshness: leave idle decay.
     noteRelayActivity();
     await pollGithubRelayOnce();
@@ -1624,6 +1639,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       relayPollGeneration += 1;
       unsubscribeSignIn?.();
       unsubscribeSignIn = null;
+      repairedDuringPoll = false;
       githubRelayHealthy = false;
       relayPollCooldownUntilMs = 0;
       relayPollFailureCount = 0;
