@@ -667,7 +667,15 @@ window hears it, off the slider or off the window). A fold that fails puts the
 slider back to the device's own angle. The 3D body eases into every pose (hinge,
 the landscape turn, the half turn that shows the cover) and the camera eases
 to each new fit; while ADE's own fold sweeps (up to 8 s), the simulator's
-intermediate reports are held off so the hinge does not jump back. A drag on
+intermediate reports are held off so the hinge does not jump back. The body
+turns to the screen the fold ends on (`appleDuoFacingScreen`), not the one the
+simulator reports mid-sweep: it reports the switch only once its sweep ends,
+and it switches with hysteresis (opening between 120° and 150°, closing between
+30° and 10°, on iOS 27.1). So a target at 10° or less faces the cover, at 150°
+or more the inner screen, and anything between keeps the reported one. Waiting
+for the report stood a closing phone edge-on and turned an opening one's back
+to the camera before it spun round. The picture stays on the panel the
+simulator reports. A drag on
 the 3D view leaves the device where it was let go; Reset view brings back the
 rest pose, and so does an orientation press (also the one already pressed,
 which sends the turn again) or a slider release on Closed, Laptop or Open. ⌥[ and ⌥] fold and unfold by the step. A
