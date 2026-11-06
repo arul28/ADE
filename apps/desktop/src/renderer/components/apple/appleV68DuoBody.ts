@@ -1,7 +1,7 @@
 import type { BufferGeometry, Group, Material, Mesh, Object3D, Raycaster, Texture, Vector3 } from "three";
 import { disposeImportedSubtree, type DeviceBody, type DuoBodyControls, type ThreeNS } from "../device/deviceScene";
 import { APPLE_DUO_COVER_SCREEN_ID, APPLE_DUO_INNER_SCREEN_ID } from "../../../shared/types/iosSimulator";
-import { clampAppleDuoAngle } from "./appleDuo";
+import { appleDuoFacingScreen, clampAppleDuoAngle } from "./appleDuo";
 import { deviceEaseFactor } from "../device/deviceOrbit";
 
 /**
@@ -235,6 +235,12 @@ export function createV68DuoBody(
   stand.add(holder);
   root.add(stand);
   const activeMap = () => (activeScreenId === APPLE_DUO_COVER_SCREEN_ID ? coverMap : innerMap);
+  /**
+   * The panel the phone turns to: the one the fold in progress ends on. The
+   * paint (and input) stays on the panel the simulator reports, whose picture
+   * the stream carries.
+   */
+  const facingScreen = () => appleDuoFacingScreen(targetAngle, activeScreenId ?? null);
 
   const paintPanels = () => {
     const coverActive = activeScreenId === APPLE_DUO_COVER_SCREEN_ID;
@@ -268,12 +274,12 @@ export function createV68DuoBody(
     angle: targetAngle,
     sideways: Math.abs(Math.abs(targetTurn) - Math.PI / 2) < 0.01,
     tableMode,
-    coverLive: activeScreenId === APPLE_DUO_COVER_SCREEN_ID,
+    coverLive: facingScreen() === APPLE_DUO_COVER_SCREEN_ID,
   });
 
   /** The turn that puts the cover toward the camera at the TARGET fold. */
   const targetCoverYaw = () => {
-    if (activeScreenId !== APPLE_DUO_COVER_SCREEN_ID) return 0;
+    if (facingScreen() !== APPLE_DUO_COVER_SCREEN_ID) return 0;
     const phi = ((180 - Math.min(180, Math.max(0, targetAngle))) / 2) * DEG;
     return coverHalf === right ? -(Math.PI - phi) : Math.PI - phi;
   };

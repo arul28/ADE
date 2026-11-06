@@ -17,7 +17,11 @@
  */
 
 import { appleDeviceTypeSupportsDuo } from "../../../shared/appleOrientation";
-import { APPLE_DEVICE_POSE_TARGETS } from "../../../shared/types/iosSimulator";
+import {
+  APPLE_DEVICE_POSE_TARGETS,
+  APPLE_DUO_COVER_SCREEN_ID,
+  APPLE_DUO_INNER_SCREEN_ID,
+} from "../../../shared/types/iosSimulator";
 
 export type AppleDuoStanceId = "open" | "laptop" | "book" | "tent" | "closed";
 
@@ -56,6 +60,29 @@ export const APPLE_DUO_STANCES: readonly AppleDuoStance[] = [
   { id: "tent", label: "Tent", angle: APPLE_DEVICE_POSE_TARGETS.tent.angle },
   { id: "closed", label: "Closed", angle: APPLE_DEVICE_POSE_TARGETS.closed.angle },
 ];
+
+/** At or below this hinge angle the simulator has the cover on. */
+const APPLE_DUO_COVER_BY_ANGLE = 10;
+/** At or above this hinge angle it has the inner display on. */
+const APPLE_DUO_INNER_BY_ANGLE = 150;
+
+/**
+ * The panel a fold to `angle` ends on, so the body turns to it while the
+ * simulator still sweeps there.
+ *
+ * The simulator says which panel is on only once its sweep ends. A body that
+ * waited for that stood edge-on while it closed (shut, with no turn to the
+ * cover yet) and showed its back while it opened (still turned to a cover
+ * that was about to go off), then spun round. Between the two bounds the
+ * simulator keeps whichever panel was on (on iOS 27.1, opening switches
+ * between 120° and 150°, closing between 30° and 10°), so the reported one
+ * stands there.
+ */
+export function appleDuoFacingScreen(angle: number, reported: number | null): number | null {
+  if (angle <= APPLE_DUO_COVER_BY_ANGLE) return APPLE_DUO_COVER_SCREEN_ID;
+  if (angle >= APPLE_DUO_INNER_BY_ANGLE) return APPLE_DUO_INNER_SCREEN_ID;
+  return reported;
+}
 
 export function clampAppleDuoAngle(angle: number): number {
   if (!Number.isFinite(angle)) return APPLE_DUO_MAX_ANGLE;

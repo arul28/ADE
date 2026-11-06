@@ -627,8 +627,12 @@ struct WorkChatSessionView: View {
   /// The transcript's frame in the chat column's space. It extends under the
   /// header and the composer; the insets are derived from how far.
   @State var transcriptFrameInColumn: CGRect = .zero
-  /// A sign-in card the person dismissed, by the failed turn it was for.
+  /// A sign-in card the person dismissed, by the failed turn (or the
+  /// before-send reason) it was for.
   @State var dismissedSignInFailureId: String?
+  /// The chat's machine says its agent has no login, read when the chat opens
+  /// (desktop reads the same status for its before-send card).
+  @State var providerSignedOutBeforeSend = false
   @State var bottomChromeMinY: CGFloat = 0
   @State var transcriptSafeInsets = EdgeInsets()
   /// The transcript's handle on its own `UICollectionView`. Replaces the
@@ -907,13 +911,42 @@ struct WorkChatSessionView: View {
   /// composer stop button, and the streaming-markdown fast path.
   var isStreamingTurn: Bool { frame?.isStreamingTurn ?? false }
 
-  /// The failed turn whose signed-out agent the sign-in card is for, unless
-  /// the person said not now to that one.
-  var shownProviderSignInFailureId: String? {
-    guard providerSignInAllowed, !isStreamingTurn, !isPersonalChat,
-          let id = workLatestSignInFailure(transcript, provider: chatSummaryContext.provider),
-          id != dismissedSignInFailureId else { return nil }
-    return id
+  /// The sign-in card to show, keyed so a dismissed one stays hidden until a
+  /// new reason brings it back: the failed turn whose signed-out agent it is
+  /// for, else the machine's word that the agent has no login yet.
+  var shownProviderSignIn: (key: String, reason: WorkProviderSignInReason)? {
+    guard providerSignInAllowed, !isStreamingTurn, !isPersonalChat else { return nil }
+    let shown: (key: String, reason: WorkProviderSignInReason)
+    if let id = workLatestSignInFailure(transcript, provider: chatSummaryContext.provider) {
+      shown = (id, .failedTurn)
+    } else if providerSignedOutBeforeSend {
+      shown = ("\(chatSummaryContext.provider):no-login", .noLogin)
+    } else {
+      return nil
+    }
+    return shown.key == dismissedSignInFailureId ? nil : shown
+  }
+
+  /// What the before-send read depends on: the provider and the machine's
+  /// connection. Nil where no card could show.
+  var providerSignInStatusKey: String? {
+    guard providerSignInAllowed, !isPersonalChat, let host = providerSignInHost,
+          workProviderSignInKind(chatSummaryContext.provider) != .settings else { return nil }
+    return "\(ObjectIdentifier(host)):\(chatSummaryContext.provider)"
+  }
+
+  /// Reads the agent's login on the chat's machine, once per chat and machine.
+  /// Best effort: an older or unreachable machine shows no card before a send,
+  /// and the card still comes after a send that fails.
+  func refreshProviderSignedOutBeforeSend() async {
+    guard providerSignInStatusKey != nil, let host = providerSignInHost, host.providerAccountsConnected else {
+      providerSignedOutBeforeSend = false
+      return
+    }
+    let provider = chatSummaryContext.provider
+    let status = try? await host.runProviderAccountsCommand("ai.getStatus", args: [:])
+    guard !Task.isCancelled else { return }
+    providerSignedOutBeforeSend = status.map { workProviderSignedOutBeforeSend($0, provider: provider) } ?? false
   }
 
   /// The turn that stopped on the sign-in sends again by itself, with the
@@ -1975,7 +2008,7 @@ struct WorkChatSessionView: View {
           .transition(.opacity)
       }
 
-      if let signInFailureId = shownProviderSignInFailureId {
+      if let signIn = shownProviderSignIn {
         // The chat's agent is signed out on its machine: the sign-in card
         // takes the composer's place until the machine reads the login back.
         WorkProviderSignInCard(
@@ -1983,13 +2016,16 @@ struct WorkChatSessionView: View {
           machineName: providerSignInMachineName,
           host: providerSignInHost,
           instanceId: providerSignInInstanceId,
+          reason: signIn.reason,
           onSignedIn: {
-            dismissedSignInFailureId = signInFailureId
-            resendAfterSignIn()
+            dismissedSignInFailureId = signIn.key
+            providerSignedOutBeforeSend = false
+            // Nothing was sent before a no-login card, so nothing sends again.
+            if signIn.reason == .failedTurn { resendAfterSignIn() }
           },
-          onDismiss: { dismissedSignInFailureId = signInFailureId }
+          onDismiss: { dismissedSignInFailureId = signIn.key }
         )
-        .id(signInFailureId)
+        .id(signIn.key)
       } else {
         WorkChatComposerCard(
           chatSummary: chatSummaryContext,
@@ -2536,6 +2572,9 @@ struct WorkChatSessionView: View {
         // `syncWeakLinkChatSubscriptionMaxBytes`). Once it is on screen, the next
         // older page loads in the background into the paging buffer, so scrolling
         // up reveals rows that are already here: no wait, no jump, no gap.
+        .task(id: providerSignInStatusKey) {
+          await refreshProviderSignedOutBeforeSend()
+        }
         .task(id: weakLinkPrefetchKey) {
           guard weakLinkPrefetchKey != nil else { return }
           try? await Task.sleep(nanoseconds: 600_000_000)

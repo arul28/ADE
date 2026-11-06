@@ -1547,6 +1547,9 @@ enum ADEPreviewScreen: String, CaseIterable {
   case chatSignIn = "chat-signin"
   /// The same chat after the sign-in: the message went again and was answered.
   case chatSignInRecovered = "chat-signin-recovered"
+  /// A Muse chat before anything is sent: the machine says Muse has no login,
+  /// so the card shows before a send.
+  case chatSignInBeforeSend = "chat-signin-before-send"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1774,6 +1777,8 @@ struct ADEPreviewScreenHost: View {
       WorkProviderSignInPreviewHost()
     case .chatSignInRecovered:
       WorkProviderSignInPreviewHost(recovered: true)
+    case .chatSignInBeforeSend:
+      WorkProviderSignInPreviewHost(beforeSend: true)
     }
   }
 }
@@ -2811,8 +2816,15 @@ struct WorkPreviewTranscriptList: UIViewRepresentable {
 /// for the composer. Continue runs the sign-in on a stand-in machine that
 /// hands out a device code and reads the login back after a while.
 private struct WorkProviderSignInPreviewHost: View {
-  var recovered = false
-  @StateObject private var machine = WorkProviderSignInPreviewMachine()
+  let recovered: Bool
+  let beforeSend: Bool
+  @StateObject private var machine: WorkProviderSignInPreviewMachine
+
+  init(recovered: Bool = false, beforeSend: Bool = false) {
+    self.recovered = recovered
+    self.beforeSend = beforeSend
+    _machine = StateObject(wrappedValue: WorkProviderSignInPreviewMachine(signedIn: recovered))
+  }
 
   private static let recoveredTranscript: [WorkChatEnvelope] = {
     let sessionId = WorkPreviewData.chatSummary.sessionId
@@ -2849,7 +2861,7 @@ private struct WorkProviderSignInPreviewHost: View {
   var body: some View {
     NavigationStack {
       workPreviewChatSessionView(
-        transcript: recovered ? Self.recoveredTranscript : Self.transcript,
+        transcript: beforeSend ? [] : recovered ? Self.recoveredTranscript : Self.transcript,
         provider: "muse",
         providerSignInHost: machine,
         providerSignInMachineName: "Studio Mac"
@@ -2863,6 +2875,9 @@ private struct WorkProviderSignInPreviewHost: View {
 @MainActor
 private final class WorkProviderSignInPreviewMachine: ObservableObject, ProviderAccountsHost {
   private var startedAt: Date?
+  private let signedInAtStart: Bool
+
+  init(signedIn: Bool) { signedInAtStart = signedIn }
 
   var supportsProviderAccounts: Bool { true }
   var canChangeProviderAccounts: Bool { true }
@@ -2879,6 +2894,10 @@ private final class WorkProviderSignInPreviewMachine: ObservableObject, Provider
     case "ai.cliLoginCancel":
       startedAt = nil
       return login(state: "cancelled")
+    case "ai.getStatus":
+      // Muse is installed with no login until a sign-in here finishes.
+      let signedIn = signedInAtStart || (startedAt.map { Date().timeIntervalSince($0) > 25 } ?? false)
+      return ["providerConnections": ["muse": ["runtimeDetected": true, "authAvailable": signedIn, "runtimeAvailable": signedIn]]]
     default:
       return [String: Any]()
     }
