@@ -681,7 +681,11 @@ fold is read again (3 times, 250 ms apart), then answered from the last panel
 the device or the posture watcher named, or the panel the fold aimed at.
 `frame` follows a panel switch the watcher has not applied yet and waits up
 to 4 s for the first frame, so a frame right after a fold no longer fails at
-one second.
+one second. A recording that starts its own capture (`record-start` with no
+live view, the headless agent case) does the same before its first frame and
+then starts the posture watcher: a capture engine starts on the device's
+largest surface, which on a folded Duo is the dark inner panel, so without it
+the whole file came out black at the inner panel's size.
 
 **Apple's Duo skill.** The Duo menu's **Add Apple's Duo skill to this lane**
 (`addDuoSkill`, `ade apple duo-skill`) exports Xcode's agent skills
