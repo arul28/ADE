@@ -716,10 +716,14 @@ struct WorkChatMessageBubble: View, Equatable {
 
   var deliveryBadge: WorkDeliveryBadge.State? {
     guard message.role == "user" else { return nil }
+    // Muse stamps each message's own turn id as its steer id (so a retracted
+    // turn can reclaim the bubble); a message that opened its own turn was
+    // not queued behind one.
+    let steerId = message.steerId == message.turnId ? nil : message.steerId
     return workDeliveryBadgeState(
       deliveryState: message.deliveryState,
       processed: message.processed,
-      steerId: message.steerId
+      steerId: steerId
     )
   }
 

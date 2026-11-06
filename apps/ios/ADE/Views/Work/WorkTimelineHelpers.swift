@@ -3848,6 +3848,7 @@ func buildWorkEventCards(
   // itemId that lands on such a card gets its standalone "Input resolved" ribbon
   // folded away (below) to avoid rendering the resolution twice.
   let resolutionByItemId = workPendingInputResolutions(from: transcript)
+  let signInRecoveredIds = workSignInRecoveredIds(transcript)
   let foldedResolutionItemIds = workResolvedInlineItemIds(from: transcript)
   // One ribbon per itemId, first receipt wins — the same rule (and the same
   // unsorted traversal order) as `workPendingInputResolutions` above, so the
@@ -3907,7 +3908,11 @@ func buildWorkEventCards(
        recoveredCodexTurnIds.contains(turnId) {
       continue
     }
-    guard var card = eventCard(for: envelope, resolutionByItemId: resolutionByItemId) else { continue }
+    guard var card = eventCard(
+      for: envelope,
+      resolutionByItemId: resolutionByItemId,
+      signInRecovered: signInRecoveredIds.contains(envelope.id)
+    ) else { continue }
     card.turnId = card.turnId ?? workTurnId(for: envelope.event)
     if let existing = byId[card.id], let merged = mergedWorkEventCard(existing, with: card) {
       var merged = merged
@@ -4822,7 +4827,9 @@ private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: 
 
 func eventCard(
   for envelope: WorkChatEnvelope,
-  resolutionByItemId: [String: String] = [:]
+  resolutionByItemId: [String: String] = [:],
+  /// A signed-out line whose chat worked again after it (`workSignInRecoveredIds`).
+  signInRecovered: Bool = false
 ) -> WorkEventCardModel? {
   switch envelope.event {
     case .activity:
@@ -5146,6 +5153,40 @@ func eventCard(
         // rebuild by the fold. The wording stays exactly as the host wrote it —
         // only the child key is lifted out of the detail.
         spawnCompletionChildId: kind == "info" ? workSpawnCompletionChildId(from: detail) : nil
+      )
+    case .error(let message, let detail, _, _, _, _) where envelope.signedOutAgent != nil:
+      // A signed-out agent is not a crash: one calm line, and the sign-in
+      // card takes the composer's place below. The provider's own words stay
+      // in the technical fold.
+      let name = workProviderSignInLabel(envelope.signedOutAgent ?? "")
+      if signInRecovered {
+        // The chat worked again after it: one quiet line (an "auth" notice,
+        // which the diagnostics fold keeps).
+        return WorkEventCardModel(
+          id: envelope.id,
+          kind: "notice",
+          title: "\(name) signed in again",
+          icon: "checkmark.circle",
+          tint: .success,
+          timestamp: envelope.timestamp,
+          body: nil,
+          bullets: [],
+          metadata: [],
+          noticeKind: "auth"
+        )
+      }
+      return WorkEventCardModel(
+        id: envelope.id,
+        kind: "error",
+        title: "\(name) was signed out",
+        icon: "person.crop.circle.badge.exclamationmark",
+        tint: .warning,
+        timestamp: envelope.timestamp,
+        body: "Sign in below and your message sends again.",
+        bullets: [],
+        metadata: [],
+        technicalDetail: detail ?? message,
+        nextAction: nil
       )
     case .error(let message, let detail, let category, _, let title, let nextAction):
       // Title, next action and the technical fold are already resolved on the

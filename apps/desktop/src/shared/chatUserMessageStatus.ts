@@ -22,9 +22,19 @@ export type UserMessageStatus = {
 
 type UserMessageEvent = Extract<AgentChatEvent, { type: "user_message" }>;
 
+/**
+ * A message sent into or behind a running turn. Muse stamps every message's
+ * own turn id as its steer id (so a retracted turn can reclaim the bubble);
+ * a message that opened its own turn is a plain send.
+ */
+export function isQueuedSteer(event: Pick<UserMessageEvent, "steerId" | "turnId">): boolean {
+  const steerId = event.steerId?.trim();
+  return Boolean(steerId) && steerId !== event.turnId?.trim();
+}
+
 /** The one-line delivery state shown next to a user message on every client. */
 export function describeUserMessageStatus(event: UserMessageEvent): UserMessageStatus | null {
-  const isSteer = Boolean(event.steerId?.trim());
+  const isSteer = isQueuedSteer(event);
   switch (event.deliveryState) {
     case "failed": {
       const launchDeliveryError = event.metadata?.[LAUNCH_DELIVERY_ERROR_METADATA_KEY];

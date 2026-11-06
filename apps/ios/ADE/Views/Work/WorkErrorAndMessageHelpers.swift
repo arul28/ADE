@@ -1114,6 +1114,9 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
   if case .systemNotice(_, _, let detail, _, _) = entry.event {
     envelope.continuityNotice = workContinuityNotice(from: detail)
   }
+  if case .error(_, _, _, _, let errorInfo) = entry.event {
+    envelope.signedOutAgent = workSignedOutAgent(errorInfo)
+  }
   return envelope
 }
 

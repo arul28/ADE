@@ -2408,6 +2408,7 @@ function AgentChatComposerImpl({
   onSendSteerNow,
   onSendSteerInterrupt,
   onOpenAiSettings,
+  replacementCard,
   onOpenLinearSettings,
   launchPromptClipboardEnabled = false,
   launchPromptClipboardNoticeEnabled = true,
@@ -2738,6 +2739,12 @@ function AgentChatComposerImpl({
    */
   onSendSteerInterrupt?: () => void;
   onOpenAiSettings?: (family?: ProviderFamily) => void;
+  /**
+   * A card that takes the composer's place while it is up: the sign-in card
+   * for a provider that is signed out on the composer's machine. An agent's
+   * own question still comes first.
+   */
+  replacementCard?: React.ReactNode;
   onOpenLinearSettings?: () => void;
   launchPromptClipboardEnabled?: boolean;
   launchPromptClipboardNoticeEnabled?: boolean;
@@ -9452,6 +9459,8 @@ function AgentChatComposerImpl({
             />
           );
         }
+
+        if (replacementCard) return replacementCard;
 
         // The one thing the tags cannot say, kept visible because tooltips
         // never show on a touch pointer: why a message has to wait.

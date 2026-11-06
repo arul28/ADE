@@ -343,6 +343,8 @@ import {
 } from "../../../../desktop/src/main/services/chat/draftService";
 import { launchAgentChatCli } from "../../../../desktop/src/main/services/chat/agentChatCliLaunch";
 import { deleteApiKey } from "../../../../desktop/src/main/services/ai/apiKeyStore";
+import type { AgentCliLoginStartArgs } from "../../../../desktop/src/shared/types/agentCliLogin";
+import type { AntigravitySignInStartArgs } from "../../../../desktop/src/shared/types/config";
 import { resolveCodexComputerUseMcpConfig } from "../../../../desktop/src/main/utils/codexComputerUse";
 import { resolveTrackedCliUserMcp } from "../../../../desktop/src/main/services/mcp/trackedCliUserMcp";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
@@ -7443,6 +7445,50 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     }
     return { ok: true };
   });
+  // Sign-ins the phone and the hosted web client run on THIS machine: an agent
+  // CLI's own login (Grok, Devin, Muse, Copilot, Droid, Kimi) and
+  // Antigravity's. The same runners as the desktop's `ai.cliLogin*` and
+  // `ai.antigravitySignIn*` actions; the person starts them, so a viewer only
+  // reads their status.
+  // Loaded at first use, as the desktop's actions load them.
+  const cliLoginRunner = async () =>
+    (await import("../../../../desktop/src/main/services/ai/machineAgentCliLoginRunner")).getMachineAgentCliLoginRunner();
+  const antigravitySignIn = () => import("../../../../desktop/src/main/services/ai/antigravitySignIn");
+  const invalidateReadinessAfterSignIn = () => {
+    try {
+      args.aiIntegrationService?.invalidateProviderReadinessCaches();
+    } catch {
+      // A freshness step; the sign-in itself already landed.
+    }
+  };
+  register("ai.cliLoginStart", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    (await cliLoginRunner()).start(payload as unknown as AgentCliLoginStartArgs), "runtime");
+  register("ai.cliLoginStatus", { viewerAllowed: true }, async (payload) => {
+    const status = (await cliLoginRunner()).status(requireString(payload.loginId, "ai.cliLoginStatus requires loginId."));
+    if (status.state === "succeeded") invalidateReadinessAfterSignIn();
+    return status;
+  }, "runtime");
+  register("ai.cliLoginSubmitCode", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    (await cliLoginRunner()).submitCode(
+      requireString(payload.loginId, "ai.cliLoginSubmitCode requires loginId."),
+      requireString(payload.code, "ai.cliLoginSubmitCode requires code."),
+    ), "runtime");
+  register("ai.cliLoginCancel", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    (await cliLoginRunner()).cancel(requireString(payload.loginId, "ai.cliLoginCancel requires loginId.")), "runtime");
+  register("ai.antigravitySignInStatus", { viewerAllowed: true }, async () => {
+    const state = await (await antigravitySignIn()).getAntigravitySignInState();
+    if (state.phase === "succeeded") invalidateReadinessAfterSignIn();
+    return state;
+  }, "runtime");
+  register("ai.antigravitySignInStart", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    (await antigravitySignIn()).startAntigravitySignIn(payload as unknown as AntigravitySignInStartArgs), "runtime");
+  register("ai.antigravitySignInComplete", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    (await antigravitySignIn()).completeAntigravitySignIn({
+      flowId: requireString(payload.flowId, "ai.antigravitySignInComplete requires flowId."),
+      callbackUrl: requireString(payload.callbackUrl, "ai.antigravitySignInComplete requires callbackUrl."),
+    }), "runtime");
+  register("ai.antigravitySignInCancel", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    (await antigravitySignIn()).cancelAntigravitySignIn({ flowId: requireString(payload.flowId, "ai.antigravitySignInCancel requires flowId.") }), "runtime");
   register("ai.listCursorCloudRepositories", { viewerAllowed: true }, async (payload) =>
     requireService(args.aiIntegrationService, "AI integration service not available.").listCursorCloudRepositories({
       refresh: payload.refresh === true,

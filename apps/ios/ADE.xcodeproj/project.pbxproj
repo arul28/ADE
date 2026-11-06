@@ -180,6 +180,7 @@
 		E1000000000000000000002B /* WorkChatSessionView+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002B /* WorkChatSessionView+Actions.swift */; };
 		E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */; };
 		E10000000000000000C0A7A1 /* WorkChatAccountNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7A1 /* WorkChatAccountNote.swift */; };
+		E10000000000000000C0A7B9 /* WorkProviderSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7B9 /* WorkProviderSignIn.swift */; };
 		E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002D /* WorkChatRichCardViews.swift */; };
 		E20000000000000000000F06 /* WorkTurnWorkDisclosure.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F06 /* WorkTurnWorkDisclosure.swift */; };
 		F10000000000000000000103 /* WorkRemoteToolResultAffordance.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000104 /* WorkRemoteToolResultAffordance.swift */; };
@@ -634,6 +635,7 @@
 		D1000000000000000000002B /* WorkChatSessionView+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkChatSessionView+Actions.swift"; path = "ADE/Views/Work/WorkChatSessionView+Actions.swift"; sourceTree = "<group>"; };
 		D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatHeaderAndMessageViews.swift; path = ADE/Views/Work/WorkChatHeaderAndMessageViews.swift; sourceTree = "<group>"; };
 		D10000000000000000C0A7A1 /* WorkChatAccountNote.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatAccountNote.swift; path = ADE/Views/Work/WorkChatAccountNote.swift; sourceTree = "<group>"; };
+		D10000000000000000C0A7B9 /* WorkProviderSignIn.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProviderSignIn.swift; path = ADE/Views/Work/WorkProviderSignIn.swift; sourceTree = "<group>"; };
 		D1000000000000000000002D /* WorkChatRichCardViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatRichCardViews.swift; path = ADE/Views/Work/WorkChatRichCardViews.swift; sourceTree = "<group>"; };
 		D20000000000000000000F06 /* WorkTurnWorkDisclosure.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTurnWorkDisclosure.swift; path = ADE/Views/Work/WorkTurnWorkDisclosure.swift; sourceTree = "<group>"; };
 		F10000000000000000000104 /* WorkRemoteToolResultAffordance.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRemoteToolResultAffordance.swift; path = ADE/Views/Work/WorkRemoteToolResultAffordance.swift; sourceTree = "<group>"; };
@@ -1337,6 +1339,7 @@
 				D10000000000000000000F01 /* WorkLaneOrder.swift */,
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D10000000000000000C0A7A1 /* WorkChatAccountNote.swift */,
+				D10000000000000000C0A7B9 /* WorkProviderSignIn.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
 				D20000000000000000000F06 /* WorkTurnWorkDisclosure.swift */,
 				F10000000000000000000104 /* WorkRemoteToolResultAffordance.swift */,
@@ -2314,6 +2317,7 @@
 				E10000000000000000000F01 /* WorkLaneOrder.swift in Sources */,
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,
 				E10000000000000000C0A7A1 /* WorkChatAccountNote.swift in Sources */,
+				E10000000000000000C0A7B9 /* WorkProviderSignIn.swift in Sources */,
 				E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */,
 				E20000000000000000000F06 /* WorkTurnWorkDisclosure.swift in Sources */,
 				F10000000000000000000103 /* WorkRemoteToolResultAffordance.swift in Sources */,

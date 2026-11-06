@@ -421,6 +421,20 @@ extension WorkSessionDestinationView {
     syncService.routedRemoteMachineChat(sessionId)?.machineKey ?? syncService.focusedMachineKey ?? "focused"
   }
 
+  /// The chat machine's connection, where a signed-out agent signs in again;
+  /// nil for a chat on a machine the phone has no connection to, which must
+  /// never sign in this one instead.
+  var providerSignInHost: ProviderAccountsHost? {
+    let remote = syncService.remoteChatConnection(for: sessionId)
+    if remote == nil && syncService.isRemoteMachineChat(sessionId: sessionId) { return nil }
+    return remote ?? syncService
+  }
+
+  /// The chat's machine, by name, for the sign-in card.
+  var providerSignInMachineName: String {
+    syncService.remoteChatConnection(for: sessionId)?.hostName ?? syncService.hostName ?? "this computer"
+  }
+
   /// Reads the chat machine's accounts for the account row, or nil when the
   /// provider has one identity per machine or the machine cannot list them.
   func chatAccountRegistryLoader(provider: String) -> (@MainActor () async throws -> WorkChatAccountRegistry)? {

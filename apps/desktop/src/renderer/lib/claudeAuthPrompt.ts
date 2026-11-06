@@ -81,37 +81,55 @@ function isSuccessfulConversationBoundary(event: AgentChatEvent): boolean {
   return false;
 }
 
-export function shouldShowClaudeChatLoginPrompt({
+/** The agent a turn's error says is signed out, when it says so. */
+function signedOutAgent(
+  event: AgentChatEvent,
+  provider: string,
+  options: { allowTextAuthError: boolean },
+): string | null {
+  if (event.type === "error") {
+    const info = typeof event.errorInfo === "object" && event.errorInfo ? event.errorInfo : null;
+    if (info?.agentCli?.category === "unauthenticated") return info.agentCli.agent;
+  }
+  // Claude's sign-in failures also arrive as plain text from older hosts.
+  if (provider === "claude" && isClaudeAuthErrorEvent(event, options)) return "claude";
+  return null;
+}
+
+/**
+ * The chat's last turn stopped because the chat's own provider is signed out,
+ * and nothing has worked since. Returns which event said so (its id keys the
+ * card, so a dismissed card comes back for the next failure), or null.
+ */
+export function latestChatSignInFailure({
   provider,
   events,
   turnActive = false,
-  authAvailable = false,
 }: {
   provider: string | null | undefined;
   events: AgentChatEventEnvelope[];
   turnActive?: boolean;
-  authAvailable?: boolean;
-}): boolean {
-  if (provider !== "claude" || turnActive) return false;
-
+}): { provider: string; eventKey: string } | null {
+  if (!provider || turnActive) return null;
   let sawFailedTurnBoundary = false;
   for (let index = events.length - 1; index >= 0 && index >= events.length - 80; index -= 1) {
-    const event = events[index]?.event;
+    const envelope = events[index];
+    const event = envelope?.event;
     if (!event) continue;
-    if (event.type === "done" && event.status === "failed") {
+    if ((event.type === "done" && event.status === "failed") || (event.type === "status" && event.turnStatus === "failed")) {
       sawFailedTurnBoundary = true;
       continue;
     }
-    if (event.type === "status" && event.turnStatus === "failed") {
-      sawFailedTurnBoundary = true;
-      continue;
+    const agent = signedOutAgent(event, provider, { allowTextAuthError: sawFailedTurnBoundary });
+    if (agent) {
+      // A tool's own CLI being signed out is not the chat's provider.
+      if (agent !== provider) return null;
+      return { provider, eventKey: `${envelope.sequence ?? index}:${envelope.timestamp ?? ""}` };
     }
-    if (isClaudeAuthErrorEvent(event, { allowTextAuthError: sawFailedTurnBoundary })) return true;
-    if (isSuccessfulConversationBoundary(event)) return false;
-    if (event.type === "status" && event.turnStatus === "started") return false;
+    if (isSuccessfulConversationBoundary(event)) return null;
+    if (event.type === "status" && event.turnStatus === "started") return null;
   }
-
-  return !authAvailable && events.length > 0 && events.some(({ event }) => isClaudeAuthErrorEvent(event));
+  return null;
 }
 
 export function shouldShowClaudeCliLoginPrompt(
