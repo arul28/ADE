@@ -4,6 +4,7 @@ import {
   writeSavedContinueAfterRestart,
 } from "../../../../../ade-cli/src/services/runtime/continueAfterRestartStore";
 import { readSavedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
+import { codedError, encodeCodedErrorMessage, isErrnoLikeCode } from "../../../shared/codedError";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import fs from "node:fs";
 import os from "node:os";
@@ -3362,12 +3363,24 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
       const owner = typeof actionArgs.owner === "string"
         ? actionArgs.owner.trim()
         : undefined;
-      return githubService.publishCurrentProject({
-        ...(owner ? { owner } : {}),
-        name: requireNonEmptyString(actionArgs.name, "name"),
-        description,
-        isPrivate,
-      });
+      try {
+        return await githubService.publishCurrentProject({
+          ...(owner ? { owner } : {}),
+          name: requireNonEmptyString(actionArgs.name, "name"),
+          description,
+          isPrivate,
+        });
+      } catch (error) {
+        // The publish dialog answers `github_not_connected`, `remote_already_exists`
+        // and `repo_name_taken` with their own screens. A runtime action failure
+        // reaches the renderer as its message alone, so the code rides in it,
+        // in the `code: message` shape the direct IPC route already uses.
+        const code = (error as { code?: unknown } | null)?.code;
+        if (typeof code !== "string" || !code.trim() || isErrnoLikeCode(code)) throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.startsWith(`${code}:`)) throw error;
+        throw codedError(encodeCodedErrorMessage(code, message), code);
+      }
     },
     async setToken(args?: unknown) {
       githubService.setToken(readStringActionArg(args, "token"));

@@ -1587,13 +1587,22 @@ export function createHeadlessGitHubService(
           message,
           headers: response.headers,
         });
+        // GitHub puts the reason for a 422 in `errors[].message` ("name
+        // already exists on this account"); the top-level message is only
+        // "Repository creation failed." Callers match on the reason, as on the
+        // desktop twin.
+        const errorDetails = data && typeof data === "object" && Array.isArray((data as { errors?: unknown }).errors)
+          ? ((data as { errors: unknown[] }).errors)
+              .map((entry) => readApiMessage(entry, ""))
+              .filter(Boolean)
+          : [];
         const { repositoryNotFound, ambiguousRepositoryNotFound } =
           repositoryFallback.classifyFailure(candidate, response.status);
         if (!repositoryNotFound) {
           recordGithubOperationFailure(candidate, failure.authFailure, failure.rateLimit);
         }
         const attemptError = new HeadlessGithubCredentialAttemptError(
-          message,
+          errorDetails.length > 0 ? `${message}: ${errorDetails.join("; ")}` : message,
           failure.authFailure,
           failure.rateLimit,
           response.status,
@@ -1891,9 +1900,24 @@ export function createHeadlessGitHubService(
       body.description = args.description.trim();
     }
     const owner = asString(args.owner).trim();
+    // Same rule as the desktop twin: `/orgs/{owner}/repos` only accepts
+    // organizations, and GitHub answers a personal login there with 404. The
+    // publish dialog pre-fills `owner` with the signed-in login, so take the
+    // org route only when the write credential's login is known and differs.
+    // An unresolved login falls back to `/user/repos`.
+    const writeAuth = owner ? await readTokenAsync("write") : null;
+    const authenticatedLogin = writeAuth?.token
+      ? ((await validateToken(
+          writeAuth.token,
+          accountingTokenSource(writeAuth.source),
+        ).catch(() => ({ userLogin: null as string | null }))).userLogin?.trim() || null)
+      : null;
+    const useOrgRoute = owner.length > 0
+      && authenticatedLogin != null
+      && owner.toLowerCase() !== authenticatedLogin.toLowerCase();
     const { data } = await apiRequest<Record<string, unknown>>({
       method: "POST",
-      path: owner ? `/orgs/${encodeURIComponent(owner)}/repos` : "/user/repos",
+      path: useOrgRoute ? `/orgs/${encodeURIComponent(owner)}/repos` : "/user/repos",
       body,
     });
     const identity = repoIdentityFromGitHubResponse(data, owner, args.name);
