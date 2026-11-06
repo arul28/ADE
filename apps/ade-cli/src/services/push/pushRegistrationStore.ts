@@ -632,9 +632,9 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
         // divergent identity over it.
         return loadPresent(readRawSettled());
       }
-      // No exclusive create and nothing valid to adopt — best-effort overwrite.
-      write(created);
-      return created;
+      // Never an overwrite: another process may have just created the
+      // identity a phone is paired to. The next call tries again.
+      throw error;
     }
   };
 

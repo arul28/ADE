@@ -38,7 +38,7 @@ export async function readArtifactByteRange(
     if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
       throw new AdeExpectedError("Artifact file does not exist.", "user");
     }
-    throw new Error("Artifact file does not exist.");
+    throw new Error(`Artifact file could not be opened (${error?.code ?? "unknown"}).`, { cause: error });
   });
   try {
     // The opened handle's own stat, so the size and kind are those of the

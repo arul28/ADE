@@ -656,6 +656,8 @@ export class AttentionAccountCoordinator {
 
   private async sendPresence(presence: Record<string, unknown>): Promise<void> {
     const ownerId = this.currentAccountOwnerId();
+    // A sign-in after a session that could not refresh starts fresh.
+    if (!ownerId) this.presenceNoToken = null;
     if (ownerId && this.options.accountAttentionClient) {
       // Presence is a best-effort heartbeat with nobody waiting on it, and the
       // next one carries the latest state. While the relay is unreachable, or

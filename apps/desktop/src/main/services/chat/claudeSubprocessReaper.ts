@@ -269,18 +269,36 @@ export function createClaudeSubprocessReaper(args: {
    * lines, and nothing else keeps them.
    */
   const stderrTailBySession = new Map<string, string>();
+  /** Chats whose kept tail was cut inside a line that has not ended yet. */
+  const stderrMidLineCut = new Set<string>();
   const captureStderrTail = (child: { stderr?: Readable | null }, sessionId: string): void => {
     const stream = child.stderr;
     if (!stream) return;
     // Always drained: a full pipe would stall the CLI.
     stream.on("data", (chunk: Buffer | string) => {
       const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      const next = keepTrailingWholeLines(`${stderrTailBySession.get(sessionId) ?? ""}${text}`, STDERR_TAIL_MAX_CHARS);
+      // A cut that left nothing ended inside a line; that line's rest arrives
+      // here without the start the scrubber recognizes it by, so drop it.
+      let incoming = text;
+      if (stderrMidLineCut.has(sessionId)) {
+        const newline = incoming.indexOf("\n");
+        if (newline === -1) return;
+        incoming = incoming.slice(newline + 1);
+        stderrMidLineCut.delete(sessionId);
+      }
+      const combined = `${stderrTailBySession.get(sessionId) ?? ""}${incoming}`;
+      const next = keepTrailingWholeLines(combined, STDERR_TAIL_MAX_CHARS);
+      if (!next && combined.length > STDERR_TAIL_MAX_CHARS && !combined.endsWith("\n")) {
+        stderrMidLineCut.add(sessionId);
+      }
       stderrTailBySession.delete(sessionId);
       stderrTailBySession.set(sessionId, next);
       if (stderrTailBySession.size > STDERR_TAIL_MAX_SESSIONS) {
         const oldest = stderrTailBySession.keys().next();
-        if (!oldest.done) stderrTailBySession.delete(oldest.value);
+        if (!oldest.done) {
+          stderrTailBySession.delete(oldest.value);
+          stderrMidLineCut.delete(oldest.value);
+        }
       }
     });
     stream.on("error", () => {
