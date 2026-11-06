@@ -987,6 +987,223 @@ final class WorkModelMentionDirectory: @unchecked Sendable {
   }
 }
 
+// MARK: - Model chip parts
+
+/// The parts of a model chip the user edits in place, as on the desktop
+/// (`composerModelChip.ts`): `[logo Name │ High │ shield]`. The name is fixed;
+/// thinking and permission each open their own short list.
+enum WorkModelChipSegment: String, Equatable, CaseIterable {
+  case effort
+  case perm
+
+  var title: String {
+    switch self {
+    case .effort: return "Thinking"
+    case .perm: return "Permissions"
+    }
+  }
+}
+
+/// How a model chip looks: the maker's mark, the footer's colour for its
+/// thinking level, and the footer picker's icon and tone for its permission.
+enum WorkModelChipStyle {
+  /// `modelChipSegments`: a model with no thinking levels skips thinking.
+  static func segments(tiers: [String]) -> [WorkModelChipSegment] {
+    tiers.isEmpty ? [.perm] : [.effort, .perm]
+  }
+
+  /// `reasoningEffortToneColor`: where a level sits on this model's own ladder
+  /// picks the colour, so "High" reads hotter on a three-step model than on a
+  /// six-step one.
+  static func effortTint(_ effort: String?, tiers: [String]) -> UIColor {
+    guard let effort, let index = tiers.firstIndex(of: effort) else { return .systemGray }
+    guard tiers.count > 1 else { return .systemPurple }
+    let ratio = Double(index) / Double(tiers.count - 1)
+    if ratio <= 0.12 { return .systemGreen }
+    if ratio <= 0.38 { return .systemTeal }
+    if ratio <= 0.52 { return .systemBlue }
+    if ratio < 1 { return .systemIndigo }
+    return .systemPurple
+  }
+
+  struct PermissionGlyph: Equatable {
+    let symbol: String
+    let tint: UIColor
+  }
+
+  private enum Tone { case green, amber, purple, red, slate }
+
+  /// `permissionModePresentation`: the footer picker's icon and tone per mode.
+  static func permissionGlyph(provider: String?, value: String) -> PermissionGlyph {
+    let tone: Tone
+    let icon: String
+    switch (provider ?? "").lowercased() {
+    case "claude":
+      switch value {
+      case "auto": (tone, icon) = (.amber, "bolt.fill")
+      case "acceptEdits": (tone, icon) = (.amber, "pencil")
+      case "plan": (tone, icon) = (.purple, "map.fill")
+      case "bypassPermissions": (tone, icon) = (.red, "exclamationmark.shield.fill")
+      default: (tone, icon) = (.green, "checkmark.shield.fill")
+      }
+    case "cursor":
+      switch value {
+      case "plan": (tone, icon) = (.purple, "map.fill")
+      case "ask": (tone, icon) = (.green, "checkmark.shield.fill")
+      case "full-auto": (tone, icon) = (.red, "exclamationmark.shield.fill")
+      default: (tone, icon) = (.green, "desktopcomputer")
+      }
+    case "droid", "factory":
+      switch value {
+      case "auto-low": (tone, icon) = (.green, "pencil")
+      case "auto-medium": (tone, icon) = (.amber, "bolt.fill")
+      case "auto-high": (tone, icon) = (.red, "exclamationmark.shield.fill")
+      case "agi": (tone, icon) = (.purple, "airplane.departure")
+      default: (tone, icon) = (.green, "checkmark.shield.fill")
+      }
+    case "muse":
+      switch value {
+      case "promptUnmatched": (tone, icon) = (.green, "pencil")
+      case "onRequest": (tone, icon) = (.amber, "bolt.fill")
+      case "allowAll": (tone, icon) = (.red, "exclamationmark.shield.fill")
+      default: (tone, icon) = (.green, "checkmark.shield.fill")
+      }
+    default:
+      switch value {
+      case "edit": (tone, icon) = (.amber, "pencil")
+      case "plan": (tone, icon) = (.purple, "map.fill")
+      case "full-auto": (tone, icon) = (.red, "exclamationmark.shield.fill")
+      case "config-toml": (tone, icon) = (.slate, "gearshape.fill")
+      default: (tone, icon) = (.green, "checkmark.shield.fill")
+      }
+    }
+    let tint: UIColor
+    switch tone {
+    case .green: tint = UIColor(ADEColor.success)
+    case .amber: tint = UIColor(ADEColor.warning)
+    case .purple: tint = UIColor(ADEColor.purpleAccent)
+    case .red: tint = UIColor(ADEColor.danger)
+    case .slate: tint = UIColor(ADEColor.textSecondary)
+    }
+    return PermissionGlyph(symbol: icon, tint: tint)
+  }
+
+  /// A permission mode's word for a segment of the picker — the desktop
+  /// footer trigger's short label (`triggerLabel`), so five fit in one row.
+  static func permissionShortLabel(provider: String?, value: String, fallback: String) -> String {
+    switch ((provider ?? "").lowercased(), value) {
+    case ("claude", "acceptEdits"): return "Edits"
+    case ("claude", "plan"): return "Plan"
+    case ("claude", "bypassPermissions"): return "Bypass"
+    case ("codex", "full-auto"), ("cursor", "full-auto"), ("muse", "allowAll"): return "Full"
+    case ("droid", "read-only"), ("factory", "read-only"): return "Plan"
+    case ("droid", "auto-low"), ("factory", "auto-low"): return "Low"
+    case ("droid", "auto-medium"), ("factory", "auto-medium"): return "Medium"
+    case ("droid", "auto-high"), ("factory", "auto-high"): return "High"
+    case ("droid", "agi"), ("factory", "agi"): return "AGI"
+    case (_, "full-auto"): return "Full"
+    default: return fallback
+    }
+  }
+
+  /// One line on what a permission mode does, the desktop picker's `detail`.
+  static func permissionDetail(provider: String?, value: String) -> String {
+    switch ((provider ?? "").lowercased(), value) {
+    case ("claude", "auto"): return "A safety model approves each tool call."
+    case ("claude", "acceptEdits"): return "Edits auto-approved; risky actions still ask."
+    case ("claude", "plan"): return "Read-only: analyze and plan."
+    case ("claude", "bypassPermissions"): return "Never asks for permission in this chat."
+    case ("claude", _): return "Asks before edits, Bash and risky tools."
+    case ("codex", "edit"): return "Auto-approves trusted workspace changes."
+    case ("codex", "plan"): return "Read-only, asks when it needs more."
+    case ("codex", "full-auto"): return "No sandbox and no approval prompts."
+    case ("codex", "config-toml"): return "Uses the Codex config on the machine."
+    case ("codex", _): return "Writes in the workspace, asks on request."
+    case ("cursor", "plan"): return "Read-only planning mode."
+    case ("cursor", "ask"): return "Read-only Q&A mode."
+    case ("cursor", "full-auto"): return "Highest access mode for Cursor Agent."
+    case ("cursor", _): return "Cursor Agent's normal approval flow."
+    case ("droid", "read-only"), ("factory", "read-only"): return "Reads and plans, builds once you approve."
+    case ("droid", "auto-low"), ("factory", "auto-low"): return "Safe file edits and low-risk operations."
+    case ("droid", "auto-medium"), ("factory", "auto-medium"): return "Builds, tests and package installs too."
+    case ("droid", "auto-high"), ("factory", "auto-high"): return "Broad automation. Trusted workspaces only."
+    case ("droid", "agi"), ("factory", "agi"): return "Splits the task across worker subagents."
+    case ("muse", "denyUnmatched"): return "Refuses any tool call its rules don't allow."
+    case ("muse", "promptUnmatched"): return "Asks before any tool call its rules don't allow."
+    case ("muse", "allowAll"): return "Runs every tool call without asking."
+    case ("muse", _): return "Sandboxed work runs; asks when it needs more."
+    case (_, "plan"): return "Read-only plan agent."
+    case (_, "full-auto"): return "Allows every configured tool."
+    case (_, "config-toml"): return "Uses the config files on the machine."
+    default: return "Allows edits; asks for the rest."
+    }
+  }
+
+  /// A thinking level's word for a segment of the picker.
+  static func effortShortLabel(_ effort: String) -> String {
+    switch effort {
+    case "minimal": return "Min"
+    case "medium": return "Med"
+    case "xhigh": return "X-High"
+    case "ultracode": return "Ultra"
+    default: return WorkModelMentionDetector.effortLabel(effort)
+    }
+  }
+
+  /// The maker's bundled mark for a model, or nil when none is bundled.
+  static func logoAssetName(modelId: String) -> String? {
+    guard let entry = WorkModelMentionDirectory.shared.entry(for: modelId) else { return nil }
+    return providerAssetName(entry.brandKey) ?? providerAssetName(entry.provider)
+  }
+}
+
+/// Everything an inline model pill draws, read off its token and the catalog.
+struct WorkModelPillParts: Equatable {
+  var logoAssetName: String?
+  var name: String
+  /// Nil when the model has no thinking levels, so the pill has no such part.
+  var effortLabel: String?
+  var effortTint: UIColor
+  var permissionLabel: String
+  var permission: WorkModelChipStyle.PermissionGlyph
+  /// The part lit while its list is open, as the desktop chip does.
+  var active: WorkModelChipSegment?
+
+  init(mention: WorkModelMention, active: WorkModelChipSegment? = nil) {
+    let entry = WorkModelMentionDirectory.shared.entry(for: mention.modelId)
+    let tiers = entry?.reasoningTiers ?? []
+    let provider = entry?.provider
+    let permissionValue = mention.permission ?? WorkModelMentionDetector.defaultPermission(provider: provider)
+    logoAssetName = WorkModelChipStyle.logoAssetName(modelId: mention.modelId)
+    name = mention.displayName
+    effortLabel = tiers.isEmpty && mention.effort == nil
+      ? nil
+      : WorkModelMentionDetector.effortLabel(mention.effort)
+    effortTint = WorkModelChipStyle.effortTint(mention.effort, tiers: tiers)
+    permissionLabel = WorkModelMentionDetector.permissionLabel(mention.permission, provider: provider)
+    permission = WorkModelChipStyle.permissionGlyph(provider: provider, value: permissionValue)
+    self.active = active
+  }
+
+  init?(token: String, active: WorkModelChipSegment? = nil) {
+    guard let mention = WorkModelMentionDetector.mentions(in: token as NSString).first else { return nil }
+    self.init(mention: mention, active: active)
+  }
+
+  var accessibilityLabel: String {
+    [name, effortLabel.map { "\($0) thinking" }, permissionLabel].compactMap { $0 }.joined(separator: ", ")
+  }
+}
+
+/// Where each part of a drawn model pill sits, in the pill image's own
+/// horizontal coordinates, so a tap can tell which part it landed on. A nil
+/// segment is the fixed name part.
+struct WorkModelPillSpan: Equatable {
+  let segment: WorkModelChipSegment?
+  let minX: CGFloat
+  let maxX: CGFloat
+}
+
 // MARK: - `@`-prefixed repo paths
 
 /// One `@`-prefixed file or folder path in a message body — the token the
@@ -1690,6 +1907,7 @@ struct WorkComposerSuggestion: Identifiable, Equatable {
     case .slash: return .commands
     case .hash: return .pullRequests
     case .at:
+      if modelId != nil { return .models }
       switch mentionKind {
       case .chat: return .chats
       case .lane: return .lanes
@@ -1723,6 +1941,7 @@ struct WorkComposerSuggestion: Identifiable, Equatable {
 /// Groups of the `@` menu, in display order. A typed prefix (`@pr`, `@mac`,
 /// `@chat`, `@lane`, `@term`, `@file`) narrows the menu to one group.
 enum WorkComposerSuggestionSection: String, CaseIterable, Equatable {
+  case models
   case chats
   case lanes
   case terminals
@@ -1732,12 +1951,14 @@ enum WorkComposerSuggestionSection: String, CaseIterable, Equatable {
   case files
   case commands
 
+  /// The desktop's `AT_SECTION_ORDER`: models lead, then the entities.
   static let atMenuOrder: [WorkComposerSuggestionSection] = [
-    .chats, .lanes, .terminals, .pullRequests, .machines, .mcpServers, .files,
+    .models, .chats, .lanes, .files, .terminals, .pullRequests, .machines, .mcpServers,
   ]
 
   var title: String {
     switch self {
+    case .models: return "Models"
     case .chats: return "Chats"
     case .lanes: return "Lanes"
     case .terminals: return "Terminals"
@@ -1751,6 +1972,7 @@ enum WorkComposerSuggestionSection: String, CaseIterable, Equatable {
 
   var symbolName: String {
     switch self {
+    case .models: return "cpu"
     case .chats: return WorkSmartLink.Kind.chat.symbolName
     case .lanes: return WorkSmartLink.Kind.lane.symbolName
     case .terminals: return WorkSmartLink.Kind.terminal.symbolName
@@ -1775,6 +1997,7 @@ enum WorkComposerSuggestionSection: String, CaseIterable, Equatable {
       ("mac", .machines), ("machine", .machines), ("machines", .machines),
       ("mcp", .mcpServers), ("server", .mcpServers), ("servers", .mcpServers),
       ("file", .files), ("files", .files),
+      ("model", .models), ("models", .models),
     ]
     let lowered = query.lowercased()
     for (prefix, section) in prefixes.sorted(by: { $0.0.count > $1.0.count }) {
@@ -2071,10 +2294,17 @@ final class WorkComposerSuggestionController: ObservableObject {
   /// The model chip the caret sits on (or just after, as right after it was
   /// inserted). Drives the thinking/permission menu above the field.
   @Published private(set) var editingModelChip: WorkModelMention?
+  /// The part of that chip whose list is open, or nil for just the summary.
+  @Published private(set) var editingSegment: WorkModelChipSegment?
   /// Wired by the text view: replaces one model token in the live draft.
   var onRewriteModelChip: ((NSRange, String) -> Void)?
-  /// The last file rows, so model rows can be re-merged when the catalog lands.
-  private var lastFileRows: [WorkComposerSuggestion] = []
+  /// Wired by the text view: lights the open part on the pill at a storage
+  /// location (nil location clears every pill).
+  var onHighlightModelChip: ((Int?, WorkModelChipSegment?) -> Void)?
+  /// Rows each `@` section is holding back behind its "Show more" row.
+  @Published private(set) var hiddenAtCounts: [WorkComposerSuggestionSection: Int] = [:]
+  /// Sections the user opened in full for this `@` trigger.
+  private var expandedAtSections: Set<WorkComposerSuggestionSection> = []
   private var modelCatalogRequested = false
   private var modelCatalogTask: Task<Void, Never>?
 
@@ -2218,7 +2448,52 @@ final class WorkComposerSuggestionController: ObservableObject {
   }
 
   func setEditingModelChip(_ chip: WorkModelMention?) {
-    if editingModelChip != chip { editingModelChip = chip }
+    guard editingModelChip != chip else { return }
+    // A rewrite of the same chip keeps its open part; another chip, or none,
+    // starts closed.
+    let sameChip = chip != nil && editingModelChip?.range.location == chip?.range.location
+    editingModelChip = chip
+    if !sameChip, editingSegment != nil {
+      editingSegment = nil
+    }
+    onHighlightModelChip?(chip?.range.location, editingSegment)
+  }
+
+  /// Opens one part's list (nil closes it), lighting that part on the pill.
+  func setEditingSegment(_ segment: WorkModelChipSegment?) {
+    guard let chip = editingModelChip else { return }
+    if editingSegment != segment { editingSegment = segment }
+    onHighlightModelChip?(chip.range.location, segment)
+  }
+
+  /// The parts of the chip being edited, in the order a pick walks them.
+  private var editingSegments: [WorkModelChipSegment] {
+    guard let chip = editingModelChip else { return [] }
+    let tiers = WorkModelMentionDirectory.shared.entry(for: chip.modelId)?.reasoningTiers ?? []
+    return WorkModelChipStyle.segments(tiers: tiers)
+  }
+
+  /// Opens the chip's first part, as the desktop does right after a model is
+  /// picked from the `@` menu.
+  func openFirstSegment() {
+    setEditingSegment(editingSegments.first)
+  }
+
+  /// After a pick, moves on to the next part (thinking → permissions), or
+  /// closes once the last part is set — the desktop chip's Enter.
+  func advanceEditingSegment() {
+    guard let current = editingSegment, let index = editingSegments.firstIndex(of: current) else {
+      setEditingSegment(nil)
+      return
+    }
+    let next = editingSegments.indices.contains(index + 1) ? editingSegments[index + 1] : nil
+    setEditingSegment(next)
+  }
+
+  /// Opens a collapsed `@` section in full.
+  func expandAtSection(_ section: WorkComposerSuggestionSection) {
+    expandedAtSections.insert(section)
+    recombineAt()
   }
 
   /// Rewrite the chip being edited with a new thinking level or permission mode.
@@ -2255,15 +2530,6 @@ final class WorkComposerSuggestionController: ObservableObject {
     return (rows, ranked.bestScore)
   }
 
-  /// File rows plus model rows. A name hit on a model (exact or prefix) leads,
-  /// so `@deep` offers the model first; weaker model hits follow the files.
-  private func mergedAtRows(files: [WorkComposerSuggestion]) -> [WorkComposerSuggestion] {
-    guard let query = activeMatch?.query else { return files }
-    let models = Self.modelSuggestions(query: query)
-    guard !models.rows.isEmpty else { return files }
-    return (models.bestScore ?? 99) <= 1 ? models.rows + files : files + models.rows
-  }
-
   /// Load the host model catalog once, the same call the model picker makes,
   /// so the `@` menu can offer models before the picker was ever opened.
   private func fetchModelCatalogIfNeeded() {
@@ -2289,8 +2555,8 @@ final class WorkComposerSuggestionController: ObservableObject {
         return
       }
       guard self.activeMatch?.kind == .at, !self.isLoading else { return }
-      // Route through the sectioned rebuild so the model rows land in the
-      // Files section next to the file rows rather than flattening the menu.
+      // Route through the sectioned rebuild so the model rows land in their
+      // own section rather than flattening the menu.
       self.recombineAt()
     }
   }
@@ -2328,6 +2594,8 @@ final class WorkComposerSuggestionController: ObservableObject {
     atFilter = nil
     atFilesPending = false
     atMentionsPending = false
+    expandedAtSections = []
+    if !hiddenAtCounts.isEmpty { hiddenAtCounts = [:] }
     if activeMatch != nil { activeMatch = nil }
     if !suggestions.isEmpty { suggestions = [] }
     if isLoading { isLoading = false }
@@ -2357,7 +2625,8 @@ final class WorkComposerSuggestionController: ObservableObject {
 
     mentionTask?.cancel()
     mentionTask = nil
-    if parsed.filter != .files, mentionsAvailable, let sync = syncService {
+    // Models come from the local catalog, so `@model` asks the host for nothing.
+    if parsed.filter != .files, parsed.filter != .models, mentionsAvailable, let sync = syncService {
       atMentionsPending = true
       // A section filter is re-sent as the host's own kind word, so the host
       // narrows server-side and returns that kind's full list rather than a
@@ -2370,7 +2639,7 @@ final class WorkComposerSuggestionController: ObservableObject {
       case .pullRequests: mentionQuery = "pr \(parsed.rest)"
       case .machines: mentionQuery = "machine \(parsed.rest)"
       case .mcpServers: mentionQuery = "mcp \(parsed.rest)"
-      case .files, .commands, nil: mentionQuery = parsed.rest
+      case .files, .models, .commands, nil: mentionQuery = parsed.rest
       }
       let excludeSessionId = sessionId
       mentionTask = Task { [weak self] in
@@ -2419,27 +2688,32 @@ final class WorkComposerSuggestionController: ObservableObject {
     }
   }
 
-  /// Rebuilds the visible `@` list from the two sources. Unfiltered, each
-  /// section shows a few recent rows; a prefix filter shows one section deep.
+  /// Rebuilds the visible `@` list from its sources. Unfiltered, each section
+  /// shows a few rows and holds the rest behind a "Show more" row, so the menu
+  /// stays one screen tall; a prefix filter or an opened section shows deep.
   private func recombineAt() {
-    guard activeMatch?.kind == .at else { return }
+    guard let match = activeMatch, match.kind == .at else { return }
     let sections = atFilter.map { [$0] } ?? WorkComposerSuggestionSection.atMenuOrder
-    // Five per section unfiltered, matching the desktop menu.
-    let mentionCap = atFilter == nil ? 5 : 20
-    let fileCap = atFilter == nil ? 8 : 20
     var rows: [WorkComposerSuggestion] = []
+    var hidden: [WorkComposerSuggestionSection: Int] = [:]
     for section in sections {
-      if section == .files {
-        // Model rows the query names lead or follow the file rows, exactly as
-        // the desktop's flat `@` list orders them.
-        rows.append(contentsOf: mergedAtRows(files: Array(atFiles.prefix(fileCap))))
-      } else {
-        rows.append(contentsOf: atMentions.filter { $0.section == section }.prefix(mentionCap))
+      let all: [WorkComposerSuggestion]
+      switch section {
+      case .models: all = Self.modelSuggestions(query: match.query).rows
+      case .files: all = atFiles
+      default: all = atMentions.filter { $0.section == section }
       }
+      let cap = atFilter != nil || expandedAtSections.contains(section) ? 20 : Self.collapsedRowCap
+      rows.append(contentsOf: all.prefix(cap))
+      if all.count > cap { hidden[section] = all.count - cap }
     }
     isLoading = atFilesPending || atMentionsPending
+    if hiddenAtCounts != hidden { hiddenAtCounts = hidden }
     suggestions = rows
   }
+
+  /// Rows a section shows before its "Show more" row.
+  static let collapsedRowCap = 3
 
   private func scheduleFileFetch(query: String) {
     fetchTask?.cancel()
@@ -2527,9 +2801,6 @@ final class WorkComposerSuggestionController: ObservableObject {
     // Only apply while an `@` trigger is still active — a later slash/no trigger
     // may have superseded this fetch.
     guard activeMatch?.kind == .at else { return }
-    // Record the file rows (a late model-catalog fetch re-merges through
-    // `recombineAt`), then rebuild the sectioned list.
-    lastFileRows = items
     atFiles = items
     atFilesPending = false
     recombineAt()
@@ -2649,9 +2920,13 @@ struct WorkComposerPillSpec {
   var thumbnail: UIImage? = nil
   var isWarning = false
   var isPending = false
+  /// Set for an `@model:` pill, which draws as the desktop chip's parts
+  /// instead of one icon and one label.
+  var model: WorkModelPillParts? = nil
 
   func drawsSame(as other: WorkComposerPillSpec) -> Bool {
-    symbolName == other.symbolName
+    model == other.model
+      && symbolName == other.symbolName
       && label == other.label
       && monospaced == other.monospaced
       && thumbnail === other.thumbnail
@@ -2678,13 +2953,21 @@ final class WorkComposerPillAttachment: NSTextAttachment {
 
   let source: Source
   let spec: WorkComposerPillSpec
+  /// A model pill's parts, laid out by the renderer, for tap hit-testing.
+  var modelSpans: [WorkModelPillSpan] = []
 
   init(source: Source, spec: WorkComposerPillSpec) {
     self.source = source
     self.spec = spec
     super.init(data: nil, ofType: nil)
     // Read by VoiceOver in place of the object-replacement character.
-    accessibilityLabel = spec.label
+    accessibilityLabel = spec.model?.accessibilityLabel ?? spec.label
+  }
+
+  /// The model token this pill stands for, if it is a model pill.
+  var modelToken: String? {
+    guard spec.model != nil, case .token(let raw) = source, raw.hasPrefix("@model:") else { return nil }
+    return raw
   }
 
   required init?(coder: NSCoder) {
@@ -2708,6 +2991,135 @@ struct WorkComposerAttachmentNumber: Equatable {
 enum WorkComposerPillRenderer {
   static let maxLabelWidth: CGFloat = 180
   static let iconSide: CGFloat = 14
+
+  /// A model pill, drawn like the desktop chip: the maker's mark and the
+  /// model's name, then a thinking part and a permission part divided by
+  /// hairlines. Each part reports where it sits so a tap can open its list.
+  static func renderModel(
+    _ parts: WorkModelPillParts,
+    font: UIFont,
+    traits: UITraitCollection
+  ) -> (image: UIImage, bounds: CGRect, spans: [WorkModelPillSpan]) {
+    let labelSize = max(11, font.pointSize - 2)
+    let nameFont = UIFont.systemFont(ofSize: labelSize, weight: .semibold)
+    let segmentFont = UIFont.systemFont(ofSize: labelSize - 1, weight: .semibold)
+    let chipTint = UIColor(ADEColor.warning).resolvedColor(with: traits)
+    let isDark = traits.userInterfaceStyle == .dark
+    let textColor = UIColor(ADEColor.textPrimary).resolvedColor(with: traits)
+
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.lineBreakMode = .byTruncatingTail
+    let nameText = parts.name as NSString
+    let nameAttributes: [NSAttributedString.Key: Any] = [
+      .font: nameFont, .foregroundColor: textColor, .paragraphStyle: paragraph,
+    ]
+    let nameWidth = min(ceil(nameText.size(withAttributes: nameAttributes).width), 150)
+    let effortText = parts.effortLabel as NSString?
+    let effortAttributes: [NSAttributedString.Key: Any] = [
+      .font: segmentFont, .foregroundColor: parts.effortTint.resolvedColor(with: traits),
+    ]
+    let effortWidth = effortText.map { ceil($0.size(withAttributes: effortAttributes).width) } ?? 0
+
+    let pad: CGFloat = 6
+    let gap: CGFloat = 4
+    let margin: CGFloat = 1.5
+    let logoSide: CGFloat = iconSide
+    let height = ceil(nameFont.lineHeight) + 7
+    let nameSpanWidth = pad + logoSide + gap + nameWidth + pad
+    let effortSpanWidth = effortText == nil ? 0 : pad + effortWidth + pad
+    let permSpanWidth = pad + 12 + pad
+    let pillWidth = nameSpanWidth + effortSpanWidth + permSpanWidth
+    let size = CGSize(width: pillWidth + margin * 2, height: height)
+
+    var spans: [WorkModelPillSpan] = []
+    var x = margin
+    spans.append(WorkModelPillSpan(segment: nil, minX: x, maxX: x + nameSpanWidth))
+    x += nameSpanWidth
+    if effortText != nil {
+      spans.append(WorkModelPillSpan(segment: .effort, minX: x, maxX: x + effortSpanWidth))
+      x += effortSpanWidth
+    }
+    spans.append(WorkModelPillSpan(segment: .perm, minX: x, maxX: x + permSpanWidth))
+
+    let format = UIGraphicsImageRendererFormat(for: traits)
+    format.opaque = false
+    let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+      let pillRect = CGRect(x: margin, y: 0.5, width: pillWidth, height: height - 1)
+      let radius = min(7, pillRect.height / 2)
+      let shape = UIBezierPath(roundedRect: pillRect, cornerRadius: radius)
+      chipTint.withAlphaComponent(isDark ? 0.14 : 0.10).setFill()
+      shape.fill()
+
+      // The open part is lit, clipped to the pill's rounded outline.
+      if let active = parts.active, let span = spans.first(where: { $0.segment == active }) {
+        context.cgContext.saveGState()
+        shape.addClip()
+        chipTint.withAlphaComponent(isDark ? 0.32 : 0.24).setFill()
+        UIRectFill(CGRect(x: span.minX, y: pillRect.minY, width: span.maxX - span.minX, height: pillRect.height))
+        context.cgContext.restoreGState()
+      }
+
+      chipTint.withAlphaComponent(isDark ? 0.40 : 0.32).setStroke()
+      shape.lineWidth = 0.75
+      shape.stroke()
+
+      // Hairlines between parts.
+      chipTint.withAlphaComponent(isDark ? 0.30 : 0.24).setFill()
+      for span in spans.dropFirst() {
+        UIRectFill(CGRect(x: span.minX, y: pillRect.minY + 3, width: 0.75, height: pillRect.height - 6))
+      }
+
+      let logoRect = CGRect(x: margin + pad, y: (height - logoSide) / 2, width: logoSide, height: logoSide)
+      if let asset = parts.logoAssetName,
+         let logo = UIImage(named: asset, in: nil, compatibleWith: traits) {
+        logo.draw(in: aspectFit(logo.size, in: logoRect))
+      } else {
+        let configuration = UIImage.SymbolConfiguration(pointSize: labelSize - 3, weight: .semibold)
+        if let symbol = UIImage(systemName: "cpu", withConfiguration: configuration)?
+          .withTintColor(chipTint, renderingMode: .alwaysOriginal) {
+          symbol.draw(in: aspectFit(symbol.size, in: logoRect))
+        }
+      }
+
+      nameText.draw(
+        with: CGRect(
+          x: logoRect.maxX + gap,
+          y: (height - nameFont.lineHeight) / 2,
+          width: nameWidth,
+          height: ceil(nameFont.lineHeight)
+        ),
+        options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+        attributes: nameAttributes,
+        context: nil
+      )
+
+      if let effortText, let span = spans.first(where: { $0.segment == .effort }) {
+        effortText.draw(
+          at: CGPoint(x: span.minX + pad, y: (height - segmentFont.lineHeight) / 2),
+          withAttributes: effortAttributes
+        )
+      }
+
+      if let span = spans.first(where: { $0.segment == .perm }) {
+        let configuration = UIImage.SymbolConfiguration(pointSize: labelSize - 3, weight: .bold)
+        if let glyph = UIImage(systemName: parts.permission.symbol, withConfiguration: configuration)?
+          .withTintColor(parts.permission.tint.resolvedColor(with: traits), renderingMode: .alwaysOriginal) {
+          let box = CGRect(x: span.minX + pad, y: (height - 12) / 2, width: 12, height: 12)
+          glyph.draw(in: aspectFit(glyph.size, in: box))
+        }
+      }
+    }
+    let center = font.capHeight / 2
+    let bounds = CGRect(x: 0, y: (center - size.height / 2).rounded(), width: size.width, height: size.height)
+    return (image, bounds, spans)
+  }
+
+  private static func aspectFit(_ size: CGSize, in box: CGRect) -> CGRect {
+    guard size.width > 0, size.height > 0 else { return box }
+    let scale = min(box.width / size.width, box.height / size.height)
+    let drawn = CGSize(width: size.width * scale, height: size.height * scale)
+    return CGRect(x: box.midX - drawn.width / 2, y: box.midY - drawn.height / 2, width: drawn.width, height: drawn.height)
+  }
 
   /// Rasterizes one pill. Colors are resolved against `traits`, so a light /
   /// dark switch re-renders (see `WorkComposerPastingTextView.onTraitsChange`).
@@ -3071,9 +3483,40 @@ final class WorkComposerPillEngine {
 
   private func render(_ attachment: WorkComposerPillAttachment) {
     let traits = textView?.traitCollection ?? UITraitCollection.current
+    if let parts = attachment.spec.model {
+      let rendered = WorkComposerPillRenderer.renderModel(parts, font: font, traits: traits)
+      attachment.image = rendered.image
+      attachment.bounds = rendered.bounds
+      attachment.modelSpans = rendered.spans
+      return
+    }
     let rendered = WorkComposerPillRenderer.render(attachment.spec, tint: tint(), font: font, traits: traits)
     attachment.image = rendered.image
     attachment.bounds = rendered.bounds
+  }
+
+  /// Lights one part of the model pill at `location` (nil lights none) and
+  /// clears the highlight on every other model pill, so a stale range after
+  /// an edit can never leave a second pill lit.
+  func highlightModelPill(at location: Int?, segment: WorkModelChipSegment?) {
+    guard let storage = textView?.textStorage, storage.length > 0 else { return }
+    var updates: [(range: NSRange, attachment: WorkComposerPillAttachment)] = []
+    storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+      guard let pill = value as? WorkComposerPillAttachment, var parts = pill.spec.model else { return }
+      let wanted = range.location == location ? segment : nil
+      guard parts.active != wanted else { return }
+      parts.active = wanted
+      var spec = pill.spec
+      spec.model = parts
+      updates.append((range, WorkComposerPillAttachment(source: pill.source, spec: spec)))
+    }
+    guard !updates.isEmpty else { return }
+    storage.beginEditing()
+    for update in updates {
+      render(update.attachment)
+      storage.addAttribute(.attachment, value: update.attachment, range: update.range)
+    }
+    storage.endEditing()
   }
 
   func pillString(for chip: WorkChip) -> NSAttributedString {
@@ -3086,10 +3529,11 @@ final class WorkComposerPillEngine {
     case .path, .attachment, .model, .permission, .skill, .browserTab:
       label = chip.label
     }
-    return pillString(
-      source: .token(chip.canonicalText),
-      spec: WorkComposerPillSpec(symbolName: chip.kind.symbolName, label: label)
-    )
+    var spec = WorkComposerPillSpec(symbolName: chip.kind.symbolName, label: label)
+    if case .model(let mention) = chip.origin {
+      spec.model = WorkModelPillParts(mention: mention)
+    }
+    return pillString(source: .token(chip.canonicalText), spec: spec)
   }
 
   func pillString(for suggestion: WorkComposerSuggestion) -> NSAttributedString {
@@ -3098,14 +3542,15 @@ final class WorkComposerPillEngine {
     case .slash: label = suggestion.insertText
     case .hash, .at: label = suggestion.title
     }
-    return pillString(
-      source: .token(suggestion.insertText),
-      spec: WorkComposerPillSpec(
-        symbolName: suggestion.symbolName,
-        label: label,
-        monospaced: suggestion.kind == .slash
-      )
+    var spec = WorkComposerPillSpec(
+      symbolName: suggestion.symbolName,
+      label: label,
+      monospaced: suggestion.kind == .slash
     )
+    if suggestion.modelId != nil {
+      spec.model = WorkModelPillParts(token: suggestion.insertText)
+    }
+    return pillString(source: .token(suggestion.insertText), spec: spec)
   }
 
   func pillString(forAttachment id: UUID) -> NSAttributedString? {
@@ -3172,8 +3617,9 @@ final class WorkComposerPillEngine {
     return ids
   }
 
-  /// The pill under a point in the text view's own coordinates.
-  func pill(at point: CGPoint) -> (pill: WorkComposerPillAttachment, range: NSRange)? {
+  /// The pill under a point in the text view's own coordinates, and how far
+  /// into the pill's drawing the point lands.
+  func pill(at point: CGPoint) -> (pill: WorkComposerPillAttachment, range: NSRange, localX: CGFloat)? {
     guard let textView else { return nil }
     let storage = textView.textStorage
     let layoutManager = textView.layoutManager
@@ -3183,15 +3629,14 @@ final class WorkComposerPillEngine {
     )
     let glyph = layoutManager.glyphIndex(for: adjusted, in: textView.textContainer)
     guard glyph < layoutManager.numberOfGlyphs else { return nil }
-    let hitRect = layoutManager
+    let glyphRect = layoutManager
       .boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textView.textContainer)
-      .insetBy(dx: -4, dy: -4)
-    guard hitRect.contains(adjusted) else { return nil }
+    guard glyphRect.insetBy(dx: -4, dy: -4).contains(adjusted) else { return nil }
     let character = layoutManager.characterIndexForGlyph(at: glyph)
     guard character < storage.length,
           let pill = storage.attribute(.attachment, at: character, effectiveRange: nil) as? WorkComposerPillAttachment
     else { return nil }
-    return (pill, NSRange(location: character, length: 1))
+    return (pill, NSRange(location: character, length: 1), adjusted.x - glyphRect.minX)
   }
 
   // MARK: Hydrate
@@ -3669,6 +4114,8 @@ private final class WorkComposerPillInteractionController: NSObject, UIContextMe
   weak var textView: UITextView?
   weak var engine: WorkComposerPillEngine?
   var onOpenAttachment: ((UUID) -> Void)?
+  /// A tap on a model pill, with the part it landed on (nil is the name).
+  var onTapModelPill: ((NSRange, WorkModelChipSegment?) -> Void)?
 
   init(textView: UITextView, engine: WorkComposerPillEngine) {
     self.textView = textView
@@ -3684,11 +4131,18 @@ private final class WorkComposerPillInteractionController: NSObject, UIContextMe
   @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
     guard gesture.state == .ended,
           let textView,
-          let onOpenAttachment,
-          let hit = engine?.pill(at: gesture.location(in: textView)),
-          case .attachment(let id) = hit.pill.source
+          let hit = engine?.pill(at: gesture.location(in: textView))
     else { return }
-    onOpenAttachment(id)
+    if case .attachment(let id) = hit.pill.source {
+      onOpenAttachment?(id)
+    } else if hit.pill.modelToken != nil, let onTapModelPill {
+      // Past either end counts as the nearest part, so the tap slop around
+      // the pill still lands somewhere.
+      let spans = hit.pill.modelSpans
+      let span = spans.first { hit.localX >= $0.minX && hit.localX < $0.maxX }
+        ?? (hit.localX < (spans.first?.minX ?? 0) ? spans.first : spans.last)
+      onTapModelPill(hit.range, span?.segment)
+    }
   }
 
   func gestureRecognizer(
@@ -4072,6 +4526,9 @@ struct WorkComposerTextView: UIViewRepresentable {
     controller.onRewriteModelChip = { [weak coordinator = context.coordinator] range, token in
       coordinator?.rewriteModelChip(range: range, with: token)
     }
+    controller.onHighlightModelChip = { [weak coordinator = context.coordinator] location, segment in
+      coordinator?.engine.highlightModelPill(at: location, segment: segment)
+    }
 
     context.coordinator.engine.load(draftState.text)
     context.coordinator.applyPlaceholder(placeholder)
@@ -4145,6 +4602,9 @@ struct WorkComposerTextView: UIViewRepresentable {
 
     func applyHooks(to textView: UITextView) {
       interactions?.onOpenAttachment = parent.onOpenAttachment
+      interactions?.onTapModelPill = { [weak self] range, segment in
+        self?.openModelPill(range: range, segment: segment)
+      }
       guard let textView = textView as? WorkComposerPastingTextView else { return }
       textView.onPasteImages = parent.acceptsPastedImages
         ? { [weak self] images in self?.handlePasteImages(images) ?? false }
@@ -4335,6 +4795,10 @@ struct WorkComposerTextView: UIViewRepresentable {
       updatePlaceholderVisibility()
       updateHeight()
       updateModelChipEditing()
+      // A model just picked opens straight onto its thinking choices.
+      if suggestion.modelId != nil {
+        parent.controller.openFirstSegment()
+      }
     }
 
     // MARK: Model chips
@@ -4382,6 +4846,26 @@ struct WorkComposerTextView: UIViewRepresentable {
         hit = afterSpace
       }
       parent.controller.setEditingModelChip(hit)
+    }
+
+    /// A tap on one part of a model pill opens that part's list, as clicking a
+    /// desktop chip segment does; tapping the open part again closes it. The
+    /// caret moves just past the pill so the editor binds to it.
+    func openModelPill(range: NSRange, segment: WorkModelChipSegment?) {
+      // After UIKit's own tap has placed the caret, so this placement wins.
+      DispatchQueue.main.async { [weak self] in
+        guard let self, let textView = self.textView, NSMaxRange(range) <= textView.textStorage.length else { return }
+        textView.selectedRange = NSRange(location: NSMaxRange(range), length: 0)
+        self.updateModelChipEditing()
+        let controller = self.parent.controller
+        guard controller.editingModelChip?.range.location == range.location else { return }
+        guard let segment else {
+          // The name has no list of its own; it opens the first part.
+          if controller.editingSegment == nil { controller.openFirstSegment() } else { controller.setEditingSegment(nil) }
+          return
+        }
+        controller.setEditingSegment(controller.editingSegment == segment ? nil : segment)
+      }
     }
 
     /// Replace one model token (new thinking level or permission mode). The
@@ -4474,7 +4958,7 @@ struct WorkComposerSuggestionStrip: View {
     if controller.isVisible {
       VStack(alignment: .leading, spacing: 0) {
         if controller.suggestions.isEmpty {
-          header(title: fallbackTitle, symbol: fallbackSymbol, showsProgress: true)
+          header(title: fallbackTitle, symbol: fallbackSymbol, accent: ADEColor.textMuted, showsProgress: true)
           loadingRow
         } else {
           ScrollView {
@@ -4485,21 +4969,29 @@ struct WorkComposerSuggestionStrip: View {
                     Button {
                       controller.commit(suggestion)
                     } label: {
-                      row(suggestion)
+                      if suggestion.modelId != nil {
+                        modelRow(suggestion)
+                      } else {
+                        row(suggestion)
+                      }
                     }
                     .buttonStyle(.plain)
+                  }
+                  if let hidden = controller.hiddenAtCounts[group.section], hidden > 0 {
+                    moreRow(section: group.section, count: hidden)
                   }
                 } header: {
                   header(
                     title: group.section.title,
                     symbol: group.section.symbolName,
+                    accent: accent(for: group.section),
                     showsProgress: index == 0 && controller.isLoading
                   )
                 }
               }
             }
           }
-          .frame(maxHeight: 248)
+          .frame(maxHeight: 280)
         }
       }
       .background(
@@ -4515,8 +5007,8 @@ struct WorkComposerSuggestionStrip: View {
       .shadow(color: Color.black.opacity(0.10), radius: 12, y: 4)
       .transition(.opacity.combined(with: .move(edge: .bottom)))
       .accessibilityIdentifier("Work.Chat.Composer.SuggestionStrip")
-    } else if let chip = controller.editingModelChip {
-      WorkModelChipEditorBar(controller: controller, chip: chip)
+    } else if let chip = controller.editingModelChip, let segment = controller.editingSegment {
+      WorkModelChipEditorBar(controller: controller, chip: chip, segment: segment)
         .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
   }
@@ -4531,20 +5023,35 @@ struct WorkComposerSuggestionStrip: View {
 
   private var fallbackTitle: String {
     switch controller.activeMatch?.kind {
-    case .at:
-      return controller.suggestions.contains { $0.modelId != nil }
-        ? "Files & models"
-        : WorkComposerSuggestionSection.files.title
+    case .at: return "Mentions"
     case .hash: return WorkComposerSuggestionSection.pullRequests.title
     default: return WorkComposerSuggestionSection.commands.title
     }
   }
 
-  private func header(title: String, symbol: String, showsProgress: Bool) -> some View {
+  /// One colour per `@` group, the desktop menu's `SECTION_ACCENT`. The `/`
+  /// and `#` menus keep the chat's provider accent.
+  private func accent(for section: WorkComposerSuggestionSection) -> Color {
+    guard controller.activeMatch?.kind == .at else {
+      return ADEColor.providerChatAccent(for: controller.provider)
+    }
+    switch section {
+    case .models, .commands: return ADEColor.purpleAccent
+    case .chats: return Color(uiColor: .systemBlue)
+    case .lanes: return ADEColor.success
+    case .files: return ADEColor.warning
+    case .terminals: return Color(uiColor: .systemCyan)
+    case .pullRequests: return Color(uiColor: .systemIndigo)
+    case .machines: return ADEColor.textSecondary
+    case .mcpServers: return Color(uiColor: .systemTeal)
+    }
+  }
+
+  private func header(title: String, symbol: String, accent: Color, showsProgress: Bool) -> some View {
     HStack(spacing: 6) {
       Image(systemName: symbol)
         .font(.caption2.weight(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
+        .foregroundStyle(accent)
       Text(title.uppercased())
         .font(.caption2.weight(.bold))
         .tracking(0.6)
@@ -4582,16 +5089,67 @@ struct WorkComposerSuggestionStrip: View {
     }
   }
 
+  /// A model row, like the desktop `@` menu's: the maker's mark, the name,
+  /// the harness it runs through with that harness's mark, and the thinking
+  /// level a new chip starts on.
+  private func modelRow(_ suggestion: WorkComposerSuggestion) -> some View {
+    let entry = suggestion.modelId.flatMap { WorkModelMentionDirectory.shared.entry(for: $0) }
+    let harness = entry?.provider ?? ""
+    return HStack(spacing: 10) {
+      WorkProviderLogo(provider: entry?.brandKey, fallbackSymbol: "cpu", tint: ADEColor.purpleAccent, size: 28)
+        .accessibilityHidden(true)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(suggestion.title)
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        if let subtitle = suggestion.subtitle, !subtitle.isEmpty {
+          HStack(spacing: 4) {
+            if !harness.isEmpty {
+              WorkProviderBareLogo(
+                provider: harness,
+                fallbackSymbol: providerIcon(harness),
+                tint: providerTint(harness),
+                size: 10
+              )
+              .accessibilityHidden(true)
+            }
+            Text(subtitle)
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
+        }
+      }
+      Spacer(minLength: 0)
+      if let effort = entry?.defaultEffort {
+        let tint = Color(uiColor: WorkModelChipStyle.effortTint(effort, tiers: entry?.reasoningTiers ?? []))
+        Text(WorkModelMentionDetector.effortLabel(effort))
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(tint)
+          .padding(.horizontal, 7)
+          .padding(.vertical, 3)
+          .background(tint.opacity(0.14), in: Capsule(style: .continuous))
+          .accessibilityHidden(true)
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 6)
+    .frame(minHeight: 48)
+    .contentShape(Rectangle())
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(rowAccessibilityLabel(suggestion))
+  }
+
   private func row(_ suggestion: WorkComposerSuggestion) -> some View {
-    HStack(spacing: 10) {
+    let tint = accent(for: suggestion.section)
+    return HStack(spacing: 10) {
       Image(systemName: suggestion.symbolName)
         .font(.footnote.weight(.semibold))
-        .foregroundStyle(ADEColor.providerChatAccent(for: controller.provider))
-        .frame(width: 26, height: 26)
-        .background(
-          ADEColor.providerChatAccent(for: controller.provider).opacity(0.12),
-          in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-        )
+        .foregroundStyle(tint)
+        .frame(width: 28, height: 28)
+        .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         // Decorative: the title and subtitle already say what the row is, and
         // VoiceOver reading "arrow triangle pull" before every PR is noise.
         .accessibilityHidden(true)
@@ -4623,9 +5181,35 @@ struct WorkComposerSuggestionStrip: View {
     .accessibilityLabel(rowAccessibilityLabel(suggestion))
   }
 
+  /// The desktop's `+ N more` row: opens the rest of one section in place.
+  private func moreRow(section: WorkComposerSuggestionSection, count: Int) -> some View {
+    Button {
+      withAnimation(.snappy(duration: 0.2)) {
+        controller.expandAtSection(section)
+      }
+    } label: {
+      HStack(spacing: 6) {
+        Image(systemName: "chevron.down")
+          .font(.caption2.weight(.bold))
+        Text("Show \(count) more")
+          .font(.caption.weight(.semibold))
+        Spacer(minLength: 0)
+      }
+      .foregroundStyle(accent(for: section))
+      .padding(.leading, 50)
+      .padding(.trailing, 12)
+      .frame(minHeight: 34)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Show \(count) more \(section.title.lowercased())")
+    .accessibilityIdentifier("Work.Chat.Composer.SuggestionMore.\(section.rawValue)")
+  }
+
   private func rowAccessibilityLabel(_ suggestion: WorkComposerSuggestion) -> String {
     let kind: String
     switch suggestion.section {
+    case .models: kind = "Model"
     case .chats: kind = "Chat"
     case .lanes: kind = "Lane"
     case .terminals: kind = "Terminal"
@@ -4640,105 +5224,229 @@ struct WorkComposerSuggestionStrip: View {
   }
 }
 
-/// The menu for the model chip the caret is on: its thinking level and its
-/// permission mode, the two parts a desktop chip edits in place. Picking one
-/// rewrites the chip's token in the draft.
+/// The picker for the one part of a model chip that is open — thinking or
+/// permissions, never both, and never the model's name. It opens on its own
+/// right after a model is picked (thinking first), and on a tap of that part
+/// of the chip in the draft. A pick rewrites the chip and moves on: thinking
+/// hands over to permissions, permissions closes. Mirrors the desktop chip.
+///
+/// Both parts share one shape: a segmented track in the part's own order
+/// (low → high thinking, safe → open permissions) with a sliding highlight in
+/// the picked option's colour, so it reads as a scale rather than a heap.
 struct WorkModelChipEditorBar: View {
   @ObservedObject var controller: WorkComposerSuggestionController
   let chip: WorkModelMention
+  let segment: WorkModelChipSegment
 
-  private var tiers: [String] {
-    WorkModelMentionDirectory.shared.entry(for: chip.modelId)?.reasoningTiers ?? []
+  @Namespace private var highlight
+  /// The option just tapped, lit before the chip rewrite lands.
+  @State private var pending: String?
+
+  private var entry: WorkModelMentionDirectory.Entry? {
+    WorkModelMentionDirectory.shared.entry(for: chip.modelId)
   }
 
-  private var provider: String {
-    WorkModelMentionDirectory.shared.entry(for: chip.modelId)?.provider ?? ""
-  }
-
-  private var permissionOptions: [WorkModelMentionDetector.PermissionOption] {
-    WorkModelMentionDetector.permissionOptions(provider: provider)
-  }
+  private var tiers: [String] { entry?.reasoningTiers ?? [] }
+  private var provider: String { entry?.provider ?? "" }
 
   private var currentPermission: String {
     chip.permission ?? WorkModelMentionDetector.defaultPermission(provider: provider)
   }
 
-  private var summary: String {
-    var parts: [String] = []
-    if let effort = chip.effort, !effort.isEmpty { parts.append(WorkModelMentionDetector.effortLabel(effort)) }
-    parts.append(WorkModelMentionDetector.permissionLabel(chip.permission, provider: provider))
-    return parts.joined(separator: " · ")
+  private var steps: [WorkModelChipSegment] { WorkModelChipStyle.segments(tiers: tiers) }
+
+  private struct Option: Identifiable {
+    let id: String
+    let label: String
+    let shortLabel: String
+    let symbol: String?
+    let tint: Color
   }
 
-  var body: some View {
-    HStack(spacing: 8) {
-      Image(systemName: "sparkles")
-        .font(.footnote.weight(.semibold))
-        .foregroundStyle(ADEColor.warning)
-        .accessibilityHidden(true)
-      Text(chip.displayName)
-        .font(.footnote.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
-        .truncationMode(.middle)
-      Spacer(minLength: 4)
-      Menu {
-        if !tiers.isEmpty {
-          Section("Thinking") {
-            ForEach(tiers, id: \.self) { tier in
-              Button {
-                controller.rewriteEditingModelChip(effort: tier, permission: chip.permission)
-              } label: {
-                if tier == chip.effort {
-                  Label(WorkModelMentionDetector.effortLabel(tier), systemImage: "checkmark")
-                } else {
-                  Text(WorkModelMentionDetector.effortLabel(tier))
-                }
-              }
-            }
-          }
-        }
-        Section("Permissions") {
-          ForEach(permissionOptions, id: \.value) { option in
-            Button {
-              controller.rewriteEditingModelChip(effort: chip.effort, permission: option.value)
-            } label: {
-              if option.value == currentPermission {
-                Label(option.label, systemImage: "checkmark")
-              } else {
-                Text(option.label)
-              }
-            }
-          }
-        }
-      } label: {
-        HStack(spacing: 4) {
-          Text(summary)
-            .font(.footnote.weight(.semibold))
-            .lineLimit(1)
-          Image(systemName: "chevron.up.chevron.down")
-            .font(.caption2.weight(.semibold))
-            .accessibilityHidden(true)
-        }
-        .foregroundStyle(ADEColor.warning)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(ADEColor.warning.opacity(0.12), in: Capsule(style: .continuous))
+  private var options: [Option] {
+    switch segment {
+    case .effort:
+      return tiers.map { tier in
+        Option(
+          id: tier,
+          label: WorkModelMentionDetector.effortLabel(tier),
+          shortLabel: WorkModelChipStyle.effortShortLabel(tier),
+          symbol: nil,
+          tint: Color(uiColor: WorkModelChipStyle.effortTint(tier, tiers: tiers))
+        )
       }
-      .accessibilityLabel("Model chip settings: \(summary)")
-      .accessibilityIdentifier("Work.Chat.Composer.ModelChipMenu")
+    case .perm:
+      return WorkModelMentionDetector.permissionOptions(provider: provider).map { option in
+        let glyph = WorkModelChipStyle.permissionGlyph(provider: provider, value: option.value)
+        return Option(
+          id: option.value,
+          label: option.label,
+          shortLabel: WorkModelChipStyle.permissionShortLabel(provider: provider, value: option.value, fallback: option.label),
+          symbol: glyph.symbol,
+          tint: Color(uiColor: glyph.tint)
+        )
+      }
+    }
+  }
+
+  private var selectedId: String? {
+    pending ?? (segment == .effort ? chip.effort : currentPermission)
+  }
+
+  private var selected: Option? { options.first { $0.id == selectedId } }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      header
+      track
+      if segment == .perm, let selectedId {
+        Text(WorkModelChipStyle.permissionDetail(provider: provider, value: selectedId))
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .minimumScaleFactor(0.85)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 2)
+          .contentTransition(.opacity)
+      }
     }
     .padding(.horizontal, 12)
-    .padding(.vertical, 6)
-    .frame(minHeight: 44)
+    .padding(.top, 8)
+    .padding(.bottom, 12)
     .background(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(.ultraThinMaterial)
+      RoundedRectangle(cornerRadius: 18, style: .continuous)
+        .fill(ADEColor.glassBackground)
     )
+    .glassEffect(in: .rect(cornerRadius: 18))
     .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
+      RoundedRectangle(cornerRadius: 18, style: .continuous)
         .stroke(ADEColor.glassBorder, lineWidth: 0.75)
     )
-    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .shadow(color: Color.black.opacity(0.12), radius: 14, y: 4)
+    .id(segment)
+    .transition(.opacity.combined(with: .move(edge: .bottom)))
+    .onChange(of: chip) { _, _ in pending = nil }
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("Work.Chat.Composer.ModelChipEditor.\(segment.rawValue)")
+  }
+
+  /// `THINKING · Medium`, the step it is on when a pick walks both parts, and
+  /// a close button.
+  private var header: some View {
+    HStack(spacing: 6) {
+      Image(systemName: segment == .effort ? "brain" : "checkmark.shield")
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+      Text(segment.title.uppercased())
+        .font(.caption2.weight(.bold))
+        .tracking(0.6)
+        .foregroundStyle(ADEColor.textMuted)
+      if let selected {
+        Text("·")
+          .font(.caption2.weight(.bold))
+          .foregroundStyle(ADEColor.textMuted)
+        Text(selected.label)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(selected.tint)
+          .contentTransition(.opacity)
+      }
+      Spacer(minLength: 4)
+      if steps.count > 1 {
+        HStack(spacing: 4) {
+          ForEach(steps, id: \.self) { step in
+            Capsule(style: .continuous)
+              .fill(step == segment ? ADEColor.textSecondary : ADEColor.textMuted.opacity(0.35))
+              .frame(width: step == segment ? 14 : 6, height: 6)
+          }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Step \((steps.firstIndex(of: segment) ?? 0) + 1) of \(steps.count)")
+      }
+      Button {
+        withAnimation(.snappy(duration: 0.2)) { controller.setEditingSegment(nil) }
+      } label: {
+        Image(systemName: "xmark")
+          .font(.caption2.weight(.bold))
+          .foregroundStyle(ADEColor.textMuted)
+          .frame(width: 30, height: 30)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Close")
+    }
+    .frame(height: 30)
+  }
+
+  /// One row of equal segments in a recessed track; the picked one sits on a
+  /// raised, tinted pill that slides to the next pick.
+  private var track: some View {
+    HStack(spacing: 0) {
+      ForEach(options) { option in
+        let isSelected = option.id == selectedId
+        Button {
+          pick(option.id)
+        } label: {
+          VStack(spacing: 3) {
+            if let symbol = option.symbol {
+              Image(systemName: symbol)
+                .font(.footnote.weight(.semibold))
+            }
+            Text(option.shortLabel)
+              .font(.caption.weight(.semibold))
+              .lineLimit(1)
+              .minimumScaleFactor(0.7)
+          }
+          .foregroundStyle(isSelected ? option.tint : ADEColor.textSecondary)
+          .frame(maxWidth: .infinity)
+          .frame(height: option.symbol == nil ? 36 : 50)
+          .background {
+            if isSelected {
+              RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(option.tint.opacity(0.18))
+                .overlay(
+                  RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(option.tint.opacity(0.55), lineWidth: 1)
+                )
+                .matchedGeometryEffect(id: "highlight", in: highlight)
+            }
+          }
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(option.label)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityIdentifier("Work.Chat.Composer.ModelChipOption.\(option.id)")
+      }
+    }
+    .padding(3)
+    .background(
+      RoundedRectangle(cornerRadius: 13, style: .continuous)
+        .fill(ADEColor.textPrimary.opacity(0.06))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 13, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.75)
+    )
+  }
+
+  /// Slides the highlight to the pick and rewrites the chip, then moves on to
+  /// the next part once the slide has been seen.
+  private func pick(_ value: String) {
+    withAnimation(.snappy(duration: 0.22)) { pending = value }
+    switch segment {
+    case .effort:
+      controller.rewriteEditingModelChip(effort: value, permission: chip.permission)
+    case .perm:
+      controller.rewriteEditingModelChip(effort: chip.effort, permission: value)
+    }
+    let picked = segment
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+      // Only if the user has not already moved to another part or closed it.
+      guard controller.editingSegment == picked else { return }
+      withAnimation(.snappy(duration: 0.24)) {
+        controller.advanceEditingSegment()
+      }
+    }
   }
 }
