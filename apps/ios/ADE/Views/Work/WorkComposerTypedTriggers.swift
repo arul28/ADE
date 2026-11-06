@@ -670,7 +670,8 @@ enum WorkModelMentionDetector {
   /// The label for a stored mode in a provider's vocabulary. Falls back to the
   /// legacy generic labels when the provider is unknown.
   static func permissionLabel(_ mode: String?, provider: String?) -> String {
-    guard let mode, !mode.isEmpty else { return defaultPermission(provider: provider) }
+    // A token without `perm` runs on the provider's default; name it like any other mode.
+    let mode = mode.flatMap { $0.isEmpty ? nil : $0 } ?? defaultPermission(provider: provider)
     if let option = permissionOptions(provider: provider).first(where: { $0.value == mode }) {
       return option.label
     }
