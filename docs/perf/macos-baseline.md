@@ -2517,3 +2517,36 @@ Not measured as rows:
 - **The brain's crash watch.** One `adb logcat -b crash` reader for each
   booted lane emulator, started from the status read. It blocks on the
   device, so it costs no CPU while the app does not crash.
+
+### Android P3: fold, Compose previews, System images (2026-11-06)
+
+Browser mock, the same machine and method as the P2 rows: the renderer's Vite
+dev server on the merged P3 tree (`beffdfd78`, the content of #2073),
+headless Chrome 155 at 1600×1000, the Codex chat open with the Tools pane
+beside it, the Pixel 10 Pro Fold body, one warm-up run, then 3 runs of 20 s
+after a 6 s settle. Each run started at a load average under 14. Other lanes
+ran test suites during the passes, so the same open-stage case read 30.0–37.0
+ms/s across three passes; read differences under ~5 ms/s as noise.
+
+| Metric | Live 3D, open, drawer closed | Folded to 99° (after a hinge drag) | Hinge drag, 20 s without stop | Previews open, 3 rendered images | Picker, System images open | Ceiling |
+|---|---:|---:|---:|---:|---:|---:|
+| Main-thread work | 30.2 (30.0–31.9) ms/s | 31.2 (30.8–32.1) ms/s | 104.5 (100.6–112.2) ms/s | 28.2 (28.1–30.1) ms/s | 3.5 (3.5–3.9) ms/s | +25% over the closed drawer; none set for a drag |
+| Renderer JS heap | 105 MB | 105 MB | 109–111 MB | 106 MB | 103 MB | 220 MB |
+
+- A folded body costs the same as an open one: the fold changes the pose,
+  not the draw work.
+- The hinge drag redraws the 3D body on each move, so it costs about 3× the
+  still stage while the pointer moves, and goes back to the still numbers
+  when it stops. It is in the same range as Apple's Duo fold sweep (renderer
+  13.3%, about 133 ms/s, in the Apple pane section). It is user-driven, not
+  idle.
+- The Previews group adds no cost after the render: the images are inline
+  `data:` URLs, drawn once. It has no poll.
+- The System images section reads the inventory once when it opens and again
+  after an install or a removal. It has no poll. The picker stays under its
+  3.0–4.0 ms/s P1 row.
+
+Not measured as rows: the preview render (about 10 s in the brain's Android
+CLI process, with no renderer work until the images arrive), a system image
+download (`sdkmanager`-style unpack in the brain; 298 MB took about 40 s), and
+an instrumentation test run (a Gradle process; 15–37 s on the sample app).

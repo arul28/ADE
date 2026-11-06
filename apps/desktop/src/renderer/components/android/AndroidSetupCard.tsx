@@ -9,7 +9,8 @@ import { Banner } from "../ui/notice";
 import { promptDialog } from "../ui/dialog";
 import { androidSdkTool } from "./androidDeviceState";
 import { AndroidLicenseDialog } from "./AndroidLicenseDialog";
-import { androidInstallLine, formatAndroidBytes } from "./androidSdkFormat";
+import { formatAndroidBytes } from "../../../shared/androidFormat";
+import { androidInstallLine } from "./androidSdkFormat";
 import { useAndroidSdkSetup } from "./useAndroidSdkSetup";
 
 /**

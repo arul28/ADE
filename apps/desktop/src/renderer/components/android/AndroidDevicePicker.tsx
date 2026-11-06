@@ -7,6 +7,7 @@ import {
   SignOut,
 } from "@phosphor-icons/react";
 import { ANDROID_DEVICE_CATALOG, androidCatalogEntryForAvd } from "../../../shared/androidDeviceCatalog";
+import { formatAndroidBytes } from "../../../shared/androidFormat";
 import type {
   AndroidAvdListing,
   AndroidDeviceInventory,
@@ -411,7 +412,7 @@ function AvdCard({
 
 function sizeLabel(bytes: number | null): string | null {
   if (bytes == null || !Number.isFinite(bytes) || bytes <= 0) return null;
-  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1e6))} MB`;
+  return formatAndroidBytes(bytes);
 }
 
 function AvdMenu({

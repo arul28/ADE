@@ -9,7 +9,8 @@ import { Banner } from "../ui/notice";
 import { Spinner } from "../ui/Spinner";
 import { ANDROID_TILE_FOCUS_RING } from "./AndroidCatalogGrid";
 import { AndroidLicenseDialog } from "./AndroidLicenseDialog";
-import { androidInstallLine, formatAndroidBytes } from "./androidSdkFormat";
+import { formatAndroidBytes } from "../../../shared/androidFormat";
+import { androidInstallLine } from "./androidSdkFormat";
 import { useAndroidSystemImages } from "./useAndroidSystemImages";
 
 /**

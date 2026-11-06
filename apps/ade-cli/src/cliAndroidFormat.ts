@@ -7,6 +7,7 @@
  *   NEITHER FILE MAY USE THE OTHER'S IMPORTS AS A VALUE AT MODULE SCOPE.
  */
 import { asString, isRecord, renderKeyValues, renderTable, unwrapActionEnvelope, type JsonObject } from "./cli";
+import { formatAndroidBytes } from "../../desktop/src/shared/androidFormat";
 import { appleLeaseAnswer, leaseAcquiredLines, leaseHeldLine, leaseReleasedLine } from "./cliAppleFormat";
 
 /* ── Text output ──────────────────────────────────────────────────────────── */
@@ -318,10 +319,7 @@ function seconds(ms: unknown): string | null {
 
 function formatBytes(bytes: unknown): string | null {
   if (typeof bytes !== "number" || !Number.isFinite(bytes)) return null;
-  if (bytes <= 0) return "0 MB";
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
-  if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return formatAndroidBytes(bytes);
 }
 
 export function formatAndroidApps(value: unknown): string {

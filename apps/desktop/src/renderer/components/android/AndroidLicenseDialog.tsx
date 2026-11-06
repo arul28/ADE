@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { AndroidSdkLicense, AndroidSdkSetupPart } from "../../../shared/types/androidEmulator";
 import { Dialog } from "../ui/dialog";
-import { formatAndroidBytes } from "./androidSdkFormat";
+import { formatAndroidBytes } from "../../../shared/androidFormat";
 
 /**
  * "Review licences & install" (plan §1: ADE never accepts a licence by

@@ -7,7 +7,7 @@ import type {
 } from "../../../shared/types/androidEmulator";
 import { showToast } from "../app/toast/toastStore";
 import { describeAndroidError, type AndroidErrorDescription } from "./androidDeviceState";
-import { formatAndroidBytes } from "./androidSdkFormat";
+import { formatAndroidBytes } from "../../../shared/androidFormat";
 
 /**
  * The picker's System images section: the list from the lane's machine, an
