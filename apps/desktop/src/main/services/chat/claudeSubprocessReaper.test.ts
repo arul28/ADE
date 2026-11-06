@@ -127,6 +127,35 @@ describe("createClaudeSubprocessReaper", () => {
     }));
   });
 
+  it("reports a chat's stderr tail scrubbed, without the rest of a line whose secret prefix was cut", () => {
+    // The tail goes to Sentry with a runtime-failed report. A cut that lands
+    // inside a line must not leave a secret's value behind without the
+    // `api_key=` prefix the scrubber recognizes it by.
+    const child = Object.assign(createProcess(4321), { stderr: new PassThrough() });
+    const reaper = createClaudeSubprocessReaper({
+      logger: createLogger(),
+      platform: "darwin",
+      spawnProcess: vi.fn(() => child) as any,
+    });
+    reaper.spawnClaudeCodeProcess({
+      command: "/bin/claude",
+      args: [],
+      cwd: "/tmp/lane",
+      env: {},
+      signal: new AbortController().signal,
+    }, { sessionId: "chat-tail", sdkSessionId: null, laneId: "lane-1", cwd: "/tmp/lane" });
+
+    child.stderr.write(`starting\n${"x".repeat(4_100)}api_key=`);
+    child.stderr.write("CUTSECRETVALUE0123456789\nAuthorization: Bearer abcdefghijklmnopqrstuvwxyz0123\n");
+    child.stderr.write("provider refused the request\n");
+
+    const tail = reaper.stderrTail("chat-tail") ?? "";
+    expect(tail).toContain("provider refused the request");
+    expect(tail).not.toContain("CUTSECRETVALUE");
+    expect(tail).not.toContain("abcdefghijklmnopqrstuvwxyz0123");
+    expect(reaper.stderrTail("chat-unknown")).toBeNull();
+  });
+
   it("spawns through the hook and records process metadata", () => {
     const logger = createLogger();
     const child = createProcess(5678);
@@ -154,7 +183,7 @@ describe("createClaudeSubprocessReaper", () => {
     expect(spawnProcess).toHaveBeenCalledWith("/bin/claude", ["--model", "sonnet"], expect.objectContaining({
       cwd: "/tmp/lane",
       env: { FOO: "bar" },
-      stdio: ["pipe", "pipe", "ignore"],
+      stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       // POSIX only: the child has to lead its own process group or the reaper
       // can never reach its MCP servers.
