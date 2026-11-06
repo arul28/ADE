@@ -333,10 +333,15 @@ public actor DeviceSession {
     // MARK: - Foldables
 
     /// The CoreDevice input path, for a device with a hinge; nil for every other device.
-    private func foldableInput() async -> FoldableInput? {
+    ///
+    /// `forceRecheck` skips the "no" window for a caller that cannot live with
+    /// a stale answer. It costs nothing for a device CoreDevice has already
+    /// answered about — the bridge caches a successful yes or no and only the
+    /// failed question is asked again.
+    private func foldableInput(forceRecheck: Bool = false) async -> FoldableInput? {
         if let foldable { return foldable }
         let now = ContinuousClock.now
-        if let checkedAt = foldableCheckedAt, now - checkedAt < Self.foldableRecheckInterval { return nil }
+        if !forceRecheck, let checkedAt = foldableCheckedAt, now - checkedAt < Self.foldableRecheckInterval { return nil }
         foldableCheckedAt = now
         if await CoreDeviceBridge.shared.supportsHingeAngle(udid: udid) {
             foldable = FoldableInput(udid: udid)
@@ -357,8 +362,13 @@ public actor DeviceSession {
     /// fold, a recording that starts its own capture — has to ask once.
     /// A no-op for a device with no hinge.
     private func followLivePanel() async {
+        // A fresh hinge question, not the cached "no": CoreDevice can fail it
+        // for a Duo that is still coming up, and a recording that accepts that
+        // answer writes its whole file on the dark panel — the runtime's own
+        // `isFoldable()` then skips the posture watcher too, so nothing later
+        // in the recording puts it right.
         guard
-            await isFoldable(),
+            await foldableInput(forceRecheck: true) != nil,
             let live = await DevicePosture.displays(udid: udid).first(where: \.active)
         else { return }
         _ = await applyActiveScreen(live.screenID)
