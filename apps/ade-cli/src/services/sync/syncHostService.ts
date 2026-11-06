@@ -3544,6 +3544,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       broadcastBrainStatus();
     }
     const sentAt = nowIso();
+    // Read once per tick. A failed read (a disk error) skips this tick's pings
+    // but not the timeout checks below, so a dead peer is still closed; the
+    // failure is rethrown after the loop for the timer's report.
+    let dbVersion: number | null = null;
+    let dbVersionError: unknown = null;
+    try {
+      dbVersion = args.db.sync.getDbVersion();
+    } catch (error) {
+      dbVersionError = error;
+    }
     for (const peer of peers) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (isPeerBackpressured(peer)) {
@@ -3586,12 +3596,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       } else {
         peer.missedHeartbeatCount = 0;
       }
-      // Outstanding only once the ping has gone out: a tick that failed before
-      // or at the send (the version read hit a disk error) must not count a
-      // missed heartbeat against the peer.
-      const ping = { kind: "ping", sentAt, dbVersion: args.db.sync.getDbVersion() };
+      // Outstanding only once the ping has gone out: a tick whose version read
+      // failed sends none and counts no missed heartbeat against the peer.
+      if (dbVersion === null) continue;
+      const ping = { kind: "ping", sentAt, dbVersion };
       if (send(peer.ws, "heartbeat", ping)) peer.awaitingHeartbeatAt = sentAt;
     }
+    if (dbVersionError) throw dbVersionError;
   }
   const brainStatusTimer = setInterval(() => {
     broadcastBrainStatus();
