@@ -628,18 +628,20 @@ export async function emitPrCardsForChange(args: {
    * foreign PRs than its own.
    *
    * `claimingSessionIds` is already the links minus the cross-lane ones, so
-   * the claim list is the same-lane list; filtering the pool by `laneId` as
-   * well keeps that true even for a session whose lane the edge query could
-   * not read.
+   * the claim list is the same-lane list; drawing from the lane's own
+   * sessions as well keeps that true even for a session whose lane the edge
+   * query could not read, and means a chat that dropped this PR is skipped
+   * whether or not anything claimed it.
    */
-  const claimIds = new Set(claimingSessionIds(pr));
+  const claimIds = claimingSessionIds(pr);
   const dismissed = new Set(dismissedSessionIds(pr));
-  const onPrLane = (session: AgentChatSessionSummary) => session.laneId === pr.laneId;
-  const ordinarySessions = claimIds.size > 0
-    ? selectPrCardSessions([...listedById.values()].filter(onPrLane), [...claimIds])
-    // No chat claimed it, so fall back to the lane's own most recent chat, as
-    // an unlinked PR always has — minus any that explicitly dropped this PR.
-    : selectPrCardSessions(laneSessions.filter((session) => !dismissed.has(session.sessionId)));
+  // One pool, the PR's own lane, so neither branch can reach another lane's
+  // chat however the links read. Claimed: every chat that claimed it.
+  // Unclaimed: the lane's most recent chat, as an unlinked PR always had.
+  const laneCandidates = laneSessions.filter((session) => !dismissed.has(session.sessionId));
+  const ordinarySessions = claimIds.length > 0
+    ? selectPrCardSessions(laneCandidates, claimIds)
+    : selectPrCardSessions(laneCandidates);
   if (stackLanded || stackLinkedIds.size > 0) {
     remember((await Promise.all([...laneIds].map((laneId) => chat.listSessions(laneId, { includeArchived: false })))).flat());
   }
