@@ -278,7 +278,6 @@ public actor DeviceSession {
             fps: fps,
             overlays: overlays,
             accent: RecordingOverlay.parseColour(accentColor) ?? RecordingOverlay.defaultAccent,
-            metrics: metrics,
             idleCompression: idleCompression
         )
         do {
@@ -290,6 +289,7 @@ public actor DeviceSession {
             }
             throw error
         }
+        await session.setScreenTurns(await readScreenTurns(nil))
         recording = session
     }
 
@@ -323,7 +323,11 @@ public actor DeviceSession {
     /// recording — ADE sends these alongside every injected input and should
     /// not have to track whether a recording is live.
     public func overlayTap(point: DevicePoint) async {
-        await recording?.noteTap(point: point)
+        // Normalised here, against the panel showing now: the recording holds
+        // no metrics of its own, so a tap after a fold lands on the panel the
+        // viewer is looking at rather than the one the recording started on.
+        guard let recording else { return }
+        await recording.noteTap(normalized: metrics.normalize(point))
     }
 
     public func overlayText(_ text: String) async {
@@ -389,6 +393,9 @@ public actor DeviceSession {
                size.width != metrics.pixelWidth || size.height != metrics.pixelHeight {
                 metrics = DeviceMetrics.fromPixels(width: size.width, height: size.height, assumedScale: metrics.scale)
                 panelMetrics[screenID] = metrics
+                // A recording in flight is now receiving the other panel, on
+                // its own side; tell it how to stand the picture up.
+                if let recording { await recording.setScreenTurns(await readScreenTurns(nil)) }
                 return metrics
             }
         }
