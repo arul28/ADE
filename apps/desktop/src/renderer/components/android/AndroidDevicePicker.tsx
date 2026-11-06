@@ -7,6 +7,7 @@ import {
   SignOut,
 } from "@phosphor-icons/react";
 import { ANDROID_DEVICE_CATALOG, androidCatalogEntryForAvd } from "../../../shared/androidDeviceCatalog";
+import { formatAndroidBytes } from "../../../shared/androidFormat";
 import type {
   AndroidAvdListing,
   AndroidDeviceInventory,
@@ -40,7 +41,6 @@ import {
   ANDROID_TILE_FOCUS_RING,
   type AndroidCatalogCreateOptions,
 } from "./AndroidCatalogGrid";
-import { formatAndroidBytes } from "../../../shared/androidFormat";
 
 /**
  * The Android pane's front door, in the Apple picker's place and classes:
