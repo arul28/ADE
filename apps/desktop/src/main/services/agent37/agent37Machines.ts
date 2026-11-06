@@ -31,6 +31,7 @@ import {
   type Agent37MachineActionArgs,
   type Agent37MachineActionResult,
   type Agent37MachinesResult,
+  type Agent37MonthSpend,
   type Agent37Resources,
 } from "../../../shared/agent37";
 import { agent37UsageDay, Agent37Error, type Agent37Client, type Agent37Instance, type Agent37Usage } from "./agent37Client";
@@ -132,6 +133,52 @@ function readyOf(instance: Agent37Instance): Agent37Machine["ready"] {
   };
 }
 
+/** The first instant of `nowMs`'s UTC month. */
+function monthStartMs(nowMs: number): number {
+  const date = new Date(nowMs);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
+}
+
+/**
+ * This month per listed machine (spent, and what sleeping saved it since the
+ * month or its creation, whichever is later), and what machines no longer in
+ * the workspace spent this month: Agent 37's usage keeps a deleted machine's
+ * id, its list does not.
+ */
+export function agent37MonthSpend(
+  instances: readonly Agent37Instance[],
+  monthUsage: Pick<Agent37Usage, "byInstance"> | null,
+  nowMs: number,
+): Agent37MonthSpend | null {
+  if (!monthUsage) return null;
+  const sinceMs = monthStartMs(nowMs);
+  const listed = new Set(instances.map((instance) => instance.id));
+  const byInstance: Agent37MonthSpend["byInstance"] = {};
+  for (const instance of instances) {
+    const spentUsd = monthUsage.byInstance[instance.id] ?? 0;
+    const resources = resourcesOf(instance);
+    const createdAtMs = instance.created == null ? null : instance.created < 1e12 ? instance.created * 1000 : instance.created;
+    byInstance[instance.id] = {
+      spentUsd,
+      // As for `savedUsd`: the newest hour is not settled yet, so the window stops an hour back.
+      savedUsd: agent37SavedUsd({
+        runningHourlyUsd: resources ? agent37RunningHourlyUsd(instance.type, resources) : null,
+        spentUsd,
+        windowStartMs: Math.max(sinceMs, createdAtMs ?? sinceMs),
+        nowMs: nowMs - 60 * 60_000,
+      }),
+    };
+  }
+  let deletedSpentUsd = 0;
+  let deletedCount = 0;
+  for (const [id, usd] of Object.entries(monthUsage.byInstance)) {
+    if (listed.has(id) || usd <= 0) continue;
+    deletedSpentUsd += usd;
+    deletedCount += 1;
+  }
+  return { sinceMs, byInstance, deletedSpentUsd, deletedCount };
+}
+
 function emptyResult(state: Agent37MachinesResult["state"], message: string | null): Agent37MachinesResult {
   return {
     state,
@@ -157,6 +204,23 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
   let knownMachineKeys = new Set<string>();
   // Bumped by a key change, so a read under the old key can't refill the cache.
   let usageGeneration = 0;
+
+  let monthUsageCache: { at: number; month: number; usage: Agent37Usage } | null = null;
+  /** This UTC month's usage, for the per-machine month figures. Cached like the 90-day read. */
+  async function readMonthUsage(client: Agent37Client): Promise<Agent37Usage | null> {
+    const at = now();
+    const month = monthStartMs(at);
+    if (monthUsageCache && monthUsageCache.month === month && at - monthUsageCache.at < USAGE_CACHE_MS) return monthUsageCache.usage;
+    const generation = usageGeneration;
+    try {
+      const usage = await client.usage({ from: agent37UsageDay(month) });
+      if (generation === usageGeneration) monthUsageCache = { at, month, usage };
+      return usage;
+    } catch (error) {
+      logger.warn?.("agent37.month_usage_read_failed", { error: errorText(error) });
+      return monthUsageCache?.month === month ? monthUsageCache.usage : null;
+    }
+  }
 
   async function readUsage(client: Agent37Client): Promise<Agent37Usage | null> {
     const at = now();
@@ -189,7 +253,7 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
       logger.warn?.("agent37.machines_read_failed", { error: errorText(error), refused });
       return emptyResult(refused ? "key_refused" : "unreachable", errorText(error));
     }
-    const [usage, budget] = await Promise.all([readUsage(client), readBudget()]);
+    const [usage, monthUsage, budget] = await Promise.all([readUsage(client), readMonthUsage(client), readBudget()]);
     const at = now();
     const live = instances.filter((instance) => instance.status !== "deleted");
     knownMachineKeys = new Set(live.map((instance) => instance.metadata[AGENT37_MACHINE_KEY_METADATA]).filter((key): key is string => Boolean(key)));
@@ -204,6 +268,7 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
       pastDue: billing.pastDue,
       usageAvailable: usage != null,
       spending: agent37SpendingFor(budget, agent37MonthSpentUsd(usage, at)),
+      month: agent37MonthSpend(live, monthUsage, at),
       message: null,
     };
   }
@@ -409,6 +474,7 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
     /** Forgets the spend read with the last key; a new key may be another workspace. */
     resetUsage: () => {
       usageCache = null;
+      monthUsageCache = null;
       usageGeneration += 1;
     },
   };

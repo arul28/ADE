@@ -151,6 +151,12 @@ export const DEFAULT_AUTH: Record<ShippedProvider, ProviderAuthResolver> = {
     if (envKeyPresent(context.env, "ANTHROPIC_API_KEY")) {
       return { authenticated: true, authMethod: "api-key" };
     }
+    // A long-lived subscription token (`claude setup-token`) in the
+    // environment, the way a cloud machine signs Claude in: ADE gives every
+    // new Agent 37 machine the person's token as instance env.
+    if (envKeyPresent(context.env, "CLAUDE_CODE_OAUTH_TOKEN")) {
+      return { authenticated: true, authMethod: "subscription" };
+    }
     if (claudeConfigOauthAccountPresent(context)) {
       return { authenticated: true, authMethod: "subscription" };
     }

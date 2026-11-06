@@ -96,6 +96,19 @@ export type Agent37TemplateBuild = {
   finished: number | null;
 };
 
+function toTemplateBuild(body: Record<string, unknown> | null, id: string): Agent37TemplateBuild {
+  const error = body?.error && typeof body.error === "object" ? body.error as Record<string, unknown> : null;
+  return {
+    id: str(body?.id) ?? id,
+    status: str(body?.status) ?? "unknown",
+    errorCode: str(error?.code),
+    errorMessage: str(error?.message),
+    created: num(body?.created),
+    started: num(body?.started),
+    finished: num(body?.finished),
+  };
+}
+
 export class Agent37Error extends Error {
   constructor(
     message: string,
@@ -566,16 +579,24 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
     async getTemplateBuild(id: string): Promise<Agent37TemplateBuild | null> {
       try {
         const body = await api("GET", `/template-builds/${encodeURIComponent(id)}`) as Record<string, unknown> | null;
-        const error = body?.error && typeof body.error === "object" ? body.error as Record<string, unknown> : null;
-        return {
-          id: str(body?.id) ?? id,
-          status: str(body?.status) ?? "unknown",
-          errorCode: str(error?.code),
-          errorMessage: str(error?.message),
-          created: num(body?.created),
-          started: num(body?.started),
-          finished: num(body?.finished),
-        };
+        return toTemplateBuild(body, id);
+      } catch (error) {
+        if (error instanceof Agent37Error && error.status === 404) return null;
+        throw error;
+      }
+    },
+
+    /**
+     * The build plus the next chunk of its Docker build log from byte `offset`,
+     * or null when Agent37 no longer knows it (404). Pass the returned offset
+     * back to read on from there.
+     */
+    async getTemplateBuildLog(id: string, offset: number): Promise<{ build: Agent37TemplateBuild; data: string; offset: number } | null> {
+      try {
+        const query = new URLSearchParams({ offset: String(Math.max(0, Math.floor(offset))) });
+        const body = await api("GET", `/template-builds/${encodeURIComponent(id)}/logs?${query.toString()}`) as Record<string, unknown> | null;
+        const data = typeof body?.data === "string" ? body.data : "";
+        return { build: toTemplateBuild(body, id), data, offset: num(body?.offset) ?? offset + Buffer.byteLength(data, "utf8") };
       } catch (error) {
         if (error instanceof Agent37Error && error.status === 404) return null;
         throw error;

@@ -58,9 +58,18 @@ person is using.
   remote connections ask for a wake.
 - `apps/ade-cli/src/services/power/agent37KeepAwake.ts` — on the box: while
   work runs, the brain requests the box's own wake URL once a minute.
-- `apps/desktop/src/renderer/components/settings/Agent37SpendingCard.tsx` —
-  the Spending card (this month against the cap, saved asleep, how long the
-  wallet lasts, the cap).
+- `apps/desktop/src/renderer/components/settings/Agent37Section.tsx` — the
+  Agent 37 page: the hero (workspace, wallet, Open dashboard, machines, this
+  month, the template's progress) and the wallet and cap warnings under it.
+  `Agent37MachinesCard.tsx` lists every machine in the workspace (state, size,
+  price, this month's spend, lanes, Wake, the ⋯ menu) with what sleeping saved
+  and what deleted machines spent this month.
+  `remoteTargets/NewAgent37MachineDialog.tsx` is the create form, also opened
+  from the new-chat picker's **New Agent 37 machine** row.
+- `agent37ClaudeToken.ts`, `agent37ClaudeTokenStore.ts`,
+  `renderer/components/settings/Agent37ClaudeSignInCard.tsx` — Claude on
+  cloud machines (see below): the `claude setup-token` sign-in, the token in
+  the account vault, and the env every new machine starts with.
 - `agent37MachineCopy.ts` — Copy (Agent 37's fork, then the new-machine
   sign-in) and Move (box ↔ VM: a new machine, the home folder streamed over,
   the old box deleted).
@@ -74,7 +83,8 @@ person is using.
   `apps/ios/ADE/Services/SyncService+Agent37.swift` — the phone's Agent 37
   page (Work ⋯ menu), over the `agent37.read` / `agent37.write` remote commands.
 - `apps/desktop/src/renderer/components/settings/Agent37AgentLimitsCard.tsx` —
-  Settings' **What agents may spend**: presets, single limits, the optional cap.
+  Settings' **What agents may spend**: one question (may unattended agents
+  make machines?), its limits, the optional cap.
 - `agent37AgentActions.ts` — the machine verbs of the `agent37` action domain
   (`ade agent37 list|create|sleep|wake|resize|copy|move|delete|sleep-after|cap|
   spending|ready on|off|retry`) and their approval cards.
@@ -143,6 +153,18 @@ Docker.
 - A finished build is ready only once Agent 37 shows the template with this
   build's marker (ADE sets it when the build published without one). Until
   then the record stays, so a later pass resumes.
+- A newer release on another computer of the account wins over an older one:
+  the version is compared first, and a template from a newer ADE is kept
+  whatever its files, so two computers on different releases never put their
+  own template back on each start. Same release with different files (two
+  development builds) rebuilds. Every new release rebuilds once, because a
+  machine runs the ADE its template installed; while it builds, new machines
+  come from the older template and the page shows only a quiet line.
+- While a build runs, ADE reads its Docker log (`GET
+  /template-builds/{id}/logs`, every 5 s, the same call that answers the
+  build) and shows one of four plain steps (`agent37TemplateProgress`):
+  desktop and browser, ADE, Docker and Android tools, saving the image (also
+  Agent 37's `ingesting`). Steps only move forward. There is no time estimate.
 - Failures retry after 1, 5 and 15 minutes, then wait for Retry. A refused key
   or an empty wallet does not retry.
 
@@ -187,6 +209,25 @@ each one asks the box `ade auth status`:
 A record that matches no box is kept for a day, in case Agent 37 still had
 the create in flight, then dropped. Boxes made by another request id (another
 computer's create, or not ADE's) are never touched.
+
+## Claude on cloud machines
+
+A new machine has no Claude sign-in, so a ready machine's chat would stop on
+the sign-in card. **Claude on your cloud machines** on the Agent 37 page signs
+in once: ADE runs Claude Code's own `claude setup-token` (a long-lived
+subscription token made for headless machines) in a private terminal, opens
+its link in the browser, takes a pasted code when Claude asks for one, reads
+the token from the output and keeps it in the account vault
+(`agent37-claude-token`). The token is cut from every output the screen
+reads and never logged. Every machine made after that, by the desktop, a
+ready machine or a brain on its own (`adeActions/registry.ts`), gets it as
+the instance env `CLAUDE_CODE_OAUTH_TOKEN`, which Agent 37 stores with the
+machine and gives back on every boot; ADE's Claude status counts that
+variable as signed in (`providerAuthResolvers.ts`). This is how Agent 37's own
+docs sign Claude Code in on a machine. Machines made before keep what they
+had. Remove forgets the token; machines made with it keep it until they are
+deleted. A sign-in that runs emits `agent37:claudeTokenChanged` only when the
+link or the code prompt changes, never per output line.
 
 ## The machine cards
 
@@ -327,10 +368,10 @@ settles hourly, so the newest hour shows later.
 
 **Saved by sleeping** is, per box, its spend window at the running rate less
 what it actually spent: the compute its asleep hours didn't cost. The group
-head and the Spending card add it up.
+head and the Machines card add it up.
 
 **A wallet about to run dry.** The machine group warns under three days at the
-current rate, the Spending card says how long the wallet lasts, and the
+current rate, the Agent 37 page warns under its hero, and the
 desktop notifies once a day when it lasts under a day.
 
 ## Copy and move
@@ -388,9 +429,9 @@ the make in the background and follows it with `make_status`.
 automation run), ADE answers an agent's costly request with the person's
 limits: whether unattended agents may spend at all, how many new machines
 (made, copied or moved) they may start in a UTC day, and the largest size
-they may pick. Three presets, Ask me (no unattended spending), **Balanced**
-(the default: 3 a day, up to 4 vCPU · 16 GB) and Hands-off (10 a day, any
-size), or Custom. The day's count is the larger of the account's machines an
+they may pick. The card asks one question: no (they ask first) or yes within
+limits (**Balanced** by default: 3 a day, up to 4 vCPU · 16 GB). The stored
+presets (Ask me, Balanced, Hands-off, Custom) are unchanged. The day's count is the larger of the account's machines an
 agent made today (`ade_made_by_chat`, Agent 37's `created`) and what this
 brain approved today, so a make-and-delete loop can't step around it.
 Loosening a limit is the person's call only, like raising the cap.
