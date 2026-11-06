@@ -121,6 +121,28 @@ func workLatestSignInFailure(_ transcript: [WorkChatEnvelope], provider: String?
   return nil
 }
 
+/// Why the card shows: a turn stopped on the sign-in, or the machine already
+/// says the agent has no login (before anything is sent).
+enum WorkProviderSignInReason: Equatable {
+  case failedTurn
+  case noLogin
+}
+
+/// Before a send: the chat machine's `ai.getStatus` answer says this
+/// provider's agent is there but has no login and no other way to run, the
+/// same test as desktop's "no-login" card. Keys and sub-providers never
+/// count; their status is not a login ADE can read.
+func workProviderSignedOutBeforeSend(_ status: Any, provider: String) -> Bool {
+  let id = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  guard workProviderSignInKind(id) != .settings,
+        let connections = (status as? [String: Any])?["providerConnections"] as? [String: Any],
+        let connection = connections[id] as? [String: Any] else { return false }
+  return connection["runtimeDetected"] as? Bool == true
+    && connection["authAvailable"] as? Bool == false
+    // A login ADE cannot see but the machine still runs with is not a missing one.
+    && connection["runtimeAvailable"] as? Bool == false
+}
+
 /// A sign-in page link the card may open: http(s) only, whatever a CLI printed.
 func workSignInPageURL(_ url: String?) -> URL? {
   guard let url, let link = URL(string: url), let scheme = link.scheme?.lowercased(),
@@ -391,6 +413,7 @@ final class WorkProviderSignInController: ObservableObject {
 struct WorkProviderSignInCard: View {
   let provider: String
   let machineName: String
+  let reason: WorkProviderSignInReason
   let onSignedIn: () -> Void
   let onDismiss: () -> Void
   @StateObject private var controller: WorkProviderSignInController
@@ -403,11 +426,13 @@ struct WorkProviderSignInCard: View {
     machineName: String,
     host: ProviderAccountsHost?,
     instanceId: String?,
+    reason: WorkProviderSignInReason = .failedTurn,
     onSignedIn: @escaping () -> Void,
     onDismiss: @escaping () -> Void
   ) {
     self.provider = provider
     self.machineName = machineName
+    self.reason = reason
     self.onSignedIn = onSignedIn
     self.onDismiss = onDismiss
     _controller = StateObject(wrappedValue: WorkProviderSignInController(provider: provider, host: host, instanceId: instanceId))
@@ -422,7 +447,7 @@ struct WorkProviderSignInCard: View {
       HStack(spacing: 10) {
         WorkProviderLogo(provider: provider, tint: tint, size: 30)
         VStack(alignment: .leading, spacing: 2) {
-          Text("Sign in to \(label) again")
+          Text(reason == .failedTurn ? "Sign in to \(label) again" : "Sign in to \(label)")
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
           Text("on \(machineName)")
@@ -442,9 +467,11 @@ struct WorkProviderSignInCard: View {
         .accessibilityLabel("Not now")
       }
 
-      Text(controller.kind == .settings
-        ? "\(label) is signed out on \(machineName). Sign it in from Settings › Providers on that computer, then send again."
-        : "\(label) is signed out on \(machineName). Your message sends again as soon as you're back in.")
+      Text(reason == .noLogin
+        ? "\(label) isn't signed in on \(machineName) yet."
+        : controller.kind == .settings
+          ? "\(label) is signed out on \(machineName). Sign it in from Settings › Providers on that computer, then send again."
+          : "\(label) is signed out on \(machineName). Your message sends again as soon as you're back in.")
         .font(.footnote)
         .foregroundStyle(ADEColor.textSecondary)
         .fixedSize(horizontal: false, vertical: true)

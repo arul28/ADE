@@ -3829,8 +3829,20 @@ back, and when the machine reads the login back it resends the last message
 with its files. Not now hides it for that failure; a read-only quick look of
 another project's chat shows none. A host too old for the `ai.*` sign-in
 commands answers with the connection's "cannot do this from the phone yet"
-error on the card. The phone shows the card only after a failed send, not
-before one.
+error on the card.
+
+The card also shows before a send. When the chat opens (and again when the
+connection to its machine comes up), `WorkChatSessionView` reads `ai.getStatus`
+on that same connection, and `workProviderSignedOutBeforeSend` applies
+desktop's test: the agent is there (`runtimeDetected`) with no login
+(`authAvailable` false) and no other way to run (`runtimeAvailable` false), for
+a provider the card can sign in (never keys or sub-providers). The answer is
+kept under the machine and provider it was read for, so another chat's or
+machine's answer never stands in. That card reads "Sign in to Muse Code", runs
+the same sign-in, and sends nothing afterwards because nothing failed; Not now
+hides it for that machine. An older or unreachable machine answers nothing and
+shows no card before a send. The debug preview screens are `chat-signin`,
+`chat-signin-recovered` and `chat-signin-before-send`.
 
 `WorkModelPickerSheet` shows the same Claude authentication affordance
 as desktop when Claude-family models are unavailable: a compact
