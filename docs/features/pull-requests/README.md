@@ -990,17 +990,33 @@ never seen is deliberately NOT treated as deleted: it may simply live on
 another machine (see the stacked-PR claim rule), so the purge rides the delete
 cascades rather than a read-time guess.
 
-A PR's links follow the chat's spawn tree. The primary link is written first,
-then every other chat in that tree is linked the same way: the chats above it
-up to the tree's root, and every chat spawned under that root, including chats
-on other lanes. A chat that explicitly unlinked the PR keeps it unlinked
-(`hasChatSessionDismissal` is checked before each family link). A chat spawned
-while its parent holds open or draft PRs starts linked to them; merged and
-closed PRs are not copied. So a PR a subagent opened shows on the chat that
-started it and on its siblings, and the parent's header no longer reads it as
-another chat's claim. Family children come from the chats this machine has
-loaded, so siblings the brain has not opened yet are missed; the parent side
-always resolves from each chat's own lineage.
+A PR's links climb the chat's spawn tree. The primary link is written first,
+then the chats above it, up to the tree's root
+(`getChatAncestorSessionIds`) — one direction only. A subagent does not
+inherit its parent's PRs and two subagents of one parent do not see each
+other's; walking the whole tree instead gave every chat in it every PR any of
+them opened, which across three lanes meant each thread carried six PRs and
+showed more foreign ones than its own. A chat that explicitly unlinked the PR
+keeps it unlinked (`hasChatSessionDismissal` is checked before each link). A
+chat spawned while its parent holds open or draft PRs starts linked to them;
+merged and closed PRs are not copied. Ancestors resolve from each chat's own
+lineage, so none of this depends on which chats this machine has loaded.
+
+An ancestor usually sits on another lane, so its link is marked cross-lane and
+carries **no chat cards**. The link is a reference — it is how a chat offers
+you the PR its subagent opened — and a reference is not a reason to interrupt
+that lane's thread. Cards go to the chats that claimed the PR
+(`claimingSessionIds`, the links minus the cross-lane ones), drawn from the
+PR's own lane, or to that lane's most recent chat when nothing claimed it. The
+stack-landed card is the one exception and still reaches a cross-lane
+coordinator, because that is the event a coordinator is waiting for.
+
+Cards also stop once the PR is finished. CI still completes on the merge
+commit, GitHub still recomputes "behind base", and a review can still land, so
+without a gate a merged PR goes on posting into a thread whose work is over.
+Only `draft` and `open` are live — a draft's CI and reviews are exactly what
+its chat wants — and the merged card itself still fires, because that is the
+one that says the work is done.
 
 The edge table is a CRR table with a primary-key-only uniqueness contract and
 is mirrored in the iOS bootstrap/migration schema and PR projection cleanup.

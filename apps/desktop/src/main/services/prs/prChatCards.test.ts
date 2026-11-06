@@ -521,7 +521,15 @@ describe("PR chat cards", () => {
       links: { chatSessionIds: ["older"] },
       expected: ["older"],
     },
-  ])("fans a PR transition out to $name", async ({ links, expected }) => {
+    {
+      // Claiming a PR and then dropping it leaves both edges on the row. The
+      // dismissal wins, and with no one left to tell there is nothing to send.
+      name: "nobody, when the one chat that claimed it has dropped it",
+      links: { chatSessionIds: ["newer"], dismissedChatSessionIds: ["newer"] },
+      expected: [],
+      cards: 0,
+    },
+  ])("fans a PR transition out to $name", async ({ links, expected, cards = 1 }) => {
     const emitAdeCard = vi.fn().mockResolvedValue(undefined);
     const sessions = [
       session("older", "2026-07-27T10:00:00.000Z"),
@@ -553,8 +561,45 @@ describe("PR chat cards", () => {
       },
     });
 
-    expect(count).toBe(1);
+    expect(count).toBe(cards);
     expect(emitAdeCard.mock.calls.map(([call]) => call.sessionId).sort()).toEqual(expected);
+  });
+
+  /**
+   * Which lifecycle states are still worth interrupting a thread for. A draft
+   * is: its CI runs and its reviews land like any other PR's. A merged or
+   * closed one is not, however much GitHub keeps reporting about it.
+   */
+  it.each([
+    { state: "draft" as const, cards: 1 },
+    { state: "open" as const, cards: 1 },
+    { state: "merged" as const, cards: 0 },
+    { state: "closed" as const, cards: 0 },
+  ])("emits $cards card(s) when a $state PR's checks fail", async ({ state, cards }) => {
+    const emitAdeCard = vi.fn().mockResolvedValue(undefined);
+    const count = await emitPrCardsForChange({
+      change: {
+        pr: pr({ state, checksStatus: "failing" }),
+        previousState: state,
+        previousChecksStatus: "pending",
+        previousReviewStatus: "approved",
+        previousMergeConflicts: false,
+        previousBehindBaseBy: 0,
+      },
+      dataSource: {
+        getActionRuns: vi.fn().mockResolvedValue([run()]),
+        getChecks: vi.fn().mockResolvedValue([]),
+        getReviews: vi.fn().mockResolvedValue([]),
+        getReviewThreads: vi.fn().mockResolvedValue([]),
+      },
+      chat: {
+        listSessions: vi.fn().mockResolvedValue([session("newer", "2026-07-27T12:00:00.000Z")]),
+        emitAdeCard,
+      },
+    });
+
+    expect(count).toBe(cards);
+    expect(emitAdeCard).toHaveBeenCalledTimes(cards);
   });
 
   it("emits a merge-ready episode once when the prior state was not ready", async () => {
