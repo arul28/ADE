@@ -55,6 +55,7 @@ export type MachinePairingRepairResult = {
     | AccountMachinePairingResult["state"]
     | "publisher_unavailable"
     | "sync_host_not_running"
+    | "push_state_unreadable"
     | "not_revoked";
   reason: string | null;
   /**
@@ -114,11 +115,29 @@ export type MachinePairingRepairInput = {
 export async function repairMachinePairing(
   input: MachinePairingRepairInput,
 ): Promise<MachinePairingRepairResult> {
+  // Null from the store is "cannot read push-relay.json right now", not "not
+  // revoked": the durable flag may still be in the file.
+  const storedPushRevocation = input.push ? null : input.pushStore?.isMachineRevoked();
   const pushRevokedBefore = input.push
     ? input.push.getMachineRevocation().revoked
-    : input.pushStore?.isMachineRevoked() === true;
+    : storedPushRevocation === true;
   const directoryRevokedBefore = input.directory?.getMachineRevocation().revoked === true;
   const wasRevoked = pushRevokedBefore || directoryRevokedBefore;
+
+  if (!input.push && input.pushStore && storedPushRevocation === null) {
+    // The halves lift together or not at all: without a readable push state
+    // there is no telling whether delivery is gated, and no clearing it, so a
+    // re-pair now could put the machine back on the roster delivering nothing.
+    input.logger?.warn?.("account.machine_repair_push_unreadable", { wasRevoked });
+    return {
+      repaired: false,
+      wasRevoked,
+      published: false,
+      pushRestored: false,
+      state: "push_state_unreadable",
+      reason: "ADE can't read this computer's Activity settings right now, so it can't tell whether delivery is still turned off. Try again in a moment.",
+    };
+  }
 
   if (input.onlyIfRevoked && !wasRevoked) {
     return {

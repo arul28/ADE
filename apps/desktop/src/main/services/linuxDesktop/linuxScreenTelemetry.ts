@@ -16,7 +16,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { captureProblem, sendSentryLog } from "../../../shared/sentry/capture";
-import { scrubFreeTextThenCut } from "../../../shared/sentry/scrub";
+import { scrubFreeTextThenCut, scrubOutputTail } from "../../../shared/sentry/scrub";
 import type { LinuxDesktopSetupResult } from "../../../shared/types/macDesktop";
 import { linuxPackageManagerId } from "./linuxDesktopSetup";
 
@@ -136,10 +136,13 @@ export function linuxScreenFailureCause(error: unknown): LinuxScreenFailureCause
     driverExit?: { code?: unknown; signal?: unknown; stderrTail?: unknown };
   } : null;
   const exit = record?.driverExit;
-  const stderrTail = Array.isArray(exit?.stderrTail)
-    ? exit.stderrTail
-      .filter((line): line is string => typeof line === "string")
-      .map((line) => scrubFreeTextThenCut(line, CAUSE_STDERR_LINE_MAX_CHARS))
+  // Scrubbed as one text before it is split (`scrubOutputTail`): a private
+  // key spans lines, and line by line its body lines would read as ordinary.
+  const stderrLines = Array.isArray(exit?.stderrTail)
+    ? exit.stderrTail.filter((line): line is string => typeof line === "string")
+    : [];
+  const stderrTail = stderrLines.length > 0
+    ? scrubOutputTail(stderrLines.join("\n"), { maxLines: stderrLines.length, lineChars: CAUSE_STDERR_LINE_MAX_CHARS })
     : [];
   const message = typeof record?.message === "string"
     ? record.message

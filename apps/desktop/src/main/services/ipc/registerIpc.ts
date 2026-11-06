@@ -2713,7 +2713,11 @@ export function registerIpc({
   const ensureAppControl = (): NonNullable<AppContext["appControlService"]> => {
     const service = getCtx().appControlService;
     if (!service) {
-      throw new Error("App Control service is not available.");
+      // Expected, not a wiring bug: a project's App Control runs in its ADE
+      // brain, so this window builds none (only the in-process test runtime
+      // does). A call lands here when the window is not bound to that brain
+      // yet: before the project connects, or with no project open.
+      throw new AdeExpectedError("App Control service is not available.", "environment");
     }
     return service;
   };
@@ -12918,11 +12922,11 @@ export function registerIpc({
   const ensurePrReadContext = (): AppContextWith<"prService" | "prPollingService"> => {
     const ctx = ensurePrPolling();
     if (!ctx) {
-      const message = "PR service is not available for this project window.";
-      // Expected in the no-project window, as for terminals above; a project
-      // context without one is a wiring bug.
-      if (!getCtx().projectId) throw new AdeExpectedError(message, "environment");
-      throw new Error(message);
+      // Expected, not a wiring bug: a project's PR service runs in its ADE
+      // brain, so this window builds none (only the in-process test runtime
+      // does). The preload falls back here only while the window is not bound
+      // to that brain: before the project connects, or with no project open.
+      throw new AdeExpectedError("PR service is not available for this project window.", "environment");
     }
     return ctx;
   };

@@ -21,7 +21,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import { markExpected } from "../../../shared/expectedError";
-import { scrubFreeTextThenCut } from "../../../shared/sentry/scrub";
+import { createPrivateKeyStreamFilter, scrubFreeTextThenCut, scrubOutputTail } from "../../../shared/sentry/scrub";
 import os from "node:os";
 import path from "node:path";
 
@@ -402,6 +402,8 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   let stderrLineOverflowed = false;
   /** The current run's last stderr lines, and how the last run ended: the crash-loop report's cause. */
   let stderrTail: string[] = [];
+  /** Takes a private key out of this run's stderr before any line of it is kept. */
+  let stderrKeyFilter = createPrivateKeyStreamFilter();
   let lastExit: { code: number | null; signal: string | null; spawnError: string | null } | null = null;
   let nextRequestId = 0;
   let restartAttempts = 0;
@@ -655,10 +657,15 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   };
 
   // Whole lines (up to the log bound), cut only after they are scrubbed for a
-  // report, so a secret that straddles the cut is still recognized.
+  // report, so a secret that straddles the cut is still recognized. A private
+  // key spans lines, so it is taken out as the lines arrive: the tail keeps
+  // only the last few, and could keep a key's body without its BEGIN line.
   const rememberStderrLine = (line: string): void => {
-    stderrTail.push(line.slice(0, MAX_STDERR_LINE_CHARS));
-    if (stderrTail.length > CRASH_REPORT_STDERR_LINES) stderrTail.shift();
+    for (const kept of stderrKeyFilter.push(`${line.slice(0, MAX_STDERR_LINE_CHARS)}\n`).split("\n")) {
+      if (!kept.trim()) continue;
+      stderrTail.push(kept);
+      if (stderrTail.length > CRASH_REPORT_STDERR_LINES) stderrTail.shift();
+    }
   };
 
   const consumeStderr = (chunk: string): void => {
@@ -721,7 +728,10 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
           lastExitCode: lastExit?.code ?? null,
           lastExitSignal: lastExit?.signal ?? null,
           lastSpawnError: lastExit?.spawnError ? scrubFreeTextThenCut(lastExit.spawnError, CRASH_REPORT_STDERR_LINE_CHARS) : null,
-          stderrTail: stderrTail.map((line) => scrubFreeTextThenCut(line, CRASH_REPORT_STDERR_LINE_CHARS)),
+          stderrTail: scrubOutputTail(stderrTail.join("\n"), {
+            maxLines: CRASH_REPORT_STDERR_LINES,
+            lineChars: CRASH_REPORT_STDERR_LINE_CHARS,
+          }),
         });
       }
       // Nobody has asked for the driver lately, so nothing is waiting on a
@@ -829,6 +839,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       stderrBuffer = "";
       stderrLineOverflowed = false;
       stderrTail = [];
+      stderrKeyFilter = createPrivateKeyStreamFilter();
       let spawned: ChildProcessWithoutNullStreams;
       try {
         spawned = spawnProcess(launchPath, [...driverArgs], {

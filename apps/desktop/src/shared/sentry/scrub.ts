@@ -122,10 +122,115 @@ const SCRUB_THEN_CUT_MAX_INPUT = 64_000;
  * secret, email or path that straddles the cut is replaced whole, never left
  * as a prefix too short for its pattern to match. For process output (stderr
  * lines, error messages) bound for a report.
+ *
+ * Input past the scrub bound is cut first at the last whitespace before it,
+ * dropping the token the bound landed in: a URL credential or token cut before
+ * the part its pattern needs (the `@` of `scheme://user:pass@`) would otherwise
+ * be left unmatched. A private key or quoted secret cut there still goes, since
+ * those patterns run to the end of the text.
  */
 export function scrubFreeTextThenCut(input: string, maxLength: number): string {
-  const scrubbed = scrubFreeText(input, { maxLength: Math.max(maxLength, SCRUB_THEN_CUT_MAX_INPUT) });
+  const bound = Math.max(maxLength, SCRUB_THEN_CUT_MAX_INPUT);
+  let bounded = input;
+  if (input.length > bound) {
+    const head = input.slice(0, bound);
+    // A bound that lands on whitespace cut no token.
+    const lastSpace = /\s/.test(input.charAt(bound)) ? bound : head.search(/\s\S*$/);
+    bounded = lastSpace > 0 ? head.slice(0, lastSpace) : "";
+  }
+  const scrubbed = scrubFreeText(bounded, { maxLength: Math.max(bounded.length, 1) });
   return scrubbed.length > maxLength ? `${scrubbed.slice(0, maxLength)}…` : scrubbed;
+}
+
+const PRIVATE_KEY_BEGIN = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
+const PRIVATE_KEY_END = /-----END [A-Z ]*PRIVATE KEY-----/;
+/** Longer than any END line, so one split across two chunks is still found. */
+const PRIVATE_KEY_MARKER_CARRY = 64;
+
+/** Whether `text` could still grow into a BEGIN line: the start of one cut by a chunk boundary. */
+function couldBecomePrivateKeyBegin(text: string): boolean {
+  const head = "-----BEGIN ";
+  if (text.length <= head.length) return head.startsWith(text);
+  if (!text.startsWith(head) || text.length > PRIVATE_KEY_MARKER_CARRY) return false;
+  const rest = text.slice(head.length);
+  return /^[A-Z ]*$/.test(rest) || /^[A-Z ]*PRIVATE KEY-{1,4}$/.test(rest);
+}
+
+/**
+ * Takes private keys out of process output as it arrives, before any of it is
+ * kept. A tail bounded by size can otherwise keep a key's body after the cut
+ * dropped its BEGIN line, and the scrubber recognizes a key only by that line.
+ * Everything from a BEGIN line through its END line becomes `[redacted]`; an
+ * END that never comes keeps the rest out. One filter per stream, fed in
+ * order; markers split across chunks are found (text that may be the start of
+ * a BEGIN line is held until the next chunk says).
+ */
+export function createPrivateKeyStreamFilter(): { push(chunk: string): string } {
+  let insideKey = false;
+  // Inside a key: its last characters, to find an END split across chunks.
+  // Outside: a possible start of a BEGIN line, held back from the output.
+  let carry = "";
+  return {
+    push(chunk: string): string {
+      let rest = carry + chunk;
+      carry = "";
+      let out = "";
+      for (;;) {
+        if (insideKey) {
+          const end = PRIVATE_KEY_END.exec(rest);
+          if (!end) {
+            carry = rest.slice(-PRIVATE_KEY_MARKER_CARRY);
+            return out;
+          }
+          insideKey = false;
+          out += REDACTED;
+          rest = rest.slice(end.index + end[0].length);
+          continue;
+        }
+        const begin = PRIVATE_KEY_BEGIN.exec(rest);
+        if (begin) {
+          out += rest.slice(0, begin.index);
+          insideKey = true;
+          rest = rest.slice(begin.index + begin[0].length);
+          continue;
+        }
+        const lineStart = rest.lastIndexOf("\n") + 1;
+        for (let index = Math.max(lineStart, rest.length - PRIVATE_KEY_MARKER_CARRY); index < rest.length; index += 1) {
+          if (rest.charAt(index) === "-" && couldBecomePrivateKeyBegin(rest.slice(index))) {
+            carry = rest.slice(index);
+            return out + rest.slice(0, index);
+          }
+        }
+        return out + rest;
+      }
+    },
+  };
+}
+
+/**
+ * The last lines of a process's output, scrubbed for a report: the kept text
+ * is scrubbed as one string before it is split or cut, because a private key
+ * spans lines and its pattern runs from the BEGIN line on. A key whose BEGIN
+ * line was cut off before the tail is taken out through its END line. Then the
+ * last `maxLines` non-empty lines, each cut to `lineChars`. For the Claude
+ * reaper's and the desktop drivers' stderr tails, which keep their text
+ * through {@link createPrivateKeyStreamFilter} as well.
+ */
+export function scrubOutputTail(text: string, options: { maxLines: number; lineChars: number }): string[] {
+  let kept = text;
+  const end = PRIVATE_KEY_END.exec(kept);
+  if (end) {
+    const begin = kept.search(PRIVATE_KEY_BEGIN);
+    if (begin === -1 || begin > end.index) {
+      const lineEnd = kept.indexOf("\n", end.index);
+      kept = lineEnd === -1 ? "" : kept.slice(lineEnd + 1);
+    }
+  }
+  return scrubFreeTextThenCut(kept, Math.max(kept.length, 1))
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .slice(-options.maxLines)
+    .map((line) => (line.length > options.lineChars ? `${line.slice(0, options.lineChars)}…` : line));
 }
 
 export function scrubValue(value: unknown, depth = 0, key?: string): unknown {

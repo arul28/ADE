@@ -1899,9 +1899,24 @@ export function createHeadlessGitHubService(
       body.description = args.description.trim();
     }
     const owner = asString(args.owner).trim();
+    // As the desktop's `createRepository`: `/orgs/{owner}/repos` takes only an
+    // organization, and the publish dialog fills `owner` with the connected
+    // login, so a personal publish sent there got GitHub's bare "Not Found".
+    // The org route is taken only for an owner positively known to differ from
+    // that login; an unverified token keeps the personal route.
+    const writeAuth = owner ? await readTokenAsync("write") : null;
+    const authenticatedLogin = writeAuth?.token
+      ? ((await validateToken(
+          writeAuth.token,
+          accountingTokenSource(writeAuth.source),
+        ).catch(() => ({ userLogin: null as string | null }))).userLogin?.trim() || null)
+      : null;
+    const useOrgRoute = owner.length > 0
+      && authenticatedLogin != null
+      && owner.toLowerCase() !== authenticatedLogin.toLowerCase();
     const { data } = await apiRequest<Record<string, unknown>>({
       method: "POST",
-      path: owner ? `/orgs/${encodeURIComponent(owner)}/repos` : "/user/repos",
+      path: useOrgRoute ? `/orgs/${encodeURIComponent(owner)}/repos` : "/user/repos",
       body,
     });
     const identity = repoIdentityFromGitHubResponse(data, owner, args.name);

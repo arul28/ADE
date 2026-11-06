@@ -189,6 +189,10 @@ describe("createClaudeSubprocessReaper", () => {
       expect(keptTail).toContain("after the key");
       for (const bodyLine of [...keyBody, "A".repeat(60)]) expect(keptTail).not.toContain(bodyLine);
     }
+    // A key longer than the kept buffer that has not ended yet: the cut took
+    // its BEGIN line and no END has come, so nothing marks the body as a key.
+    const openKeyTail = keyTail("chat-key-open", `before the key\n${pemMarker("BEGIN")}\n${`${keyBody.join("\n")}\n`.repeat(50)}`);
+    for (const bodyLine of keyBody) expect(openKeyTail).not.toContain(bodyLine);
   });
 
   it("spawns through the hook and records process metadata", () => {

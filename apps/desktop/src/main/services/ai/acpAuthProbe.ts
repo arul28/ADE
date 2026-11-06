@@ -27,6 +27,8 @@ import {
   AcpRpcError,
   createAcpConnection,
   initializeAcpConnection,
+  ACP_DEFAULT_REQUEST_TIMEOUT_MS,
+  ACP_HANDSHAKE_TIMEOUT_MS,
 } from "../chat/acpHost/acpConnection";
 import { acpDialectFor } from "../chat/acpHost/acpDialects";
 import { ACP_METHOD } from "../chat/acpHost/acpProtocolTypes";
@@ -46,6 +48,12 @@ import {
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
 
+/**
+ * The probe waits as long as a real chat would: a slower answer here than a
+ * chat allows reported "runtime-failed" for an agent whose chats open fine
+ * (Antigravity's session/new on a loaded machine). Authenticate keeps the
+ * shorter bound; it is only reached after a sign-in failure.
+ */
 const PROBE_TIMEOUT_MS = 15_000;
 const PROBE_CACHE_TTL_MS = 60_000;
 
@@ -272,7 +280,7 @@ export async function probeAcpProviderAuth(
       const response = await initializeAcpConnection({
         connection,
         dialect,
-        timeoutMs: PROBE_TIMEOUT_MS,
+        timeoutMs: ACP_HANDSHAKE_TIMEOUT_MS,
       });
 
       const advertised = response.authMethods ?? [];
@@ -286,7 +294,7 @@ export async function probeAcpProviderAuth(
         await connection.request(
           ACP_METHOD.sessionNew,
           { cwd, mcpServers: [] },
-          { timeoutMs: PROBE_TIMEOUT_MS },
+          { timeoutMs: ACP_DEFAULT_REQUEST_TIMEOUT_MS },
         );
         return { state: "ready", message: null };
       } catch (error) {

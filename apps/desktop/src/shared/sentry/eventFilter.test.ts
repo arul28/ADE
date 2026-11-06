@@ -210,6 +210,12 @@ describe("createSentryEventHooks", () => {
     const reported = scrubFreeTextThenCut(line, 4_100);
     expect(reported).not.toContain("hunter2");
     expect(reported).toContain("host.example/status");
+    // Past the 64,000-char scrub bound the input is cut before it is scrubbed;
+    // wherever that cut lands in the credential, none of it is kept.
+    for (const prefix of [63_975, 63_980, 63_988, 63_995, 63_999]) {
+      const long = `${"x".repeat(prefix)} https://ade:hunter2secret@host.example/status`;
+      expect(scrubFreeTextThenCut(long, 64_000)).not.toMatch(/hunter|ade:/);
+    }
   });
 
   // Last in the file: it turns diagnostics on for the rest of this process.

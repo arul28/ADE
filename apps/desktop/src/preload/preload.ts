@@ -3732,6 +3732,30 @@ function subscribeRemoteSessionChangedEvents(
   return remoteSessionChangedFanout.subscribe(cb);
 }
 
+/**
+ * The binding each lane delete this window started ran against, by lane id, so
+ * its progress events carry their project after a tab switch
+ * (`LaneDeleteEvent.origin`). Lane ids are unique, so a bounded map is enough.
+ */
+const laneDeleteOrigins = new Map<string, OpenProjectBinding | null>();
+const MAX_LANE_DELETE_ORIGINS = 64;
+
+function rememberLaneDeleteOrigin(laneId: string, binding: OpenProjectBinding | null): void {
+  laneDeleteOrigins.delete(laneId);
+  laneDeleteOrigins.set(laneId, binding);
+  while (laneDeleteOrigins.size > MAX_LANE_DELETE_ORIGINS) {
+    const oldest = laneDeleteOrigins.keys().next().value;
+    if (oldest === undefined) break;
+    laneDeleteOrigins.delete(oldest);
+  }
+}
+
+function withLaneDeleteOrigin(event: LaneDeleteEvent): LaneDeleteEvent {
+  const laneId = event?.progress?.laneId;
+  if (!laneId || !laneDeleteOrigins.has(laneId)) return event;
+  return { ...event, origin: laneDeleteOrigins.get(laneId) ?? null };
+}
+
 function subscribeRemoteLaneDeleteEvents(
   cb: (payload: LaneDeleteEvent) => void,
 ): () => void {
@@ -7037,6 +7061,7 @@ const adeBridge = {
     },
     delete: async (args: DeleteLaneArgs, pin?: OpenProjectBinding | null): Promise<void> => {
       clearGitReadCaches();
+      rememberLaneDeleteOrigin(args.laneId, pin ?? currentProjectBinding);
       if (pin) {
         await callPinnedRuntimeAction<void>(pin, "lane", "delete", { args });
       } else {
@@ -7095,9 +7120,10 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.lanesGetReclaimRisk, args),
       ),
     onDeleteEvent: (
-      cb: (ev: LaneDeleteEvent) => void,
+      callback: (ev: LaneDeleteEvent) => void,
       pin?: OpenProjectBinding | null,
     ) => {
+      const cb = (ev: LaneDeleteEvent) => callback(withLaneDeleteOrigin(ev));
       const removePinned = subscribePinnedProjectRuntimeEvents(
         pin,
         (payload) => toWrappedEvent<LaneDeleteEvent>(

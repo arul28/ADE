@@ -10,11 +10,12 @@ import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 
 /**
- * Where the delete ran: this host hears the delete events of the project the
- * window shows, and the user can switch tabs before answering, so the folder's
- * actions must not follow the active tab. `pin` is set only for a project on
- * another machine; a project on this one is named by `rootPath` and keeps the
- * unpinned route.
+ * Where the delete ran: the user can switch tabs while a delete runs and
+ * before answering, so the folder's actions must not follow the active tab.
+ * The event's `origin` (the binding the delete started with) names it; the
+ * active tab is only the fallback for a delete this window did not start.
+ * `pin` is set only for a project on another machine; a project on this one is
+ * named by `rootPath` and keeps the unpinned route.
  */
 type LeftoverPrompt = LaneDeleteLeftoverWorktree & {
   laneId: string;
@@ -44,11 +45,11 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
       const leftover = progress.leftoverWorktree;
       const finished = progress.overallStatus === "completed" || progress.overallStatus === "completed_with_warnings";
       if (!finished || !leftover?.path) return;
+      const binding = event.origin !== undefined ? event.origin : useAppStore.getState().projectBinding ?? null;
       setQueue((existing) => {
         if (existing.some((entry) => entry.laneId === progress.laneId && entry.path === leftover.path)) {
           return existing;
         }
-        const binding = useAppStore.getState().projectBinding ?? null;
         const pin = binding?.kind === "remote" ? binding : null;
         const rootPath = binding?.kind === "local" ? binding.rootPath : null;
         return [...existing, { ...leftover, laneId: progress.laneId, pin, rootPath }];
