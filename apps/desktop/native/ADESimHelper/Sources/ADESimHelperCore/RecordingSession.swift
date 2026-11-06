@@ -252,7 +252,12 @@ actor RecordingSession {
         guard let image = decode(jpeg) else { return }
 
         if writer == nil {
-            guard prepareWriter(width: image.width, height: image.height) else { return }
+            // The upright size, not the framebuffer's: a recording that starts
+            // on the Duo's inner panel is a landscape picture in a portrait
+            // buffer, and sizing the file from the buffer would letterbox it
+            // for its whole length.
+            let size = uprightSize(of: image)
+            guard prepareWriter(width: Int(size.width), height: Int(size.height)) else { return }
             sessionStartedAt = now
         }
         guard
@@ -470,10 +475,7 @@ actor RecordingSession {
         // squashed. The bars are painted every time, because a buffer out of
         // the pool still holds the frame it was last used for.
         let canvas = CGRect(x: 0, y: 0, width: width, height: height)
-        let upright = screenTurns % 2 == 1
-            ? CGSize(width: image.height, height: image.width)
-            : CGSize(width: image.width, height: image.height)
-        let picture = Self.fit(upright, in: canvas)
+        let picture = Self.fit(uprightSize(of: image), in: canvas)
         context.interpolationQuality = picture == canvas && screenTurns == 0 ? .none : .medium
         if picture != canvas {
             context.setFillColor(gray: 0, alpha: 1)
@@ -503,6 +505,14 @@ actor RecordingSession {
         drawRings(in: context, picture: picture, at: time)
         drawBadge(in: context, picture: picture, at: time)
         return buffer
+    }
+
+    /// A framebuffer's size once the panel's turn is applied — the picture as
+    /// a viewer sees it, which is what the file is sized and framed by.
+    private func uprightSize(of image: CGImage) -> CGSize {
+        screenTurns % 2 == 1
+            ? CGSize(width: image.height, height: image.width)
+            : CGSize(width: image.width, height: image.height)
     }
 
     /// The largest centred rect inside `canvas` with the picture's proportions.

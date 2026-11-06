@@ -280,6 +280,10 @@ public actor DeviceSession {
             accent: RecordingOverlay.parseColour(accentColor) ?? RecordingOverlay.defaultAccent,
             idleCompression: idleCompression
         )
+        // Before `start`, which begins the pacer and the frame consumer: a
+        // frame composited with the turn still at zero would be drawn sideways
+        // and, worse, would fix the file's size for the whole recording.
+        if await isFoldable() { await session.setScreenTurns(await readScreenTurns(nil)) }
         do {
             try await session.start(engine: engine)
         } catch {
@@ -289,7 +293,6 @@ public actor DeviceSession {
             }
             throw error
         }
-        if await isFoldable() { await session.setScreenTurns(await readScreenTurns(nil)) }
         recording = session
     }
 
