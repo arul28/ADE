@@ -14,6 +14,7 @@ import {
 } from "../../../shared/sentry/capture";
 import { scrubFreeText, scrubString } from "../../../shared/sentry/scrub";
 import { webClientVersion } from "../../lib/webClientMode";
+import type { WebAnalyticsNamespace } from "./analytics";
 import type { AdeNamespace } from "./types";
 
 /** A report sent with no screen behind it; the desktop's equivalent is `settings_manual`. */
@@ -21,6 +22,9 @@ const MANUAL_SURFACE = "web_manual";
 const DETAIL_MAX_CHARS = 1_200;
 const SENDS_KEY = "ade:web-report-sends";
 const DAY_MS = 24 * 60 * 60 * 1_000;
+const HOUR_MS = 60 * 60 * 1_000;
+
+type IssueReportOutcome = "success" | "failed" | "opened";
 
 /**
  * "Report issue" in the hosted web client.
@@ -39,12 +43,34 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
  * Sentry capture is the automatic report here, and the boundaries skip the
  * call when the member is missing.
  */
-export function createDiagnosticsNamespace(): AdeNamespace<"diagnostics"> {
+export function createDiagnosticsNamespace(
+  analytics: Pick<WebAnalyticsNamespace, "capture">,
+): AdeNamespace<"diagnostics"> {
+  // The desktop records this in main's IPC handlers; here the outcome is known
+  // in this file, so the same coarse fact is recorded here (docs/logging.md).
+  const recordOutcome = (outcome: IssueReportOutcome) => {
+    void analytics.capture({
+      event: "ade_feature_used",
+      properties: { feature: "connections", action: "issue_report", outcome },
+      dedupeKey: `issue_report:${outcome}`,
+      minimumIntervalMs: HOUR_MS,
+    }).catch((error: unknown) => console.warn("[ade-web] report analytics not recorded", error));
+  };
+  const sendManualRecorded = async (context?: DiagnosticReportRequestPayload) => {
+    const result = await sendManual(context);
+    // A send with no context is not a Report issue press, as on desktop.
+    if (context) recordOutcome(result.ok ? "success" : "failed");
+    return result;
+  };
   return {
     get sendManual() {
-      return isSentryActive() ? sendManual : undefined;
+      return isSentryActive() ? sendManualRecorded : undefined;
     },
-    openIssue,
+    openIssue: async (context: DiagnosticReportRequestPayload) => {
+      const issue = await openIssue(context);
+      recordOutcome(issue.opened ? "opened" : "failed");
+      return issue;
+    },
   };
 }
 

@@ -110,14 +110,15 @@ export function createAdeWebAdapter(
   const { git, diff, conflicts } = createGitNamespaces(infra);
   const misc = createMiscNamespaces(infra);
   const accountClient = providedAccountClient ?? new BrowserAccountClient();
+  const analytics = createAnalyticsNamespace(infra);
 
   const surface = {
     app: createAppNamespace(infra),
     account: createAccountNamespace(accountClient),
     accountSettings: createAccountSettingsNamespace(),
     attention: createAttentionNamespace(infra, accountClient),
-    analytics: createAnalyticsNamespace(infra),
-    diagnostics: createDiagnosticsNamespace(),
+    analytics,
+    diagnostics: createDiagnosticsNamespace(analytics),
     project: createProjectNamespace(infra),
     remoteRuntime: createRemoteRuntimeNamespace(infra),
     lanes: createLanesNamespace(infra),

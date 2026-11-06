@@ -2187,7 +2187,7 @@ The normative privacy, consent, taxonomy, quota, configuration, and instrumentat
 - CTO and AI UI components use try/catch around async loads with `isLoading`/`error` state and retry actions.
 - Graceful degradation: when no provider is configured, AI surfaces show explanatory disabled state rather than spinning.
 - Explicit fallbacks: Linear sync skips when no credentials/workflows; Linear ingress stays dormant without config; trivial session summaries skip AI entirely.
-- The full-screen error surfaces share one kit (`renderer/components/app/errorSurfaceKit.tsx`: `ErrorSurfaceCard`, `WhatToDo`, `TechnicalDetailsFold`, `ERROR_PRIMARY_BUTTON`), so the recovery screen, the renderer/page error boundaries, and the CTO wake failure all say what happened, what is safe, and what to do — with the raw text behind a fold rather than on the headline. Each one carries a `ReportIssueButton`; a failure pane with no way out is a dead end, so each also carries a retry.
+- The full-screen error surfaces share one kit (`renderer/components/app/errorSurfaceKit.tsx`: `ErrorSurfaceCard`, `TechnicalDetailsFold`, `ERROR_PRIMARY_BUTTON`), so the recovery screen, the renderer/page error boundaries, and the CTO wake failure all say what happened and what is safe, with the raw text behind a fold rather than on the headline. Each one carries Report issue; on the recovery screen and the crash boundaries it is the card's last row (`ReportIssueFooter`: a rule, the button and one hint line, and on a crash card "ADE got an error report automatically" once Sentry confirms it has the crash). A failure pane with no way out is a dead end, so each also carries a retry.
 
 ### 15.4 Observability / dev tools
 
