@@ -6,7 +6,7 @@ import {
 
 type BrainLoggerOptions = FileLoggerOptions & {
   now?: () => Date;
-  stderr?: Pick<NodeJS.WriteStream, "write"> & Partial<Pick<NodeJS.WriteStream, "on">>;
+  stderr?: Pick<NodeJS.WriteStream, "write" | "on">;
 };
 
 const guardedStreams = new WeakSet<object>();
@@ -37,7 +37,7 @@ export function createBrainLogger(
   // listener per stream, however many loggers share it). After the first
   // failure this logger's copy stops; the log file keeps every line.
   let stderrBroken = false;
-  if (typeof stderr.on === "function" && !guardedStreams.has(stderr)) {
+  if (!guardedStreams.has(stderr)) {
     guardedStreams.add(stderr);
     stderr.on("error", () => {});
   }

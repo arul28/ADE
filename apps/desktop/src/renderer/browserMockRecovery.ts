@@ -59,6 +59,7 @@ const STATE_CODE: Partial<Record<RecoveryState, AdeRecoveryErrorCode>> = {
   background_blocked: "background_item_blocked",
   socket_stale_no_owner: "socket_stale_no_owner",
   socket_owned_by_other: "socket_owned_by_other",
+  project_busy: "db_busy",
 };
 
 function readScenario(): { state: RecoveryState; code: AdeRecoveryErrorCode } | null {

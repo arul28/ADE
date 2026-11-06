@@ -17,6 +17,7 @@ import {
 import { isCursorSdkResolutionError, loadCursorSdk } from "../ai/cursorSdkLoader";
 import { resolvePinnedCursorAgentCli } from "../ai/pinnedProviderTools";
 import { stripVTControlCharacters } from "node:util";
+import { withTimeout as withSettleTimeout } from "../shared/withTimeout";
 
 export type CursorModelParameterValue = { id: string; value: string };
 export type CursorModelParameterDefinition = {
@@ -1100,6 +1101,33 @@ export function resolveCachedCursorModelAvailability(
   const cli = (getCachedCursorModels() ?? []).some((row) => cursorRowMatchesRef(row, ref));
   const sdk = sdkRows.some((row) => cursorRowMatchesRef(row, ref));
   return cli || sdk ? { cli, sdk } : null;
+}
+
+/**
+ * How long a chat start waits for the SDK model list that is loading, so a
+ * fresh launch can still tell an SDK-less model apart before it gives up and
+ * lets the start through.
+ */
+const SDK_AVAILABILITY_WAIT_MS = 3_000;
+
+/**
+ * {@link resolveCachedCursorModelAvailability}, after waiting up to ~3 s for
+ * an SDK model list that is still loading for this key. Still unknown after
+ * that (slow, failed, or a list that loaded empty) reads as null, which lets
+ * the chat start. An empty list stays unknown on purpose: read as "no SDK
+ * models", it would refuse Auto and every other model.
+ */
+export async function resolveCursorModelAvailability(
+  modelRef: string,
+  apiKey?: string | null,
+): Promise<CursorModelAvailability | null> {
+  const known = resolveCachedCursorModelAvailability(modelRef, apiKey);
+  if (known || getCachedCursorSdkModels(apiKey)) return known;
+  const keyHash = hashKeyForCache(apiKey?.trim() || undefined);
+  const loading = sdkWarmInFlight?.keyHash === keyHash ? sdkWarmInFlight.promise : null;
+  if (!loading) return null;
+  await withSettleTimeout(loading, SDK_AVAILABILITY_WAIT_MS);
+  return resolveCachedCursorModelAvailability(modelRef, apiKey);
 }
 
 function cursorRowsToDescriptors(rows: CursorCliModelRow[]): ModelDescriptor[] {

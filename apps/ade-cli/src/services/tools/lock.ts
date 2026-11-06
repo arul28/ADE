@@ -182,7 +182,11 @@ export async function acquireToolLock(options: ToolLockOptions): Promise<ToolLoc
       throw new ToolError(
         `Timed out after ${Math.round(waited / 1000)}s waiting for another ADE process`
         + `${record ? ` (pid ${record.pid} on ${record.host})` : ""} to finish installing agent tools.`,
-        { kind: "lock-timeout" },
+        {
+          kind: "lock-timeout",
+          // Only a holder on this machine can be checked; another host's PID says nothing here.
+          lockHolderLive: record != null && record.host === os.hostname() && isProcessAlive(record.pid),
+        },
       );
     }
     onWait?.(waited);

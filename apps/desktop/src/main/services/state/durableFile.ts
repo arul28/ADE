@@ -227,6 +227,32 @@ export function writeFileAtomic(
   }
 }
 
+/**
+ * Create `filePath` with `data` only if it does not exist, never exposing a
+ * partial file: the bytes go to a sibling temp file, and a hard link puts it in
+ * place (EEXIST when the name is taken). A filesystem without hard links (FAT,
+ * some network shares) falls back to an exclusive create in place.
+ */
+export function createFileExclusive(
+  filePath: string,
+  data: string | Buffer,
+  opts: { mode?: number } = {},
+): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = siblingTempPath(filePath);
+  const writeOptions = opts.mode != null ? { flag: "wx", mode: opts.mode } : { flag: "wx" };
+  fs.writeFileSync(tempPath, data, writeOptions);
+  try {
+    fs.linkSync(tempPath, filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw error;
+    fs.writeFileSync(filePath, data, writeOptions);
+  } finally {
+    // A temp left behind is swept by `cleanupAbandonedTempFiles`.
+    bestEffortUnlink(tempPath);
+  }
+}
+
 export type JsonWithPreviousOptions<T> = {
   validate?: (value: unknown) => value is T;
   fsync?: boolean;

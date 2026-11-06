@@ -7279,29 +7279,37 @@ const adeBridge = {
       await ipcRenderer.invoke(IPC.lanesRevealWorktree, args);
     },
     revealLeftoverWorktree: async (
-      args: { laneId: string },
+      args: { laneId: string; rootPath?: string },
       pin?: OpenProjectBinding | null,
     ): Promise<void> => {
-      const binding = pin ? (pin.kind === "remote" ? pin : null) : await getRemoteProjectBinding();
-      if (binding) {
+      // `rootPath` names the project on this machine whose delete left the
+      // folder, which can be another tab than the one this window shows now.
+      const remote = pin
+        ? (pin.kind === "remote" ? pin : null)
+        : (args.rootPath ? null : await getRemoteProjectBinding());
+      if (remote) {
         throw new Error(
           "Remote lane folders cannot be revealed on this machine. Copy the remote path instead.",
         );
       }
-      // A local pin names the project whose delete left the folder, which can
-      // be another tab than the one this window shows now.
-      await ipcRenderer.invoke(
-        IPC.lanesRevealLeftoverWorktree,
-        pin?.kind === "local" ? { ...args, rootPath: pin.rootPath } : args,
-      );
+      await ipcRenderer.invoke(IPC.lanesRevealLeftoverWorktree, args);
     },
     deleteLeftoverWorktree: async (
-      args: { laneId: string },
+      args: { laneId: string; rootPath?: string },
       pin?: OpenProjectBinding | null,
-    ): Promise<{ removed: boolean }> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "lane", "deleteLeftoverWorktree", { args }, () =>
+    ): Promise<{ removed: boolean }> => {
+      if (pin) {
+        return callPinnedRuntimeAction<{ removed: boolean }>(pin, "lane", "deleteLeftoverWorktree", {
+          args: { laneId: args.laneId },
+        });
+      }
+      // A project on this machine: main asks that project's runtime, then its
+      // in-process service, whichever tab the window shows now.
+      if (args.rootPath) return ipcRenderer.invoke(IPC.lanesDeleteLeftoverWorktree, args);
+      return callProjectRuntimeActionOr("lane", "deleteLeftoverWorktree", { args }, () =>
         ipcRenderer.invoke(IPC.lanesDeleteLeftoverWorktree, args),
-      ),
+      );
+    },
     initEnv: async (
       args: InitLaneEnvArgs,
       pin?: OpenProjectBinding | null,

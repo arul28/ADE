@@ -6,6 +6,8 @@ import type {
   PushNotificationPrefs,
 } from "../../../../desktop/src/shared/types/push";
 import { safeJsonParse, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
+import { createFileExclusive } from "../../../../desktop/src/main/services/state/durableFile";
+import { createRepeatedFailureGate } from "../../../../desktop/src/main/services/logging/repeatedFailure";
 
 /** A device registration plus the machine-side metadata we persist for it. */
 export type StoredPushDevice = PushDeviceRegistration & {
@@ -238,46 +240,30 @@ function salvageMachineKeys(parsed: unknown): string[] {
   return keys;
 }
 
-/**
- * Machine-local push identity + device roster, stored next to the sync pairing
- * files under `~/.ade/secrets/`. The machineKey/machineSecret are minted once on
- * first access and never rotate — the relay's first-writer-wins claim binds them.
- */
+/** The registration file is there and could not be read; the store never mints over it. */
+class PushRegistrationUnreadableError extends Error {
+  constructor(detail: string) {
+    super(`ADE could not read this machine's push registration file: ${detail}`);
+    this.name = "PushRegistrationUnreadableError";
+  }
+}
+
 const SETTLE_READ_ATTEMPTS = 5;
 const SETTLE_READ_DELAY_MS = 20;
+/** How long an unreadable file is answered from memory instead of read (and waited on) again. */
+const UNREADABLE_MEMORY_MS = 5_000;
+/** Read failures that a short wait does not fix: permissions, or a folder where the file should be. */
+const LASTING_READ_ERROR_CODES = new Set(["EACCES", "EPERM", "EISDIR", "ENOTDIR"]);
 
 function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /**
- * Create `filePath` with `text` only if it does not exist, never exposing a
- * partial file: the bytes go to a sibling temp file, and a hard link puts it in
- * place (EEXIST when the name is taken). A filesystem without hard links (FAT,
- * some network shares) falls back to an exclusive create in place.
+ * Machine-local push identity + device roster, stored next to the sync pairing
+ * files under `~/.ade/secrets/`. The machineKey/machineSecret are minted once on
+ * first access and never rotate — the relay's first-writer-wins claim binds them.
  */
-function createExclusive(filePath: string, text: string): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tempPath = path.join(
-    path.dirname(filePath),
-    `.${path.basename(filePath)}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`,
-  );
-  fs.writeFileSync(tempPath, text, { flag: "wx", mode: 0o600 });
-  try {
-    fs.linkSync(tempPath, filePath);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EEXIST") throw error;
-    fs.writeFileSync(filePath, text, { flag: "wx", mode: 0o600 });
-  } finally {
-    try {
-      fs.unlinkSync(tempPath);
-    } catch {
-      // A leftover temp file is swept with the other abandoned temps.
-    }
-  }
-}
-
 export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
   fs.mkdirSync(path.dirname(args.filePath), { recursive: true });
 
@@ -314,6 +300,8 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
     present: boolean;
     parsed: unknown;
     readError: string | null;
+    /** The read failure's errno code, when it had one. */
+    readErrorCode?: string;
   };
 
   const readRaw = (): RawRead => {
@@ -331,10 +319,12 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
       }
       // Unreadable is NOT absent: a permissions or I/O fault must not be
       // answered by minting a replacement identity over the top of it.
+      const code = (error as NodeJS.ErrnoException).code;
       return {
         present: true,
         parsed: null,
         readError: error instanceof Error ? error.message : String(error),
+        ...(typeof code === "string" ? { readErrorCode: code } : {}),
       };
     }
   };
@@ -547,24 +537,33 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
    * creates the file in place, so a racing reader can see it empty or half
    * written; on Windows a scanner can hold it for a moment. Either settles in
    * milliseconds, and re-minting on the first look would orphan the identity
-   * every paired phone uses.
+   * every paired phone uses. A permissions fault does not settle, so it is not
+   * waited on, and an unreadable file is answered from memory for a few
+   * seconds so a burst of calls does not each read and wait again.
    */
+  let rememberedUnreadable: { raw: RawRead; at: number } | null = null;
   const readRawSettled = (): RawRead => {
+    if (rememberedUnreadable && Date.now() - rememberedUnreadable.at < UNREADABLE_MEMORY_MS) {
+      return rememberedUnreadable.raw;
+    }
     let raw = readRaw();
     for (
       let attempt = 1;
       attempt < SETTLE_READ_ATTEMPTS
         && raw.present
+        && !LASTING_READ_ERROR_CODES.has(raw.readErrorCode ?? "")
         && (raw.readError !== null || !isValid(raw.parsed as PushRegistrationFile | null));
       attempt += 1
     ) {
       sleepSync(SETTLE_READ_DELAY_MS * attempt);
       raw = readRaw();
     }
+    rememberedUnreadable = raw.readError !== null ? { raw, at: Date.now() } : null;
     return raw;
   };
 
   let lastUnreadableDetail: string | null = null;
+  const startupReadFailures = createRepeatedFailureGate();
 
   /** Adopt the file on disk, repair it, or (unreadable) refuse; never mint over it. */
   const loadPresent = (raw: RawRead): PushRegistrationFile => {
@@ -579,7 +578,7 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
           detail: raw.readError,
         });
       }
-      throw new Error(`ADE could not read this machine's push registration file: ${raw.readError}`);
+      throw new PushRegistrationUnreadableError(raw.readError);
     }
     const existing = validFileFrom(raw.parsed);
     if (existing) {
@@ -597,8 +596,18 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
    */
   const loadForStartupRead = (): PushRegistrationFile | null => {
     try {
-      return load();
-    } catch {
+      const file = load();
+      startupReadFailures.clear();
+      return file;
+    } catch (error) {
+      // A mint, repair or write that failed (a full disk, a denied folder) is
+      // logged here, once per cause; an unreadable file was logged by `loadPresent`.
+      if (!(error instanceof PushRegistrationUnreadableError)) {
+        const detail = error instanceof Error ? error.message : String(error);
+        if (!startupReadFailures.repeated(detail)) {
+          args.logger?.warn?.("push.registration_startup_read_failed", { filePath: args.filePath, detail });
+        }
+      }
       return null;
     }
   };
@@ -614,7 +623,7 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
     // overwriting the phone-pairing crypto key with a divergent one.
     const created = createEmptyFile();
     try {
-      createExclusive(args.filePath, `${JSON.stringify(created, null, 2)}\n`);
+      createFileExclusive(args.filePath, `${JSON.stringify(created, null, 2)}\n`, { mode: 0o600 });
       cache = created;
       return created;
     } catch (error) {

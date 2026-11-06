@@ -56,10 +56,10 @@ export function createLinuxSeatProvider(client: Parameters<typeof createSeatProv
       try {
         reply = await provider.create(args);
       } catch (error) {
-        const code = (error as { code?: unknown } | null)?.code;
         // A refusal the caller caused (a bad size, a lane already busy) is its answer, not a host fault.
         if (expectedErrorKind(error) !== "user") {
-          reportLinuxScreenProblem("display_create_failed", linuxScreenFailureCause(error), typeof code === "string" ? code : "");
+          const cause = linuxScreenFailureCause(error);
+          reportLinuxScreenProblem("display_create_failed", cause, cause.code ?? "");
         }
         throw error;
       }

@@ -118,7 +118,15 @@ const CAUSE_STDERR_LINE_MAX_CHARS = 300;
  * as `driverExit`). The texts go through `scrubFreeText`, which takes out
  * secrets, email addresses and absolute paths (so no home folder or user name).
  */
-export function linuxScreenFailureCause(error: unknown): Record<string, unknown> {
+export type LinuxScreenFailureCause = {
+  code: string | null;
+  reason: string | null;
+  exitCode?: number | null;
+  exitSignal?: string | null;
+  stderrTail?: string[];
+};
+
+export function linuxScreenFailureCause(error: unknown): LinuxScreenFailureCause {
   const record = error && typeof error === "object" ? error as {
     code?: unknown;
     message?: unknown;

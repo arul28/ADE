@@ -72,6 +72,11 @@ function failureReason(errorKind: string | null): string {
  * failed (with the typed kind and a retry hint), not available for this
  * machine's platform, or not downloaded yet.
  */
+/** A wait on the install lock that timed out while a live process on this machine still held it. */
+function isLiveLockTimeout(status: PinnedToolStatus): boolean {
+  return status.errorKind === "lock-timeout" && status.lockHolderLive === true;
+}
+
 export function pinnedToolBlocker(label: string, status: PinnedToolStatus): string | null {
   switch (status.state) {
     case "ready":
@@ -79,10 +84,12 @@ export function pinnedToolBlocker(label: string, status: PinnedToolStatus): stri
     case "downloading":
       return `ADE is downloading ${label} for this machine. Refresh when it finishes.`;
     case "failed":
-      // The install lock outlived this process's wait: another ADE on this
-      // machine is still installing the same copy, and its result is what this
-      // process uses once it lands. Nothing here failed.
-      if (status.errorKind === "lock-timeout") {
+      // The install lock outlived this process's wait and names a process on
+      // this machine that is still running: another ADE is still installing
+      // the same copy, and its result is what this process uses once it
+      // lands. Nothing here failed. A lock with no live holder is a real
+      // failure and keeps the generic message.
+      if (isLiveLockTimeout(status)) {
         return `Another ADE on this machine is still installing ${label}. Try again when it finishes.`;
       }
       return `Couldn't download ${label}: ${failureReason(status.errorKind)}. Retry from Settings > Providers.`;
@@ -160,7 +167,7 @@ export class PinnedToolNotReadyError extends Error {
     // "ready" tool that could not start stay issues: those are ADE's.
     const machineState = status.state === "missing"
       || status.state === "downloading"
-      || (status.state === "failed" && status.errorKind === "lock-timeout")
+      || (status.state === "failed" && isLiveLockTimeout(status))
       || (status.state === "unavailable" && status.errorKind === "unsupported-target");
     if (machineState) {
       markExpected(this, "environment");

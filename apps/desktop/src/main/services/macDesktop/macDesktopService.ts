@@ -1437,7 +1437,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
           // stderr lines, scrubbed): the report used to carry none.
           if (isLinuxSeat) {
             const cause = linuxScreenFailureCause(error);
-            reportLinuxScreenProblem("helper_start_failed", cause, typeof cause.code === "string" ? cause.code : "");
+            reportLinuxScreenProblem("helper_start_failed", cause, cause.code ?? "");
           }
         });
       } else if (driverLifecycle.isDriverRunning()) {

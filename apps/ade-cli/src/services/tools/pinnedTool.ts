@@ -60,6 +60,8 @@ export type PinnedToolStatus = {
   /** The typed failure of the last download (`failed`), or why it is `unavailable`. */
   errorKind: ToolErrorKind | null;
   error: string | null;
+  /** `lock-timeout` only: the install lock names a process on this machine that is still running. */
+  lockHolderLive?: boolean;
   /**
    * Whether this process would download the tool when asked: false in a test,
    * with `ADE_DISABLE_TOOLS_FETCH=1`, or in a source checkout for a tool that
@@ -146,6 +148,14 @@ export function getPinnedToolStatus(name: string, context: ToolsContext = {}): P
   }
   if (downloading) return { ...withPin, state: "downloading" };
   const failure = pinnedToolLastFailure(name);
-  if (failure) return { ...withPin, state: "failed", errorKind: failure.kind, error: failure.message };
+  if (failure) {
+    return {
+      ...withPin,
+      state: "failed",
+      errorKind: failure.kind,
+      error: failure.message,
+      ...(failure.lockHolderLive !== undefined ? { lockHolderLive: failure.lockHolderLive } : {}),
+    };
+  }
   return withPin;
 }

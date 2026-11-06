@@ -166,11 +166,6 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // A second viewer asking for a lane's live stream while the first start is
   // still running; the answer says to try again once it answers.
   /^capture_starting: Lane \S+'s (?:live stream|recording) is already starting\. Try again once that start answers\.$/,
-  // Added from Sentry traffic, 2026-11-06.
-  // A project drive that is not answering (a permission prompt, a hung network
-  // or USB drive). Marked where it is thrown; the text stays because the
-  // database layer rewraps it with the statement, which drops the mark.
-  /\bADE can't read .+ on this computer right now: it is not answering\./,
 ];
 
 /**
@@ -251,9 +246,19 @@ export function isExpectedOutcomeText(text: string): boolean {
  * same expected states the text patterns name once the code crosses the wire
  * as a `code: message` prefix.
  */
-// `storage_read_failed` is ADE's "unreadable, not corrupt" verdict: the
-// machine's drive (a prompt, a placeholder, a hung disk), not a defect.
-const EXPECTED_OUTCOME_CODES: ReadonlySet<string> = new Set(["project_data_missing", "project_moving", "db_path_changed", "git_untrusted_folder", "storage_read_failed"]);
+// `storage_read_failed` is ADE's "unreadable, not corrupt" verdict and
+// `storage_io_failed` a drive that stopped answering mid-open: the machine's
+// drive (a prompt, a placeholder, a hung disk), not a defect. `db_busy` is
+// another ADE process holding the project database through every retry.
+const EXPECTED_OUTCOME_CODES: ReadonlySet<string> = new Set([
+  "project_data_missing",
+  "project_moving",
+  "db_path_changed",
+  "git_untrusted_folder",
+  "storage_read_failed",
+  "storage_io_failed",
+  "db_busy",
+]);
 
 /**
  * An answer the caller gets, worth a Sentry Log but not an issue. The throw

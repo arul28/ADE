@@ -94,6 +94,12 @@ export type ProjectRecoveryDiagnosis = {
     | "socket_stale_no_owner"
     | "socket_owned_by_other"
     /**
+     * Another ADE process held the project's database locked through every
+     * retry of the open. Nothing is broken, so no repair is offered: the lock
+     * goes when that process finishes or closes.
+     */
+    | "project_busy"
+    /**
      * The background service is registered and its brain is alive but has not
      * bound the socket yet. Nothing to repair — the desktop keeps checking and
      * opens the project as soon as it answers.
@@ -268,6 +274,15 @@ export const RECOVERY_COPY: Record<RecoveryState, {
       "Then choose Try again.",
     ],
   },
+  project_busy: {
+    headline: "Another ADE process is using this project",
+    body: "Your work is safe.",
+    canAutoRepair: false,
+    steps: [
+      "Wait a moment, or close the other ADE.",
+      "Then choose Try again.",
+    ],
+  },
   brain_starting: {
     headline: "ADE is starting",
     body: "This can take a minute the first time, or right after an update. The project opens by itself.",
@@ -348,7 +363,9 @@ export function stateForCode(code: AdeRecoveryErrorCode): ProjectRecoveryDiagnos
     case "db_integrity":
     case "migration_incomplete":
     case "migration_unknown_state": return "db_repair_needed";
-    case "storage_read_failed": return "storage_unreadable";
+    case "storage_read_failed":
+    case "storage_io_failed": return "storage_unreadable";
+    case "db_busy": return "project_busy";
     case "project_data_missing": return "data_missing";
     case "db_path_changed": return "data_replaced";
     case "brain_crash_looping": return "brain_crash_looping";

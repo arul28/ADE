@@ -8,6 +8,7 @@ import {
   type GithubRepoSlug,
 } from "../../../shared/githubRemote";
 import type { GitHubRepoRef } from "../../../shared/types/git";
+import { createRepeatedFailureGate } from "../logging/repeatedFailure";
 
 /**
  * Resolves SSH host aliases that point at GitHub.
@@ -128,9 +129,10 @@ function isMissingSsh(error: { code?: unknown } | null | undefined): boolean {
   return error?.code === "ENOENT";
 }
 
-// Hosts (and kinds) already reported by this process. A slow machine times out
-// the same way on every retry; the first report says all there is to say.
-const reportedLookupFailures = new Set<string>();
+// The kind each host last failed with. A slow machine times out the same way
+// on every retry; the first report says all there is to say. A host that
+// answers again is cleared, so its next failure is reported.
+const lookupFailures = createRepeatedFailureGate();
 
 function reportLookupFailure(
   remote: SshRemote,
@@ -139,10 +141,7 @@ function reportLookupFailure(
 ): void {
   if (isMissingSsh(error)) return;
   const kind = timedOut ? "timeout" : "failed";
-  const reportKey = `${cacheKey(remote)}\u0000${kind}`;
-  if (reportedLookupFailures.has(reportKey)) return;
-  if (reportedLookupFailures.size >= CACHE_CAPACITY) reportedLookupFailures.clear();
-  reportedLookupFailures.add(reportKey);
+  if (lookupFailures.repeated(kind, cacheKey(remote))) return;
   captureProblem(`ssh -G lookup for a git remote alias ${kind}`, {
     fingerprint: ["github-ssh-alias", kind],
     tags: { kind },
@@ -220,10 +219,11 @@ function storeLookup(key: string, result: SshConfigLookup): void {
   const previous = cache.get(key);
   // A failed refresh keeps the last answer, so the repository key does not
   // flip back to the alias while ssh is briefly unable to answer.
-  const keepsPrevious = Boolean((result.failed || result.missing) && previous?.hostname);
-  const kept = keepsPrevious
-    ? { ...previous!, failed: false, missing: false }
+  const kept = (result.failed || result.missing) && previous?.hostname
+    ? { ...previous, failed: false, missing: false }
     : result;
+  const keepsPrevious = kept !== result;
+  if (!result.failed && !result.missing) lookupFailures.clear(key);
   cache.delete(key);
   if (cache.size >= CACHE_CAPACITY) {
     for (const [entryKey, entry] of cache) {

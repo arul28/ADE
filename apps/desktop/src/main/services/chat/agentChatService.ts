@@ -1498,7 +1498,7 @@ import {
   discoverCursorCliModelDescriptors,
   discoverCursorSdkModelDescriptors,
   mergeCursorModelDescriptorSources,
-  resolveCachedCursorModelAvailability,
+  resolveCursorModelAvailability,
 } from "./cursorModelsDiscovery";
 import {
   cursorModelFastTierFromCache,
@@ -6156,32 +6156,6 @@ const CODEX_ARCHIVE_REQUEST_TIMEOUT_MS = 3_000;
 /** OpenCode session ids carry the `ses_` prefix its identifier scheme assigns. */
 const OPENCODE_SESSION_ID_PATTERN = /^ses_[A-Za-z0-9]+$/;
 
-/**
- * `thread/resume`, unarchiving the thread first when Codex refuses because it
- * is archived ("session … is archived. Run `codex unarchive …`"). ADE archives
- * a chat's thread when it disposes the chat, so reopening that chat later
- * finds its own thread archived. An unarchive that fails keeps the original
- * refusal, which is what the caller classifies.
- */
-async function resumeCodexThread<T>(
-  runtime: Pick<CodexRuntime, "request">,
-  params: { threadId: string } & Record<string, unknown>,
-  options?: CodexRequestOptions,
-): Promise<T> {
-  try {
-    return await runtime.request<T>("thread/resume", params, options);
-  } catch (error) {
-    if (!/\bis archived\b/i.test(error instanceof Error ? error.message : String(error))) throw error;
-    try {
-      await runtime.request("thread/unarchive", { threadId: params.threadId }, {
-        timeoutMs: CODEX_ARCHIVE_REQUEST_TIMEOUT_MS,
-      });
-    } catch {
-      throw error;
-    }
-    return await runtime.request<T>("thread/resume", params, options);
-  }
-}
 const CODEX_NO_FIRST_EVENT_WATCHDOG_MS = 120_000;
 const CODEX_MID_TURN_INACTIVITY_WATCHDOG_MS = 10 * 60_000;
 /** Codex turn items that are work a turn waits on in silence while in progress. */
@@ -6249,6 +6223,38 @@ const MAX_RECENT_CONVERSATION_ENTRIES = 50;
 const RECENT_TRANSCRIPT_MAX_BYTES = 4 * 1024 * 1024;
 const MAX_SESSION_MAP_ENTRIES = 200;
 const CODEX_GOAL_BUDGET_CLEAR_RETRY_BACKOFF_MS = 30_000;
+
+/** Codex refusing a thread because it is archived ("session … is archived. Run `codex unarchive …`"). */
+function isCodexThreadArchivedMessage(message: string): boolean {
+  return /\bis archived\b/i.test(message);
+}
+
+/**
+ * `thread/resume`, unarchiving the thread first when Codex refuses because it
+ * is archived ("session … is archived. Run `codex unarchive …`"). ADE archives
+ * a chat's thread when it disposes the chat, so reopening that chat later
+ * finds its own thread archived. An unarchive that fails keeps the original
+ * refusal, which is what the caller classifies.
+ */
+async function resumeCodexThread<T>(
+  runtime: Pick<CodexRuntime, "request">,
+  params: { threadId: string } & Record<string, unknown>,
+  options?: CodexRequestOptions,
+): Promise<T> {
+  try {
+    return await runtime.request<T>("thread/resume", params, options);
+  } catch (error) {
+    if (!isCodexThreadArchivedMessage(error instanceof Error ? error.message : String(error))) throw error;
+    try {
+      await runtime.request("thread/unarchive", { threadId: params.threadId }, {
+        timeoutMs: CODEX_ARCHIVE_REQUEST_TIMEOUT_MS,
+      });
+    } catch {
+      throw error;
+    }
+    return await runtime.request<T>("thread/resume", params, options);
+  }
+}
 
 type PendingTranscriptWrite = {
   chunks: Buffer[];
@@ -10966,12 +10972,12 @@ function getCursorSdkApiKey(): string | null {
   return env || null;
 }
 
-function assertCursorChatModelCanUseSdk(args: {
+async function assertCursorChatModelCanUseSdk(args: {
   modelRef: string;
   descriptor?: ModelDescriptor | null;
-}): void {
+}): Promise<void> {
   const availability = args.descriptor?.cursorAvailability
-    ?? resolveCachedCursorModelAvailability(args.modelRef, getCursorSdkApiKey());
+    ?? await resolveCursorModelAvailability(args.modelRef, getCursorSdkApiKey());
   if (!availability || availability.sdk !== false) return;
   const label = args.descriptor?.displayName?.trim() || args.modelRef;
   throw new AdeExpectedError(cursorChatModelUnavailableMessage(label), "user");
@@ -35302,7 +35308,7 @@ export function createAgentChatService(args: {
         markSessionIdleWithFreshCache(managed);
         const errorMessage = effectiveError instanceof Error ? effectiveError.message : String(effectiveError);
         reportProviderRuntimeFailure("claude", errorMessage, {
-          stderrTail: claudeSubprocessReaper.stderrTail?.(managed.session.id) ?? null,
+          stderrTail: claudeSubprocessReaper.stderrTail(managed.session.id) ?? null,
         });
         emitChatEvent(managed, {
           type: "error",
@@ -35369,7 +35375,7 @@ export function createAgentChatService(args: {
           reportProviderRuntimeAuthFailure("claude", CLAUDE_RUNTIME_AUTH_ERROR);
         } else {
           reportProviderRuntimeFailure("claude", errorMessage, {
-            stderrTail: claudeSubprocessReaper.stderrTail?.(managed.session.id) ?? null,
+            stderrTail: claudeSubprocessReaper.stderrTail(managed.session.id) ?? null,
           });
         }
 
@@ -50730,7 +50736,7 @@ export function createAgentChatService(args: {
     }
 
     if (launchingProvider === "cursor") {
-      assertCursorChatModelCanUseSdk({
+      await assertCursorChatModelCanUseSdk({
         modelRef: resolvedDescriptor?.providerModelId ?? normalizedInputModel,
         descriptor: resolvedDescriptor,
       });
@@ -56268,7 +56274,7 @@ export function createAgentChatService(args: {
     const failure = new Error(`Could not resume the original Codex thread: ${classification.detail}`);
     // A thread the user archived in Codex ("session … is archived. Run `codex
     // unarchive …`") is their choice; the message says how to undo it.
-    if (/\bis archived\b/i.test(classification.detail)) markExpected(failure, "user");
+    if (isCodexThreadArchivedMessage(classification.detail)) markExpected(failure, "user");
     return Object.assign(
       failure,
       {
@@ -57747,7 +57753,7 @@ export function createAgentChatService(args: {
     const policy = resolveCursorSdkPolicy(managed.session);
     const displayModeId = resolveCursorDisplayModeId(managed.session, policy);
     const launchModelSdkId = resolveCursorRuntimeModelSdkId(managed.session);
-    assertCursorChatModelCanUseSdk({
+    await assertCursorChatModelCanUseSdk({
       modelRef: launchModelSdkId,
       descriptor: resolveSessionModelDescriptor(managed.session),
     });
@@ -73007,7 +73013,7 @@ export function createAgentChatService(args: {
 
       const nextProvider: AgentChatProvider = resolveProviderGroupForModel(descriptor);
       if (nextProvider === "cursor") {
-        assertCursorChatModelCanUseSdk({
+        await assertCursorChatModelCanUseSdk({
           modelRef: descriptor.providerModelId,
           descriptor,
         });

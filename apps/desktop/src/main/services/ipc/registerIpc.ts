@@ -7851,18 +7851,24 @@ export function registerIpc({
     shell.showItemInFolder(leftover.path);
   });
 
-  ipcMain.handle(IPC.lanesDeleteLeftoverWorktree, async (event, arg: { laneId: string }): Promise<{ removed: boolean }> => {
-    const fromRuntime = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+  ipcMain.handle(IPC.lanesDeleteLeftoverWorktree, async (event, arg: { laneId: string; rootPath?: string }): Promise<{ removed: boolean }> => {
+    // Only a project ADE knows; never a path the renderer made up.
+    const projectRoot = typeof arg?.rootPath === "string" && arg.rootPath.trim()
+      ? resolveAllowedProjectRoot(arg.rootPath)
+      : null;
+    const deleteLeftover = (pool: LocalRuntimeConnectionPool, rootPath: string) =>
       pool.callActionForRoot(rootPath, {
         domain: "lane",
         action: "deleteLeftoverWorktree",
         args: { laneId: arg.laneId },
-      }),
-    );
+      });
+    const fromRuntime = projectRoot
+      ? (localRuntimeConnectionPool ? await deleteLeftover(localRuntimeConnectionPool, projectRoot) : null)
+      : await tryLocalRuntimeSync(event, deleteLeftover);
     if (fromRuntime?.result && typeof fromRuntime.result === "object") {
       return fromRuntime.result as { removed: boolean };
     }
-    const service = getCtx().laneService;
+    const service = (projectRoot ? getProjectContext?.(projectRoot) ?? null : getCtx())?.laneService;
     if (!service) throw new Error("That folder is no longer waiting to be deleted.");
     return service.deleteLeftoverWorktree(arg.laneId);
   });

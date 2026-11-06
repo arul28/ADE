@@ -1,4 +1,5 @@
 import path from "node:path";
+import { markExpected } from "../../../shared/expectedError";
 
 /**
  * Folders that are not answering right now, and the error a file call under
@@ -51,12 +52,12 @@ export function unansweringRootOf(target: string): string | null {
  */
 export class StorageNotAnsweringError extends Error {
   readonly code = "storage_read_failed";
-  /** The machine's drive, not a defect in ADE: never a Sentry issue (`shared/expectedError.ts`). */
-  readonly adeExpected = "environment" as const;
   readonly path: string;
   constructor(target: string, root: string) {
     super(`ADE can't read ${root} on this computer right now: it is not answering. ${notAnsweringHint()}`);
     this.path = target;
+    // The machine's drive, not a defect in ADE: never a Sentry issue.
+    markExpected(this, "environment");
   }
 }
 

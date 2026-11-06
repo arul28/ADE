@@ -24,6 +24,7 @@ import {
   storeApiKey,
 } from "./apiKeyStore";
 import { openExternalUrl } from "../shared/externalLinks";
+import { withDeadline } from "../shared/withTimeout";
 import { isCursorAdminApiKey } from "./utils";
 import { isCursorProviderSupported } from "../../../shared/providerPlatformSupport";
 import type {
@@ -291,37 +292,37 @@ export async function loginCursorSdk(): Promise<CursorSdkLoginResult> {
   emit({ providerId: "cursor", state: "pending" });
 
   let timedOut = false;
-  let cutoffTimer: ReturnType<typeof setTimeout> | null = null;
-  // Rejects at the cutoff even if the SDK ignores the abort and never settles.
-  const cutoff = new Promise<never>((_resolve, reject) => {
-    cutoffTimer = setTimeout(() => {
-      timedOut = true;
-      abort.abort();
-      reject(new Error(CURSOR_LOGIN_TIMED_OUT_MESSAGE));
-    }, CURSOR_LOGIN_CUTOFF_MS);
-    cutoffTimer.unref?.();
-  });
-
   try {
-    const sdk = await Promise.race([hooks.loadSdk(), cutoff]);
-    const result = await Promise.race([cutoff, sdk.Cursor.auth.login({
-      apiKeyName: CURSOR_LOGIN_API_KEY_NAME,
-      signal: abort.signal,
-      // Electron's opener (Launch Services on macOS, shell.openExternal on
-      // Windows/Linux) rather than the SDK's process-spawn default, so SSH
-      // sessions and Windows hosts open the same way ADE opens other URLs.
-      openBrowser: (url) => {
-        void hooks.openLoginUrl(url).catch(() => {
-          // URL is still delivered via onLoginUrl / the renderer event.
+    // Rejects at the cutoff even if the SDK ignores the abort and never settles.
+    const result = await withDeadline(
+      (async () => {
+        const sdk = await hooks.loadSdk();
+        return sdk.Cursor.auth.login({
+          apiKeyName: CURSOR_LOGIN_API_KEY_NAME,
+          signal: abort.signal,
+          // Electron's opener (Launch Services on macOS, shell.openExternal on
+          // Windows/Linux) rather than the SDK's process-spawn default, so SSH
+          // sessions and Windows hosts open the same way ADE opens other URLs.
+          openBrowser: (url) => {
+            void hooks.openLoginUrl(url).catch(() => {
+              // URL is still delivered via onLoginUrl / the renderer event.
+            });
+          },
+          onLoginUrl: (url) => {
+            const trimmed = url.trim();
+            if (!trimmed) return;
+            flow.loginUrl = trimmed;
+            emit({ providerId: "cursor", state: "pending", url: trimmed });
+          },
         });
+      })(),
+      CURSOR_LOGIN_CUTOFF_MS,
+      () => {
+        timedOut = true;
+        abort.abort();
+        return new Error(CURSOR_LOGIN_TIMED_OUT_MESSAGE);
       },
-      onLoginUrl: (url) => {
-        const trimmed = url.trim();
-        if (!trimmed) return;
-        flow.loginUrl = trimmed;
-        emit({ providerId: "cursor", state: "pending", url: trimmed });
-      },
-    })]);
+    );
     if (activeLogin !== flow) {
       return { ok: false, error: "Cursor sign-in was replaced by a newer attempt." };
     }
@@ -353,7 +354,6 @@ export async function loginCursorSdk(): Promise<CursorSdkLoginResult> {
     emit({ providerId: "cursor", state: "error", error: message });
     return { ok: false, error: message };
   } finally {
-    if (cutoffTimer) clearTimeout(cutoffTimer);
     if (activeLogin === flow) activeLogin = null;
   }
 }

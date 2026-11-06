@@ -953,6 +953,20 @@ export function bindIosSimulatorReleaseOnChatEnd(args: {
   });
 }
 
+/** The sentence a failed project database open shows, by its recovery code. */
+function projectDbOpenFailureMessage(code: ReturnType<typeof mapKvDbOpenErrorCode>, dbPath: string): string {
+  switch (code) {
+    case "storage_read_failed":
+      return storageUnreadableMessage(dbPath, detectCloudStorageProvider(dbPath));
+    case "storage_io_failed":
+      return `ADE couldn't read or write this project's data at ${dbPath}: the drive isn't answering. Check that the drive is connected and has free space, then open the project again.`;
+    case "db_busy":
+      return "Another ADE process is still using this project's data. Wait a moment, then open the project again.";
+    default:
+      return "ADE could not open the project data store.";
+  }
+}
+
 export async function createAdeRuntime(args: {
   projectRoot: string;
   /** Control endpoint this runtime actually bound, for chat ownership stamps. */
@@ -1088,13 +1102,7 @@ export async function createAdeRuntime(args: {
     if (environmentFailure && error instanceof Error) markExpected(error, "environment");
     const failure = {
       code,
-      message: code === "storage_read_failed"
-        ? storageUnreadableMessage(paths.dbPath, detectCloudStorageProvider(paths.dbPath))
-        : code === "storage_io_failed"
-          ? `ADE couldn't read or write this project's data at ${paths.dbPath}: the drive isn't answering. Check that the drive is connected and has free space, then open the project again.`
-          : code === "db_busy"
-            ? "Another ADE process is still using this project's data. Wait a moment, then open the project again."
-            : "ADE could not open the project data store.",
+      message: projectDbOpenFailureMessage(code, paths.dbPath),
       detail,
       projectRoot,
       component: "project_db_open" as const,

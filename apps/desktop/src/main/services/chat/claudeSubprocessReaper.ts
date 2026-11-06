@@ -8,7 +8,7 @@ import type { Logger } from "../logging/logger";
 import { killWindowsProcessTreeAsync, resolveCliSpawnInvocation } from "../shared/processExecution";
 import { signalProcessGroup } from "../shared/utils";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
-import { scrubDiagnosticText } from "../../../shared/sentry/scrub";
+import { scrubFreeText } from "../../../shared/sentry/scrub";
 import { moveClaudeMcpConfigOffArgv, pruneStaleClaudeMcpConfigFiles, removeClaudeMcpConfigFiles } from "./claudeMcpConfigFile";
 
 /**
@@ -59,6 +59,7 @@ const STDERR_TAIL_MAX_CHARS = 4_000;
 const STDERR_TAIL_MAX_SESSIONS = 32;
 const STDERR_TAIL_REPORT_LINES = 20;
 const STDERR_TAIL_REPORT_CHARS = 2_000;
+const STDERR_TAIL_LINE_CHARS = 300;
 
 /**
  * Image names a registered Claude subprocess can legitimately be running under
@@ -214,10 +215,7 @@ type LiveClaudeSubprocess = {
   groupLeader: boolean;
 };
 
-type CreatedClaudeSubprocessReaper = ReturnType<typeof createClaudeSubprocessReaper>;
-/** `stderrTail` is optional so an injected reaper without one stays valid. */
-export type ClaudeSubprocessReaper = Omit<CreatedClaudeSubprocessReaper, "stderrTail">
-  & Partial<Pick<CreatedClaudeSubprocessReaper, "stderrTail">>;
+export type ClaudeSubprocessReaper = ReturnType<typeof createClaudeSubprocessReaper>;
 
 export function createClaudeSubprocessReaper(args: {
   logger: Pick<Logger, "debug" | "warn">;
@@ -748,7 +746,11 @@ export function createClaudeSubprocessReaper(args: {
         .filter((line) => line.trim().length > 0)
         .slice(-STDERR_TAIL_REPORT_LINES);
       if (!lines.length) return null;
-      return scrubDiagnosticText(lines.join("\n")).slice(-STDERR_TAIL_REPORT_CHARS);
+      // Line by line, as free text: a home path or an email in a line never reaches a report.
+      return lines
+        .map((line) => scrubFreeText(line, { maxLength: STDERR_TAIL_LINE_CHARS }))
+        .join("\n")
+        .slice(-STDERR_TAIL_REPORT_CHARS);
     },
     liveRecords: (): ClaudeSubprocessRecord[] => [...live.values()].map((entry) => ({ ...entry.record })),
     /**

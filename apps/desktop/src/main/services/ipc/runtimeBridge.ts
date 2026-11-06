@@ -607,6 +607,12 @@ export function registerRuntimeBridge({
     },
     pairedMachineStore,
   );
+  /** A saved remote target by id. One that is gone (removed, or never saved here) is the caller's to fix. */
+  const requireRemoteTarget = (id: string | null | undefined) => {
+    const target = id ? remoteConnectionService.getTarget(id) : null;
+    if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
+    return target;
+  };
   // The media server's `/remote/...` route reads a proof video from a paired
   // computer through this, one bounded chunk per call. The broker on that
   // machine resolves the path inside its own `.ade/artifacts` and refuses the rest.
@@ -751,8 +757,7 @@ export function registerRuntimeBridge({
     const targetId = rawTargetId.trim();
     const projectId = rawProjectId.trim();
     const rootPath = rawRootPath?.trim() ?? "";
-    const target = targetId ? remoteConnectionService.getTarget(targetId) : null;
-    if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
+    const target = requireRemoteTarget(targetId);
     if (!projectId && !rootPath) {
       throw new RemoteProjectNotFoundError("Remote project is required.");
     }
@@ -1472,8 +1477,7 @@ export function registerRuntimeBridge({
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       const projectId =
         typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
-      const target = id ? remoteConnectionService.getTarget(id) : null;
-      if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
+      const target = requireRemoteTarget(id);
       if (!projectId) throw new Error("Remote project is required.");
       return await remoteConnectionService.listActionRegistry(
         target.id,
@@ -1501,12 +1505,11 @@ export function registerRuntimeBridge({
         !Array.isArray(arg.request)
           ? arg.request
           : null;
-      const target = id ? remoteConnectionService.getTarget(id) : null;
+      const target = requireRemoteTarget(id);
       const domain =
         typeof request?.domain === "string" ? request.domain.trim() : "";
       const action =
         typeof request?.action === "string" ? request.action.trim() : "";
-      if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
       if (!projectId) throw new Error("Remote project is required.");
       if (!domain || !action)
         throw new Error("Remote action domain and action are required.");
@@ -1639,8 +1642,7 @@ export function registerRuntimeBridge({
         typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
       const method = typeof arg?.method === "string" ? arg.method.trim() : "";
       const params = isObjectRecord(arg?.params) ? arg.params : {};
-      const target = id ? remoteConnectionService.getTarget(id) : null;
-      if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
+      const target = requireRemoteTarget(id);
       if (!projectId) throw new Error("Remote project is required.");
       if (!isRemoteRuntimeSyncMethod(method))
         throw new Error("Remote sync method is not exposed.");
@@ -1664,8 +1666,7 @@ export function registerRuntimeBridge({
         typeof arg?.targetVersion === "string" && arg.targetVersion.trim()
           ? arg.targetVersion.trim()
           : null;
-      const target = id ? remoteConnectionService.getTarget(id) : null;
-      if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
+      const target = requireRemoteTarget(id);
       // A build whose app cannot install updates would answer "installing" and
       // then abort, so it gets its updater run in a terminal instead.
       const status = remoteConnectionService.snapshot().connections
@@ -1925,8 +1926,7 @@ export function registerRuntimeBridge({
         typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
       if (!id) throw new Error("Remote target id is required.");
       if (!projectId) throw new Error("Remote project id is required.");
-      const target = remoteConnectionService.getTarget(id);
-      if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
+      const target = requireRemoteTarget(id);
       const request = normalizeRuntimeStreamEventsRequest(arg?.request);
       const bindingKey = remoteProjectBindingKey(target.id, projectId);
       const requestKey = runtimeEventRequestKey(bindingKey, request);

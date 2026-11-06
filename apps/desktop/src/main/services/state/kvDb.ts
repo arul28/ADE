@@ -4,8 +4,8 @@ import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType, StatementSync } from "node:sqlite";
-import { codedError, isCodedError } from "../../../shared/codedError";
-import { markExpected } from "../../../shared/expectedError";
+import { codedError, isCodedError, isErrnoLikeCode } from "../../../shared/codedError";
+import { carryExpected, markExpected } from "../../../shared/expectedError";
 import type { Logger } from "../logging/logger";
 import { isSqliteBusyOrLockedError, isSqliteIoError } from "./sqliteErrors";
 import { safeJsonParse } from "../shared/utils";
@@ -684,14 +684,27 @@ function preparedStatement(db: DatabaseSyncType, sql: string): StatementSync {
   return statement;
 }
 
+/**
+ * A failed statement, rethrown with its SQL. ADE's own code and expected mark
+ * travel with it (a drive that is not answering stays `storage_read_failed`
+ * and an answer, not an issue); a platform code is left behind with the
+ * original error.
+ */
+function statementError(error: unknown, sql: string): Error {
+  const statement = sql.replace(/\s+/g, " ").trim();
+  const message = error instanceof Error ? error.message : String(error);
+  const wrapped = new Error(`${message} [sql=${statement}]`);
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && code.trim() && !isErrnoLikeCode(code)) Object.assign(wrapped, { code });
+  return carryExpected(error, wrapped);
+}
+
 function runStatement(db: DatabaseSyncType, sql: string, params: Array<SqlValue | SyncScalar> = []): { changes: number } {
   try {
     return preparedStatement(db, sql).run(...params.map((param, index) => toDbValue(param, index))) as { changes: number };
   } catch (error) {
     if (isCodedError(error, "db_path_changed")) throw error;
-    const statement = sql.replace(/\s+/g, " ").trim();
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${message} [sql=${statement}]`);
+    throw statementError(error, sql);
   }
 }
 
@@ -700,9 +713,7 @@ function getRow<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | S
     return (preparedStatement(db, sql).get(...params.map((param, index) => toDbValue(param, index))) as T | undefined) ?? null;
   } catch (error) {
     if (isCodedError(error, "db_path_changed")) throw error;
-    const statement = sql.replace(/\s+/g, " ").trim();
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${message} [sql=${statement}]`);
+    throw statementError(error, sql);
   }
 }
 
@@ -711,9 +722,7 @@ function allRows<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | 
     return preparedStatement(db, sql).all(...params.map((param, index) => toDbValue(param, index))) as T[];
   } catch (error) {
     if (isCodedError(error, "db_path_changed")) throw error;
-    const statement = sql.replace(/\s+/g, " ").trim();
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${message} [sql=${statement}]`);
+    throw statementError(error, sql);
   }
 }
 
@@ -5113,13 +5122,19 @@ export async function openKvDb(
   options: OpenKvDbOptions = {},
 ): Promise<AdeDb> {
   for (let attempt = 1; ; attempt += 1) {
-    const finalAttempt = attempt >= OPEN_BUSY_ATTEMPTS;
     try {
-      const db = await openKvDbOnce(dbPath, logger, options, finalAttempt);
+      const db = await openKvDbOnce(dbPath, logger, options);
       if (attempt > 1) logger.info("db.open_busy_settled", { attempt });
       return db;
     } catch (error) {
-      if (finalAttempt || !isSqliteBusyOrLockedError(error)) throw error;
+      if (!isSqliteBusyOrLockedError(error)) throw error;
+      if (attempt >= OPEN_BUSY_ATTEMPTS) {
+        // A peer that never let go is this machine's state, not a defect: a
+        // Sentry Log, not an issue. Only the last attempt's failure is news.
+        if (error instanceof Error) markExpected(error, "environment");
+        logger.error("db.init_failed", { dbPath, error, errorText: String(error) });
+        throw error;
+      }
       logger.info("db.open_busy_retry", {
         attempt,
         error: error instanceof Error ? error.message : String(error),
@@ -5133,7 +5148,6 @@ async function openKvDbOnce(
   dbPath: string,
   logger: Logger,
   options: OpenKvDbOptions,
-  finalAttempt: boolean,
 ): Promise<AdeDb> {
   const extensionPath = resolveCrsqliteExtensionPath();
   const hasCrsqlite = extensionPath != null;
@@ -5302,12 +5316,11 @@ async function openKvDbOnce(
     } catch {
       // best effort cleanup
     }
-    const busy = isSqliteBusyOrLockedError(err);
-    // `openKvDb` runs the open again; only the last attempt's failure is news.
-    if (busy && !finalAttempt) throw err;
-    // A drive that stopped answering or a peer that never let go is this
-    // machine's state, not a defect: a Sentry Log, not an issue.
-    if ((busy || isSqliteIoError(err)) && err instanceof Error) markExpected(err, "environment");
+    // `openKvDb` runs a busy open again, and reports the last one itself.
+    if (isSqliteBusyOrLockedError(err)) throw err;
+    // A drive that stopped answering is this machine's state, not a defect: a
+    // Sentry Log, not an issue.
+    if (isSqliteIoError(err) && err instanceof Error) markExpected(err, "environment");
     // The Error itself, so `logBridge` lifts it into the Sentry event and the
     // issue groups by the real failure; `errorText` keeps the sentence on disk,
     // which `JSON.stringify` writes an Error without.

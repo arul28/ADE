@@ -39,7 +39,7 @@ const inFlight = new Map<string, Promise<ToolError | null>>();
 const lastFailureAt = new Map<string, number>();
 const FAILED_FETCH_BACKOFF_MS = 2 * 60_000;
 /** The last tracked download of each tool that failed, until one succeeds. */
-const lastFailure = new Map<string, { kind: ToolErrorKind; message: string }>();
+const lastFailure = new Map<string, { kind: ToolErrorKind; message: string; lockHolderLive?: boolean }>();
 /** Bytes so far of each tracked download that reports progress. */
 const progressByTool = new Map<string, { receivedBytes: number | null; totalBytes: number | null }>();
 
@@ -67,7 +67,7 @@ export function pinnedToolFetchAllowed(name: string, context: ToolsContext = {})
 }
 
 /** The last failed download of `name` in this process, cleared by the next success. */
-export function pinnedToolLastFailure(name: string): { kind: ToolErrorKind; message: string } | null {
+export function pinnedToolLastFailure(name: string): { kind: ToolErrorKind; message: string; lockHolderLive?: boolean } | null {
   return lastFailure.get(name) ?? null;
 }
 
@@ -134,7 +134,11 @@ export function trackPinnedToolFetch(name: string, run: () => Promise<unknown>):
       settle(null);
     } catch (error) {
       const failure = asToolError(error, { kind: "filesystem", tool: name });
-      lastFailure.set(name, { kind: failure.kind, message: failure.message });
+      lastFailure.set(name, {
+        kind: failure.kind,
+        message: failure.message,
+        ...(failure.lockHolderLive !== undefined ? { lockHolderLive: failure.lockHolderLive } : {}),
+      });
       settle(failure);
     } finally {
       inFlight.delete(name);

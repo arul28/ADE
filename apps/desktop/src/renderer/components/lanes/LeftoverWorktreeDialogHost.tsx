@@ -10,16 +10,26 @@ import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 
 /**
- * `pin` is the project (and machine) the delete ran on: this host hears the
- * delete events of the project the window shows, and the user can switch tabs
- * before answering, so the folder's actions must not follow the active tab.
+ * Where the delete ran: this host hears the delete events of the project the
+ * window shows, and the user can switch tabs before answering, so the folder's
+ * actions must not follow the active tab. `pin` is set only for a project on
+ * another machine; a project on this one is named by `rootPath` and keeps the
+ * unpinned route.
  */
-type LeftoverPrompt = LaneDeleteLeftoverWorktree & { laneId: string; pin: OpenProjectBinding | null };
+type LeftoverPrompt = LaneDeleteLeftoverWorktree & {
+  laneId: string;
+  pin: OpenProjectBinding | null;
+  rootPath: string | null;
+};
 
 /**
  * After a lane delete leaves an external folder on disk, ask once what to do
  * with it. Close keeps the folder. Delete folder removes that directory only.
  */
+function leftoverArgs(prompt: LeftoverPrompt): { laneId: string; rootPath?: string } {
+  return prompt.rootPath ? { laneId: prompt.laneId, rootPath: prompt.rootPath } : { laneId: prompt.laneId };
+}
+
 export function LeftoverWorktreeDialogHost(): JSX.Element | null {
   const [queue, setQueue] = useState<LeftoverPrompt[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -38,8 +48,10 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
         if (existing.some((entry) => entry.laneId === progress.laneId && entry.path === leftover.path)) {
           return existing;
         }
-        const pin = useAppStore.getState().projectBinding ?? null;
-        return [...existing, { ...leftover, laneId: progress.laneId, pin }];
+        const binding = useAppStore.getState().projectBinding ?? null;
+        const pin = binding?.kind === "remote" ? binding : null;
+        const rootPath = binding?.kind === "local" ? binding.rootPath : null;
+        return [...existing, { ...leftover, laneId: progress.laneId, pin, rootPath }];
       });
     });
     return unsubscribe;
@@ -57,7 +69,7 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
   };
 
   const reveal = () => {
-    void window.ade.lanes.revealLeftoverWorktree({ laneId: current.laneId }, current.pin).catch((reason: unknown) => {
+    void window.ade.lanes.revealLeftoverWorktree(leftoverArgs(current), current.pin).catch((reason: unknown) => {
       setError(extractError(reason));
     });
   };
@@ -65,7 +77,7 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
   const remove = () => {
     setDeleting(true);
     setError(null);
-    void window.ade.lanes.deleteLeftoverWorktree({ laneId: current.laneId }, current.pin)
+    void window.ade.lanes.deleteLeftoverWorktree(leftoverArgs(current), current.pin)
       .then(() => dismiss())
       .catch((reason: unknown) => {
         setDeleting(false);

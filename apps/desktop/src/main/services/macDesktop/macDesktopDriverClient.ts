@@ -242,10 +242,22 @@ function privateDriverCopy(source: string, slot: string, logger: Logger): string
   }
 }
 
+/** How the helper ended, and the last lines it wrote to stderr (raw; scrub before reporting). */
+export type MacDesktopDriverExit = {
+  code: number | null;
+  signal: string | null;
+  stderrTail: string[];
+};
+
 export class MacDesktopDriverError extends Error {
   readonly code: string;
   /** The refusal's other fields (`app`, `windowClass`, `input` on a background refusal). */
   readonly details: Record<string, unknown> | null;
+  /**
+   * Set (not enumerable) on a "driver stopped" error, so nothing that
+   * serializes the error picks up the raw stderr lines.
+   */
+  declare readonly driverExit?: MacDesktopDriverExit;
 
   constructor(code: string, message: string, details: Record<string, unknown> | null = null) {
     // See `MacDesktopError`: the code prefix is what reaches the CLI's hints.
@@ -626,9 +638,14 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
    * caller gets, for its own report (`linuxScreenFailureCause`). Not
    * enumerable, so nothing that serializes the error picks up the raw lines.
    */
-  const withExitCause = <E extends Error>(error: E): E => {
+  const withExitCause = (error: MacDesktopDriverError): MacDesktopDriverError => {
+    const driverExit: MacDesktopDriverExit = {
+      code: lastExit?.code ?? null,
+      signal: lastExit?.signal ?? null,
+      stderrTail: [...stderrTail],
+    };
     Object.defineProperty(error, "driverExit", {
-      value: { code: lastExit?.code ?? null, signal: lastExit?.signal ?? null, stderrTail: [...stderrTail] },
+      value: driverExit,
       enumerable: false,
       configurable: true,
     });

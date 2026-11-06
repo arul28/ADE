@@ -10,6 +10,7 @@
 import { readAccountRefusalCode } from "../../../shared/accountMachineRefusal";
 import { parseCodedErrorMessage } from "../../../shared/codedError";
 import type { SyncRoleSnapshot } from "../../../shared/types";
+import { JsonRpcErrorCode } from "../../../../../ade-cli/src/jsonrpc";
 
 /**
  * The structured code of a brain action failure, and NEVER its message.
@@ -32,12 +33,12 @@ export function brainActionErrorCode(error: unknown, didTimeout: boolean): strin
 }
 
 const JSON_RPC_CODE_NAMES: Readonly<Record<number, string>> = {
-  [-32700]: "rpc_parse_error",
-  [-32600]: "rpc_invalid_request",
-  [-32601]: "rpc_method_not_found",
-  [-32602]: "rpc_invalid_params",
-  [-32010]: "rpc_policy_denied",
-  [-32011]: "rpc_tool_failed",
+  [JsonRpcErrorCode.parseError]: "rpc_parse_error",
+  [JsonRpcErrorCode.invalidRequest]: "rpc_invalid_request",
+  [JsonRpcErrorCode.methodNotFound]: "rpc_method_not_found",
+  [JsonRpcErrorCode.invalidParams]: "rpc_invalid_params",
+  [JsonRpcErrorCode.policyDenied]: "rpc_policy_denied",
+  [JsonRpcErrorCode.toolFailed]: "rpc_tool_failed",
 };
 
 /**
