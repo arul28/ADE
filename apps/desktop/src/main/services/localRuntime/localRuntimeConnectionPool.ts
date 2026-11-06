@@ -66,7 +66,7 @@ import {
 } from "../../../shared/runtimeErrors";
 import type { RuntimeHealthSnapshot } from "../../../shared/types/storage";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
-import { markExpectedFromWire } from "../../../shared/expectedError";
+import { runtimeActionReplyError } from "../../../shared/runtimeActionReplyError";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS,
@@ -2513,13 +2513,9 @@ export class LocalRuntimeConnectionPool {
         if (value && typeof value === "object" && !Array.isArray(value)) {
           const record = value as Record<string, unknown>;
           if (record.ok === false) {
-            const error = record.error && typeof record.error === "object" && !Array.isArray(record.error)
-              ? record.error as Record<string, unknown>
-              : {};
-            throw markExpectedFromWire(
-              new Error(typeof error.message === "string" ? error.message : "Local ADE service action failed."),
-              error.expected,
-            );
+            // The reply's code, expected mark and the brain's top frames ride
+            // on the rebuilt error (`runtimeActionReplyError.ts`).
+            throw runtimeActionReplyError(record.error, "Local ADE service action failed.");
           }
         }
       } catch (error) {

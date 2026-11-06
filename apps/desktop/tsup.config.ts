@@ -6,6 +6,11 @@ import { asciiBundleSource } from "../../scripts/build/asciiBundleSource";
 
 const posthogProjectToken = process.env.ADE_POSTHOG_PROJECT_TOKEN?.trim() ?? "";
 const devMainReadyMarker = process.env.ADE_DEV_MAIN_READY_MARKER?.trim() ?? "";
+// Set by the release workflows (`.github/workflows/release-core.yml`); an Alpha
+// package is a release of its own channel. A package built anywhere else is a
+// development build to Sentry and PostHog (`main/sentry/releaseBuild.ts`).
+const releaseBuild = process.env.ADE_RELEASE_BUILD === "1"
+  || process.env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase() === "alpha";
 assertPublicPostHogToken(posthogProjectToken, "ADE_POSTHOG_PROJECT_TOKEN");
 
 export default defineConfig({
@@ -66,5 +71,6 @@ export default defineConfig({
     "process.env.ADE_LINEAR_CLIENT_ID": JSON.stringify(process.env.ADE_LINEAR_CLIENT_ID ?? ""),
     __ADE_POSTHOG_PROJECT_TOKEN__: JSON.stringify(posthogProjectToken),
     __ADE_POSTHOG_HOST__: JSON.stringify(process.env.ADE_POSTHOG_HOST?.trim() ?? ""),
+    __ADE_RELEASE_BUILD__: JSON.stringify(releaseBuild),
   },
 });

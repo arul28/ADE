@@ -233,6 +233,11 @@ function round1(value: number): number {
 
 /* ---------- reads (the edge) ---------- */
 
+/** Runs a tool with a bounded timeout and the C locale; its stdout, or null when it could not run. Never throws. */
+export function runHostTool(command: string, args: string[], timeoutMs: number): Promise<string | null> {
+  return defaultRun(command, args, timeoutMs);
+}
+
 function defaultRun(command: string, args: string[], timeoutMs: number): Promise<string | null> {
   return new Promise((resolve) => {
     try {

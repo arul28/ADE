@@ -79,7 +79,8 @@ import {
 import { classifyPairedRuntimeEndpoint } from "./pairedRuntimeRoutes";
 import { getSshHostKeyTrustForTarget } from "./sshTransport";
 import { callerReportsFailureParam } from "../../sentry/ipcCallScope";
-import { expectedErrorKind, markExpected, markExpectedFromWire } from "../../../shared/expectedError";
+import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
+import { runtimeActionReplyError } from "../../../shared/runtimeActionReplyError";
 import { compareUpdateVersions } from "../../../shared/updateVersions";
 import { isPeerVersionGapMessage } from "../../../shared/sentry/expectedFailure";
 
@@ -1203,7 +1204,9 @@ export class RemoteConnectionPool {
           this.unsupportedOptionalActionKeys.add(optionalFallbackKey);
           return optionalFallback;
         }
-        throw markPeerVersionGap(markExpectedFromWire(new Error(message), error.expected), entry.result.version, this.appVersion);
+        // The reply's code, expected mark and the brain's top frames ride on
+        // the rebuilt error (`runtimeActionReplyError.ts`).
+        throw markPeerVersionGap(runtimeActionReplyError({ ...error, message }, message), entry.result.version, this.appVersion);
       }
       return {
         domain:

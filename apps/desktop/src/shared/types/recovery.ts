@@ -14,6 +14,12 @@ export const ADE_RECOVERY_ERROR_CODES = [
   "project_data_missing",
   /** The open database was moved or replaced while ADE was using it. */
   "db_path_changed",
+  /**
+   * The project's database would not open for a reason no bucket above names;
+   * the failure's SQLite class (`sqliteErrorClass`) rides beside it. Was
+   * `unknown`, which told triage nothing.
+   */
+  "db_open_failed",
   "brain_not_installed",
   "brain_crash_looping",
   /** macOS loaded the launch agent but "Allow in the Background" is off for ADE. */
@@ -361,7 +367,7 @@ export function mapKvDbOpenErrorCode(code: string): AdeRecoveryErrorCode {
     case "db_busy":
       return code;
     default:
-      return "unknown";
+      return "db_open_failed";
   }
 }
 

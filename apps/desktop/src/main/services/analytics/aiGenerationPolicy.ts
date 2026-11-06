@@ -1,8 +1,10 @@
 import { MODEL_REGISTRY } from "../../../shared/modelRegistry";
 import type { ProductAnalyticsAiGeneration } from "../../../shared/types/productAnalytics";
 import { PROVIDER_VALUES } from "./productAnalyticsPolicy";
+import { TURN_FAILURE_KINDS } from "./agentTurnProductAnalytics";
 
 let catalogModelIds: ReadonlySet<string> | null = null;
+const TURN_FAILURE_KIND_SET: ReadonlySet<string> = new Set(TURN_FAILURE_KINDS);
 
 /**
  * A model id leaves the machine only when it names a model in ADE's built-in
@@ -59,6 +61,10 @@ export function sanitizeAiGenerationProperties(
   }
   if (typeof payload.durationMs === "number" && Number.isFinite(payload.durationMs) && payload.durationMs >= 0) {
     properties.$ai_latency = Math.min(86_400, Math.round(payload.durationMs) / 1_000);
+  }
+  // A failed turn's closed kind, so failures can be cut by provider and kind.
+  if (payload.status === "failed" && typeof payload.errorKind === "string" && TURN_FAILURE_KIND_SET.has(payload.errorKind)) {
+    properties.error_kind = payload.errorKind;
   }
   return properties;
 }

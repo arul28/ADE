@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  collapseRepeatedLogLines,
   LOG_TAIL_COMPACT_MAX_BYTES,
   LOG_TAIL_COMPACT_MAX_LINES,
   projectPathLabel,
@@ -75,7 +76,8 @@ export function readLogTail(
     try {
       const buffer = Buffer.alloc(readBytes);
       fs.readSync(handle, buffer, 0, readBytes, Math.max(0, stat.size - readBytes));
-      return { label, path: filePath, text: tailLogText(buffer.toString("utf8"), limits) };
+      // Repeats collapse first, so the lines they gave up go to other events.
+      return { label, path: filePath, text: tailLogText(collapseRepeatedLogLines(buffer.toString("utf8")), limits) };
     } finally {
       fs.closeSync(handle);
     }
@@ -205,11 +207,40 @@ function readCommandOutput(
   args: readonly string[],
   run: DiagnosticCommandRunner,
   limits: { maxLines?: number; maxBytes?: number } = {},
+  transform: (stdout: string) => string = (stdout) => stdout,
 ): DiagnosticLogTail {
   const result = run(command, args);
   if (!result) return { label, path: display, error: "(could not be read)" };
   if (result.status !== 0) return { label, path: display, error: "(not present)" };
-  return { label, path: display, text: tailLogText(result.stdout, limits) };
+  return { label, path: display, text: tailLogText(transform(result.stdout), limits) };
+}
+
+/**
+ * Blocks and lines of `launchctl print` that never explain a failure: the
+ * coalitions, jetsam settings, spawn bookkeeping and launchd's own default
+ * environment. What stays is what the job is told to be (program, arguments,
+ * environment, log paths) and how it is doing (state, pid, runs, last exit).
+ */
+const LAUNCHCTL_NOISE_BLOCK = /^\s*(?:resource coalition|jetsam coalition|inherited environment|default environment|endpoints|event triggers|event channels) = \{$/;
+const LAUNCHCTL_NOISE_LINE = /^\s*(?:active count|domain|asid|initialized|trampolined|started suspended|proxy started suspended|checked allocations(?: reason| flags)?|jetsam [a-z ()]+|jetsamproperties category|cpumon|sanitizer flags|forks|execs|minimum runtime|exit timeout) = /;
+
+export function trimLaunchctlPrint(text: string): string {
+  const out: string[] = [];
+  let skipDepth = 0;
+  for (const line of text.split(/\r?\n/)) {
+    if (skipDepth > 0) {
+      if (/\{\s*$/.test(line)) skipDepth += 1;
+      if (/^\s*\}\s*$/.test(line)) skipDepth -= 1;
+      continue;
+    }
+    if (LAUNCHCTL_NOISE_BLOCK.test(line)) {
+      skipDepth = 1;
+      continue;
+    }
+    if (LAUNCHCTL_NOISE_LINE.test(line)) continue;
+    out.push(line);
+  }
+  return out.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
 /** Parses a JSON file, or null for anything that is missing or malformed. */
@@ -590,7 +621,7 @@ function collectServiceDefinition(args: {
       readFileHead("launchd agent", launchAgentPath(args.homeDir, serviceName)),
       readCommandOutput("launchd job", print.display, print.command, print.args, args.run, {
         maxBytes: SERVICE_DEFINITION_MAX_BYTES,
-      }),
+      }, trimLaunchctlPrint),
       launchdDisabledEntry(serviceName, args.run),
       backgroundItemAnswer && backgroundItemAnswer.status === 0
         ? {

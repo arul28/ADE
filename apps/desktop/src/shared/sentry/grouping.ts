@@ -45,16 +45,21 @@ const PROGRAMMING_ERROR_NAMES: ReadonlySet<string> = new Set(["TypeError", "Refe
 const PROGRAMMING_ERROR_MESSAGE = /Cannot read properties of|is not a function|is not defined|is not iterable/;
 
 /**
- * The fingerprint for a failed runtime action: the error's code (or its type)
- * and its normalized message. The action name stays a tag, except for a
- * programming error: "Cannot read properties of undefined" in two actions is
- * two bugs, so those keep the action in the fingerprint.
+ * The fingerprint for a failed runtime action. A coded error groups on its
+ * code alone: ADE authored the code for exactly one failure, and its message
+ * varies with the transport around it ("Remote ADE service method
+ * ade/actions/call failed" against "… runtimeEvents.subscribe failed"), which
+ * split one unreadable drive into an issue per RPC method. An uncoded error
+ * groups on its type and normalized message. The action name stays a tag,
+ * except for a programming error: "Cannot read properties of undefined" in two
+ * actions is two bugs, so those keep the action in the fingerprint.
  */
 export function runtimeActionFingerprint(error: unknown, action: string): string[] {
   const code = parseCodedErrorMessage(error).code;
   const name = error instanceof Error ? error.name : "unknown";
   const message = error instanceof Error ? error.message : String(error);
-  const fingerprint = ["runtime-action", code ?? name, normalizeErrorMessageForGrouping(message)];
   const programmingError = PROGRAMMING_ERROR_NAMES.has(name) || PROGRAMMING_ERROR_MESSAGE.test(message);
+  if (code && !programmingError) return ["runtime-action", code];
+  const fingerprint = ["runtime-action", code ?? name, normalizeErrorMessageForGrouping(message)];
   return programmingError ? [...fingerprint, action] : fingerprint;
 }

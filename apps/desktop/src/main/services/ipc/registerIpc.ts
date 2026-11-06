@@ -98,7 +98,9 @@ import { isSyncServiceUnavailableError } from "../../../shared/runtimeErrors";
 import { createSyncStatusReaders } from "../sync/syncStatusReaders";
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
-import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
+import { normalizeAppPackageChannel, resolveReleaseChannel } from "../../../shared/packageChannel";
+import { loadMachineTelemetryId } from "../analytics/machineTelemetryId";
+import { reportsAsPackagedRelease } from "../../sentry/releaseBuild";
 import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import { isAgentChatTurnRecoveryAction } from "../../../shared/types/chat";
 import { isAgentChatStopMode } from "../../../shared/chatStopModes";
@@ -1021,7 +1023,7 @@ import {
   getSharedAccountAuthService,
   setSharedAccountRefreshBroker,
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
-import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { DevToolsCheckResult } from "../../../shared/types/devTools";
@@ -5135,7 +5137,13 @@ export function registerIpc({
       {
         appVersion: app.getVersion(),
         packageChannel: normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+        releaseChannel: resolveReleaseChannel({
+          env: process.env,
+          packaged: reportsAsPackagedRelease(app.isPackaged),
+          version: app.getVersion(),
+        }),
         isPackaged: app.isPackaged,
+        machineId: await loadMachineTelemetryId(resolveMachineAdeDir()),
         userDataPath: app.getPath("userData"),
         reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
         installId: productAnalyticsService?.getDistinctId() ?? null,

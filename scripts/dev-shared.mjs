@@ -896,6 +896,9 @@ export function devDesktopBridgeSocketPath(socketPath) {
 export function devRuntimeEnv(socketPath, projectRoot, parentEnv = process.env) {
   return {
     ADE_CLI_VERSION: resolveDevAppVersion(),
+    // A dev brain is development to Sentry, PostHog and automatic reports,
+    // whatever bundle it runs (`apps/ade-cli/src/sentry/brainBuild.ts`).
+    ADE_DEV_BRAIN: "1",
     // Read the role from the SANITIZED parent env: an agent shell exports
     // ADE_DEFAULT_ROLE=agent, and that must never become the dev brain's role.
     ADE_DEFAULT_ROLE: normalizeDefaultRole(

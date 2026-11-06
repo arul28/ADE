@@ -1256,11 +1256,17 @@ reason in plain words plus that path, so the user is left holding a file to
 attach rather than a sentence about a service they cannot reach. Both appear in
 `--json` as `reportPath` and `sent`.
 
-The report contains: app version/channel/packaging, platform, arch, OS release
-(plus `sw_vers -productVersion` on macOS), Electron/Node/Chrome versions,
-timezone offset, the surface and recovery code the user hit, the technical
+The report contains: app version, release channel and packaging (always
+printed), platform, arch, OS release (plus `sw_vers -productVersion` on macOS),
+hardware (model, CPU, RAM), `machine_id`, the machine key fingerprint,
+Electron/Node/Chrome versions, timezone offset, a **Machine health** section
+(memory, swap, pressure, load, ADE's processes by group, emulators, the brain's
+last write-ahead-log read, the last five resource-pressure episodes; see
+`docs/logging.md`, "Diagnostic reports: machine facts"), the surface and
+recovery code the user hit, the technical
 detail that screen already showed, the local runtime status snapshot, the
-machine and project `last-failure.json`, `last-wedge.json`, the recovery
+machine and project `last-failure.json`, `last-wedge.json` (titled with its
+age, left out after seven days), the recovery
 diagnosis for the open project, free disk for the ADE home and the project, the
 background-service definition, the storage environment (below), and bounded
 tails of the logs below. The `ade doctor` checks are **not** run: the report must
@@ -1362,7 +1368,9 @@ token). Search PostHog for that `distinct_id` to get the same installation's
 event history. When an account is signed in, `Account hash` carries a 12-hex
 truncated SHA-256 of the account user id — enough to tell two reports apart,
 never enough to recover the account. The account email and name are never
-included.
+included. `Machine id` is the `machine_id` Sentry tags and PostHog events carry,
+so the same computer's events can be found in both; the upload stores it as the
+R2 object's `machineId` metadata.
 
 One coarse analytics event is emitted per press:
 `ade_feature_used { feature: "connections", action: "issue_report", outcome:

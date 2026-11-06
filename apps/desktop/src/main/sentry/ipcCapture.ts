@@ -18,6 +18,7 @@ import { runtimeActionFingerprint } from "../../shared/sentry/grouping";
 import { IPC } from "../../shared/ipc";
 import { forwardLogToSentry } from "../../shared/sentry/logBridge";
 import { runInCapturedIpcCall } from "./ipcCallScope";
+import { readBrainFrames } from "../../shared/runtimeActionReplyError";
 import { IpcHandlerTimeoutError, ipcTimerFiredWhilePaused } from "./ipcHandlerTimeout";
 
 const SLOW_CALL_BREADCRUMB_MS = 250;
@@ -162,6 +163,29 @@ function isExpectedRepeat(label: string, message: string, now: number): boolean 
   return false;
 }
 
+/**
+ * One stall, one issue. When the main process or the brain stops answering,
+ * every call in flight times out within seconds of each other, on different
+ * channels (`attention.getSnapshot`, `lanes.list`, `chat.listSessions`, …),
+ * and each channel used to open an issue of its own for the same stall. The
+ * first timeout of a stall is the issue; each timeout of another call within
+ * {@link STALL_WINDOW_MS} of the last one is the same stall, logged as
+ * `ipc.timeout_in_stall.<label>` with the same `ipc.stall_id`, so one search
+ * finds every call it took down.
+ */
+const STALL_WINDOW_MS = 30_000;
+let currentStall: { id: string; lastAt: number; calls: number } | null = null;
+
+function joinStall(now: number): { id: string; first: boolean; calls: number } {
+  if (currentStall && now >= currentStall.lastAt && now - currentStall.lastAt < STALL_WINDOW_MS) {
+    currentStall.lastAt = now;
+    currentStall.calls += 1;
+    return { id: currentStall.id, first: false, calls: currentStall.calls };
+  }
+  currentStall = { id: Math.random().toString(16).slice(2, 10).padEnd(8, "0"), lastAt: now, calls: 1 };
+  return { id: currentStall.id, first: true, calls: 1 };
+}
+
 /** The channels that carry every brain action; `labelFor` names the action. */
 const RUNTIME_ACTION_CHANNELS: ReadonlySet<string> = new Set([IPC.localRuntimeCallAction, IPC.remoteRuntimeCallAction]);
 
@@ -211,19 +235,36 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
           forwardLogToSentry("warn", `ipc.timeout_repeat.${label}`, { durationMs });
           throw error;
         }
+        const stall = timeout ? joinStall(Date.now()) : null;
+        if (stall && !stall.first) {
+          forwardLogToSentry("warn", `ipc.timeout_in_stall.${label}`, {
+            durationMs,
+            stallId: stall.id,
+            stallCalls: stall.calls,
+            lateMs: timeout?.lateMs ?? null,
+            cpuMs: timeout?.cpuMs ?? null,
+          });
+          throw error;
+        }
         if (!isExpectedFailure(error)) {
           const errorName = error instanceof Error ? error.name : "unknown";
           const code = parseCodedErrorMessage(error).code ?? null;
           const runtimeAction = RUNTIME_ACTION_CHANNELS.has(channel);
+          const rpcCode = (error as { rpcCode?: unknown } | null)?.rpcCode;
+          const brainFrames = runtimeAction ? readBrainFrames(error) : null;
           captureError(error, {
             tags: {
               "ipc.channel": channel,
               ...(runtimeAction ? { "runtime.action": label } : {}),
               ...(code ? { "error.code": code } : {}),
+              ...(typeof rpcCode === "number" ? { "rpc.code": String(rpcCode) } : {}),
+              ...(stall ? { "ipc.stall_id": stall.id } : {}),
             },
             extra: {
               durationMs,
               ...(timeout ? timeoutDiagnostics(timeout, startedAt, startedMono) : {}),
+              // Where the brain failed: its own top frames, `function:line`.
+              ...(brainFrames ? { brainFrames } : {}),
             },
             // A runtime action's failure is rebuilt from the brain's reply and
             // has no stack of its own: group it by what failed, not by which

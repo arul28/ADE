@@ -707,6 +707,47 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
       XCTAssertEqual(ADEAppHangStack.isIdleRunLoop(frames), dropped, name)
     }
   }
+
+  /// The ADE Beta app (on TestFlight) must never report as production, or a
+  /// beta's errors read as the store app's; Sentry's environment follows the
+  /// same `release_channel` every event carries.
+  func testSentryEnvironmentFollowsTheReleaseChannel() {
+    let cases: [(Bool, String, String)] = [
+      (false, "stable", "production"),
+      (false, "beta", "beta"),
+      (false, "development", "development"),
+      (true, "beta", "development"),
+      (true, "stable", "development"),
+    ]
+    for (developmentRun, channel, expected) in cases {
+      XCTAssertEqual(
+        CrashReporting.sentryEnvironment(isDevelopmentRun: developmentRun, releaseChannel: channel),
+        expected,
+        "\(channel), development run \(developmentRun)"
+      )
+    }
+  }
+
+  /// An error's associated values (a machine's name) never reach the issue
+  /// title; the title is the bare type, and the extra keeps the shape with
+  /// every quoted value left out.
+  func testReportedErrorTitlesByBareTypeWithoutAssociatedValues() {
+    struct RoutesExhausted: Error {
+      let machineName: String
+      let routeLabels: [String]
+    }
+    let error = RoutesExhausted(machineName: "Ana's MacBook Pro", routeLabels: ["local 192.168.1.4", "relay"])
+    let typeName = CrashReporting.errorTypeName(error)
+    XCTAssertEqual(typeName, "RoutesExhausted")
+    let reported = CrashReporting.reportableError(error, typeName: typeName) as NSError
+    XCTAssertEqual(reported.domain, "RoutesExhausted")
+    XCTAssertFalse(reported.domain.contains("unknown context"))
+    XCTAssertEqual(reported.localizedDescription, "RoutesExhausted")
+    let detail = CrashReporting.redactedErrorDescription(error)
+    XCTAssertTrue(detail.contains("machineName"))
+    XCTAssertFalse(detail.contains("Ana"))
+    XCTAssertFalse(detail.contains("192.168"))
+  }
 }
 
 private final class ProductAnalyticsTestSink: ProductAnalyticsSink {

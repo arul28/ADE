@@ -14,9 +14,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as nodePty from "node-pty";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
+import { brainReportsAsRelease } from "./sentry/brainBuild";
+import { machineTelemetryIdReader } from "../../desktop/src/main/services/analytics/machineTelemetryId";
 import { resolveReleaseChannel } from "../../desktop/src/shared/packageChannel";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
+import { sqliteErrorClass } from "../../desktop/src/main/services/state/sqliteErrors";
 import { createRegisteredSyncPeerGate } from "../../desktop/src/main/services/state/syncPeerCompactionGate";
 import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
 import {
@@ -992,7 +995,11 @@ export function bindIosSimulatorReleaseOnChatEnd(args: {
 }
 
 /** The sentence a failed project database open shows, by its recovery code. */
-function projectDbOpenFailureMessage(code: ReturnType<typeof mapKvDbOpenErrorCode>, dbPath: string): string {
+function projectDbOpenFailureMessage(
+  code: ReturnType<typeof mapKvDbOpenErrorCode>,
+  dbPath: string,
+  sqliteClass: string | null = null,
+): string {
   switch (code) {
     case "storage_read_failed":
       return storageUnreadableMessage(dbPath, detectCloudStorageProvider(dbPath));
@@ -1001,7 +1008,9 @@ function projectDbOpenFailureMessage(code: ReturnType<typeof mapKvDbOpenErrorCod
     case "db_busy":
       return "Another ADE process is still using this project's data. Wait a moment, then open the project again.";
     default:
-      return "ADE could not open the project data store.";
+      return sqliteClass
+        ? `ADE could not open the project data store (${sqliteClass}).`
+        : "ADE could not open the project data store.";
   }
 }
 
@@ -1132,6 +1141,9 @@ export async function createAdeRuntime(args: {
     // `syscall`, and without a path the classifier refuses to call them
     // storage faults (a socket errno must not read as an unreadable file).
     const code = mapKvDbOpenErrorCode(classifySqliteOpenError(error, { path: paths.dbPath }));
+    // A failure no bucket fits keeps its SQLite class (`sqlite_cantopen`,
+    // `eacces`), so a report says more than "could not open".
+    const sqliteClass = code === "db_open_failed" ? sqliteErrorClass(error) : null;
     const detail = error instanceof Error ? error.message : String(error);
     // A drive that stopped answering and a peer that kept the database locked
     // are this machine's state, not a defect: the person gets the fix, and
@@ -1140,7 +1152,7 @@ export async function createAdeRuntime(args: {
     if (environmentFailure && error instanceof Error) markExpected(error, "environment");
     const failure = {
       code,
-      message: projectDbOpenFailureMessage(code, paths.dbPath),
+      message: projectDbOpenFailureMessage(code, paths.dbPath, sqliteClass),
       detail,
       projectRoot,
       component: "project_db_open" as const,
@@ -1155,6 +1167,7 @@ export async function createAdeRuntime(args: {
     // the real error, and `ade report-issue` bundles them.
     logger.error("project.db_open_failed", {
       code,
+      ...(sqliteClass ? { sqliteClass } : {}),
       detail,
       dbPath: paths.dbPath,
       projectRoot,
@@ -1168,7 +1181,7 @@ export async function createAdeRuntime(args: {
     // copy, and `detail` stays for logs and `ade report-issue`.
     const coded = Object.assign(
       codedError(failure.message, code),
-      { dbPath: paths.dbPath, projectRoot, detail },
+      { dbPath: paths.dbPath, projectRoot, detail, ...(sqliteClass ? { sqliteClass } : {}) },
     );
     throw environmentFailure ? markExpected(coded, "environment") : coded;
   }
@@ -1255,11 +1268,13 @@ export async function createAdeRuntime(args: {
         logger,
         appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
         runtimeMode: syncRuntimeOptions?.runtimeKind ?? (chatOnlyRuntime ? "chat_runtime" : "project_runtime"),
+        // As `initBrainSentry` decides it (`sentry/brainBuild.ts`).
         releaseChannel: resolveReleaseChannel({
           env: process.env,
-          packaged: !isSourceCheckoutRuntimeModule(currentModulePath),
+          packaged: brainReportsAsRelease(process.env, currentModulePath),
           version: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION,
         }),
+        machineId: machineTelemetryIdReader(resolveMachineAdeLayout().adeDir),
       }));
     setSentryUserResolver(() => productAnalyticsService.getDistinctId());
     setSentryEventMirror(createExceptionAnalyticsMirror({ analytics: productAnalyticsService, surface: "api" }));

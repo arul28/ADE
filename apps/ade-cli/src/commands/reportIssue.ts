@@ -9,6 +9,21 @@ import {
   type DiagnosticRedactionContext,
 } from "../services/diagnostics/diagnosticReport";
 import {
+  basicMachineHardware,
+  readMachineKeyFingerprint,
+  recordedMachineHealth,
+  type DiagnosticMachineHardware,
+  type DiagnosticMachineHealth,
+} from "../services/diagnostics/machineHealth";
+import {
+  loadMachineTelemetryId,
+  readMachineTelemetryId,
+} from "../../../desktop/src/main/services/analytics/machineTelemetryId";
+import { resolveReleaseChannel } from "../../../desktop/src/shared/packageChannel";
+import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import { brainReportsAsRelease } from "../sentry/brainBuild";
+import { isSourceCheckoutRuntimeModule } from "../runtimePackaging";
+import {
   collectMachineDiagnosticSources,
   collectMachineDiagnosticSourcesAsync,
   readDiagnosticJsonFile,
@@ -52,6 +67,8 @@ export type ReportIssueResult = {
   report: string;
   issueUrl: string;
   installId: string;
+  /** `machine_id`, sent as upload metadata so the stored report names its machine. */
+  machineId?: string | null;
   /** CLI version stamped into the report; sent as upload metadata. */
   appVersion: string | null;
   /** Where this machine's account session lives, so `--send` can read a token. */
@@ -99,6 +116,39 @@ function readInstallId(secretsDir: string): string | null {
 }
 
 /**
+ * The package channel without `ADE_PACKAGE_CHANNEL`, which launchd and systemd
+ * never pass to the brain: Alpha lives in `~/.ade-alpha` and its service name
+ * ends in `.alpha`. Anything else is the normal install.
+ */
+function cliPackageChannel(env: NodeJS.ProcessEnv, adeDir: string): "stable" | "alpha" {
+  const explicit = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
+  if (explicit === "alpha" || explicit === "stable") return explicit;
+  if (path.basename(adeDir).toLowerCase() === ".ade-alpha") return "alpha";
+  return env.ADE_RUNTIME_SERVICE_NAME?.trim().toLowerCase().endsWith(".alpha") ? "alpha" : "stable";
+}
+
+type CliMachineFacts = {
+  machineId: string | null;
+  hardware: DiagnosticMachineHardware;
+  machineHealth: DiagnosticMachineHealth;
+};
+
+/**
+ * Both CLI builders read the same machine facts, so their reports stay
+ * identical: what the machine brain recorded (its last memory and database
+ * sample, the last resource-pressure episodes with their process groups) and
+ * the load average, never a live process listing. The desktop's report adds
+ * the live read (`diagnosticReportService.ts`).
+ */
+function recordedMachineFacts(runtimeDir: string): Omit<CliMachineFacts, "machineId"> {
+  return { hardware: basicMachineHardware(), machineHealth: recordedMachineHealth(runtimeDir) };
+}
+
+function currentModulePath(): string {
+  return typeof __filename === "string" ? __filename : process.argv[1] ?? "";
+}
+
+/**
  * The two builders below differ only in how they collect: a one-shot
  * `ade report-issue` has nothing to hold up and stays synchronous, while a
  * long-lived process must not block its event loop on the collector's
@@ -109,24 +159,41 @@ function finishCliDiagnosticReport(
   options: ReportIssueOptions,
   inputs: { at: Date; projectRoot: string | null; surface: string },
   sources: ReturnType<typeof collectMachineDiagnosticSources>,
+  machine: CliMachineFacts,
 ): ReportIssueResult {
   const { at, projectRoot, surface } = inputs;
   const env = options.env ?? process.env;
   const installId = readInstallId(sources.layout.secretsDir) ?? "unknown";
+  const packageChannel = cliPackageChannel(env, sources.layout.adeDir);
 
   const report = buildDiagnosticReport({
     generatedAt: at.toISOString(),
     app: {
       version: options.cliVersion ?? null,
-      packageChannel: env.ADE_PACKAGE_CHANNEL?.trim() || null,
-      isPackaged: null,
+      packageChannel,
+      // As Sentry and PostHog name this build (`sentry/brainBuild.ts`).
+      releaseChannel: resolveReleaseChannel({
+        env: { ...env, ADE_PACKAGE_CHANNEL: packageChannel },
+        packaged: brainReportsAsRelease(env),
+        version: options.cliVersion ?? null,
+      }),
+      isPackaged: !isSourceCheckoutRuntimeModule(currentModulePath()),
       platform: process.platform,
       arch: process.arch,
       osRelease: os.release(),
       nodeVersion: process.versions.node ?? null,
       timezoneOffsetMinutes: -at.getTimezoneOffset(),
     },
-    identity: { installId },
+    identity: {
+      // No account hash here: reading the session through the account service
+      // writes its key file, and a report must not change the machine it
+      // describes. The install id above is the account hash once signed in.
+      installId,
+      machineKeyFingerprint: readMachineKeyFingerprint(sources.layout.secretsDir),
+      machineId: machine.machineId,
+    },
+    hardware: machine.hardware,
+    machineHealth: machine.machineHealth,
     context: {
       surface,
       headline: options.headline?.trim().slice(0, 300) || null,
@@ -146,6 +213,7 @@ function finishCliDiagnosticReport(
   return {
     report,
     installId,
+    machineId: machine.machineId,
     appVersion: options.cliVersion ?? null,
     secretsDir: sources.layout.secretsDir,
     reportsDir: path.join(sources.layout.adeDir, "diagnostic-reports"),
@@ -179,7 +247,10 @@ export function buildCliDiagnosticReport(options: ReportIssueOptions = {}): Repo
   const env = options.env ?? process.env;
   const inputs = resolveCliReportInputs(options);
   const sources = collectMachineDiagnosticSources({ env, projectRoot: inputs.projectRoot });
-  return finishCliDiagnosticReport(options, inputs, sources);
+  return finishCliDiagnosticReport(options, inputs, sources, {
+    machineId: readMachineTelemetryId(sources.layout.adeDir),
+    ...recordedMachineFacts(sources.layout.runtimeDir),
+  });
 }
 
 /**
@@ -193,11 +264,17 @@ export async function buildCliDiagnosticReportAsync(
 ): Promise<ReportIssueResult> {
   const env = options.env ?? process.env;
   const inputs = resolveCliReportInputs(options);
-  const sources = await collectMachineDiagnosticSourcesAsync({
-    env,
-    projectRoot: inputs.projectRoot,
+  const [sources, machineId] = await Promise.all([
+    collectMachineDiagnosticSourcesAsync({
+      env,
+      projectRoot: inputs.projectRoot,
+    }),
+    loadMachineTelemetryId(resolveMachineAdeLayout(env).adeDir).catch(() => null),
+  ]);
+  return finishCliDiagnosticReport(options, inputs, sources, {
+    machineId,
+    ...recordedMachineFacts(sources.layout.runtimeDir),
   });
-  return finishCliDiagnosticReport(options, inputs, sources);
 }
 
 /**
@@ -251,7 +328,7 @@ export async function openDiagnosticIssue(
  * carries. Neither path changes a byte of the report.
  */
 export async function sendDiagnosticReport(
-  built: Pick<ReportIssueResult, "report" | "installId" | "appVersion" | "secretsDir">,
+  built: Pick<ReportIssueResult, "report" | "installId" | "appVersion" | "secretsDir" | "machineId">,
   deps: {
     env?: NodeJS.ProcessEnv;
     baseUrl?: string;
@@ -291,6 +368,7 @@ export async function sendDiagnosticReport(
     report: built.report,
     token,
     installId: built.installId === "unknown" ? null : built.installId,
+    machineId: built.machineId ?? null,
     appVersion: built.appVersion,
     auto: deps.auto === true,
     failureCode: deps.failureCode ?? null,

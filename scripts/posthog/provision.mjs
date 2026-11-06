@@ -146,16 +146,35 @@ export function validateDashboardSpec(spec = dashboardSpec) {
         if (node.kind === "EventsNode" && typeof node.id === "string" && !allowedEvents.has(node.id)) {
           fail(`Insight ${item.key} references unknown retention event ${JSON.stringify(node.id)}.`);
         }
-        if (node.type === "hogql") {
-          if (typeof node.key !== "string" || node.key.trim() === "") fail(`Insight ${item.key} has an empty HogQL filter.`);
-          const names = hogqlFilterNames(node.key);
+        const checkHogql = (expression, where) => {
+          const names = hogqlFilterNames(expression);
           for (const name of names.properties) {
-            if (!allowedProperties.has(name)) fail(`Insight ${item.key} references unknown property ${JSON.stringify(name)} in a HogQL filter.`);
+            if (!allowedProperties.has(name)) fail(`Insight ${item.key} references unknown property ${JSON.stringify(name)} in ${where}.`);
           }
           for (const name of names.events) {
-            if (!allowedEvents.has(name)) fail(`Insight ${item.key} references unknown event ${JSON.stringify(name)} in a HogQL filter.`);
+            if (!allowedEvents.has(name)) fail(`Insight ${item.key} references unknown event ${JSON.stringify(name)} in ${where}.`);
           }
+        };
+        if (node.type === "hogql") {
+          if (typeof node.key !== "string" || node.key.trim() === "") fail(`Insight ${item.key} has an empty HogQL filter.`);
+          checkHogql(node.key, "a HogQL filter");
           return;
+        }
+        // A HogQL math expression and a HogQL table name properties and events the same way.
+        if (node.math === "hogql") {
+          if (typeof node.math_hogql !== "string" || node.math_hogql.trim() === "") fail(`Insight ${item.key} has an empty HogQL math expression.`);
+          checkHogql(node.math_hogql, "a HogQL math expression");
+        }
+        if (node.kind === "HogQLQuery") {
+          if (typeof node.query !== "string" || node.query.trim() === "") fail(`Insight ${item.key} has an empty HogQL query.`);
+          checkHogql(node.query, "a HogQL query");
+        }
+        if (Array.isArray(node.breakdowns)) {
+          for (const entry of node.breakdowns) {
+            if (typeof entry?.property !== "string" || !allowedProperties.has(entry.property)) {
+              fail(`Insight ${item.key} references unknown breakdown property ${JSON.stringify(entry?.property)}.`);
+            }
+          }
         }
         for (const field of ["breakdown", "key", "math_property"]) {
           if (typeof node[field] === "string" && !allowedProperties.has(node[field])) {

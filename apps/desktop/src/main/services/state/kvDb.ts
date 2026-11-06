@@ -23,6 +23,7 @@ import {
   type ExportHelper,
 } from "./crsqlExport";
 import { stripCrrUnsupportedTableConstraints } from "./sqliteDdl";
+import { noteDbClosed, noteDbOpened, noteDbWrite } from "./dbActivity";
 import {
   EVENT_LOG_RETENTION_DAYS,
   INGRESS_EVENT_RETENTION_MS,
@@ -704,6 +705,7 @@ function statementError(error: unknown, sql: string): Error {
 }
 
 function runStatement(db: DatabaseSyncType, sql: string, params: Array<SqlValue | SyncScalar> = []): { changes: number } {
+  noteDbWrite(sql);
   try {
     return preparedStatement(db, sql).run(...params.map((param, index) => toDbValue(param, index))) as { changes: number };
   } catch (error) {
@@ -5129,6 +5131,17 @@ export async function openKvDb(
     try {
       const db = await openKvDbOnce(dbPath, logger, options);
       if (attempt > 1) logger.info("db.open_busy_settled", { attempt });
+      // Open databases, for the brain's write-ahead-log sampling (`dbActivity.ts`).
+      noteDbOpened(dbPath);
+      const close = db.close;
+      let closed = false;
+      db.close = () => {
+        if (!closed) {
+          closed = true;
+          noteDbClosed(dbPath);
+        }
+        close();
+      };
       return db;
     } catch (error) {
       if (!isSqliteBusyOrLockedError(error)) {

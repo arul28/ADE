@@ -576,6 +576,12 @@ export function startBrainLoopWatchdog(args: {
    */
   onMemoryPressure?: (sample: BrainMemoryPressureSample) => void;
   /**
+   * Every five-minute memory sample, for work that rides the same cadence (the
+   * machine's resource-pressure sampling, `resourcePressureMonitor.ts`). Must
+   * not block: anything slow runs off the loop.
+   */
+  onSampleTick?: () => void;
+  /**
    * A stall the process came back from (not a suspension). Lets the host tell
    * devices that reconnect after it why they lost it.
    */
@@ -848,6 +854,11 @@ export function startBrainLoopWatchdog(args: {
         nowMonotonicMs,
       });
       memoryPressure = pressure.state;
+      try {
+        args.onSampleTick?.();
+      } catch {
+        // The host's sampling is its own business; the watchdog keeps ticking.
+      }
       if (pressure.triggered && rssRestartBytes !== null) {
         try {
           args.onMemoryPressure?.({

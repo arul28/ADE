@@ -134,6 +134,7 @@ import {
 } from "../../desktop/src/shared/sentry/diagnostics";
 import { projectRegistryDiagnosticAttachment } from "./services/projects/projectRegistryJournal";
 import { initBrainSentry } from "./sentry/initBrain";
+import { brainReportsAsRelease } from "./sentry/brainBuild";
 import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
 import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
 import { resolveSelectedUpdateTrack } from "./services/runtime/updateTrackStore";
@@ -28155,6 +28156,10 @@ async function runServe(
     getSharedProductAnalyticsService,
   } = await import("../../desktop/src/main/services/analytics/productAnalyticsService");
   const brainAnalyticsStateFile = defaultProductAnalyticsStateFile(layout.adeDir);
+  // `machine_id` (`machineTelemetryId.ts`): probed once, off the loop, on the first send.
+  const { machineTelemetryIdReader } = await import(
+    "../../desktop/src/main/services/analytics/machineTelemetryId"
+  );
   const brainProductAnalytics = getSharedProductAnalyticsService(
     brainAnalyticsStateFile,
     () => createProductAnalyticsService({
@@ -28162,14 +28167,14 @@ async function runServe(
       logger: headlessProjectLogger,
       appVersion: VERSION,
       runtimeMode: "brain",
-      // Where this bundle runs, as `initBrainSentry` decides it.
+      // As `initBrainSentry` decides it (`sentry/brainBuild.ts`): a dev brain,
+      // a source checkout or a bundle no release built is `development`.
       releaseChannel: resolveReleaseChannel({
         env: process.env,
-        packaged: !isSourceCheckoutRuntimeModule(
-          typeof __filename === "string" ? __filename : process.argv[1] ?? "",
-        ),
+        packaged: brainReportsAsRelease(process.env),
         version: VERSION,
       }),
+      machineId: machineTelemetryIdReader(layout.adeDir),
     }),
   );
   // From the brain's start, not only once a project opens: a brain that only
@@ -28188,6 +28193,7 @@ async function runServe(
     cliVersion: VERSION,
     logger: headlessProjectLogger,
     capture: (input) => brainProductAnalytics.capture(input),
+    devBuild: !brainReportsAsRelease(process.env),
   });
   const socketPath = serveSocketPath;
   // The watchdog below says that the brain froze; this says which synchronous
@@ -28200,9 +28206,14 @@ async function runServe(
   installSyncFsCallTracker({ warn: (event, meta) => headlessProjectLogger.warn(event, meta) });
   const projectRootAccessMonitor = await import("./services/projects/projectRootAccessMonitor");
   projectRootAccessMonitor.configureProjectRootAccessMonitor({ logger: headlessProjectLogger });
+  // Started below for the machine brain only; the watchdog's five-minute sample drives it.
+  let resourcePressureMonitor: { tick: () => Promise<void> } | null = null;
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     socketPath,
+    onSampleTick: () => {
+      void resourcePressureMonitor?.tick();
+    },
     warn: (event, meta) => headlessProjectLogger.warn(event, meta),
     info: (event, meta) => headlessProjectLogger.info(event, meta),
     onStall: ({ observedLagMs }) => recordHostStall({ durationMs: observedLagMs }),
@@ -28270,6 +28281,14 @@ async function runServe(
       runtimeDir: layout.runtimeDir,
       warn: (event, meta) => headlessProjectLogger.warn(event, meta),
       info: (event, meta) => headlessProjectLogger.info(event, meta),
+    });
+    // One machine, one sampler: the machine brain watches this computer's
+    // memory, swap, database logs and its own CPU (`resourcePressureMonitor.ts`).
+    const { createResourcePressureMonitor } = await import("./services/runtime/resourcePressureMonitor");
+    resourcePressureMonitor = createResourcePressureMonitor({
+      runtimeDir: layout.runtimeDir,
+      logger: headlessProjectLogger,
+      capture: (input) => brainProductAnalytics.captureInternal(input),
     });
   } else {
     headlessProjectLogger.info("brain.heartbeat_skipped_non_machine_socket", {
@@ -30698,7 +30717,7 @@ async function runServe(
       "background_item_blocked", "brain_not_running",
       "socket_stale_no_owner", "socket_owned_by_other", "provider_thread_missing",
       "provider_resume_failed", "optional_mcp_failed", "continuity_reconstruction_required",
-      "unknown",
+      "db_open_failed", "unknown",
     ]);
     const code: AdeRecoveryErrorCode = knownCodes.has(rawCode as AdeRecoveryErrorCode)
       ? rawCode as AdeRecoveryErrorCode

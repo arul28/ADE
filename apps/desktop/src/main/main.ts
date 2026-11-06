@@ -1,11 +1,13 @@
 import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, type WebContents } from "electron";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
+import { reportsAsPackagedRelease } from "./sentry/releaseBuild";
 import { configureOutboundProxyFromEnv, trustSystemCertificates } from "./services/shared/outboundNetwork";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import { flushSentry } from "../shared/sentry/capture";
 import { registerSentryDiagnosticAttachment, registerSentryDiagnosticContext } from "../shared/sentry/diagnostics";
-import { setSentryEventMirror, setSentryUserResolver } from "../shared/sentry/eventFilter";
+import { setSentryEventMirror, setSentryMachineIdResolver, setSentryUserResolver } from "../shared/sentry/eventFilter";
+import { loadMachineTelemetryId, machineTelemetryIdReader, peekMachineTelemetryId } from "./services/analytics/machineTelemetryId";
 import { createExceptionAnalyticsMirror } from "./services/analytics/exceptionProductAnalytics";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
@@ -681,6 +683,12 @@ initMainSentry({
     return request.action ? `${request.domain}.${request.action}` : request.domain;
   },
 });
+// `machine_id` for Sentry and PostHog (`machineTelemetryId.ts`): one `ioreg` or
+// `reg` per launch, off the main thread, and only when something reports;
+// events sent before it answers go without the tag.
+const telemetryAdeDir = resolveMachineAdeDir();
+setSentryMachineIdResolver(() => peekMachineTelemetryId(telemetryAdeDir));
+if (isMainSentryStarted()) void loadMachineTelemetryId(telemetryAdeDir);
 
 function resolveAutoUpdaterCacheDir(): string {
   const homeDir = os.homedir();
@@ -2434,7 +2442,8 @@ app.whenReady().then(async () => {
     return null;
   };
   const productAnalyticsStateFile = defaultProductAnalyticsStateFile(machineAdeLayout.adeDir);
-  const analyticsReleaseChannel = resolveReleaseChannel({ env: process.env, packaged: app.isPackaged, version: app.getVersion() });
+  // As Sentry decides it: a package that did not come from a release workflow is `development`.
+  const analyticsReleaseChannel = resolveReleaseChannel({ env: process.env, packaged: reportsAsPackagedRelease(app.isPackaged), version: app.getVersion() });
   const productAnalyticsService = getSharedProductAnalyticsService(productAnalyticsStateFile, () =>
     createProductAnalyticsService({
       stateFilePath: productAnalyticsStateFile,
@@ -2442,6 +2451,7 @@ app.whenReady().then(async () => {
       appVersion: app.getVersion(),
       runtimeMode: app.isPackaged ? "desktop_packaged" : "desktop_development",
       releaseChannel: analyticsReleaseChannel,
+      machineId: machineTelemetryIdReader(telemetryAdeDir),
     }));
   setSentryUserResolver(() => productAnalyticsService.getDistinctId());
   setSentryEventMirror(createExceptionAnalyticsMirror({ analytics: productAnalyticsService, surface: "desktop" }));
@@ -3672,13 +3682,16 @@ app.whenReady().then(async () => {
     appVersion: app.getVersion(),
     logger: localRuntimeLogger,
     capture: (input) => productAnalyticsService.capture(input),
+    devBuild: !reportsAsPackagedRelease(app.isPackaged),
     buildReport: async (request) => {
       const projectRoot = request.projectRoot?.trim() || null;
       const result = await collectDiagnosticReport(
         {
           appVersion: app.getVersion(),
           packageChannel: normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+          releaseChannel: analyticsReleaseChannel,
           isPackaged: app.isPackaged,
+          machineId: await loadMachineTelemetryId(telemetryAdeDir),
           userDataPath: app.getPath("userData"),
           reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
           installId: productAnalyticsService.getDistinctId(),
@@ -3698,7 +3711,7 @@ app.whenReady().then(async () => {
           extraNotes: request.extraNotes,
         },
       );
-      return { report: result.report, filePath: result.filePath, installId: result.installId };
+      return { report: result.report, filePath: result.filePath, installId: result.installId, machineId: result.machineId };
     },
     // Fast path only. `webContents.send` does not throw when the renderer has
     // crashed or has not mounted its toast host, so nothing here can tell that

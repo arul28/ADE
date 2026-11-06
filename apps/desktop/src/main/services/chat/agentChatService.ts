@@ -192,7 +192,7 @@ import {
   parseSideSlashCommand,
   sideChatUnavailableReason,
 } from "../../../shared/sideChat";
-import type { ChatSideChatOutcome } from "../analytics/agentTurnProductAnalytics";
+import { turnFailureKind, type ChatSideChatOutcome, type TurnFailureKind } from "../analytics/agentTurnProductAnalytics";
 import { createSideChatService, sideChatReadOnlySettings } from "./sideChatService";
 import {
   createChatProviderFork,
@@ -5373,6 +5373,8 @@ type ManagedChatSession = {
    * settle, for the `ade_error` event's `error_kind`. In memory only.
    */
   turnErrorCategory?: AgentChatTurnErrorCategory | null;
+  /** The same failure as `error_kind` (`turnFailureKind`), from the category and the error's words. */
+  turnErrorKind?: TurnFailureKind | null;
   /**
    * The chat's personal profile changed while its provider process was
    * mid-turn (`adoptLegacyPersonalSessionAsAssistant`). That process was built
@@ -11451,6 +11453,8 @@ export type AgentChatTurnSettledEvent = Readonly<{
   durationMs?: number | null;
   /** On a failed turn, why, when its error event said; otherwise null. */
   errorCategory?: AgentChatTurnErrorCategory | null;
+  /** On a failed turn, its closed `error_kind` (`turnFailureKind`); otherwise null. */
+  errorKind?: TurnFailureKind | null;
 }>;
 
 type AgentChatAutomationService = {
@@ -22313,6 +22317,7 @@ export function createAgentChatService(args: {
       lastTurnIdBySession.delete(managed.session.id);
       managed.turnReasoningEffort = managed.session.reasoningEffort ?? null;
       managed.turnErrorCategory = null;
+      managed.turnErrorKind = null;
     }
     managed.session.status = "active";
     managed.session.idleSinceAt = null;
@@ -23953,6 +23958,11 @@ export function createAgentChatService(args: {
           ).errorInfo.category;
       if (turnErrorCategory !== "unknown" || !managed.turnErrorCategory) {
         managed.turnErrorCategory = turnErrorCategory;
+        // Only the kind leaves the machine; the words it is read from do not.
+        managed.turnErrorKind = turnFailureKind(
+          turnErrorCategory,
+          [decoratedEvent.message, decoratedEvent.detail].filter(Boolean).join("\n"),
+        );
       }
       logger.warn("agent_chat.turn_error", {
         sessionId: managed.session.id,
@@ -24323,7 +24333,9 @@ export function createAgentChatService(args: {
       // model, else the requested one. Non-catalog names report as `other`.
       const servedModelId = event.servedModel ? getModelById(event.servedModel)?.id : undefined;
       const errorCategory = event.status === "failed" ? managed.turnErrorCategory ?? null : null;
+      const errorKind = event.status === "failed" ? managed.turnErrorKind ?? null : null;
       managed.turnErrorCategory = null;
+      managed.turnErrorKind = null;
       onTurnSettled({
         sessionId: managed.session.id,
         turnId: event.turnId,
@@ -24335,6 +24347,7 @@ export function createAgentChatService(args: {
         costUsd: event.costUsd ?? null,
         durationMs: turnStartedMs === undefined ? null : Math.max(0, Date.now() - turnStartedMs),
         errorCategory,
+        errorKind,
       });
     } catch (error) {
       logger.warn("agent_chat.turn_settled_callback_failed", {

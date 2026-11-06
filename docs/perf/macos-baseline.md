@@ -132,6 +132,7 @@ running, the ADE repository open, and its lanes changing under other agents.
 | Machine-wide `ps` runs (Electron main, top bar load indicator) | 152 (every 2 s) | 30 (every 10 s while calm) | 40 |
 | CPU in those child processes | ~6.4% of a core | ~1.2% of a core | 2% |
 | Electron main / brain process CPU (`process-cpu.sh`) | 1.7% / 4.3% | 1.3% / 4.4% | 15% / 10% (the Processes table) |
+| Brain resource-pressure sample (`resourcePressureMonitor.ts`, machine brain, on the existing 5-minute watchdog tick): child processes and brain CPU per tick | — (new) | 1 `sysctl` per 5 min on macOS (1.2 ms each), 0 on Linux, 0 on Windows unless under 15% of memory is free; 2.4 ms brain CPU per tick; an episode (at most one per breach, re-armed after 30 healthy min) adds 3 spawns (`ps`, `ps`, `footprint`) and ~1.3 s off the loop. Micro-measured with `vite-node` (20 ticks, real readers) on a Mac16,9 (M4 Max), 2026-11-06; the app-level `spawn-trace`/`process-cpu.sh` pass was not run (no dev app or brain may run in this lane) | 2 spawns per 5 min; 10 ms per tick |
 
 What is left is mostly git run by the brain as lanes change (`git remote
 get-url`, `worktree list`, `rev-parse` from the lane list and the search

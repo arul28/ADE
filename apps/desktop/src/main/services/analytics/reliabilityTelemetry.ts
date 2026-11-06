@@ -29,7 +29,15 @@ import { JsonRpcErrorCode } from "../../../../../ade-cli/src/jsonrpc";
 export function brainActionErrorCode(error: unknown, didTimeout: boolean): string {
   if (didTimeout) return "ipc_timeout";
   const code = parseCodedErrorMessage(error).code;
-  return code && code.trim() ? code.trim() : uncodedErrorClass(error);
+  if (code && code.trim()) return code.trim();
+  // An `ok: false` action reply's JSON-RPC code (`runtimeActionReplyError.ts`):
+  // the same names the wrapped JSON-RPC path below gets.
+  const rpcCode = (error as { rpcCode?: unknown } | null)?.rpcCode;
+  if (typeof rpcCode === "number") {
+    if (rpcCode === JsonRpcErrorCode.internalError) return "brain_internal_error";
+    return JSON_RPC_CODE_NAMES[rpcCode] ?? "rpc_error";
+  }
+  return uncodedErrorClass(error);
 }
 
 const JSON_RPC_CODE_NAMES: Readonly<Record<number, string>> = {

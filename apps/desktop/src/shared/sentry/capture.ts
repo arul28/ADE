@@ -103,6 +103,28 @@ export function setSentryUserResolver(resolver: (() => string | null | undefined
   resolveUserId = resolver;
 }
 
+let resolveMachineId: (() => string | null | undefined) | null = null;
+
+/**
+ * Where events get their `machine_id` tag (`machineTelemetryId.ts`): which
+ * install on which computer sent it, the same value PostHog events and
+ * diagnostic reports carry. The user is the person and spans every machine
+ * they own; this tells those machines apart. Read at send time, so a probe
+ * that finishes after start-up still tags every later event. Must not probe.
+ */
+export function setSentryMachineIdResolver(resolver: (() => string | null | undefined) | null): void {
+  resolveMachineId = resolver;
+}
+
+export function resolveSentryMachineId(): string | null {
+  try {
+    const id = resolveMachineId?.() ?? null;
+    return typeof id === "string" && /^[0-9a-f]{16}$/.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The user `beforeSend` puts on an event; for events that skip it (User Feedback). */
 export function resolveSentryUserId(): string | null {
   try {
