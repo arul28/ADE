@@ -109,6 +109,7 @@ describe("createSentryEventHooks", () => {
     ["a path the renderer may not read", "Path is outside allowed directories.", false],
     ["an agent's bad selector", "Invalid element selector: [aria-label=6 more companies:]", true],
     ["an agent driving a lane with no screen", "MAC_DESKTOP_NO_DISPLAY: Lane l1 has no Mac Desktop screen. Start one first.", true],
+    ["a lane screen whose display went away", "MAC_DESKTOP_DISPLAY_UNAVAILABLE: No ScreenCaptureKit content for display 22.", true],
     ["a desktop driver that crashed", "MAC_DESKTOP_DRIVER_CRASHED: helper exited", false],
     ["a remote machine that is slow to answer", "Remote ADE service timed out waiting for method ade/actions/call pr.refresh (30000ms).", true],
     ["a Mac-only surface asked for before the runtime connected", "Mac Desktop is not available on this machine.", true],
