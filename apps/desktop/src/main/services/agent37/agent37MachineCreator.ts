@@ -82,6 +82,12 @@ export type Agent37MachineCreatorDeps = {
    */
   handOffApproval?: (args: { url: string; userCode: string; name: string }) => void;
   templateName?: () => string;
+  /**
+   * Env the new machine starts with: the person's Claude token, so Claude is
+   * signed in on it from the first chat (agent37ClaudeToken.ts). Agent 37
+   * keeps it with the machine and gives it back on every boot.
+   */
+  machineEnv?: () => Promise<Record<string, string>>;
   fetch?: FetchLike;
   logger?: {
     info?(event: string, meta?: Record<string, unknown>): void;
@@ -245,6 +251,8 @@ export async function createAgent37Machine(
     logger.warn?.("agent37.machine_create_not_recorded", { error: errorText(error) });
     throw new Error("ADE couldn't save a note of the machine it's about to make, so it didn't make one. Check that ADE can write to its folder, then try again.");
   }
+  const machineEnv = await (deps.machineEnv?.() ?? Promise.resolve({})).catch(() => ({} as Record<string, string>));
+  checkCancelled();
   progress("creating", `Making ${name} on Agent 37…`);
   let instance: Agent37Instance;
   try {
@@ -254,6 +262,7 @@ export async function createAgent37Machine(
       type: agent37InstanceType(rawArgs.kind),
       resources: { cpu: shape.cpu, memory: shape.memoryGb, disk: shape.diskGb },
       metadata: { ...options.metadata, created_by: "ade", ade_request_id: requestId },
+      ...(Object.keys(machineEnv).length ? { env: machineEnv } : {}),
       // The box's wake URL: its brain requests it while it works, which keeps
       // Agent 37's idle sleep off it (agent37Sleep.ts).
       publicPorts: [{ port: AGENT37_WAKE_PORT, label: AGENT37_WAKE_PORT_LABEL }],

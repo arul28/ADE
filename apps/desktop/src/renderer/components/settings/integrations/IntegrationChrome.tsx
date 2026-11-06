@@ -72,6 +72,7 @@ export function IntegrationHero({
   panel,
   className,
   group,
+  footer,
   ...source
 }: ({ id: IntegrationId; brand?: never } | { brand: IntegrationHeroBrand; id?: never }) & {
   /** The settings deeplink target, when the connection lives in the banner. */
@@ -93,6 +94,8 @@ export function IntegrationHero({
   className?: string;
   /** The settings search group the banner belongs to. */
   group?: string;
+  /** One line under the facts, inside the banner: a state the page wants seen first. */
+  footer?: ReactNode;
 }) {
   const brand: IntegrationHeroBrand = source.brand ?? integrationBrand(source.id);
   const picture = source.id ? integrationBrand(source.id).art : null;
@@ -108,25 +111,31 @@ export function IntegrationHero({
       <SettingsToggle label={`Show ${topBar.label} in the top bar`} checked={topBar.checked} onChange={topBar.onChange} />
     </div>
   ) : null;
-  const accountPanel = (
+  // Not connected says itself in the status chip, so the panel then carries
+  // only what it has to: a note that isn't "not connected", the actions, the
+  // switch. With none of those there is no panel at all.
+  const emptyNote = account ? null : accountNote ?? (status.tone === "checking" ? "Checking the connection…" : null);
+  const accountPanel = account || emptyNote || actions ? (
     <>
-      <span className="ade-ig-hero-panel-label">{account ? "Signed in" : "Account"}</span>
       {account ? (
-        <div className="ade-ig-account">
-          <span className="ade-ig-avatar" aria-hidden>{account.avatar}</span>
-          <div className="ade-ig-account-id">
-            <b>{account.title}</b>
-            {account.detail ? <span>{account.detail}</span> : null}
+        <>
+          <span className="ade-ig-hero-panel-label">Signed in</span>
+          <div className="ade-ig-account">
+            <span className="ade-ig-avatar" aria-hidden>{account.avatar}</span>
+            <div className="ade-ig-account-id">
+              <b>{account.title}</b>
+              {account.detail ? <span>{account.detail}</span> : null}
+            </div>
           </div>
-        </div>
-      ) : (
-        <p className="ade-ig-hero-panel-empty">
-          {accountNote ?? (status.tone === "checking" ? "Checking this machine's sign-in…" : `This machine isn't connected to ${brand.label} yet.`)}
-        </p>
-      )}
+        </>
+      ) : emptyNote ? (
+        <p className="ade-ig-hero-panel-empty">{emptyNote}</p>
+      ) : null}
       {actions ? <div className="ade-ig-hero-panel-actions">{actions}</div> : null}
     </>
-  );
+  ) : null;
+  const panelContent = panel ?? accountPanel;
+  const showPanel = panelContent != null || (topBar != null && !hasFacts);
   return (
     <section
       className={className ? `ade-ig-hero ${className}` : "ade-ig-hero"}
@@ -138,7 +147,7 @@ export function IntegrationHero({
     >
       {art ?? (picture ? <img className="ade-ig-hero-art" src={picture} alt="" draggable={false} /> : null)}
       <div className="ade-ig-hero-shade" />
-      <div className="ade-ig-hero-row">
+      <div className="ade-ig-hero-row" data-panel={showPanel ? undefined : "none"}>
         <SolidLogo spec={brand.logo} straight />
         <div className="ade-ig-hero-id">
           <h1 className="ade-ig-hero-name">{brand.label}</h1>
@@ -150,10 +159,12 @@ export function IntegrationHero({
             </span>
           </div>
         </div>
-        <div className="ade-ig-hero-panel">
-          {panel ?? accountPanel}
-          {topBar && !hasFacts ? toggle : null}
-        </div>
+        {showPanel ? (
+          <div className="ade-ig-hero-panel">
+            {panelContent}
+            {topBar && !hasFacts ? toggle : null}
+          </div>
+        ) : null}
       </div>
       {hasFacts ? (
         <div className="ade-ig-hero-strip">
@@ -166,6 +177,7 @@ export function IntegrationHero({
           {topBar && hasFacts ? toggle : null}
         </div>
       ) : null}
+      {footer ? <div className="ade-ig-hero-foot">{footer}</div> : null}
     </section>
   );
 }

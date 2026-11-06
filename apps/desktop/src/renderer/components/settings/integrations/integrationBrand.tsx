@@ -108,7 +108,7 @@ const BRANDS: Record<IntegrationId, IntegrationBrand> = {
   agent37: {
     id: "agent37",
     label: AGENT37_NAME,
-    tagline: "Cloud Linux machines for your lanes, made and signed in from ADE.",
+    tagline: "Cloud Linux machines for your lanes.",
     // Agent 37's brand is monochrome (agent37.com): white on black.
     accent: "#E9E9E9",
     banner: {

@@ -7,6 +7,8 @@ import {
   agent37ChoiceBlocker,
   agent37HourlyUsd,
   agent37ReadyIdleMonthlyUsd,
+  agent37RepoLabel,
+  agent37SetupSuggestion,
   agent37Shape,
   formatAgent37Usd,
   type Agent37MachineKind,
@@ -20,7 +22,6 @@ import { useAppStore } from "../../state/appStore";
 import { originUrlForBinding } from "../lanes/laneMachines";
 import { IntegrationCard } from "./integrations/IntegrationChrome";
 import { Banner } from "../ui/notice";
-import { SmartTooltip } from "../ui/SmartTooltip";
 import { ipcErrorMessage } from "../../lib/format";
 
 /** "0:42" / "2:05" since `startedAt`. */
@@ -35,6 +36,20 @@ function stateTag(project: Agent37ReadyProjectStatus | null): { label: string; t
   if (project.state === "ready") return { label: "Ready", tone: "ok" };
   if (project.state === "failed") return { label: "Failed", tone: "crit" };
   return { label: "Preparing", tone: "warn" };
+}
+
+/** What ADE does to make a ready machine, in order. */
+const READY_STEPS = ["Make the machine", "Sign in to ADE", "Clone the repo", "Your setup", "Asleep and ready"] as const;
+
+/** Which of `READY_STEPS` a preparing machine is on, from its status line. */
+function readyStepIndex(project: Agent37ReadyProjectStatus): number {
+  if (project.state === "ready") return READY_STEPS.length;
+  const message = project.message.toLowerCase();
+  if (message.includes("sleep")) return 4;
+  if (message.includes("setup")) return 3;
+  if (message.includes("cloning")) return 2;
+  if (message.includes("sign") || message.includes("approv") || message.includes("login") || message.includes("joining")) return 1;
+  return 0;
 }
 
 /** A segmented choice exposed as a radio group (`.kit-seg`). */
@@ -74,7 +89,11 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
   const bridge = window.ade.agent37;
   const binding = useAppStore((state) => state.projectBinding);
   const identity = normalizeGitRemoteIdentity(originUrlForBinding(binding));
-  const projectName = binding?.displayName ?? identity ?? "this project";
+  // The repo names the project here: a project called "ADE" reads like the product.
+  const projectName = agent37RepoLabel(identity) ?? binding?.displayName ?? "this project";
+  const [expanded, setExpanded] = useState(false);
+  const [suggestion, setSuggestion] = useState<string | null>(null);
+  const [claudeSaved, setClaudeSaved] = useState<boolean | null>(null);
 
   const [ready, setReady] = useState<Agent37ReadyStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -118,6 +137,43 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
     setSetup(saved?.setup ?? "");
   }, [identity, saved?.identity, saved?.kind, saved?.shape, saved?.setup]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Whether new ready machines start signed in to Claude (the Claude card above).
+  useEffect(() => {
+    if (!bridge?.claudeTokenStatus) return;
+    let cancelled = false;
+    const read = () => {
+      void bridge.claudeTokenStatus!().then((next) => {
+        if (!cancelled) setClaudeSaved(next && !next.unknown ? next.saved : null);
+      }, () => undefined);
+    };
+    read();
+    const off = bridge.onClaudeTokenChanged?.(read);
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, [bridge]);
+
+  // A setup to offer from the repo's lockfile, read from the project's top
+  // folder once the settings are open. Unpinned on purpose: the files are
+  // where the project tab is bound.
+  const showSettings = mine != null || expanded;
+  useEffect(() => {
+    if (!showSettings || !identity) return;
+    const files = window.ade.files;
+    if (!files?.listWorkspaces || !files.listTree) return;
+    let cancelled = false;
+    void files.listWorkspaces().then(async (workspaces) => {
+      const primary = workspaces.find((workspace) => workspace.kind === "primary") ?? null;
+      if (!primary || cancelled) return;
+      const nodes = await files.listTree({ workspaceId: primary.id, depth: 1 });
+      if (!cancelled) setSuggestion(agent37SetupSuggestion(nodes.filter((node) => node.type === "file").map((node) => node.name)));
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [identity, showSettings]);
+
   // A running prepare shows its elapsed time; one tick a second only while it runs.
   const preparing = mine?.state === "preparing" || mine?.state === "waiting";
   useEffect(() => {
@@ -159,16 +215,20 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
       title="Ready machine"
       badge={<span className="kit-tag" data-tone={tag.tone}>{tag.label}</span>}
       tone={mine?.state === "failed" ? "focus" : undefined}
-      hint="A cloud machine kept set up and asleep, so a new chat on it starts in seconds."
+      hint={`ADE keeps one machine with ${projectName} cloned and set up, asleep. A new chat started on "Agent 37 · ready" in the chat's machine picker begins there in about 15 seconds, and ADE prepares the next one.`}
       actions={mine ? (
         <button type="button" className="ade-modern-btn" data-size="sm" disabled={busy} onClick={() => void run(() => remove(mine.settings.identity))}>
           Turn off
+        </button>
+      ) : identity && !expanded ? (
+        <button type="button" className="ade-modern-btn" data-size="sm" data-tone="primary" onClick={() => setExpanded(true)}>
+          Set up
         </button>
       ) : null}
     >
       {!identity ? (
         <p className="ade-ig-note">Open a project with a git origin to keep a machine ready for it.</p>
-      ) : (
+      ) : !showSettings ? null : (
         <>
           {mine?.state === "ready" ? (
             <div className="ade-ig-state" role="status">
@@ -194,6 +254,18 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
                 actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: () => { void run(() => retry(mine.settings.identity)); } }],
               }}
             />
+          ) : null}
+
+          <ol className="ade-ig-ready-steps" aria-label="What ADE does">
+            {READY_STEPS.map((label, index) => {
+              const at = mine && mine.state !== "failed" ? readyStepIndex(mine) : -1;
+              const state = at < 0 ? undefined : index < at ? "done" : index === at && preparing ? "now" : undefined;
+              return <li key={label} data-state={state} aria-current={state === "now" ? "step" : undefined}>{index + 1}. {label}</li>;
+            })}
+          </ol>
+          {/* Slot: Claude and GitHub sign-in for cloud machines (backend to come). */}
+          {claudeSaved === false ? (
+            <p className="ade-ig-note">New ready machines start signed in to Claude only after you sign in on the Claude card above.</p>
           ) : null}
 
           <div className="ade-ig-field">
@@ -225,16 +297,27 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
 
           <div className="ade-ig-field" data-align="top">
             <label className="ade-ig-field-label" htmlFor="agent37-ready-setup">Setup</label>
-            <textarea
-              id="agent37-ready-setup"
-              className="ade-settings-input ade-ig-code-input"
-              rows={2}
-              spellCheck={false}
-              disabled={busy}
-              value={setup}
-              placeholder={"npm ci\ndocker compose up -d"}
-              onChange={(event) => setSetup(event.target.value)}
-            />
+            <div style={{ display: "grid", gap: 6, minWidth: 0 }}>
+              <span className="ade-ig-note">Commands that get the project ready, like installing packages. ADE runs them after it clones the repo.</span>
+              <textarea
+                id="agent37-ready-setup"
+                className="ade-settings-input ade-ig-code-input"
+                rows={2}
+                spellCheck={false}
+                disabled={busy}
+                value={setup}
+                placeholder={"For example: npm ci"}
+                onChange={(event) => setSetup(event.target.value)}
+              />
+              {suggestion && !setup.includes(suggestion) ? (
+                <span className="ade-ig-note">
+                  Suggested from the lockfile:
+                  <button type="button" className="ade-ig-chip-btn" disabled={busy} onClick={() => setSetup((current) => (current.trim() ? `${current.trimEnd()}\n${suggestion}` : suggestion))}>
+                    {suggestion}
+                  </button>
+                </span>
+              ) : null}
+            </div>
           </div>
 
           <div className="ade-ig-figures">
@@ -263,15 +346,7 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
           ) : null}
 
           <div className="ade-ig-card-foot">
-            <SmartTooltip
-              forceEnabled
-              content={{
-                label: "Start a chat on it",
-                description: "Pick \"Agent 37 · ready\" in the machine list beside the composer, or run: ade chat create --machine agent37:ready",
-              }}
-            >
-              <span className="ade-ig-note"><Info size={13} /> Pick “Agent 37 · ready” beside the composer</span>
-            </SmartTooltip>
+            <span className="ade-ig-note" title="From an agent or a terminal: ade chat create --machine agent37:ready"><Info size={13} /> Also from the CLI</span>
             {saved == null || changed ? (
               <button
                 type="button"
