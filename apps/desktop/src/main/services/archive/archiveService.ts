@@ -27,6 +27,8 @@ import {
   type ArchivedItem,
 } from "../../../shared/types/archive";
 import { emptyArchiveCounts, isArchiveStale } from "../../../shared/archive";
+import { archiveStaleDays, isFreeUpSpaceDue, resolveLaneCleanupPolicy } from "../../../shared/laneCleanup";
+import type { LaneCleanupConfig } from "../../../shared/types/config";
 
 type LaneRuntimeDependencies = Parameters<typeof restoreUnarchivedLaneRuntime>[0];
 
@@ -35,7 +37,12 @@ type LaneRuntimeDependencies = Parameters<typeof restoreUnarchivedLaneRuntime>[0
  * IPC context, the action registry's runtime, and the sync host all carry
  * these fields under these names, so each passes itself in.
  */
-export type ArchiveServiceDeps = Omit<LaneRuntimeDependencies, "laneService"> & {
+export type ArchiveServiceDeps = Omit<LaneRuntimeDependencies, "laneService" | "projectConfigService"> & {
+  /** Also read for the lane cleanup rules: when archived things count as old and are due to be freed up. */
+  projectConfigService?: {
+    getEffective: () => ReturnType<NonNullable<LaneRuntimeDependencies["projectConfigService"]>["getEffective"]>
+      & { laneCleanup?: LaneCleanupConfig };
+  } | null;
   db: AdeDb;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
@@ -126,23 +133,39 @@ function parseArchiveActionArgs(raw: unknown): ArchiveActionArgs {
 }
 
 export function createArchiveService(deps: ArchiveServiceDeps) {
-  const listArchivedLanes = async (): Promise<ArchivedItem[]> => {
+  /** The project's lane cleanup rules; none (the defaults) when the config can't be read. */
+  const readLaneCleanup = (): LaneCleanupConfig | undefined => {
+    try {
+      return deps.projectConfigService?.getEffective().laneCleanup;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const listArchivedLanes = async (laneCleanup: LaneCleanupConfig | undefined): Promise<ArchivedItem[]> => {
     const lanes = await deps.laneService.list({ includeArchived: true, includeStatus: false });
     const archived = lanes.filter((lane): lane is typeof lane & { archivedAt: string } => Boolean(lane.archivedAt));
     if (archived.length === 0) return [];
+    const policy = resolveLaneCleanupPolicy(laneCleanup);
     const knownBytes = new Map<string, number>();
+    const failedRemovals = new Map<string, string>();
     try {
       // Written by storage insights when it measures or reclaims a worktree.
       // Zero means "never measured", not "empty".
-      const rows = deps.db.all<{ laneId: string; bytes: number }>(
-        "select lane_id as laneId, last_known_bytes as bytes from local_lane_storage_state where last_known_bytes > 0",
+      const rows = deps.db.all<{ laneId: string; bytes: number; state: string; error: string | null }>(
+        "select lane_id as laneId, last_known_bytes as bytes, reclaim_state as state, last_error as error from local_lane_storage_state",
       );
-      for (const row of rows) knownBytes.set(row.laneId, Number(row.bytes));
+      for (const row of rows) {
+        if (Number(row.bytes) > 0) knownBytes.set(row.laneId, Number(row.bytes));
+        if (row.state === "failed") failedRemovals.set(row.laneId, row.error ?? "The folder could not be removed.");
+      }
     } catch {
       // Older databases without the table: sizes stay unknown.
     }
+    const nowMs = Date.now();
     return Promise.all(archived.map(async (lane): Promise<ArchivedItem> => {
       const worktreePresent = await pathExists(lane.worktreePath);
+      const freeUpError = worktreePresent ? failedRemovals.get(lane.id) ?? null : null;
       return {
         kind: "lane",
         id: lane.id,
@@ -154,6 +177,10 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
         sizeBytes: worktreePresent ? knownBytes.get(lane.id) ?? null : null,
         worktreePresent,
         branchRef: lane.branchRef || null,
+        ...(lane.laneType !== "primary" && worktreePresent && isFreeUpSpaceDue(lane.archivedAt, policy, nowMs)
+          ? { freeUpDue: true }
+          : {}),
+        ...(freeUpError ? { freeUpError } : {}),
       };
     }));
   };
@@ -197,8 +224,9 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
   const list = async (raw?: unknown): Promise<ArchiveListResult> => {
     const args = parseArchiveListArgs(raw);
     const kinds = new Set<ArchiveItemKind>(args.kinds ?? ARCHIVE_ITEM_KINDS);
+    const laneCleanup = readLaneCleanup();
     const items: ArchivedItem[] = [];
-    if (kinds.has("lane")) items.push(...(await listArchivedLanes()));
+    if (kinds.has("lane")) items.push(...(await listArchivedLanes(laneCleanup)));
     if (kinds.has("chat") || kinds.has("shell")) {
       const rows = readArchivedSessions().filter((row) => kinds.has(sessionKind(row.toolType)));
       items.push(...(await Promise.all(rows.map(toSessionItem))));
@@ -208,13 +236,14 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
       ? items.filter((item) => isArchiveStale(item.archivedAt, olderThanDays))
       : items;
     filtered.sort((a, b) => (Date.parse(b.archivedAt) || 0) - (Date.parse(a.archivedAt) || 0));
-    return { items: filtered };
+    return { items: filtered, staleAfterDays: archiveStaleDays(laneCleanup) };
   };
 
   const summary = async (raw?: unknown): Promise<ArchiveSummary> => {
-    const olderThanDays = parseArchiveSummaryArgs(raw).olderThanDays ?? DEFAULT_ARCHIVE_STALE_DAYS;
+    const { items, staleAfterDays } = await list();
+    // The weekly reminder asks without a number: the "Free up space after" line.
+    const olderThanDays = parseArchiveSummaryArgs(raw).olderThanDays ?? staleAfterDays ?? DEFAULT_ARCHIVE_STALE_DAYS;
     const nowMs = Date.now();
-    const { items } = await list();
     const byKind = emptyArchiveCounts();
     const staleByKind = emptyArchiveCounts();
     let staleTotal = 0;

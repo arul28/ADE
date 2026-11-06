@@ -1,64 +1,44 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-  Check,
-  CloudArrowDown,
-  Desktop,
-  FilePlus,
-  GitBranch,
-  HardDrive,
-  House,
-  UserCircle,
-  type Icon,
-} from "@phosphor-icons/react";
+import { Desktop, UserCircle } from "@phosphor-icons/react";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
-import { ModernSection, SavedFlash, useSavedFlash } from "./primitives";
+import { ModernRow, ModernRows, ModernSection, SavedFlash, SettingsSelect, SettingsTextField, useSavedFlash } from "./primitives";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
-import { getNewLaneDefaultsCached, saveNewLaneDefaults, useNewLaneDefaultsState } from "../../lib/newLaneDefaultsCache";
+import { pinArg } from "../../state/laneMachineRouting";
+import { saveNewLaneDefaults, useNewLaneDefaultsState } from "../../lib/newLaneDefaultsCache";
 import { Banner } from "../ui/notice";
-import { confirmDialog } from "../ui/dialog/confirm";
+import { laneStartSentence, sameLaneStart, type LaneStart } from "../../../shared/laneStart";
 import {
-  LANE_START_DEFAULT_FROM_VALUES,
-  LANE_START_FROM_LABEL,
-  LANE_START_ON_LABEL,
-  LANE_START_ON_VALUES,
-  laneStartSentence,
-  type LaneStart,
-  type LaneStartFrom,
-  type LaneStartOn,
-} from "../../../shared/laneStart";
-import type { LaneSummary, NewLaneSettingsScope } from "../../../shared/types";
-import { LaneBranchSwitcher } from "../lanes/detail/LaneBranchSwitcher";
-import { laneHoldingBranch, startSourceBranch } from "../lanes/laneStartOptions";
+  DEFAULT_LANE_BRANCH_PATTERN,
+  laneBranchPatternProblem,
+  renderLaneBranchName,
+  renderLaneBranchPrefix,
+} from "../../../shared/laneBranchName";
+import type { BranchPullRequest, LaneSummary, NewLaneDefaultsSnapshot, NewLaneSettingsScope } from "../../../shared/types";
+import type { LaneBranchOption } from "../lanes/laneUtils";
+import { startSourceBranch } from "../lanes/laneStartOptions";
+import { LaneStartBranchField, LaneStartOnSwitch } from "../lanes/LaneStartPicker";
 import "./machineSettings.css";
 
-const FROM_ICON: Record<LaneStartFrom, Icon> = {
-  default: House,
-  primary: GitBranch,
-  branch: GitBranch,
-};
-
-const ON_ICON: Record<LaneStartOn, Icon> = {
-  remote: CloudArrowDown,
-  local: HardDrive,
-  uncommitted: FilePlus,
-};
-
-const ON_HINT: Record<LaneStartOn, string> = {
-  remote: "Fetches first, then uses what's on the remote.",
-  local: "Your local copy, with commits you haven't pushed.",
-  uncommitted: "Local, plus a copy of uncommitted work.",
-};
+/** The patterns most projects want; anything else is "Custom". `{user}` needs a git user name to show. */
+const CUSTOM_PATTERN = "__custom__";
+function patternPresets(user: string | null): Array<{ value: string; label: string }> {
+  return [
+    { value: DEFAULT_LANE_BRANCH_PATTERN, label: "ade/ prefix" },
+    ...(user ? [{ value: "{user}/{slug}", label: `Your name (${user}/)` }] : []),
+    { value: "{slug}", label: "No prefix" },
+    { value: CUSTOM_PATTERN, label: "Custom…" },
+  ];
+}
 
 /**
- * Settings → Lanes → New lanes: where every new lane starts, and on which
- * copy of that branch.
+ * Settings → Lanes → New lanes: where every new lane starts, and what its
+ * branch is called.
  *
  * Used everywhere a lane is made without a pick of its own: Auto-create lane,
  * `ade lanes create`, the phone, and the New lane dialog's first selection.
  * Saved to the account for this repository, so every computer that opens it
  * agrees (a project without a remote keeps it on this computer, and the chip
- * says so). A named branch is not offered: whoever wants every lane to start
- * from `develop` checks it out in the primary lane, right here.
+ * says so).
  */
 export function NewLaneSettingsSection() {
   const { pin } = useSettingsMachineScope();
@@ -68,21 +48,59 @@ export function NewLaneSettingsSection() {
   const [pending, setPending] = useState<LaneStart | null>(null);
   const start = pending ?? snapshot?.defaults.start ?? null;
 
-  // The machine's lanes: who has which branch open (for "uncommitted"), and
-  // its primary lane, whose branch the switcher changes.
+  // The branch menu's data, read the way the New lane dialog reads it: that
+  // machine's lanes (who has which branch open), its branches through the
+  // primary lane, git's user name for "mine", and the repo's open PRs.
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
-  const loadLanes = useCallback(() => {
+  const [branches, setBranches] = useState<LaneBranchOption[]>([]);
+  const [branchesLoading, setBranchesLoading] = useState(true);
+  const [pullRequests, setPullRequests] = useState<BranchPullRequest[]>([]);
+  const [gitUserName, setGitUserName] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    setBranchesLoading(true);
     void window.ade.lanes.list({ includeStatus: false }, pin)
-      .then((next) => setLanes(Array.isArray(next) ? next : []))
+      .then((next) => {
+        if (cancelled) return;
+        const list = Array.isArray(next) ? next : [];
+        setLanes(list);
+        const primary = list.find((lane) => lane.laneType === "primary");
+        if (!primary) {
+          setBranchesLoading(false);
+          return;
+        }
+        void window.ade.git.listBranches({ laneId: primary.id }, ...pinArg(pin))
+          .then((found) => {
+            if (!cancelled) setBranches(found);
+          })
+          .catch(() => {})
+          .finally(() => {
+            if (!cancelled) setBranchesLoading(false);
+          });
+        void window.ade.git.getUserIdentity({ laneId: primary.id }, ...pinArg(pin))
+          .then((identity) => {
+            if (!cancelled) setGitUserName(identity?.name ?? "");
+          })
+          .catch(() => {});
+      })
       .catch((error) => {
         console.warn("new_lane_settings.lanes_load_failed", error);
+        if (!cancelled) setBranchesLoading(false);
       });
+    // Repo-wide (GitHub): the tab's machine answers it for any target. Only
+    // decoration for the menu, so a host without it never blocks the page.
+    void Promise.resolve()
+      .then(() => window.ade.prs.listOpenForRepo())
+      .then((next) => {
+        if (!cancelled) setPullRequests(next);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
     // Keyed on the pin's identity, not the object.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pin?.key]);
-  useEffect(() => {
-    loadLanes();
-  }, [loadLanes]);
 
   const save = useCallback(async (next: LaneStart) => {
     if (!snapshot) return;
@@ -99,22 +117,10 @@ export function NewLaneSettingsSection() {
     }
   }, [fail, flash, pin, projectRoot, snapshot]);
 
-  const primaryLane = lanes.find((lane) => lane.laneType === "primary") ?? null;
-  const confirmPrimarySwitch = useCallback(({ from, to }: { from: string; to: string }) => confirmDialog({
-    title: `Switch the primary lane to ${to}?`,
-    message: (
-      <>
-        The primary lane's folder moves from <b>{from}</b> to <b>{to}</b>. New lanes that start from the primary
-        lane's branch will start from <b>{to}</b>.
-      </>
-    ),
-    confirmLabel: `Switch to ${to}`,
-  }), []);
-  const afterPrimarySwitch = useCallback(() => {
-    loadLanes();
-    void getNewLaneDefaultsCached({ projectRoot, pin, force: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadLanes, pin?.key, projectRoot]);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const pick = (next: LaneStart) => {
+    if (start && !sameLaneStart(next, start)) void save(next);
+  };
 
   if (failed && !snapshot) {
     return (
@@ -140,14 +146,12 @@ export function NewLaneSettingsSection() {
   }
 
   const sourceBranch = startSourceBranch(start, snapshot);
-  const holder = laneHoldingBranch(sourceBranch, lanes);
 
   return (
     <>
       <div className="ade-nl-meta">
         <span>
-          Auto-create lane and <code>ade lanes create</code> start new lanes this way. You can change it for one lane
-          when you make it.
+          Auto-create lane and <code>ade lanes create</code> use these. You can change both when you make a lane.
         </span>
         <span className="ade-nl-meta-end">
           <SavedFlash state={saveState} />
@@ -155,101 +159,155 @@ export function NewLaneSettingsSection() {
         </span>
       </div>
 
-      <ModernSection size="step" group="New lanes" anchor="new-lane-start" title="Start from">
-        <div role="radiogroup" aria-label="Start from" className="ade-nl-grid2">
-          {LANE_START_DEFAULT_FROM_VALUES.map((from) => {
-            const active = start.from === from;
-            const FromIcon = FROM_ICON[from];
-            const branch = from === "default" ? snapshot.defaultBranch : snapshot.primaryBranch;
-            const pick = () => {
-              if (!active) void save({ from, on: start.on });
-            };
-            // A div, not a button: the primary card holds the branch switcher,
-            // and a button cannot hold another.
-            return (
-              <div
-                key={from}
-                role="radio"
-                tabIndex={0}
-                aria-checked={active}
-                className="ade-ap-choice"
-                data-active={active}
-                onClick={pick}
-                onKeyDown={(event) => {
-                  if (event.target !== event.currentTarget) return;
-                  if (event.key === " " || event.key === "Enter") {
-                    event.preventDefault();
-                    pick();
-                  }
-                }}
-              >
-                <span className="ade-modern-choice-body">
-                  <span className="ade-modern-choice-title">
-                    <FromIcon size={14} />
-                    {LANE_START_FROM_LABEL[from]}
-                    {active ? <Check size={12} weight="bold" className="ade-ap-check" /> : null}
-                  </span>
-                  {from === "primary" && primaryLane ? (
-                    // Switching the primary lane's branch is how a project
-                    // points every new lane at another branch.
-                    <span
-                      className="ade-nl-primary"
-                      title="Switch the primary lane's branch to change where new lanes start."
-                      onClick={(event) => event.stopPropagation()}
-                      onKeyDown={(event) => event.stopPropagation()}
-                    >
-                      <LaneBranchSwitcher
-                        lane={primaryLane}
-                        active
-                        pin={pin}
-                        confirmSwitch={confirmPrimarySwitch}
-                        onSwitched={afterPrimarySwitch}
-                      />
-                    </span>
-                  ) : (
-                    <span className="ade-modern-choice-hint ade-nl-mono">
-                      {branch || (from === "primary" ? "No branch checked out" : "The repository's main branch")}
-                    </span>
-                  )}
-                </span>
+      <ModernSection size="step" group="New lanes" anchor="new-lane-start" title="Branch">
+        <ModernRows>
+          <ModernRow
+            title="Start from"
+            hint={sourceBranch
+              ? laneStartSentence(start, sourceBranch, "New lanes")
+              : <span className="ade-nl-warn">The primary lane has no branch checked out, so new lanes can't start from it.</span>}
+            control={(
+              <div className="ade-nl-start">
+                <LaneStartBranchField
+                  start={start}
+                  onChange={pick}
+                  snapshot={snapshot}
+                  branches={branches}
+                  lanes={lanes}
+                  pullRequests={pullRequests}
+                  currentUserName={gitUserName}
+                  loading={branchesLoading}
+                  disabled={pending !== null}
+                  open={menuOpen}
+                  onOpenChange={setMenuOpen}
+                />
+                <LaneStartOnSwitch start={start} onChange={pick} disabled={pending !== null} />
               </div>
-            );
-          })}
-        </div>
-      </ModernSection>
-
-      <ModernSection size="step" group="New lanes" title="On">
-        <div role="radiogroup" aria-label="On" className="ade-ap-grid3">
-          {LANE_START_ON_VALUES.map((on) => {
-            const active = start.on === on;
-            const OnIcon = ON_ICON[on];
-            return (
-              <button
-                key={on}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                className="ade-ap-choice"
-                data-active={active}
-                onClick={() => {
-                  if (!active) void save({ ...start, on });
-                }}
-              >
-                <span className="ade-modern-choice-body">
-                  <span className="ade-modern-choice-title">
-                    <OnIcon size={14} />
-                    {LANE_START_ON_LABEL[on]}
-                    {active ? <Check size={12} weight="bold" className="ade-ap-check" /> : null}
-                  </span>
-                  <span className="ade-modern-choice-hint">{ON_HINT[on]}</span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        <StartSummary start={start} sourceBranch={sourceBranch} holder={holder} />
+            )}
+          />
+          <BranchPatternRow snapshot={snapshot} flash={flash} fail={fail} />
+        </ModernRows>
       </ModernSection>
     </>
+  );
+}
+
+/**
+ * Settings → Lanes → New lanes → Branch names: the pattern every new branch
+ * follows, picked from a few common ones or typed as a custom pattern.
+ */
+function BranchPatternRow({
+  snapshot,
+  flash,
+  fail,
+}: {
+  snapshot: NewLaneDefaultsSnapshot;
+  flash: () => void;
+  fail: (message: string) => void;
+}) {
+  const { pin } = useSettingsMachineScope();
+  const projectRoot = useAppStore(selectActiveProjectRoot);
+  const user = snapshot.branchUser ?? null;
+  const saved = snapshot.defaults.branchPattern ?? DEFAULT_LANE_BRANCH_PATTERN;
+  const presets = patternPresets(user);
+  const savedIsPreset = presets.some((preset) => preset.value === saved);
+  const [custom, setCustom] = useState(!savedIsPreset);
+  const [draft, setDraft] = useState(saved);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    setDraft(saved);
+    setError(null);
+  }, [saved]);
+
+  const shown = custom ? draft.trim() : saved;
+  const problem = laneBranchPatternProblem(shown);
+  const example = problem ? null : renderLaneBranchName(renderLaneBranchPrefix(shown, user), "Fix login bug");
+
+  const persist = async (pattern: string) => {
+    if (pattern === saved || saving) return;
+    const invalid = laneBranchPatternProblem(pattern);
+    if (invalid) {
+      setError(invalid);
+      return;
+    }
+    setSaving(true);
+    try {
+      // The lane's machine also refuses a prefix that clashes with a branch it has.
+      await saveNewLaneDefaults({ projectRoot, pin, defaults: { branchPattern: pattern } });
+      setError(null);
+      flash();
+    } catch (err) {
+      const message = err instanceof Error ? err.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "") : String(err);
+      setError(message);
+      fail(message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <ModernRow
+      anchor="new-lane-branch-pattern"
+      title="Branch names"
+      hint={error || (custom && problem)
+        ? <span className="ade-nl-warn">{error ?? problem}</span>
+        : <>“Fix login bug” becomes <code className="ade-nl-code">{example}</code></>}
+      control={(
+        <SettingsSelect
+          ariaLabel="Branch names"
+          value={custom ? CUSTOM_PATTERN : saved}
+          options={presets}
+          disabled={saving}
+          style={{ width: 240 }}
+          onChange={(value) => {
+            setError(null);
+            if (value === CUSTOM_PATTERN) {
+              setDraft(saved);
+              setCustom(true);
+              return;
+            }
+            setCustom(false);
+            void persist(value);
+          }}
+        />
+      )}
+    >
+      {custom ? (
+        <div className="ade-nl-custom">
+          <SettingsTextField
+            value={draft}
+            onChange={(value) => {
+              setDraft(value);
+              setError(null);
+            }}
+            onBlur={() => void persist(draft.trim())}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void persist(draft.trim());
+              }
+              if (event.key === "Escape") {
+                setDraft(saved);
+                setError(null);
+              }
+            }}
+            ariaLabel="Branch name pattern"
+            placeholder={DEFAULT_LANE_BRANCH_PATTERN}
+            mono
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            disabled={saving}
+            style={{ maxWidth: 320 }}
+          />
+          <span>
+            <code className="ade-nl-code">{"{slug}"}</code> is the lane name and goes last.{" "}
+            <code className="ade-nl-code">{"{user}"}</code> is your git name.
+          </span>
+        </div>
+      ) : null}
+    </ModernRow>
   );
 }
 
@@ -267,41 +325,5 @@ function ScopeChip({ scope }: { scope: NewLaneSettingsScope }) {
       {account ? "Your account" : "This computer"}
       {account && scope.repo ? <span className="ade-nl-scope-repo">{scope.repo.replace(/^github\.com\//, "")}</span> : null}
     </span>
-  );
-}
-
-/** The one-line answer: "New lanes will be created from the latest main on the remote." */
-function StartSummary({ start, sourceBranch, holder }: { start: LaneStart; sourceBranch: string; holder: LaneSummary | null }) {
-  if (!sourceBranch) {
-    return (
-      <Banner
-        layout="inline"
-        model={{
-          id: "new-lane-start-no-branch",
-          tone: "warning",
-          title: "The primary lane has no branch checked out.",
-          detail: "New lanes can't start from it until it's on a branch.",
-        }}
-      />
-    );
-  }
-  if (start.on === "uncommitted" && !holder) {
-    return (
-      <Banner
-        layout="inline"
-        model={{
-          id: "new-lane-start-nothing-to-copy",
-          tone: "warning",
-          title: `${sourceBranch} isn't open in any lane, so there's no uncommitted work to copy.`,
-          detail: `New lanes will be created from local ${sourceBranch}.`,
-        }}
-      />
-    );
-  }
-  return (
-    <div className="ade-nl-summary">
-      <GitBranch size={14} />
-      <span>{laneStartSentence(start, sourceBranch, "New lanes")}</span>
-    </div>
   );
 }

@@ -238,6 +238,7 @@ export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig 
   const start = mode === "new" && value.start != null ? normalizeLaneStart(value.start) : null;
   if (mode === "new" && value.start != null && !start) throw new Error("Invalid lane start.");
   const branchRef = asTrimmedString(value.branchRef);
+  const branchName = mode === "new" ? asTrimmedString(value.branchName) : null;
   const templateId = asTrimmedString(value.templateId);
   const color = asTrimmedString(value.color);
   // The canonical strict parser, so a malformed issue degrades to null instead
@@ -247,6 +248,7 @@ export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig 
     mode,
     ...(start ? { start } : {}),
     ...(branchRef ? { branchRef } : {}),
+    ...(branchName ? { branchName } : {}),
     ...(templateId ? { templateId } : {}),
     ...(color ? { color } : {}),
     ...(linearIssue ? { linearIssue } : {}),

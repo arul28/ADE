@@ -17,7 +17,9 @@ import type {
   StorageCategorySnapshot,
   StorageCleanupTarget,
   StorageItem,
+  StorageLaneSizingState,
   StorageSnapshotExtras,
+  StorageVolumeRootKind,
 } from "../../../../shared/types/storage";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { ModernSection } from "../primitives";
@@ -41,14 +43,13 @@ import {
   dbBreakdownRows,
   dbSizeSamples,
   dbSizeTrend,
-  formatBytes,
-  formatMeasuredBytes,
   freeSpaceLevel,
   groupLaneItems,
   groupRowsByLabel,
   maintenanceOutcome,
 } from "../storage/storageView";
 import { FreeSpaceMeter, StackedBreakdown } from "./healthCharts";
+import { useStorageBytes } from "../storage/useStorageBytes";
 import type { HealthData } from "./useHealthData";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { decodeSettingsHash } from "../settingsHash";
@@ -78,6 +79,7 @@ export const HEALTH_DETAIL_ANCHORS: ReadonlySet<string> = new Set([
 ]);
 
 export function HealthSpace({ data }: { data: HealthData }) {
+  const { bytes: storageBytes, measured: storageMeasured, platform } = useStorageBytes();
   // Every call below acts on the machine this Settings page shows.
   const { pin } = useSettingsMachineScope();
   const { snapshot, pressureState, laneIdByKey, archivedAtByKey, loading, refreshing, error } = data.storage;
@@ -124,13 +126,13 @@ export function HealthSpace({ data }: { data: HealthData }) {
         ? {
             runMaintenance: runMaintenanceNow,
             onMaintenanceDone: (report: MaintenanceRunReport) => {
-              const outcome = maintenanceOutcome(report);
+              const outcome = maintenanceOutcome(report, platform);
               if (outcome.failed) notify(outcome.message, "warning");
             },
           }
         : {}),
     };
-  }, [notify, plan, runMaintenanceNow]);
+  }, [notify, plan, platform, runMaintenanceNow]);
 
   const canCleanUp = Boolean(plan && (plan.fsTargets.length > 0 || runMaintenanceNow));
 
@@ -140,7 +142,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
     try {
       const result = await compressNow(pin);
       notify(result.filesCompressed > 0
-        ? `Compressed ${result.filesCompressed} ${result.filesCompressed === 1 ? "file" : "files"}, saved ${formatBytes(result.savedBytes)}`
+        ? `Compressed ${result.filesCompressed} ${result.filesCompressed === 1 ? "file" : "files"}, saved ${storageBytes(result.savedBytes)}`
         : "Nothing was ready to compress");
       refreshAfterChange();
     } catch (err) {
@@ -179,8 +181,12 @@ export function HealthSpace({ data }: { data: HealthData }) {
   const dbTrend = dbSizeTrend(dbSamples);
   const database = byId.get("database");
   const level = snapshot ? freeSpaceLevel(snapshot.volume.freeBytes, snapshot.volume.totalBytes) : undefined;
+  const laneSizing = snapshot?.laneSizing;
+  const measuringLanes = Boolean(laneSizing?.running);
+  const volumes = snapshot?.volumes ?? [];
+  const purgeable = snapshot?.volume.purgeableBytes ?? 0;
   const cleanLabel = plan && plan.estimatedBytes > 0
-    ? `Clean up safely · ${plan.partial ? "≥ " : ""}${formatBytes(plan.estimatedBytes)}`
+    ? `Clean up safely · ${plan.partial ? "≥ " : ""}${storageBytes(plan.estimatedBytes)}`
     : "Clean up safely";
 
   return (
@@ -190,19 +196,21 @@ export function HealthSpace({ data }: { data: HealthData }) {
         anchor="storage"
         title="Storage"
         hint={snapshot
-          ? `ADE keeps ${formatMeasuredBytes(snapshot.totalAdeBytes, snapshot.truncated)} for this project and its own temporary files. Measured ${relativeWhen(snapshot.generatedAt)}.`
+          ? `ADE keeps ${storageMeasured(snapshot.totalAdeBytes, snapshot.truncated)} for this project and its own temporary files. ${measuredLine(snapshot.generatedAt, snapshot.truncated, lanes, laneSizing)}`
           : "What ADE keeps for this project, and what you can clear."}
         actions={snapshot ? (
           <>
             <button
               type="button"
-              onClick={() => void loadStorage({ force: true })}
-              disabled={refreshing}
+              // Also measures lane folders in full, in the background; the page
+              // shows the progress and never waits for it.
+              onClick={() => void loadStorage({ force: true, measureLanes: true })}
+              disabled={refreshing || measuringLanes}
               className="ade-modern-btn"
               data-variant="ghost"
             >
-              <ArrowClockwise size={13} className={refreshing ? "animate-spin" : undefined} />
-              {refreshing ? "Checking" : "Check again"}
+              <ArrowClockwise size={13} className={refreshing || measuringLanes ? "animate-spin" : undefined} />
+              {refreshing ? "Checking" : measuringLanes ? "Measuring lanes" : "Check again"}
             </button>
             {canCleanUp ? (
               <button
@@ -248,34 +256,42 @@ export function HealthSpace({ data }: { data: HealthData }) {
           <>
             <div className="ade-modern-stats">
               <div className="ade-modern-stat">
-                <span className="kit-eyebrow">Free on disk</span>
+                <span className="kit-eyebrow">{volumes.length > 1 ? "Free on project drive" : "Free on disk"}</span>
                 <span className="ade-modern-stat-value">
                   <span
                     className="kit-stat kit-num"
                     style={level ? { color: level === "crit" ? "var(--kit-crit)" : "var(--kit-warn)" } : undefined}
                   >
-                    {formatBytes(snapshot.volume.freeBytes)}
+                    {storageBytes(snapshot.volume.freeBytes)}
                   </span>
                 </span>
                 <FreeSpaceMeter freeBytes={snapshot.volume.freeBytes} totalBytes={snapshot.volume.totalBytes} level={level} />
                 <span className="ade-modern-stat-sub">
                   {snapshot.volume.totalBytes > 0
-                    ? `${Math.round((snapshot.volume.freeBytes / snapshot.volume.totalBytes) * 100)}% of ${formatBytes(snapshot.volume.totalBytes)} free`
+                    ? `${Math.round((snapshot.volume.freeBytes / snapshot.volume.totalBytes) * 100)}% of ${storageBytes(snapshot.volume.totalBytes)} free`
                     : "Disk size unknown"}
                   {pressureState === "critical" || pressureState === "exhausted" ? " · ADE is pausing heavy work" : ""}
                 </span>
+                {purgeable > 0 ? (
+                  <span
+                    className="ade-modern-stat-sub"
+                    title="Space macOS frees by itself when an app needs it, like old local snapshots and files it can download again. Finder counts it as available too."
+                  >
+                    Includes about {storageBytes(purgeable)} macOS can clear on its own
+                  </span>
+                ) : null}
               </div>
               <div className="ade-modern-stat">
                 <span className="kit-eyebrow">ADE data</span>
                 <span className="ade-modern-stat-value">
-                  <span className="kit-stat kit-num">{formatMeasuredBytes(snapshot.totalAdeBytes, snapshot.truncated)}</span>
+                  <span className="kit-stat kit-num">{storageMeasured(snapshot.totalAdeBytes, snapshot.truncated)}</span>
                 </span>
                 <span className="ade-modern-stat-sub" title="This project's lanes, chats, proof, caches and database, plus ADE's temporary files on this machine">Lanes, chats, proof, caches and database.</span>
               </div>
               <div className="ade-modern-stat">
                 <span className="kit-eyebrow">Database</span>
                 <span className="ade-modern-stat-value">
-                  <span className="kit-stat kit-num">{database ? formatMeasuredBytes(database.bytes, database.partial) : "—"}</span>
+                  <span className="kit-stat kit-num">{database ? storageMeasured(database.bytes, database.partial) : "—"}</span>
                   {dbTrend && dbTrend !== "flat" ? (
                     <span className="kit-tag" data-tone={dbTrend === "up" ? "warn" : "ok"}>
                       {dbTrend === "up" ? "growing" : "shrinking"}
@@ -286,7 +302,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
                   <span className="usage-stat-trend">
                     <UsageSparkline
                       values={dbSamples.map((sample) => sample.bytes)}
-                      label={`Database size after each cleanup, from ${formatBytes(dbSamples[0]!.bytes)} to ${formatBytes(dbSamples[dbSamples.length - 1]!.bytes)}`}
+                      label={`Database size after each cleanup, from ${storageBytes(dbSamples[0]!.bytes)} to ${storageBytes(dbSamples[dbSamples.length - 1]!.bytes)}`}
                     />
                   </span>
                 ) : (
@@ -297,9 +313,30 @@ export function HealthSpace({ data }: { data: HealthData }) {
 
             <StackedBreakdown series={series} ariaLabel="What ADE keeps, by category" />
 
+            {volumes.length > 1 ? (
+              <div className="ade-st-items" aria-label="Drives ADE keeps data on">
+                {volumes.map((volume) => (
+                  <ItemRow
+                    key={volume.roots.map((root) => root.path).join("|")}
+                    label={volumeLabel(volume.roots.map((root) => root.kind))}
+                    size={volume.totalBytes > 0
+                      ? `${storageBytes(volume.freeBytes)} free of ${storageBytes(volume.totalBytes)}`
+                      : `${storageBytes(volume.freeBytes)} free`}
+                    detail={volume.purgeableBytes
+                      ? `Includes about ${storageBytes(volume.purgeableBytes)} macOS can clear on its own`
+                      : undefined}
+                    path={volume.roots.map((root) => root.path).join(" · ")}
+                  />
+                ))}
+              </div>
+            ) : null}
+
             {snapshot.truncated ? (
               <p className="ade-modern-muted">
                 Some folders were too big to measure in one pass. Sizes marked ≥ are at least that much.
+                {lanes?.partial && !measuringLanes && laneSizing
+                  ? " ADE measures lane folders in full in the background; Check again starts that now."
+                  : ""}
               </p>
             ) : null}
           </>
@@ -319,7 +356,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
                   {row.label}
                   {row.count > 1 ? <span className="ade-health-plan-count kit-num"> · {row.count}</span> : null}
                 </span>
-                <span className="kit-num">{formatBytes(row.bytes)}</span>
+                <span className="kit-num">{storageBytes(row.bytes)}</span>
               </div>
             )) : (
               <div className="ade-health-plan-row"><span className="ade-modern-muted">No files need removing right now.</span></div>
@@ -328,7 +365,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
             {plan.rows.length > 0 ? (
               <div className="ade-health-plan-row" data-total="true">
                 <span>Files to remove</span>
-                <span className="kit-num">{plan.partial ? "≥ " : ""}{formatBytes(plan.estimatedBytes)}</span>
+                <span className="kit-num">{plan.partial ? "≥ " : ""}{storageBytes(plan.estimatedBytes)}</span>
               </div>
             ) : null}
             {plan.alsoRuns.map((line) => (
@@ -412,6 +449,46 @@ export function HealthSpace({ data }: { data: HealthData }) {
   );
 }
 
+/**
+ * When the numbers were taken, without claiming more than is true: "Measured
+ * just now" only when every size is whole, and the lane sizes' own age when
+ * they come from the background measurement.
+ */
+function measuredLine(
+  generatedAt: string,
+  truncated: boolean,
+  lanes: StorageCategorySnapshot | undefined,
+  laneSizing: StorageLaneSizingState | undefined,
+): string {
+  const parts = [truncated
+    ? `Checked ${relativeWhen(generatedAt)}; sizes marked ≥ are not measured in full yet.`
+    : `Measured ${relativeWhen(generatedAt)}.`];
+  if (laneSizing?.running) {
+    parts.push(laneSizing.total > 0
+      ? `Measuring lane folders, ${Math.min(laneSizing.done + 1, laneSizing.total)} of ${laneSizing.total}…`
+      : "Measuring lane folders…");
+  } else {
+    const oldest = (lanes?.items ?? [])
+      .map((item) => item.measuredAt)
+      .filter((value): value is string => Boolean(value))
+      .sort()[0];
+    if (oldest) parts.push(`Lane folders measured ${relativeWhen(oldest)}.`);
+  }
+  return parts.join(" ");
+}
+
+const VOLUME_ROOT_LABEL: Record<StorageVolumeRootKind, string> = {
+  project: "This project and its lanes",
+  ade_home: "ADE's own folder",
+  temp: "Temporary files",
+};
+
+/** "This project and its lanes", or "ADE's own folder and temporary files". */
+function volumeLabel(kinds: StorageVolumeRootKind[]): string {
+  const labels = kinds.map((kind, index) => (index === 0 ? VOLUME_ROOT_LABEL[kind] : VOLUME_ROOT_LABEL[kind].toLowerCase()));
+  return labels.length <= 1 ? labels[0] ?? "" : `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+}
+
 // ---------------------------------------------------------------------------
 // Details
 // ---------------------------------------------------------------------------
@@ -469,18 +546,27 @@ function ActionButton({ label, icon, onClick }: { label: string; icon: React.Rea
   );
 }
 
+type Measured = (bytes: number, partial: boolean | undefined) => string;
+
 /** "Build output removed 3d ago (1.2 GB): node_modules. Reinstall to rebuild." while those folders are still gone. */
-function buildOutputNote(item: StorageItem): string | null {
+function buildOutputNote(item: StorageItem, measured: Measured): string | null {
   const removed = item.buildOutputRemoved;
   if (!removed || removed.folders.length === 0) return null;
-  const size = removed.bytes > 0 || removed.partial ? ` (${formatMeasuredBytes(removed.bytes, removed.partial)})` : "";
+  const size = removed.bytes > 0 || removed.partial ? ` (${measured(removed.bytes, removed.partial)})` : "";
   return `Build output removed ${relativeWhen(removed.at)}${size}: ${removed.folders.join(", ")}. Reinstall or build to bring it back.`;
 }
 
-function withBuildOutputNote(line: string | undefined, item: StorageItem): string | undefined {
-  const note = buildOutputNote(item);
+function withBuildOutputNote(line: string | undefined, item: StorageItem, measured: Measured): string | undefined {
+  const note = buildOutputNote(item, measured);
   if (!note) return line;
   return line ? `${line}. ${note}` : note;
+}
+
+/** "…. Measured 3h ago" for a lane size from the background measurement. */
+function withMeasuredNote(line: string | undefined, item: StorageItem): string | undefined {
+  if (!item.measuredAt) return line;
+  const note = `Measured ${relativeWhen(item.measuredAt)}`;
+  return line ? `${line} · ${note}` : note;
 }
 
 function LaneDetails({
@@ -498,6 +584,7 @@ function LaneDetails({
   onReclaim: (laneId: string) => void;
   onRestore: (laneId: string) => void;
 }) {
+  const { measured: storageMeasured } = useStorageBytes();
   const { active, archived, orphaned } = groupLaneItems(category.items);
   const hidden = Math.max(0, (category.itemCount ?? category.items.length) - category.items.length);
   return (
@@ -511,10 +598,10 @@ function LaneDetails({
             key={item.id}
             label={<>{item.label} <span className="kit-tag">Archived</span></>}
             path={item.path}
-            size={reclaimed ? "Folder removed" : formatMeasuredBytes(item.bytes, item.partial)}
+            size={reclaimed ? "Folder removed" : storageMeasured(item.bytes, item.partial)}
             detail={reclaimed
               ? "The lane, branch and chats are kept. Restoring it recreates the folder."
-              : withBuildOutputNote(archivedAt ? `Archived ${relativeWhen(archivedAt)}` : item.detail, item)}
+              : withMeasuredNote(withBuildOutputNote(archivedAt ? `Archived ${relativeWhen(archivedAt)}` : item.detail, item, storageMeasured), item)}
             action={laneId ? (
               reclaimed
                 ? <ActionButton label="Restore lane" icon={<ArrowClockwise size={13} />} onClick={() => onRestore(laneId)} />
@@ -530,7 +617,7 @@ function LaneDetails({
             key={item.id}
             label={<>{item.label} <span className="kit-tag" data-tone="warn">Left over</span></>}
             path={item.path}
-            size={formatMeasuredBytes(item.bytes, item.partial)}
+            size={storageMeasured(item.bytes, item.partial)}
             detail="Left over from a deleted lane. ADE checks it for uncommitted work before removing it."
             action={target && (item.bytes > 0 || item.partial) ? (
               <ActionButton
@@ -551,8 +638,8 @@ function LaneDetails({
           key={item.id}
           label={item.label}
           path={item.path}
-          size={formatMeasuredBytes(item.bytes, item.partial)}
-          detail={buildOutputNote(item) ?? "In use, kept"}
+          size={storageMeasured(item.bytes, item.partial)}
+          detail={withMeasuredNote(buildOutputNote(item, storageMeasured) ?? "In use, kept", item)}
           muted
         />
       ))}
@@ -571,6 +658,7 @@ function LeftoverDetails({
   laneIdByKey: Map<string, string>;
   onRequestCleanup: (request: CleanupRequest) => void;
 }) {
+  const { bytes: storageBytes, measured: storageMeasured } = useStorageBytes();
   const find = (id: StorageCategoryId) => categories.find((category) => category.id === id);
   const build = find("build_release");
   const caches = find("caches");
@@ -595,13 +683,13 @@ function LeftoverDetails({
             <ItemRow
               key={row.label}
               label={row.count > 1 ? `${row.label} (${row.count})` : row.label}
-              size={formatBytes(row.bytes)}
+              size={storageBytes(row.bytes)}
             />
           ))}
           {sum(buildCleanable) > 0 ? (
             <div>
               <ActionButton
-                label={`Remove old staging · ${formatBytes(sum(buildCleanable))}…`}
+                label={`Remove old staging · ${storageBytes(sum(buildCleanable))}…`}
                 icon={<Broom size={13} />}
                 onClick={() => onRequestCleanup({
                   title: "Remove old build and release staging",
@@ -620,7 +708,7 @@ function LeftoverDetails({
             <ItemRow
               key={item.id}
               label={item.label}
-              size={formatMeasuredBytes(item.bytes, item.partial)}
+              size={storageMeasured(item.bytes, item.partial)}
               detail={item.detail}
               muted={item.safety === "protected"}
             />
@@ -628,7 +716,7 @@ function LeftoverDetails({
           {sum(cacheCleanable) > 0 ? (
             <div>
               <ActionButton
-                label={`Clear caches · ${formatBytes(sum(cacheCleanable))}…`}
+                label={`Clear caches · ${storageBytes(sum(cacheCleanable))}…`}
                 icon={<Broom size={13} />}
                 onClick={() => onRequestCleanup({
                   title: "Clear caches",
@@ -647,7 +735,7 @@ function LeftoverDetails({
             <ItemRow
               key={entry.item.id}
               label={entry.item.label}
-              size={formatMeasuredBytes(entry.item.bytes, entry.item.partial)}
+              size={storageMeasured(entry.item.bytes, entry.item.partial)}
               detail={entry.item.lastModifiedAt ? `Last added ${relativeWhen(entry.item.lastModifiedAt)}` : entry.item.detail}
               action={(
                 <ActionButton
@@ -675,7 +763,7 @@ function LeftoverDetails({
             <ItemRow
               key={item.id}
               label={item.label}
-              size={formatBytes(item.bytes)}
+              size={storageBytes(item.bytes)}
               detail={item.lastModifiedAt ? `Saved ${relativeWhen(item.lastModifiedAt)}` : undefined}
               action={(
                 <ActionButton
@@ -709,6 +797,7 @@ function HistoryDetails({
   laneIdByKey: Map<string, string>;
   onRequestCleanup: (request: CleanupRequest) => void;
 }) {
+  const { bytes: storageBytes, measured: storageMeasured } = useStorageBytes();
   if (!category || (category.bytes <= 0 && !category.partial)) return null;
   const compressible = category.compressibleBytes ?? 0;
   const removable = new Map(
@@ -727,7 +816,7 @@ function HistoryDetails({
             key={item.id}
             id={target ? "storage-deleted-chats" : undefined}
             label={item.label}
-            size={formatMeasuredBytes(item.bytes, item.partial)}
+            size={storageMeasured(item.bytes, item.partial)}
             detail={target ? item.detail : undefined}
             path={target ? item.path : undefined}
             action={target ? (
@@ -756,8 +845,8 @@ function HistoryDetails({
       {compressible > 0 && onCompress ? (
         <ItemRow
           label="Older than two weeks"
-          size={formatBytes(compressible)}
-          detail={`${formatBytes(compressible)} of old history can be compressed. Nothing is lost; the saving shows after it runs.`}
+          size={storageBytes(compressible)}
+          detail={`${storageBytes(compressible)} of old history can be compressed. Nothing is lost; the saving shows after it runs.`}
           action={(
             <button type="button" onClick={onCompress} disabled={compressing} className="ade-modern-btn" data-size="sm">
               <FileZip size={13} className={compressing ? "animate-spin" : undefined} />
@@ -786,6 +875,7 @@ function ProviderHistoryDetails({
   copies: DeletedLaneProviderCopies | null;
   onRequestCleanup: (request: CleanupRequest) => void;
 }) {
+  const { bytes: storageBytes, measured: storageMeasured } = useStorageBytes();
   if (entries.length === 0 && !copies) return null;
   return (
     <DetailBlock
@@ -797,7 +887,7 @@ function ProviderHistoryDetails({
         <ItemRow
           key={entry.provider}
           label={entry.label}
-          size={formatMeasuredBytes(entry.bytes, entry.partial)}
+          size={storageMeasured(entry.bytes, entry.partial)}
           detail={entry.note}
           path={entry.paths.join(" · ")}
         />
@@ -805,7 +895,7 @@ function ProviderHistoryDetails({
       {copies ? (
         <ItemRow
           label="Copies of chats from deleted lanes"
-          size={formatBytes(copies.bytes)}
+          size={storageBytes(copies.bytes)}
           detail={`Claude and Codex session files ADE started for ${copies.chatCount} ${copies.chatCount === 1 ? "chat" : "chats"} it no longer has. Sessions you imported from your own CLI are never included.`}
           action={(
             <ActionButton
@@ -831,11 +921,12 @@ function DatabaseDetails({
   category: StorageCategorySnapshot | undefined;
   snapshot: { extras?: { dbBreakdown?: DbBreakdownEntry[] } };
 }) {
-  const rows = dbBreakdownRows(snapshot.extras?.dbBreakdown);
+  const { measured: storageMeasured, platform } = useStorageBytes();
+  const rows = dbBreakdownRows(snapshot.extras?.dbBreakdown, platform);
   if (!category) return null;
   return (
     <DetailBlock
-      title={`${CATEGORY_META.database.name} · ${formatMeasuredBytes(category.bytes, category.partial)}`}
+      title={`${CATEGORY_META.database.name} · ${storageMeasured(category.bytes, category.partial)}`}
       hint="The database file with its write-ahead log. Table sizes are the space each table's pages take."
     >
       {rows.length === 0 ? (

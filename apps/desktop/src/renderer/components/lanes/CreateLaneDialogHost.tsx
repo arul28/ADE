@@ -7,6 +7,7 @@ import { DEFAULT_LANE_START, plainLaneStartBranch, type LaneStart } from "../../
 import { startSourceBranch } from "./laneStartOptions";
 import { getNewLaneDefaultsCached, saveNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { linearIssueLaneName, resolveLinearIssueBranchName } from "../../../shared/linearIssueBranch";
+import { branchNameProblem, renderLaneBranchName, renderLaneBranchPrefix } from "../../../shared/laneBranchName";
 import { dismissToast, showToast } from "../app/toast/toastStore";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import {
@@ -190,6 +191,10 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
 
   const [createLaneName, setCreateLaneName] = useState("");
+  // The branch follows the lane name (or the Linear issue) until the user
+  // types one; null while it follows.
+  const [editedBranchName, setEditedBranchName] = useState<string | null>(null);
+  const [createBranchProblem, setCreateBranchProblem] = useState<string | null>(null);
   const [createMode, setCreateMode] = useState<CreateLaneMode>("new");
   // Starts as the project's saved default; a pick here is for this lane only.
   const [createStart, setCreateStartState] = useState<LaneStart>(DEFAULT_LANE_START);
@@ -313,6 +318,8 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     createBaseBranchesLoadSeqRef.current += 1;
     setLaneCreated(false);
     setCreateLaneName("");
+    setEditedBranchName(null);
+    setCreateBranchProblem(null);
     setCreateMode("new");
     setCreateStartState(DEFAULT_LANE_START);
     setNewLaneDefaults(null);
@@ -334,6 +341,23 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     setCreateLaneName(value);
     laneNameChangedEmoji();
   }, [laneNameChangedEmoji]);
+
+  // What the branch is called while it follows: an issue keeps its own branch
+  // name; otherwise the project's pattern, rendered on the lane's machine.
+  const followedBranchName = useMemo(() => {
+    if (createSelectedLinearIssue) return resolveLinearIssueBranchName(createSelectedLinearIssue);
+    const name = createLaneName.trim();
+    if (!name) return "";
+    const prefix = newLaneDefaults?.branchPrefix
+      ?? renderLaneBranchPrefix(newLaneDefaults?.defaults.branchPattern ?? "", newLaneDefaults?.branchUser ?? null);
+    return renderLaneBranchName(prefix, name);
+  }, [createLaneName, createSelectedLinearIssue, newLaneDefaults]);
+  const createBranchName = editedBranchName ?? followedBranchName;
+  const handleSetCreateBranchName = useCallback((value: string) => {
+    // Cleared: follow the name again.
+    setEditedBranchName(value.trim() ? value : null);
+    setCreateBranchProblem(value.trim() ? branchNameProblem(value) : null);
+  }, []);
 
   const handleSetCreateLinearIssue = useCallback((issue: LaneLinearIssue | null) => {
     setCreateSelectedLinearIssue(issue);
@@ -441,6 +465,8 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
 
   const prepareCreateDialog = useCallback((prefillInput?: CreateLanePrefill | null) => {
     setCreateLaneName("");
+    setEditedBranchName(null);
+    setCreateBranchProblem(null);
     setCreateMode("new");
     // The colour is not cleared here: closing already cleared it, and the
     // dialog's own effect picks a free one on open. Clearing it again here, in
@@ -603,6 +629,23 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     return null;
   }, [createMode, createSelectedLinearIssue, selectedTemplateId, templates]);
 
+  /** Asks the lane's machine; false (with the reason shown under the field) when the name is taken or invalid. */
+  const branchNameIsFree = useCallback(async (branchName: string, pin: OpenProjectBinding | null): Promise<boolean> => {
+    const local = branchNameProblem(branchName);
+    if (local) {
+      setCreateBranchProblem(local);
+      return false;
+    }
+    try {
+      const check = await window.ade.lanes.checkBranchName({ name: branchName }, ...pinArg(pin));
+      setCreateBranchProblem(check.problem);
+      return !check.problem;
+    } catch {
+      // An older brain can't check; creating the lane still refuses a taken name.
+      return true;
+    }
+  }, []);
+
   const handleCreateSubmit = useCallback(async () => {
     // Configure-for-chat: validate like a create, then hand the recipe back
     // instead of creating. The composer owns the deferred creation.
@@ -613,11 +656,14 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
         return;
       }
       setCreateError(null);
+      const typedBranch = createMode === "new" ? editedBranchName?.trim() ?? "" : "";
+      if (typedBranch && !(await branchNameIsFree(typedBranch, targetPinRef.current))) return;
       onConfigured?.({
         mode: createMode,
         name: createLaneName.trim(),
         start: createMode === "new" ? createStart : null,
         branchRef: createMode === "existing" ? createImportBranch : "",
+        ...(typedBranch ? { branchName: typedBranch } : {}),
         templateId: selectedTemplateId || null,
         color: createSelectedColor,
         linearIssue: createSelectedLinearIssue,
@@ -658,6 +704,10 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       setCreateError(extrasError);
       return;
     }
+    // A typed branch name is checked where the lane will live; a followed one
+    // is the brain's to make unique.
+    const typedBranch = createMode === "new" ? editedBranchName?.trim() ?? "" : "";
+    if (typedBranch && !(await branchNameIsFree(typedBranch, pin))) return;
 
     setCreateBusy(true);
     setCreateError(null);
@@ -681,7 +731,13 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       if (createMode === "existing") {
         lane = await window.ade.lanes.importBranch({ branchRef: createImportBranch, name, operationId }, ...pinArg(pin));
       } else {
-        lane = await window.ade.lanes.create({ name, start: createStart, ...linearIssueArgs, operationId }, ...pinArg(pin));
+        lane = await window.ade.lanes.create({
+          name,
+          start: createStart,
+          ...linearIssueArgs,
+          ...(typedBranch ? { branchName: typedBranch } : {}),
+          operationId,
+        }, ...pinArg(pin));
       }
       createOperationRef.current = null;
       // A fallback the brain had to take (a failed fetch, a copy that did not
@@ -749,6 +805,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   }, [
     behavior,
     createLaneName,
+    editedBranchName,
+    branchNameIsFree,
+    targetPinRef,
     createMode,
     createStart,
     newLaneDefaults,
@@ -829,6 +888,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       onOpenChange={handleDialogOpenChange}
       createLaneName={createLaneName}
       setCreateLaneName={handleSetCreateLaneName}
+      createBranchName={createBranchName}
+      setCreateBranchName={handleSetCreateBranchName}
+      createBranchProblem={createBranchProblem}
       createMode={createMode}
       setCreateMode={setCreateMode}
       createStart={createStart}

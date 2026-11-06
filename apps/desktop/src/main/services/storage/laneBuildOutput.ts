@@ -14,6 +14,10 @@ import type { AdeDb } from "../state/kvDb";
 import { nonAsarFs } from "../shared/nonAsarFs";
 import { createLaneWorktreeLockService, LaneWorktreeLockedError } from "../lanes/laneWorktreeLockService";
 import { measureTree } from "./diskUsage";
+import { isDirectChildFolder, sameFolder } from "../shared/sameFolder";
+import { DELETING_TRASH_NAME, deletingTrashName } from "../shared/deletingTrash";
+import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
+import { gitLongPathArgs } from "../git/gitLongPaths";
 
 /**
  * Clean build output out of idle lanes.
@@ -185,13 +189,9 @@ function isSameOrWithin(parent: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
-function isDirectChild(parent: string, candidate: string): boolean {
-  const normalizedParent = path.resolve(parent);
-  const normalizedCandidate = path.resolve(candidate);
-  return normalizedCandidate !== normalizedParent
-    && path.dirname(normalizedCandidate) === normalizedParent
-    && path.basename(normalizedCandidate).trim().length > 0;
-}
+// Shared with reclaim and the storage page: a lane git reports through a
+// junction or with another drive-letter case is still the lane.
+const isDirectChild = isDirectChildFolder;
 
 /** True when `target`, or any folder between `anchor` and it, is a link (or is missing). */
 async function hasLinkOnPath(anchor: string, target: string): Promise<boolean> {
@@ -277,8 +277,9 @@ async function lastWriteMs(folder: string, stat: fs.Stats): Promise<number> {
 /**
  * Where processes on this computer are working. A lane folder that holds one
  * is in use, whoever started it. Null when the check failed (nothing is
- * removed then). Windows has no cheap way to ask; there a program holding a
- * file makes the removal fail on that file instead, and the reason is kept.
+ * removed then). Windows has no cheap way to ask; there the folder is
+ * renamed out of the lane first (`moveBuildFolderOut`), which fails, changing
+ * nothing, while any program holds it, and the reason is kept.
  */
 async function listProcessWorkingDirs(): Promise<{ dirs: string[]; supported: boolean } | null> {
   if (process.platform === "win32") return { dirs: [], supported: false };
@@ -407,6 +408,83 @@ async function removeFolder(folder: string, deadline: number): Promise<void> {
   }
 }
 
+/** What a folder held open by another program fails to rename or remove with. */
+const IN_USE_CODES = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"]);
+
+function isInUseError(error: unknown): boolean {
+  const code = errorCode(error);
+  return Boolean(code && IN_USE_CODES.has(code));
+}
+
+/**
+ * The folder as it was when its removal failed. A failed folder is tried
+ * again only once this changes (a reinstall, a build, the folder replaced),
+ * not on every daily run.
+ */
+function folderFingerprint(stat: fs.Stats): string {
+  return `${stat.ino}:${Math.floor(stat.mtimeMs)}`;
+}
+
+const backgroundRemovals = new Set<string>();
+
+/** Removes a folder already moved out of the lane, off this process; a failure waits for the next sweep. */
+function removeTrashInBackground(trashPath: string, logger: Logger): void {
+  if (backgroundRemovals.has(trashPath)) return;
+  backgroundRemovals.add(trashPath);
+  void removeTreeOffProcess(trashPath)
+    .then(() => logger.info("storage.build_output_trash_removed", { path: trashPath }))
+    .catch((error) => logger.warn("storage.build_output_trash_remove_failed", { path: trashPath, error: errorMessage(error) }))
+    .finally(() => backgroundRemovals.delete(trashPath));
+}
+
+/**
+ * Windows: build output moved out of a lane is finished from here. Only
+ * ADE's own `.ade-deleting-` names with no git checkout inside (a renamed
+ * lane folder still known to git is not trash).
+ */
+async function sweepBuildOutputTrash(worktreesDir: string, logger: Logger): Promise<void> {
+  let names: string[];
+  try {
+    names = await nonAsarFs.promises.readdir(worktreesDir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!DELETING_TRASH_NAME.test(name) || !name.includes(BUILD_TRASH_MARK)) continue;
+    const trashPath = path.join(worktreesDir, name);
+    const stat = await lstatOrNull(trashPath);
+    if (!stat?.isDirectory() || stat.isSymbolicLink()) continue;
+    if (await lstatOrNull(path.join(trashPath, ".git"))) continue;
+    removeTrashInBackground(trashPath, logger);
+  }
+}
+
+/** In a trash name, between the lane folder and the build folder: `.<lane>~build~<folder>.ade-deleting-<hex>`. */
+const BUILD_TRASH_MARK = "~build~";
+
+/**
+ * Windows: move a build folder out of the lane, then delete it in the
+ * background. The rename fails cleanly, changing nothing, when any program
+ * holds a file in the folder or works inside it; Windows gives no cheap way to
+ * ask which processes do (`listProcessWorkingDirs`), and deleting in place
+ * stopped at the first held file and left half a `node_modules` behind. The
+ * trash sits beside the lane folder in `.ade/worktrees`, on the same drive,
+ * so the rename is instant. Returns false when it cannot be moved there
+ * (another drive), and the caller removes in place.
+ */
+async function moveBuildFolderOut(candidate: Candidate, worktree: VerifiedWorktree, logger: Logger): Promise<boolean> {
+  const trashDir = path.dirname(worktree.root);
+  const trashDirStat = await lstatOrNull(trashDir);
+  if (!trashDirStat?.isDirectory() || trashDirStat.dev !== candidate.dev) return false;
+  const trashPath = path.join(
+    trashDir,
+    deletingTrashName(`${path.basename(worktree.root)}${BUILD_TRASH_MARK}${candidate.rel.split("/").join("~")}`),
+  );
+  await nonAsarFs.promises.rename(candidate.abs, trashPath);
+  removeTrashInBackground(trashPath, logger);
+  return true;
+}
+
 export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOptions) {
   const projectRoot = path.resolve(options.projectRoot);
   const worktreesDir = path.resolve(options.worktreesDir);
@@ -444,10 +522,11 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
     bytes: number;
     partial: boolean;
     error: string | null;
+    fingerprint?: string | null;
   }): void => {
     options.db.run(
-      `insert into local_lane_build_output_cleanups(id, project_id, lane_id, run_id, folder, bytes, partial, error, removed_at)
-       values(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `insert into local_lane_build_output_cleanups(id, project_id, lane_id, run_id, folder, bytes, partial, error, fingerprint, removed_at)
+       values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         randomUUID(),
         row.projectId,
@@ -457,9 +536,21 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
         Math.max(0, Math.floor(row.bytes)),
         row.partial ? 1 : 0,
         row.error,
+        row.fingerprint ?? null,
         new Date().toISOString(),
       ],
     );
+  };
+
+  /** The folder failed last time and is unchanged since: not tried again. */
+  const failedUnchanged = (projectId: string, laneId: string, folder: string, stat: fs.Stats): boolean => {
+    const last = options.db.get<{ error: string | null; fingerprint: string | null }>(
+      `select error, fingerprint from local_lane_build_output_cleanups
+        where project_id = ? and lane_id = ? and folder = ?
+        order by removed_at desc limit 1`,
+      [projectId, laneId, folder],
+    );
+    return Boolean(last?.error && last.fingerprint && last.fingerprint === folderFingerprint(stat));
   };
 
   const pruneRecords = (projectId: string): void => {
@@ -492,7 +583,7 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
   const verifyWorktree = async (worktreePath: string): Promise<VerifiedWorktree | null> => {
     const root = path.resolve(worktreePath);
     if (!isDirectChild(worktreesDir, root)) return null;
-    if (comparablePath(root) === comparablePath(projectRoot)) return null;
+    if (sameFolder(root, projectRoot)) return null;
     if (await hasLinkOnPath(projectRoot, root)) return null;
     const rootStat = await lstatOrNull(root);
     if (!rootStat?.isDirectory()) return null;
@@ -512,10 +603,10 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
     } catch {
       return null;
     }
-    const sameFolder = topStat.ino && rootStat.ino
+    const isOwnCheckout = topStat.ino && rootStat.ino
       ? topStat.dev === rootStat.dev && topStat.ino === rootStat.ino
-      : comparablePath(top) === comparablePath(realRoot);
-    if (!sameFolder) return null;
+      : sameFolder(top, realRoot);
+    if (!isOwnCheckout) return null;
     return { root, realRoot, gitDir, dev: rootStat.dev };
   };
 
@@ -527,7 +618,7 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
       if (stat) latest = Math.max(latest, stat.mtimeMs);
     }
     const status = await runGit(
-      ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--no-renames", "--ignore-submodules=all"],
+      [...gitLongPathArgs(), "--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--no-renames", "--ignore-submodules=all"],
       { cwd: worktree.root, timeoutMs: GIT_TIMEOUT_MS, maxOutputBytes: 4 * 1024 * 1024 },
     );
     if (status.exitCode !== 0) return null;
@@ -566,13 +657,13 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
     if (candidates.length === 0) return [];
     const rels = candidates.map((candidate) => candidate.rel);
     const tracked = await runGit(
-      ["--literal-pathspecs", "ls-files", "-z", "--", ...rels],
+      [...gitLongPathArgs(), "--literal-pathspecs", "ls-files", "-z", "--", ...rels],
       { cwd: worktree.root, timeoutMs: GIT_TIMEOUT_MS, maxOutputBytes: 4 * 1024 * 1024 },
     );
     if (tracked.exitCode !== 0 || tracked.stdoutTruncated) return [];
     const trackedPaths = nulList(tracked.stdout);
     const ignored = await runGit(
-      ["check-ignore", "-z", "--stdin"],
+      [...gitLongPathArgs(), "check-ignore", "-z", "--stdin"],
       { cwd: worktree.root, timeoutMs: GIT_TIMEOUT_MS, stdin: `${rels.join("\0")}\0` },
     );
     // 0: some are ignored; 1: none are. Anything else is an error.
@@ -586,7 +677,7 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
   const findCandidates = async (worktree: VerifiedWorktree, idleSince: number): Promise<Candidate[]> => {
     // Ignored folders, each listed once without descending into it.
     const listing = await runGit(
-      ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"],
+      [...gitLongPathArgs(), "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"],
       { cwd: worktree.root, timeoutMs: GIT_TIMEOUT_MS, maxOutputBytes: 16 * 1024 * 1024 },
     );
     if (listing.exitCode !== 0) return [];
@@ -637,9 +728,9 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
     idleSince: number;
     deadline: number;
     probe: { dirs: string[]; supported: boolean };
-  }): Promise<{ removed: number; freed: number; failed: number }> => {
+  }): Promise<{ removed: number; freed: number; failed: number; inUse: number }> => {
     const { lane, projectId, runId, idleSince, deadline } = args;
-    const outcome = { removed: 0, freed: 0, failed: 0 };
+    const outcome = { removed: 0, freed: 0, failed: 0, inUse: 0 };
     const skip = (reason: string) => {
       options.logger.debug("storage.build_output_lane_skipped", { laneId: lane.id, reason });
       return outcome;
@@ -691,6 +782,11 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
         if (stillBusy) return skip(stillBusy);
         const check = await inspectFolder(worktree, candidate.rel, idleSince, candidate);
         if (!("candidate" in check)) continue;
+        const candidateStat = await lstatOrNull(candidate.abs);
+        if (candidateStat && failedUnchanged(projectId, lane.id, candidate.rel, candidateStat)) {
+          options.logger.debug("storage.build_output_folder_skipped", { laneId: lane.id, folder: candidate.rel, reason: "failed_unchanged" });
+          continue;
+        }
         const measureDeadline = Math.min(deadline, Date.now() + MEASURE_BUDGET_MS);
         const before = await measureTree(candidate.abs, { entryLimit: MEASURE_ENTRY_LIMIT, deadline: measureDeadline });
         // Measuring can take minutes: look again right before removing. A
@@ -708,7 +804,8 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
         const busyNow = busyReason(lane.id);
         if (busyNow) return skip(busyNow);
         try {
-          await removeFolder(candidate.abs, Math.max(deadline, Date.now() + MEASURE_BUDGET_MS));
+          const movedOut = process.platform === "win32" && await moveBuildFolderOut(candidate, worktree, options.logger);
+          if (!movedOut) await removeFolder(candidate.abs, Math.max(deadline, Date.now() + MEASURE_BUDGET_MS));
           record({ projectId, laneId: lane.id, runId, folder: candidate.rel, bytes: before.bytes, partial: before.truncated, error: null });
           options.logger.info("storage.build_output_removed", {
             laneId: lane.id,
@@ -723,7 +820,17 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
           const after = await measureTree(candidate.abs, { entryLimit: MEASURE_ENTRY_LIMIT, deadline: Date.now() + MEASURE_BUDGET_MS });
           const freed = Math.max(0, before.bytes - after.bytes);
           const reason = describeRemovalError(error);
-          record({ projectId, laneId: lane.id, runId, folder: candidate.rel, bytes: freed, partial: before.truncated || after.truncated, error: reason });
+          const afterStat = await lstatOrNull(candidate.abs);
+          record({
+            projectId,
+            laneId: lane.id,
+            runId,
+            folder: candidate.rel,
+            bytes: freed,
+            partial: before.truncated || after.truncated,
+            error: reason,
+            fingerprint: afterStat ? folderFingerprint(afterStat) : null,
+          });
           options.logger.warn("storage.build_output_remove_failed", {
             laneId: lane.id,
             folder: candidate.rel,
@@ -731,7 +838,9 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
             error: errorMessage(error),
             freedBytes: freed,
           });
-          outcome.failed += 1;
+          // In use is a normal state, shown on the lane; anything else is a failure of the run.
+          if (isInUseError(error)) outcome.inUse += 1;
+          else outcome.failed += 1;
           outcome.freed += freed;
         }
         await yieldToEventLoop();
@@ -770,9 +879,11 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
       options.logger.warn("storage.build_output_skipped", { reason: "process_check_failed" });
       return { itemsAffected: 0, bytesReclaimed: 0, skippedReason: "process_check_failed" };
     }
+    if (process.platform === "win32") await sweepBuildOutputTrash(worktreesDir, options.logger);
     let removed = 0;
     let freed = 0;
     let failed = 0;
+    let inUse = 0;
     let stoppedEarly = false;
     for (const lane of lanes) {
       if (Date.now() >= deadline) {
@@ -784,6 +895,7 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
         removed += outcome.removed;
         freed += outcome.freed;
         failed += outcome.failed;
+        inUse += outcome.inUse;
       } catch (error) {
         options.logger.warn("storage.build_output_lane_failed", { laneId: lane.id, error: errorMessage(error) });
       }
@@ -795,6 +907,7 @@ export function createLaneBuildOutputSweeper(options: LaneBuildOutputSweeperOpti
       lanes: lanes.length,
       removed,
       failed,
+      inUse,
       freedBytes: freed,
       stoppedEarly,
       durationMs: Date.now() - startedAt,

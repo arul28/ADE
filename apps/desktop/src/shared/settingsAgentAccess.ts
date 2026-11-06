@@ -131,6 +131,7 @@ const OWNER_ONLY: Record<Exclude<SettingOwnerOnlyReason, "preference">, readonly
     "storage.recentlyDeleted",
     "storage.cleanups",
     "storage.lane-rules",
+    "storage.archived-lanes",
     "storage.lane-build-output",
     "storage.session-lifecycle",
     "storage.project-files",

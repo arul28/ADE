@@ -6,7 +6,8 @@ import {
   type RebaseRunEventPayload,
 } from "../../../../shared/types";
 import { isChatLaunchLane } from "../../../state/chatLaunchStore";
-import { showToast } from "./toastStore";
+import { useAppStore } from "../../../state/appStore";
+import { READABLE_TOAST_DURATION_MS, showToast } from "./toastStore";
 
 /**
  * A toast names a lane and claims something happened to it, so an event that
@@ -46,6 +47,42 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
               label: "View",
               onClick: () =>
                 navigate(`/lanes?laneId=${event.laneId}&focus=single`),
+            }],
+          });
+          return;
+        }
+        // The archive rules archived it, not a person: say why, and offer Undo.
+        if (event.type === "lane-archived" && event.autoArchive) {
+          // Lifecycle events arrive from the machine this tab is bound to, so
+          // that is where the lane lives. Taken now: Undo must still go there
+          // after the person switches to a tab bound to another machine, and
+          // stays unpinned (the tab's own route) while it is the same one.
+          const origin = useAppStore.getState().projectBinding;
+          const laneId = event.laneId;
+          const laneName = event.laneName;
+          showToast({
+            id: `lane-auto-archived-${laneId}`,
+            title: laneName,
+            replayMask: { title: true },
+            message: `Archived automatically: ${event.autoArchive.reason}`,
+            tone: "info",
+            colorDot: dot,
+            durationMs: READABLE_TOAST_DURATION_MS,
+            actions: [{
+              label: "Undo",
+              onClick: () => {
+                const current = useAppStore.getState().projectBinding;
+                const pin = origin && current?.key !== origin.key ? origin : null;
+                void window.ade.lanes.unarchive({ laneId }, pin).catch((err: unknown) => {
+                  showToast({
+                    id: `lane-auto-archived-${laneId}`,
+                    title: laneName,
+                    replayMask: { title: true },
+                    message: `Couldn't restore it: ${err instanceof Error ? err.message : String(err)}`,
+                    tone: "error",
+                  });
+                });
+              },
             }],
           });
           return;

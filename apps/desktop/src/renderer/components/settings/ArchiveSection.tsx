@@ -1,5 +1,5 @@
 import React from "react";
-import { Archive as ArchiveIcon, ArrowCounterClockwise, Check, Trash, X } from "@phosphor-icons/react";
+import { Archive as ArchiveIcon, ArrowCounterClockwise, Broom, Check, Trash, X } from "@phosphor-icons/react";
 import type {
   ArchiveActionResult,
   ArchiveItemKind,
@@ -15,6 +15,7 @@ import { showToast } from "../app/toast/toastStore";
 import { LaneChip, LaneLogoMark, laneDisplayColor } from "../terminals/LaneChip";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { useLaneReclaim } from "./lanes/useLaneReclaim";
 import { SettingsColumn } from "./primitives";
 import { Banner } from "../ui/notice";
 import "./primitives/settingsModern.css";
@@ -23,11 +24,16 @@ import "./machineSettings.css";
 /**
  * Settings → Archive: every lane, chat and shell you archived, in one place.
  *
- * Archive only hides a thing; it stays on disk until you delete it here. ADE
- * never deletes on its own — the weekly reminder banner points back to this
- * page. The list splits at the same two-week line the reminder uses, so
+ * Archive only hides a thing; it stays on disk until you free up its space or
+ * delete it here, or a rule under Storage → Rules does. The weekly reminder
+ * banner points back to this page. The list splits at the same line the
+ * reminder uses (the "Free up space after" setting, two weeks by default), so
  * "Older" is exactly what the banner was asking about, with one button to
  * clear it.
+ *
+ * A lane's Free up space is Archive & reclaim's own confirm and flow: the
+ * folder goes, the branch and chats stay, and Restore recreates the folder
+ * from the branch.
  */
 
 export const ARCHIVE_SETTINGS_ANCHOR = "archive";
@@ -154,6 +160,7 @@ function ArchiveRow({
   busy,
   onToggle,
   onRestore,
+  onFreeUp,
   onDelete,
 }: {
   item: ArchivedItem;
@@ -162,11 +169,15 @@ function ArchiveRow({
   busy: boolean;
   onToggle: () => void;
   onRestore: () => void;
+  onFreeUp: () => void;
   onDelete: () => void;
 }) {
   const meta: string[] = [relativeWhen(item.archivedAt)];
   if (item.sizeBytes != null && item.sizeBytes > 0) meta.push(formatBytes(item.sizeBytes));
-  if (item.kind === "lane" && item.worktreePresent === false) meta.push("folder already removed");
+  const freed = item.kind === "lane" && item.worktreePresent === false;
+  if (freed) meta.push("space freed, Restore recreates its folder");
+  else if (item.kind === "lane" && item.freeUpError) meta.push(`couldn't free up space: ${item.freeUpError}`);
+  else if (item.kind === "lane" && item.freeUpDue) meta.push("due to free up space");
   const where = item.kind === "lane"
     ? (item.branchRef ? <span className="ade-ar-branch">{item.branchRef}</span> : null)
     : (item.laneName ? <LaneChip laneName={item.laneName} laneColor={item.laneColor} maxWidth={160} /> : null);
@@ -193,6 +204,11 @@ function ArchiveRow({
           <IconAction label="Restore" onClick={onRestore} disabled={busy}>
             <ArrowCounterClockwise size={14} />
           </IconAction>
+          {item.kind === "lane" && !freed ? (
+            <IconAction label="Free up space" onClick={onFreeUp} disabled={busy}>
+              <Broom size={14} />
+            </IconAction>
+          ) : null}
           <IconAction label="Delete" onClick={onDelete} disabled={busy} danger>
             <Trash size={14} />
           </IconAction>
@@ -245,6 +261,8 @@ async function deleteInBatches(
 export function ArchiveSection() {
   const { pin } = useSettingsMachineScope();
   const [items, setItems] = React.useState<ArchivedItem[] | null>(null);
+  // The host's line between recent and old: its "Free up space after" setting.
+  const [staleDays, setStaleDays] = React.useState(DEFAULT_ARCHIVE_STALE_DAYS);
   const [error, setError] = React.useState<string | null>(null);
   const [filter, setFilter] = React.useState<KindFilter>("all");
   const [selected, setSelected] = React.useState<Set<string>>(() => new Set());
@@ -254,6 +272,7 @@ export function ArchiveSection() {
     try {
       const result = await window.ade.archive.list({}, pin);
       setItems(result.items);
+      setStaleDays(result.staleAfterDays ?? DEFAULT_ARCHIVE_STALE_DAYS);
       setError(null);
       const live = new Set(result.items.map(refKey));
       setSelected((prev) => new Set([...prev].filter((key) => live.has(key))));
@@ -270,6 +289,9 @@ export function ArchiveSection() {
     void load();
   }, [load]);
 
+  // Free up space on `pin`'s machine, where the lane's folder is.
+  const reclaim = useLaneReclaim(pin, () => void load(), { alreadyArchived: true });
+
   const counts = React.useMemo(() => {
     const byKind = emptyArchiveCounts();
     for (const item of items ?? []) byKind[item.kind] += 1;
@@ -285,10 +307,10 @@ export function ArchiveSection() {
     const nowMs = Date.now();
     const groups = { recent: [] as ArchivedItem[], older: [] as ArchivedItem[] };
     for (const item of visible) {
-      (isArchiveStale(item.archivedAt, DEFAULT_ARCHIVE_STALE_DAYS, nowMs) ? groups.older : groups.recent).push(item);
+      (isArchiveStale(item.archivedAt, staleDays, nowMs) ? groups.older : groups.recent).push(item);
     }
     return groups;
-  }, [visible]);
+  }, [staleDays, visible]);
 
   const report = React.useCallback((verb: "Restored" | "Deleted", result: ArchiveActionResult) => {
     const [firstFailure] = result.failed;
@@ -400,6 +422,7 @@ export function ArchiveSection() {
         busy={busy}
         onToggle={() => toggle(refKey(item))}
         onRestore={() => void restore([toRef(item)])}
+        onFreeUp={() => void reclaim.open(item.id)}
         onDelete={() => void remove([toRef(item)])}
       />
     ));
@@ -408,8 +431,8 @@ export function ArchiveSection() {
   const allBytes = totalBytes(all);
   const staleAll = React.useMemo(() => {
     const nowMs = Date.now();
-    return all.filter((item) => isArchiveStale(item.archivedAt, DEFAULT_ARCHIVE_STALE_DAYS, nowMs));
-  }, [all]);
+    return all.filter((item) => isArchiveStale(item.archivedAt, staleDays, nowMs));
+  }, [all, staleDays]);
   const staleBytes = totalBytes(staleAll);
 
   const filterBar = (
@@ -474,7 +497,7 @@ export function ArchiveSection() {
           <header className="ade-ap-head">
             <div style={{ minWidth: 0 }}>
               <h2>On this machine</h2>
-              <p>Archive only hides a thing. It stays on disk until you delete it here — ADE never deletes on its own.</p>
+              <p>Archive only hides a thing. It stays on disk until you free up its space or delete it here, or a rule in Rules does it for you.</p>
             </div>
           </header>
           <div className="ade-modern-stats">
@@ -502,8 +525,8 @@ export function ArchiveSection() {
               </div>
               <span className="ade-modern-stat-sub">
                 {staleAll.length > 0
-                  ? `${formatBytes(staleBytes)} older than ${DEFAULT_ARCHIVE_STALE_DAYS} days`
-                  : `Nothing older than ${DEFAULT_ARCHIVE_STALE_DAYS} days`}
+                  ? `${formatBytes(staleBytes)} older than ${staleDays} days`
+                  : `Nothing older than ${staleDays} days`}
               </span>
             </div>
           </div>
@@ -543,14 +566,14 @@ export function ArchiveSection() {
             <div role="table" aria-label="Archived items" className="ade-ar-table">
               {recent.length > 0 ? (
                 <div className="ade-ar-block">
-                  <GroupHeader title={`Last ${DEFAULT_ARCHIVE_STALE_DAYS} days`} items={recent} />
+                  <GroupHeader title={`Last ${staleDays} days`} items={recent} />
                   <div className="ade-modern-rows ade-ar-list">{renderRows(recent)}</div>
                 </div>
               ) : null}
               {older.length > 0 ? (
                 <div className="ade-ar-block">
                   <GroupHeader
-                    title={`Older than ${DEFAULT_ARCHIVE_STALE_DAYS} days`}
+                    title={`Older than ${staleDays} days`}
                     items={older}
                     action={
                       <button
@@ -574,6 +597,7 @@ export function ArchiveSection() {
           )}
         </div>
       </section>
+      {reclaim.dialog}
     </SettingsColumn>
   );
 }

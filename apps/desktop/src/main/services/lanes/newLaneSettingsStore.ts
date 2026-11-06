@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ACCOUNT_SCOPE_ALL, accountRepoScopeKey } from "../../../shared/accountSettingsScope";
+import { DEFAULT_LANE_BRANCH_PATTERN } from "../../../shared/laneBranchName";
 import {
   DEFAULT_LANE_START,
   normalizeNewLaneDefaults,
@@ -165,6 +166,7 @@ export function createNewLaneSettingsStore(args: {
     return {
       start: { ...DEFAULT_LANE_START, on: legacy.baseSource === "local" ? "local" : "remote" },
       templateId: legacy.defaultTemplateId?.trim() || null,
+      branchPattern: DEFAULT_LANE_BRANCH_PATTERN,
     };
   };
 

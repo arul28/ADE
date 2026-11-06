@@ -6,7 +6,7 @@ import type { OpenProjectBinding } from "../../../../shared/types";
 import { confirmDialog } from "../../ui/dialog";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../../app/toast/toastStore";
 import { relativeWhen } from "../../../lib/format";
-import { formatBytes, formatMeasuredBytes } from "../storage/storageView";
+import { useStorageBytes } from "../storage/useStorageBytes";
 import { useLaneReclaim } from "./useLaneReclaim";
 import {
   laneBulkArchiveSkipReason,
@@ -23,14 +23,14 @@ const ARCHIVE_TOAST_ID = "settings-lanes-archive";
 /** Rows shown before "Show N more". */
 const INITIAL_ROWS = 12;
 
-type LaneSize = { bytes: number; partial: boolean };
+type LaneSize = { bytes: number; partial: boolean; measuredAt?: string };
 
 /** Each lane's folder size from the storage snapshot, by lane id or folder. */
 function sizeIndex(items: readonly StorageItem[]): { byId: Map<string, LaneSize>; byPath: Map<string, LaneSize> } {
   const byId = new Map<string, LaneSize>();
   const byPath = new Map<string, LaneSize>();
   for (const item of items) {
-    const size = { bytes: item.bytes, partial: Boolean(item.partial) };
+    const size = { bytes: item.bytes, partial: Boolean(item.partial), ...(item.measuredAt ? { measuredAt: item.measuredAt } : {}) };
     if (item.laneId) byId.set(item.laneId, size);
     if (item.path) byPath.set(item.path, size);
   }
@@ -64,6 +64,7 @@ export function LaneList({
   const [showAll, setShowAll] = React.useState(false);
   const [archiving, setArchiving] = React.useState(false);
   const reclaim = useLaneReclaim(pin, onChanged);
+  const { bytes: formatBytes } = useStorageBytes();
 
   const sizes = React.useMemo(() => sizeIndex(laneItems), [laneItems]);
   const sizeOf = React.useCallback(
@@ -280,6 +281,7 @@ function LaneRow({
   onToggleSelect: () => void;
   onArchive: () => void;
 }) {
+  const { measured } = useStorageBytes();
   const primary = lane.laneType === "primary";
   const blockedReason = laneNotSelectableReason(lane);
   const pill = laneStatusPill(lane);
@@ -322,7 +324,12 @@ function LaneRow({
           ) : null}
         </span>
         <span className="ade-lanes-when kit-num">{lane.lastActivityAt ? relativeWhen(lane.lastActivityAt) : "—"}</span>
-        <span className="ade-lanes-size kit-num">{primary ? "" : size ? formatMeasuredBytes(size.bytes, size.partial) : "—"}</span>
+        <span
+          className="ade-lanes-size kit-num"
+          title={!primary && size?.measuredAt ? `Measured ${relativeWhen(size.measuredAt)}` : undefined}
+        >
+          {primary ? "" : size ? measured(size.bytes, size.partial) : "—"}
+        </span>
         <span className="ade-lanes-action">
           {!primary && blockedReason != null && lane.runningSessions === 0 ? (
             <button type="button" className="ade-modern-btn" data-size="sm" title="Shows what would be lost first" onClick={onArchive}>

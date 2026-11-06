@@ -932,12 +932,11 @@ struct HubInlineComposer: View {
     var autoCreatedTemporaryBranch: String?
     if isAutoCreateLane {
       let name = workDeterministicAutoLaneName(from: opener, genericSuffix: workAutoLaneGenericSuffix())
-      let temporaryBranch = workAutoLaneTemporaryBranch()
       do {
         let lane = try await syncService.createLane(
           name: name,
           description: opener.isEmpty ? "" : String(opener.prefix(280)),
-          branchName: temporaryBranch,
+          autoNamedBranch: true,
           targetProjectId: targetProjectId,
           targetProjectRootPath: targetProjectRootPath,
           setUpLane: true
@@ -946,7 +945,8 @@ struct HubInlineComposer: View {
         targetLaneName = lane.name
         createdLaneId = lane.id
         autoCreatedFallbackName = name
-        autoCreatedTemporaryBranch = temporaryBranch
+        // The host chose the placeholder in the project's branch pattern.
+        autoCreatedTemporaryBranch = lane.branchRef
       } catch {
         ADEHaptics.error()
         errorMessage = error.localizedDescription

@@ -263,19 +263,29 @@ back to "none" in `local.yaml`.
 
 ```ts
 type LaneCleanupConfig = {
-  maxActiveLanes?: number;
-  cleanupIntervalHours?: number;
-  autoArchiveAfterHours?: number;
-  reclaimArchivedAfterHours?: number;
+  /** Archive idle, finished lanes after this many days. Absent or 0 = off. */
+  archiveIdleAfterDays?: number;
+  /** Free up an archived lane's folder this many days after archiving. Absent = 14; 0 = off. */
+  freeUpSpaceAfterDays?: number;
+  /** "ask" (default): remind, remove nothing. "auto": remove during the hourly check. */
+  freeUpSpaceMode?: "ask" | "auto";
+  /** Delete archived lanes this many days after archiving. Absent or 0 = off. */
+  deleteArchivedAfterDays?: number;
+  /** The automatic delete also deletes the local branch. Never the remote one. */
+  deleteLocalBranchOnAutoDelete?: boolean;
   /** Remove build output from lanes idle this many days. Absent = 7; 0 = off. */
   cleanBuildOutputAfterDays?: number;
-  autoDeleteArchivedAfterHours?: number; // deprecated: read as reclaimArchivedAfterHours
-  deleteRemoteBranchOnCleanup?: boolean; // deprecated: never deletes remote branches
 };
 ```
 
-`cleanBuildOutputAfterDays` is the one rule that is on without being set:
-a `local.yaml` with no value gets 7 days. See
+Older files with `cleanupIntervalHours`, `autoArchiveAfterHours`,
+`maxActiveLanes`, `reclaimArchivedAfterHours` or `autoDeleteArchivedAfterHours`
+are read into these day keys and never written back; see
+`docs/features/storage-and-recovery/README.md` ("Lane lifecycle rules").
+
+`cleanBuildOutputAfterDays` and `freeUpSpaceAfterDays` are on without being
+set: a `local.yaml` with no value gets 7 days of build output and "Ask me"
+after 14 days. See
 `docs/features/storage-and-recovery/README.md` ("Build output in idle lanes").
 
 Policy enforced by the lane cleanup service. UI lives in

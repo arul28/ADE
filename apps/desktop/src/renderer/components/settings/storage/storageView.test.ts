@@ -76,13 +76,13 @@ describe("dbBreakdownRows", () => {
   ];
 
   it("sorts largest first and marks the tables Clean up safely trims", () => {
-    const rows = dbBreakdownRows(entries);
+    const rows = dbBreakdownRows(entries, undefined);
     expect(rows.map((r) => r.label)).toEqual(["Webhook history", "Sync bookkeeping", "Core data", "Pull request cache"]);
     expect(rows.filter((r) => r.trimmedByCleanup).map((r) => r.table)).toEqual(["automation_ingress_events", "operations"]);
   });
 
   it("frames core data as protected and pending rows as pending, neither trimmed", () => {
-    const rows = dbBreakdownRows(entries);
+    const rows = dbBreakdownRows(entries, undefined);
     const core = rows.find((r) => r.category === "core")!;
     expect(core.isProtected).toBe(true);
     expect(core.trimmedByCleanup).toBe(false);
@@ -92,7 +92,7 @@ describe("dbBreakdownRows", () => {
   });
 
   it("returns nothing for an absent breakdown", () => {
-    expect(dbBreakdownRows(undefined)).toEqual([]);
+    expect(dbBreakdownRows(undefined, undefined)).toEqual([]);
   });
 });
 
@@ -135,7 +135,7 @@ describe("maintenanceActionLines", () => {
         { ledgerId: "fs.tmp", kind: "delete", itemsAffected: 0, bytesReclaimed: 0, durationMs: 4, error: "busy" },
       ],
     });
-    expect(maintenanceOutcome(report)).toEqual({
+    expect(maintenanceOutcome(report, undefined)).toEqual({
       message: "Some cleanup steps couldn't finish",
       failed: true,
     });
@@ -346,7 +346,7 @@ describe("buildSafeCleanupPlan", () => {
   });
 
   it("says the idle-lane check runs first when the archive rules are on", () => {
-    const plan = buildSafeCleanupPlan({ categories, extras, lifecycle: { policy: { cleanupIntervalHours: 24 } } }, new Map());
+    const plan = buildSafeCleanupPlan({ categories, extras, lifecycle: { policy: { archiveIdleAfterDays: 14 } } }, new Map());
     expect(plan.alsoRuns[0]).toContain("idle lanes");
   });
 });

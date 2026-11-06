@@ -15,15 +15,25 @@ redirect service that makes multi-lane auth practical.
 
 The **Primary lane** is the folder you opened the project from. Every other lane is a separate worktree folder. Git allows a branch to be open in only one folder at a time.
 
-In **Create new branch** mode, choose **Start from**: the project default branch, the primary lane's branch, or another branch. Choose where to start **On**:
+In **Create new branch** mode, the **Branch** field under the name shows the branch the lane will get. It follows the lane name through the project's branch pattern until you type your own; an attached Linear issue fills it with the issue's branch name. A typed name is checked on the lane's machine before the lane is made: an invalid name, or one taken locally or on the remote (compared without case, as Windows and macOS do), is explained under the field. A name that follows the pattern and is taken gets the lane's id added instead.
+
+Choose **Start from**: the project default branch, the primary lane's branch, or another branch. Choose where to start **On**:
 
 - **Remote** fetches and starts from the remote branch.
 - **Local** starts from the local tip, including unpushed commits.
-- **Local + uncommitted** starts from the local tip and copies staged, unstaged, and untracked changes from the folder holding that branch. Ignored files are excluded; the source is never moved or modified.
+- **Bring my uncommitted changes from <lane>** (a checkbox, shown only when the start branch is open in a lane) starts from the local tip and copies staged, unstaged, and untracked changes from that lane's folder. Ignored files are excluded; the source is never moved or modified.
+
+### Branch names
+
+Settings → Lanes → New lanes → **Branch names** holds the pattern every new branch follows, `ade/{slug}` unless changed. `{slug}` is the lane name (lower-case, words joined by `-`) and must come last; `{user}` is git `user.name` on the lane's machine, slugged (`Arul Sharma` → `arul-sharma`). `{slug}` alone means no prefix. Settings saved before patterns existed read as `ade/{slug}`. Names are capped near 100 characters and stripped of what git or Windows refuse (`< > " |`, device names such as `con`, trailing dots and spaces). Saving refuses a prefix that clashes with an existing branch (`arul/` while `arul` exists). `shared/laneBranchName.ts` holds the render, sanitize and clash rules for every surface.
+
+Auto-create lanes start on a placeholder `<prefix><8 hex>` chosen by the lane's machine (clients send `autoNamedBranch: true`), marked with the git config flag `branch.<name>.adeautolane` so a bare `1a2b3c4d` under an empty prefix is never taken for a user's branch. The AI rename then gives it `<prefix><title slug>`. The legacy `ade/<8 hex>` is still recognised.
+
+**Rename branch…** in the lane menu renames a lane's branch (`lane.renameBranch`, pinned to the lane's machine) only while it was never pushed, tracks nothing, and has no PR; otherwise the menu says why. It shares those guards and the rollback with the auto-create rename.
 
 **Use existing branch** opens the chosen branch directly without creating a branch. A branch already open in another folder cannot be selected.
 
-Settings → Lanes → New lanes saves the default or primary branch start choice and template per account and repository. If the repository has no remote, defaults are saved on this computer. Auto-create lane, `ade lanes create` without flags, the New lane dialog's first choice, and phone use these defaults. Run `ade lanes defaults --text` to inspect them.
+Settings → Lanes → New lanes saves where new lanes start (one **New lanes start from** dropdown: the default branch from the remote or your local copy, the primary lane's branch, or **Another branch…** from that machine's branch list), the branch pattern, and the template, per account and repository. A saved start the list doesn't offer shows as its own entry; a saved `uncommitted` from an older version reads as local. If a saved branch is deleted, new lanes start from the default branch with a note. If the repository has no remote, defaults are saved on this computer. Auto-create lane, `ade lanes create` without flags, the New lane dialog's first choice, and phone use these defaults. Run `ade lanes defaults --text` to inspect them, and `ade lanes defaults set --from <branch>` or `--branch-pattern "{user}/{slug}"` to change them.
 
 A lane compares against its open PR's base branch, or the project's default branch when there is no open PR, just as GitHub does. The primary lane compares to its upstream. The Lanes tab shows a quiet notice when work is behind or built on work now in the base: **N behind <base>** or **Built on work now in <base>**.
 
@@ -309,8 +319,8 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   the host's small AI model using desktop's background-rename pattern
   (`startBackgroundLaneNaming` in `AgentChatPane`): `submit()` creates
   the lane instantly with the deterministic
-  `autoCreatedLaneName(opener:)` on an exact `ade/<8 lowercase hex>` temporary
-  branch, launches the chat/CLI session, then fires a fire-and-forget task that
+  `autoCreatedLaneName(opener:)` on the host's placeholder branch
+  (`autoNamedBranch`, see Branch names), launches the chat/CLI session, then fires a fire-and-forget task that
   generates one structured lane/branch identity.
   The backend applies the readable lane title independently, then renames the
   temporary branch only while the lane record, checked-out worktree branch,
@@ -644,9 +654,14 @@ that machine's own numbers and is never marked stale by this one.
    includes the dirty-work override. Reclaim and restore also hold a shared
    database-backed worktree lease, so another ADE process or PR workflow cannot
    mutate the same folder concurrently. Failed removal is recorded as
-   machine-local retry state. `unarchive` restores the active state; a lane
+   machine-local retry state. Settings → Archive offers the same flow per
+   archived lane as **Free up space**, and the "Archived lanes" rules can run
+   it, or the lane delete, on their own after a number of days (see
+   `docs/features/storage-and-recovery/README.md`, "Lane lifecycle rules").
+   `unarchive` restores the active state; a lane
    whose folder is still on disk is restored in place wherever it lives, and
-   only a lane whose folder is missing gets a worktree recreated — always
+   only a lane whose folder is missing (freed up) gets a worktree recreated
+   from its kept branch (the local one, else `origin/<branch>`) — always
    inside `.ade/worktrees` (its own managed path, or a fresh canonical one when
    the saved path points somewhere ADE does not manage). Restore rejects
    occupied, linked, or differently registered paths instead of overwriting

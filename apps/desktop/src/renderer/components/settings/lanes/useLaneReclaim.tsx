@@ -2,7 +2,7 @@ import React from "react";
 import type { LaneReclaimRisk, OpenProjectBinding } from "../../../../shared/types";
 import { showToast } from "../../app/toast/toastStore";
 import { ReclaimConfirmDialog } from "../storage/ReclaimConfirmDialog";
-import { formatBytes } from "../storage/storageView";
+import { useStorageBytes } from "../storage/useStorageBytes";
 
 const RECLAIM_TOAST_ID = "settings-lane-reclaim";
 
@@ -12,9 +12,17 @@ const RECLAIM_TOAST_ID = "settings-lane-reclaim";
  * dialog shows it and asks for a typed confirmation, and uncommitted files
  * need a separate acknowledgement. Every call goes to `pin`'s machine.
  *
- * Returns `open(laneId)` and the dialog to render.
+ * Returns `open(laneId)` and the dialog to render. `alreadyArchived`: the
+ * lanes are in the archive (Settings → Archive's Free up space), so the
+ * result says what was freed rather than that the lane was archived.
  */
-export function useLaneReclaim(pin: OpenProjectBinding | null, onDone: () => void) {
+export function useLaneReclaim(
+  pin: OpenProjectBinding | null,
+  onDone: () => void,
+  opts: { alreadyArchived?: boolean } = {},
+) {
+  const alreadyArchived = opts.alreadyArchived === true;
+  const { bytes: storageBytes } = useStorageBytes();
   const [risk, setRisk] = React.useState<LaneReclaimRisk | null>(null);
   const [confirm, setConfirm] = React.useState("");
   const [discardDirty, setDiscardDirty] = React.useState(false);
@@ -40,12 +48,21 @@ export function useLaneReclaim(pin: OpenProjectBinding | null, onDone: () => voi
         confirmation: "RECLAIM",
         ...(risk.dirty && discardDirty ? { forceDirty: true } : {}),
       }, pin);
-      showToast({
-        id: RECLAIM_TOAST_ID,
-        tone: "success",
-        title: `Archived ${risk.laneName}, freed ${formatBytes(result.reclaimedBytes)}`,
-        message: "The branch and chats were kept. Restore it from the archive.",
-      });
+      showToast(result.keptForRetry
+        ? {
+            id: RECLAIM_TOAST_ID,
+            tone: "info",
+            title: alreadyArchived ? `Kept ${risk.laneName}'s folder for now` : `Archived ${risk.laneName}`,
+            message: "Some files in its folder are still in use, so ADE kept the folder and will remove it on its own later.",
+          }
+        : {
+            id: RECLAIM_TOAST_ID,
+            tone: "success",
+            title: alreadyArchived
+              ? `Freed up ${storageBytes(result.reclaimedBytes)} from ${risk.laneName}`
+              : `Archived ${risk.laneName}, freed ${storageBytes(result.reclaimedBytes)}`,
+            message: "The branch and chats were kept. Restore it from the archive.",
+          });
       setRisk(null);
       setConfirm("");
       setDiscardDirty(false);
@@ -55,7 +72,7 @@ export function useLaneReclaim(pin: OpenProjectBinding | null, onDone: () => voi
     } finally {
       setBusy(false);
     }
-  }, [confirm, discardDirty, onDone, pin, risk]);
+  }, [alreadyArchived, confirm, discardDirty, onDone, pin, risk]);
 
   const dialog = risk ? (
     <ReclaimConfirmDialog

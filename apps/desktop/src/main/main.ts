@@ -6,6 +6,7 @@ import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import { flushSentry } from "../shared/sentry/capture";
 import { registerSentryDiagnosticAttachment, registerSentryDiagnosticContext } from "../shared/sentry/diagnostics";
 import { setSentryEventMirror, setSentryUserResolver } from "../shared/sentry/eventFilter";
+import { staleLaneDays } from "../shared/laneCleanup";
 import { createExceptionAnalyticsMirror } from "./services/analytics/exceptionProductAnalytics";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
@@ -6031,6 +6032,8 @@ app.whenReady().then(async () => {
       logger,
       listLanes: () => laneService.list({ includeArchived: false }),
       readChatTurnStates: createProjectHealthTurnStateReader(agentChatService),
+      // The "Archive idle lanes after" rule, when on, is where a lane turns stale.
+      staleAfterDays: () => staleLaneDays(projectConfigService.get().effective.laneCleanup),
       openTerminal: async (request) => {
         await ptyService.create({
           laneId: request.laneId,

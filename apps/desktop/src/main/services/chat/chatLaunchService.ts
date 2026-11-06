@@ -60,6 +60,8 @@ type LaneServiceLike = {
       name: string;
       start?: LaneStart | null;
       branchName?: string;
+      /** The brain names a placeholder branch that the lane's AI naming replaces. */
+      autoNamedBranch?: boolean;
       /** Bound to the new lane the same way a manual create binds it. */
       linearIssue?: LaneLinearIssue | null;
     },
@@ -189,8 +191,6 @@ function autoLaneGenericSuffix(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
-
-const temporaryAutoLaneBranch = (): string => `ade/${randomUUID().replace(/-/g, "").slice(0, 8)}`;
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.());
 
@@ -634,9 +634,12 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       lane = await deps.laneService.create(
         {
           name: record.snapshot.laneName,
-          // A configured lane derives its branch from the user's name; an
-          // auto-create lane gets a placeholder branch and is renamed after.
-          ...(laneIsAutoNamed(record) ? { branchName: temporaryAutoLaneBranch() } : {}),
+          // A configured lane derives its branch from the user's name (or
+          // takes the one they typed); an auto-create lane gets a placeholder
+          // branch in the project's pattern and is renamed after.
+          ...(laneIsAutoNamed(record)
+            ? { autoNamedBranch: true }
+            : config?.branchName ? { branchName: config.branchName } : {}),
           ...(start ? { start } : {}),
           ...(config?.linearIssue ? { linearIssue: config.linearIssue } : {}),
         },

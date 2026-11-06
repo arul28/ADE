@@ -333,9 +333,11 @@ describe("lane storage lifecycle", () => {
     fs.mkdirSync(worktreePath, { recursive: true });
     fs.writeFileSync(path.join(worktreePath, "unrelated.txt"), "keep this");
     installGitStub();
+    // Git lists the folder as another branch's checkout: not this lane's, and
+    // not a leftover reclaim may finish.
     vi.mocked(runGitOrThrow).mockImplementation(async (command: string[]) => {
       if (command[0] === "worktree" && command[1] === "list") {
-        return "worktree /somewhere/else\nbranch refs/heads/feature/storage\n" as never;
+        return `worktree ${worktreePath}\nbranch refs/heads/someone-else\n` as never;
       }
       return gitResult(0) as never;
     });

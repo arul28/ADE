@@ -1272,6 +1272,21 @@ function coerceLaneTemplate(value: unknown): ConfigLaneTemplate | null {
   };
 }
 
+/**
+ * The lane cleanup rules from local.yaml. The older keys, in hours, are read
+ * when the new day keys are absent and come out as day keys; a save writes
+ * only these, so the old keys go with the next save:
+ *
+ * - `autoArchiveAfterHours` becomes `archiveIdleAfterDays`, rounded up, but
+ *   only when `cleanupIntervalHours` was above 0: the old rules ran only
+ *   then. An interval of 0 reads as off (0); without an interval (off by
+ *   default) the rule is left out, which is off too.
+ * - `reclaimArchivedAfterHours` (or the older `autoDeleteArchivedAfterHours`)
+ *   becomes `freeUpSpaceAfterDays` with "Ask me". Neither removed anything,
+ *   and "Ask me" doesn't either. 0 meant off for a mark nobody saw, while the
+ *   two-week archive reminder kept asking, so 0 is left to the default.
+ * - `maxActiveLanes` and `deleteRemoteBranchOnCleanup` are dropped.
+ */
 function coerceLaneCleanupConfig(value: unknown): LaneCleanupConfig | undefined {
   if (!isRecord(value)) return undefined;
   const readNonNegativeInteger = (candidate: unknown): number | undefined => {
@@ -1279,18 +1294,41 @@ function coerceLaneCleanupConfig(value: unknown): LaneCleanupConfig | undefined 
     if (numeric == null || !Number.isFinite(numeric)) return undefined;
     return Math.max(0, Math.floor(numeric));
   };
-  const maxActiveLanes = readNonNegativeInteger(value.maxActiveLanes);
-  const cleanupIntervalHours = readNonNegativeInteger(value.cleanupIntervalHours);
-  const autoArchiveAfterHours = readNonNegativeInteger(value.autoArchiveAfterHours);
-  const reclaimArchivedAfterHours =
-    readNonNegativeInteger(value.reclaimArchivedAfterHours)
-    ?? readNonNegativeInteger(value.autoDeleteArchivedAfterHours);
-  const cleanBuildOutputAfterDays = readNonNegativeInteger(value.cleanBuildOutputAfterDays);
+  const hoursToDays = (hours: number): number => Math.ceil(hours / 24);
   const out: LaneCleanupConfig = {};
-  if (maxActiveLanes != null) out.maxActiveLanes = maxActiveLanes;
-  if (cleanupIntervalHours != null) out.cleanupIntervalHours = cleanupIntervalHours;
-  if (autoArchiveAfterHours != null) out.autoArchiveAfterHours = autoArchiveAfterHours;
-  if (reclaimArchivedAfterHours != null) out.reclaimArchivedAfterHours = reclaimArchivedAfterHours;
+
+  const archiveIdleAfterDays = readNonNegativeInteger(value.archiveIdleAfterDays);
+  if (archiveIdleAfterDays != null) {
+    out.archiveIdleAfterDays = archiveIdleAfterDays;
+  } else {
+    const legacyInterval = readNonNegativeInteger(value.cleanupIntervalHours);
+    const legacyArchiveHours = readNonNegativeInteger(value.autoArchiveAfterHours);
+    if (legacyInterval === 0) out.archiveIdleAfterDays = 0;
+    else if (legacyInterval != null && legacyArchiveHours != null) out.archiveIdleAfterDays = hoursToDays(legacyArchiveHours);
+  }
+
+  const freeUpSpaceAfterDays = readNonNegativeInteger(value.freeUpSpaceAfterDays);
+  const freeUpSpaceMode = value.freeUpSpaceMode === "auto" || value.freeUpSpaceMode === "ask"
+    ? value.freeUpSpaceMode
+    : undefined;
+  if (freeUpSpaceAfterDays != null) {
+    out.freeUpSpaceAfterDays = freeUpSpaceAfterDays;
+  } else {
+    const legacyReclaimHours = readNonNegativeInteger(value.reclaimArchivedAfterHours)
+      ?? readNonNegativeInteger(value.autoDeleteArchivedAfterHours);
+    if (legacyReclaimHours != null && legacyReclaimHours > 0) {
+      out.freeUpSpaceAfterDays = hoursToDays(legacyReclaimHours);
+      if (!freeUpSpaceMode) out.freeUpSpaceMode = "ask";
+    }
+  }
+  if (freeUpSpaceMode) out.freeUpSpaceMode = freeUpSpaceMode;
+
+  const deleteArchivedAfterDays = readNonNegativeInteger(value.deleteArchivedAfterDays);
+  if (deleteArchivedAfterDays != null) out.deleteArchivedAfterDays = deleteArchivedAfterDays;
+  if (typeof value.deleteLocalBranchOnAutoDelete === "boolean") {
+    out.deleteLocalBranchOnAutoDelete = value.deleteLocalBranchOnAutoDelete;
+  }
+  const cleanBuildOutputAfterDays = readNonNegativeInteger(value.cleanBuildOutputAfterDays);
   if (cleanBuildOutputAfterDays != null) out.cleanBuildOutputAfterDays = cleanBuildOutputAfterDays;
   return Object.keys(out).length ? out : undefined;
 }
@@ -2675,7 +2713,8 @@ function validateEffectiveConfig(
 
   if (effective.laneCleanup) {
     for (const [key, value] of Object.entries(effective.laneCleanup)) {
-      if (value == null || typeof value === "boolean") continue;
+      // `freeUpSpaceMode` is a word; `coerceLaneCleanupConfig` keeps only the known ones.
+      if (value == null || typeof value === "boolean" || typeof value === "string") continue;
       if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) {
         issues.push({
           path: `effective.laneCleanup.${key}`,

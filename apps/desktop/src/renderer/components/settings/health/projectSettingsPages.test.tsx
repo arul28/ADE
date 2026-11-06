@@ -576,14 +576,13 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
   it("shows the archive rule in force and saves an edit, debounced, as a local override only", async () => {
     const { saveProjectConfig } = installAdeMock({
       config: {
-        shared: { laneCleanup: { autoArchiveAfterHours: 24 } },
-        local: { laneCleanup: { maxActiveLanes: 3 } },
+        shared: {},
+        local: { laneCleanup: { deleteArchivedAfterDays: 3 } },
         effective: {
           laneCleanup: {
-            maxActiveLanes: 3,
-            autoArchiveAfterHours: 24,
-            cleanupIntervalHours: 6,
-            reclaimArchivedAfterHours: 72,
+            archiveIdleAfterDays: 2,
+            freeUpSpaceAfterDays: 10,
+            deleteArchivedAfterDays: 3,
           },
         },
       },
@@ -595,18 +594,18 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     await openView("Rules");
 
     // An inherited rule shows the value in force, not an empty box.
-    const inherited = await screen.findByLabelText(/Archive after inactivity/i);
-    await waitFor(() => expect((inherited as HTMLInputElement).value).toBe("24"));
+    const inherited = await screen.findByLabelText(/Archive idle lanes after/i);
+    await waitFor(() => expect((inherited as HTMLInputElement).value).toBe("2"));
 
-    fireEvent.change(screen.getByLabelText(/Keep at most/i), { target: { value: "5" } });
+    fireEvent.change(screen.getByLabelText(/^Delete after/i), { target: { value: "5" } });
     expect(saveProjectConfig).not.toHaveBeenCalled();
     await waitFor(() => expect(saveProjectConfig).toHaveBeenCalledTimes(1), { timeout: 3000 });
     const saved = saveProjectConfig.mock.calls[0]![0].local.laneCleanup!;
-    expect(saved.maxActiveLanes).toBe(5);
+    expect(saved.deleteArchivedAfterDays).toBe(5);
     // Untouched rules stay inherited rather than being frozen as overrides.
-    expect(saved.autoArchiveAfterHours).toBeUndefined();
-    expect(saved.cleanupIntervalHours).toBeUndefined();
-    expect(saved.reclaimArchivedAfterHours).toBeUndefined();
+    expect(saved.archiveIdleAfterDays).toBeUndefined();
+    expect(saved.freeUpSpaceAfterDays).toBeUndefined();
+    expect(saved.freeUpSpaceMode).toBeUndefined();
   });
 
   it("offers history compression only when the machine can compress, and reports what it saved", async () => {

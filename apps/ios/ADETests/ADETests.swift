@@ -13949,13 +13949,6 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testWorkAutoLaneTemporaryBranchUsesExactHostRecognizedFormat() {
-    let branch = workAutoLaneTemporaryBranch()
-    XCTAssertTrue(branch.hasPrefix("ade/"))
-    XCTAssertEqual(branch.count, 12)
-    XCTAssertNotNil(branch.range(of: #"^ade/[0-9a-f]{8}$"#, options: .regularExpression))
-  }
-
   @MainActor
   func testWorkAutoLaneAiRenameRetriesAndRenamesWithTargetProjectScope() async {
     let client = WorkAutoLaneNamingClientSpy()

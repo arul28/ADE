@@ -2018,6 +2018,7 @@ function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
     ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
     ...(start ? { start } : {}),
     ...(asTrimmedString(value.branchName) ? { branchName: asTrimmedString(value.branchName)! } : {}),
+    ...(value.autoNamedBranch === true ? { autoNamedBranch: true } : {}),
     ...(asTrimmedString(value.startPoint) ? { startPoint: asTrimmedString(value.startPoint)! } : {}),
     ...(isRecord(value.linearIssue) ? { linearIssue: value.linearIssue as CreateLaneArgs["linearIssue"] } : {}),
     ...(isRecord(value.githubIssue) ? { githubIssue: value.githubIssue as CreateLaneArgs["githubIssue"] } : {}),
@@ -4381,7 +4382,11 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
       }
       defaults.templateId = raw.templateId;
     }
-    return args.laneService.setNewLaneDefaults({ defaults });
+    if (raw.branchPattern !== undefined) {
+      if (typeof raw.branchPattern !== "string") throw new Error("lanes.setNewLaneDefaults branchPattern must be a string.");
+      defaults.branchPattern = raw.branchPattern;
+    }
+    return await args.laneService.setNewLaneDefaults({ defaults });
   });
   // The template reads above shipped without their writes, so a remote client
   // could list templates and "save" one into nothing.

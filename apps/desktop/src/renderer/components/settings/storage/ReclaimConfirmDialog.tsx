@@ -3,7 +3,7 @@ import type { LaneReclaimRisk } from "../../../../shared/types";
 import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { Banner } from "../../ui/notice";
 import { StorageDialogFrame } from "./StorageCleanupDialog";
-import { formatBytes } from "./storageView";
+import { useStorageBytes } from "./useStorageBytes";
 
 /**
  * Archive & reclaim one lane: keeps the lane, branch and chats, removes its
@@ -29,6 +29,7 @@ export function ReclaimConfirmDialog({
   onClose: () => void;
   onConfirm: () => void;
 }) {
+  const { bytes: storageBytes } = useStorageBytes();
   const warnings = risk.blockedReasons;
   const blocked = warnings.some((reason) => reason.disposition === "blocked");
   const dirtyNotConfirmed = risk.dirty && !discardDirtyConfirmed;
@@ -58,10 +59,10 @@ export function ReclaimConfirmDialog({
         </div>
         <div style={{ marginTop: 14, padding: 12, borderRadius: 9, border: `1px solid ${COLORS.borderMuted}`, background: COLORS.recessedBg }}>
           <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary }}>
-            Estimated space: <strong>{formatBytes(risk.reclaimableBytes)}</strong>
+            Estimated space: <strong>{storageBytes(risk.reclaimableBytes)}</strong>
           </div>
           <div style={{ marginTop: 4, fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.textMuted }}>
-            Worktree {formatBytes(risk.worktreeBytes)} · generated data {formatBytes(risk.generatedBytes)}
+            Worktree {storageBytes(risk.worktreeBytes)} · generated data {storageBytes(risk.generatedBytes)}
           </div>
         </div>
         {warnings.length > 0 ? (
@@ -112,7 +113,7 @@ export function ReclaimConfirmDialog({
                 ? "Cannot reclaim this folder"
                 : dirtyNotConfirmed
                   ? "Confirm discarded changes"
-                  : `Reclaim ${formatBytes(risk.reclaimableBytes)}`}
+                  : `Reclaim ${storageBytes(risk.reclaimableBytes)}`}
           </button>
         </div>
     </StorageDialogFrame>

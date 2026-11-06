@@ -21,6 +21,25 @@ func machineChoiceSubtitle(runningCount: Int, isLeastBusy: Bool) -> String {
   return isLeastBusy ? "\(running) · least busy" : running
 }
 
+/// A lane name as a branch's `{slug}`: lower-case words joined by `-`, at
+/// most 60 characters (`laneBranchSlug` in `shared/laneBranchName.ts`).
+func laneBranchSlug(_ value: String) -> String {
+  var slug = ""
+  var pendingDash = false
+  for scalar in value.lowercased().unicodeScalars {
+    if ("a"..."z").contains(scalar) || ("0"..."9").contains(scalar) {
+      if pendingDash && !slug.isEmpty { slug.append("-") }
+      pendingDash = false
+      slug.unicodeScalars.append(scalar)
+    } else {
+      pendingDash = true
+    }
+  }
+  var capped = String(slug.prefix(60))
+  while capped.hasSuffix("-") { capped.removeLast() }
+  return capped
+}
+
 /// A branch name as the user would type it: no `refs/heads/`, `refs/remotes/<remote>/`
 /// or `origin/` prefix (`plainLaneStartBranch` in `shared/laneStart.ts`).
 func plainLaneStartBranch(_ value: String?) -> String {
@@ -73,6 +92,8 @@ struct LaneCreateSheet: View {
   let onComplete: @MainActor (String) async -> Void
 
   @State private var name = ""
+  /// The branch the user typed; nil while it follows the lane name.
+  @State private var editedBranchName: String?
   @State private var description = ""
   @State private var createMode: LaneCreateMode
   /// New branch: where it starts and what it brings. Pre-filled from the
@@ -183,6 +204,9 @@ struct LaneCreateSheet: View {
               )
             }
             LaneTextField("Lane name", text: $name)
+            if createMode == .newBranch {
+              LaneTextField("Branch name", text: branchNameBinding)
+            }
             LaneTextField("Description", text: $description)
           }
         }
@@ -586,10 +610,14 @@ struct LaneCreateSheet: View {
       let created: LaneSummary
       switch createMode {
       case .newBranch:
+        // Only a typed name is sent; a followed one is the host's to make
+        // unique (it adds the lane's id when the name is taken).
+        let typedBranch = editedBranchName?.trimmingCharacters(in: .whitespacesAndNewlines)
         created = try await syncService.createLane(
           name: name,
           description: description,
           start: start,
+          branchName: typedBranch?.isEmpty == false ? typedBranch : nil,
           targetProjectId: target?.projectId,
           targetProjectRootPath: target?.rootPath
         )
@@ -629,6 +657,22 @@ struct LaneCreateSheet: View {
       errorMessage = error.localizedDescription
     }
     busy = false
+  }
+
+  /// The project's branch pattern on the lane's machine, with the lane name
+  /// as `{slug}`, until the user edits it; clearing it follows the name again.
+  private var branchNameBinding: Binding<String> {
+    Binding(
+      get: { editedBranchName ?? followedBranchName },
+      set: { next in editedBranchName = next.trimmingCharacters(in: .whitespaces).isEmpty ? nil : next }
+    )
+  }
+
+  private var followedBranchName: String {
+    let slug = laneBranchSlug(name)
+    guard !slug.isEmpty else { return "" }
+    // Older hosts send no prefix and name branches `ade/<slug>-<id>` themselves.
+    return (defaults?.branchPrefix ?? "ade/") + slug
   }
 
   private var canSubmit: Bool {

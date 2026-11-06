@@ -871,6 +871,9 @@ import type {
   RebaseRunEventPayload,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
+  RenameLaneBranchArgs,
+  RenameLaneBranchResult,
+  LaneBranchNameCheck,
   UpdateLaneAppearanceArgs,
   InitLaneEnvArgs,
   GetLaneEnvStatusArgs,
@@ -4966,7 +4969,7 @@ const adeBridge = {
     getPressure: async (): Promise<DiskPressureSnapshot> =>
       ipcRenderer.invoke(IPC.storageGetPressure),
     getSnapshot: async (
-      args: { forceRefresh?: boolean } = {},
+      args: { forceRefresh?: boolean; measureLanes?: boolean } = {},
       pin?: OpenProjectBinding | null,
     ): Promise<StorageSnapshot> =>
       callPinnedOrBoundRuntimeActionOr(pin, "storage", "getSnapshot", { args }, () =>
@@ -6981,6 +6984,18 @@ const adeBridge = {
       }
       clearGitReadCaches();
     },
+    // The lane's own machine renames its branch: a pin goes to that machine.
+    renameBranch: async (args: RenameLaneBranchArgs, pin?: OpenProjectBinding | null): Promise<RenameLaneBranchResult> => {
+      const result = await callPinnedOrBoundRuntimeActionOr<RenameLaneBranchResult>(pin, "lane", "renameBranch", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesRenameBranch, args),
+      );
+      if (!args.dryRun) clearGitReadCaches();
+      return result;
+    },
+    checkBranchName: async (args: { name: string }, pin?: OpenProjectBinding | null): Promise<LaneBranchNameCheck> =>
+      callPinnedOrBoundRuntimeActionOr<LaneBranchNameCheck>(pin, "lane", "checkBranchName", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesCheckBranchName, args),
+      ),
     updateAppearance: async (
       args: UpdateLaneAppearanceArgs,
       pin?: OpenProjectBinding | null,

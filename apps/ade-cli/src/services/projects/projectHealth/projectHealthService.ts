@@ -61,6 +61,11 @@ export type ProjectHealthServiceDeps = {
    * reported stuck.
    */
   readChatTurnStates?: (sessionIds: string[]) => Promise<ProjectHealthChatTurnState[]>;
+  /**
+   * Days idle before a lane counts as stale: the "Archive idle lanes after"
+   * rule when it is on. Without it, or when it throws, 14.
+   */
+  staleAfterDays?: () => number;
 };
 
 export type ProjectHealthChatTurnState = {
@@ -125,7 +130,7 @@ export function createProjectHealthTurnStateReader(
 }
 
 const REPORT_CACHE_MS = 30_000;
-/** A lane with no activity for this long, and no open PR, counts as stale. */
+/** A lane with no activity for this long, and no open PR, counts as stale, unless the archive rule says otherwise. */
 const STALE_AFTER_DAYS = 14;
 const DAY_MS = 24 * 60 * 60_000;
 /** A git lock file older than this with no git running is a leftover from a crash. */
@@ -466,6 +471,14 @@ function gitLeftovers(projectRoot: string, nowMs: number): string[] {
 
 export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
   const projectRoot = path.resolve(deps.projectRoot);
+  const staleAfterDays = (): number => {
+    try {
+      const days = deps.staleAfterDays?.();
+      return typeof days === "number" && Number.isFinite(days) && days > 0 ? Math.floor(days) : STALE_AFTER_DAYS;
+    } catch {
+      return STALE_AFTER_DAYS;
+    }
+  };
   let cached: { at: number; report: Promise<ProjectHealthReport> } | null = null;
 
   async function context(): Promise<Context> {
@@ -621,7 +634,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
       }
       countRunning(row);
     }
-    const staleBefore = nowMs - STALE_AFTER_DAYS * DAY_MS;
+    const staleBefore = nowMs - staleAfterDays() * DAY_MS;
     const lanes = await mapLimit(ctx.lanes, GIT_CONCURRENCY, async (lane): Promise<ProjectLaneHealth> => {
       const folderExists = Boolean(lane.worktreePath) && exists(lane.worktreePath);
       const primary = lane.laneType === "primary";
@@ -721,7 +734,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           area: "git",
           severity: "info",
           title: `${plural(stale.length, "lane")} look${stale.length === 1 ? "s" : ""} done`,
-          detail: `Their PR is merged or closed, or nothing happened in them for ${STALE_AFTER_DAYS} days. ${safe === stale.length ? "All can be archived without losing anything." : `${safe} can be archived without losing anything; the rest have changes or unpushed commits.`}`,
+          detail: `Their PR is merged or closed, or nothing happened in them for ${staleAfterDays()} days. ${safe === stale.length ? "All can be archived without losing anything." : `${safe} can be archived without losing anything; the rest have changes or unpushed commits.`}`,
           items: stale.map((lane) => `${lane.name}: ${why(lane)}${lane.safeToArchive ? "" : " (has unsaved work)"}`),
         }];
       })] : []),
@@ -954,7 +967,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
       drive: volume ? { name: volume.name, internal: volume.internal, freeBytes: volume.freeBytes, totalBytes: volume.totalBytes } : null,
       issues,
       lanes: laneReport?.lanes ?? [],
-      staleAfterDays: STALE_AFTER_DAYS,
+      staleAfterDays: staleAfterDays(),
       checks: checks.sort((a, b) => a.label.localeCompare(b.label)),
     };
   }

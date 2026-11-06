@@ -70,6 +70,9 @@ function defaultLaneBranchGitStub(args: string[]): { exitCode: number; stdout: s
   if (args[0] === "check-ref-format" && args[1] === "--branch") {
     return { exitCode: 0, stdout: "", stderr: "" };
   }
+  // Branch clash listing and git config (user.name, the placeholder marker).
+  if (args[0] === "for-each-ref" && args.includes("refs/heads")) return { exitCode: 0, stdout: "", stderr: "" };
+  if (args[0] === "config") return { exitCode: 1, stdout: "", stderr: "" };
   if (args[0] === "show-ref" && args[1] === "--verify" && args[2] === "--quiet") {
     const ref = args[3] ?? "";
     if (ref.startsWith("refs/heads/ade/") || ref.startsWith("refs/remotes/origin/ade/")) {
@@ -164,6 +167,7 @@ describe("laneService automatic lane identity", () => {
       }
       if (args[0] === "check-ref-format") return { exitCode: 0, stdout: "", stderr: "" };
       if (args[0] === "show-ref") return { exitCode: 1, stdout: "", stderr: "" };
+      if (args[0] === "for-each-ref" || args[0] === "config") return { exitCode: args[0] === "config" ? 1 : 0, stdout: "", stderr: "" };
       if (args[0] === "branch" && args[1] === "-m") {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
@@ -195,6 +199,7 @@ describe("laneService automatic lane identity", () => {
           }
           if (args[0] === "check-ref-format") return { exitCode: 0, stdout: "", stderr: "" };
           if (args[0] === "show-ref") return { exitCode: 1, stdout: "", stderr: "" };
+          if (args[0] === "for-each-ref" || args[0] === "config") return { exitCode: args[0] === "config" ? 1 : 0, stdout: "", stderr: "" };
           if (args[0] === "branch" && args[1] === "-m") {
             resolve();
             await new Promise<void>((done) => { releaseRename = done; });
@@ -309,7 +314,7 @@ describe("laneService automatic lane identity", () => {
         branchRef: "ade/ok-something-super-weird-happened",
       });
       expect(vi.mocked(runGit).mock.calls.some(([gitArgs]) => (
-        gitArgs[0] === "branch" && gitArgs[1] === "-m" && gitArgs[2] === "ade/ok-something-super-weird-happened"
+        gitArgs[0] === "branch" && gitArgs[1] === "-m" && gitArgs.at(-1) === "ade/ok-something-super-weird-happened"
       ))).toBe(true);
     } finally {
       db.close();

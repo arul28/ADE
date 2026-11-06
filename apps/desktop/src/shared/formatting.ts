@@ -18,6 +18,35 @@ export function formatBytes(bytes: number): string {
 }
 
 /**
+ * The unit a machine's own file manager counts disk sizes in: Finder and the
+ * Linux file managers use 1000 bytes to the KB, Windows Explorer uses 1024 and
+ * still prints "GB". `platform` is the measured machine's `process.platform`;
+ * unknown (an older snapshot) keeps the 1024 that `formatBytes` always used.
+ */
+export function storageByteBase(platform: string | null | undefined): 1000 | 1024 {
+  return platform === "darwin" || platform === "linux" ? 1000 : 1024;
+}
+
+/**
+ * A disk size as the measured machine's own file manager would print it, so
+ * ADE's "free on disk" matches Finder on a Mac and Explorer on Windows. Only
+ * for storage figures; other sizes keep `formatBytes`.
+ */
+export function formatStorageBytes(bytes: number, platform: string | null | undefined): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const base = storageByteBase(platform);
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= base && unit < units.length - 1) {
+    value /= base;
+    unit += 1;
+  }
+  const digits = unit === 0 || value >= 100 ? 0 : 1;
+  return `${value.toFixed(digits)} ${units[unit]}`;
+}
+
+/**
  * Case/accent-insensitive text order, and the same order with embedded numbers
  * compared as numbers (`item2` before `item10`).
  *

@@ -471,9 +471,16 @@ function createMockStorageSnapshot(now: string) {
       lastScanAt: daysAgo(0.1),
       nextScanAt: daysAgo(-0.9),
       scanInProgress: false,
-      policy: { maxActiveLanes: 0, cleanupIntervalHours: 24, autoArchiveAfterHours: 336, reclaimArchivedAfterHours: 0, cleanBuildOutputAfterDays: 7 },
+      policy: {
+        archiveIdleAfterDays: 14,
+        freeUpSpaceAfterDays: 14,
+        freeUpSpaceMode: "ask",
+        deleteArchivedAfterDays: 0,
+        deleteLocalBranchOnAutoDelete: false,
+        cleanBuildOutputAfterDays: 7,
+      },
       archivedAutomatically: 1,
-      reviewReadyCount: 0,
+      freeUpDueCount: 0,
       buildOutput: {
         lastCheckAt: daysAgo(0.2),
         totalFreedBytes: 4.1 * GB,
@@ -602,6 +609,7 @@ function createMockArchive() {
       items: items.filter((item) =>
         (!args?.kinds?.length || args.kinds.includes(item.kind))
         && (!args?.olderThanDays || ageDays(item) >= args.olderThanDays)),
+      staleAfterDays: DEFAULT_ARCHIVE_STALE_DAYS,
     }),
     summary: async (args?: ArchiveSummaryArgs, _pin?: unknown): Promise<ArchiveSummary> => {
       const olderThanDays = args?.olderThanDays ?? DEFAULT_ARCHIVE_STALE_DAYS;
@@ -3959,10 +3967,12 @@ const MOCK_LIVE_PR_FILES: Record<string, any[]> = {};
 
 // ── New lane defaults (one set per account per repo) ─────────
 const MOCK_NEW_LANE_DEFAULTS = {
-  defaults: { start: { from: "default", on: "remote" }, templateId: null },
+  defaults: { start: { from: "default", on: "remote" }, templateId: null, branchPattern: "ade/{slug}" },
   scope: { kind: "account-repo", repo: "github.com/acme/app" },
   defaultBranch: "main",
   primaryBranch: "main",
+  branchPrefix: "ade/",
+  branchUser: "arul-sharma",
 };
 
 // ── Rebase Needs (all urgency categories) ─────────────────────
@@ -7171,6 +7181,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         activeWork: [],
       }),
       rename: resolvedArg(undefined),
+      renameBranch: async (args: { laneId: string; branchName?: string; dryRun?: boolean }) => ({
+        branchRef: args.dryRun ? "ade/mock-branch" : args.branchName ?? "ade/mock-branch",
+        renamed: !args.dryRun,
+        blocked: null,
+      }),
+      checkBranchName: async (args: { name: string }) => ({ branchName: args.name.trim(), problem: null }),
       updateAppearance: resolvedArg(undefined),
       archive: resolvedArg(undefined),
       archiveAndReclaim: resolvedArg({

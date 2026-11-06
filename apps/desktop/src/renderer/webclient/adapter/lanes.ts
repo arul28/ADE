@@ -95,6 +95,13 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       guardPin("rename", pin);
       await call("lanes.rename", args, undefined, false);
     },
+    renameBranch: async () => {
+      throw new Error("Renaming a lane's branch is not available from the web client yet. Use the desktop app on that machine.");
+    },
+    // No sync command yet: the dialog then lets the lane's machine check the name when it creates the lane.
+    checkBranchName: async () => {
+      throw new Error("Checking a branch name is not available from the web client yet.");
+    },
     updateAppearance: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("updateAppearance", pin);
       await call("lanes.updateAppearance", args, undefined, false);

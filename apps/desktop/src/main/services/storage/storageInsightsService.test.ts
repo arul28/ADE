@@ -86,6 +86,23 @@ function seedLane(db: AdeDb, args: {
   );
 }
 
+/** `getAutoArchiveFacts` for a clean lane whose merged work is all pushed. */
+function finishedLaneFacts() {
+  return {
+    worktreeUsable: true,
+    dirty: false,
+    hasBranch: true,
+    hasOwnCommits: true,
+    mergedIntoBase: true,
+    unpushedCommitCount: 0,
+    lastCommitAtMs: null,
+    prMerged: false,
+    prOpen: false,
+  };
+}
+
+const NOTHING_RUNNING = () => ({ activeChatCount: 0, activePtyCount: 0, activeWatcherCount: 0 });
+
 async function makeStorageFixture() {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-storage-extra-project-"));
   const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-storage-extra-home-"));
@@ -1291,16 +1308,9 @@ describe("storageMaintenanceJournal", () => {
     };
     insertLock("lane-locked", lockedPath, "lock-before-scan");
     const archive = vi.fn(async () => {});
-    const getReclaimRisk = vi.fn(async ({ laneId }: { laneId: string }) => {
+    const getAutoArchiveFacts = vi.fn(async (laneId: string) => {
       if (laneId === "lane-raced") insertLock(laneId, racedPath, "lock-during-scan");
-      return {
-        laneId,
-        dirty: false,
-        activeChatCount: 0,
-        activePtyCount: 0,
-        activeWatcherCount: 0,
-        blockedReasons: [],
-      };
+      return finishedLaneFacts();
     });
     const service = createStorageInsightsService({
       projectRoot,
@@ -1323,15 +1333,15 @@ describe("storageMaintenanceJournal", () => {
             status: { dirty: false },
           },
         ]),
-        getReclaimRisk,
+        getAutoArchiveFacts,
+        getLiveWorkCounts: NOTHING_RUNNING,
         archive,
       },
       projectConfigService: {
         get: () => ({
           effective: {
             laneCleanup: {
-              cleanupIntervalHours: 1,
-              autoArchiveAfterHours: 1,
+              archiveIdleAfterDays: 1,
             },
           },
         }),
@@ -1340,8 +1350,8 @@ describe("storageMaintenanceJournal", () => {
 
     await service.runLifecycleScanNow();
 
-    expect(getReclaimRisk).toHaveBeenCalledTimes(1);
-    expect(getReclaimRisk).toHaveBeenCalledWith({ laneId: "lane-raced" });
+    expect(getAutoArchiveFacts).toHaveBeenCalledTimes(1);
+    expect(getAutoArchiveFacts).toHaveBeenCalledWith("lane-raced");
     expect(archive).not.toHaveBeenCalled();
     service.dispose();
     fixture.cleanup();
@@ -1367,21 +1377,15 @@ describe("storageMaintenanceJournal", () => {
           isEditProtected: false,
           status: { dirty: false },
         }]),
-        getReclaimRisk: vi.fn(async () => ({
-          dirty: false,
-          activeChatCount: 0,
-          activePtyCount: 0,
-          activeWatcherCount: 0,
-          blockedReasons: [],
-        })),
+        getAutoArchiveFacts: vi.fn(async () => finishedLaneFacts()),
+        getLiveWorkCounts: NOTHING_RUNNING,
         archive,
       },
       projectConfigService: {
         get: () => ({
           effective: {
             laneCleanup: {
-              cleanupIntervalHours: 1,
-              autoArchiveAfterHours: 1,
+              archiveIdleAfterDays: 1,
             },
           },
         }),
@@ -1409,14 +1413,14 @@ describe("storageMaintenanceJournal", () => {
         list: vi.fn(async () => {
           throw new Error("lane scan failed");
         }),
-        getReclaimRisk: vi.fn(),
+        getAutoArchiveFacts: vi.fn(),
         archive: vi.fn(async () => {}),
       },
       projectConfigService: {
         get: () => ({
           effective: {
             laneCleanup: {
-              cleanupIntervalHours: 1,
+              archiveIdleAfterDays: 1,
             },
           },
         }),
@@ -1429,14 +1433,13 @@ describe("storageMaintenanceJournal", () => {
     expect(report.actions.length).toBeGreaterThan(0);
     expect(logger.warn).toHaveBeenCalledWith("storage.lifecycle_scan_failed", expect.objectContaining({
       projectRoot,
-      trigger: "manual",
       error: "lane scan failed",
     }));
     service.dispose();
     fixture.cleanup();
   });
 
-  it("enforces active-lane limits on safe lanes and only marks retained files for review", async () => {
+  it("archives idle safe lanes once per interval and removes nothing from an archived lane under Ask me", async () => {
     const fixture = await makeStorageFixture();
     const { projectRoot, adeHome, db } = fixture;
     const activeIds = ["lane-a", "lane-b", "lane-c"];
@@ -1470,23 +1473,17 @@ describe("storageMaintenanceJournal", () => {
         isEditProtected: row.is_edit_protected === 1,
         status: { dirty: false },
       }))),
-      getReclaimRisk: vi.fn(async ({ laneId }: { laneId: string }) => ({
-        laneId,
-        dirty: false,
-        activeChatCount: 0,
-        activePtyCount: 0,
-        activeWatcherCount: 0,
-        blockedReasons: [],
-      })),
+      getAutoArchiveFacts: vi.fn(async () => finishedLaneFacts()),
+      getLiveWorkCounts: NOTHING_RUNNING,
       archive,
     };
     const projectConfigService = {
       get: () => ({
         effective: {
           laneCleanup: {
-            maxActiveLanes: 1,
-            cleanupIntervalHours: 6,
-            reclaimArchivedAfterHours: 1,
+            archiveIdleAfterDays: 1,
+            freeUpSpaceAfterDays: 1,
+            freeUpSpaceMode: "ask" as const,
           },
         },
       }),
@@ -1506,11 +1503,11 @@ describe("storageMaintenanceJournal", () => {
     await service.runLifecycleScanNow();
     await service.runLifecycleScanNow();
 
-    expect(archive).toHaveBeenCalledTimes(2);
+    expect(archive).toHaveBeenCalledTimes(3);
     expect(releaseLaneRuntimeResources.mock.calls.map(([laneId]) => laneId))
       .toEqual(archive.mock.calls.map(([args]) => args.laneId));
     expect(db.get("select reclaim_state from local_lane_storage_state where lane_id = ?", ["lane-retained"]))
-      .toMatchObject({ reclaim_state: "ready_for_review" });
+      .toBeNull();
     expect(fs.existsSync(retainedPath)).toBe(true);
     service.dispose();
     fixture.cleanup();
