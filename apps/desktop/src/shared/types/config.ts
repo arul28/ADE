@@ -210,26 +210,44 @@ export function laneSetupScriptHasWork(
 
 // --- Lane Cleanup / Lifecycle types ---
 
-/** Auto-cleanup policy for stale lanes. */
+/**
+ * What cleanup does to lanes. A lane is active, archived (hidden, nothing
+ * deleted, one click to restore) or deleted; these rules move lanes along that
+ * line. Every duration is in days, and 0 means off.
+ *
+ * The keys before these (`cleanupIntervalHours`, `autoArchiveAfterHours`,
+ * `maxActiveLanes`, `reclaimArchivedAfterHours`, `autoDeleteArchivedAfterHours`)
+ * are still read from older files and turned into these (see
+ * `coerceLaneCleanupConfig`), never written. New names on purpose: an older
+ * ADE reading the same file drops keys it does not know, and would read a
+ * number of days under an old name as hours.
+ */
 export type LaneCleanupConfig = {
-  /** Maximum number of active (non-archived) lanes. Oldest by access time are auto-archived. 0 = unlimited. */
-  maxActiveLanes?: number;
-  /** How often (in hours) to scan for stale lanes. 0 = disabled. */
-  cleanupIntervalHours?: number;
-  /** Auto-archive lanes that have been inactive for this many hours. 0 = never. */
-  autoArchiveAfterHours?: number;
-  /** Mark archived lane files ready for review after this many hours. 0 = never. */
-  reclaimArchivedAfterHours?: number;
+  /** Archive idle lanes with nothing unsaved whose work is merged, after this many days. Absent or 0 = off. */
+  archiveIdleAfterDays?: number;
+  /**
+   * Days after a lane was archived that its folder is due to be freed up:
+   * the folder goes, the branch and chats stay. Absent = 14; 0 = off.
+   */
+  freeUpSpaceAfterDays?: number;
+  /**
+   * `ask` (default): nothing is removed; the archive reminder and Settings →
+   * Archive point at the lane. `auto`: cleanup removes the folder itself, with
+   * the same checks as a person's Free up space.
+   */
+  freeUpSpaceMode?: LaneFreeUpSpaceMode;
+  /** Delete archived lanes this many days after they were archived. Absent or 0 = off. */
+  deleteArchivedAfterDays?: number;
+  /** An automatic delete also deletes the lane's local branch. Never the remote one. Default false. */
+  deleteLocalBranchOnAutoDelete?: boolean;
   /**
    * Remove rebuildable build output (node_modules, dist, .next, ...) from lane
    * worktrees idle this many days. Absent = 7 (on by default); 0 = off.
    */
   cleanBuildOutputAfterDays?: number;
-  /** @deprecated Read as reclaimArchivedAfterHours for older local.yaml files. */
-  autoDeleteArchivedAfterHours?: number;
-  /** @deprecated Cleanup never deletes remote branches automatically. */
-  deleteRemoteBranchOnCleanup?: boolean;
 };
+
+export type LaneFreeUpSpaceMode = "ask" | "auto";
 
 // --- Lane Template types (Phase 5 W2) ---
 

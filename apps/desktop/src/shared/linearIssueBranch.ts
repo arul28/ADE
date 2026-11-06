@@ -1,3 +1,4 @@
+import { sanitizeBranchName } from "./laneBranchName";
 import type { LaneLinearIssue, NormalizedLinearIssue } from "./types";
 
 type BranchIssueInput = Pick<LaneLinearIssue | NormalizedLinearIssue, "identifier" | "title">;
@@ -43,25 +44,10 @@ export function linearIssueBranchName(issue: BranchIssueInput): string {
   return sanitizeLinearIssueBranchName(branch || identifier || "linear-issue");
 }
 
+/**
+ * A Linear (or Jira, GitHub) branch name made into one git and every OS
+ * accept: the lane branch rules, Windows-safe and capped in length.
+ */
 export function sanitizeLinearIssueBranchName(input: string): string {
-  return input
-    .trim()
-    .replace(/^refs\/heads\//, "")
-    .replace(/^origin\//, "")
-    // Git ref-format invalids: backslash, tilde, caret, colon, question, star,
-    // brackets, whitespace, plus the `@{` sequence (reflog selector syntax).
-    .replace(/@\{/g, "-")
-    .replace(/[\\~^:?*\[\]\s]+/g, "-")
-    .replace(/\/+/g, "/")
-    .replace(/\/\.+/g, "/")
-    .replace(/\.+\//g, "/")
-    .replace(/\.\.+/g, "-")
-    .replace(/\.+$/g, "")
-    // Strip a trailing `.lock` (case-insensitive) — invalid as a Git ref suffix.
-    .replace(/\.lock$/i, "")
-    .replace(/^-+|-+$/g, "")
-    .replace(/\/$/g, "")
-    .replace(/^\/+/g, "")
-    .replace(/-{2,}/g, "-")
-    || "linear-issue";
+  return sanitizeBranchName(input) || "linear-issue";
 }

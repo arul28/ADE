@@ -70,6 +70,9 @@ function defaultLaneBranchGitStub(args: string[]): { exitCode: number; stdout: s
   if (args[0] === "check-ref-format" && args[1] === "--branch") {
     return { exitCode: 0, stdout: "", stderr: "" };
   }
+  // Branch clash listing and git config (user.name, the placeholder marker).
+  if (args[0] === "for-each-ref" && args.includes("refs/heads")) return { exitCode: 0, stdout: "", stderr: "" };
+  if (args[0] === "config") return { exitCode: 1, stdout: "", stderr: "" };
   if (args[0] === "show-ref" && args[1] === "--verify" && args[2] === "--quiet") {
     const ref = args[3] ?? "";
     if (ref.startsWith("refs/heads/ade/") || ref.startsWith("refs/remotes/origin/ade/")) {
@@ -164,6 +167,7 @@ describe("laneService automatic lane identity", () => {
       }
       if (args[0] === "check-ref-format") return { exitCode: 0, stdout: "", stderr: "" };
       if (args[0] === "show-ref") return { exitCode: 1, stdout: "", stderr: "" };
+      if (args[0] === "for-each-ref" || args[0] === "config") return { exitCode: args[0] === "config" ? 1 : 0, stdout: "", stderr: "" };
       if (args[0] === "branch" && args[1] === "-m") {
         return { exitCode: 0, stdout: "", stderr: "" };
       }
@@ -195,6 +199,7 @@ describe("laneService automatic lane identity", () => {
           }
           if (args[0] === "check-ref-format") return { exitCode: 0, stdout: "", stderr: "" };
           if (args[0] === "show-ref") return { exitCode: 1, stdout: "", stderr: "" };
+          if (args[0] === "for-each-ref" || args[0] === "config") return { exitCode: args[0] === "config" ? 1 : 0, stdout: "", stderr: "" };
           if (args[0] === "branch" && args[1] === "-m") {
             resolve();
             await new Promise<void>((done) => { releaseRename = done; });
@@ -309,7 +314,7 @@ describe("laneService automatic lane identity", () => {
         branchRef: "ade/ok-something-super-weird-happened",
       });
       expect(vi.mocked(runGit).mock.calls.some(([gitArgs]) => (
-        gitArgs[0] === "branch" && gitArgs[1] === "-m" && gitArgs[2] === "ade/ok-something-super-weird-happened"
+        gitArgs[0] === "branch" && gitArgs[1] === "-m" && gitArgs.at(-1) === "ade/ok-something-super-weird-happened"
       ))).toBe(true);
     } finally {
       db.close();
@@ -1803,6 +1808,13 @@ describe("laneService delete outside .ade/worktrees", () => {
     return { ...rest, parentDir, worktreePath };
   }
 
+  /** "worktree prune" from `-c core.longpaths=true worktree prune`: the command, not its config flags. */
+  const gitSubcommand = (gitArgs: string[]): string => {
+    let start = 0;
+    while (gitArgs[start] === "-c") start += 2;
+    return gitArgs.slice(start, start + 2).join(" ");
+  };
+
   it("renames a Windows worktree aside and lets git prune it, instead of git removing it file by file", async () => {
     const originalPlatform = process.platform;
     const { db, service, parentDir, worktreePath } = await setupInOwnParent({
@@ -1818,7 +1830,7 @@ describe("laneService delete outside .ade/worktrees", () => {
 
       await service.delete({ laneId: "lane-external", deleteBranch: false });
 
-      const gitCalls = vi.mocked(runGit).mock.calls.map(([gitArgs]) => gitArgs.slice(0, 2).join(" "));
+      const gitCalls = vi.mocked(runGit).mock.calls.map(([gitArgs]) => gitSubcommand(gitArgs));
       expect(gitCalls).toContain("worktree prune");
       expect(gitCalls).not.toContain("worktree remove");
       expect(fs.existsSync(worktreePath)).toBe(false);
@@ -1858,7 +1870,7 @@ describe("laneService delete outside .ade/worktrees", () => {
       );
 
       // The rename really happened first: the prune only runs on that path.
-      expect(vi.mocked(runGit).mock.calls.map(([gitArgs]) => gitArgs.slice(0, 2).join(" "))).toContain(
+      expect(vi.mocked(runGit).mock.calls.map(([gitArgs]) => gitSubcommand(gitArgs))).toContain(
         "worktree prune",
       );
       expect(fs.existsSync(path.join(worktreePath, "work.txt"))).toBe(true);

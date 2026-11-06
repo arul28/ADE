@@ -2,7 +2,7 @@
 
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { expectNoJargon } from "../../../../test/jargonGuard";
 import { LanesSettingsPage, StorageSettingsPage } from "../lanes/LanesSettingsPage";
@@ -573,17 +573,16 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     expect(document.activeElement).toBe(trigger);
   });
 
-  it("shows the archive rule in force and saves an edit, debounced, as a local override only", async () => {
+  it("shows the archive rule in force and saves an edit only once it is committed, as a local override only", async () => {
     const { saveProjectConfig } = installAdeMock({
       config: {
-        shared: { laneCleanup: { autoArchiveAfterHours: 24 } },
-        local: { laneCleanup: { maxActiveLanes: 3 } },
+        shared: {},
+        local: { laneCleanup: { deleteArchivedAfterDays: 3 } },
         effective: {
           laneCleanup: {
-            maxActiveLanes: 3,
-            autoArchiveAfterHours: 24,
-            cleanupIntervalHours: 6,
-            reclaimArchivedAfterHours: 72,
+            archiveIdleAfterDays: 2,
+            freeUpSpaceAfterDays: 10,
+            deleteArchivedAfterDays: 3,
           },
         },
       },
@@ -595,18 +594,31 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     await openView("Rules");
 
     // An inherited rule shows the value in force, not an empty box.
-    const inherited = await screen.findByLabelText(/Archive after inactivity/i);
-    await waitFor(() => expect((inherited as HTMLInputElement).value).toBe("24"));
+    const inherited = await screen.findByLabelText(/Archive idle lanes after/i);
+    await waitFor(() => expect((inherited as HTMLInputElement).value).toBe("2"));
 
-    fireEvent.change(screen.getByLabelText(/Keep at most/i), { target: { value: "5" } });
-    expect(saveProjectConfig).not.toHaveBeenCalled();
+    // Typing "60" passes through "6": a rule that deletes lanes must never
+    // save a half-typed number, however long the typing pauses.
+    const deleteAfter = screen.getByLabelText(/^Delete after/i);
+    vi.useFakeTimers();
+    try {
+      fireEvent.change(deleteAfter, { target: { value: "6" } });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(saveProjectConfig).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+    fireEvent.change(deleteAfter, { target: { value: "60" } });
+    fireEvent.blur(deleteAfter);
     await waitFor(() => expect(saveProjectConfig).toHaveBeenCalledTimes(1), { timeout: 3000 });
     const saved = saveProjectConfig.mock.calls[0]![0].local.laneCleanup!;
-    expect(saved.maxActiveLanes).toBe(5);
+    expect(saved.deleteArchivedAfterDays).toBe(60);
     // Untouched rules stay inherited rather than being frozen as overrides.
-    expect(saved.autoArchiveAfterHours).toBeUndefined();
-    expect(saved.cleanupIntervalHours).toBeUndefined();
-    expect(saved.reclaimArchivedAfterHours).toBeUndefined();
+    expect(saved.archiveIdleAfterDays).toBeUndefined();
+    expect(saved.freeUpSpaceAfterDays).toBeUndefined();
+    expect(saved.freeUpSpaceMode).toBeUndefined();
   });
 
   it("offers history compression only when the machine can compress, and reports what it saved", async () => {

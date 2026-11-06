@@ -34,13 +34,29 @@ import { isWithinDir, normalizeBranchName, parseDiffNameOnly, resolvePathWithinR
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { isPathInside, pathKey, pathsEqual } from "../shared/pathCompare";
 import { nonAsarFs } from "../shared/nonAsarFs";
+import { sameFolder } from "../shared/sameFolder";
+import { deletingTrashName, isInUseError } from "../shared/deletingTrash";
+import {
+  gitAdminDirStillExists,
+  LaneFolderBusyError,
+  moveLaneFolderAsideWhenReleased,
+  moveWorktreeAsideAndPrune,
+  removeLaneTrashInBackground,
+  removeWorktreeDirectoryWithRecovery,
+  sweepLaneDeletingTrash,
+  LaneUnsavedWorkError,
+  worktreeRemovalRefusal,
+} from "./laneFolderRemoval";
+// Imported from here by the Windows lock-retry regression test.
+export { removeWorktreeDirectoryWithRecovery };
+import { gitLongPathArgs } from "../git/gitLongPaths";
 import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
 import { detectConflictKind } from "../git/gitConflictState";
 import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
 import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
 import { readLaneCompareBase } from "./laneCompareBase";
 import { PRIMARY_LANE_COLOR, allocateLaneColor } from "../../../shared/laneColorPalette";
-import { linearIssueBranchName, resolveLinearIssueBranchName, sanitizeLinearIssueBranchName } from "../../../shared/linearIssueBranch";
+import { linearIssueBranchName } from "../../../shared/linearIssueBranch";
 import {
   finalizeLaneLinearIssue,
   isLinkableLaneLinearIssue,
@@ -64,7 +80,7 @@ import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
 import { assertLaneIdArg, describeArgType } from "./laneIdArg";
-import { laneWorktreeFolderName, legacyLaneWorktreeFolderName, slugify } from "./laneWorktreeNaming";
+import { laneWorktreeFolderName, legacyLaneWorktreeFolderName } from "./laneWorktreeNaming";
 import { createLaneWorktreeLockService } from "./laneWorktreeLockService";
 import { measureTree } from "../storage/diskUsage";
 import { writeLaneUsageTombstone, type LaneUsageTombstoneMode } from "./laneUsageTombstone";
@@ -103,7 +119,6 @@ import type {
   LaneStateSnapshotSummary,
   LaneStatus,
   LaneSummary,
-  NewLaneDefaultsSnapshot,
   LaneType,
   ListLanesArgs,
   RecreateMissingWorktreeResult,
@@ -137,11 +152,8 @@ import {
 import { createLaneBranchHistoryObserver } from "./laneBranchHistory";
 import { copyUncommittedChanges, resolveLaneStart, type LaneStartFolder } from "./laneStartResolver";
 import type { NewLaneSettingsStore } from "./newLaneSettingsStore";
-import { DEFAULT_NEW_LANE_DEFAULTS, isSavableDefaultLaneStart, normalizeLaneStart, plainLaneStartBranch, type NewLaneDefaults } from "../../../shared/laneStart";
-import {
-  isAutoLaneTemporaryBranch,
-  resolveAppliedAutoLaneBranchFragment,
-} from "../../../shared/laneNameFallback";
+import { DEFAULT_NEW_LANE_DEFAULTS, normalizeLaneStart, plainLaneStartBranch, type LaneStart, type NewLaneDefaults } from "../../../shared/laneStart";
+import { createLaneBranchNaming } from "./laneBranchNaming";
 
 import { appleLaneDerivedDataPath, endLaneDeviceOnDisk, releaseLaneAppleDevice } from "../ios/laneDeviceRelease";
 import { anotherLaneHoldsUdid, readLaneAppleDeviceRecord } from "../ios/laneDeviceRows";
@@ -233,6 +245,32 @@ type SessionLinearIssueLinkRow = {
 type SessionGitHubIssueLinkRow = SessionLinearIssueLinkRow;
 type SessionJiraIssueLinkRow = SessionLinearIssueLinkRow;
 
+/** `getAutoArchiveFacts`: what the archive rules read about one lane. */
+export type LaneAutoArchiveFacts = {
+  /** The folder exists and is the lane's own git checkout. */
+  worktreeUsable: boolean;
+  dirty: boolean;
+  hasBranch: boolean;
+  /** The branch moved after ADE created it. */
+  hasOwnCommits: boolean;
+  /** The branch is an ancestor of its base (merged, or never moved). */
+  mergedIntoBase: boolean;
+  /** Commits on no remote, on the lane's branch or the folder's HEAD (the larger); 1 when git could not say. */
+  unpushedCommitCount: number;
+  /** The branch's newest commit, or null when git could not say. */
+  lastCommitAtMs: number | null;
+  /** ADE's PR record for the lane says merged / open. */
+  prMerged: boolean;
+  prOpen: boolean;
+  /**
+   * A merged PR's last head is exactly what the branch (and the folder) has,
+   * so every commit went into that merge. After a squash merge GitHub deletes
+   * the head branch and those commits sit on no remote, which alone would
+   * read as unpushed work.
+   */
+  mergedPrHasHead: boolean;
+};
+
 export type LinkedIssueSnapshotPatch = {
   reference: IssueRef;
   title: string;
@@ -316,143 +354,6 @@ const LANE_OWNED_ARTIFACT_IDS_SQL = `
         and s.lane_id <> ?
     )
 `;
-
-function isPermissionError(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException | undefined)?.code;
-  return code === "EACCES" || code === "EPERM";
-}
-
-async function makeTreeWritableForRemoval(targetPath: string): Promise<void> {
-  let stat: fs.Stats;
-  try {
-    stat = await nonAsarFs.promises.lstat(targetPath);
-  } catch {
-    return;
-  }
-
-  if (stat.isSymbolicLink()) return;
-
-  try {
-    await nonAsarFs.promises.chmod(targetPath, stat.mode | 0o700);
-  } catch {
-    // Best effort. The following rm will surface any remaining failure.
-  }
-
-  if (!stat.isDirectory()) return;
-
-  let entries: string[];
-  try {
-    entries = await nonAsarFs.promises.readdir(targetPath);
-  } catch (error) {
-    if (!isPermissionError(error)) return;
-    try {
-      await nonAsarFs.promises.chmod(targetPath, stat.mode | 0o700);
-      entries = await nonAsarFs.promises.readdir(targetPath);
-    } catch {
-      return;
-    }
-  }
-
-  await Promise.all(entries.map((entry) => makeTreeWritableForRemoval(path.join(targetPath, entry))));
-}
-
-/** Each attempt's child already retries a held file for ~9 s (see removeTreeOffProcess). */
-const WORKTREE_REMOVE_ATTEMPTS = 3;
-const WORKTREE_REMOVE_RETRY_MS = 250;
-
-function isRetryableRemoveError(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException | undefined)?.code;
-  return code === "EBUSY" || code === "EPERM" || code === "EACCES" || code === "ENOTEMPTY";
-}
-
-/**
- * Remove a worktree directory, recovering from read-only files and — on
- * Windows — handles a just-killed git (or an indexer/AV scanner) still holds:
- * those fail with EBUSY/EPERM/EACCES until the handle closes, so retry on a
- * bounded schedule instead of failing the cleanup outright. Exported only for
- * the Windows lock-retry regression test.
- *
- * Every attempt runs in a separate process (see removeTreeOffProcess): a lane
- * folder can hold hundreds of thousands of files, and a removal that stopped
- * at one held file can leave most of them, so even a retry here would stall
- * every other file operation in this process.
- */
-export async function removeWorktreeDirectoryWithRecovery(targetPath: string): Promise<void> {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      await removeTreeOffProcess(targetPath);
-      return;
-    } catch (error) {
-      if (!isRetryableRemoveError(error) || attempt >= WORKTREE_REMOVE_ATTEMPTS) throw error;
-      if (isPermissionError(error)) await makeTreeWritableForRemoval(targetPath);
-      if (attempt > 1 || !isPermissionError(error)) {
-        await new Promise((resolve) => setTimeout(resolve, WORKTREE_REMOVE_RETRY_MS));
-      }
-    }
-  }
-}
-
-/**
- * A lane folder renamed aside so its files can be removed after the delete
- * returns: `.<name>.ade-deleting-<8 hex>`, next to where it lived. The name is
- * ADE's own, which is what makes sweeping a forgotten one safe.
- */
-const DELETING_TRASH_SUFFIX = ".ade-deleting-";
-const DELETING_TRASH_NAME = /^\..+\.ade-deleting-[0-9a-f]{8}$/;
-const trashRemovalsInFlight = new Set<string>();
-
-function removeTrashInBackground(trashPath: string, logger: Logger): void {
-  const key = normAbs(trashPath);
-  if (trashRemovalsInFlight.has(key)) return;
-  trashRemovalsInFlight.add(key);
-  const t0 = Date.now();
-  void removeWorktreeDirectoryWithRecovery(key)
-    .then(() => {
-      logger.info("lane.delete.background_remove_done", { path: key, durationMs: Date.now() - t0 });
-    })
-    .catch((error) => {
-      // Left for the next sweep of this folder.
-      logger.warn("lane.delete.background_remove_failed", {
-        path: key,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    })
-    .finally(() => {
-      trashRemovalsInFlight.delete(key);
-    });
-}
-
-/** Finish removing renamed-aside lane folders an earlier run did not get to. */
-async function sweepDeletingTrash(parentDir: string, logger: Logger): Promise<void> {
-  let entries: fs.Dirent[];
-  try {
-    entries = await fs.promises.readdir(parentDir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !DELETING_TRASH_NAME.test(entry.name)) continue;
-    const trashPath = path.join(parentDir, entry.name);
-    // A folder Git still has metadata for was never pruned — its move back
-    // failed, or Git kept a locked worktree. That checkout is not trash.
-    if (await gitAdminDirStillExists(trashPath)) continue;
-    removeTrashInBackground(trashPath, logger);
-  }
-}
-
-async function gitAdminDirStillExists(checkoutPath: string): Promise<boolean> {
-  let pointer: string;
-  try {
-    pointer = await fs.promises.readFile(path.join(checkoutPath, ".git"), "utf8");
-  } catch (error) {
-    // No `.git` at all is the pruned case. Anything else (a `.git` directory,
-    // an unreadable file) is not something to sweep.
-    return (error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT";
-  }
-  const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(pointer)?.[1];
-  if (!gitdir) return true;
-  return fs.existsSync(path.resolve(checkoutPath, gitdir));
-}
 
 /**
  * Bytes a reclaim would free: blocks on disk, each hard-linked file once and
@@ -619,7 +520,9 @@ async function isExpectedGitWorktreeRoot(worktreePath: string): Promise<boolean>
     if (topLevelRes.exitCode !== 0) return false;
     const topLevel = topLevelRes.stdout.trim();
     if (!topLevel) return true;
-    return normAbs(topLevel) === normAbs(worktreePath);
+    // Git prints the real path: `/private/tmp` for `/tmp` on macOS, a
+    // OneDrive junction's target or another drive-letter case on Windows.
+    return sameFolder(topLevel, worktreePath);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // Test mocks can throw for unhandled git probes. The real runGit helper
@@ -2802,89 +2705,6 @@ export function createLaneService({
     return normalized;
   };
 
-  const resolveCreateBranchRef = async (args: {
-    name: string;
-    laneId: string;
-    branchName?: string | null;
-    linearIssue?: LaneLinearIssue | null;
-  }): Promise<string> => {
-    const explicitBranch = args.branchName?.trim() ?? "";
-    const linearBranch = !explicitBranch && args.linearIssue
-      ? resolveLinearIssueBranchName(args.linearIssue)
-      : "";
-    const suggested = explicitBranch || linearBranch;
-    const isCustomBranch = suggested.length > 0;
-    const isLinearBranch = !explicitBranch && linearBranch.length > 0;
-    const slug = slugify(args.name);
-    const fallback = `ade/${slug}-${args.laneId.slice(0, 8)}`;
-    const branchRef = suggested
-      ? sanitizeLinearIssueBranchName(suggested)
-      : fallback;
-
-    const check = await runGit(["check-ref-format", "--branch", branchRef], {
-      cwd: projectRoot,
-      timeoutMs: 8_000,
-    });
-    if (check.exitCode !== 0) {
-      throw new Error(`Generated branch name "${branchRef}" is not valid.`);
-    }
-
-    // Does this ref already exist locally, as a remote-tracking ref, or on the
-    // actual remote? Used to detect collisions before `git worktree add -b`.
-    const branchIsTaken = async (ref: string): Promise<boolean> => {
-      const localExists = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${ref}`], {
-        cwd: projectRoot,
-        timeoutMs: 8_000,
-      }).then((res) => res.exitCode === 0);
-      if (localExists) return true;
-      // Only auto-named (slug / Linear) branches probe the remote — explicit
-      // user branches are checked separately so the error can be specific.
-      if (!isCustomBranch) return false;
-      const remoteTrackingExists = await runGit(["show-ref", "--verify", "--quiet", `refs/remotes/origin/${ref}`], {
-        cwd: projectRoot,
-        timeoutMs: 8_000,
-      }).then((res) => res.exitCode === 0);
-      if (remoteTrackingExists) return true;
-      return runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", ref], {
-        cwd: projectRoot,
-        timeoutMs: 15_000,
-      }).then((res) => res.exitCode === 0 && res.stdout.trim().length > 0);
-    };
-
-    // Linear-derived branch names are deterministic (e.g. `ver-136-title`) and so
-    // collide when the same issue is launched again or a prior lane leaked the
-    // branch. Mirror the `ade/<slug>-<laneId>` fallback: keep the clean name when
-    // it is free (so Linear's branch-name matching still works), otherwise append
-    // the lane's unique suffix until the name is unused. Never hard-fail here.
-    if (isLinearBranch) {
-      if (!(await branchIsTaken(branchRef))) return branchRef;
-      const compactId = args.laneId.replace(/-/g, "");
-      for (let len = 6; len <= 12; len += 2) {
-        const candidate = sanitizeLinearIssueBranchName(`${branchRef}-${compactId.slice(0, len)}`);
-        if (!(await branchIsTaken(candidate))) return candidate;
-      }
-      // Astronomically unlikely; fall back to the guaranteed-unique slug form.
-      return fallback;
-    }
-
-    const branchTaken = await branchIsTaken(branchRef);
-    if (isAutoLaneTemporaryBranch(branchRef) && branchTaken) {
-      for (let attempt = 0; attempt < 32; attempt += 1) {
-        const candidate = `ade/${randomUUID().replace(/-/g, "").slice(0, 8)}`;
-        if (!(await branchIsTaken(candidate))) return candidate;
-      }
-      throw new Error("Unable to allocate a unique temporary branch for the automatic lane.");
-    }
-
-    if (branchTaken) {
-      throw new Error(
-        `Branch "${branchRef}" already exists locally or on the remote. Choose a different branch name.`,
-      );
-    }
-
-    return branchRef;
-  };
-
   const ensureBranchProfileForRow = (row: LaneRow): LaneBranchProfile =>
     upsertBranchProfileForRow(row);
 
@@ -3100,6 +2920,27 @@ export function createLaneService({
     return worktrees;
   };
 
+  /** `git worktree prune`: null when it succeeded, else what git said. */
+  const pruneGitWorktrees = async (): Promise<string | null> => {
+    const prune = await runGit([...gitLongPathArgs(), "worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
+    if (prune.exitCode === 0) return null;
+    return (prune.stderr || prune.stdout || "git worktree prune failed").trim();
+  };
+
+  /** Whether git lists `target` as a (non-bare) worktree; null when git could not say. */
+  // `sameFolder` reads real paths only for folders that exist, and this is
+  // asked after the folder moved aside: `canonicalPath` resolves through the
+  // nearest parent that still does, so git's real-path spelling (a OneDrive
+  // or 8.3 path on Windows) still matches.
+  const isListedGitWorktree = (target: string): Promise<boolean | null> => listGitWorktrees().then(
+    (worktrees) => {
+      const canonicalTarget = canonicalPath(target);
+      return worktrees.some((worktree) =>
+        !worktree.isBare && (sameFolder(worktree.path, target) || canonicalPath(worktree.path) === canonicalTarget));
+    },
+    () => null,
+  );
+
   const registeredWorktreeForLane = async (
     worktreePath: string,
     branchRef: string,
@@ -3108,11 +2949,40 @@ export function createLaneService({
     const expectedBranch = normalizeBranchKey(branchRef);
     if (!expectedBranch) return null;
     const worktrees = await listGitWorktrees();
+    // `sameFolder`, not `===`: git prints the real path, so a drive-letter case
+    // difference or a OneDrive junction made ADE's own lane read as foreign
+    // ("Cannot reclaim this folder").
     return worktrees.find((worktree) =>
       !worktree.isBare
-      && worktree.path === target
+      && sameFolder(worktree.path, target)
       && normalizeBranchKey(worktree.branch) === expectedBranch
     ) ?? null;
+  };
+
+  /**
+   * Whether a lane's folder is what an interrupted removal left behind: git
+   * dropped its record of the worktree (a held file stopped
+   * `git worktree remove` partway, or a path was too long for it) and the
+   * folder stayed. Such a folder used to block reclaim for good, as "not the
+   * lane worktree registered to this project".
+   *
+   * Only when every one of these holds: the folder is directly inside ADE's
+   * worktrees folder, git lists no worktree there on any branch, no other
+   * lane of this project points at it, and its `.git` is gone or points at
+   * git metadata that no longer exists. A checkout git still knows about, or
+   * one another lane owns, is never treated as leftover.
+   */
+  const isUnregisteredLeftoverOfLane = async (laneId: string, worktreePath: string): Promise<boolean> => {
+    const target = normAbs(worktreePath);
+    if (!isDirectlyInsideManagedWorktreesDir(target)) return false;
+    const worktrees = await listGitWorktrees();
+    if (worktrees.some((worktree) => !worktree.isBare && sameFolder(worktree.path, target))) return false;
+    const others = db.all<{ worktree_path: string }>(
+      "select worktree_path from lanes where project_id = ? and id != ?",
+      [projectId, laneId],
+    );
+    if (others.some((other) => sameFolder(other.worktree_path, target))) return false;
+    return !(await gitAdminDirStillExists(target));
   };
 
   const residualWorktreeCleanup = createWorktreeResidualCleanup({
@@ -4307,16 +4177,18 @@ export function createLaneService({
     startPoint: string;
     folder?: string;
     branchName?: string | null;
+    autoNamedBranch?: boolean;
     linearIssue?: LaneLinearIssue | null;
     githubIssue?: LaneGitHubIssue | null;
     jiraIssue?: LaneJiraIssue | null;
   }, runtimeOptions: LaneCreateRuntimeOptions = {}): Promise<LaneSummary> => {
     const laneId = resolvePresetLaneId(runtimeOptions.laneId);
     const now = new Date().toISOString();
-    const branchRef = await resolveCreateBranchRef({
+    const { branchRef, temporary: temporaryBranch } = await resolveCreateBranchRef({
       name: args.name,
       laneId,
       branchName: args.branchName,
+      autoNamedBranch: args.autoNamedBranch,
       linearIssue: args.linearIssue,
     });
     const worktreePath = path.join(worktreesDir, laneWorktreeFolderName(args.name, laneId));
@@ -4476,7 +4348,9 @@ export function createLaneService({
     // Automatic lanes must remain local and renameable until their background
     // identity generation completes. Ordinary lane creation keeps the existing
     // best-effort upstream setup.
-    if (!isAutoLaneTemporaryBranch(branchRef)) {
+    if (temporaryBranch) {
+      await setTemporaryBranchMarker(worktreePath, branchRef, true);
+    } else {
       try {
         await runGitWithGithubAuthFallback(["push", "-u", "origin", branchRef], {
           cwd: worktreePath,
@@ -5290,8 +5164,9 @@ export function createLaneService({
     }
     if (!registered && !fs.existsSync(worktreePath)) return;
 
+    // A placeholder this launch made, never a branch someone named.
     const branchRef = registeredBranch
-      && isAutoLaneTemporaryBranch(registeredBranch)
+      && (await isTemporaryLaneBranch(registeredBranch))
       && !db.get<{ id: string }>(
         "select id from lanes where project_id = ? and branch_ref = ? limit 1",
         [projectId, registeredBranch],
@@ -5462,7 +5337,7 @@ export function createLaneService({
   const archiveLaneCore = async (
     laneId: string,
     row: LaneRow,
-    options: { afterStopWork?: () => Promise<void> } = {},
+    options: { afterStopWork?: () => Promise<void>; autoArchive?: LaneLifecycleEvent["autoArchive"] } = {},
   ): Promise<void> => {
     // Before the status write, so a failure leaves the lane visible and still
     // owned rather than hidden with live processes behind it.
@@ -5492,6 +5367,7 @@ export function createLaneService({
       laneId,
       laneName: row.name,
       color: row.color,
+      ...(options.autoArchive ? { autoArchive: { ...options.autoArchive, projectRoot } } : {}),
     });
   };
 
@@ -5629,6 +5505,33 @@ export function createLaneService({
 
   // Named so a few methods (branch-drift resolution) can delegate to sibling
   // methods instead of duplicating their transaction/rollback handling.
+  const {
+    readGitUserName,
+    listBranchNames,
+    isTemporaryLaneBranch,
+    setTemporaryBranchMarker,
+    resolveCreateBranchRef,
+    ...branchNamingApi
+  } = createLaneBranchNaming({
+    db,
+    projectId,
+    projectRoot,
+    defaultBaseRef,
+    logger,
+    getNewLaneDefaultsForCreate,
+    getNewLaneSettings: () => newLaneSettings,
+    getValidateNewLaneTemplateId: () => validateNewLaneTemplateId,
+    getLaneRow,
+    getAllLaneRows: () => getAllLaneRows(false),
+    findActiveBranchOwner,
+    normalizeBranchKey,
+    autoLaneIdentityInFlight,
+    renameLane: (args) => laneServiceApi.rename(args),
+    updateBranchRef: (laneId, branchRef) => laneServiceApi.updateBranchRef(laneId, branchRef),
+    invalidateLaneListCache,
+    broadcastLifecycleEvent,
+  });
+
   const laneServiceApi = {
     async ensurePrimaryLane(): Promise<void> {
       await ensurePrimaryLane();
@@ -6318,6 +6221,7 @@ export function createLaneService({
         description,
         start,
         branchName,
+        autoNamedBranch,
         startPoint,
         linearIssue,
         githubIssue,
@@ -6342,6 +6246,7 @@ export function createLaneService({
             baseRef: defaultBaseRef,
             startPoint: resolvedHead,
             branchName,
+            autoNamedBranch,
             ...issues,
           }, runtimeOptions);
           return {
@@ -6359,6 +6264,7 @@ export function createLaneService({
         }
 
         let effectiveStart = getNewLaneDefaultsForCreate().start;
+        const usingSavedStart = start == null;
         if (start != null) {
           const requestedStart = normalizeLaneStart(start);
           if (!requestedStart) throw new Error("Invalid lane start.");
@@ -6369,8 +6275,8 @@ export function createLaneService({
           .filter((row) => row.worktree_path && row.branch_ref)
           .map((row) => ({ name: row.name, branchRef: row.branch_ref, worktreePath: row.worktree_path }));
         const primaryRow = rows.find((row) => row.lane_type === "primary") ?? null;
-        const resolved = await resolveLaneStart({
-          start: effectiveStart,
+        const resolveStart = (laneStart: LaneStart) => resolveLaneStart({
+          start: laneStart,
           projectRoot,
           defaultBranch: defaultBaseRef,
           primary: primaryRow
@@ -6379,6 +6285,24 @@ export function createLaneService({
           folders,
           skipFetch: runtimeOptions.skipStartFetch === true,
         });
+        let resolved: Awaited<ReturnType<typeof resolveLaneStart>>;
+        const fallbackNotes: string[] = [];
+        try {
+          resolved = await resolveStart(effectiveStart);
+        } catch (error) {
+          // The project's saved branch was deleted since it was saved: the
+          // saved default must not stop every new lane. A branch picked for
+          // this lane still fails, so the user can pick another.
+          const savedBranch = usingSavedStart && effectiveStart.from === "branch" ? plainLaneStartBranch(effectiveStart.branch) : "";
+          if (!savedBranch || !(error instanceof AdeExpectedError)) throw error;
+          const branchStillThere = (await listBranchNames()).some((existing) => existing === savedBranch);
+          if (branchStillThere) throw error;
+          effectiveStart = { from: "default", on: effectiveStart.on };
+          resolved = await resolveStart(effectiveStart);
+          fallbackNotes.push(
+            `The saved start branch ${savedBranch} no longer exists, so the lane started from ${resolved.sourceBranch}. Pick another in Settings › Lanes › New lanes.`,
+          );
+        }
 
         const lane = await createWorktreeLane({
           name,
@@ -6386,10 +6310,11 @@ export function createLaneService({
           baseRef: defaultBaseRef,
           startPoint: resolved.startSha,
           branchName,
+          autoNamedBranch,
           ...issues,
         }, runtimeOptions);
 
-        const notes = [...resolved.notes];
+        const notes = [...fallbackNotes, ...resolved.notes];
         let copiedFiles = 0;
         if (resolved.copyFrom && lane.worktreePath) {
           try {
@@ -7572,271 +7497,9 @@ export function createLaneService({
       });
     },
 
-    async applyAutoLaneIdentity(args: {
-      laneId: string;
-      expectedLaneName: string;
-      temporaryBranch: string;
-      laneTitle: string;
-      branchFragment: string;
-    }): Promise<{
-      laneRenameOutcome: "renamed" | "kept" | "skipped" | "failed";
-      branchRenameOutcome: "renamed" | "kept" | "skipped" | "failed";
-      branchRef: string;
-      reason?: string;
-    }> {
-      if (autoLaneIdentityInFlight.has(args.laneId)) {
-        const current = getLaneRow(args.laneId);
-        return {
-          laneRenameOutcome: "skipped",
-          branchRenameOutcome: "skipped",
-          branchRef: current?.branch_ref ?? args.temporaryBranch,
-          reason: "identity_mutation_in_flight",
-        };
-      }
-      autoLaneIdentityInFlight.add(args.laneId);
-      return await (async (): Promise<{
-        laneRenameOutcome: "renamed" | "kept" | "skipped" | "failed";
-        branchRenameOutcome: "renamed" | "kept" | "skipped" | "failed";
-        branchRef: string;
-        reason?: string;
-      }> => {
-      const lane = getLaneRow(args.laneId);
-      if (!lane || lane.lane_type !== "worktree") {
-        return {
-          laneRenameOutcome: "skipped",
-          branchRenameOutcome: "skipped",
-          branchRef: lane?.branch_ref ?? args.temporaryBranch,
-          reason: "lane_missing_or_not_worktree",
-        };
-      }
+    applyAutoLaneIdentity: branchNamingApi.applyAutoLaneIdentity,
 
-      let laneRenameOutcome: "renamed" | "kept" | "skipped" | "failed" = "kept";
-      if (lane.name === args.expectedLaneName) {
-        try {
-          laneServiceApi.rename({ laneId: args.laneId, name: args.laneTitle });
-          laneRenameOutcome = lane.name === args.laneTitle ? "kept" : "renamed";
-        } catch (error) {
-          laneRenameOutcome = "failed";
-          logger.warn("lane.auto_identity_lane_rename_failed", {
-            laneId: args.laneId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      } else if (lane.name !== args.laneTitle) {
-        laneRenameOutcome = "skipped";
-      }
-
-      const skipBranch = (reason: string, branchRef = lane.branch_ref) => ({
-        laneRenameOutcome,
-        branchRenameOutcome: "skipped" as const,
-        branchRef,
-        reason,
-      });
-      const temporaryBranch = branchNameFromLaneRef(args.temporaryBranch);
-      if (!isAutoLaneTemporaryBranch(temporaryBranch)) return skipBranch("invalid_temporary_branch");
-      if (normalizeBranchKey(lane.branch_ref) !== temporaryBranch) return skipBranch("persisted_branch_changed");
-
-      const currentBranch = await runGit(["branch", "--show-current"], {
-        cwd: lane.worktree_path,
-        timeoutMs: 8_000,
-      });
-      if (currentBranch.exitCode !== 0 || branchNameFromLaneRef(currentBranch.stdout.trim()) !== temporaryBranch) {
-        return skipBranch("checked_out_branch_changed");
-      }
-      const upstream = await runGit(
-        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
-        { cwd: lane.worktree_path, timeoutMs: 8_000 },
-      );
-      if (upstream.exitCode === 0 && upstream.stdout.trim()) return skipBranch("upstream_configured");
-      const origin = await runGit(["remote", "get-url", "origin"], {
-        cwd: lane.worktree_path,
-        timeoutMs: 8_000,
-      });
-      const hasOrigin = origin.exitCode === 0 && origin.stdout.trim().length > 0;
-      if (hasOrigin) {
-        const remoteTemp = await runGitWithGithubAuthFallback(
-          ["ls-remote", "--exit-code", "--heads", "origin", temporaryBranch],
-          { cwd: lane.worktree_path, timeoutMs: 12_000 },
-        );
-        if (remoteTemp.exitCode === 0 && remoteTemp.stdout.trim()) return skipBranch("temporary_branch_pushed");
-        if (remoteTemp.exitCode !== 2) return skipBranch("remote_state_unavailable");
-      }
-      const pr = db.get<{ id: string }>(
-        "select id from pull_requests where project_id = ? and lane_id = ? and detached_at is null limit 1",
-        [projectId, args.laneId],
-      );
-      if (pr) return skipBranch("pull_request_exists");
-
-      const autoIdentityBranchOccupied = (ref: string): boolean => {
-        const normalized = normalizeBranchKey(ref);
-        if (!normalized) return true;
-        if (findActiveBranchOwner(normalized, args.laneId)) return true;
-        const headVariants = [normalized, `refs/heads/${normalized}`, `origin/${normalized}`];
-        const historical = db.get<{ id: string }>(
-          `
-            select id from pull_requests
-            where project_id = ?
-              and (
-                head_branch = ?
-                or head_branch = ?
-                or head_branch = ?
-              )
-            limit 1
-          `,
-          [projectId, ...headVariants],
-        );
-        if (historical) return true;
-        const projected = db.get<{ github_pr_number: number }>(
-          `
-            select github_pr_number from github_pr_projections
-            where project_id = ?
-              and (
-                head_branch = ?
-                or head_branch = ?
-                or head_branch = ?
-              )
-            limit 1
-          `,
-          [projectId, ...headVariants],
-        );
-        return Boolean(projected);
-      };
-
-      // Only keep the AI fragment when this lane actually took the AI title.
-      // A duplicate-name failure (or a user rename mid-flight) must not still
-      // claim `ade/chat-mention-tags-2` for a lane that stayed on its fallback
-      // title. Occupied fragments also lose to the applied title's slug rather
-      // than suffixing a name that belongs to another live lane or merged PR.
-      const adoptedAiTitle = laneRenameOutcome === "renamed"
-        || (laneRenameOutcome === "kept" && args.laneTitle === lane.name);
-      const identityTitle = laneRenameOutcome === "skipped"
-        ? lane.name
-        : laneRenameOutcome === "failed"
-          ? args.expectedLaneName
-          : args.laneTitle;
-      const branchFragment = resolveAppliedAutoLaneBranchFragment({
-        adoptedAiTitle,
-        aiBranchFragment: args.branchFragment,
-        identityTitle,
-        occupied: autoIdentityBranchOccupied,
-      });
-      const baseRef = `ade/${branchFragment}`;
-      const validRef = await runGit(["check-ref-format", "--branch", baseRef], {
-        cwd: lane.worktree_path,
-        timeoutMs: 8_000,
-      });
-      if (validRef.exitCode !== 0) return skipBranch("invalid_target_branch");
-
-      let targetRef: string | null = null;
-      for (let suffix = 1; suffix < 1_000; suffix += 1) {
-        const candidate = suffix === 1 ? baseRef : `${baseRef}-${suffix}`;
-        const local = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`], {
-          cwd: projectRoot,
-          timeoutMs: 8_000,
-        });
-        const remote = hasOrigin
-          ? await runGitWithGithubAuthFallback(["ls-remote", "--exit-code", "--heads", "origin", candidate], {
-            cwd: projectRoot,
-            timeoutMs: 12_000,
-          })
-          : { exitCode: 2, stdout: "", stderr: "" };
-        if (remote.exitCode !== 0 && remote.exitCode !== 2) {
-          return skipBranch("remote_state_unavailable");
-        }
-        if (local.exitCode !== 0 && remote.exitCode === 2 && !autoIdentityBranchOccupied(candidate)) {
-          targetRef = candidate;
-          break;
-        }
-      }
-      if (!targetRef) return skipBranch("branch_collision_limit_reached");
-
-      const latestLane = getLaneRow(args.laneId);
-      if (normalizeBranchKey(latestLane?.branch_ref ?? "") !== temporaryBranch) {
-        return skipBranch("persisted_branch_changed");
-      }
-      const latestBranch = await runGit(["branch", "--show-current"], {
-        cwd: lane.worktree_path,
-        timeoutMs: 8_000,
-      });
-      if (latestBranch.exitCode !== 0 || branchNameFromLaneRef(latestBranch.stdout.trim()) !== temporaryBranch) {
-        return skipBranch("checked_out_branch_changed");
-      }
-
-      const renamed = await runGit(["branch", "-m", targetRef], {
-        cwd: lane.worktree_path,
-        timeoutMs: 15_000,
-      });
-      if (renamed.exitCode !== 0) {
-        logger.warn("lane.auto_identity_branch_rename_failed", {
-          laneId: args.laneId,
-          temporaryBranch,
-          targetRef,
-          error: renamed.stderr.trim(),
-        });
-        return {
-          laneRenameOutcome,
-          branchRenameOutcome: "failed",
-          branchRef: temporaryBranch,
-          reason: "git_rename_failed",
-        };
-      }
-      try {
-        laneServiceApi.updateBranchRef(args.laneId, targetRef);
-      } catch (error) {
-        const rollback = await runGit(["branch", "-m", temporaryBranch], {
-          cwd: lane.worktree_path,
-          timeoutMs: 15_000,
-        });
-        logger.error("lane.auto_identity_branch_persist_failed", {
-          laneId: args.laneId,
-          temporaryBranch,
-          targetRef,
-          rollbackSucceeded: rollback.exitCode === 0,
-          // The Error itself, so `logBridge` lifts it into the Sentry event and
-          // the issue groups by the real failure; `errorText` keeps the
-          // sentence on disk, which `JSON.stringify` writes an Error without.
-          error,
-          errorText: error instanceof Error ? error.message : String(error),
-        });
-        if (rollback.exitCode !== 0) {
-          db.run("update lanes set branch_ref = ? where id = ? and project_id = ?", [
-            targetRef,
-            args.laneId,
-            projectId,
-          ]);
-          invalidateLaneListCache();
-          const reconciledLane = getLaneRow(args.laneId);
-          if (reconciledLane) {
-            broadcastLifecycleEvent({
-              type: "lane-branch-updated",
-              laneId: args.laneId,
-              laneName: reconciledLane.name,
-              color: reconciledLane.color,
-            });
-          }
-          return {
-            laneRenameOutcome,
-            branchRenameOutcome: "renamed",
-            branchRef: targetRef,
-            reason: "persist_reconciled_after_rollback_failure",
-          };
-        }
-        return {
-          laneRenameOutcome,
-          branchRenameOutcome: "failed",
-          branchRef: temporaryBranch,
-          reason: "persistence_failed_git_rolled_back",
-        };
-      }
-      return {
-        laneRenameOutcome,
-        branchRenameOutcome: "renamed",
-        branchRef: targetRef,
-      };
-      })().finally(() => {
-        autoLaneIdentityInFlight.delete(args.laneId);
-      });
-    },
+    renameBranch: branchNamingApi.renameBranch,
 
     updateAppearance({ laneId, color, emoji, icon, tags }: UpdateLaneAppearanceArgs): void {
       const lane = getLaneRow(laneId);
@@ -7916,15 +7579,19 @@ export function createLaneService({
         ? await hasSymlinkInManagedPath(normalizedRoot, normalizedWorktree)
         : false;
       let registeredWorktree: GitWorktreeInfo | null = null;
+      let finishRemoval = false;
       if (worktreeExists && !symlinkPath) {
         try {
           registeredWorktree = await registeredWorktreeForLane(normalizedWorktree, row.branch_ref);
+          // Git no longer lists the folder: an earlier removal stopped partway.
+          // Reclaim finishes it rather than refusing forever.
+          if (!registeredWorktree) finishRemoval = await isUnregisteredLeftoverOfLane(laneId, normalizedWorktree);
         } catch {
           // Ownership must be proven before reclaim; a failed registry read is
           // treated as blocked instead of trusting the saved database path.
         }
       }
-      const worktreeAvailable = Boolean(registeredWorktree);
+      const worktreeAvailable = Boolean(registeredWorktree) || finishRemoval;
       const { adeDir: packAdeDir, lanePackDir } = lanePackDirectory(projectRoot, laneId);
       const packSymlinkPath = await hasSymlinkInManagedPath(packAdeDir, lanePackDir);
       const [worktreeBytes, generatedBytes] = await Promise.all([
@@ -7964,7 +7631,7 @@ export function createLaneService({
           disposition: "blocked",
         });
       }
-      if (worktreeExists && !symlinkPath && !registeredWorktree) {
+      if (worktreeExists && !symlinkPath && !registeredWorktree && !finishRemoval) {
         blockedReasons.push({
           code: "worktree_not_registered",
           message: "This folder is not the lane worktree registered to this project and will not be removed.",
@@ -8004,6 +7671,7 @@ export function createLaneService({
         generatedBytes,
         reclaimableBytes: worktreeBytes + generatedBytes,
         worktreeAvailable,
+        ...(finishRemoval ? { finishRemoval: true } : {}),
         blockedReasons,
         lastFailure: state?.last_error ?? null,
         retryCount: state?.attempts ?? 0,
@@ -8042,7 +7710,7 @@ export function createLaneService({
       const hardBlock = risk.blockedReasons.find((reason) => reason.disposition === "blocked");
       if (hardBlock) throw new Error(hardBlock.message);
       if (risk.dirty && args.forceDirty !== true) {
-        throw new AdeExpectedError("This lane has uncommitted files. Confirm that those changes may be lost.", "user");
+        throw new LaneUnsavedWorkError("This lane has uncommitted files. Confirm that those changes may be lost.");
       }
       if (laneReclaimInFlight.has(args.laneId)) {
         throw new Error("Archive & Reclaim is already running for this lane.");
@@ -8101,7 +7769,13 @@ export function createLaneService({
             if (await hasSymlinkInManagedPath(normalizedRoot, normalizedWorktree)) {
               throw new Error("ADE will not reclaim a folder through a symbolic link.");
             }
-            if (!await registeredWorktreeForLane(normalizedWorktree, row.branch_ref)) {
+            // Proven again under the mutation queue. A leftover (git dropped
+            // its record in an earlier, interrupted removal) must still be one:
+            // git may have been told about the folder again meanwhile.
+            const owned = risk.finishRemoval
+              ? await isUnregisteredLeftoverOfLane(args.laneId, normalizedWorktree)
+              : Boolean(await registeredWorktreeForLane(normalizedWorktree, row.branch_ref));
+            if (!owned) {
               throw new Error("This folder is no longer the lane worktree registered to this project.");
             }
             const beforeRemove = await fs.promises.lstat(normalizedWorktree);
@@ -8113,40 +7787,98 @@ export function createLaneService({
             ) {
               throw new Error("The lane worktree changed while ADE was preparing cleanup.");
             }
-            const unsavedWork = await describeUnsavedWorktreeWork(normalizedWorktree);
-            if (unsavedWork && args.forceDirty !== true) {
-              logger.info("lane.reclaim.unsaved_work", { laneId: args.laneId, reason: unsavedWork });
-              throw new AdeExpectedError(
-                unsavedWork === UNCOMMITTED_CHANGES_REASON
-                  ? "This lane gained uncommitted files during cleanup. Confirm that those changes may be lost."
-                  : `${unsavedWork} Confirm that this work may be lost.`,
-                "user",
-              );
+            // A leftover has no git metadata left to ask, and git run inside it
+            // would answer for the main checkout instead.
+            if (!risk.finishRemoval) {
+              const unsavedWork = await describeUnsavedWorktreeWork(normalizedWorktree);
+              if (unsavedWork && args.forceDirty !== true) {
+                logger.info("lane.reclaim.unsaved_work", { laneId: args.laneId, reason: unsavedWork });
+                throw new LaneUnsavedWorkError(
+                  unsavedWork === UNCOMMITTED_CHANGES_REASON
+                    ? "This lane gained uncommitted files during cleanup. Confirm that those changes may be lost."
+                    : `${unsavedWork} Confirm that this work may be lost.`,
+                );
+              }
             }
-            const remove = await runGit(
-              ["worktree", "remove", "--force", normalizedWorktree],
-              { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS },
-            );
-            if (remove.exitCode !== 0 || fs.existsSync(normalizedWorktree)) {
-              let residualStat: fs.Stats | null = null;
+            if (process.platform === "win32" || risk.finishRemoval) {
+              // Windows: ADE removes the files itself, never `git worktree
+              // remove`. Older Git for Windows follows NTFS junctions inside a
+              // worktree (a `node_modules` linked elsewhere) and deletes what
+              // they point to; Node's `rm` removes the junction only. So ADE
+              // makes git's own refusals here, waits for the folder to be let
+              // go, moves it aside, has git drop its record, and only then
+              // deletes. A held file can no longer stop the removal halfway
+              // through the checkout, which is what used to leave a folder git
+              // had forgotten and reclaim refused for good.
+              if (!risk.finishRemoval) {
+                const refusal = await worktreeRemovalRefusal(normalizedWorktree, args.forceDirty === true);
+                if (refusal) throw new AdeExpectedError(refusal, "user");
+              }
+              let trashPath: string;
+              if (risk.finishRemoval) {
+                trashPath = await moveLaneFolderAsideWhenReleased(normalizedWorktree);
+              } else {
+                const aside = await moveWorktreeAsideAndPrune(normalizedWorktree, {
+                  moveAside: moveLaneFolderAsideWhenReleased,
+                  prune: pruneGitWorktrees,
+                  isListed: () => isListedGitWorktree(normalizedWorktree),
+                });
+                // Git still has the worktree: the folder is back, still a
+                // working checkout; report why.
+                if (!aside.trashPath) throw new Error(`The lane folder was kept: ${aside.keptReason ?? "Git kept its record of this worktree."}`);
+                trashPath = aside.trashPath;
+              }
               try {
-                residualStat = await fs.promises.lstat(normalizedWorktree);
+                await removeWorktreeDirectoryWithRecovery(trashPath);
               } catch (error) {
-                if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+                // The lane's folder is gone from its place and git has no record
+                // of it; what is left is ADE's trash, finished in the background
+                // and by the next sweep.
+                removeLaneTrashInBackground(trashPath, logger);
+                warnings.push("Some files are still being removed in the background.");
+                logger.info("lane.reclaim.trash_remove_deferred", {
+                  laneId: args.laneId,
+                  error: error instanceof Error ? error.message : String(error),
+                });
               }
-              if (residualStat) {
-                if (
-                  !residualStat.isDirectory()
-                  || residualStat.isSymbolicLink()
-                  || residualStat.dev !== initialStat.dev
-                  || residualStat.ino !== initialStat.ino
-                ) {
-                  throw new Error("The lane worktree changed during cleanup; ADE left the folder in place.");
+              // And any an earlier reclaim or delete left beside it.
+              void sweepLaneDeletingTrash(path.dirname(normalizedWorktree), logger);
+            } else {
+              const remove = await runGit(
+                ["worktree", "remove", "--force", normalizedWorktree],
+                { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS },
+              );
+              if (remove.exitCode !== 0 || fs.existsSync(normalizedWorktree)) {
+                let residualStat: fs.Stats | null = null;
+                try {
+                  residualStat = await fs.promises.lstat(normalizedWorktree);
+                } catch (error) {
+                  if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
                 }
-                await removeWorktreeDirectoryWithRecovery(normalizedWorktree);
+                if (residualStat) {
+                  if (
+                    !residualStat.isDirectory()
+                    || residualStat.isSymbolicLink()
+                    || residualStat.dev !== initialStat.dev
+                    || residualStat.ino !== initialStat.ino
+                  ) {
+                    throw new Error("The lane worktree changed during cleanup; ADE left the folder in place.");
+                  }
+                  try {
+                    await removeWorktreeDirectoryWithRecovery(normalizedWorktree);
+                  } catch (error) {
+                    // Held files: what is left is a leftover the next attempt
+                    // finishes (`finishRemoval`), so keep it quietly.
+                    if (isInUseError(error)) throw new LaneFolderBusyError();
+                    throw error;
+                  }
+                }
               }
             }
-            const prune = await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
+            const prune = await runGit(
+              [...gitLongPathArgs(), "worktree", "prune"],
+              { cwd: projectRoot, timeoutMs: 30_000 },
+            );
             if (prune.exitCode !== 0) {
               warnings.push((prune.stderr || prune.stdout || "Git worktree cleanup did not finish.").trim());
             }
@@ -8173,7 +7905,8 @@ export function createLaneService({
         }
         db.run(
           `update local_lane_storage_state
-              set reclaim_state = 'reclaimed', reclaimed_at = ?, last_error = null, updated_at = ?
+              set reclaim_state = 'reclaimed', reclaimed_at = ?, last_error = null,
+                  pending_removal_at = null, updated_at = ?
             where project_id = ? and lane_id = ?`,
           [now, now, projectId, args.laneId],
         );
@@ -8200,6 +7933,34 @@ export function createLaneService({
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (error instanceof LaneFolderBusyError) {
+          // Nothing was removed, or what is left is a leftover reclaim can
+          // finish. Kept, not failed: the lane is archived, and the storage
+          // doctor tries again (`pending_removal_at`) without an error.
+          const at = new Date().toISOString();
+          // A new wait on files in use counts its tries from 1.
+          db.run(
+            `update local_lane_storage_state
+                set reclaim_state = 'kept',
+                    attempts = case when pending_removal_at is null then 1 else attempts + 1 end,
+                    last_error = ?,
+                    pending_removal_at = coalesce(pending_removal_at, ?), updated_at = ?
+              where project_id = ? and lane_id = ?`,
+            [message, at, at, projectId, args.laneId],
+          );
+          logger.info("lane.storage.reclaim.kept_busy", {
+            laneId: args.laneId,
+            durationMs: Date.now() - startedAtMs,
+          });
+          return {
+            laneId: args.laneId,
+            reclaimedBytes: 0,
+            worktreeRemoved: false,
+            generatedDataRemoved: false,
+            keptForRetry: true,
+            warnings: [...warnings, message],
+          };
+        }
         db.run(
           `update local_lane_storage_state
               set reclaim_state = 'failed', attempts = attempts + 1, last_error = ?, updated_at = ?
@@ -8235,7 +7996,12 @@ export function createLaneService({
      * Async for that reason, and the same teardown steps `delete` and
      * `archiveAndReclaim` already run — one list, not three.
      */
-    async archive({ laneId }: { laneId: string }): Promise<void> {
+    async archive(
+      { laneId }: { laneId: string },
+      // Set by the storage doctor's archive rules only: the toast says why
+      // and offers Undo.
+      opts: { autoArchive?: LaneLifecycleEvent["autoArchive"] } = {},
+    ): Promise<void> {
       // Guards first: a lane that cannot be archived must not have its Docker
       // stack pulled out from under it on the way to the error.
       const row = readArchivableLaneRow(laneId);
@@ -8245,6 +8011,7 @@ export function createLaneService({
       // callback below from racing a rebind between the guard and the call.
       const teardownEnv = onLaneArchivedEnvTeardown;
       await archiveLaneCore(laneId, row, {
+        ...(opts.autoArchive ? { autoArchive: opts.autoArchive } : {}),
         // Docker services the lane's env init started come down with it,
         // keeping archive symmetric with the `compose up` unarchive re-runs.
         //
@@ -8765,11 +8532,7 @@ export function createLaneService({
                   return fs.existsSync(worktreeMetadataPath);
                 }
               };
-              const pruneWorktreesBestEffort = async (): Promise<string | null> => {
-                const pruneRes = await runGit(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
-                if (pruneRes.exitCode === 0) return null;
-                return (pruneRes.stderr || pruneRes.stdout || "git worktree prune failed").trim();
-              };
+              const pruneWorktreesBestEffort = pruneGitWorktrees;
               const removeResidualDirectory = async (detail: string, failurePrefix?: string) => {
                 try {
                   await removeWorktreeDirectoryWithRecovery(row.worktree_path);
@@ -8819,49 +8582,34 @@ export function createLaneService({
                 if (!fs.existsSync(target) || !(await isExpectedGitWorktreeRoot(target))) return null;
                 // Git refuses to remove a worktree with submodules unless forced.
                 if (!force && fs.existsSync(path.join(target, ".gitmodules"))) return null;
-                const isRegistered = () => listGitWorktrees().then(
-                  (worktrees) => worktrees.some((worktree) =>
-                    !worktree.isBare
-                    && (worktree.path === target || canonicalPath(worktree.path) === canonicalPath(target))),
-                  () => null,
-                );
                 // Only a folder Git lists as this worktree is renamed: pruning
                 // the missing entry is what makes the rename a removal.
-                if ((await isRegistered()) !== true) return null;
-                const trashPath = path.join(
-                  path.dirname(target),
-                  `.${path.basename(target)}${DELETING_TRASH_SUFFIX}${randomUUID().replace(/-/g, "").slice(0, 8)}`,
-                );
-                try {
-                  await fs.promises.rename(target, trashPath);
-                } catch (error) {
-                  // A handle still open inside the tree blocks the rename;
-                  // `git worktree remove` gets its usual chance below.
-                  logger.info("lane.delete.rename_aside_skipped", {
-                    laneId,
-                    error: error instanceof Error ? error.message : String(error),
-                  });
-                  return null;
-                }
-                const pruneFailure = await pruneWorktreesBestEffort();
-                // Unknown counts as registered: the folder goes back.
-                if (pruneFailure !== null || (await isRegistered()) !== false) {
-                  // Git kept the worktree (it is locked, or prune failed). Put
-                  // the folder back and let `git worktree remove` decide.
-                  try {
-                    await fs.promises.rename(trashPath, target);
-                  } catch (restoreError) {
-                    throw new Error(
-                      `ADE moved the lane folder to ${trashPath} and could not move it back: ${
-                        restoreError instanceof Error ? restoreError.message : String(restoreError)
-                      }`,
-                    );
-                  }
-                  return null;
-                }
+                if ((await isListedGitWorktree(target)) !== true) return null;
+                // Git kept the worktree (it is locked, or prune failed): the
+                // folder is back and `git worktree remove` decides.
+                const { trashPath } = await moveWorktreeAsideAndPrune(target, {
+                  moveAside: async (folder) => {
+                    const aside = path.join(path.dirname(folder), deletingTrashName(path.basename(folder)));
+                    try {
+                      await fs.promises.rename(folder, aside);
+                      return aside;
+                    } catch (error) {
+                      // A handle still open inside the tree blocks the rename;
+                      // `git worktree remove` gets its usual chance below.
+                      logger.info("lane.delete.rename_aside_skipped", {
+                        laneId,
+                        error: error instanceof Error ? error.message : String(error),
+                      });
+                      return null;
+                    }
+                  },
+                  prune: pruneWorktreesBestEffort,
+                  isListed: () => isListedGitWorktree(target),
+                });
+                if (!trashPath) return null;
                 residualWorktreeCleanup.deleteRow(target);
-                removeTrashInBackground(trashPath, logger);
-                void sweepDeletingTrash(path.dirname(target), logger);
+                removeLaneTrashInBackground(trashPath, logger);
+                void sweepLaneDeletingTrash(path.dirname(target), logger);
                 return { detail: `${target} (removing files in the background)` };
               };
               const renamedAside = await renameAsideWorktree();
@@ -9183,6 +8931,119 @@ export function createLaneService({
       };
     },
 
+    /**
+     * What the automatic archive rules need to decide whether a lane is done,
+     * and nothing more: local git only, no `ls-remote` (a network round trip
+     * with a GitHub sign-in fallback) and no folder measurement (a full walk
+     * of `node_modules`). `getReclaimRisk` did both for every lane on every
+     * scan only to read three of its answers.
+     *
+     * - `hasOwnCommits`: the branch moved since ADE created it (its reflog has
+     *   a commit, merge, rebase or reset). A new lane sits on its base, so
+     *   `merge-base --is-ancestor` calls it merged; it is not done. Without a
+     *   reflog (expired, or never kept), its newest commit is newer than the
+     *   lane.
+     * - `prMerged`: ADE's PR record for the lane says merged. A squash merge
+     *   never makes the branch an ancestor of its base.
+     * - `mergedPrHasHead`: that merged PR's head is the branch's (and the
+     *   folder's) commit, so nothing came after it.
+     * - `lastCommitAtMs`: the branch's newest commit, so commits made outside
+     *   ADE count as activity.
+     */
+    async getAutoArchiveFacts(laneId: string): Promise<LaneAutoArchiveFacts> {
+      const row = getLaneRow(laneId);
+      if (!row) throw new Error(`Lane not found: ${laneId}`);
+      const worktreeUsable = Boolean(row.worktree_path) && fs.existsSync(row.worktree_path)
+        && await isExpectedGitWorktreeRoot(row.worktree_path);
+      const dirty = worktreeUsable ? await readWorktreeDirty(row.worktree_path, 6_000) : false;
+      // What the folder has checked out may not be the lane's branch (a
+      // detached HEAD, another branch): its commits on no remote count too.
+      const headUnpushed = worktreeUsable
+        ? runGit(["rev-list", "--count", "HEAD", "--not", "--remotes"], { cwd: row.worktree_path, timeoutMs: 8_000 })
+          .then((result) => (result.exitCode === 0 ? Number.parseInt(result.stdout.trim(), 10) || 0 : 1), () => 1)
+        : Promise.resolve(0);
+      const branchName = row.branch_ref ? branchNameForDelete(row.branch_ref, "origin") : "";
+      const pr = db.get<{ merged: number; open: number }>(
+        `select
+           coalesce(max(case when state = 'merged' then 1 else 0 end), 0) as merged,
+           coalesce(max(case when state in ('open', 'draft') then 1 else 0 end), 0) as open
+         from pull_requests
+         where project_id = ? and lane_id = ? and detached_at is null`,
+        [projectId, laneId],
+      );
+      const facts: LaneAutoArchiveFacts = {
+        worktreeUsable,
+        dirty,
+        hasBranch: Boolean(branchName),
+        hasOwnCommits: false,
+        mergedIntoBase: false,
+        unpushedCommitCount: 0,
+        lastCommitAtMs: null,
+        prMerged: Boolean(pr?.merged),
+        prOpen: Boolean(pr?.open),
+        mergedPrHasHead: false,
+      };
+      if (!branchName) {
+        facts.unpushedCommitCount = await headUnpushed;
+        return facts;
+      }
+      const ref = `refs/heads/${branchName}`;
+      const [reflog, merged, unpushed] = await Promise.all([
+        runGit(["reflog", "show", "-n", "200", "--format=%ct%x09%gs", ref, "--"], { cwd: projectRoot, timeoutMs: 8_000 }),
+        runGit(["merge-base", "--is-ancestor", branchName, row.base_ref], { cwd: projectRoot, timeoutMs: 8_000 }),
+        runGit(["rev-list", "--count", branchName, "--not", "--remotes"], { cwd: projectRoot, timeoutMs: 8_000 }),
+      ]);
+      facts.mergedIntoBase = merged.exitCode === 0;
+      facts.unpushedCommitCount = unpushed.exitCode === 0 ? Number.parseInt(unpushed.stdout.trim(), 10) || 0 : 0;
+      // Unreadable counts as unpushed work: a lane is archived only on proof.
+      if (unpushed.exitCode !== 0) facts.unpushedCommitCount = 1;
+      facts.unpushedCommitCount = Math.max(facts.unpushedCommitCount, await headUnpushed);
+      if (facts.prMerged) {
+        const mergedHeads = db.all<{ head_sha: string }>(
+          `select head_sha from pull_requests
+            where project_id = ? and lane_id = ? and detached_at is null and state = 'merged' and head_sha is not null`,
+          [projectId, laneId],
+        ).map((entry) => entry.head_sha.trim().toLowerCase()).filter((sha) => sha.length >= 7);
+        if (mergedHeads.length > 0) {
+          const [branchHead, folderHead] = await Promise.all([
+            runGit(["rev-parse", "--verify", `${ref}^{commit}`], { cwd: projectRoot, timeoutMs: 8_000 }),
+            worktreeUsable ? runGit(["rev-parse", "HEAD"], { cwd: row.worktree_path, timeoutMs: 8_000 }) : null,
+          ]);
+          const sha = branchHead.exitCode === 0 ? branchHead.stdout.trim().toLowerCase() : "";
+          const folderSha = folderHead ? (folderHead.exitCode === 0 ? folderHead.stdout.trim().toLowerCase() : "") : sha;
+          facts.mergedPrHasHead = Boolean(sha) && sha === folderSha && mergedHeads.some((head) => sha.startsWith(head));
+        }
+      }
+      const entries = reflog.exitCode === 0
+        ? reflog.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+        : [];
+      const headSeconds = entries.length > 0 ? Number.parseInt(entries[0]!.split("\t")[0] ?? "", 10) : Number.NaN;
+      if (Number.isFinite(headSeconds)) {
+        facts.lastCommitAtMs = headSeconds * 1000;
+      } else {
+        const head = await runGit(["log", "-1", "--format=%ct", branchName, "--"], { cwd: projectRoot, timeoutMs: 8_000 });
+        const seconds = head.exitCode === 0 ? Number.parseInt(head.stdout.trim(), 10) : Number.NaN;
+        facts.lastCommitAtMs = Number.isFinite(seconds) ? seconds * 1000 : null;
+      }
+      // Reflog subjects: "branch: Created from main", "commit: ...",
+      // "commit (amend): ...", "merge ...", "rebase ...", "reset: ...",
+      // "pull: ...", "cherry-pick: ...". Anything but the creation (or a
+      // rename) is the branch moving.
+      // `git branch -m` (naming an auto-create lane, Rename branch) logs
+      // "Branch: renamed …": a rename moves no commit either.
+      const moved = entries.some((entry) => {
+        const subject = entry.slice(entry.indexOf("\t") + 1);
+        return !/^branch: (?:Created from |Reset to |renamed )/i.test(subject);
+      });
+      if (entries.length > 0) {
+        facts.hasOwnCommits = moved;
+      } else {
+        const createdMs = Date.parse(row.created_at);
+        facts.hasOwnCommits = facts.lastCommitAtMs != null && Number.isFinite(createdMs) && facts.lastCommitAtMs > createdMs;
+      }
+      return facts;
+    },
+
     getLaneWorktreePath(laneId: string): string {
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
@@ -9354,6 +9215,9 @@ export function createLaneService({
     ): void {
       newLaneSettings = store;
       validateNewLaneTemplateId = options.validateTemplateId ?? null;
+      // The first settings read needs git's user.name: a `{user}` pattern
+      // renders it, and Settings offers "Your name" only once it is known.
+      void readGitUserName();
     },
 
     /**
@@ -9361,15 +9225,7 @@ export function createLaneService({
      * Auto-create lane, `ade lanes create` with no flags, and the New lane
      * dialog's first choice all read this.
      */
-    getNewLaneDefaults(): NewLaneDefaultsSnapshot {
-      const primary = getAllLaneRows(false).find((row) => row.lane_type === "primary") ?? null;
-      return {
-        defaults: getNewLaneDefaultsForCreate(),
-        scope: newLaneSettings?.scope() ?? { kind: "this-computer", repo: null },
-        defaultBranch: plainLaneStartBranch(defaultBaseRef),
-        primaryBranch: primary?.branch_ref ? plainLaneStartBranch(primary.branch_ref) : null,
-      };
-    },
+    getNewLaneDefaults: branchNamingApi.getNewLaneDefaults,
 
     /** The project's default branch, e.g. `main`. */
     getDefaultBranch(): string {
@@ -9388,29 +9244,9 @@ export function createLaneService({
       return branchNameFromLaneRef(compareBaseForRow(row)) || defaultBranch;
     },
 
-    /** Merges the given fields into the saved defaults; fields left out keep their value. */
-    setNewLaneDefaults(args: { defaults: Partial<NewLaneDefaults> }): NewLaneDefaultsSnapshot {
-      if (!newLaneSettings) throw new Error("New-lane settings aren't available on this computer.");
-      const patch = args.defaults ?? {};
-      const next: NewLaneDefaults = { ...getNewLaneDefaultsForCreate() };
-      if (patch.start !== undefined) {
-        const start = normalizeLaneStart(patch.start);
-        if (!start) throw new Error("Invalid lane start.");
-        // A named branch is a per-lane pick. A project that wants every lane
-        // on `develop` checks it out in the primary lane and saves "primary".
-        if (!isSavableDefaultLaneStart(start)) {
-          throw new Error("New lanes can start from the default branch or the primary lane's branch. Pick a specific branch per lane instead.");
-        }
-        next.start = start;
-      }
-      if (patch.templateId !== undefined) {
-        const templateId = typeof patch.templateId === "string" ? patch.templateId.trim() : "";
-        if (templateId) validateNewLaneTemplateId?.(templateId);
-        next.templateId = templateId || null;
-      }
-      newLaneSettings.setDefaults(next);
-      return laneServiceApi.getNewLaneDefaults();
-    },
+    setNewLaneDefaults: branchNamingApi.setNewLaneDefaults,
+
+    checkBranchName: branchNamingApi.checkBranchName,
 
     /**
      * A lane's worktree is on, or has visited, branches other than the one the

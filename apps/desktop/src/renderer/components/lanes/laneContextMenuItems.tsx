@@ -34,6 +34,9 @@ import { LaneColorPicker } from "./LaneColorPicker";
 import { showToast } from "../app/toast/toastStore";
 import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
 import { LaneEmojiPicker } from "./LaneEmojiPicker";
+import { promptDialog } from "../ui/dialog";
+import { branchNameProblem } from "../../../shared/laneBranchName";
+import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 
 export function LaneMenuGlyph({ icon: Icon }: { icon: Icon }) {
   return (
@@ -440,8 +443,21 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     });
   }
 
-  // ── Manage: last, because both entries open a surface that can delete.
+  // ── Manage: last, because Manage lane and its batch form open a surface
+  // that can delete (Rename branch only renames).
   const manage: LaneMenuEntry[] = [];
+  if (lane && !isPrimary && lane.laneType === "worktree") {
+    manage.push({
+      kind: "action",
+      key: "rename-branch",
+      label: "Rename branch…",
+      icon: GitBranch,
+      onSelect: () => {
+        onClose();
+        void renameLaneBranch(lane, runtimePin, onAppearanceChanged);
+      },
+    });
+  }
   if (lane && !isPrimary) {
     manage.push({
       kind: "action",
@@ -468,6 +484,50 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
   }
 
   return groups;
+}
+
+/**
+ * Rename branch: asks the lane's machine first whether the branch may be
+ * renamed (never pushed, no upstream, no PR) and says why not when it can't.
+ */
+async function renameLaneBranch(
+  lane: LaneSummary,
+  runtimePin: OpenProjectBinding | null,
+  onRenamed?: () => void | Promise<void>,
+): Promise<void> {
+  const errorText = (error: unknown) =>
+    (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "");
+  try {
+    const check = await window.ade.lanes.renameBranch({ laneId: lane.id, dryRun: true }, runtimePin);
+    if (check.blocked) {
+      showToast({ title: `Can't rename ${check.branchRef}`, message: check.blocked, tone: "warning" });
+      return;
+    }
+    const current = check.branchRef;
+    const next = (await promptDialog({
+      title: "Rename branch",
+      message: <>The lane <b>{lane.name}</b> keeps its name. Only its branch changes.</>,
+      defaultValue: current,
+      confirmLabel: "Rename",
+      validate: (value) => (value.trim() === current ? null : branchNameProblem(value)),
+    }))?.trim();
+    if (!next || next === current) return;
+    let result: Awaited<ReturnType<typeof window.ade.lanes.renameBranch>>;
+    try {
+      result = await window.ade.lanes.renameBranch({ laneId: lane.id, branchName: next }, runtimePin);
+    } catch (error) {
+      captureLaneSetupAnalytics({ action: "branch_renamed", outcome: "failed" });
+      throw error;
+    }
+    if (result.blocked) {
+      showToast({ title: `Can't rename ${result.branchRef}`, message: result.blocked, tone: "warning" });
+      return;
+    }
+    captureLaneSetupAnalytics({ action: "branch_renamed", outcome: "completed" });
+    await onRenamed?.();
+  } catch (error) {
+    showToast({ title: "Couldn't rename the branch", message: errorText(error), tone: "error" });
+  }
 }
 
 export const laneMenuHeaderStyle: React.CSSProperties = {

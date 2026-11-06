@@ -287,6 +287,8 @@ export const IPC = {
   lanesGetBranchDrift: "ade.lanes.getBranchDrift",
   lanesResolveBranchDrift: "ade.lanes.resolveBranchDrift",
   lanesRename: "ade.lanes.rename",
+  lanesRenameBranch: "ade.lanes.renameBranch",
+  lanesCheckBranchName: "ade.lanes.checkBranchName",
   lanesUpdateAppearance: "ade.lanes.updateAppearance",
   lanesArchive: "ade.lanes.archive",
   lanesArchiveAndReclaim: "ade.lanes.archiveAndReclaim",

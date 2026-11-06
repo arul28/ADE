@@ -141,6 +141,7 @@ import {
 import {
   deriveDeterministicLaneNameFromPrompt,
   deriveDeterministicLaneTitleFromPrompt,
+  legacyAutoLaneTemporaryBranch,
 } from "../../../shared/laneNameFallback";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import {
@@ -1389,11 +1390,6 @@ function chatLaunchLaneConfigFromDraft(config: NewLaneDraftConfig): ChatLaunchLa
   return recipe.mode === "new" && !name.trim() ? { ...recipe, autoName: true } : recipe;
 }
 
-function createTemporaryAutoLaneBranch(): string {
-  const bytes = new Uint8Array(4);
-  crypto.getRandomValues(bytes);
-  return `ade/${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-}
 
 /**
  * What a host may put into the pane's composer (`composerHandleRef`).
@@ -12774,8 +12770,14 @@ export function AgentChatPane({
         assertActive?.();
         const createArgs = {
           name: laneName,
-          // A lane the user named derives its branch from that name.
-          ...(configuredName ? {} : { branchName: createTemporaryAutoLaneBranch() }),
+          // A lane the user named derives its branch from that name (or takes
+          // the one they typed); otherwise the lane's machine picks a
+          // placeholder in the project's branch pattern, renamed once named.
+          // The legacy `ade/<8 hex>` rides along for an older machine, which
+          // ignores `autoNamedBranch`.
+          ...(configuredName
+            ? configured?.branchName ? { branchName: configured.branchName } : {}
+            : { autoNamedBranch: true, branchName: legacyAutoLaneTemporaryBranch() }),
           ...(configured?.start ? { start: configured.start } : {}),
           ...(configured?.linearIssue ? { linearIssue: configured.linearIssue } : {}),
         };

@@ -3713,13 +3713,13 @@ function reuseSameLocalBinding(previous: OpenProjectBinding | null, next: OpenPr
   return previous?.kind === "local" && next.kind === "local" && shallow(previous, next) ? previous : next;
 }
 
+/** The binding for a project folder on this computer, open in a tab or not. */
+export function localProjectBindingForRoot(rootPath: string, displayName: string): Extract<OpenProjectBinding, { kind: "local" }> {
+  return { kind: "local", key: `local:${rootPath}`, rootPath, displayName };
+}
+
 function createLocalProjectBinding(project: ProjectInfo): OpenProjectBinding {
-  const binding: Extract<OpenProjectBinding, { kind: "local" }> = {
-    kind: "local",
-    key: `local:${project.rootPath}`,
-    rootPath: project.rootPath,
-    displayName: project.displayName,
-  };
+  const binding = localProjectBindingForRoot(project.rootPath, project.displayName);
   const gitOriginUrl = originUrlForBinding(binding);
   return gitOriginUrl ? { ...binding, gitOriginUrl } : binding;
 }

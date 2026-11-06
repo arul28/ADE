@@ -129,12 +129,17 @@ struct LaneTextField: View {
     self._text = text
   }
 
+  /// Paths and branch names are typed exactly: no capitals, no corrections.
+  private var literal: Bool {
+    title.localizedCaseInsensitiveContains("path") || title.localizedCaseInsensitiveContains("branch")
+  }
+
   var body: some View {
     TextField(title, text: $text)
       .textFieldStyle(.plain)
       .foregroundStyle(ADEColor.textPrimary)
-      .textInputAutocapitalization(title.localizedCaseInsensitiveContains("path") ? .never : .sentences)
-      .autocorrectionDisabled(title.localizedCaseInsensitiveContains("path"))
+      .textInputAutocapitalization(literal ? .never : .sentences)
+      .autocorrectionDisabled(literal)
       .submitLabel(.done)
       .padding(.horizontal, 12)
       .frame(minHeight: 44, maxHeight: 56, alignment: .center)

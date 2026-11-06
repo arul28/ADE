@@ -10,13 +10,21 @@ import type {
   StorageItem,
   StorageSafety,
   StorageSnapshotExtras,
+  StorageLifecyclePolicy,
 } from "../../../../shared/types/storage";
 import type { AppResourceUsageSnapshot } from "../../../../shared/types";
 import { DELETED_LANE_CHATS_ITEM_ID } from "../../../../shared/types/storage";
 import type { ResourcePressureLevel } from "../../../lib/resourcePressure";
 import { COLORS } from "../../lanes/laneDesignTokens";
-import { formatBytes } from "../../../lib/format";
-export { formatBytes } from "../../../lib/format";
+import { formatStorageBytes } from "../../../../shared/formatting";
+export { formatStorageBytes } from "../../../../shared/formatting";
+
+/**
+ * `process.platform` of the machine a storage snapshot measured. Disk sizes
+ * print in that machine's own units (`formatStorageBytes`): GB of 1000 on a
+ * Mac or Linux, Explorer's GB of 1024 on Windows, whichever machine views it.
+ */
+export type StoragePlatform = string | null | undefined;
 
 /**
  * Presentation metadata for the storage dashboard. This module holds only pure
@@ -210,8 +218,8 @@ export function groupLaneItems(items: StorageItem[]): {
 // ===========================================================================
 
 /** Approximate size label, e.g. "~1.2 GB". Used for estimates the doctor will reclaim. */
-export function formatApproxBytes(bytes: number): string {
-  return `~${formatBytes(bytes)}`;
+export function formatApproxBytes(bytes: number, platform?: StoragePlatform): string {
+  return `~${formatStorageBytes(bytes, platform)}`;
 }
 
 /** The daemon-provided safe reclaim estimate, clamped to a positive number. */
@@ -260,7 +268,7 @@ export type DbBreakdownRow = {
 };
 
 /** Largest-first, display-ready rows for the project database card. */
-export function dbBreakdownRows(entries: DbBreakdownEntry[] | undefined): DbBreakdownRow[] {
+export function dbBreakdownRows(entries: DbBreakdownEntry[] | undefined, platform: StoragePlatform): DbBreakdownRow[] {
   if (!entries || entries.length === 0) return [];
   return [...entries]
     .filter((entry) => entry.bytes > 0 || entry.category === "core")
@@ -273,7 +281,7 @@ export function dbBreakdownRows(entries: DbBreakdownEntry[] | undefined): DbBrea
         table: entry.table,
         label: entry.label,
         bytes: entry.bytes,
-        size: formatBytes(entry.bytes),
+        size: formatStorageBytes(entry.bytes, platform),
         category: entry.category,
         hint: DB_CATEGORY_HINT[entry.category],
         isProtected,
@@ -330,19 +338,20 @@ export function ledgerLabel(ledgerId: string): string {
 /** One humanized line per maintenance action, largest reclaim first. */
 export function maintenanceActionLines(
   report: MaintenanceRunReport,
+  platform?: StoragePlatform,
 ): Array<{ ledgerId: string; label: string; detail: string; failed: boolean }> {
   return [...report.actions]
     .sort((a, b) => b.bytesReclaimed - a.bytesReclaimed)
     .map((action) => ({
       ledgerId: action.ledgerId,
       label: ledgerLabel(action.ledgerId),
-      detail: maintenanceActionDetail(action),
+      detail: maintenanceActionDetail(action, platform),
       failed: Boolean(action.error),
     }));
 }
 
 /** Honest one-line outcome for a maintenance report, including partial failures. */
-export function maintenanceOutcome(report: MaintenanceRunReport): { message: string; failed: boolean } {
+export function maintenanceOutcome(report: MaintenanceRunReport, platform: StoragePlatform): { message: string; failed: boolean } {
   const reclaimed = typeof report.reclaimedBytes === "number" && Number.isFinite(report.reclaimedBytes)
     ? Math.max(0, report.reclaimedBytes)
     : 0;
@@ -350,21 +359,21 @@ export function maintenanceOutcome(report: MaintenanceRunReport): { message: str
   if (failed) {
     return {
       message: reclaimed > 0
-        ? `Reclaimed ${formatBytes(reclaimed)}, but some cleanup steps couldn't finish`
+        ? `Reclaimed ${formatStorageBytes(reclaimed, platform)}, but some cleanup steps couldn't finish`
         : "Some cleanup steps couldn't finish",
       failed: true,
     };
   }
   return {
-    message: reclaimed > 0 ? `Reclaimed ${formatBytes(reclaimed)}` : "Storage is already tidy",
+    message: reclaimed > 0 ? `Reclaimed ${formatStorageBytes(reclaimed, platform)}` : "Storage is already tidy",
     failed: false,
   };
 }
 
-function maintenanceActionDetail(action: MaintenanceAction): string {
+function maintenanceActionDetail(action: MaintenanceAction, platform: StoragePlatform): string {
   if (action.error) return "couldn't finish";
   if (action.skippedReason) return "nothing to do";
-  if (action.bytesReclaimed > 0) return `reclaimed ${formatBytes(action.bytesReclaimed)}`;
+  if (action.bytesReclaimed > 0) return `reclaimed ${formatStorageBytes(action.bytesReclaimed, platform)}`;
   if (action.itemsAffected > 0) {
     return `${action.itemsAffected} ${action.itemsAffected === 1 ? "item" : "items"}`;
   }
@@ -406,10 +415,10 @@ export function formatRunClock(iso: string, now: Date = new Date()): string {
 }
 
 /** Headline for a maintenance run, e.g. "Yesterday 03:12 · reclaimed 481 MB". */
-export function maintenanceHeadline(report: MaintenanceRunReport, now?: Date): string {
+export function maintenanceHeadline(report: MaintenanceRunReport, now?: Date, platform?: StoragePlatform): string {
   const when = formatRunClock(report.finishedAt || report.startedAt, now);
   const reclaimed = report.reclaimedBytes > 0
-    ? `reclaimed ${formatBytes(report.reclaimedBytes)}`
+    ? `reclaimed ${formatStorageBytes(report.reclaimedBytes, platform)}`
     : "nothing to reclaim";
   return when ? `${when} · ${reclaimed}` : reclaimed;
 }
@@ -583,11 +592,11 @@ export function cleanupRunParts(run: MaintenanceRunReport): CleanupRunParts {
 }
 
 /** "files 392 MB · database 12 MB · history 1.6 MB", parts with bytes only. */
-export function cleanupPartsLine(parts: CleanupRunParts): string {
+export function cleanupPartsLine(parts: CleanupRunParts, platform: StoragePlatform): string {
   const out: string[] = [];
-  if (parts.files > 0) out.push(`files ${formatBytes(parts.files)}`);
-  if (parts.database > 0) out.push(`database ${formatBytes(parts.database)}`);
-  if (parts.history > 0) out.push(`history ${formatBytes(parts.history)}`);
+  if (parts.files > 0) out.push(`files ${formatStorageBytes(parts.files, platform)}`);
+  if (parts.database > 0) out.push(`database ${formatStorageBytes(parts.database, platform)}`);
+  if (parts.history > 0) out.push(`history ${formatStorageBytes(parts.history, platform)}`);
   return out.join(" · ");
 }
 
@@ -616,9 +625,16 @@ export function groupRowsByLabel(rows: ReadonlyArray<{ label: string; bytes: num
 }
 
 /** A size that may be a lower bound: "≥ 4.1 GB" when not fully measured. */
-export function formatMeasuredBytes(bytes: number, partial: boolean | undefined): string {
-  if (!partial) return formatBytes(bytes);
-  return bytes > 0 ? `≥ ${formatBytes(bytes)}` : "Not measured";
+export function formatMeasuredBytes(bytes: number, partial: boolean | undefined, platform: StoragePlatform): string {
+  if (!partial) return formatStorageBytes(bytes, platform);
+  return bytes > 0 ? `≥ ${formatStorageBytes(bytes, platform)}` : "Not measured";
+}
+
+/** A part's share of a whole: "61%", and "<1%" for a part too small to round up to 1%. */
+export function formatShare(part: number, total: number): string {
+  if (!(total > 0) || !(part > 0)) return "0%";
+  const percent = (part / total) * 100;
+  return percent < 1 ? "<1%" : `${Math.round(percent)}%`;
 }
 
 // ---- Charts ----------------------------------------------------------------
@@ -730,9 +746,10 @@ function isSameOrInside(parent: string, candidate: string): boolean {
  */
 export function buildSafeCleanupPlan(
   snapshot: {
+    platform?: string;
     categories: StorageCategorySnapshot[];
     extras?: StorageSnapshotExtras;
-    lifecycle?: { policy: { cleanupIntervalHours: number; cleanBuildOutputAfterDays?: number } };
+    lifecycle?: { policy: Partial<StorageLifecyclePolicy> };
   },
   laneIdByKey: Map<string, string>,
   opts: { maintenance: boolean } = { maintenance: true },
@@ -776,8 +793,16 @@ export function buildSafeCleanupPlan(
   const alsoRuns: string[] = [];
   if (opts.maintenance) {
     const lifecycle = snapshot.lifecycle;
-    if (lifecycle && lifecycle.policy.cleanupIntervalHours > 0) {
-      alsoRuns.push("Checks for idle lanes first and archives the ones your Archive idle lanes rules allow. Their branches, chats and files are kept.");
+    // Older hosts send the hour keys; these read as off there.
+    const policy = lifecycle?.policy;
+    if ((policy?.archiveIdleAfterDays ?? 0) > 0) {
+      alsoRuns.push("Checks for idle lanes first and archives the ones your Archive lanes automatically rule allows. Their branches, chats and files are kept.");
+    }
+    if (policy?.freeUpSpaceMode === "auto" && (policy.freeUpSpaceAfterDays ?? 0) > 0) {
+      alsoRuns.push(`Frees up space from lanes archived over ${policy.freeUpSpaceAfterDays} days: their folders go, their branches and chats stay.`);
+    }
+    if ((policy?.deleteArchivedAfterDays ?? 0) > 0) {
+      alsoRuns.push(`Deletes lanes archived over ${policy?.deleteArchivedAfterDays} days that have nothing unsaved and no open PR.`);
     }
     const buildOutputDays = lifecycle?.policy.cleanBuildOutputAfterDays ?? 0;
     if (buildOutputDays > 0) {
@@ -785,7 +810,7 @@ export function buildSafeCleanupPlan(
     }
     const compressible = snapshot.categories.find((c) => c.id === "chats_history")?.compressibleBytes ?? 0;
     if (compressible > 0) {
-      alsoRuns.push(`Compresses ${formatBytes(compressible)} of old chat and terminal history. Nothing is lost.`);
+      alsoRuns.push(`Compresses ${formatStorageBytes(compressible, snapshot.platform)} of old chat and terminal history. Nothing is lost.`);
     }
     const trimmed = (snapshot.extras?.dbBreakdown ?? [])
       .filter((entry) => entry.action === "prunable" || entry.action === "compactable")

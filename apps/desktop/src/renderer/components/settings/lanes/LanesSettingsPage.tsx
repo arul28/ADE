@@ -17,6 +17,7 @@ import { ProjectIssueList, useProjectFix } from "../health/ProjectIssues";
 import { issuesForPage } from "../health/healthModel";
 import { useHealthData } from "../health/useHealthData";
 import { formatMeasuredBytes } from "../storage/storageView";
+import { StoragePlatformContext } from "../storage/useStorageBytes";
 import { relativeWhen } from "../../../lib/format";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { Banner } from "../../ui/notice";
@@ -41,7 +42,7 @@ const LANES_VIEWS: readonly View[] = [
     id: "new-lanes",
     label: "New lanes",
     icon: <GitFork size={13} weight="duotone" />,
-    anchors: ["new-lane-start", "lane-templates"],
+    anchors: ["new-lane-start", "new-lane-branch-pattern", "lane-templates"],
   },
   { id: "lanes", label: "Your lanes", icon: <GitBranch size={13} weight="duotone" />, anchors: ["lane-list"] },
 ];
@@ -59,7 +60,7 @@ const STORAGE_VIEWS: readonly View[] = [
     id: "cleanup-rules",
     label: "Rules",
     icon: <SlidersHorizontal size={13} weight="duotone" />,
-    anchors: ["lane-storage-rules", "lane-build-output", "session-lifecycle", "project"],
+    anchors: ["lane-storage-rules", "archived-lanes", "lane-build-output", "session-lifecycle", "project"],
   },
 ];
 
@@ -158,7 +159,7 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
 
   const badge = (id: ViewId): { text: string; tone?: "warn" } | null => {
     if (id === "lanes" && report?.lanes) return staleCount > 0 ? { text: `${staleCount} stale`, tone: "warn" } : { text: String(report.lanes.length) };
-    if (id === "space" && snapshot) return { text: formatMeasuredBytes(snapshot.totalAdeBytes, snapshot.truncated) };
+    if (id === "space" && snapshot) return { text: formatMeasuredBytes(snapshot.totalAdeBytes, snapshot.truncated, snapshot.platform) };
     return null;
   };
 
@@ -173,7 +174,7 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
             hint={report
               ? [
                   `Stale once its PR merges or closes, or after ${report.staleAfterDays ?? 14} days idle.`,
-                  laneCategory ? `Lane folders take ${formatMeasuredBytes(laneCategory.bytes, Boolean(laneCategory.partial))}.` : null,
+                  laneCategory ? `Lane folders take ${formatMeasuredBytes(laneCategory.bytes, Boolean(laneCategory.partial), snapshot?.platform)}.` : null,
                   `Checked ${relativeWhen(report.checkedAt)}.`,
                 ].filter(Boolean).join(" ")
               : available ? "Every lane in this project, stale ones first." : "The lane list needs a newer ADE on this machine."}
@@ -253,6 +254,8 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
   };
 
   return (
+    // Disk sizes on every view print in the units of the machine measured.
+    <StoragePlatformContext.Provider value={snapshot?.platform}>
     <div className="ade-lanes-page">
       {views.length > 1 ? (
         <div className="ade-lanes-tabs" role="tablist" aria-label={label}>
@@ -288,5 +291,6 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
         {renderView(view)}
       </div>
     </div>
+    </StoragePlatformContext.Provider>
   );
 }

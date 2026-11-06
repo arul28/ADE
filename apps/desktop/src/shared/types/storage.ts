@@ -1,3 +1,5 @@
+import type { LaneFreeUpSpaceMode } from "./config";
+
 export type DiskPressureState = "normal" | "warning" | "critical" | "exhausted";
 
 export type DiskPressureSnapshot = {
@@ -47,7 +49,13 @@ export type StorageItem = {
   reclaimableBytes?: number;
   ageHours?: number | null;
   laneId?: string;
-  reclaimState?: "kept" | "ready_for_review" | "reclaimed" | "failed";
+  /**
+   * An archived lane's folder removal: `kept` (a removal found files in use
+   * and tries again), `reclaimed` (removed), `failed`. Whether a folder is
+   * due to be freed up is not stored; it follows from `archived_at` and the
+   * setting (`laneFreeUpStatus`).
+   */
+  reclaimState?: "kept" | "reclaimed" | "failed";
   /**
    * The scan ran out of its budget inside this item, so `bytes` is a lower
    * bound ("at least"), not the size. Absent on a fully measured item.
@@ -59,6 +67,12 @@ export type StorageItem = {
    * nothing removed.
    */
   buildOutputRemoved?: { at: string; bytes: number; partial?: boolean; folders: string[] };
+  /**
+   * A lane folder's size from the background lane measurement, not from this
+   * snapshot's walk: when that full measurement ran. Absent when the size was
+   * walked now (and on older builds).
+   */
+  measuredAt?: string;
 };
 
 export type StorageCategorySnapshot = {
@@ -83,10 +97,47 @@ export type StorageCompressionResult = {
   savedBytes: number;
 };
 
+/** What ADE keeps on one drive: the project, ADE's own folder, the temp folder. */
+export type StorageVolumeRootKind = "project" | "ade_home" | "temp";
+
+export type StorageVolumeSpace = {
+  /**
+   * Space free for new files, as the machine's own file manager counts it. On
+   * macOS that includes `purgeableBytes` (Finder's "available").
+   */
+  freeBytes: number;
+  totalBytes: number;
+  /** macOS only: the part of `freeBytes` the system frees on its own when needed. */
+  purgeableBytes?: number;
+};
+
+export type StorageVolumeSnapshot = StorageVolumeSpace & {
+  /** The ADE folders on this drive, project first. */
+  roots: Array<{ kind: StorageVolumeRootKind; path: string }>;
+};
+
+/** The background pass that measures each lane folder in full. */
+export type StorageLaneSizingState = {
+  /** A pass is running now. */
+  running: boolean;
+  /** Lanes the running pass has measured so far, and how many it will. */
+  done: number;
+  total: number;
+  /** When the last pass finished, or null. */
+  lastFinishedAt: string | null;
+};
+
 export type StorageSnapshot = {
   generatedAt: string;
   projectRoot: string;
-  volume: { freeBytes: number; totalBytes: number };
+  /** `process.platform` of the machine measured, so sizes print in its own units. Absent on older builds. */
+  platform?: string;
+  /** The project's drive. */
+  volume: StorageVolumeSpace;
+  /** Every drive ADE keeps data on, project's first. Absent on older builds. */
+  volumes?: StorageVolumeSnapshot[];
+  /** Absent on older builds and on an instance that cannot measure lanes. */
+  laneSizing?: StorageLaneSizingState;
   totalAdeBytes: number;
   categories: StorageCategorySnapshot[];
   scanDurationMs: number;
@@ -105,18 +156,53 @@ export type StorageLifecycleSnapshot = {
   lastScanAt: string | null;
   nextScanAt: string | null;
   scanInProgress: boolean;
-  policy: {
-    maxActiveLanes: number;
-    cleanupIntervalHours: number;
-    autoArchiveAfterHours: number;
-    reclaimArchivedAfterHours: number;
-    /** Days a lane sits idle before its build output is removed; 0 = off. Absent on older builds. */
-    cleanBuildOutputAfterDays?: number;
-  };
+  policy: StorageLifecyclePolicy;
   archivedAutomatically: number;
-  reviewReadyCount: number;
+  /** What the archive rules' last check did, lane by lane. Absent on older builds. */
+  lastRun?: StorageLifecycleRunReport | null;
+  /**
+   * Archived lanes whose folder is still on disk and due to be freed up, plus
+   * those whose removal failed. Absent on older builds.
+   */
+  freeUpDueCount?: number;
   /** What the idle-lane build output cleanup removed. Absent on older builds. */
   buildOutput?: LaneBuildOutputSummary;
+};
+
+/** The lane cleanup rules in force (`resolveLaneCleanupPolicy`). Days; 0 = off. */
+export type StorageLifecyclePolicy = {
+  archiveIdleAfterDays: number;
+  freeUpSpaceAfterDays: number;
+  freeUpSpaceMode: LaneFreeUpSpaceMode;
+  deleteArchivedAfterDays: number;
+  deleteLocalBranchOnAutoDelete: boolean;
+  /** Days a lane sits idle before its build output is removed; 0 = off. */
+  cleanBuildOutputAfterDays: number;
+};
+
+/** One lane in the archive rules' last check. */
+export type StorageLifecycleLaneOutcome = {
+  laneId: string;
+  laneName: string;
+  /**
+   * `kept`: a reclaim found the folder in use and will try again. `freed`:
+   * an archived lane's folder was removed. `deleted`: an archived lane was
+   * deleted.
+   */
+  outcome: "archived" | "freed" | "deleted" | "skipped" | "failed" | "kept";
+  /** One plain sentence: what happened and why ("Kept: no commits yet."). */
+  detail: string;
+};
+
+export type StorageLifecycleRunReport = {
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number;
+  /** Set when the whole check stopped early; the lanes it reached are still listed. */
+  error?: string;
+  /** Lanes used recently enough that no rule applied, so they were not checked further. */
+  recentlyUsedCount: number;
+  lanes: StorageLifecycleLaneOutcome[];
 };
 
 /** `laneCleanup.cleanBuildOutputAfterDays` when local.yaml does not set it: on, at a week. */

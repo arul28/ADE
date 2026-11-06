@@ -34,6 +34,13 @@ export type ArchivedItem = {
   worktreePresent?: boolean;
   /** Lane: the git branch, which a delete from the archive keeps. */
   branchRef?: string | null;
+  /**
+   * Lane: its folder is still on disk and was archived longer ago than the
+   * "Free up space after" setting. Computed from `archivedAt`, never stored.
+   */
+  freeUpDue?: boolean;
+  /** Lane: why the last removal of its folder did not finish, when it did not. */
+  freeUpError?: string | null;
 };
 
 export type ArchiveListArgs = {
@@ -44,10 +51,15 @@ export type ArchiveListArgs = {
 
 export type ArchiveListResult = {
   items: ArchivedItem[];
+  /**
+   * Items archived at least this many days ago count as old: the "Free up
+   * space after" setting, or 14 when it is off. Absent on older hosts.
+   */
+  staleAfterDays?: number;
 };
 
 export type ArchiveSummaryArgs = {
-  /** Items archived at least this many days ago count as stale. Default 14. */
+  /** Items archived at least this many days ago count as stale. Default: the list's `staleAfterDays`. */
   olderThanDays?: number;
 };
 
@@ -81,4 +93,5 @@ export type ArchiveActionResult = {
   failed: Array<ArchiveItemRef & { error: string }>;
 };
 
+/** The stale line on a host that does not say (`ArchiveListResult.staleAfterDays`). */
 export const DEFAULT_ARCHIVE_STALE_DAYS = 14;

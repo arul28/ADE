@@ -1,5 +1,5 @@
 import { Archive } from "@phosphor-icons/react";
-import { DEFAULT_ARCHIVE_STALE_DAYS, type ArchiveSummary } from "../../../shared/types/archive";
+import type { ArchiveSummary } from "../../../shared/types/archive";
 import { ARCHIVE_REMINDER_INTERVAL_MS, archiveReminderTitle } from "../../../shared/archive";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { useSnoozedReminderBanner } from "./useSnoozedReminderBanner";
@@ -9,14 +9,16 @@ import { useSnoozedReminderBanner } from "./useSnoozedReminderBanner";
  *
  * Archived lanes and chats were forgotten: archive hides them and nothing ever
  * brings them back to mind, while their worktrees and transcripts keep the
- * disk. ADE deletes nothing on its own, so instead it asks — at most once a
- * week per project — when something has sat in the archive for two weeks.
- * Every answer (Review, Remind me next week, ×) pushes the next ask a week out.
+ * disk. Unless a cleanup rule says otherwise, ADE deletes nothing on its own,
+ * so instead it asks — at most once a week per project — when something has
+ * sat in the archive longer than the "Free up space after" setting (two weeks
+ * by default; the host picks the line, so no number is sent). Every answer
+ * (Review, Remind me next week, ×) pushes the next ask a week out.
  */
 
 export const ARCHIVE_SETTINGS_ROUTE = settingsRouteFor("archive.items");
 
-const readSummary = () => window.ade.archive.summary({ olderThanDays: DEFAULT_ARCHIVE_STALE_DAYS });
+const readSummary = () => window.ade.archive.summary({});
 const hasStaleItems = (summary: ArchiveSummary) => summary.staleTotal > 0;
 
 export function useArchiveReminderBanner({

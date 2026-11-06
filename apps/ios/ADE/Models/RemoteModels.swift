@@ -703,6 +703,8 @@ struct LaneStart: Codable, Equatable {
 struct NewLaneDefaults: Codable, Equatable {
   var start: LaneStart
   var templateId: String?
+  /// New branch names, e.g. `ade/{slug}`. Absent from older hosts.
+  var branchPattern: String?
 }
 
 struct NewLaneSettingsScope: Codable, Equatable {
@@ -717,6 +719,8 @@ struct NewLaneDefaultsSnapshot: Codable, Equatable {
   var scope: NewLaneSettingsScope?
   var defaultBranch: String
   var primaryBranch: String?
+  /// The branch pattern's prefix with `{user}` filled in on the host (`ade/`, `arul-sharma/`, "").
+  var branchPrefix: String?
 }
 
 struct DeviceMarker: Codable, Identifiable, Equatable, Hashable {

@@ -89,7 +89,7 @@ extension and releases its handles immediately, including on Windows.
 | `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` | Brain-independent diagnosis and ordered repair: space, ownership, database validation, migration recovery, service restart, endpoint/project verification, and chat reconciliation. On macOS it also reads the launch agent's Background Items verdict (`isBackgroundItemBlocked`, `shared/types/core.ts`) and reports `background_blocked` ahead of every repairable state when "Allow in the Background" is off; an installed brain that is not running with no crash on record is `brain_not_running`, not a crash loop. Also owns `restartBrain()` — the machine-scoped restart behind the Connections **Repair** button and the brain-down notice's **Fix it** — which shares one `restartServiceAndWait()` sequence (install → wait ≤90 s for the endpoint → `ping`) with `repair()`'s restart_service/verify_endpoint steps. The two are mutually exclusive: `restartBrain()` rejects while a `repair()` is in flight, because repair stops the service and then does exclusive database work that a reinstall would put a second writer on top of. A forced restart also treats a *skipped* install as a failure ("A newer version of ADE is already running. Restart ADE to switch to it."), where `repair()` tolerates one, since a protocol-compatible brain that is already running satisfies its step. `main.ts` constructs exactly one of these and shares it with `registerIpc`, so the mutual exclusion actually holds — the post-update transaction's `restart` step (see [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction)) binds to the same instance rather than a second one that could run alongside a repair. |
 | `apps/desktop/src/main/services/storage/diskPressure.ts` | Samples all ADE storage roots, classifies pressure with recovery hysteresis, and gates write-producing operation classes via `canPerform(kind)`. Exports the `DiskPressureMonitor` type and refusal-message copy. |
 | `apps/desktop/src/main/services/ipc/registerIpc.ts` | Uses the project's disk-pressure monitor when available; otherwise samples the machine ADE directory, so disk pressure remains visible with no project open or while a remote project is bound. |
-| `apps/desktop/src/main/services/storage/volume.ts` | `readVolumeSpace(dir)` (statfs free/total bytes) and `isNoSpaceError(err)` (ENOSPC/EDQUOT and disk-full message detection), shared by the pressure monitor and the database-open error classifier. |
+| `apps/desktop/src/main/services/storage/volume.ts` | `readVolumeSpace(dir)` (statfs free/total bytes) and `isNoSpaceError(err)` (ENOSPC/EDQUOT and disk-full message detection), shared by the pressure monitor and the database-open error classifier. `readStorageVolumes(roots)` is the storage page's async read: one entry per drive (device number; drive root on Windows) for the project, ADE home and temp folder, and on macOS the free space Finder shows (`NSURLVolumeAvailableCapacityForImportantUsageKey`, one short `osascript` run, statfs on any failure) with its purgeable part. The page prints these and every storage size in the measured machine's own units (`formatStorageBytes`: 1000 on macOS and Linux, Explorer's 1024 on Windows). |
 | `apps/desktop/src/main/services/storage/cloudPlaceholder.ts` | The cloud-eviction preflight. `detectCloudStorageProvider` matches a path against the provider roots (`Library/Mobile Documents`, `Library/CloudStorage`, and home-relative `OneDrive` / `Dropbox` / `Google Drive` folders) on text alone, so it costs nothing on any platform; `isDatalessFileStats` spots a file with a size but zero allocated blocks, which is what a dehydrated placeholder looks like through `fs.stat`. `detectCloudPlaceholderFile` reports a finding only when both agree, and `storageUnreadableMessage` writes the one sentence a person needs — with the "move it out of the cloud folder" remedy stated conditionally when no provider was matched, because a failing disk or a dropped network mount produces the same unreadable file. `storageUnreadableRemedy` is that remedy on its own, so a caller holding an errno but no path can still word the fix. |
 | `apps/desktop/src/main/services/storage/storageErrnoClassifier.ts` | The one place that decides whether a platform error means "this computer cannot read its own bytes". `classifyStorageFault(error, { path })` returns a `StorageFault` (`{ code: "storage_read_failed", errno, path, provider, message }`) or `null`, and `STORAGE_FAULT_ERRNO_CODES` names the seven codes it acts on (`EDEADLK`, `EIO`, `ENXIO`, `ENODEV`, `ESTALE`, `EHOSTDOWN`, `EREMOTEIO`). An errno alone is not enough: the error must also carry filesystem evidence — a caller-supplied path, a path on the error, or a `syscall` — so a socket-layer `EHOSTDOWN` or `ESTALE` is never read as a disk fault. An errno libuv could not name (`UNKNOWN_SYSTEM_ERRNO_PATTERN`, on the code or the text) qualifies on its own, as does a Windows `UNKNOWN` inside a detected cloud-provider folder, which is where `ERROR_CLOUD_FILE_*` and `ERROR_FILE_OFFLINE` land. The classifier was extracted out of `kvDb.ts` so the database open and the sync host would stop keeping two copies of the same errno list; those two are its only production callers. |
 | `apps/ade-cli/src/services/diagnostics/storageEnvironmentProbe.ts` | `collectStorageEnvironment(roots)` — the "where do ADE's directories actually live, and are their bytes on this disk" probe behind the report's **Storage environment** section. It uses `node:fs` alone and needs no brain, because the machine it explains is often the one where the brain will not start. `classifyStorageLocation` labels each root `icloud` / `dropbox` / `google-drive` / `onedrive` / `cloud-storage` / `external-volume` / `network-volume` / `local`; a bounded breadth-first walk (`STORAGE_SAMPLE_MAX_FILES` 200, `STORAGE_SAMPLE_MAX_DIRECTORIES` 40, `STORAGE_SAMPLE_TIME_BUDGET_MS` 750, symlinks never followed) counts dataless placeholders through `isDatalessFileStats`. `detectLaunchdManaged` and `readMaterializeDatalessFilesKey` report whether launchd started this process and whether the installed launch agent carries the materialization key. The privacy contract is structural: it emits enums and counts, never a path, directory, or file name. |
@@ -99,6 +99,9 @@ extension and releases its handles immediately, including on Windows.
 | `apps/desktop/src/main/services/storage/storageLedger.ts` | The **storage ledger** (`STORAGE_LEDGER`): the declared policy for every persistent table and directory ADE writes — its privacy class (`user_data` / `derived` / `operational`) and how it is bounded (`write_time` / `doctor` / `both` / `manual`). `LEDGER_LAYOUT_COVERAGE` maps every `ADE_LAYOUT_DEFINITIONS` directory to a ledger id (or `null` for intentionally-unmanaged config/credentials) so a coverage test fails CI if a new tracked directory ships without a declared policy. `deriveCategoryPolicyChips()` renders the Settings policy chips from the ledger. |
 | `apps/desktop/src/main/services/storage/storageDbBreakdown.ts` | Pure helpers turning raw `dbstat` rows into the coarse project-database breakdown (`classifyDbTable` / `mapDbBreakdown`: webhooks, sync bookkeeping, PR cache, core) and `deriveSyncBookkeepingAction` — which reads the journal so the sync-bookkeeping row offers "Compact now" only after a run proves compaction ran without a `has_peers` skip, and stays "waiting to compact" otherwise. |
 | `apps/desktop/src/main/services/storage/laneBuildOutput.ts` | Build output in idle lanes: the explicit folder list (`BUILD_OUTPUT_FOLDER_RULES`), the depth bound, the lane and folder checks, the removal (bounded whole-pass retries, read-only entries made writable), the `local_lane_build_output_cleanups` record and the summary Settings shows. See "Build output in idle lanes". |
+| `apps/desktop/src/main/services/storage/laneLifecycleScan.ts` | The archive rules' scan (`createLaneLifecycleScan`): archive idle lanes whose work is merged (an open PR keeps a lane; a squash-merged PR whose head is the branch counts as merged), then free up or delete archived lanes under the "Archived lanes" rules, each lane checked by one `laneSafeToTouch` gate; the retry of folders kept because files were in use; and the "Last run" report. Runs about hourly while a rule is on. |
+| `apps/desktop/src/main/services/shared/deletingTrash.ts`, `shared/sameFolder.ts`, `git/gitLongPaths.ts` | The `.ade-deleting-` trash name, in-use error check, background removal and sweep shared by lane delete, reclaim and build-output cleanup; one path comparison (case-insensitive on Windows, real paths when the spellings differ); `-c core.longpaths=true` for git on Windows. |
+| `apps/desktop/src/main/services/storage/laneSizes.ts` | Each lane folder's full size (`measureTree`, no entry cap), measured in the background one lane at a time and stored in the local-only `local_lane_size_measurements` table: for lanes never measured a minute after boot, for lanes older than 12 h (or whose build output was removed) from the storage doctor, and from the page's Check again. The snapshot shows a measured lane's size with when it was measured and walks only the others; `laneSizing` carries the pass's progress. Stops on `dispose()`; a lane cut short is not stored. |
 | `apps/desktop/src/main/services/storage/diskUsage.ts` | One definition of "how much disk a folder takes", shared by the storage snapshot walk, the lane reclaim estimate (`laneService.managedTreeBytes`) and the build-output cleanup: allocated blocks (`st_blocks * 512`, the file length on Windows), a hard-linked file counted once and only when all its links are inside the measured folder, pnpm's `node_modules/.pnpm` left out when `.modules.yaml`'s `storeDir` is on the same volume (clones and hard links share the store's blocks), links never followed, unpatched `fs` so a lane's `.asar` files are files. |
 | `apps/desktop/src/main/services/storage/storageMaintenanceJournal.ts` | Read/write helpers for the storage-doctor journal — a plain rebuildable JSON file (`storage-doctor-journal.json` under `.ade/cache`, no DB/CRR) capping the last 30 runs, written via temp-file-then-rename so a crash never leaves a torn journal. |
 | `apps/desktop/src/main/services/storage/historyCompression.ts` | Finds inactive old history, gzip-compresses it, verifies byte identity, and only then removes the original; also reinflates before append. Exposes `readHistoryFileSync` / `reinflateHistoryFileSync` so transcript, session, and search readers can read a `.gz` generation transparently. The `.gz` keeps the source's modification time. An optional `minAgeMsFor` hook gives finished chats a shorter idle age and lists them first. |
@@ -742,22 +745,110 @@ prints nothing. The `ade` CLI itself does not prune.
 
 ### Lane lifecycle rules
 
-Project → Storage & cleanup → Rules owns the four project cleanup rules:
+A lane is only ever active, archived (hidden, nothing deleted, one click to
+restore) or deleted. Project → Storage & cleanup → Rules sets what cleanup
+does along that line, every duration in days (`laneCleanup` in `local.yaml`,
+read with `shared/laneCleanup.ts` `resolveLaneCleanupPolicy`):
 
-- maximum active lanes;
-- archive inactive lanes after a configured age;
-- run the safety scan at a configured interval;
-- flag archived worktrees for reclaim review after a configured age;
-- remove build output from lanes idle a configured number of days (on by
-  default at 7; see "Build output in idle lanes").
+- **Archive lanes automatically** (anchor `lane-storage-rules`):
+  `archiveIdleAfterDays`, "Archive idle lanes after" (absent or 0 = off).
+- **Archived lanes** (anchor `archived-lanes`): what cleanup does to a lane
+  once it is archived, counted from `archived_at`.
+  - `freeUpSpaceAfterDays` (absent = 14, 0 = off) with `freeUpSpaceMode`,
+    "Free up space after N days" [Ask me / Automatically]. Free up space is
+    Archive & Reclaim: the folder goes, the branch and chats stay, Restore
+    recreates the folder from the branch. **Ask me** (the default) removes
+    nothing: the archive reminder (`archive.summary` without a number) and
+    Settings → Archive ("due to free up space") point at the lane after N
+    days. **Automatically** removes it during the hourly check.
+  - `deleteArchivedAfterDays` (absent or 0 = off), "Delete after", with
+    `deleteLocalBranchOnAutoDelete`, "Also delete its local branch" (off).
+    The remote branch is never deleted.
+- **Clean build output from idle lanes** (`cleanBuildOutputAfterDays`; see
+  "Build output in idle lanes").
 
-The backend, not the renderer, enforces these settings. The daemon checks once
-per minute whether the configured interval has elapsed; `0` disables scheduled
-scans. A scheduled scan can archive only a clean, merged/pushed, unattached
-managed lane with no running chat, PTY, watcher, protected edit operation, or
-linked pull-request group. Blocked lanes remain active. The retention rule
-never deletes files: it marks the archived lane `ready_for_review` so a person
-can inspect the estimate and explicitly confirm Archive & Reclaim.
+The same lines feed two labels: Settings → Archive and the weekly reminder
+split at `freeUpSpaceAfterDays` (`archiveStaleDays`, 14 when off), and project
+health calls an active lane stale after `archiveIdleAfterDays`
+(`staleLaneDays`, 14 when off).
+
+**Older keys.** `coerceLaneCleanupConfig` reads the old hour keys when the new
+ones are absent and returns only day keys, so the next save of `local.yaml`
+writes only these: `autoArchiveAfterHours` becomes `archiveIdleAfterDays`
+rounded up, but 0 when `cleanupIntervalHours` was 0 (the rules were off then)
+and left out without an interval; `reclaimArchivedAfterHours` (or the older
+`autoDeleteArchivedAfterHours`) above 0 becomes `freeUpSpaceAfterDays` with
+"Ask me"; `maxActiveLanes` and `deleteRemoteBranchOnCleanup` are dropped. The
+new keys have new names on purpose: an older ADE reading the same file drops
+keys it does not know (its rules read as off), and never reads days as hours.
+
+The backend, not the renderer, enforces these settings. The daemon ticks once
+per minute (first a minute after boot, once chats have loaded) and runs a scan
+about every hour while a rule needs one (`laneCleanupChecksOn`: archive idle,
+delete after, or free up space Automatically; "Ask me" needs none). The scan
+records its start (`local_storage_lifecycle_runs.last_attempt_at`) before any
+work, so a scan that throws waits an hour instead of running again on the next
+tick, and checks each lane on its own: one lane that fails is reported and the
+others still run.
+
+A scheduled scan can archive only a clean, finished, managed worktree lane with
+nothing running in it: no open chat, PTY or watcher in memory, no chat or
+terminal the database records as running, no lease held by another operation,
+and not edit-protected. Until the chat and terminal services are wired, nothing
+is archived. "Finished" (`getAutoArchiveFacts`, local git only, no
+`ls-remote` and no folder measurement): no commits that aren't on a remote, and
+either ADE's PR record says merged (a squash merge never makes the branch an
+ancestor of its base) or the branch has commits of its own (its reflog moved
+after creation) and is an ancestor of its base. A new lane with no commits and
+no PR is not finished. Activity is the newest chat, terminal or operation row,
+or the branch's newest commit, so commits made outside ADE count. The scan
+reads database activity first and runs git only for lanes a rule would
+archive. Blocked lanes remain active. An automatic archive's notice says why
+("Archived automatically: idle 3 days", "PR merged, idle 3 days") and offers
+Undo, which restores the lane on the machine the notice came from.
+
+Then the archived lanes. One that is due for the delete or the automatic free
+up is acted on only with the same checks: not edit-protected, nothing running
+and no lease (as above), and `getAutoArchiveFacts` shows no uncommitted files
+and no commit only this machine has (a folder that is not a working checkout
+is kept too). The delete also waits for an open PR; when one is open and the
+free up is due, the folder is freed instead. The delete is the lane delete
+(`laneService.delete`, `deleteRemoteBranch: false`, not forced, so its own
+unsaved-work refusal still applies), then the lane's port lease and route are
+released. The lane's chats go to Recently deleted like any lane delete
+(`recordChatsDeletedWithLane`). The free up is `archiveAndReclaim` without the
+dirty override; a folder still in use is kept and finished by the retry below,
+and a lane whose removal `failed` waits for a person to try again from
+Settings → Archive. The primary lane is never deleted or freed up.
+
+Each scan's result is kept per lane (`last_run_json`: archived, freed,
+deleted, kept and why, or failed with the error) and shown under Rules →
+"Archive lanes automatically" as "Last run", one sentence per lane. Failures
+show there, never as repeated toasts.
+
+"Due to free up" is never stored. `local_lane_storage_state.reclaim_state`
+only records removals: `kept` (waiting on files in use), `reclaimed`, or
+`failed`. A `ready_for_review` row an older build wrote reads as `kept`.
+
+### Archive & Reclaim removal
+
+Lane folders are compared with `shared/sameFolder` (resolved, without case on
+Windows, by real path when the spellings still differ), so git's spelling of a
+lane (a OneDrive junction, another drive-letter case, `/private/tmp`) matches
+ADE's. On Windows ADE never runs `git worktree remove` on a lane: it makes
+git's refusals itself (a locked worktree; submodules without the dirty
+confirmation), renames the folder aside to a `.ade-deleting-` name, which only
+succeeds once the lane's chats, terminals and agent CLIs have exited and
+nothing else holds a file in it (it retries for 20 s), has `git worktree
+prune` drop git's record (or puts the folder back if git keeps it), then
+deletes with Node's `rm`, which removes junctions without following them. Git
+runs with `-c core.longpaths=true` there. A folder still held after the wait
+is kept quietly (`reclaim_state = 'kept'`, `pending_removal_at`), and the
+storage doctor finishes it every 10 minutes, up to 12 tries. A folder that an
+earlier, interrupted removal left behind (inside `.ade/worktrees`, this lane's
+own, git lists no worktree there and its git metadata is gone) is reported as
+`finishRemoval` and reclaim finishes it instead of refusing with "not the lane
+worktree registered to this project".
 
 ### Build output in idle lanes
 
@@ -790,8 +881,12 @@ scanned and again right before removal, while the lane's worktree lease is held:
   (`laneService.getLiveWorkCounts`, re-read before every folder), no lease
   held by another operation, and no process on this computer working inside
   it (`lsof -d cwd` on macOS, `/proc/*/cwd` on Linux, re-checked under the
-  lease). Windows has no cheap equivalent; a program holding a file there
-  makes that folder's removal fail with a reason instead.
+  lease). Windows has no cheap equivalent; there the folder is first renamed
+  out of the lane, beside it in `.ade/worktrees`, and deleted in the
+  background. The rename fails, changing nothing, while a program holds a file
+  in it, and that reason is kept. A folder whose removal failed is recorded
+  with its inode and mtime (`fingerprint`) and not tried again until it
+  changes; a folder in use is not a failure of the run.
 - It is idle: no chat, terminal or operation row, archive, `HEAD` or reflog
   write, or uncommitted change (first 200 paths of `git status`) inside the
   window; the folder and everything directly in it have mtime and ctime

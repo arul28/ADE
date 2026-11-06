@@ -6,7 +6,7 @@ import type { OpenProjectBinding } from "../../../../shared/types";
 import { confirmDialog } from "../../ui/dialog";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../../app/toast/toastStore";
 import { relativeWhen } from "../../../lib/format";
-import { formatBytes, formatMeasuredBytes } from "../storage/storageView";
+import { useStorageBytes } from "../storage/useStorageBytes";
 import { useLaneReclaim } from "./useLaneReclaim";
 import {
   laneBulkArchiveSkipReason,
@@ -23,14 +23,14 @@ const ARCHIVE_TOAST_ID = "settings-lanes-archive";
 /** Rows shown before "Show N more". */
 const INITIAL_ROWS = 12;
 
-type LaneSize = { bytes: number; partial: boolean };
+type LaneSize = { bytes: number; partial: boolean; measuredAt?: string };
 
 /** Each lane's folder size from the storage snapshot, by lane id or folder. */
 function sizeIndex(items: readonly StorageItem[]): { byId: Map<string, LaneSize>; byPath: Map<string, LaneSize> } {
   const byId = new Map<string, LaneSize>();
   const byPath = new Map<string, LaneSize>();
   for (const item of items) {
-    const size = { bytes: item.bytes, partial: Boolean(item.partial) };
+    const size = { bytes: item.bytes, partial: Boolean(item.partial), ...(item.measuredAt ? { measuredAt: item.measuredAt } : {}) };
     if (item.laneId) byId.set(item.laneId, size);
     if (item.path) byPath.set(item.path, size);
   }
@@ -64,6 +64,7 @@ export function LaneList({
   const [showAll, setShowAll] = React.useState(false);
   const [archiving, setArchiving] = React.useState(false);
   const reclaim = useLaneReclaim(pin, onChanged);
+  const { bytes: storageBytes } = useStorageBytes();
 
   const sizes = React.useMemo(() => sizeIndex(laneItems), [laneItems]);
   const sizeOf = React.useCallback(
@@ -108,7 +109,7 @@ export function LaneList({
     const count = selectedLanes.length;
     const confirmed = await confirmDialog({
       title: count === 1 ? `Archive ${selectedLanes[0]!.name}?` : `Archive ${count} lanes?`,
-      message: `${selectedBytes > 0 ? `Frees about ${formatBytes(selectedBytes)}. ` : ""}Their folders are removed; branches, chats and history are kept. You can restore any of them from the archive below.`,
+      message: `${selectedBytes > 0 ? `Frees about ${storageBytes(selectedBytes)}. ` : ""}Their folders are removed; branches, chats and history are kept. You can restore any of them from the archive below.`,
       confirmLabel: count === 1 ? "Archive lane" : `Archive ${count} lanes`,
     });
     if (!confirmed) return;
@@ -154,7 +155,7 @@ export function LaneList({
       tone: archived.length === 0 ? (failed.length > 0 ? "error" : "warning") : lines.length > 0 ? "warning" : "success",
       title: archived.length === 0
         ? "No lanes were archived"
-        : `Archived ${archived.length === 1 ? archived[0] : `${archived.length} lanes`}${freed > 0 ? `, freed ${formatBytes(freed)}` : ""}`,
+        : `Archived ${archived.length === 1 ? archived[0] : `${archived.length} lanes`}${freed > 0 ? `, freed ${storageBytes(freed)}` : ""}`,
       message: lines.length > 0 ? lines.join("\n") : "Branches and chats were kept.",
       durationMs: lines.length > 0 ? READABLE_TOAST_DURATION_MS : undefined,
     });
@@ -211,7 +212,7 @@ export function LaneList({
                 onClick={() => void archiveSelected()}
               >
                 {archiving ? <ArrowClockwise size={13} className="animate-spin" /> : <Archive size={13} />}
-                {`Archive ${selected.size === 1 ? "1 lane" : `${selected.size} lanes`}${selectedBytes > 0 ? ` · frees ${formatBytes(selectedBytes)}` : ""}`}
+                {`Archive ${selected.size === 1 ? "1 lane" : `${selected.size} lanes`}${selectedBytes > 0 ? ` · frees ${storageBytes(selectedBytes)}` : ""}`}
               </button>
             </>
           ) : null}
@@ -280,6 +281,7 @@ function LaneRow({
   onToggleSelect: () => void;
   onArchive: () => void;
 }) {
+  const { measured } = useStorageBytes();
   const primary = lane.laneType === "primary";
   const blockedReason = laneNotSelectableReason(lane);
   const pill = laneStatusPill(lane);
@@ -322,7 +324,12 @@ function LaneRow({
           ) : null}
         </span>
         <span className="ade-lanes-when kit-num">{lane.lastActivityAt ? relativeWhen(lane.lastActivityAt) : "—"}</span>
-        <span className="ade-lanes-size kit-num">{primary ? "" : size ? formatMeasuredBytes(size.bytes, size.partial) : "—"}</span>
+        <span
+          className="ade-lanes-size kit-num"
+          title={!primary && size?.measuredAt ? `Measured ${relativeWhen(size.measuredAt)}` : undefined}
+        >
+          {primary ? "" : size ? measured(size.bytes, size.partial) : "—"}
+        </span>
         <span className="ade-lanes-action">
           {!primary && blockedReason != null && lane.runningSessions === 0 ? (
             <button type="button" className="ade-modern-btn" data-size="sm" title="Shows what would be lost first" onClick={onArchive}>

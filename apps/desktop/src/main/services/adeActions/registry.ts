@@ -4305,7 +4305,7 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
   const storageInsightsService = runtime.storageInsightsService;
   if (!storageInsightsService) return null;
   return {
-    getSnapshot: (args?: { forceRefresh?: boolean }) => storageInsightsService.getSnapshot(args),
+    getSnapshot: (args?: { forceRefresh?: boolean; measureLanes?: boolean }) => storageInsightsService.getSnapshot(args),
     compressNow: () => storageInsightsService.compressNow(),
     runMaintenanceNow: () => storageInsightsService.runMaintenanceNow(),
     deletedLaneChatsSummary: () => storageInsightsService.deletedLaneChatsSummary(),

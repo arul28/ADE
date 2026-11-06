@@ -806,6 +806,9 @@ import type {
   PtyExitEvent,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
+  RenameLaneBranchArgs,
+  RenameLaneBranchResult,
+  LaneBranchNameCheck,
   RiskMatrixEntry,
   RunTestSuiteArgs,
   PrepareConflictProposalArgs,
@@ -1378,7 +1381,7 @@ declare global {
       };
       storage: {
         getPressure: () => Promise<DiskPressureSnapshot>;
-        getSnapshot: (args?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<StorageSnapshot>;
+        getSnapshot: (args?: { forceRefresh?: boolean; measureLanes?: boolean }, pin?: OpenProjectBinding | null) => Promise<StorageSnapshot>;
         compressNow: (pin?: OpenProjectBinding | null) => Promise<StorageCompressionResult>;
         runMaintenanceNow: (pin?: OpenProjectBinding | null) => Promise<MaintenanceRunReport>;
         deletedLaneChatsSummary: (pin?: OpenProjectBinding | null) => Promise<DeletedLaneChatsSummary>;
@@ -2276,6 +2279,10 @@ declare global {
           args: ResolveLaneBranchDriftArgs,
         ) => Promise<ResolveLaneBranchDriftResult>;
         rename: (args: RenameLaneArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        /** Rename the lane's branch while it is unpushed, untracked and has no PR; `dryRun` only checks. */
+        renameBranch: (args: RenameLaneBranchArgs, pin?: OpenProjectBinding | null) => Promise<RenameLaneBranchResult>;
+        /** Whether a new lane's branch can have this name on the lane's machine. */
+        checkBranchName: (args: { name: string }, pin?: OpenProjectBinding | null) => Promise<LaneBranchNameCheck>;
         updateAppearance: (
           args: UpdateLaneAppearanceArgs,
           pin?: OpenProjectBinding | null,

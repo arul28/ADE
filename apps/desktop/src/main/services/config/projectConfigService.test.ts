@@ -156,7 +156,7 @@ describe("projectConfigService - providers permissions", () => {
 });
 
 describe("projectConfigService - lane storage rules", () => {
-  it("persists all cleanup fields and migrates the old delete setting to review retention", () => {
+  it("reads the old hour keys as day keys and saves only day keys", () => {
     const { root, adeDir } = makeProjectFixture("ade-project-config-lane-storage-");
     fs.writeFileSync(path.join(adeDir, "local.yaml"), YAML.stringify({
       version: 1,
@@ -177,10 +177,9 @@ describe("projectConfigService - lane storage rules", () => {
     });
 
     expect(service.get().effective.laneCleanup).toEqual({
-      maxActiveLanes: 4,
-      cleanupIntervalHours: 6,
-      autoArchiveAfterHours: 72,
-      reclaimArchivedAfterHours: 168,
+      archiveIdleAfterDays: 3,
+      freeUpSpaceAfterDays: 7,
+      freeUpSpaceMode: "ask",
     });
 
     const snapshot = service.get();
@@ -189,19 +188,21 @@ describe("projectConfigService - lane storage rules", () => {
       local: {
         ...snapshot.local,
         laneCleanup: {
-          maxActiveLanes: 3,
-          cleanupIntervalHours: 12,
-          autoArchiveAfterHours: 48,
-          reclaimArchivedAfterHours: 240,
+          archiveIdleAfterDays: 2,
+          freeUpSpaceAfterDays: 10,
+          freeUpSpaceMode: "auto",
+          deleteArchivedAfterDays: 30,
+          deleteLocalBranchOnAutoDelete: true,
         },
       },
     });
     const written = YAML.parse(fs.readFileSync(path.join(adeDir, "local.yaml"), "utf8"));
     expect(written.laneCleanup).toEqual({
-      maxActiveLanes: 3,
-      cleanupIntervalHours: 12,
-      autoArchiveAfterHours: 48,
-      reclaimArchivedAfterHours: 240,
+      archiveIdleAfterDays: 2,
+      freeUpSpaceAfterDays: 10,
+      freeUpSpaceMode: "auto",
+      deleteArchivedAfterDays: 30,
+      deleteLocalBranchOnAutoDelete: true,
     });
   });
 });
@@ -474,7 +475,7 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
     ui: { linearBatchLaunchDefaultPrompt: "Legacy prompt" },
     // Automatic lifecycle behavior: must be skipped like other executable keys.
     git: { newLaneBaseSource: "local" },
-    laneCleanup: { maxActiveLanes: 3 },
+    laneCleanup: { archiveIdleAfterDays: 3 },
   };
 
   function writeLegacySharedConfig(adeDir: string, config: unknown = LEGACY_CONFIG) {

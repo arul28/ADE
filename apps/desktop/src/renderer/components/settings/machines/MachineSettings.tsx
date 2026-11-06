@@ -26,7 +26,8 @@ import { useAutoUpdateSnapshot } from "../../app/useAutoUpdateSnapshot";
 import { showToast } from "../../app/toast/toastStore";
 import { SettingsSelect, SettingsToggle } from "../primitives";
 import { FreeSpaceMeter } from "../health/healthCharts";
-import { formatBytes, freeSpaceLevel } from "../storage/storageView";
+import { formatStorageBytes } from "../../../../shared/formatting";
+import { freeSpaceLevel } from "../storage/storageView";
 import { SingleMachineUpdateRow } from "../general/MachineUpdateRows";
 import { machineSectionAvailable, type SettingsMachinePage } from "../SettingsMachinesNav";
 import { osLabel, platformWord, type MachineFacts } from "./machineFacts";
@@ -121,7 +122,7 @@ export function MachineSettings({
           <MachineRow
             icon={<HardDrive size={14} />}
             title="Disk"
-            value={`${formatBytes(local.pressure.freeBytes)} free of ${formatBytes(local.pressure.totalBytes)}`}
+            value={`${formatStorageBytes(local.pressure.freeBytes, local.info?.platform)} free of ${formatStorageBytes(local.pressure.totalBytes, local.info?.platform)}`}
             control={(
               <span className="ade-mx-row-meter">
                 <FreeSpaceMeter freeBytes={local.pressure.freeBytes} totalBytes={local.pressure.totalBytes} level={freeSpaceLevel(local.pressure.freeBytes, local.pressure.totalBytes)} />

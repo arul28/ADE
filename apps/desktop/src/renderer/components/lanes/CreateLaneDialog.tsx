@@ -20,9 +20,6 @@ import type {
   NewLaneDefaultsSnapshot,
 } from "../../../shared/types";
 import {
-  LANE_START_ON_LABEL,
-  LANE_START_ON_VALUES,
-  LANE_START_FROM_LABEL,
   isSavableDefaultLaneStart,
   laneStartSentence,
   plainLaneStartBranch,
@@ -42,16 +39,11 @@ import { linearIssueLaneName, resolveLinearIssueBranchName } from "../../../shar
 import { branchExistsForLinearIssue } from "./linearIssueDisplay";
 import { LinearMark } from "./linearBrand";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
-import {
-  laneHoldingBranch,
-  startBranchItems,
-  startFromPickerRef,
-  startPickerRef,
-  startSourceBranch,
-} from "./laneStartOptions";
+import { laneHoldingBranch, startSourceBranch } from "./laneStartOptions";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import type { LaneMachineOption } from "./laneMachines";
 import { ComposerPopover, LaneMachineChip, LaneTemplateChip } from "./createLaneComposerChips";
+import { LaneStartBranchField, LaneStartOnSwitch } from "./LaneStartPicker";
 import "./createLaneComposer.css";
 import { isImeComposing } from "../../lib/imeComposition";
 
@@ -105,6 +97,9 @@ export function CreateLaneDialog({
   onOpenChange,
   createLaneName,
   setCreateLaneName,
+  createBranchName,
+  setCreateBranchName,
+  createBranchProblem,
   createMode,
   setCreateMode,
   createStart,
@@ -152,6 +147,11 @@ export function CreateLaneDialog({
   onOpenChange: (open: boolean) => void;
   createLaneName: string;
   setCreateLaneName: (v: string) => void;
+  /** New branch: its name. Follows the lane name (or the issue) until the user edits it. */
+  createBranchName: string;
+  setCreateBranchName: (v: string) => void;
+  /** Why the branch name can't be used, from the lane's machine; null when fine. */
+  createBranchProblem?: string | null;
   createMode: CreateLaneMode;
   setCreateMode: (v: CreateLaneMode) => void;
   /** New branch: where it starts and what it brings. */
@@ -286,10 +286,6 @@ export function CreateLaneDialog({
   }, [createBranches, createImportBranch, prByBranch]);
 
   // New branch: where it starts.
-  const startItems = React.useMemo(
-    () => startBranchItems({ branches: createBranches, lanes, snapshot: newLaneDefaults }),
-    [createBranches, lanes, newLaneDefaults],
-  );
   const startSource = startSourceBranch(createStart, newLaneDefaults);
   // The folder whose uncommitted changes "Local + uncommitted" copies.
   const startHolder = laneHoldingBranch(startSource, lanes);
@@ -298,10 +294,14 @@ export function CreateLaneDialog({
   // resolve, so an unread (or failed) defaults read does not block them.
   const startBranchMissing = createStart.from === "branch" ? !startSource : newLaneDefaults !== null && !startSource;
   const uncommittedBlocked = !startHolder;
+  // The copy is offered only for a branch open in a lane; a new source without
+  // one drops back to its local copy instead of leaving a hidden choice set.
+  React.useEffect(() => {
+    if (createMode === "new" && createStart.on === "uncommitted" && uncommittedBlocked && lanes.length > 0) {
+      setCreateStart({ ...createStart, on: "local" });
+    }
+  }, [createMode, createStart, lanes.length, setCreateStart, uncommittedBlocked]);
   const startIsDefault = newLaneDefaults ? sameLaneStart(createStart, newLaneDefaults.defaults.start) : false;
-  let startTitle: string;
-  if (createStart.from === "branch") startTitle = startSource || "Pick a branch…";
-  else startTitle = LANE_START_FROM_LABEL[createStart.from];
 
   // Existing branch: a branch already open in a lane is that lane.
   const importHolder = createMode === "existing" && createImportBranch
@@ -332,7 +332,7 @@ export function CreateLaneDialog({
     : (busy
       || machineMissing
       || !createLaneName.trim()
-      || (createMode === "new" && (startBranchMissing || startMissing || (createStart.on === "uncommitted" && uncommittedBlocked)))
+      || (createMode === "new" && (startBranchMissing || startMissing || (createStart.on === "uncommitted" && uncommittedBlocked) || Boolean(createBranchProblem)))
       || (createMode === "existing" && (!createImportBranch || Boolean(importHolder)))
       || selectedLinearBranchConflict);
 
@@ -539,65 +539,65 @@ export function CreateLaneDialog({
           {/* New branch: which branch it starts from, on the remote or local copy */}
           {createMode === "new" ? (
             <>
+              <span className="cl-label">Branch</span>
+              <div className="cl-cell">
+                <label className="cl-field cl-branch" data-tone={createBranchProblem ? "warn" : undefined}>
+                  <span className="cl-tile" data-tone="mode"><GitBranch size={13} weight="bold" /></span>
+                  <input
+                    value={createBranchName}
+                    onChange={(event) => setCreateBranchName(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !isImeComposing(event)) {
+                        event.preventDefault();
+                        submit();
+                      }
+                    }}
+                    placeholder="Named after the lane"
+                    aria-label="Branch name"
+                    aria-invalid={createBranchProblem ? true : undefined}
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    disabled={locked}
+                    data-tour="lanes.createDialog.branchName"
+                  />
+                </label>
+                {createBranchProblem ? <span className="cl-hint" data-tone="warn">{createBranchProblem}</span> : null}
+              </div>
+
               <span className="cl-label">Start from</span>
               <div className="cl-cell">
-                <ComposerPopover
+                <LaneStartBranchField
                   {...chipProps("source")}
-                  trigger={(
-                    <button
-                      type="button"
-                      className="cl-field"
-                      disabled={locked}
-                      data-empty={startSource ? undefined : "true"}
-                      aria-label="Start from"
-                      data-tour="lanes.createDialog.branchBase"
-                    >
-                      <span className="cl-tile" data-tone="mode"><ModeIcon size={13} weight="bold" /></span>
-                      <span className="cl-field-text">{startTitle}</span>
-                      {createStart.from !== "branch" && startSource ? <span className="cl-tag" data-tone="mode">{startSource}</span> : null}
-                      {startMissing ? <span className="cl-field-meta">no branch checked out</span> : null}
-                      <CaretUpDown size={12} className="cl-field-caret" />
-                    </button>
-                  )}
-                >
-                  <LaneBranchList
-                    items={startItems}
-                    pullRequests={branchPullRequests}
-                    currentUserName={currentGitUserName}
-                    selectedRef={startPickerRef(createStart)}
-                    loading={loadingBranches}
-                    emptyLabel="No branches found in this repo."
-                    ariaLabel="Start from"
-                    onSelect={(ref) => {
-                      setCreateStart(startFromPickerRef(ref, createStart.on));
-                      setOpenChip(null);
-                    }}
-                  />
-                </ComposerPopover>
+                  start={createStart}
+                  onChange={setCreateStart}
+                  snapshot={newLaneDefaults}
+                  branches={createBranches}
+                  lanes={lanes}
+                  pullRequests={branchPullRequests}
+                  currentUserName={currentGitUserName}
+                  loading={loadingBranches}
+                  disabled={locked}
+                />
               </div>
 
               <span className="cl-label">On</span>
               <div className="cl-cell">
-                <div className="kit-seg cl-on" data-case="sentence" role="radiogroup" aria-label="On">
-                  {LANE_START_ON_VALUES.map((on) => {
-                    const blocked = on === "uncommitted" && uncommittedBlocked;
-                    return (
-                      <button
-                        key={on}
-                        type="button"
-                        role="radio"
-                        aria-checked={createStart.on === on}
-                        disabled={locked || blocked}
-                        title={blocked
-                          ? `${startSource || "This branch"} isn't open in any lane, so there are no uncommitted changes to copy.`
-                          : undefined}
-                        onClick={() => setCreateStart({ ...createStart, on })}
-                      >
-                        {LANE_START_ON_LABEL[on]}
-                      </button>
-                    );
-                  })}
-                </div>
+                <LaneStartOnSwitch start={createStart} onChange={setCreateStart} disabled={locked} />
+                {startHolder ? (
+                  // Only a branch open in a lane has uncommitted changes to bring.
+                  <label className="cl-check">
+                    <input
+                      type="checkbox"
+                      checked={createStart.on === "uncommitted"}
+                      disabled={locked}
+                      onChange={(event) => setCreateStart({ ...createStart, on: event.target.checked ? "uncommitted" : "local" })}
+                    />
+                    <span>
+                      Bring my uncommitted changes from {startHolder.laneType === "primary" ? "the primary lane" : <b>{startHolder.name}</b>}
+                    </span>
+                  </label>
+                ) : null}
                 <div className="cl-hint-row">
                   <span className="cl-hint" data-tone={createStart.on === "uncommitted" && uncommittedBlocked ? "warn" : undefined}>
                     {createStart.on === "uncommitted" && uncommittedBlocked

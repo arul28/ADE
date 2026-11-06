@@ -416,6 +416,18 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "template_setup_started",
   "template_suggestion_hidden",
   "deps_update_started",
+  // Lane settings a person chose, recorded after the save or rename succeeded:
+  // the branch name pattern (which kind, never the text), where new lanes
+  // start, a branch renamed, the automatic archive / free up / delete rules
+  // turned on or off, and Free up space on an archived lane. Never the lane,
+  // branch, pattern, day count, machine, or error.
+  "branch_pattern_changed",
+  "start_default_changed",
+  "branch_renamed",
+  "auto_archive_changed",
+  "auto_free_up_changed",
+  "auto_delete_changed",
+  "space_freed",
   // The desktop "Star ADE on GitHub" pill: seen, clicked, dismissed, and a
   // star detected while it showed. Never the GitHub account or a count.
   "star_prompt_shown",
@@ -674,6 +686,10 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "chat_shortcut", "chat_palette", "chat_palette_hit", "diff_shortcut",
     // Where a lane-template setup chat was opened.
     "from_banner", "from_settings",
+    // Which branch name pattern a project chose, and where its new lanes
+    // start. Prefixed like the other renderer surfaces; never the text.
+    "pattern_ade", "pattern_user", "pattern_none", "pattern_custom",
+    "start_default", "start_primary", "start_branch",
     // What the user did with a model hint chip. A chip left alone is not sent.
     "hint_accepted", "hint_dismissed",
     // Which showing of the star pill: before any dismissal, or the one return
