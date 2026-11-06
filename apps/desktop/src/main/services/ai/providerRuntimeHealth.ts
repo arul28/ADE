@@ -59,8 +59,9 @@ const RUNTIME_FAILURE_KINDS: ReadonlyArray<readonly [kind: string, pattern: RegE
   ["owned-elsewhere", /\balready owned by another\b/i],
   ["timeout", /\bdid not answer within\b|\btimed out\b/i],
   ["spawn-failed", /\bfailed to spawn\b|\bcould not start\b/i],
-  // Node's `spawn <path> EAGAIN`: the path can hold spaces (`C:\Program Files\…`),
-  // and Windows can say `UNKNOWN`. Case-sensitive, so a word such as "error" is not a code.
+  // Node's `spawn <path> EAGAIN`: the path can hold spaces (a Windows Program
+  // Files path), and Windows can say `UNKNOWN`. Case-sensitive, so a word such
+  // as "error" is not a code.
   ["spawn-failed", /\bspawn\b.*\b(?:E[A-Z]{2,}|UNKNOWN)\b/],
   ["exited", /\bexited with code\b/i],
 ];
