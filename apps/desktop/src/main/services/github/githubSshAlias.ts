@@ -29,18 +29,19 @@ import { createRepeatedFailureGate } from "../logging/repeatedFailure";
 // healthy but busy Windows host needs more time than 3 s to answer.
 const IS_WINDOWS = process.platform === "win32";
 const SSH_CONFIG_TIMEOUT_MS = IS_WINDOWS ? 10_000 : 3_000;
-// The synchronous lookup blocks its process, so it gets a shorter limit. It
+// The synchronous lookup blocks its process (the desktop main process, for
+// the recent-projects list), so it keeps the short limit on every platform. It
 // runs once for each alias host; later reads use the cache (a failure for
 // FAILED_LOOKUP_TTL_MS), and refreshes go through the async lookup above.
-const SSH_CONFIG_SYNC_TIMEOUT_MS = IS_WINDOWS ? 3_000 : 1_500;
+const SSH_CONFIG_SYNC_TIMEOUT_MS = 1_500;
 const SSH_CONFIG_MAX_OUTPUT_BYTES = 64 * 1024;
 const CACHE_TTL_MS = 60_000;
 // No ssh on PATH is retried soon, so a newly installed ssh is used promptly.
 const MISSING_SSH_TTL_MS = 10_000;
-// A failed lookup (timeout, broken config) is kept for a while: re-running a
+// A failed lookup (timeout, broken config) is kept for a minute: re-running a
 // slow or broken ssh every few seconds costs a process each time and gives
-// the same answer.
-const FAILED_LOOKUP_TTL_MS = 5 * 60_000;
+// the same answer, while a repaired config is still picked up soon.
+const FAILED_LOOKUP_TTL_MS = 60_000;
 const CACHE_CAPACITY = 128;
 // Public forges that are never an alias of GitHub: their origins skip ssh.
 const KNOWN_FORGE_HOSTS = new Set([

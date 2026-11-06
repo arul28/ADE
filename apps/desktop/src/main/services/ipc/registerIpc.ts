@@ -7811,9 +7811,22 @@ export function registerIpc({
 
   // A leftover folder belongs to the project whose delete left it, named by
   // `rootPath` (the window may show another tab by now). Only a project ADE
-  // knows; never a path the renderer made up. Without one, the active tab.
-  const leftoverProjectRoot = (rootPath: unknown): string | null =>
-    typeof rootPath === "string" && rootPath.trim() ? resolveAllowedProjectRoot(rootPath) : null;
+  // knows; never a path the renderer made up, nor a folder inside a project
+  // (runtimes and project contexts are keyed by the root itself), so the
+  // answer is the known root's own spelling. Without one, the active tab.
+  const leftoverProjectRoot = (rootPath: unknown): string | null => {
+    if (typeof rootPath !== "string" || !rootPath.trim()) return null;
+    const resolved = resolveAllowedProjectRoot(rootPath);
+    const knownRoot = getAllowedProjectRoots().find((root) => {
+      try {
+        return path.relative(fs.realpathSync.native(path.resolve(root)), resolved) === "";
+      } catch {
+        return false;
+      }
+    });
+    if (!knownRoot) throw new Error("rootPath is not a known project root.");
+    return knownRoot;
+  };
 
   /** That project's runtime answer for a leftover-folder action, then its in-process lane service. */
   const leftoverLaneTarget = async (
@@ -12282,21 +12295,22 @@ export function registerIpc({
     isTargetConnected: runtimeBridge.isTargetConnected,
     callMachineMethod: runtimeBridge.callMachineMethod,
     callLocalMachineMethod: async (machineKey) => {
-      if (!localRuntimeConnectionPool) throw new Error("The local runtime is unavailable.");
       // This computer's inventory is machine data; any booted project scope
       // can answer for it. A window with no project open (Settings › Account
-      // on the welcome screen) may have none: the accounts come from the
-      // machine's own store and the presets from its settings cache, and only
-      // the model counts and CLI sign-ins, which need the brain, stay unknown.
-      const rootPath = getCtx().project?.rootPath?.trim()
-        || bootedUsageScopeRoot(getResourceUsageContexts?.() ?? [])
-        || null;
+      // on the welcome screen) may have none, and a desktop without a local
+      // runtime has no brain to ask: the accounts come from the machine's own
+      // store and the presets from its settings cache, and only the model
+      // counts and CLI sign-ins, which need the brain, stay unknown.
+      const pool = localRuntimeConnectionPool;
+      const rootPath = pool
+        ? getCtx().project?.rootPath?.trim() || bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []) || null
+        : null;
       return await readLocalMachineInventoryDetail({
         machineKey,
         providerInstanceStore: getMachineProviderInstanceStore(),
         readPresetValue: async () => {
-          if (!rootPath) return readHarnessPresetsFromMachine(resolveMachineAdeLayout().adeDir) ?? undefined;
-          const response = await localRuntimeConnectionPool.callActionForRoot(rootPath, {
+          if (!pool || !rootPath) return readHarnessPresetsFromMachine(resolveMachineAdeLayout().adeDir) ?? undefined;
+          const response = await pool.callActionForRoot(rootPath, {
             domain: "account_settings",
             action: "get",
             argsList: ["all", "harnessPresets"],
@@ -12304,8 +12318,8 @@ export function registerIpc({
           return response.result;
         },
         readAiStatus: async () => {
-          if (!rootPath) return undefined;
-          const response = await localRuntimeConnectionPool.callActionForRoot(rootPath, {
+          if (!pool || !rootPath) return undefined;
+          const response = await pool.callActionForRoot(rootPath, {
             domain: "ai",
             action: "getStatus",
             args: {},

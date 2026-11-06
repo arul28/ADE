@@ -8,7 +8,7 @@ import type { Logger } from "../logging/logger";
 import { killWindowsProcessTreeAsync, resolveCliSpawnInvocation } from "../shared/processExecution";
 import { signalProcessGroup } from "../shared/utils";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
-import { scrubFreeText } from "../../../shared/sentry/scrub";
+import { scrubFreeTextThenCut } from "../../../shared/sentry/scrub";
 import { moveClaudeMcpConfigOffArgv, pruneStaleClaudeMcpConfigFiles, removeClaudeMcpConfigFiles } from "./claudeMcpConfigFile";
 
 /**
@@ -60,6 +60,19 @@ const STDERR_TAIL_MAX_SESSIONS = 32;
 const STDERR_TAIL_REPORT_LINES = 20;
 const STDERR_TAIL_REPORT_CHARS = 2_000;
 const STDERR_TAIL_LINE_CHARS = 300;
+
+/**
+ * The last `maxChars` of `text`, minus the first line when the cut lands inside
+ * it: a line whose start was cut off could hold the end of a secret without
+ * the prefix the scrubber recognizes it by.
+ */
+function keepTrailingWholeLines(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const kept = text.slice(-maxChars);
+  if (text[text.length - maxChars - 1] === "\n") return kept;
+  const newline = kept.indexOf("\n");
+  return newline === -1 ? "" : kept.slice(newline + 1);
+}
 
 /**
  * Image names a registered Claude subprocess can legitimately be running under
@@ -262,7 +275,7 @@ export function createClaudeSubprocessReaper(args: {
     // Always drained: a full pipe would stall the CLI.
     stream.on("data", (chunk: Buffer | string) => {
       const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      const next = `${stderrTailBySession.get(sessionId) ?? ""}${text}`.slice(-STDERR_TAIL_MAX_CHARS);
+      const next = keepTrailingWholeLines(`${stderrTailBySession.get(sessionId) ?? ""}${text}`, STDERR_TAIL_MAX_CHARS);
       stderrTailBySession.delete(sessionId);
       stderrTailBySession.set(sessionId, next);
       if (stderrTailBySession.size > STDERR_TAIL_MAX_SESSIONS) {
@@ -748,7 +761,7 @@ export function createClaudeSubprocessReaper(args: {
       if (!lines.length) return null;
       // Line by line, as free text: a home path or an email in a line never reaches a report.
       return lines
-        .map((line) => scrubFreeText(line, { maxLength: STDERR_TAIL_LINE_CHARS }))
+        .map((line) => scrubFreeTextThenCut(line, STDERR_TAIL_LINE_CHARS))
         .join("\n")
         .slice(-STDERR_TAIL_REPORT_CHARS);
     },

@@ -856,14 +856,16 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
       return next;
     },
 
+    /** Null while the file cannot be read: unknown, not "nothing published". */
     getLastPublishedActivityRevisions(): {
       accountOwnerId: string | null;
       revisions: Record<string, number>;
-    } {
+    } | null {
       const file = loadForStartupRead();
+      if (!file) return null;
       return {
-        accountOwnerId: file?.lastPublishedRevisionAccountOwnerId ?? null,
-        revisions: { ...file?.lastPublishedRevisionById },
+        accountOwnerId: file.lastPublishedRevisionAccountOwnerId ?? null,
+        revisions: { ...file.lastPublishedRevisionById },
       };
     },
 

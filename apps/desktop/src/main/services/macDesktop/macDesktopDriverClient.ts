@@ -21,7 +21,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import { markExpected } from "../../../shared/expectedError";
-import { scrubFreeText } from "../../../shared/sentry/scrub";
+import { scrubFreeTextThenCut } from "../../../shared/sentry/scrub";
 import os from "node:os";
 import path from "node:path";
 
@@ -398,6 +398,8 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   let disposed = false;
   let stdoutBuffer = "";
   let stderrBuffer = "";
+  /** The stderr line in progress already passed the log bound and was flushed. */
+  let stderrLineOverflowed = false;
   /** The current run's last stderr lines, and how the last run ended: the crash-loop report's cause. */
   let stderrTail: string[] = [];
   let lastExit: { code: number | null; signal: string | null; spawnError: string | null } | null = null;
@@ -652,8 +654,10 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     return error;
   };
 
+  // Whole lines (up to the log bound), cut only after they are scrubbed for a
+  // report, so a secret that straddles the cut is still recognized.
   const rememberStderrLine = (line: string): void => {
-    stderrTail.push(line.slice(0, CRASH_REPORT_STDERR_LINE_CHARS));
+    stderrTail.push(line.slice(0, MAX_STDERR_LINE_CHARS));
     if (stderrTail.length > CRASH_REPORT_STDERR_LINES) stderrTail.shift();
   };
 
@@ -663,8 +667,13 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     while (newlineIndex >= 0) {
       const line = stderrBuffer.slice(0, newlineIndex).trim();
       stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
+      // The rest of a line already flushed as too long starts mid-line; it is
+      // logged but kept out of the report tail, where its cut-off start could
+      // hide a secret from the scrubber.
+      const continuation = stderrLineOverflowed;
+      stderrLineOverflowed = false;
       if (line.length) {
-        rememberStderrLine(line);
+        if (!continuation) rememberStderrLine(line);
         deps.logger.info("mac_desktop.driver_stderr", { message: line.slice(0, MAX_STDERR_LINE_CHARS) });
         if (CAPTURE_STALL_PATTERN.test(line)) sampleStalledDriver();
       }
@@ -672,9 +681,10 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     }
     // A partial line this long is not going to end; log what there is.
     if (stderrBuffer.length > MAX_STDERR_LINE_CHARS) {
-      rememberStderrLine(stderrBuffer);
+      if (!stderrLineOverflowed) rememberStderrLine(stderrBuffer);
       deps.logger.info("mac_desktop.driver_stderr", { message: stderrBuffer.slice(0, MAX_STDERR_LINE_CHARS) });
       stderrBuffer = "";
+      stderrLineOverflowed = true;
     }
   };
 
@@ -710,8 +720,8 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
           platform,
           lastExitCode: lastExit?.code ?? null,
           lastExitSignal: lastExit?.signal ?? null,
-          lastSpawnError: lastExit?.spawnError ? scrubFreeText(lastExit.spawnError, { maxLength: CRASH_REPORT_STDERR_LINE_CHARS }) : null,
-          stderrTail: stderrTail.map((line) => scrubFreeText(line, { maxLength: CRASH_REPORT_STDERR_LINE_CHARS })),
+          lastSpawnError: lastExit?.spawnError ? scrubFreeTextThenCut(lastExit.spawnError, CRASH_REPORT_STDERR_LINE_CHARS) : null,
+          stderrTail: stderrTail.map((line) => scrubFreeTextThenCut(line, CRASH_REPORT_STDERR_LINE_CHARS)),
         });
       }
       // Nobody has asked for the driver lately, so nothing is waiting on a
@@ -814,6 +824,11 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       // The helper passes its environment to every app it opens on a lane's
       // screen, so it gets a user process's env, not the host's: with the
       // brain's ELECTRON_RUN_AS_NODE an Electron app starts as Node and exits.
+      // A new run starts with its own stderr, so a crash-loop report never
+      // pairs this run's end (a spawn error included) with an earlier run's lines.
+      stderrBuffer = "";
+      stderrLineOverflowed = false;
+      stderrTail = [];
       let spawned: ChildProcessWithoutNullStreams;
       try {
         spawned = spawnProcess(launchPath, [...driverArgs], {
@@ -837,8 +852,6 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       child = spawned;
       childReady = false;
       stdoutBuffer = "";
-      stderrBuffer = "";
-      stderrTail = [];
       spawned.stdout.setEncoding("utf8");
       spawned.stderr.setEncoding("utf8");
       spawned.stdout.on("data", (chunk: string) => consumeStdout(chunk));

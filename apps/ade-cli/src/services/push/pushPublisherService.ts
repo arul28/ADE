@@ -576,6 +576,28 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   let lastActivityAccountOwnerId: string | null | undefined =
     persistedPublishedRevisions?.accountOwnerId ?? initialAccountOwnerId;
   /**
+   * The store could not read its file at startup (it answers null), so the
+   * maps above started empty. Read again before each publish until it can:
+   * publishing from the empty start would persist a smaller revision map over
+   * the larger one on disk, and let a reconcile tombstone delivered messages.
+   */
+  let persistedRevisionsPending =
+    typeof deps.store.getLastPublishedActivityRevisions === "function" && persistedPublishedRevisions === null;
+  const hydratePersistedRevisions = (): void => {
+    if (!persistedRevisionsPending) return;
+    const persisted = deps.store.getLastPublishedActivityRevisions?.() ?? null;
+    if (!persisted) return;
+    persistedRevisionsPending = false;
+    // As if the startup read had worked: its account (a different current one
+    // then resets below, as a switch does), then its revisions, never lowering
+    // one this process already published.
+    lastActivityAccountOwnerId = persisted.accountOwnerId ?? lastActivityAccountOwnerId;
+    for (const [id, revision] of Object.entries(persisted.revisions)) {
+      lastPublishedRevisionById.set(id, Math.max(revision, lastPublishedRevisionById.get(id) ?? 0));
+      if (id.startsWith("message:")) persistedMessageItemIds.add(id);
+    }
+  };
+  /**
    * Content hash of the last roster the relay accepted, or null when there
    * isn't one to compare against (nothing published yet, a failed publish, a
    * new account owner). Only the heartbeat reads it: it is what lets a
@@ -1652,6 +1674,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     if (typeof deps.relayClient.publishAttention !== "function") return "unavailable";
     const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
     if (!accountOwnerId) return "unavailable";
+    hydratePersistedRevisions();
     if (lastActivityAccountOwnerId !== accountOwnerId) {
       lastPublishedFingerprintById.clear();
       lastPublishedRevisionById.clear();

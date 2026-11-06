@@ -1,6 +1,14 @@
 import fs from "node:fs";
 
 import { ARTIFACT_RANGE_READ_MAX_BYTES } from "../../../shared/artifactStreamUrl";
+import { AdeExpectedError } from "../../../shared/expectedError";
+
+/**
+ * Read-only, and never through a link at the last step (POSIX only; Windows
+ * has no O_NOFOLLOW). Callers pass a real path their jail already checked, so
+ * a link there was swapped in after the check.
+ */
+const OPEN_FLAGS = fs.constants.O_RDONLY | (typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0);
 
 export type ArtifactByteRange = {
   totalSize: number;
@@ -24,12 +32,19 @@ export async function readArtifactByteRange(
   offset?: number,
   length?: number,
 ): Promise<ArtifactByteRange> {
-  const handle = await fs.promises.open(absolutePath, "r").catch(() => {
+  const handle = await fs.promises.open(absolutePath, OPEN_FLAGS).catch((error: NodeJS.ErrnoException) => {
+    // Gone (deleted, or never copied to this computer) is an answer; anything
+    // else that stops the open is not.
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+      throw new AdeExpectedError("Artifact file does not exist.", "user");
+    }
     throw new Error("Artifact file does not exist.");
   });
   try {
+    // The opened handle's own stat, so the size and kind are those of the
+    // file actually read, not of whatever the path named a moment earlier.
     const stat = await handle.stat();
-    if (!stat.isFile()) throw new Error("Artifact file does not exist.");
+    if (!stat.isFile()) throw new AdeExpectedError("Artifact file does not exist.", "user");
     const totalSize = stat.size;
     const requestedOffset = Number(offset ?? 0);
     const start = Number.isFinite(requestedOffset) ? Math.max(0, Math.floor(requestedOffset)) : 0;

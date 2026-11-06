@@ -3586,8 +3586,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       } else {
         peer.missedHeartbeatCount = 0;
       }
-      peer.awaitingHeartbeatAt = sentAt;
-      send(peer.ws, "heartbeat", { kind: "ping", sentAt, dbVersion: args.db.sync.getDbVersion() });
+      // Outstanding only once the ping has gone out: a tick that failed before
+      // or at the send (the version read hit a disk error) must not count a
+      // missed heartbeat against the peer.
+      const ping = { kind: "ping", sentAt, dbVersion: args.db.sync.getDbVersion() };
+      if (send(peer.ws, "heartbeat", ping)) peer.awaitingHeartbeatAt = sentAt;
     }
   }
   const brainStatusTimer = setInterval(() => {

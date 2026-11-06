@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType, StatementSync } from "node:sqlite";
 import { codedError, isCodedError, isErrnoLikeCode } from "../../../shared/codedError";
-import { carryExpected, markExpected } from "../../../shared/expectedError";
+import { carryExpected, expectedErrorKind, markExpected } from "../../../shared/expectedError";
 import type { Logger } from "../logging/logger";
 import { isSqliteBusyOrLockedError, isSqliteIoError } from "./sqliteErrors";
 import { safeJsonParse } from "../shared/utils";
@@ -696,6 +696,10 @@ function statementError(error: unknown, sql: string): Error {
   const wrapped = new Error(`${message} [sql=${statement}]`);
   const code = (error as { code?: unknown } | null)?.code;
   if (typeof code === "string" && code.trim() && !isErrnoLikeCode(code)) Object.assign(wrapped, { code });
+  // SQLite's own result code, so busy and I/O failures are classified by it
+  // and not by the wrapped message (which now carries the SQL).
+  const errcode = (error as { errcode?: unknown } | null)?.errcode;
+  if (typeof errcode === "number") Object.assign(wrapped, { errcode });
   return carryExpected(error, wrapped);
 }
 
@@ -5127,7 +5131,15 @@ export async function openKvDb(
       if (attempt > 1) logger.info("db.open_busy_settled", { attempt });
       return db;
     } catch (error) {
-      if (!isSqliteBusyOrLockedError(error)) throw error;
+      if (!isSqliteBusyOrLockedError(error)) {
+        // Also for a failure before the open's own handler (opening the file,
+        // the first metadata read): a drive that stopped answering is this
+        // machine's state, not a defect, wherever the open noticed it.
+        if (isSqliteIoError(error) && error instanceof Error && !expectedErrorKind(error)) {
+          markExpected(error, "environment");
+        }
+        throw error;
+      }
       if (attempt >= OPEN_BUSY_ATTEMPTS) {
         // A peer that never let go is this machine's state, not a defect: a
         // Sentry Log, not an issue. Only the last attempt's failure is news.

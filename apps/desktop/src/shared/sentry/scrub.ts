@@ -109,6 +109,17 @@ export function scrubFreeText(input: string, options?: { maxLength?: number }): 
     .replace(POSIX_ABSOLUTE_PATH, "[path]");
 }
 
+/**
+ * {@link scrubFreeText}, then cut to `maxLength`. Scrubbing first means a
+ * secret, email or path that straddles the cut is replaced whole, never left
+ * as a prefix too short for its pattern to match. For process output (stderr
+ * lines, error messages) bound for a report.
+ */
+export function scrubFreeTextThenCut(input: string, maxLength: number): string {
+  const scrubbed = scrubFreeText(input);
+  return scrubbed.length > maxLength ? `${scrubbed.slice(0, maxLength)}…` : scrubbed;
+}
+
 export function scrubValue(value: unknown, depth = 0, key?: string): unknown {
   if (key !== undefined) {
     if (SECRET_KEY.test(key) && (typeof value === "string" || (typeof value === "object" && value !== null))) return REDACTED;

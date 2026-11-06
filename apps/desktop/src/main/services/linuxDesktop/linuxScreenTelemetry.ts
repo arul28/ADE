@@ -15,7 +15,7 @@
 
 import fs from "node:fs";
 import { captureProblem, sendSentryLog } from "../../../shared/sentry/capture";
-import { scrubFreeText } from "../../../shared/sentry/scrub";
+import { scrubFreeTextThenCut } from "../../../shared/sentry/scrub";
 import type { LinuxDesktopSetupResult } from "../../../shared/types/macDesktop";
 import { linuxPackageManagerId } from "./linuxDesktopSetup";
 
@@ -110,13 +110,15 @@ export function reportLinuxScreenProblem(
 
 const CAUSE_TEXT_MAX_CHARS = 500;
 const CAUSE_STDERR_LINE_MAX_CHARS = 300;
+const CAUSE_CODE_MAX_CHARS = 100;
 
 /**
  * Why a helper start or a screen failed, for the report's extras: the error's
  * code, its message, and, when the helper exited, its exit code or signal and
  * the last lines it wrote to stderr (the driver client puts those on the error
- * as `driverExit`). The texts go through `scrubFreeText`, which takes out
- * secrets, email addresses and absolute paths (so no home folder or user name).
+ * as `driverExit`). Every text, the code too (it is also the dedupe detail),
+ * goes through `scrubFreeText`, which takes out secrets, email addresses and
+ * absolute paths (so no home folder or user name).
  */
 export type LinuxScreenFailureCause = {
   code: string | null;
@@ -136,14 +138,14 @@ export function linuxScreenFailureCause(error: unknown): LinuxScreenFailureCause
   const stderrTail = Array.isArray(exit?.stderrTail)
     ? exit.stderrTail
       .filter((line): line is string => typeof line === "string")
-      .map((line) => scrubFreeText(line, { maxLength: CAUSE_STDERR_LINE_MAX_CHARS }))
+      .map((line) => scrubFreeTextThenCut(line, CAUSE_STDERR_LINE_MAX_CHARS))
     : [];
   const message = typeof record?.message === "string"
     ? record.message
     : typeof error === "string" ? error : "";
   return {
-    code: typeof record?.code === "string" ? record.code : null,
-    reason: message ? scrubFreeText(message, { maxLength: CAUSE_TEXT_MAX_CHARS }) : null,
+    code: typeof record?.code === "string" ? scrubFreeTextThenCut(record.code, CAUSE_CODE_MAX_CHARS) : null,
+    reason: message ? scrubFreeTextThenCut(message, CAUSE_TEXT_MAX_CHARS) : null,
     ...(exit ? {
       exitCode: typeof exit.code === "number" ? exit.code : null,
       exitSignal: typeof exit.signal === "string" ? exit.signal : null,
