@@ -83,7 +83,7 @@ struct SettingsPushDeliverySection: View {
             )
         }
 
-        ADESettingsSection("Push delivery", hint: "Alerts and Live Activities from your computers.") {
+        ADESettingsSection("Push delivery", hint: "Alerts and Live Activities from your computers.", symbol: "bell.badge", tint: .red) {
             ADESettingsRows {
                 toggleRow("Notifications", hint: "Approvals, replies and failures", isOn: notificationsBinding)
                 toggleRow("Live Activities", hint: "Agent runs on the Lock Screen", isOn: liveActivitiesBinding)
@@ -91,7 +91,7 @@ struct SettingsPushDeliverySection: View {
             }
         }
 
-        ADESettingsSection("Quiet hours", hint: "Mute pushes on a schedule.") {
+        ADESettingsSection("Quiet hours", hint: "Mute pushes on a schedule.", symbol: "moon", tint: .violet) {
             ADESettingsRows {
                 toggleRow("Quiet hours", hint: nil, isOn: quietHoursBinding)
                 if pushService.prefs.quietHoursEnabled {
@@ -148,7 +148,7 @@ struct SettingsPushDeliverySection: View {
 
     @ViewBuilder
     private var diagnosticsContent: some View {
-        ADESettingsSection("This device") {
+        ADESettingsSection("This device", symbol: "iphone", tint: .slate) {
             ADESettingsRows {
                 ADESettingsValueRow(title: "Status", value: statusValue, tone: statusTone)
                 if let tokenSuffix = snapshot.tokenSuffix {
@@ -163,7 +163,7 @@ struct SettingsPushDeliverySection: View {
             }
         }
 
-        ADESettingsSection("Relay", trailing: {
+        ADESettingsSection("Relay", symbol: "antenna.radiowaves.left.and.right", tint: .blue, trailing: {
             Button {
                 Task { await pushService.refreshStatus() }
             } label: {

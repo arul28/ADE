@@ -70,11 +70,11 @@ func laneHolderLabel(_ lane: LaneSummary) -> String {
 }
 
 /// Match the lane start sentence shown on desktop.
-func laneStartSentence(_ on: LaneStart.On, sourceBranch: String) -> String {
+func laneStartSentence(_ on: LaneStart.On, sourceBranch: String, subject: String = "Lane") -> String {
   switch on {
-  case .remote: return "Lane will be created from the latest \(sourceBranch) on the remote."
-  case .local: return "Lane will be created from local \(sourceBranch), including commits you haven't pushed."
-  case .uncommitted: return "Lane will be created from local \(sourceBranch), and uncommitted work will be copied over."
+  case .remote: return "\(subject) will be created from the latest \(sourceBranch) on the remote."
+  case .local: return "\(subject) will be created from local \(sourceBranch), including commits you haven't pushed."
+  case .uncommitted: return "\(subject) will be created from local \(sourceBranch), and uncommitted work will be copied over."
   }
 }
 

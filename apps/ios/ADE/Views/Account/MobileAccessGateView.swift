@@ -191,6 +191,21 @@ struct MobileAccessGateView: View {
       guard requestId != nil else { return }
       presentedSheet = .pairMachine
     }
+    // A pairing link that opened the app from cold arrives before this gate
+    // is on screen, so the change above never fires for it.
+    .onAppear {
+      #if DEBUG
+      // `-adePairingLink <url>`: a pairing link handed in at launch, for a
+      // simulator whose Safari keeps the link instead of opening the app.
+      if syncService.requestedPairingQrNavigation == nil,
+         let raw = UserDefaults.standard.string(forKey: "adePairingLink"), !raw.isEmpty {
+        syncService.requestedPairingQrNavigation = PairingQrNavigationRequest(raw: raw)
+      }
+      #endif
+      if syncService.requestedPairingQrNavigation != nil {
+        presentedSheet = .pairMachine
+      }
+    }
     .onChange(of: syncService.hasPairedHost) { _, isPaired in
       guard isPaired else { return }
       if presentedSheet == .pairMachine {

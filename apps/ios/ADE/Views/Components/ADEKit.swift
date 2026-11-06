@@ -674,22 +674,42 @@ extension View {
 /// draws its own unavailable state (muted text plus a reason) passes
 /// `dimsWhenDisabled: false`, so the reason stays readable.
 struct ADEKitRowButtonStyle: ButtonStyle {
+  enum Shape { case row, sidebar }
   var dimsWhenDisabled = true
+  /// `.sidebar` presses a rounded plane, as a sidebar row selects.
+  var shape: Shape = .row
 
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .contentShape(Rectangle())
-      .background(configuration.isPressed ? ADEKit.pressed : Color.clear)
+      .background {
+        if configuration.isPressed {
+          if shape == .sidebar {
+            RoundedRectangle(cornerRadius: 9, style: .continuous).fill(ADEKit.pressed)
+          } else {
+            ADEKit.pressed
+          }
+        }
+      }
       .modifier(ADEKitDisabledDim(enabled: dimsWhenDisabled))
   }
 }
 
 // MARK: - Settings page (desktop ModernPage / ModernSection / ModernRows / ModernRow)
 
-/// One calm scrolling column of sections on the page background.
+/// One calm scrolling column of sections on the page background, under the
+/// page's large title and its one-line description, as the desktop's settings
+/// pages open ("Chat" / "How the chat transcript reads…").
 struct ADESettingsPage<Content: View>: View {
   let title: String
+  var subtitle: String?
   @ViewBuilder var content: () -> Content
+
+  init(title: String, subtitle: String? = nil, @ViewBuilder content: @escaping () -> Content) {
+    self.title = title
+    self.subtitle = subtitle
+    self.content = content
+  }
 
   var body: some View {
     ScrollView {
@@ -701,9 +721,66 @@ struct ADESettingsPage<Content: View>: View {
       .padding(.bottom, 36)
     }
     .background(ADEColor.pageBackground.ignoresSafeArea())
-    .adeNavigationGlass()
-    .navigationTitle(title)
-    .navigationBarTitleDisplayMode(.inline)
+    .adeSettingsPageTitle(title, subtitle: subtitle)
+  }
+}
+
+extension View {
+  /// The settings page title bar: the large title and description, the glass
+  /// bar, and Close where the stack has one. For a page that draws its own
+  /// scroll view instead of `ADESettingsPage`.
+  @ViewBuilder
+  func adeSettingsPageTitle(_ title: String, subtitle: String? = nil) -> some View {
+    let titled = adeNavigationGlass()
+      .navigationTitle(title)
+      .navigationBarTitleDisplayMode(.large)
+      .settingsPageClose()
+    if let subtitle, !subtitle.isEmpty {
+      titled.navigationSubtitle(subtitle)
+    } else {
+      titled
+    }
+  }
+}
+
+/// The desktop settings tones (`SETTINGS_TONES` in `SettingsRows.tsx`): one
+/// hue per kind of thing, mixed down to a soft tile behind its glyph, so a long
+/// page scans by shape and colour the same way on both.
+enum ADESettingsTint: Equatable {
+  case accent, blue, green, amber, red, violet, pink, teal, orange, slate
+
+  var color: Color {
+    switch self {
+    case .accent: return ADEColor.accent
+    case .blue: return Color(red: 0x5B / 255, green: 0x8C / 255, blue: 1)
+    case .green: return Color(red: 0x34 / 255, green: 0xC7 / 255, blue: 0x7B / 255)
+    case .amber: return Color(red: 0xF5 / 255, green: 0xA5 / 255, blue: 0x24 / 255)
+    case .red: return Color(red: 0xF0 / 255, green: 0x61 / 255, blue: 0x6D / 255)
+    case .violet: return Color(red: 0xA7 / 255, green: 0x8B / 255, blue: 0xFA / 255)
+    case .pink: return Color(red: 0xEC / 255, green: 0x6F / 255, blue: 0xB0 / 255)
+    case .teal: return Color(red: 0x2B / 255, green: 0xC2 / 255, blue: 0xB2 / 255)
+    case .orange: return Color(red: 0xF2 / 255, green: 0x84 / 255, blue: 0x4B / 255)
+    case .slate: return Color(red: 0x8C / 255, green: 0x93 / 255, blue: 0xA8 / 255)
+    }
+  }
+}
+
+/// A glyph on a soft tinted tile (desktop `SettingsRowIcon`): 15% of the tone
+/// behind it, a 22% edge.
+struct ADESettingsIconTile: View {
+  let symbol: String
+  var tint: ADESettingsTint = .accent
+  var size: CGFloat = 30
+
+  var body: some View {
+    let shape = RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+    Image(systemName: symbol)
+      .font(.system(size: size * 0.5, weight: .medium))
+      .foregroundStyle(tint.color)
+      .frame(width: size, height: size)
+      .background(tint.color.opacity(0.15), in: shape)
+      .overlay(shape.strokeBorder(tint.color.opacity(0.22), lineWidth: 1))
+      .accessibilityHidden(true)
   }
 }
 
@@ -712,13 +789,16 @@ struct ADESettingsPage<Content: View>: View {
 struct ADESettingsSection<Content: View, Trailing: View>: View {
   var title: String?
   var hint: String?
+  /// A tinted tile before the heading (desktop `ModernSection` `icon`).
+  var symbol: String?
+  var tint: ADESettingsTint = .accent
   @ViewBuilder var trailing: () -> Trailing
   @ViewBuilder var content: () -> Content
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: 12) {
       if title != nil || hint != nil {
-        ADESettingsHeader(title: title, hint: hint, trailing: trailing)
+        ADESettingsHeader(title: title, hint: hint, symbol: symbol, tint: tint, trailing: trailing)
       }
       content()
     }
@@ -727,14 +807,14 @@ struct ADESettingsSection<Content: View, Trailing: View>: View {
 }
 
 extension ADESettingsSection where Trailing == EmptyView {
-  init(_ title: String? = nil, hint: String? = nil, @ViewBuilder content: @escaping () -> Content) {
-    self.init(title: title, hint: hint, trailing: { EmptyView() }, content: content)
+  init(_ title: String? = nil, hint: String? = nil, symbol: String? = nil, tint: ADESettingsTint = .accent, @ViewBuilder content: @escaping () -> Content) {
+    self.init(title: title, hint: hint, symbol: symbol, tint: tint, trailing: { EmptyView() }, content: content)
   }
 }
 
 extension ADESettingsSection {
-  init(_ title: String?, hint: String? = nil, @ViewBuilder trailing: @escaping () -> Trailing, @ViewBuilder content: @escaping () -> Content) {
-    self.init(title: title, hint: hint, trailing: trailing, content: content)
+  init(_ title: String?, hint: String? = nil, symbol: String? = nil, tint: ADESettingsTint = .accent, @ViewBuilder trailing: @escaping () -> Trailing, @ViewBuilder content: @escaping () -> Content) {
+    self.init(title: title, hint: hint, symbol: symbol, tint: tint, trailing: trailing, content: content)
   }
 }
 
@@ -767,15 +847,14 @@ struct ADESettingsRow<Control: View>: View {
   var hint: String?
   var symbol: String?
   var titleColor: Color = ADEColor.textPrimary
+  /// The tone of the symbol's tile (desktop `ModernRow` `tone`).
+  var tint: ADESettingsTint = .slate
   @ViewBuilder var control: () -> Control
 
   var body: some View {
     HStack(spacing: 12) {
       if let symbol {
-        Image(systemName: symbol)
-          .font(.system(size: 15, weight: .regular))
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(width: 22)
+        ADESettingsIconTile(symbol: symbol, tint: tint, size: 28)
       }
       VStack(alignment: .leading, spacing: 2) {
         Text(title)
@@ -794,7 +873,10 @@ struct ADESettingsRow<Control: View>: View {
       // hint wrapped at half the row with empty space beside it.
       .layoutPriority(1)
       Spacer(minLength: 8)
+      // The control is sized first, so a long hint cannot squeeze a menu's
+      // label down to "…".
       control()
+        .layoutPriority(2)
     }
     .padding(.horizontal, ADEKit.inset)
     .padding(.vertical, 11)
@@ -803,8 +885,8 @@ struct ADESettingsRow<Control: View>: View {
 }
 
 extension ADESettingsRow where Control == EmptyView {
-  init(_ title: String, hint: String? = nil, symbol: String? = nil, titleColor: Color = ADEColor.textPrimary) {
-    self.init(title: title, hint: hint, symbol: symbol, titleColor: titleColor, control: { EmptyView() })
+  init(_ title: String, hint: String? = nil, symbol: String? = nil, titleColor: Color = ADEColor.textPrimary, tint: ADESettingsTint = .slate) {
+    self.init(title: title, hint: hint, symbol: symbol, titleColor: titleColor, tint: tint, control: { EmptyView() })
   }
 }
 
@@ -815,9 +897,10 @@ struct ADESettingsValueRow: View {
   var symbol: String?
   var mono = false
   var tone: ADEKitTone?
+  var tint: ADESettingsTint = .slate
 
   var body: some View {
-    ADESettingsRow(title: title, symbol: symbol) {
+    ADESettingsRow(title: title, symbol: symbol, tint: tint) {
       Text(value)
         .font(mono ? .adeMono(12) : .system(size: 14))
         .foregroundStyle(tone?.color ?? ADEColor.textSecondary)
@@ -835,23 +918,57 @@ struct ADESettingsLink<Destination: View>: View {
   var hint: String?
   var symbol: String?
   var value: String?
+  var tint: ADESettingsTint = .slate
+  /// Drawn as a row of the desktop settings sidebar: flat on the page, an
+  /// outline glyph, the picked row on a rounded accent plane.
+  var sidebar = false
   @ViewBuilder var destination: () -> Destination
-  /// Set by the Duo's two-column Settings: the row whose page fills the right
-  /// column draws the selection, as Apple Settings' sidebar does.
+  /// Set by the Duo's two-column Settings on its list column: the row whose
+  /// page fills the right column draws the selection, as Apple Settings'
+  /// sidebar does.
   @Environment(\.duoSettingsSelection) private var splitSelection
-  /// The two-column window's close: the page this row opens in the right
-  /// column carries it, so it stays on the edge bar.
-  @Environment(\.duoSettingsClose) private var splitClose
+  /// The two-column window's page column: a row on the list column hands its
+  /// page there instead of pushing, so the page is the root of the right
+  /// column's own stack and anything it opens pushes with a back button.
+  @Environment(\.duoSettingsShow) private var splitShow
 
   var body: some View {
-    NavigationLink {
-      if let splitClose {
-        destination().modifier(DuoSettingsCloseItem(onClose: splitClose))
+    Group {
+      if let splitShow {
+        Button {
+          splitShow(title, AnyView(destination()))
+        } label: {
+          label
+        }
       } else {
-        destination()
+        SettingsNavigationLink {
+          destination()
+        } label: {
+          label
+        }
       }
-    } label: {
-      ADESettingsRow(title: title, hint: hint, symbol: symbol) {
+    }
+    .buttonStyle(sidebar ? ADEKitRowButtonStyle(shape: .sidebar) : ADEKitRowButtonStyle())
+    .background {
+      if isSelected {
+        if sidebar {
+          RoundedRectangle(cornerRadius: 9, style: .continuous).fill(ADEColor.accent.opacity(0.16))
+        } else {
+          ADEColor.accent.opacity(0.14)
+        }
+      }
+    }
+    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+  }
+
+  private var isSelected: Bool { splitSelection?.wrappedValue == title }
+
+  @ViewBuilder
+  private var label: some View {
+    if sidebar {
+      ADESettingsSidebarRow(title: title, symbol: symbol, value: value, selected: isSelected, showsChevron: splitShow == nil)
+    } else {
+      ADESettingsRow(title: title, hint: hint, symbol: symbol, tint: tint) {
         HStack(spacing: 6) {
           if let value {
             Text(value)
@@ -863,15 +980,95 @@ struct ADESettingsLink<Destination: View>: View {
         }
       }
     }
-    .buttonStyle(ADEKitRowButtonStyle())
-    .background {
-      if let splitSelection, splitSelection.wrappedValue == title {
-        ADEColor.accent.opacity(0.14)
+  }
+}
+
+/// One row of the settings sidebar (desktop `SettingsSidebar`): outline glyph,
+/// title, an optional quiet value. The picked row turns the accent colour.
+struct ADESettingsSidebarRow: View {
+  let title: String
+  var symbol: String?
+  var value: String?
+  var selected = false
+  /// A one-column stack pushes, so the row says so; the two-column window
+  /// shows the page beside it instead.
+  var showsChevron = true
+
+  var body: some View {
+    HStack(spacing: 12) {
+      if let symbol {
+        Image(systemName: symbol)
+          .font(.system(size: 16, weight: .regular))
+          .foregroundStyle(selected ? ADEColor.accent : ADEColor.textSecondary)
+          .frame(width: 24)
+      }
+      Text(title)
+        .font(.system(size: 16, weight: selected ? .semibold : .regular))
+        .foregroundStyle(selected ? ADEColor.accent : ADEColor.textPrimary)
+        .lineLimit(1)
+      Spacer(minLength: 8)
+      if let value {
+        Text(value)
+          .font(.system(size: 13.5))
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+      }
+      if showsChevron {
+        ADESettingsChevron()
       }
     }
-    .simultaneousGesture(TapGesture().onEnded {
-      splitSelection?.wrappedValue = title
-    })
+    .padding(.horizontal, 12)
+    .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
+    .contentShape(Rectangle())
+  }
+}
+
+/// A heading over a run of sidebar rows ("You", "App", "Project: ADE").
+struct ADESettingsSidebarGroupLabel: View {
+  let text: String
+
+  var body: some View {
+    Text(text)
+      .font(.system(size: 13, weight: .medium))
+      .foregroundStyle(ADEColor.textMuted)
+      .lineLimit(1)
+      .padding(.horizontal, 12)
+      .padding(.top, 14)
+      .padding(.bottom, 2)
+      .accessibilityAddTraits(.isHeader)
+  }
+}
+
+/// A page a Settings link pushes through its stack's path
+/// (`settingsPagePath`), so the stack can pop it by clearing the path.
+struct SettingsPushedPage: Hashable {
+  let id = UUID()
+  let view: AnyView
+
+  static func == (lhs: SettingsPushedPage, rhs: SettingsPushedPage) -> Bool { lhs.id == rhs.id }
+  func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+extension EnvironmentValues {
+  /// The Settings stack pushes through a path of `SettingsPushedPage`: the
+  /// Duo's right column, which clears it when another row is picked. A page
+  /// pushed by a plain link is not in the path and would stay on top.
+  @Entry var settingsPagePath = false
+}
+
+/// `NavigationLink` for Settings pages: a plain link, or a value pushed onto
+/// the stack's path where the stack keeps one (`settingsPagePath`).
+struct SettingsNavigationLink<Destination: View, Label: View>: View {
+  @ViewBuilder var destination: () -> Destination
+  @ViewBuilder var label: () -> Label
+  @Environment(\.settingsPagePath) private var usesPath
+
+  var body: some View {
+    if usesPath {
+      NavigationLink(value: SettingsPushedPage(view: AnyView(destination()))) { label() }
+    } else {
+      NavigationLink { destination() } label: { label() }
+    }
   }
 }
 
@@ -978,23 +1175,18 @@ extension View {
 struct ADESettingsHeader<Trailing: View>: View {
   var title: String?
   var hint: String?
+  var symbol: String? = nil
+  var tint: ADESettingsTint = .accent
   var inList = false
   @ViewBuilder var trailing: () -> Trailing
 
   var body: some View {
     HStack(alignment: .bottom, spacing: 8) {
-      VStack(alignment: .leading, spacing: 2) {
-        if let title {
-          Text(title)
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(ADEColor.textPrimary)
+      HStack(alignment: .top, spacing: 12) {
+        if let symbol {
+          ADESettingsIconTile(symbol: symbol, tint: tint, size: 32)
         }
-        if let hint {
-          Text(hint)
-            .font(.system(size: 12.5))
-            .foregroundStyle(ADEColor.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
+        headingText
       }
       Spacer(minLength: 8)
       trailing()
@@ -1004,6 +1196,22 @@ struct ADESettingsHeader<Trailing: View>: View {
     .padding(.trailing, inList ? 0 : 4)
     .padding(.bottom, inList ? 2 : 0)
     .accessibilityElement(children: .contain)
+  }
+
+  private var headingText: some View {
+      VStack(alignment: .leading, spacing: 2) {
+        if let title {
+          Text(title)
+            .font(.system(size: symbol == nil ? 15 : 17, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+        }
+        if let hint {
+          Text(hint)
+            .font(.system(size: 12.5))
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
   }
 }
 

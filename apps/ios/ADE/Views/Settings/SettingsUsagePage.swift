@@ -228,9 +228,7 @@ struct SettingsUsagePage: View {
       .padding(.bottom, 36)
     }
     .background(ADEColor.pageBackground.ignoresSafeArea())
-    .adeNavigationGlass()
-    .navigationTitle("Usage")
-    .navigationBarTitleDisplayMode(.inline)
+    .adeSettingsPageTitle("Usage", subtitle: SettingsRoute.usage.subtitle)
     .toolbar {
       ToolbarItem(placement: .topBarTrailing) {
         Button {
@@ -404,7 +402,9 @@ struct SettingsUsagePage: View {
           }
         }
       } else {
-        Text("Connect an up-to-date ADE computer to see live limits.")
+        Text(syncService.connectionState == .connected
+          ? "Waiting for \(syncService.machineDisplayName) to check its limits."
+          : "Connect an up-to-date ADE computer to see live limits.")
           .font(.system(size: 13))
           .foregroundStyle(ADEColor.textMuted)
       }
@@ -483,7 +483,7 @@ struct SettingsUsagePage: View {
       let total = model.models.reduce(0) { $0 + ($1.costUsd ?? 0) }
       VStack(spacing: 0) {
         ForEach(model.models.prefix(12)) { entry in
-          NavigationLink {
+          SettingsNavigationLink {
             SettingsUsageModelDetailScreen(syncService: syncService, provider: entry.provider, model: entry.model, preset: rangeRaw)
           } label: {
             SettingsUsageBreakdownRowView(

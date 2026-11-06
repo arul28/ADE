@@ -370,6 +370,13 @@
 		F10000000000000000000A01 /* ADEResetCreditRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000A01 /* ADEResetCreditRows.swift */; };
 		F10000000000000000000B51 /* ADEGlassComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000B51 /* ADEGlassComposer.swift */; };
 		F10000000000000000000008 /* SettingsUsagePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000008 /* SettingsUsagePage.swift */; };
+		5E77000000000000000B0001 /* SettingsRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0001 /* SettingsRoute.swift */; };
+		5E77000000000000000B0002 /* SettingsGeneralPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0002 /* SettingsGeneralPage.swift */; };
+		5E77000000000000000B0003 /* SettingsChatPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0003 /* SettingsChatPage.swift */; };
+		5E77000000000000000B0004 /* SettingsProvidersPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0004 /* SettingsProvidersPage.swift */; };
+		5E77000000000000000B0005 /* SettingsIntegrationsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0005 /* SettingsIntegrationsPage.swift */; };
+		5E77000000000000000B0006 /* SettingsLanesPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0006 /* SettingsLanesPage.swift */; };
+		5E77000000000000000B0007 /* SyncService+SettingsPages.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0007 /* SyncService+SettingsPages.swift */; };
 		F1000000000000000000AB01 /* SettingsWebhooksPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000000000000000000AB01 /* SettingsWebhooksPage.swift */; };
 		F10000000000000000000009 /* SettingsUsageChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000009 /* SettingsUsageChart.swift */; };
 		F10000000000000000000007 /* SettingsMachineRenameSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000007 /* SettingsMachineRenameSheet.swift */; };
@@ -885,6 +892,13 @@
 		F20000000000000000000A01 /* ADEResetCreditRows.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEResetCreditRows.swift; path = ADE/Views/Components/ADEResetCreditRows.swift; sourceTree = "<group>"; };
 		F20000000000000000000B51 /* ADEGlassComposer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEGlassComposer.swift; path = ADE/Views/Components/ADEGlassComposer.swift; sourceTree = "<group>"; };
 		F20000000000000000000008 /* SettingsUsagePage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsUsagePage.swift; path = ADE/Views/Settings/SettingsUsagePage.swift; sourceTree = "<group>"; };
+		5E77000000000000000A0001 /* SettingsRoute.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsRoute.swift; path = ADE/Views/Settings/SettingsRoute.swift; sourceTree = "<group>"; };
+		5E77000000000000000A0002 /* SettingsGeneralPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsGeneralPage.swift; path = ADE/Views/Settings/SettingsGeneralPage.swift; sourceTree = "<group>"; };
+		5E77000000000000000A0003 /* SettingsChatPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsChatPage.swift; path = ADE/Views/Settings/SettingsChatPage.swift; sourceTree = "<group>"; };
+		5E77000000000000000A0004 /* SettingsProvidersPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProvidersPage.swift; path = ADE/Views/Settings/SettingsProvidersPage.swift; sourceTree = "<group>"; };
+		5E77000000000000000A0005 /* SettingsIntegrationsPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsIntegrationsPage.swift; path = ADE/Views/Settings/SettingsIntegrationsPage.swift; sourceTree = "<group>"; };
+		5E77000000000000000A0006 /* SettingsLanesPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsLanesPage.swift; path = ADE/Views/Settings/SettingsLanesPage.swift; sourceTree = "<group>"; };
+		5E77000000000000000A0007 /* SyncService+SettingsPages.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+SettingsPages.swift"; path = "ADE/Services/SyncService+SettingsPages.swift"; sourceTree = "<group>"; };
 		F2000000000000000000AB01 /* SettingsWebhooksPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsWebhooksPage.swift; path = ADE/Views/Settings/SettingsWebhooksPage.swift; sourceTree = "<group>"; };
 		F20000000000000000000009 /* SettingsUsageChart.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsUsageChart.swift; path = ADE/Views/Settings/SettingsUsageChart.swift; sourceTree = "<group>"; };
 		F20000000000000000000007 /* SettingsMachineRenameSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsMachineRenameSheet.swift; path = ADE/Views/Settings/SettingsMachineRenameSheet.swift; sourceTree = "<group>"; };
@@ -1438,6 +1452,12 @@
 				F20000000000000000000007 /* SettingsMachineRenameSheet.swift */,
 				F20000000000000000000008 /* SettingsUsagePage.swift */,
 				F2000000000000000000AB01 /* SettingsWebhooksPage.swift */,
+				5E77000000000000000A0001 /* SettingsRoute.swift */,
+				5E77000000000000000A0002 /* SettingsGeneralPage.swift */,
+				5E77000000000000000A0003 /* SettingsChatPage.swift */,
+				5E77000000000000000A0004 /* SettingsProvidersPage.swift */,
+				5E77000000000000000A0005 /* SettingsIntegrationsPage.swift */,
+				5E77000000000000000A0006 /* SettingsLanesPage.swift */,
 				F20000000000000000000009 /* SettingsUsageChart.swift */,
 				AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */,
 				AF00000000000000000000A3 /* SettingsPairingScannerSheet.swift */,
@@ -1478,6 +1498,7 @@
 				B80000000000000000000001 /* SyncConnectionRace.swift */,
 				B80000000000000000000007 /* SyncService+MachineWake.swift */,
 				A37A0000000000000000A001 /* SyncService+Agent37.swift */,
+				5E77000000000000000A0007 /* SyncService+SettingsPages.swift */,
 				CA1A00000000000000000006 /* SyncService+ChatLaunch.swift */,
 				CA1A000000000000000000F1 /* SyncService+MachineInventory.swift */,
 				B80000000000000000000005 /* SyncMachineWake.swift */,
@@ -2222,6 +2243,13 @@
 				F10000000000000000000B51 /* ADEGlassComposer.swift in Sources */,
 				F10000000000000000000008 /* SettingsUsagePage.swift in Sources */,
 				F1000000000000000000AB01 /* SettingsWebhooksPage.swift in Sources */,
+				5E77000000000000000B0001 /* SettingsRoute.swift in Sources */,
+				5E77000000000000000B0002 /* SettingsGeneralPage.swift in Sources */,
+				5E77000000000000000B0003 /* SettingsChatPage.swift in Sources */,
+				5E77000000000000000B0004 /* SettingsProvidersPage.swift in Sources */,
+				5E77000000000000000B0005 /* SettingsIntegrationsPage.swift in Sources */,
+				5E77000000000000000B0006 /* SettingsLanesPage.swift in Sources */,
+				5E77000000000000000B0007 /* SyncService+SettingsPages.swift in Sources */,
 				F10000000000000000000009 /* SettingsUsageChart.swift in Sources */,
 				G10000000000000000000001 /* PrModels.swift in Sources */,
 				G10000000000000000000002 /* PrHelpers.swift in Sources */,

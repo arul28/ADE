@@ -272,6 +272,9 @@ struct SettingsConnectionHeader: View {
   /// connect attempt as every other path, so the card always lands back on a
   /// definite state.
   var onWake: ((String) -> Void)?
+  /// Draws its own card. Off inside a card that already frames it (General's
+  /// "This machine").
+  var framed = true
 
   private var health: SyncConnectionHealth {
     snapshot.health
@@ -296,7 +299,16 @@ struct SettingsConnectionHeader: View {
     }
   }
 
+  @ViewBuilder
   var body: some View {
+    if framed {
+      status.adeKitCard()
+    } else {
+      status
+    }
+  }
+
+  private var status: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .center, spacing: 12) {
         ADEKitDot(tone: dotTone, size: 8)
@@ -395,7 +407,6 @@ struct SettingsConnectionHeader: View {
         ADESettingsNotice(message: stall.message, tone: .warn)
       }
     }
-    .adeKitCard()
   }
 
   private var errorMessage: String? {

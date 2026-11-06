@@ -494,6 +494,8 @@ struct SettingsMachineSections: View {
       ADESettingsSection(
         "Connected",
         hint: "\(controller.liveCount(machines)) of \(MachineFleet.liveMachineLimit) live",
+        symbol: "desktopcomputer",
+        tint: .green,
         trailing: { addMenu }
       ) {
         ADESettingsRows {
@@ -506,7 +508,7 @@ struct SettingsMachineSections: View {
         }
       }
       if !sections.available.isEmpty {
-        ADESettingsSection("Available") {
+        ADESettingsSection("Available", symbol: "desktopcomputer", tint: .slate) {
           ADESettingsRows {
             ForEach(sections.available) { machine in
               row(machine)
@@ -522,7 +524,7 @@ struct SettingsMachineSections: View {
   }
 
   private func row(_ machine: SettingsMachine) -> some View {
-    NavigationLink {
+    SettingsNavigationLink {
       SettingsMachinePage(syncService: syncService, controller: controller, machineId: machine.id)
     } label: {
       SettingsMachineRow(
@@ -705,6 +707,7 @@ struct SettingsMachinePage: View {
     }
     .navigationTitle("")
     .navigationBarTitleDisplayMode(.inline)
+    .settingsPageClose()
     .adeToast($controller.toast)
     .sheet(item: $controller.renaming) { machine in
       SettingsMachineRenameSheet(machine: machine)
@@ -765,7 +768,7 @@ struct SettingsMachinePageContent: View {
         }
         .adeKitCard()
 
-        ADESettingsSection("Status") {
+        ADESettingsSection("Status", symbol: "waveform.path.ecg", tint: .green) {
           ADESettingsRows {
             ForEach(statusFacts, id: \.label) { fact in
               ADESettingsValueRow(title: fact.label, value: fact.value)
@@ -773,7 +776,7 @@ struct SettingsMachinePageContent: View {
           }
         }
 
-        ADESettingsSection("Projects", hint: machine.projects.isEmpty ? nil : "\(machine.projects.count) open") {
+        ADESettingsSection("Projects", hint: machine.projects.isEmpty ? nil : "\(machine.projects.count) open", symbol: "folder", tint: .blue) {
           ADESettingsRows {
             if machine.projects.isEmpty {
               ADESettingsRow(machine.isLive ? "No projects open on this machine." : "Projects show once the machine is connected.")
@@ -794,11 +797,11 @@ struct SettingsMachinePageContent: View {
         }
 
         if let inventory = machine.account?.inventory {
-          ADESettingsSection("AI accounts") {
+          ADESettingsSection("AI accounts", symbol: "person.2", tint: .violet) {
             ADESettingsRows {
               ForEach(inventory.providers, id: \.provider) { provider in
                 if let page = actions.accountsPage, let kind = ProviderAccountProvider(rawValue: provider.provider) {
-                  NavigationLink { page(kind) } label: { accountCountRow(provider, link: true) }
+                  SettingsNavigationLink { page(kind) } label: { accountCountRow(provider, link: true) }
                     .buttonStyle(ADEKitRowButtonStyle())
                 } else {
                   accountCountRow(provider, link: false)
@@ -809,7 +812,7 @@ struct SettingsMachinePageContent: View {
           }
         }
 
-        ADESettingsSection("Connection", hint: offlineHelp) {
+        ADESettingsSection("Connection", hint: offlineHelp, symbol: "network", tint: .teal) {
           ADESettingsRows {
             ForEach(connectionFacts, id: \.label) { fact in
               ADESettingsValueRow(title: fact.label, value: fact.value)

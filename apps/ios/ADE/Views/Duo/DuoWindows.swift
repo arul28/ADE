@@ -193,12 +193,21 @@ struct DuoSettingsSplit<Sidebar: View, Landing: View>: View {
   /// trailing stack, so held landscape iOS puts it at the top of the edge bar
   /// under the thumb; the list column carries none.
   let onClose: () -> Void
+  /// The row the landing page belongs to, drawn selected until another row
+  /// is picked.
+  var landingTitle: String?
   @ViewBuilder var sidebar: () -> Sidebar
   @ViewBuilder var landing: () -> Landing
 
   /// The row whose page fills the right column; nil while the landing page
   /// shows. Rows read it through `\.duoSettingsSelection`.
   @State private var selection: String?
+  /// That row's page. Each pick replaces the right column's whole stack, so
+  /// a page the last one pushed never lingers under the new one.
+  @State private var page: AnyView?
+  /// The right column's pushes. Cleared on each pick: a page pushed under the
+  /// last row would otherwise stay on top of the new row's page.
+  @State private var detailPath: [SettingsPushedPage] = []
 
   var body: some View {
     DuoLocalFoldReader { fold, size, landscape in
@@ -207,22 +216,50 @@ struct DuoSettingsSplit<Sidebar: View, Landing: View>: View {
           sidebar()
             .navigationSplitViewColumnWidth(sidebarWidth(fold: fold, size: size))
             .toolbar(removing: .sidebarToggle)
-            .environment(\.duoSettingsSelection, $selection)
-            .environment(\.duoSettingsClose, onClose)
+            .environment(\.duoSettingsSelection, selectionBinding)
+            .environment(\.duoSettingsShow, { title, view in
+              detailPath = []
+              selection = title
+              page = view
+            })
+            // The list column carries no Close (its page column does), and
+            // its rows hand their pages over rather than push.
+            .environment(\.settingsClose, nil)
+            .environment(\.settingsPagePath, false)
         } detail: {
-          NavigationStack {
-            landing()
-              .modifier(DuoSettingsCloseItem(onClose: onClose))
+          // Every page in this column, and every page it pushes, carries
+          // Close (`settingsPageClose`).
+          NavigationStack(path: $detailPath) {
+            Group {
+              if let page {
+                page
+              } else {
+                landing()
+              }
+            }
+            .navigationDestination(for: SettingsPushedPage.self) { $0.view }
           }
+          .id(selection ?? "")
         }
         .navigationSplitViewStyle(.balanced)
+        // On the split view, not the page column's stack: a page that column
+        // pushes takes its environment from here.
+        .environment(\.settingsClose, onClose)
+        .environment(\.settingsPagePath, true)
       } else {
         NavigationStack {
           sidebar()
-            .modifier(DuoSettingsCloseItem(onClose: onClose))
         }
+        .environment(\.settingsClose, onClose)
       }
     }
+  }
+
+  private var selectionBinding: Binding<String?> {
+    Binding(
+      get: { selection ?? landingTitle },
+      set: { selection = $0 }
+    )
   }
 
   private func sidebarWidth(fold: DuoFold, size: CGSize) -> CGFloat {
@@ -236,21 +273,37 @@ struct DuoSettingsSplit<Sidebar: View, Landing: View>: View {
 extension EnvironmentValues {
   /// The two-column Settings window's selected row (by title). Nil outside it.
   @Entry var duoSettingsSelection: Binding<String?>? = nil
-  /// The two-column Settings window's close, which every page a row opens in
-  /// the right column carries (so it stays on the edge bar). Nil outside it.
-  @Entry var duoSettingsClose: (() -> Void)? = nil
+  /// Shows a row's page in the two-column Settings window's right column.
+  /// Nil outside its list column, where rows push as usual.
+  @Entry var duoSettingsShow: ((String, AnyView) -> Void)? = nil
 }
 
-/// Settings' close button, the standard close role, on the trailing side of
-/// a page's bar: held landscape in the right column that is the edge bar.
-struct DuoSettingsCloseItem: ViewModifier {
-  let onClose: () -> Void
+extension EnvironmentValues {
+  /// Closes Settings, for every page of a Settings stack: set on the stack,
+  /// read by `settingsPageClose()`. Nil outside Settings and on the Duo's
+  /// list column, which carries no Close of its own.
+  @Entry var settingsClose: (() -> Void)? = nil
+}
+
+extension View {
+  /// Settings' close button, the standard close role, on the trailing side of
+  /// the page's bar, so every Settings page can be closed, not only the list.
+  /// Held landscape in the Duo's right column that is the edge bar.
+  func settingsPageClose() -> some View {
+    modifier(SettingsPageCloseItem())
+  }
+}
+
+private struct SettingsPageCloseItem: ViewModifier {
+  @Environment(\.settingsClose) private var close
 
   func body(content: Content) -> some View {
     content.toolbar {
-      ToolbarItem(placement: .topBarTrailing) {
-        Button(role: .close, action: onClose)
-          .accessibilityLabel("Close settings")
+      if let close {
+        ToolbarItem(placement: .topBarTrailing) {
+          Button(role: .close, action: close)
+            .accessibilityLabel("Close settings")
+        }
       }
     }
   }

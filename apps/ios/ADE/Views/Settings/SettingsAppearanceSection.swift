@@ -10,7 +10,7 @@ struct SettingsAppearanceSection: View {
   }
 
   var body: some View {
-    ADESettingsSection("Mode", hint: "System follows iOS.") {
+    ADESettingsSection("Mode", hint: "System follows iOS.", symbol: "circle.lefthalf.filled", tint: .violet) {
       HStack(spacing: 10) {
         ForEach(ADEColorSchemeChoice.allCases) { option in
           SettingsThemeChoice(

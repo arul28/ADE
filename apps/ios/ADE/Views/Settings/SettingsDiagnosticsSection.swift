@@ -17,7 +17,7 @@ struct SettingsDiagnosticsSection: View {
 
   var body: some View {
     if content != .about {
-      ADESettingsSection("Connection") {
+      ADESettingsSection("Connection", symbol: "network", tint: .blue) {
         if snapshot.connectionRoute == nil, snapshot.connectionPerformance == nil {
           ADESettingsRows {
             ADESettingsRow("Not connected", hint: "Connect to a machine to see its route.", symbol: "desktopcomputer")
@@ -36,7 +36,7 @@ struct SettingsDiagnosticsSection: View {
     }
 
     if content != .connection {
-      ADESettingsSection("This device") {
+      ADESettingsSection("This device", symbol: "iphone", tint: .slate) {
         ADESettingsRows {
           ADESettingsValueRow(title: "ADE", value: Self.appVersionString, mono: true)
           SettingsAppUpdateRow(advisor: appUpdateAdvisor)
@@ -73,7 +73,7 @@ struct SettingsDiagnosticsSection: View {
   }
 }
 
-private struct SettingsAppUpdateRow: View {
+struct SettingsAppUpdateRow: View {
   @ObservedObject var advisor: AppUpdateAdvisor
 
   private var status: String {

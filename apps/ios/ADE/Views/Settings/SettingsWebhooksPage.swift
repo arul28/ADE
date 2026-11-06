@@ -164,7 +164,7 @@ struct SettingsWebhooksPage: View {
         } else if !automations.isEmpty {
           Section {
             ForEach(automations) { automation in
-              NavigationLink {
+              SettingsNavigationLink {
                 WebhookAutomationDetailPage(syncService: syncService, automation: automation)
               } label: {
                 WebhookAutomationRow(automation: automation)
@@ -184,6 +184,7 @@ struct SettingsWebhooksPage: View {
     .adeSettingsList()
     .navigationTitle("Webhooks")
     .navigationBarTitleDisplayMode(.inline)
+    .settingsPageClose()
     .refreshable { await load() }
     .task { await load() }
   }
@@ -515,6 +516,7 @@ private enum WebhookPreviewData {
     .adeSettingsList()
     .navigationTitle("Webhooks")
     .navigationBarTitleDisplayMode(.inline)
+    .settingsPageClose()
   }
 }
 

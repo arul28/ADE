@@ -123,6 +123,7 @@ struct SettingsProviderAccountsPage: View {
     }
     .navigationTitle("AI accounts")
     .navigationBarTitleDisplayMode(.inline)
+    .settingsPageClose()
   }
 }
 
@@ -228,7 +229,7 @@ struct ProviderAccountsScreen: View {
           HStack { ProgressView(); Spacer() }.adeSettingsListRow()
         }
         ForEach(store.accounts) { account in
-          NavigationLink {
+          SettingsNavigationLink {
             ProviderAccountDetailPage(
               machine: machine,
               store: store,
