@@ -2106,9 +2106,10 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(chip.textContent).toContain('Chat "Move/Regroup Engine and Undo" finished its turn');
   });
 
-  it("shows a repeat multiplier on a folded spawn_completed chip", () => {
-    // The count lives on the render row, produced by the adjacency fold — so
-    // the input is what a real transcript holds: one notice per sibling turn.
+  it("folds one child's repeated finished-turn notices into a single line", () => {
+    // A real transcript holds one notice per child turn. They collapse to one
+    // line naming the child — without a turn tally, which read as a pile of
+    // unread events rather than one chat getting on with it.
     const completion = (timestamp: string, childTurnId: string) => ({
       sessionId: "parent-session",
       timestamp,
@@ -2135,7 +2136,8 @@ describe("AgentChatMessageList transcript rendering", () => {
       completion("2026-07-14T10:00:02.000Z", "turn-3"),
     ], { sessionId: "parent-session" });
 
-    expect(screen.getByText("×3")).toBeTruthy();
+    expect(screen.getAllByTestId("spawn-completed-line")).toHaveLength(1);
+    expect(screen.getByText('Chat "Docs" finished its turn')).toBeTruthy();
   });
 
   it("suppresses the legacy subagent_spawned pill for a plain spawn (the unified card replaces it)", () => {
