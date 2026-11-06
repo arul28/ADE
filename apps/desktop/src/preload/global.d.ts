@@ -2291,8 +2291,11 @@ declare global {
         unarchive: (args: ArchiveLaneArgs, pin?: OpenProjectBinding | null) => Promise<RestoreLaneResult>;
         delete: (args: DeleteLaneArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         revealWorktree: (args: { laneId: string }) => Promise<void>;
-        revealLeftoverWorktree: (args: { laneId: string }) => Promise<void>;
-        deleteLeftoverWorktree: (args: { laneId: string }) => Promise<{ removed: boolean }>;
+        revealLeftoverWorktree: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<void>;
+        deleteLeftoverWorktree: (
+          args: { laneId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ removed: boolean }>;
         cancelDelete: (
           args: { laneId: string },
           pin?: OpenProjectBinding | null,

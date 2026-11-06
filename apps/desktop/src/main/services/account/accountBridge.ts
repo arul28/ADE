@@ -29,6 +29,7 @@ import {
 } from "../../../shared/accountDirectory";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
+import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
 import { createFileLogger, type Logger } from "../logging/logger";
 import { logMachineEvent } from "../logging/machineLogger";
 import os from "node:os";
@@ -272,7 +273,17 @@ export function describeAccountDeviceLoginFailure(error: unknown): Error {
           : "ADE couldn't start a sign-in on this computer. Try again in a moment.";
   const failure = new Error(message);
   if (raw) failure.cause = error;
-  return failure;
+  // The sign-in service that never answered (the brain's "device service could
+  // not be reached / timed out") is the network, and a machine signed in by
+  // ADE_ACCOUNT_TOKEN is its setup: answers, not defects. A cause already
+  // marked keeps its kind; anything else stays reported.
+  const kind = expectedErrorKind(error)
+    ?? (/ADE_ACCOUNT_TOKEN/i.test(raw)
+      ? "environment"
+      : /device service (?:could not be reached|timed out)|timed out|etimedout/i.test(raw)
+        ? "network"
+        : null);
+  return kind ? markExpected(failure, kind) : failure;
 }
 
 /** The subset of the local runtime pool this bridge needs. */

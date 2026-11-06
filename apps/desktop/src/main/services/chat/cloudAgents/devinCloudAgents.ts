@@ -18,6 +18,7 @@ import {
 } from "../../../../shared/devinCloud";
 import { devinCloudRepoMatchKey, repoMatchKey } from "../../../../shared/cursorCloudRepoMatch";
 import { devinCloudBareSessionId } from "../acpHost/acpDialects/devinCloud";
+import { AdeExpectedError } from "../../../../shared/expectedError";
 import type { DevinCloudDirectory, DevinCloudDirectoryEntry } from "../devinCloudDirectory";
 import { slugify, type CloudAgentsContext, type CloudAgentsStrategy } from "./cloudAgentsContext";
 
@@ -180,9 +181,9 @@ export function devinCloudAgents(ctx: CloudAgentsContext, directory: DevinCloudD
     // has nothing to check out, and pinning it to a branch of ours would
     // point its VM at code it never cloned.
     if (!agent.inThisProject) {
-      throw new Error(entry.repos.length
+      throw new AdeExpectedError(entry.repos.length
         ? `This session works on ${entry.repos.join(", ")}, not this project.`
-        : "This session is not tied to a repository, so it has no lane in this project.");
+        : "This session is not tied to a repository, so it has no lane in this project.", "user");
     }
     const { lane, created, pinned } = await laneFor(entry, agent);
     const opened = await deps.chats.openDevinCloudChat({

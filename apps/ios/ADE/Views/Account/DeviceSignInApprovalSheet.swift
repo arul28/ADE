@@ -117,10 +117,13 @@ final class DeviceSignInApprovalModel: NSObject, ObservableObject, ASWebAuthenti
   /// Returns when the sheet closes, whoever closed it.
   private func presentWebSheet(url: URL) async {
     await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+      // The completion and a failed `start()` can both end this wait, so
+      // whichever comes second must not resume it again.
+      let once = WebAuthResumeOnce(continuation)
       // No page of this sign-in redirects to the callback scheme, so the
       // completion fires only when the sheet is closed.
       let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "ade") { _, _ in
-        continuation.resume()
+        once.resume()
       }
       // The one-time ticket signs the account in, so nothing is reused, and
       // nothing of this sign-in stays in the browser afterwards.
@@ -129,7 +132,7 @@ final class DeviceSignInApprovalModel: NSObject, ObservableObject, ASWebAuthenti
       webSession = session
       if !session.start() {
         webSession = nil
-        continuation.resume()
+        once.resume()
       }
     }
   }

@@ -231,6 +231,13 @@ const ACCOUNT_CHANGED_REASONS = {
 } as const;
 const ACCOUNT_CHANGED_REASON_SET: ReadonlySet<string> = new Set(Object.values(ACCOUNT_CHANGED_REASONS));
 
+/** The 401s this client builds itself, before any request, when it has no token to send. */
+const NO_ACCOUNT_TOKEN_REASONS = {
+  noUsableToken: "ADE account has no usable access token",
+  signedOut: "ADE account is not signed in",
+} as const;
+const NO_ACCOUNT_TOKEN_REASON_SET: ReadonlySet<string> = new Set(Object.values(NO_ACCOUNT_TOKEN_REASONS));
+
 export class PushRelayRequestError extends Error {
   constructor(
     readonly action: string,
@@ -245,7 +252,18 @@ export class PushRelayRequestError extends Error {
     // The user signed out or switched accounts while the call was on its way;
     // the next call goes out as the new account.
     else if (status === 409 && ACCOUNT_CHANGED_REASON_SET.has(reason)) markExpected(this, "user");
+    // Signed out, or a session whose token could not be read or refreshed:
+    // the machine's account state, not a defect. Only this client's own
+    // answer; a 401 from the relay itself stays reported.
+    else if (status === 401 && NO_ACCOUNT_TOKEN_REASON_SET.has(reason)) markExpected(this, "environment");
   }
+}
+
+/** True for the 401 this client answers itself when there is no account token to send. */
+export function isPushRelayNoAccountTokenError(error: unknown): boolean {
+  return error instanceof PushRelayRequestError
+    && error.status === 401
+    && NO_ACCOUNT_TOKEN_REASON_SET.has(error.reason);
 }
 
 /**
@@ -425,8 +443,8 @@ export function createPushRelayClient(args: {
             status: 401,
             body: {
               error: expectedAccountUserId
-                ? "ADE account has no usable access token"
-                : "ADE account is not signed in",
+                ? NO_ACCOUNT_TOKEN_REASONS.noUsableToken
+                : NO_ACCOUNT_TOKEN_REASONS.signedOut,
             },
           };
         }

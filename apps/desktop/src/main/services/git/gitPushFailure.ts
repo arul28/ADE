@@ -143,7 +143,11 @@ export function gitPushError(raw: string, options: GitPushErrorOptions = {}): Er
     failure && failure.kind !== "auth_failed"
       ? redactGitOutput(`${failure.message}\n\n${detail}`)
       : formatGitExecutionError(detail);
-  return gitCommandError(detail, options.prefix ? `${options.prefix} ${body}` : body);
+  const error = gitCommandError(detail, options.prefix ? `${options.prefix} ${body}` : body);
+  // A push the remote refused for a reason git named (a rule, a permission
+  // such as Azure DevOps' VS403660, a stale branch, a sign-in) is the user's
+  // to fix, and the message says how. An unrecognized failure stays reported.
+  return failure ? markExpected(error, "user") : error;
 }
 
 /**

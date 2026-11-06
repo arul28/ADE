@@ -51,11 +51,24 @@ export function unansweringRootOf(target: string): string | null {
  */
 export class StorageNotAnsweringError extends Error {
   readonly code = "storage_read_failed";
+  /** The machine's drive, not a defect in ADE: never a Sentry issue (`shared/expectedError.ts`). */
+  readonly adeExpected = "environment" as const;
   readonly path: string;
   constructor(target: string, root: string) {
-    super(`ADE can't read ${root} on this computer right now: it is not answering. If macOS is asking on this computer's screen whether ADE may use this drive or folder, allow it; if the drive is not responding, reconnect it.`);
+    super(`ADE can't read ${root} on this computer right now: it is not answering. ${notAnsweringHint()}`);
     this.path = target;
   }
+}
+
+/** What to check, in the words of the platform the folder is on. */
+function notAnsweringHint(): string {
+  if (process.platform === "darwin") {
+    return "If macOS is asking on this computer's screen whether ADE may use this drive or folder, allow it; if the drive is not responding, reconnect it.";
+  }
+  if (process.platform === "win32") {
+    return "If it is on a network, USB or cloud drive, open it in File Explorer to check that it is connected and signed in; if the drive is not responding, reconnect it.";
+  }
+  return "If it is on a network or removable drive, check that it is still mounted; if the drive is not responding, reconnect it.";
 }
 
 /** Throws {@link StorageNotAnsweringError} when `target` is under a listed folder. */

@@ -24,14 +24,22 @@ import type { GitHubRepoRef } from "../../../shared/types/git";
  * lives in that machine's ssh config.
  */
 
-const SSH_CONFIG_TIMEOUT_MS = 3_000;
+// Windows starts processes slowly (and antivirus scans each new ssh.exe), so a
+// healthy but busy Windows host needs more time than 3 s to answer.
+const IS_WINDOWS = process.platform === "win32";
+const SSH_CONFIG_TIMEOUT_MS = IS_WINDOWS ? 10_000 : 3_000;
 // The synchronous lookup blocks its process, so it gets a shorter limit. It
-// runs once for each alias host; later reads use the cache.
-const SSH_CONFIG_SYNC_TIMEOUT_MS = 1_500;
+// runs once for each alias host; later reads use the cache (a failure for
+// FAILED_LOOKUP_TTL_MS), and refreshes go through the async lookup above.
+const SSH_CONFIG_SYNC_TIMEOUT_MS = IS_WINDOWS ? 3_000 : 1_500;
 const SSH_CONFIG_MAX_OUTPUT_BYTES = 64 * 1024;
 const CACHE_TTL_MS = 60_000;
-// A failed lookup (timeout, broken config) is retried sooner than an answer.
-const FAILED_LOOKUP_TTL_MS = 10_000;
+// No ssh on PATH is retried soon, so a newly installed ssh is used promptly.
+const MISSING_SSH_TTL_MS = 10_000;
+// A failed lookup (timeout, broken config) is kept for a while: re-running a
+// slow or broken ssh every few seconds costs a process each time and gives
+// the same answer.
+const FAILED_LOOKUP_TTL_MS = 5 * 60_000;
 const CACHE_CAPACITY = 128;
 // Public forges that are never an alias of GitHub: their origins skip ssh.
 const KNOWN_FORGE_HOSTS = new Set([
@@ -120,9 +128,21 @@ function isMissingSsh(error: { code?: unknown } | null | undefined): boolean {
   return error?.code === "ENOENT";
 }
 
-function reportLookupFailure(error: { code?: unknown; killed?: boolean }, timedOut = Boolean(error.killed)): void {
+// Hosts (and kinds) already reported by this process. A slow machine times out
+// the same way on every retry; the first report says all there is to say.
+const reportedLookupFailures = new Set<string>();
+
+function reportLookupFailure(
+  remote: SshRemote,
+  error: { code?: unknown; killed?: boolean },
+  timedOut = Boolean(error.killed),
+): void {
   if (isMissingSsh(error)) return;
   const kind = timedOut ? "timeout" : "failed";
+  const reportKey = `${cacheKey(remote)}\u0000${kind}`;
+  if (reportedLookupFailures.has(reportKey)) return;
+  if (reportedLookupFailures.size >= CACHE_CAPACITY) reportedLookupFailures.clear();
+  reportedLookupFailures.add(reportKey);
   captureProblem(`ssh -G lookup for a git remote alias ${kind}`, {
     fingerprint: ["github-ssh-alias", kind],
     tags: { kind },
@@ -151,7 +171,7 @@ function runSshConfigLookupSync(remote: SshRemote): SshConfigLookup {
     if (result.error || result.status !== 0) {
       const error = (result.error ?? {}) as { code?: unknown };
       const timedOut = (result.error as { code?: unknown } | undefined)?.code === "ETIMEDOUT" || result.signal != null;
-      reportLookupFailure(error, timedOut);
+      reportLookupFailure(remote, error, timedOut);
       return { hostname: null, failed: !isMissingSsh(error), missing: isMissingSsh(error) };
     }
     return { hostname: readHostname(String(result.stdout ?? "")), failed: false, missing: false };
@@ -179,7 +199,7 @@ function runSshConfigLookup(remote: SshRemote): Promise<SshConfigLookup> {
           // GitHub, as before ADE read ssh config.
           if (error) {
             resolve({ hostname: null, failed: !isMissingSsh(error), missing: isMissingSsh(error) });
-            reportLookupFailure(error);
+            reportLookupFailure(remote, error);
             return;
           }
           resolve({ hostname: readHostname(String(stdout ?? "")), failed: false, missing: false });
@@ -200,8 +220,9 @@ function storeLookup(key: string, result: SshConfigLookup): void {
   const previous = cache.get(key);
   // A failed refresh keeps the last answer, so the repository key does not
   // flip back to the alias while ssh is briefly unable to answer.
-  const kept = (result.failed || result.missing) && previous?.hostname
-    ? { ...previous, failed: false, missing: false }
+  const keepsPrevious = Boolean((result.failed || result.missing) && previous?.hostname);
+  const kept = keepsPrevious
+    ? { ...previous!, failed: false, missing: false }
     : result;
   cache.delete(key);
   if (cache.size >= CACHE_CAPACITY) {
@@ -213,9 +234,11 @@ function storeLookup(key: string, result: SshConfigLookup): void {
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) cache.delete(oldest);
   }
-  // Missing ssh retries soon too, so a newly installed ssh is used promptly.
-  const retrySoon = result.failed || result.missing;
-  cache.set(key, { ...kept, expiresAt: Date.now() + (retrySoon ? FAILED_LOOKUP_TTL_MS : CACHE_TTL_MS) });
+  // A kept answer is refreshed on the normal schedule.
+  const ttlMs = keepsPrevious || !(result.failed || result.missing)
+    ? CACHE_TTL_MS
+    : result.missing ? MISSING_SSH_TTL_MS : FAILED_LOOKUP_TTL_MS;
+  cache.set(key, { ...kept, expiresAt: Date.now() + ttlMs });
 }
 
 function resolveSshHostname(remote: SshRemote): Promise<string | null> {

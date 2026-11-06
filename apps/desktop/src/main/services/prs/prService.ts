@@ -8632,12 +8632,34 @@ export function createPrService({
     return "GitHub auth is invalid or missing required access. Update it in Settings to sync pull requests.";
   };
 
+  /**
+   * The rate-limit and outage answers `buildGithubSnapshotAuthError` gives are
+   * GitHub's state, not a defect: never a Sentry issue. Same order as the
+   * message, so a state it answers first (no token, an unreadable store) is
+   * left as it was.
+   */
+  const markGithubSnapshotAuthError = (error: Error, githubStatus: GitHubStatus): Error => {
+    if (
+      githubStatus.credentialStoreUnreadable === true
+      || !githubStatus.tokenStored
+      || githubStatus.tokenDecryptionFailed
+    ) {
+      return error;
+    }
+    if (githubStatus.authFailure?.kind === "rate_limited") return markExpected(error, "environment");
+    if (githubStatus.authFailure?.kind === "renewing") return error;
+    if (githubStatus.authFailure?.kind === "service_unavailable" || githubStatus.serviceHealth != null) {
+      return markExpected(error, "network");
+    }
+    return error;
+  };
+
   const requireGithubSnapshotAuth = async (): Promise<GitHubStatus> => {
     const githubStatus = await githubService.getStatus();
     if (githubStatus.repo) activeGithubRepo = githubStatus.repo;
     if (!githubStatus.tokenStored || !githubStatus.connected) {
       clearGithubSnapshotAuthCache();
-      throw new Error(buildGithubSnapshotAuthError(githubStatus));
+      throw markGithubSnapshotAuthError(new Error(buildGithubSnapshotAuthError(githubStatus)), githubStatus);
     }
     return githubStatus;
   };

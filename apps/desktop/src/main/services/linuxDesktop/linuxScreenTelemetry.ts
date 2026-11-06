@@ -9,11 +9,13 @@
  * dying is one event, not one per restart.
  *
  * Nothing here carries user content or terminal output: kinds, the helper's
- * error messages, package names and host facts only.
+ * error messages and last stderr lines (paths and home folders taken out, see
+ * `linuxScreenFailureCause`), package names and host facts only.
  */
 
 import fs from "node:fs";
 import { captureProblem, sendSentryLog } from "../../../shared/sentry/capture";
+import { scrubFreeText } from "../../../shared/sentry/scrub";
 import type { LinuxDesktopSetupResult } from "../../../shared/types/macDesktop";
 import { linuxPackageManagerId } from "./linuxDesktopSetup";
 
@@ -104,6 +106,42 @@ export function reportLinuxScreenProblem(
     extra: { ...extra, ...(detail ? { detail } : {}) },
     fingerprint: ["linux_screen", kind, host["linux.distro"], detail],
   });
+}
+
+const CAUSE_TEXT_MAX_CHARS = 500;
+const CAUSE_STDERR_LINE_MAX_CHARS = 300;
+
+/**
+ * Why a helper start or a screen failed, for the report's extras: the error's
+ * code, its message, and, when the helper exited, its exit code or signal and
+ * the last lines it wrote to stderr (the driver client puts those on the error
+ * as `driverExit`). The texts go through `scrubFreeText`, which takes out
+ * secrets, email addresses and absolute paths (so no home folder or user name).
+ */
+export function linuxScreenFailureCause(error: unknown): Record<string, unknown> {
+  const record = error && typeof error === "object" ? error as {
+    code?: unknown;
+    message?: unknown;
+    driverExit?: { code?: unknown; signal?: unknown; stderrTail?: unknown };
+  } : null;
+  const exit = record?.driverExit;
+  const stderrTail = Array.isArray(exit?.stderrTail)
+    ? exit.stderrTail
+      .filter((line): line is string => typeof line === "string")
+      .map((line) => scrubFreeText(line, { maxLength: CAUSE_STDERR_LINE_MAX_CHARS }))
+    : [];
+  const message = typeof record?.message === "string"
+    ? record.message
+    : typeof error === "string" ? error : "";
+  return {
+    code: typeof record?.code === "string" ? record.code : null,
+    reason: message ? scrubFreeText(message, { maxLength: CAUSE_TEXT_MAX_CHARS }) : null,
+    ...(exit ? {
+      exitCode: typeof exit.code === "number" ? exit.code : null,
+      exitSignal: typeof exit.signal === "string" ? exit.signal : null,
+    } : {}),
+    ...(stderrTail.length > 0 ? { stderrTail } : {}),
+  };
 }
 
 /**

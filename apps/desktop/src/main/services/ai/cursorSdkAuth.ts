@@ -269,6 +269,16 @@ function persistMintedKey(result: SdkLoginResult): void {
   hooks.markOAuthMinted();
 }
 
+/**
+ * How long ADE waits on one Cursor sign-in before it ends it. Cursor's own
+ * browser handshake polls for about this long but has been seen to keep going
+ * past it, until the 21-minute IPC deadline (`CURSOR_LOGIN_IPC_TIMEOUT_MS`)
+ * failed the call with no word for the user. Ending it here, under that
+ * deadline, answers "timed out, try again" and frees the login slot.
+ */
+export const CURSOR_LOGIN_CUTOFF_MS = 20 * 60_000;
+const CURSOR_LOGIN_TIMED_OUT_MESSAGE = "Cursor sign-in timed out. Start it again and finish it in the browser.";
+
 export async function loginCursorSdk(): Promise<CursorSdkLoginResult> {
   if (activeLogin) {
     activeLogin.abort.abort();
@@ -280,9 +290,21 @@ export async function loginCursorSdk(): Promise<CursorSdkLoginResult> {
   activeLogin = flow;
   emit({ providerId: "cursor", state: "pending" });
 
+  let timedOut = false;
+  let cutoffTimer: ReturnType<typeof setTimeout> | null = null;
+  // Rejects at the cutoff even if the SDK ignores the abort and never settles.
+  const cutoff = new Promise<never>((_resolve, reject) => {
+    cutoffTimer = setTimeout(() => {
+      timedOut = true;
+      abort.abort();
+      reject(new Error(CURSOR_LOGIN_TIMED_OUT_MESSAGE));
+    }, CURSOR_LOGIN_CUTOFF_MS);
+    cutoffTimer.unref?.();
+  });
+
   try {
-    const sdk = await hooks.loadSdk();
-    const result = await sdk.Cursor.auth.login({
+    const sdk = await Promise.race([hooks.loadSdk(), cutoff]);
+    const result = await Promise.race([cutoff, sdk.Cursor.auth.login({
       apiKeyName: CURSOR_LOGIN_API_KEY_NAME,
       signal: abort.signal,
       // Electron's opener (Launch Services on macOS, shell.openExternal on
@@ -299,7 +321,7 @@ export async function loginCursorSdk(): Promise<CursorSdkLoginResult> {
         flow.loginUrl = trimmed;
         emit({ providerId: "cursor", state: "pending", url: trimmed });
       },
-    });
+    })]);
     if (activeLogin !== flow) {
       return { ok: false, error: "Cursor sign-in was replaced by a newer attempt." };
     }
@@ -319,6 +341,10 @@ export async function loginCursorSdk(): Promise<CursorSdkLoginResult> {
     if (activeLogin !== flow) {
       return { ok: false, error: "Cursor sign-in was replaced by a newer attempt." };
     }
+    if (timedOut) {
+      emit({ providerId: "cursor", state: "error", error: CURSOR_LOGIN_TIMED_OUT_MESSAGE });
+      return { ok: false, error: CURSOR_LOGIN_TIMED_OUT_MESSAGE };
+    }
     if (abort.signal.aborted || isAbortError(error)) {
       emit({ providerId: "cursor", state: "cancelled" });
       return { ok: false, error: "Cursor sign-in was cancelled." };
@@ -327,6 +353,7 @@ export async function loginCursorSdk(): Promise<CursorSdkLoginResult> {
     emit({ providerId: "cursor", state: "error", error: message });
     return { ok: false, error: message };
   } finally {
+    if (cutoffTimer) clearTimeout(cutoffTimer);
     if (activeLogin === flow) activeLogin = null;
   }
 }

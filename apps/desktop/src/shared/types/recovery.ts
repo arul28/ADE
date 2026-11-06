@@ -6,6 +6,10 @@ export const ADE_RECOVERY_ERROR_CODES = [
   "migration_unknown_state",
   /** The data files exist but the filesystem refuses to read them. */
   "storage_read_failed",
+  /** The drive under the project stopped answering while ADE opened its data (SQLite "disk I/O error"). */
+  "storage_io_failed",
+  /** Another ADE process held the project's database locked past every retry of the open. */
+  "db_busy",
   /** ADE opened this project's data before, and its .ade folder or database is gone. */
   "project_data_missing",
   /** The open database was moved or replaced while ADE was using it. */
@@ -322,6 +326,8 @@ export function mapKvDbOpenErrorCode(code: string): AdeRecoveryErrorCode {
     case "migration_incomplete":
     case "migration_unknown_state":
     case "storage_read_failed":
+    case "storage_io_failed":
+    case "db_busy":
       return code;
     default:
       return "unknown";

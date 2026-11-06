@@ -5,6 +5,7 @@ import type {
 } from "../../../shared/types/remoteRuntime";
 import type { SyncHelloErrorPayload } from "../../../shared/types/sync";
 import { describeLinkHeldByOtherAdeApp } from "../../../shared/connectionDiagnosis";
+import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
 
 export type PairedRuntimeRouteDiagnostic = {
   correlationId: string;
@@ -158,6 +159,10 @@ export class PairedRuntimeRelayAuthRequiredError extends Error {
     super(message);
     this.name = "PairedRuntimeRelayAuthRequiredError";
     assignCause(this, cause);
+    // Signed out, or signed in as another account: the user signs in, and
+    // nothing in ADE is broken. A cause that already says why (the account
+    // service unreachable) keeps its own kind.
+    markExpected(this, expectedErrorKind(cause) ?? "user");
   }
 }
 

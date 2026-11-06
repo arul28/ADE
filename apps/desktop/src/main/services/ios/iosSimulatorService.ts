@@ -3420,7 +3420,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const assertDarwin = () => {
-    if (process.platform !== "darwin") throw new Error(MACOS_ONLY_MESSAGE);
+    if (process.platform !== "darwin") throw new AdeExpectedError(MACOS_ONLY_MESSAGE, "environment");
   };
 
   const runSimctlWithTimeout = async (simctlArgs: string[], timeoutMs: number, timeoutMessage: string) => {
@@ -4621,7 +4621,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const openPreviewWorkspace = async (openArgs: IosSimulatorOpenPreviewWorkspaceArgs = {}): Promise<{ ok: true; path: string }> => {
     const projectRoot = await resolveScopedRoot(openArgs);
     const openPath = previewWorkspaceOpenPath(projectRoot);
-    if (process.platform !== "darwin") throw new Error("Xcode preview setup is only available on macOS.");
+    if (process.platform !== "darwin") throw new AdeExpectedError("Xcode preview setup is only available on macOS.", "environment");
     spawnProcess("open", ["-a", "Xcode", openPath], { detached: true, stdio: "ignore" }).unref();
     return { ok: true, path: openPath };
   };

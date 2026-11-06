@@ -28131,6 +28131,20 @@ async function runServe(
     brainLogPath(layout),
   );
   reportBrainCredentialStoreHealth(layout.secretsDir, headlessProjectLogger);
+  // On-demand pinned-tool downloads are on before anything can serve: a chat
+  // or a model list that reaches this brain while it is still starting would
+  // otherwise read "downloads are turned off" for a tool it simply has not
+  // fetched yet. The startup fetch pass itself still starts after the socket
+  // is up (below), and the checkout rules are explained there.
+  const toolsFetchDisabled = process.env.ADE_DISABLE_TOOLS_FETCH === "1";
+  const skipToolsFetchForSourceCheckout =
+    !toolsFetchDisabled
+    && isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH)
+    && process.env.ADE_FORCE_TOOLS_FETCH !== "1";
+  if (!toolsFetchDisabled) {
+    const { enablePinnedToolFetch } = await import("./services/tools/onDemand");
+    enablePinnedToolFetch(headlessProjectLogger, { downloadOnly: skipToolsFetchForSourceCheckout });
+  }
   const {
     createProductAnalyticsService,
     defaultProductAnalyticsStateFile,
@@ -30434,25 +30448,15 @@ async function runServe(
   // ADE_FORCE_TOOLS_FETCH=1 makes a checkout behave like a packaged install
   // (exercising the real fetch path locally); ADE_DISABLE_TOOLS_FETCH=1 still
   // wins over it, and is handled inside startBackgroundAgentToolsFetch so the
-  // skip is logged there.
-  const toolsFetchDisabled = process.env.ADE_DISABLE_TOOLS_FETCH === "1";
-  const skipToolsFetchForSourceCheckout =
-    !toolsFetchDisabled
-    && isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH)
-    && process.env.ADE_FORCE_TOOLS_FETCH !== "1";
+  // skip is logged there. On-demand downloads were turned on at the top of
+  // runServe, with the same rules.
   if (skipToolsFetchForSourceCheckout) {
-    const { enablePinnedToolFetch } = await import("./services/tools/onDemand");
-    enablePinnedToolFetch(headlessProjectLogger, { downloadOnly: true });
     headlessProjectLogger.info("tools.fetch_skipped", {
       reason:
         "Running from a source checkout, where the lockfile-pinned agent tools resolve from the repo's node_modules; "
         + "download-only tools still download on demand. Set ADE_FORCE_TOOLS_FETCH=1 to run the startup fetch anyway.",
     });
   } else {
-    if (!toolsFetchDisabled) {
-      const { enablePinnedToolFetch } = await import("./services/tools/onDemand");
-      enablePinnedToolFetch(headlessProjectLogger);
-    }
     void import("./services/tools/backgroundFetch").then(({ startBackgroundAgentToolsFetch }) => {
       startBackgroundAgentToolsFetch(headlessProjectLogger);
     });

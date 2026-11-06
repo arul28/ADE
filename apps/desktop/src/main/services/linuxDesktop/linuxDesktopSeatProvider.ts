@@ -27,7 +27,7 @@ import {
   type MacDesktopDriverClientFactory,
 } from "../macDesktop/macDesktopSeatProvider";
 import { resolveLinuxDesktopDriverBinary } from "../native/nativeHelperPaths";
-import { logLinuxScreenFact, reportLinuxScreenProblem } from "./linuxScreenTelemetry";
+import { linuxScreenFailureCause, logLinuxScreenFact, reportLinuxScreenProblem } from "./linuxScreenTelemetry";
 
 /** What the pane and the CLI call a lane's Linux screen. */
 const LINUX_DISPLAY_NAME_PREFIX = "Linux Desktop";
@@ -59,7 +59,7 @@ export function createLinuxSeatProvider(client: Parameters<typeof createSeatProv
         const code = (error as { code?: unknown } | null)?.code;
         // A refusal the caller caused (a bad size, a lane already busy) is its answer, not a host fault.
         if (expectedErrorKind(error) !== "user") {
-          reportLinuxScreenProblem("display_create_failed", { code }, typeof code === "string" ? code : "");
+          reportLinuxScreenProblem("display_create_failed", linuxScreenFailureCause(error), typeof code === "string" ? code : "");
         }
         throw error;
       }

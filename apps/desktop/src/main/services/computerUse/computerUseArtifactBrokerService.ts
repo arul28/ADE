@@ -51,6 +51,7 @@ import {
 } from "../shared/utils";
 import { commandExistsCached, prewarmCommandExists } from "../ai/utils";
 import { readArtifactByteRange } from "./artifactByteRange";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { createComputerUseArtifactPath, getLocalComputerUseCapabilities, toProjectArtifactUri } from "./localComputerUse";
 import { isStreamableArtifactFile, knownArtifactMimeType } from "./artifactStreamProtocol";
 import {
@@ -265,14 +266,21 @@ async function readArtifactRangeChunk(args: {
   if (!uri) throw new Error("Artifact uri is required.");
   let resolved: string;
   try {
+    // `allowMissing` so the jail decides only where the path points: a
+    // missing file used to fail here and read as a path escape. The jail is
+    // unchanged; a missing file is answered below.
     resolved = resolvePathWithinRoot(
       args.artifactsDir,
       path.normalize(resolveRendererArtifactPath(uri, args.projectRoot)),
+      { allowMissing: true },
     );
   } catch {
     throw new Error("Artifact path must resolve within .ade/artifacts.");
   }
   if (!isStreamableArtifactFile(resolved)) throw new Error("This artifact type cannot be streamed.");
+  // A proof deleted, or never copied to this computer: an answer, not a defect.
+  const isFile = await fs.promises.stat(resolved).then((stat) => stat.isFile(), () => false);
+  if (!isFile) throw new AdeExpectedError(`Artifact file not found: ${uri}`, "user");
   const range = await readArtifactByteRange(resolved, args.offset, args.length);
   return { totalSize: range.totalSize, offset: range.rangeStart, data: range.base64 };
 }

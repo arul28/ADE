@@ -1,14 +1,20 @@
 import { useEffect, useState } from "react";
 import { FolderOpen } from "@phosphor-icons/react";
-import type { LaneDeleteLeftoverWorktree } from "../../../shared/types";
+import type { LaneDeleteLeftoverWorktree, OpenProjectBinding } from "../../../shared/types";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { revealLabel } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { extractError } from "../../lib/format";
+import { useAppStore } from "../../state/appStore";
 import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 
-type LeftoverPrompt = LaneDeleteLeftoverWorktree & { laneId: string };
+/**
+ * `pin` is the project (and machine) the delete ran on: this host hears the
+ * delete events of the project the window shows, and the user can switch tabs
+ * before answering, so the folder's actions must not follow the active tab.
+ */
+type LeftoverPrompt = LaneDeleteLeftoverWorktree & { laneId: string; pin: OpenProjectBinding | null };
 
 /**
  * After a lane delete leaves an external folder on disk, ask once what to do
@@ -32,7 +38,8 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
         if (existing.some((entry) => entry.laneId === progress.laneId && entry.path === leftover.path)) {
           return existing;
         }
-        return [...existing, { ...leftover, laneId: progress.laneId }];
+        const pin = useAppStore.getState().projectBinding ?? null;
+        return [...existing, { ...leftover, laneId: progress.laneId, pin }];
       });
     });
     return unsubscribe;
@@ -50,7 +57,7 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
   };
 
   const reveal = () => {
-    void window.ade.lanes.revealLeftoverWorktree({ laneId: current.laneId }).catch((reason: unknown) => {
+    void window.ade.lanes.revealLeftoverWorktree({ laneId: current.laneId }, current.pin).catch((reason: unknown) => {
       setError(extractError(reason));
     });
   };
@@ -58,7 +65,7 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
   const remove = () => {
     setDeleting(true);
     setError(null);
-    void window.ade.lanes.deleteLeftoverWorktree({ laneId: current.laneId })
+    void window.ade.lanes.deleteLeftoverWorktree({ laneId: current.laneId }, current.pin)
       .then(() => dismiss())
       .catch((reason: unknown) => {
         setDeleting(false);

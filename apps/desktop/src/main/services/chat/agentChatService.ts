@@ -6153,6 +6153,35 @@ const CODEX_STALL_RECONCILE_TIMEOUT_MS = 10_000;
 const CODEX_INTERRUPT_REQUEST_TIMEOUT_MS = 2_500;
 const CODEX_SUBAGENT_INTERRUPT_FALLBACK_MS = 1_000;
 const CODEX_ARCHIVE_REQUEST_TIMEOUT_MS = 3_000;
+/** OpenCode session ids carry the `ses_` prefix its identifier scheme assigns. */
+const OPENCODE_SESSION_ID_PATTERN = /^ses_[A-Za-z0-9]+$/;
+
+/**
+ * `thread/resume`, unarchiving the thread first when Codex refuses because it
+ * is archived ("session … is archived. Run `codex unarchive …`"). ADE archives
+ * a chat's thread when it disposes the chat, so reopening that chat later
+ * finds its own thread archived. An unarchive that fails keeps the original
+ * refusal, which is what the caller classifies.
+ */
+async function resumeCodexThread<T>(
+  runtime: Pick<CodexRuntime, "request">,
+  params: { threadId: string } & Record<string, unknown>,
+  options?: CodexRequestOptions,
+): Promise<T> {
+  try {
+    return await runtime.request<T>("thread/resume", params, options);
+  } catch (error) {
+    if (!/\bis archived\b/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    try {
+      await runtime.request("thread/unarchive", { threadId: params.threadId }, {
+        timeoutMs: CODEX_ARCHIVE_REQUEST_TIMEOUT_MS,
+      });
+    } catch {
+      throw error;
+    }
+    return await runtime.request<T>("thread/resume", params, options);
+  }
+}
 const CODEX_NO_FIRST_EVENT_WATCHDOG_MS = 120_000;
 const CODEX_MID_TURN_INACTIVITY_WATCHDOG_MS = 10 * 60_000;
 /** Codex turn items that are work a turn waits on in silence while in progress. */
@@ -23904,8 +23933,21 @@ export function createAgentChatService(args: {
       // a second ("Command not found: ship") left no line in the brain log.
       const errorInfo = typeof decoratedEvent.errorInfo === "object" ? decoratedEvent.errorInfo : null;
       // After the decoration, so a CLI sign-in or missing-CLI failure settles
-      // with that category, not the raw error's.
-      if (errorInfo?.category) managed.turnErrorCategory = errorInfo.category;
+      // with that category, not the raw error's. Most runtimes' turn failures
+      // carry only a message, so one without a category of its own is sorted
+      // by the provider-error classifier; otherwise every such turn reached
+      // `ade_error` as `other`. A later uncategorized error never replaces a
+      // known one.
+      const turnErrorCategory = errorInfo?.category && errorInfo.category !== "unknown"
+        ? errorInfo.category
+        : classifyProviderHostError(
+            [decoratedEvent.message, decoratedEvent.detail].filter(Boolean).join("\n"),
+            "",
+            "",
+          ).errorInfo.category;
+      if (turnErrorCategory !== "unknown" || !managed.turnErrorCategory) {
+        managed.turnErrorCategory = turnErrorCategory;
+      }
       logger.warn("agent_chat.turn_error", {
         sessionId: managed.session.id,
         provider: managed.session.provider,
@@ -35259,7 +35301,9 @@ export function createAgentChatService(args: {
       } else if (timeoutError) {
         markSessionIdleWithFreshCache(managed);
         const errorMessage = effectiveError instanceof Error ? effectiveError.message : String(effectiveError);
-        reportProviderRuntimeFailure("claude", errorMessage);
+        reportProviderRuntimeFailure("claude", errorMessage, {
+          stderrTail: claudeSubprocessReaper.stderrTail?.(managed.session.id) ?? null,
+        });
         emitChatEvent(managed, {
           type: "error",
           message: errorMessage,
@@ -35324,7 +35368,9 @@ export function createAgentChatService(args: {
           }
           reportProviderRuntimeAuthFailure("claude", CLAUDE_RUNTIME_AUTH_ERROR);
         } else {
-          reportProviderRuntimeFailure("claude", errorMessage);
+          reportProviderRuntimeFailure("claude", errorMessage, {
+            stderrTail: claudeSubprocessReaper.stderrTail?.(managed.session.id) ?? null,
+          });
         }
 
         // Self-heal a corrupted thinking history (reused message ids merge into
@@ -62341,7 +62387,7 @@ export function createAgentChatService(args: {
               resolveSessionModelDescriptor(managed.session),
             );
             managed.session.reasoningEffort = resumeReasoningEffort;
-            const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
+            const resumeResponse = await resumeCodexThread<CodexThreadLifecycleResponse>(runtime, {
               threadId: threadIdToResume,
               model: managed.session.model,
               cwd: managed.laneWorktreePath,
@@ -66458,7 +66504,7 @@ export function createAgentChatService(args: {
           // `thread/resume` has no dynamicTools field; refresh ADE's local
           // handler map while leaving tool registration to the original thread.
           refreshCodexDynamicTools(managed, runtime);
-          const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
+          const resumeResponse = await resumeCodexThread<CodexThreadLifecycleResponse>(runtime, {
             threadId,
             model: managed.session.model,
             cwd: managed.laneWorktreePath,
@@ -66778,7 +66824,7 @@ export function createAgentChatService(args: {
           const runtime = await ensureCodexSessionRuntime(managed);
           const { codexPolicy } = resolveCodexThreadParams(managed);
           refreshCodexDynamicTools(managed, runtime);
-          const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
+          const resumeResponse = await resumeCodexThread<CodexThreadLifecycleResponse>(runtime, {
             threadId: originalThreadId,
             model: managed.session.model,
             cwd: managed.laneWorktreePath,
@@ -75052,6 +75098,12 @@ export function createAgentChatService(args: {
     if (provider === "opencode" && managed) {
       // A child is its own OpenCode session, so its stored messages are the
       // full transcript. Pages are read in order up to what was asked for.
+      // Only an OpenCode session id (`ses_…`) names one: a row can ask with
+      // the Task call id before the child session is known, and OpenCode
+      // answers that with an error, not an empty list.
+      const childSessionId = [normalizedAgentId, normalizedTaskId]
+        .find((id): id is string => Boolean(id && OPENCODE_SESSION_ID_PATTERN.test(id)));
+      if (!childSessionId) return [];
       try {
         return await withOpenCodeClient(managed, async (client) => {
           const wanted = (normalizedOffset ?? 0) + (normalizedLimit ?? 500);
@@ -75061,20 +75113,20 @@ export function createAgentChatService(args: {
             if (signal?.aborted) break;
             // A cursor carries its own order; OpenCode refuses the pair.
             const page = await client.message.list({
-              sessionID: normalizedAgentId,
+              sessionID: childSessionId,
               limit: 100,
               ...(cursor ? { cursor } : { order: "asc" as const }),
             });
             messages.push(...page.data);
             cursor = page.cursor.next ?? undefined;
           } while (cursor && messages.length < wanted);
-          const mapped = mapOpenCodeMessagesToTranscript(normalizedAgentId, messages);
+          const mapped = mapOpenCodeMessagesToTranscript(childSessionId, messages);
           const sliced = normalizedOffset !== undefined ? mapped.slice(normalizedOffset) : mapped;
           return normalizedLimit !== undefined ? sliced.slice(0, normalizedLimit) : sliced;
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`OpenCode messages failed for ${normalizedAgentId}: ${message}`);
+        throw new Error(`OpenCode messages failed for ${childSessionId}: ${message}`);
       }
     }
 
@@ -76528,7 +76580,7 @@ export function createAgentChatService(args: {
           resolveSessionModelDescriptor(managed.session),
         );
         managed.session.reasoningEffort = resumeReasoningEffort;
-        const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
+        const resumeResponse = await resumeCodexThread<CodexThreadLifecycleResponse>(runtime, {
           threadId,
           model: managed.session.model,
           cwd: managed.laneWorktreePath,

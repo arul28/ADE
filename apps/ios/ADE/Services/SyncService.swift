@@ -434,6 +434,32 @@ func decodeHydrationPayload<T: Decodable>(_ raw: Any, as type: T.Type, domainLab
   }
 }
 
+/// Hydration decodes of the big lists (lanes, work sessions, PRs) run here,
+/// off the main actor: a project's PR list or session list took the main
+/// thread long enough to hang the app. One queue, one job at a time in the
+/// order the main actor sent them, so answers still apply in the order they
+/// arrived, as when the decode was synchronous.
+private let syncHydrationDecodeQueue = DispatchQueue(label: "com.ade.sync.hydration-decode", qos: .userInitiated)
+
+/// `decodeHydrationPayload` on `syncHydrationDecodeQueue`. Callers keep every
+/// state change on the main actor and recheck their scope after the await.
+func decodeHydrationPayloadOffMain<T: Decodable>(_ raw: Any, as type: T.Type, domainLabel: String, decoder: JSONDecoder) async throws -> T {
+  try await withCheckedThrowingContinuation { continuation in
+    syncHydrationDecodeQueue.async {
+      continuation.resume(with: Result { try decodeHydrationPayload(raw, as: type, domainLabel: domainLabel, decoder: decoder) })
+    }
+  }
+}
+
+/// Waits for every hydration decode sent before it. An answer that reuses a
+/// saved list (nothing to decode) waits here, so it still applies after an
+/// earlier answer that is still decoding.
+func awaitEarlierHydrationDecodes() async {
+  await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+    syncHydrationDecodeQueue.async { continuation.resume() }
+  }
+}
+
 func adeJSONData(withJSONObject object: Any, options: JSONSerialization.WritingOptions = []) throws -> Data {
   let writingOptions = options.union(.fragmentsAllowed)
   guard JSONSerialization.isValidJSONObject(object) || adeIsValidJSONFragment(object) else {
@@ -657,6 +683,15 @@ func syncConnectFailureIsUnreachableMachine(_ error: Error) -> Bool {
     guard let finalFailure = exhausted.finalFailure else { return true }
     return syncConnectFailureIsUnreachableMachine(finalFailure)
   }
+  if let mailboxError = error as? SyncConnectionRaceMailboxError {
+    // A candidate's reader only runs until the hello finishes, so this socket
+    // dropped before the machine said anything. A drop there (the route went
+    // away under it) is an unreachable machine; anything else keeps its own
+    // classification.
+    guard let underlying = mailboxError.underlying else { return false }
+    return syncConnectFailureIsSocketDropBeforeHello(underlying)
+      || syncConnectFailureIsUnreachableMachine(underlying)
+  }
   if let urlError = error as? URLError {
     return syncUnreachableURLErrorCodes.contains(urlError.code)
   }
@@ -674,6 +709,18 @@ func syncConnectFailureIsUnreachableMachine(_ error: Error) -> Bool {
   default:
     return false
   }
+}
+
+/// The socket was torn down under the candidate ("Socket is not connected",
+/// a reset or an abort). Only meaningful before hello: after it, the same
+/// codes are an ordinary disconnect, not proof the machine was out of reach.
+private func syncConnectFailureIsSocketDropBeforeHello(_ error: Error) -> Bool {
+  if let urlError = error as? URLError {
+    return urlError.code == .networkConnectionLost
+  }
+  let nsError = error as NSError
+  guard nsError.domain == NSPOSIXErrorDomain else { return false }
+  return [ENOTCONN, ECONNRESET, ECONNABORTED].contains(Int32(nsError.code))
 }
 
 /// The machine answered and said why it can't take this sign-in, with the
@@ -8167,7 +8214,7 @@ final class SyncService: ObservableObject {
               if self.isCandidateHelloTerminalFrame(text) { return }
             }
           } catch {
-            await mailbox.finish(message: error.localizedDescription)
+            await mailbox.finish(message: error.localizedDescription, underlying: error)
           }
         }
         defer { reader.cancel() }
@@ -10460,7 +10507,7 @@ final class SyncService: ObservableObject {
           try requireCurrentHydrationProjectScope(scope)
         }
       }
-      let payload = try decodeHydrationPayload(raw, as: LaneRefreshPayload.self, domainLabel: "lane", decoder: decoder)
+      let payload = try await decodeHydrationPayloadOffMain(raw, as: LaneRefreshPayload.self, domainLabel: "lane", decoder: decoder)
       if payload.notModified == true {
         try requireCurrentHydrationProjectScope(scope)
         if let signature = payload.signature {
@@ -10773,7 +10820,7 @@ final class SyncService: ObservableObject {
       if let conditional = raw as? [String: Any], conditional["partial"] as? Bool == true {
         // Head rows only: keep what the database already has, and fetch the
         // full list shortly.
-        sessions = try decodeHydrationPayload(
+        sessions = try await decodeHydrationPayloadOffMain(
           conditional["sessions"] ?? raw,
           as: [TerminalSessionSummary].self,
           domainLabel: "work session",
@@ -10787,6 +10834,7 @@ final class SyncService: ObservableObject {
            let cached = workSessionsConditionalCache,
            cached.key == cacheKey,
            cached.signature == signature {
+          await awaitEarlierHydrationDecodes()
           sessions = cached.sessions
         } else if conditional["notModified"] as? Bool == true || conditional["delta"] != nil {
           let delta = conditional["delta"] as? [String: Any]
@@ -10795,7 +10843,7 @@ final class SyncService: ObservableObject {
              cached.key == cacheKey,
              cached.signature == delta["baseSignature"] as? String,
              let signature {
-            let upserted = try decodeHydrationPayload(
+            let upserted = try await decodeHydrationPayloadOffMain(
               delta["upserted"] ?? [Any](),
               as: [TerminalSessionSummary].self,
               domainLabel: "work session",
@@ -10822,7 +10870,7 @@ final class SyncService: ObservableObject {
             )
             try requireCurrentHydrationProjectScope(scope)
             let fullObject = fullRaw as? [String: Any]
-            sessions = try decodeHydrationPayload(
+            sessions = try await decodeHydrationPayloadOffMain(
               fullObject?["sessions"] ?? fullRaw,
               as: [TerminalSessionSummary].self,
               domainLabel: "work session",
@@ -10836,7 +10884,7 @@ final class SyncService: ObservableObject {
           // An object without a list is not an answer to this request: it
           // fails to decode, as before, instead of reading as "no sessions",
           // which would delete every row.
-          sessions = try decodeHydrationPayload(
+          sessions = try await decodeHydrationPayloadOffMain(
             conditional["sessions"] ?? raw,
             as: [TerminalSessionSummary].self,
             domainLabel: "work session",
@@ -10845,9 +10893,11 @@ final class SyncService: ObservableObject {
           workSessionsConditionalCache = signature.map { (key: cacheKey, signature: $0, sessions: sessions) }
         }
       } else {
-        sessions = try decodeHydrationPayload(raw, as: [TerminalSessionSummary].self, domainLabel: "work session", decoder: decoder)
+        sessions = try await decodeHydrationPayloadOffMain(raw, as: [TerminalSessionSummary].self, domainLabel: "work session", decoder: decoder)
         workSessionsConditionalCache = nil
       }
+      // The decode above runs off the main actor; the project may have changed.
+      try requireCurrentHydrationProjectScope(scope)
       // Captured from the wire, not from the database: `replaceTerminalSessions`
       // below writes only the columns `terminal_sessions` has, and this is not
       // one of them. A full list is authoritative for the rows it names, so a
@@ -11403,6 +11453,7 @@ final class SyncService: ObservableObject {
          let cached = pullRequestListConditionalCache,
          cached.key == cacheKey,
          cached.signature == signature {
+        await awaitEarlierHydrationDecodes()
         prs = cached.prs
       } else if conditional["notModified"] as? Bool == true {
         // "Not modified" for a list this app no longer holds: ask in full.
@@ -11416,16 +11467,16 @@ final class SyncService: ObservableObject {
         )
         try requireCurrentHydrationProjectScope(scope)
         let fullObject = fullRaw as? [String: Any]
-        prs = try decodeHydrationPayload(fullObject?["prs"] ?? fullRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
+        prs = try await decodeHydrationPayloadOffMain(fullObject?["prs"] ?? fullRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
         pullRequestListConditionalCache = (fullObject?["signature"] as? String).map { (key: cacheKey, signature: $0, prs: prs) }
       } else {
-        prs = try decodeHydrationPayload(conditional["prs"] ?? listRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
+        prs = try await decodeHydrationPayloadOffMain(conditional["prs"] ?? listRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
         if !activeOnly {
           pullRequestListConditionalCache = signature.map { (key: cacheKey, signature: $0, prs: prs) }
         }
       }
     } else {
-      prs = try decodeHydrationPayload(listRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
+      prs = try await decodeHydrationPayloadOffMain(listRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
       if !activeOnly { pullRequestListConditionalCache = nil }
     }
     try requireCurrentHydrationProjectScope(scope)
@@ -11450,7 +11501,7 @@ final class SyncService: ObservableObject {
         fallbackToActiveProjectScope: false
       )
       try requireCurrentHydrationProjectScope(scope)
-      var payload = try decodeHydrationPayload(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
+      var payload = try await decodeHydrationPayloadOffMain(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
       try requireCurrentHydrationProjectScope(scope)
       // Hydrate exactly what was asked for, whatever the brain sent back.
       let batchIds = Set(batch)
@@ -11540,7 +11591,7 @@ final class SyncService: ObservableObject {
           fallbackToActiveProjectScope: false
         )
         try requireCurrentHydrationProjectScope(scope)
-        let payload = try decodeHydrationPayload(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
+        let payload = try await decodeHydrationPayloadOffMain(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
         try requireCurrentHydrationProjectScope(scope)
         let pruneStale = prId == nil
         try await performDatabaseOffMain {
@@ -19571,7 +19622,7 @@ final class SyncService: ObservableObject {
               if self.isCandidateHelloTerminalFrame(text) { return }
             }
           } catch {
-            await mailbox.finish(message: error.localizedDescription)
+            await mailbox.finish(message: error.localizedDescription, underlying: error)
           }
         }
         defer { reader.cancel() }

@@ -9,6 +9,7 @@ import { IPC } from "../../../shared/ipc";
 import { describeReportForMachine, type HostReachabilityReport } from "../../../shared/connectionDiagnosis";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import type {
   CloneProjectInput,
   CreateProjectInput,
@@ -248,6 +249,31 @@ function trackPageFileWatch(
  * budget. One deadline covers the ask and its older-machine fallback.
  */
 const REMOTE_MACHINE_UPDATE_IMPACT_TIMEOUT_MS = 3_000;
+/**
+ * The bound on one personal-chats event poll, under the 30s IPC default. A
+ * poll is a read from a cursor, so one that runs long (a brain still starting,
+ * a busy remote machine) answers with an empty page at the same cursor and the
+ * renderer polls again, instead of failing as an IPC timeout.
+ */
+const PERSONAL_CHAT_EVENT_POLL_DEADLINE_MS = 20_000;
+
+function boundedPersonalChatEventPoll(
+  poll: Promise<PersonalChatStreamEventsResult>,
+  cursor: number | undefined,
+): Promise<PersonalChatStreamEventsResult> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const emptyPage = new Promise<PersonalChatStreamEventsResult>((resolve) => {
+    timer = setTimeout(
+      () => resolve({ events: [], nextCursor: cursor ?? 0, hasMore: false }),
+      PERSONAL_CHAT_EVENT_POLL_DEADLINE_MS,
+    );
+    timer.unref?.();
+  });
+  return Promise.race([poll, emptyPage]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 const REMOTE_RUNTIME_SYNC_METHODS = new Set([
   "sync.getStatus",
   "sync.refreshDiscovery",
@@ -726,7 +752,7 @@ export function registerRuntimeBridge({
     const projectId = rawProjectId.trim();
     const rootPath = rawRootPath?.trim() ?? "";
     const target = targetId ? remoteConnectionService.getTarget(targetId) : null;
-    if (!target) throw new Error("Remote target was not found.");
+    if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
     if (!projectId && !rootPath) {
       throw new RemoteProjectNotFoundError("Remote project is required.");
     }
@@ -982,18 +1008,24 @@ export function registerRuntimeBridge({
       };
       const remoteTargetId = personalChatRemoteTargetId(event.sender, target);
       if (remoteTargetId) {
-        return await remoteConnectionService.callMachineMethod<PersonalChatStreamEventsResult>(
-          remoteTargetId,
-          "personalChats.streamEvents",
-          normalized as Record<string, unknown>,
+        return await boundedPersonalChatEventPoll(
+          remoteConnectionService.callMachineMethod<PersonalChatStreamEventsResult>(
+            remoteTargetId,
+            "personalChats.streamEvents",
+            normalized as Record<string, unknown>,
+          ),
+          normalized.cursor,
         );
       }
       if (!localRuntimeConnectionPool) {
         throw new Error("The local ADE brain is unavailable for personal chats.");
       }
-      return await localRuntimeConnectionPool.callSync<PersonalChatStreamEventsResult>(
-        "personalChats.streamEvents",
-        normalized as Record<string, unknown>,
+      return await boundedPersonalChatEventPoll(
+        localRuntimeConnectionPool.callSync<PersonalChatStreamEventsResult>(
+          "personalChats.streamEvents",
+          normalized as Record<string, unknown>,
+        ),
+        normalized.cursor,
       );
     },
   );
@@ -1441,7 +1473,7 @@ export function registerRuntimeBridge({
       const projectId =
         typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
       const target = id ? remoteConnectionService.getTarget(id) : null;
-      if (!target) throw new Error("Remote target was not found.");
+      if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
       if (!projectId) throw new Error("Remote project is required.");
       return await remoteConnectionService.listActionRegistry(
         target.id,
@@ -1474,7 +1506,7 @@ export function registerRuntimeBridge({
         typeof request?.domain === "string" ? request.domain.trim() : "";
       const action =
         typeof request?.action === "string" ? request.action.trim() : "";
-      if (!target) throw new Error("Remote target was not found.");
+      if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
       if (!projectId) throw new Error("Remote project is required.");
       if (!domain || !action)
         throw new Error("Remote action domain and action are required.");
@@ -1608,7 +1640,7 @@ export function registerRuntimeBridge({
       const method = typeof arg?.method === "string" ? arg.method.trim() : "";
       const params = isObjectRecord(arg?.params) ? arg.params : {};
       const target = id ? remoteConnectionService.getTarget(id) : null;
-      if (!target) throw new Error("Remote target was not found.");
+      if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
       if (!projectId) throw new Error("Remote project is required.");
       if (!isRemoteRuntimeSyncMethod(method))
         throw new Error("Remote sync method is not exposed.");
@@ -1633,7 +1665,7 @@ export function registerRuntimeBridge({
           ? arg.targetVersion.trim()
           : null;
       const target = id ? remoteConnectionService.getTarget(id) : null;
-      if (!target) throw new Error("Remote target was not found.");
+      if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
       // A build whose app cannot install updates would answer "installing" and
       // then abort, so it gets its updater run in a terminal instead.
       const status = remoteConnectionService.snapshot().connections
@@ -1894,7 +1926,7 @@ export function registerRuntimeBridge({
       if (!id) throw new Error("Remote target id is required.");
       if (!projectId) throw new Error("Remote project id is required.");
       const target = remoteConnectionService.getTarget(id);
-      if (!target) throw new Error("Remote target was not found.");
+      if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
       const request = normalizeRuntimeStreamEventsRequest(arg?.request);
       const bindingKey = remoteProjectBindingKey(target.id, projectId);
       const requestKey = runtimeEventRequestKey(bindingKey, request);

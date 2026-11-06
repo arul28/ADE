@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createGithubIssueOps } from "../../desktop/src/main/services/github/githubIssueOps";
+import { markExpectedGithubFailure } from "../../desktop/src/main/services/github/githubExpectedFailure";
+import { markExpected } from "../../desktop/src/shared/expectedError";
 import { createRepeatedFailureGate } from "../../desktop/src/main/services/logging/repeatedFailure";
 import { resolveGithubRepoRef } from "../../desktop/src/main/services/github/githubSshAlias";
 import { gitPushError } from "../../desktop/src/main/services/git/gitPushFailure";
@@ -373,6 +375,9 @@ class HeadlessGithubCredentialAttemptError extends Error {
   ) {
     super(message);
     this.name = "HeadlessGithubCredentialAttemptError";
+    // The same answers the desktop's transport marks: a refused token, a
+    // repository it cannot see, a rate limit, GitHub's own outage.
+    markExpectedGithubFailure(this, authFailure);
   }
 }
 
@@ -1592,11 +1597,15 @@ export function createHeadlessGitHubService(
         if (!repositoryNotFound) {
           recordGithubOperationFailure(candidate, failure.authFailure, failure.rateLimit);
         }
-        const attemptError = new HeadlessGithubCredentialAttemptError(
-          message,
+        const attemptError = markExpectedGithubFailure(
+          new HeadlessGithubCredentialAttemptError(
+            message,
+            failure.authFailure,
+            failure.rateLimit,
+            response.status,
+          ),
           failure.authFailure,
-          failure.rateLimit,
-          response.status,
+          { repositoryNotFound: ambiguousRepositoryNotFound },
         );
         lastAttemptError = attemptError;
         if (attemptError.authFailure.kind === "rate_limited") {
@@ -1617,11 +1626,11 @@ export function createHeadlessGitHubService(
           const resetDetail = resetAtMs == null
             ? "rate limit exceeded"
             : `rate limit exceeded; resets at ${new Date(resetAtMs).toLocaleString()}`;
-          throw new GitHubRateLimitError(
+          throw markExpected(new GitHubRateLimitError(
             `${attemptError.message} (${resetDetail})`,
             resetAtMs,
             attemptError.rateLimit,
-          );
+          ), "environment");
         }
         throw attemptError;
       }
@@ -1655,7 +1664,7 @@ export function createHeadlessGitHubService(
         if (canTryNext) continue;
         if (attemptError.authFailure.kind === "rate_limited") {
           const resetAtMs = githubRateLimitRetryAtMs(attemptError.authFailure, attemptError.rateLimit);
-          throw new GitHubRateLimitError(attemptError.message, resetAtMs, attemptError.rateLimit);
+          throw markExpected(new GitHubRateLimitError(attemptError.message, resetAtMs, attemptError.rateLimit), "environment");
         }
         throw attemptError;
       }
@@ -1695,11 +1704,12 @@ export function createHeadlessGitHubService(
       const resetDetail = resetAtMs == null
         ? "rate limit exceeded"
         : `rate limit exceeded; resets at ${new Date(resetAtMs).toLocaleString()}`;
-      throw new GitHubRateLimitError(
+      // The account's quota, not a defect: never a Sentry issue.
+      throw markExpected(new GitHubRateLimitError(
         `${exhausted.message} (${resetDetail})`,
         resetAtMs,
         exhausted.rateLimit,
-      );
+      ), "environment");
     }
     if (exhausted) throw exhausted;
     throw new Error("No usable GitHub credential is available for this operation.");

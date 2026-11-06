@@ -21,6 +21,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import { markExpected } from "../../../shared/expectedError";
+import { scrubFreeText } from "../../../shared/sentry/scrub";
 import os from "node:os";
 import path from "node:path";
 
@@ -153,6 +154,9 @@ const RESTART_TERM_GRACE_MS = 2_000;
 const RESTART_KILL_GRACE_MS = 1_000;
 /** One stderr line longer than this is cut before it reaches the log. */
 const MAX_STDERR_LINE_CHARS = 2_000;
+/** The last stderr lines of one helper run, kept for the crash-loop report. */
+const CRASH_REPORT_STDERR_LINES = 8;
+const CRASH_REPORT_STDERR_LINE_CHARS = 300;
 
 /**
  * Where each macOS client keeps its own copy of the helper binary:
@@ -382,6 +386,9 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   let disposed = false;
   let stdoutBuffer = "";
   let stderrBuffer = "";
+  /** The current run's last stderr lines, and how the last run ended: the crash-loop report's cause. */
+  let stderrTail: string[] = [];
+  let lastExit: { code: number | null; signal: string | null; spawnError: string | null } | null = null;
   let nextRequestId = 0;
   let restartAttempts = 0;
   /** When a caller last asked for the driver (a request, an ensure, a restart). */
@@ -614,6 +621,25 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     });
   };
 
+  /**
+   * Carries how the helper ended and its last stderr lines on the error a
+   * caller gets, for its own report (`linuxScreenFailureCause`). Not
+   * enumerable, so nothing that serializes the error picks up the raw lines.
+   */
+  const withExitCause = <E extends Error>(error: E): E => {
+    Object.defineProperty(error, "driverExit", {
+      value: { code: lastExit?.code ?? null, signal: lastExit?.signal ?? null, stderrTail: [...stderrTail] },
+      enumerable: false,
+      configurable: true,
+    });
+    return error;
+  };
+
+  const rememberStderrLine = (line: string): void => {
+    stderrTail.push(line.slice(0, CRASH_REPORT_STDERR_LINE_CHARS));
+    if (stderrTail.length > CRASH_REPORT_STDERR_LINES) stderrTail.shift();
+  };
+
   const consumeStderr = (chunk: string): void => {
     stderrBuffer += chunk;
     let newlineIndex = stderrBuffer.indexOf("\n");
@@ -621,6 +647,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       const line = stderrBuffer.slice(0, newlineIndex).trim();
       stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
       if (line.length) {
+        rememberStderrLine(line);
         deps.logger.info("mac_desktop.driver_stderr", { message: line.slice(0, MAX_STDERR_LINE_CHARS) });
         if (CAPTURE_STALL_PATTERN.test(line)) sampleStalledDriver();
       }
@@ -628,6 +655,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     }
     // A partial line this long is not going to end; log what there is.
     if (stderrBuffer.length > MAX_STDERR_LINE_CHARS) {
+      rememberStderrLine(stderrBuffer);
       deps.logger.info("mac_desktop.driver_stderr", { message: stderrBuffer.slice(0, MAX_STDERR_LINE_CHARS) });
       stderrBuffer = "";
     }
@@ -657,7 +685,17 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       // The budget is spent and the helper is still not up. Reported once, on
       // the transition, so the event keeps meaning "it started looping".
       if (restartAttempts === MAX_RESTART_ATTEMPTS + 1) {
-        deps.logger.error("mac_desktop.driver_crash_loop", { attempts: restartAttempts - 1 });
+        // With how the last run ended and what it last wrote to stderr: the
+        // count alone said nothing about why. Paths and home folders are
+        // taken out of the stderr lines before they leave the machine.
+        deps.logger.error("mac_desktop.driver_crash_loop", {
+          attempts: restartAttempts - 1,
+          platform,
+          lastExitCode: lastExit?.code ?? null,
+          lastExitSignal: lastExit?.signal ?? null,
+          lastSpawnError: lastExit?.spawnError ? scrubFreeText(lastExit.spawnError, { maxLength: CRASH_REPORT_STDERR_LINE_CHARS }) : null,
+          stderrTail: stderrTail.map((line) => scrubFreeText(line, { maxLength: CRASH_REPORT_STDERR_LINE_CHARS })),
+        });
       }
       // Nobody has asked for the driver lately, so nothing is waiting on a
       // screen: no timer. A helper that dies on sight must not respawn every
@@ -771,6 +809,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
           windowsHide: true,
         }) as ChildProcessWithoutNullStreams;
       } catch (error) {
+        lastExit = { code: null, signal: null, spawnError: error instanceof Error ? error.message : String(error) };
         scheduleRestart();
         reject(new MacDesktopDriverError(
           "MAC_DESKTOP_DRIVER_UNAVAILABLE",
@@ -782,6 +821,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       childReady = false;
       stdoutBuffer = "";
       stderrBuffer = "";
+      stderrTail = [];
       spawned.stdout.setEncoding("utf8");
       spawned.stderr.setEncoding("utf8");
       spawned.stdout.on("data", (chunk: string) => consumeStdout(chunk));
@@ -799,6 +839,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
         if (child !== spawned) return;
         child = null;
         childReady = false;
+        lastExit = { code: null, signal: null, spawnError: error.message };
         if (stableTimer) {
           clearTimeout(stableTimer);
           stableTimer = null;
@@ -836,6 +877,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
           stableTimer = null;
         }
         const detail = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
+        lastExit = { code, signal, spawnError: null };
         if (!disposed && code === MAC_DESKTOP_DRIVER_RETIRE_EXIT_CODE && platform === "win32") {
           handleRetirement(spawned.pid ?? null, wasReady);
           reject(new MacDesktopDriverError("MAC_DESKTOP_DRIVER_UNAVAILABLE", "The desktop driver retired itself."));
@@ -849,15 +891,15 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
           pid: spawned.pid ?? null,
           pendingRequests: pending.size,
         });
-        settlePending(new MacDesktopDriverError(
+        settlePending(withExitCause(new MacDesktopDriverError(
           "MAC_DESKTOP_DRIVER_UNAVAILABLE",
           `The desktop driver stopped (${detail}).`,
-        ));
+        )));
         if (disposed) return;
         if (wasReady) deps.onDriverLost?.(detail);
         scheduleRestart();
         publishHealth();
-        reject(new MacDesktopDriverError("MAC_DESKTOP_DRIVER_UNAVAILABLE", `The desktop driver stopped (${detail}).`));
+        reject(withExitCause(new MacDesktopDriverError("MAC_DESKTOP_DRIVER_UNAVAILABLE", `The desktop driver stopped (${detail}).`)));
       });
     });
 

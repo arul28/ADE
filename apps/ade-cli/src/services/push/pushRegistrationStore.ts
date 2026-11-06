@@ -243,6 +243,41 @@ function salvageMachineKeys(parsed: unknown): string[] {
  * files under `~/.ade/secrets/`. The machineKey/machineSecret are minted once on
  * first access and never rotate — the relay's first-writer-wins claim binds them.
  */
+const SETTLE_READ_ATTEMPTS = 5;
+const SETTLE_READ_DELAY_MS = 20;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Create `filePath` with `text` only if it does not exist, never exposing a
+ * partial file: the bytes go to a sibling temp file, and a hard link puts it in
+ * place (EEXIST when the name is taken). A filesystem without hard links (FAT,
+ * some network shares) falls back to an exclusive create in place.
+ */
+function createExclusive(filePath: string, text: string): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`,
+  );
+  fs.writeFileSync(tempPath, text, { flag: "wx", mode: 0o600 });
+  try {
+    fs.linkSync(tempPath, filePath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") throw error;
+    fs.writeFileSync(filePath, text, { flag: "wx", mode: 0o600 });
+  } finally {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // A leftover temp file is swept with the other abandoned temps.
+    }
+  }
+}
+
 export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
   fs.mkdirSync(path.dirname(args.filePath), { recursive: true });
 
@@ -282,9 +317,6 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
   };
 
   const readRaw = (): RawRead => {
-    if (!fs.existsSync(args.filePath)) {
-      return { present: false, parsed: null, readError: null };
-    }
     try {
       const text = fs.readFileSync(args.filePath, "utf8");
       return {
@@ -293,6 +325,10 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
         readError: null,
       };
     } catch (error) {
+      // Only a file that is not there is absent.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return { present: false, parsed: null, readError: null };
+      }
       // Unreadable is NOT absent: a permissions or I/O fault must not be
       // answered by minting a replacement identity over the top of it.
       return {
@@ -303,10 +339,9 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
     }
   };
 
-  const readValidFile = (): PushRegistrationFile | null => {
-    const raw = readRaw();
-    if (!raw.present) return null;
-    const parsed = raw.parsed as PushRegistrationFile | null;
+  /** The file as read, with defaults backfilled; null when it fails validation. */
+  const validFileFrom = (value: unknown): PushRegistrationFile | null => {
+    const parsed = value as PushRegistrationFile | null;
     if (!isValid(parsed)) return null;
     // Backfill defaults for fields added after the file was first written.
     return {
@@ -506,36 +541,87 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
     return replacement;
   };
 
+  /**
+   * A read of a file that is there but read badly, repeated briefly before
+   * anything treats it as damaged. A first-run writer from an older build
+   * creates the file in place, so a racing reader can see it empty or half
+   * written; on Windows a scanner can hold it for a moment. Either settles in
+   * milliseconds, and re-minting on the first look would orphan the identity
+   * every paired phone uses.
+   */
+  const readRawSettled = (): RawRead => {
+    let raw = readRaw();
+    for (
+      let attempt = 1;
+      attempt < SETTLE_READ_ATTEMPTS
+        && raw.present
+        && (raw.readError !== null || !isValid(raw.parsed as PushRegistrationFile | null));
+      attempt += 1
+    ) {
+      sleepSync(SETTLE_READ_DELAY_MS * attempt);
+      raw = readRaw();
+    }
+    return raw;
+  };
+
+  let lastUnreadableDetail: string | null = null;
+
+  /** Adopt the file on disk, repair it, or (unreadable) refuse; never mint over it. */
+  const loadPresent = (raw: RawRead): PushRegistrationFile => {
+    if (raw.readError !== null) {
+      // The identity is there and only the read failed. Minting a new one would
+      // force every phone to pair again, so this load fails and the next one
+      // reads the file again. Each new cause is logged once, not every call.
+      if (lastUnreadableDetail !== raw.readError) {
+        lastUnreadableDetail = raw.readError;
+        args.logger?.warn?.("push.registration_file_unreadable", {
+          filePath: args.filePath,
+          detail: raw.readError,
+        });
+      }
+      throw new Error(`ADE could not read this machine's push registration file: ${raw.readError}`);
+    }
+    const existing = validFileFrom(raw.parsed);
+    if (existing) {
+      cache = existing;
+      return existing;
+    }
+    return recoverDamagedFile(raw);
+  };
+
+  /**
+   * For the reads the push publisher makes while the runtime is being built:
+   * an unreadable file (already logged by `loadPresent`) reads as empty there,
+   * so the project still opens. Every write and every identity read goes
+   * through `load` and keeps failing until the file reads again.
+   */
+  const loadForStartupRead = (): PushRegistrationFile | null => {
+    try {
+      return load();
+    } catch {
+      return null;
+    }
+  };
+
   const load = (): PushRegistrationFile => {
     if (cache) return cache;
-    const raw = readRaw();
-    const parsed = raw.parsed as PushRegistrationFile | null;
-    if (raw.present) {
-      const existing = isValid(parsed) ? readValidFile() : null;
-      if (existing) {
-        cache = existing;
-        return existing;
-      }
-      return recoverDamagedFile(raw);
-    }
-    // Mint the identity once, exclusively (O_EXCL). If two `ade` processes race
-    // on first run the loser gets EEXIST and adopts the winner's identity rather
-    // than overwriting the phone-pairing crypto key with a divergent one.
+    const raw = readRawSettled();
+    if (raw.present) return loadPresent(raw);
+    // Mint the identity once, exclusively, and whole: written to a temp file and
+    // linked into place, which fails with EEXIST when the name exists, so a
+    // racing reader never sees a half-written identity. If two `ade` processes
+    // race on first run the loser adopts the winner's identity rather than
+    // overwriting the phone-pairing crypto key with a divergent one.
     const created = createEmptyFile();
     try {
-      fs.writeFileSync(args.filePath, `${JSON.stringify(created, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+      createExclusive(args.filePath, `${JSON.stringify(created, null, 2)}\n`);
       cache = created;
       return created;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        const winner = readValidFile();
-        if (winner) {
-          cache = winner;
-          return winner;
-        }
-        // The race winner wrote something unusable — recover from THAT file
-        // rather than stamping a divergent identity over it.
-        return recoverDamagedFile(readRaw());
+        // The race winner's file — recover from THAT rather than stamping a
+        // divergent identity over it.
+        return loadPresent(readRawSettled());
       }
       // No exclusive create and nothing valid to adopt — best-effort overwrite.
       write(created);
@@ -742,7 +828,7 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
     },
 
     getActivityProtocol(): number | null {
-      return load().activityProtocol;
+      return loadForStartupRead()?.activityProtocol ?? null;
     },
 
     setActivityProtocol(protocol: number | null): void {
@@ -765,10 +851,10 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
       accountOwnerId: string | null;
       revisions: Record<string, number>;
     } {
-      const file = load();
+      const file = loadForStartupRead();
       return {
-        accountOwnerId: file.lastPublishedRevisionAccountOwnerId,
-        revisions: { ...file.lastPublishedRevisionById },
+        accountOwnerId: file?.lastPublishedRevisionAccountOwnerId ?? null,
+        revisions: { ...file?.lastPublishedRevisionById },
       };
     },
 
@@ -802,7 +888,7 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
     },
 
     listUserMessages(): StoredUserMessage[] {
-      return [...load().userMessages];
+      return [...loadForStartupRead()?.userMessages ?? []];
     },
 
     /** Replace the stored messages (already pruned by the caller), oldest first. */
@@ -857,7 +943,7 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
 
     /** Has the account owner removed this machine? Terminal until re-paired. */
     isMachineRevoked(): boolean {
-      return load().machineRevokedAt != null;
+      return loadForStartupRead()?.machineRevokedAt != null;
     },
 
     /**

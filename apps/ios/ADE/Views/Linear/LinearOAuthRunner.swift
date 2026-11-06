@@ -92,16 +92,19 @@ final class LinearOAuthRunner: NSObject, ObservableObject, ASWebAuthenticationPr
 
   private func presentWebAuth(url: URL) async throws -> URL {
     try await withCheckedThrowingContinuation { continuation in
+      // The completion and a failed `start()` can both end this wait, so
+      // whichever comes second must not resume it again.
+      let once = WebAuthResumeOnce(continuation)
       let webSession = ASWebAuthenticationSession(
         url: url,
         callbackURLScheme: "ade"
       ) { callbackURL, error in
         if let error {
-          continuation.resume(throwing: error)
+          once.resume(with: .failure(error))
         } else if let callbackURL {
-          continuation.resume(returning: callbackURL)
+          once.resume(with: .success(callbackURL))
         } else {
-          continuation.resume(throwing: ASWebAuthenticationSessionError(.canceledLogin))
+          once.resume(with: .failure(ASWebAuthenticationSessionError(.canceledLogin)))
         }
       }
       // Reuse an existing Linear login when present rather than an ephemeral
@@ -110,7 +113,7 @@ final class LinearOAuthRunner: NSObject, ObservableObject, ASWebAuthenticationPr
       webSession.presentationContextProvider = self
       self.webSession = webSession
       if !webSession.start() {
-        continuation.resume(throwing: ASWebAuthenticationSessionError(.canceledLogin))
+        once.resume(with: .failure(ASWebAuthenticationSessionError(.canceledLogin)))
       }
     }
   }

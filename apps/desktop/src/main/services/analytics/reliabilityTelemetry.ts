@@ -28,7 +28,47 @@ import type { SyncRoleSnapshot } from "../../../shared/types";
 export function brainActionErrorCode(error: unknown, didTimeout: boolean): string {
   if (didTimeout) return "ipc_timeout";
   const code = parseCodedErrorMessage(error).code;
-  return code && code.trim() ? code.trim() : "unknown";
+  return code && code.trim() ? code.trim() : uncodedErrorClass(error);
+}
+
+const JSON_RPC_CODE_NAMES: Readonly<Record<number, string>> = {
+  [-32700]: "rpc_parse_error",
+  [-32600]: "rpc_invalid_request",
+  [-32601]: "rpc_method_not_found",
+  [-32602]: "rpc_invalid_params",
+  [-32010]: "rpc_policy_denied",
+  [-32011]: "rpc_tool_failed",
+};
+
+/**
+ * A closed-set class for a failure that carries no code: where it failed (the
+ * transport, the brain's runtime, a brain refusal) or the error's own type.
+ * Matched against the fixed wrappers the runtime RPC client and the brain's
+ * JSON-RPC server write, so only one of these tokens ever leaves, never text
+ * from the message itself. Most brain refusals are plain sentences with no
+ * code, and reporting all of them as `unknown` made an incident's spike
+ * unattributable.
+ */
+function uncodedErrorClass(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (/^Remote ADE service timed out\b/.test(message)) return "rpc_timeout";
+  if (/^Remote ADE service connection (?:closed|failed)\b/.test(message)) return "rpc_connection_lost";
+  if (/^Failed to parse remote ADE service response\b/.test(message)) return "rpc_bad_response";
+  if (/^Remote ADE service response for method \S+ exceeded\b/.test(message)) return "rpc_response_too_large";
+  const rpc = message.match(/^Remote ADE service method \S+ failed \(code (-?\d+)\):\s*(.*)$/s);
+  if (rpc) {
+    const named = JSON_RPC_CODE_NAMES[Number(rpc[1])];
+    if (named) return named;
+    // The brain redacts a runtime fault to this reference line (`jsonrpc.ts`);
+    // any other uncoded reply is a service refusing in its own words.
+    return /^Internal error in \S+ \(ref [0-9a-f]+\)/.test(rpc[2] ?? "") ? "brain_internal_error" : "brain_refused";
+  }
+  // A local failure keeps its type: `TypeError` reads as `type_error`.
+  const name = error instanceof Error ? error.name : "";
+  if (name && name !== "Error" && /^[A-Za-z][A-Za-z0-9]*$/.test(name)) {
+    return name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().slice(0, 48);
+  }
+  return "unknown";
 }
 
 /**

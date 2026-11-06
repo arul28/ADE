@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { AdeExpectedError } from "../../../desktop/src/shared/expectedError";
 import {
   resolveTrustedWindowsTool,
   trustedWindowsToolKernelPath,
@@ -14,7 +15,8 @@ function parseUrl(url: string | undefined | null): URL | null {
   try {
     return new URL(raw);
   } catch {
-    throw new Error("Invalid URL");
+    // The link the user (or an agent) asked to open: an answer, not a defect.
+    throw new AdeExpectedError("Invalid URL", "user");
   }
 }
 
@@ -22,7 +24,7 @@ export function normalizeExternalUrl(url: string | undefined | null): string | n
   const parsed = parseUrl(url);
   if (!parsed) return null;
   if (!ALLOWED_EXTERNAL_URL_SCHEMES.has(parsed.protocol)) {
-    throw new Error("Only http(s) and mailto: URLs are allowed.");
+    throw new AdeExpectedError("Only http(s) and mailto: URLs are allowed.", "user");
   }
   return parsed.toString();
 }
@@ -44,7 +46,7 @@ export function normalizeEditorExternalUrl(url: string | undefined | null): stri
   const parsed = parseUrl(url);
   if (!parsed) return null;
   if (!isVscodeFamilySshUrl(parsed) && !isZedSshUrl(parsed)) {
-    throw new Error("Only approved editor SSH URLs are allowed.");
+    throw new AdeExpectedError("Only approved editor SSH URLs are allowed.", "user");
   }
   return parsed.toString();
 }

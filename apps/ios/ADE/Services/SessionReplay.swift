@@ -44,7 +44,7 @@ enum SessionReplay {
     guard shouldSchedule else { return }
     Task { @MainActor in
       try? await Task.sleep(for: startDelay)
-      start()
+      await start()
     }
   }
 
@@ -94,7 +94,7 @@ enum SessionReplay {
   }
 
   @MainActor
-  private static func start() {
+  private static func start() async {
     guard !lock.withLock({ didSetup }) else { return }
     guard isAllowedForThisBuild(),
           let configuration = ProductAnalytics.shared.replayConfiguration(),
@@ -151,11 +151,18 @@ enum SessionReplay {
     config.debug = ProductAnalytics.isTruthyFlag(ProcessInfo.processInfo.environment["ADE_POSTHOG_REPLAY_DEBUG"])
     #endif
 
-    PostHogSDK.shared.setup(config)
+    // `setup` opens the SDK's disk storage and starts its queues, which froze
+    // the main thread for seconds on a cold device. The SDK supports setup off
+    // the main thread (it hops to main itself for the UIKit reads), so only
+    // the wait happens here. Nothing touches the SDK before `didSetup`.
+    await Task.detached(priority: .utility) {
+      PostHogSDK.shared.setup(config)
+    }.value
     lock.withLock { didSetup = true }
     // A bootstrap is ignored for an install the SDK already identified as
-    // someone else; this moves it (and then asks for flags itself).
-    if PostHogSDK.shared.getDistinctId() != distinctId {
+    // someone else, and the account can change while setup runs; this moves
+    // it to the id the product events use now (and then asks for flags).
+    if PostHogSDK.shared.getDistinctId() != ProductAnalytics.shared.currentDistinctId() {
       syncIdentity()
     } else {
       startIfFlagAllows()

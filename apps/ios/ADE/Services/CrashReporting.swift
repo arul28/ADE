@@ -69,7 +69,7 @@ enum CrashReporting {
       options.beforeBreadcrumb = { crumb in ADECrashScrubber.scrub(crumb) }
       // The budget decides first, on the raw event; the scrubber only cleans.
       options.beforeSend = { event in
-        if isIdleRunLoopAppHang(event) { return nil }
+        if isIdleRunLoopAppHang(event) || isNoiseHang(event) { return nil }
         groupAppHang(event)
         guard ADECrashEventLimiter.shared.admit(ADECrashScrubber.fingerprint(for: event)) else { return nil }
         let scrubbed = ADECrashScrubber.scrub(event)
@@ -189,6 +189,16 @@ enum CrashReporting {
     return ADEAppHangStack.isIdleRunLoop(frames.map {
       ADEAppHangStack.Frame(package: $0.package, inApp: $0.inApp?.boolValue == true)
     })
+  }
+
+  /// A hang report that is not a freeze someone saw: see `ADEHangReportFilter`.
+  private static func isNoiseHang(_ event: Sentry.Event) -> Bool {
+    guard let exception = event.exceptions?.last else { return false }
+    return ADEHangReportFilter.isNoise(
+      type: exception.type,
+      value: exception.value,
+      isFatal: event.level == .fatal
+    )
   }
 
   /// One issue per kind of app hang, not per duration. The SDK titles a hang
@@ -348,6 +358,56 @@ enum ADEAppHangStack {
   private static func library(_ frame: Frame) -> String {
     guard let package = frame.package else { return "" }
     return package.split(separator: "/").last.map(String.init) ?? package
+  }
+}
+
+/// Hang reports that describe no freeze a person saw, read from the exception
+/// Sentry builds:
+/// - A non-fatal `App Hang …` lasting over `maxNonFatalAppHangSeconds`. The
+///   detector measured the app suspended in the background (reports ran from
+///   200 s to 23,000 s); a real freeze that long ends in a watchdog kill, which
+///   arrives as the fatal type and is always kept.
+/// - A MetricKit `MXHangDiagnostic` under `minMetricKitHangSeconds`: the
+///   keyboard and other system work the OS counts as a hang, not one of ours.
+/// A value this cannot read is kept.
+enum ADEHangReportFilter {
+  static let maxNonFatalAppHangSeconds: Double = 60
+  static let minMetricKitHangSeconds: Double = 2
+
+  static func isNoise(type: String?, value: String?, isFatal: Bool) -> Bool {
+    guard let type, let value else { return false }
+    if type == "MXHangDiagnostic" {
+      guard let seconds = metricKitHangSeconds(value) else { return false }
+      return seconds < minMetricKitHangSeconds
+    }
+    guard type.contains("App Hang"), !isFatal, !type.hasPrefix("Fatal") else { return false }
+    guard let seconds = appHangMinimumSeconds(value) else { return false }
+    return seconds > maxNonFatalAppHangSeconds
+  }
+
+  /// "App hanging between 235.3 and 236.1 seconds." -> 235.3
+  static func appHangMinimumSeconds(_ value: String) -> Double? {
+    guard let range = value.range(of: "between ") else { return nil }
+    let number = value[range.upperBound...].prefix { $0.isNumber || $0 == "." }
+    return Double(number)
+  }
+
+  /// "MXHangDiagnostic hangDuration:1.603 sec" -> 1.603. Sentry formats the
+  /// OS's measurement in en_US with the unit it came in.
+  static func metricKitHangSeconds(_ value: String) -> Double? {
+    guard let range = value.range(of: "hangDuration:") else { return nil }
+    let parts = value[range.upperBound...].trimmingCharacters(in: .whitespaces)
+      .split(separator: " ", maxSplits: 1)
+    guard let first = parts.first, let amount = Double(first.replacingOccurrences(of: ",", with: "")) else {
+      return nil
+    }
+    switch parts.count > 1 ? String(parts[1]) : "" {
+    case "ms": return amount / 1_000
+    case "sec", "s": return amount
+    case "min": return amount * 60
+    case "hr", "h": return amount * 3_600
+    default: return nil
+    }
   }
 }
 

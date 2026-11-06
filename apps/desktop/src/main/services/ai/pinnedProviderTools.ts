@@ -79,6 +79,12 @@ export function pinnedToolBlocker(label: string, status: PinnedToolStatus): stri
     case "downloading":
       return `ADE is downloading ${label} for this machine. Refresh when it finishes.`;
     case "failed":
+      // The install lock outlived this process's wait: another ADE on this
+      // machine is still installing the same copy, and its result is what this
+      // process uses once it lands. Nothing here failed.
+      if (status.errorKind === "lock-timeout") {
+        return `Another ADE on this machine is still installing ${label}. Try again when it finishes.`;
+      }
       return `Couldn't download ${label}: ${failureReason(status.errorKind)}. Retry from Settings > Providers.`;
     case "unavailable":
       return status.errorKind === "unsupported-target"
@@ -147,12 +153,14 @@ export class PinnedToolNotReadyError extends Error {
     this.tool = tool;
     this.state = status.state;
     this.errorKind = status.errorKind;
-    // Not downloaded yet, still downloading, or not built for this machine's
-    // platform: the machine's state, which the message names. A failed
+    // Not downloaded yet, still downloading (here, or by another ADE holding
+    // the install lock), or not built for this machine's platform: the
+    // machine's state, which the message names. A failed
     // download, a build with no pin for the tool (a broken manifest) and a
     // "ready" tool that could not start stay issues: those are ADE's.
     const machineState = status.state === "missing"
       || status.state === "downloading"
+      || (status.state === "failed" && status.errorKind === "lock-timeout")
       || (status.state === "unavailable" && status.errorKind === "unsupported-target");
     if (machineState) {
       markExpected(this, "environment");

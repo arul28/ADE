@@ -1783,6 +1783,7 @@ export function registerIpc({
   runWithIpcWindow,
   getWindowSession,
   waitForStartupProjectOpen,
+  getProjectContext,
   setWindowProjectTabs,
   bindRemoteProject,
   localRuntimeConnectionPool,
@@ -3514,6 +3515,8 @@ export function registerIpc({
   ipcMain.handle(IPC.appGetWindowSession, async (event) => {
     // The first window can load before the launch has opened its project.
     await waitForStartupProjectOpen?.();
+    // The window can close while the launch is still opening its project.
+    if (event.sender.isDestroyed()) return null;
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
     if (getWindowSession) return getWindowSession(windowId);
     const ctx = getCtx();
@@ -4303,7 +4306,8 @@ export function registerIpc({
         properties: ["openDirectory"]
       };
       const result = await showRememberedOpenDialog(win, options);
-      if (result.canceled || result.filePaths.length === 0) {
+      // The window can close while the dialog is up; its id is gone with it.
+      if (result.canceled || result.filePaths.length === 0 || event.sender.isDestroyed()) {
         return null;
       }
       const selected = result.filePaths[0]!;
@@ -7808,19 +7812,25 @@ export function registerIpc({
   const readLeftoverWorktree = async (
     event: { sender: Electron.WebContents },
     laneId: string,
+    projectRoot?: string | null,
   ): Promise<LaneDeleteLeftoverWorktree | null> => {
-    const fromRuntime = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+    // `projectRoot` is the project whose delete left the folder; the window
+    // may show another tab by now.
+    const getLeftover = (pool: LocalRuntimeConnectionPool, rootPath: string) =>
       pool.callActionForRoot(rootPath, {
         domain: "lane",
         action: "getLeftoverWorktree",
         args: { laneId },
-      }),
-    );
+      });
+    const fromRuntime = projectRoot
+      ? (localRuntimeConnectionPool ? await getLeftover(localRuntimeConnectionPool, projectRoot) : null)
+      : await tryLocalRuntimeSync(event, getLeftover);
     const runtimeLeftover = fromRuntime?.result;
     if (runtimeLeftover && typeof runtimeLeftover === "object" && typeof (runtimeLeftover as LaneDeleteLeftoverWorktree).path === "string") {
       return runtimeLeftover as LaneDeleteLeftoverWorktree;
     }
-    return getCtx().laneService?.getLeftoverWorktree(laneId) ?? null;
+    const ctx = projectRoot ? getProjectContext?.(projectRoot) ?? null : getCtx();
+    return ctx?.laneService?.getLeftoverWorktree(laneId) ?? null;
   };
 
   ipcMain.handle(IPC.lanesRevealWorktree, async (event, arg: { laneId: string }): Promise<void> => {
@@ -7830,8 +7840,12 @@ export function registerIpc({
     shell.showItemInFolder(worktreePath);
   });
 
-  ipcMain.handle(IPC.lanesRevealLeftoverWorktree, async (event, arg: { laneId: string }): Promise<void> => {
-    const leftover = await readLeftoverWorktree(event, arg.laneId);
+  ipcMain.handle(IPC.lanesRevealLeftoverWorktree, async (event, arg: { laneId: string; rootPath?: string }): Promise<void> => {
+    // Only a project ADE knows; never a path the renderer made up.
+    const rootPath = typeof arg?.rootPath === "string" && arg.rootPath.trim()
+      ? resolveAllowedProjectRoot(arg.rootPath)
+      : null;
+    const leftover = await readLeftoverWorktree(event, arg.laneId, rootPath);
     if (!leftover?.path) throw new Error("That folder is no longer available to reveal.");
     if (!fs.existsSync(leftover.path)) throw new Error("That folder is no longer on disk.");
     shell.showItemInFolder(leftover.path);
@@ -12267,14 +12281,19 @@ export function registerIpc({
     callMachineMethod: runtimeBridge.callMachineMethod,
     callLocalMachineMethod: async (machineKey) => {
       if (!localRuntimeConnectionPool) throw new Error("The local runtime is unavailable.");
-      const rootPath = getCtx().project?.rootPath?.trim();
-      // A window with no project open (Settings › Account on the welcome
-      // screen) has no local runtime to ask; the row shows that state.
-      if (!rootPath) throw new AdeExpectedError("The local project runtime is unavailable.", "environment");
+      // This computer's inventory is machine data; any booted project scope
+      // can answer for it. A window with no project open (Settings › Account
+      // on the welcome screen) may have none: the accounts come from the
+      // machine's own store and the presets from its settings cache, and only
+      // the model counts and CLI sign-ins, which need the brain, stay unknown.
+      const rootPath = getCtx().project?.rootPath?.trim()
+        || bootedUsageScopeRoot(getResourceUsageContexts?.() ?? [])
+        || null;
       return await readLocalMachineInventoryDetail({
         machineKey,
         providerInstanceStore: getMachineProviderInstanceStore(),
         readPresetValue: async () => {
+          if (!rootPath) return readHarnessPresetsFromMachine(resolveMachineAdeLayout().adeDir) ?? undefined;
           const response = await localRuntimeConnectionPool.callActionForRoot(rootPath, {
             domain: "account_settings",
             action: "get",
@@ -12283,6 +12302,7 @@ export function registerIpc({
           return response.result;
         },
         readAiStatus: async () => {
+          if (!rootPath) return undefined;
           const response = await localRuntimeConnectionPool.callActionForRoot(rootPath, {
             domain: "ai",
             action: "getStatus",

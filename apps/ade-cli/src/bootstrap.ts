@@ -25,6 +25,7 @@ import {
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
 import { mapKvDbOpenErrorCode } from "../../desktop/src/shared/types/recovery";
 import { codedError } from "../../desktop/src/shared/codedError";
+import { markExpected } from "../../desktop/src/shared/expectedError";
 import { shippedVersionOrNull } from "../../desktop/src/shared/updateTrack";
 import {
   detectCloudPlaceholderFile,
@@ -1080,11 +1081,20 @@ export async function createAdeRuntime(args: {
     // storage faults (a socket errno must not read as an unreadable file).
     const code = mapKvDbOpenErrorCode(classifySqliteOpenError(error, { path: paths.dbPath }));
     const detail = error instanceof Error ? error.message : String(error);
+    // A drive that stopped answering and a peer that kept the database locked
+    // are this machine's state, not a defect: the person gets the fix, and
+    // Sentry gets a Log instead of an issue.
+    const environmentFailure = code === "storage_io_failed" || code === "db_busy";
+    if (environmentFailure && error instanceof Error) markExpected(error, "environment");
     const failure = {
       code,
       message: code === "storage_read_failed"
         ? storageUnreadableMessage(paths.dbPath, detectCloudStorageProvider(paths.dbPath))
-        : "ADE could not open the project data store.",
+        : code === "storage_io_failed"
+          ? `ADE couldn't read or write this project's data at ${paths.dbPath}: the drive isn't answering. Check that the drive is connected and has free space, then open the project again.`
+          : code === "db_busy"
+            ? "Another ADE process is still using this project's data. Wait a moment, then open the project again."
+            : "ADE could not open the project data store.",
       detail,
       projectRoot,
       component: "project_db_open" as const,
@@ -1110,10 +1120,11 @@ export async function createAdeRuntime(args: {
     // above and handed the renderer a bare libuv message. Carry the code, the
     // offending path and the raw errno instead — the code picks the recovery
     // copy, and `detail` stays for logs and `ade report-issue`.
-    throw Object.assign(
+    const coded = Object.assign(
       codedError(failure.message, code),
       { dbPath: paths.dbPath, projectRoot, detail },
     );
+    throw environmentFailure ? markExpected(coded, "environment") : coded;
   }
   clearLastFailure({ kind: "project", projectRoot });
 

@@ -21,6 +21,7 @@ import {
   usageClientSurfaceFromPeer,
 } from "../../../../desktop/src/main/services/usage/usageStatsStore";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
+import { createRepeatedFailureGate } from "../../../../desktop/src/main/services/logging/repeatedFailure";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket } from "ws";
@@ -3229,6 +3230,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   let disposed = false;
   let startupError: Error | null = null;
+  // Timer ticks that touch the project database (the local device row is a
+  // CRR write) must never throw out of the timer: an uncaught error there
+  // kills the brain. A database that stays broken (a disk I/O error, a full
+  // disk) fails every tick, so each new cause is logged once.
+  const timerTickFailures = createRepeatedFailureGate();
+  const reportTimerTickFailure = (timer: string, error: unknown): void => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (timerTickFailures.repeated(message, timer)) return;
+    args.logger.warn("sync_host.timer_tick_failed", { timer, error: message });
+  };
   const loopbackProbe = args.loopbackProbe ?? probeAdeLoopbackListener;
   let loopbackValidationStatus: SyncLoopbackValidationStatus = sharedListener
     ? sharedListener.getLoopbackValidationStatus()
@@ -3517,6 +3528,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   wakePollPump();
   const heartbeatTimer = setInterval(() => {
+    try {
+      heartbeatTick();
+      timerTickFailures.clear("heartbeat");
+    } catch (error) {
+      reportTimerTickFailure("heartbeat", error);
+    }
+  }, heartbeatIntervalMs);
+  function heartbeatTick(): void {
     pairFailureTracker.pruneExpired();
     adoptChallengeTracker.pruneExpired();
     const refreshedLocalPresence = refreshLocalLanePresence();
@@ -3570,7 +3589,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       peer.awaitingHeartbeatAt = sentAt;
       send(peer.ws, "heartbeat", { kind: "ping", sentAt, dbVersion: args.db.sync.getDbVersion() });
     }
-  }, heartbeatIntervalMs);
+  }
   const brainStatusTimer = setInterval(() => {
     broadcastBrainStatus();
   }, brainStatusIntervalMs);
@@ -5820,8 +5839,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       (peer) => peer.authenticated && peer.ws.readyState === WebSocket.OPEN,
     );
     if (recipients.length === 0) return;
-    const payload = buildBrainStatus();
-    for (const peer of recipients) send(peer.ws, "brain_status", payload);
+    // Runs from timers and event handlers alike; a failed build (the device
+    // row write hit a disk I/O error) skips this status, never the process.
+    try {
+      const payload = buildBrainStatus();
+      for (const peer of recipients) send(peer.ws, "brain_status", payload);
+      timerTickFailures.clear("brain_status");
+    } catch (error) {
+      reportTimerTickFailure("brain_status", error);
+    }
   }
 
   // A catching-up replica acks a batch every round trip. Broadcasting a full

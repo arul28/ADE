@@ -1704,6 +1704,9 @@ export function createBuiltInBrowserService(args: {
       };
     },
     attachToWindow(nextWin: BrowserWindow): void {
+      // The first window can close before the launch finishes opening its
+      // project; there is nothing left to attach to.
+      if (nextWin.isDestroyed?.()) return;
       activeWindowId = nextWin.id;
       serviceForWindow(nextWin).attachToWindow(nextWin);
     },
@@ -5009,6 +5012,7 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   const attachToWindow = (nextWin: BrowserWindow): void => {
+    if (nextWin.isDestroyed?.()) return;
     if (win === nextWin) {
       attachViewsToCurrentWindow();
       emitStatus();

@@ -14,6 +14,7 @@ export const APP_FALLBACK_REFUSED_FAILURES: ReadonlySet<AdeRecoveryErrorCode> = 
   "insufficient_headroom",
   "db_integrity",
   "storage_read_failed",
+  "storage_io_failed",
   "migration_incomplete",
   "migration_unknown_state",
 ]);

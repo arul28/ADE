@@ -2415,9 +2415,23 @@ app.whenReady().then(async () => {
    * quietly repoint it somewhere else.
    */
   let accountAuthServiceForOwnerId: AccountAuthService | null = null;
+  // The renderer's account status keeps the last signed-in identity across an
+  // unreadable session read (a locked or briefly unreadable credential file),
+  // so it does not flash to signed out. Main follows the same rule: answering
+  // null there made every Activity call from that window read as "the account
+  // changed" until the file was readable again.
+  let lastReadableAccountOwnerId: string | null = null;
   const readAccountOwnerId = (): string | null => {
-    const status = accountAuthServiceForOwnerId?.getStatus();
-    return status?.signedIn ? status.userId?.trim() || null : null;
+    const service = accountAuthServiceForOwnerId;
+    if (!service) return null;
+    const status = service.getStatus();
+    if (status.signedIn) {
+      lastReadableAccountOwnerId = status.userId?.trim() || null;
+      return lastReadableAccountOwnerId;
+    }
+    if (service.getSessionReadState?.() === "unreadable") return lastReadableAccountOwnerId;
+    lastReadableAccountOwnerId = null;
+    return null;
   };
   const productAnalyticsStateFile = defaultProductAnalyticsStateFile(machineAdeLayout.adeDir);
   const analyticsReleaseChannel = resolveReleaseChannel({ env: process.env, packaged: app.isPackaged, version: app.getVersion() });

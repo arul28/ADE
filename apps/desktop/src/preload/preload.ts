@@ -7278,17 +7278,28 @@ const adeBridge = {
       }
       await ipcRenderer.invoke(IPC.lanesRevealWorktree, args);
     },
-    revealLeftoverWorktree: async (args: { laneId: string }): Promise<void> => {
-      const binding = await getRemoteProjectBinding();
+    revealLeftoverWorktree: async (
+      args: { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
+      const binding = pin ? (pin.kind === "remote" ? pin : null) : await getRemoteProjectBinding();
       if (binding) {
         throw new Error(
           "Remote lane folders cannot be revealed on this machine. Copy the remote path instead.",
         );
       }
-      await ipcRenderer.invoke(IPC.lanesRevealLeftoverWorktree, args);
+      // A local pin names the project whose delete left the folder, which can
+      // be another tab than the one this window shows now.
+      await ipcRenderer.invoke(
+        IPC.lanesRevealLeftoverWorktree,
+        pin?.kind === "local" ? { ...args, rootPath: pin.rootPath } : args,
+      );
     },
-    deleteLeftoverWorktree: async (args: { laneId: string }): Promise<{ removed: boolean }> =>
-      callProjectRuntimeActionOr("lane", "deleteLeftoverWorktree", { args }, () =>
+    deleteLeftoverWorktree: async (
+      args: { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ removed: boolean }> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "deleteLeftoverWorktree", { args }, () =>
         ipcRenderer.invoke(IPC.lanesDeleteLeftoverWorktree, args),
       ),
     initEnv: async (

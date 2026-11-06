@@ -1,5 +1,6 @@
 import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import {
+  isPushRelayNoAccountTokenError,
   PushRelayRequestError,
   PushRelayUnreachableError,
 } from "../../../../../ade-cli/src/services/push/pushRelayClient";
@@ -18,6 +19,7 @@ import {
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import type { Logger } from "../logging/logger";
 import { withDeadline } from "../shared/withTimeout";
+import { markExpected } from "../../../shared/expectedError";
 
 type AccountAttentionClient = Pick<
   PushRelayClient,
@@ -636,6 +638,10 @@ export class AttentionAccountCoordinator {
         );
         this.noteRelayAvailable();
       } catch (error) {
+        // No account token to send (signed out, or a session that could not
+        // refresh): there is no presence to report, and the next heartbeat
+        // after sign-in carries the current state.
+        if (isPushRelayNoAccountTokenError(error)) return;
         if (!isRelayUnavailable(error)) throw error;
         this.noteRelayUnavailable("presence", error);
       }
@@ -862,7 +868,12 @@ export class AttentionAccountCoordinator {
       throw new Error("A valid Activity account owner is required.");
     }
     if (this.currentAccountOwnerId() !== accountOwnerId) {
-      throw new Error("The ADE account changed before Activity preferences could be used.");
+      // A real switch (or sign-out) between the window's read and this call:
+      // the right answer, and the window retries with the new account.
+      throw markExpected(
+        new Error("The ADE account changed before Activity preferences could be used."),
+        "user",
+      );
     }
     return accountOwnerId;
   }

@@ -1089,9 +1089,15 @@ export function resolveCachedCursorModelAvailability(
 ): CursorModelAvailability | null {
   const ref = normalizeCursorModelLookupRef(modelRef);
   if (!ref) return null;
-  const cli = (getCachedCursorModels() ?? []).some((row) => cursorRowMatchesRef(row, ref));
   const sdkRows = getCachedCursorSdkModels(apiKey);
-  if (!sdkRows) return cli ? { cli: true, sdk: false } : null;
+  if (!sdkRows) {
+    // The SDK list has not loaded for this key yet, so SDK support is unknown,
+    // not "no". Answering `sdk: false` here refused Auto and every other chat
+    // model on a fresh launch. Start the load so the next check can tell.
+    warmCursorModelsFromSdk(apiKey);
+    return null;
+  }
+  const cli = (getCachedCursorModels() ?? []).some((row) => cursorRowMatchesRef(row, ref));
   const sdk = sdkRows.some((row) => cursorRowMatchesRef(row, ref));
   return cli || sdk ? { cli, sdk } : null;
 }
