@@ -289,7 +289,7 @@ public actor DeviceSession {
             }
             throw error
         }
-        await session.setScreenTurns(await readScreenTurns(nil))
+        if await isFoldable() { await session.setScreenTurns(await readScreenTurns(nil)) }
         recording = session
     }
 
@@ -378,6 +378,17 @@ public actor DeviceSession {
         _ = await applyActiveScreen(live.screenID)
     }
 
+    /// Tell a running recording how the live panel stands now.
+    ///
+    /// Separate from `applyActiveScreen` because the panel does not have to
+    /// change for the answer to: a Duo turned in the hand reports a new
+    /// orientation for the same screen, and a recording that kept the old turn
+    /// would write the rest of the file on its side.
+    public func refreshRecordingScreenTurns() async {
+        guard let recording, await isFoldable() else { return }
+        await recording.setScreenTurns(await readScreenTurns(nil))
+    }
+
     /// The panel CoreDevice reports active: capture it, route input to it, and
     /// measure it. Returns the panel's metrics when they changed, else nil.
     public func applyActiveScreen(_ screenID: UInt32?) async -> DeviceMetrics? {
@@ -393,9 +404,6 @@ public actor DeviceSession {
                size.width != metrics.pixelWidth || size.height != metrics.pixelHeight {
                 metrics = DeviceMetrics.fromPixels(width: size.width, height: size.height, assumedScale: metrics.scale)
                 panelMetrics[screenID] = metrics
-                // A recording in flight is now receiving the other panel, on
-                // its own side; tell it how to stand the picture up.
-                if let recording { await recording.setScreenTurns(await readScreenTurns(nil)) }
                 return metrics
             }
         }

@@ -80,6 +80,9 @@ public actor SimHelperRuntime {
         var payload = state.payload
         if let session = sessions[udid] {
             _ = await session.applyActiveScreen(state.activeScreenID)
+            // After the panel, the turn: a recording follows both, and a
+            // device turned without folding changes only the second.
+            await session.refreshRecordingScreenTurns()
             let metrics = await session.metrics
             payload["pointWidth"] = metrics.pointWidth
             payload["pointHeight"] = metrics.pointHeight
