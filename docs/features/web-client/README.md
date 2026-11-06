@@ -87,8 +87,8 @@ Build and static host:
   and with the one-year immutable cache. The worker answers it with a 404 and
   `Cache-Control: no-store` instead. An open tab from the old build then gets a
   plain load failure, and `lib/staleChunkReload.ts` reloads it once. The worker
-  sets the `/assets/*` cache headers itself. If it throws, Pages serves the
-  static file. `_headers` and `_redirects` still apply to every other path.
+  sets the `/assets/*` cache headers itself. If its own code throws, it
+  returns the static answer unchanged. `_headers` and `_redirects` still apply to every other path.
   `npx wrangler@4 pages dev apps/desktop/dist/web-client` runs it on this
   machine.
 
