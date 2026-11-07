@@ -41,6 +41,7 @@ import { androidLaneFolderName, containAndroidOutPath, writeAndroidFileNoFollow 
 import type { AndroidStreamHub } from "./androidStream";
 import { createAndroidUiSnapshots, elementActionResult, readElementQuery } from "./androidUiSnapshot";
 import { describeElementQuery, pickElement } from "./androidUiTree";
+import { androidAvdDisplayName } from "../../../shared/androidDevicePresentation";
 
 /*
  * The P1 agent suite: `ade android` at the level of `ade apple`. Apps, the
@@ -195,7 +196,10 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
     demoEngines: deps.demoEngines ?? null,
     readPreferences: deps.readPreferences,
     screenSize: (laneId) => screenSize(laneId),
-    deviceName: (laneId) => deps.laneDevices.get(laneId)?.avdName ?? null,
+    deviceName: (laneId) => {
+      const avdName = deps.laneDevices.get(laneId)?.avdName;
+      return avdName ? androidAvdDisplayName(avdName) : null;
+    },
   });
 
   // Rec: an agent's input starts a recording; every input is drawn on one (`androidAutoRecord.ts`).

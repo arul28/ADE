@@ -5495,7 +5495,8 @@ function AgentChatComposerImpl({
     chip.appendChild(label);
 
     const source = document.createElement("span");
-    source.className = "max-w-[90px] truncate text-cyan-100/45";
+    // Cut the start, not the end, so the line number of `File.kt:80` stays.
+    source.className = "max-w-[90px] truncate text-left text-cyan-100/45 [direction:rtl]";
     source.textContent = iosContextSourceDescription(item);
     chip.appendChild(source);
 

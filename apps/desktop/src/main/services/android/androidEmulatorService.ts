@@ -456,6 +456,9 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     invalidateUi: (laneId) => agent.invalidateUi(laneId),
     onRotated: (laneId) => {
       agent.recordings.forgetScreenSize(laneId);
+      void deviceSettings.refreshStatusBar(laneId).catch((error: unknown) => {
+        logger?.warn("android.status_bar_refresh_failed", { laneId, error: getErrorMessage(error) });
+      });
       // Parity: a half turn keeps the video's shape, so viewers learn the turn here.
       // The read is one more adb call; the caller does not wait for it, the event follows.
       void deviceSettings.getDeviceSettings(laneId, "orientation").then((read) => {

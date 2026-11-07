@@ -395,6 +395,9 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
     }
   };
 
+  /** The status bar each lane asked for, to apply again after the screen re-lays out. */
+  const statusBars = new Map<string, ReturnType<typeof readStatusBar>>();
+
   /*
    * One accessibility switch. Grayscale and color correction share the
    * daltonizer: turning one on sets its mode; turning one off ends the
@@ -474,6 +477,39 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
     ["am broadcast -a com.android.systemui.demo -e command", command,
       ...Object.entries(extras).flatMap(([key, value]) => ["-e", key, value]), ">/dev/null"].join(" ");
 
+  /** Demo mode's enter and each icon of the bar. */
+  const statusBarCommands = (bar: ReturnType<typeof readStatusBar>): string[] => {
+    const wifi = bar.network === "wifi";
+    return [
+      demo("enter"),
+      demo("clock", { hhmm: bar.hhmm }),
+      demo("battery", { level: String(bar.batteryLevel), plugged: bar.charging ? "true" : "false" }),
+      demo("network", wifi
+        ? { wifi: "show", level: String(bar.wifiBars), fully: "true" }
+        : { wifi: "hide" }),
+      // Wi-Fi hides the mobile icon: SystemUI keeps a stale type label (3G) on it in demo mode.
+      demo("network", wifi
+        ? { mobile: "hide" }
+        : { mobile: "show", datatype: bar.network, level: String(bar.cellularBars), fully: "true" }),
+      demo("notifications", { visible: "false" }),
+    ];
+  };
+
+  /**
+   * SystemUI adds one more demo Wi-Fi icon each time the status bar lays out
+   * again in demo mode (a rotation, a text or display size change). Sending
+   * the icons again does not remove the extra ones; leaving demo mode and
+   * entering it again does. Only while the override is still on: a person may
+   * have turned demo mode off on the device.
+   */
+  const refreshStatusBar = async (laneId: string): Promise<void> => {
+    const bar = statusBars.get(laneId);
+    if (!bar) return;
+    const booted = await deps.requireBooted(laneId);
+    const commands = [demo("exit"), ...statusBarCommands(bar)].join(" && ");
+    await apply(booted, [`if [ "$(settings get global sysui_tuner_demo_on)" = 1 ]; then ${commands}; fi`], "the status bar");
+  };
+
   const statusBarState = async (booted: BootedDevice, laneId: string, time: string | null): Promise<AndroidStatusBarResult> => {
     const text = (await shell(booted, "settings get global sysui_tuner_demo_on")).stdout.trim();
     return { laneId, overridden: text === "1", time };
@@ -548,6 +584,7 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
       default:
         throw new Error(`Unknown setting kind "${(setting as { kind: string }).kind}".`);
     }
+    if (setting.kind === "text-size" || setting.kind === "display-size") await refreshStatusBar(laneId);
     deps.onScreenChanged(laneId);
   };
 
@@ -583,23 +620,13 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
       const laneId = requireLaneId(args?.laneId);
       const bar = readStatusBar(args);
       const booted = await deps.requireBooted(laneId);
-      const wifi = bar.network === "wifi";
       await apply(booted, [
         "settings put global sysui_demo_allowed 1",
         // The tuner switch is what SystemUI reads for "in demo mode", and what the read reports.
         "settings put global sysui_tuner_demo_on 1",
-        demo("enter"),
-        demo("clock", { hhmm: bar.hhmm }),
-        demo("battery", { level: String(bar.batteryLevel), plugged: bar.charging ? "true" : "false" }),
-        demo("network", wifi
-          ? { wifi: "show", level: String(bar.wifiBars), fully: "true" }
-          : { wifi: "hide" }),
-        // Wi-Fi hides the mobile icon: SystemUI keeps a stale type label (3G) on it in demo mode.
-        demo("network", wifi
-          ? { mobile: "hide" }
-          : { mobile: "show", datatype: bar.network, level: String(bar.cellularBars), fully: "true" }),
-        demo("notifications", { visible: "false" }),
+        ...statusBarCommands(bar),
       ], "the status bar");
+      statusBars.set(laneId, bar);
       deps.onScreenChanged(laneId);
       return statusBarState(booted, laneId, bar.time);
     },
@@ -608,6 +635,7 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
       const laneId = requireLaneId(args?.laneId);
       const booted = await deps.requireBooted(laneId);
       await apply(booted, [demo("exit"), "settings put global sysui_tuner_demo_on 0"], "the status bar");
+      statusBars.delete(laneId);
       deps.onScreenChanged(laneId);
       return statusBarState(booted, laneId, null);
     },
@@ -645,6 +673,7 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
   return {
     getDeviceSettings: (laneId: string, fields: AndroidDeviceSettingsFields = "all") => read(laneId, fields),
     setDeviceSetting: write,
+    refreshStatusBar,
     verbs,
   };
 }
