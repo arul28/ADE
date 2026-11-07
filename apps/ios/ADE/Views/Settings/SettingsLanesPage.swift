@@ -36,6 +36,9 @@ struct SettingsLanesPage: View {
   @State private var toast: ADEToastMessage?
   /// The project the page's values were read from.
   @State private var loadedProjectId: String?
+  /// Bumped on a project change, so a save started for the old project
+  /// neither changes the new project's rows nor holds them.
+  @State private var projectGeneration = 0
 
   private var connected: Bool { syncService.connectionState == .connected }
   private var machine: String { syncService.machineDisplayName }
@@ -74,6 +77,11 @@ struct SettingsLanesPage: View {
         branchListLaneId = nil
         customPattern = false
         patternDraft = ""
+        patternError = nil
+        savingStart = false
+        savingPattern = false
+        savingTemplate = false
+        projectGeneration += 1
         loadedProjectId = projectId
       }
       await load(projectId)
@@ -391,6 +399,7 @@ struct SettingsLanesPage: View {
         if !customPattern { patternDraft = snapshot.defaults.branchPattern ?? Self.defaultPattern }
       }
     } catch {
+      guard syncService.activeProjectId == projectId else { return }
       settingsLanesLog.warning("New lane defaults read failed: \(error.localizedDescription, privacy: .public)")
       if defaults == nil { defaultsError = SyncUserFacingError.message(for: error) }
     }
@@ -413,6 +422,7 @@ struct SettingsLanesPage: View {
         settingsLanesLog.warning("Default lane template read failed: \(error.localizedDescription, privacy: .public)")
       }
     } catch {
+      guard syncService.activeProjectId == projectId else { return }
       settingsLanesLog.warning("Lane templates read failed: \(error.localizedDescription, privacy: .public)")
       if templates == nil { templatesError = SyncUserFacingError.message(for: error) }
     }
@@ -428,15 +438,18 @@ struct SettingsLanesPage: View {
     guard let previous = defaults?.defaults.start, previous != next, !savingStart else { return }
     defaults?.defaults.start = next
     savingStart = true
+    let generation = projectGeneration
     Task {
-      defer { savingStart = false }
-      toast = await SettingsPageCopy.commit(
+      let message = await SettingsPageCopy.commit(
         failure: "Couldn't save where new lanes start.",
         on: machine,
-        revert: { _ in defaults?.defaults.start = previous }
+        revert: { _ in if generation == projectGeneration { defaults?.defaults.start = previous } }
       ) {
         try await syncService.saveNewLaneDefaults(start: next)
-      } ?? toast
+      }
+      guard generation == projectGeneration else { return }
+      savingStart = false
+      toast = message ?? toast
     }
   }
 
@@ -453,27 +466,31 @@ struct SettingsLanesPage: View {
     }
     defaults?.defaults.branchPattern = pattern
     savingPattern = true
+    let generation = projectGeneration
+    let projectId = loadedProjectId
     Task {
-      defer { savingPattern = false }
       var failed = false
-      toast = await SettingsPageCopy.commit(
+      let message = await SettingsPageCopy.commit(
         failure: "Couldn't save branch names.",
         on: machine,
         revert: { reason in
           failed = true
+          guard generation == projectGeneration else { return }
           defaults?.defaults.branchPattern = previous
           patternError = reason
         }
       ) {
         try await syncService.saveNewLaneDefaults(branchPattern: pattern)
-      } ?? toast
+      }
+      guard generation == projectGeneration else { return }
+      savingPattern = false
+      toast = message ?? toast
       guard !failed else { return }
       patternError = nil
       customPattern = false
       // The machine fills `{user}` into the prefix it reports; read it back
       // once this save no longer holds the row.
-      savingPattern = false
-      if let id = syncService.activeProjectId { await loadDefaults(id) }
+      if let projectId { await loadDefaults(projectId) }
     }
   }
 
@@ -482,19 +499,22 @@ struct SettingsLanesPage: View {
     let previous = defaultTemplateId
     defaultTemplateId = templateId
     savingTemplate = true
+    let generation = projectGeneration
     Task {
-      defer { savingTemplate = false }
       var failed = false
-      toast = await SettingsPageCopy.commit(
+      let message = await SettingsPageCopy.commit(
         failure: "Couldn't change the template.",
         on: machine,
         revert: { _ in
           failed = true
-          defaultTemplateId = previous
+          if generation == projectGeneration { defaultTemplateId = previous }
         }
       ) {
         try await syncService.setDefaultLaneTemplate(templateId)
-      } ?? toast
+      }
+      guard generation == projectGeneration else { return }
+      savingTemplate = false
+      toast = message ?? toast
       if !failed { defaults?.defaults.templateId = templateId }
     }
   }
