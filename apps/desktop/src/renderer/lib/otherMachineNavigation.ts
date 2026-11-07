@@ -109,16 +109,24 @@ function unionListsSession(machines: CrossMachineLanes, sessionId: string): bool
 }
 
 /**
- * Pairs this window with the account machine `machineKey` and connects to it,
- * so the union starts reading it. Best effort: this computer's own key, or a
- * failure, does nothing more than log.
+ * Connects this window to the account machine `machineKey`, so the union
+ * starts reading it. A machine already connected is left alone, and a saved
+ * one connects with its saved pairing: pairing again replaces the live
+ * connection on that machine. Only a machine this window never saved is
+ * paired. Best effort: this computer's own key, or a failure, only logs.
  */
 async function connectAccountMachine(machineKey: string): Promise<void> {
+  const sameKey = (key: string | null | undefined) => key?.trim().toLowerCase() === machineKey.toLowerCase();
   try {
-    const local = (await window.ade.account.getLocalMachineIdentity?.())?.machineKey?.trim() || null;
-    if (local && local === machineKey) return;
-    const paired = await window.ade.account.pairMachine(machineKey);
-    await window.ade.remoteRuntime.connect(paired.targetId);
+    const local = (await window.ade.account.getLocalMachineIdentity?.())?.machineKey ?? null;
+    if (sameKey(local)) return;
+    const runtime = window.ade.remoteRuntime;
+    const live = (await runtime.getConnectionSnapshot()).connections
+      .find((connection) => sameKey(connection.target.pairedMachine?.machineKey));
+    if (live && (live.state === "connected" || live.state === "connecting")) return;
+    const saved = live?.target ?? (await runtime.listTargets()).find((target) => sameKey(target.pairedMachine?.machineKey));
+    const targetId = saved?.id ?? (await window.ade.account.pairMachine(machineKey)).targetId;
+    await runtime.connect(targetId);
   } catch (error) {
     console.warn("[otherMachineNavigation] could not connect the machine the chat moved to", error);
   }
