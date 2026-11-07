@@ -4,8 +4,8 @@ import {
   writeSavedContinueAfterRestart,
 } from "../../../../../ade-cli/src/services/runtime/continueAfterRestartStore";
 import { readSavedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
-import { codedError, encodeCodedErrorMessage, isErrnoLikeCode } from "../../../shared/codedError";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { encodeCodedErrorMessage, isErrnoLikeCode } from "../../../shared/codedError";
+import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -3379,7 +3379,10 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
         if (typeof code !== "string" || !code.trim() || isErrnoLikeCode(code)) throw error;
         const message = error instanceof Error ? error.message : String(error);
         if (message.startsWith(`${code}:`)) throw error;
-        throw codedError(encodeCodedErrorMessage(code, message), code);
+        throw carryExpected(
+          error,
+          Object.assign(new Error(encodeCodedErrorMessage(code, message), { cause: error }), { code }),
+        );
       }
     },
     async setToken(args?: unknown) {

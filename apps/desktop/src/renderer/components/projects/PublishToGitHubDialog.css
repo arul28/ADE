@@ -42,6 +42,11 @@
   padding: 0 10px 0 7px;
 }
 .ade-gh-publish-owner:focus-within { border-color: color-mix(in srgb, var(--color-fg) 35%, transparent); }
+/* The inner input drops its own outline, so the well carries the kit input's focus ring. */
+.ade-gh-publish-owner:has(input:focus-visible) {
+  outline: 2px solid color-mix(in srgb, var(--color-fg) 60%, transparent);
+  outline-offset: 1px;
+}
 .ade-gh-publish-owner input {
   flex: 1;
   min-width: 0;

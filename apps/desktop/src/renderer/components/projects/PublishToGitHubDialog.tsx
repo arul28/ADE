@@ -13,6 +13,7 @@ import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { extractError } from "../../lib/format";
 import { describeGithubPatVerification } from "../../lib/githubIntegrationStatus";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
+import { GITHUB_OWNER_NOT_FOUND_CODE } from "../../../shared/githubApiPath";
 import { Dialog, type DialogAction } from "../ui/dialog";
 import { Banner, noticeKindModel, type NoticeKind } from "../ui/notice";
 import "./PublishToGitHubDialog.css";
@@ -63,21 +64,6 @@ function detectTokenType(token: string): "classic" | "fine-grained" | "unknown" 
   return "unknown";
 }
 
-/**
- * The publish failure in words. GitHub answers a create under an owner the
- * signed-in account cannot use with a bare "Not Found", which says nothing.
- */
-function publishErrorMessage(err: unknown, owner: string): string {
-  // Without the transport wrapper and the `code:` prefix the action adds.
-  const message = parseCodedErrorMessage(err).message || extractError(err);
-  if (/^not found$/i.test(message.trim())) {
-    return owner
-      ? `GitHub couldn't make a repository under ${owner}. Use your own account or an organization you can create repositories in.`
-      : "GitHub couldn't make the repository. Check the owner and try again.";
-  }
-  return message;
-}
-
 const TOKEN_TYPE_LABEL: Record<ReturnType<typeof detectTokenType>, string> = {
   classic: "Classic token",
   "fine-grained": "Fine-grained token",
@@ -88,7 +74,21 @@ const TOKEN_TYPE_LABEL: Record<ReturnType<typeof detectTokenType>, string> = {
  * Answers about the project or the chosen name, not failures: the project
  * already has a remote, or the name is taken. A warning with nothing to report.
  */
-const PUBLISH_STATE_CODES = new Set(["remote_already_exists", "repo_name_taken"]);
+const PUBLISH_STATE_CODES = new Set([
+  "remote_already_exists",
+  "repo_name_taken",
+  GITHUB_OWNER_NOT_FOUND_CODE,
+]);
+
+/**
+ * The login a publish runs as: the write credential's, which the service
+ * compares the owner against, falling back to the read login for runtimes that
+ * predate `writeUserLogin`.
+ */
+function publishLogin(status: { connected: boolean; userLogin: string | null; writeUserLogin?: string | null }): string | null {
+  if (!status.connected) return null;
+  return status.writeUserLogin || status.userLogin || null;
+}
 
 const VISIBILITY = [
   { value: true, label: "Private", detail: "Only you and people you invite", icon: LockSimple },
@@ -131,6 +131,7 @@ export function PublishToGitHubDialog({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<PublishError | null>(null);
   const [success, setSuccess] = useState<PublishProjectResult | null>(null);
+  // What the form asked for, shown when an older runtime doesn't report the repo's own visibility.
   const [publishedPrivate, setPublishedPrivate] = useState(true);
 
   const [connectMode, setConnectMode] = useState(false);
@@ -140,6 +141,7 @@ export function PublishToGitHubDialog({
   const [storeUnreadable, setStoreUnreadable] = useState(false);
 
   const nameRef = useRef<HTMLInputElement | null>(null);
+  const ownerRef = useRef<HTMLInputElement | null>(null);
   const tokenRef = useRef<HTMLInputElement | null>(null);
 
   // Reset all local state whenever the dialog opens.
@@ -160,9 +162,9 @@ export function PublishToGitHubDialog({
     setStoreUnreadable(false);
     void window.ade.github.getStatus({ forceRefresh: false }).then((status) => {
       if (cancelled) return;
-      if (status.connected && status.userLogin) {
-        setOwner(status.userLogin);
-      }
+      const login = publishLogin(status);
+      // The status read can land after the user has typed an owner; keep theirs.
+      if (login) setOwner((current) => (current.trim() ? current : login));
       // "Not connected" would be a guess here: an unreadable store reports no
       // credential whether or not one is saved.
       setStoreUnreadable(status.credentialStoreUnreadable === true);
@@ -210,7 +212,8 @@ export function PublishToGitHubDialog({
       } else {
         setError({
           code: code ?? "unknown",
-          message: publishErrorMessage(err, trimmedOwner),
+          // Without the transport wrapper and the `code:` prefix the action adds.
+          message: parseCodedErrorMessage(err).message || extractError(err),
         });
       }
     } finally {
@@ -236,7 +239,8 @@ export function PublishToGitHubDialog({
       setTokenDraft("");
       setConnectMode(false);
       void window.ade.github.getStatus({ forceRefresh: true }).then((status) => {
-        if (status.connected && status.userLogin) setOwner(status.userLogin);
+        const login = publishLogin(status);
+        if (login) setOwner((current) => (current.trim() ? current : login));
       }).catch(() => {});
     } catch (err) {
       setTokenError({ message: extractError(err), kind: "failure" });
@@ -244,6 +248,13 @@ export function PublishToGitHubDialog({
       setTokenSaving(false);
     }
   }, [tokenDraft]);
+
+  // After a failed publish, put the cursor where the fix goes. The fields are
+  // disabled while publishing, so this waits for `pending` to clear.
+  useEffect(() => {
+    if (!error || pending) return;
+    (error.code === GITHUB_OWNER_NOT_FOUND_CODE ? ownerRef : nameRef).current?.focus();
+  }, [error, pending]);
 
   const handleDone = useCallback(() => {
     onPublished();
@@ -259,6 +270,7 @@ export function PublishToGitHubDialog({
 
   if (success) {
     const pushed = success.state === "pushed";
+    const repoPrivate = success.isPrivate ?? publishedPrivate;
     return (
       <Dialog
         open={open}
@@ -268,6 +280,7 @@ export function PublishToGitHubDialog({
         icon={<CheckCircle size={16} weight="fill" />}
         tone="success"
         size="md"
+        focusKey="success"
         actions={[
           { label: "Done", variant: "solid", onClick: handleDone, autoFocus: true },
           {
@@ -286,8 +299,8 @@ export function PublishToGitHubDialog({
               <span className="ade-gh-publish-repo-url">{success.htmlUrl}</span>
             </div>
             <span className="kit-tag">
-              {publishedPrivate ? <LockSimple size={10} weight="bold" /> : <GlobeHemisphereWest size={10} weight="bold" />}
-              {publishedPrivate ? "Private" : "Public"}
+              {repoPrivate ? <LockSimple size={10} weight="bold" /> : <GlobeHemisphereWest size={10} weight="bold" />}
+              {repoPrivate ? "Private" : "Public"}
             </span>
           </div>
           {!pushed ? (
@@ -328,12 +341,12 @@ export function PublishToGitHubDialog({
     // that repair can recover, so this state offers only the repair route.
     const actions: DialogAction[] = storeUnreadable
       ? [
-          { label: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.action, variant: "solid", onClick: handleOpenConnections },
+          { label: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.action, variant: "solid", onClick: handleOpenConnections, autoFocus: true },
           { label: "Back", variant: "secondary", onClick: back },
         ]
       : [
           {
-            label: tokenSaving ? "Saving…" : "Save token",
+            label: "Save token",
             variant: "solid",
             icon: <Key size={12} weight="bold" />,
             onClick: () => void handleSaveToken(),
@@ -352,6 +365,7 @@ export function PublishToGitHubDialog({
         description="Publishing needs a GitHub sign-in that can make repositories."
         icon={<GithubLogo size={16} weight="fill" />}
         size="md"
+        focusKey="connect"
         initialFocusRef={storeUnreadable ? undefined : tokenRef}
         dismissible={!tokenSaving}
         actions={actions}
@@ -420,11 +434,13 @@ export function PublishToGitHubDialog({
       description="Make a new repository and push this project to it."
       icon={<GithubLogo size={16} weight="fill" />}
       size="md"
+      focusKey="form"
       initialFocusRef={nameRef}
       dismissible={!pending}
       actions={[
         {
-          label: pending ? "Publishing…" : "Publish",
+          // A stable label keeps the button (keyed on it) in place; `busy` shows progress.
+          label: "Publish",
           variant: "solid",
           onClick: () => void handleSubmit(),
           disabled: !canSubmit && !pending,
@@ -446,7 +462,10 @@ export function PublishToGitHubDialog({
             <div className="kit-input ade-gh-publish-owner" aria-invalid={ownerInvalid}>
               <OwnerAvatar login={trimmedOwner} />
               <input
+                ref={ownerRef}
                 aria-label="Owner"
+                aria-invalid={ownerInvalid}
+                aria-describedby="ade-gh-publish-repo-hint"
                 type="text"
                 value={owner}
                 placeholder="owner"
@@ -461,6 +480,7 @@ export function PublishToGitHubDialog({
               ref={nameRef}
               aria-label="Repository name"
               aria-invalid={nameInvalid}
+              aria-describedby={nameInvalid && !ownerInvalid ? "ade-gh-publish-repo-hint" : undefined}
               className="kit-input ade-gh-publish-input"
               type="text"
               value={name}
@@ -472,11 +492,11 @@ export function PublishToGitHubDialog({
             />
           </div>
           {ownerInvalid || nameInvalid ? (
-            <span className="ade-gh-publish-hint" data-tone="crit" role="alert">
+            <span className="ade-gh-publish-hint" id="ade-gh-publish-repo-hint" data-tone="crit" role="alert">
               {!ownerValidation.ok ? ownerValidation.reason : !validation.ok ? validation.reason : null}
             </span>
           ) : (
-            <span className="ade-gh-publish-hint">Your account or an organization you belong to.</span>
+            <span className="ade-gh-publish-hint" id="ade-gh-publish-repo-hint">Your account or an organization you belong to.</span>
           )}
         </div>
 
@@ -498,7 +518,7 @@ export function PublishToGitHubDialog({
         <div className="ade-gh-publish-field">
           <span className="ade-gh-publish-label" id="ade-gh-publish-visibility">Visibility</span>
           <div className="ade-gh-publish-choices" role="radiogroup" aria-labelledby="ade-gh-publish-visibility">
-            {VISIBILITY.map((option) => {
+            {VISIBILITY.map((option, index) => {
               const Icon = option.icon;
               const selected = isPrivate === option.value;
               return (
@@ -507,8 +527,23 @@ export function PublishToGitHubDialog({
                   type="button"
                   role="radio"
                   aria-checked={selected}
+                  // One Tab stop for the group; arrows move the choice, as a radio group does.
+                  tabIndex={selected ? 0 : -1}
                   className="ade-gh-publish-choice"
                   onClick={() => setIsPrivate(option.value)}
+                  onKeyDown={(event) => {
+                    const step = event.key === "ArrowRight" || event.key === "ArrowDown"
+                      ? 1
+                      : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
+                    const nextIndex = (index + step + VISIBILITY.length) % VISIBILITY.length;
+                    const next = VISIBILITY[nextIndex];
+                    if (!step || !next) return;
+                    event.preventDefault();
+                    setIsPrivate(next.value);
+                    event.currentTarget.parentElement
+                      ?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[nextIndex]
+                      ?.focus();
+                  }}
                   disabled={pending}
                 >
                   <Icon size={16} weight={selected ? "fill" : "regular"} />
