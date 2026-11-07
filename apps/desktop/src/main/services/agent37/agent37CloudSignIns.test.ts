@@ -86,13 +86,14 @@ describe("applyAgent37CloudSignIns", () => {
 });
 
 describe("createAgent37ClaudeSignIn", () => {
-  it("saves the token only once it is whole, though the output cuts it in two, then stops Claude Code", async () => {
+  function fakeClaudeCode() {
     let emit: (data: string) => void = () => undefined;
+    let exit: (event: { exitCode: number }) => void = () => undefined;
     const stopped: AgentCliLoginPty[] = [];
     const pty: AgentCliLoginPty = {
       pid: 1,
       onData: (listener) => { emit = listener; },
-      onExit: () => undefined,
+      onExit: (listener) => { exit = listener; },
       write: () => undefined,
       kill: () => undefined,
     };
@@ -102,13 +103,18 @@ describe("createAgent37ClaudeSignIn", () => {
       spawnPty: () => pty,
       stopPty: (target) => { stopped.push(target); },
     });
+    return { pty, signIn, stopped, emit: (data: string) => emit(data), exit: (exitCode: number) => exit({ exitCode }) };
+  }
+  // A save's answer settles on the next turn of the event loop.
+  const settled = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+  it("saves the token only once it is whole, though the output cuts it in two, then stops Claude Code", async () => {
+    const { pty, signIn, stopped, emit } = fakeClaudeCode();
     const saved: string[] = [];
     signIn.start(async (token) => {
       saved.push(token);
       return true;
     });
-    // The save's answer settles on the next turn of the event loop.
-    const settled = () => new Promise<void>((resolve) => setImmediate(resolve));
 
     emit(`Your token:\r\n${CLAUDE_TOKEN.slice(0, 40)}`);
     expect(saved).toEqual([]);
@@ -119,5 +125,20 @@ describe("createAgent37ClaudeSignIn", () => {
     expect(saved).toEqual([CLAUDE_TOKEN]);
     expect(signIn.state()?.state).toBe("succeeded");
     expect(stopped).toEqual([pty]);
+  });
+
+  it("never stops a Claude Code that already exited while its token was saving", async () => {
+    // On Windows a stop kills the process tree by PID, and a PID that exited
+    // can already belong to another process.
+    const { signIn, stopped, emit, exit } = fakeClaudeCode();
+    let answer: (ok: boolean) => void = () => undefined;
+    signIn.start(() => new Promise<boolean>((resolve) => { answer = resolve; }));
+    emit(`${CLAUDE_TOKEN}\r\n`);
+    expect(signIn.state()?.state).toBe("saving");
+    exit(0);
+    answer(false);
+    await settled();
+    expect(signIn.state()?.state).toBe("failed");
+    expect(stopped).toEqual([]);
   });
 });

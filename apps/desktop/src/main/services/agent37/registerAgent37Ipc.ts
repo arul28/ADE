@@ -101,7 +101,7 @@ const APPROVAL_TIMEOUT_MS = 5 * 60_000;
  * consent screen), so the window is shown, named after the box, and is the one
  * confirmation they give. ADE never clicks anything on it.
  */
-export function openAgent37ApprovalWindow(
+function openAgent37ApprovalWindow(
   args: { url: string; mode: Agent37ApprovalMode; title: string; signal: AbortSignal; onNeedsPerson: () => void },
   logger: Logger,
 ): Promise<Agent37ApprovalWindowResult> {

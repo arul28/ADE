@@ -27,6 +27,7 @@ import {
   agent37CapReachedMessage,
   agent37InstanceType,
   agent37Shape,
+  agent37ShapeById,
   agent37ShapeFor,
   isAgent37MachineKind,
   type Agent37CreateMachineResult,
@@ -251,7 +252,7 @@ export async function moveAgent37Machine(
     throw new Error(`It's already a ${args.to === "vm" ? "VM" : "box"}. Use Resize to change its size.`);
   }
   const sourceResources = source.resources ? { cpu: source.resources.cpu, memoryGb: source.resources.memory } : null;
-  const shape = (args.shape ? agent37Shape(args.shape) : null) ?? agent37ShapeFor(sourceResources) ?? agent37Shape(args.to === "vm" ? "4x8" : "2x4")!;
+  const shape = (args.shape ? agent37Shape(args.shape) : null) ?? agent37ShapeFor(sourceResources) ?? agent37ShapeById(args.to === "vm" ? "4x8" : "2x4");
   const sourceName = source.name ?? source.id;
   // The old box must be awake to hand its files over.
   if (source.status !== "running") {

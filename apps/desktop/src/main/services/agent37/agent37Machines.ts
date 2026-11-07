@@ -75,11 +75,11 @@ function resourcesOf(instance: Agent37Instance): Agent37Resources | null {
 }
 
 /** Whether ADE made this box (its create tags) or recorded its machine on it. */
-export function agent37InstanceMadeByAde(instance: Pick<Agent37Instance, "metadata">): boolean {
+function agent37InstanceMadeByAde(instance: Pick<Agent37Instance, "metadata">): boolean {
   return instance.metadata.created_by === "ade" || Boolean(instance.metadata[AGENT37_MACHINE_KEY_METADATA]);
 }
 
-export function toAgent37Machine(
+function toAgent37Machine(
   instance: Agent37Instance,
   usage: Agent37Usage | null,
   nowMs: number,
@@ -126,9 +126,10 @@ export function toAgent37Machine(
 /** A project's ready machine (see agent37ReadyMachines.ts), or null for any other box. */
 function readyOf(instance: Agent37Instance): Agent37Machine["ready"] {
   const state = readAgent37ReadyMachineState(instance.metadata[AGENT37_READY_METADATA.state]);
-  if (!state || !instance.metadata[AGENT37_READY_METADATA.project]) return null;
+  const project = instance.metadata[AGENT37_READY_METADATA.project];
+  if (!state || !project) return null;
   return {
-    projectName: instance.metadata[AGENT37_READY_METADATA.projectName] || instance.metadata[AGENT37_READY_METADATA.project]!,
+    projectName: instance.metadata[AGENT37_READY_METADATA.projectName] || project,
     state,
   };
 }
@@ -145,26 +146,24 @@ function monthStartMs(nowMs: number): number {
  * the workspace spent this month: Agent 37's usage keeps a deleted machine's
  * id, its list does not.
  */
-export function agent37MonthSpend(
-  instances: readonly Agent37Instance[],
+function agent37MonthSpend(
+  machines: readonly Pick<Agent37Machine, "instanceId" | "runningHourlyUsd" | "createdAtMs">[],
   monthUsage: Pick<Agent37Usage, "byInstance"> | null,
   nowMs: number,
 ): Agent37MonthSpend | null {
   if (!monthUsage) return null;
   const sinceMs = monthStartMs(nowMs);
-  const listed = new Set(instances.map((instance) => instance.id));
+  const listed = new Set(machines.map((machine) => machine.instanceId));
   const byInstance: Agent37MonthSpend["byInstance"] = {};
-  for (const instance of instances) {
-    const spentUsd = monthUsage.byInstance[instance.id] ?? 0;
-    const resources = resourcesOf(instance);
-    const createdAtMs = instance.created == null ? null : instance.created < 1e12 ? instance.created * 1000 : instance.created;
-    byInstance[instance.id] = {
+  for (const machine of machines) {
+    const spentUsd = monthUsage.byInstance[machine.instanceId] ?? 0;
+    byInstance[machine.instanceId] = {
       spentUsd,
       // As for `savedUsd`: the newest hour is not settled yet, so the window stops an hour back.
       savedUsd: agent37SavedUsd({
-        runningHourlyUsd: resources ? agent37RunningHourlyUsd(instance.type, resources) : null,
+        runningHourlyUsd: machine.runningHourlyUsd,
         spentUsd,
-        windowStartMs: Math.max(sinceMs, createdAtMs ?? sinceMs),
+        windowStartMs: Math.max(sinceMs, machine.createdAtMs ?? sinceMs),
         nowMs: nowMs - 60 * 60_000,
       }),
     };
@@ -257,9 +256,10 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
     const at = now();
     const live = instances.filter((instance) => instance.status !== "deleted");
     knownMachineKeys = new Set(live.map((instance) => instance.metadata[AGENT37_MACHINE_KEY_METADATA]).filter((key): key is string => Boolean(key)));
+    const machines = live.map((instance) => toAgent37Machine(instance, usage, at));
     return {
       state: "ok",
-      machines: live.map((instance) => toAgent37Machine(instance, usage, at)),
+      machines,
       balanceUsd: billing.balanceUsd,
       tier: billing.tier,
       instanceLimit: billing.instanceLimit,
@@ -268,7 +268,7 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
       pastDue: billing.pastDue,
       usageAvailable: usage != null,
       spending: agent37SpendingFor(budget, agent37MonthSpentUsd(usage, at)),
-      month: agent37MonthSpend(live, monthUsage, at),
+      month: agent37MonthSpend(machines, monthUsage, at),
       deletedInstanceIds: usage ? Object.keys(usage.byInstance).filter((id) => !live.some((instance) => instance.id === id)) : [],
       message: null,
     };

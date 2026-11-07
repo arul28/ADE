@@ -4723,8 +4723,9 @@ declare global {
         /** Gives back a claim no chat used yet: ready again, and asleep. */
         readyRelease?: (instanceId: string, claimToken: string) => Promise<{ released: boolean } | null>;
         onReadyStatus?: (cb: (status: Agent37ReadyStatus) => void) => () => void;
-        /** The account's monthly cap for Agent 37 machines (account vault; no pin). */
+        /** The account's monthly cap and agent limits for Agent 37 machines (account vault; no pin). */
         getBudget?: () => Promise<Agent37Budget | null>;
+        setBudget?: (budget: Partial<Agent37Budget>) => Promise<Agent37Budget | null>;
         /**
          * Copy (fork) or move (box ↔ VM) one box. Both answer at once and
          * report through `onCreateProgress` with this request id. Account
@@ -4734,7 +4735,6 @@ declare global {
         moveMachine?: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }) => Promise<{ started: boolean }>;
         /** Signs a box that was removed from the account ("Not in ADE") back in, as the same machine. Reports like a copy. */
         reconnectMachine?: (args: { requestId: string; instanceId: string }) => Promise<{ started: boolean }>;
-        setBudget?: (budget: Partial<Agent37Budget>) => Promise<Agent37Budget | null>;
         /**
          * Wakes the Agent 37 box behind an account machine because the person
          * is about to use it (opening one of its lanes). It acts on the Agent

@@ -34,6 +34,7 @@ import {
   AGENT37_READY_METADATA,
   agent37CapReachedMessage,
   agent37ReadyRetryAt,
+  agent37ReadyStepOf,
   agent37Shape,
   type Agent37ReadyFailure,
   type Agent37CreateMachineArgs,
@@ -42,6 +43,7 @@ import {
   type Agent37ReadyProjectSettings,
   type Agent37ReadyProjectStatus,
   type Agent37ReadyStatus,
+  type Agent37ReadyStep,
   type Agent37Spending,
 } from "../../../shared/agent37";
 import type { Agent37Client, Agent37Instance, Agent37Logger } from "./agent37Client";
@@ -125,7 +127,7 @@ function shellQuote(value: string): string {
  * it by its origin, wait for Docker on a VM, then the person's commands in the
  * clone.
  */
-export function buildAgent37ReadySetupScript(settings: Pick<Agent37ReadyProjectSettings, "identity" | "setup">): string {
+function buildAgent37ReadySetupScript(settings: Pick<Agent37ReadyProjectSettings, "identity" | "setup">): string {
   const folder = agent37ReadyFolderName(settings.identity);
   const url = shellQuote(agent37ReadyCloneUrl(settings.identity));
   const lines = [
@@ -213,7 +215,7 @@ async function readPrimaryLaneId(
   return null;
 }
 
-export class Agent37ReadyPrepareCancelled extends Error {
+class Agent37ReadyPrepareCancelled extends Error {
   constructor() {
     super("Stopped: the project no longer keeps a machine ready.");
     this.name = "Agent37ReadyPrepareCancelled";
@@ -232,6 +234,7 @@ type LocalPrepare = {
   controller: AbortController;
   startedAt: number;
   message: string;
+  step: Agent37ReadyStep;
   instanceId: string | null;
   machineKey: string | null;
 };
@@ -275,10 +278,10 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
     settings: Agent37ReadyProjectSettings,
     pool: Agent37Instance[] | null,
   ): Agent37ReadyProjectStatus => {
-    const base = { settings, instanceId: null, machineName: null, startedAt: null, error: null };
+    const base = { settings, step: null, instanceId: null, machineName: null, startedAt: null, error: null };
     const mine = local.get(settings.identity);
     if (mine) {
-      return { ...base, state: "preparing", message: mine.message, instanceId: mine.instanceId, startedAt: mine.startedAt };
+      return { ...base, state: "preparing", message: mine.message, step: mine.step, instanceId: mine.instanceId, startedAt: mine.startedAt };
     }
     const ready = pool?.find((instance) => agent37ReadyStateOf(instance) === "ready") ?? null;
     if (ready) {
@@ -326,15 +329,16 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
     return { ...base, state: "waiting", message: "ADE will prepare one shortly." };
   };
 
-  const setLocalMessage = (identity: string, message: string, instanceId?: string | null) => {
+  const setLocalMessage = (identity: string, step: Agent37ReadyStep, message: string, instanceId?: string | null) => {
     const entry = local.get(identity);
     if (!entry) return;
     entry.message = message;
+    entry.step = step;
     if (instanceId) entry.instanceId = instanceId;
     publish({
       ...last,
       projects: last.projects.map((project) => (project.settings.identity === identity
-        ? { ...project, state: "preparing", message, instanceId: entry.instanceId, startedAt: entry.startedAt }
+        ? { ...project, state: "preparing", message, step, instanceId: entry.instanceId, startedAt: entry.startedAt }
         : project)),
     });
   };
@@ -375,7 +379,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
         throw new Error("the machine's template is too old to run a setup. ADE updates its template on its own; Retry once it's ready.");
       }
       // The step only: the setup's own output is install noise, and it can echo anything.
-      if (read.started) setLocalMessage(settings.identity, "Running your setup…");
+      if (read.started) setLocalMessage(settings.identity, "setup", "Running your setup…");
     }
     if (read.exitCode !== 0) {
       // The last lines say why; the very last is usually the reason, so it is kept whole.
@@ -398,6 +402,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       controller: new AbortController(),
       startedAt: now(),
       message: "Making the machine…",
+      step: "make",
       instanceId: null,
       machineKey: null,
     };
@@ -411,7 +416,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       const created = await deps.createMachine(
         requestId,
         { kind: settings.kind, shape: settings.shape, name: `${settings.projectName} ${suffix}` },
-        (progress) => setLocalMessage(settings.identity, progress.message, progress.instanceId ?? null),
+        (progress) => setLocalMessage(settings.identity, agent37ReadyStepOf(progress.stage) ?? entry.step, progress.message, progress.instanceId ?? null),
         {
           signal,
           metadata: {
@@ -429,10 +434,10 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       // A chat finds the machine by its ADE machine key; one that never told
       // it is no use as a ready machine.
       if (!created.machineKey) throw new Error("the new machine signed in but didn't say which ADE machine it is.");
-      setLocalMessage(settings.identity, `Cloning ${settings.identity}…`, created.instanceId);
+      setLocalMessage(settings.identity, "clone", `Cloning ${settings.identity}…`, created.instanceId);
       const { projectPath, laneId } = await runSetup(client, settings, created.instanceId, signal);
       if (signal.aborted) throw new Agent37ReadyPrepareCancelled();
-      setLocalMessage(settings.identity, "Set up. Putting it to sleep…");
+      setLocalMessage(settings.identity, "sleep", "Set up. Putting it to sleep…");
       await patchAgent37Metadata(client, created.instanceId, {
         [AGENT37_READY_METADATA.state]: "ready",
         ...(projectPath ? { [AGENT37_READY_METADATA.path]: projectPath } : {}),

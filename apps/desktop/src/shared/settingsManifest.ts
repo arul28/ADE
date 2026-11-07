@@ -1525,12 +1525,13 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Agent37",
   },
   {
+    // The id keeps its old name: deeplinks and agent access hold it.
     id: "integrations.agent37-spending",
-    label: "Agent 37 spending",
-    keywords: ["spending cap", "monthly cap", "budget", "limit spend", "saved", "sleep", "auto-sleep", "idle", "wallet", "low balance", "cost"],
+    label: "Agent 37 machines and spending",
+    keywords: ["machines", "new machine", "spending cap", "monthly cap", "budget", "limit spend", "saved", "sleep", "auto-sleep", "idle", "wallet", "low balance", "cost"],
     tab: "integrations",
-    anchor: "agent37-spending",
-    // This month's spend, saved asleep, the wallet; read from Agent 37.
+    anchor: "agent37-machines",
+    // Every machine with this month's spend and what sleeping saved; read from Agent 37.
     scope: "account",
     web: "hidden",
     group: "Agent37",

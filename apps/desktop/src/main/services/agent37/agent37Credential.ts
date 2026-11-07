@@ -23,10 +23,10 @@ import { describeIntegrationCredentialStorage, type IntegrationCredentialStorage
 import type { IntegrationConnectAdapter } from "../integrations/integrationConnectRequest";
 import { Agent37Error, createAgent37Client, type Agent37Client } from "./agent37Client";
 
-export const AGENT37_VAULT_KIND = "integration";
-export const AGENT37_VAULT_KEY = "agent37";
+const AGENT37_VAULT_KIND = "integration";
+const AGENT37_VAULT_KEY = "agent37";
 /** The machine-local fallback, in the credential file the app, brain and CLI share. */
-export const AGENT37_MACHINE_CREDENTIAL_KEY = "agent37.apiKey.v1";
+const AGENT37_MACHINE_CREDENTIAL_KEY = "agent37.apiKey.v1";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -130,7 +130,7 @@ function readMachine(deps: Agent37CredentialDeps): string | null {
 }
 
 /** Where a key saved now would land. */
-export function agent37StorageFor(deps: Agent37CredentialDeps): IntegrationCredentialStorage {
+function agent37StorageFor(deps: Agent37CredentialDeps): IntegrationCredentialStorage {
   return describeIntegrationCredentialStorage({
     scope: ACCOUNT_SCOPE_ALL,
     perProject: false,
@@ -200,7 +200,7 @@ export async function saveAgent37Key(deps: Agent37CredentialDeps, rawKey: string
 }
 
 /** The account vault refused to forget the key: nothing was disconnected. */
-export class Agent37DisconnectFailed extends Error {
+class Agent37DisconnectFailed extends Error {
   constructor(detail: string | null) {
     super(`ADE couldn't remove the Agent 37 key from your account${detail ? ` (${detail})` : ""}, so it is still connected. Try again in a moment.`);
     this.name = "Agent37DisconnectFailed";

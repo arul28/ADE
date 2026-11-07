@@ -6,7 +6,7 @@ import {
   agent37ChoiceBlocker,
   agent37HourlyUsd,
   describeAgent37TemplateStatus,
-  agent37Shape,
+  agent37ShapeById,
   formatAgent37HourlyPrice,
   type Agent37CreateMachineResult,
   type Agent37CreateProgress,
@@ -57,7 +57,7 @@ export function NewAgent37MachineForm({
 
   const running = progress != null && progress.stage !== "done" && progress.stage !== "failed";
   runningRef.current = running;
-  const shape = agent37Shape(shapeId) ?? AGENT37_SHAPES[0]!;
+  const shape = agent37ShapeById(shapeId);
   const blocker = agent37ChoiceBlocker(status, kind, shape);
   // Create waits for a template it can make the box from; an older one that
   // is being updated still works.

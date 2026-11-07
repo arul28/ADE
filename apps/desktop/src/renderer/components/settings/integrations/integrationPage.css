@@ -833,45 +833,7 @@
   display: contents;
 }
 
-/* Agent 37 › What agents may spend: three presets, then the single limits. */
-.ade-ig-presets { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
-.ade-ig-preset {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  padding: 14px;
-  text-align: left;
-  font: inherit;
-  color: var(--color-fg);
-  border-radius: 12px;
-  border: 1px solid var(--kit-panel-edge, var(--color-border));
-  background: var(--kit-panel-bg, transparent);
-  cursor: pointer;
-}
-.ade-ig-preset:hover:not(:disabled) { border-color: color-mix(in srgb, var(--ig-accent) 35%, var(--color-border)); }
-.ade-ig-preset:focus-visible { outline: 2px solid var(--ig-accent); outline-offset: 2px; }
-.ade-ig-preset[data-on="true"] {
-  border-color: var(--ig-accent);
-  box-shadow: inset 0 0 0 1px var(--ig-accent);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--ig-accent) 9%, transparent), transparent 80%);
-}
-.ade-ig-preset:disabled { cursor: default; }
-.ade-ig-preset > svg { color: var(--ig-accent); }
-.ade-ig-preset > b { font-size: 13px; font-weight: 600; margin-top: 4px; }
-.ade-ig-preset > span { font-size: 12px; line-height: 1.45; color: var(--kit-text-3, var(--color-muted-fg)); }
-.ade-ig-preset > ul { margin: 6px 0 0; padding-left: 16px; font-size: 11.5px; line-height: 1.6; color: var(--kit-text-3, var(--color-muted-fg)); }
-.ade-ig-preset-tag {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  font-size: 10px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  color: var(--ig-accent);
-  background: color-mix(in srgb, var(--ig-accent) 16%, transparent);
-}
+/* Agent 37 › What agents may spend: one row per limit. */
 .ade-ig-limit-rows { display: flex; flex-direction: column; border-top: 1px solid var(--kit-rule, var(--color-border)); }
 .ade-ig-limit-row {
   display: flex;
@@ -913,7 +875,8 @@
   .ade-ig-progress[data-indeterminate="true"] > i { animation: none; left: 0; width: 100%; opacity: 0.4; }
 }
 .ade-ig-hero-panel-quiet { margin: 0; font-size: 11.5px; opacity: 0.65; }
-.ade-ig-hero-panel-warn { margin: 0; font-size: 11.5px; color: #F5C451; }
+.ade-ig-hero-panel-warn { margin: 0; font-size: 11.5px; color: #F59E0B; }
+.ade-ig-hero[data-light="true"] .ade-ig-hero-panel-warn { color: #B45309; }
 .ade-ig-step-shot { display: block; width: 100%; max-width: 380px; margin-top: 8px; border-radius: 10px; border: 1px solid var(--kit-rule, var(--color-border)); }
 .ade-ig-ready-steps { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 11.5px; }
 .ade-ig-ready-steps > li { padding: 3px 9px; border-radius: 999px; border: 1px solid var(--kit-rule, var(--color-border)); color: var(--kit-text-3, var(--color-muted-fg)); }
