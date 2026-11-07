@@ -59,4 +59,30 @@ describe("createAndroidRecordingSessions", () => {
     expect(releaseStream).toHaveBeenCalledTimes(1);
     await expect(sessions.api.recordStop({ laneId: "lane-1" })).resolves.toMatchObject({ active: false, stopReason: "released" });
   });
+
+  it("stops an agent's automatic recording whose start was still on its way when the turn ended", async () => {
+    const hold = deferred<string>();
+    const sessions = createAndroidRecordingSessions({
+      requireBooted: async () => ({}),
+      assertWorkCopyLive: () => undefined,
+      streams: { subscribePackets: vi.fn(() => () => undefined) },
+      holdStreamForRecording: () => hold.promise,
+      releaseStreamForRecording: async () => undefined,
+      artifactFiler: null,
+      callerRoot: null,
+      dataDir,
+      logger: null,
+      now: () => new Date("2026-11-05T08:00:00Z"),
+    });
+
+    // The agent's input gave up waiting for the start; its turn ends first.
+    const started = sessions.startAuto("lane-1", "chat-a");
+    const turnEnded = sessions.onTurnEnded("chat-a");
+    hold.resolve("emulator-5556");
+    await started;
+    await turnEnded;
+
+    expect(sessions.isRecording("lane-1")).toBe(false);
+    await expect(sessions.api.recordStop({ laneId: "lane-1" })).resolves.toMatchObject({ active: false, stopReason: "turn-end" });
+  });
 });

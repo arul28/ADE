@@ -444,8 +444,10 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
   // `launch … -- <am words>`: everything after `--` is the launch's, as `ade apple launch -- <args>`.
   // Taken out first, so no flag reader sees a word meant for `am start`.
   const fence = sub === "launch" || sub === "relaunch" ? args.indexOf("--") : -1;
-  // `--text`/`--json` after the words are the output mode, never `am` options (`launch … -- -f 0x10 --text`).
-  const launchPassthrough = fence >= 0 ? args.splice(fence).slice(1).filter((word) => word !== "--text" && word !== "--json") : [];
+  // Trailing `--text`/`--json` are the output mode (`launch … -- -f 0x10 --text`); the same words
+  // inside the fence are `am` words, such as an extra's value (`--es mode --json`).
+  const launchPassthrough = fence >= 0 ? args.splice(fence).slice(1) : [];
+  while (launchPassthrough.at(-1) === "--text" || launchPassthrough.at(-1) === "--json") launchPassthrough.pop();
   // `sdk install --wait` is a switch, `lease --wait <s>` takes seconds. In
   // `key`, `--option` is the alt switch, so `key --option tab` keeps its key.
   const carriers = ANDROID_VERB_VALUE_CARRIER_FLAGS.get(sub) ?? ANDROID_VALUE_CARRIER_FLAGS;

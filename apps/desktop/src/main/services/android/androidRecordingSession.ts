@@ -659,12 +659,29 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
       if (active) active.deviceSize = null;
     },
 
-    /** A chat's turn ended: its automatic recordings stop and are filed. Never throws. */
+    /**
+     * A chat's turn ended: its automatic recordings stop and are filed. Never
+     * throws. A start still in flight (scrcpy can take longer than the input's
+     * wait) belongs to this turn too: it is waited for and then stopped. Only
+     * what was running or starting when the turn ended stops, so the chat's
+     * next turn keeps its own recording.
+     */
     async onTurnEnded(chatSessionId: string): Promise<void> {
-      const lanes = [...recordings]
-        .filter(([, active]) => active.recording.mode === "auto" && active.recording.chatSessionId === chatSessionId)
-        .map(([laneId]) => laneId);
-      for (const laneId of lanes) await finishQuietly(laneId, "turn-end", "android.recording_turn_end_stop_failed");
+      const ownedBy = (recording: AndroidRecording | null | undefined): recording is AndroidRecording =>
+        recording?.mode === "auto" && recording.chatSessionId === chatSessionId;
+      const ending = new Map<string, string>();
+      for (const [laneId, active] of recordings) {
+        if (ownedBy(active.recording)) ending.set(laneId, active.recording.id);
+      }
+      const pending = [...starting.entries()];
+      for (const [laneId, start] of pending) {
+        const started = await start.catch(() => null);
+        if (ownedBy(started)) ending.set(laneId, started.id);
+      }
+      for (const [laneId, recordingId] of ending) {
+        if (recordings.get(laneId)?.recording.id !== recordingId) continue;
+        await finishQuietly(laneId, "turn-end", "android.recording_turn_end_stop_failed");
+      }
     },
 
     /** Bytes of this project's Android recordings on disk, every lane. Counted again after a start, an end or a delete. */
