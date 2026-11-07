@@ -38,6 +38,8 @@ export type Agent37BoxContext = {
   /** This computer's saved connection to it, removed with it. */
   targetId: string | null;
   work: Agent37BoxWork;
+  /** The account list was read, so a null `accountMachine` really means "not in ADE". */
+  accountKnown: boolean;
 };
 
 const PENDING_LABELS: Record<Agent37BoxPending, string> = {
@@ -350,7 +352,7 @@ export function useAgent37BoxActions(args: {
       items.push({ key: "a37-backup", label: "Back up now", icon: <CloudArrowUp size={14} />, disabled: busy, onSelect: () => void run(ctx, "backup") });
     }
     // A box that joined once (it carries its machine key) and left the account.
-    if (!ctx.accountMachine && box.machineKey && !suspended && window.ade?.agent37?.reconnectMachine
+    if (ctx.accountKnown && !ctx.accountMachine && box.machineKey && !suspended && window.ade?.agent37?.reconnectMachine
       && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
       items.push({ key: "a37-reconnect", label: "Reconnect to ADE", icon: <PlugsConnected size={14} />, disabled: busy, onSelect: () => void reconnectBox(ctx) });
     }

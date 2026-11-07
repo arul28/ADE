@@ -154,7 +154,7 @@ export function agent37AndroidNeedsVmMessage(boxShape: Agent37Shape | null): str
   return "This machine is an Agent 37 box, and a box can't run the Android emulator. An Agent 37 VM can. "
     + `A ${vmShape.id} VM costs ${formatAgent37HourlyPrice(vmHourly)} while it's awake${more}. `
     + "ADE can make the VM and continue this chat there, with its history and changes. "
-    + "This box stays: it sleeps when idle, and you can delete it from the new chat.";
+    + "This box stays, and you can delete it from the new chat.";
 }
 
 /** The integration's state, as Settings and the machine picker read it. Never the key. */

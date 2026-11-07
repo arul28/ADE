@@ -54018,7 +54018,8 @@ export function createAgentChatService(args: {
         const notice = crossMachineRouteNotice({
           route: carriedRoute,
           fromMachine: capsule.source.machineName,
-          accountKept: Boolean(keptInstanceId),
+          // A reused session (a retry) keeps the account it was made with.
+          accountKept: Boolean(keptInstanceId) && destinationManaged.session.instanceId === keptInstanceId,
           accountHere: destinationManaged.session.instanceId?.trim() || null,
           blockedReason: route ? launchPlanBlockBySession.get(session.id) ?? null : null,
         });
@@ -54433,7 +54434,8 @@ export function createAgentChatService(args: {
         awaitingInput: blocked?.kind === "awaiting_input",
         permissionLevel,
         provider: managed.session.provider,
-        modelId: managed.session.modelId ?? null,
+        // A chat whose model resolved to no registry id still names it.
+        modelId: managed.session.modelId ?? (managed.session.model?.trim() || null),
         title: sessionService.get(sessionId)?.title ?? null,
       };
     },

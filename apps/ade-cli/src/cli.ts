@@ -11064,8 +11064,9 @@ function readHandoffTarget(args: string[], sub: string, options: { modelOptional
   }
   const namedModel = readValue(args, ["--target-model", "--target-model-id", "--model", "--target"]) ??
     firstStandalonePositional(args);
-  // A move to another machine without a model continues with the chat's own.
-  const targetModelId = options.modelOptional ? namedModel : requireValue(namedModel, "targetModelId");
+  // A move to another machine without a model continues with the chat's own;
+  // a model flag given empty is still refused.
+  const targetModelId = options.modelOptional && namedModel === null ? null : requireValue(namedModel, "targetModelId");
   const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
   const fastMode = readFastModeFlag(args);
   const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);

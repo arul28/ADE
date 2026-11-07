@@ -30,6 +30,7 @@ const HEADLESS_APPROVAL_TIMEOUT_MS = 2 * 60_000;
 /** No page change for this long, and not done: the page waits on a person. */
 const STALLED_PAGE_MS = 25_000;
 const DEVTOOLS_WAIT_MS = 20_000;
+const POLL_READ_TIMEOUT_MS = 5_000;
 
 function chromiumCandidates(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string[] {
   const configured = env.ADE_HEADLESS_CHROMIUM?.trim();
@@ -171,14 +172,18 @@ export async function approveInHeadlessChromium(args: {
     const port = await new Promise<number | null>((resolve) => {
       let stderr = "";
       const timer = setTimeout(() => resolve(null), DEVTOOLS_WAIT_MS);
-      child.stderr.on("data", (chunk: Buffer) => {
+      const onStderr = (chunk: Buffer) => {
         stderr += chunk.toString("utf8");
         const match = /DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//.exec(stderr);
         if (match) {
           clearTimeout(timer);
+          // Only the port was wanted: stop keeping Chromium's output.
+          child.stderr.off("data", onStderr);
+          child.stderr.resume();
           resolve(Number(match[1]));
         }
-      });
+      };
+      child.stderr.on("data", onStderr);
       child.on("error", () => { clearTimeout(timer); resolve(null); });
       child.on("exit", () => { clearTimeout(timer); resolve(null); });
     });
@@ -201,7 +206,8 @@ export async function approveInHeadlessChromium(args: {
     for (;;) {
       if (args.signal.aborted) return "cancelled";
       if (Date.now() - startedAt > HEADLESS_APPROVAL_TIMEOUT_MS) return "timed_out";
-      const targets = await fetch(`${devtools}/json/list`, { signal: args.signal })
+      // Each read is bounded, so a DevTools server that stops answering can't hold the loop past its timeout.
+      const targets = await fetch(`${devtools}/json/list`, { signal: AbortSignal.any([args.signal, AbortSignal.timeout(POLL_READ_TIMEOUT_MS)]) })
         .then((response) => response.json() as Promise<DevtoolsTarget[]>)
         .catch(() => [] as DevtoolsTarget[]);
       const page = targets.find((target) => target.type === "page" && target.url && target.url !== "about:blank");

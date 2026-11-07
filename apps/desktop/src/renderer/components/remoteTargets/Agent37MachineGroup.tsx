@@ -332,7 +332,7 @@ export function Agent37BoxOnlyRow({
     : joining
       ? "Setting up and signing in to your account…"
       : box.machineKey
-        ? `Not in ADE. Reconnect it from ⋯, or delete it: it bills on ${AGENT37_NAME} until you do.`
+        ? `Not in ADE. Reconnect it from ⋯. It bills on ${AGENT37_NAME} until you delete it.`
         : `Not in ADE. It bills on ${AGENT37_NAME} until you delete it.`;
   return (
     <div style={machineRowStyle} data-agent37-box-only={box.instanceId}>

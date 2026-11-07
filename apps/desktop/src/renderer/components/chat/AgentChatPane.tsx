@@ -7942,10 +7942,12 @@ export function AgentChatPane({
   }, [devinCloudAuthConfigured, refetchDevinCloudAuth]);
   // "Least loaded" reads machine stats only once the machine menu has opened.
   const [draftMachinePickerOpened, setDraftMachinePickerOpened] = useState(false);
+  const [draftMachinePickerOpens, setDraftMachinePickerOpens] = useState(0);
   /** Set below, once the draft's machine routing exists: reads the machines' projects again. */
   const refreshDraftMachineProjectsRef = useRef<(() => void) | null>(null);
   const handleDraftMachinePickerOpen = useCallback(() => {
     setDraftMachinePickerOpened(true);
+    setDraftMachinePickerOpens((count) => count + 1);
     refreshDraftMachineProjectsRef.current?.();
     refetchCursorCloudRepos();
     if (laneGitRemoteStatus === "error") refetchLaneGitRemote();
@@ -16461,7 +16463,7 @@ export function AgentChatPane({
   const draftMachineSetup = useDraftMachineSetup({
     enabled: showDraftLaunchControls,
     originUrl: originUrlForBinding(projectBinding),
-    pickerOpened: draftMachinePickerOpened,
+    pickerOpens: draftMachinePickerOpens,
     cloneCandidates: draftCloneMachineOptions,
     offlineMachines: draftOfflineMachines,
     selectableMachineIds: laneMachineOptionIds,

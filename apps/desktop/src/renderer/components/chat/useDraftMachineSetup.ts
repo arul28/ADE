@@ -41,7 +41,7 @@ function githubCloneUrl(originUrl: string | null): { url: string; repo: string }
 export function useDraftMachineSetup({
   enabled,
   originUrl,
-  pickerOpened,
+  pickerOpens,
   cloneCandidates,
   offlineMachines,
   selectableMachineIds,
@@ -50,8 +50,8 @@ export function useDraftMachineSetup({
 }: {
   enabled: boolean;
   originUrl: string | null;
-  /** Read the Agent 37 list only once the person opened the picker. */
-  pickerOpened: boolean;
+  /** How many times the person opened the picker: each open reads the Agent 37 list again (0: never read). */
+  pickerOpens: number;
   /** Connected machines without this repository. */
   cloneCandidates: readonly LaneMachineOption[];
   /** Saved paired machines that are not connected now. */
@@ -61,7 +61,8 @@ export function useDraftMachineSetup({
   onMachineReady: (machineId: string) => void;
   onNotice: (notice: { message: string; kind: "hint" | "status" } | null) => void;
 }) {
-  const clone = githubCloneUrl(originUrl);
+  // Stable for one origin, so the effects below don't restart on each render.
+  const clone = useMemo(() => githubCloneUrl(originUrl), [originUrl]);
   const [agent37Machines, setAgent37Machines] = useState<Agent37Machine[]>([]);
   const [busy, setBusy] = useState<Busy | null>(null);
   /** Prepared (connected, repository there): selected as soon as the picker lists it. */
@@ -71,7 +72,7 @@ export function useDraftMachineSetup({
 
   useEffect(() => {
     const listMachines = window.ade?.agent37?.listMachines;
-    if (!enabled || !pickerOpened || !hasOffline || !listMachines) return;
+    if (!enabled || pickerOpens === 0 || !hasOffline || !listMachines) return;
     let cancelled = false;
     void listMachines().then(
       (result) => { if (!cancelled) setAgent37Machines(result?.state === "ok" ? result.machines : []); },
@@ -80,7 +81,7 @@ export function useDraftMachineSetup({
     return () => {
       cancelled = true;
     };
-  }, [enabled, hasOffline, pickerOpened]);
+  }, [enabled, hasOffline, pickerOpens]);
 
   const cloudOffline = useMemo(() => {
     const byKey = new Map(agent37Machines.filter((machine) => machine.machineKey).map((machine) => [machine.machineKey!, machine]));

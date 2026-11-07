@@ -1146,13 +1146,25 @@ function resolveShellCandidates(mode: WindowsShellLaunchMode = "interactive"): S
   // (the child fails in execvp and exits 1), so a missing first choice never
   // falls through to the next one. A brain started by a service or a
   // container has no SHELL, and a Linux machine often has no zsh.
-  const installed = Array.from(new Set(candidates.filter(Boolean))).filter(isExecutableFile);
+  const installed = Array.from(new Set(candidates.filter(Boolean).map(installedShellPath)))
+    .filter((file): file is string => file !== null);
   const uniq = installed.length ? installed : ["/bin/sh"];
   return uniq.map((file) => {
     if (mode === "clean") return cleanShellSpec(file);
     if (mode === "login") return loginShellSpec(file);
     return { file, args: [] };
   });
+}
+
+/** The shell's path when it is installed: a bare name (`SHELL=fish`) is looked up on PATH, as execvp would. */
+function installedShellPath(file: string): string | null {
+  if (file.includes("/")) return isExecutableFile(file) ? file : null;
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, file);
+    if (isExecutableFile(candidate)) return candidate;
+  }
+  return null;
 }
 
 function isExecutableFile(file: string): boolean {

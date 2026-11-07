@@ -83,7 +83,8 @@ These ask the person in your chat first: `create`, `resize`, `copy`, `move`,
 `ade android start` on a box says why in plain words, with the price. Tell the
 person that, then, within their limits:
 
-1. `ade agent37 create --kind vm --shape 4x8 --name "<name>"`. ADE asks the
+1. `ade agent37 create --kind vm --shape <the size the message names> --name
+   "<name>"`: 4x8, or the box's own size when the box is bigger. ADE asks the
    person, or answers for them in full-auto with their limits. The VM joins
    on its own.
 2. `ade chat handoff "$ADE_CHAT_SESSION_ID" --machine "<name>" --fork

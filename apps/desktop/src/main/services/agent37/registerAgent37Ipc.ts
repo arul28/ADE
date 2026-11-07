@@ -725,7 +725,7 @@ export function registerAgent37Ipc(args: {
       const result = await reconnectAgent37Machine({ ...machineCreatorDeps, spending: () => machines.spending() }, { instanceId, requestId }, send, { signal });
       args.recordMachineAction?.("reconnect");
       return {
-        message: result.machineKey ? `${result.name} is back in ADE.` : `${result.name} is signed in again. It shows up in a minute.`,
+        message: result.joined ? `${result.name} is back in ADE.` : `${result.name} is signed in again. It shows up in a minute.`,
         result,
       };
     });

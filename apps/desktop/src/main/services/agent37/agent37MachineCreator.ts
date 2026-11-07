@@ -483,7 +483,16 @@ export async function approveAgent37MachineSignIn(
     } catch (error) {
       checkCancelled();
       logger.warn?.("agent37.self_approval_failed", { instanceId, requestId: args.requestId, error: errorText(error) });
-      if (await readSignedIn()) return;
+      // The approval may have landed (a page can end on an unclear title)
+      // with the box still collecting its session; a fresh code now would
+      // kill that sign-in, so give it the same grace a signed-in page gets.
+      const graceDeadline = Date.now() + SIGN_IN_FINISH_TIMEOUT_MS;
+      for (;;) {
+        checkCancelled();
+        if (await readSignedIn()) return;
+        if (Date.now() > graceDeadline) break;
+        await sleep(POLL_MS);
+      }
       // /device/approve claimed the first code, so the link needs a new one.
       const fresh = await args.restartSignIn?.().catch((restartError: unknown) => {
         logger.warn?.("agent37.sign_in_restart_failed", { instanceId, error: errorText(restartError) });

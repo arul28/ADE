@@ -15,6 +15,7 @@
 import { agent37CapReachedMessage, type Agent37CreateMachineResult, type Agent37CreateProgress } from "../../../shared/agent37";
 import { getErrorMessage } from "../shared/utils";
 import {
+  Agent37CreateCancelled,
   approveAgent37MachineSignIn,
   readAgent37BoxAuth,
   startAgent37BoxSignIn,
@@ -31,11 +32,30 @@ function inAccount(auth: Record<string, unknown> | null): boolean {
   return auth?.signedIn === true && (auth.thisComputerRefusal == null);
 }
 
+type ReconnectDeps = Agent37MachineCreatorDeps & Pick<Agent37CopyDeps, "spending">;
+
 export async function reconnectAgent37Machine(
-  deps: Agent37MachineCreatorDeps & Pick<Agent37CopyDeps, "spending">,
+  deps: ReconnectDeps,
   args: { instanceId: string; requestId: string },
   onProgress: (progress: Agent37CreateProgress) => void,
   options: { signal?: AbortSignal } = {},
+): Promise<Agent37CreateMachineResult> {
+  try {
+    return await reconnect(deps, args, onProgress, options);
+  } catch (error) {
+    // The shared steps word a cancel for a create.
+    if (error instanceof Agent37CreateCancelled) {
+      throw new Agent37CreateCancelled("You stopped the reconnect. If the box had already signed in, it shows under Your computers when it's ready.");
+    }
+    throw error;
+  }
+}
+
+async function reconnect(
+  deps: ReconnectDeps,
+  args: { instanceId: string; requestId: string },
+  onProgress: (progress: Agent37CreateProgress) => void,
+  options: { signal?: AbortSignal },
 ): Promise<Agent37CreateMachineResult> {
   const { requestId } = args;
   const { signal } = options;

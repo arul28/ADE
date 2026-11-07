@@ -4101,7 +4101,9 @@ function agent37BrainMakerFor(runtime: AdeRuntime, machines: ReturnType<typeof c
     appVersion: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
     directoryBaseUrl: () => directoryBaseUrl() ?? "",
   });
-  const chromium = findHeadlessChromium();
+  // Only a brain on an Agent 37 machine approves the machines it makes; anywhere
+  // else a person has a browser, and the sign-in link goes to them.
+  const chromium = process.env.AGENT37_INSTANCE_ID?.trim() ? findHeadlessChromium() : null;
   const maker = createAgent37BrainMaker({
     base: {
       client: async () => {
