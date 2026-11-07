@@ -48,11 +48,14 @@ const READY_STEP_LABELS: Record<Agent37ReadyStep, string> = {
   sleep: "Asleep and ready",
 };
 
-/** Which of `AGENT37_READY_STEPS` the project's machine is on; all done once ready. */
+/**
+ * Which of `AGENT37_READY_STEPS` the project's machine is on; all done once
+ * ready, and -1 (none marked) while another computer prepares it, since that
+ * computer does not say its step.
+ */
 function readyStepIndex(project: Agent37ReadyProjectStatus): number {
   if (project.state === "ready") return AGENT37_READY_STEPS.length;
-  // Preparing on another computer, which does not say its step.
-  return project.step ? AGENT37_READY_STEPS.indexOf(project.step) : 0;
+  return project.step ? AGENT37_READY_STEPS.indexOf(project.step) : -1;
 }
 
 /** The lockfiles a ready machine's setup can be guessed from, best first. */

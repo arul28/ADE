@@ -332,7 +332,7 @@ export function Agent37Section() {
       {live && machines.result?.state === "ok" && machines.result.pastDue ? (
         <Banner layout="inline" model={{ id: "agent37-suspended", tone: "error", title: `${AGENT37_NAME} suspended your machines`, detail: "Your wallet ran out, so every machine is asleep and not billing. Top up to wake them. A machine left suspended for 30 days is deleted.", actions: [{ label: "Top up", href: AGENT37_BILLING_URL }], report: false }} />
       ) : walletWarning ? (
-        <Banner layout="inline" model={{ id: "agent37-wallet-low", tone: "warning", title: machines.result?.state === "ok" && machines.result.balanceUsd != null && machines.result.balanceUsd <= 0 ? "Your wallet is empty" : "Your wallet is running low", detail: walletWarning, actions: [{ label: "Top up", href: AGENT37_BILLING_URL }], report: false }} />
+        <Banner layout="inline" model={{ id: "agent37-wallet-low", tone: "warning", title: walletWarning.empty ? "Your wallet is empty" : "Your wallet is running low", detail: walletWarning.detail, actions: [{ label: "Top up", href: AGENT37_BILLING_URL }], report: false }} />
       ) : null}
       {live && spending && (spending.capReached || spending.capNear) ? (
         <Banner

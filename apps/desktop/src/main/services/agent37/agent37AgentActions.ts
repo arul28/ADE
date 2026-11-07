@@ -174,8 +174,14 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
     return { box: matches[0]!, all };
   };
 
+  /** This month against the cap; null when it can't be read. */
+  const readSpending = (): Promise<Agent37Spending | null> => deps.machines.spending().catch((error: unknown) => {
+    logger.warn?.("agent37.spending_read_failed", { error: getErrorMessage(error) });
+    return null;
+  });
+
   const capCheck = async (): Promise<Agent37Spending | null> => {
-    const month = await deps.machines.spending().catch(() => null);
+    const month = await readSpending();
     if (month?.capReached) throw new Error(agent37CapReachedMessage(month));
     return month;
   };
@@ -243,7 +249,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         refuse(`agents may pick up to ${max.cpu} vCPU · ${max.memoryGb} GB on their own.`);
       }
       // capCheck lets a month it couldn't read through, for a person to decide; nobody decides here.
-      const month = costs ? await deps.machines.spending().catch(() => null) : null;
+      const month = costs ? await readSpending() : null;
       const blocked = costs ? agent37UnattendedSpendBlock(month) : null;
       if (blocked) {
         const why = blocked === "cap_reached" && month ? agent37CapReachedMessage(month) : AGENT37_SPEND_UNKNOWN_MESSAGE;
