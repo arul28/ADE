@@ -3797,6 +3797,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     ANDROID_AVD_HELD_BY_OTHER_LANE   pick a free AVD, or create one
     ANDROID_AVD_RUNNING              that AVD already runs outside this lane
     ANDROID_BOOT_TIMEOUT / ANDROID_EMULATOR_EXITED   read the log the error names
+    ANDROID_ADB_UNAUTHORIZED         adb has an old key; ask the user, then start --restart-adb
     ANDROID_NOT_RUNNING              ade android start first
     ANDROID_LOW_MEMORY               free memory, or ask the user, then start --force
     ANDROID_ELEMENT_NOT_FOUND        ade android snapshot, then aim again

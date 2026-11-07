@@ -1406,14 +1406,18 @@ system image install from the device picker finished and put the image in
 place), `tests_run` (an instrumentation test run ran at least one test,
 passed or failed), `device_folded` (a fold of a foldable AVD that the
 emulator settled), `previews_rendered` (a Compose preview render wrote at
-least one image), or `store_screenshots` (a Play Store screenshot set was
-taken: the cover and inner screens of a foldable, else one screen). A failed, refused
+least one image), `store_screenshots` (a Play Store screenshot set was
+taken: the cover and inner screens of a foldable, else one screen),
+`device_booted` (a start booted the lane's emulator), `boot_failed` (a start
+did not boot it: a timeout, an exit, or an adb refusal), or `adb_restarted`
+(the adb server refused the device as `unauthorized`, and ADE restarted the
+server so the boot could go on). Apart from `boot_failed`, a failed, refused
 or no-op call emits nothing; the guard's own refusal is not an event. Nothing
 finer crosses: no SDK path, AVD, package, APK, angle, lane, chat, machine,
 memory size, image, test class, test count, module, or preview name. A hinge
 drag sends one fold when it is released, never per frame. A per-outcome
 `work_android_device:<outcome>` key with a 24-hour minimum interval bounds this
-to at most eleven accepted events per installation per UTC day, inside the same
+to at most fourteen accepted events per installation per UTC day, inside the same
 `ade_feature_used` limits; no ceiling was raised. The dashboard spec is
 untouched.
 

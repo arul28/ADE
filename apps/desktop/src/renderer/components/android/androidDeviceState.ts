@@ -273,6 +273,7 @@ const ANDROID_ERROR_SENTENCE: Record<AndroidEmulatorErrorCode, string> = {
   ANDROID_AVD_RUNNING: "That device is already running somewhere else.",
   ANDROID_NO_FREE_PORT: "No free emulator port is left on this machine.",
   ANDROID_BOOT_TIMEOUT: "The device did not finish booting in time.",
+  ANDROID_ADB_UNAUTHORIZED: "adb refused the device: its server uses an older key.",
   ANDROID_EMULATOR_EXITED: "The emulator stopped.",
   ANDROID_STREAM_FAILED: "The live view could not start.",
   ANDROID_NOT_RUNNING: "The device is not running.",

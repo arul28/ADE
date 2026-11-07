@@ -14,6 +14,7 @@ import type { DeviceOrientation } from "../../../shared/types/deviceOrientation"
 import { cn } from "../ui/cn";
 import { Banner, type NoticeAction } from "../ui/notice";
 import { showToast } from "../app/toast/toastStore";
+import { confirmDialog } from "../ui/dialog/confirm";
 import { Button } from "../ui/Button";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import {
@@ -495,6 +496,23 @@ export function AndroidDevicePane({
     void runStart({ kind: "start" }, () => api.start({ laneId }, runtimePinRef.current));
   }, [api, laneId, runStart]);
 
+  /**
+   * adb refused the device, and other devices use the adb server, so the brain
+   * did not restart it alone. The person agrees, then the start restarts it.
+   */
+  const restartAdbAndStart = useCallback(async () => {
+    if (!api) return;
+    const where = remoteMachineName ?? "this machine";
+    const confirmed = await confirmDialog({
+      title: "Restart adb?",
+      message: `ADE stops the adb server on ${where} and starts a new one with the current adb key. `
+        + "Other Android devices, and Android Studio, lose their connection for a few seconds.",
+      confirmLabel: "Restart adb",
+    });
+    if (!confirmed) return;
+    void runStart({ kind: "start" }, () => api.start({ laneId, restartAdb: true }, runtimePinRef.current));
+  }, [api, laneId, remoteMachineName, runStart]);
+
   /** Past the RAM guard, after its warning: the person accepts the swap. */
   const startAnyway = useCallback(() => {
     if (!api) return;
@@ -656,18 +674,28 @@ export function AndroidDevicePane({
       return <DeviceErrorStrip tool="android" sentence={error.sentence} detail={error.detail} onDismiss={() => setError(null)} />;
     }
     if (paneState === "crashed") {
+      // One line, one action (the shared strip's rule); the log is a quiet
+      // link, and "Choose another device" sits on the card below.
       const crash = lane?.error ?? null;
-      const actions: NoticeAction[] = [{ label: "Restart", onClick: start }];
+      const refused = crash?.code === "ANDROID_ADB_UNAUTHORIZED";
+      const actions: NoticeAction[] = [
+        refused ? { label: "Restart adb and start", onClick: () => void restartAdbAndStart() } : { label: "Restart", onClick: start },
+      ];
       if (crash?.logPath) {
         const logPath = crash.logPath;
-        actions.push({ label: "Open log", variant: "secondary", onClick: () => openLog(logPath) });
+        actions.push({ label: "Open log", variant: "link", onClick: () => openLog(logPath) });
       }
-      if (!noPicker) actions.push({ label: "Choose another device", variant: "secondary", onClick: () => setPickerRequested(true) });
       return (
         <DeviceErrorStrip
           tool="android"
           sentence={crash ? describeAndroidError(crash).sentence : `${deviceName} stopped.`}
           actions={actions}
+          report={{
+            surface: "android_device_boot",
+            code: crash?.code ?? "android_device_stopped",
+            // The title is already the brain's sentence; the code is what is new.
+            technicalDetail: crash?.code ?? null,
+          }}
         />
       );
     }
@@ -812,7 +840,14 @@ export function AndroidDevicePane({
       case "stopped":
         return <AndroidPaneMessage title={deviceName} description={deviceSpec ? `${deviceSpec} · Off` : "Off"} />;
       case "crashed":
-        return <AndroidPaneMessage title={`${deviceName} stopped.`} description={deviceSpec} />;
+        // The strip above says why; the card says only what the device is now.
+        return (
+          <AndroidPaneMessage
+            title={`${deviceName} is off.`}
+            description={deviceSpec}
+            action={noPicker ? null : { label: "Choose another device", onClick: () => setPickerRequested(true) }}
+          />
+        );
       case "starting":
       case "live":
       case "video-lost":

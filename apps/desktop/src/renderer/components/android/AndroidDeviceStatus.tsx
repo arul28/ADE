@@ -1,6 +1,7 @@
 import type { ComponentProps } from "react";
 import { AndroidLogo, DeviceMobile } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { Button } from "../ui/Button";
 import { DeviceLoadingCard } from "../device/DeviceLoadingCard";
 import { DeviceNoticeStrip } from "../device/DeviceStatusStrip";
 
@@ -19,9 +20,12 @@ export function AndroidDeviceNoticeStrip(props: Omit<ComponentProps<typeof Devic
 export function AndroidPaneMessage({
   title,
   description,
+  action,
 }: {
   title: string;
   description: string | null;
+  /** One quiet way on from the card ("Choose another device"). */
+  action?: { label: string; onClick: () => void } | null;
 }) {
   return (
     <div data-android-pane-message="" className="ade-tool-picker-static flex size-full items-center justify-center px-6 py-10">
@@ -29,6 +33,11 @@ export function AndroidPaneMessage({
         <AndroidLogo size={28} aria-hidden="true" className="text-muted-fg/60" />
         <p className="min-w-0 break-words font-sans text-sm font-medium leading-5 text-fg">{title}</p>
         {description ? <p className="min-w-0 break-words font-sans text-xs leading-5 text-muted-fg">{description}</p> : null}
+        {action ? (
+          <Button variant="outline" size="sm" casing="sentence" className="mt-2" onClick={action.onClick}>
+            {action.label}
+          </Button>
+        ) : null}
       </div>
     </div>
   );

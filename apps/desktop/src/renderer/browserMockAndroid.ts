@@ -9,6 +9,7 @@
  * - `picker`: the lane holds nothing.
  * - `setup`: no SDK.  `noaccel`: the SDK, no acceleration.
  * - `starting`, `off`, `crashed`, `unsupported`.
+ * - `refused`: the start failed because the adb server refused the device (`ANDROID_ADB_UNAUTHORIZED`).
  *
  * P1 look (3D stage, brand grid):
  * - `?mockAndroidCatalog=<catalog id>` makes the lane's device that catalog
@@ -58,7 +59,7 @@ import { createMockAndroidPreferences } from "./browserMockAndroidPreferences";
 import { androidCatalogColor, androidCatalogEntry, resolveAndroidCatalogProfile } from "../shared/androidDeviceCatalog";
 import { mockDelay, mockParam } from "./browserMockAndroidUtil";
 
-type Scenario = "live" | "picker" | "setup" | "noaccel" | "starting" | "off" | "crashed" | "unsupported";
+type Scenario = "live" | "picker" | "setup" | "noaccel" | "starting" | "off" | "crashed" | "refused" | "unsupported";
 
 const MOCK_STREAM_PATH = "/android-mock-stream";
 /** The fake loopback stream; `?mockIosLive` points the iOS mock at it too. */
@@ -77,7 +78,7 @@ function remoteWorkCopyEmpty(): boolean {
 function scenario(): Scenario {
   try {
     const value = new URLSearchParams(window.location.search).get("mockAndroid");
-    const known: Scenario[] = ["live", "picker", "setup", "noaccel", "starting", "off", "crashed", "unsupported"];
+    const known: Scenario[] = ["live", "picker", "setup", "noaccel", "starting", "off", "crashed", "refused", "unsupported"];
     return known.includes(value as Scenario) ? (value as Scenario) : "live";
   } catch {
     return "live";
@@ -212,7 +213,7 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
   let laneState: AndroidLaneDeviceStatus["state"] = which === "picker" ? "none"
     : which === "starting" ? "starting"
       : which === "off" ? "off"
-        : which === "crashed" ? "crashed"
+        : which === "crashed" || which === "refused" ? "crashed"
           : "booted";
   let streamRunning = false;
   /** The lane device's catalog look (P1): which catalog device, its colour and screen. */
@@ -259,9 +260,10 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
       } : null,
       avd: record,
       state: record ? laneState : "none",
-      error: laneState === "crashed"
-        ? { code: "ANDROID_EMULATOR_EXITED", message: "The emulator exited during boot (exit code 1).", logPath: "/Users/mock/.ade/android/logs/ade_lane_medium_phone-2026-11-03.log" }
-        : null,
+      error: laneState !== "crashed" ? null
+        : which === "refused"
+          ? { code: "ANDROID_ADB_UNAUTHORIZED", message: "adb refused Medium Phone: the adb server uses an older key.", logPath: "/Users/mock/.ade/android/logs/ade_lane_medium_phone.log" }
+          : { code: "ANDROID_EMULATOR_EXITED", message: "The emulator exited during boot (exit code 1).", logPath: "/Users/mock/.ade/android/logs/ade_lane_medium_phone-2026-11-03.log" },
     };
   };
   /** `remote`: another machine answers (a pinned call), which can always run an emulator. */

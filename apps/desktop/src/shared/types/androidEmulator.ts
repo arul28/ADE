@@ -49,6 +49,11 @@ export const ANDROID_DEVICE_ANALYTICS_OUTCOMES = [
   "previews_rendered",
   // Parity: a Play Store screenshot set was taken (Apple's `duo_app_store_shots`).
   "store_screenshots",
+  // Boot health: a start that booted, one that failed, and an adb server
+  // restart that ADE made so a refused (`unauthorized`) device could boot.
+  "device_booted",
+  "boot_failed",
+  "adb_restarted",
 ] as const;
 export type AndroidDeviceAnalyticsOutcome = (typeof ANDROID_DEVICE_ANALYTICS_OUTCOMES)[number];
 
@@ -255,6 +260,12 @@ export const ANDROID_EMULATOR_ERROR_CODES = [
   "ANDROID_AVD_RUNNING",
   "ANDROID_NO_FREE_PORT",
   "ANDROID_BOOT_TIMEOUT",
+  /**
+   * The emulator runs, but the adb server refuses it as `unauthorized`: the
+   * server holds an older adb key than the one the emulator trusts.
+   * `start` with `restartAdb` restarts the adb server and boots again.
+   */
+  "ANDROID_ADB_UNAUTHORIZED",
   "ANDROID_EMULATOR_EXITED",
   "ANDROID_STREAM_FAILED",
   "ANDROID_NOT_RUNNING",
@@ -331,8 +342,13 @@ export type AndroidDeviceInventory = {
 
 export type AndroidLaneArgs = { laneId: string };
 
-/** `start`. `force` boots even when the RAM guard says the machine has too little free memory. */
-export type AndroidStartArgs = AndroidLaneArgs & { force?: boolean };
+/**
+ * `start`. `force` boots even when the RAM guard says the machine has too little free memory.
+ * `restartAdb` restarts the machine's adb server when the device stays
+ * `unauthorized`, even while other devices use that server (the person's
+ * answer to `ANDROID_ADB_UNAUTHORIZED`).
+ */
+export type AndroidStartArgs = AndroidLaneArgs & { force?: boolean; restartAdb?: boolean };
 
 /** `listDevices`. `measureSizes` (P1 look, Storage) walks each AVD folder for `sizeBytes`. */
 export type AndroidListDevicesArgs = { laneId?: string | null; measureSizes?: boolean };

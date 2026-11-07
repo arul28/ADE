@@ -1161,8 +1161,9 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade android device-attach --avd Pixel_9_API_36 --json",
     },
     start: {
-      description: "Boot the lane's AVD and wait until Android reports boot completed. No-op when it is already booted.",
-      input: "object { laneId: string }",
+      description: "Boot the lane's AVD and wait until Android reports boot completed. No-op when it is already booted. "
+        + "force boots past the RAM guard. When adb refuses the device (ANDROID_ADB_UNAUTHORIZED), ADE restarts the adb server itself if no other device uses it; restartAdb restarts it even then.",
+      input: "object { laneId: string, force?: boolean, restartAdb?: boolean }",
       example: "ade android start --json",
     },
     stop: {

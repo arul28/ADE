@@ -774,7 +774,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         assertWorkCopyLive(laneId);
         // A chat's work copy has no device until its first start asks for one.
         if (isRemoteWorkLaneId(laneId) && !deps.laneDevices.get(laneId)) await inventory.ensureWorkCopyDeviceLocked(laneId);
-        return startLocked(laneState(laneId), { force: args.force === true });
+        return startLocked(laneState(laneId), { force: args.force === true, restartAdb: args.restartAdb === true });
       });
     },
 

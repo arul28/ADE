@@ -194,7 +194,7 @@ const ANDROID_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
   devices: ["--profiles"],
   "device-create": ["--profile", "--catalog", "--color", "--image", "--name", "--no-start"],
   "device-attach": ["--avd", "--no-start"],
-  start: ["--force"],
+  start: ["--force", "--restart-adb"],
   stop: [],
   "device-detach": ["--keep"],
   screenshot: ["--out", "--caption", "--no-proof"],
@@ -320,6 +320,8 @@ const ANDROID_ERROR_HINTS: Record<AndroidErrorCode, string> = {
     "hint: every emulator port (5554-5682) is in use. Stop an emulator you do not need, then try again.",
   ANDROID_BOOT_TIMEOUT:
     "hint: the emulator did not finish booting in time. Read the log it names, then run `ade android start` again.",
+  ANDROID_ADB_UNAUTHORIZED:
+    "hint: the adb server uses an older adb key, and other devices use that server. Ask the user before you run `ade android start --restart-adb`: it restarts the adb server, and the other devices reconnect.",
   ANDROID_EMULATOR_EXITED:
     "hint: the emulator quit. Read the log it names (`ade android status --text` shows the path).",
   ANDROID_STREAM_FAILED:
@@ -542,9 +544,15 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
     }, "android-device", noStart ? {} : { progressNotice: bootNotice });
   }
   if (sub === "start") {
-    // --force boots past the RAM guard (ANDROID_LOW_MEMORY).
+    // --force boots past the RAM guard (ANDROID_LOW_MEMORY); --restart-adb
+    // restarts a refusing adb server even while other devices use it (ANDROID_ADB_UNAUTHORIZED).
     const force = readFlag(args, ["--force"]);
-    return androidAction("android start", "start", { ...laneClaim(), ...(force ? { force: true } : {}) }, "android-device", { progressNotice: bootNotice });
+    const restartAdb = readFlag(args, ["--restart-adb"]);
+    return androidAction("android start", "start", {
+      ...laneClaim(),
+      ...(force ? { force: true } : {}),
+      ...(restartAdb ? { restartAdb: true } : {}),
+    }, "android-device", { progressNotice: bootNotice });
   }
   if (sub === "stop")
     return androidAction("android stop", "stop", laneClaim(), "android-device");

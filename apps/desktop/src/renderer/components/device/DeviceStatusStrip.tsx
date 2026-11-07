@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Banner, type NoticeAction } from "../ui/notice";
+import { Banner, type NoticeAction, type NoticeReport } from "../ui/notice";
 import type { DeviceToolId } from "./deviceTool";
 
 /**
@@ -13,6 +13,8 @@ import type { DeviceToolId } from "./deviceTool";
  * it is always the longest thing on screen.
  *
  * `tool` names the `data-{tool}-status-strip` marker and the banner's id.
+ * `report` names the failure for Sentry and the issue report (a stable code
+ * and the raw text); without it the banner reports its own words.
  */
 export function DeviceErrorStrip({
   tool,
@@ -20,12 +22,14 @@ export function DeviceErrorStrip({
   detail,
   actions,
   onDismiss,
+  report,
 }: {
   tool: DeviceToolId;
   sentence: string;
   detail?: string | null | undefined;
   actions?: NoticeAction[] | undefined;
   onDismiss?: (() => void) | undefined;
+  report?: NoticeReport | undefined;
 }) {
   const [open, setOpen] = useState(false);
   const all: NoticeAction[] = [...(actions ?? [])];
@@ -43,6 +47,7 @@ export function DeviceErrorStrip({
           title: sentence,
           actions: all,
           dismiss: onDismiss ? { onDismiss, title: "Dismiss this message", label: "Dismiss this message" } : undefined,
+          ...(report ? { report } : {}),
           extra: open && detail ? (
             <div
               style={{

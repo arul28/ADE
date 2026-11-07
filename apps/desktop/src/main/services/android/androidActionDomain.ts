@@ -200,7 +200,11 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
       avdName: requiredString(args, "avdName", "attachDevice"),
       start: optionalBoolean(args, "start"),
     }),
-    start: (args?: unknown) => service.start({ ...laneArgs(args, "start"), ...(readBoolean(args, "force") === true ? { force: true } : {}) }),
+    start: (args?: unknown) => service.start({
+      ...laneArgs(args, "start"),
+      ...(readBoolean(args, "force") === true ? { force: true } : {}),
+      ...(readBoolean(args, "restartAdb") === true ? { restartAdb: true } : {}),
+    }),
     stop: (args?: unknown) => service.stop(laneArgs(args, "stop")),
     releaseDevice: (args?: unknown) => service.releaseDevice({
       ...laneArgs(args, "releaseDevice"),

@@ -6,7 +6,8 @@ import path from "node:path";
 import type { AndroidRunningEmulator } from "../../../shared/types/androidEmulator";
 import type { Logger } from "../logging/logger";
 import { killWindowsProcessTreeAsync, terminateProcessTree } from "../shared/processExecution";
-import { runAdb, runAdbText } from "./adb";
+import { androidAvdDisplayName } from "../../../shared/androidDevicePresentation";
+import { readAdbDevices, restartAdbServer, runAdb, runAdbText } from "./adb";
 import { readAndroidAvd, sameAvdName } from "./androidAvds";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { androidUserHome, parseAndroidIni, type AndroidEnv } from "./androidSdk";
@@ -529,9 +530,33 @@ function exitedFailure(launch: AndroidEmulatorLaunch, info: AndroidEmulatorExit)
   const reason = lastAndroidEmulatorLogError(launch.logPath);
   return new AndroidEmulatorFailure(
     "ANDROID_EMULATOR_EXITED",
-    `The emulator for ${launch.avdName} exited (${how}) before it finished booting.${reason ? ` ${reason}` : ""}`,
+    `The emulator for ${androidAvdDisplayName(launch.avdName)} exited (${how}) before it finished booting.${reason ? ` ${reason}` : ""}`,
     launch.logPath,
   );
+}
+
+/**
+ * How long the device may stay `unauthorized` before ADE calls it refused. The
+ * emulator says yes to its own key in about a second; a server with an older
+ * key is refused for good.
+ */
+export const ANDROID_UNAUTHORIZED_GRACE_MS = 20_000;
+
+/**
+ * What the boot wait may do when the adb server stays refused:
+ * - `auto`: restart it only when no other device uses it, so nothing else loses its connection.
+ * - `always`: restart it (the person chose this after the refusal).
+ * - `never`: report the refusal.
+ */
+export type AndroidAdbRestartPolicy = "auto" | "always" | "never";
+
+/** One line from ADE into the emulator's log, so "Open log" says what ADE saw and did. */
+function noteInLaunchLog(launch: AndroidEmulatorLaunch, line: string): void {
+  try {
+    fs.appendFileSync(launch.logPath, `# ADE ${new Date().toISOString()} ${line}\n`);
+  } catch {
+    // The log is for reading only; a boot never fails on it.
+  }
 }
 
 export type AndroidBootResult = {
@@ -541,6 +566,8 @@ export type AndroidBootResult = {
   waitForDeviceMs: number;
   /** From spawn to `sys.boot_completed` = 1. */
   bootCompletedMs: number;
+  /** ADE restarted the adb server during this boot, because the server refused the device. */
+  adbRestarted: boolean;
 };
 
 /**
@@ -549,10 +576,25 @@ export type AndroidBootResult = {
  * `ANDROID_EMULATOR_EXITED` as soon as the emulator exits, and
  * `ANDROID_BOOT_TIMEOUT` after `timeoutMs` (a cold boot measured 24 s on
  * Windows). On a timeout the emulator is left running; the caller stops it.
+ *
+ * A device that stays `unauthorized` for `ANDROID_UNAUTHORIZED_GRACE_MS` is
+ * refused by the adb server: the server started before `~/.android/adbkey`
+ * changed, and it never reads the key again. `restartAdb` says whether the wait
+ * restarts the server once (`auto`, the default, only when no other device
+ * uses it); otherwise it throws `ANDROID_ADB_UNAUTHORIZED` at once, not after
+ * the whole timeout.
  */
 export async function waitForAndroidBoot(
   launch: AndroidEmulatorLaunch,
-  options: { adbPath: string; timeoutMs?: number; registry?: AdeStartedEmulators | null; discoveryDirs?: readonly string[] },
+  options: {
+    adbPath: string;
+    timeoutMs?: number;
+    registry?: AdeStartedEmulators | null;
+    discoveryDirs?: readonly string[];
+    restartAdb?: AndroidAdbRestartPolicy;
+    /** Called once the restart ADE made has finished. */
+    onAdbRestarted?: (otherDevices: number) => void;
+  },
 ): Promise<AndroidBootResult> {
   if (!fs.existsSync(options.adbPath)) {
     throw new AndroidEmulatorFailure("ANDROID_TOOL_MISSING", `adb is not installed at ${options.adbPath}.`);
@@ -571,7 +613,7 @@ export async function waitForAndroidBoot(
     if (remaining() <= 0) {
       throw new AndroidEmulatorFailure(
         "ANDROID_BOOT_TIMEOUT",
-        `${launch.avdName} did not finish booting in ${Math.round((options.timeoutMs ?? 120_000) / 1000)} s.`,
+        `${androidAvdDisplayName(launch.avdName)} did not finish booting in ${Math.round((options.timeoutMs ?? 120_000) / 1000)} s.`,
         launch.logPath,
       );
     }
@@ -579,12 +621,39 @@ export async function waitForAndroidBoot(
 
   // `wait-for-device` in short slices: an adb call cannot be cancelled, so a
   // slice that times out is simply asked again while the emulator lives.
+  const restartPolicy = options.restartAdb ?? "auto";
+  let adbRestarted = false;
+  let unauthorizedSince: number | null = null;
   for (;;) {
     checkAlive();
     const slice = Math.max(250, Math.min(5_000, remaining()));
     const attempt = runAdb(options.adbPath, ["wait-for-device"], { serial: launch.serial, timeoutMs: slice })
       .then(() => true, () => false);
     if (await Promise.race([attempt, exitRace])) break;
+    // `wait-for-device` waits on an `unauthorized` device until it times out,
+    // so the server's own list says why it has not come up.
+    const devices = await Promise.race([readAdbDevices(options.adbPath), exitRace]);
+    const refused = devices.some((row) => row.serial === launch.serial && row.state === "unauthorized");
+    unauthorizedSince = refused ? (unauthorizedSince ?? Date.now()) : null;
+    if (unauthorizedSince !== null && Date.now() - unauthorizedSince >= ANDROID_UNAUTHORIZED_GRACE_MS) {
+      const otherDevices = devices.filter((row) => row.serial !== launch.serial).length;
+      const mayRestart = !adbRestarted && (restartPolicy === "always" || (restartPolicy === "auto" && otherDevices === 0));
+      if (!mayRestart) {
+        noteInLaunchLog(launch, `adb refuses ${launch.serial} as unauthorized: the adb server uses an older adb key. Stopping the boot.`);
+        throw new AndroidEmulatorFailure(
+          "ANDROID_ADB_UNAUTHORIZED",
+          `adb refused ${androidAvdDisplayName(launch.avdName)}: the adb server uses an older key.`,
+          launch.logPath,
+        );
+      }
+      noteInLaunchLog(launch, `adb refuses ${launch.serial} as unauthorized: the adb server uses an older adb key. Restarting the adb server (${otherDevices} other device(s) on it).`);
+      await Promise.race([restartAdbServer(options.adbPath), exitRace]);
+      adbRestarted = true;
+      unauthorizedSince = null;
+      noteInLaunchLog(launch, "The adb server restarted. Waiting for the device again.");
+      options.onAdbRestarted?.(otherDevices);
+      continue;
+    }
     await Promise.race([sleep(250), exitRace]);
   }
   const waitForDeviceMs = Date.now() - launch.startedAt;
@@ -610,7 +679,7 @@ export async function waitForAndroidBoot(
     await sleep(250);
   }
   options.registry?.record({ avdName: launch.avdName, consolePort: launch.consolePort, launcherPid: launch.launcherPid, pid });
-  return { pid, waitForDeviceMs, bootCompletedMs };
+  return { pid, waitForDeviceMs, bootCompletedMs, adbRestarted };
 }
 
 async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {

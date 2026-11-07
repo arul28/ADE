@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AndroidEmulatorEvent, AndroidLaneDevice, AndroidLaneDeviceStatus, AndroidSdkStatus } from "../../../shared/types/androidEmulator";
+import { androidAvdDisplayName } from "../../../shared/androidDevicePresentation";
+import { captureProblem } from "../../../shared/sentry/capture";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import { readAndroidAvd } from "./androidAvds";
@@ -150,7 +152,7 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
     });
   };
 
-  const startLocked = async (state: LaneState, options: { force?: boolean } = {}): Promise<AndroidLaneDeviceStatus> => {
+  const startLocked = async (state: LaneState, options: { force?: boolean; restartAdb?: boolean } = {}): Promise<AndroidLaneDeviceStatus> => {
     const laneId = state.laneId;
     // The machine first: a lane without a device on a machine that can't run one needs the machine's answer.
     const ready = await requireSdk({ emulator: true });
@@ -174,7 +176,7 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
     const force = options.force === true;
     const reservation = await reserveAndroidMemoryForStart({ laneId, avd, force, platform, logger });
     try {
-      const status = await bootLocked(state, device, ready);
+      const status = await bootLocked(state, device, ready, options.restartAdb === true);
       // Started past the RAM guard: how often the guard's answer is overruled.
       if (force && status.state === "booted") deps.captureAnalytics?.("start_forced");
       return status;
@@ -184,7 +186,12 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
   };
 
   /** The launch and the boot wait of `startLocked`, once the start may go ahead. */
-  const bootLocked = async (state: LaneState, device: AndroidLaneDevice, ready: ReadyAndroidSdk): Promise<AndroidLaneDeviceStatus> => {
+  const bootLocked = async (
+    state: LaneState,
+    device: AndroidLaneDevice,
+    ready: ReadyAndroidSdk,
+    restartAdb: boolean,
+  ): Promise<AndroidLaneDeviceStatus> => {
     const laneId = state.laneId;
     const logPath = path.join(deps.dataDir, "logs", `${device.avdName}.log`);
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
@@ -214,7 +221,17 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
       // A stop that came while the launch was still picking ports.
       if (state.stopRequested) throw new AndroidEmulatorFailure("ANDROID_NOT_RUNNING", "The emulator was stopped while it was starting.");
       const startedAt = Date.now();
-      const boot = await waitForAndroidBoot(launch, { adbPath: ready.adbPath, timeoutMs: bootTimeoutMs, registry, discoveryDirs });
+      const boot = await waitForAndroidBoot(launch, {
+        adbPath: ready.adbPath,
+        timeoutMs: bootTimeoutMs,
+        registry,
+        discoveryDirs,
+        restartAdb: restartAdb ? "always" : "auto",
+        onAdbRestarted: (otherDevices) => {
+          logger?.warn("android.adb_server_restarted", { laneId, reason: "unauthorized", otherDevices, asked: restartAdb });
+          deps.captureAnalytics?.("adb_restarted");
+        },
+      });
       if (state.stopRequested) throw new AndroidEmulatorFailure("ANDROID_NOT_RUNNING", "The emulator was stopped while it was starting.");
       bootedSeen.add(`${launch.serial}:${boot.pid}`);
       logger?.info("android.emulator_booted", {
@@ -224,7 +241,9 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
         waitForDeviceMs: boot.waitForDeviceMs,
         bootCompletedMs: boot.bootCompletedMs,
         totalMs: Date.now() - startedAt,
+        adbRestarted: boot.adbRestarted,
       });
+      deps.captureAnalytics?.("device_booted");
       state.transient = null;
       onBooted(laneId);
       watchExit(state, launch);
@@ -251,9 +270,24 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
       }
       const failure = error instanceof AndroidEmulatorFailure
         ? error
-        : new AndroidEmulatorFailure("ANDROID_EMULATOR_EXITED", `The emulator for ${device.avdName} did not start: ${getErrorMessage(error)}`, logPath);
+        : new AndroidEmulatorFailure(
+          "ANDROID_EMULATOR_EXITED",
+          `The emulator for ${androidAvdDisplayName(device.avdName)} did not start: ${getErrorMessage(error)}`,
+          logPath,
+        );
       state.error = failure.toAndroidEmulatorError();
-      logger?.warn("android.emulator_start_failed", { laneId, avdName: device.avdName, code: failure.code, error: failure.message });
+      const elapsedMs = launch ? Date.now() - launch.startedAt : null;
+      logger?.warn("android.emulator_start_failed", { laneId, avdName: device.avdName, code: failure.code, error: failure.message, elapsedMs });
+      // A boot that failed is a failure ADE should hear about, not only a log
+      // line: one issue for each code. The message names the device, so it
+      // stays out; the code and the time say what happened.
+      captureProblem("Android emulator did not boot", {
+        tags: { area: "android", code: failure.code },
+        extra: { elapsedMs, profileId: device.profileId ?? null, origin: device.origin },
+        fingerprint: ["android", "boot_failed", failure.code],
+        handled: true,
+      });
+      deps.captureAnalytics?.("boot_failed");
       emit({ type: "android.device.state", laneId, state: "crashed" });
       throw failure;
     }

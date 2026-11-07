@@ -431,7 +431,7 @@ machine can give without swapping (`androidMemoryGuard.ts`):
 | Live | The picture, the rail and the live line. |
 | Video stopped | The picture dims. The strip says "Video stopped." with **Reconnect**. |
 | Off | "{name} is off." with **Start** and **Choose another device**. |
-| Crashed | Why the emulator stopped (often the last error line of its log), with **Restart**, **Open log** and **Choose another device**. |
+| Crashed | An error strip with one line on why the emulator stopped (often the last error line of its log), one action (**Restart**, or **Restart adb and start** when adb refused the device) and an **Open log** link. The card below says "{name} is off." with **Choose another device**. The strip reports the failure to Sentry under `android_device_boot` with its code. |
 | Low memory | A warning strip with the numbers and **Start anyway** (the RAM guard). |
 | Unsupported | "This machine can't run the Android emulator." with the host's reason. |
 
@@ -1059,8 +1059,14 @@ an app installs, a 3D render files as proof, an agent takes a new lease, a
 system image installs (`image_installed`), an instrumentation run runs at
 least one test (`tests_run`), a fold settles (`device_folded`), or a Compose
 preview render writes an image (`previews_rendered`), or a Play Store
-screenshot set is taken (`store_screenshots`). Each outcome counts at
-most once a day. No path, AVD, package, lane, image, angle or preview name
+screenshot set is taken (`store_screenshots`). Boot health has three
+outcomes: a start that booted (`device_booted`), one that did not
+(`boot_failed`), and an adb server restart that ADE made so a refused
+device could boot (`adb_restarted`). Each outcome counts at most once a day.
+A boot that fails is also one Sentry issue for each error code
+(`["android", "boot_failed", <code>]`), with the time it took and the
+profile id; the `android.emulator_start_failed` and
+`android.adb_server_restarted` log lines carry the rest. No path, AVD, package, lane, image, angle or preview name
 goes with it. `docs/logging.md` holds the contract.
 
 ## Source file map
@@ -1158,6 +1164,7 @@ The full list is in §6 of the [plan](../../plans/android-emulator.md).
 | `ANDROID_NO_ACCELERATION` | Turn on acceleration: Windows Hypervisor Platform on Windows, KVM access on Linux. WSL2 has none, and a VM has it only with nested virtualization. The banner's **How to fix** opens Google's guide. |
 | `ANDROID_EMULATOR_EXITED` | The emulator exited. Read its log, `<project>/.ade/android/logs/<avd>.log` on the emulator's machine (**Open log**, or the path in `ade android status --text`). Then **Restart**. |
 | `ANDROID_BOOT_TIMEOUT` | The boot took more than 180 s. Read the log, then run `ade android start` again. |
+| `ANDROID_ADB_UNAUTHORIZED` | The emulator runs, but the adb server refuses it as `unauthorized` for 20 s. The server started before `~/.android/adbkey` changed (a new SDK or Android CLI setup can write a new key), and it never reads the key again. When no other device uses the server, ADE restarts it and the boot goes on (`# ADE` lines in the log say so). Otherwise the pane offers **Restart adb and start**, after a confirm, and `ade android start --restart-adb` does the same. |
 | `ANDROID_PATH_OUTSIDE_LANE` | `screenshot --out` must be inside the lane worktree. Give a path there, or leave out `--out`. |
 | Work copy gone (`ANDROID_NOT_RUNNING`) | "This chat's work copy on this machine is gone, so it has no Android device here." Run the command again to make a new copy. |
 | `ANDROID_NOT_RUNNING` | Boot the lane's emulator first (`ade android start`), or make one (`ade android device-create --profile <id>`). |

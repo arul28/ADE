@@ -235,6 +235,7 @@ Each error prints its next step. The common ones:
 | Code | What to do |
 |---|---|
 | `ANDROID_NOT_RUNNING` | `android start`, or `device-create` when the lane has none |
+| `ANDROID_ADB_UNAUTHORIZED` | the adb server has an older adb key, and other devices use it. Ask the user, then `android start --restart-adb` (the other devices reconnect). Never run `adb kill-server` yourself |
 | `ANDROID_ELEMENT_NOT_FOUND` | `android snapshot --text`, then aim again |
 | `ANDROID_WAIT_TIMEOUT` | look at the screen; pass a longer `--timeout-ms` |
 | `ANDROID_BUILD_FAILED` | read the Gradle output; fix the build. No JDK: ask the user to install Android Studio or a JDK 17+ |
