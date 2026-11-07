@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowClockwise, ArrowSquareOut, CircleNotch, LinkBreak, Wallet, Warning } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, CircleNotch, LinkBreak, Wallet } from "@phosphor-icons/react";
 import {
   AGENT37_API_KEYS_URL,
   AGENT37_BILLING_URL,
   AGENT37_DASHBOARD_URL,
   formatAgent37Usd,
+  type Agent37CreateMachineResult,
   type Agent37Status,
   type Agent37TemplateStatus,
 } from "../../../shared/agent37";
@@ -22,12 +23,14 @@ import { Agent37ReadyMachinesCard } from "./Agent37ReadyMachinesCard";
 import { Agent37MachinesCard } from "./Agent37MachinesCard";
 import { Agent37CloudSignInsCard, useAgent37CloudSignIns } from "./Agent37CloudSignInsCard";
 import { useAgent37Machines } from "../remoteTargets/useAgent37Machines";
-import { agent37GroupTotals } from "../remoteTargets/agent37MachineModel";
+import { agent37GroupTotals, agent37WalletWarning } from "../remoteTargets/agent37MachineModel";
 import agent37ApiKeyShot from "./integrations/steps/agent37-api-key.webp";
 import { Agent37AgentLimitsCard } from "./Agent37AgentLimitsCard";
 import { Agent37Mark, AGENT37_NAME } from "../remoteTargets/agent37Brand";
 import { agent37RetryLabel, useAgent37Template } from "../remoteTargets/useAgent37Template";
 import { openExternalUrl } from "../../lib/openExternal";
+import { showToast } from "../app/toast/toastStore";
+import { NewAgent37MachineDialog } from "../remoteTargets/NewAgent37MachineDialog";
 import "./IntegrationsSettings.css";
 
 function errorText(error: unknown, fallback: string): string {
@@ -58,14 +61,16 @@ function Agent37TemplateFoot({ status, loadError, onRetry }: { status: Agent37Te
     const reason = status?.error ?? loadError ?? "The build failed.";
     const retryLine = status?.nextRetryAt ? agent37RetryLabel(status.nextRetryAt) : null;
     return (
-      <div className="ade-ig-hero-foot-row" role="alert">
-        <Warning size={14} weight="fill" />
-        <b>New machines can't be made yet.</b>
-        <span>{reason}{retryLine ? ` ${retryLine}` : ""}</span>
-        <button type="button" className="ade-modern-btn" data-size="sm" onClick={onRetry}>
-          <ArrowClockwise size={12} /> Retry
-        </button>
-      </div>
+      <Banner
+        layout="inline"
+        model={{
+          id: "agent37-template-failed",
+          tone: "error",
+          title: "New machines can't be made yet.",
+          detail: `${reason}${retryLine ? ` ${retryLine}` : ""}`,
+          actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: onRetry }],
+        }}
+      />
     );
   }
   if (status?.state !== "building") return null;
@@ -107,16 +112,6 @@ function Agent37TemplateFoot({ status, loadError, onRetry }: { status: Agent37Te
   );
 }
 
-/** "about 2 days" at this rate, or null when it lasts more than three days or nothing bills. */
-function walletRunwayWarning(balanceUsd: number | null, hourlyUsd: number): string | null {
-  if (balanceUsd == null || hourlyUsd <= 0) return null;
-  if (balanceUsd <= 0) return `Your ${AGENT37_NAME} wallet is empty. ${AGENT37_NAME} suspends your machines at the next hourly settle unless you top up.`;
-  const hours = balanceUsd / hourlyUsd;
-  if (hours > 72) return null;
-  const left = hours < 2 ? "about an hour" : hours < 48 ? `about ${Math.floor(hours)} hours` : `about ${Math.floor(hours / 24)} days`;
-  return `Your wallet lasts ${left} at this rate. When it runs out, ${AGENT37_NAME} suspends your machines.`;
-}
-
 /**
  * Settings › Integrations › Agent 37. Account-wide: the workspace key is kept in
  * the account vault, so this page asks this desktop's own main process with no
@@ -132,6 +127,13 @@ export function Agent37Section() {
   /** What the error banner's button does: check again, or retry the disconnect that failed. */
   const [errorRetry, setErrorRetry] = useState<"load" | "disconnect">("load");
   const connected = status?.connected === true;
+  /**
+   * The New machine dialog lives here, not in the machines card: the card goes
+   * away while a status read fails, and closing the dialog mid-create cancels
+   * the create and deletes the half-made machine.
+   */
+  const [creating, setCreating] = useState(false);
+  const [accountChangedAt, setAccountChangedAt] = useState(0);
   const template = useAgent37Template(connected && !status?.error);
   // One read of the workspace's machines for the hero's month, the warnings and the machines card.
   const machines = useAgent37Machines(connected && !status?.error);
@@ -201,6 +203,18 @@ export function Agent37Section() {
     }
   };
 
+  const onCreated = useCallback((result: Agent37CreateMachineResult) => {
+    setCreating(false);
+    machines.refresh();
+    setAccountChangedAt(Date.now());
+    showToast({
+      tone: "success",
+      title: `Made ${result.name}`,
+      message: result.joined ? "It's in Your computers. Connect it there, or pick it when you start a chat." : "It's still starting. It shows in Your computers once it's ready.",
+      replayMask: { title: true },
+    });
+  }, [machines]);
+
   // Before the early return below: a hook runs on every render.
   const cloudSignIns = useAgent37CloudSignIns(connected && !status?.error);
 
@@ -254,7 +268,7 @@ export function Agent37Section() {
       : null;
   const storage = status?.credentialStorage ?? null;
   const walletWarning = machines.result?.state === "ok" && !machines.result.pastDue
-    ? walletRunwayWarning(machines.result.balanceUsd, agent37GroupTotals(machines.result.machines).hourlyUsd)
+    ? agent37WalletWarning(machines.result.balanceUsd, agent37GroupTotals(machines.result.machines).hourlyUsd)
     : null;
 
   return (
@@ -318,7 +332,7 @@ export function Agent37Section() {
       {live && machines.result?.state === "ok" && machines.result.pastDue ? (
         <Banner layout="inline" model={{ id: "agent37-suspended", tone: "error", title: `${AGENT37_NAME} suspended your machines`, detail: "Your wallet ran out, so every machine is asleep and not billing. Top up to wake them. A machine left suspended for 30 days is deleted.", actions: [{ label: "Top up", href: AGENT37_BILLING_URL }], report: false }} />
       ) : walletWarning ? (
-        <Banner layout="inline" model={{ id: "agent37-wallet-low", tone: "warning", title: "Your wallet is running low", detail: walletWarning, actions: [{ label: "Top up", href: AGENT37_BILLING_URL }], report: false }} />
+        <Banner layout="inline" model={{ id: "agent37-wallet-low", tone: "warning", title: walletWarning.empty ? "Your wallet is empty" : "Your wallet is running low", detail: walletWarning.detail, actions: [{ label: "Top up", href: AGENT37_BILLING_URL }], report: false }} />
       ) : null}
       {live && spending && (spending.capReached || spending.capNear) ? (
         <Banner
@@ -340,7 +354,7 @@ export function Agent37Section() {
           <>
             {live ? <Agent37CloudSignInsCard signIns={cloudSignIns} /> : null}
             {live ? <Agent37ReadyMachinesCard status={status} cloudSignIns={cloudSignIns.status} /> : null}
-            {live ? <Agent37MachinesCard status={status} machines={machines} /> : null}
+            {live ? <Agent37MachinesCard status={status} machines={machines} onNewMachine={() => setCreating(true)} accountChangedAt={accountChangedAt} /> : null}
             {live ? <Agent37AgentLimitsCard /> : null}
           </>
         ) : (
@@ -393,6 +407,9 @@ export function Agent37Section() {
           </IntegrationCard>
         )}
       </IntegrationColumns>
+      {creating && status ? (
+        <NewAgent37MachineDialog status={status} onCreated={onCreated} onClose={() => setCreating(false)} />
+      ) : null}
     </IntegrationPage>
   );
 }

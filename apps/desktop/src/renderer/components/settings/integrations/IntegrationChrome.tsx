@@ -243,3 +243,34 @@ export function IntegrationOr({ children }: { children: ReactNode }) {
 export function IntegrationColumns({ children }: { children: ReactNode }) {
   return <div className="ade-ig-body">{children}</div>;
 }
+
+/**
+ * A segmented choice (`.kit-seg`) exposed as a radio group. `sentenceCase`
+ * off keeps the kit's small-caps look, for short values like counts.
+ */
+export function IntegrationChoice<T extends string | number>({ label, value, options, disabled, sentenceCase = true, onChange }: {
+  label: string;
+  value: T | null;
+  options: readonly { value: T; label: string; title?: string }[];
+  disabled: boolean;
+  sentenceCase?: boolean;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="kit-seg" data-case={sentenceCase ? "sentence" : undefined} role="radiogroup" aria-label={label} aria-disabled={disabled || undefined}>
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="radio"
+          aria-checked={option.value === value}
+          title={option.title}
+          disabled={disabled}
+          onClick={() => { if (option.value !== value) onChange(option.value); }}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}

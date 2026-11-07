@@ -139,7 +139,7 @@ export function Agent37GroupBanners({
     const warning = agent37WalletWarning(result.balanceUsd, agent37GroupTotals(result.machines).hourlyUsd);
     if (warning) {
       banners.push(
-        <Banner key="wallet" layout="inline" model={{ id: "agent37-wallet-low", tone: "warning", icon: <Agent37Mark size={15} />, title: result.balanceUsd != null && result.balanceUsd <= 0 ? "Your Agent 37 wallet is empty" : "Your Agent 37 wallet is running low", detail: warning, actions: [TOP_UP] }} />,
+        <Banner key="wallet" layout="inline" model={{ id: "agent37-wallet-low", tone: "warning", icon: <Agent37Mark size={15} />, title: warning.empty ? "Your Agent 37 wallet is empty" : "Your Agent 37 wallet is running low", detail: warning.detail, actions: [TOP_UP] }} />,
       );
     }
     const { spending } = result;

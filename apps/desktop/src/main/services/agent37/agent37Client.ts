@@ -145,7 +145,7 @@ export const AGENT37_LIST_MACHINES_IPC_TIMEOUT_MS = 2 * REQUEST_TIMEOUT_MS + 10_
 const UPLOAD_TIMEOUT_MS = 2 * 60_000;
 
 /** The sentence for an Agent37 error code. Agent37's own message is the fallback. */
-export function agent37ErrorMessage(code: string, status: number, upstream: string | null): string {
+function agent37ErrorMessage(code: string, status: number, upstream: string | null): string {
   switch (code) {
     case "invalid_api_key":
       return "Agent 37 did not accept this API key. Check that you copied all of it, or make a new one.";

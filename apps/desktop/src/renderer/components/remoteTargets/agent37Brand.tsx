@@ -3,7 +3,7 @@
  * (viewBox 0 0 512 512, stroke-only, drawn in currentColor). Their brand is
  * monochrome: black and white, no accent color.
  */
-export const AGENT37_LOGO_PATHS = [
+const AGENT37_LOGO_PATHS = [
   "M226.31 69.18 L280.18 69.18 L442.82 231.82 L442.82 278.38 L284.11 437.1 L230.73 437.1 L68.93 275.3 L68.93 226.56 Z",
   "M281.22 70.22 L126.17 225.26 L256.67 355.76",
   "M73.6 221.89 L232.07 380.36 L354.43 258",

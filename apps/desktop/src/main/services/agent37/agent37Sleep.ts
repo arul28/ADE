@@ -213,7 +213,7 @@ const WAKE_LOOKUP_TIMEOUT_MS = 5_000;
 
 /** The account vault item for the cap; this computer's copy sits in the shared credential file. */
 export const AGENT37_BUDGET_VAULT_KEY = "agent37-budget";
-export const AGENT37_BUDGET_MACHINE_CREDENTIAL_KEY = "agent37.budget.v1";
+const AGENT37_BUDGET_MACHINE_CREDENTIAL_KEY = "agent37.budget.v1";
 
 function parseAgentLimits(raw: unknown): Agent37AgentLimits {
   const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};

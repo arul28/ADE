@@ -6,10 +6,10 @@ import { accountMachinePresence, machineIsAwake } from "../../../shared/machineP
 import type { AdeAccountMachine, RemoteRuntimeTarget } from "../../../shared/types";
 import { useActivityStore } from "../../state/activityStore";
 import { Agent37BoxOnlyRow, Agent37BoxStrip, Agent37GroupBanners, Agent37GroupHead, agent37DeletedRow, agent37ParkedRow } from "./Agent37MachineGroup";
-import { agent37BoxWork, isDeletedAgent37Row, matchAgent37Boxes } from "./agent37MachineModel";
+import { isDeletedAgent37Row, matchAgent37Boxes } from "./agent37MachineModel";
 import type { MachineAction } from "./MachineActionsMenu";
 import type { MachineRow, MachineSection, MachineSections } from "./remoteMachineModel";
-import { useAgent37BoxActions, type Agent37BoxContext } from "./useAgent37BoxActions";
+import { agent37BoxContext, useAgent37BoxActions, type Agent37BoxContext } from "./useAgent37BoxActions";
 import { useAgent37Machines } from "./useAgent37Machines";
 
 /** While a box's row lags, how often the account list is read again. */
@@ -118,22 +118,14 @@ export function useAgent37MachineGroup(args: {
     tier: agent37Result?.tier ?? null,
   });
 
-  const boxContext = useCallback((box: Agent37Machine, row: MachineRow | null): Agent37BoxContext => {
-    const accountMachine = row ? rowAccountMachine(row) : null;
-    const name = row?.kind === "saved"
-      ? row.target.name
-      : accountMachine
-        ? accountMachineDisplayName(accountMachine) ?? box.name ?? box.instanceId
-        : box.name?.trim() || box.instanceId;
-    return {
-      box,
-      name,
-      accountMachine,
-      targetId: row?.kind === "saved" ? row.target.id : row?.kind === "account" ? row.matchedTargetId : null,
-      work: agent37BoxWork(accountMachine, activityItems),
-      accountKnown,
-    };
-  }, [activityItems, rowAccountMachine]);
+  const boxContext = useCallback((box: Agent37Machine, row: MachineRow | null): Agent37BoxContext => agent37BoxContext({
+    box,
+    accountMachine: row ? rowAccountMachine(row) : null,
+    name: row?.kind === "saved" ? row.target.name : null,
+    targetId: row?.kind === "saved" ? row.target.id : row?.kind === "account" ? row.matchedTargetId : null,
+    activityItems,
+    accountKnown,
+  }), [accountKnown, activityItems, rowAccountMachine]);
 
   // A row puts Wake where Connect goes; a box with no row gets it on its card.
   const boxStrip = (ctx: Agent37BoxContext, wakeOnCard: boolean) => (
@@ -196,7 +188,7 @@ export function useAgent37MachineGroup(args: {
 
   // Rows that are Agent 37 boxes leave their section for the Agent 37 group,
   // which keeps the order Connected, Ready to connect, Not reachable.
-  const agent37Rows: Array<{ row: MachineRow; section: MachineSection }> = [];
+  const agent37Rows: Array<{ row: MachineRow; section: MachineSection; box: Agent37Machine }> = [];
   const listedSections: Record<MachineSection, MachineRow[]> = { connected: [], available: [], unavailable: [] };
   const matchedBoxIds = new Set<string>();
   for (const section of ["connected", "available", "unavailable"] as const) {
@@ -204,7 +196,7 @@ export function useAgent37MachineGroup(args: {
       const box = rowBox(row);
       if (box && !matchedBoxIds.has(box.instanceId)) {
         matchedBoxIds.add(box.instanceId);
-        agent37Rows.push({ row, section });
+        agent37Rows.push({ row, section, box });
       } else {
         listedSections[section].push(row);
       }
@@ -213,7 +205,7 @@ export function useAgent37MachineGroup(args: {
   // Boxes ADE made that no row stands for: joining, removed from ADE, or
   // never signed in. They still bill, so they stay visible.
   const looseBoxes = agent37Boxes.filter((box) => box.madeByAde && !matchedBoxIds.has(box.instanceId));
-  const agent37GroupBoxes = [...agent37Rows.map(({ row }) => rowBox(row)!), ...looseBoxes];
+  const agent37GroupBoxes = [...agent37Rows.map(({ box }) => box), ...looseBoxes];
   const showAgent37Group = agent37Result != null && agent37Result.state !== "not_connected"
     && (agent37GroupBoxes.length > 0 || agent37Result.state !== "ok" || agent37Result.pastDue);
 

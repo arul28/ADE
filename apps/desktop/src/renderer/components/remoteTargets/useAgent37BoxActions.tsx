@@ -11,14 +11,15 @@ import {
   type Agent37MachineActionResult,
   type Agent37ShapeId,
 } from "../../../shared/agent37";
-import { accountMachineRemovalConfirmBody } from "../../../shared/accountDirectory";
+import { accountMachineDisplayName, accountMachineRemovalConfirmBody } from "../../../shared/accountDirectory";
 import { captureError } from "../../../shared/sentry/capture";
 import type { AdeAccountMachine } from "../../../shared/types/account";
+import type { AttentionItem } from "../../../shared/types/attention";
 import { showToast } from "../app/toast/toastStore";
 import { confirmDialog, Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 import { extractError } from "../../lib/format";
-import { describeAgent37Rate, type Agent37BoxWork } from "./agent37MachineModel";
+import { agent37BoxWork, describeAgent37Rate, type Agent37BoxWork } from "./agent37MachineModel";
 import type { MachineAction } from "./MachineActionsMenu";
 
 /** What one box is doing in the list right now, shown on its card. */
@@ -41,6 +42,30 @@ export type Agent37BoxContext = {
   /** The account list was read, so a null `accountMachine` really means "not in ADE". */
   accountKnown: boolean;
 };
+
+/**
+ * A box's context from its account row (if any): the row's name wins, then
+ * Agent 37's name, then the instance id. `name` overrides it (a saved
+ * connection's own name).
+ */
+export function agent37BoxContext(args: {
+  box: Agent37Machine;
+  accountMachine: AdeAccountMachine | null;
+  targetId: string | null;
+  activityItems: readonly AttentionItem[];
+  accountKnown: boolean;
+  name?: string | null;
+}): Agent37BoxContext {
+  const { box, accountMachine } = args;
+  return {
+    box,
+    name: args.name ?? (accountMachine ? accountMachineDisplayName(accountMachine) : null) ?? (box.name?.trim() || box.instanceId),
+    accountMachine,
+    targetId: args.targetId,
+    work: agent37BoxWork(accountMachine, args.activityItems),
+    accountKnown: args.accountKnown,
+  };
+}
 
 const PENDING_LABELS: Record<Agent37BoxPending, string> = {
   sleep: "Putting it to sleep…",
@@ -274,6 +299,8 @@ export function useAgent37BoxActions(args: {
   }, [onAccountChanged, refresh, setError, setPending]);
 
   const copyBox = useCallback(async (ctx: Agent37BoxContext) => {
+    const copyMachine = window.ade.agent37?.copyMachine;
+    if (!copyMachine) return;
     const rate = describeAgent37Rate({ ...ctx.box, state: "running" });
     const ok = await confirmDialog({
       title: `Copy ${ctx.name}?`,
@@ -281,10 +308,12 @@ export function useAgent37BoxActions(args: {
       confirmLabel: "Copy",
     });
     if (!ok) return;
-    await runLong(ctx, "copy", (requestId) => window.ade.agent37!.copyMachine!({ requestId, instanceId: ctx.box.instanceId, name: `${ctx.name} copy` }));
+    await runLong(ctx, "copy", (requestId) => copyMachine({ requestId, instanceId: ctx.box.instanceId, name: `${ctx.name} copy` }));
   }, [runLong]);
 
   const moveBox = useCallback(async (ctx: Agent37BoxContext) => {
+    const moveMachine = window.ade.agent37?.moveMachine;
+    if (!moveMachine) return;
     const to = ctx.box.type === "vm" ? "box" : "vm";
     const ok = await confirmDialog({
       title: `Move ${ctx.name} to a ${to === "vm" ? "VM" : "box"}?`,
@@ -296,7 +325,7 @@ export function useAgent37BoxActions(args: {
       size: "md",
     });
     if (!ok) return;
-    await runLong(ctx, "move", (requestId) => window.ade.agent37!.moveMachine!({
+    await runLong(ctx, "move", (requestId) => moveMachine({
       requestId,
       instanceId: ctx.box.instanceId,
       machineKey: ctx.accountMachine?.machineKey ?? null,
@@ -311,7 +340,9 @@ export function useAgent37BoxActions(args: {
    * same machine under Your computers.
    */
   const reconnectBox = useCallback(async (ctx: Agent37BoxContext) => {
-    await runLong(ctx, "reconnect", (requestId) => window.ade.agent37!.reconnectMachine!({ requestId, instanceId: ctx.box.instanceId }));
+    const reconnectMachine = window.ade.agent37?.reconnectMachine;
+    if (!reconnectMachine) return;
+    await runLong(ctx, "reconnect", (requestId) => reconnectMachine({ requestId, instanceId: ctx.box.instanceId }));
   }, [runLong]);
 
   /** The ⋯ menu items for a box, after the row's own (Rename, Test…). */
