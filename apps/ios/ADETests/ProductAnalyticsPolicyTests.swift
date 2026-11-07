@@ -446,6 +446,7 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
       "build_number",
       "distribution",
       "release_channel",
+      "machine_id",
       "$process_person_profile",
       "$geoip_disable",
     ]))
@@ -583,6 +584,7 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
         "build_number",
         "distribution",
         "release_channel",
+        "machine_id",
         "$process_person_profile",
         "$geoip_disable",
       ])

@@ -1438,7 +1438,9 @@ the `android.start_low_memory` log line, with the reason and the numbers).
 Every emulator stop also writes the operational log line
 `android.emulator_stopped` with its reason (`user`, `released`,
 `lane_released`, `idle`, `owner_gone`, `orphan`, `project_closed`) and the
-AVD name; that stays in the local log and Sentry Logs, never PostHog. Nothing
+AVD name; that stays in the local log and Sentry Logs, never PostHog. An owner
+record that could not be written (`android.owner_record_failed`, warn, with the
+AVD name) leaves that emulator outside the idle stop and cleanup. Nothing
 finer crosses: no SDK path, AVD, package, APK, angle, lane, chat, machine,
 memory size, image, test class, test count, module, or preview name. A hinge
 drag sends one fold when it is released, never per frame. A per-outcome

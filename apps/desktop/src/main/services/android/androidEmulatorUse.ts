@@ -192,7 +192,10 @@ export function createAndroidEmulatorUse(deps: AndroidEmulatorUseDeps) {
         guestRamMb: described.guestRamMb,
         costMb: 0,
       });
-      void lifecycle.recordBooted({ avdName: emulator.avdName, consolePort: emulator.consolePort, pid: emulator.pid }).catch(() => undefined);
+      void lifecycle.recordBooted({ avdName: emulator.avdName, consolePort: emulator.consolePort, pid: emulator.pid }).catch((error: unknown) => {
+        // Without its owner record the emulator is never idle-stopped or cleaned up.
+        logger?.warn("android.owner_record_failed", { avdName: emulator.avdName, error: getErrorMessage(error) });
+      });
       logger?.info("android.emulator_taken_in", { laneId, avdName: emulator.avdName, serial: emulator.serial });
     }
   };

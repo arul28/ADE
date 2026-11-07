@@ -495,7 +495,10 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       const boot = await waitForAndroidBoot(launch, { adbPath: ready.adbPath, timeoutMs: bootTimeoutMs, registry, discoveryDirs });
       if (state.stopRequested) throw new AndroidEmulatorFailure("ANDROID_NOT_RUNNING", "The emulator was stopped while it was starting.");
       bootedSeen.add(`${launch.serial}:${boot.pid}`);
-      void lifecycle?.recordBooted({ avdName: launch.avdName, consolePort: launch.consolePort, pid: boot.pid }).catch(() => undefined);
+      void lifecycle?.recordBooted({ avdName: launch.avdName, consolePort: launch.consolePort, pid: boot.pid }).catch((error: unknown) => {
+        // Without its owner record the emulator is never idle-stopped or cleaned up.
+        logger?.warn("android.owner_record_failed", { avdName: launch?.avdName ?? null, error: getErrorMessage(error) });
+      });
       logger?.info("android.emulator_booted", {
         laneId,
         avdName: device.avdName,
