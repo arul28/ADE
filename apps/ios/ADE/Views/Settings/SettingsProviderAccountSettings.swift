@@ -141,6 +141,9 @@ struct ProviderAccountCompactionPage: View {
     ADESettingsPage(title: "Auto-compact", subtitle: "When ADE compacts chats on this account.") {
       if let account = store.account(id: accountId) {
         content(account)
+          // Each control writes the whole compaction object from the last
+          // read, so a second edit waits for the first write and read back.
+          .disabled(store.busyAccountId == accountId)
       }
     }
     .settingsPageClose()
