@@ -74,8 +74,31 @@ function laneDeviceLines(lane: JsonObject): string[] {
     lines.push("", `app crash: ${app}: ${asString(crash.summary) ?? ""}`.trimEnd());
     lines.push(`next: ade android log${asString(crash.packageName) ? ` --package ${asString(crash.packageName)}` : ""} --level error`);
   }
+  // The lane's extra devices (`device-create --extra`), each reached with --device.
+  const extras = records(lane.extras);
+  if (extras.length) {
+    lines.push("", `Extra devices  ${extras.length}`, renderTable(
+      ["avd", "name", "state", "serial", "profile"],
+      extras.map((extra) => {
+        const row = isRecord(extra.device) ? extra.device : {};
+        const extraAvd = isRecord(extra.avd) ? extra.avd : null;
+        const extraRunning = extraAvd && isRecord(extraAvd.running) ? extraAvd.running : null;
+        return [row.avdName, extraAvd?.displayName ?? null, extra.state, extraRunning?.serial ?? null, row.profileId];
+      }),
+      "No extra devices.",
+      { fullColumns: ["avd"] },
+    ));
+    for (const extra of extras) {
+      const extraError = isRecord(extra.error) ? extra.error : null;
+      const row = isRecord(extra.device) ? extra.device : {};
+      if (extraError) lines.push(`error (${asString(row.avdName) ?? "?"}): ${asString(extraError.code) ?? "?"}: ${asString(extraError.message) ?? ""}`.trimEnd());
+    }
+    lines.push("reach one with --device <avd> (start, stop, install, launch, device-detach); device-promote --device <avd> makes it the lane's device");
+  }
   if (!device) {
-    lines.push("", "next: ade android device-create --profile <id> (ade android devices --profiles lists them), or ade android device-attach --avd <name>");
+    lines.push("", extras.length
+      ? "next: ade android device-promote --device <avd> makes an extra the lane's device, or ade android device-create --profile <id>"
+      : "next: ade android device-create --profile <id> (ade android devices --profiles lists them), or ade android device-attach --avd <name>");
   } else if (lane.state === "off" || lane.state === "crashed") {
     // Parity: the idle timer powered it off (`ADE_ANDROID_IDLE_POWER_OFF_MINUTES`); the device stays the lane's.
     const poweredOff = isRecord(lane.poweredOff) ? lane.poweredOff : null;
@@ -196,8 +219,31 @@ export function formatAndroidRelease(value: unknown): string {
   const result = record(value);
   return renderKeyValues("ADE Android emulator release", [
     ["released", yesNo(result.released)],
+    ["extra device", result.extra === true ? "yes" : null],
     ["deleted avd", result.deletedAvd ?? (result.released === true ? "(kept)" : null)],
   ]);
+}
+
+/** `device-promote`: which device the lane has now, and what became of the old one (Apple's wording). */
+export function formatAndroidDevicePromote(value: unknown): string {
+  const result = record(value);
+  const device = isRecord(result.device) ? result.device : {};
+  const previous = isRecord(result.previous) ? result.previous : null;
+  const name = asString(device.avdName) ?? "the device";
+  const previousName = asString(previous?.avdName) ?? "The old device";
+  const kept = result.previousKeptAs === "extra"
+    ? `${previousName} is now one of the lane's extra devices (reach it with --device ${previousName}).`
+    : result.previousKeptAs === "detached"
+      ? `${previousName} was released; it stays on this machine.`
+      : null;
+  const lane = isRecord(result.lane) ? result.lane : null;
+  return [
+    previous ? `${name} is now this lane's device.` : `${name} is this lane's device.`,
+    ...(kept ? [kept] : []),
+    lane?.state === "booted" ? "It runs: ade android show opens it." : "ade android start boots it.",
+    "",
+    ...(lane ? laneDeviceLines(lane) : []),
+  ].join("\n");
 }
 
 export function formatAndroidScreenshot(value: unknown): string {
@@ -358,16 +404,25 @@ export function formatAndroidApps(value: unknown): string {
   );
 }
 
-function installLine(install: JsonObject): string {
+/** ` on <avd> (an extra device)` when the call named a device with --device. */
+function onDevice(result: JsonObject): string {
+  const device = isRecord(result.device) ? result.device : null;
+  const avdName = asString(device?.avdName);
+  if (!avdName) return "";
+  return device?.extra === true ? ` on ${avdName} (an extra device)` : ` on ${avdName}`;
+}
+
+function installLine(install: JsonObject, target: JsonObject = install): string {
   const how = install.method === "gradle" ? `Gradle ${asString(install.gradleTask) ?? ""}`.trimEnd() : `APK ${asString(install.apkPath) ?? ""}`.trimEnd();
-  return `Installed ${asString(install.packageName) ?? "the app"} (${how}) in ${seconds(install.durationMs) ?? "?"}.`;
+  return `Installed ${asString(install.packageName) ?? "the app"} (${how})${onDevice(target)} in ${seconds(install.durationMs) ?? "?"}.`;
 }
 
 export function formatAndroidInstall(value: unknown): string {
   const install = record(value);
+  const device = isRecord(install.device) && install.device.extra === true ? asString(install.device.avdName) : null;
   return [
     installLine(install),
-    `Open it: ade android launch --package ${asString(install.packageName) ?? "<name>"} --text`,
+    `Open it: ade android launch --package ${asString(install.packageName) ?? "<name>"}${device ? ` --device ${device}` : ""} --text`,
   ].join("\n");
 }
 
@@ -375,10 +430,10 @@ export function formatAndroidLaunch(value: unknown): string {
   const launch = record(value);
   const install = isRecord(launch.install) ? launch.install : null;
   return [
-    ...(install ? [installLine(install)] : []),
+    ...(install ? [installLine(install, launch)] : []),
     // `activity` is the component (`pkg/.Main`) when the app's launcher named it.
     `Opened ${asString(launch.activity)?.includes("/") ? asString(launch.activity) : `${asString(launch.packageName) ?? "?"}/${asString(launch.activity) ?? "?"}`}`
-      + `${typeof launch.totalTimeMs === "number" ? ` (started in ${launch.totalTimeMs} ms)` : ""}.`,
+      + `${onDevice(launch)}${typeof launch.totalTimeMs === "number" ? ` (started in ${launch.totalTimeMs} ms)` : ""}.`,
     "Check the screen: ade android snapshot --text",
   ].join("\n");
 }

@@ -136,11 +136,17 @@ export function buildAndroidSuitePlan(
     return { ...(words.length ? { arguments: words } : {}), ...(extras.length ? { extras } : {}) };
   };
   const elementResult = { exitCodeFromResult: (result: unknown) => (record(result).ok === false ? 1 : 0) };
+  /** `install`/`launch --device <avd>`: one of the lane's extra devices instead of its own. */
+  const readDevice = (): JsonObject => {
+    const device = readValue(args, ["--device"]);
+    if (device != null && !device.trim()) throw usage("--device needs an AVD name (`ade android status --text` lists the lane's devices).");
+    return device ? { device: device.trim() } : {};
+  };
 
   if (sub === "apps") return androidAction("android apps", "listApps", laneClaim(), "android-apps");
   if (sub === "install") {
     const source = readInstallSource(true);
-    return androidAction("android install", "installApp", { ...laneClaim(), ...source }, "android-install",
+    return androidAction("android install", "installApp", { ...laneClaim(), ...source, ...readDevice() }, "android-install",
       source.gradle ? { progressNotice: "Building the lane's app with Gradle and installing it; a first build can take a few minutes…" } : {});
   }
   if (sub === "launch") {
@@ -157,6 +163,7 @@ export function buildAndroidSuitePlan(
       ...(packageName ? { packageName } : {}),
       ...(activity ? { activity } : {}),
       ...launchExtras,
+      ...readDevice(),
     }, "android-launch", source.gradle ? { progressNotice: "Building the lane's app with Gradle, then opening it…" } : {});
   }
   // Parity with `ade apple`: relaunch, app-state, foreground, frame, inspect, select, device-cleanup.

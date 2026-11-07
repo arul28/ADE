@@ -18,7 +18,10 @@ const DISPLAY_SCALE = { small: 0.85, default: 1, large: 1.15, larger: 1.3 } as c
 const TEXT_SCALE = { small: 0.85, default: 1, large: 1.15, largest: 1.3 } as const;
 
 /** P3's System images and "Run tests" come from `browserMockAndroidImages.ts`. */
-type MockToolsApi = Omit<AndroidEmulatorToolsPreloadApi, "listSystemImages" | "installSystemImage" | "removeSystemImage" | "runInstrumentationTests">;
+type MockToolsApi = Omit<
+  AndroidEmulatorToolsPreloadApi,
+  "listSystemImages" | "installSystemImage" | "removeSystemImage" | "runInstrumentationTests" | "devicePromote"
+>;
 
 const MOCK_PREVIEWS = [
   { fqn: "com.example.sample.ui.GreetingKt.GreetingPreview", name: "Light", dark: false },

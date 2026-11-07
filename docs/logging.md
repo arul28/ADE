@@ -1409,16 +1409,22 @@ emulator settled), `previews_rendered` (a Compose preview render wrote at
 least one image), `store_screenshots` (a Play Store screenshot set was
 taken: the cover and inner screens of a foldable, else one screen),
 `device_booted` (a start booted the lane's emulator), `boot_failed` (a start
-did not boot it: a timeout, an exit, or an adb refusal), or `adb_restarted`
+did not boot it: a timeout, an exit, or an adb refusal), `adb_restarted`
 (the adb server refused the device as `unauthorized`, and ADE restarted the
-server so the boot could go on). Apart from `boot_failed`, a failed, refused
-or no-op call emits nothing; the guard's own refusal is not an event. Nothing
+server so the boot could go on), `extra_device_created` (a lane made an extra
+device beside its own with `ade android device-create --extra`, Apple's
+spelling), or `device_promoted` (one of a lane's extra devices became its
+device, from `ade android device-promote` or the picker; a promote of the
+device the lane already holds is not one). A boot of an extra device counts
+under `device_booted` and `boot_failed` as the lane device's does. Apart from
+`boot_failed`, a failed, refused or no-op call emits nothing; the guard's own
+refusal and a promote refused as busy are not events. Nothing
 finer crosses: no SDK path, AVD, package, APK, angle, lane, chat, machine,
 memory size, image, test class, test count, module, or preview name. A hinge
 drag sends one fold when it is released, never per frame. A per-outcome
 `work_android_device:<outcome>` key with a 24-hour minimum interval bounds this
-to at most fourteen accepted events per installation per UTC day, inside the same
-`ade_feature_used` limits; no ceiling was raised. The dashboard spec is
+to at most seventeen accepted events per installation per UTC day (one per
+outcome), inside the same `ade_feature_used` limits; no ceiling was raised. The dashboard spec is
 untouched.
 
 Whether agents use the user's own browser records the same `ade_feature_used`

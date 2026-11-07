@@ -23,6 +23,12 @@ const EXPECTED_KIND: Partial<Record<AndroidErrorCode, "user" | "environment">> =
   ANDROID_AVD_NOT_FOUND: "user",
   ANDROID_AVD_HELD_BY_OTHER_LANE: "user",
   ANDROID_LANE_HAS_DEVICE: "user",
+  // Extra devices: a full lane, an extra named where the lane's device is
+  // meant, a device the lane does not hold, a device in use: the person's state.
+  ANDROID_EXTRA_DEVICE_LIMIT: "user",
+  ANDROID_DEVICE_IS_EXTRA: "user",
+  ANDROID_DEVICE_NOT_LANE_OWNED: "user",
+  ANDROID_LANE_DEVICE_BUSY: "user",
   ANDROID_AVD_RUNNING: "user",
   ANDROID_NOT_RUNNING: "user",
   ANDROID_PATH_OUTSIDE_LANE: "user",

@@ -27,6 +27,8 @@ import type { AndroidEmulatorControlServiceApi, AndroidPowerOffRecord } from "./
 import { ANDROID_CONTROL_ACTIONS } from "./androidEmulatorControl";
 import type { AndroidEmulatorDeviceServiceApi, AndroidOrientationEvent } from "./androidEmulatorDevice";
 import { ANDROID_DEVICE_ACTIONS, ANDROID_ROTATE_ORIENTATIONS } from "./androidEmulatorDevice";
+import type { AndroidEmulatorExtrasServiceApi, AndroidLaneExtraStatus } from "./androidEmulatorExtras";
+import { ANDROID_EXTRA_DEVICE_ACTIONS } from "./androidEmulatorExtras";
 
 /**
  * The Android panel's product facts (`ade_feature_used`, `action: "android_device"`):
@@ -54,6 +56,10 @@ export const ANDROID_DEVICE_ANALYTICS_OUTCOMES = [
   "device_booted",
   "boot_failed",
   "adb_restarted",
+  // Extra devices: a lane made a second device beside its own (Apple's
+  // `extra_device_created`), and an extra became the lane's device.
+  "extra_device_created",
+  "device_promoted",
 ] as const;
 export type AndroidDeviceAnalyticsOutcome = (typeof ANDROID_DEVICE_ANALYTICS_OUTCOMES)[number];
 
@@ -181,6 +187,12 @@ export type AndroidLaneDevice = {
   createdAt: string;
   /** Package names ADE installed, so release can uninstall only those. */
   adeInstalledPackages: string[];
+  /**
+   * One of the lane's extra devices (`device-create --extra`), not its own
+   * device: reached with `--device <avd>`, never the default target, never
+   * streamed in the pane. Absent on the lane's device.
+   */
+  extra?: boolean;
 };
 
 /** The emulator the lane holds, as the panel reads it. */
@@ -195,6 +207,8 @@ export type AndroidLaneDeviceStatus = {
   appCrash?: AndroidAppCrash | null;
   /** Parity: why ADE powered the emulator off (idle timer or cleanup), until the next start. */
   poweredOff?: AndroidPowerOffRecord | null;
+  /** The lane's extra devices (`device-create --extra`), oldest first. Absent from an older brain. */
+  extras?: AndroidLaneExtraStatus[];
 };
 
 /**
@@ -256,6 +270,14 @@ export const ANDROID_EMULATOR_ERROR_CODES = [
   "ANDROID_AVD_HELD_BY_OTHER_LANE",
   /** The lane already holds an AVD; release it before making or attaching another. */
   "ANDROID_LANE_HAS_DEVICE",
+  /** `device-create --extra` on a lane that already holds its limit of extra devices. */
+  "ANDROID_EXTRA_DEVICE_LIMIT",
+  /** `device-attach` naming one of this lane's extra devices: promote it instead. */
+  "ANDROID_DEVICE_IS_EXTRA",
+  /** `--device` names neither the lane's device nor one of its extra devices. */
+  "ANDROID_DEVICE_NOT_LANE_OWNED",
+  /** `device-promote` refused: the lane's device (or the extra) is in use now. */
+  "ANDROID_LANE_DEVICE_BUSY",
   /** The AVD already runs (one AVD boots once at a time). */
   "ANDROID_AVD_RUNNING",
   "ANDROID_NO_FREE_PORT",
@@ -332,6 +354,8 @@ export type AndroidAvdListing = AndroidAvd & {
    * never lets this project delete it.
    */
   madeForOtherLane: boolean;
+  /** The lane in `heldByLaneId` holds it as one of its extra devices, not as its own. */
+  heldAsExtra?: boolean;
 };
 
 export type AndroidDeviceInventory = {
@@ -348,7 +372,15 @@ export type AndroidLaneArgs = { laneId: string };
  * `unauthorized`, even while other devices use that server (the person's
  * answer to `ANDROID_ADB_UNAUTHORIZED`).
  */
-export type AndroidStartArgs = AndroidLaneArgs & { force?: boolean; restartAdb?: boolean };
+export type AndroidStartArgs = AndroidLaneArgs & {
+  force?: boolean;
+  restartAdb?: boolean;
+  /** One of the lane's extra devices (AVD name or shown name). Default: the lane's device. */
+  device?: string | null;
+};
+
+/** `stop`. `device` names one of the lane's extra devices; default: the lane's device. */
+export type AndroidStopArgs = AndroidLaneArgs & { device?: string | null };
 
 /** `listDevices`. `measureSizes` (P1 look, Storage) walks each AVD folder for `sizeBytes`. */
 export type AndroidListDevicesArgs = { laneId?: string | null; measureSizes?: boolean };
@@ -368,6 +400,13 @@ export type AndroidCreateDeviceArgs = AndroidLaneArgs & {
   catalogId?: string | null;
   /** P1 look: the catalog entry's colour id, recorded on the AVD. */
   colorId?: string | null;
+  /**
+   * Make an EXTRA device for the lane instead of its own one: the lane keeps
+   * its device, and the new one boots beside it (unless `start` is false).
+   * Deleted with the lane, like the lane's own. At most
+   * `ANDROID_LANE_EXTRA_DEVICE_LIMIT` per lane by default.
+   */
+  extra?: boolean | null;
 };
 
 export type AndroidAttachDeviceArgs = AndroidLaneArgs & {
@@ -382,6 +421,18 @@ export type AndroidReleaseDeviceArgs = AndroidLaneArgs & {
    * never deleted; ADE only uninstalls the packages it installed.
    */
   deleteCreated?: boolean;
+  /**
+   * One of the lane's extra devices (AVD name or shown name): release that one
+   * and keep the lane's device. Default: the lane's device (its extras stay).
+   */
+  device?: string | null;
+};
+
+export type AndroidReleaseDeviceResult = {
+  released: boolean;
+  deletedAvd: string | null;
+  /** The released device was one of the lane's extra devices. */
+  extra?: boolean;
 };
 
 export type AndroidStartStreamArgs = AndroidLaneArgs & {
@@ -458,6 +509,8 @@ export type AndroidEmulatorEvent =
   | { type: "android.app.crashed"; laneId: string; crash: AndroidAppCrash }
   /** P3 fold: the hinge moved (from any viewer or an agent). */
   | { type: "android.device.posture"; laneId: string; posture: AndroidPosture }
+  /** One of the lane's extra devices changed state (`android.device.state` is the lane device's alone). */
+  | { type: "android.extra.state"; laneId: string; avdName: string; state: AndroidLaneExtraStatus["state"] | "none" }
   /** Parity: the display turned (a rotate from any caller). */
   | AndroidOrientationEvent
   | AndroidRenderRequestEvent;
@@ -469,11 +522,11 @@ export type AndroidEmulatorServiceApi = {
   createDevice(args: AndroidCreateDeviceArgs): Promise<AndroidLaneDeviceStatus>;
   /** Hold an existing (user or free ADE) AVD for the lane. */
   attachDevice(args: AndroidAttachDeviceArgs): Promise<AndroidLaneDeviceStatus>;
-  /** Boot the lane's AVD (no-op when already booted). */
+  /** Boot the lane's AVD, or one of its extras with `device` (no-op when already booted). */
   start(args: AndroidStartArgs): Promise<AndroidLaneDeviceStatus>;
-  /** Stop the lane's emulator if ADE started it. */
-  stop(args: AndroidLaneArgs): Promise<AndroidLaneDeviceStatus>;
-  releaseDevice(args: AndroidReleaseDeviceArgs): Promise<{ released: boolean; deletedAvd: string | null }>;
+  /** Stop the lane's emulator (or one of its extras) if ADE started it. */
+  stop(args: AndroidStopArgs): Promise<AndroidLaneDeviceStatus>;
+  releaseDevice(args: AndroidReleaseDeviceArgs): Promise<AndroidReleaseDeviceResult>;
   /** Delete an ADE-created AVD that no lane holds. User-only. */
   deleteDevice(args: { avdName: string }): Promise<{ deleted: boolean }>;
   /** Mints the loopback stream token: viewers only, never a session-bound agent. */
@@ -501,7 +554,8 @@ export type AndroidEmulatorServiceApi = {
   onEvent(listener: (event: AndroidEmulatorEvent) => void): () => void;
 } & AndroidEmulatorLookServiceApi & AndroidEmulatorAgentServiceApi & AndroidEmulatorSetupServiceApi & AndroidEmulatorPostureServiceApi
   & AndroidEmulatorImagesServiceApi & AndroidEmulatorInstrumentationServiceApi & AndroidEmulatorPreviewServiceApi
-  & AndroidEmulatorRecordingServiceApi & AndroidEmulatorControlServiceApi & AndroidEmulatorDeviceServiceApi;
+  & AndroidEmulatorRecordingServiceApi & AndroidEmulatorControlServiceApi & AndroidEmulatorDeviceServiceApi
+  & AndroidEmulatorExtrasServiceApi;
 
 /**
  * P1 agent suite (android-agent): the actions `ade android` adds for agents.
@@ -582,6 +636,8 @@ export const ANDROID_AGENT_ACTIONS = [
   ...ANDROID_CONTROL_ACTIONS,
   // Parity: status bar, Clear location, Play Store screenshots, window layout.
   ...ANDROID_DEVICE_ACTIONS,
+  // Extra devices: one of the lane's extras becomes its own device.
+  ...ANDROID_EXTRA_DEVICE_ACTIONS,
 ] as const;
 export type AndroidAgentAction = (typeof ANDROID_AGENT_ACTIONS)[number];
 
@@ -674,8 +730,8 @@ export type AndroidEmulatorPreloadApi = {
   createDevice(args: AndroidCreateDeviceArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
   attachDevice(args: AndroidAttachDeviceArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
   start(args: AndroidStartArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
-  stop(args: AndroidLaneArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
-  releaseDevice(args: AndroidReleaseDeviceArgs, pin?: Pin): Promise<{ released: boolean; deletedAvd: string | null }>;
+  stop(args: AndroidStopArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
+  releaseDevice(args: AndroidReleaseDeviceArgs, pin?: Pin): Promise<AndroidReleaseDeviceResult>;
   deleteDevice(args: { avdName: string }, pin?: Pin): Promise<{ deleted: boolean }>;
   startStream(args: AndroidStartStreamArgs, pin?: Pin): Promise<AndroidStreamStatus>;
   stopStream(args: AndroidStreamViewerArgs, pin?: Pin): Promise<AndroidStreamStatus>;
@@ -721,4 +777,5 @@ export * from "./androidEmulatorPreviews";
 export * from "./androidEmulatorRecording";
 export * from "./androidEmulatorControl";
 export * from "./androidEmulatorDevice";
+export * from "./androidEmulatorExtras";
 

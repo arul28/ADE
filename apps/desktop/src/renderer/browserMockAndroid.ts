@@ -367,6 +367,15 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
       emit({ type: "android.inventory.changed" });
       return delay({ released: Boolean(released), deletedAvd: null });
     },
+    // The mock lane holds no extra devices: a promote of its own device answers with it.
+    devicePromote: async (args) => {
+      laneId = args.laneId;
+      const lane = laneStatus();
+      if (!lane.device || lane.device.avdName !== args.device) {
+        throw new Error(`ANDROID_DEVICE_NOT_LANE_OWNED: ${args.device} is not one of this lane's extra devices.`);
+      }
+      return delay({ device: lane.device, previous: null, previousKeptAs: null, lane });
+    },
     deleteDevice: async (args) => {
       const index = otherAvds.findIndex((entry) => entry.name === args.avdName);
       if (index >= 0) otherAvds.splice(index, 1);

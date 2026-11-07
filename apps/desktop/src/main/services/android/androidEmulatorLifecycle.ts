@@ -293,5 +293,15 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
     }
   };
 
-  return { stopEmulator, abortBoot, stopLocked, startLocked };
+  /**
+   * Promote: the lane's state takes an emulator this process launched for an
+   * extra, so a stop passes its launcher pid and a later exit reads as crashed.
+   */
+  const adoptLaunch = (state: LaneState, launch: AndroidEmulatorLaunch | null): void => {
+    state.launch = launch;
+    state.error = null;
+    if (launch) watchExit(state, launch);
+  };
+
+  return { stopEmulator, abortBoot, stopLocked, startLocked, adoptLaunch };
 }

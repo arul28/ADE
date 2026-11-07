@@ -177,6 +177,10 @@ export function AndroidDevicePane({
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const [pickerRequested, setPickerRequested] = useState(false);
   const [pending, setPending] = useState<PendingStart | null>(null);
+  /** The lane's extra device a start, stop or remove is in flight for. */
+  const [pendingExtra, setPendingExtra] = useState<string | null>(null);
+  /** The extra whose start the RAM guard refused, so "Start anyway" starts that one, not the lane's device. */
+  const lowMemoryExtraRef = useRef<string | null>(null);
   const [error, setError] = useState<AndroidErrorDescription | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [noAccelDismissed, setNoAccelDismissed] = useState(false);
@@ -442,6 +446,7 @@ export function AndroidDevicePane({
     setPending(kind);
     setError(null);
     setStreamError(null);
+    lowMemoryExtraRef.current = null;
     try {
       const next = await call();
       if (laneIdRef.current !== laneId) return;
@@ -513,11 +518,70 @@ export function AndroidDevicePane({
     void runStart({ kind: "start" }, () => api.start({ laneId, restartAdb: true }, runtimePinRef.current));
   }, [api, laneId, remoteMachineName, runStart]);
 
+  /**
+   * One call on one of the lane's extra devices: a spinner on its card while
+   * it runs, the pane's error line when it fails, a re-read after. The lane's
+   * device and its stream are left as they are.
+   */
+  const runExtra = useCallback(async (avdName: string, call: () => Promise<unknown>): Promise<void> => {
+    setPendingExtra(avdName);
+    setError(null);
+    lowMemoryExtraRef.current = null;
+    try {
+      await call();
+    } catch (caught: unknown) {
+      if (laneIdRef.current !== laneId) return;
+      const described = describeAndroidError(caught);
+      if (described.code === "ANDROID_LOW_MEMORY") lowMemoryExtraRef.current = avdName;
+      setError(described);
+    } finally {
+      if (laneIdRef.current === laneId) setPendingExtra(null);
+      void readStatus();
+      if (pickerShownRef.current) void readInventory();
+    }
+  }, [laneId, readInventory, readStatus]);
+
   /** Past the RAM guard, after its warning: the person accepts the swap. */
   const startAnyway = useCallback(() => {
     if (!api) return;
+    const extra = lowMemoryExtraRef.current;
+    if (extra) {
+      void runExtra(extra, () => api.start({ laneId, device: extra, force: true }, runtimePinRef.current));
+      return;
+    }
     void runStart({ kind: "start" }, () => api.start({ laneId, force: true }, runtimePinRef.current));
-  }, [api, laneId, runStart]);
+  }, [api, laneId, runExtra, runStart]);
+
+  const startExtra = useCallback((avdName: string) => {
+    if (!api) return;
+    void runExtra(avdName, () => api.start({ laneId, device: avdName }, runtimePinRef.current));
+  }, [api, laneId, runExtra]);
+
+  const stopExtra = useCallback((avdName: string) => {
+    if (!api) return;
+    void runExtra(avdName, () => api.stop({ laneId, device: avdName }, runtimePinRef.current));
+  }, [api, laneId, runExtra]);
+
+  /** ADE made every extra for this lane, so removing one deletes it. */
+  const removeExtra = useCallback((avdName: string) => {
+    if (!api) return;
+    void runExtra(avdName, () => api.releaseDevice({ laneId, device: avdName, deleteCreated: true }, runtimePinRef.current));
+  }, [api, laneId, runExtra]);
+
+  /**
+   * One of the lane's extras becomes its device and opens: one that is off
+   * boots, as "Open" does for the lane's device. The old device stays as an
+   * extra (the user's own AVD is released).
+   */
+  const promoteExtra = useCallback((avdName: string) => {
+    if (!api) return;
+    forgetStream();
+    void runStart({ kind: "attach", avdName }, async () => {
+      const promoted = await api.devicePromote({ laneId, device: avdName }, runtimePinRef.current);
+      if (promoted.lane.state === "off" || promoted.lane.state === "crashed") return api.start({ laneId }, runtimePinRef.current);
+      return promoted.lane;
+    });
+  }, [api, forgetStream, laneId, runStart]);
 
   const powerOff = useCallback(() => {
     if (!api) return;
@@ -835,6 +899,11 @@ export function AndroidDevicePane({
             onRefresh={refreshAll}
             playing={!hidden}
             systemImages={<AndroidSystemImagesSection pin={runtimePin} machineName={remoteMachineName} />}
+            pendingExtra={pendingExtra ?? (pending?.kind === "attach" && lane?.extras?.some((extra) => extra.device.avdName === pending.avdName) ? pending.avdName : null)}
+            onPromoteExtra={promoteExtra}
+            onStartExtra={startExtra}
+            onStopExtra={stopExtra}
+            onRemoveExtra={removeExtra}
           />
         );
       case "stopped":

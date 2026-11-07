@@ -150,7 +150,9 @@ export type AndroidToolsPreloadAction =
   | "clearStatusBar"
   | "clearLocation"
   | "storeScreenshots"
-  | "windowLayout";
+  | "windowLayout"
+  // Extra devices: the picker makes one of the lane's extras its device.
+  | "devicePromote";
 
 /** What one service method answers, without the promise. */
 export type AndroidServiceResult<K extends keyof AndroidEmulatorServiceApi> = Awaited<ReturnType<AndroidEmulatorServiceApi[K]>>;

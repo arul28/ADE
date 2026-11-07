@@ -170,8 +170,14 @@ function launchExtrasArgs(args: unknown, action: string): AndroidLaunchExtrasArg
   return out;
 }
 
+/** `device`: one of the lane's extra devices (AVD name or shown name); omitted = the lane's device. */
+function deviceArg(args: unknown): { device?: string } {
+  const device = optionalString(args, "device");
+  return device ? { device } : {};
+}
+
 function installArgs(args: unknown) {
-  return { apkPath: optionalString(args, "apkPath"), gradle: gradleTarget(args) };
+  return { apkPath: optionalString(args, "apkPath"), gradle: gradleTarget(args), ...deviceArg(args) };
 }
 
 export function buildAndroidDomainService(runtime: AndroidActionRuntime): OpaqueService | null {
@@ -194,6 +200,8 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
       start: optionalBoolean(args, "start"),
       catalogId: optionalString(args, "catalogId"),
       colorId: optionalString(args, "colorId"),
+      // An extra device beside the lane's own (`device-create --extra`).
+      ...(readBoolean(args, "extra") === true ? { extra: true } : {}),
     }),
     attachDevice: (args?: unknown) => service.attachDevice({
       ...laneArgs(args, "attachDevice"),
@@ -204,11 +212,19 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
       ...laneArgs(args, "start"),
       ...(readBoolean(args, "force") === true ? { force: true } : {}),
       ...(readBoolean(args, "restartAdb") === true ? { restartAdb: true } : {}),
+      ...deviceArg(args),
     }),
-    stop: (args?: unknown) => service.stop(laneArgs(args, "stop")),
+    stop: (args?: unknown) => service.stop({ ...laneArgs(args, "stop"), ...deviceArg(args) }),
     releaseDevice: (args?: unknown) => service.releaseDevice({
       ...laneArgs(args, "releaseDevice"),
       deleteCreated: optionalBoolean(args, "deleteCreated"),
+      ...deviceArg(args),
+    }),
+    // One of the lane's extras becomes its device. The RPC server sets the caller's chat (its own lease is no refusal).
+    devicePromote: (args?: unknown) => service.devicePromote({
+      ...laneArgs(args, "devicePromote"),
+      device: requiredString(args, "device", "devicePromote"),
+      chatSessionId: optionalString(args, "chatSessionId"),
     }),
     // User-only (`ANDROID_USER_ONLY_ACTIONS`): an agent releases its lane's
     // device instead, which deletes only the AVD ADE made for that lane.

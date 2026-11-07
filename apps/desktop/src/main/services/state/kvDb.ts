@@ -1393,6 +1393,7 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // The same for a lane's Android emulator: an AVD is a folder in ONE
   // machine's AVD home.
   "lane_android_devices",
+  "lane_android_extra_devices",
   "lane_detail_snapshots",
   "lane_list_snapshots",
   "pr_auto_link_ignores",
@@ -3230,6 +3231,19 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       ade_installed_packages text
     )
   `);
+  // A lane's EXTRA Android devices (`device-create --extra`), beside its own
+  // one: ADE-made only, keyed by AVD name, deleted with the lane. Local-only
+  // for the same reason as the table above.
+  db.run(`
+    create table if not exists lane_android_extra_devices (
+      avd_name text primary key,
+      lane_id text not null,
+      profile_id text,
+      system_image text,
+      created_at text not null
+    )
+  `);
+  db.run("create index if not exists idx_lane_android_extra_devices_lane on lane_android_extra_devices(lane_id)");
 
   db.run(`
     create table if not exists terminal_sessions (

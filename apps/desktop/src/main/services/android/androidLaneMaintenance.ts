@@ -36,6 +36,11 @@ import type { AndroidDiscoveredEmulator } from "./androidEmulatorProcess";
  * The service's own start counts as use, so a brain restart (the hand-off,
  * `handOffOnDispose`) never reads as idle time.
  *
+ * A lane's extra devices (`device-create --extra`) are rows here too, with
+ * `extra` set. Each has its own idle clock and power-off record, keyed by
+ * `keyOf` (the lane id for the lane's own device). An idle extra powers off
+ * the same way; a lane that ended gives its extras back with its device.
+ *
  * Never touched: an emulator ADE did not start, and an AVD the lane attached
  * (the user's own; another tool may drive it where ADE cannot see). AVDs ADE
  * made that no lane holds are only listed: their marker does not name the
@@ -94,7 +99,10 @@ export async function readOtherScrcpyViewer(booted: BootedDevice, signal: AbortS
 }
 
 export type AndroidLaneMaintenanceDeps = {
+  /** Every lane device row and every extra row (`extra: true`). */
   listRows: () => AndroidLaneDevice[];
+  /** The idle clock's key for a row: the lane id for the lane's own device, one key per extra. Default: the lane id. */
+  keyOf?: (device: AndroidLaneDevice) => string;
   /** `active`, `archived`, `missing`, or null when it cannot be told (never act on null). */
   laneLiveness: (laneId: string) => "active" | "archived" | "missing" | null;
   discovered: () => AndroidDiscoveredEmulator[];
@@ -112,10 +120,10 @@ export type AndroidLaneMaintenanceDeps = {
   endLane: (device: AndroidLaneDevice) => Promise<void>;
   stopOrphan: (emulator: AndroidDiscoveredEmulator) => Promise<void>;
   forgetRow: (device: AndroidLaneDevice) => void;
-  /** Something in this process uses the lane's device now. */
-  isBusy: (laneId: string) => boolean;
+  /** Something in this process uses this device now. */
+  isBusy: (device: AndroidLaneDevice) => boolean;
   /** How long ago the device saw input, from the device; null when it cannot say. */
-  deviceIdleMs: (laneId: string) => Promise<number | null>;
+  deviceIdleMs: (device: AndroidLaneDevice) => Promise<number | null>;
   /**
    * Stops the lane's emulator on its queue, by the service's own stop.
    * `stillIdle` is asked again on the queue, just before the stop: a lease,
@@ -131,6 +139,7 @@ export type AndroidLaneMaintenanceDeps = {
 
 export function createAndroidLaneMaintenance(deps: AndroidLaneMaintenanceDeps) {
   const now = deps.now ?? (() => Date.now());
+  const keyOf = deps.keyOf ?? ((device: AndroidLaneDevice) => device.laneId);
   const idleMs = deps.idleMs ?? androidIdlePowerOffMs();
   const startedAt = now();
   const lastUse = new Map<string, number>();
@@ -143,13 +152,13 @@ export function createAndroidLaneMaintenance(deps: AndroidLaneMaintenanceDeps) {
   let started = false;
   let stopped = false;
 
-  /** Something used the lane's device: restart its idle clock, and forget an old power-off. */
-  const touch = (laneId: string): void => {
-    if (!laneId) return;
-    lastUse.set(laneId, now());
+  /** Something used a device (a lane id, or an extra's key): restart its idle clock. */
+  const touch = (key: string): void => {
+    if (!key) return;
+    lastUse.set(key, now());
   };
 
-  const idleFor = (laneId: string): number => now() - Math.max(lastUse.get(laneId) ?? 0, startedAt);
+  const idleFor = (key: string): number => now() - Math.max(lastUse.get(key) ?? 0, startedAt);
 
   /** The lane's ADE-made, ADE-started emulator that is up, or null. */
   const candidate = (device: AndroidLaneDevice): AndroidDiscoveredEmulator | null => {
@@ -166,18 +175,19 @@ export function createAndroidLaneMaintenance(deps: AndroidLaneMaintenanceDeps) {
       if (stopped) break;
       if (options.onlyLaneId && device.laneId !== options.onlyLaneId) continue;
       if (!candidate(device)) continue;
-      if (deps.isBusy(device.laneId)) {
-        touch(device.laneId);
+      const key = keyOf(device);
+      if (deps.isBusy(device)) {
+        touch(key);
         continue;
       }
-      const adeIdle = idleFor(device.laneId);
+      const adeIdle = idleFor(key);
       if (!options.force && adeIdle < idleMs) continue;
       // Input from outside ADE (adb, Android Studio) shows on the device.
-      const deviceIdle = await deps.deviceIdleMs(device.laneId).catch(() => null);
+      const deviceIdle = await deps.deviceIdleMs(device).catch(() => null);
       const idle = deviceIdle === null ? adeIdle : Math.min(adeIdle, deviceIdle);
       if (!options.force && idle < idleMs) {
         // Seen as used: restart ADE's own clock at the device's last input.
-        lastUse.set(device.laneId, now() - idle);
+        lastUse.set(key, now() - idle);
         continue;
       }
       const idleMinutes = Math.round(idle / 60_000);
@@ -186,12 +196,18 @@ export function createAndroidLaneMaintenance(deps: AndroidLaneMaintenanceDeps) {
         continue;
       }
       try {
-        const usedAt = lastUse.get(device.laneId) ?? 0;
-        const stillIdle = () => !deps.isBusy(device.laneId) && (lastUse.get(device.laneId) ?? 0) <= usedAt;
+        const usedAt = lastUse.get(key) ?? 0;
+        const stillIdle = () => !deps.isBusy(device) && (lastUse.get(key) ?? 0) <= usedAt;
         if (!(await deps.powerOff(device, { stillIdle }))) continue;
-        poweredOff.set(device.laneId, { at: new Date(now()).toISOString(), reason: options.force ? "cleanup" : "idle", idleMinutes });
+        poweredOff.set(key, { at: new Date(now()).toISOString(), reason: options.force ? "cleanup" : "idle", idleMinutes });
         done.push({ laneId: device.laneId, avdName: device.avdName, idleMinutes });
-        deps.logger?.info("android.lane_device_idle_powered_off", { laneId: device.laneId, avdName: device.avdName, idleMinutes, reason: options.force ? "cleanup" : "idle" });
+        deps.logger?.info("android.lane_device_idle_powered_off", {
+          laneId: device.laneId,
+          avdName: device.avdName,
+          extra: device.extra === true,
+          idleMinutes,
+          reason: options.force ? "cleanup" : "idle",
+        });
       } catch (error) {
         errors.push({ avdName: device.avdName, message: getErrorMessage(error) });
         deps.logger?.warn("android.lane_device_idle_power_off_failed", { laneId: device.laneId, avdName: device.avdName, error: getErrorMessage(error) });
@@ -250,6 +266,7 @@ export function createAndroidLaneMaintenance(deps: AndroidLaneMaintenanceDeps) {
       for (const device of deps.listRows()) {
         if (deps.runningFor(device.avdName) || deps.avdExists(avdHome, device.avdName)) continue;
         if (result.released.some((entry) => entry.laneId === device.laneId)) continue;
+        // An ended lane's extras go with it; an extra whose AVD is gone is forgotten like a lane row.
         result.forgottenRows.push({ laneId: device.laneId, avdName: device.avdName });
         if (!dryRun) deps.forgetRow(device);
       }
@@ -379,12 +396,12 @@ export function createAndroidLaneMaintenance(deps: AndroidLaneMaintenanceDeps) {
 
   return {
     touch,
-    /** Why ADE last powered the lane's emulator off, until it starts again. */
-    poweredOffRecord: (laneId: string): AndroidPowerOffRecord | null => poweredOff.get(laneId) ?? null,
-    /** The lane's emulator started: the power-off is no longer the news, and the idle clock restarts. */
-    started: (laneId: string): void => {
-      poweredOff.delete(laneId);
-      touch(laneId);
+    /** Why ADE last powered a device off (a lane id, or an extra's key), until it starts again. */
+    poweredOffRecord: (key: string): AndroidPowerOffRecord | null => poweredOff.get(key) ?? null,
+    /** A device started: the power-off is no longer the news, and the idle clock restarts. */
+    started: (key: string): void => {
+      poweredOff.delete(key);
+      touch(key);
     },
     runIdlePass,
     runCleanup,

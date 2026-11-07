@@ -89,6 +89,12 @@ export type AndroidDeviceInventoryDeps<S extends AndroidInventoryLaneState> = {
   runningFor: (avdName: string) => AndroidDiscoveredEmulator | null;
   /** While the emulator still runs: the packages ADE put on an attached AVD come off. */
   beforeRelease: (laneId: string) => Promise<void>;
+  /** How many extra devices one lane may hold (`androidLaneExtraLimit`). */
+  extraLimit: number;
+  /** Boots a new extra after its create, outside the lane's queue. */
+  startExtra: (laneId: string, extra: AndroidLaneDevice) => Promise<void>;
+  /** A new extra: one coarse product fact. */
+  onExtraCreated?: () => void;
 };
 
 export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState>(deps: AndroidDeviceInventoryDeps<S>) {
@@ -100,6 +106,17 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
       throw new AndroidEmulatorFailure(
         "ANDROID_LANE_HAS_DEVICE",
         `This lane already has ${held.avdName}. Release it before adding another device.`,
+      );
+    }
+  };
+
+  /** `device-attach` naming one of this lane's extras: the answer is the promote verb. */
+  const assertNotExtra = (laneId: string, avdName: string) => {
+    const extra = laneDevices.extras(laneId).find((row) => sameAvdName(row.avdName, avdName));
+    if (extra) {
+      throw new AndroidEmulatorFailure(
+        "ANDROID_DEVICE_IS_EXTRA",
+        `${extra.avdName} is one of this lane's extra devices, not its own device. To make it the lane's device, run: ade android device-promote --device ${extra.avdName}`,
       );
     }
   };
@@ -142,8 +159,9 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
 
   /**
    * Makes a new AVD for the lane and records it as the lane's own (deleted
-   * with the lane). The caller holds the lane's queue and checked the lane
-   * is free.
+   * with the lane), or as one of its extra devices with `asExtra`. The
+   * caller holds the lane's queue and checked the lane is free (or under its
+   * extra limit).
    */
   const createLocked = async (
     laneId: string,
@@ -152,7 +170,8 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
     displayName: string | null,
     // P1 look: a brand catalog entry picks the profile and records its colour.
     look: { entry: AndroidCatalogEntry; colorId: string } | null = null,
-  ): Promise<void> => {
+    asExtra = false,
+  ): Promise<AndroidLaneDevice> => {
     const ready = await requireSdk({ emulator: true });
     const images = listAndroidSystemImages(ready.root);
     const definitions = definitionsFor(ready.root, images);
@@ -202,15 +221,64 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
       catalogId: look?.entry.id ?? null,
       colorId: look?.colorId ?? null,
     });
-    laneDevices.set(newLaneDevice(laneId, avd.name, "created", definition.profile.id, image.packageId));
+    const row = newLaneDevice(laneId, avd.name, "created", definition.profile.id, image.packageId);
+    if (asExtra) laneDevices.setExtra({ ...row, extra: true });
+    else laneDevices.set(row);
     logger?.info("android.device_created", {
       laneId,
       avdName: avd.name,
+      extra: asExtra,
       profileId: definition.profile.id,
       systemImage: image.packageId,
       ...(look ? { catalogId: look.entry.id, colorId: look.colorId, profileFallback: catalogChoice?.fallback ?? false } : {}),
     });
     emit({ type: "android.inventory.changed" });
+    return asExtra ? { ...row, extra: true } : row;
+  };
+
+  /**
+   * `device-create --extra`: a new AVD beside the lane's own, under the
+   * lane's extra limit. The create holds the lane's queue, so two at once
+   * cannot both pass the limit; the boot does not, so a first boot of an
+   * extra never holds up the lane device. A boot that fails leaves the extra
+   * made: it still counts toward the limit.
+   */
+  const createExtra = async (
+    laneId: string,
+    profileId: string,
+    args: AndroidCreateDeviceArgs,
+    look: { entry: AndroidCatalogEntry; colorId: string } | null,
+  ): Promise<AndroidLaneDeviceStatus> => {
+    const extra = await serialize(laneId, async () => {
+      deps.assertWorkCopyLive(laneId);
+      const held = laneDevices.extras(laneId);
+      if (held.length >= deps.extraLimit) {
+        throw new AndroidEmulatorFailure(
+          "ANDROID_EXTRA_DEVICE_LIMIT",
+          `This lane already holds ${held.length} extra device${held.length === 1 ? "" : "s"} (${held.map((row) => row.avdName).join(", ")}), its limit. `
+            + "Each one holds 2 to 5 GB of RAM while it runs. Remove one with ade android device-detach --device <avd>, "
+            + "or raise ADE_ANDROID_LANE_EXTRA_DEVICES in ADE's environment.",
+        );
+      }
+      return createLocked(laneId, profileId, args.systemImage?.trim() || null, args.displayName ?? null, look, true);
+    });
+    deps.onExtraCreated?.();
+    if (args.start !== false) {
+      try {
+        await deps.startExtra(laneId, extra);
+      } catch (error) {
+        if (error instanceof AndroidEmulatorFailure) {
+          throw new AndroidEmulatorFailure(
+            error.code,
+            `Made the extra device ${extra.avdName}, but it did not boot: ${error.message.replace(`${error.code}: `, "")} `
+              + `It still counts toward the lane's extras. Start it with ade android start --device ${extra.avdName}, or remove it with ade android device-detach --device ${extra.avdName}.`,
+            error.logPath,
+          );
+        }
+        throw error;
+      }
+    }
+    return deps.emitDeviceState(laneId);
   };
 
   const api: Pick<
@@ -222,6 +290,8 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
       if (!sdk.found || !sdk.root || !sdk.avdHome) return { avds: [], profiles: [], images: [] };
       const adbPath = androidSdkPaths(sdk.root, platform).adb;
       const running = await Promise.all(deps.discovered().map((emulator) => deps.asRunning(adbPath, emulator)));
+      // One read for every lane's extras, not one per AVD.
+      const extraNames = new Set(laneDevices.extras(null).map((extra) => extra.avdName.toLowerCase()));
       const avds: AndroidAvdListing[] = listAndroidAvds(sdk.avdHome, { running }).map((avd) => {
         const madeFor = avd.adeCreated ? readAdeAvdLaneId(avd) : null;
         return {
@@ -229,6 +299,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
           running: running.find((emulator) => sameAvdName(emulator.avdName, avd.name)) ?? null,
           heldByLaneId: laneDevices.holder(avd.name),
           madeForOtherLane: madeFor !== null && deps.laneLiveness(madeFor) === "missing",
+          ...(extraNames.has(avd.name.toLowerCase()) ? { heldAsExtra: true } : {}),
         };
       });
       // Storage: sizes only when asked (the picker's Storage section), never on every read.
@@ -252,6 +323,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
       const colorId = typeof args.colorId === "string" ? args.colorId.trim() : "";
       if (entry && colorId) assertCatalogColor(entry, colorId);
       const look = entry ? { entry, colorId: androidCatalogColor(entry, colorId || null).id } : null;
+      if (args.extra === true) return createExtra(laneId, profileId, args, look);
       return serialize(laneId, async () => {
         deps.assertWorkCopyLive(laneId);
         assertLaneFree(laneId, null);
@@ -268,6 +340,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
       if (!avdName) throw new Error("avdName is required.");
       return serialize(laneId, async () => {
         deps.assertWorkCopyLive(laneId);
+        assertNotExtra(laneId, avdName);
         assertLaneFree(laneId, avdName);
         assertNotHeldElsewhere(laneId, avdName);
         const ready = await requireSdk({ emulator: false });

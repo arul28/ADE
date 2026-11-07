@@ -150,7 +150,13 @@ The picker shows when the lane holds no device, or when the user picks
 **Switch device…**. It has three sections, top to bottom:
 
 1. **This lane.** The lane's AVD, with its state (Running, Starting, Stopping,
-   Stopped, Off). A click opens it.
+   Stopped, Off). A click opens it. Under it, **Extra devices** lists the
+   lane's extra devices (see [Extra devices](#extra-devices)), each with its
+   state. A click on an extra makes it the lane's device and opens it (one
+   that is off boots). Its ⋯ menu has **Start beside the lane's device** (or
+   **Stop**), **Make this the lane's device**, **Copy AVD name** and
+   **Remove from this lane…**, which asks again and deletes the AVD. The
+   extras are not listed again under On this machine.
 2. **On this machine.** Every other AVD. A free AVD is a button that attaches
    it to the lane and boots it. Tags:
    - **Running** or **Off**.
@@ -488,13 +494,14 @@ with no poll (`useAndroidLaneDeviceCard.ts`).
 
 ## Lanes and devices
 
-A lane holds at most one Android device, and an AVD belongs to at most one
-lane. The Android device is separate from the Apple device, so a lane can hold
-one of each. An agent can drive both in one turn with `ade apple` and
-`ade android`.
+A lane holds one Android device as its own (the lane device), and can hold
+extra devices beside it ([Extra devices](#extra-devices)). An AVD belongs to
+at most one lane. The Android device is separate from the Apple device, so a
+lane can hold one of each. An agent can drive both in one turn with
+`ade apple` and `ade android`.
 
-The lane's row is in the local-only table `lane_android_devices`. It does not
-sync.
+The lane's row is in the local-only table `lane_android_devices`, and its
+extras are in `lane_android_extra_devices`. Neither syncs.
 
 ### Created and attached devices
 
@@ -521,6 +528,51 @@ Boot is headless (no window, no audio, no boot animation). It is ready when
 `sys.boot_completed` reads 1. A first boot of a new AVD took 54 s on the
 Windows test machine, and a cold boot 24 s. ADE waits up to 180 s.
 
+### Extra devices
+
+As an Apple lane holds extra simulators, an Android lane can hold extra AVDs
+beside its own device, for example a tablet beside a phone
+(`androidLaneExtras.ts`, `androidEmulatorExtras.ts`).
+
+- **Make one.** `ade android device-create --extra --catalog <id>` (or
+  `--profile <id>`). ADE makes the AVD for the lane, with ADE's marker, and
+  boots it beside the lane device unless `--no-start`. A lane may hold 2
+  extras; `ADE_ANDROID_LANE_EXTRA_DEVICES` in ADE's environment raises the
+  limit up to 8. One more is refused with `ANDROID_EXTRA_DEVICE_LIMIT`. A
+  boot that fails leaves the extra made, and it still counts.
+- **The lane device stays the lane device.** It streams, records, runs the
+  tests, and takes every verb that names no device. An extra has no stream,
+  recording, lease, crash pin or tests.
+- **Reach an extra with `--device <avd>`** on `start`, `stop`, `install`,
+  `launch` and `device-detach`. The AVD name or the shown name works. A
+  `--device` the lane does not hold is refused with
+  `ANDROID_DEVICE_NOT_LANE_OWNED`. An install or a launch on an extra that is
+  off boots it first. Each extra starts and stops on its own queue, so its
+  boot never holds up the lane device.
+- **Memory.** Each running emulator holds 2 to 5 GB. Every start of an extra
+  goes through the [RAM guard](#the-ram-guard-p2), the same as the lane
+  device; `start --device <avd> --force` boots past it, after the user agrees.
+- **Promote.** `ade android device-promote --device <avd>` (or a click on the
+  extra in the picker) makes the extra the lane's device. The old device is
+  kept: one ADE made becomes an extra in its place, and its emulator keeps
+  running; the user's own AVD is released to them (what ADE installed comes
+  off, ADE's emulator stops, nothing is deleted). A running extra becomes the
+  lane's running device. The promote is refused with
+  `ANDROID_LANE_DEVICE_BUSY` while the old device starts or stops, records,
+  streams to a viewer (an open pane counts; the picker does not), runs tests,
+  installs or launches an app, or another holder has the lane's lease; and
+  while the extra itself starts, stops, or takes an install. Nothing changes
+  before the refusal.
+- **Attach.** `device-attach --avd <name>` naming one of the lane's extras is
+  refused with `ANDROID_DEVICE_IS_EXTRA`: promote it instead. No other lane
+  can take, stop or delete a lane's extra.
+- **Remove.** `ade android device-detach --device <avd>` stops the extra and
+  deletes its AVD (`--keep` keeps it on disk as a free AVD). The lane keeps
+  its device. `device-detach` with no `--device` releases the lane's device
+  and keeps the extras.
+
+The phone and the web viewers show only the lane device, as Apple's do.
+
 ### When a lane ends
 
 Archive and delete both end the lane's hold on its device. The lane service
@@ -536,6 +588,9 @@ AVD (`androidLaneRelease.ts`):
   leaves the AVD.
 - A created AVD that still runs keeps its row, so the start-up cleanup can
   finish the job.
+- The lane's extra devices stop, and each one is deleted the same way (only
+  while its `config.ini` carries ADE's marker). A running extra keeps its
+  row, and the cleanup pass ends it later.
 
 `ade android device-detach` does the same for a lane that stays. `--keep`
 keeps a created AVD on disk.
@@ -576,7 +631,9 @@ build an Android service. So one service owns a project's emulators.
   start counts as use, so a brain restart or a hand-off never reads as idle.
   An emulator the user attached, or one ADE did not start, is never powered
   off. The lane keeps its device; `status` shows `poweredOff` (when, and the
-  idle minutes) until the next start.
+  idle minutes) until the next start. Each extra device has its own idle
+  clock (an install or a launch on it counts as use) and powers off the same
+  way.
 - **Cleanup.** 60 s after the service starts, then every 15 min: release the
   device of each ended lane, stop each emulator ADE started that no lane
   holds (by its process tree, so Windows too), forget each lane row whose AVD
@@ -612,6 +669,11 @@ any flag that a verb does not take.
 | `start` | Boot the lane's AVD. It waits for boot completed. |
 | `stop` | Stop the lane's emulator. The lane keeps its AVD. |
 | `device-detach [--keep]` | Stop the emulator and release the AVD (see [When a lane ends](#when-a-lane-ends)). |
+| `device-create --extra (--catalog <id> \| --profile <id>) [--no-start]` | Make an extra AVD beside the lane's device and boot it ([Extra devices](#extra-devices)). |
+| `start --device <avd>`, `stop --device <avd>` | Boot or stop one of the lane's extras (the RAM guard applies; `--force` boots past it). |
+| `install … --device <avd>`, `launch … --device <avd>` | Install or launch on one of the lane's extras; an extra that is off boots first. |
+| `device-promote --device <avd>` | Make an extra the lane's device; the old one is kept. Refused with `ANDROID_LANE_DEVICE_BUSY` while it is in use. |
+| `device-detach --device <avd> [--keep]` | Stop one extra and delete its AVD (`--keep` keeps it). The lane keeps its device. |
 | `screenshot [--out <path>]` | Write a PNG of the screen. |
 | `tap <x> <y>` (or `--x`, `--y`) | Tap a point. |
 | `swipe <x1> <y1> <x2> <y2> [--duration-ms <ms>]` | Swipe from one point to another (default 300 ms). |
@@ -1062,7 +1124,9 @@ preview render writes an image (`previews_rendered`), or a Play Store
 screenshot set is taken (`store_screenshots`). Boot health has three
 outcomes: a start that booted (`device_booted`), one that did not
 (`boot_failed`), and an adb server restart that ADE made so a refused
-device could boot (`adb_restarted`). Each outcome counts at most once a day.
+device could boot (`adb_restarted`). Extra devices have two: a lane made an
+extra device (`extra_device_created`, Apple's name), and an extra became the
+lane's device (`device_promoted`). Each outcome counts at most once a day.
 A boot that fails is also one Sentry issue for each error code
 (`["android", "boot_failed", <code>]`), with the time it took and the
 profile id; the `android.emulator_start_failed` and
@@ -1086,7 +1150,8 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/shared/androidDeviceCatalog.ts`, `apps/desktop/src/main/services/android/androidCatalogProfiles.ts` | The brand grid's devices (names, sizes, colours, bodies, profiles), and the merge of ADE's `ade_*` profiles into `devices.xml`. |
 | `apps/desktop/src/main/services/android/androidRender.ts` | The render broker for `ade android render`: the request event, the first window's ack, the filed paths, and the time limit. |
 | `apps/desktop/src/main/services/android/androidEmulatorProcess.ts` | Boot, discovery files, boot completed, and stop. |
-| `apps/desktop/src/main/services/android/androidLaneDeviceStore.ts`, `androidLaneRelease.ts` | The `lane_android_devices` rows, and the release of a lane's AVD on disk (used by `laneService` with no service). |
+| `apps/desktop/src/main/services/android/androidLaneDeviceStore.ts`, `androidLaneRelease.ts` | The `lane_android_devices` and `lane_android_extra_devices` rows (a lane's AVD is held when either names it), and the release of a lane's AVD and its extras on disk (used by `laneService` with no service). |
+| `apps/desktop/src/main/services/android/androidLaneExtras.ts`, `apps/desktop/src/shared/types/androidEmulatorExtras.ts` | Extra devices: their status, start and stop (on each extra's own queue, through the RAM guard), release, the install and launch target, and their types. The promote is in `androidEmulatorService.ts`, where the lane device's state is. |
 | `apps/desktop/src/main/services/android/androidStream.ts`, `androidStreamServer.ts`, `androidLaneStreams.ts` | Streams by adb serial, the defaults, restarts, and the loopback stream server; the lane's side of its stream (a viewer, a recording). |
 | `apps/desktop/src/main/services/android/scrcpyServer.ts`, `scrcpyVideo.ts`, `scrcpyControl.ts` | The scrcpy session, video records and control messages. |
 | `apps/desktop/src/main/services/android/androidActionDomain.ts` | The `android_emulator` action domain. |
@@ -1169,7 +1234,12 @@ The full list is in §6 of the [plan](../../plans/android-emulator.md).
 | Work copy gone (`ANDROID_NOT_RUNNING`) | "This chat's work copy on this machine is gone, so it has no Android device here." Run the command again to make a new copy. |
 | `ANDROID_NOT_RUNNING` | Boot the lane's emulator first (`ade android start`), or make one (`ade android device-create --profile <id>`). |
 | `ANDROID_AVD_HELD_BY_OTHER_LANE` | Pick a free AVD (`ade android devices --text`), or make one. |
-| `ANDROID_LANE_HAS_DEVICE` | Use the lane's AVD, or run `ade android device-detach` first. |
+| `ANDROID_LANE_HAS_DEVICE` | Use the lane's AVD, or run `ade android device-detach` first. To keep it and add another, make an extra: `ade android device-create --extra`. |
+| `ANDROID_EXTRA_DEVICE_LIMIT` | The lane holds its limit of extra devices (2 by default). Remove one (`device-detach --device <avd>`), or raise `ADE_ANDROID_LANE_EXTRA_DEVICES` (up to 8). Mind the memory: each running one holds 2 to 5 GB. |
+| `ANDROID_DEVICE_IS_EXTRA` | That AVD is one of the lane's extras. Make it the lane's device with `device-promote --device <avd>`. |
+| `ANDROID_DEVICE_NOT_LANE_OWNED` | `--device` names an AVD the lane does not hold. `ade android status --text` lists the lane's device and its extras. |
+| `ANDROID_LANE_DEVICE_BUSY` | The lane's device (or the extra) is in use: a recording, an open live view, tests, an install or launch, a start or stop, or another holder's lease. Finish that, then promote again. In the pane, open the picker first: it closes the live view. |
+| An extra reads Stopped soon after a promote, with a dev app open beside the installed ADE | An older brain on the same project does not know extra rows, so its cleanup pass stops a running extra as an orphan. Start it again (`start --device <avd>`); run one brain per project for long runs. |
 | `ANDROID_AVD_RUNNING` | Another app started that AVD. Close it there, or attach another AVD. |
 | `ANDROID_SYSTEM_IMAGE_IN_USE` | An AVD uses that system image. Stop its emulator first. To remove an image that AVDs use, confirm it in the picker's System images. |
 | `ANDROID_TESTS_RUNNING` | The lane's instrumentation tests already run. Wait for that run to end. |

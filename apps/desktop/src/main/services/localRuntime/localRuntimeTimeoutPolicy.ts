@@ -427,6 +427,7 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["android_emulator.start", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
   ["android_emulator.stop", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
   ["android_emulator.releaseDevice", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
+  ["android_emulator.devicePromote", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
   ["android_emulator.deleteDevice", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
   ["android_emulator.getSdkSetupPlan", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
   // P1 look: a render waits for a desktop window to draw the stills (and a 6 s
