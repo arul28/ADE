@@ -31,7 +31,8 @@ import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 import type { AndroidDiscoveredEmulator } from "./androidEmulatorProcess";
 import { listAndroidDeviceDefinitions } from "./androidHardwareProfiles";
 import { releaseAndroidLaneDevice, type AndroidLaneDeviceRepo } from "./androidLaneRelease";
-import { androidSdkPaths, androidUserHome, listAndroidSystemImages, type AndroidEnv, type ReadyAndroidSdk } from "./androidSdk";
+import { androidSdkPaths, androidUserHome, listAndroidSystemImages, readableAndroidAvdHome, type AndroidEnv, type ReadyAndroidSdk } from "./androidSdk";
+import { requireLaneDeviceNamed } from "./androidLaneExtras";
 import { pickWorkCopyAvd } from "./androidWorkCopy";
 
 /*
@@ -79,10 +80,10 @@ export type AndroidDeviceInventoryDeps<S extends AndroidInventoryLaneState> = {
   laneState: (laneId: string) => S;
   /** The lane's state is dropped (its device is gone). */
   forgetLane: (laneId: string) => void;
-  /** Boots the lane's device. The caller holds the lane's queue. */
-  startLocked: (state: S) => Promise<AndroidLaneDeviceStatus>;
+  /** Boots the lane's device; `chatSessionId` is an agent's chat (its owner record, its failure report). The caller holds the lane's queue. */
+  startLocked: (state: S, options: { chatSessionId: string | null }) => Promise<AndroidLaneDeviceStatus>;
   /** Stops the lane's emulator if ADE started it. The caller holds the lane's queue. */
-  stopLocked: (state: S, device: AndroidLaneDevice, options: { refuseForeign: boolean; reason?: AndroidEmulatorStopReason }) => Promise<void>;
+  stopLocked: (state: S, device: AndroidLaneDevice, options: { refuseForeign: boolean; reason: AndroidEmulatorStopReason }) => Promise<void>;
   emitDeviceState: (laneId: string) => Promise<AndroidLaneDeviceStatus>;
   discovered: () => AndroidDiscoveredEmulator[];
   ownsEmulator: (emulator: AndroidDiscoveredEmulator) => boolean;
@@ -93,7 +94,7 @@ export type AndroidDeviceInventoryDeps<S extends AndroidInventoryLaneState> = {
   /** How many extra devices one lane may hold (`androidLaneExtraLimit`). */
   extraLimit: number;
   /** Boots a new extra after its create, outside the lane's queue. */
-  startExtra: (laneId: string, extra: AndroidLaneDevice) => Promise<void>;
+  startExtra: (laneId: string, extra: AndroidLaneDevice, options: { chatSessionId: string | null }) => Promise<void>;
   /** A new extra: one coarse product fact. */
   onExtraCreated?: () => void;
 };
@@ -275,7 +276,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
     deps.onExtraCreated?.();
     if (args.start !== false) {
       try {
-        await deps.startExtra(laneId, extra);
+        await deps.startExtra(laneId, extra, { chatSessionId: args.chatSessionId?.trim() || null });
       } catch (error) {
         if (error instanceof AndroidEmulatorFailure) {
           throw new AndroidEmulatorFailure(
@@ -283,6 +284,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
             `Made the extra device ${extra.avdName}, but it did not boot: ${error.toAndroidEmulatorError().message} `
               + `It still counts toward the lane's extras. Start it with ade android start --device ${extra.avdName}, or remove it with ade android device-detach --device ${extra.avdName}.`,
             error.logPath,
+            error.adbRestarted,
           );
         }
         throw error;
@@ -339,7 +341,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
         assertLaneFree(laneId, null);
         await createLocked(laneId, profileId, { systemImage: args.systemImage?.trim() || null, displayName: args.displayName ?? null, look });
         if (args.start === false) return deps.emitDeviceState(laneId);
-        return deps.startLocked(deps.laneState(laneId));
+        return deps.startLocked(deps.laneState(laneId), { chatSessionId: args.chatSessionId?.trim() || null });
       });
     },
 
@@ -369,13 +371,15 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
           emit({ type: "android.inventory.changed" });
         }
         if (args.start === false) return deps.emitDeviceState(laneId);
-        return deps.startLocked(deps.laneState(laneId));
+        return deps.startLocked(deps.laneState(laneId), { chatSessionId: args.chatSessionId?.trim() || null });
       });
     },
 
     releaseDevice(args) {
       const laneId = requireLaneId(args.laneId);
       return serialize(laneId, async () => {
+        // A `device` the caller named must still be the lane's device here, in the queue.
+        requireLaneDeviceNamed(laneDevices, laneId, args.device, readableAndroidAvdHome(env, home));
         const state = deps.laneState(laneId);
         const device = laneDevices.get(laneId);
         if (!device) return { released: false, deletedAvd: null };

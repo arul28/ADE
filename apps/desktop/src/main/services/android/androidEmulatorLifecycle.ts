@@ -124,6 +124,23 @@ export type AndroidEmulatorLifecycleContext = {
   onBooted: (laneId: string) => void;
 };
 
+/**
+ * The AVD a start boots, once the machine can run it: hardware acceleration
+ * is there and the AVD's folder is on disk. Else the refusal (`notFound` is
+ * the message for a missing AVD).
+ */
+export function requireBootableAvd(ready: ReadyAndroidSdk, avdName: string, notFound: string): AndroidAvd {
+  if (!ready.sdk.acceleration.usable) {
+    throw new AndroidEmulatorFailure(
+      "ANDROID_NO_ACCELERATION",
+      ready.sdk.acceleration.detail ?? "Hardware acceleration is not available, so the emulator cannot run here.",
+    );
+  }
+  const avd = readAndroidAvd(ready.avdHome, avdName);
+  if (!avd) throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", notFound);
+  return avd;
+}
+
 function stoppedWhileStarting(): AndroidEmulatorFailure {
   return new AndroidEmulatorFailure("ANDROID_NOT_RUNNING", "The emulator was stopped while it was starting.");
 }
@@ -185,6 +202,18 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
     await slot.launchStop?.catch((error: unknown) => {
       logger?.warn(`${hooks.logPrefix}launch_stop_failed`, { laneId: slot.laneId, avdName: hooks.avdName, ...hooks.logFields, error: getErrorMessage(error) });
     });
+  };
+
+  /**
+   * A stop during a start does not wait behind the boot: the device says
+   * "stopping" and its boot ends now, so the start fails with "stopped while
+   * it was starting". Nothing happens when no boot runs.
+   */
+  const interruptSlot = async (slot: AndroidEmulatorSlot, hooks: AndroidEmulatorSlotHooks, adbPath: () => Promise<string | null>): Promise<void> => {
+    if (slot.transient !== "starting") return;
+    slot.transient = "stopping";
+    hooks.emitState("stopping");
+    await abortSlot(slot, hooks, adbPath);
   };
 
   /** Stops the device's emulator if ADE started it, saying why. The caller holds the device's queue. */
@@ -457,21 +486,29 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
     onStoppedWhileStarting: () => {},
   });
 
-  /** Ends the lane's boot in progress (`abortSlot`). */
-  const abortBoot = (state: LaneState, adbPath: () => Promise<string | null>): Promise<void> => {
+  /** The lane's hooks while its row may be gone (a boot in progress after a release). */
+  const currentLaneHooks = (state: LaneState): AndroidEmulatorSlotHooks => {
     const device = deps.laneDevices.get(state.laneId);
     const avdName = device?.avdName ?? state.launch?.avdName ?? "";
-    return abortSlot(state, laneHooks(state, { avdName, origin: device?.origin ?? "created", profileId: device?.profileId ?? null }), adbPath);
+    return laneHooks(state, { avdName, origin: device?.origin ?? "created", profileId: device?.profileId ?? null });
   };
 
-  /** Stops the lane's emulator if ADE started it, saying why (default `user`). The caller holds the lane's queue. */
+  /** Ends the lane's boot in progress (`abortSlot`). */
+  const abortBoot = (state: LaneState, adbPath: () => Promise<string | null>): Promise<void> =>
+    abortSlot(state, currentLaneHooks(state), adbPath);
+
+  /** A stop during the lane's start (`interruptSlot`). */
+  const interruptBoot = (state: LaneState, adbPath: () => Promise<string | null>): Promise<void> =>
+    interruptSlot(state, currentLaneHooks(state), adbPath);
+
+  /** Stops the lane's emulator if ADE started it, saying why. The caller holds the lane's queue. */
   const stopLocked = async (
     state: LaneState,
     device: AndroidLaneDevice,
-    options: { refuseForeign: boolean; reason?: AndroidEmulatorStopReason },
+    options: { refuseForeign: boolean; reason: AndroidEmulatorStopReason },
   ): Promise<void> => {
     crashWatch.stop(state.laneId);
-    await stopSlot(state, laneHooks(state, device), { refuseForeign: options.refuseForeign, reason: options.reason ?? "user" });
+    await stopSlot(state, laneHooks(state, device), options);
   };
 
   const startLocked = async (state: LaneState, options: AndroidStartOptions = {}): Promise<AndroidLaneDeviceStatus> => {
@@ -482,16 +519,7 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
     if (!device) {
       throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", "This lane has no Android device. Create or attach one first.");
     }
-    if (!ready.sdk.acceleration.usable) {
-      throw new AndroidEmulatorFailure(
-        "ANDROID_NO_ACCELERATION",
-        ready.sdk.acceleration.detail ?? "Hardware acceleration is not available, so the emulator cannot run here.",
-      );
-    }
-    const avd = readAndroidAvd(ready.avdHome, device.avdName);
-    if (!avd) {
-      throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", `The lane's AVD ${device.avdName} is no longer on this machine.`);
-    }
+    const avd = requireBootableAvd(ready, device.avdName, `The lane's AVD ${device.avdName} is no longer on this machine.`);
     // Already running (a start from before a brain restart, or the user's own
     // emulator for an attached AVD): use it as it is.
     if (runningFor(device.avdName)) return ctx.laneStatus(laneId, ready.sdk);
@@ -514,11 +542,12 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
   return {
     stopEmulator,
     abortBoot,
+    interruptBoot,
     stopLocked,
     startLocked,
     adoptLaunch,
     /** The one boot, stop, abort and exit watch, for the extras (`androidLaneExtras.ts`). */
-    slots: { reserveAndBoot, abort: abortSlot, stop: stopSlot, watchExit },
+    slots: { reserveAndBoot, abort: abortSlot, interrupt: interruptSlot, stop: stopSlot, watchExit },
   };
 }
 

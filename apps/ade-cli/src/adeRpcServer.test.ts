@@ -6939,8 +6939,8 @@ describe("adeRpcServer", () => {
   describe("android_emulator for agent callers", () => {
     // `source: "user"` skips auto-record and draws the input as the person's,
     // so only the brain sets it; an agent's own lane and chat are the brain's too.
-    // `restartAdb` drops every device's adb connection: an agent may not ask
-    // for it; the person's own terminal (an ade process with no chat) may.
+    // `restartAdb` drops every device's adb connection: an agent's ask is
+    // refused; the person's own terminal (an ade process with no chat) may ask.
     it.each([
       ["a bound agent, pinned to its chat's lane", { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" }, "lane-2", false, "chat-a", undefined],
       ["an ade process with no chat, placed by its worktree", { callerId: "ade-rpc-stdio-proxy:77355", role: "agent" }, "lane-1", true, undefined, true],
@@ -6972,9 +6972,11 @@ describe("adeRpcServer", () => {
       expect(forwarded.agentCaller).toBeUndefined();
       expect(forwarded.chatSessionId).toBe(ownChat);
 
+      // An agent's adb restart is refused, never dropped in silence.
       const started = await call({ restartAdb: true }, "start");
-      expect(started?.isError).toBeUndefined();
-      expect((start.mock.calls.at(-1)?.[0] as Record<string, unknown>).restartAdb).toBe(restartAdb);
+      expect(started?.isError).toBe(restartAdb ? undefined : true);
+      expect(start).toHaveBeenCalledTimes(restartAdb ? 1 : 0);
+      if (restartAdb) expect((start.mock.calls.at(-1)?.[0] as Record<string, unknown>).restartAdb).toBe(true);
 
       const refused = await call({ x: 1, y: 1, laneId: "lane-3" });
       expect(refused?.isError).toBe(true);

@@ -60,6 +60,8 @@ export class AndroidEmulatorFailure extends Error {
     readonly code: AndroidErrorCode,
     message: string,
     readonly logPath: string | null = null,
+    /** `ANDROID_ADB_UNAUTHORIZED` only: the refusal came after ADE restarted the adb server. */
+    readonly adbRestarted = false,
   ) {
     super(`${code}: ${message}`);
     this.name = "AndroidEmulatorFailure";
@@ -77,6 +79,7 @@ export class AndroidEmulatorFailure extends Error {
       code: isAndroidEmulatorErrorCode(this.code) ? this.code : "ANDROID_EMULATOR_EXITED",
       message: this.message.startsWith(prefix) ? this.message.slice(prefix.length) : this.message,
       logPath: this.logPath,
+      ...(this.adbRestarted ? { adbRestarted: true } : {}),
     };
   }
 }

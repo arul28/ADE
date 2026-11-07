@@ -123,6 +123,9 @@ export function createAndroidEmulatorUse(deps: AndroidEmulatorUseDeps) {
 
   /** The lane's emulator in use here now: a boot or stop, a stream, a recording, a lease, a call in flight. */
   const laneBusy = (laneId: string): boolean => deps.busyHere(laneId) || (useInFlight.get(laneId) ?? 0) > 0;
+  /** One device in use here now: its lane is busy, or (an extra) its own boot, stop or job runs. */
+  const deviceBusy = (device: AndroidLaneDevice): boolean =>
+    laneBusy(device.laneId) || (device.extra === true && deps.extraBusy(device.laneId, device.avdName));
 
   /** Minutes since the AVD's emulator was used: this process's own clock, else the owner file's. */
   const idleMinutesFor = (avdName: string, record: AndroidEmulatorOwnerRecord | null = lifecycle?.recordFor(avdName) ?? null): number => {
@@ -161,7 +164,7 @@ export function createAndroidEmulatorUse(deps: AndroidEmulatorUseDeps) {
       const current = lifecycle?.recordFor(record.avdName) ?? null;
       if (current && (current.pinned || current.owner.brainPid !== record.owner.brainPid)) return "kept";
       const lastHere = lifecycle?.lastUsedHereMs(record.avdName) ?? null;
-      if (laneBusy(laneId) || (device.extra === true && deps.extraBusy(laneId, device.avdName))) return "busy";
+      if (deviceBusy(device)) return "busy";
       if (lastHere !== null && deps.now().getTime() - lastHere < idleMs) return "busy";
       // Use ADE's calls cannot see. "busy" moves the idle clock to now.
       const used = await deps.usedOnDevice(device, idleMs);
@@ -254,6 +257,8 @@ export function createAndroidEmulatorUse(deps: AndroidEmulatorUseDeps) {
 
     /** In use here now (`busyHere`, or a use call in flight): the cleanup pass's power-off leaves it alone. */
     laneBusy,
+    /** The one busy rule for a row of the cleanup pass and the sweep's idle stop: the lane's device or an extra. */
+    deviceBusy,
     /** The person pinned the AVD's running emulator ("Keep running"). */
     isPinned(avdName: string): boolean {
       return lifecycle?.recordFor(avdName)?.pinned === true;

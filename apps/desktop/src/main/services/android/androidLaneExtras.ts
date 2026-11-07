@@ -15,12 +15,13 @@ import { getErrorMessage } from "../shared/utils";
 import { readAndroidAvd, sameAvdName } from "./androidAvds";
 import type { BootedDevice } from "./androidDeviceShell";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
-import type { AndroidEmulatorSlotHooks, AndroidEmulatorSlots, AndroidStartOptions } from "./androidEmulatorLifecycle";
+import { requireBootableAvd, type AndroidEmulatorSlotHooks, type AndroidEmulatorSlots, type AndroidStartOptions } from "./androidEmulatorLifecycle";
+import { ANDROID_CAME_INTO_USE } from "./androidLaneMaintenance";
 import type { AndroidEmulatorStopReason } from "./androidEmulatorOwners";
 import type { AdeStartedEmulators, AndroidDiscoveredEmulator, AndroidEmulatorLaunch } from "./androidEmulatorProcess";
 import type { AndroidEmulatorServiceDeps } from "./androidEmulatorServiceDeps";
 import type { AndroidIdleStopAnswer } from "./androidEmulatorSweep";
-import { releaseAndroidLaneExtras } from "./androidLaneRelease";
+import { releaseAndroidLaneExtras, type AndroidLaneDeviceRepo } from "./androidLaneRelease";
 import { androidSdkPaths, type AndroidEnv, type ReadyAndroidSdk } from "./androidSdk";
 
 /*
@@ -72,6 +73,28 @@ export function androidDeviceNames(device: Pick<AndroidLaneDevice, "avdName">, a
 /** True when `wanted` is one of this device's names (`androidDeviceNames`). */
 export function namesAndroidDevice(device: Pick<AndroidLaneDevice, "avdName">, wanted: string, avdHome: string | null): boolean {
   return androidDeviceNames(device, avdHome).some((name) => sameAvdName(name, wanted));
+}
+
+/**
+ * A call that named a device (`wanted`) and found the lane's own device acts
+ * on it only while the lane still holds that device: checked in the lane's
+ * queue, where a promote cannot swap it. Else `ANDROID_DEVICE_NOT_LANE_OWNED`,
+ * so a device-detach never deletes an AVD the caller did not name.
+ */
+export function requireLaneDeviceNamed(
+  repo: Pick<AndroidLaneDeviceRepo, "get">,
+  laneId: string,
+  wanted: string | null | undefined,
+  avdHome: string | null,
+): void {
+  const asked = typeof wanted === "string" ? wanted.trim() : "";
+  if (!asked) return;
+  const own = repo.get(laneId);
+  if (own && namesAndroidDevice(own, asked, avdHome)) return;
+  throw new AndroidEmulatorFailure(
+    "ANDROID_DEVICE_NOT_LANE_OWNED",
+    `${asked} is not this lane's device any more (the lane's device changed while the call waited). ade android status --text lists the lane's devices.`,
+  );
 }
 
 /** One extra's state in this process. */
@@ -224,22 +247,20 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
     }));
   };
 
+  /** The lane still holds this extra, else `ANDROID_DEVICE_NOT_LANE_OWNED` (a promote or a release took it). */
+  const requireHeld = (laneId: string, avdName: string): void => {
+    if (!holdsExtra(laneId, avdName)) {
+      throw new AndroidEmulatorFailure("ANDROID_DEVICE_NOT_LANE_OWNED", `${avdName} is not one of this lane's extra devices any more.`);
+    }
+  };
+
   /** Boots one extra (no-op when it runs), through the memory guard: `force` starts it past a refusal. */
   const start = (laneId: string, extra: AndroidLaneDevice, options: AndroidStartOptions = {}): Promise<void> =>
     ctx.serialize(androidExtraKey(laneId, extra.avdName), async () => {
       // Again in the queue: a promote or a release may have taken it meanwhile.
-      if (!holdsExtra(laneId, extra.avdName)) {
-        throw new AndroidEmulatorFailure("ANDROID_DEVICE_NOT_LANE_OWNED", `${extra.avdName} is not one of this lane's extra devices any more.`);
-      }
+      requireHeld(laneId, extra.avdName);
       const ready = await ctx.requireSdk({ emulator: true });
-      if (!ready.sdk.acceleration.usable) {
-        throw new AndroidEmulatorFailure(
-          "ANDROID_NO_ACCELERATION",
-          ready.sdk.acceleration.detail ?? "Hardware acceleration is not available, so the emulator cannot run here.",
-        );
-      }
-      const avd = readAndroidAvd(ready.avdHome, extra.avdName);
-      if (!avd) throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", `The extra device ${extra.avdName} is no longer on this machine.`);
+      const avd = requireBootableAvd(ready, extra.avdName, `The extra device ${extra.avdName} is no longer on this machine.`);
       ctx.touch(extra.avdName);
       if (ctx.runningFor(extra.avdName)) return;
       const state = stateOf(laneId, extra.avdName);
@@ -252,24 +273,31 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
   const stopLocked = (state: ExtraState, options: { refuseForeign: boolean; reason: AndroidEmulatorStopReason }): Promise<void> =>
     slots.stop(state, hooksFor(state), options);
 
-  /** Stops one extra. A stop during its start does not wait behind the boot: it ends it now. */
+  /**
+   * Stops one extra. A stop during its start does not wait behind the boot:
+   * it ends it now. Nothing more happens (and no "off" is said) when the lane
+   * does not hold it any more once the stop has its queue: a promote made it
+   * the lane's device, or a release took it.
+   */
   const stop = async (
     laneId: string,
     extra: AndroidLaneDevice,
     options: { refuseForeign?: boolean; reason?: AndroidEmulatorStopReason } = {},
   ): Promise<void> => {
+    const key = androidExtraKey(laneId, extra.avdName);
     const state = stateOf(laneId, extra.avdName);
-    if (state.transient === "starting") {
-      state.transient = "stopping";
-      emitState(laneId, extra.avdName, "stopping");
-      await slots.abort(state, hooksFor(state), async () => (await ctx.requireSdk({ emulator: false }).catch(() => null))?.adbPath ?? null);
-    }
-    await ctx.serialize(androidExtraKey(laneId, extra.avdName), async () => {
+    await slots.interrupt(state, hooksFor(state), async () => (await ctx.requireSdk({ emulator: false }).catch(() => null))?.adbPath ?? null);
+    const stopped = await ctx.serialize(key, async () => {
+      if (!holdsExtra(laneId, extra.avdName)) {
+        if (states.get(key) === state && !state.launch) states.delete(key);
+        return false;
+      }
       state.stopRequested = false;
       await stopLocked(state, { refuseForeign: options.refuseForeign !== false, reason: options.reason ?? "user" });
       state.error = null;
+      return true;
     });
-    emitState(laneId, extra.avdName, "off");
+    if (stopped) emitState(laneId, extra.avdName, "off");
   };
 
   /**
@@ -406,7 +434,7 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
   /** The cleanup pass's power-off of one extra. `stillIdle` is asked in the extra's queue; false throws, as for the lane device. */
   const powerOffIdle = async (laneId: string, extra: AndroidLaneDevice, stillIdle: () => boolean): Promise<boolean> =>
     (await powerOff(laneId, extra, "cleanup", async () => {
-      if (!stillIdle()) throw new Error("The emulator came into use or was pinned, so ADE left it running.");
+      if (!stillIdle()) throw new Error(ANDROID_CAME_INTO_USE);
       return null;
     })) === "stopped";
 
@@ -444,6 +472,7 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
     find,
     resolveTarget,
     holdsExtra,
+    requireHeld,
     statuses,
     start,
     stop,

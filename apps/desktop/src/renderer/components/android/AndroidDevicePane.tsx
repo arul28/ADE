@@ -432,6 +432,8 @@ export function AndroidDevicePane({
     }));
   }, [laneId]);
 
+  /** The lane's own start with options (set below, once `runStart` exists). */
+  const startLaneRef = useRef<(options: { force?: boolean; restartAdb?: boolean }) => void>(() => undefined);
   const extraDevices = useAndroidExtraDevices({
     api,
     laneId,
@@ -441,8 +443,9 @@ export function AndroidDevicePane({
     readInventory,
     pickerShownRef,
     onError: setError,
+    startLane: useCallback((options) => startLaneRef.current(options), []),
   });
-  const { startExtra, stopExtra, removeExtra, startRefusedAgain, forgetRefused } = extraDevices;
+  const { startExtra, stopExtra, removeExtra, startRefused, forgetRefused } = extraDevices;
 
   /** Runs one lane-changing call: pending while it runs, a strip when it fails, a re-read after. */
   const runStart = useCallback(async (
@@ -507,21 +510,9 @@ export function AndroidDevicePane({
     void runStart({ kind: "start" }, () => api.start({ laneId }, runtimePinRef.current));
   }, [api, laneId, runStart]);
 
-  /**
-   * The person agreed to restart adb (the strip asks): the same start runs
-   * again and restarts it, for the lane's device (`lane`) or for the device
-   * whose start was refused (`refused`: the lane's device or one of its extras).
-   */
-  const restartAdbAndStart = useCallback((target: "lane" | "refused") => {
-    if (!api || (target === "refused" && startRefusedAgain({ restartAdb: true }))) return;
-    void runStart({ kind: "start" }, () => api.start({ laneId, restartAdb: true }, runtimePinRef.current));
-  }, [api, laneId, runStart, startRefusedAgain]);
-
-  /** Past the memory guard, after its warning: the person accepts the swap, for the device that was refused. */
-  const startAnyway = useCallback(() => {
-    if (!api || startRefusedAgain({ force: true })) return;
-    void runStart({ kind: "start" }, () => api.start({ laneId, force: true }, runtimePinRef.current));
-  }, [api, laneId, runStart, startRefusedAgain]);
+  startLaneRef.current = (options) => {
+    if (api) void runStart({ kind: "start" }, () => api.start({ laneId, ...options }, runtimePinRef.current));
+  };
 
   /**
    * One of the lane's extras becomes its device and opens: one that is off
@@ -685,11 +676,12 @@ export function AndroidDevicePane({
       acceleration={accel}
       accelerationDismissed={noAccelDismissed}
       canChoose={!noPicker}
-      onDismissError={() => setError(null)}
+      adbRestartedAlready={extraDevices.refusedAfterAdbRestart(lane)}
+      onDismissError={() => { setError(null); forgetRefused(); }}
       onStart={start}
-      onStartAnyway={startAnyway}
+      onStartAnyway={() => startRefused({ force: true })}
       machine={{ remote: remoteMachine, name: remoteMachineName }}
-      onRestartAdb={restartAdbAndStart}
+      onRestartAdb={() => startRefused({ restartAdb: true })}
       onError={setError}
       onChoose={() => setPickerRequested(true)}
       onReconnect={() => stream.reconnect()}

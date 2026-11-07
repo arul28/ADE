@@ -32,6 +32,7 @@ import {
 } from "../../desktop/src/shared/types/androidEmulator";
 import { localRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import {
+  CliToolError,
   CliUsageError,
   HELP_BY_COMMAND,
   actionStep,
@@ -51,7 +52,7 @@ import {
   type JsonObject,
   type ValueCarrierFlags,
 } from "./cli";
-import { withAsked } from "./cliAndroidFormat";
+import { record, records, withAsked } from "./cliAndroidFormat";
 import { buildAndroidSuitePlan } from "./cliAndroidSuite";
 import { buildAndroidDevicePlan } from "./cliAndroidDevice";
 
@@ -335,7 +336,7 @@ const ANDROID_ERROR_HINTS: Record<AndroidErrorCode, string> = {
     "hint: the emulator did not finish booting in time. Read the log it names, then run `ade android start` again.",
   ANDROID_ADB_UNAUTHORIZED:
     "hint: adb refused the device; the error says why. An agent does not restart the adb server: every device on it loses its connection. "
-      + "Ask the user to press \"Restart adb and start\" in the Android pane, or to run `ade android start --restart-adb` in their own terminal. "
+      + "Ask the user to press \"Restart adb and start\" in the Android pane, or to run `ade android start --restart-adb` in a terminal on that machine. "
       + "If ADE already restarted the server, cold boot the AVD or read the log the error names.",
   ANDROID_EMULATOR_EXITED:
     "hint: the emulator quit. Read the log it names (`ade android status --text` shows the path).",
@@ -489,15 +490,13 @@ export function requireAndroidExtrasSupport(plan: CliPlan & { kind: "execute" },
       {
         ...call,
         params: (values: JsonObject) => {
-          const listed = values.extrasSupport;
-          const actions = listed && typeof listed === "object" && Array.isArray((listed as JsonObject).actions)
-            ? (listed as JsonObject).actions as unknown[]
-            : [];
-          const known = actions.some((entry) => Boolean(entry) && typeof entry === "object" && (entry as JsonObject).action === ANDROID_EXTRAS_ACTION);
+          const known = records(record(values.extrasSupport).actions).some((entry) => entry.action === ANDROID_EXTRAS_ACTION);
           if (!known) {
-            throw new CliUsageError(
-              `android ${verb}: the ADE on that machine is older and does not know extra devices, so it would act on the lane's own device. `
-                + `Update ADE there, or run the command without ${flag}.`,
+            // As `requireMacDesktopBrainCapability`: an older brain drops the argument without an error.
+            throw new CliToolError(
+              `The ADE brain this command reached is older than this ade and does not know extra devices; it would ignore ${flag}, `
+                + `so android ${verb} would act on the lane's own device. Update ADE there (or run \`ade brain update\` for a standalone brain), or leave out ${flag}.`,
+              { capability: ANDROID_EXTRAS_ACTION, flag, verb },
             );
           }
           return typeof params === "function" ? params(values) : params ?? {};
@@ -506,6 +505,11 @@ export function requireAndroidExtrasSupport(plan: CliPlan & { kind: "execute" },
       ...rest,
     ],
   };
+}
+
+/** `plan`, with the extra-devices check when the verb names one with `--device`. */
+export function onAndroidDevice(plan: CliPlan & { kind: "execute" }, verb: string, device: { device?: string }): CliPlan & { kind: "execute" } {
+  return device.device ? requireAndroidExtrasSupport(plan, verb, "--device") : plan;
 }
 
 export function buildAndroidPlan(args: string[], options: { remote?: boolean } = {}): CliPlan {
@@ -566,8 +570,6 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
   const bootNotice = "Booting the lane's Android emulator; the first boot of a new AVD can take about a minute…";
   const extraBootNotice = "Booting the extra Android device beside the lane's own; the first boot of a new AVD can take about a minute…";
   /** A verb with `--device <avd>`: refused before its call when the brain does not know extra devices. */
-  const onDevice = (plan: CliPlan & { kind: "execute" }, device: { device?: string }) =>
-    (device.device ? requireAndroidExtrasSupport(plan, sub, "--device") : plan);
 
   if (sub === "status")
     return androidAction("android status", "getStatus", laneClaim(), "android-status");
@@ -625,16 +627,16 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
     const force = readFlag(args, ["--force"]);
     const restartAdb = readFlag(args, ["--restart-adb"]);
     const device = readAndroidDeviceClaim(args, sub);
-    return onDevice(androidAction("android start", "start", {
+    return onAndroidDevice(androidAction("android start", "start", {
       ...laneClaim(),
       ...(force ? { force: true } : {}),
       ...(restartAdb ? { restartAdb: true } : {}),
       ...device,
-    }, "android-device", { progressNotice: device.device ? extraBootNotice : bootNotice }), device);
+    }, "android-device", { progressNotice: device.device ? extraBootNotice : bootNotice }), sub, device);
   }
   if (sub === "stop") {
     const device = readAndroidDeviceClaim(args, sub);
-    return onDevice(androidAction("android stop", "stop", { ...laneClaim(), ...device }, "android-device"), device);
+    return onAndroidDevice(androidAction("android stop", "stop", { ...laneClaim(), ...device }, "android-device"), sub, device);
   }
   if (sub === "keep-running") {
     // The pin against ADE's idle stop. On the lane's machine, like every lane verb.
@@ -648,11 +650,11 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
     // releases one of the lane's extras instead, and the lane keeps its device.
     const keep = readFlag(args, ["--keep"]);
     const device = readAndroidDeviceClaim(args, sub);
-    return onDevice(androidAction("android device-detach", "releaseDevice", {
+    return onAndroidDevice(androidAction("android device-detach", "releaseDevice", {
       ...laneClaim(),
       ...(keep ? { deleteCreated: false } : {}),
       ...device,
-    }, "android-release"), device);
+    }, "android-release"), sub, device);
   }
   if (sub === "device-promote") {
     // One of the lane's extras becomes the lane's device; the old one is kept.

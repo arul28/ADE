@@ -205,11 +205,14 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
       colorId: optionalString(args, "colorId"),
       // An extra device beside the lane's own (`device-create --extra`).
       ...(readBoolean(args, "extra") === true ? { extra: true } : {}),
+      // Set by the RPC server for an agent: the boot's owner record and failure report name the chat.
+      chatSessionId: optionalString(args, "chatSessionId"),
     }),
     attachDevice: (args?: unknown) => service.attachDevice({
       ...laneArgs(args, "attachDevice"),
       avdName: requiredString(args, "avdName", "attachDevice"),
       start: optionalBoolean(args, "start"),
+      chatSessionId: optionalString(args, "chatSessionId"),
     }),
     start: (args?: unknown) => service.start({
       ...laneArgs(args, "start"),

@@ -1255,9 +1255,11 @@ lane's device (`device_promoted`). Each outcome counts at most once a day.
 A boot that fails with an unexpected code is also one Sentry issue for each
 code (`["android", "boot_failed", <code>]`), with the time it took and the
 profile id (`extra: "true"` for an extra device). The brain reports it only
-for an agent's call (one that names its chat, over RPC): the desktop's IPC
-capture reports its own calls once, and no "already reported" mark crosses
-the runtime boundary. An expected code (`ANDROID_ADB_UNAUTHORIZED`,
+for an agent's call (one that names its chat, over RPC: a start, a create or
+an attach that boots, or an install on an extra that is off): the desktop's
+IPC capture reports its own calls once, and no "already reported" mark
+crosses the runtime boundary. A boot from a person's own terminal is not a
+Sentry issue; `boot_failed` and the log line still count it. An expected code (`ANDROID_ADB_UNAUTHORIZED`,
 `ANDROID_LOW_MEMORY`, …) is never an issue. The
 `android.emulator_start_failed` and `android.adb_server_restarted` log lines
 carry the rest. No path, AVD, package, lane, image, angle or preview name
@@ -1367,7 +1369,7 @@ The full list is in §6 of the [plan](../../plans/android-emulator.md).
 | `ANDROID_NO_ACCELERATION` | Turn on acceleration: Windows Hypervisor Platform on Windows, KVM access on Linux. WSL2 has none, and a VM has it only with nested virtualization. The banner's **How to fix** opens Google's guide. |
 | `ANDROID_EMULATOR_EXITED` | The emulator exited. Read its log, `<project>/.ade/android/logs/<avd>.log` on the emulator's machine (**Open log**, or the path in `ade android status --text`). Then **Restart**. |
 | `ANDROID_BOOT_TIMEOUT` | The boot took more than 180 s. Read the log, then run `ade android start` again. |
-| `ANDROID_ADB_UNAUTHORIZED` | The emulator runs, but the adb server refuses it as `unauthorized` for 20 s. The server started before `~/.android/adbkey` changed (a new SDK or Android CLI setup can write a new key), and it never reads the key again. When no other connected device uses the server (an `unauthorized` or `offline` row does not count), ADE restarts it and the boot goes on (`# ADE` lines in the log say so). Otherwise the pane offers **Restart adb and start**, after a confirm, for the device whose start failed, and `ade android start --restart-adb` in the person's own terminal does the same. An agent cannot restart adb: the RPC server drops its `restartAdb`, and it asks the person. When adb still refuses the device after ADE restarted the server, the emulator does not trust the current key: cold boot the AVD, or wipe its data, then start it again. |
+| `ANDROID_ADB_UNAUTHORIZED` | The emulator runs, but the adb server refuses it as `unauthorized` for 20 s. The server started before `~/.android/adbkey` changed (a new SDK or Android CLI setup can write a new key), and it never reads the key again. When no other connected device uses the server (an `unauthorized` or `offline` row does not count), ADE restarts it and the boot goes on (`# ADE` lines in the log say so). Otherwise the pane offers **Restart adb and start**, after a confirm, for the device whose start failed, and `ade android start --restart-adb` in the person's own terminal does the same. An agent cannot restart adb: the RPC server refuses its `restartAdb` with a policy error that says to ask the person. The pane shows no **Restart adb and start** for a refusal that came after ADE already restarted the server. When adb still refuses the device after ADE restarted the server, the emulator does not trust the current key: cold boot the AVD, or wipe its data, then start it again. |
 | `ANDROID_PATH_OUTSIDE_LANE` | `screenshot --out` must be inside the lane worktree. Give a path there, or leave out `--out`. |
 | Work copy gone (`ANDROID_NOT_RUNNING`) | "This chat's work copy on this machine is gone, so it has no Android device here." Run the command again to make a new copy. |
 | `ANDROID_NOT_RUNNING` | Boot the lane's emulator first (`ade android start`), or make one (`ade android device-create --profile <id>`). |

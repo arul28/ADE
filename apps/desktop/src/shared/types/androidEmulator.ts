@@ -327,6 +327,12 @@ export type AndroidEmulatorError = {
   message: string;
   /** The emulator log path, when there is one ("Open log"). */
   logPath?: string | null;
+  /**
+   * `ANDROID_ADB_UNAUTHORIZED` after ADE already restarted the adb server: a
+   * new restart does not help (the emulator does not trust the current key),
+   * so the pane offers none.
+   */
+  adbRestarted?: boolean;
 };
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -421,12 +427,16 @@ export type AndroidCreateDeviceArgs = AndroidLaneArgs & {
    * `ANDROID_LANE_EXTRA_DEVICE_LIMIT` per lane by default.
    */
   extra?: boolean | null;
+  /** Set by the RPC server for an agent: the boot names the chat in its owner record, and reports a failure. */
+  chatSessionId?: string | null;
 };
 
 export type AndroidAttachDeviceArgs = AndroidLaneArgs & {
   avdName: string;
   /** Boot it right after attach. Default true. */
   start?: boolean;
+  /** Set by the RPC server for an agent, as on `createDevice`. */
+  chatSessionId?: string | null;
 };
 
 /** `device`: one of the lane's extra devices; release that one and keep the lane's device. Default: the lane's device (its extras stay). */

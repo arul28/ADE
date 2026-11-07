@@ -1454,9 +1454,11 @@ the reason and the numbers), and a promote refused as busy is not one either.
 A boot that fails with an unexpected code is one Sentry issue per code
 (`["android", "boot_failed", <code>]`; tags `area`, `code`, and `extra` for
 an extra device). The brain reports it only for an agent's call over RPC (one
-that names its chat); the desktop's IPC capture (`main/sentry/ipcCapture.ts`)
-reports the desktop's own calls once, since no "already reported" mark
-crosses the runtime boundary. `ANDROID_ADB_UNAUTHORIZED` is an expected
+that names its chat: a start, or a create, attach or install that boots); the
+desktop's IPC capture (`main/sentry/ipcCapture.ts`) reports the desktop's own
+calls once, since no "already reported" mark crosses the runtime boundary. A
+boot from a person's own terminal is no Sentry issue; `boot_failed` and the
+`android.emulator_start_failed` line still count it. `ANDROID_ADB_UNAUTHORIZED` is an expected
 (`environment`) answer and never an issue. `android.adb_devices_failed`
 (warn, once per boot, with the AVD name and the error) says that `adb devices`
 did not answer during a boot wait; the refusal clock does not move on such a

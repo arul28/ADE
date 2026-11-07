@@ -4908,6 +4908,17 @@ export function scopeAndroidAdeActionArgs(
       method,
     );
   }
+  // `restartAdb` restarts the machine's one adb server, and every other device
+  // and tool on it loses its connection: only the person decides that (the
+  // pane's "Restart adb and start", or `ade android start --restart-adb` in a
+  // terminal on that machine, an `ade` process with no chat or run). An
+  // agent's ask is refused, never dropped in silence; ADE still restarts a
+  // server that no other device uses.
+  if (androidArgs.restartAdb === true && !isUnboundAdeCliCaller(session)) {
+    scopeAccessDenied("only a person can restart adb", method, {
+      nextStep: "Ask them to press Restart adb and start in the Android pane, or to run ade android start --restart-adb in a terminal on that machine.",
+    });
+  }
   const laneId = pinAgentDeviceLane(runtime, session, {
     method,
     requestedLaneId: asOptionalTrimmedString(androidArgs.laneId),
@@ -4916,17 +4927,10 @@ export function scopeAndroidAdeActionArgs(
   });
   // `source` is set by the brain, never by the caller: an agent that sent
   // `source: "user"` would skip auto-record and draw its input as the person's.
-  const { chatSessionId: _callerChat, agentCaller: _agentCaller, source: _callerSource, restartAdb, ...rest } = androidArgs;
+  const { chatSessionId: _callerChat, agentCaller: _agentCaller, source: _callerSource, ...rest } = androidArgs;
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-  // `restartAdb` restarts the machine's one adb server, and every other device
-  // and tool on it loses its connection: only the person decides that (the
-  // pane's "Restart adb and start", or `ade android start --restart-adb` in
-  // their own terminal, an `ade` process with no chat or run). An agent's is
-  // dropped; ADE still restarts a server that no other device uses.
-  const personsTerminal = isUnboundAdeCliCaller(session);
   return {
     ...rest,
-    ...(personsTerminal && restartAdb !== undefined ? { restartAdb } : {}),
     ...(laneId ? { laneId } : {}),
     ...(callerChatSessionId ? { chatSessionId: callerChatSessionId } : {}),
     // Parity, as Apple's: an agent's `device-cleanup --power-off-idle` reaches its own lane only.

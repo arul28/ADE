@@ -406,28 +406,36 @@ export function formatAndroidApps(value: unknown): string {
   );
 }
 
-/**
- * The device a call named with --device: ` on <avd> (an extra device)` for a
- * sentence, or ` --device <avd>` (an extra only) for the next command.
- */
-function onDevice(result: JsonObject, as: "sentence" | "flag" = "sentence"): string {
+/** The device a call named with --device, as `{ avdName, extra }`, or null. */
+function namedDevice(result: JsonObject): { avdName: string; extra: boolean } | null {
   const device = isRecord(result.device) ? result.device : null;
   const avdName = asString(device?.avdName);
-  if (!avdName) return "";
-  if (as === "flag") return device?.extra === true ? ` --device ${avdName}` : "";
-  return device?.extra === true ? ` on ${avdName} (an extra device)` : ` on ${avdName}`;
+  return avdName ? { avdName, extra: device?.extra === true } : null;
+}
+
+/** ` on <avd> (an extra device)` for a sentence, when the call named a device with --device. */
+function onDeviceSentence(result: JsonObject): string {
+  const device = namedDevice(result);
+  if (!device) return "";
+  return device.extra ? ` on ${device.avdName} (an extra device)` : ` on ${device.avdName}`;
+}
+
+/** ` --device <avd>` for the next command, when the call went to an extra device. */
+function deviceFlag(result: JsonObject): string {
+  const device = namedDevice(result);
+  return device?.extra ? ` --device ${device.avdName}` : "";
 }
 
 function installLine(install: JsonObject, target: JsonObject = install): string {
   const how = install.method === "gradle" ? `Gradle ${asString(install.gradleTask) ?? ""}`.trimEnd() : `APK ${asString(install.apkPath) ?? ""}`.trimEnd();
-  return `Installed ${asString(install.packageName) ?? "the app"} (${how})${onDevice(target)} in ${seconds(install.durationMs) ?? "?"}.`;
+  return `Installed ${asString(install.packageName) ?? "the app"} (${how})${onDeviceSentence(target)} in ${seconds(install.durationMs) ?? "?"}.`;
 }
 
 export function formatAndroidInstall(value: unknown): string {
   const install = record(value);
   return [
     installLine(install),
-    `Open it: ade android launch --package ${asString(install.packageName) ?? "<name>"}${onDevice(install, "flag")} --text`,
+    `Open it: ade android launch --package ${asString(install.packageName) ?? "<name>"}${deviceFlag(install)} --text`,
   ].join("\n");
 }
 
@@ -438,7 +446,7 @@ export function formatAndroidLaunch(value: unknown): string {
     ...(install ? [installLine(install, launch)] : []),
     // `activity` is the component (`pkg/.Main`) when the app's launcher named it.
     `Opened ${asString(launch.activity)?.includes("/") ? asString(launch.activity) : `${asString(launch.packageName) ?? "?"}/${asString(launch.activity) ?? "?"}`}`
-      + `${onDevice(launch)}${typeof launch.totalTimeMs === "number" ? ` (started in ${launch.totalTimeMs} ms)` : ""}.`,
+      + `${onDeviceSentence(launch)}${typeof launch.totalTimeMs === "number" ? ` (started in ${launch.totalTimeMs} ms)` : ""}.`,
     "Check the screen: ade android snapshot --text",
   ].join("\n");
 }

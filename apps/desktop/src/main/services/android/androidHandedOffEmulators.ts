@@ -133,7 +133,8 @@ export async function reconcileStartedEmulators(args: {
  * and the rest still run.
  */
 export async function stopAdeStartedEmulators(args: {
-  registry: AdeStartedEmulators;
+  /** The state files to read: the lanes' own devices and their extras. */
+  registries: readonly AdeStartedEmulators[];
   adbPath: string;
   discoveryDirs: readonly string[];
   logger: Logger | null;
@@ -143,7 +144,8 @@ export async function stopAdeStartedEmulators(args: {
   onStopped?: (emulator: AndroidDiscoveredEmulator) => void;
 }): Promise<void> {
   for (const emulator of readAndroidDiscoveryFiles(args.discoveryDirs)) {
-    if (!args.registry.owns(emulator)) continue;
+    const registry = args.registries.find((entry) => entry.owns(emulator));
+    if (!registry) continue;
     await stopAndroidEmulator({
       adbPath: args.adbPath,
       serial: emulator.serial,
@@ -151,7 +153,7 @@ export async function stopAdeStartedEmulators(args: {
       avdName: emulator.avdName,
       pid: emulator.pid,
       launcherPid: args.launcherPidFor?.(emulator) ?? null,
-      registry: args.registry,
+      registry,
       discoveryDirs: args.discoveryDirs,
     }).then(() => args.onStopped?.(emulator), (error: unknown) => {
       args.logger?.warn("android.dispose_stop_failed", { serial: emulator.serial, error: getErrorMessage(error) });
@@ -196,14 +198,12 @@ export async function stopHandedOffAndroidEmulators(args: {
       // No SDK or no adb: nothing ADE could have started is reachable here.
       return;
     }
-    for (const file of present) {
-      await stopAdeStartedEmulators({
-        registry: openStartedEmulators(dataDir, logger, file),
-        adbPath,
-        discoveryDirs: androidDiscoveryDirs(platform, env, home),
-        logger,
-      });
-    }
+    await stopAdeStartedEmulators({
+      registries: present.map((file) => openStartedEmulators(dataDir, logger, file)),
+      adbPath,
+      discoveryDirs: androidDiscoveryDirs(platform, env, home),
+      logger,
+    });
   } catch (error) {
     logger?.warn("android.unregister_stop_failed", { projectRoot: args.projectRoot, error: getErrorMessage(error) });
   }

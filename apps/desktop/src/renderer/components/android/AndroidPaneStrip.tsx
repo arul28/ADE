@@ -62,6 +62,7 @@ export function AndroidPaneStrip({
   accelerationDismissed,
   canChoose,
   machine,
+  adbRestartedAlready,
   onDismissError,
   onStart,
   onStartAnyway,
@@ -85,14 +86,13 @@ export function AndroidPaneStrip({
   canChoose: boolean;
   /** The emulator's machine: another machine's log path is copied, not opened. */
   machine: { remote: boolean; name: string | null };
+  /** adb refused the failed start after ADE had restarted the adb server: a new restart does not help. */
+  adbRestartedAlready: boolean;
   onDismissError: () => void;
   onStart: () => void;
   onStartAnyway: () => void;
-  /**
-   * adb refused a start and the person agreed to restart adb: `lane` for the
-   * lane's crashed device, `refused` for the device whose start just failed.
-   */
-  onRestartAdb: (target: "lane" | "refused") => void;
+  /** adb refused a start and the person agreed to restart adb: the same start again, with the restart. */
+  onRestartAdb: () => void;
   onError: (error: AndroidErrorDescription) => void;
   onChoose: () => void;
   onReconnect: () => void;
@@ -100,9 +100,9 @@ export function AndroidPaneStrip({
   onDismiss3D: () => void;
   onDismissAcceleration: () => void;
 }) {
-  const restartAdb = (target: "lane" | "refused") => {
+  const restartAdb = () => {
     void confirmAdbRestart(machine.name).then((confirmed) => {
-      if (confirmed) onRestartAdb(target);
+      if (confirmed) onRestartAdb();
     });
   };
   if (error?.code === "ANDROID_LOW_MEMORY") {
@@ -117,14 +117,15 @@ export function AndroidPaneStrip({
     );
   }
   if (error) {
-    // adb refused a start: the same start again, with the adb restart the person agrees to.
-    const refused = error.code === "ANDROID_ADB_UNAUTHORIZED";
+    // adb refused a start: the same start again, with the adb restart the
+    // person agrees to; none when ADE already restarted it and adb still refused.
+    const restartHelps = error.code === "ANDROID_ADB_UNAUTHORIZED" && !adbRestartedAlready;
     return (
       <DeviceErrorStrip
         tool="android"
         sentence={error.sentence}
         detail={error.detail}
-        actions={refused ? [{ label: "Restart adb and start", onClick: () => restartAdb("refused") }] : undefined}
+        actions={restartHelps ? [{ label: "Restart adb and start", onClick: restartAdb }] : undefined}
         onDismiss={onDismissError}
       />
     );
@@ -134,9 +135,10 @@ export function AndroidPaneStrip({
     // link, and "Choose another device" sits on the card below.
     const crash = lane?.error ?? null;
     const refused = crash?.code === "ANDROID_ADB_UNAUTHORIZED";
-    const actions: NoticeAction[] = [
-      refused ? { label: "Restart adb and start", onClick: () => restartAdb("lane") } : { label: "Restart", onClick: onStart },
-    ];
+    // After a refusal that followed ADE's own adb restart, only the log helps.
+    const actions: NoticeAction[] = !refused
+      ? [{ label: "Restart", onClick: onStart }]
+      : crash?.adbRestarted ? [] : [{ label: "Restart adb and start", onClick: restartAdb }];
     if (crash?.logPath) {
       const logPath = crash.logPath;
       actions.push({ label: "Open log", variant: "link", onClick: () => openAndroidLog(logPath, machine, onError) });

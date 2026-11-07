@@ -77,8 +77,8 @@ export function createAndroidDevicePromote(ctx: AndroidDevicePromoteContext) {
   const { deps, extras, logger } = ctx;
   /** Installs and launches in flight on each lane's own device. */
   const laneJobs = new Map<string, number>();
-  /** Lanes with an instrumentation test run in progress. */
-  const testsRunning = new Set<string>();
+  /** Instrumentation test runs in progress on each lane's own device, counted: one call never clears another's. */
+  const testsRunning = new Map<string, number>();
   /** The promote that runs now on each lane, from the start of its step in the lane's queue to its end. */
   const promoting = new Map<string, Promise<unknown>>();
 
@@ -94,7 +94,7 @@ export function createAndroidDevicePromote(ctx: AndroidDevicePromoteContext) {
     // Before the stream: a recording holds the stream too, and "recording" is the answer a caller can act on.
     if (ctx.agent.isRecording(laneId)) return "recording";
     if (ctx.laneStreams.held(laneId)) return "streaming its live view";
-    if (testsRunning.has(laneId)) return "running tests";
+    if ((testsRunning.get(laneId) ?? 0) > 0) return "running tests";
     if (laneJobs.has(laneId)) return "installing or launching an app";
     const holder = ctx.agent.otherLeaseHolder(laneId, chatSessionId);
     return holder ? `leased to ${holder}` : null;
@@ -108,6 +108,14 @@ export function createAndroidDevicePromote(ctx: AndroidDevicePromoteContext) {
     );
   };
 
+  /** The extra is busy (its boot, its stop, an install on it): the promote is refused. */
+  const refuseExtraBusy = (extra: AndroidLaneDevice): void => {
+    const busy = extras.busyReason(extra.laneId, extra.avdName);
+    if (busy) {
+      throw busyFailure(`${extra.avdName} is ${busy}, so it cannot become the lane's device now. Wait for that to finish, then run device-promote again.`);
+    }
+  };
+
   /** Waits until no promote runs on the lane. A job then counts itself before its first await. */
   const settled = async (laneId: string): Promise<void> => {
     for (let running = promoting.get(laneId); running; running = promoting.get(laneId)) {
@@ -115,15 +123,15 @@ export function createAndroidDevicePromote(ctx: AndroidDevicePromoteContext) {
     }
   };
 
-  /** An install or a launch on the lane's own device, counted as in use while it runs. */
-  const runLaneJob = async <T>(laneId: string, job: () => Promise<T>): Promise<T> => {
-    laneJobs.set(laneId, (laneJobs.get(laneId) ?? 0) + 1);
+  /** Runs `job` with the lane counted in `counts` meanwhile; the count starts before the first await. */
+  const counted = async <T>(counts: Map<string, number>, laneId: string, job: () => Promise<T>): Promise<T> => {
+    counts.set(laneId, (counts.get(laneId) ?? 0) + 1);
     try {
       return await job();
     } finally {
-      const left = (laneJobs.get(laneId) ?? 1) - 1;
-      if (left > 0) laneJobs.set(laneId, left);
-      else laneJobs.delete(laneId);
+      const left = (counts.get(laneId) ?? 1) - 1;
+      if (left > 0) counts.set(laneId, left);
+      else counts.delete(laneId);
     }
   };
 
@@ -139,26 +147,21 @@ export function createAndroidDevicePromote(ctx: AndroidDevicePromoteContext) {
     onExtra: (laneId: string, booted: () => Promise<BootedDevice>) => Promise<T>,
   ): Promise<T & { device?: AndroidTargetDevice }> => {
     const laneId = requireLaneId(args.laneId);
-    await settled(laneId);
+    // With no promote, the count below starts in this tick.
+    if (promoting.has(laneId)) await settled(laneId);
     const extra = extras.resolveTarget(laneId, args.device);
     if (extra) {
       const result = await extras.runJob(laneId, extra, (booted) => onExtra(laneId, booted), { chatSessionId: args.chatSessionId ?? null });
       return { ...result, device: { avdName: extra.avdName, extra: true } };
     }
-    const result = await runLaneJob(laneId, onLane);
+    const result = await counted(laneJobs, laneId, onLane);
     const own = args.device ? deps.laneDevices.get(laneId) : null;
     return own ? { ...result, device: { avdName: own.avdName, extra: false } } : result;
   };
 
   /** A test run on the lane's own device: a promote is refused while it runs. */
-  const runTests = async <T>(laneId: string, run: () => Promise<T>): Promise<T> => {
-    if (laneId) testsRunning.add(laneId);
-    try {
-      return await run();
-    } finally {
-      if (laneId) testsRunning.delete(laneId);
-    }
-  };
+  const runTests = <T>(laneId: string, run: () => Promise<T>): Promise<T> =>
+    (laneId ? counted(testsRunning, laneId, run) : run());
 
   /**
    * The swap, once nothing uses either device. The caller holds the lane's
@@ -176,15 +179,26 @@ export function createAndroidDevicePromote(ctx: AndroidDevicePromoteContext) {
     const state = ctx.laneState(laneId);
     let previousKeptAs: AndroidDevicePromoteResult["previousKeptAs"] = null;
     if (current) {
+      /**
+       * Each await gives a viewer, a recording or a lease time to come. A late
+       * refusal leaves the lane's device as it was: its status read arms the
+       * crash watch again, and a stream starts again when a viewer asks.
+       */
+      const checkStillFree = async () => {
+        const busy = laneBusyReason(laneId, chatSessionId);
+        if (!busy) return;
+        await ctx.laneStatus(laneId);
+        refuseLaneBusy(current, extra, busy);
+      };
       ctx.crashWatch.stop(laneId);
       // A stream no viewer holds may still run on the old device.
       await ctx.stopLaneStream(state);
+      // Before anything comes off the device.
+      await checkStillFree();
       // Ends the lane's recording (none runs: checked above), and on the
       // user's own AVD takes off what ADE installed, while it still runs.
       await ctx.agent.beforeRelease(laneId);
-      // The awaits above gave a viewer, a recording or a lease time to come.
-      const busy = laneBusyReason(laneId, chatSessionId);
-      if (busy) refuseLaneBusy(current, extra, busy);
+      await checkStillFree();
       if (current.origin === "attached") {
         await ctx.stopLocked(state, current, { refuseForeign: false, reason: "released" });
         deps.laneDevices.forget(laneId, current.avdName);
@@ -274,21 +288,13 @@ export function createAndroidDevicePromote(ctx: AndroidDevicePromoteContext) {
             `${wanted} is not one of this lane's extra devices. ade android status --text lists the lane's devices.`,
           );
         }
-        const extraBusy = extras.busyReason(laneId, extra.avdName);
-        if (extraBusy) {
-          throw busyFailure(`${extra.avdName} is ${extraBusy}, so it cannot become the lane's device now. Wait for that to finish, then run device-promote again.`);
-        }
+        refuseExtraBusy(extra);
         const busy = current ? laneBusyReason(laneId, chatSessionId) : null;
         if (current && busy) refuseLaneBusy(current, extra, busy);
         return ctx.serialize(androidExtraKey(laneId, extra.avdName), async () => {
           // Again in the extra's queue: a release or a start may have come first.
-          if (!extras.holdsExtra(laneId, extra.avdName)) {
-            throw new AndroidEmulatorFailure("ANDROID_DEVICE_NOT_LANE_OWNED", `${extra.avdName} is not one of this lane's extra devices any more.`);
-          }
-          const nowBusy = extras.busyReason(laneId, extra.avdName);
-          if (nowBusy) {
-            throw busyFailure(`${extra.avdName} is ${nowBusy}, so it cannot become the lane's device now. Wait for that to finish, then run device-promote again.`);
-          }
+          extras.requireHeld(laneId, extra.avdName);
+          refuseExtraBusy(extra);
           return swapLocked(laneId, current, extra, chatSessionId);
         });
       })();
@@ -299,7 +305,7 @@ export function createAndroidDevicePromote(ctx: AndroidDevicePromoteContext) {
     });
   };
 
-  return { promote, onLaneOrExtra, runTests };
+  return { promote, settled, onLaneOrExtra, runTests };
 }
 
 export type AndroidDevicePromote = ReturnType<typeof createAndroidDevicePromote>;

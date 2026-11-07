@@ -677,6 +677,7 @@ export async function waitForAndroidBoot(
             `adb still refused ${name} after ADE restarted the adb server: the emulator does not trust the current adb key. `
               + "Cold boot the AVD, or wipe its data (Android Studio's Device Manager), then start it again; the log says more.",
             launch.logPath,
+            true,
           );
         }
         noteInLaunchLog(launch, `adb refuses ${launch.serial} as unauthorized: the adb server uses an older adb key. Stopping the boot.`);

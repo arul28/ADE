@@ -47,6 +47,9 @@ import type { AndroidDiscoveredEmulator } from "./androidEmulatorProcess";
  * Node built-ins and relative imports only, so it runs under `tsx`.
  */
 
+/** A power-off refused on the device's queue: something used the emulator, or the person pinned it, while the pass waited. */
+export const ANDROID_CAME_INTO_USE = "The emulator came into use or was pinned, so ADE left it running.";
+
 const CLEANUP_FIRST_MS = 60_000;
 const CLEANUP_TICK_MS = 15 * 60_000;
 

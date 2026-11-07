@@ -1165,7 +1165,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Boot the lane's AVD and wait until Android reports boot completed. No-op when it is already booted. "
         + "Refused with ANDROID_LOW_MEMORY when the machine is under memory pressure, swapping, or its emulators would pass half of its memory; force boots anyway. "
         + "When adb refuses the device (ANDROID_ADB_UNAUTHORIZED), ADE restarts the adb server itself if no other device uses it; restartAdb restarts it even then, "
-        + "and only the person may ask for that (an agent's restartAdb is dropped): an agent asks the person to press \"Restart adb and start\" in the Android pane, or to run ade android start --restart-adb in their own terminal. "
+        + "and only the person may ask for that (an agent's restartAdb is refused): an agent asks the person to press \"Restart adb and start\" in the Android pane, or to run ade android start --restart-adb in a terminal on that machine. "
         + "device names one of the lane's extra devices to boot beside the lane's device instead (the same memory guard).",
       input: "object { laneId: string, force?: boolean, restartAdb?: boolean, device?: string }",
       example: "ade android start --json",

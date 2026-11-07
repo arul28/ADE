@@ -512,7 +512,6 @@ function ExtraDeviceCard({
         sizeBytes={null}
         disabled={disabled}
         kind="extra"
-        labelSuffix="extra device"
         {...(running ? { onStop: () => actions.stop(avdName) } : { onStart: () => actions.start(avdName) })}
         {...(promote ? { onPromote: promote } : {})}
         onDelete={() => actions.remove(avdName)}
@@ -526,17 +525,47 @@ function sizeLabel(bytes: number | null): string | null {
   return formatAndroidBytes(bytes);
 }
 
-/** The words and the test hooks of the menu's delete: an AVD on the machine is deleted, an extra is removed (and deleted). */
-const AVD_MENU_DELETE = {
-  avd: { attribute: "delete", idle: "Delete device…", confirm: (size: string | null) => (size ? `Delete for good — frees ${size}` : "Delete for good") },
-  extra: { attribute: "remove", idle: "Remove from this lane…", confirm: () => "Remove and delete the device" },
+/**
+ * Per kind of card: the menu label's suffix (null: the AVD's size on disk),
+ * the words of its delete (an AVD on the machine is deleted, an extra is
+ * removed and deleted), and the `data-android-*` attribute of each item.
+ */
+const AVD_MENU = {
+  avd: {
+    labelSuffix: null,
+    deleteIdle: "Delete device…",
+    deleteConfirm: (size: string | null) => (size ? `Delete for good — frees ${size}` : "Delete for good"),
+    attributes: {
+      menu: "data-android-avd-menu",
+      stop: "data-android-avd-stop",
+      start: "data-android-avd-start-item",
+      promote: "data-android-avd-promote-item",
+      release: "data-android-avd-release",
+      delete: "data-android-avd-delete",
+      deleteConfirm: "data-android-avd-delete-confirm",
+    },
+  },
+  extra: {
+    labelSuffix: "extra device",
+    deleteIdle: "Remove from this lane…",
+    deleteConfirm: () => "Remove and delete the device",
+    attributes: {
+      menu: "data-android-extra-menu",
+      stop: "data-android-extra-stop",
+      start: "data-android-extra-start",
+      promote: "data-android-extra-promote-item",
+      release: "data-android-extra-release",
+      delete: "data-android-extra-remove",
+      deleteConfirm: "data-android-extra-remove-confirm",
+    },
+  },
 } as const;
 
 /**
  * The ⋯ menu of one AVD card: an AVD on this machine or the lane's own
  * (`kind: "avd"`), or one of the lane's extra devices (`kind: "extra"`). Each
- * item shows only when its handler is given. Its `data-android-<kind>-*`
- * attributes name the AVD.
+ * item shows only when its handler is given; its attribute (`AVD_MENU`)
+ * names the AVD.
  */
 function AvdMenu({
   name,
@@ -544,7 +573,6 @@ function AvdMenu({
   sizeBytes,
   disabled,
   kind = "avd",
-  labelSuffix,
   onStart,
   onStop,
   onPromote,
@@ -556,8 +584,6 @@ function AvdMenu({
   sizeBytes: number | null;
   disabled: boolean;
   kind?: "avd" | "extra";
-  /** After the name in the menu's label; default the AVD's size on disk. */
-  labelSuffix?: string;
   /** Boot it beside the lane's device (an extra). */
   onStart?: () => void;
   onStop?: () => void;
@@ -570,9 +596,9 @@ function AvdMenu({
 }) {
   const [confirming, setConfirming] = useState(false);
   const size = sizeLabel(sizeBytes);
-  const suffix = labelSuffix ?? size;
-  const removal = AVD_MENU_DELETE[kind];
-  const hook = (item: string) => ({ [`data-android-${kind}-${item}`]: avdName });
+  const menu = AVD_MENU[kind];
+  const suffix = menu.labelSuffix ?? size;
+  const hook = (item: keyof typeof menu.attributes) => ({ [menu.attributes[item]]: avdName });
   return (
     <DropdownMenu.Root onOpenChange={(open) => { if (!open) setConfirming(false); }}>
       <DropdownMenu.Trigger asChild>
@@ -603,7 +629,7 @@ function AvdMenu({
             </DropdownMenu.Item>
           ) : null}
           {onPromote ? (
-            <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onPromote} {...hook("promote-item")}>
+            <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onPromote} {...hook("promote")}>
               <Swap size={14} />
               Make this the lane's device
             </DropdownMenu.Item>
@@ -626,10 +652,10 @@ function AvdMenu({
               <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
               <DangerConfirmMenuItem
                 confirming={confirming}
-                idleLabel={removal.idle}
-                confirmLabel={removal.confirm(size)}
-                idleDataAttribute={{ name: `data-android-${kind}-${removal.attribute}`, value: avdName }}
-                confirmDataAttribute={{ name: `data-android-${kind}-${removal.attribute}-confirm`, value: avdName }}
+                idleLabel={menu.deleteIdle}
+                confirmLabel={menu.deleteConfirm(size)}
+                idleDataAttribute={{ name: menu.attributes.delete, value: avdName }}
+                confirmDataAttribute={{ name: menu.attributes.deleteConfirm, value: avdName }}
                 onBeginConfirm={() => setConfirming(true)}
                 onConfirm={onDelete}
               />

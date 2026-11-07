@@ -18,6 +18,7 @@ export function useAndroidExtraDevices({
   readInventory,
   pickerShownRef,
   onError,
+  startLane,
 }: {
   api: Window["ade"]["androidEmulator"] | null;
   laneId: string;
@@ -29,6 +30,8 @@ export function useAndroidExtraDevices({
   /** The picker is on screen: a call reads the device list again after it. */
   pickerShownRef: MutableRefObject<boolean>;
   onError: (error: AndroidErrorDescription | null) => void;
+  /** Starts the lane's own device again with `options` (the pane's lane start). */
+  startLane: (options: { force?: boolean; restartAdb?: boolean }) => void;
 }) {
   /** The extra device a start, stop or remove is in flight for. */
   const [pendingExtra, setPendingExtra] = useState<string | null>(null);
@@ -91,25 +94,34 @@ export function useAndroidExtraDevices({
   }, [api, laneId, pinRef, runExtra]);
 
   /**
-   * Starts the device the last refused start was for again, with `options`:
-   * true when that was an extra (started here), false when it was the lane's
-   * own device (the caller starts it).
+   * Starts the device the last refused start was for again, with `options`
+   * ("Start anyway", "Restart adb and start"): that extra, or else the lane's
+   * own device.
    */
-  const startRefusedAgain = useCallback((options: { force?: boolean; restartAdb?: boolean }): boolean => {
+  const startRefused = useCallback((options: { force?: boolean; restartAdb?: boolean }) => {
     const extra = refusedExtraRef.current;
-    if (!extra) return false;
-    startExtra(extra, options);
-    return true;
-  }, [startExtra]);
+    if (extra) startExtra(extra, options);
+    else startLane(options);
+  }, [startExtra, startLane]);
 
-  /** A start of the lane's own device began: a later refusal is that device's. */
+  /** A start of the lane's own device began, or its error was dismissed: a later refusal is not an extra's. */
   const forgetRefused = useCallback(() => {
     refusedExtraRef.current = null;
   }, []);
+
+  /**
+   * adb still refused the device whose start failed after ADE had restarted
+   * the adb server (its status error says so): a new restart does not help.
+   */
+  const refusedAfterAdbRestart = (lane: AndroidLaneDeviceStatus | null | undefined): boolean => {
+    const extra = refusedExtraRef.current;
+    const failed = extra ? lane?.extras?.find((entry) => entry.device.avdName === extra)?.error : lane?.error;
+    return failed?.adbRestarted === true;
+  };
 
   /** The extra a card shows as busy: a call on it, or a promote of it in flight. */
   const pendingName = (promoting: string | null, lane: AndroidLaneDeviceStatus | null | undefined): string | null =>
     pendingExtra ?? (promoting && lane?.extras?.some((extra) => extra.device.avdName === promoting) ? promoting : null);
 
-  return { pendingExtra, pendingName, startExtra, stopExtra, removeExtra, startRefusedAgain, forgetRefused };
+  return { pendingExtra, pendingName, startExtra, stopExtra, removeExtra, startRefused, forgetRefused, refusedAfterAdbRestart };
 }

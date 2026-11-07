@@ -3830,7 +3830,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     ANDROID_BOOT_TIMEOUT / ANDROID_EMULATOR_EXITED   read the log the error names
     ANDROID_ADB_UNAUTHORIZED         adb refused the device; ask the user to press "Restart adb
                                      and start" in the Android pane (or run start --restart-adb
-                                     in their own terminal); never restart adb yourself
+                                     in a terminal on that machine); never restart adb yourself
     ANDROID_NOT_RUNNING              ade android start first
     ANDROID_LOW_MEMORY               free memory, or ask the user, then start --force
     ANDROID_ELEMENT_NOT_FOUND        ade android snapshot, then aim again
