@@ -2551,7 +2551,9 @@ The new-project screen has a **Settings** button. It sets the app-store flag
 screen and the top bar shows a "Settings" tab. Only settings that need no
 project are shown. The manifest's standalone resolver hides `account-repo` and
 `machine-repo` entries, and a tab whose sections all need a project binding is
-left out. A page that mixes this computer's settings with ones saved in a
+left out. Integrations shows only the account's pages (Agent 37 and the MCP
+servers); GitHub, Linear and Jira live in a project's machine, so their tiles
+and status reads are left out. A page that mixes this computer's settings with ones saved in a
 project (Chat, Notifications) reads `isStandaloneSettings()` and shows one
 "Open a project to change these." notice (`ProjectSettingsNotice`) in place of
 the project cards (prompt suggestions, Smart decisions, Claude mods, scheduled

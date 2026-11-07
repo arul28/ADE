@@ -559,7 +559,9 @@ a window with no project on this computer (or one whose only project is on
 another machine), and `ade agent37` works from any folder. The brain serves
 them with no project through two methods (`machineAccountActions.ts`), for the
 actions in `ADE_ACTION_MACHINE_SCOPED` (`actionPolicy.ts`), with the caller
-rules of `run_ade_action` (`adeActionCallerRefusal`):
+rules of `run_ade_action` (`adeActionCallerRefusal`). With no project, Settings
+› Integrations shows the Agent 37 page and the MCP servers only
+(`settingsTabContent.tsx`):
 
 | Method and actions | This computer's desktop | A terminal or agent on this computer | A paired machine or the phone |
 | --- | --- | --- | --- |
