@@ -36,12 +36,22 @@ export type AndroidSettingsFile = {
    * Sets `keys` and keeps every other key the file holds. Written to a temp
    * file and renamed over the old one. A file that does not parse is kept as
    * it is, and the write throws: merging over `{}` would lose `sdkPath`.
+   * `keys` may be built from the body the write itself read, so a merge never
+   * works on an older read.
    */
-  writeKeys(keys: Record<string, unknown>): void;
+  writeKeys(keys: Record<string, unknown> | ((body: Record<string, unknown>) => Record<string, unknown>)): void;
 };
 
-/** `broken`: the file is there but ADE could not read it or parse it, so a write must not replace it. */
-type SettingsRead = { body: Record<string, unknown>; broken: boolean; reason?: string };
+/**
+ * `problem`: the file is there but ADE could not read it (`unreadable`) or
+ * parse it (`invalid`), so a write must not replace it.
+ */
+type SettingsRead = { body: Record<string, unknown>; problem: null | "unreadable" | "invalid" };
+
+const SETTINGS_PROBLEM_TEXT: Record<NonNullable<SettingsRead["problem"]>, string> = {
+  unreadable: "could not be read",
+  invalid: "is not valid JSON",
+};
 
 function readSettingsBody(file: string): SettingsRead {
   let text: string;
@@ -50,16 +60,16 @@ function readSettingsBody(file: string): SettingsRead {
   } catch (error) {
     // Missing: there is nothing to keep. Any other read error (a permission
     // error, a lock on Windows) is broken, so a write does not replace the file.
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return { body: {}, broken: false };
-    return { body: {}, broken: true, reason: "could not be read" };
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return { body: {}, problem: null };
+    return { body: {}, problem: "unreadable" };
   }
   try {
     const parsed: unknown = JSON.parse(text);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? { body: parsed as Record<string, unknown>, broken: false }
-      : { body: {}, broken: true, reason: "is not valid JSON" };
+      ? { body: parsed as Record<string, unknown>, problem: null }
+      : { body: {}, problem: "invalid" };
   } catch {
-    return { body: {}, broken: true, reason: "is not valid JSON" };
+    return { body: {}, problem: "invalid" };
   }
 }
 
@@ -76,7 +86,7 @@ export function createAndroidSettingsFile(file: string | null | undefined): Andr
         if (cache && cache.mtimeMs === stat.mtimeMs && cache.size === stat.size) return cache.value;
         const current = readSettingsBody(file);
         // A file that could not be read is not cached, so the next read tries again.
-        if (current.broken && current.reason === "could not be read") return current.body;
+        if (current.problem === "unreadable") return current.body;
         cache = { mtimeMs: stat.mtimeMs, size: stat.size, value: current.body };
         return current.body;
       } catch {
@@ -85,17 +95,17 @@ export function createAndroidSettingsFile(file: string | null | undefined): Andr
     },
     writeKeys(keys) {
       if (!file) {
-        memory = { ...memory, ...keys };
+        memory = { ...memory, ...(typeof keys === "function" ? keys(memory) : keys) };
         return;
       }
       const current = readSettingsBody(file);
-      if (current.broken) {
+      if (current.problem) {
         throw new AndroidSettingsFileBrokenError(
-          `The Android settings file ${file} ${current.reason}, so ADE did not change it. Fix the file or delete it, then try again.`,
+          `The Android settings file ${file} ${SETTINGS_PROBLEM_TEXT[current.problem]}, so ADE did not change it. Fix the file or delete it, then try again.`,
         );
       }
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      const body = { ...current.body, ...keys, updatedAt: new Date().toISOString() };
+      const body = { ...current.body, ...(typeof keys === "function" ? keys(current.body) : keys), updatedAt: new Date().toISOString() };
       writeFileAtomic(file, `${JSON.stringify(body, null, 2)}\n`);
       cache = null;
     },
@@ -121,8 +131,12 @@ export function createAndroidMachinePreferenceStore(settings: AndroidSettingsFil
   return {
     read,
     write(patch) {
-      const next = normalizeAndroidMachinePreferences(patch, read());
-      settings.writeKeys({ preferences: next });
+      // Merged over the body the write reads and checks, not an earlier read.
+      let next = read();
+      settings.writeKeys((body) => {
+        next = normalizeAndroidMachinePreferences(patch, normalizeAndroidMachinePreferences(body.preferences));
+        return { preferences: next };
+      });
       return next;
     },
   };

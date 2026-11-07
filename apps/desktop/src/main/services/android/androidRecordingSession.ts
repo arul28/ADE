@@ -293,7 +293,7 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
       }
       bytesOnDisk = null;
       // A newer recording on the lane makes this one stale: a later stop answers the newer one.
-      if (reason !== "requested" && !recordings.has(laneId) && !starting.has(laneId)) uncollected.set(laneId, recording);
+      if (reason !== "requested" && !recordings.has(laneId)) uncollected.set(laneId, recording);
       // A newer recording may run by now: the panes then read that one.
       deps.onRecordingChanged?.(laneId, recordings.get(laneId)?.recording ?? recording);
       logger?.info("android.recording_stopped", {
@@ -381,7 +381,6 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
 
   const begin = async (laneId: string, args: BeginArgs): Promise<AndroidRecording> => {
     await deps.requireBooted(laneId);
-    uncollected.delete(laneId);
     const startedAt = now();
     const id = newAndroidRecordingId(startedAt);
     const basePath = path.join(androidRecordingsDir(deps.dataDir, laneId), id);
@@ -447,6 +446,8 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
       throw error;
     }
     recordings.set(laneId, active);
+    // Only a start that took replaces the last unread recording: a failed one keeps it.
+    uncollected.delete(laneId);
     bytesOnDisk = null;
     if (active.writeError) {
       // The first packet failed before the slot was set.

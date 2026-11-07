@@ -62,7 +62,12 @@ export function useAndroidRecording({
       }
       setActive((current) => nextActiveRecording(current, event.recording));
     }, runtimePinRef.current);
-    return () => { cancelled = true; unsubscribe(); };
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      // An event from this subscription must not land after the device, lane or machine changed.
+      heldEventRef.current = null;
+    };
   }, [laneId, live, pinKey, runtimePinRef]);
 
   const toggleRecording = useCallback(() => {

@@ -22,7 +22,7 @@ import type {
   AndroidSystemImageInventory,
   AndroidToolsPreloadMethod,
 } from "../shared/types/androidEmulator";
-import { mockParam } from "./browserMockAndroidUtil";
+import { mockDelay, mockParam } from "./browserMockAndroidUtil";
 
 const ROOT = "/Users/mock/Library/Android/sdk";
 const LICENSE_TEXT = `Terms and Conditions
@@ -61,7 +61,7 @@ export function createMockAndroidImages(deps: {
   /** The installed images (the base one, then each mock install), for `listDevices`. */
   installed: () => AndroidSystemImage[];
 } {
-  const delay = <T,>(value: T, ms = 160) => new Promise<T>((resolve) => window.setTimeout(() => resolve(value), ms));
+  const delay = <T,>(value: T, ms = 160) => mockDelay(value, ms);
   // Read once: the app's router drops the query string after the first load.
   const failInstall = mockParam("mockAndroidImages") === "fail";
   const failingTests = mockParam("mockAndroidTests") === "fail";

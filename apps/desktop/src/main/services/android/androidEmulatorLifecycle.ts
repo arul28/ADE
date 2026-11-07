@@ -14,7 +14,7 @@ import {
   type AndroidDiscoveredEmulator,
   type AndroidEmulatorLaunch,
 } from "./androidEmulatorProcess";
-import type { AndroidEmulatorServiceDeps, AndroidLaneState as LaneState } from "./androidEmulatorServiceDeps";
+import { ANDROID_BOOT_TIMEOUT_MS, type AndroidEmulatorServiceDeps, type AndroidLaneState as LaneState } from "./androidEmulatorServiceDeps";
 import type { openStartedEmulators } from "./androidHandedOffEmulators";
 import { reserveAndroidMemoryForStart } from "./androidMemoryGuard";
 import type { AndroidEnv, ReadyAndroidSdk } from "./androidSdk";
@@ -33,13 +33,12 @@ import type { AndroidEnv, ReadyAndroidSdk } from "./androidSdk";
  */
 
 export type AndroidEmulatorLifecycleContext = {
-  deps: Pick<AndroidEmulatorServiceDeps, "laneDevices" | "dataDir" | "captureAnalytics" | "handOffOnDispose">;
+  deps: Pick<AndroidEmulatorServiceDeps, "laneDevices" | "dataDir" | "captureAnalytics" | "handOffOnDispose" | "bootTimeoutMs">;
   env: AndroidEnv;
   platform: NodeJS.Platform;
   logger: Logger | null;
   registry: ReturnType<typeof openStartedEmulators>;
   discoveryDirs: readonly string[];
-  bootTimeoutMs: number;
   /** `serial:pid` of emulators seen booted (the service's set). */
   bootedSeen: Set<string>;
   crashWatch: ReturnType<typeof createAndroidCrashWatch>;
@@ -60,9 +59,10 @@ export type AndroidEmulatorLifecycleContext = {
 
 export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleContext) {
   const {
-    deps, env, platform, logger, registry, discoveryDirs, bootTimeoutMs, bootedSeen, crashWatch,
+    deps, env, platform, logger, registry, discoveryDirs, bootedSeen, crashWatch,
     emit, runningFor, ownsEmulator, requireSdk, laneStatus, emitDeviceState, stopLaneStream, isDisposed, onBooted,
   } = ctx;
+  const bootTimeoutMs = Math.max(deps.bootTimeoutMs ?? ANDROID_BOOT_TIMEOUT_MS, 120_000);
 
   /* ---------- stop ---------- */
 
@@ -83,17 +83,11 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
   const stopLaunch = (launch: AndroidEmulatorLaunch, adbPath: string): Promise<void> =>
     stopAndroidLaunch(launch, { adbPath, registry, discoveryDirs, logger });
 
-  /** Waits for the lane's mid-boot stop; a failure is logged, never thrown. */
-  const settleLaunchStop = async (state: LaneState): Promise<void> => {
-    await state.launchStop?.catch((error: unknown) => {
-      logger?.warn("android.launch_stop_failed", { laneId: state.laneId, error: getErrorMessage(error) });
-    });
-  };
-
   /**
    * Ends the lane's boot in progress: the failing start then reads
    * `stopRequested`. Starts the stop of the booting emulator unless one runs;
-   * `adbPath` is asked for only then, and a null one starts none.
+   * `adbPath` is asked for only then, and a null one starts none. A failed
+   * stop is logged, never thrown.
    */
   const abortBoot = async (state: LaneState, adbPath: () => Promise<string | null>): Promise<void> => {
     state.stopRequested = true;
@@ -101,7 +95,9 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
       const resolved = await adbPath();
       if (resolved && state.launch && !state.launchStop) state.launchStop = stopLaunch(state.launch, resolved);
     }
-    await settleLaunchStop(state);
+    await state.launchStop?.catch((error: unknown) => {
+      logger?.warn("android.launch_stop_failed", { laneId: state.laneId, error: getErrorMessage(error) });
+    });
   };
 
   /** Stops the lane's emulator if ADE started it. The caller holds the lane's queue. */

@@ -56,7 +56,7 @@ import { createMockAndroidTools } from "./browserMockAndroidTools";
 import { createMockAndroidImages } from "./browserMockAndroidImages";
 import { createMockAndroidPreferences } from "./browserMockAndroidPreferences";
 import { androidCatalogColor, androidCatalogEntry, resolveAndroidCatalogProfile } from "../shared/androidDeviceCatalog";
-import { mockParam } from "./browserMockAndroidUtil";
+import { mockDelay, mockParam } from "./browserMockAndroidUtil";
 
 type Scenario = "live" | "picker" | "setup" | "noaccel" | "starting" | "off" | "crashed" | "unsupported";
 
@@ -71,11 +71,7 @@ let mockOrientation: "portrait" | "landscape" = mockParam("mockAndroidLandscape"
 const LCD = { width: 1080, height: 2400 };
 
 function remoteWorkCopyEmpty(): boolean {
-  try {
-    return new URLSearchParams(window.location.search).get("mockAndroidRemote") === "none";
-  } catch {
-    return false;
-  }
+  return mockParam("mockAndroidRemote") === "none";
 }
 
 function scenario(): Scenario {
@@ -297,7 +293,7 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
       if (laneId) emit({ type: "android.device.state", laneId, state: "booted" });
     }, mockParam("mockAndroidCatalog") !== null && which === "starting" ? 25_000 : 1_800);
   };
-  const delay = <T,>(value: T, ms = 120) => new Promise<T>((resolve) => window.setTimeout(() => resolve(value), ms));
+  const delay = <T,>(value: T, ms = 120) => mockDelay(value, ms);
 
   installMockStreamFetch(touches);
 

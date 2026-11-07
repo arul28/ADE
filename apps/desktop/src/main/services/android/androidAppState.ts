@@ -4,11 +4,10 @@ import type {
   AndroidForegroundArgs,
   AndroidIntentExtra,
   AndroidIntentExtraInput,
-  AndroidIntentExtraType,
   AndroidLaunchExtrasArgs,
   AndroidPackageArgs,
 } from "../../../shared/types/androidEmulator";
-import { ANDROID_INTENT_EXTRA_KEY, ANDROID_INTENT_EXTRA_TYPES, androidIntentExtraWords } from "../../../shared/types/androidEmulator";
+import { ANDROID_INTENT_EXTRA_KEY, ANDROID_INTENT_EXTRA_TYPES, androidIntentExtraWords, isAndroidIntentExtraType } from "../../../shared/types/androidEmulator";
 import { sleep } from "../shared/utils";
 import { runDeviceScript, runDeviceShell, type BootedDevice } from "./androidDeviceShell";
 import { readAndroidForeground } from "./androidDeviceSettings";
@@ -42,7 +41,7 @@ export function androidLaunchWords(args: AndroidLaunchExtrasArgs | null | undefi
     if (typeof key !== "string" || !ANDROID_INTENT_EXTRA_KEY.test(key)) {
       throw new Error("Each extra needs a key name (letters, digits, `.`, `_`, `$`, `-`).");
     }
-    if (typeof type !== "string" || !(ANDROID_INTENT_EXTRA_TYPES as readonly string[]).includes(type)) {
+    if (!isAndroidIntentExtraType(type)) {
       throw new Error(`An extra's type must be ${ANDROID_INTENT_EXTRA_TYPES.join(", ")}.`);
     }
     if (typeof value !== "string") throw new Error(`The extra ${key} needs a value.`);
@@ -50,7 +49,7 @@ export function androidLaunchWords(args: AndroidLaunchExtrasArgs | null | undefi
     if (type !== "string" && value.trim() === "") {
       throw new Error(`The extra ${key} is a${type === "int" ? "n" : ""} ${type}, so it needs a value.`);
     }
-    return { key, type: type as AndroidIntentExtraType, value };
+    return { key, type, value };
   });
   const all = [...words, ...androidIntentExtraWords(extras)];
   if (all.length > LAUNCH_WORDS_MAX) throw new Error(`A launch takes at most ${LAUNCH_WORDS_MAX} extra words.`);

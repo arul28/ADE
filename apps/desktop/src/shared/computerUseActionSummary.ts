@@ -447,7 +447,6 @@ function isSubcommandWord(domain: ComputerUseDomain, words: readonly string[], t
 
 /* ── Verbs ───────────────────────────────────────────────────────────────── */
 
-
 const VERBS: Readonly<Record<string, VerbSpec>> = {
   click: { past: "Clicked", progressive: "Clicking", infinitive: "click", target: "element" },
   "double-click": { past: "Double-clicked", progressive: "Double-clicking", infinitive: "double-click", target: "element" },
@@ -682,8 +681,6 @@ export function summarizeComputerUseCommand(input: ComputerUseCommandInput): Com
   summaryCache.set(cacheKey, summary);
   return summary;
 }
-
-/** The object of the sentence, and how the verb reads around it. */
 
 const DIRECTIONS = new Set(["up", "down", "left", "right"]);
 

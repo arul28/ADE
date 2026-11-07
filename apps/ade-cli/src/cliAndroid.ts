@@ -425,9 +425,14 @@ export function readStroke(rest: readonly string[], verb: string): { fromX: numb
   return { fromX: fromX!, fromY: fromY!, toX: toX!, toY: toY! };
 }
 
+/** A table's own entry: a typed word such as `constructor` must not read `Object.prototype`. */
+function ownEntry<T>(table: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
 export function buildAndroidPlan(args: string[], options: { remote?: boolean } = {}): CliPlan {
   const typedSub = firstStandalonePositional(args, ANDROID_VALUE_CARRIER_FLAGS) ?? "status";
-  const sub = Object.hasOwn(ANDROID_VERB_ALIASES, typedSub) ? ANDROID_VERB_ALIASES[typedSub]! : typedSub;
+  const sub = ownEntry(ANDROID_VERB_ALIASES, typedSub) ?? typedSub;
   // `launch … -- <am words>`: everything after `--` is the launch's, as `ade apple launch -- <args>`.
   // Taken out first, so no flag reader sees a word meant for `am start`.
   const fence = sub === "launch" || sub === "relaunch" ? args.indexOf("--") : -1;
@@ -437,7 +442,7 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
   // `key`, `--option` is the alt switch, so `key --option tab` keeps its key.
   const carriers = ANDROID_VERB_VALUE_CARRIER_FLAGS.get(sub) ?? ANDROID_VALUE_CARRIER_FLAGS;
   const positionals = (): string[] => standalonePositionals(args, carriers);
-  const verbFlags = ANDROID_VERB_FLAGS[sub];
+  const verbFlags = ownEntry(ANDROID_VERB_FLAGS, sub);
   if (verbFlags) {
     const unknown = androidFlagNames(args, carriers).find((name) =>
       name !== "--lane" && !verbFlags.includes(name) && !(name === "--no-record" && ANDROID_NO_RECORD_VERBS.has(sub)));

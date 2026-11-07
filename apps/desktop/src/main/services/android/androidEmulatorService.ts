@@ -58,7 +58,7 @@ import { createDemoEngineSet } from "../demoVideo/demoEngines";
 import { NOOP_LOGGER } from "../logging/machineLogger";
 import { isRemoteWorkLaneId } from "../remoteWork/remoteWorkCopyService";
 import { createAndroidLaneScope } from "./androidWorkCopy";
-import { ANDROID_BOOT_TIMEOUT_MS, type AndroidEmulatorServiceDeps, type AndroidLaneState as LaneState } from "./androidEmulatorServiceDeps";
+import type { AndroidEmulatorServiceDeps, AndroidLaneState as LaneState } from "./androidEmulatorServiceDeps";
 
 /** The project-removal stop moved with the state file; the CLI keeps importing it from here. */
 export { stopHandedOffAndroidEmulators } from "./androidHandedOffEmulators";
@@ -98,7 +98,6 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   const platform = deps.platform ?? process.platform;
   const home = deps.home ?? os.homedir();
   const discoveryDirs = deps.discoveryDirs ?? androidDiscoveryDirs(platform, env, home);
-  const bootTimeoutMs = Math.max(deps.bootTimeoutMs ?? ANDROID_BOOT_TIMEOUT_MS, 120_000);
   const now = deps.now ?? (() => new Date());
   /** One warning per kind of failure: the file is read on every call. */
   const registry = openStartedEmulators(deps.dataDir, logger);
@@ -316,7 +315,6 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     logger,
     registry,
     discoveryDirs,
-    bootTimeoutMs,
     bootedSeen,
     crashWatch,
     emit,

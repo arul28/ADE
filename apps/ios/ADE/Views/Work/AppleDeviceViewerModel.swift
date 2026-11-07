@@ -32,7 +32,6 @@ final class AppleDeviceViewerModel: ObservableObject {
   /// from hosts that do not send it.
   @Published private(set) var posture: AppleStreamPosture?
 
-
   /// The socket, decoder, health clock, speed and redials, shared with the
   /// emulator's model. The config record's size is the helper's metrics in
   /// pixels.

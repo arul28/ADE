@@ -120,6 +120,10 @@ export type AndroidPressKeyResult = {
 export const ANDROID_INTENT_EXTRA_TYPES = ["string", "int", "long", "float", "bool"] as const;
 export type AndroidIntentExtraType = (typeof ANDROID_INTENT_EXTRA_TYPES)[number];
 
+export function isAndroidIntentExtraType(value: unknown): value is AndroidIntentExtraType {
+  return typeof value === "string" && (ANDROID_INTENT_EXTRA_TYPES as readonly string[]).includes(value);
+}
+
 /** An intent extra's key name: letters, digits, `.`, `_`, `$`, `-`. */
 export const ANDROID_INTENT_EXTRA_KEY = /^[A-Za-z_][\w.$-]*$/u;
 
