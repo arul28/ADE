@@ -67,7 +67,8 @@ These ask the person in your chat first: `create`, `resize`, `copy`, `move`,
   didn't make. A line in the chat records the answer. At the daily limit,
   reuse a machine instead of making another.
 - At the monthly cap ADE makes, wakes and resizes nothing. Running work carries
-  on. Don't look for a way around the cap; tell the person.
+  on. Don't look for a way around the cap; tell the person. In a full-auto chat or an
+  automation, a month ADE can't read counts as the cap: try again in a minute.
 - Asked from a shell with no chat (no `ADE_CHAT_SESSION_ID`), costly commands
   are refused: there is nobody to ask.
 

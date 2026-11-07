@@ -11,6 +11,7 @@
 import { randomUUID } from "node:crypto";
 import {
   AGENT37_MADE_BY_CHAT_METADATA,
+  agent37UnattendedSpendBlock,
   type Agent37CreateMachineArgs,
   type Agent37CreateProgress,
   type Agent37MachineKind,
@@ -91,10 +92,8 @@ export function createAgent37BrainMaker(deps: {
     const client = await deps.base.client().catch(readFailed("client"));
     const instance = client ? await client.getInstance(input.instanceId).catch(readFailed("instance")) : null;
     if (instance?.metadata?.ade_request_id !== input.requestId) return refuse("request_id_mismatch");
-    // A month this brain can't read counts as over the cap: no tap needs a known spend.
-    const month = await deps.base.spending?.().catch(readFailed("spending"));
-    if (!month || month.monthSpentUsd == null) return refuse("spend_unknown");
-    if (month.capReached) return refuse("cap_reached");
+    const blocked = agent37UnattendedSpendBlock(await deps.base.spending?.().catch(readFailed("spending")));
+    if (blocked) return refuse(blocked);
     selfApproved.add(input.requestId);
     deps.logger?.info?.("agent37.self_approval_used", input);
     return true;

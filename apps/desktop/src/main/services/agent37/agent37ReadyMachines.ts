@@ -32,10 +32,12 @@
 import { randomUUID } from "node:crypto";
 import {
   AGENT37_READY_METADATA,
+  AGENT37_SPEND_UNKNOWN_MESSAGE,
   agent37CapReachedMessage,
   agent37ReadyRetryAt,
   agent37ReadyStepOf,
   agent37Shape,
+  agent37UnattendedSpendBlock,
   type Agent37ReadyFailure,
   type Agent37CreateMachineArgs,
   type Agent37CreateMachineResult,
@@ -83,7 +85,7 @@ export type Agent37ReadyKeeperDeps = {
    * is replaced, so a ready machine runs the same ADE as the desktop that keeps it.
    */
   templateAdeVersion?: () => string | null;
-  /** This month against the cap: at the cap no machine is prepared. */
+  /** This month against the cap: at the cap, or while it can't be read, no machine is prepared. */
   spending?: () => Promise<Agent37Spending | null>;
   onStatus?: (status: Agent37ReadyStatus) => void;
   /** A prepare ended: the machine is ready, or it failed (a cancel is neither). */
@@ -598,9 +600,16 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
         && !blockedByFailure(settings)
         && usedAsleep(machines) < AGENT37_READY_USED_ASLEEP_LIMIT;
     });
-    // At the monthly cap ADE makes nothing new; the next pass after it is raised prepares.
-    const month = missing.length ? await deps.spending?.().catch(() => null) ?? null : null;
-    if (!month?.capReached) {
+    // Nobody approves a prepare, so at the monthly cap, or with a month ADE
+    // can't read, it makes nothing new; a later pass prepares once it can.
+    const month = missing.length
+      ? await deps.spending?.().catch((error: unknown) => {
+        logger.warn?.("agent37.ready_spending_read_failed", { error: getErrorMessage(error) });
+        return null;
+      }) ?? null
+      : null;
+    const blocked = missing.length ? agent37UnattendedSpendBlock(month) : null;
+    if (!blocked) {
       for (const settings of missing) void prepare(settings);
     }
     publish({
@@ -608,7 +617,9 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
         settings,
         agent37ReadyMachinesFor(instances, settings.identity).filter((instance) => instance.status !== "failed"),
       )),
-      error: month?.capReached ? agent37CapReachedMessage(month) : null,
+      error: blocked === "cap_reached" && month ? agent37CapReachedMessage(month)
+        : blocked === "spend_unknown" ? AGENT37_SPEND_UNKNOWN_MESSAGE
+        : null,
     });
   };
 

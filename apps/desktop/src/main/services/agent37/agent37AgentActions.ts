@@ -21,11 +21,13 @@
 import {
   AGENT37_MADE_BY_CHAT_METADATA,
   AGENT37_SHAPES,
+  AGENT37_SPEND_UNKNOWN_MESSAGE,
   agent37CapReachedMessage,
   agent37HourlyUsd,
   agent37Shape,
   agent37ShapeById,
   agent37ShapeWithin,
+  agent37UnattendedSpendBlock,
   agent37LimitsPresetOf,
   AGENT37_DEFAULT_AGENT_LIMITS,
   AGENT37_LIMITS_PRESETS,
@@ -239,6 +241,14 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       if (limits && card.shape && !agent37ShapeWithin(card.shape, limits.maxShape)) {
         const max = agent37ShapeById(limits.maxShape);
         refuse(`agents may pick up to ${max.cpu} vCPU · ${max.memoryGb} GB on their own.`);
+      }
+      // capCheck lets a month it couldn't read through, for a person to decide; nobody decides here.
+      const month = costs ? await deps.machines.spending().catch(() => null) : null;
+      const blocked = costs ? agent37UnattendedSpendBlock(month) : null;
+      if (blocked) {
+        const why = blocked === "cap_reached" && month ? agent37CapReachedMessage(month) : AGENT37_SPEND_UNKNOWN_MESSAGE;
+        approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: ${why}`);
+        throw new Agent37Declined(`${card.title}: declined. ${why}`);
       }
       if (limits && card.newMachine) {
         const listed = await deps.machines.agentMadeToday().catch(() => 0);

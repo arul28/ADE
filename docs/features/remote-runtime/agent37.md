@@ -492,6 +492,11 @@ running work carries on and boxes still sleep when idle. From 80% the group
 and the card warn, and the desktop notifies once per month at 80% and 100%.
 The spend is Agent 37's `GET /usage` for this UTC month, which Agent 37
 settles hourly, so the newest hour shows later.
+When ADE can't read the month, what nobody approves counts it as over the cap
+(`agent37UnattendedSpendBlock` in `shared/agent37.ts`): a full-auto chat or an
+automation makes and changes nothing, the ready-machine keeper prepares nothing
+and shows why until a later pass reads the month, and a brain does not approve
+a new machine's sign-in itself. A person answering the card may still go ahead.
 
 **Saved by sleeping** is, per box, its spend window at the running rate less
 what it actually spent: the compute its asleep hours didn't cost. The group

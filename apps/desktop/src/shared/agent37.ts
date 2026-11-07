@@ -508,6 +508,22 @@ export function agent37CapReachedMessage(spending: Pick<Agent37Spending, "monthl
   return `Your Agent 37 machines reached this month's ${cap} cap. Raise it in Settings › Integrations › Agent 37 to make, wake or resize machines.`;
 }
 
+export const AGENT37_SPEND_UNKNOWN_MESSAGE =
+  "ADE could not read your Agent 37 spend this month, so it did not start or change a machine. Try again in a minute.";
+
+/**
+ * Why spending that nobody approves (a full-auto chat, an automation, the
+ * ready-machine keeper, a sign-in the brain approves itself) may not go ahead:
+ * the month is at the cap, or ADE could not read it. A month it can't read
+ * counts as over the cap. Null when it may go ahead.
+ */
+export function agent37UnattendedSpendBlock(
+  month: Pick<Agent37Spending, "monthSpentUsd" | "capReached"> | null | undefined,
+): "spend_unknown" | "cap_reached" | null {
+  if (!month || month.monthSpentUsd == null) return "spend_unknown";
+  return month.capReached ? "cap_reached" : null;
+}
+
 /**
  * What sleeping saved a box over a window: the window at its running rate,
  * less what it spent. Agent 37 bills an awake hour at the running rate and an
