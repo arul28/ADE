@@ -10061,7 +10061,7 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
   return refuseUnknownSubcommand("prs", "pr", sub);
 }
 
-function buildShellPlan(args: string[], inWorkCopy = false): CliPlan {
+function buildShellPlan(args: string[], inWorkCopy = false, machine: string | null = null): CliPlan {
   const sub = firstPositional(args) ?? "start";
   if (sub === "actions")
     return {
@@ -10139,7 +10139,10 @@ function buildShellPlan(args: string[], inWorkCopy = false): CliPlan {
             return typeof code === "number" ? (code < 0 ? 1 : Math.min(code, 255)) : 1;
           },
         }
-      : {};
+      : machine
+        // The shell is on that machine, so reading it needs --machine too.
+        ? { formatText: (result: unknown) => formatPtyCreate(result, machine) }
+        : {};
     const shellStart = { kind: "execute", label: "shell start", formatter: "pty-create", ...followPlan } as const;
     if (ownLane) {
       return { ...shellStart, steps: [actionStep("result", "pty", "create", { ...input, laneId: ownLane })] };
@@ -23275,7 +23278,7 @@ function buildCliPlan(
   if (primary === "files" || primary === "file") return buildFilesPlan(args, options.machine ?? null);
   if (primary === "search") return buildSearchPlan(args);
   if (primary === "prs" || primary === "pr") return buildPrPlan(args, options.projectRoot ?? null);
-  if (primary === "shell" || primary === "pty") return buildShellPlan(args, options.machineWorkCopy != null);
+  if (primary === "shell" || primary === "pty") return buildShellPlan(args, options.machineWorkCopy != null, options.machine?.trim() || null);
   if (primary === "terminal" || primary === "term")
     return buildTerminalPlan(args);
   if (primary === "history") return buildHistoryPlan(args);
@@ -36045,11 +36048,12 @@ function formatTerminalList(value: unknown): string {
   );
 }
 
-function formatPtyCreate(value: unknown): string {
+function formatPtyCreate(value: unknown, machine: string | null = null): string {
   const result = isRecord(value) ? value : {};
   const sessionId = typeof result.sessionId === "string" ? result.sessionId : null;
   const ptyId = typeof result.ptyId === "string" ? result.ptyId : null;
-  const readCommand = sessionId ? `ade terminal read --terminal ${sessionId} --text` : null;
+  const onMachine = machine ? ` --machine ${shellEscapeToken(machine)}` : "";
+  const readCommand = sessionId ? `ade terminal read --terminal ${sessionId}${onMachine} --text` : null;
   return renderKeyValues("ADE shell session", [
     ["session", sessionId],
     ["pty", ptyId],

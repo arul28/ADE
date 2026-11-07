@@ -160,6 +160,17 @@ class RemotePty implements HostedPty {
   private spawned = false;
   private exited = false;
   private unackedChars = 0;
+  /**
+   * Output and exit the host reported before anyone listened. The caller
+   * attaches its listeners only once `__adePtyHostReady` settles, a microtask
+   * after the host's `spawned` message; IPC messages read in one chunk are all
+   * emitted before that, so a quick command's output and exit came with it and
+   * reached nobody (a blank terminal that stayed "running"). An in-process
+   * node-pty never emits before its caller listens; this keeps that promise.
+   */
+  private earlyData: string[] = [];
+  private earlyExit: { exitCode: number; signal?: number } | null = null;
+  private replayScheduled = false;
 
   readonly __adePtyHostReady: Promise<void>;
   readonly __adePtyHostId: string;
@@ -201,6 +212,16 @@ class RemotePty implements HostedPty {
 
   emitData(data: string): void {
     if (this.exited) return;
+    // Held output is not acknowledged, so the host stops reading this PTY
+    // (PTY_HOST_UNACKED_HIGH_CHARS) if nobody ever listens.
+    if (this.earlyData.length > 0 || this.emitter.listenerCount("data") === 0) {
+      this.earlyData.push(data);
+      return;
+    }
+    this.deliverData(data);
+  }
+
+  private deliverData(data: string): void {
     try {
       this.emitter.emit("data", data);
     } finally {
@@ -221,8 +242,37 @@ class RemotePty implements HostedPty {
     if (this.exited) return;
     this.exited = true;
     this.resolveReady();
-    this.emitter.emit("exit", { exitCode: exitCode ?? 1, signal: signal ?? undefined });
+    const event = { exitCode: exitCode ?? 1, signal: (signal ?? undefined) as number | undefined };
+    // After the output it follows, and only to someone listening.
+    if (this.earlyData.length > 0 || this.emitter.listenerCount("exit") === 0) {
+      this.earlyExit = event;
+      return;
+    }
+    this.deliverExit(event);
+  }
+
+  private deliverExit(event: { exitCode: number; signal?: number }): void {
+    this.emitter.emit("exit", event);
     this.emitter.removeAllListeners();
+  }
+
+  /**
+   * Hands what the host reported early to the listeners attached since. A
+   * microtask later, so a caller that attaches onData and then onExit gets
+   * the output before the exit.
+   */
+  private scheduleReplay(): void {
+    if (this.replayScheduled || (this.earlyData.length === 0 && !this.earlyExit)) return;
+    this.replayScheduled = true;
+    queueMicrotask(() => {
+      this.replayScheduled = false;
+      for (const data of this.earlyData.splice(0)) this.deliverData(data);
+      const exit = this.earlyExit;
+      if (exit && this.emitter.listenerCount("exit") > 0) {
+        this.earlyExit = null;
+        this.deliverExit(exit);
+      }
+    });
   }
 
   markHostExited(exitCode: number | null): void {
@@ -235,11 +285,13 @@ class RemotePty implements HostedPty {
 
   onData(callback: (data: string) => void): { dispose: () => void } {
     this.emitter.on("data", callback);
+    this.scheduleReplay();
     return { dispose: () => this.emitter.removeListener("data", callback) };
   }
 
   onExit(callback: (event: { exitCode: number; signal?: number }) => void): { dispose: () => void } {
     this.emitter.on("exit", callback);
+    this.scheduleReplay();
     return { dispose: () => this.emitter.removeListener("exit", callback) };
   }
 
