@@ -28090,6 +28090,12 @@ async function runServe(
           + `(signed out; the old identity is kept in ${hostGuard.movedTo}).\n`,
       );
     }
+    // An Agent 37 machine made with the person's sign-ins: Codex reads its
+    // key only from its auth file, so it is written before any chat starts.
+    const { applyAgent37CloudSignIns } = await import("../../desktop/src/main/services/agent37/agent37CloudSignInBoot");
+    if (applyAgent37CloudSignIns() === "failed") {
+      process.stderr.write("ADE: couldn't write Codex's sign-in on this machine; Codex asks to sign in here instead.\n");
+    }
   }
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [

@@ -96,8 +96,8 @@ export type Agent37MachineCreatorDeps = {
   selfApproval?: (args: { instanceId: string; requestId: string }) => Promise<boolean>;
   templateName?: () => string;
   /**
-   * Env the new machine starts with: the person's Claude token, so Claude is
-   * signed in on it from the first chat (agent37ClaudeToken.ts). Agent 37
+   * Env the new machine starts with: the person's provider sign-ins, so they
+   * work from the first chat (agent37CloudSignInStore.ts). Agent 37
    * keeps it with the machine and gives it back on every boot.
    */
   machineEnv?: () => Promise<Record<string, string>>;
@@ -322,6 +322,18 @@ export async function createAgent37Machine(
   const logger = deps.logger ?? {};
   const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+  // The person's provider sign-ins, read before anything is recorded: a slow
+  // or cancelled read leaves no half-made create behind. An unreadable vault
+  // gives none; the machine is still made and asks to sign in like before.
+  const minAdeVersion = agent37MinAdeVersion(deps.minAdeVersion?.() ?? null);
+  const machineEnv = {
+    ...await (deps.machineEnv?.() ?? Promise.resolve({})).catch(() => {
+      logger.warn?.("agent37.machine_env_read_failed", { reason: "vault_read_failed" });
+      return {} as Record<string, string>;
+    }),
+    ...(minAdeVersion ? { ADE_MIN_VERSION: minAdeVersion } : {}),
+  };
+  checkCancelled();
   // On disk before the request goes out: whatever happens to the answer, the
   // box carries this request id and the next start can find it.
   // If ADE cannot write down that it is making a box, it does not make one:
@@ -332,12 +344,6 @@ export async function createAgent37Machine(
     logger.warn?.("agent37.machine_create_not_recorded", { error: errorText(error) });
     throw new Error("ADE couldn't save a note of the machine it's about to make, so it didn't make one. Check that ADE can write to its folder, then try again.");
   }
-  const minAdeVersion = agent37MinAdeVersion(deps.minAdeVersion?.() ?? null);
-  const machineEnv = {
-    ...await (deps.machineEnv?.() ?? Promise.resolve({})).catch(() => ({} as Record<string, string>)),
-    ...(minAdeVersion ? { ADE_MIN_VERSION: minAdeVersion } : {}),
-  };
-  checkCancelled();
   progress("creating", `Making ${name} on Agent 37…`);
   let instance: Agent37Instance;
   try {

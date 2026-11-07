@@ -1503,6 +1503,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Agent37",
   },
   {
+    id: "integrations.agent37-sign-ins",
+    label: "Sign-ins for your cloud machines",
+    keywords: ["sign in", "sign-in", "login", "api key", "token", "claude", "codex", "cursor", "droid", "grok", "copilot", "devin", "muse", "openrouter", "new machine", "cloud machine"],
+    tab: "integrations",
+    anchor: "agent37-sign-ins",
+    // The provider sign-ins every new Agent 37 machine starts with, in the account vault.
+    scope: "account",
+    web: "hidden",
+    group: "Agent37",
+  },
+  {
     id: "integrations.agent37-ready",
     label: "Agent 37 ready machine",
     keywords: ["ready machine", "keep a machine ready", "warm", "prepared", "seed", "setup", "docker", "fast start", "cloud chat"],

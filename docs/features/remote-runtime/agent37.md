@@ -73,10 +73,13 @@ person is using.
   and what deleted machines spent this month.
   `remoteTargets/NewAgent37MachineDialog.tsx` is the create form, also opened
   from the new-chat picker's **New Agent 37 machine** row.
-- `agent37ClaudeToken.ts`, `agent37ClaudeTokenStore.ts`,
-  `renderer/components/settings/Agent37ClaudeSignInCard.tsx` — Claude on
-  cloud machines (see below): the `claude setup-token` sign-in, the token in
-  the account vault, and the env every new machine starts with.
+- `agent37CloudSignInStore.ts`, `agent37CloudSignInActions.ts`,
+  `agent37ClaudeSignIn.ts`, `agent37CloudSignInBoot.ts`,
+  `renderer/components/settings/Agent37CloudSignInsCard.tsx` — sign-ins for
+  cloud machines (see below): the keys and the Claude token in the account
+  vault, the brain actions that save them, the `claude setup-token` sign-in,
+  the env every new machine starts with, and the Codex file a box writes at
+  boot.
 - `agent37MachineCopy.ts` — Copy (Agent 37's fork, then the new-machine
   sign-in) and Move (box ↔ VM: a new machine, the home folder streamed over,
   the old box deleted).
@@ -269,24 +272,59 @@ A record that matches no box is kept for a day, in case Agent 37 still had
 the create in flight, then dropped. Boxes made by another request id (another
 computer's create, or not ADE's) are never touched.
 
-## Claude on cloud machines
+## Sign-ins for cloud machines
 
-A new machine has no Claude sign-in, so a ready machine's chat would stop on
-the sign-in card. **Claude on your cloud machines** on the Agent 37 page signs
-in once: ADE runs Claude Code's own `claude setup-token` (a long-lived
-subscription token made for headless machines) in a private terminal, opens
-its link in the browser, takes a pasted code when Claude asks for one, reads
-the token from the output and keeps it in the account vault
-(`agent37-claude-token`). The token is cut from every output the screen
-reads and never logged. Every machine made after that, by the desktop, a
-ready machine or a brain on its own (`adeActions/registry.ts`), gets it as
-the instance env `CLAUDE_CODE_OAUTH_TOKEN`, which Agent 37 stores with the
-machine and gives back on every boot; ADE's Claude status counts that
-variable as signed in (`providerAuthResolvers.ts`). This is how Agent 37's own
-docs sign Claude Code in on a machine. Machines made before keep what they
-had. Remove forgets the token; machines made with it keep it until they are
-deleted. A sign-in that runs emits `agent37:claudeTokenChanged` only when the
-link or the code prompt changes, never per output line.
+A new machine has no provider sign-ins, so a ready machine's chat would stop
+on the sign-in card. **Sign-ins for your cloud machines** on the Agent 37 page
+saves them once, in the account vault. Every machine made after that, by the
+desktop, a ready machine or a brain on its own (`adeActions/registry.ts`),
+gets each one as an instance env variable. Agent 37 stores the env with the
+machine and gives it back to the box's brain on every boot. Machines made
+before keep what they had. Remove forgets a sign-in; machines made with it
+keep it until they are deleted.
+
+| Row | Method | Env on the machine |
+| --- | --- | --- |
+| Claude | `claude setup-token` (a long-lived subscription token made for headless machines) | `CLAUDE_CODE_OAUTH_TOKEN` |
+| Codex | An OpenAI API key. A ChatGPT sign-in can't be shared: each machine that refreshes it breaks the others. | `OPENAI_API_KEY` |
+| Cursor | A Cursor API key | `CURSOR_API_KEY` |
+| Droid | A Factory API key | `FACTORY_API_KEY` |
+| Grok | An xAI API key | `XAI_API_KEY` |
+| Copilot | A fine-grained GitHub token with Copilot Requests | `COPILOT_GITHUB_TOKEN` |
+| Devin | A Windsurf service key | `WINDSURF_API_KEY` |
+| Muse | A Meta AI key | `META_API_KEY` |
+| OpenCode and Pi | An OpenRouter key | `OPENROUTER_API_KEY` |
+
+Qwen Code, Kimi Code and Antigravity have no key a machine can read from its
+env, so the card says to sign in on the machine. The list is
+`AGENT37_CLOUD_SIGN_INS` and `AGENT37_CLOUD_SIGN_IN_GAPS` in
+`shared/agent37.ts`.
+
+The saves and the Claude sign-in are brain actions (`agent37
+cloud_sign_in_*`), run on this computer's brain, which owns the account vault.
+The desktop only forwards the IPC. So the sign-in terminal never starts in
+the desktop process: in a packaged app, node-pty there met its helper inside
+`app.asar` and failed. The write actions are user-only and are a user
+setting, so an agent can read the status (never a value) but cannot save,
+start or remove a sign-in.
+
+The Claude sign-in runs `claude setup-token` in a private terminal, opens its
+link in the browser, takes a pasted code when Claude asks for one, reads the
+token from the output and saves it (`agent37-claude-token`). The token is cut
+from every output the screen reads and never logged. ADE's Claude status
+counts `CLAUDE_CODE_OAUTH_TOKEN` as signed in (`providerAuthResolvers.ts`).
+Remove also stops a sign-in that runs.
+
+Codex's app-server reads only `auth.json`, never `OPENAI_API_KEY`. So at
+`ade serve` start, a brain on an Agent 37 box (`ADE_HOST_INSTANCE_ID` starts
+with `agent37:`) with `OPENAI_API_KEY` writes an API-key `auth.json` (mode
+0600) in the Codex home, unless one already exists
+(`agent37CloudSignInBoot.ts`). A laptop's own `OPENAI_API_KEY` never writes
+one.
+
+After each change the desktop sends `agent37:cloudSignInChanged` to every
+window. The page reads the status once for both cards that need it, and polls
+it only while the Claude sign-in runs.
 
 ## The machine cards
 
