@@ -410,6 +410,13 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
     },
     releaseDevice: async (args) => {
       laneId = args.laneId;
+      // `device` names one of the lane's extras: only that one goes; the lane keeps its device.
+      const extra = findExtra(args.device);
+      if (extra) {
+        extras = extras.filter((entry) => entry !== extra);
+        emit({ type: "android.inventory.changed" });
+        return delay({ released: true, deletedAvd: extra.name, extra: true });
+      }
       const released = laneAvdRecord();
       if (released) otherAvds.unshift({ ...released, heldByLaneId: null, running: null });
       laneAvd = null;
@@ -421,17 +428,18 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
     devicePromote: async (args) => {
       laneId = args.laneId;
       const extra = findExtra(args.device);
-      if (extra && laneAvd) {
+      if (extra) {
         const before = laneStatus();
-        const demoted: MockExtra = { name: laneAvd, look: laneLook, state: laneState === "booted" ? "booted" : "off" };
-        extras = extras.map((entry) => (entry === extra ? demoted : entry));
+        // The lane's old device, when it has one, takes the extra's place.
+        const demoted: MockExtra | null = laneAvd ? { name: laneAvd, look: laneLook, state: laneState === "booted" ? "booted" : "off" } : null;
+        extras = demoted ? extras.map((entry) => (entry === extra ? demoted : entry)) : extras.filter((entry) => entry !== extra);
         laneAvd = extra.name;
         laneLook = extra.look;
         laneState = extra.state === "booted" ? "booted" : "off";
         emit({ type: "android.device.state", laneId: args.laneId, state: laneState });
         emit({ type: "android.inventory.changed" });
         const lane = laneStatus();
-        return delay({ device: lane.device!, previous: before.device, previousKeptAs: "extra" as const, lane }, 600);
+        return delay({ device: lane.device!, previous: before.device, previousKeptAs: demoted ? "extra" as const : null, lane }, 600);
       }
       const lane = laneStatus();
       if (!lane.device || lane.device.avdName !== args.device) {
