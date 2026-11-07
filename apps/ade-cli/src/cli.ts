@@ -4634,6 +4634,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat create --machine agent37:ready --prompt "…"
                                                     Start the chat on this project's ready machine
 
+  list, spending, limits (reading them), sleep and wake are the account's and
+  work from any folder; the rest run in this folder's project.
+
   Asks first: create, resize, copy, move, delete, sleep-after never, raising
   the cap or the limits, ready on. The card shows in your chat and gives up
   after 5 minutes. In a full-auto chat or an automation ADE answers it with
