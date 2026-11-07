@@ -643,6 +643,8 @@ const SIGN_IN_SOURCE_BY_ACTION: Readonly<Record<string, "browser" | "device_code
 
 /** How old the machine's copy of the account vault may be when a clone reads the GitHub token from it. */
 const MACHINE_GITHUB_VAULT_MAX_AGE_MS = 60_000;
+/** The account whose GitHub token a clone with no project open last read; see createMultiProjectRpcRequestHandler. */
+let machineGithubTokenUserId: string | null = null;
 
 const machineProjectLogger: Logger = {
   debug: () => {},
@@ -794,9 +796,11 @@ async function createMachineProjectScaffoldService() {
       getAccountUserId: account.accountUserId,
     },
   );
-  if (account.accountUserId()) {
+  const userId = account.accountUserId();
+  if (userId) {
     await account.vault.sync({ maxAgeMs: MACHINE_GITHUB_VAULT_MAX_AGE_MS }).catch(() => {});
     await githubService.hydratePatFromVault();
+    machineGithubTokenUserId = userId;
   }
   return createProjectScaffoldService({
     logger: machineProjectLogger,
@@ -1399,6 +1403,27 @@ export function createMultiProjectRpcRequestHandler(
     if (!isRecord(value) || value.signedIn !== true) return null;
     return typeof value.userId === "string" ? value.userId.trim() || null : null;
   };
+  // A GitHub token that a clone with no project open copied from the account
+  // (createMachineProjectScaffoldService) goes with that account: on sign-out,
+  // and when another account signs in. A token pasted on this machine stays.
+  const purgeAccountGithubToken = (): void => {
+    try {
+      createHeadlessGitHubService(process.cwd(), machineProjectLogger).purgeAccountPat();
+    } catch (error) {
+      process.stderr.write(`Warning: could not remove the account's GitHub token from this machine: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  };
+  const stopGithubTokenSignOut = accountAuthService.onSignedOut?.(() => {
+    machineGithubTokenUserId = null;
+    purgeAccountGithubToken();
+  });
+  const stopGithubTokenSignIn = accountAuthService.onSignedIn(() => {
+    const next = currentAccountOwnerUserId();
+    if (machineGithubTokenUserId && next !== machineGithubTokenUserId) {
+      machineGithubTokenUserId = null;
+      purgeAccountGithubToken();
+    }
+  });
   const ownsPersonalChatScope = options.personalChatScope == null;
   const personalChatScope = options.personalChatScope ?? createPersonalChatScope();
   const providerStatus = options.providerStatus ?? createProviderStatusService();
@@ -3972,6 +3997,8 @@ export function createMultiProjectRpcRequestHandler(
       void scopeRegistry.disposeAll();
     }
     if (ownsPersonalChatScope) void personalChatScope.dispose();
+    stopGithubTokenSignOut?.();
+    stopGithubTokenSignIn();
   };
 
   handler.setNotifier = (notify: JsonRpcNotifier | null) => {

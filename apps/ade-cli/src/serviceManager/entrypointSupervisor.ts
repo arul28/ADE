@@ -49,6 +49,14 @@ const TEMPLATE_ENTRYPOINT = "ade-entrypoint.sh";
 /** How long a brain gets to exit on SIGTERM before it is killed. */
 const BRAIN_STOP_GRACE_MS = 10_000;
 
+/**
+ * How long a restart waits for the loop to start the next brain. After a
+ * brain that ran less than a minute, the loop waits up to 60 s before the
+ * next start (ade-entrypoint.sh), so a crash-looping box needs that wait plus
+ * the start itself.
+ */
+const ENTRYPOINT_HANDOVER_TIMEOUT_MS = 90_000;
+
 export type EntrypointSupervisorDeps = {
   command: AdeServiceCommand;
   env?: NodeJS.ProcessEnv;
@@ -181,7 +189,7 @@ export async function restartEntrypointSupervisedBrain(deps: EntrypointSuperviso
   }
 
   const gone = new Set([...self, ...running]);
-  const timeoutMs = Math.max(0, deps.handoverTimeoutMs ?? RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS);
+  const timeoutMs = Math.max(0, deps.handoverTimeoutMs ?? Math.max(RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS, ENTRYPOINT_HANDOVER_TIMEOUT_MS));
   const handover = await awaitServiceHandover({
     readSupervisedPid: () => servePidsOnSocket(procRoot, socketPath, gone)[0] ?? null,
     isAlive: isPidAlive,
