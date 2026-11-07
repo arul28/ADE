@@ -68,6 +68,23 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
     }
   }
 
+  /// The colour of the page's tile in the settings list.
+  var tint: ADESettingsTint {
+    switch self {
+    case .general: return .slate
+    case .account: return .accent
+    case .usage: return .green
+    case .chat: return .blue
+    case .providers: return .violet
+    case .integrations: return .orange
+    case .notifications: return .red
+    case .appearance: return .teal
+    case .lanes: return .amber
+    case .machines: return .pink
+    case .advanced: return .slate
+    }
+  }
+
   var group: SettingsRouteGroup {
     switch self {
     case .general: return .overview

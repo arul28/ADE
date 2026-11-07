@@ -156,11 +156,8 @@ struct ProviderAccountsMachinePicker: View {
   }
 
   private func label(showsChevron: Bool) -> some View {
-    HStack(spacing: 10) {
-      Image(systemName: "desktopcomputer")
-        .font(.system(size: 15))
-        .foregroundStyle(ADEColor.textSecondary)
-        .frame(width: 22)
+    HStack(spacing: 12) {
+      ADESettingsIconTile(symbol: "desktopcomputer", tint: .accent, size: 32)
       VStack(alignment: .leading, spacing: 1) {
         Text(selected?.name ?? "This machine")
           .font(.system(size: 15, weight: .medium))
@@ -198,10 +195,7 @@ struct ProviderAccountsScreen: View {
   var body: some View {
     List {
       Section {
-        ADEKitSegmented(
-          selection: $provider,
-          options: ProviderAccountProvider.allCases.map { (value: $0, title: $0.title) }
-        )
+        ProviderAccountsProviderPicker(selection: $provider)
         .listRowBackground(Color.clear)
         .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
       }
@@ -323,11 +317,8 @@ struct ProviderAccountsScreen: View {
 
   private var balanceRow: some View {
     let enabled = store.settings?.smartBalance ?? false
-    return HStack(alignment: .center, spacing: 10) {
-      Image(systemName: "arrow.triangle.branch")
-        .font(.system(size: 15))
-        .foregroundStyle(ADEColor.textSecondary)
-        .frame(width: 22)
+    return HStack(alignment: .center, spacing: 12) {
+      ADESettingsIconTile(symbol: "arrow.triangle.branch", tint: .teal, size: 32)
       VStack(alignment: .leading, spacing: 2) {
         Text("Smart balance")
           .font(.system(size: 15))
@@ -429,11 +420,16 @@ struct ProviderAccountRow: View {
   var busy = false
 
   var body: some View {
+    HStack(alignment: .top, spacing: 12) {
+      ADEBrandTile(brand: .provider(account.provider), size: 32, dimmed: !account.signedIn)
+      rowBody
+    }
+    .accessibilityElement(children: .combine)
+  }
+
+  private var rowBody: some View {
     VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 6) {
-        if let asset = providerAssetName(account.provider) {
-          ADEProviderMark(assetName: asset, size: 14)
-        }
         Text(account.displayName)
           .font(.system(size: 15, weight: .semibold))
           // No email is a state, not a name: it reads quieter than one.
@@ -464,7 +460,6 @@ struct ProviderAccountRow: View {
         .padding(.top, 4)
       }
     }
-    .accessibilityElement(children: .combine)
   }
 
   private var detailLine: String? {
@@ -549,9 +544,7 @@ struct ProviderAccountDetailPage: View {
       VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
         VStack(alignment: .leading, spacing: 14) {
           HStack(spacing: 12) {
-            if let asset = providerAssetName(account.provider) {
-              ADEProviderMark(assetName: asset, size: 28)
-            }
+            ADEBrandTile(brand: .provider(account.provider), size: 44)
             VStack(alignment: .leading, spacing: 3) {
               HStack(spacing: 6) {
                 Text(account.displayName)
@@ -679,5 +672,38 @@ struct ProviderAccountsUnavailableView: View {
     ) {
       EmptyView()
     }
+  }
+}
+
+/// Claude or Codex, each as its maker's tile and name; the picked one is
+/// raised on the track, as a segmented control.
+struct ProviderAccountsProviderPicker: View {
+  @Binding var selection: ProviderAccountProvider
+
+  var body: some View {
+    HStack(spacing: 4) {
+      ForEach(ProviderAccountProvider.allCases) { provider in
+        let selected = provider == selection
+        Button {
+          withAnimation(.snappy(duration: 0.18)) { selection = provider }
+        } label: {
+          HStack(spacing: 8) {
+            ADEBrandTile(brand: .provider(provider.rawValue), size: 24, dimmed: !selected)
+            Text(provider.title)
+              .font(.system(size: 14.5, weight: selected ? .semibold : .medium))
+              .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
+          }
+          .frame(maxWidth: .infinity, minHeight: 42)
+          .background {
+            if selected { ADEKitSegmentThumb(radius: 9) }
+          }
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(provider.title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+      }
+    }
+    .adeKitSegmentTrack()
   }
 }

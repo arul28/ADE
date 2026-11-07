@@ -57,14 +57,19 @@ struct SettingsIntegrationsPage: View {
   // MARK: - GitHub
 
   private var githubSection: some View {
-    ADESettingsSection("GitHub", hint: "Open, review and merge pull requests, follow checks, and work on issues.", symbol: "chevron.left.forwardslash.chevron.right", tint: .slate) {
-      projectStatus(readBy: "github.getStatus") {
-        ADESettingsRows {
-          statusRow(github, connectHint: "Connect on your computer.")
-          if let githubRepo {
-            ADESettingsValueRow(title: "Repository", value: githubRepo, mono: true)
-          }
-        }
+    SettingsIntegrationCard(
+      name: "GitHub",
+      tagline: "Open, review and merge pull requests, follow checks, and work on issues.",
+      status: projectStatus(github, readBy: "github.getStatus")
+    ) {
+      ADEBrandTile(brand: .github, size: 42)
+    } rows: {
+      if let notice = updateNotice(readBy: "github.getStatus") { notice }
+      if hasProject, let githubRepo {
+        ADESettingsValueRow(title: "Repository", value: githubRepo, mono: true)
+      }
+      if hasProject, github == .notConnected {
+        ADESettingsRow("Connect on your computer", hint: "Settings › Integrations › GitHub")
       }
     }
   }
@@ -90,18 +95,25 @@ struct SettingsIntegrationsPage: View {
   }
 
   private var linearSection: some View {
-    ADESettingsSection("Linear", hint: "Start lanes from Linear issues, link them to PRs, and let your team assign work to ADE.", symbol: "circle.lefthalf.striped.horizontal", tint: .violet) {
-      projectStatus(readBy: "cto.getLinearConnectionStatus") {
-        ADESettingsRows {
-          statusRow(linear, connectHint: canManageLinear ? nil : "Connect on your computer.")
-          if canManageLinear && linearChecked {
-            ADESettingsLink(
-              title: linearStatus?.connected == true ? "Manage Linear" : "Connect Linear",
-              symbol: "link"
-            ) {
-              SettingsLinearConnectionPage(syncService: syncService)
-            }
+    SettingsIntegrationCard(
+      name: "Linear",
+      tagline: "Start lanes from Linear issues, link them to PRs, and let your team assign work to ADE.",
+      status: projectStatus(linear, readBy: "cto.getLinearConnectionStatus")
+    ) {
+      ADEBrandTile(brand: .linear, size: 42)
+    } rows: {
+      if let notice = updateNotice(readBy: "cto.getLinearConnectionStatus") { notice }
+      if hasProject, linearChecked {
+        if canManageLinear {
+          ADESettingsLink(
+            title: linearStatus?.connected == true ? "Manage Linear" : "Connect Linear",
+            symbol: "link",
+            tint: .violet
+          ) {
+            SettingsLinearConnectionPage(syncService: syncService)
           }
+        } else if linearStatus?.connected != true {
+          ADESettingsRow("Connect on your computer", hint: "Settings › Integrations › Linear")
         }
       }
     }
@@ -110,11 +122,16 @@ struct SettingsIntegrationsPage: View {
   // MARK: - Jira
 
   private var jiraSection: some View {
-    ADESettingsSection("Jira", hint: "Bring a Jira Cloud site's issues into ADE and tie them to this project.", symbol: "square.stack.3d.up", tint: .blue) {
-      projectStatus(readBy: "jira.getConnectionStatus") {
-        ADESettingsRows {
-          statusRow(jira, connectHint: "Connect on your computer.")
-        }
+    SettingsIntegrationCard(
+      name: "Jira",
+      tagline: "Bring a Jira Cloud site's issues into ADE and tie them to this project.",
+      status: projectStatus(jira, readBy: "jira.getConnectionStatus")
+    ) {
+      ADEBrandTile(brand: .jira, size: 42)
+    } rows: {
+      if let notice = updateNotice(readBy: "jira.getConnectionStatus") { notice }
+      if hasProject, jira == .notConnected {
+        ADESettingsRow("Connect on your computer", hint: "Settings › Integrations › Jira")
       }
     }
   }
@@ -122,15 +139,19 @@ struct SettingsIntegrationsPage: View {
   // MARK: - Agent 37
 
   private var agent37Section: some View {
-    ADESettingsSection("Agent 37", hint: "Make cloud Linux machines for your lanes, signed in to your account with no code to type.", symbol: "cloud", tint: .teal) {
+    SettingsIntegrationCard(
+      name: "Agent 37",
+      tagline: "Make cloud Linux machines for your lanes, signed in to your account with no code to type.",
+      status: syncService.agent37Supported ? agent37 : nil
+    ) {
+      ADEBrandTile(brand: .agent37, size: 42)
+    } rows: {
       if !syncService.agent37Supported {
         ADESettingsNotice(message: SettingsPageCopy.updateADE(on: machine))
+          .padding(ADEKit.inset)
       } else {
-        ADESettingsRows {
-          statusRow(agent37, connectHint: "Connect on your computer.")
-          ADESettingsActionRow(title: "Open Agent 37", symbol: "server.rack") {
-            agent37Presented = true
-          }
+        ADESettingsActionRow(title: "Open Agent 37", symbol: "server.rack") {
+          agent37Presented = true
         }
       }
     }
@@ -139,50 +160,35 @@ struct SettingsIntegrationsPage: View {
   // MARK: - Webhooks
 
   private var webhooksSection: some View {
-    ADESettingsSection("Webhooks", hint: "Requests that reach your automations.", symbol: "point.3.connected.trianglepath.dotted", tint: .pink) {
-      ADESettingsRows {
-        ADESettingsLink(title: "Webhooks", symbol: "link") {
-          SettingsWebhooksPage(syncService: syncService)
-        }
+    SettingsIntegrationCard(
+      name: "Webhooks",
+      tagline: "Requests that reach your automations.",
+      status: nil
+    ) {
+      ADESettingsIconTile(symbol: "point.3.connected.trianglepath.dotted", tint: .pink, size: 42)
+    } rows: {
+      ADESettingsLink(title: "Manage webhooks", symbol: "slider.horizontal.3", tint: .pink) {
+        SettingsWebhooksPage(syncService: syncService)
       }
     }
   }
 
-  // MARK: - Rows
+  // MARK: - Status
 
-  /// A card whose status the machine reads in the open project: a notice
-  /// when the machine is too old for `action`, a quiet row when no project
-  /// is open (the page says why once, above the cards).
-  @ViewBuilder
-  private func projectStatus<Content: View>(readBy action: String, @ViewBuilder content: () -> Content) -> some View {
-    if !syncService.supportsRemoteAction(action) {
+  /// A card whose status the machine reads in the open project: nil while
+  /// the machine is too old to say (the card shows `updateNotice` instead),
+  /// "No project open" when there is none (the page says why once, above).
+  private func projectStatus(_ summary: IntegrationSummary, readBy action: String) -> IntegrationSummary? {
+    guard syncService.supportsRemoteAction(action) else { return nil }
+    return hasProject ? summary : IntegrationSummary(label: "No project open", tone: .neutral)
+  }
+
+  private func updateNotice(readBy action: String) -> AnyView? {
+    guard !syncService.supportsRemoteAction(action) else { return nil }
+    return AnyView(
       ADESettingsNotice(message: SettingsPageCopy.updateADE(on: machine))
-    } else if !hasProject {
-      ADESettingsRows {
-        ADESettingsValueRow(title: "Status", value: "No project open")
-      }
-    } else {
-      content()
-    }
-  }
-
-  /// The card's status line. `connectHint` shows under it while not connected.
-  private func statusRow(_ summary: IntegrationSummary, connectHint: String?) -> some View {
-    ADESettingsRow(title: "Status", hint: summary == .notConnected ? connectHint : nil) {
-      HStack(spacing: 6) {
-        if summary == .checking {
-          ProgressView().controlSize(.small)
-        } else {
-          ADEKitDot(tone: summary.tone)
-        }
-        Text(summary.label)
-          .font(.system(size: 14))
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(2)
-          .multilineTextAlignment(.trailing)
-      }
-    }
-    .accessibilityElement(children: .combine)
+        .padding(ADEKit.inset)
+    )
   }
 
   // MARK: - Loading
@@ -232,6 +238,58 @@ struct SettingsIntegrationsPage: View {
         agent37 = IntegrationSummary(label: "Couldn't reach Agent 37", tone: .warn)
       }
     }
+  }
+}
+
+/// One integration as one card (desktop `IntegrationsHome` rows): its logo
+/// tile, name, status and what it is for, then the card's own rows.
+struct SettingsIntegrationCard<Mark: View, Rows: View>: View {
+  let name: String
+  let tagline: String
+  let status: IntegrationSummary?
+  @ViewBuilder var mark: () -> Mark
+  @ViewBuilder var rows: () -> Rows
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(alignment: .top, spacing: 14) {
+        mark()
+        VStack(alignment: .leading, spacing: 4) {
+          Text(name)
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          if let status {
+            HStack(spacing: 6) {
+              if status == .checking {
+                ProgressView().controlSize(.mini)
+              } else {
+                Circle().fill(status.tone.color).frame(width: 6, height: 6)
+              }
+              Text(status.label)
+                .font(.system(size: 13.5, weight: .medium))
+                .foregroundStyle(status.tone == .neutral ? ADEColor.textSecondary : status.tone.color)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            }
+          }
+          Text(tagline)
+            .font(.system(size: 13))
+            .foregroundStyle(ADEColor.textMuted)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        Spacer(minLength: 0)
+      }
+      .padding(ADEKit.inset)
+      .accessibilityElement(children: .combine)
+      Group(subviews: rows()) { subviews in
+        ForEach(subviews) { subview in
+          Rectangle().fill(ADEKit.rule).frame(height: 0.75).padding(.leading, ADEKit.inset)
+          subview
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .adeKitCard(padding: nil)
   }
 }
 

@@ -99,8 +99,24 @@ struct SettingsChatPage: View {
   @ViewBuilder
   private var projectSections: some View {
     if syncService.activeProjectId == nil {
-      ADESettingsSection("Agent behavior", hint: "Next prompt suggestions, Smart decisions and Claude mods are saved in each project.", symbol: "sparkles", tint: .violet) {
-        ADESettingsNotice(message: SettingsPageCopy.openProject, tone: .neutral)
+      ADESettingsSection("Agent behavior", hint: "Saved in each project.", symbol: "sparkles", tint: .violet) {
+        // What lives here, dimmed, so the page says what opening a project
+        // gives instead of only that it is needed.
+        VStack(alignment: .leading, spacing: 0) {
+          ADESettingsRows {
+            ADESettingsRow("Next prompt", hint: "A guess at your next message", symbol: "text.cursor", tint: .blue)
+            ADESettingsRow("Smart decisions", hint: "Quick calls about your chats", symbol: "brain", tint: .teal)
+            ADESettingsRow("Claude mods", hint: "Plugins that draw in the chat", symbol: "puzzlepiece.extension", tint: .orange)
+            ADESettingsRow("Scheduled work", hint: "Jobs agents schedule", symbol: "clock", tint: .blue)
+          }
+          .opacity(0.5)
+          .allowsHitTesting(false)
+          Label(SettingsPageCopy.openProject, systemImage: "info.circle.fill")
+            .font(.system(size: 13))
+            .foregroundStyle(ADEColor.textSecondary)
+            .padding(.horizontal, 4)
+            .padding(.top, 10)
+        }
       }
     } else if !supportsProjectConfig {
       ADESettingsSection("Agent behavior", symbol: "sparkles", tint: .violet) {

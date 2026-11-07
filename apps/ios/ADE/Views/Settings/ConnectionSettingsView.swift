@@ -194,7 +194,7 @@ struct ConnectionSettingsView: View {
               ADESettingsSidebarGroupLabel(text: title)
             }
             ForEach(routes) { route in
-              ADESettingsSidebarLink(title: route.title, symbol: route.symbol, value: rowValue(route)) {
+              ADESettingsSidebarLink(title: route.title, symbol: route.symbol, tint: route.tint, value: rowValue(route)) {
                 page(route)
               }
             }

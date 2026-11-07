@@ -565,10 +565,7 @@ struct SettingsMachineRow: View {
 
   var body: some View {
     HStack(spacing: 12) {
-      Image(systemName: machine.symbol)
-        .font(.system(size: 16))
-        .foregroundStyle(machine.isConnectedSet ? ADEColor.textPrimary : ADEColor.textMuted)
-        .frame(width: 24)
+      ADESettingsIconTile(symbol: machine.symbol, tint: machine.isLive ? .accent : .slate, size: 36)
       VStack(alignment: .leading, spacing: 2) {
         HStack(spacing: 6) {
           Text(machine.name)
@@ -612,12 +609,12 @@ struct SettingsMachineRow: View {
     } else {
       switch machine.link {
       case .primary(let live, let connecting):
-        if live { ADEKitDot(tone: .ok, size: 7) }
+        if live { ADESettingsStatus(text: "Live", tone: .ok) }
         else if connecting { ProgressView().controlSize(.small) }
         else { retryButton }
       case .connected(let state, let gaveUp):
         switch state {
-        case .live: ADEKitDot(tone: .ok, size: 7)
+        case .live: ADESettingsStatus(text: "Live", tone: .ok)
         case .connecting: ProgressView().controlSize(.small)
         case .offline where gaveUp: retryButton
         case .needsUpdate, .needsAttention: retryButton
@@ -840,10 +837,7 @@ struct SettingsMachinePageContent: View {
 
   private var header: some View {
     HStack(alignment: .center, spacing: 14) {
-      Image(systemName: machine.symbol)
-        .font(.system(size: 26, weight: .light))
-        .foregroundStyle(ADEColor.textPrimary)
-        .frame(width: 40, height: 40)
+      ADESettingsIconTile(symbol: machine.symbol, tint: machine.isLive ? .accent : .slate, size: 48)
       VStack(alignment: .leading, spacing: 4) {
         HStack(spacing: 8) {
           Text(machine.name)
@@ -959,10 +953,7 @@ struct SettingsMachinePageContent: View {
 
   private func accountCountRow(_ provider: AccountMachineInventoryProvider, link: Bool) -> some View {
     HStack(spacing: 12) {
-      if let asset = providerAssetName(provider.provider) {
-        ADEProviderMark(assetName: asset, size: 18)
-          .frame(width: 22)
-      }
+      ADEBrandTile(brand: .provider(ADESharedTheme.providerFamilyKey(for: provider.provider)), size: 30)
       Text(ADESharedTheme.providerDisplayName(for: provider.provider) ?? provider.provider.capitalized)
         .font(.system(size: 15))
         .foregroundStyle(ADEColor.textPrimary)

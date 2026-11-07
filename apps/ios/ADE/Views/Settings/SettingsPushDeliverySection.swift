@@ -75,9 +75,11 @@ struct SettingsPushDeliverySection: View {
     @ViewBuilder
     private var controls: some View {
         if let notice = permissionNotice {
-            ADESettingsNotice(
-                message: notice.message,
+            ADESettingsCallout(
+                symbol: "bell.slash",
                 tone: .warn,
+                title: notice.title,
+                detail: notice.detail,
                 actionTitle: notice.actionTitle,
                 action: notice.action
             )
@@ -118,20 +120,20 @@ struct SettingsPushDeliverySection: View {
     }
 
     /// What stands between this phone and its first push, with the fix.
-    private var permissionNotice: (message: String, actionTitle: String?, action: (() -> Void)?)? {
+    private var permissionNotice: (title: String, detail: String, actionTitle: String?, action: (() -> Void)?)? {
         let permissionStatus = pushService.permissionStatus
         if !snapshot.canEnableNotifications {
-            return ("Sign in or pair a computer to get notifications.", nil, nil)
+            return ("No notifications yet", "Sign in or pair a computer to get them.", nil, nil)
         }
         if permissionStatus == .denied {
-            return ("Notifications are off for ADE in iOS Settings.", "Open iOS Settings", {
+            return ("Notifications are off", "Turn them on for ADE in iOS Settings.", "Turn on", {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(url)
                 }
             })
         }
         if permissionStatus == .notDetermined {
-            return ("Notifications are not on yet.", "Enable notifications", {
+            return ("Notifications are not on yet", "Get approvals, replies and failures as they happen.", "Turn on", {
                 Task { await pushService.enableIfPaired() }
             })
         }

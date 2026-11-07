@@ -352,13 +352,37 @@ struct ADESettingsLink<Destination: View>: View {
 struct ADESettingsSidebarLink<Destination: View>: View {
   let title: String
   var symbol: String?
+  var tint: ADESettingsTint?
   var value: String?
   @ViewBuilder var destination: () -> Destination
 
   var body: some View {
     ADESettingsPageLink(title: title, shape: .sidebar, destination: destination) { selected, pushes in
-      ADESettingsSidebarRow(title: title, symbol: symbol, value: value, selected: selected, showsChevron: pushes)
+      ADESettingsSidebarRow(title: title, symbol: symbol, tint: tint, value: value, selected: selected, showsChevron: pushes)
     }
+  }
+}
+
+/// A white glyph on a solid tile of its colour, as a settings list's rows
+/// carry them: each page is found by colour and shape before its name.
+struct ADESettingsSolidTile: View {
+  let symbol: String
+  let tint: ADESettingsTint
+  var size: CGFloat = 30
+
+  var body: some View {
+    let shape = RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+    Image(systemName: symbol)
+      .symbolVariant(.fill)
+      .font(.system(size: size * 0.5, weight: .semibold))
+      .foregroundStyle(.white)
+      .frame(width: size, height: size)
+      .background(
+        LinearGradient(colors: [tint.color, tint.color.mix(with: .black, by: 0.22)], startPoint: .top, endPoint: .bottom),
+        in: shape
+      )
+      .overlay(shape.strokeBorder(Color.white.opacity(0.14), lineWidth: 0.75))
+      .accessibilityHidden(true)
   }
 }
 
@@ -367,6 +391,8 @@ struct ADESettingsSidebarLink<Destination: View>: View {
 struct ADESettingsSidebarRow: View {
   let title: String
   var symbol: String?
+  /// Draws the symbol on a solid tile of this colour instead of as an outline.
+  var tint: ADESettingsTint?
   var value: String?
   var selected = false
   /// A one-column stack pushes, so the row says so; the two-column window
@@ -375,7 +401,9 @@ struct ADESettingsSidebarRow: View {
 
   var body: some View {
     HStack(spacing: 12) {
-      if let symbol {
+      if let symbol, let tint {
+        ADESettingsSolidTile(symbol: symbol, tint: tint)
+      } else if let symbol {
         Image(systemName: symbol)
           .font(.system(size: 16, weight: .regular))
           .foregroundStyle(selected ? ADEColor.accent : ADEColor.textSecondary)
@@ -574,5 +602,204 @@ extension ADESettingsHeader where Trailing == EmptyView {
   /// A List section header (`adeSettingsList()`).
   init(_ title: String, hint: String? = nil) {
     self.init(title: title, hint: hint, inList: true, trailing: { EmptyView() })
+  }
+}
+
+// MARK: - Brand tiles (desktop `providerBrand.tsx`, `integrationBrand.tsx`)
+
+/// A maker's colours and logo, as the desktop's provider and integration
+/// pages wear them: the banner's gradient behind the logo in the banner's
+/// ink, so Claude reads as Claude before its name is read.
+struct ADEBrand: Equatable {
+  /// The banner gradient, top leading to bottom trailing.
+  let colors: [Color]
+  /// The logo. Nil draws `monogram` instead.
+  let asset: String?
+  /// The logo's ink. Nil keeps the logo's own colours (a full-colour mark).
+  let ink: Color?
+  var monogram: String? = nil
+  /// The logo's share of the tile.
+  var scale: CGFloat = 0.54
+
+  private static func rgb(_ hex: UInt32) -> Color {
+    Color(red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255, blue: Double(hex & 0xFF) / 255)
+  }
+
+  private static func make(_ colors: [UInt32], _ asset: String?, ink: UInt32?, monogram: String? = nil, scale: CGFloat = 0.54) -> ADEBrand {
+    ADEBrand(colors: colors.map(rgb), asset: asset, ink: ink.map(rgb), monogram: monogram, scale: scale)
+  }
+
+  /// A coding agent, by the desktop's provider id ("claude", "codex", …).
+  static func provider(_ id: String) -> ADEBrand {
+    switch id {
+    case "claude": return make([0xC9653F, 0xD97757, 0xE0896A], "ProviderClaude", ink: 0xFFF4EA)
+    // Codex's mark is a gradient cloud: it keeps its colours on a light tile.
+    case "codex": return make([0xFFFFFF, 0xE6E9FF], "ProviderCodex", ink: nil, scale: 0.62)
+    case "cursor": return make([0x26262B, 0x0B0B0D], "ProviderCursor", ink: 0xF4F4F5)
+    case "droid": return make([0x1C1C1C, 0x000000], "ProviderDroid", ink: nil, scale: 0.66)
+    case "copilot": return make([0x7448FF, 0x2A00B8], "ProviderGitHub", ink: 0xFFFFFF)
+    case "muse": return make([0xFFFFFF, 0xE9EEF5], "ProviderMuse", ink: nil, scale: 0.62)
+    case "pi": return make([0x2C2C2C, 0x050505], "ProviderPi", ink: 0xFFFFFF, scale: 0.6)
+    case "opencode": return make([0x2A2626, 0x131010], "ProviderOpenCode", ink: 0xF1ECEC)
+    case "qwen": return make([0x7A4FE8, 0x615CED, 0x3F38D6], "ProviderQwen", ink: 0xFFFFFF)
+    case "kimi": return make([0x1D4F94, 0x111214, 0x050506], "ProviderKimi", ink: 0xFFFFFF)
+    case "grok": return make([0x3A3A3E, 0x0A0A0A, 0x000000], "ProviderXAI", ink: 0xFFFFFF)
+    case "devin": return make([0x2A2A2C, 0x050505], "ProviderDevin", ink: 0xF2F2F2, scale: 0.66)
+    case "antigravity": return make([0x4285F4, 0x9B72CB], nil, ink: 0xFFFFFF, monogram: "A")
+    case "anthropic": return make([0xC9653F, 0xD97757, 0xE0896A], "ProviderAnthropic", ink: 0xFFF4EA)
+    case "openai": return make([0x2A2A2F, 0x0B0B0D], "ProviderOpenAI", ink: 0xFFFFFF)
+    default:
+      return make([0x2A2A2F, 0x111114], nil, ink: 0xF2F2F3, monogram: id.first.map { String($0).uppercased() } ?? "?")
+    }
+  }
+
+  static let github = make([0xEFFCFF, 0xD8F8FF], "ProviderGitHub", ink: 0x24292F)
+  static let linear = make([0x303C9A, 0x252D7C], "LinearLogo", ink: 0xFFFFFF, scale: 0.5)
+  static let jira = make([0xEAFBFF, 0xDFF9FF], "BrandJira", ink: 0x2684FF, scale: 0.5)
+  static let agent37 = make([0x262626, 0x0A0A0A], "BrandAgent37", ink: 0xFFFFFF, scale: 0.62)
+}
+
+/// A maker's tile: its banner gradient with its logo on it (desktop
+/// `.ade-ix-mark`). `dimmed` greys it for a provider that is not set up.
+struct ADEBrandTile: View {
+  let brand: ADEBrand
+  var size: CGFloat = 32
+  var dimmed = false
+
+  var body: some View {
+    let shape = RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+    ZStack {
+      LinearGradient(colors: brand.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+      // A soft top light, as the desktop's banners have.
+      LinearGradient(colors: [.white.opacity(0.16), .clear], startPoint: .top, endPoint: .center)
+      logo
+    }
+    .frame(width: size, height: size)
+    .clipShape(shape)
+    .overlay(shape.strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75))
+    .saturation(dimmed ? 0 : 1)
+    .opacity(dimmed ? 0.55 : 1)
+    .accessibilityHidden(true)
+  }
+
+  @ViewBuilder
+  private var logo: some View {
+    let side = size * brand.scale
+    if let asset = brand.asset {
+      if let ink = brand.ink {
+        Image(asset).renderingMode(.template).resizable().scaledToFit()
+          .foregroundStyle(ink)
+          .frame(width: side, height: side)
+      } else {
+        Image(asset).renderingMode(.original).resizable().scaledToFit()
+          .frame(width: side, height: side)
+      }
+    } else {
+      Text(brand.monogram ?? "?")
+        .font(.system(size: size * 0.46, weight: .bold, design: .rounded))
+        .foregroundStyle(brand.ink ?? .white)
+    }
+  }
+}
+
+/// A few makers' tiles overlapping, as an avatar stack: "these are ready".
+struct ADEBrandTileStack: View {
+  let brands: [ADEBrand]
+  var size: CGFloat = 26
+  var limit = 5
+
+  var body: some View {
+    HStack(spacing: -size * 0.3) {
+      ForEach(Array(brands.prefix(limit).enumerated()), id: \.offset) { _, brand in
+        ADEBrandTile(brand: brand, size: size)
+          .overlay(
+            RoundedRectangle(cornerRadius: size * 0.27 + 1.5, style: .continuous)
+              .strokeBorder(ADEKit.surface, lineWidth: 1.5)
+              .padding(-1.5)
+          )
+      }
+      if brands.count > limit {
+        Text("+\(brands.count - limit)")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(width: size, height: size)
+          .background(ADEKit.track, in: RoundedRectangle(cornerRadius: size * 0.27, style: .continuous))
+          .padding(.leading, size * 0.3 + 4)
+      }
+    }
+    .accessibilityHidden(true)
+  }
+}
+
+/// A status in a row's trailing slot: a dot and a word in sentence case.
+/// Calm for a good state; the tone's colour for one that wants a tap.
+struct ADESettingsStatus: View {
+  let text: String
+  var tone: ADEKitTone = .neutral
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Circle().fill(tone.color).frame(width: 6, height: 6)
+      Text(text)
+        .font(.system(size: 13.5, weight: tone == .warn || tone == .crit ? .medium : .regular))
+        .foregroundStyle(textColor)
+        .lineLimit(1)
+    }
+    .fixedSize()
+  }
+
+  private var textColor: Color {
+    switch tone {
+    case .warn, .crit: return tone.color
+    case .neutral: return ADEColor.textMuted
+    default: return ADEColor.textSecondary
+    }
+  }
+}
+
+/// A page-level call to act: a tone tile, what is wrong in a few words, why
+/// it matters, and the one button that fixes it, side by side.
+struct ADESettingsCallout: View {
+  let symbol: String
+  var tone: ADEKitTone = .warn
+  let title: String
+  var detail: String?
+  var actionTitle: String?
+  var action: (() -> Void)?
+
+  var body: some View {
+    let shape = RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous)
+    HStack(alignment: .center, spacing: 12) {
+      Image(systemName: symbol)
+        .symbolVariant(.fill)
+        .font(.system(size: 16, weight: .semibold))
+        .foregroundStyle(tone.color)
+        .frame(width: 36, height: 36)
+        .background(tone.color.opacity(0.16), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityHidden(true)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(title)
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        if let detail {
+          Text(detail)
+            .font(.system(size: 13))
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      .layoutPriority(1)
+      Spacer(minLength: 8)
+      if let actionTitle, let action {
+        Button(actionTitle, action: action)
+          .buttonStyle(ADEKitButtonStyle(prominent: true, brand: tone == .neutral ? nil : tone.color))
+          .fixedSize()
+      }
+    }
+    .padding(ADEKit.inset)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(tone.color.opacity(0.08), in: shape)
+    .overlay(shape.strokeBorder(tone.color.opacity(0.28), lineWidth: 0.75))
+    .accessibilityElement(children: .combine)
   }
 }

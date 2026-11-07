@@ -42,59 +42,133 @@ struct SettingsProvidersPage: View {
   private var providersSections: some View {
     if let status {
       let rows = SettingsProviderRow.build(status: status, disabled: disabledProviders)
-      let ready = rows.filter { !$0.state.isUnset }
+      let needsYou = rows.filter { $0.state == .signIn || $0.state == .attention }
+      let ready = rows.filter { $0.state == .connected }
       let unset = rows.filter(\.state.isUnset)
-      // With nothing set up yet there is nothing to fold the rest behind.
-      let folds = !ready.isEmpty && !unset.isEmpty
-      // Headed by the machine, not "Providers" again under the page title.
-      ADESettingsSection(machine, hint: "\(SettingsProviderRow.summary(rows)).", symbol: "desktopcomputer", tint: .accent) {
-        ADESettingsRows {
-          ForEach(folds ? ready : rows) { row in
-            providerRow(row)
+      summaryCard(rows: rows, ready: ready, needsYou: needsYou)
+      if !needsYou.isEmpty {
+        ADESettingsSection("Needs you", hint: "Sign in to these on \(machine).") {
+          ADESettingsRows {
+            ForEach(needsYou) { providerRow($0) }
           }
         }
       }
-      if folds {
-        ADESettingsSection("Not set up · \(unset.count)") {
+      if !ready.isEmpty {
+        ADESettingsSection("Ready") {
           ADESettingsRows {
-            ForEach(unset) { row in
-              providerRow(row)
-            }
+            ForEach(ready) { providerRow($0) }
+          }
+        }
+      }
+      if !unset.isEmpty {
+        ADESettingsSection("Not set up") {
+          ADESettingsRows {
+            ForEach(unset) { providerRow($0) }
           }
         }
       }
     } else if let loadError {
-      ADESettingsSection(machine, symbol: "desktopcomputer", tint: .accent) {
-        ADESettingsNotice(
-          message: "Couldn't read the providers on \(machine). \(loadError)",
-          actionTitle: "Retry",
-          action: { Task { await load() } }
-        )
-      }
+      ADESettingsNotice(
+        message: "Couldn't read the providers on \(machine). \(loadError)",
+        actionTitle: "Retry",
+        action: { Task { await load() } }
+      )
     } else {
-      ADESettingsSection(machine, hint: "Checking. This can take up to 30 seconds.", symbol: "desktopcomputer", tint: .accent) {
-        ADESettingsRows {
-          ADESettingsLoadingRow(title: "Checking providers…")
-        }
+      ADESettingsRows {
+        ADESettingsLoadingRow(title: "Checking \(machine)… this can take 30 seconds")
       }
     }
   }
 
-  private func providerRow(_ row: SettingsProviderRow) -> some View {
-    ADESettingsRow(title: row.label, hint: row.fact) {
-      ADEKitTag(text: row.state.label, tone: row.state.tone)
+  /// The page's lead: which machine, how many of its agents are ready, and
+  /// the ready ones' logos.
+  private func summaryCard(rows: [SettingsProviderRow], ready: [SettingsProviderRow], needsYou: [SettingsProviderRow]) -> some View {
+    VStack(alignment: .leading, spacing: 14) {
+      HStack(spacing: 12) {
+        ADESettingsIconTile(symbol: "desktopcomputer", tint: .accent, size: 36)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(machine)
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          Text("\(rows.count) coding agents")
+            .font(.system(size: 13))
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+        Spacer(minLength: 8)
+      }
+      HStack(alignment: .center, spacing: 12) {
+        VStack(alignment: .leading, spacing: 2) {
+          (Text("\(ready.count)").font(.system(size: 28, weight: .semibold, design: .rounded))
+            + Text(" of \(rows.count) ready").font(.system(size: 15)).foregroundColor(ADEColor.textSecondary))
+            .foregroundStyle(ADEColor.textPrimary)
+          if !needsYou.isEmpty {
+            Text("\(needsYou.count) need\(needsYou.count == 1 ? "s" : "") you")
+              .font(.system(size: 13, weight: .medium))
+              .foregroundStyle(ADEKitTone.warn.color)
+          }
+        }
+        Spacer(minLength: 8)
+        ADEBrandTileStack(brands: ready.map { ADEBrand.provider($0.id) }, size: 30, limit: 4)
+      }
     }
+    .padding(ADEKit.inset)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .adeKitCard(padding: nil)
+    .accessibilityElement(children: .combine)
+  }
+
+  private func providerRow(_ row: SettingsProviderRow) -> some View {
+    HStack(spacing: 12) {
+      ADEBrandTile(brand: .provider(row.id), size: 34, dimmed: row.state.isUnset)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(row.label)
+          .font(.system(size: 15, weight: .medium))
+          .foregroundStyle(row.state.isUnset ? ADEColor.textSecondary : ADEColor.textPrimary)
+          .lineLimit(1)
+        if let fact = row.fact {
+          Text(fact)
+            .font(.system(size: 12.5))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(2)
+            .truncationMode(.middle)
+        }
+      }
+      .layoutPriority(1)
+      Spacer(minLength: 8)
+      ADESettingsStatus(text: row.state.label, tone: row.state.tone)
+    }
+    .padding(.horizontal, ADEKit.inset)
+    .padding(.vertical, 10)
+    .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
     .accessibilityElement(children: .combine)
   }
 
   // MARK: - Accounts
 
   private var accountsSection: some View {
-    ADESettingsSection("Accounts", hint: "API keys are added on the computer, in Settings › Providers.", symbol: "person.2", tint: .blue) {
+    ADESettingsSection("Accounts", hint: "API keys are added on the computer, in Settings › Providers.") {
       if syncService.supportsRemoteAction("providerAccounts.list") {
         ADESettingsRows {
-          ADESettingsLink(title: "AI accounts", hint: "Claude and Codex logins on each machine", symbol: "person.2") {
+          ADESettingsPageLink(title: "AI accounts") {
             SettingsProviderAccountsPage(syncService: syncService)
+          } label: { _, pushes in
+            HStack(spacing: 12) {
+              ADEBrandTileStack(brands: [.provider("claude"), .provider("codex")], size: 30)
+              VStack(alignment: .leading, spacing: 2) {
+                Text("AI accounts")
+                  .font(.system(size: 15, weight: .medium))
+                  .foregroundStyle(ADEColor.textPrimary)
+                Text("Claude and Codex logins on each machine")
+                  .font(.system(size: 12.5))
+                  .foregroundStyle(ADEColor.textSecondary)
+                  .lineLimit(2)
+              }
+              Spacer(minLength: 8)
+              if pushes { ADESettingsChevron() }
+            }
+            .padding(.horizontal, ADEKit.inset)
+            .padding(.vertical, 12)
           }
         }
       } else {
@@ -127,18 +201,19 @@ struct SettingsProvidersPage: View {
 
 // MARK: - Presentation
 
-/// A provider tile's state, in the desktop's six words (minus "Checking…",
-/// which the whole list shows while `ai.getStatus` runs).
+/// A provider's state (minus "Checking…", which the whole list shows while
+/// `ai.getStatus` runs).
 enum SettingsProviderState: Int, Comparable {
   case connected, attention, signIn, notInstalled, disabled
 
+  /// The word in a row's trailing status.
   var label: String {
     switch self {
-    case .connected: return "Connected"
+    case .connected: return "Ready"
     case .attention: return "Needs attention"
-    case .signIn: return "Sign in required"
-    case .notInstalled: return "Not downloaded"
-    case .disabled: return "Disabled"
+    case .signIn: return "Sign in"
+    case .notInstalled: return "Not installed"
+    case .disabled: return "Off"
     }
   }
 
@@ -193,15 +268,6 @@ struct SettingsProviderRow: Identifiable, Equatable {
         lhs.row.state == rhs.row.state ? lhs.order < rhs.order : lhs.row.state < rhs.row.state
       }
       .map(\.row)
-  }
-
-  /// "13 coding agents — 3 ready, 2 need you".
-  static func summary(_ rows: [SettingsProviderRow]) -> String {
-    let ready = rows.filter { $0.state == .connected }.count
-    let asking = rows.filter { $0.state == .signIn || $0.state == .attention }.count
-    var tail = "\(ready) ready"
-    if asking > 0 { tail += ", \(asking) need\(asking == 1 ? "s" : "") you" }
-    return "\(rows.count) coding agents — \(tail)"
   }
 
   private static func makeRow(
