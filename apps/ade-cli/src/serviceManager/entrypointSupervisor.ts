@@ -58,8 +58,6 @@ export type EntrypointSupervisorDeps = {
   handoverTimeoutMs?: number;
   handoverPollMs?: number;
   sleep?: (ms: number) => Promise<void>;
-  /** procfs root; tests point it elsewhere. */
-  procRoot?: string;
 };
 
 function readCommandLine(procRoot: string, pid: number): string | null {
@@ -132,7 +130,7 @@ function result(ok: boolean, scriptPath: string | null, message: string, extra: 
  */
 export async function restartEntrypointSupervisedBrain(deps: EntrypointSupervisorDeps): Promise<ServiceManagerResult | null> {
   const env = deps.env ?? process.env;
-  const procRoot = deps.procRoot ?? "/proc";
+  const procRoot = "/proc";
   const homeDir = deps.homeDir ?? os.homedir();
   const adeHome = deps.command.env?.ADE_HOME?.trim() || env.ADE_HOME?.trim() || path.join(homeDir, ".ade");
   const socketPath = path.join(adeHome, "sock", "ade.sock");

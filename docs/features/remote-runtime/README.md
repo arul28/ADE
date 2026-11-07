@@ -59,7 +59,10 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   an address with two or more consecutive silent failures and no answer or
   mDNS sighting since ranks after the routes that are not failing; it is still
   dialled, last; only timeouts, unreachable and unknown errors demote, so a
-  host that answered with a rejection never does), typed handshake rejections
+  host that answered with a rejection never does; a relay attempt the relay
+  closed with `4505`, because the host opened a new relay link mid-connect as
+  a machine back from sleep does, is tried once more at once and does not
+  demote the relay, `isRelayHostReplacedError`), typed handshake rejections
   (`pairedRuntimeErrors.ts` — `PairedRuntimeHelloRejectedError` carries the
   host's structured `hello_error.code` and the rejecting host's identity, so
   classification never pattern-matches the host's prose;

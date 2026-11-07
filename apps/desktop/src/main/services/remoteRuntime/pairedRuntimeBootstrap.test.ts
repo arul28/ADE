@@ -303,6 +303,53 @@ describe("bootstrapPairedRuntime", () => {
     expect(openTransport).not.toHaveBeenCalled();
   });
 
+  // A machine back from sleep opens a new relay link a second after it wakes,
+  // and the relay closes the clients of the old one with 4505. The host is
+  // there by then; giving up on the relay cost a 10 s wait on a dead address.
+  it("tries the relay once more when the host replaced its relay link mid-connect, and never counts that against the route", async () => {
+    initializeMock.mockResolvedValue({
+      runtimeInfo: { version: "1.0.0", multiProject: true },
+      capabilities: { projects: true },
+    });
+    callMock.mockResolvedValue([]);
+    const relayCredentials = {
+      ...credentials,
+      endpoints: ["wss://relay.example/connect/host-1"],
+      relayUrl: "wss://relay.example/connect/host-1",
+    };
+    const pairedStore = {
+      getForReference: vi.fn(() => relayCredentials),
+      save: vi.fn(() => relayCredentials),
+      markEndpointFailed: vi.fn(),
+      markEndpointSucceeded: vi.fn(() => relayCredentials),
+    };
+    const replaced = Object.assign(new Error("Sync connection closed before the expected response arrived."), { closeCode: 4505 });
+    const openTransport = vi.fn()
+      .mockRejectedValueOnce(replaced)
+      .mockRejectedValueOnce(replaced)
+      .mockResolvedValue(transport());
+    const bootstrap = () => bootstrapPairedRuntime({
+      target,
+      registry: { update: vi.fn(() => target) } as any,
+      pairedStore: pairedStore as any,
+      appVersion: "1.0.0",
+      options: {
+        openTransport,
+        getAccountRelayProof: vi.fn(async () => ({ userId: "account-b", token: "short-lived-account-token" })),
+      },
+    });
+
+    // Once per connect: a host that keeps replacing its link is not retried forever.
+    await expect(bootstrap()).rejects.toBeInstanceOf(PairedRuntimeTransportUnavailableError);
+    expect(openTransport).toHaveBeenCalledTimes(2);
+
+    const result = await bootstrap();
+    expect(openTransport).toHaveBeenCalledTimes(3);
+    expect(openTransport.mock.calls.every(([args]) => args.endpoint === "wss://relay.example/connect/host-1")).toBe(true);
+    expect(result.result.route?.kind).toBe("relay");
+    expect(pairedStore.markEndpointFailed).toHaveBeenCalledTimes(1);
+  });
+
   it("tries direct routes before Relay and returns bounded privacy-safe diagnostics", async () => {
     const routedCredentials = {
       ...credentials,
