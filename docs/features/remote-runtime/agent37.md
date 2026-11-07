@@ -34,6 +34,13 @@ person is using.
   (`adeActions/registry.ts`).
 - `agent37TemplateBuilder.ts` — builds ADE's template in the person's
   workspace (see below).
+- `agent37Reconnect.ts` — Reconnect to ADE for a box removed from the
+  account: the cap check before a wake, the wait for its ADE, `ade machines
+  reconnect` over exec, and the same approval seam as a new machine.
+- `agent37HeadlessApproval.ts` — the one-time sign-in link opened in a
+  headless Chromium, for a brain with no window that approves a machine it
+  made itself. It never types or clicks; a page that waits on a person ends
+  it, and the link goes to the person.
 - `agent37MachineCreator.ts` — `createAgent37Machine`, the New Agent 37
   machine flow.
 - `agent37PendingCreates.ts` — the on-disk record of creates not yet
