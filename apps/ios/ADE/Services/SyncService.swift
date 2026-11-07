@@ -10869,7 +10869,13 @@ final class SyncService: ObservableObject {
            cached.key == cacheKey,
            cached.signature == signature {
           await awaitEarlierHydrationDecodes()
-          sessions = cached.sessions
+          // An earlier full list may have landed during the wait; the newest
+          // cached list for this key wins over the one this reply named.
+          if let current = workSessionsConditionalCache, current.key == cacheKey {
+            sessions = current.sessions
+          } else {
+            sessions = cached.sessions
+          }
         } else if conditional["notModified"] as? Bool == true || conditional["delta"] != nil {
           let delta = conditional["delta"] as? [String: Any]
           if let delta,
@@ -11488,7 +11494,13 @@ final class SyncService: ObservableObject {
          cached.key == cacheKey,
          cached.signature == signature {
         await awaitEarlierHydrationDecodes()
-        prs = cached.prs
+        // An earlier full list may have landed during the wait; the newest
+        // cached list for this key wins over the one this reply named.
+        if let current = pullRequestListConditionalCache, current.key == cacheKey {
+          prs = current.prs
+        } else {
+          prs = cached.prs
+        }
       } else if conditional["notModified"] as? Bool == true {
         // "Not modified" for a list this app no longer holds: ask in full.
         pullRequestListConditionalCache = nil

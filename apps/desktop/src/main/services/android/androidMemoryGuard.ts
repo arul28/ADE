@@ -302,6 +302,9 @@ export async function reserveAndroidMemoryForStart(args: {
   };
   if (args.force) return reservation;
   const discovered = args.discovered ?? [];
+  // Taken before the sample: a boot that finishes during it drops its
+  // reservation, while the memory read may predate its full size.
+  const bootsBeforeSample = reservation.earlierBoots();
   const [signals, emulators] = await Promise.all([
     (args.readers?.signals ?? (() => readHostMemorySignals({ platform, pagingSampleMs: ANDROID_PAGING_SAMPLE_MS })))(),
     (args.readers?.emulators ?? ((pids) => readProcessMemory({ pids, namePrefixes: ANDROID_EMULATOR_PROCESS_PREFIXES, platform })))(
@@ -311,7 +314,12 @@ export async function reserveAndroidMemoryForStart(args: {
   args.ledger?.observe?.(emulators);
   if (signals.availableMb === null) logger?.warn("android.start_memory_unread", { laneId });
   // This process's boots and other brains' (the owner file's list leaves this process's out).
-  const earlierBoots = reservation.earlierBoots();
+  // Whichever view of the boots in flight leaves more memory unaccounted is
+  // the one counted, so a boot that finished mid-sample still counts.
+  const bootsAfterSample = reservation.earlierBoots();
+  const pendingOf = (boots: typeof bootsAfterSample) =>
+    boots.reduce((sum, boot) => sum + boot.mb, 0) - androidBootsMeasuredMb(boots, emulators, discovered);
+  const earlierBoots = pendingOf(bootsBeforeSample) > pendingOf(bootsAfterSample) ? bootsBeforeSample : bootsAfterSample;
   const facts: AndroidMemoryFacts = {
     totalMb: signals.totalMb,
     availableMb: signals.availableMb,
