@@ -358,6 +358,20 @@ export async function createMachineRemoteConnection(
   const callRemote = async (method: string, params?: JsonObject): Promise<unknown> =>
     (await callRemoteAnswer(method, params)).result;
 
+  /** The primary lane of the project there (cloned first under --clone, like any call). */
+  const remotePrimaryLaneId = async (): Promise<string> => {
+    const listed = unwrapToolResult(await callRemote("ade/actions/call", { name: "list_lanes", arguments: {} }));
+    const lanes = isRecord(listed) && Array.isArray(listed.lanes) ? listed.lanes : listed;
+    const primary = Array.isArray(lanes) ? lanes.find((lane) => isRecord(lane) && lane.laneType === "primary") : null;
+    const laneId = isRecord(primary) ? asString(primary.id) : null;
+    if (!laneId) {
+      throw new CliUsageError(
+        `The project on ${machine} has no primary lane to start the chat in. Pass --lane <lane there> (see \`ade lanes list --machine ${JSON.stringify(machine)}\`).`,
+      );
+    }
+    return laneId;
+  };
+
   let localProjectId: string | null = null;
   const callLocalProject = async (method: string, params: JsonObject): Promise<unknown> => {
     if (!localProjectId) {
@@ -786,6 +800,11 @@ export async function createMachineRemoteConnection(
         // review reads proof from it: this one.
         return await callLocalProject(method, params);
       }
+      if (method === "ade/actions/call" && params && chatCreateCallWithoutLane(params)) {
+        // Lane ids are per machine, so a chat create that names none starts
+        // in the primary lane there: the project's main checkout.
+        return await callRemote(method, withChatCreateLane(params, await remotePrimaryLaneId()));
+      }
       return await callRemote(method, params);
     },
     close: () => socketClient.close(),
@@ -1087,14 +1106,23 @@ const READY_MACHINE_PROBE_TIMEOUT_MS = 15_000;
 function withDefaultChatLane<T extends CliPlan & { kind: "execute" }>(plan: T, laneId: string): T {
   return {
     ...plan,
-    steps: plan.steps.map((step) => {
-      const params = step.params;
-      if (!isRecord(params) || params.name !== "run_ade_action" || !isRecord(params.arguments)) return step;
-      const call = params.arguments;
-      if (call.domain !== "chat" || call.action !== "createSession" || !isRecord(call.args) || asString(call.args.laneId)) return step;
-      return { ...step, params: { ...params, arguments: { ...call, args: { ...call.args, laneId } } } };
-    }),
+    steps: plan.steps.map((step) => (isRecord(step.params) && chatCreateCallWithoutLane(step.params)
+      ? { ...step, params: withChatCreateLane(step.params, laneId) }
+      : step)),
   };
+}
+
+/** The `chat.createSession` call in an `ade/actions/call` request, when it names no lane. */
+function chatCreateCallWithoutLane(params: JsonObject): (JsonObject & { args: JsonObject }) | null {
+  if (params.name !== "run_ade_action" || !isRecord(params.arguments)) return null;
+  const call = params.arguments;
+  if (call.domain !== "chat" || call.action !== "createSession" || !isRecord(call.args) || asString(call.args.laneId)) return null;
+  return call as JsonObject & { args: JsonObject };
+}
+
+function withChatCreateLane(params: JsonObject, laneId: string): JsonObject {
+  const call = chatCreateCallWithoutLane(params);
+  return call ? { ...params, arguments: { ...call, args: { ...call.args, laneId } } } : params;
 }
 
 /** An `agent37` action on this machine's brain, in the project the CLI runs in; its `result`. */
