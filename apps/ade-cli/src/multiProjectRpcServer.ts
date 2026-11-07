@@ -802,10 +802,13 @@ async function createMachineProjectScaffoldService() {
     machineGithubTokenUserId = userId;
     await account.vault.sync({ maxAgeMs: MACHINE_GITHUB_VAULT_MAX_AGE_MS }).catch(() => {});
     await githubService.hydratePatFromVault();
-    // The account changed while the token was read: it is not this account's to keep.
-    if (account.accountUserId() !== userId) {
+    // The account changed while the token was read: it is not this account's
+    // to keep. A newer request that read the new account's token recorded that
+    // account, and its copy stays.
+    const newerAccountRead = machineGithubTokenUserId != null && machineGithubTokenUserId !== userId;
+    if (account.accountUserId() !== userId && !newerAccountRead) {
       githubService.purgeAccountPat();
-      if (machineGithubTokenUserId === userId) machineGithubTokenUserId = null;
+      machineGithubTokenUserId = null;
     }
   }
   return createProjectScaffoldService({
