@@ -29643,8 +29643,18 @@ async function runServe(
     return buildMachineAccountDomainServices(await machineAccountRuntime);
   };
 
+  // An action another machine runs here is use: on a cloud machine it keeps
+  // the machine awake (agent37KeepAwake). Connection housekeeping is not.
+  const withRemoteUseNoted = <H extends JsonRpcHandler>(peerDeviceId: string | null, handler: H): H => {
+    if (!peerDeviceId || !agent37KeepAwake) return handler;
+    const keepAwake = agent37KeepAwake;
+    return Object.assign(async (request: Parameters<JsonRpcHandler>[0]) => {
+      if (request.method === "ade/actions/call") keepAwake.noteUse();
+      return await handler(request);
+    }, handler);
+  };
   const createHandler = (context?: { peerDeviceId: string | null }) =>
-    createMultiProjectRpcRequestHandler({
+    withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
       serverVersion: VERSION,
       peerDeviceId: context?.peerDeviceId ?? null,
       agentMachineBridge: agentMachineBridgeProxy,
@@ -29716,7 +29726,7 @@ async function runServe(
       },
       disposeScopesOnDispose: false,
       onShutdown: finish,
-    });
+    }));
   clearSyncRuntimeRpcHandlerFactory = setSyncRuntimeRpcHandlerFactory(createHandler);
   // An embedded runtime belongs to the process that spawned it. On POSIX an
   // orphaned child is reparented to init and keeps running, so a host that dies

@@ -319,7 +319,17 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     if (woke) machine = woke;
     if (!machine.online) throw new MachineOfflineError(machineName(machine), lastSeen(machine));
 
-    const entry = woke ? await acquireWokenMachine(machine) : await pool.acquire(machine);
+    let entry: Awaited<ReturnType<typeof pool.acquire>>;
+    try {
+      entry = woke ? await acquireWokenMachine(machine) : await pool.acquire(machine);
+    } catch (error) {
+      // The account still lists a cloud machine online for a few minutes after
+      // it falls asleep, so the first dial times out. Wake it then, once.
+      const late = woke ? null : await wakeIfSleepingCloudMachine(machine);
+      if (!late) throw error;
+      machine = late;
+      entry = await acquireWokenMachine(machine);
+    }
     let project: RemoteProjectRecord | null = null;
     if (PROJECT_SCOPED_METHODS.has(method)) {
       if (input.scope.kind === "personal" || input.scope.kind === "machine") {
