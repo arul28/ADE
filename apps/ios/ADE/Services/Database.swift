@@ -547,14 +547,16 @@ final class DatabaseService {
   ///   rejected by the same check in `applyChangesLocked`.
   ///
   /// Returns the rows deleted and the rowid to continue from (0 once the
-  /// scan reached the end of the log).
+  /// scan reached the end of the log). `failed` is true when the window's
+  /// delete was rolled back; `nextRowId` is then the window's own start, so a
+  /// later run retries it.
   func pruneSupersededSyncChanges(
     localAckedThroughDbVersion: Int,
     afterRowId: Int64,
     scanLimit: Int
-  ) -> (deletedCount: Int, nextRowId: Int64) {
+  ) -> (deletedCount: Int, nextRowId: Int64, failed: Bool) {
     withLock {
-      guard db != nil, hasTable(named: "crsql_changes") else { return (0, 0) }
+      guard db != nil, hasTable(named: "crsql_changes") else { return (0, 0, false) }
       let window = querySingle("""
         select count(*), coalesce(max(rowid), 0)
           from (select rowid from crsql_changes where rowid > ? order by rowid limit ?)
@@ -564,7 +566,7 @@ final class DatabaseService {
       }) { statement in
         (count: Int(sqlite3_column_int64(statement, 0)), endRowId: sqlite3_column_int64(statement, 1))
       }
-      guard let window, window.count > 0 else { return (0, 0) }
+      guard let window, window.count > 0 else { return (0, 0, false) }
 
       let sameSiteNewer = { (requireClockAdvance: Bool) in
         Self.newerSameSiteChangeExists(
@@ -597,10 +599,38 @@ final class DatabaseService {
         try exec("commit")
       } catch {
         try? exec("rollback")
-        return (0, afterRowId)
+        return (0, afterRowId, true)
       }
       let reachedEnd = window.count < max(1, scanLimit)
-      return (deleted, reachedEnd ? 0 : window.endRowId)
+      return (deleted, reachedEnd ? 0 : window.endRowId, false)
+    }
+  }
+
+  /// Deletes every change-log row authored by `siteIdHex`, in one transaction,
+  /// for a host whose own history went backwards (its ade.db was recreated or
+  /// restored from an older copy while its site id, kept outside the
+  /// database, stayed the same). Those rows carry clocks and db_versions from
+  /// the lost history, so the apply guard in `applyChangesLocked` would keep
+  /// ignoring the host's new writes for every cell they cover. Materialized
+  /// rows are kept: the host's full replay that follows overwrites them.
+  /// The phone's own site is never cleared. Returns the rows deleted, or nil
+  /// when the delete failed and was rolled back.
+  func discardSyncChanges(fromSiteId siteIdHex: String) -> Int? {
+    withLock {
+      guard db != nil, hasTable(named: "crsql_changes") else { return 0 }
+      let site = siteIdHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      guard !site.isEmpty, site != cachedSiteIdHex.lowercased() else { return 0 }
+      do {
+        try exec("begin")
+        let deleted = try execute("delete from crsql_changes where site_id = ?") { statement in
+          try bindHexBlob(site, to: statement, index: 1)
+        }
+        try exec("commit")
+        return deleted
+      } catch {
+        try? exec("rollback")
+        return nil
+      }
     }
   }
 

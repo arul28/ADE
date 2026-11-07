@@ -9561,6 +9561,75 @@ final class ADETests: XCTestCase {
     }
   }
 
+  /// A host whose ade.db was recreated or restored from an older copy keeps
+  /// its site id (it lives outside the database) and restarts its numbering
+  /// and clocks lower. Its new writes must land, not be ignored as older than
+  /// the lost history the phone still holds.
+  @MainActor
+  func testHostHistoryGoingBackwardsResyncsFromZeroAndAppliesTheHostsNewWrites() async throws {
+    let profileKey = "ade.sync.hostProfile"
+    let profilesKey = "ade.sync.hostProfiles"
+    UserDefaults.standard.removeObject(forKey: profileKey)
+    UserDefaults.standard.removeObject(forKey: profilesKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: profileKey)
+      UserDefaults.standard.removeObject(forKey: profilesKey)
+    }
+    let baseURL = makeTemporaryDirectory()
+    let database = DatabaseService(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+    let hostSite = "5e1f0c2a9b3d4e6f8a7b6c5d4e3f2a1b"
+    let hostIdentity = "restored-host-\(UUID().uuidString.lowercased())"
+    let hostPk = packedDesktopTextPrimaryKey("stash-host")
+    func hostRow(_ cid: String, _ text: String, colVersion: Int, dbVersion: Int, seq: Int) -> CrsqlChangeRow {
+      CrsqlChangeRow(
+        table: "prompt_stashes", pk: hostPk, cid: cid, val: .string(text),
+        colVersion: colVersion, dbVersion: dbVersion, siteId: hostSite, cl: 1, seq: seq
+      )
+    }
+    // The phone synced the host's history through 5_000.
+    _ = try database.applyChanges([
+      hostRow("text", "before restore", colVersion: 9, dbVersion: 5_000, seq: 0),
+      hostRow("created_at", "2026-11-06T10:00:00.000Z", colVersion: 1, dbVersion: 5_000, seq: 1),
+    ])
+    var profile = HostConnectionProfile(
+      hostIdentity: hostIdentity,
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 5_000,
+      lastHostDeviceId: hostIdentity,
+      lastSuccessfulAddress: nil,
+      savedAddressCandidates: [],
+      discoveredLanAddresses: [],
+      tailscaleAddress: nil
+    )
+    profile.remoteDbVersionBySite = [hostSite: 5_000]
+    UserDefaults.standard.set(try JSONEncoder().encode(profile), forKey: profileKey)
+
+    // The restored host is back at 3_000.
+    let service = SyncService(database: database)
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": hostIdentity, "deviceName": "Restored Mac"],
+      "serverDbSiteId": hostSite,
+      "serverDbVersion": 3_000,
+    ])
+    // Retire the connection so the reset does not dial a real host.
+    service.teardownSocketForTesting()
+    await service.awaitHostHistoryResetForTesting()
+
+    // The next hello claims 0, so the host exports everything it holds.
+    XCTAssertEqual(service.latestRemoteDbVersionForTesting(), 0)
+    XCTAssertEqual(service.loadProfile()?.remoteDbVersionBySite?[hostSite], 0)
+    // The host's current value, numbered and clocked below the lost history.
+    _ = try database.applyChanges([
+      hostRow("text", "after restore", colVersion: 4, dbVersion: 3_001, seq: 0),
+      hostRow("created_at", "2026-11-06T10:00:00.000Z", colVersion: 1, dbVersion: 3_001, seq: 1),
+    ])
+    XCTAssertEqual(try textValue(in: baseURL, table: "prompt_stashes", column: "text", id: "stash-host"), "after restore")
+    database.close()
+  }
+
   func testLocalWritesMintDbVersionsInsideTheHostVersionSpace() throws {
     // Regression for proof artifacts (and any other host row) never reaching the
     // phone: the phone's CRR clock is seeded from the highest db_version it has

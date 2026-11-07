@@ -4820,6 +4820,12 @@ final class SyncService: ObservableObject {
   private var outboundCursorPersistTask: Task<Void, Never>?
   private var pendingOutboundCursorPersistVersion: Int?
   private var syncChangeLogPruneTask: Task<Void, Never>?
+  /// The connection whose `hello_ok` showed the host's history went backwards
+  /// (see `resetBackwardsHostHistoryIfNeeded`), and the task that clears that
+  /// host's stale change-log rows and reconnects for a full replay. While it
+  /// runs, batches on that connection must not move the host cursor off 0.
+  private var hostHistoryResetGeneration: UInt64?
+  private var hostHistoryResetTask: Task<Void, Never>?
   private var remoteCursorProfilePersistTask: Task<Void, Never>?
   private var pendingRemoteProfileDbVersion: Int?
   private var pendingRemoteProfileDbVersionBySite: [String: Int] = [:]
@@ -18008,11 +18014,86 @@ final class SyncService: ObservableObject {
   /// forever. Batches arrive in order on one connection, and a new connection
   /// re-seeds this from the profile, so plain assignment is correct.
   private func advanceRemoteDbCursor(appliedBatchToDbVersion: Int) {
+    if hostHistoryResetGeneration == connectionGeneration { return }
     latestRemoteDbVersion = appliedBatchToDbVersion
     scheduleRemoteDbCursorProfilePersist(
       dbVersion: latestRemoteDbVersion,
       cursorSite: activeRemoteDbSiteId
     )
+  }
+
+  /// The host's history went backwards when the cursor it delivered to this
+  /// phone from its own site is past the db_version it now advertises in
+  /// `hello_ok`. Its site id lives outside ade.db (`.ade/secrets`), so a
+  /// deleted, recreated or restored-from-backup ade.db keeps the site and
+  /// restarts its numbering and clocks lower. The phone's rows from the lost
+  /// history then make `applyChangesLocked` ignore the host's new writes for
+  /// every cell they cover, and the phone stays on old values for good.
+  ///
+  /// The cursor is the right witness: only batches from this host advance it,
+  /// in this host's own numbering, and the host never sends past its own
+  /// version, so another host relaying this site's rows can never move it.
+  /// (The log is not: a relayed row carries the relaying host's db_version.)
+  ///
+  /// Recovery: delete this site's rows from the change log, set the cursor to
+  /// 0, and reconnect. A hello that claims 0 makes the host export from 0
+  /// (`min(claim, watermark)`), so every current value arrives again and
+  /// lands. The next hello no longer trips: the cursor is 0.
+  private func resetBackwardsHostHistoryIfNeeded(hostDbVersion: Int?) {
+    // 0 is also what a host without cr-sqlite advertises; there is nothing to
+    // resync from yet, and a later hello with real history catches it.
+    guard hostHistoryResetTask == nil,
+          let siteId = activeRemoteDbSiteId,
+          let hostDbVersion, hostDbVersion > 0,
+          latestRemoteDbVersion > hostDbVersion
+    else { return }
+    let heldCursor = latestRemoteDbVersion
+    let generation = connectionGeneration
+    hostHistoryResetGeneration = generation
+    syncConnectLog.notice(
+      "host history went backwards cursor=\(heldCursor, privacy: .public) hostDbVersion=\(hostDbVersion, privacy: .public); resyncing from 0"
+    )
+    CrashReporting.breadcrumb("sync.changeset", message: "host history went backwards; resyncing from 0", data: [
+      "cursor": String(heldCursor),
+      "hostDbVersion": String(hostDbVersion),
+    ])
+    let database = self.database
+    hostHistoryResetTask = Task { @MainActor [weak self] in
+      let deleted = await Task.detached(priority: .userInitiated) {
+        database.discardSyncChanges(fromSiteId: siteId)
+      }.value
+      guard let self else { return }
+      self.hostHistoryResetTask = nil
+      guard let deleted else {
+        // Keep this connection's data flowing; its batches move the cursor
+        // to this host's real numbering again, so a failed reset is not
+        // retried on every hello.
+        if self.hostHistoryResetGeneration == generation { self.hostHistoryResetGeneration = nil }
+        syncConnectLog.error("host history reset failed to clear the change log")
+        CrashReporting.breadcrumb("sync.changeset", message: "host history reset failed to clear the change log")
+        return
+      }
+      syncConnectLog.notice("host history reset cleared rows=\(deleted, privacy: .public)")
+      // Persist 0 now, so the hello that follows claims it.
+      if self.activeRemoteDbSiteId == siteId {
+        self.latestRemoteDbVersion = 0
+        self.pendingRemoteProfileDbVersion = 0
+        self.pendingRemoteProfileDbVersionBySite[siteId] = 0
+        self.persistPendingRemoteDbCursorProfile()
+      } else {
+        self.updateProfile { profile in
+          if profile.remoteDbVersionBySite?[siteId] != nil {
+            profile.remoteDbVersionBySite?[siteId] = 0
+          }
+        }
+      }
+      // Nothing runs between here and the teardown, so no batch of this
+      // connection can move the cursor once the flag is cleared.
+      if self.hostHistoryResetGeneration == generation { self.hostHistoryResetGeneration = nil }
+      guard self.isCurrentConnectionGeneration(generation) else { return }
+      self.teardownSocket(reason: "Resyncing with the machine.")
+      await self.reconnectIfPossible()
+    }
   }
 
   /// The debounce coalesces to the LAST value seen, not the highest: every
@@ -21504,6 +21585,10 @@ final class SyncService: ObservableObject {
     )
   }
 
+  func awaitHostHistoryResetForTesting() async {
+    await hostHistoryResetTask?.value
+  }
+
   func awaitReconnectStabilityResetForTesting() async {
     let scheduledTask = reconnectStabilityTask
     await scheduledTask?.value
@@ -21675,6 +21760,9 @@ final class SyncService: ObservableObject {
     } else {
       activeRemoteDbSiteId = nil
     }
+    resetBackwardsHostHistoryIfNeeded(
+      hostDbVersion: (payload["serverDbVersion"] as? NSNumber)?.intValue
+    )
 
     let negotiation = SyncHelloNegotiation(helloPayload: payload)
     let features = negotiation.features
@@ -22725,6 +22813,7 @@ final class SyncService: ObservableObject {
     syncChangeLogPruneTask = Task.detached(priority: .utility) { [weak self] in
       var rowId = startRowId
       var deleted = 0
+      var failed = false
       for window in 0..<maxWindows {
         if Task.isCancelled { break }
         if window > 0 {
@@ -22737,17 +22826,28 @@ final class SyncService: ObservableObject {
         )
         deleted += result.deletedCount
         rowId = result.nextRowId
+        // A failed window would fail the same way again right away: stop, and
+        // let the next hourly run retry it.
+        if result.failed {
+          failed = true
+          break
+        }
         if rowId == 0 { break }
       }
       if deleted > 0 {
         database.checkpointWalTruncate()
       }
-      await self?.finishSyncChangeLogPrune(nextRowId: rowId, deletedCount: deleted, floor: floor)
+      await self?.finishSyncChangeLogPrune(nextRowId: rowId, deletedCount: deleted, floor: floor, failed: failed)
     }
   }
 
-  private func finishSyncChangeLogPrune(nextRowId: Int64, deletedCount: Int, floor: Int) {
+  private func finishSyncChangeLogPrune(nextRowId: Int64, deletedCount: Int, floor: Int, failed: Bool) {
     UserDefaults.standard.set(Int(nextRowId), forKey: syncChangeLogPruneNextRowIdKey)
+    if failed {
+      syncChangeLogPruneTask = nil
+      syncConnectLog.error("sync change log prune failed rows=\(deletedCount, privacy: .public) floor=\(floor, privacy: .public) nextRowId=\(nextRowId, privacy: .public)")
+      return
+    }
     if nextRowId != 0 {
       // A large old log is not through yet: come back in five minutes instead
       // of an hour.
