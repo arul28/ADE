@@ -147,10 +147,16 @@ describe("ready machine keeper", () => {
     expect(fake.slept).toEqual(["good0001"]);
   });
 
-  it("at the monthly cap makes no ready machine and hands none out, until the cap is raised", async () => {
+  it.each([
+    { month: "at the cap", error: /cap/i },
+    { month: "unreadable", error: /could not read your Agent 37 spend/i },
+  ] as const)("with a month $month makes no ready machine, until it can", async ({ month, error }) => {
     const fake = fakeAgent37([readyBox("other001", { [AGENT37_READY_METADATA.project]: OTHER })]);
-    let capReached = true;
-    const spending = async () => ({ monthlyCapUsd: 20, monthSpentUsd: capReached ? 20 : 5, capNear: capReached, capReached });
+    let blocked = true;
+    const spending = async () => {
+      if (blocked && month === "unreadable") throw new Error("Agent 37 usage timed out");
+      return { monthlyCapUsd: 20, monthSpentUsd: blocked ? 20 : 5, capNear: blocked, capReached: blocked };
+    };
     const made: string[] = [];
     let prepareStarted!: () => void;
     const started = new Promise<void>((resolve) => { prepareStarted = resolve; });
@@ -168,18 +174,21 @@ describe("ready machine keeper", () => {
       sleep: async () => undefined,
     });
 
-    const atCap = await keeper.refresh();
+    const held = await keeper.refresh();
     expect(made).toEqual([]);
-    expect(atCap.error).toMatch(/cap/i);
-    await expect(claimAgent37ReadyMachine(fake.client, OTHER, { spending })).rejects.toThrow(/cap/i);
-    expect(fake.boxes.get("other001")?.status).toBe("sleeping");
-    expect(fake.boxes.get("other001")?.metadata[AGENT37_READY_METADATA.state]).toBe("ready");
+    expect(held.error).toMatch(error);
+    if (month === "at the cap") {
+      // A claim at the cap hands nothing out either.
+      await expect(claimAgent37ReadyMachine(fake.client, OTHER, { spending })).rejects.toThrow(/cap/i);
+      expect(fake.boxes.get("other001")?.status).toBe("sleeping");
+      expect(fake.boxes.get("other001")?.metadata[AGENT37_READY_METADATA.state]).toBe("ready");
+    }
 
-    capReached = false;
-    const raised = await keeper.refresh();
+    blocked = false;
+    const cleared = await keeper.refresh();
     await started;
     keeper.stop();
     expect(made).toHaveLength(1);
-    expect(raised.error).toBeNull();
+    expect(cleared.error).toBeNull();
   });
 });

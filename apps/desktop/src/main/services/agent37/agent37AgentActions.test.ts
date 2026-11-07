@@ -7,7 +7,8 @@ import { buildAgent37AgentActions, type Agent37AgentActionDeps, type Agent37Appr
  * Who may let an agent spend Agent 37 money or delete a machine. The person
  * decides; an unattended agent gets ADE's answer from the person's limits:
  * within them yes, past them (a bigger size, the day's count, the cap, never
- * sleeping) no, deleting a machine it didn't make no.
+ * sleeping) no, deleting a machine it didn't make no, and no while ADE can't
+ * read the month's spend.
  */
 describe("Agent 37 agent actions: approvals", () => {
   function setup(options: {
@@ -17,6 +18,7 @@ describe("Agent 37 agent actions: approvals", () => {
     answer?: "yes" | "no";
     unattendedSpend?: boolean;
     madeToday?: number;
+    spendUnreadable?: boolean;
   } = {}) {
     const ran: string[] = [];
     const cards: string[] = [];
@@ -25,7 +27,10 @@ describe("Agent 37 agent actions: approvals", () => {
     const deps = {
       machines: {
         list: async () => ({ state: "ok", machines: [box], spending: null, balanceUsd: 10 }),
-        spending: async () => ({ monthlyCapUsd: budget.monthlyCapUsd, monthSpentUsd: 1, capNear: false, capReached: false }),
+        spending: async () => {
+          if (options.spendUnreadable) throw new Error("Agent 37 usage timed out");
+          return { monthlyCapUsd: budget.monthlyCapUsd, monthSpentUsd: 1, capNear: false, capReached: false };
+        },
         run: async (action: { action: string }) => {
           ran.push(action.action);
           return { ok: true };
@@ -85,6 +90,11 @@ describe("Agent 37 agent actions: approvals", () => {
     ["a full-auto agent makes a machine within the day's limit", agent, { level: "full-auto", madeToday: 2 }, "create", { kind: "box", shape: "2x4" }, "create", 0],
     ["at the day's limit a full-auto agent makes no machine", agent, { automation: true, madeToday: 3 }, "create", { kind: "box", shape: "2x4" }, null, 0],
     ["an attended agent asks even past the limits", agent, { level: "ask", answer: "yes", madeToday: 9 }, "create", { kind: "vm", shape: "4x32" }, "create", 1],
+    // A month ADE can't read counts as over the cap for whoever nobody watches; a person still decides.
+    ["with an unreadable month, a full-auto agent makes no machine", agent, { level: "full-auto", spendUnreadable: true }, "create", { kind: "box", shape: "2x4" }, null, 0],
+    ["with an unreadable month, an automation run resizes nothing", agent, { automation: true, spendUnreadable: true }, "resize", { machine: "lane box", shape: "4x8" }, null, 0],
+    ["with an unreadable month, an attended agent asks, and yes runs it", agent, { level: "ask", answer: "yes", spendUnreadable: true }, "create", { kind: "box", shape: "2x4" }, "create", 1],
+    ["with an unreadable month, the person makes a machine", person, { spendUnreadable: true }, "create", { kind: "box", shape: "2x4" }, "create", 0],
     ["a full-auto agent may not loosen the limits", agent, { level: "full-auto" }, "set_limits", { preset: "hands_off" }, null, 0],
     ["any agent may tighten the limits", agent, { level: "full-auto" }, "set_limits", { preset: "ask" }, "cap:20", 0],
   ] as const)("%s", async (_label, approval, options, verb, args, expectedRun, expectedCards) => {
