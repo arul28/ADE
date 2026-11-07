@@ -859,13 +859,31 @@ jobs:
         id: gate
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          # A PR: checkout@v4 checks out the PR merge commit, so its first
+          # parent is the base and the diff is exactly what the PR changes.
+          # A push to main: a merge or squash commit, whose first parent is
+          # the main it was pushed onto, so the diff is what that PR changed.
+          # When two PRs that touch iOS merge one after the other, the second
+          # push still runs the suite, so a conflict between them is caught.
+          # Anything else (a dispatch, a push of several commits, a missing
+          # parent, a failed diff) runs the suite.
+          case "${{ github.event_name }}" in
+            pull_request) ;;
+            push)
+              if [[ "$(git rev-parse HEAD^1 2>/dev/null || true)" != "${{ github.event.before }}" ]]; then
+                echo "run=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              ;;
+            *)
+              echo "run=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          if ! changed=$(git diff --name-only HEAD^1 HEAD); then
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # checkout@v4 checks out the PR merge commit; diffing it against its
-          # base parent yields exactly the changes this PR introduces.
-          changed=$(git diff --name-only HEAD^1 HEAD || true)
           # The shared chip fixture lives under apps/desktop but the iOS suite
           # asserts against it (WorkComposerTriggerDetectorTests.
           # testMatchesSharedChipFixture). Without it in this gate, a
@@ -876,7 +894,7 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "No apps/ios or shared-fixture changes in this PR; skipping the iOS build."
+            echo "No apps/ios or shared-fixture changes; skipping the iOS build."
           fi
 
 
@@ -889,7 +907,7 @@ jobs:
     steps:
       - name: No iOS changes
         if: needs.ios-gate.outputs.run != 'true'
-        run: echo "No apps/ios or shared-fixture changes in this PR; skipping the iOS build."
+        run: echo "No apps/ios or shared-fixture changes; skipping the iOS build."
 
       - uses: actions/checkout@v4
         if: needs.ios-gate.outputs.run == 'true'
