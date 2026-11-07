@@ -370,6 +370,18 @@ Main process:
   into missing permissions. `service_unavailable` gets no credential cooldown,
   because the credential is not the problem and must stay usable the instant
   GitHub recovers.
+  Publishing a project (`createRepository`, identical in the background
+  service's twin) picks its route with `resolveGithubCreateRepositoryRoute` in
+  `shared/githubApiPath.ts`: `/user/repos` with no owner or the write
+  credential's own login, `/orgs/{owner}/repos` otherwise, and, when `GET /user`
+  fails, the owner's account `type` from `GET /users/{owner}`, so an
+  organization publish never lands on the personal account. The personal route
+  is the one write that does not fall back: it stays on the write credential
+  whose login chose it (`credentialSource`), because another credential can be
+  another account. An owner GitHub won't create under answers
+  `github_owner_not_found`. A same-name leftover from a failed attempt is reused
+  only when it is empty and has the requested visibility, so a private project
+  never goes into a public repository.
   `GitHubStatus.credentialStoreUnreadable` is carried on the credential
   inventory (cached with it for 30 s) rather than re-read at status time, so the
   readability verdict always belongs to the read that produced that inventory's
