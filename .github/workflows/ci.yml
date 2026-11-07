@@ -934,6 +934,17 @@ jobs:
           key: spm-v1-${{ hashFiles('apps/ios/ADE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
           restore-keys: spm-v1-
 
+      # EXPERIMENT (ade/ci-speed): Xcode's content-addressed compilation cache,
+      # kept between runs. Measures whether "Build for testing" (about 21 min
+      # cold) gets faster, and how big the cache is.
+      - name: Restore the compilation cache
+        if: needs.ios-gate.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ios-cas
+          key: ios-cas-v1-${{ github.run_id }}
+          restore-keys: ios-cas-v1-
+
       # The simulator cold boot took 4-8 minutes when it started after the
       # build; booting it now overlaps the build.
       - name: Pick and boot the simulator
@@ -966,7 +977,15 @@ jobs:
             -skipMacroValidation \
             -skipPackagePluginValidation \
             -quiet \
+            COMPILATION_CACHE_ENABLE_CACHING=YES \
+            COMPILATION_CACHE_CAS_PATH="$RUNNER_TEMP/ios-cas" \
             build-for-testing
+
+      - name: Report build cache sizes
+        if: always() && needs.ios-gate.outputs.run == 'true'
+        run: |
+          du -sh "$RUNNER_TEMP/ios-cas" "$RUNNER_TEMP/ios-dd" ~/spm-packages 2>/dev/null || true
+          du -sh "$RUNNER_TEMP"/ios-dd/* 2>/dev/null | sort -h | tail -8 || true
 
       - name: Run ADETests
         if: needs.ios-gate.outputs.run == 'true'
