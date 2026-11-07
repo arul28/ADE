@@ -22,7 +22,6 @@ import { AdeExpectedError } from "../../../shared/expectedError";
 import {
   LOGIN_TIMEOUT_MS,
   cleanLoginOutput,
-  lastOutputLine,
   readLoginOutput,
   writeLoginCode,
 } from "../shared/cliLoginPty";
@@ -131,9 +130,10 @@ export function createAgent37ClaudeSignIn(deps: Agent37ClaudeSignInDeps) {
         take(target, last);
         return;
       }
+      // Not Claude Code's last line: it can hold part of a token cut across lines.
       end(target, "failed", exitCode === 0
         ? "Claude Code finished without a token. Try again."
-        : lastOutputLine(target.status.output) ?? `Claude Code's sign-in stopped (exit code ${exitCode}).`);
+        : `Claude Code's sign-in stopped (exit code ${exitCode}).`);
     });
   }
 
