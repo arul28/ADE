@@ -136,6 +136,8 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
   const starting = new Map<string, Promise<AndroidRecording>>();
   /** A recording that ended on its own (its cap, the device going off) and no stop has collected yet. */
   const uncollected = new Map<string, AndroidRecording>();
+  /** The id of the lane's newest started recording: only it may set `uncollected`, however the renders finish. */
+  const newest = new Map<string, string>();
   /**
    * A stopped recording whose video is still made and filed (up to the demo
    * budget). It no longer holds the lane's slot, as Apple's: the next turn
@@ -292,8 +294,9 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
         }
       }
       bytesOnDisk = null;
-      // A newer recording on the lane makes this one stale: a later stop answers the newer one.
-      if (reason !== "requested" && !recordings.has(laneId)) uncollected.set(laneId, recording);
+      // A newer recording on the lane makes this one stale, also when its render ends first:
+      // a later stop answers the newer one.
+      if (reason !== "requested" && newest.get(laneId) === recording.id) uncollected.set(laneId, recording);
       // A newer recording may run by now: the panes then read that one.
       deps.onRecordingChanged?.(laneId, recordings.get(laneId)?.recording ?? recording);
       logger?.info("android.recording_stopped", {
@@ -446,6 +449,7 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
       throw error;
     }
     recordings.set(laneId, active);
+    newest.set(laneId, id);
     // Only a start that took replaces the last unread recording: a failed one keeps it.
     uncollected.delete(laneId);
     bytesOnDisk = null;

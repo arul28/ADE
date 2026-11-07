@@ -9,8 +9,8 @@ import { describeAndroidError } from "./androidDeviceState";
  * Which way up the Android pane's device is.
  *
  * The brain reads it from the display (the home screen of a phone stays
- * portrait, so the video's shape cannot say). The pane reads it after the
- * device changes and whenever the video changes shape. A rotate from any
+ * portrait, so the video's shape cannot say). The pane reads it when a
+ * device's stream goes live and whenever the video changes shape. A rotate from any
  * caller pushes `android.device.orientation`; the pane's one event listener
  * gives that to `setOrientation`. A failed rotate goes back to the old value.
  */
@@ -28,7 +28,7 @@ export function useAndroidOrientation({
   avdName: string | null;
   pinKey: string | null;
   runtimePinRef: MutableRefObject<OpenProjectBinding | null>;
-  /** `WxH` of the video, or null before the first frame. */
+  /** `WxH` of the live video, or null while no stream is live. */
   streamShape: string | null;
   onRotateError: (caught: unknown) => void;
 }): {
@@ -58,7 +58,7 @@ export function useAndroidOrientation({
       cancelled = true;
     };
     // Keyed on the machine, not the pin object (CLAUDE.md "key effects on pin?.key").
-  }, [api, laneId, pinKey, runtimePinRef, streamShape]);
+  }, [api, laneId, avdName, pinKey, runtimePinRef, streamShape]);
 
   const rotate = useCallback((next: DeviceOrientation) => {
     if (!api) return;

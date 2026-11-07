@@ -525,7 +525,8 @@ export function AndroidDevicePane({
   }, [laneState, start]);
 
   /* Which way up the device is: `useAndroidOrientation`. */
-  const streamShape = stream.width && stream.height ? `${stream.width}x${stream.height}` : null;
+  // Live only: a stopped stream keeps its old size, so a new device with the same size still reads its orientation.
+  const streamShape = stream.state === "live" && stream.width && stream.height ? `${stream.width}x${stream.height}` : null;
   const onActionError = useCallback((caught: unknown) => setError(describeAndroidError(caught)), []);
   const { orientation, setOrientation, rotate } = useAndroidOrientation({
     api,
