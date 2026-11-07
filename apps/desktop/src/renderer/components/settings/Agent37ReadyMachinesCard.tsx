@@ -6,22 +6,23 @@ import {
   AGENT37_SHAPES,
   agent37ChoiceBlocker,
   agent37HourlyUsd,
+  AGENT37_READY_STEPS,
   agent37ReadyIdleMonthlyUsd,
-  agent37RepoLabel,
-  agent37SetupSuggestion,
-  agent37Shape,
+  agent37ShapeById,
   formatAgent37Usd,
   type Agent37CloudSignInStatus,
   type Agent37MachineKind,
   type Agent37ReadyProjectStatus,
   type Agent37ReadyStatus,
+  type Agent37ReadyStep,
   type Agent37ShapeId,
   type Agent37Status,
 } from "../../../shared/agent37";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { useAppStore } from "../../state/appStore";
 import { originUrlForBinding } from "../lanes/laneMachines";
-import { IntegrationCard } from "./integrations/IntegrationChrome";
+import { cursorCloudRepoLabel } from "../../lib/cursorCloudUtils";
+import { IntegrationCard, IntegrationChoice } from "./integrations/IntegrationChrome";
 import { Banner } from "../ui/notice";
 import { ipcErrorMessage } from "../../lib/format";
 
@@ -39,45 +40,34 @@ function stateTag(project: Agent37ReadyProjectStatus | null): { label: string; t
   return { label: "Preparing", tone: "warn" };
 }
 
-/** What ADE does to make a ready machine, in order. */
-const READY_STEPS = ["Make the machine", "Sign in to ADE", "Clone the repo", "Your setup", "Asleep and ready"] as const;
+const READY_STEP_LABELS: Record<Agent37ReadyStep, string> = {
+  make: "Make the machine",
+  sign_in: "Sign in to ADE",
+  clone: "Clone the repo",
+  setup: "Your setup",
+  sleep: "Asleep and ready",
+};
 
-/** Which of `READY_STEPS` a preparing machine is on, from its status line. */
+/** Which of `AGENT37_READY_STEPS` the project's machine is on; all done once ready. */
 function readyStepIndex(project: Agent37ReadyProjectStatus): number {
-  if (project.state === "ready") return READY_STEPS.length;
-  const message = project.message.toLowerCase();
-  if (message.includes("sleep")) return 4;
-  if (message.includes("setup")) return 3;
-  if (message.includes("cloning")) return 2;
-  if (message.includes("sign") || message.includes("approv") || message.includes("login") || message.includes("joining")) return 1;
-  return 0;
+  if (project.state === "ready") return AGENT37_READY_STEPS.length;
+  // Preparing on another computer, which does not say its step.
+  return project.step ? AGENT37_READY_STEPS.indexOf(project.step) : 0;
 }
 
-/** A segmented choice exposed as a radio group (`.kit-seg`). */
-function Choice<T extends string>({ label, value, options, disabled, onChange }: {
-  label: string;
-  value: T;
-  options: readonly { value: T; label: string; title?: string }[];
-  disabled: boolean;
-  onChange: (value: T) => void;
-}) {
-  return (
-    <div className="kit-seg" data-case="sentence" role="radiogroup" aria-label={label} aria-disabled={disabled || undefined}>
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          role="radio"
-          aria-checked={option.value === value}
-          title={option.title}
-          disabled={disabled}
-          onClick={() => { if (option.value !== value) onChange(option.value); }}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
+/** The lockfiles a ready machine's setup can be guessed from, best first. */
+const SETUP_BY_LOCKFILE: ReadonlyArray<readonly [string, string]> = [
+  ["pnpm-lock.yaml", "pnpm install --frozen-lockfile"],
+  ["bun.lockb", "bun install"],
+  ["bun.lock", "bun install"],
+  ["yarn.lock", "yarn install --frozen-lockfile"],
+  ["package-lock.json", "npm ci"],
+];
+
+/** A setup command for a repo whose top folder holds these files, or null. */
+function setupSuggestion(fileNames: readonly string[]): string | null {
+  const names = new Set(fileNames);
+  return SETUP_BY_LOCKFILE.find(([lockfile]) => names.has(lockfile))?.[1] ?? null;
 }
 
 /**
@@ -91,7 +81,7 @@ export function Agent37ReadyMachinesCard({ status, cloudSignIns }: { status: Age
   const binding = useAppStore((state) => state.projectBinding);
   const identity = normalizeGitRemoteIdentity(originUrlForBinding(binding));
   // The repo names the project here: a project called "ADE" reads like the product.
-  const projectName = agent37RepoLabel(identity) ?? binding?.displayName ?? "this project";
+  const projectName = (identity ? cursorCloudRepoLabel(identity) : null) || binding?.displayName || "this project";
   const [expanded, setExpanded] = useState(false);
   const [suggestion, setSuggestion] = useState<string | null>(null);
 
@@ -145,6 +135,8 @@ export function Agent37ReadyMachinesCard({ status, cloudSignIns }: { status: Age
   // where the project tab is bound.
   const showSettings = mine != null || expanded;
   useEffect(() => {
+    // Another project's lockfile must never be offered here, even when this one's can't be read.
+    setSuggestion(null);
     if (!showSettings || !identity) return;
     const files = window.ade.files;
     if (!files?.listWorkspaces || !files.listTree) return;
@@ -153,7 +145,7 @@ export function Agent37ReadyMachinesCard({ status, cloudSignIns }: { status: Age
       const primary = workspaces.find((workspace) => workspace.kind === "primary") ?? null;
       if (!primary || cancelled) return;
       const nodes = await files.listTree({ workspaceId: primary.id, depth: 1 });
-      if (!cancelled) setSuggestion(agent37SetupSuggestion(nodes.filter((node) => node.type === "file").map((node) => node.name)));
+      if (!cancelled) setSuggestion(setupSuggestion(nodes.filter((node) => node.type === "file").map((node) => node.name)));
     }).catch(() => undefined);
     return () => {
       cancelled = true;
@@ -186,7 +178,7 @@ export function Agent37ReadyMachinesCard({ status, cloudSignIns }: { status: Age
   const remove = bridge.readyRemoveProject;
   const retry = bridge.readyRetry;
 
-  const shape = agent37Shape(shapeId) ?? agent37Shape(AGENT37_READY_DEFAULT_SHAPE)!;
+  const shape = agent37ShapeById(shapeId);
   // Editing a project that already keeps a machine makes none now (the next
   // one uses the change), so the workspace's machine limit doesn't block it.
   const blocker = status ? agent37ChoiceBlocker(saved ? { ...status, instanceCount: null } : status, kind, shape) : null;
@@ -243,7 +235,8 @@ export function Agent37ReadyMachinesCard({ status, cloudSignIns }: { status: Age
           ) : null}
 
           <ol className="ade-ig-ready-steps" aria-label="What ADE does">
-            {READY_STEPS.map((label, index) => {
+            {AGENT37_READY_STEPS.map((step, index) => {
+              const label = READY_STEP_LABELS[step];
               const at = mine && mine.state !== "failed" ? readyStepIndex(mine) : -1;
               const state = at < 0 ? undefined : index < at ? "done" : index === at && preparing ? "now" : undefined;
               return <li key={label} data-state={state} aria-current={state === "now" ? "step" : undefined}>{index + 1}. {label}</li>;
@@ -256,7 +249,7 @@ export function Agent37ReadyMachinesCard({ status, cloudSignIns }: { status: Age
           <div className="ade-ig-field">
             <span className="ade-ig-field-label">Machine</span>
             <div className="ade-ig-field-controls">
-              <Choice
+              <IntegrationChoice
                 label="Machine type"
                 value={kind}
                 disabled={busy}
@@ -267,7 +260,7 @@ export function Agent37ReadyMachinesCard({ status, cloudSignIns }: { status: Age
                   title: spec.summary,
                 }))}
               />
-              <Choice
+              <IntegrationChoice
                 label="Size"
                 value={shapeId}
                 disabled={busy}

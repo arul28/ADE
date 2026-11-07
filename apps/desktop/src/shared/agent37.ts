@@ -35,15 +35,24 @@ export type Agent37Shape = {
   diskGb: number;
 };
 
-export const AGENT37_SHAPES: readonly Agent37Shape[] = [
-  { id: "2x4", cpu: 2, memoryGb: 4, diskGb: 12 },
-  { id: "4x8", cpu: 4, memoryGb: 8, diskGb: 20 },
-  { id: "4x16", cpu: 4, memoryGb: 16, diskGb: 40 },
-  { id: "4x32", cpu: 4, memoryGb: 32, diskGb: 80 },
-];
+const AGENT37_SHAPE_BY_ID: Record<Agent37ShapeId, Agent37Shape> = {
+  "2x4": { id: "2x4", cpu: 2, memoryGb: 4, diskGb: 12 },
+  "4x8": { id: "4x8", cpu: 4, memoryGb: 8, diskGb: 20 },
+  "4x16": { id: "4x16", cpu: 4, memoryGb: 16, diskGb: 40 },
+  "4x32": { id: "4x32", cpu: 4, memoryGb: 32, diskGb: 80 },
+};
 
+/** Smallest first. */
+export const AGENT37_SHAPES: readonly Agent37Shape[] = Object.values(AGENT37_SHAPE_BY_ID);
+
+/** The shape for an id from anywhere (a caller, a saved setting), or null when it is none. */
 export function agent37Shape(id: string | null | undefined): Agent37Shape | null {
   return AGENT37_SHAPES.find((shape) => shape.id === id) ?? null;
+}
+
+/** The shape for an id already known to be one. */
+export function agent37ShapeById(id: Agent37ShapeId): Agent37Shape {
+  return AGENT37_SHAPE_BY_ID[id];
 }
 
 export function isAgent37MachineKind(value: unknown): value is Agent37MachineKind {
@@ -126,10 +135,6 @@ export const AGENT37_KINDS: readonly Agent37KindSpec[] = [
   },
 ];
 
-export function agent37KindSpec(kind: Agent37MachineKind): Agent37KindSpec {
-  return AGENT37_KINDS.find((spec) => spec.kind === kind) ?? AGENT37_KINDS[0]!;
-}
-
 /** The shape with this CPU count and memory (what a box sees from inside), or null. */
 export function agent37ShapeForResources(cpu: number, memoryBytes: number): Agent37Shape | null {
   const memoryGb = Math.round(memoryBytes / 1024 ** 3);
@@ -137,7 +142,7 @@ export function agent37ShapeForResources(cpu: number, memoryBytes: number): Agen
 }
 
 /** The smallest VM that runs the Android emulator well. */
-const AGENT37_ANDROID_VM_SHAPE = agent37Shape("4x8")!;
+const AGENT37_ANDROID_VM_SHAPE = agent37ShapeById("4x8");
 
 /**
  * Why an Agent 37 box can't run the Android emulator, in plain words for the
@@ -633,8 +638,6 @@ export type Agent37TemplateStatus = {
   adeVersion: string | null;
   /** When the running build started, epoch ms. */
   startedAt: number | null;
-  /** A rough estimate while building. */
-  minutesLeft: number | null;
   /**
    * Where the running build is, read from Agent 37's build log: step `step` of
    * `steps`, with a plain label. Null while nothing is building or before the
@@ -694,7 +697,7 @@ export function isAgent37InstanceId(value: unknown): value is string {
 }
 
 /** `ade chat create --machine agent37:ready`: start the chat on this project's ready machine. */
-export const AGENT37_READY_MACHINE_SELECTOR = "agent37:ready";
+const AGENT37_READY_MACHINE_SELECTOR = "agent37:ready";
 
 export function isAgent37ReadyMachineSelector(value: string | null | undefined): boolean {
   return value?.trim().toLowerCase() === AGENT37_READY_MACHINE_SELECTOR;
@@ -763,7 +766,7 @@ export type Agent37ReadyFailure = {
 };
 
 /** The waits before each automatic retry of a failed prepare; after the last, Retry is the person's. */
-export const AGENT37_READY_AUTO_RETRY_DELAYS_MS = [60_000, 5 * 60_000] as const;
+const AGENT37_READY_AUTO_RETRY_DELAYS_MS = [60_000, 5 * 60_000] as const;
 
 /** When a prepare that failed for the `attempts`-th time in a row is tried again, or null for "wait for Retry". */
 export function agent37ReadyRetryAt(attempts: number, at: number, retriable: boolean): number | null {
@@ -782,11 +785,36 @@ export function agent37ReadyRetryAt(attempts: number, at: number, retriable: boo
  */
 export type Agent37ReadyProjectState = "preparing" | "ready" | "failed" | "waiting";
 
+/** What ADE does to make a ready machine, in order. */
+export const AGENT37_READY_STEPS = ["make", "sign_in", "clone", "setup", "sleep"] as const;
+export type Agent37ReadyStep = (typeof AGENT37_READY_STEPS)[number];
+
+/** The ready-machine step a create's stage belongs to. */
+export function agent37ReadyStepOf(stage: Agent37CreateStage): Agent37ReadyStep | null {
+  switch (stage) {
+    case "creating":
+    case "waiting_for_brain":
+      return "make";
+    case "signing_in":
+    case "confirm_in_window":
+    case "approve_elsewhere":
+    case "joining":
+      return "sign_in";
+    default:
+      return null;
+  }
+}
+
 export type Agent37ReadyProjectStatus = {
   settings: Agent37ReadyProjectSettings;
   state: Agent37ReadyProjectState;
   /** One plain line. */
   message: string;
+  /**
+   * The step a machine this computer prepares is on; null while preparing
+   * elsewhere (another computer says nothing of its step) or not preparing.
+   */
+  step: Agent37ReadyStep | null;
   instanceId: string | null;
   machineName: string | null;
   /** When the prepare began, epoch ms, while preparing. */
@@ -839,16 +867,10 @@ export function agent37ReadyIdleMonthlyUsd(shape: Agent37Shape): number {
   return shape.diskGb * DISK_GB_MONTH_USD;
 }
 
-/** "Asleep it costs about $1.80 a month (its disk). A chat on it costs 3.3¢ an hour while it's awake." */
-export function describeAgent37ReadyCost(kind: Agent37MachineKind, shape: Agent37Shape): string {
-  return `Asleep it costs about ${formatAgent37Usd(agent37ReadyIdleMonthlyUsd(shape))} a month (its disk). `
-    + `A chat on it costs ${formatAgent37HourlyPrice(agent37HourlyUsd(kind, shape))} while it's awake.`;
-}
-
 /*
- * Settings › Integrations › Agent 37: the page's own links, the month's spend
- * per machine, and the small helpers its cards share. Kept apart from the
- * template, ready and create contracts above.
+ * Settings › Integrations › Agent 37: the page's own links and the month's
+ * spend per machine. Kept apart from the template, ready and create contracts
+ * above.
  */
 
 /** Agent 37's own list of the workspace's machines. */
@@ -866,32 +888,6 @@ export type Agent37MonthSpend = {
   deletedSpentUsd: number;
   deletedCount: number;
 };
-
-/** "owner/repo" from a git identity like `github.com/owner/repo`; the identity itself when it has no such tail. */
-export function agent37RepoLabel(identity: string | null | undefined): string | null {
-  const trimmed = identity?.trim();
-  if (!trimmed) return null;
-  const parts = trimmed.replace(/\.git$/i, "").split("/").filter(Boolean);
-  return parts.length >= 3 ? parts.slice(-2).join("/") : trimmed;
-}
-
-/** The lockfiles a ready machine's setup can be guessed from, best first. */
-const AGENT37_SETUP_BY_LOCKFILE: ReadonlyArray<readonly [string, string]> = [
-  ["pnpm-lock.yaml", "pnpm install --frozen-lockfile"],
-  ["bun.lockb", "bun install"],
-  ["bun.lock", "bun install"],
-  ["yarn.lock", "yarn install --frozen-lockfile"],
-  ["package-lock.json", "npm ci"],
-];
-
-/** A setup command for a repo whose top folder holds these files, or null. */
-export function agent37SetupSuggestion(fileNames: readonly string[]): string | null {
-  const names = new Set(fileNames);
-  for (const [lockfile, command] of AGENT37_SETUP_BY_LOCKFILE) {
-    if (names.has(lockfile)) return command;
-  }
-  return null;
-}
 
 /*
  * Sign-ins for cloud machines. A new cloud machine has no provider sign-in,

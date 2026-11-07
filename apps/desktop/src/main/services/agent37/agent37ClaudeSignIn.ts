@@ -123,8 +123,10 @@ export function createAgent37ClaudeSignIn(deps: Agent37ClaudeSignInDeps) {
       if (token) take(target, token);
     });
     pty.onExit(({ exitCode }) => {
+      // Forget the process first, whatever the state: a later end() must never
+      // kill a PID that is gone, which on Windows may already be another process.
+      if (target.pty === pty) target.pty = null;
       if (record !== target || target.status.state !== "running") return;
-      target.pty = null;
       const last = CLAUDE_TOKEN_PATTERN.exec(cleanLoginOutput(target.rawOutput, target.submittedCodes))?.[0] ?? null;
       if (last) {
         take(target, last);

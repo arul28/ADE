@@ -275,7 +275,7 @@ export function normalizeAgent37MachineName(raw: string): string {
 }
 
 /** A published release a machine can install (`ade brain update --version`), or null. */
-export function agent37MinAdeVersion(version: string | null | undefined): string | null {
+function agent37MinAdeVersion(version: string | null | undefined): string | null {
   const trimmed = version?.trim().replace(/^v/, "") ?? "";
   // 0.0.0 is an unstamped development build; alpha builds are not published.
   if (trimmed === "0.0.0" || !/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(trimmed)) return null;

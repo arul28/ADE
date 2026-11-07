@@ -56,8 +56,12 @@ export function useAgent37ReadyDraftMachine({
   const bridge = window.ade.agent37;
   const identity = normalizeGitRemoteIdentity(originUrl);
   const [project, setProject] = useState<Agent37ReadyProjectStatus | null>(null);
-  /** The machine being woken, by name, until it is selected or given back. */
-  const [wakingName, setWakingName] = useState<string | null>(null);
+  /**
+   * The machine on its way to being the selection, until it is selected or
+   * given back: this project's ready machine being woken, or one this chat
+   * just made. Each flow has its own words.
+   */
+  const [waking, setWaking] = useState<{ flow: "ready" | "new"; name: string } | null>(null);
   const [pendingTargetId, setPendingTargetId] = useState<string | null>(null);
   /** Agent 37's connection, read once the picker opens: the row shows only while a key works. */
   const [agent37Status, setAgent37Status] = useState<Agent37Status | null>(null);
@@ -103,7 +107,7 @@ export function useAgent37ReadyDraftMachine({
     if (!pendingTargetId || !connectedMachineIds.includes(pendingTargetId)) return;
     unusedClaimRef.current = null;
     setPendingTargetId(null);
-    setWakingName(null);
+    setWaking(null);
     onNotice(null);
     onMachineReady(pendingTargetId);
   }, [connectedMachineIds, onMachineReady, onNotice, pendingTargetId]);
@@ -119,17 +123,25 @@ export function useAgent37ReadyDraftMachine({
     });
   }, [bridge]);
 
-  // Connected but never listed among the picker's machines: say so, and give it back.
+  // Connected but never listed among the picker's machines: say so, and give
+  // a ready machine back. A machine this chat made stays the person's.
+  const wakingFlow = waking?.flow ?? null;
+  const wakingName = waking?.name ?? null;
   useEffect(() => {
     if (!pendingTargetId) return;
     const timer = window.setTimeout(() => {
       setPendingTargetId(null);
-      setWakingName(null);
+      setWaking(null);
       giveBack();
-      onNotice({ message: "ADE connected to the ready machine but couldn't offer it here. Try again, or pick it under Your computers.", kind: "status" });
+      onNotice({
+        message: wakingFlow === "new"
+          ? `ADE connected to ${wakingName ?? "the new machine"} but couldn't offer it here. Pick it under Your computers.`
+          : "ADE connected to the ready machine but couldn't offer it here. Try again, or pick it under Your computers.",
+        kind: "status",
+      });
     }, SELECT_WAIT_MS);
     return () => window.clearTimeout(timer);
-  }, [giveBack, onNotice, pendingTargetId]);
+  }, [giveBack, onNotice, pendingTargetId, wakingFlow, wakingName]);
 
   // A draft that goes away mid-wake (closed, launched elsewhere) stops the wake
   // and gives its claim back, including a claim still on its way.
@@ -142,17 +154,17 @@ export function useAgent37ReadyDraftMachine({
   const option: DraftMachineOption | null = project
     ? {
         id: AGENT37_READY_MACHINE_ID,
-        name: wakingName ? `Waking ${wakingName}…` : "Agent 37 · ready",
+        name: waking ? `Waking ${waking.name}…` : "Agent 37 · ready",
         kind: "cloud",
         cloudProvider: "agent37",
         // While waking it is the selection, never an unavailable one.
-        unavailableReason: wakingName || project.state === "ready" ? null : project.message,
+        unavailableReason: waking || project.state === "ready" ? null : project.message,
       }
-    : agent37Connected || wakingName
+    : agent37Connected || waking
       ? {
           // No ready machine for this project: make one for this chat.
           id: AGENT37_NEW_MACHINE_ID,
-          name: wakingName ? `Connecting to ${wakingName}…` : "New Agent 37 machine",
+          name: waking ? `Connecting to ${waking.name}…` : "New Agent 37 machine",
           kind: "cloud",
           cloudProvider: "agent37",
           unavailableReason: null,
@@ -171,9 +183,9 @@ export function useAgent37ReadyDraftMachine({
 
   /** "New Agent 37 machine": open the create form. */
   const chooseNew = useCallback(() => {
-    if (wakingName) return;
+    if (waking) return;
     setCreating(true);
-  }, [wakingName]);
+  }, [waking]);
 
   /**
    * The form made the machine and it signed in to the account: pair with it
@@ -189,7 +201,7 @@ export function useAgent37ReadyDraftMachine({
     }
     const attempt = ++attemptRef.current;
     const stillWanted = () => attemptRef.current === attempt;
-    setWakingName(result.name);
+    setWaking({ flow: "new", name: result.name });
     onNotice({ message: `${result.name} is signed in. Connecting…`, kind: "status" });
     const { value: targetId, lastError } = await connectWithRetry({
       connect: () => pairAndConnect(machineKey),
@@ -202,13 +214,13 @@ export function useAgent37ReadyDraftMachine({
       setPendingTargetId(targetId);
       return;
     }
-    setWakingName(null);
+    setWaking(null);
     const reason = lastError ? ipcErrorMessage(lastError) : "";
     onNotice({ message: `ADE made ${result.name} but couldn't connect to it yet${reason ? `: ${reason}` : "."} Connect it under Your computers.`, kind: "status" });
   }, [onNotice]);
 
   const choose = useCallback(async () => {
-    if (!originUrl || !bridge?.readyClaim || wakingName) return;
+    if (!originUrl || !bridge?.readyClaim || waking) return;
     // One claim at a time: a second pick while one is in flight would wake a second machine.
     if (unusedClaimRef.current || claimingRef.current) {
       onNotice({ message: "Still handing back the last ready machine. Pick it again in a moment.", kind: "hint" });
@@ -217,7 +229,7 @@ export function useAgent37ReadyDraftMachine({
     const attempt = ++attemptRef.current;
     const startedAt = Date.now();
     // Shown as the choice from the pick on, so picking any machine cancels it.
-    setWakingName("the ready machine");
+    setWaking({ flow: "ready", name: "the ready machine" });
     const stillWanted = () => attemptRef.current === attempt;
     onNotice({ message: "Waking this project's ready machine on Agent 37…", kind: "status" });
     try {
@@ -226,7 +238,7 @@ export function useAgent37ReadyDraftMachine({
         claimingRef.current = false;
       });
       if (!claim) {
-        setWakingName(null);
+        setWaking(null);
         onNotice(null);
         return;
       }
@@ -236,7 +248,7 @@ export function useAgent37ReadyDraftMachine({
         giveBack();
         return;
       }
-      setWakingName(claim.name);
+      setWaking({ flow: "ready", name: claim.name });
       onNotice({ message: `${claim.name} is awake. Connecting to its ADE…`, kind: "status" });
       // Its ADE reconnects a few seconds after the wake; until then a pair or connect fails.
       const { value: targetId, lastError } = await connectWithRetry({
@@ -257,15 +269,15 @@ export function useAgent37ReadyDraftMachine({
       if (!stillWanted()) return;
       // Nothing used it: back to ready and asleep.
       giveBack();
-      setWakingName(null);
+      setWaking(null);
       onNotice({ message: ipcErrorMessage(error) || "ADE couldn't wake the ready machine.", kind: "status" });
     }
-  }, [bridge, giveBack, onNotice, originUrl, wakingName]);
+  }, [bridge, giveBack, onNotice, originUrl, waking]);
 
   /** The person picked another machine (or the draft launched): stop following this one and give an unselected claim back. */
   const abandon = useCallback(() => {
     attemptRef.current += 1;
-    setWakingName(null);
+    setWaking(null);
     setPendingTargetId(null);
     giveBack();
   }, [giveBack]);
@@ -281,7 +293,7 @@ export function useAgent37ReadyDraftMachine({
     choose,
     chooseNew,
     abandon,
-    waking: wakingName != null || pendingTargetId != null,
+    waking: waking != null || pendingTargetId != null,
     /** The New Agent 37 machine form, open; the pane renders it. */
     create: creating && agent37Status?.connected
       ? { status: agent37Status, onCreated: onNewMachineCreated, onClose: () => setCreating(false) }

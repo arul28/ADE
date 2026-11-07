@@ -3,11 +3,9 @@ import { CircleNotch, HardDrives, Plus, Sun } from "@phosphor-icons/react";
 import {
   describeAgent37MachineSize,
   formatAgent37Usd,
-  type Agent37CreateMachineResult,
   type Agent37Machine,
   type Agent37Status,
 } from "../../../shared/agent37";
-import { accountMachineDisplayName } from "../../../shared/accountDirectory";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { RemoteRuntimeTarget } from "../../../shared/types";
 import { useActivityStore } from "../../state/activityStore";
@@ -18,14 +16,12 @@ import { IntegrationCard } from "./integrations/IntegrationChrome";
 import { AGENT37_NAME } from "../remoteTargets/agent37Brand";
 import {
   AGENT37_STATE_LABELS,
-  agent37BoxWork,
   agent37StateTone,
   describeAgent37Rate,
   matchAgent37Boxes,
 } from "../remoteTargets/agent37MachineModel";
 import { MachineActionsMenu } from "../remoteTargets/MachineActionsMenu";
-import { NewAgent37MachineDialog } from "../remoteTargets/NewAgent37MachineDialog";
-import { agent37PendingLabel, useAgent37BoxActions, type Agent37BoxContext } from "../remoteTargets/useAgent37BoxActions";
+import { agent37BoxContext, agent37PendingLabel, useAgent37BoxActions, type Agent37BoxContext } from "../remoteTargets/useAgent37BoxActions";
 import type { Agent37MachinesState } from "../remoteTargets/useAgent37Machines";
 import "../remoteTargets/connections.css";
 
@@ -35,11 +31,17 @@ import "../remoteTargets/connections.css";
  * and the same actions and confirmations as Your computers. Account-level (the
  * key is the account's), so every call goes out with no pin.
  */
-export function Agent37MachinesCard({ status, machines }: { status: Agent37Status | null; machines: Agent37MachinesState }) {
+export function Agent37MachinesCard({ status, machines, onNewMachine, accountChangedAt }: {
+  status: Agent37Status | null;
+  machines: Agent37MachinesState;
+  /** Opens the New machine dialog, which the page keeps (it must outlive this card). */
+  onNewMachine: () => void;
+  /** Bumped when a machine joined the account, so the account rows are read again. */
+  accountChangedAt: number;
+}) {
   const [accountMachines, setAccountMachines] = useState<AdeAccountMachine[]>([]);
   const [accountKnown, setAccountKnown] = useState(false);
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
-  const [creating, setCreating] = useState(false);
 
   const loadAccount = useCallback((force: boolean) => {
     void fetchAccountMachines({ force }).then((result) => {
@@ -51,6 +53,7 @@ export function Agent37MachinesCard({ status, machines }: { status: Agent37Statu
     void window.ade.remoteRuntime?.listTargets?.().then(setTargets, () => undefined);
   }, []);
   useEffect(() => { loadAccount(false); }, [loadAccount]);
+  useEffect(() => { if (accountChangedAt) loadAccount(true); }, [accountChangedAt, loadAccount]);
 
   const forgetTarget = useCallback(async (targetId: string) => {
     await window.ade.remoteRuntime.removeTarget(targetId);
@@ -69,42 +72,31 @@ export function Agent37MachinesCard({ status, machines }: { status: Agent37Statu
   const byMachineKey = useMemo(() => matchAgent37Boxes(boxes, accountMachines), [boxes, accountMachines]);
   const month = machines.result?.state === "ok" ? machines.result.month ?? null : null;
 
-  const contextFor = (box: Agent37Machine): Agent37BoxContext => {
-    let accountMachine: AdeAccountMachine | null = null;
+  // Instance id → its account row, the reverse of the match above.
+  const accountMachineByInstance = useMemo(() => {
+    const byInstance = new Map<string, AdeAccountMachine>();
     for (const [machineKey, matched] of byMachineKey) {
-      if (matched.instanceId === box.instanceId) {
-        accountMachine = accountMachines.find((entry) => entry.machineKey === machineKey) ?? null;
-        break;
-      }
+      const accountMachine = accountMachines.find((entry) => entry.machineKey === machineKey);
+      if (accountMachine) byInstance.set(matched.instanceId, accountMachine);
     }
-    const target = accountMachine
-      ? targets.find((entry) => entry.pairedMachine?.machineKey === accountMachine!.machineKey) ?? null
-      : null;
-    return {
-      box,
-      name: (accountMachine ? accountMachineDisplayName(accountMachine) : null) ?? (box.name?.trim() || box.instanceId),
-      accountMachine,
-      targetId: target?.id ?? null,
-      work: agent37BoxWork(accountMachine, activityItems),
-      accountKnown,
-    };
-  };
+    return byInstance;
+  }, [accountMachines, byMachineKey]);
 
-  const onCreated = useCallback((result: Agent37CreateMachineResult) => {
-    setCreating(false);
-    machines.refresh();
-    loadAccount(true);
-    showToast({
-      tone: "success",
-      title: `Made ${result.name}`,
-      message: result.joined ? "It's in Your computers. Connect it there, or pick it when you start a chat." : "It's still starting. It shows in Your computers once it's ready.",
-      replayMask: { title: true },
+  const contextFor = (box: Agent37Machine): Agent37BoxContext => {
+    const accountMachine = accountMachineByInstance.get(box.instanceId) ?? null;
+    const machineKey = accountMachine?.machineKey ?? null;
+    return agent37BoxContext({
+      box,
+      accountMachine,
+      targetId: machineKey ? targets.find((entry) => entry.pairedMachine?.machineKey === machineKey)?.id ?? null : null,
+      activityItems,
+      accountKnown,
     });
-  }, [loadAccount, machines]);
+  };
 
   const savedUsd = month ? Object.values(month.byInstance).reduce((sum, entry) => sum + (entry.savedUsd ?? 0), 0) : null;
   const newButton = (
-    <button type="button" className="ade-modern-btn" data-size="sm" disabled={!status?.connected} onClick={() => setCreating(true)}>
+    <button type="button" className="ade-modern-btn" data-size="sm" disabled={!status?.connected} onClick={onNewMachine}>
       <Plus size={12} /> New machine
     </button>
   );
@@ -193,9 +185,6 @@ export function Agent37MachinesCard({ status, machines }: { status: Agent37Statu
       ) : null}
       {/* Room for the stale-rows cleanup line (backend to come). */}
       {actions.dialog}
-      {creating && status ? (
-        <NewAgent37MachineDialog status={status} onCreated={onCreated} onClose={() => setCreating(false)} />
-      ) : null}
     </IntegrationCard>
   );
 }
