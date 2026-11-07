@@ -53,6 +53,7 @@
 		E2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift */; };
 		E2000000000000000000A620 /* SettingsProviderAccountSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A620 /* SettingsProviderAccountSignIn.swift */; };
 		E2000000000000000000A610 /* SettingsProviderAccounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A610 /* SettingsProviderAccounts.swift */; };
+		E2000000000000000000A611 /* SettingsProviderAccountSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A611 /* SettingsProviderAccountSettings.swift */; };
 		E2000000000000000000A600 /* ProviderAccountsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A600 /* ProviderAccountsStore.swift */; };
 		E20000000000000000000F30 /* ADEFlat.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F30 /* ADEFlat.swift */; };
 		E20000000000000000000F3A /* ADEKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F3A /* ADEKit.swift */; };
@@ -559,6 +560,7 @@
 		D2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccountsPreviews.swift; path = ADE/Views/Settings/SettingsProviderAccountsPreviews.swift; sourceTree = "<group>"; };
 		D2000000000000000000A620 /* SettingsProviderAccountSignIn.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccountSignIn.swift; path = ADE/Views/Settings/SettingsProviderAccountSignIn.swift; sourceTree = "<group>"; };
 		D2000000000000000000A610 /* SettingsProviderAccounts.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccounts.swift; path = ADE/Views/Settings/SettingsProviderAccounts.swift; sourceTree = "<group>"; };
+		D2000000000000000000A611 /* SettingsProviderAccountSettings.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccountSettings.swift; path = ADE/Views/Settings/SettingsProviderAccountSettings.swift; sourceTree = "<group>"; };
 		D2000000000000000000A600 /* ProviderAccountsStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProviderAccountsStore.swift; path = ADE/Services/ProviderAccountsStore.swift; sourceTree = "<group>"; };
 		D20000000000000000000F30 /* ADEFlat.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEFlat.swift; path = ADE/Views/Components/ADEFlat.swift; sourceTree = "<group>"; };
 		D20000000000000000000F3A /* ADEKit.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEKit.swift; path = ADE/Views/Components/ADEKit.swift; sourceTree = "<group>"; };
@@ -1449,6 +1451,7 @@
 				D2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift */,
 				D2000000000000000000A620 /* SettingsProviderAccountSignIn.swift */,
 				D2000000000000000000A610 /* SettingsProviderAccounts.swift */,
+				D2000000000000000000A611 /* SettingsProviderAccountSettings.swift */,
 				D2000000000000000000A600 /* ProviderAccountsStore.swift */,
 				D20000000000000000000F35 /* SettingsMachinesPreviews.swift */,
 				F20000000000000000000003 /* SettingsPairingSection.swift */,
@@ -2230,6 +2233,7 @@
 				E2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift in Sources */,
 				E2000000000000000000A620 /* SettingsProviderAccountSignIn.swift in Sources */,
 				E2000000000000000000A610 /* SettingsProviderAccounts.swift in Sources */,
+				E2000000000000000000A611 /* SettingsProviderAccountSettings.swift in Sources */,
 				E2000000000000000000A600 /* ProviderAccountsStore.swift in Sources */,
 				E20000000000000000000F35 /* SettingsMachinesPreviews.swift in Sources */,
 				F10000000000000000000003 /* SettingsPairingSection.swift in Sources */,

@@ -490,6 +490,8 @@ struct ADESettingsNotice: View {
   var tone: ADEKitTone = .warn
   var actionTitle: String?
   var action: (() -> Void)?
+  /// An × that puts the notice away.
+  var dismiss: (() -> Void)?
 
   var body: some View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -507,6 +509,17 @@ struct ADESettingsNotice: View {
         }
       }
       Spacer(minLength: 0)
+      if let dismiss {
+        Button(action: dismiss) {
+          Image(systemName: "xmark")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Dismiss")
+      }
     }
     .padding(.horizontal, ADEKit.inset)
     .padding(.vertical, 11)

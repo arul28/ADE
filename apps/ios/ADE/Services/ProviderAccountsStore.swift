@@ -16,6 +16,27 @@ struct ProviderAccount: Codable, Equatable, Identifiable {
     var replacedAt: String
   }
 
+  /// ADE's own compaction overrides for this account (desktop
+  /// `ProviderCompactionSettings`). Absent fields keep the harness default.
+  struct Compaction: Codable, Equatable {
+    var atTokens: Int?
+    var subagentAtTokens: Int?
+    var reserveTokens: Int?
+    var keepRecentTokens: Int?
+    /// ask · always · never
+    var idleMode: String?
+
+    var wireValue: [String: Any] {
+      var out: [String: Any] = [:]
+      if let atTokens { out["atTokens"] = atTokens }
+      if let subagentAtTokens { out["subagentAtTokens"] = subagentAtTokens }
+      if let reserveTokens { out["reserveTokens"] = reserveTokens }
+      if let keepRecentTokens { out["keepRecentTokens"] = keepRecentTokens }
+      if let idleMode { out["idleMode"] = idleMode }
+      return out
+    }
+  }
+
   var id: String
   var provider: String
   var label: String
@@ -27,6 +48,14 @@ struct ProviderAccount: Codable, Equatable, Identifiable {
   var loginBroken: Bool?
   var sameLoginAs: String?
   var replacedAccount: ReplacedLogin?
+  /// Nil inherits the provider's compaction settings.
+  var compaction: Compaction?
+  /// Claude only. "1h", or nil for Claude Code's 5 minutes.
+  var subagentPromptCacheTtl: String?
+  /// Claude only. "5m" or "1h", or nil for automatic.
+  var mainPromptCacheTtl: String?
+  /// Claude only. "stop", or nil to keep going on extra usage.
+  var onExtraUsage: String?
 
   var email: String? { nonEmpty(account?.email) }
   /// What an account is called: its login's email, never its id (a storage key
@@ -37,6 +66,12 @@ struct ProviderAccount: Codable, Equatable, Identifiable {
   var plan: String? { nonEmpty(account?.plan) }
   /// The config home names a login, working or not.
   var hasLogin: Bool { signedIn || loginBroken == true }
+  /// The machine's own login (the one the terminal's CLI uses). The host
+  /// refuses to remove it. Desktop `isBaseProviderInstance`.
+  var isMachineLogin: Bool { id == provider }
+  /// A working login of its own, so new chats can start on it: signed in,
+  /// not broken, and not a copy of another account's login.
+  var canTakeChats: Bool { signedIn && loginBroken != true && sameLoginAs == nil }
 
   private func nonEmpty(_ value: String?) -> String? {
     let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -47,6 +82,45 @@ struct ProviderAccount: Codable, Equatable, Identifiable {
 struct ProviderAccountSettings: Codable, Equatable {
   var smartBalance: Bool
   var autoStartWindows: Bool
+}
+
+/// One account setting the phone changes. Nil restores the default.
+enum ProviderAccountSettingChange: Equatable {
+  case mainPromptCache(String?)
+  case subagentPromptCache(String?)
+  case onExtraUsage(String?)
+  case compaction(ProviderAccount.Compaction?)
+
+  var key: String {
+    switch self {
+    case .mainPromptCache: return "mainPromptCacheTtl"
+    case .subagentPromptCache: return "subagentPromptCacheTtl"
+    case .onExtraUsage: return "onExtraUsage"
+    case .compaction: return "compaction"
+    }
+  }
+
+  var wireValue: Any {
+    switch self {
+    case .mainPromptCache(let value), .subagentPromptCache(let value), .onExtraUsage(let value):
+      return value ?? NSNull()
+    case .compaction(let value):
+      return value?.wireValue ?? NSNull()
+    }
+  }
+
+  /// The account, as read back, holds this change. An older ADE accepts a
+  /// setting it does not know and saves nothing.
+  func isSaved(in account: ProviderAccount?) -> Bool {
+    guard let account else { return false }
+    switch self {
+    case .mainPromptCache(let value): return account.mainPromptCacheTtl == value
+    case .subagentPromptCache(let value): return account.subagentPromptCacheTtl == value
+    case .onExtraUsage(let value): return account.onExtraUsage == value
+    // The host normalizes the numbers, so only on or off is compared.
+    case .compaction(let value): return (account.compaction == nil) == (value == nil)
+    }
+  }
 }
 
 /// A sign-in the host is running for one account.
@@ -200,8 +274,23 @@ struct ProviderAccountsClient {
     try await settings("getSettings", ["provider": provider.rawValue])
   }
 
-  func setSmartBalance(_ provider: ProviderAccountProvider, enabled: Bool) async throws -> ProviderAccountSettings {
-    try await settings("setSettings", ["provider": provider.rawValue, "settings": ["smartBalance": enabled]])
+  /// Smart balance or auto-start, for the whole provider on this machine.
+  func setRouting(_ provider: ProviderAccountProvider, key: String, enabled: Bool) async throws -> ProviderAccountSettings {
+    try await settings("setSettings", ["provider": provider.rawValue, "settings": [key: enabled]])
+  }
+
+  func setAccountSetting(_ provider: ProviderAccountProvider, id: String, change: ProviderAccountSettingChange) async throws {
+    _ = try await settings("setSettings", [
+      "provider": provider.rawValue,
+      "instanceId": id,
+      "settings": [change.key: change.wireValue],
+    ])
+  }
+
+  /// Signs the login out and keeps the account, so Sign in can put one back.
+  func signOut(id: String) async throws {
+    struct SignedOut: Decodable { var instance: ProviderAccount? }
+    _ = try await call("providerAccounts.signOut", ["id": id], as: SignedOut.self)
   }
 
   func create(_ provider: ProviderAccountProvider) async throws -> ProviderAccount {
@@ -329,14 +418,53 @@ final class ProviderAccountsStore: ObservableObject {
   }
 
   func setSmartBalance(_ enabled: Bool) async {
+    await setRouting(key: "smartBalance", enabled: enabled) { $0.smartBalance = enabled }
+  }
+
+  func setAutoStartWindows(_ enabled: Bool) async {
+    await setRouting(key: "autoStartWindows", enabled: enabled) { $0.autoStartWindows = enabled }
+  }
+
+  @discardableResult
+  func signOut(id: String) async -> Bool {
+    await run(accountId: id) { try await $0.signOut(id: id) } != nil
+  }
+
+  /// Changes one account setting, then checks the account read back holds it.
+  @discardableResult
+  func setAccountSetting(id: String, _ change: ProviderAccountSettingChange) async -> Bool {
+    guard await run(accountId: id, { try await $0.setAccountSetting(self.provider, id: id, change: change) }) != nil else {
+      return false
+    }
+    guard change.isSaved(in: account(id: id)) else {
+      errorMessage = "That setting was not saved. Update ADE on that computer and try again."
+      return false
+    }
+    return true
+  }
+
+  /// "Use this account": new chats start on it. Smart balance would pick for
+  /// them instead, so it turns off first (desktop `selectAccount`).
+  @discardableResult
+  func useForNewChats(id: String) async -> Bool {
+    if settings?.smartBalance == true {
+      await setSmartBalance(false)
+      guard settings?.smartBalance == false else { return false }
+    }
+    guard account(id: id)?.isDefault != true else { return true }
+    return await makeDefault(id: id)
+  }
+
+  /// Shows the new value at once and puts the old one back if the host refuses.
+  private func setRouting(key: String, enabled: Bool, apply: (inout ProviderAccountSettings) -> Void) async {
     guard let client else {
-      settings?.smartBalance = enabled
+      if settings != nil { apply(&settings!) }
       return
     }
     let previous = settings
-    settings?.smartBalance = enabled
+    if settings != nil { apply(&settings!) }
     do {
-      settings = try await client.setSmartBalance(provider, enabled: enabled)
+      settings = try await client.setRouting(provider, key: key, enabled: enabled)
       errorMessage = nil
     } catch {
       settings = previous
