@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createGithubIssueOps } from "../../desktop/src/main/services/github/githubIssueOps";
+import { markExpectedGithubFailure } from "../../desktop/src/main/services/github/githubExpectedFailure";
 import { createRepeatedFailureGate } from "../../desktop/src/main/services/logging/repeatedFailure";
 import { resolveGithubRepoRef } from "../../desktop/src/main/services/github/githubSshAlias";
 import { gitPushError } from "../../desktop/src/main/services/git/gitPushFailure";
@@ -123,6 +124,7 @@ import {
   type GithubOperationCredentialCapability,
 } from "../../desktop/src/shared/githubOperationCredential";
 import {
+  assertGithubRepositoryOwner,
   classifyGitHubRepositoryApiPath,
   createGithubRepositoryRequestFallback,
   GITHUB_OWNER_NOT_FOUND_CODE,
@@ -379,6 +381,9 @@ class HeadlessGithubCredentialAttemptError extends Error {
   ) {
     super(message);
     this.name = "HeadlessGithubCredentialAttemptError";
+    // The same answers the desktop's transport marks: a refused token, a
+    // repository it cannot see, a rate limit, GitHub's own outage.
+    markExpectedGithubFailure(this, authFailure);
   }
 }
 
@@ -1600,11 +1605,15 @@ export function createHeadlessGitHubService(
         if (!repositoryNotFound) {
           recordGithubOperationFailure(candidate, failure.authFailure, failure.rateLimit);
         }
-        const attemptError = new HeadlessGithubCredentialAttemptError(
-          detailed,
+        const attemptError = markExpectedGithubFailure(
+          new HeadlessGithubCredentialAttemptError(
+            detailed,
+            failure.authFailure,
+            failure.rateLimit,
+            response.status,
+          ),
           failure.authFailure,
-          failure.rateLimit,
-          response.status,
+          { repositoryNotFound: ambiguousRepositoryNotFound },
         );
         lastAttemptError = attemptError;
         if (attemptError.authFailure.kind === "rate_limited") {
@@ -2698,6 +2707,8 @@ export function createHeadlessGitHubService(
           isPrivate: existing.isPrivate,
         };
       }
+      // Never push anywhere but the owner the user picked.
+      assertGithubRepositoryOwner(requestedOwner, created);
 
       const cleanupLocalOrigin = async (): Promise<void> => {
         await runGitHeadlessAsync(projectRoot, ["remote", "remove", "origin"], 8_000);

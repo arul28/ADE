@@ -6,8 +6,10 @@ import {
 
 type BrainLoggerOptions = FileLoggerOptions & {
   now?: () => Date;
-  stderr?: Pick<NodeJS.WriteStream, "write">;
+  stderr?: Pick<NodeJS.WriteStream, "write" | "on">;
 };
+
+const guardedStreams = new WeakSet<object>();
 
 function serializedMeta(meta: Record<string, unknown> | undefined): string {
   if (!meta) return "";
@@ -28,14 +30,33 @@ export function createBrainLogger(
     ...fileLoggerOptions
   } = options;
   const fileLogger = createFileLogger(logFilePath, fileLoggerOptions);
+  // The stderr copy is a courtesy for whoever watches the brain's terminal.
+  // A full disk (ENOSPC) or a closed pipe (EPIPE) on it must never take the
+  // brain down: a write that throws is dropped, and an asynchronous failure
+  // arrives as a stream 'error' event, which with no listener is fatal (one
+  // listener per stream, however many loggers share it). After the first
+  // failure this logger's copy stops; the log file keeps every line.
+  let stderrBroken = false;
+  if (!guardedStreams.has(stderr)) {
+    guardedStreams.add(stderr);
+    stderr.on("error", () => {});
+  }
   const mirror = (
     level: "warn" | "error",
     event: string,
     meta?: Record<string, unknown>,
   ): void => {
-    stderr.write(
-      `[${now().toISOString()}] ${level.toUpperCase()} ${event}${serializedMeta(meta)}\n`,
-    );
+    if (stderrBroken) return;
+    try {
+      stderr.write(
+        `[${now().toISOString()}] ${level.toUpperCase()} ${event}${serializedMeta(meta)}\n`,
+        (error) => {
+          if (error) stderrBroken = true;
+        },
+      );
+    } catch {
+      stderrBroken = true;
+    }
   };
 
   return {

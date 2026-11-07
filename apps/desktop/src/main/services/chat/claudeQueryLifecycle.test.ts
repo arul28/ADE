@@ -146,6 +146,7 @@ function createReaperSpy(): ClaudeSubprocessReaper {
     liveRecords: vi.fn(() => []),
     recordsForSession: vi.fn(() => []),
     terminatedByAdeSince: vi.fn(() => false),
+    stderrTail: () => null,
   };
 }
 

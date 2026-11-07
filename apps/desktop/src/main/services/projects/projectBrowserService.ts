@@ -143,7 +143,11 @@ export async function browseProjectDirectories(args: ProjectBrowseInput = {}): P
     });
   } catch (error) {
     const code = error instanceof Error && "code" in error ? String((error as NodeJS.ErrnoException).code ?? "") : "";
-    if (code !== "ENOENT" && code !== "ENOTDIR") {
+    // A folder that is gone, or one this account may not list (a protected
+    // system or another user's folder, macOS privacy settings): no entries,
+    // and the user browses elsewhere. Failing the whole browse here showed an
+    // error for an ordinary folder the user only typed their way past.
+    if (code !== "ENOENT" && code !== "ENOTDIR" && code !== "EACCES" && code !== "EPERM") {
       throw error;
     }
   }

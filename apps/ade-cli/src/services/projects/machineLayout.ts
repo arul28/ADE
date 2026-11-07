@@ -80,6 +80,16 @@ export function isSyncCapableAdeHome(adeDir: string, env: NodeJS.ProcessEnv = pr
 }
 
 /**
+ * Whether a brain on this ADE home may adopt the emulators another brain on
+ * it left: the user's default home or a packaged channel's (`~/.ade`,
+ * `~/.ade-alpha`). Any other home is a test or dev copy, and its emulators
+ * stop once its brain is gone.
+ */
+export function isAdoptableAdeHome(adeDir: string): boolean {
+  return isMachineAdeHome(adeDir) || isMachineAdeHome(adeDir, adeHomeForChannel("alpha"));
+}
+
+/**
  * The default ADE home of a package channel: `~/.ade` or `~/.ade-alpha`. Beta
  * is an update track of the normal install and uses `~/.ade`.
  */

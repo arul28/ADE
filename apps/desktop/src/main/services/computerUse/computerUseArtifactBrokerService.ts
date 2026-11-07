@@ -51,6 +51,7 @@ import {
 } from "../shared/utils";
 import { commandExistsCached, prewarmCommandExists } from "../ai/utils";
 import { readArtifactByteRange } from "./artifactByteRange";
+import { AdeExpectedError, expectedErrorKind } from "../../../shared/expectedError";
 import { createComputerUseArtifactPath, getLocalComputerUseCapabilities, toProjectArtifactUri } from "./localComputerUse";
 import { isStreamableArtifactFile, knownArtifactMimeType } from "./artifactStreamProtocol";
 import {
@@ -265,15 +266,24 @@ async function readArtifactRangeChunk(args: {
   if (!uri) throw new Error("Artifact uri is required.");
   let resolved: string;
   try {
+    // `allowMissing` so the jail decides only where the path points: a
+    // missing file used to fail here and read as a path escape. The jail is
+    // unchanged; a missing file is answered below.
     resolved = resolvePathWithinRoot(
       args.artifactsDir,
       path.normalize(resolveRendererArtifactPath(uri, args.projectRoot)),
+      { allowMissing: true },
     );
   } catch {
     throw new Error("Artifact path must resolve within .ade/artifacts.");
   }
   if (!isStreamableArtifactFile(resolved)) throw new Error("This artifact type cannot be streamed.");
-  const range = await readArtifactByteRange(resolved, args.offset, args.length);
+  // Read through one opened handle (no separate stat first). A proof deleted,
+  // or never copied to this computer, is an answer, not a defect.
+  const range = await readArtifactByteRange(resolved, args.offset, args.length).catch((error: unknown) => {
+    if (expectedErrorKind(error) === "user") throw new AdeExpectedError(`Artifact file not found: ${uri}`, "user");
+    throw error;
+  });
   return { totalSize: range.totalSize, offset: range.rangeStart, data: range.base64 };
 }
 
@@ -654,10 +664,11 @@ export function createComputerUseArtifactBrokerService(args: {
       }
 
       if (!isImportableArtifactFile(absolutePath)) {
-        throw new Error(
+        throw new AdeExpectedError(
           `Artifact file type is not importable as proof: ${absolutePath}. `
           + `Proof must be an image, video, browser trace, or log `
           + `(${[...IMPORTABLE_ARTIFACT_EXTENSIONS].join(", ")}).`,
+          "user",
         );
       }
 
@@ -1670,8 +1681,9 @@ export function createComputerUseArtifactBrokerService(args: {
         );
       }
       if (source.status === "missing") {
-        throw new Error(
+        throw new AdeExpectedError(
           `The original file for "${record.title}" no longer exists, so it cannot be recovered. Remove the record instead.`,
+          "user",
         );
       }
       const sourcePath = source.path;
@@ -1684,7 +1696,7 @@ export function createComputerUseArtifactBrokerService(args: {
       // Recovery re-imports bytes from a surviving lane worktree, so it is an
       // import like any other and gets the same file-type gate.
       if (!isImportableArtifactFile(sourcePath)) {
-        throw new Error(`Artifact file type is not importable as proof: ${sourcePath}`);
+        throw new AdeExpectedError(`Artifact file type is not importable as proof: ${sourcePath}`, "user");
       }
       const extension = inferArtifactExtension({ path: sourcePath }, record.kind);
       const targetPath = createComputerUseArtifactPath(projectRoot, record.title, extension);

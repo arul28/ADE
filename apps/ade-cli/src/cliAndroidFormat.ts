@@ -60,6 +60,12 @@ function laneDeviceLines(lane: JsonObject): string[] {
       ["screen", avd?.lcdWidth && avd?.lcdHeight ? `${avd.lcdWidth}x${avd.lcdHeight}` : null],
       ["serial", running?.serial],
       ["booted", yesNo(running?.booted)],
+      // Null: not running, or not ADE's (ADE never stops those).
+      ["keep running", lane.keepRunning === true
+        ? "yes"
+        : lane.keepRunning === false
+          ? typeof lane.idleStopMinutes === "number" ? `no (ADE stops it after ${lane.idleStopMinutes} min unused)` : "no"
+          : null],
     ]),
   ];
   if (error) {
@@ -77,7 +83,7 @@ function laneDeviceLines(lane: JsonObject): string[] {
   if (!device) {
     lines.push("", "next: ade android device-create --profile <id> (ade android devices --profiles lists them), or ade android device-attach --avd <name>");
   } else if (lane.state === "off" || lane.state === "crashed") {
-    // Parity: the idle timer powered it off (`ADE_ANDROID_IDLE_POWER_OFF_MINUTES`); the device stays the lane's.
+    // Parity: the idle stop (`ADE_ANDROID_IDLE_POWER_OFF_MINUTES`) or `device-cleanup --power-off-idle` powered it off; the device stays the lane's.
     const poweredOff = isRecord(lane.poweredOff) ? lane.poweredOff : null;
     if (poweredOff) lines.push("", `powered off: idle ${String(poweredOff.idleMinutes)} min, at ${asString(poweredOff.at) ?? "?"}`);
     lines.push("", "next: ade android start");

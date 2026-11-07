@@ -15,6 +15,7 @@
  */
 import { isToolError, type ToolErrorKind } from "./errors";
 import { type ToolResolution, type ToolsContext, tryResolvePreviousTool, tryResolveTool } from "./install";
+import { isToolLockHolderLive } from "./lock";
 import { findToolTargetPin, loadToolsManifest } from "./manifest";
 import {
   pinnedToolFetchAllowed,
@@ -60,6 +61,8 @@ export type PinnedToolStatus = {
   /** The typed failure of the last download (`failed`), or why it is `unavailable`. */
   errorKind: ToolErrorKind | null;
   error: string | null;
+  /** `lock-timeout` only: the install lock names a process on this machine that is still running. */
+  lockHolderLive?: boolean;
   /**
    * Whether this process would download the tool when asked: false in a test,
    * with `ADE_DISABLE_TOOLS_FETCH=1`, or in a source checkout for a tool that
@@ -146,6 +149,17 @@ export function getPinnedToolStatus(name: string, context: ToolsContext = {}): P
   }
   if (downloading) return { ...withPin, state: "downloading" };
   const failure = pinnedToolLastFailure(name);
-  if (failure) return { ...withPin, state: "failed", errorKind: failure.kind, error: failure.message };
+  if (failure) {
+    // Checked again now, not as it was at the timeout: a holder that has
+    // since exited makes this an ordinary failed download.
+    const lockHolderLive = failure.lockHolder ? isToolLockHolderLive(failure.lockHolder) : failure.lockHolderLive;
+    return {
+      ...withPin,
+      state: "failed",
+      errorKind: failure.kind,
+      error: failure.message,
+      ...(lockHolderLive !== undefined ? { lockHolderLive } : {}),
+    };
+  }
   return withPin;
 }

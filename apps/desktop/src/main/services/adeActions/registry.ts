@@ -874,6 +874,17 @@ async function getAgentChatImageDataUrl(
  * pending thread comments: those can go on their own, and the host builds the
  * message text from them.
  */
+/**
+ * The session an agent's or the CLI's status/attention call names. Those
+ * callers can omit it (`ade chat note` run outside a chat), which is their
+ * answer, not a fault.
+ */
+function requireCallerSessionId(value: unknown): string {
+  const sessionId = optionalNonEmptyString(value);
+  if (!sessionId) throw new AdeExpectedError("Expected 'sessionId' to be a non-empty string.", "user");
+  return sessionId;
+}
+
 function readSendText(record: Record<string, unknown>): string {
   if (record.includeThreadComments === true) return typeof record.text === "string" ? record.text : "";
   return requireNonEmptyString(record.text, "text");
@@ -1825,7 +1836,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     requestSessionAttention: (args?: unknown) => {
       const record = readObjectActionArg(args, "session.requestSessionAttention");
-      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const sessionId = requireCallerSessionId(record.sessionId);
       const message = requireNonEmptyString(record.message, "message");
       const raised = requestSessionAttentionForRuntime(runtime, {
         sessionId,
@@ -1845,7 +1856,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     setSessionStatusNote: (args?: unknown) => {
       const record = readObjectActionArg(args, "session.setSessionStatusNote");
-      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const sessionId = requireCallerSessionId(record.sessionId);
       if (typeof record.note !== "string") {
         throw new Error("setSessionStatusNote requires a string `note` field.");
       }
@@ -1856,7 +1867,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     setSessionActivity: (args?: unknown) => {
       const record = readObjectActionArg(args, "session.setSessionActivity");
-      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const sessionId = requireCallerSessionId(record.sessionId);
       const value = record.value;
       if (value !== null && typeof value !== "string") {
         throw new Error("setSessionActivity requires a supported string `value` or null.");

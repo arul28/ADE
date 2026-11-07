@@ -150,7 +150,9 @@ export type AndroidToolsPreloadAction =
   | "clearStatusBar"
   | "clearLocation"
   | "storeScreenshots"
-  | "windowLayout";
+  | "windowLayout"
+  // The rail's "Keep running".
+  | "setKeepRunning";
 
 /** What one service method answers, without the promise. */
 export type AndroidServiceResult<K extends keyof AndroidEmulatorServiceApi> = Awaited<ReturnType<AndroidEmulatorServiceApi[K]>>;

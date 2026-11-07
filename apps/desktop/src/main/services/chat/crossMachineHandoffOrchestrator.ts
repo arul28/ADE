@@ -35,6 +35,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { isCodedError, parseCodedErrorMessage } from "../../../shared/codedError";
+import { markExpected } from "../../../shared/expectedError";
 import {
   CROSS_MACHINE_RETURN_REFUSED_CODE,
   decodeAcceptCrossMachineHandoffResult,
@@ -456,10 +457,11 @@ export function requireMovable(
   options: { includeChanges: boolean; label: string },
 ): CrossMachineMovableSource {
   const blockers = inspection.blockers.filter((blocker) => !(options.includeChanges && blocker.clearedByIncludeChanges));
-  if (blockers.length) throw new Error(`${options.label} can't move yet:\n${describeCrossMachineBlockers(blockers)}`);
+  // An answer naming what the user does first (publish, commit), not a fault.
+  if (blockers.length) throw markExpected(new Error(`${options.label} can't move yet:\n${describeCrossMachineBlockers(blockers)}`), "user");
   const { originUrl, branchRef, headSha } = inspection;
   if (!originUrl || !branchRef || !headSha) {
-    throw new Error(`${options.label} needs a published branch and origin before it can move.`);
+    throw markExpected(new Error(`${options.label} needs a published branch and origin before it can move.`), "user");
   }
   return { originUrl, branchRef, headSha };
 }

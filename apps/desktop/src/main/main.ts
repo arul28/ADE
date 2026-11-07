@@ -1,11 +1,18 @@
 import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, type WebContents } from "electron";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
-import { configureOutboundProxyFromEnv, trustSystemCertificates } from "./services/shared/outboundNetwork";
+import { reportsAsPackagedRelease } from "./sentry/releaseBuild";
+import {
+  configureOutboundProxyFromEnv,
+  systemCertificateReadInFlight,
+  trustSystemCertificates,
+  whenSystemCertificateReadSettles,
+} from "./services/shared/outboundNetwork";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import { flushSentry } from "../shared/sentry/capture";
 import { registerSentryDiagnosticAttachment, registerSentryDiagnosticContext } from "../shared/sentry/diagnostics";
-import { setSentryEventMirror, setSentryUserResolver } from "../shared/sentry/eventFilter";
+import { setSentryEventMirror, setSentryMachineIdResolver, setSentryUserResolver } from "../shared/sentry/eventFilter";
+import { loadMachineTelemetryId, machineTelemetryIdReader, peekMachineTelemetryId } from "./services/analytics/machineTelemetryId";
 import { staleLaneDays } from "../shared/laneCleanup";
 import { createExceptionAnalyticsMirror } from "./services/analytics/exceptionProductAnalytics";
 
@@ -682,6 +689,12 @@ initMainSentry({
     return request.action ? `${request.domain}.${request.action}` : request.domain;
   },
 });
+// `machine_id` for Sentry and PostHog (`machineTelemetryId.ts`): one `ioreg` or
+// `reg` per launch, off the main thread, and only when something reports;
+// events sent before it answers go without the tag.
+const telemetryAdeDir = resolveMachineAdeDir();
+setSentryMachineIdResolver(() => peekMachineTelemetryId(telemetryAdeDir));
+if (isMainSentryStarted()) void loadMachineTelemetryId(telemetryAdeDir);
 
 function resolveAutoUpdaterCacheDir(): string {
   const homeDir = os.homedir();
@@ -767,6 +780,8 @@ let startupProjectOpen: Promise<void> | null = null;
 const STARTUP_PROJECT_WINDOW_WAIT_MS = 20_000;
 /** How long a dev window waits to clear its cache before it loads anyway. */
 const DEV_CACHE_CLEAR_WAIT_MS = 3_000;
+/** How long an exit waits for the OS trust store read still on its worker. */
+const SYSTEM_CA_READ_EXIT_WAIT_MS = 2_000;
 
 /**
  * Makes `ade` exist for a user who never opens Settings. Every guard that
@@ -1187,24 +1202,35 @@ async function createWindow(args: {
     args.onCloseRequested?.(win, event);
   });
 
+  // A window being torn down (quit destroys windows) can emit these with its
+  // webContents already gone: null, or destroyed.
+  const windowUrl = (): string | null => {
+    const contents = win.isDestroyed() ? null : win.webContents;
+    return contents && !contents.isDestroyed() ? contents.getURL() : null;
+  };
+
   win.on("unresponsive", () => {
     args.logger?.warn("window.unresponsive", {
       windowId: win.id,
-      url: win.webContents.getURL(),
+      url: windowUrl(),
     });
   });
 
   win.on("responsive", () => {
     args.logger?.info("window.responsive", {
       windowId: win.id,
-      url: win.webContents.getURL(),
+      url: windowUrl(),
     });
   });
 
   const rendererRecoveryBudget = createRendererCrashRecoveryBudget();
 
   win.webContents.on("render-process-gone", (_event, details) => {
-    args.logger?.error("window.render_process_gone", {
+    // `killed` is the renderer ended from outside (SIGTERM on macOS, Windows
+    // ending it at sign-out or shutdown, 0xC000013A): logged, recovered, not
+    // an issue. A crash, an OOM or a failed launch stays one.
+    const level = details.reason === "killed" ? "warn" : "error";
+    args.logger?.[level]("window.render_process_gone", {
       windowId: win.id,
       reason: details.reason,
       exitCode: details.exitCode,
@@ -2416,12 +2442,27 @@ app.whenReady().then(async () => {
    * quietly repoint it somewhere else.
    */
   let accountAuthServiceForOwnerId: AccountAuthService | null = null;
+  // The renderer's account status keeps the last signed-in identity across an
+  // unreadable session read (a locked or briefly unreadable credential file),
+  // so it does not flash to signed out. Main follows the same rule: answering
+  // null there made every Activity call from that window read as "the account
+  // changed" until the file was readable again.
+  let lastReadableAccountOwnerId: string | null = null;
   const readAccountOwnerId = (): string | null => {
-    const status = accountAuthServiceForOwnerId?.getStatus();
-    return status?.signedIn ? status.userId?.trim() || null : null;
+    const service = accountAuthServiceForOwnerId;
+    if (!service) return null;
+    const status = service.getStatus();
+    if (status.signedIn) {
+      lastReadableAccountOwnerId = status.userId?.trim() || null;
+      return lastReadableAccountOwnerId;
+    }
+    if (service.getSessionReadState?.() === "unreadable") return lastReadableAccountOwnerId;
+    lastReadableAccountOwnerId = null;
+    return null;
   };
   const productAnalyticsStateFile = defaultProductAnalyticsStateFile(machineAdeLayout.adeDir);
-  const analyticsReleaseChannel = resolveReleaseChannel({ env: process.env, packaged: app.isPackaged, version: app.getVersion() });
+  // As Sentry decides it: a package that did not come from a release workflow is `development`.
+  const analyticsReleaseChannel = resolveReleaseChannel({ env: process.env, packaged: reportsAsPackagedRelease(app.isPackaged), version: app.getVersion() });
   const productAnalyticsService = getSharedProductAnalyticsService(productAnalyticsStateFile, () =>
     createProductAnalyticsService({
       stateFilePath: productAnalyticsStateFile,
@@ -2429,6 +2470,7 @@ app.whenReady().then(async () => {
       appVersion: app.getVersion(),
       runtimeMode: app.isPackaged ? "desktop_packaged" : "desktop_development",
       releaseChannel: analyticsReleaseChannel,
+      machineId: machineTelemetryIdReader(telemetryAdeDir),
     }));
   setSentryUserResolver(() => productAnalyticsService.getDistinctId());
   setSentryEventMirror(createExceptionAnalyticsMirror({ analytics: productAnalyticsService, surface: "desktop" }));
@@ -3659,13 +3701,16 @@ app.whenReady().then(async () => {
     appVersion: app.getVersion(),
     logger: localRuntimeLogger,
     capture: (input) => productAnalyticsService.capture(input),
+    devBuild: !reportsAsPackagedRelease(app.isPackaged),
     buildReport: async (request) => {
       const projectRoot = request.projectRoot?.trim() || null;
       const result = await collectDiagnosticReport(
         {
           appVersion: app.getVersion(),
           packageChannel: normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+          releaseChannel: analyticsReleaseChannel,
           isPackaged: app.isPackaged,
+          machineId: await loadMachineTelemetryId(telemetryAdeDir),
           userDataPath: app.getPath("userData"),
           reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
           installId: productAnalyticsService.getDistinctId(),
@@ -3685,7 +3730,7 @@ app.whenReady().then(async () => {
           extraNotes: request.extraNotes,
         },
       );
-      return { report: result.report, filePath: result.filePath, installId: result.installId };
+      return { report: result.report, filePath: result.filePath, installId: result.installId, machineId: result.machineId };
     },
     // Fast path only. `webContents.send` does not throw when the renderer has
     // crashed or has not mounted its toast host, so nothing here can tell that
@@ -8769,11 +8814,22 @@ app.whenReady().then(async () => {
     destroyWindowsForExit();
     runImmediateProcessCleanup("process_exit_finalize");
     recordMainExit(shutdownReason ?? "finalize", exitCode);
-    if (app.isReady()) {
-      app.exit(exitCode);
+    const exitNow = (): void => {
+      if (app.isReady()) {
+        app.exit(exitCode);
+        return;
+      }
+      process.exit(exitCode);
+    };
+    // Node frees its cached system certificates on exit; a quit in the first
+    // second, while the OS trust store read still runs on its worker, freed
+    // them under it and crashed (ADE-DESKTOP-9H). That read takes well under a
+    // second, so the exit waits for it, bounded.
+    if (systemCertificateReadInFlight()) {
+      void whenSystemCertificateReadSettles(SYSTEM_CA_READ_EXIT_WAIT_MS).then(exitNow);
       return;
     }
-    process.exit(exitCode);
+    exitNow();
   };
 
   const requestAppShutdown = (args: {

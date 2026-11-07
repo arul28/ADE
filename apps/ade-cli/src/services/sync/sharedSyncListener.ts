@@ -365,7 +365,7 @@ export function createSharedSyncListener(options: {
   bindHost?: string;
   maxPayloadBytes?: number;
   parkedPeerGraceMs?: number;
-  loopbackProbe?: (port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult>;
+  loopbackProbe?: (port: number, expectedNonce: string, timeoutMs?: number) => Promise<SyncLoopbackProbeResult>;
   inspectPort?: (port: number) => SyncListenerPortDiagnosis | Promise<SyncListenerPortDiagnosis>;
   activeServicePid?: () => number | null;
   terminatePid?: (pid: number) => Promise<void>;

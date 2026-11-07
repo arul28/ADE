@@ -8584,30 +8584,35 @@ export function createPrService({
     mergeStateGraphqlBrake.clear();
   };
 
-  const buildGithubSnapshotAuthError = (githubStatus: GitHubStatus): string => {
+  /**
+   * The error a PR sync throws when GitHub cannot be used. The rate-limit and
+   * outage answers are GitHub's state, not a defect, so they are marked and
+   * never become a Sentry issue; every other answer stays reported.
+   */
+  const buildGithubSnapshotAuthError = (githubStatus: GitHubStatus): Error => {
     // Ahead of `!tokenStored`: an unreadable credential store reports no token,
     // so this would otherwise tell someone whose credentials are intact to run
     // `gh auth login` and overwrite them.
     if (githubStatus.credentialStoreUnreadable === true) {
-      return `${GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title}. ${GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail}`;
+      return new Error(`${GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title}. ${GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail}`);
     }
     if (!githubStatus.tokenStored) {
-      return "GitHub auth missing. Run gh auth login or add a PAT in Settings to sync pull requests.";
+      return new Error("GitHub auth missing. Run gh auth login or add a PAT in Settings to sync pull requests.");
     }
     if (githubStatus.tokenDecryptionFailed) {
-      return "GitHub token could not be decrypted. Reconnect GitHub in Settings to sync pull requests.";
+      return new Error("GitHub token could not be decrypted. Reconnect GitHub in Settings to sync pull requests.");
     }
     if (githubStatus.authFailure?.kind === "rate_limited") {
       const retry = githubStatus.authFailure.retryAt
         ? ` Try again after ${githubStatus.authFailure.retryAt}.`
         : " Try again after GitHub resets the API limit.";
-      return `GitHub API rate limit reached.${retry}`;
+      return markExpected(new Error(`GitHub API rate limit reached.${retry}`), "environment");
     }
     // ADE is renewing its own GitHub App authorization. Nothing about the
     // credential is in question, so this must not fall through to the
     // "auth is invalid — update it in Settings" default.
     if (githubStatus.authFailure?.kind === "renewing") {
-      return "ADE is renewing its GitHub authorization — pull requests will sync again in a moment.";
+      return new Error("ADE is renewing its GitHub authorization — pull requests will sync again in a moment.");
     }
     // GitHub itself failed, so nothing about the credential is in question.
     // Without this arm a 503 falls through to the "auth is invalid — update it
@@ -8622,14 +8627,14 @@ export function createPrService({
       githubStatus.authFailure?.kind === "service_unavailable"
       || githubStatus.serviceHealth != null
     ) {
-      return githubStatus.serviceHealth
+      return markExpected(new Error(githubStatus.serviceHealth
         ? "GitHub is having problems, so pull requests can't sync right now. Nothing to change here — ADE will catch up when GitHub recovers."
-        : "GitHub returned an error, so pull requests can't sync right now. This isn't a problem with your GitHub connection — ADE will keep retrying.";
+        : "GitHub returned an error, so pull requests can't sync right now. This isn't a problem with your GitHub connection — ADE will keep retrying."), "network");
     }
     if (githubStatus.repo && githubStatus.repoAccessError) {
-      return `GitHub auth cannot access ${githubStatus.repo.owner}/${githubStatus.repo.name}: ${githubStatus.repoAccessError}. Update it in Settings to sync pull requests.`;
+      return new Error(`GitHub auth cannot access ${githubStatus.repo.owner}/${githubStatus.repo.name}: ${githubStatus.repoAccessError}. Update it in Settings to sync pull requests.`);
     }
-    return "GitHub auth is invalid or missing required access. Update it in Settings to sync pull requests.";
+    return new Error("GitHub auth is invalid or missing required access. Update it in Settings to sync pull requests.");
   };
 
   const requireGithubSnapshotAuth = async (): Promise<GitHubStatus> => {
@@ -8637,7 +8642,7 @@ export function createPrService({
     if (githubStatus.repo) activeGithubRepo = githubStatus.repo;
     if (!githubStatus.tokenStored || !githubStatus.connected) {
       clearGithubSnapshotAuthCache();
-      throw new Error(buildGithubSnapshotAuthError(githubStatus));
+      throw buildGithubSnapshotAuthError(githubStatus);
     }
     return githubStatus;
   };

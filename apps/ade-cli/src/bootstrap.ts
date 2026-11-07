@@ -14,9 +14,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as nodePty from "node-pty";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
+import { brainReportsAsRelease } from "./sentry/brainBuild";
+import { machineTelemetryIdReader } from "../../desktop/src/main/services/analytics/machineTelemetryId";
 import { resolveReleaseChannel } from "../../desktop/src/shared/packageChannel";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
+import { sqliteErrorClass } from "../../desktop/src/main/services/state/sqliteErrors";
 import { createRegisteredSyncPeerGate } from "../../desktop/src/main/services/state/syncPeerCompactionGate";
 import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
 import {
@@ -25,6 +28,7 @@ import {
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
 import { mapKvDbOpenErrorCode } from "../../desktop/src/shared/types/recovery";
 import { codedError } from "../../desktop/src/shared/codedError";
+import { markExpected } from "../../desktop/src/shared/expectedError";
 import { shippedVersionOrNull } from "../../desktop/src/shared/updateTrack";
 import { staleLaneDays } from "../../desktop/src/shared/laneCleanup";
 import {
@@ -229,6 +233,15 @@ import {
 } from "../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "../../desktop/src/main/services/macDesktop/macDesktopLogger";
 import { createAndroidEmulatorService } from "../../desktop/src/main/services/android/androidEmulatorService";
+import {
+  AndroidEmulatorOwnersStore,
+  machineAndroidEmulatorOwnersPath,
+} from "../../desktop/src/main/services/android/androidEmulatorOwners";
+import {
+  createAndroidEmulatorLifecycle,
+  type AndroidEmulatorLifecycle,
+} from "../../desktop/src/main/services/android/androidEmulatorSweep";
+import { readProcessStartTimeMs } from "../../desktop/src/main/services/processes/processStartTime";
 import { createAndroidStreamHub } from "../../desktop/src/main/services/android/androidStream";
 import { resolveScrcpyServerJarPath } from "../../desktop/src/main/services/android/scrcpyServer";
 import { sqlAndroidLaneDeviceRepo } from "../../desktop/src/main/services/android/androidLaneRelease";
@@ -281,6 +294,7 @@ import {
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import {
   brainLogPath,
+  isAdoptableAdeHome,
   resolveMachineAdeLayout,
   resolveMachineEndpointNames,
   resolveReachableMachineDesktopBridgeSocketPath,
@@ -610,6 +624,34 @@ const currentModulePath =
 
 /** One Android stream hub (the emulators' live pictures) for every project this brain runs. */
 const androidStreamHub = createAndroidStreamHub();
+
+/**
+ * One emulator lifecycle for every project this brain runs: the machine's
+ * owner file (`~/.ade/android/emulator-owners.json`, shared by every brain on
+ * the machine, whatever its ADE home), the idle and owner-gone sweep, the
+ * pin. Built with the first project's Android service.
+ */
+let androidEmulatorLifecycle: AndroidEmulatorLifecycle | null = null;
+function sharedAndroidEmulatorLifecycle(machineId: () => string | null, logger: Logger): AndroidEmulatorLifecycle {
+  if (androidEmulatorLifecycle) return androidEmulatorLifecycle;
+  const adeHome = resolveMachineAdeLayout().adeDir;
+  const warned = new Set<string>();
+  androidEmulatorLifecycle = createAndroidEmulatorLifecycle({
+    store: new AndroidEmulatorOwnersStore(machineAndroidEmulatorOwnersPath(), (op, error) => {
+      if (warned.has(op)) return;
+      warned.add(op);
+      logger.warn("android.emulator_owners_file_failed", { op, error: error instanceof Error ? error.message : String(error) });
+    }),
+    self: {
+      brainPid: process.pid,
+      brainStartedAtMs: readProcessStartTimeMs(process.pid),
+      adeHome,
+      adoptable: isAdoptableAdeHome(adeHome),
+    },
+    machineId,
+  });
+  return androidEmulatorLifecycle;
+}
 
 if (
   !isSourceCheckoutRuntimeModule(currentModulePath)
@@ -953,6 +995,26 @@ export function bindIosSimulatorReleaseOnChatEnd(args: {
   });
 }
 
+/** The sentence a failed project database open shows, by its recovery code. */
+function projectDbOpenFailureMessage(
+  code: ReturnType<typeof mapKvDbOpenErrorCode>,
+  dbPath: string,
+  sqliteClass: string | null = null,
+): string {
+  switch (code) {
+    case "storage_read_failed":
+      return storageUnreadableMessage(dbPath, detectCloudStorageProvider(dbPath));
+    case "storage_io_failed":
+      return `ADE couldn't read or write this project's data at ${dbPath}: the drive isn't answering. Check that the drive is connected and has free space, then open the project again.`;
+    case "db_busy":
+      return "Another ADE process is still using this project's data. Wait a moment, then open the project again.";
+    default:
+      return sqliteClass
+        ? `ADE could not open the project data store (${sqliteClass}).`
+        : "ADE could not open the project data store.";
+  }
+}
+
 export async function createAdeRuntime(args: {
   projectRoot: string;
   /** Control endpoint this runtime actually bound, for chat ownership stamps. */
@@ -1080,12 +1142,18 @@ export async function createAdeRuntime(args: {
     // `syscall`, and without a path the classifier refuses to call them
     // storage faults (a socket errno must not read as an unreadable file).
     const code = mapKvDbOpenErrorCode(classifySqliteOpenError(error, { path: paths.dbPath }));
+    // A failure no bucket fits keeps its SQLite class (`sqlite_cantopen`,
+    // `eacces`), so a report says more than "could not open".
+    const sqliteClass = code === "db_open_failed" ? sqliteErrorClass(error) : null;
     const detail = error instanceof Error ? error.message : String(error);
+    // A drive that stopped answering and a peer that kept the database locked
+    // are this machine's state, not a defect: the person gets the fix, and
+    // Sentry gets a Log instead of an issue.
+    const environmentFailure = code === "storage_io_failed" || code === "db_busy";
+    if (environmentFailure && error instanceof Error) markExpected(error, "environment");
     const failure = {
       code,
-      message: code === "storage_read_failed"
-        ? storageUnreadableMessage(paths.dbPath, detectCloudStorageProvider(paths.dbPath))
-        : "ADE could not open the project data store.",
+      message: projectDbOpenFailureMessage(code, paths.dbPath, sqliteClass),
       detail,
       projectRoot,
       component: "project_db_open" as const,
@@ -1100,6 +1168,7 @@ export async function createAdeRuntime(args: {
     // the real error, and `ade report-issue` bundles them.
     logger.error("project.db_open_failed", {
       code,
+      ...(sqliteClass ? { sqliteClass } : {}),
       detail,
       dbPath: paths.dbPath,
       projectRoot,
@@ -1111,10 +1180,11 @@ export async function createAdeRuntime(args: {
     // above and handed the renderer a bare libuv message. Carry the code, the
     // offending path and the raw errno instead — the code picks the recovery
     // copy, and `detail` stays for logs and `ade report-issue`.
-    throw Object.assign(
+    const coded = Object.assign(
       codedError(failure.message, code),
-      { dbPath: paths.dbPath, projectRoot, detail },
+      { dbPath: paths.dbPath, projectRoot, detail, ...(sqliteClass ? { sqliteClass } : {}) },
     );
+    throw environmentFailure ? markExpected(coded, "environment") : coded;
   }
   clearLastFailure({ kind: "project", projectRoot });
 
@@ -1199,11 +1269,13 @@ export async function createAdeRuntime(args: {
         logger,
         appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
         runtimeMode: syncRuntimeOptions?.runtimeKind ?? (chatOnlyRuntime ? "chat_runtime" : "project_runtime"),
+        // As `initBrainSentry` decides it (`sentry/brainBuild.ts`).
         releaseChannel: resolveReleaseChannel({
           env: process.env,
-          packaged: !isSourceCheckoutRuntimeModule(currentModulePath),
+          packaged: brainReportsAsRelease(process.env, currentModulePath),
           version: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION,
         }),
+        machineId: machineTelemetryIdReader(resolveMachineAdeLayout().adeDir),
       }));
     setSentryUserResolver(() => productAnalyticsService.getDistinctId());
     setSentryEventMirror(createExceptionAnalyticsMirror({ analytics: productAnalyticsService, surface: "api" }));
@@ -2304,10 +2376,15 @@ export async function createAdeRuntime(args: {
             return null;
           }
         },
-        // This brain's exits are restarts (an update, a service restart, a
-        // project repair): the lanes' emulators keep running and the next
-        // brain re-adopts them, as Mac Desktop hands its apps off.
-        handOffOnDispose: true,
+        // On the installed app's ADE home this brain's exits are restarts (an
+        // update, a service restart, a project repair): the lanes' emulators
+        // keep running and the next brain re-adopts them, as Mac Desktop
+        // hands its apps off. A dev or test brain on any other home has no
+        // next brain, so it stops its emulators on the way out.
+        handOffOnDispose: isAdoptableAdeHome(resolveMachineAdeLayout().adeDir),
+        // Owner records, the idle stop, the pin and the cross-brain memory
+        // ledger, shared by this brain's projects.
+        emulatorLifecycle: sharedAndroidEmulatorLifecycle(readSyncDeviceId, logger),
         // The machine's SDK choice ("Use mine…", a chosen install folder), shared by every project.
         sdkSettingsFile: path.join(resolveMachineAdeLayout().adeDir, "android", "settings.json"),
         // P1: screenshots, recordings, proof bundles and renders file

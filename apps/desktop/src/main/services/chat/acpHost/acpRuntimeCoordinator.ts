@@ -17,6 +17,7 @@ import type {
 } from "../../../../shared/types";
 import type { Logger } from "../../logging/logger";
 import { getErrorMessage } from "../../shared/utils";
+import { markExpected } from "../../../../shared/expectedError";
 import type { ChatRuntimeBudget } from "../chatRuntimeBudget";
 import { AcpRpcError } from "./acpConnection";
 import {
@@ -250,6 +251,46 @@ function recordConfigChange<TSteer>(
     return;
   }
   runtime.configOptions = runtime.configOptions.map((option) => (option.id === configId ? { ...option, value } : option));
+}
+
+/**
+ * An agent build that can take ADE's permission mode neither through
+ * `session/set_config_option` nor `session/set_mode`. The chat fails closed
+ * (the agent could run with a broader posture), but the agent itself works:
+ * not a runtime failure of the provider.
+ */
+export class AcpModeUnsupportedError extends Error {
+  constructor(displayName: string, cause: unknown) {
+    super(`This ${displayName} build cannot switch its permission mode, so ADE did not start it. Update ${displayName}, then try again.`, { cause });
+    this.name = "AcpModeUnsupportedError";
+    markExpected(this, "environment");
+  }
+}
+
+/**
+ * `session/set_mode` for a session whose agent has no `session/set_config_option`.
+ * `unsupported` when the agent has no `session/set_mode` either or refused
+ * the mode (invalid params); any other failure is the call's own.
+ */
+async function applyAcpModeWithoutConfigOption<TSteer>(
+  runtime: AcpRuntimeState<TSteer>,
+  modeId: string,
+  args: { sessionId: string; logger: Logger },
+): Promise<{ applied: true } | { applied: false; unsupported: boolean; error: unknown }> {
+  if (runtime.session.initialModeId === modeId) return { applied: true };
+  try {
+    await runtime.session.setMode(modeId);
+    runtime.currentModeId = modeId;
+    return { applied: true };
+  } catch (error) {
+    args.logger.warn("agent_chat.acp_set_mode_fallback_failed", {
+      sessionId: args.sessionId,
+      provider: runtime.provider,
+      error: getErrorMessage(error),
+    });
+    const unsupported = error instanceof AcpRpcError && (error.isMethodNotFound || error.code === -32602);
+    return { applied: false, unsupported, error };
+  }
 }
 
 export type AcpReasoningEffortUpdateResult = "applied" | "unchanged" | "rejected" | "transient_failure";
@@ -500,13 +541,26 @@ export async function createAcpRuntime<TSteer>(
         nativeModeValue,
         await session.setConfigOption({ configId: "mode", value: nativeModeValue }),
       );
-    } catch (error) {
+    } catch (caught) {
       args.logger.warn("agent_chat.acp_set_mode_failed", {
         sessionId: args.owner.session.id,
         provider: args.provider,
-        error: getErrorMessage(error),
+        error: getErrorMessage(caught),
       });
-      if (args.dialect.modeSetupRequired) {
+      // A build without `session/set_config_option` (-32601) still takes the
+      // mode through the standard `session/set_mode`, or needs nothing when
+      // its session already runs in that mode. Only a mode it cannot take at
+      // all (no `set_mode` either, or the mode refused) fails closed as the
+      // build's answer; a `set_mode` that failed any other way is reported.
+      const methodMissing = caught instanceof AcpRpcError && caught.isMethodNotFound;
+      const fallback = methodMissing
+        ? await applyAcpModeWithoutConfigOption(runtime, nativeModeValue, { sessionId: args.owner.session.id, logger: args.logger })
+        : null;
+      const applied = fallback?.applied === true;
+      const error = fallback && !fallback.applied
+        ? fallback.unsupported ? new AcpModeUnsupportedError(args.dialect.displayName, caught) : fallback.error
+        : caught;
+      if (!applied && args.dialect.modeSetupRequired) {
         // A failed mode setup must never fall through to onReady: the agent may
         // now be running with a broader posture than the user selected.
         try {

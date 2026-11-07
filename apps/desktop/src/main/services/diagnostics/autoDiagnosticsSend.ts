@@ -40,9 +40,10 @@ export type AutoDiagnosticsOutcome =
    */
   | "skipped_budget"
   /**
-   * The request never became a candidate: an unusable failure code, or another
-   * send already in flight. Distinct from `skipped_budget` because nothing was
-   * spent and nothing was refused — and, like today, it emits no analytics.
+   * The request never became a candidate: an unusable failure code, another
+   * send already in flight, or a development build (which never sends on its
+   * own). Distinct from `skipped_budget` because nothing was spent and nothing
+   * was refused — and, like today, it emits no analytics.
    */
   | "skipped_ineligible"
   /** Built or uploaded and did not work. Silent to the user by design. */
@@ -94,6 +95,14 @@ export type AutoDiagnosticsSendArgs<TBuilt> = {
   onSent?: (notice: AutoDiagnosticsSentNotice) => void;
   logger?: AutoDiagnosticsLogger;
   capture?: (input: ProductAnalyticsCapture) => void;
+  /**
+   * A development build: a source checkout, a dev brain, or a package that did
+   * not come from a release workflow (`main/sentry/releaseBuild.ts`). It never
+   * sends a report on its own, so a developer's broken branch does not spend
+   * the fleet's report budget or read as a user's failure. A person can still
+   * send one by hand.
+   */
+  devBuild?: boolean;
   now?: () => number;
 };
 
@@ -140,6 +149,14 @@ export async function runAutoDiagnosticsSend<TBuilt>(
     }
   };
 
+  if (args.devBuild) {
+    args.logger?.info?.("diagnostics.auto_send_skipped", {
+      failureCode,
+      surface: args.surface,
+      reason: "dev_build",
+    });
+    return "skipped_ineligible";
+  }
   if (!isAutoDiagnosticsEnabled(args.stateFilePath)) return "skipped_disabled";
   const claim = claimAutoDiagnosticsSend({
     filePath: args.stateFilePath,

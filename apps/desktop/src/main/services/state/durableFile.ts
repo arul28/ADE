@@ -227,6 +227,54 @@ export function writeFileAtomic(
   }
 }
 
+/**
+ * Create `filePath` with `data` only if it does not exist, never exposing a
+ * partial file: the bytes go to a sibling temp file, and a hard link puts it in
+ * place (EEXIST when the name is taken). A filesystem without hard links (FAT,
+ * some network shares) falls back to an exclusive create in place; any other
+ * link failure propagates.
+ */
+export function createFileExclusive(
+  filePath: string,
+  data: string | Buffer,
+  opts: { mode?: number } = {},
+): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = siblingTempPath(filePath);
+  const writeOptions = opts.mode != null ? { flag: "wx", mode: opts.mode } : { flag: "wx" };
+  try {
+    fs.writeFileSync(tempPath, data, writeOptions);
+    try {
+      fs.linkSync(tempPath, filePath);
+    } catch (error) {
+      if (!HARD_LINK_UNSUPPORTED_CODES.has((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      createInPlaceExclusive(filePath, data, opts.mode);
+    }
+  } finally {
+    // A temp left behind is swept by `cleanupAbandonedTempFiles`.
+    bestEffortUnlink(tempPath);
+  }
+}
+
+// Link errors that mean "this filesystem has no hard links" (Windows FAT
+// reports ERROR_INVALID_FUNCTION, which libuv maps to EISDIR).
+const HARD_LINK_UNSUPPORTED_CODES = new Set([
+  "EPERM", "EACCES", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV", "EMLINK", "EISDIR", "EINVAL",
+]);
+
+/** O_EXCL create in place; a write that fails after the create removes the file it made. */
+function createInPlaceExclusive(filePath: string, data: string | Buffer, mode: number | undefined): void {
+  const fd = mode != null ? fs.openSync(filePath, "wx", mode) : fs.openSync(filePath, "wx");
+  try {
+    fs.writeFileSync(fd, data);
+  } catch (error) {
+    try { fs.closeSync(fd); } catch { /* preserve original error */ }
+    bestEffortUnlink(filePath);
+    throw error;
+  }
+  fs.closeSync(fd);
+}
+
 export type JsonWithPreviousOptions<T> = {
   validate?: (value: unknown) => value is T;
   fsync?: boolean;

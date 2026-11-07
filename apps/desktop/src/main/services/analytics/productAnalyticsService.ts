@@ -104,6 +104,12 @@ type ProductAnalyticsState = {
   pendingMilestones: Partial<Record<MilestoneEvent, PendingMilestone>>;
   /** Clients (surfaces) whose first ade_app_opened has been sent. */
   openedSurfaces: ProductAnalyticsSurface[];
+  /**
+   * The `machine_id` (`machineTelemetryId.ts`) this state was written on. A
+   * different one at load means the file was copied to another computer (a
+   * migrated or restored ADE home), whose events must not pass as this one's.
+   */
+  machineId: string | null;
   enabled: boolean;
   /** Oldest usage-ledger timestamp that may be exported under current consent. */
   enabledSinceMs: number | null;
@@ -129,6 +135,12 @@ type ProductAnalyticsServiceArgs = {
   runtimeMode: string;
   /** `resolveReleaseChannel` for this process; `unknown` when a caller has none. */
   releaseChannel?: ReleaseChannel | null;
+  /**
+   * This install's `machine_id`, or null/undefined while it is unknown (not
+   * probed yet, or an OS with no machine identifier). Read on every capture, so
+   * it must not probe: pass a cached reader (`peekMachineTelemetryId`).
+   */
+  machineId?: () => string | null | undefined;
   projectToken?: string | null;
   host?: string | null;
   dailyBudget?: number;
@@ -294,6 +306,7 @@ function createInitialState(nowMs: number): ProductAnalyticsState {
     activatedAtMs: null,
     pendingMilestones: {},
     openedSurfaces: [],
+    machineId: null,
     enabled: true,
     enabledSinceMs: nowMs,
     quota: freshQuotaState(nowMs),
@@ -372,6 +385,9 @@ function normalizeState(value: unknown, nowMs: number): ProductAnalyticsState | 
     openedSurfaces: Array.isArray(parsed.openedSurfaces)
       ? PRODUCT_ANALYTICS_SURFACE_LIST.filter((surface) => parsed.openedSurfaces?.some((opened) => normalizeAdeUsageClientSurface(opened) === surface))
       : [...PRODUCT_ANALYTICS_SURFACE_LIST],
+    machineId: typeof parsed.machineId === "string" && MACHINE_ID_VALUE.test(parsed.machineId)
+      ? parsed.machineId
+      : null,
     enabled,
     enabledSinceMs: enabled
       ? (typeof parsed.enabledSinceMs === "number" && Number.isFinite(parsed.enabledSinceMs)
@@ -380,6 +396,32 @@ function normalizeState(value: unknown, nowMs: number): ProductAnalyticsState | 
       : null,
     quota: normalizeQuotaState(parsed.quota, nowMs),
   };
+}
+
+const MACHINE_ID_VALUE = /^[0-9a-f]{16}$/;
+
+/**
+ * The state as this machine may use it. A state written on another computer
+ * (the whole ADE home copied or restored onto a new one) keeps its consent and
+ * the signed-in person, but gets a new installation id, anonymous id and
+ * hashing salt: the two computers are two installs, and the copy must not
+ * send events under the original's anonymous id or hash its projects to the
+ * same values. A state from before `machineId` existed simply adopts this one.
+ * Returns whether anything changed, so the caller (which holds the lock)
+ * writes it.
+ */
+function adoptMachineId(state: ProductAnalyticsState, machineId: string | null | undefined): boolean {
+  if (!machineId || !MACHINE_ID_VALUE.test(machineId) || state.machineId === machineId) return false;
+  if (state.machineId) {
+    const installationId = `ade_${randomBytes(16).toString("hex")}`;
+    state.installationId = installationId;
+    state.anonymousId = installationId;
+    state.hashSalt = randomBytes(32).toString("hex");
+    // Dedupe keys are hashed with the salt; the old ones match nothing now.
+    state.quota.dedupe = {};
+  }
+  state.machineId = machineId;
+  return true;
 }
 
 function readState(filePath: string, nowMs: number): ProductAnalyticsState {
@@ -627,6 +669,28 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   const host = normalizeHost(args.host ?? bundledHost());
   const appVersion = safeProductAnalyticsString(args.appVersion?.trim() ?? "") ?? "unknown";
   const releaseChannel: ReleaseChannel | "unknown" = args.releaseChannel ?? "unknown";
+  const currentMachineId = (): string | null => {
+    try {
+      const id = args.machineId?.();
+      return typeof id === "string" && MACHINE_ID_VALUE.test(id) ? id : null;
+    } catch {
+      return null;
+    }
+  };
+  /** `machine_id` on every event, when this install has one. */
+  const machineProperty = (): Record<string, string> => {
+    const id = currentMachineId();
+    return id ? { machine_id: id } : {};
+  };
+  /** The state under the lock the caller holds, reconciled with this machine. */
+  const loadLockedState = (): ProductAnalyticsState => {
+    const loaded = rollQuotaDay(readState(args.stateFilePath, now()), now());
+    if (adoptMachineId(loaded, currentMachineId())) {
+      writeState(args.stateFilePath, loaded);
+      args.logger.debug("product_analytics.machine_adopted", {});
+    }
+    return loaded;
+  };
   const dailyBudget = Math.max(25, Math.min(2_000, Math.floor(args.dailyBudget ?? DEFAULT_DAILY_BUDGET)));
   // State stays lazy so builds without a valid public project token have zero
   // analytics filesystem or module-startup cost. Every configured path catches
@@ -779,6 +843,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
           ...productAnalyticsEventContext("ade_analytics_budget", "api", null),
           is_internal: isInternalInstall(),
           release_channel: releaseChannel,
+          ...machineProperty(),
           sent_count: summary.sentCount,
           dropped_count: summary.droppedCount,
           drop_reason: summary.dropReason,
@@ -826,7 +891,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
     try {
       release = tryAcquireStateLock(args.stateFilePath);
       if (!release) return { accepted: false, reason: "rate_limited" };
-      state = rollQuotaDay(readState(args.stateFilePath, now()), now());
+      state = loadLockedState();
       if (!state.enabled) return { accepted: false, reason: "disabled" };
       // An account identified by a build before `clerk_user_id` existed is
       // identified once more, so its person gets the id.
@@ -931,7 +996,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
     try {
       release = tryAcquireStateLock(args.stateFilePath);
       if (!release) return false;
-      state = rollQuotaDay(readState(args.stateFilePath, now()), now());
+      state = loadLockedState();
       if (!state.identifiedUserHash) return false;
       state = {
         ...state,
@@ -1000,7 +1065,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         pendingIngressDrops = Math.min(1_000_000, pendingIngressDrops + 1);
         return { accepted: false, reason: "rate_limited" };
       }
-      state = rollQuotaDay(readState(args.stateFilePath, now()), now());
+      state = loadLockedState();
       if (pendingIngressDrops > 0) {
         state.quota.dropped = Math.min(1_000_000_000, state.quota.dropped + pendingIngressDrops);
         state.quota.droppedByReason.rate_limited = Math.min(
@@ -1083,6 +1148,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         ...productAnalyticsEventContext(input.event, surface, typedProperties ?? input.properties),
         is_internal: isInternalInstall(),
         release_channel: releaseChannel,
+        ...machineProperty(),
         app_version: appVersion,
         runtime_mode: safeProductAnalyticsString(args.runtimeMode) ?? "unknown",
         platform: process.platform,
@@ -1220,7 +1286,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
     try {
       release = tryAcquireStateLock(args.stateFilePath);
       if (release) {
-        const nextState = rollQuotaDay(readState(args.stateFilePath, now()), now());
+        const nextState = loadLockedState();
         if (nextState.quota.day !== state.quota.day) writeState(args.stateFilePath, nextState);
         state = nextState;
       }
@@ -1271,7 +1337,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
     try {
       release = tryAcquireStateLock(args.stateFilePath);
       if (release) {
-        state = rollQuotaDay(readState(args.stateFilePath, now()), now());
+        state = loadLockedState();
         state = {
           ...state,
           enabled,

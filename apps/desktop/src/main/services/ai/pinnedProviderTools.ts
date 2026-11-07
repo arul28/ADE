@@ -59,12 +59,17 @@ const ERROR_KIND_WORDS: Readonly<Partial<Record<ToolErrorKind, string>>> = {
   integrity: "the download did not match ADE's checksum",
   "disk-space": "not enough free disk space",
   extract: "the download could not be unpacked",
-  "lock-timeout": "another ADE was still installing it",
+  "lock-timeout": "the install lock was never released",
   filesystem: "it could not be written to disk",
 };
 
 function failureReason(errorKind: string | null): string {
   return (errorKind && ERROR_KIND_WORDS[errorKind as ToolErrorKind]) ?? errorKind ?? "unknown error";
+}
+
+/** A wait on the install lock that timed out while a live process on this machine still held it. */
+function isLiveLockTimeout(status: PinnedToolStatus): boolean {
+  return status.errorKind === "lock-timeout" && status.lockHolderLive === true;
 }
 
 /**
@@ -79,6 +84,14 @@ export function pinnedToolBlocker(label: string, status: PinnedToolStatus): stri
     case "downloading":
       return `ADE is downloading ${label} for this machine. Refresh when it finishes.`;
     case "failed":
+      // The install lock outlived this process's wait and names a process on
+      // this machine that is still running: another ADE is still installing
+      // the same copy, and its result is what this process uses once it
+      // lands. Nothing here failed. A lock with no live holder is a real
+      // failure and keeps the generic message.
+      if (isLiveLockTimeout(status)) {
+        return `Another ADE on this machine is still installing ${label}. Try again when it finishes.`;
+      }
       return `Couldn't download ${label}: ${failureReason(status.errorKind)}. Retry from Settings > Providers.`;
     case "unavailable":
       return status.errorKind === "unsupported-target"
@@ -147,12 +160,14 @@ export class PinnedToolNotReadyError extends Error {
     this.tool = tool;
     this.state = status.state;
     this.errorKind = status.errorKind;
-    // Not downloaded yet, still downloading, or not built for this machine's
-    // platform: the machine's state, which the message names. A failed
+    // Not downloaded yet, still downloading (here, or by another ADE holding
+    // the install lock), or not built for this machine's platform: the
+    // machine's state, which the message names. A failed
     // download, a build with no pin for the tool (a broken manifest) and a
     // "ready" tool that could not start stay issues: those are ADE's.
     const machineState = status.state === "missing"
       || status.state === "downloading"
+      || (status.state === "failed" && isLiveLockTimeout(status))
       || (status.state === "unavailable" && status.errorKind === "unsupported-target");
     if (machineState) {
       markExpected(this, "environment");

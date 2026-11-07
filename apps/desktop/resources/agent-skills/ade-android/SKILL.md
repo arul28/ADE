@@ -18,9 +18,14 @@ Android tool of the Work pane.
 
 - **Always call `"$ADE_CLI_PATH"`, never a bare `ade`.** Do not add
   `--socket`: `"$ADE_CLI_PATH"` already names the right brain.
-- **Never run `emulator -avd`.** It starts a second emulator outside the
-  lane, with its own window, on the user's machine. The lane has its
-  emulator: `android start` boots it.
+- **Start emulators only with `android start`, never with the raw
+  `emulator` binary (`emulator -avd …`).** `android start` checks the
+  machine's memory first and refuses (`ANDROID_LOW_MEMORY`) when another
+  emulator would make it swap; each emulator takes 5–9 GB, and a machine
+  with too many froze. ADE also stops the emulators it starts once nobody
+  uses them. An emulator started by hand skips both: it opens a window on
+  the user's machine, still counts against the memory limit, and ADE never
+  stops it. The lane has its emulator: `android start` boots it.
 - **Never run `adb kill-server`, `adb emu kill` or `adb reboot`.** One adb
   server serves every lane's emulator and every live view. Killing it cuts
   them all off. To stop the lane's emulator, use `android stop`.
@@ -53,8 +58,15 @@ Plain `adb shell …` reads (`dumpsys`, `getprop`, `pm list`) are fine, with
   (`android devices --profiles --text` lists the profiles), or hold one of
   the user's AVDs that no lane holds: `android device-attach --avd <name>`.
 - `state: off`: `android start --text` boots it (about 20 s; a new AVD's first
-  boot can take a minute).
+  boot can take a minute). `ANDROID_LOW_MEMORY` means the machine is short
+  of memory: stop an emulator you no longer need (`android stop`), or tell
+  the user. Ask the user before `android start --force`.
 - `state: booted`: drive it.
+
+ADE stops an emulator it started that nobody has used for 20 minutes
+(`keep running: no` in `status`). It boots again with `android start`. If you
+need it up through a long pause, run `android keep-running on --text`, and
+`off` when you are done.
 
 `status` also shows `capabilities`: whether this machine can record, read the
 UI tree (and with which tool), read logcat and build with Gradle, and the
@@ -147,11 +159,12 @@ a tap is fresh. `--fresh` reads again anyway.
   user's own AVD (attached), it removes only apps ADE installed, and ADE
   removes those again when the lane lets the AVD go.
 
-- An emulator ADE made powers off after 30 min with no input, view,
-  recording, lease, test or preview (`ADE_ANDROID_IDLE_POWER_OFF_MINUTES`, 0
-  turns it off). The lane keeps it: `"$A" android start` boots it again, and
-  `status` says when it was powered off. ADE never powers off an emulator it
-  did not start. Take a `lease` when you need it to stay up between turns.
+- The 20-minute idle stop counts any call on the lane's emulator, input on
+  the device itself, another viewer, a recording, a lease and a test run as use
+  (`ADE_ANDROID_IDLE_POWER_OFF_MINUTES`, 0 turns it off). The lane keeps its
+  device: `"$A" android start` boots it again, and `status` says when it was
+  powered off. ADE never powers off an emulator it did not start. Take a
+  `lease`, or `keep-running on`, when you need it to stay up between turns.
 - `open-url` with an `http(s)` URL that opens in Chrome skips Chrome's first
   run ("Welcome to Chrome" and the notifications prompt), once per boot.
 - You cannot start or stop the live view: it belongs to the user (its start

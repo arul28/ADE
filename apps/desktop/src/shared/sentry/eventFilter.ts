@@ -5,7 +5,7 @@
  * can all take it.
  */
 import { expectedErrorKind } from "../expectedError";
-import { resolveSentryUserId } from "./capture";
+import { resolveSentryMachineId, resolveSentryUserId } from "./capture";
 import { applySentryDiagnostics, type DiagnosticEvent, type DiagnosticHint } from "./diagnostics";
 import { createEventLimiter, eventBudgetKey, FATAL_SENTRY_BUDGET, isIgnoredEvent, type SentryBudget } from "./guardrails";
 import { forwardLogToSentry } from "./logBridge";
@@ -23,7 +23,7 @@ import {
 type FilterableEvent = ScrubbableEvent & Parameters<typeof eventBudgetKey>[0] & DiagnosticEvent & SentryMirrorEvent & { type?: string; level?: string };
 
 // The user resolver lives in `capture.ts`; re-exported for the processes that install it here.
-export { resolveSentryUserId, setSentryUserResolver } from "./capture";
+export { resolveSentryUserId, setSentryMachineIdResolver, setSentryUserResolver } from "./capture";
 
 /**
  * Receives each error event `beforeSend` admitted, after the budget and the
@@ -117,6 +117,8 @@ export function createSentryEventHooks(budget?: SentryBudget) {
       if (!admitted) return null;
       const userId = resolveSentryUserId();
       if (userId) candidate.user = { ...(candidate.user ?? {}), id: userId };
+      const machineId = resolveSentryMachineId();
+      if (machineId) candidate.tags = { ...(candidate.tags ?? {}), machine_id: machineId };
       // A no-op outside main and the brain (`enableSentryDiagnostics`).
       applySentryDiagnostics(candidate, hint, budgetKey);
       const scrubbed = scrubEvent(candidate);
@@ -142,7 +144,10 @@ export function createSentryEventHooks(budget?: SentryBudget) {
       return scrubSpan(span as unknown as ScrubbableSpan) as unknown as T;
     },
     beforeSendLog<T>(log: T): T | null {
-      return scrubLog(log as unknown as ScrubbableLog) as unknown as T;
+      const scrubbable = log as unknown as ScrubbableLog;
+      const machineId = resolveSentryMachineId();
+      if (machineId) scrubbable.attributes = { ...(scrubbable.attributes ?? {}), machine_id: machineId };
+      return scrubLog(scrubbable) as unknown as T;
     },
   };
 }

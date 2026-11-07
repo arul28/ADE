@@ -8,6 +8,7 @@ import type { Logger } from "../logging/logger";
 import { killWindowsProcessTreeAsync, resolveCliSpawnInvocation } from "../shared/processExecution";
 import { signalProcessGroup } from "../shared/utils";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { createPrivateKeyStreamFilter, scrubOutputTail } from "../../../shared/sentry/scrub";
 import { moveClaudeMcpConfigOffArgv, pruneStaleClaudeMcpConfigFiles, removeClaudeMcpConfigFiles } from "./claudeMcpConfigFile";
 
 /**
@@ -51,7 +52,27 @@ export type ClaudeSubprocessRecord = ClaudeSubprocessMetadata & {
   createdAt: string;
 };
 
-type ClaudeChildProcess = ChildProcessByStdio<Writable, Readable, null>;
+type ClaudeChildProcess = ChildProcessByStdio<Writable, Readable, Readable>;
+
+/** Characters of a chat's Claude stderr kept for failure reports, and how many chats keep one. */
+const STDERR_TAIL_MAX_CHARS = 4_000;
+const STDERR_TAIL_MAX_SESSIONS = 32;
+const STDERR_TAIL_REPORT_LINES = 20;
+const STDERR_TAIL_REPORT_CHARS = 2_000;
+const STDERR_TAIL_LINE_CHARS = 300;
+
+/**
+ * The last `maxChars` of `text`, minus the first line when the cut lands inside
+ * it: a line whose start was cut off could hold the end of a secret without
+ * the prefix the scrubber recognizes it by.
+ */
+function keepTrailingWholeLines(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const kept = text.slice(-maxChars);
+  if (text[text.length - maxChars - 1] === "\n") return kept;
+  const newline = kept.indexOf("\n");
+  return newline === -1 ? "" : kept.slice(newline + 1);
+}
 
 /**
  * Image names a registered Claude subprocess can legitimately be running under
@@ -242,6 +263,53 @@ export function createClaudeSubprocessReaper(args: {
    * outside, and the failure card says so instead of the bare exit code.
    */
   const adeTerminatedAt = new Map<string, number>();
+  /**
+   * The end of what each chat's Claude process wrote to stderr, newest chats
+   * last. A process that exits with only a code is explained by its last
+   * lines, and nothing else keeps them.
+   */
+  const stderrTailBySession = new Map<string, string>();
+  /** Chats whose kept tail was cut inside a line that has not ended yet. */
+  const stderrMidLineCut = new Set<string>();
+  const captureStderrTail = (child: { stderr?: Readable | null }, sessionId: string): void => {
+    const stream = child.stderr;
+    if (!stream) return;
+    // Keys come out as the text arrives, before the tail is cut: a cut that
+    // dropped a key's BEGIN line would leave its body unrecognizable, and a key
+    // longer than the tail would never show its END. One filter per stream.
+    const keyFilter = createPrivateKeyStreamFilter();
+    // Always drained: a full pipe would stall the CLI.
+    stream.on("data", (chunk: Buffer | string) => {
+      const text = keyFilter.push(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+      if (!text) return;
+      // A cut that left nothing ended inside a line; that line's rest arrives
+      // here without the start the scrubber recognizes it by, so drop it.
+      let incoming = text;
+      if (stderrMidLineCut.has(sessionId)) {
+        const newline = incoming.indexOf("\n");
+        if (newline === -1) return;
+        incoming = incoming.slice(newline + 1);
+        stderrMidLineCut.delete(sessionId);
+      }
+      const combined = `${stderrTailBySession.get(sessionId) ?? ""}${incoming}`;
+      const next = keepTrailingWholeLines(combined, STDERR_TAIL_MAX_CHARS);
+      if (!next && combined.length > STDERR_TAIL_MAX_CHARS && !combined.endsWith("\n")) {
+        stderrMidLineCut.add(sessionId);
+      }
+      stderrTailBySession.delete(sessionId);
+      stderrTailBySession.set(sessionId, next);
+      if (stderrTailBySession.size > STDERR_TAIL_MAX_SESSIONS) {
+        const oldest = stderrTailBySession.keys().next();
+        if (!oldest.done) {
+          stderrTailBySession.delete(oldest.value);
+          stderrMidLineCut.delete(oldest.value);
+        }
+      }
+    });
+    stream.on("error", () => {
+      // The process is going away; its tail so far is what there is.
+    });
+  };
 
   /**
    * The POSIX half of "kill the tree, not the leaf" — the counterpart to the
@@ -561,7 +629,7 @@ export function createClaudeSubprocessReaper(args: {
         cwd: options.cwd,
         env: options.env,
         signal: options.signal,
-        stdio: ["pipe", "pipe", "ignore"],
+        stdio: ["pipe", "pipe", "pipe"],
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         windowsHide: true,
         // POSIX only: put the Claude binary in its own process group so a
@@ -585,6 +653,7 @@ export function createClaudeSubprocessReaper(args: {
       child.once("exit", cleanup);
       child.once("error", cleanup);
     }
+    captureStderrTail(child, metadata.sessionId);
     register(child, metadata, options.command, mcpConfig.args, { groupLeader: !isWindows });
     return child;
   };
@@ -703,6 +772,20 @@ export function createClaudeSubprocessReaper(args: {
     /** Whether ADE itself signalled one of this chat's processes at or after `sinceMs`. */
     terminatedByAdeSince: (sessionId: string, sinceMs: number): boolean =>
       (adeTerminatedAt.get(sessionId) ?? Number.NEGATIVE_INFINITY) >= sinceMs,
+    /**
+     * The last lines this chat's Claude process wrote to stderr, scrubbed and
+     * bounded, for a runtime-failed report. Null when it wrote nothing.
+     */
+    stderrTail: (sessionId: string): string | null => {
+      // Scrubbed whole before it is split or cut (`scrubOutputTail`): a
+      // private key spans lines. A home path or an email never reaches a report.
+      const lines = scrubOutputTail(stderrTailBySession.get(sessionId) ?? "", {
+        maxLines: STDERR_TAIL_REPORT_LINES,
+        lineChars: STDERR_TAIL_LINE_CHARS,
+      });
+      if (!lines.length) return null;
+      return lines.join("\n").slice(-STDERR_TAIL_REPORT_CHARS);
+    },
     liveRecords: (): ClaudeSubprocessRecord[] => [...live.values()].map((entry) => ({ ...entry.record })),
     /**
      * Live SDK processes owned by one chat, for the surfaces that report what a

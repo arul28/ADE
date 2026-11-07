@@ -60,6 +60,13 @@ permissions:
   checks: read
   contents: read
 
+# Every build this workflow makes is a release: the desktop bundle and the brain
+# bake this in (`__ADE_RELEASE_BUILD__`, both `tsup.config.ts`), and only a build
+# that has it reports to Sentry and PostHog as stable or beta. A package built
+# anywhere else (a local `npm run dist`, a CI check build) is `development`.
+env:
+  ADE_RELEASE_BUILD: "1"
+
 jobs:
   verify:
     runs-on: ubuntu-latest

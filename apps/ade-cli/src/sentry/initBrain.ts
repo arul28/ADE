@@ -11,7 +11,9 @@
  */
 import * as Sentry from "@sentry/node";
 import { resolveReleaseChannel } from "../../../desktop/src/shared/packageChannel";
-import { connectSentry } from "../../../desktop/src/shared/sentry/capture";
+import { connectSentry, setSentryMachineIdResolver } from "../../../desktop/src/shared/sentry/capture";
+import { loadMachineTelemetryId, peekMachineTelemetryId } from "../../../desktop/src/main/services/analytics/machineTelemetryId";
+import { resolveMachineAdeDir } from "../services/projects/machineLayout";
 import {
   resolveSentryDsn,
   resolveSentryEnvironment,
@@ -22,7 +24,7 @@ import {
   shouldEnableSentry,
 } from "../../../desktop/src/shared/sentry/config";
 import { createSentryEventHooks } from "../../../desktop/src/shared/sentry/eventFilter";
-import { isSourceCheckoutRuntimeModule } from "../runtimePackaging";
+import { brainReportsAsRelease } from "./brainBuild";
 import {
   sentryMachineContext,
   sentryProcessTags,
@@ -32,8 +34,6 @@ import { hasPriorTelemetryOptOut } from "../../../desktop/src/main/sentry/priorO
 import { registerBrainServiceSentryDiagnostics } from "./brainServiceDiagnostics";
 
 declare const __ADE_VERSION__: string | undefined;
-/** True when the bundle kept a source placeholder version (`tsup.config.ts`). */
-declare const __ADE_UNRELEASED_VERSION__: boolean | undefined;
 
 function currentModulePath(): string {
   return typeof __filename === "string" ? __filename : process.argv[1] ?? "";
@@ -46,13 +46,9 @@ const EXCLUDED_INTEGRATIONS = /^(?:LocalVariables)/;
 
 export function initBrainSentry(args: { mode: "serve" | "service" }): boolean {
   if (started) return true;
-  // Decided from where this bundle runs, not from ADE_RUNTIME_PACKAGED: a dev
-  // brain started from an installed ADE's terminal inherits that variable and
-  // would otherwise report as production. A bundle built from source and
-  // copied elsewhere (`/opt/ade-dev`) keeps a placeholder version, and is a
-  // dev build wherever it runs.
-  const unreleased = typeof __ADE_UNRELEASED_VERSION__ === "boolean" && __ADE_UNRELEASED_VERSION__;
-  const packaged = !unreleased && !isSourceCheckoutRuntimeModule(currentModulePath());
+  // A dev brain, a source checkout and a bundle no release workflow built are
+  // all development (`brainBuild.ts`), whatever ADE_RUNTIME_PACKAGED says.
+  const packaged = brainReportsAsRelease(process.env, currentModulePath());
   if (!shouldEnableSentry({ env: process.env, packaged, priorOptOut: hasPriorTelemetryOptOut() })) return false;
   started = true;
   const version = typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__ : null;
@@ -78,6 +74,10 @@ export function initBrainSentry(args: { mode: "serve" | "service" }): boolean {
     beforeSendLog: hooks.beforeSendLog,
   });
   connectSentry(Sentry);
+  // `machine_id` (`machineTelemetryId.ts`), once the start-up probe answers.
+  const adeDir = resolveMachineAdeDir(process.env);
+  setSentryMachineIdResolver(() => peekMachineTelemetryId(adeDir));
+  void loadMachineTelemetryId(adeDir);
   Sentry.setTags({
     ...sentryProcessTags({ processName: "brain", surface: "brain", releaseChannel }),
     "brain.mode": args.mode,

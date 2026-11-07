@@ -51,6 +51,7 @@ export const INTERNAL_ONLY_EVENTS = new Set<ProductAnalyticsEventName>([
   "ade_account_session_unreadable",
   "ade_tool_fetched",
   "ade_brain_action_failed",
+  "ade_resource_pressure",
   // Survey events come only from the main process's survey service, which
   // checks every answer against the survey it showed.
   "survey shown", "survey dismissed", "survey sent",
@@ -104,6 +105,9 @@ export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   // whole day's budget. The emitter dedupes per domain+code per hour, so 20 is
   // roughly "twenty distinct failure shapes a day", not twenty failures.
   ade_brain_action_failed: 20,
+  // One per episode, and the brain dedupes per kind for six hours, so a machine
+  // that stays short of memory all day sends at most four.
+  ade_resource_pressure: 4,
   // At most one survey shows per 21 days; these caps only stop a broken
   // renderer from repeating one.
   "survey shown": 3,
@@ -150,6 +154,7 @@ export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   // A brain that fails every action fails it in a tight loop; the per-minute
   // ceiling is what stops the first minute of an outage from spending the day.
   ade_brain_action_failed: 3,
+  ade_resource_pressure: 1,
   "survey shown": 2,
   "survey dismissed": 2,
   "survey sent": 2,
@@ -164,6 +169,7 @@ const STRING_PROPERTIES = new Set([
   "escalation_reason", "install_source", "trigger", "from_version", "to_version", "user_action",
   "tool_error_kind", "crash_reason", "count_bucket",
   "action_domain", "error_code", "refusal_code", "brain_action", "expected_kind", "cause",
+  "kind", "severity", "emulator_count", "top_table",
 ]);
 const NUMBER_PROPERTIES = new Set([
   "sent_count", "dropped_count", "interaction_count", "session_count", "chat_session_count",
@@ -177,6 +183,7 @@ const NUMBER_PROPERTIES = new Set([
 ]);
 const BOOLEAN_PROPERTIES = new Set([
   "recoverable", "recovered", "paired", "cached_data", "is_packaged", "native_staging_completed",
+  "dev_brain_running",
 ]);
 
 // Actions emitted only by daemon services (not user-mutation ledger rows) that
@@ -501,6 +508,11 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   // most brain errors carry no structured code, and without these two every
   // failure read as `unknown` with nothing to tell a bug from a user outcome.
   ade_brain_action_failed: new Set(["action_domain", "error_code", "brain_action", "expected_kind"]),
+  // What ran short, how badly, how many Android emulators were up, whether a
+  // developer's brain ran beside the installed one, and which of ADE's own
+  // tables took the most writes in the five minutes before. Group names and
+  // buckets only: no process names, paths or sizes.
+  ade_resource_pressure: new Set(["kind", "severity", "emulator_count", "dev_brain_running", "top_table"]),
   // Survey properties are PostHog's `$survey_*` set, built from the survey
   // payload by `sanitizeSurveyEventProperties`, never from `properties`.
   "survey shown": new Set(),
@@ -767,6 +779,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   // fallback: it is free text.
   refusal_code: new Set<string>([...ACCOUNT_MACHINE_REFUSAL_CODES, "other"]),
   cause: new Set<string>(ACCOUNT_PUBLISH_FAILURE_CAUSES),
+  kind: new Set<string>(["memory", "swap", "wal", "cpu"]),
+  severity: new Set<string>(["warn", "critical"]),
+  emulator_count: new Set<string>(["0", "1", "2", "3_4", "5_plus"]),
 };
 
 export function safeProductAnalyticsString(value: ProductAnalyticsPropertyValue): string | null {
@@ -779,6 +794,8 @@ export function safeProductAnalyticsString(value: ProductAnalyticsPropertyValue)
 const ERROR_KIND_BUCKETS = new Set([
   "timeout", "expired", "cancelled", "permission", "network", "type_error", "range_error", "syntax_error",
   "rate_limit", "budget", "busy", "cli_missing", "other",
+  // A failed agent turn's finer kinds (`turnFailureKind`).
+  "server_overloaded", "context_too_long", "model_unavailable", "process_exited",
 ]);
 
 function coarseErrorKind(value: ProductAnalyticsPropertyValue): string | null {
@@ -826,6 +843,7 @@ const BACKGROUND_EVENTS = new Set<ProductAnalyticsEventName>([
   "ade_update_auto_applied", "ade_update_auto_apply_cancelled", "ade_update_prompted",
   "ade_brain_recovered", "ade_renderer_recovered", "ade_publish_failing", "ade_relay_suppressed",
   "ade_account_session_unreadable", "ade_tool_fetched", "ade_brain_action_failed",
+  "ade_resource_pressure",
   "$exception",
 ]);
 

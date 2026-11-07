@@ -143,7 +143,32 @@ export function gitPushError(raw: string, options: GitPushErrorOptions = {}): Er
     failure && failure.kind !== "auth_failed"
       ? redactGitOutput(`${failure.message}\n\n${detail}`)
       : formatGitExecutionError(detail);
-  return gitCommandError(detail, options.prefix ? `${options.prefix} ${body}` : body);
+  const error = gitCommandError(detail, options.prefix ? `${options.prefix} ${body}` : body);
+  return failure && isUserFixablePushFailure(failure, detail) ? markExpected(error, "user") : error;
+}
+
+/**
+ * Push refusals that are a policy or the user's own state (a rule, a
+ * permission, a stale branch, a sign-in): the user's to fix, and the message
+ * says how. A generic remote refusal is reported unless its reason is a
+ * permission (Azure DevOps' VS403660 names a ref the identity may not create);
+ * a missing repository and an unrecognized failure stay reported too.
+ */
+const USER_FIXABLE_PUSH_FAILURES: ReadonlySet<GitPushFailureKind> = new Set([
+  "secret_detected",
+  "workflow_scope",
+  "branch_protected",
+  "repository_rule",
+  "stale_lease",
+  "non_fast_forward",
+  "hook_declined",
+  "permission_denied",
+  "auth_failed",
+]);
+
+function isUserFixablePushFailure(failure: GitPushFailure, detail: string): boolean {
+  if (USER_FIXABLE_PUSH_FAILURES.has(failure.kind)) return true;
+  return failure.kind === "remote_rejected" && /\bVS403660\b|\bdo(?:es)? not have permission\b/i.test(detail);
 }
 
 /**

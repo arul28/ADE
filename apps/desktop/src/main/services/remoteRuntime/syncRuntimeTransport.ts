@@ -4,6 +4,7 @@ import {
   randomUUID,
   sign,
 } from "node:crypto";
+import { markExpected } from "../../../shared/expectedError";
 import { WebSocket, type RawData } from "ws";
 import {
   PAIRED_RUNTIME_RPC_OVER_BUDGET_CODE,
@@ -41,6 +42,9 @@ import {
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeRpcOverBudgetError,
 } from "./pairedRuntimeErrors";
+
+/** The close reason a host sends its peers when it hands them to its next sync host. */
+const SYNC_HOST_CHANGED_REASON = "Sync host changed.";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_AUTH_TIMEOUT_MS = 10_000;
@@ -649,7 +653,11 @@ export async function openSyncRuntimeTransport(
       fail(
         isRpcOverBudgetClose(payload.code, reason)
           ? new PairedRuntimeRpcOverBudgetError(reason)
-          : new Error(reason),
+          // The host handed its peers to its next sync host (a project
+          // closed, the brain restarting); the pool reconnects on its own.
+          : reason === SYNC_HOST_CHANGED_REASON
+            ? markExpected(new Error(reason), "network")
+            : new Error(reason),
         true,
       );
       return;

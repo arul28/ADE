@@ -1,3 +1,4 @@
+import { codedError, isCodedError } from "./codedError";
 import { AdeExpectedError } from "./expectedError";
 import type { GitHubRepoRef } from "./types/git";
 
@@ -68,6 +69,9 @@ export function createGithubRepositoryRequestFallback<Candidate>(args: {
 
 export type GithubCreateRepositoryRoute = { path: string; organization: string | null };
 
+/** ADE couldn't tell whether the owner is the signed-in account, so it created nothing. Retryable. */
+export const GITHUB_OWNER_UNVERIFIED_CODE = "github_owner_unverified";
+
 /**
  * Where to POST a new repository. `/orgs/{owner}/repos` takes only
  * organizations; GitHub answers a personal login there with 404, and
@@ -78,8 +82,13 @@ export type GithubCreateRepositoryRoute = { path: string; organization: string |
  * - an unknown login (`GET /user` failed, or no write token): ask GitHub what
  *   the owner is. An organization takes the org route. A user can't be
  *   confirmed as the signed-in account, and `/user/repos` would create under
- *   whoever that is, so it fails instead of guessing. `readAccountType` throws
- *   when it can't tell.
+ *   whoever that is, so it fails instead of guessing. So does a lookup that
+ *   can't answer (offline, rate limited); `readAccountType` throws a
+ *   `GITHUB_OWNER_NOT_FOUND_CODE` error for an owner GitHub doesn't know, and
+ *   that one passes through.
+ *
+ * The caller sends `/user/repos` on the credential whose login was read here:
+ * another credential can be another account.
  */
 export async function resolveGithubCreateRepositoryRoute(
   owner: string,
@@ -97,20 +106,46 @@ export async function resolveGithubCreateRepositoryRoute(
     organization: account,
   };
   let login: string | null = null;
-  let loginError: unknown = null;
+  let lookupError: unknown = null;
   try {
     login = (await deps.readAuthenticatedLogin())?.trim() || null;
   } catch (error) {
-    loginError = error;
+    lookupError = error;
     deps.onLoginLookupFailed(error);
   }
   if (login) return account.toLowerCase() === login.toLowerCase() ? userRoute : orgRoute;
-  if ((await deps.readAccountType(account)) === "Organization") return orgRoute;
-  const reason = loginError instanceof Error ? loginError.message : null;
-  throw new AdeExpectedError(
-    `ADE couldn't confirm which GitHub account is signed in, so it didn't create ${account}'s repository. Try again.${reason ? ` (${reason})` : ""}`,
-    "network",
-    { cause: loginError },
+  try {
+    if ((await deps.readAccountType(account)) === "Organization") return orgRoute;
+  } catch (error) {
+    if (isCodedError(error, GITHUB_OWNER_NOT_FOUND_CODE)) throw error;
+    lookupError = error;
+  }
+  const reason = lookupError instanceof Error ? lookupError.message : null;
+  throw Object.assign(
+    new AdeExpectedError(
+      `ADE couldn't confirm which GitHub account is signed in, so it didn't create ${account}'s repository. Try again.${reason ? ` (${reason})` : ""}`,
+      "network",
+      { cause: lookupError },
+    ),
+    { code: GITHUB_OWNER_UNVERIFIED_CODE },
+  );
+}
+
+/**
+ * Refuse a created (or reused) repository whose owner is not the one asked
+ * for, before anything is pushed to it. With no owner asked for, any owner is
+ * the credential's own account and is accepted.
+ */
+export function assertGithubRepositoryOwner(
+  requestedOwner: string | null | undefined,
+  repository: { owner: string; fullName: string },
+): void {
+  const requested = (requestedOwner ?? "").trim();
+  if (!requested) return;
+  if (repository.owner.trim().toLowerCase() === requested.toLowerCase()) return;
+  throw codedError(
+    `GitHub put the repository at ${repository.fullName || repository.owner}, not under ${requested}, so ADE did not push to it. Delete it on GitHub if you don't want it, then try again.`,
+    "repo_owner_mismatch",
   );
 }
 

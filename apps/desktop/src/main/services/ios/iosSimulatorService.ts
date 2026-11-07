@@ -212,7 +212,7 @@ import { appleDeviceTypeSupportsDuo, appleOrientationFamily, isAppleDeviceOrient
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelayForService";
 import { SIMCTL_MISSING } from "../../../shared/xcodeToolchain";
-import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
+import { AdeExpectedError, carryExpected, markExpected } from "../../../shared/expectedError";
 
 const execFile = promisify(execFileCallback);
 
@@ -3012,6 +3012,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       simctlMissingAt = 0;
       return appleInstalledSimulatorsFrom(parseSimctlDevices(stdout));
     } catch (error) {
+      // Killed at the deadline: the bare "Command failed" said nothing. The
+      // Mac's simulator service stopped answering, not ADE.
+      if ((error as { killed?: unknown } | null)?.killed === true) {
+        throw markExpected(new Error(
+          "The Mac's simulator service did not answer `xcrun simctl list devices` within 30 s. Quit Simulator, then try again.",
+          { cause: error },
+        ), "environment");
+      }
       if (!SIMCTL_MISSING.test(error instanceof Error ? error.message : String(error))) throw error;
       if (!simctlMissingAt) args.logger.info("apple.simctl_missing", { hint: "Xcode is not installed" });
       simctlMissingAt = Date.now();
@@ -3420,7 +3428,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const assertDarwin = () => {
-    if (process.platform !== "darwin") throw new Error(MACOS_ONLY_MESSAGE);
+    if (process.platform !== "darwin") throw new AdeExpectedError(MACOS_ONLY_MESSAGE, "environment");
   };
 
   const runSimctlWithTimeout = async (simctlArgs: string[], timeoutMs: number, timeoutMessage: string) => {
@@ -4621,7 +4629,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const openPreviewWorkspace = async (openArgs: IosSimulatorOpenPreviewWorkspaceArgs = {}): Promise<{ ok: true; path: string }> => {
     const projectRoot = await resolveScopedRoot(openArgs);
     const openPath = previewWorkspaceOpenPath(projectRoot);
-    if (process.platform !== "darwin") throw new Error("Xcode preview setup is only available on macOS.");
+    if (process.platform !== "darwin") throw new AdeExpectedError("Xcode preview setup is only available on macOS.", "environment");
     spawnProcess("open", ["-a", "Xcode", openPath], { detached: true, stdio: "ignore" }).unref();
     return { ok: true, path: openPath };
   };

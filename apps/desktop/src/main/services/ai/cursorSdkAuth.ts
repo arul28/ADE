@@ -24,6 +24,7 @@ import {
   storeApiKey,
 } from "./apiKeyStore";
 import { openExternalUrl } from "../shared/externalLinks";
+import { withDeadline } from "../shared/withTimeout";
 import { isCursorAdminApiKey } from "./utils";
 import { isCursorProviderSupported } from "../../../shared/providerPlatformSupport";
 import type {
@@ -269,6 +270,16 @@ function persistMintedKey(result: SdkLoginResult): void {
   hooks.markOAuthMinted();
 }
 
+/**
+ * How long ADE waits on one Cursor sign-in before it ends it. Cursor's own
+ * browser handshake polls for about this long but has been seen to keep going
+ * past it, until the 21-minute IPC deadline (`CURSOR_LOGIN_IPC_TIMEOUT_MS`)
+ * failed the call with no word for the user. Ending it here, under that
+ * deadline, answers "timed out, try again" and frees the login slot.
+ */
+export const CURSOR_LOGIN_CUTOFF_MS = 20 * 60_000;
+const CURSOR_LOGIN_TIMED_OUT_MESSAGE = "Cursor sign-in timed out. Start it again and finish it in the browser.";
+
 export async function loginCursorSdk(): Promise<CursorSdkLoginResult> {
   if (activeLogin) {
     activeLogin.abort.abort();
@@ -280,26 +291,42 @@ export async function loginCursorSdk(): Promise<CursorSdkLoginResult> {
   activeLogin = flow;
   emit({ providerId: "cursor", state: "pending" });
 
+  let timedOut = false;
+  // A flow that timed out, was cancelled or was replaced is over: an SDK that
+  // keeps calling back must not open a browser or announce a new link for it.
+  const flowEnded = (): boolean => activeLogin !== flow || timedOut || abort.signal.aborted;
   try {
-    const sdk = await hooks.loadSdk();
-    const result = await sdk.Cursor.auth.login({
-      apiKeyName: CURSOR_LOGIN_API_KEY_NAME,
-      signal: abort.signal,
-      // Electron's opener (Launch Services on macOS, shell.openExternal on
-      // Windows/Linux) rather than the SDK's process-spawn default, so SSH
-      // sessions and Windows hosts open the same way ADE opens other URLs.
-      openBrowser: (url) => {
-        void hooks.openLoginUrl(url).catch(() => {
-          // URL is still delivered via onLoginUrl / the renderer event.
+    // Rejects at the cutoff even if the SDK ignores the abort and never settles.
+    const result = await withDeadline(
+      (async () => {
+        const sdk = await hooks.loadSdk();
+        return sdk.Cursor.auth.login({
+          apiKeyName: CURSOR_LOGIN_API_KEY_NAME,
+          signal: abort.signal,
+          // Electron's opener (Launch Services on macOS, shell.openExternal on
+          // Windows/Linux) rather than the SDK's process-spawn default, so SSH
+          // sessions and Windows hosts open the same way ADE opens other URLs.
+          openBrowser: (url) => {
+            if (flowEnded()) return;
+            void hooks.openLoginUrl(url).catch(() => {
+              // URL is still delivered via onLoginUrl / the renderer event.
+            });
+          },
+          onLoginUrl: (url) => {
+            const trimmed = url.trim();
+            if (!trimmed || flowEnded()) return;
+            flow.loginUrl = trimmed;
+            emit({ providerId: "cursor", state: "pending", url: trimmed });
+          },
         });
+      })(),
+      CURSOR_LOGIN_CUTOFF_MS,
+      () => {
+        timedOut = true;
+        abort.abort();
+        return new Error(CURSOR_LOGIN_TIMED_OUT_MESSAGE);
       },
-      onLoginUrl: (url) => {
-        const trimmed = url.trim();
-        if (!trimmed) return;
-        flow.loginUrl = trimmed;
-        emit({ providerId: "cursor", state: "pending", url: trimmed });
-      },
-    });
+    );
     if (activeLogin !== flow) {
       return { ok: false, error: "Cursor sign-in was replaced by a newer attempt." };
     }
@@ -318,6 +345,10 @@ export async function loginCursorSdk(): Promise<CursorSdkLoginResult> {
   } catch (error) {
     if (activeLogin !== flow) {
       return { ok: false, error: "Cursor sign-in was replaced by a newer attempt." };
+    }
+    if (timedOut) {
+      emit({ providerId: "cursor", state: "error", error: CURSOR_LOGIN_TIMED_OUT_MESSAGE });
+      return { ok: false, error: CURSOR_LOGIN_TIMED_OUT_MESSAGE };
     }
     if (abort.signal.aborted || isAbortError(error)) {
       emit({ providerId: "cursor", state: "cancelled" });

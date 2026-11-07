@@ -6,6 +6,8 @@ import type {
   PushNotificationPrefs,
 } from "../../../../desktop/src/shared/types/push";
 import { safeJsonParse, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
+import { createFileExclusive } from "../../../../desktop/src/main/services/state/durableFile";
+import { createRepeatedFailureGate } from "../../../../desktop/src/main/services/logging/repeatedFailure";
 
 /** A device registration plus the machine-side metadata we persist for it. */
 export type StoredPushDevice = PushDeviceRegistration & {
@@ -238,6 +240,25 @@ function salvageMachineKeys(parsed: unknown): string[] {
   return keys;
 }
 
+/** The registration file is there and could not be read; the store never mints over it. */
+class PushRegistrationUnreadableError extends Error {
+  constructor(detail: string) {
+    super(`ADE could not read this machine's push registration file: ${detail}`);
+    this.name = "PushRegistrationUnreadableError";
+  }
+}
+
+const SETTLE_READ_ATTEMPTS = 5;
+const SETTLE_READ_DELAY_MS = 20;
+/** How long an unreadable file is answered from memory instead of read (and waited on) again. */
+const UNREADABLE_MEMORY_MS = 5_000;
+/** Read failures that a short wait does not fix: permissions, or a folder where the file should be. */
+const LASTING_READ_ERROR_CODES = new Set(["EACCES", "EPERM", "EISDIR", "ENOTDIR"]);
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /**
  * Machine-local push identity + device roster, stored next to the sync pairing
  * files under `~/.ade/secrets/`. The machineKey/machineSecret are minted once on
@@ -279,12 +300,11 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
     present: boolean;
     parsed: unknown;
     readError: string | null;
+    /** The read failure's errno code, when it had one. */
+    readErrorCode?: string;
   };
 
   const readRaw = (): RawRead => {
-    if (!fs.existsSync(args.filePath)) {
-      return { present: false, parsed: null, readError: null };
-    }
     try {
       const text = fs.readFileSync(args.filePath, "utf8");
       return {
@@ -293,20 +313,25 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
         readError: null,
       };
     } catch (error) {
+      // Only a file that is not there is absent.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return { present: false, parsed: null, readError: null };
+      }
       // Unreadable is NOT absent: a permissions or I/O fault must not be
       // answered by minting a replacement identity over the top of it.
+      const code = (error as NodeJS.ErrnoException).code;
       return {
         present: true,
         parsed: null,
         readError: error instanceof Error ? error.message : String(error),
+        ...(typeof code === "string" ? { readErrorCode: code } : {}),
       };
     }
   };
 
-  const readValidFile = (): PushRegistrationFile | null => {
-    const raw = readRaw();
-    if (!raw.present) return null;
-    const parsed = raw.parsed as PushRegistrationFile | null;
+  /** The file as read, with defaults backfilled; null when it fails validation. */
+  const validFileFrom = (value: unknown): PushRegistrationFile | null => {
+    const parsed = value as PushRegistrationFile | null;
     if (!isValid(parsed)) return null;
     // Backfill defaults for fields added after the file was first written.
     return {
@@ -506,40 +531,110 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
     return replacement;
   };
 
+  /**
+   * A read of a file that is there but read badly, repeated briefly before
+   * anything treats it as damaged. A first-run writer from an older build
+   * creates the file in place, so a racing reader can see it empty or half
+   * written; on Windows a scanner can hold it for a moment. Either settles in
+   * milliseconds, and re-minting on the first look would orphan the identity
+   * every paired phone uses. A permissions fault does not settle, so it is not
+   * waited on, and an unreadable file is answered from memory for a few
+   * seconds so a burst of calls does not each read and wait again.
+   */
+  let rememberedUnreadable: { raw: RawRead; at: number } | null = null;
+  const readRawSettled = (): RawRead => {
+    if (rememberedUnreadable && Date.now() - rememberedUnreadable.at < UNREADABLE_MEMORY_MS) {
+      return rememberedUnreadable.raw;
+    }
+    let raw = readRaw();
+    for (
+      let attempt = 1;
+      attempt < SETTLE_READ_ATTEMPTS
+        && raw.present
+        && !LASTING_READ_ERROR_CODES.has(raw.readErrorCode ?? "")
+        && (raw.readError !== null || !isValid(raw.parsed as PushRegistrationFile | null));
+      attempt += 1
+    ) {
+      sleepSync(SETTLE_READ_DELAY_MS * attempt);
+      raw = readRaw();
+    }
+    rememberedUnreadable = raw.readError !== null ? { raw, at: Date.now() } : null;
+    return raw;
+  };
+
+  let lastUnreadableDetail: string | null = null;
+  const startupReadFailures = createRepeatedFailureGate();
+
+  /** Adopt the file on disk, repair it, or (unreadable) refuse; never mint over it. */
+  const loadPresent = (raw: RawRead): PushRegistrationFile => {
+    if (raw.readError !== null) {
+      // The identity is there and only the read failed. Minting a new one would
+      // force every phone to pair again, so this load fails and the next one
+      // reads the file again. Each new cause is logged once, not every call.
+      if (lastUnreadableDetail !== raw.readError) {
+        lastUnreadableDetail = raw.readError;
+        args.logger?.warn?.("push.registration_file_unreadable", {
+          filePath: args.filePath,
+          detail: raw.readError,
+        });
+      }
+      throw new PushRegistrationUnreadableError(raw.readError);
+    }
+    const existing = validFileFrom(raw.parsed);
+    if (existing) {
+      cache = existing;
+      return existing;
+    }
+    return recoverDamagedFile(raw);
+  };
+
+  /**
+   * For the reads the push publisher makes while the runtime is being built:
+   * an unreadable file (already logged by `loadPresent`) reads as empty there,
+   * so the project still opens. Every write and every identity read goes
+   * through `load` and keeps failing until the file reads again.
+   */
+  const loadForStartupRead = (): PushRegistrationFile | null => {
+    try {
+      const file = load();
+      startupReadFailures.clear();
+      return file;
+    } catch (error) {
+      // A mint, repair or write that failed (a full disk, a denied folder) is
+      // logged here, once per cause; an unreadable file was logged by `loadPresent`.
+      if (!(error instanceof PushRegistrationUnreadableError)) {
+        const detail = error instanceof Error ? error.message : String(error);
+        if (!startupReadFailures.repeated(detail)) {
+          args.logger?.warn?.("push.registration_startup_read_failed", { filePath: args.filePath, detail });
+        }
+      }
+      return null;
+    }
+  };
+
   const load = (): PushRegistrationFile => {
     if (cache) return cache;
-    const raw = readRaw();
-    const parsed = raw.parsed as PushRegistrationFile | null;
-    if (raw.present) {
-      const existing = isValid(parsed) ? readValidFile() : null;
-      if (existing) {
-        cache = existing;
-        return existing;
-      }
-      return recoverDamagedFile(raw);
-    }
-    // Mint the identity once, exclusively (O_EXCL). If two `ade` processes race
-    // on first run the loser gets EEXIST and adopts the winner's identity rather
-    // than overwriting the phone-pairing crypto key with a divergent one.
+    const raw = readRawSettled();
+    if (raw.present) return loadPresent(raw);
+    // Mint the identity once, exclusively, and whole: written to a temp file and
+    // linked into place, which fails with EEXIST when the name exists, so a
+    // racing reader never sees a half-written identity. If two `ade` processes
+    // race on first run the loser adopts the winner's identity rather than
+    // overwriting the phone-pairing crypto key with a divergent one.
     const created = createEmptyFile();
     try {
-      fs.writeFileSync(args.filePath, `${JSON.stringify(created, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+      createFileExclusive(args.filePath, `${JSON.stringify(created, null, 2)}\n`, { mode: 0o600 });
       cache = created;
       return created;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        const winner = readValidFile();
-        if (winner) {
-          cache = winner;
-          return winner;
-        }
-        // The race winner wrote something unusable — recover from THAT file
-        // rather than stamping a divergent identity over it.
-        return recoverDamagedFile(readRaw());
+        // The race winner's file — recover from THAT rather than stamping a
+        // divergent identity over it.
+        return loadPresent(readRawSettled());
       }
-      // No exclusive create and nothing valid to adopt — best-effort overwrite.
-      write(created);
-      return created;
+      // Never an overwrite: another process may have just created the
+      // identity a phone is paired to. The next call tries again.
+      throw error;
     }
   };
 
@@ -742,7 +837,7 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
     },
 
     getActivityProtocol(): number | null {
-      return load().activityProtocol;
+      return loadForStartupRead()?.activityProtocol ?? null;
     },
 
     setActivityProtocol(protocol: number | null): void {
@@ -761,13 +856,15 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
       return next;
     },
 
+    /** Null while the file cannot be read: unknown, not "nothing published". */
     getLastPublishedActivityRevisions(): {
       accountOwnerId: string | null;
       revisions: Record<string, number>;
-    } {
-      const file = load();
+    } | null {
+      const file = loadForStartupRead();
+      if (!file) return null;
       return {
-        accountOwnerId: file.lastPublishedRevisionAccountOwnerId,
+        accountOwnerId: file.lastPublishedRevisionAccountOwnerId ?? null,
         revisions: { ...file.lastPublishedRevisionById },
       };
     },
@@ -801,8 +898,10 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
       });
     },
 
-    listUserMessages(): StoredUserMessage[] {
-      return [...load().userMessages];
+    /** Null while the file cannot be read: unknown, not "no messages". */
+    listUserMessages(): StoredUserMessage[] | null {
+      const file = loadForStartupRead();
+      return file ? [...file.userMessages] : null;
     },
 
     /** Replace the stored messages (already pruned by the caller), oldest first. */
@@ -855,9 +954,13 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
       };
     },
 
-    /** Has the account owner removed this machine? Terminal until re-paired. */
-    isMachineRevoked(): boolean {
-      return load().machineRevokedAt != null;
+    /**
+     * Has the account owner removed this machine? Terminal until re-paired.
+     * Null while the file cannot be read: unknown, not "still on the account".
+     */
+    isMachineRevoked(): boolean | null {
+      const file = loadForStartupRead();
+      return file ? file.machineRevokedAt != null : null;
     },
 
     /**

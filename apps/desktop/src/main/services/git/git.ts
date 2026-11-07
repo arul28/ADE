@@ -1079,8 +1079,13 @@ export function gitCommandError(raw: string, message: string = formatGitExecutio
   // A file only the user can delete; the message names it.
   if (windowsReservedFileInGitError(raw)) return markExpected(error, "user");
   const noGit = GIT_TOOLCHAIN_MISSING.test(raw) || raw.startsWith(GIT_EXECUTABLE_NOT_FOUND);
-  return noGit ? markExpected(error, "environment") : error;
+  if (noGit) return markExpected(error, "environment");
+  // The remote never answered: no network, a firewall on SSH's port, DNS.
+  return GIT_REMOTE_UNREACHABLE.test(raw) ? markExpected(error, "network") : error;
 }
+
+/** Git's (and ssh's) words for a remote host it could not reach at all. */
+const GIT_REMOTE_UNREACHABLE = /^ssh: connect to host \S+ port \d+: |^ssh: Could not resolve hostname |\bCould not resolve host: |\bFailed to connect to \S+ port \d+/m;
 
 const GIT_UNINDEXABLE_FILE = /unable to index file '([^'\n]+)'/;
 /** Device names Windows reserves, with or without an extension (`NUL`, `nul.txt`, `COM1`). */

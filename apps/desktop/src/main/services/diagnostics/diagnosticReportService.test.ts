@@ -3,6 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import {
+  basicMachineHardware,
+  recordedMachineHealth,
+} from "../../../../../ade-cli/src/services/diagnostics/machineHealth";
+import {
   collectDiagnosticReport,
   diagnosticReportRoots,
   resolveRevealableDiagnosticReport,
@@ -14,6 +18,8 @@ afterAll(() => {
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
+// Never this machine's ADE home, logs, sync key or live process list: a
+// report built from them carries whatever this machine holds.
 function deps() {
   return {
     appVersion: "1.2.3",
@@ -22,6 +28,9 @@ function deps() {
     userDataPath: path.join(tempRoot, "userData"),
     reportsDir: path.join(tempRoot, "reports"),
     installId: "install-abc",
+    env: { ADE_HOME: path.join(tempRoot, "adeHome-default") },
+    readMachineHealth: async (runtimeDir: string) => recordedMachineHealth(runtimeDir),
+    readMachineHardware: async () => basicMachineHardware(),
   };
 }
 

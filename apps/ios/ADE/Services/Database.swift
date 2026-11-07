@@ -420,9 +420,18 @@ final class DatabaseService {
     }
     try exec("begin")
     do {
+      // A host change the log already holds is ignored by the unique index. A
+      // host change that a newer write from the same site already superseded
+      // is ignored too: `pruneSupersededSyncChanges` deletes such rows, and a
+      // host can resend one (a retried batch), which must stay a no-op rather
+      // than roll the row back to the older value.
       let sql = """
         insert or ignore into crsql_changes ([table], pk, cid, val, col_version, db_version, site_id, cl, seq)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        select ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+         where ?7 = ?10 or not \(Self.newerSameSiteChangeExists(
+           table: "?1", pk: "?2", cid: "?3", colVersion: "?5", dbVersion: "?6",
+           siteId: "?7", cl: "?8", seq: "?9", requireClockAdvance: true
+         ))
       """
       for rawChange in changes {
         if shouldIgnoreIncomingSyncTable(rawChange.table) {
@@ -450,6 +459,7 @@ final class DatabaseService {
           try bindHexBlob(change.siteId, to: statement, index: 7)
           sqlite3_bind_int64(statement, 8, sqlite3_int64(change.cl))
           sqlite3_bind_int64(statement, 9, sqlite3_int64(change.seq))
+          try bindHexBlob(cachedSiteIdHex, to: statement, index: 10)
         }
         appliedCount += changed
         if changed > 0 {
@@ -480,6 +490,154 @@ final class DatabaseService {
       touchedTables: touchedTables.sorted(),
       rebuiltFts: rebuiltFts,
     )
+  }
+
+  /// SQL that is true when the log holds a newer change from the same site for
+  /// the same cell (`table`, `pk`, `cid`) as the candidate, whose columns or
+  /// bound parameters are named by the arguments. "Newer" is the order every
+  /// reader of the log uses: (db_version, cl, seq). With
+  /// `requireClockAdvance`, the newer change must also carry a later CRDT
+  /// clock, (cl, col_version), so a change merely numbered higher by another
+  /// host's version space never counts. A null value supersedes only a delete
+  /// marker: materialization reads "every stored value is null" as a deleted
+  /// row, so older non-null values of a cell whose newest value is null stay.
+  private static func newerSameSiteChangeExists(
+    table: String,
+    pk: String,
+    cid: String,
+    colVersion: String,
+    dbVersion: String,
+    siteId: String,
+    cl: String,
+    seq: String,
+    requireClockAdvance: Bool
+  ) -> String {
+    let clockAdvance = requireClockAdvance
+      ? "and (n.cl, n.col_version) > (\(cl), \(colVersion))"
+      : ""
+    return """
+      exists (
+        select 1
+          from crsql_changes n
+         where n.[table] = \(table)
+           and n.pk = \(pk)
+           and n.cid = \(cid)
+           and n.site_id = \(siteId)
+           and (n.db_version, n.cl, n.seq) > (\(dbVersion), \(cl), \(seq))
+           \(clockAdvance)
+           and (n.val is not null or n.cid in ('\(localDeleteColumnId)', '\(legacyDeleteColumnId)'))
+      )
+      """
+  }
+
+  /// Deletes change-log rows no reader can need again, scanning at most
+  /// `scanLimit` rows after `afterRowId` in one transaction (ADE-IOS-1C: the
+  /// log only ever grew).
+  ///
+  /// The log is read by: the outbound export (this phone's own rows above the
+  /// acked cursor), row materialization and column replay (the newest change
+  /// per cell and the newest delete), `readMaxDbVersion`, and the unique index
+  /// that makes a host resend a no-op. A row is deleted only when a newer
+  /// change from the same site exists for its cell, so the newest change per
+  /// cell, the newest delete, and the max db_version all stay. On top of that:
+  /// - this phone's row must be at or below `localAckedThroughDbVersion`, the
+  ///   lowest cursor any host acknowledged, so an unsent change is never lost;
+  /// - a host row must be behind the newer one's clock (cl, col_version). Its
+  ///   host can never send it again as current state, and a stale resend is
+  ///   rejected by the same check in `applyChangesLocked`.
+  ///
+  /// Returns the rows deleted and the rowid to continue from (0 once the
+  /// scan reached the end of the log). `failed` is true when the window's
+  /// delete was rolled back; `nextRowId` is then the window's own start, so a
+  /// later run retries it.
+  func pruneSupersededSyncChanges(
+    localAckedThroughDbVersion: Int,
+    afterRowId: Int64,
+    scanLimit: Int
+  ) -> (deletedCount: Int, nextRowId: Int64, failed: Bool) {
+    withLock {
+      guard db != nil, hasTable(named: "crsql_changes") else { return (0, 0, false) }
+      let window = querySingle("""
+        select count(*), coalesce(max(rowid), 0)
+          from (select rowid from crsql_changes where rowid > ? order by rowid limit ?)
+      """, bind: { statement in
+        sqlite3_bind_int64(statement, 1, afterRowId)
+        sqlite3_bind_int64(statement, 2, sqlite3_int64(max(1, scanLimit)))
+      }) { statement in
+        (count: Int(sqlite3_column_int64(statement, 0)), endRowId: sqlite3_column_int64(statement, 1))
+      }
+      guard let window, window.count > 0 else { return (0, 0, false) }
+
+      let sameSiteNewer = { (requireClockAdvance: Bool) in
+        Self.newerSameSiteChangeExists(
+          table: "c.[table]", pk: "c.pk", cid: "c.cid", colVersion: "c.col_version",
+          dbVersion: "c.db_version", siteId: "c.site_id", cl: "c.cl", seq: "c.seq",
+          requireClockAdvance: requireClockAdvance
+        )
+      }
+      let sql = """
+        delete from crsql_changes
+         where rowid in (
+           select c.rowid
+             from crsql_changes c
+            where c.rowid > ?1 and c.rowid <= ?2
+              and (
+                (c.site_id = ?3 and c.db_version <= ?4 and \(sameSiteNewer(false)))
+                or (c.site_id <> ?3 and \(sameSiteNewer(true)))
+              )
+         )
+      """
+      var deleted = 0
+      do {
+        try exec("begin")
+        deleted = try execute(sql) { statement in
+          sqlite3_bind_int64(statement, 1, afterRowId)
+          sqlite3_bind_int64(statement, 2, window.endRowId)
+          try bindHexBlob(cachedSiteIdHex, to: statement, index: 3)
+          sqlite3_bind_int64(statement, 4, sqlite3_int64(max(0, localAckedThroughDbVersion)))
+        }
+        try exec("commit")
+      } catch {
+        try? exec("rollback")
+        return (0, afterRowId, true)
+      }
+      let reachedEnd = window.count < max(1, scanLimit)
+      return (deleted, reachedEnd ? 0 : window.endRowId, false)
+    }
+  }
+
+  /// Deletes every change-log row authored by `siteIdHex`, in one transaction,
+  /// for a host whose own history went backwards (its ade.db was recreated or
+  /// restored from an older copy while its site id, kept outside the
+  /// database, stayed the same). Those rows carry clocks and db_versions from
+  /// the lost history, so the apply guard in `applyChangesLocked` would keep
+  /// ignoring the host's new writes for every cell they cover. Materialized
+  /// rows are kept: the host's full replay that follows overwrites them.
+  /// The phone's own site is never cleared. Returns the rows deleted, or nil
+  /// when the delete failed and was rolled back.
+  func discardSyncChanges(fromSiteId siteIdHex: String) -> Int? {
+    withLock {
+      guard db != nil, hasTable(named: "crsql_changes") else { return 0 }
+      let site = siteIdHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      guard !site.isEmpty, site != cachedSiteIdHex.lowercased() else { return 0 }
+      do {
+        try exec("begin")
+        let deleted = try execute("delete from crsql_changes where site_id = ?") { statement in
+          try bindHexBlob(site, to: statement, index: 1)
+        }
+        try exec("commit")
+        return deleted
+      } catch {
+        try? exec("rollback")
+        return nil
+      }
+    }
+  }
+
+  /// Move the WAL back into the database file and truncate it, as the chat
+  /// log store does, after a prune freed pages.
+  func checkpointWalTruncate() {
+    withLock { try? exec("pragma wal_checkpoint(truncate)") }
   }
 
   func fetchLanes(includeArchived: Bool) -> [LaneSummary] {
@@ -3837,7 +3995,7 @@ final class DatabaseService {
   private func blobHexValue(_ statement: OpaquePointer, index: Int32) -> String? {
     guard let bytes = sqlite3_column_blob(statement, index) else { return nil }
     let count = Int(sqlite3_column_bytes(statement, index))
-    return Data(bytes: bytes, count: count).map { String(format: "%02x", $0) }.joined()
+    return UnsafeRawBufferPointer(start: bytes, count: count).adeLowercaseHex
   }
 
   private func stringValue(_ statement: OpaquePointer, index: Int32) -> String? {
@@ -3948,7 +4106,10 @@ final class DatabaseService {
     """)
     try run("create unique index if not exists idx_crsql_changes_unique on crsql_changes([table], pk, cid, db_version, site_id, cl, seq)")
     try run("create index if not exists idx_crsql_changes_version on crsql_changes(db_version, cl, seq)")
-    try run("create index if not exists idx_crsql_changes_table_pk on crsql_changes([table], pk)")
+    // `idx_crsql_changes_unique` leads with ([table], pk), so it already serves
+    // every per-row lookup; a second index on that prefix only added a B-tree
+    // write to every synced change (ADE-IOS-1C).
+    try run("drop index if exists idx_crsql_changes_table_pk")
   }
 
   private func registerInternalFunctions() throws {
@@ -4240,7 +4401,7 @@ final class DatabaseService {
         }
         try insertRow(finalRow!, in: tableInfo)
       } else {
-        try updateRow(finalRow!, in: tableInfo)
+        try updateRow(finalRow!, in: tableInfo, existing: existingRow)
       }
     }
   }
@@ -4773,9 +4934,22 @@ final class DatabaseService {
     }
   }
 
-  private func updateRow(_ row: [String: SyncScalarValue], in tableInfo: SyncTableInfo) throws {
+  /// Writes only the columns whose value differs from `existing`, and skips
+  /// the statement when none does. The host re-sends rows whose values did not
+  /// move (status pings, re-hydrated snapshots), and rewriting each one with
+  /// every index on the table was a large part of the phone's sync disk writes
+  /// (MetricKit disk-write reports past 1 GB a day, ADE-IOS-1C).
+  private func updateRow(
+    _ row: [String: SyncScalarValue],
+    in tableInfo: SyncTableInfo,
+    existing: [String: SyncScalarValue]? = nil
+  ) throws {
     let pkCols = Set(tableInfo.primaryKeyColumns)
-    let orderedColumns = tableInfo.columns.map(\.name).filter { !pkCols.contains($0) && row[$0] != nil }
+    let orderedColumns = tableInfo.columns.map(\.name).filter { column in
+      guard !pkCols.contains(column), let value = row[column] else { return false }
+      guard let existing, let current = existing[column] else { return true }
+      return current != value
+    }
     guard !orderedColumns.isEmpty else { return }
     let assignments = orderedColumns.map { "\(quoteIdentifier($0)) = ?" }.joined(separator: ", ")
     let whereClause = tableInfo.primaryKeyColumns.map { "\(quoteIdentifier($0)) = ?" }.joined(separator: " and ")
@@ -4831,6 +5005,22 @@ final class DatabaseService {
       return nil
     }
     throw sqliteError(sqliteMessage(db), code: result)
+  }
+}
+
+extension Sequence where Element == UInt8 {
+  /// Lowercase hex, two digits per byte. `String(format: "%02x")` per byte
+  /// runs Foundation's format parser and builds an NSString for every byte;
+  /// this runs once per synced change row and on the push-token paths.
+  var adeLowercaseHex: String {
+    let digits = Array("0123456789abcdef".utf8)
+    var out: [UInt8] = []
+    out.reserveCapacity(underestimatedCount * 2)
+    for byte in self {
+      out.append(digits[Int(byte >> 4)])
+      out.append(digits[Int(byte & 0x0f)])
+    }
+    return String(decoding: out, as: UTF8.self)
   }
 }
 

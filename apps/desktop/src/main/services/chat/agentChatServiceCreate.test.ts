@@ -411,11 +411,13 @@ describe("createAgentChatService", () => {
       costUsd: null,
       durationMs: expect.any(Number),
       errorCategory: null,
+      errorKind: null,
     });
     expect(Object.keys(settled).sort()).toEqual([
       "costUsd",
       "durationMs",
       "errorCategory",
+      "errorKind",
       "model",
       "provider",
       "sessionId",

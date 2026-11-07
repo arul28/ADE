@@ -345,6 +345,11 @@ const WINDOWS_TASKKILL_TIMEOUT_MS = 15_000;
 export function killWindowsProcessTreeAsync(
   pid: number,
   onFailure?: (detail: ProcessTreeFailureDetail) => void,
+  /**
+   * `force: false` sends `taskkill /T` without `/F`: Windows asks the tree to
+   * close (a window gets WM_CLOSE) before a caller escalates. Default forced.
+   */
+  options: { force?: boolean } = {},
 ): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 0) return Promise.resolve(false);
   return new Promise((resolve) => {
@@ -353,7 +358,7 @@ export function killWindowsProcessTreeAsync(
       resolve(false);
     };
     try {
-      const invocation = windowsTaskkillInvocation(pid, { force: true });
+      const invocation = windowsTaskkillInvocation(pid, { force: options.force !== false });
       execFile(
         invocation.command,
         invocation.args,

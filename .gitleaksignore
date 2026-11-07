@@ -8,6 +8,11 @@
 26e2ed03a0fd341ce244fc2cd86d9103d0ad348a:apps/desktop/src/shared/accountDirectory.ts:generic-api-key:21
 26e2ed03a0fd341ce244fc2cd86d9103d0ad348a:apps/desktop/src/shared/accountDirectory.ts:generic-api-key:26
 
+# Synthetic PEM fixture for the Claude stderr-tail scrub test (no key material,
+# body lines are fake). The current test builds the markers at runtime; keep
+# this exception scoped to the PR commit that still had them inline.
+67daee752386c1343c35747edc829e3edc967106:apps/desktop/src/main/services/chat/claudeSubprocessReaper.test.ts:private-key:184
+
 # Synthetic encrypted OpenSSH parser fixture. The current test constructs the
 # boundary at runtime; keep this exception scoped to its original PR commit.
 73f8acc461fd37996a95e4765007f2c794df13ee:apps/ios/ADETests/SSHBootstrapTests.swift:private-key:25

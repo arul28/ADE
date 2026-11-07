@@ -222,7 +222,7 @@ describe("computerUseArtifactBrokerService", () => {
     await expect(broker.readArtifactRange({ uri: ".ade/artifacts/apple-recordings/lane-1/notes.json" }))
       .rejects.toThrow(/cannot be streamed/);
     await expect(broker.readArtifactRange({ uri: ".ade/artifacts/apple-recordings/lane-1/gone.mp4" }))
-      .rejects.toThrow(/does not exist|within/);
+      .rejects.toThrow(/not found/);
   });
 
   it("rejects local file imports outside allowed artifact roots", () => {

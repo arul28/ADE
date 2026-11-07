@@ -119,12 +119,52 @@ async function addSystemCertificates(logger?: NetworkLogger): Promise<number> {
   }
 }
 
+/**
+ * The worker's read while it runs. Node frees its cached system certificates
+ * when the process exits, and an exit during the read freed them under the
+ * worker, which crashed (ADE-DESKTOP-9H, Windows, quit one second after
+ * launch). An exit waits for this first; see `whenSystemCertificateReadSettles`.
+ */
+let systemCaRead: Promise<void> | null = null;
+
+/**
+ * Resolves once no system CA read is running, or after `timeoutMs`, whichever
+ * is first. At once when none is.
+ */
+export function whenSystemCertificateReadSettles(timeoutMs: number): Promise<void> {
+  const read = systemCaRead;
+  if (!read) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    void read.then(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+/** Whether a system CA read is running right now. */
+export function systemCertificateReadInFlight(): boolean {
+  return systemCaRead !== null;
+}
+
 function readSystemCertificatesOffThread(): Promise<string[]> {
   return new Promise((resolve, reject) => {
     // Referenced on purpose: a short CLI command awaits this read, and an
     // unref'd worker would let the process exit before the command runs. The
     // worker ends itself once it has posted.
     const worker = new Worker(SYSTEM_CA_WORKER_SOURCE, { eval: true });
+    let settleRead: () => void = () => {};
+    const read = new Promise<void>((done) => {
+      settleRead = () => {
+        if (systemCaRead === read) systemCaRead = null;
+        done();
+      };
+    });
+    systemCaRead = read;
+    worker.once("message", settleRead);
+    worker.once("error", settleRead);
+    worker.once("exit", settleRead);
     worker.once("message", (message: { ok: boolean; certificates?: string[]; error?: string }) => {
       void worker.terminate();
       if (message.ok) resolve(message.certificates ?? []);

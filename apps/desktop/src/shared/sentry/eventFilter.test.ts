@@ -4,6 +4,7 @@ import { createSentryEventHooks, setSentryUserResolver } from "./eventFilter";
 import { codedError } from "../codedError";
 import { AdeExpectedError } from "../expectedError";
 import { isExpectedOutcome } from "./expectedFailure";
+import { scrubFreeTextThenCut, scrubOutputTail } from "./scrub";
 
 type TestEvent = Record<string, any>;
 
@@ -201,6 +202,23 @@ describe("createSentryEventHooks", () => {
     // The same code after crossing the wire as a message prefix.
     expect(isExpectedOutcome(new Error("project_moving: This project is being moved."))).toBe(true);
     expect(isExpectedOutcome(codedError("The project folder is gone.", "project_corrupt"))).toBe(false);
+  });
+
+  it("scrubs process output whole before cutting it, so a secret across the default 4,000-char bound goes and a tail keeps its newest line", () => {
+    // The URL's password runs from char 3,988 to 4,000 and its `@` is past 4,000.
+    const line = `${"x".repeat(3_975)} https://ade:hunter2secret@host.example/status`;
+    const reported = scrubFreeTextThenCut(line, 4_100);
+    expect(reported).not.toContain("hunter2");
+    expect(reported).toContain("host.example/status");
+    // Past the 64,000-char scrub bound the input is cut before it is scrubbed;
+    // wherever that cut lands in the credential, none of it is kept.
+    for (const prefix of [63_975, 63_980, 63_988, 63_995, 63_999]) {
+      const long = `${"x".repeat(prefix)} https://ade:hunter2secret@host.example/status`;
+      expect(scrubFreeTextThenCut(long, 64_000)).not.toMatch(/hunter|ade:/);
+    }
+    // A short path grows into `[path]`; the newest line of a tail still comes whole.
+    expect(scrubOutputTail("/a/b\nfatal: final error", { maxLines: 5, lineChars: 200 }))
+      .toEqual(["[path]", "fatal: final error"]);
   });
 
   // Last in the file: it turns diagnostics on for the rest of this process.

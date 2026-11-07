@@ -50,7 +50,7 @@ export type BrainAutoDiagnosticsOutcome = AutoDiagnosticsOutcome;
 /** Everything the send needs out of a built CLI report, and nothing more. */
 export type BrainDiagnosticReport = Pick<
   ReportIssueResult,
-  "report" | "installId" | "appVersion" | "secretsDir"
+  "report" | "installId" | "appVersion" | "secretsDir" | "machineId"
 >;
 
 /**
@@ -80,6 +80,8 @@ export type BrainAutoDiagnosticsDeps = {
   env?: NodeJS.ProcessEnv;
   logger?: AutoDiagnosticsLogger;
   capture?: (input: ProductAnalyticsCapture) => void;
+  /** A development brain sends nothing on its own (`runAutoDiagnosticsSend`). */
+  devBuild?: boolean;
   /** Test seams. */
   stateFilePath?: string;
   reportsDir?: string;
@@ -140,6 +142,7 @@ export function createBrainAutoDiagnostics(
         send: (built, failureCode) => send(built, { env, auto: true, failureCode }),
         logger: deps.logger,
         capture: deps.capture,
+        devBuild: deps.devBuild,
         now,
       });
     } finally {

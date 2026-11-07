@@ -4,6 +4,7 @@ import type { AppleDeviceCleanupResult, AppleLaneDevice } from "../../../shared/
 import { APPLE_DEVICE_CLEANUP_INTERVAL_MS, isAdeOwnedLaneDevice } from "../../../shared/types/iosSimulator";
 import { appleDeviceDataRoot, parseSimctlDevices } from "./appleSimulatorCatalog";
 import type { LaneDeviceRegistry } from "./laneDeviceRegistry";
+import { createPerKeyThrottle, deviceIdleMsFromEnv, startDeviceMaintenanceTimers } from "../device/deviceMaintenance";
 
 /**
  * The two background jobs that keep lane devices from piling up.
@@ -53,11 +54,7 @@ type RunCommand = (
 
 /** `ADE_APPLE_IDLE_POWER_OFF_MINUTES`: minutes, `0` turns idle power-off off. */
 export function appleIdlePowerOffMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env.ADE_APPLE_IDLE_POWER_OFF_MINUTES?.trim();
-  if (!raw) return DEFAULT_IDLE_MS;
-  const minutes = Number(raw);
-  if (!Number.isFinite(minutes) || minutes < 0) return DEFAULT_IDLE_MS;
-  return minutes * 60_000;
+  return deviceIdleMsFromEnv(env, "ADE_APPLE_IDLE_POWER_OFF_MINUTES", DEFAULT_IDLE_MS);
 }
 
 /** What `APPLE_DEVICE_POWER_OFF_FILE` holds. */
@@ -149,18 +146,16 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
   const root = () => deps.deviceDataRoot?.trim() || appleDeviceDataRoot();
   const idleMs = deps.idleMs ?? appleIdlePowerOffMs();
   const startedAt = now();
-  const lastTouch = new Map<string, number>();
-  const timers: NodeJS.Timeout[] = [];
+  const touchThrottle = createPerKeyThrottle(TOUCH_THROTTLE_MS, now);
+  let stopTimers: (() => void) | null = null;
   let cleanupRunning: Promise<AppleDeviceCleanupResult> | null = null;
 
   const activityFile = (udid: string) => path.join(root(), udid, APPLE_DEVICE_ACTIVITY_FILE);
 
   /** Record that something used the device. Throttled; never throws. */
   const touch = (udid: string): void => {
+    if (!touchThrottle.take(udid)) return;
     const at = now();
-    const previous = lastTouch.get(udid) ?? 0;
-    if (at - previous < TOUCH_THROTTLE_MS) return;
-    lastTouch.set(udid, at);
     try {
       // Only into a directory that exists: the device may be gone.
       if (!fs.existsSync(path.join(root(), udid))) return;
@@ -343,29 +338,20 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
   };
 
   const start = (): void => {
-    if (timers.length) return;
-    const schedule = (ms: number, job: () => Promise<unknown>, repeat: boolean) => {
-      const handle = (repeat ? setInterval : setTimeout)(() => {
-        void job().catch((error: unknown) => {
-          deps.logger.warn("apple.lane_device_maintenance_failed", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      }, ms);
-      // Never the reason a process stays alive.
-      handle.unref?.();
-      timers.push(handle);
-    };
-    schedule(CLEANUP_FIRST_MS, () => runCleanup(), false);
-    schedule(CLEANUP_TICK_MS, () => runCleanup(), true);
-    if (idleMs > 0) schedule(IDLE_TICK_MS, () => runIdlePass(), true);
+    if (stopTimers) return;
+    stopTimers = startDeviceMaintenanceTimers([
+      { firstMs: CLEANUP_FIRST_MS, everyMs: CLEANUP_TICK_MS, run: () => runCleanup() },
+      ...(idleMs > 0 ? [{ everyMs: IDLE_TICK_MS, run: () => runIdlePass() }] : []),
+    ], (error) => {
+      deps.logger.warn("apple.lane_device_maintenance_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   const stop = (): void => {
-    for (const handle of timers.splice(0)) {
-      clearTimeout(handle);
-      clearInterval(handle);
-    }
+    stopTimers?.();
+    stopTimers = null;
   };
 
   return { touch, readPowerOff, clearPowerOff, runIdlePass, runCleanup, start, stop };

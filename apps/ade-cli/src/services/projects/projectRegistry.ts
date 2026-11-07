@@ -9,6 +9,7 @@ import {
   type MachineAdeLayout,
 } from "./machineLayout";
 import { codedError } from "../../../../desktop/src/shared/codedError";
+import { markExpected } from "../../../../desktop/src/shared/expectedError";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
 import { findMoveInProgress, readMovedMarker, type MovedMarker } from "./projectMove/moveJournal";
 import { statIdentity } from "./fileIdentity";
@@ -102,8 +103,25 @@ function readGitOriginUrl(rootPath: string): string | null {
   return canonicalGitOriginUrl(readGitOriginUrlFromConfigOrGit(rootPath));
 }
 
+/** Errnos that mean this account may not write in the project folder. */
+const PROJECT_FOLDER_NOT_WRITABLE = new Set(["EACCES", "EPERM", "EROFS"]);
+
 function ensureProjectAdeDir(rootPath: string): void {
-  fs.mkdirSync(path.join(rootPath, ".ade"), { recursive: true });
+  try {
+    fs.mkdirSync(path.join(rootPath, ".ade"), { recursive: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (typeof code !== "string" || !PROJECT_FOLDER_NOT_WRITABLE.has(code)) throw error;
+    // A folder this account cannot write (owned by another user, read-only
+    // media): the machine's setup, not a defect, and the user can fix it.
+    throw markExpected(
+      new Error(
+        `ADE can't create its .ade folder in ${rootPath}: this account can't write there (${code}). Give your user write access to the project folder, or open a copy of the project you own.`,
+        { cause: error },
+      ),
+      "environment",
+    );
+  }
 }
 
 /**

@@ -134,6 +134,7 @@ import {
 } from "../../desktop/src/shared/sentry/diagnostics";
 import { projectRegistryDiagnosticAttachment } from "./services/projects/projectRegistryJournal";
 import { initBrainSentry } from "./sentry/initBrain";
+import { brainReportsAsRelease } from "./sentry/brainBuild";
 import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
 import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
 import { resolveSelectedUpdateTrack } from "./services/runtime/updateTrackStore";
@@ -3593,8 +3594,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                    Hold an existing AVD no other lane holds (--no-start)
     $ ade android start --text                     Boot the lane's AVD (waits for boot completed).
                                                    Refused with ANDROID_LOW_MEMORY when the machine
-                                                   would swap; --force boots anyway (ask the user first)
+                                                   is short of memory or swapping, or its emulators
+                                                   would pass half of its memory; --force boots
+                                                   anyway (ask the user first)
     $ ade android stop --text                      Stop it; the lane keeps its AVD
+    $ ade android keep-running on|off --text       ADE stops an emulator nobody used for 20 min;
+                                                   "on" keeps the lane's running one up
     $ ade android device-detach --text             Stop it and let the AVD go. An AVD ADE made
                                                    for the lane is deleted; --keep keeps it.
                                                    The user's own AVD is never deleted.
@@ -3602,8 +3607,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                    emulators ADE started that no lane holds, forget rows
                                                    whose AVD is gone (--power-off-idle: also idle ones;
                                                    an agent reaches only its own lane). It runs by itself
-                                                   too. An ADE-made emulator with no input, view,
-                                                   recording, lease or test for 30 min powers off
+                                                   too. An emulator ADE started with no input, view,
+                                                   recording, lease or test for 20 min powers off
+                                                   unless kept running
                                                    (ADE_ANDROID_IDLE_POWER_OFF_MINUTES, 0 = never).
 
   Input and capture:
@@ -28220,12 +28226,30 @@ async function runServe(
     brainLogPath(layout),
   );
   reportBrainCredentialStoreHealth(layout.secretsDir, headlessProjectLogger);
+  // On-demand pinned-tool downloads are on before anything can serve: a chat
+  // or a model list that reaches this brain while it is still starting would
+  // otherwise read "downloads are turned off" for a tool it simply has not
+  // fetched yet. The startup fetch pass itself still starts after the socket
+  // is up (below), and the checkout rules are explained there.
+  const toolsFetchDisabled = process.env.ADE_DISABLE_TOOLS_FETCH === "1";
+  const skipToolsFetchForSourceCheckout =
+    !toolsFetchDisabled
+    && isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH)
+    && process.env.ADE_FORCE_TOOLS_FETCH !== "1";
+  if (!toolsFetchDisabled) {
+    const { enablePinnedToolFetch } = await import("./services/tools/onDemand");
+    enablePinnedToolFetch(headlessProjectLogger, { downloadOnly: skipToolsFetchForSourceCheckout });
+  }
   const {
     createProductAnalyticsService,
     defaultProductAnalyticsStateFile,
     getSharedProductAnalyticsService,
   } = await import("../../desktop/src/main/services/analytics/productAnalyticsService");
   const brainAnalyticsStateFile = defaultProductAnalyticsStateFile(layout.adeDir);
+  // `machine_id` (`machineTelemetryId.ts`): probed once, off the loop, on the first send.
+  const { machineTelemetryIdReader } = await import(
+    "../../desktop/src/main/services/analytics/machineTelemetryId"
+  );
   const brainProductAnalytics = getSharedProductAnalyticsService(
     brainAnalyticsStateFile,
     () => createProductAnalyticsService({
@@ -28233,14 +28257,14 @@ async function runServe(
       logger: headlessProjectLogger,
       appVersion: VERSION,
       runtimeMode: "brain",
-      // Where this bundle runs, as `initBrainSentry` decides it.
+      // As `initBrainSentry` decides it (`sentry/brainBuild.ts`): a dev brain,
+      // a source checkout or a bundle no release built is `development`.
       releaseChannel: resolveReleaseChannel({
         env: process.env,
-        packaged: !isSourceCheckoutRuntimeModule(
-          typeof __filename === "string" ? __filename : process.argv[1] ?? "",
-        ),
+        packaged: brainReportsAsRelease(process.env),
         version: VERSION,
       }),
+      machineId: machineTelemetryIdReader(layout.adeDir),
     }),
   );
   // From the brain's start, not only once a project opens: a brain that only
@@ -28259,6 +28283,7 @@ async function runServe(
     cliVersion: VERSION,
     logger: headlessProjectLogger,
     capture: (input) => brainProductAnalytics.capture(input),
+    devBuild: !brainReportsAsRelease(process.env),
   });
   const socketPath = serveSocketPath;
   // The watchdog below says that the brain froze; this says which synchronous
@@ -28271,9 +28296,14 @@ async function runServe(
   installSyncFsCallTracker({ warn: (event, meta) => headlessProjectLogger.warn(event, meta) });
   const projectRootAccessMonitor = await import("./services/projects/projectRootAccessMonitor");
   projectRootAccessMonitor.configureProjectRootAccessMonitor({ logger: headlessProjectLogger });
+  // Started below for the machine brain only; the watchdog's five-minute sample drives it.
+  let resourcePressureMonitor: { tick: () => Promise<void> } | null = null;
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     socketPath,
+    onSampleTick: () => {
+      void resourcePressureMonitor?.tick();
+    },
     warn: (event, meta) => headlessProjectLogger.warn(event, meta),
     info: (event, meta) => headlessProjectLogger.info(event, meta),
     onStall: ({ observedLagMs }) => recordHostStall({ durationMs: observedLagMs }),
@@ -28341,6 +28371,14 @@ async function runServe(
       runtimeDir: layout.runtimeDir,
       warn: (event, meta) => headlessProjectLogger.warn(event, meta),
       info: (event, meta) => headlessProjectLogger.info(event, meta),
+    });
+    // One machine, one sampler: the machine brain watches this computer's
+    // memory, swap, database logs and its own CPU (`resourcePressureMonitor.ts`).
+    const { createResourcePressureMonitor } = await import("./services/runtime/resourcePressureMonitor");
+    resourcePressureMonitor = createResourcePressureMonitor({
+      runtimeDir: layout.runtimeDir,
+      logger: headlessProjectLogger,
+      capture: (input) => brainProductAnalytics.captureInternal(input),
     });
   } else {
     headlessProjectLogger.info("brain.heartbeat_skipped_non_machine_socket", {
@@ -30523,25 +30561,15 @@ async function runServe(
   // ADE_FORCE_TOOLS_FETCH=1 makes a checkout behave like a packaged install
   // (exercising the real fetch path locally); ADE_DISABLE_TOOLS_FETCH=1 still
   // wins over it, and is handled inside startBackgroundAgentToolsFetch so the
-  // skip is logged there.
-  const toolsFetchDisabled = process.env.ADE_DISABLE_TOOLS_FETCH === "1";
-  const skipToolsFetchForSourceCheckout =
-    !toolsFetchDisabled
-    && isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH)
-    && process.env.ADE_FORCE_TOOLS_FETCH !== "1";
+  // skip is logged there. On-demand downloads were turned on at the top of
+  // runServe, with the same rules.
   if (skipToolsFetchForSourceCheckout) {
-    const { enablePinnedToolFetch } = await import("./services/tools/onDemand");
-    enablePinnedToolFetch(headlessProjectLogger, { downloadOnly: true });
     headlessProjectLogger.info("tools.fetch_skipped", {
       reason:
         "Running from a source checkout, where the lockfile-pinned agent tools resolve from the repo's node_modules; "
         + "download-only tools still download on demand. Set ADE_FORCE_TOOLS_FETCH=1 to run the startup fetch anyway.",
     });
   } else {
-    if (!toolsFetchDisabled) {
-      const { enablePinnedToolFetch } = await import("./services/tools/onDemand");
-      enablePinnedToolFetch(headlessProjectLogger);
-    }
     void import("./services/tools/backgroundFetch").then(({ startBackgroundAgentToolsFetch }) => {
       startBackgroundAgentToolsFetch(headlessProjectLogger);
     });
@@ -30663,6 +30691,45 @@ async function runServe(
   });
   const stopParentMonitor = monitorRuntimeParentProcess(finish);
   const stopIdleMonitor = monitorRuntimeIdleExit(states, finish);
+  // A brain a dev or test launcher marked (no service, no parent, not the
+  // installed home) leaves once its launcher is gone and it has had nothing
+  // to do for a while, stopping the emulators it started on the way out.
+  const stopUnmanagedIdleMonitor = await (async () => {
+    const [unmanaged, { isStartedByRuntimeService }, { ADE_RUNTIME_SERVICE_NAME }] = await Promise.all([
+      import("./services/runtime/unmanagedBrainIdleExit"),
+      import("./serviceManager"),
+      import("./serviceManager/common"),
+    ]);
+    const idleExitMs = unmanaged.unmanagedBrainIdleExitMs({
+      env: process.env,
+      platform: process.platform,
+      adeHome: layout.adeDir,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      windowsSupervised: process.platform === "win32" ? isStartedByRuntimeService() : null,
+    });
+    return unmanaged.monitorUnmanagedBrainIdleExit({
+      idleExitMs,
+      isOrphaned: () => unmanaged.isOrphanedProcess({ ppid: process.ppid, platform: process.platform, isPidAlive }),
+      isBusy: async () => {
+        if (hasActiveHeadlessConnections(states)) return true;
+        const activity = await readMachineRuntimeActivitySummary({ projectRegistry, scopeRegistry, personalChatScope });
+        if (!activity.idle || (activity.activeAgentCliSessions ?? 0) > 0) return true;
+        // A phone or a desktop syncing with this brain is using it too.
+        const activeProjectId = scopeRegistry.getActiveSyncHostProjectId();
+        const scope = activeProjectId ? await scopeRegistry.getIfBooted(activeProjectId)?.catch(() => null) ?? null : null;
+        const sync = await scope?.runtime.syncService?.getStatus({ includeTransferReadiness: false }).catch(() => null) ?? null;
+        return Array.isArray(sync?.connectedPeers) && sync.connectedPeers.length > 0;
+      },
+      onIdle: (idleMs) => {
+        headlessProjectLogger.info("brain.unmanaged_idle_exit", {
+          adeHome: layout.adeDir,
+          socketPath,
+          idleMinutes: Math.round(idleMs / 60_000),
+        });
+        finish();
+      },
+    });
+  })().catch(() => () => {});
   try {
     await new Promise<void>((resolve) => {
       if (done) {
@@ -30685,6 +30752,7 @@ async function runServe(
   } finally {
     stopParentMonitor();
     stopIdleMonitor();
+    stopUnmanagedIdleMonitor();
     stopSocketOwnershipMonitor();
   }
 
@@ -30739,7 +30807,7 @@ async function runServe(
       "background_item_blocked", "brain_not_running",
       "socket_stale_no_owner", "socket_owned_by_other", "provider_thread_missing",
       "provider_resume_failed", "optional_mcp_failed", "continuity_reconstruction_required",
-      "unknown",
+      "db_open_failed", "unknown",
     ]);
     const code: AdeRecoveryErrorCode = knownCodes.has(rawCode as AdeRecoveryErrorCode)
       ? rawCode as AdeRecoveryErrorCode

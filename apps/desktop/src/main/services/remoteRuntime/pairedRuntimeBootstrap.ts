@@ -9,6 +9,7 @@ import type {
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
 import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import {
   coerceProjects,
   validateRemoteRuntimeInitializeResult,
@@ -133,6 +134,18 @@ export async function bootstrapPairedRuntime(args: {
   // Keep the phases explicit even if a future candidate-builder change
   // accidentally reorders endpoints.
   const orderedCandidates = orderPairedCandidates(candidates);
+  // The user can remove (or re-pair) the machine while a dial is still running,
+  // and the route bookkeeping below then finds no record to update. That ends
+  // the connect: there is nothing left to connect to, and the answer says so
+  // instead of the store's bare "not found".
+  const unpairedMidDial = (error: unknown): unknown =>
+    args.pairedStore.get(credentials.hostIdentity.deviceId)
+      ? error
+      : new AdeExpectedError(
+        `${credentials.hostIdentity.name?.trim() || "This machine"} is no longer paired with this computer. Pair it again to connect.`,
+        "user",
+        { cause: error },
+      );
   // The host just opened a new relay link (a machine back from sleep), during
   // the connect or the first calls: try the relay once more now, and don't
   // count it against the route.
@@ -147,7 +160,11 @@ export async function bootstrapPairedRuntime(args: {
       orderedCandidates.splice(candidateIndex + 1, 0, candidate);
       return;
     }
-    recordPairedRouteFailure(args.pairedStore, credentials.hostIdentity.deviceId, candidate.endpoint, failure);
+    try {
+      recordPairedRouteFailure(args.pairedStore, credentials.hostIdentity.deviceId, candidate.endpoint, failure);
+    } catch (recordError) {
+      throw unpairedMidDial(recordError);
+    }
   };
   for (const [candidateIndex, candidate] of orderedCandidates.entries()) {
     const attemptStartedAt = Date.now();
@@ -376,7 +393,7 @@ export async function bootstrapPairedRuntime(args: {
       };
     } catch (error) {
       client.close();
-      throw error;
+      throw unpairedMidDial(error);
     }
   }
 

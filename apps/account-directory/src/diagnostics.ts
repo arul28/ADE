@@ -335,6 +335,11 @@ function parseAutoFlag(value: unknown): boolean {
   return normalized === "true" || normalized === "1" || normalized === "yes";
 }
 
+/** A `machine_id`: exactly 16 lowercase hex characters, or nothing at all. */
+function boundedMachineId(value: unknown): string | undefined {
+  return typeof value === "string" && /^[0-9a-f]{16}$/.test(value.trim()) ? value.trim() : undefined;
+}
+
 /** A `failureCode` that matches `FAILURE_CODE_PATTERN`, or nothing at all. */
 function boundedFailureCode(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -346,6 +351,8 @@ type ParsedUpload = {
   report: string;
   installId?: string;
   appVersion?: string;
+  /** The sender's `machine_id` (16 hex characters), when it sent one. */
+  machineId?: string;
   /** True when the client sent this on its own; false is a human pressing send. */
   auto: boolean;
   failureCode?: string;
@@ -377,6 +384,7 @@ function parseUpload(contentType: string, raw: string, url: URL): ParsedUpload |
     report,
     installId: boundedMetadata(fields.installId ?? url.searchParams.get("installId")),
     appVersion: boundedMetadata(fields.appVersion ?? url.searchParams.get("appVersion")),
+    machineId: boundedMachineId(fields.machineId ?? url.searchParams.get("machineId")),
     // `??` rather than `||` so an explicit `auto: false` in the body is honored
     // instead of falling through to a query parameter that says otherwise.
     auto: parseAutoFlag(fields.auto ?? url.searchParams.get("auto")),
@@ -638,6 +646,7 @@ async function handleDiagnosticsUpload(
         ...(userId ? { userId } : {}),
         ...(parsed.installId ? { installId: parsed.installId } : {}),
         ...(parsed.appVersion ? { appVersion: parsed.appVersion } : {}),
+        ...(parsed.machineId ? { machineId: parsed.machineId } : {}),
         // Only written when true, so a manual upload's metadata is exactly what
         // it was before this flag existed.
         ...(parsed.auto ? { auto: "true" } : {}),

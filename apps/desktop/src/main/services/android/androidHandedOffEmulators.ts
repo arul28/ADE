@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import type { AndroidLaneDevice } from "../../../shared/types/androidEmulator";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import {
@@ -12,6 +13,7 @@ import {
   type AndroidDiscoveredEmulator,
 } from "./androidEmulatorProcess";
 import { readAndroidSdkStatus, requireAndroidSdkTools, type AndroidEnv } from "./androidSdk";
+import type { AndroidLaneDeviceRepo } from "./androidLaneRelease";
 
 /*
  * The emulators ADE started and handed off: the started-emulators state file
@@ -35,6 +37,66 @@ export function openStartedEmulators(dataDir: string, logger: Logger | null): Ad
 }
 
 /**
+ * A service's start-up reconcile. A lane archived or deleted while no brain
+ * ran (or a chat's work copy deleted then) left its row (the release keeps a
+ * running AVD's row) and maybe its emulator: stop that emulator and release
+ * the AVD by the normal rules. Then an emulator ADE started that no lane
+ * holds at all is stopped. Lanes that are still active keep their emulators:
+ * those are re-adopted. True when something changed.
+ */
+export async function reconcileStartedEmulators(args: {
+  laneDevices: AndroidLaneDeviceRepo;
+  laneLiveness: (laneId: string) => "active" | "archived" | "missing" | null;
+  /** Running emulators the state file lists as ADE's. */
+  startedHere: () => AndroidDiscoveredEmulator[];
+  /** Runs before the SDK is read: the emulators started before the owner file are taken in. */
+  takeIn: () => void;
+  /** The SDK's adb, or null without an SDK. */
+  locateAdb: () => string | null;
+  isDisposed: () => boolean;
+  serialize: <T>(laneId: string, step: () => Promise<T>) => Promise<T>;
+  endLaneLocked: (device: AndroidLaneDevice) => Promise<object>;
+  stopOrphan: (emulator: AndroidDiscoveredEmulator, adbPath: string) => Promise<unknown>;
+  logger: Logger | null;
+}): Promise<boolean> {
+  const { logger } = args;
+  // Cheap reads first (the lane rows, the discovery files, the state file):
+  // a brain start with nothing to reconcile never reads the SDK, which would
+  // run `emulator -accel-check` once per project.
+  // A chat's work copy counts as a lane while the copy exists.
+  const endedLanes = (args.laneDevices.list?.() ?? []).filter((device) => {
+    const liveness = args.laneLiveness(device.laneId);
+    return liveness !== null && liveness !== "active";
+  });
+  const orphans = () => args.startedHere().filter((emulator) => args.laneDevices.holder(emulator.avdName) === null);
+  args.takeIn();
+  if (endedLanes.length === 0 && orphans().length === 0) return false;
+  const adbPath = args.locateAdb();
+  if (!adbPath || args.isDisposed()) return false;
+  let changed = false;
+  for (const device of endedLanes) {
+    await args.serialize(device.laneId, async () => {
+      const result = await args.endLaneLocked(device);
+      changed = true;
+      logger?.info("android.reconcile.released", { laneId: device.laneId, avdName: device.avdName, ...result });
+    }).catch((error: unknown) => {
+      logger?.warn("android.reconcile.release_failed", { laneId: device.laneId, error: getErrorMessage(error) });
+    });
+  }
+  for (const emulator of orphans()) {
+    if (args.isDisposed()) return changed;
+    await args.stopOrphan(emulator, adbPath).then(
+      () => {
+        changed = true;
+        logger?.info("android.reconcile.stopped_orphan", { serial: emulator.serial, avdName: emulator.avdName });
+      },
+      (error: unknown) => logger?.warn("android.reconcile.stop_failed", { serial: emulator.serial, error: getErrorMessage(error) }),
+    );
+  }
+  return changed;
+}
+
+/**
  * Stops every running emulator the state file lists as ADE's, and nothing
  * else; each stop forgets its emulator in the file. A failed stop is logged
  * and the rest still run.
@@ -46,6 +108,8 @@ export async function stopAdeStartedEmulators(args: {
   logger: Logger | null;
   /** The launcher process this run kept for an emulator, if any. */
   launcherPidFor?: (emulator: AndroidDiscoveredEmulator) => number | null;
+  /** One emulator stopped (the machine's owner record goes with it). */
+  onStopped?: (emulator: AndroidDiscoveredEmulator) => void;
 }): Promise<void> {
   for (const emulator of readAndroidDiscoveryFiles(args.discoveryDirs)) {
     if (!args.registry.owns(emulator)) continue;
@@ -58,7 +122,7 @@ export async function stopAdeStartedEmulators(args: {
       launcherPid: args.launcherPidFor?.(emulator) ?? null,
       registry: args.registry,
       discoveryDirs: args.discoveryDirs,
-    }).catch((error: unknown) => {
+    }).then(() => args.onStopped?.(emulator), (error: unknown) => {
       args.logger?.warn("android.dispose_stop_failed", { serial: emulator.serial, error: getErrorMessage(error) });
     });
   }
