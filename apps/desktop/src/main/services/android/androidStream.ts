@@ -49,7 +49,7 @@ import { createScrcpyRecordBuilder, type ScrcpyVideoPacket } from "./scrcpyVideo
  * encoder. The server sets real-time priority and one-frame latency itself
  * (scrcpy 4.0 and later).
  */
-const ANDROID_STREAM_DEFAULTS = {
+export const ANDROID_STREAM_DEFAULTS = {
   /** Longest side of the encoded picture (464x1024 for a 1080x2400 phone). */
   maxSize: 1024,
   bitRate: 4_000_000,

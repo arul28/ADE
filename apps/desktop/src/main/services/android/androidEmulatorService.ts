@@ -122,7 +122,12 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     ? null
     : `The Android emulator runs on macOS, Windows and Linux, not on ${platform}.`;
 
+  /** Set once the maintenance timers exist (`androidLaneMaintenance.ts`); a lifecycle event re-checks them. */
+  let refreshMaintenance: () => void = () => {};
+
   const emit = (event: AndroidEmulatorEvent) => {
+    // A device came or went: the idle and cleanup timers run only while there is one.
+    if (event.type === "android.device.state" || event.type === "android.inventory.changed") refreshMaintenance();
     try {
       deps.onEvent?.(event);
     } catch (error) {
@@ -692,7 +697,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       await rawInput.rotate(args);
       agent.recordings.forgetScreenSize(args.laneId);
       // Parity: a half turn keeps the video's shape, so viewers learn the turn here.
-      await deviceSettings.getDeviceSettings(args.laneId, "orientation").then((read) => {
+      // The read is one more adb call; the caller does not wait for it, the event follows.
+      void deviceSettings.getDeviceSettings(args.laneId, "orientation").then((read) => {
         if (read.orientation) {
           emit({ type: "android.device.orientation", laneId: args.laneId, orientation: read.orientation });
         }
@@ -814,6 +820,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     ...(deps.idlePowerOffMs != null ? { idleMs: deps.idlePowerOffMs } : { idleMs: androidIdlePowerOffMsFromEnv(env) }),
     logger,
   });
+  refreshMaintenance = () => maintenance.refresh();
 
   /* ---------- parity: Inspect at a point (`androidInspect.ts`) ---------- */
 
@@ -1214,13 +1221,16 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       return method(...callArgs);
     };
   }
-  maintenance.start();
   // After construction returns, so a caller's first call is not held up by it;
-  // lane steps still queue behind it through `serialize`.
+  // lane steps still queue behind it through `serialize`. The maintenance
+  // timers arm after it, from what the reconcile left: none for a project
+  // with no Android device and no emulator ADE started.
   setTimeout(() => {
-    void reconcile().catch((error: unknown) => {
-      logger?.warn("android.reconcile_failed", { error: getErrorMessage(error) });
-    });
+    void reconcile()
+      .catch((error: unknown) => {
+        logger?.warn("android.reconcile_failed", { error: getErrorMessage(error) });
+      })
+      .finally(() => maintenance.start());
   }, 0);
   return service;
 }

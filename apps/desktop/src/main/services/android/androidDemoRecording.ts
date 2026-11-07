@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { DemoArtifactMetadata, DemoEngine, DemoRect, DemoTrack, DemoTrackEvent } from "../../../shared/demoVideo/demoContract";
@@ -129,17 +129,27 @@ function runFfmpegOnce(ffmpegPath: string, args: string[], signal: AbortSignal):
  * An ffmpeg on this machine that can join the parts: the demo engine's, else
  * any one with libx264 (a join needs no drawtext). Null when there is none.
  */
-let joinFfmpegCache: { path: string | null } | null = null;
-function localJoinFfmpeg(): string | null {
+let joinFfmpegCache: Promise<string | null> | null = null;
+/** Asked once per process, off the event loop: the brain keeps serving while ffmpeg lists its encoders. */
+function localJoinFfmpeg(logger: Logger | null): Promise<string | null> {
   const demo = resolveFfmpegTools();
-  if (demo) return demo.ffmpegPath;
-  if (joinFfmpegCache) return joinFfmpegCache.path;
-  const found = resolveExecutableFromKnownLocations("ffmpeg");
-  const encoders = found
-    ? spawnSync(found.path, ["-hide_banner", "-encoders"], { encoding: "utf8", timeout: 10_000, windowsHide: true })
-    : null;
-  joinFfmpegCache = { path: found && encoders?.status === 0 && /\blibx264\b/u.test(encoders.stdout) ? found.path : null };
-  return joinFfmpegCache.path;
+  if (demo) return Promise.resolve(demo.ffmpegPath);
+  joinFfmpegCache ??= new Promise<string | null>((resolve) => {
+    const found = resolveExecutableFromKnownLocations("ffmpeg");
+    if (!found) {
+      resolve(null);
+      return;
+    }
+    execFile(found.path, ["-hide_banner", "-encoders"], { encoding: "utf8", timeout: 10_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
+      if (error) {
+        logger?.warn("android.recording_join_ffmpeg_probe_failed", { error: getErrorMessage(error) });
+        resolve(null);
+        return;
+      }
+      resolve(/\blibx264\b/u.test(stdout) ? found.path : null);
+    });
+  });
+  return joinFfmpegCache;
 }
 
 async function joinWithFfmpeg(
@@ -293,7 +303,7 @@ async function joinSegments(args: {
   const swift = args.engines.find((engine) => engine.id === "swift" && engine.canRead(args.segments[0]!.path)) ?? null;
   // ffmpeg on the machine first (one run, no download); then ade-media on
   // macOS; then ADE's own ffmpeg, which may need a download.
-  const localFfmpeg = localJoinFfmpeg();
+  const localFfmpeg = await localJoinFfmpeg(args.logger);
   if (localFfmpeg) {
     await joinWithFfmpeg(args.segments, args.rawPath, canvas, args.signal, localFfmpeg);
   } else if (swift) {

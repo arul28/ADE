@@ -5,7 +5,7 @@ import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import type { BootedDevice } from "./androidDeviceShell";
 import { requireLaneId } from "./androidEmulatorErrors";
-import { asStreamFailure, type AndroidStreamHub } from "./androidStream";
+import { ANDROID_STREAM_DEFAULTS, asStreamFailure, type AndroidStreamHub } from "./androidStream";
 
 /*
  * The lane's live stream: who holds it (a viewer on this machine, a remote
@@ -33,6 +33,15 @@ import { asStreamFailure, type AndroidStreamHub } from "./androidStream";
  * A rate change restarts the scrcpy session on the same transport
  * (`AndroidStreamHub.recap`). The local viewer never sees one while it
  * watches: a cap applies only when no local viewer is there.
+ *
+ * A restart costs the viewers a short gap in the picture (0.5 to 4 s), and
+ * the relay's pacing can ask for a new cap every 2 s while a link stalls. So
+ * a cap change restarts the session at most once in
+ * {@link RECAP_MIN_INTERVAL_MS}, and a raise (the link is quiet again, so it
+ * is not urgent) at most once in {@link RECAP_RAISE_MIN_INTERVAL_MS}. A change
+ * inside that time waits for its end and then applies the rate wanted at that
+ * moment, so a run of steps costs one restart. The return to full rate for a
+ * viewer here or a recording never waits.
  *
  * Node built-ins and relative imports only, so it runs under `tsx`.
  */
@@ -80,9 +89,25 @@ type RemoteHold = {
 
 const NO_STREAM = { running: false, backend: null, transport: null, fps: null } as const;
 
+/** The shortest time between two restarts of a lane's stream for a remote cap change. */
+export const RECAP_MIN_INTERVAL_MS = 10_000;
+/** The same for a raise of the remote cap: pacing steps up every 10 s, so about three steps go in one restart. */
+export const RECAP_RAISE_MIN_INTERVAL_MS = 30_000;
+
+/** One lane's restarts for a rate change: when the last began, and the change waiting for the interval. */
+type RecapPacing = { lastAt: number; timer: ReturnType<typeof setTimeout> | null; dueAt: number };
+
 export function createAndroidLaneStreams<S extends AndroidLaneStreamState>(deps: AndroidLaneStreamsDeps<S>) {
   const { streams, logger } = deps;
   const holds = new Map<string, RemoteHold>();
+  const recaps = new Map<string, RecapPacing>();
+
+  /** Drops the lane's waiting rate change (the stream stopped, or the rate is already right). */
+  const cancelPendingRecap = (laneId: string): void => {
+    const pacing = recaps.get(laneId);
+    if (pacing?.timer) clearTimeout(pacing.timer);
+    if (pacing) pacing.timer = null;
+  };
 
   const holdOf = (laneId: string): RemoteHold => {
     let hold = holds.get(laneId);
@@ -124,11 +149,50 @@ export function createAndroidLaneStreams<S extends AndroidLaneStreamState>(deps:
     return Math.min(ceiling, adaptive ?? ceiling) * 1000;
   };
 
-  /** Puts the running stream at the rate its holders want. Never starts one. */
+  /**
+   * Puts the running stream at the rate its holders want. Never starts one.
+   * Full rate for a viewer here or a recording applies at once; a remote cap
+   * applies at most once per {@link RECAP_MIN_INTERVAL_MS} (see the top).
+   */
   const retune = async (laneId: string): Promise<void> => {
     const serial = deps.peekLane(laneId)?.streamSerial ?? null;
-    if (!serial) return;
+    if (!serial) {
+      cancelPendingRecap(laneId);
+      return;
+    }
     const bitRate = wantedBitRate(laneId);
+    const runningKbps = streams.status(serial, laneId).capKbps ?? null;
+    if (runningKbps !== null && runningKbps === Math.round((bitRate ?? ANDROID_STREAM_DEFAULTS.bitRate) / 1000)) {
+      // Already at that rate: nothing to restart, and an older change waiting is moot.
+      cancelPendingRecap(laneId);
+      return;
+    }
+    let pacing = recaps.get(laneId);
+    if (!pacing) {
+      pacing = { lastAt: 0, timer: null, dueAt: 0 };
+      recaps.set(laneId, pacing);
+    }
+    const raising = runningKbps !== null && bitRate !== null && bitRate / 1000 > runningKbps;
+    const waitMs = fullRateHeld(laneId)
+      ? 0
+      : pacing.lastAt + (raising ? RECAP_RAISE_MIN_INTERVAL_MS : RECAP_MIN_INTERVAL_MS) - Date.now();
+    if (waitMs > 0) {
+      // A restart ran a moment ago: one more when the interval ends, at the
+      // rate wanted then. A lowering may move a waiting raise earlier, never later.
+      const dueAt = Date.now() + waitMs;
+      if (pacing.timer && pacing.dueAt <= dueAt) return;
+      cancelPendingRecap(laneId);
+      const held = pacing;
+      held.dueAt = dueAt;
+      held.timer = setTimeout(() => {
+        held.timer = null;
+        void retune(laneId);
+      }, waitMs);
+      (held.timer as { unref?: () => void }).unref?.();
+      return;
+    }
+    cancelPendingRecap(laneId);
+    pacing.lastAt = Date.now();
     try {
       await streams.recap(serial, bitRate);
     } catch (error) {
@@ -138,6 +202,8 @@ export function createAndroidLaneStreams<S extends AndroidLaneStreamState>(deps:
 
   /** Stops the lane's stream, whoever holds it, and says so. */
   const stopRunning = async (state: S): Promise<void> => {
+    cancelPendingRecap(state.laneId);
+    recaps.delete(state.laneId);
     const serial = state.streamSerial;
     if (!serial) return;
     state.streamSerial = null;

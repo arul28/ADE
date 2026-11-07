@@ -15,10 +15,18 @@ import type { AndroidDiscoveredEmulator } from "./androidEmulatorProcess";
  * - The cleanup pass: release the devices of lanes that ended, stop
  *   emulators ADE started that no lane holds (an emulator handed off by an
  *   earlier brain whose lane is gone is one of them), and drop lane rows whose
- *   AVD is gone from disk. Shortly after start, then every 15 minutes.
+ *   AVD is gone from disk. One minute after it is armed, then every 15 minutes.
  * - Idle power-off: an emulator ADE started for an AVD ADE made, that nothing
  *   has used for `idleMs` (30 minutes), is stopped. A booted emulator holds
  *   2 to 4 GB of RAM. Starting it again takes seconds from its snapshot.
+ *
+ * Neither job runs for a project that does not use Android. Every project's
+ * brain builds this service, so the timers are armed only while there is
+ * something to keep: the cleanup pass while a lane holds an Android device
+ * or an emulator ADE started runs, the idle pass while such an emulator runs
+ * for an AVD ADE made. `refresh` checks this again. The service calls it
+ * after each lifecycle event, and each pass calls it when it ends, so the
+ * timers stop when the last device goes.
  *
  * "Used" is any agent or viewer call on the lane, a running stream (a viewer
  * or a recording), a lease, a lifecycle step or a test run in progress, and
@@ -100,8 +108,12 @@ export function createAndroidLaneMaintenance(deps: AndroidLaneMaintenanceDeps) {
   const startedAt = now();
   const lastUse = new Map<string, number>();
   const poweredOff = new Map<string, AndroidPowerOffRecord>();
-  const timers: NodeJS.Timeout[] = [];
+  /** The cleanup pass's first run and its repeat, while armed. */
+  const cleanupTimers: NodeJS.Timeout[] = [];
+  /** The idle pass's repeat, while armed. */
+  let idleTimer: NodeJS.Timeout | null = null;
   let running: Promise<AndroidDeviceCleanupResult> | null = null;
+  let started = false;
   let stopped = false;
 
   /** Something used the lane's device: restart its idle clock, and forget an old power-off. */
@@ -260,32 +272,80 @@ export function createAndroidLaneMaintenance(deps: AndroidLaneMaintenanceDeps) {
     return result;
   };
 
-  const start = (): void => {
-    if (timers.length || stopped) return;
-    const schedule = (ms: number, job: () => Promise<unknown>, repeat: boolean) => {
-      const handle = (repeat ? setInterval : setTimeout)(() => {
-        void job().catch((error: unknown) => {
+  /** A timer that runs one pass, logs a failure, then checks again whether the timers are still needed. */
+  const schedule = (ms: number, job: () => Promise<unknown>, repeat: boolean): NodeJS.Timeout => {
+    const handle = (repeat ? setInterval : setTimeout)(() => {
+      void job()
+        .catch((error: unknown) => {
           deps.logger?.warn("android.lane_device_maintenance_failed", { error: getErrorMessage(error) });
-        });
-      }, ms);
-      // Never the reason a process stays alive.
-      handle.unref?.();
-      timers.push(handle);
+        })
+        .finally(() => refresh());
+    }, ms);
+    // Never the reason a process stays alive.
+    handle.unref?.();
+    return handle;
+  };
+
+  /** What the timers have to keep now: lane rows, and emulators ADE started. */
+  const wanted = (): { cleanup: boolean; idle: boolean } => {
+    const rows = deps.listRows();
+    const ownedRunning = rows.length > 0 ? false : deps.discovered().some((emulator) => deps.ownsEmulator(emulator));
+    return {
+      cleanup: rows.length > 0 || ownedRunning,
+      idle: idleMs > 0 && rows.some((device) => candidate(device) !== null),
     };
-    schedule(CLEANUP_FIRST_MS, () => runCleanup(), false);
-    schedule(CLEANUP_TICK_MS, () => runCleanup(), true);
-    if (idleMs > 0) {
-      const tick = Math.min(IDLE_TICK_MAX_MS, Math.max(IDLE_TICK_MIN_MS, Math.round(idleMs / 4)));
-      schedule(tick, () => runIdlePass(), true);
+  };
+
+  /**
+   * Arms the timers that have work and stops the ones that have none. Cheap
+   * (the lane rows and the emulator discovery files), so the service calls it
+   * on each lifecycle event. Never throws.
+   */
+  const refresh = (): void => {
+    if (!started || stopped) return;
+    let want: { cleanup: boolean; idle: boolean };
+    try {
+      want = wanted();
+    } catch (error) {
+      deps.logger?.warn("android.lane_device_maintenance_check_failed", { error: getErrorMessage(error) });
+      return;
     }
+    const before = { cleanup: cleanupTimers.length > 0, idle: idleTimer !== null };
+    if (want.cleanup && cleanupTimers.length === 0) {
+      cleanupTimers.push(schedule(CLEANUP_FIRST_MS, () => runCleanup(), false), schedule(CLEANUP_TICK_MS, () => runCleanup(), true));
+    } else if (!want.cleanup && cleanupTimers.length > 0) {
+      for (const handle of cleanupTimers.splice(0)) {
+        clearTimeout(handle);
+        clearInterval(handle);
+      }
+    }
+    if (want.idle && idleTimer === null) {
+      const tick = Math.min(IDLE_TICK_MAX_MS, Math.max(IDLE_TICK_MIN_MS, Math.round(idleMs / 4)));
+      idleTimer = schedule(tick, () => runIdlePass(), true);
+    } else if (!want.idle && idleTimer !== null) {
+      clearInterval(idleTimer);
+      idleTimer = null;
+    }
+    if (before.cleanup !== want.cleanup || before.idle !== want.idle) {
+      deps.logger?.info("android.lane_device_maintenance_armed", { cleanup: want.cleanup, idle: want.idle });
+    }
+  };
+
+  /** Lets `refresh` arm the timers. The service calls it after its start-up reconcile. */
+  const start = (): void => {
+    if (started || stopped) return;
+    started = true;
+    refresh();
   };
 
   const stop = (): void => {
     stopped = true;
-    for (const handle of timers.splice(0)) {
+    for (const handle of cleanupTimers.splice(0)) {
       clearTimeout(handle);
       clearInterval(handle);
     }
+    if (idleTimer !== null) clearInterval(idleTimer);
+    idleTimer = null;
   };
 
   return {
@@ -299,6 +359,7 @@ export function createAndroidLaneMaintenance(deps: AndroidLaneMaintenanceDeps) {
     },
     runIdlePass,
     runCleanup,
+    refresh,
     start,
     stop,
   };

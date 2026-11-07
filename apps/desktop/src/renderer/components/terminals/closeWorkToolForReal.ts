@@ -85,13 +85,10 @@ export function closeWorkToolForReal(
     }
     case "android": {
       // A tab close is not a minimize: nothing floats, and a player already
-      // floating goes with the tab.
-      suppressAndroidMiniPlayerHandoff();
+      // floating goes with the tab. The mark is the lane's and the pane's
+      // unmount takes it, however late that unmount comes after the dialog.
+      suppressAndroidMiniPlayerHandoff({ laneId, runtimePin });
       retakeAndroidMiniPlayer({ laneId, runtimePin });
-      // The close runs after the dialog, so the pane can unmount after the
-      // suppress flag clears (seen live under load): the handoff then floats
-      // the player again. Take it back once the unmount has had its turn.
-      window.setTimeout(() => retakeAndroidMiniPlayer({ laneId, runtimePin }), 300);
       // "Keep running" (the default) leaves the emulator up: it is the lane's,
       // a boot is slow, and the brain's idle power-off stops an ADE-made one
       // nobody uses. The question was asked upstream, in

@@ -36,7 +36,11 @@ import {
   releaseAppleMiniPlayerHandoverHold,
   retakeAppleMiniPlayer,
 } from "../apple/appleMiniPlayerStore";
-import { handoffAndroidMiniPlayer, retakeAndroidMiniPlayer } from "../android/androidMiniPlayerStore";
+import {
+  clearAndroidMiniPlayerHandoffSuppression,
+  handoffAndroidMiniPlayer,
+  retakeAndroidMiniPlayer,
+} from "../android/androidMiniPlayerStore";
 import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
 import { FilesTab } from "../files/FilesTab";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
@@ -731,7 +735,10 @@ function WorkAndroidDevice({
    */
   const floats = !pinnedMachineName;
   useLayoutEffect(() => {
-    if (!laneId || !floats) return undefined;
+    if (!laneId) return undefined;
+    // A close mark from a tab that was not on screen is old now.
+    clearAndroidMiniPlayerHandoffSuppression({ laneId, runtimePin: pinRef.current });
+    if (!floats) return undefined;
     retakeAndroidMiniPlayer({ laneId, runtimePin: pinRef.current });
     return () => {
       handoffAndroidMiniPlayer({ laneId, chatSessionId: sessionRef.current, runtimePin: pinRef.current });
