@@ -85,4 +85,37 @@ describe("createAndroidRecordingSessions", () => {
     expect(sessions.isRecording("lane-1")).toBe(false);
     await expect(sessions.api.recordStop({ laneId: "lane-1" })).resolves.toMatchObject({ active: false, stopReason: "turn-end" });
   });
+
+  it("stops the chat's running recording at once while another lane's start still waits", async () => {
+    const otherLane = deferred<string>();
+    const lane1Stopped = deferred<void>();
+    const sessions = createAndroidRecordingSessions({
+      requireBooted: async () => ({}),
+      assertWorkCopyLive: () => undefined,
+      streams: { subscribePackets: vi.fn(() => () => undefined) },
+      holdStreamForRecording: (laneId) => (laneId === "lane-2" ? otherLane.promise : Promise.resolve("emulator-5556")),
+      releaseStreamForRecording: async () => undefined,
+      onRecordingChanged: (laneId, recording) => {
+        if (laneId === "lane-1" && !recording.active) lane1Stopped.resolve();
+      },
+      artifactFiler: null,
+      callerRoot: null,
+      dataDir,
+      logger: null,
+      now: () => new Date("2026-11-05T08:00:00Z"),
+    });
+
+    await sessions.startAuto("lane-1", "chat-a");
+    const otherStart = sessions.startAuto("lane-2", "chat-b");
+
+    const turnEnded = sessions.onTurnEnded("chat-a");
+    // Lane 1 stops before lane 2's start (another chat's) has its stream.
+    await lane1Stopped.promise;
+    expect(sessions.isRecording("lane-1")).toBe(false);
+
+    otherLane.resolve("emulator-5558");
+    await otherStart;
+    await turnEnded;
+    expect(sessions.isRecording("lane-2")).toBe(true);
+  });
 });

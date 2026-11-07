@@ -661,27 +661,29 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
 
     /**
      * A chat's turn ended: its automatic recordings stop and are filed. Never
-     * throws. A start still in flight (scrcpy can take longer than the input's
-     * wait) belongs to this turn too: it is waited for and then stopped. Only
-     * what was running or starting when the turn ended stops, so the chat's
-     * next turn keeps its own recording.
+     * throws. The running ones stop at once. A start still in flight (scrcpy
+     * can take longer than the input's wait) belongs to this turn too: each
+     * one is waited for on its own and then stopped. Each stop checks first
+     * that the lane still has that recording and that it is still this chat's
+     * automatic one: a `record-start` that took it over makes it manual, and
+     * the chat's next turn keeps its own.
      */
     async onTurnEnded(chatSessionId: string): Promise<void> {
       const ownedBy = (recording: AndroidRecording | null | undefined): recording is AndroidRecording =>
         recording?.mode === "auto" && recording.chatSessionId === chatSessionId;
-      const ending = new Map<string, string>();
-      for (const [laneId, active] of recordings) {
-        if (ownedBy(active.recording)) ending.set(laneId, active.recording.id);
-      }
-      const pending = [...starting.entries()];
-      for (const [laneId, start] of pending) {
-        const started = await start.catch(() => null);
-        if (ownedBy(started)) ending.set(laneId, started.id);
-      }
-      for (const [laneId, recordingId] of ending) {
-        if (recordings.get(laneId)?.recording.id !== recordingId) continue;
+      const stopIfStillOwned = async (laneId: string, recordingId: string) => {
+        const current = recordings.get(laneId)?.recording;
+        if (current?.id !== recordingId || !ownedBy(current)) return;
         await finishQuietly(laneId, "turn-end", "android.recording_turn_end_stop_failed");
-      }
+      };
+      const running = [...recordings]
+        .filter(([, active]) => ownedBy(active.recording))
+        .map(([laneId, active]) => stopIfStillOwned(laneId, active.recording.id));
+      const pending = [...starting.entries()].map(async ([laneId, start]) => {
+        const started = await start.catch(() => null);
+        if (ownedBy(started)) await stopIfStillOwned(laneId, started.id);
+      });
+      await Promise.all([...running, ...pending]);
     },
 
     /** Bytes of this project's Android recordings on disk, every lane. Counted again after a start, an end or a delete. */
