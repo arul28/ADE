@@ -46,7 +46,8 @@ struct SettingsProvidersPage: View {
       let unset = rows.filter(\.state.isUnset)
       // With nothing set up yet there is nothing to fold the rest behind.
       let folds = !ready.isEmpty && !unset.isEmpty
-      ADESettingsSection("Providers", hint: "\(SettingsProviderRow.summary(rows)) on \(machine).", symbol: "cpu", tint: .accent) {
+      // Headed by the machine, not "Providers" again under the page title.
+      ADESettingsSection(machine, hint: "\(SettingsProviderRow.summary(rows)).", symbol: "desktopcomputer", tint: .accent) {
         ADESettingsRows {
           ForEach(folds ? ready : rows) { row in
             providerRow(row)
@@ -63,7 +64,7 @@ struct SettingsProvidersPage: View {
         }
       }
     } else if let loadError {
-      ADESettingsSection("Providers", symbol: "cpu", tint: .accent) {
+      ADESettingsSection(machine, symbol: "desktopcomputer", tint: .accent) {
         ADESettingsNotice(
           message: "Couldn't read the providers on \(machine). \(loadError)",
           actionTitle: "Retry",
@@ -71,7 +72,7 @@ struct SettingsProvidersPage: View {
         )
       }
     } else {
-      ADESettingsSection("Providers", hint: "Checking \(machine). This can take up to 30 seconds.", symbol: "cpu", tint: .accent) {
+      ADESettingsSection(machine, hint: "Checking. This can take up to 30 seconds.", symbol: "desktopcomputer", tint: .accent) {
         ADESettingsRows {
           ADESettingsLoadingRow(title: "Checking providers…")
         }

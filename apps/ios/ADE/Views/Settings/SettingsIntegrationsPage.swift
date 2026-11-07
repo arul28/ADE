@@ -31,6 +31,11 @@ struct SettingsIntegrationsPage: View {
       if !connected {
         ADESettingsNotice(message: SettingsPageCopy.connectMachine)
       } else {
+        if !hasProject {
+          // Said once here; the three project cards below then show only a
+          // quiet status row, not the same warning three times.
+          ADESettingsNotice(message: "GitHub, Linear and Jira follow the open project. Open a project to see them.", tone: .neutral)
+        }
         githubSection
         linearSection
         jiraSection
@@ -146,13 +151,16 @@ struct SettingsIntegrationsPage: View {
   // MARK: - Rows
 
   /// A card whose status the machine reads in the open project: a notice
-  /// when the machine is too old for `action` or no project is open.
+  /// when the machine is too old for `action`, a quiet row when no project
+  /// is open (the page says why once, above the cards).
   @ViewBuilder
   private func projectStatus<Content: View>(readBy action: String, @ViewBuilder content: () -> Content) -> some View {
     if !syncService.supportsRemoteAction(action) {
       ADESettingsNotice(message: SettingsPageCopy.updateADE(on: machine))
     } else if !hasProject {
-      ADESettingsNotice(message: SettingsPageCopy.openProject, tone: .neutral)
+      ADESettingsRows {
+        ADESettingsValueRow(title: "Status", value: "No project open")
+      }
     } else {
       content()
     }

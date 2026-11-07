@@ -213,6 +213,9 @@ struct SettingsUsagePage: View {
   var body: some View {
     ScrollView {
       LazyVStack(alignment: .leading, spacing: 14) {
+        if let subtitle = SettingsRoute.usage.subtitle {
+          ADESettingsPageIntro(text: subtitle)
+        }
         rangeControl
         costBand
         chartBand
@@ -224,11 +227,10 @@ struct SettingsUsagePage: View {
         }
       }
       .padding(.horizontal, 16)
-      .padding(.top, 8)
       .padding(.bottom, 36)
     }
     .background(ADEColor.pageBackground.ignoresSafeArea())
-    .adeSettingsPageTitle("Usage", subtitle: SettingsRoute.usage.subtitle)
+    .adeSettingsPageTitle(SettingsRoute.usage.title)
     .toolbar {
       ToolbarItem(placement: .topBarTrailing) {
         Button {

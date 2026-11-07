@@ -5,20 +5,24 @@ private let settingsGeneralLog = Logger(subsystem: "com.ade.ios", category: "Set
 
 // Settings › General, where Settings opens. The desktop's General page
 // (`GeneralPage.tsx`) on the phone, in the same order: what needs attention,
-// then a "You" card and a "This machine" card (side by side where the window
-// is wide enough), then ADE itself with every machine's version.
+// then "You" and "This machine" (side by side where the window is wide
+// enough), then ADE itself with every machine's version. Each block is one
+// panel of rows, as on every other Settings page: a lead row that says who or
+// what, then one row per fact, each opening the page that owns it.
 
 /// The page. `ConnectionSettingsView` owns the connection state and the pages
-/// the cards' head links open, and hands them in.
+/// the rows open, and hands them in.
 struct SettingsGeneralPage: View {
   let syncService: SyncService
   let machines: [SettingsMachine]
   let onSignIn: () -> Void
   let accountPage: () -> AnyView
+  let usagePage: () -> AnyView
+  let providersPage: () -> AnyView
   let machinesPage: () -> AnyView
   let advancedPage: () -> AnyView
   /// The connection's status and its one action (Disconnect, Reconnect, Wake),
-  /// drawn without its own card.
+  /// drawn as a row under the machine, without naming the machine again.
   let connection: () -> AnyView
 
   @ObservedObject private var account = AccountService.shared
@@ -36,13 +40,13 @@ struct SettingsGeneralPage: View {
         SettingsAttentionStrip(items: attentionItems)
       }
       ViewThatFits(in: .horizontal) {
-        HStack(alignment: .top, spacing: 14) {
-          youCard.frame(minWidth: 290)
-          machineCard.frame(minWidth: 290)
+        HStack(alignment: .top, spacing: 18) {
+          youSection.frame(minWidth: 300)
+          machineSection.frame(minWidth: 300)
         }
-        VStack(spacing: 14) {
-          youCard
-          machineCard
+        VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
+          youSection
+          machineSection
         }
       }
       SettingsAdeHeroCard(
@@ -56,104 +60,142 @@ struct SettingsGeneralPage: View {
     }
   }
 
-  // MARK: Cards
+  // MARK: You
 
-  private var youCard: some View {
-    ADEKitCard(title: "You", symbol: "person.crop.circle", action: {
-      SettingsCardHeadLink(title: SettingsRoute.account.title, destination: accountPage)
-    }) {
-      VStack(alignment: .leading, spacing: 14) {
-        youIdentity
-        statusLine(tone: providerTone, text: providerLine)
-        SettingsCardMeter(
-          label: "This week",
-          value: weekTotals.map { "\(adeUsageCompact($0.reduce(0, +))) tokens" } ?? "—"
-        ) {
-          if let weekTotals, weekTotals.count >= 2 {
-            SettingsSparkline(values: weekTotals.map(Double.init))
-              .accessibilityLabel("Tokens per day this week, \(adeUsageCompact(weekTotals.reduce(0, +))) in all")
+  private var youSection: some View {
+    ADESettingsSection("You") {
+      ADESettingsRows {
+        accountRow
+        ADESettingsPageLink(title: SettingsRoute.providers.title, destination: providersPage) { _, pushes in
+          ADESettingsRow(title: "Providers", symbol: SettingsRoute.providers.symbol, tint: .violet) {
+            SettingsGeneralTrailing(pushes: pushes) {
+              providerValue
+            }
+          }
+        }
+        ADESettingsPageLink(title: SettingsRoute.usage.title, destination: usagePage) { _, pushes in
+          ADESettingsRow(title: "This week", symbol: SettingsRoute.usage.symbol, tint: .teal) {
+            SettingsGeneralTrailing(pushes: pushes) {
+              weekValue
+            }
           }
         }
       }
     }
-    .frame(maxHeight: .infinity, alignment: .top)
   }
 
+  /// Who is signed in, opening Account; or, signed out, one row that says so
+  /// with the one button that fixes it.
   @ViewBuilder
-  private var youIdentity: some View {
+  private var accountRow: some View {
     switch account.phase {
     case .signedIn:
       if let identity = account.identity {
-        SettingsCardIdentity(title: identity.displayName, subtitle: identity.email) {
-          AccountAvatar(identity: identity)
+        ADESettingsPageLink(title: SettingsRoute.account.title, destination: accountPage) { _, pushes in
+          SettingsGeneralLeadRow(title: identity.displayName, subtitle: identity.email) {
+            AccountAvatar(identity: identity)
+          } trailing: {
+            if pushes { ADESettingsChevron() }
+          }
         }
       }
     case .loading:
-      ProgressView().frame(maxWidth: .infinity, minHeight: 44)
+      ADESettingsLoadingRow(title: "Checking your account…")
     default:
-      SettingsCardIdentity(
+      SettingsGeneralLeadRow(
         title: "Not signed in",
-        subtitle: account.isConfigured ? nil : "Pair a computer with a code instead."
+        subtitle: account.isConfigured
+          ? "Reach your machines from any network."
+          : "Pair a computer with a code instead."
       ) {
-        ADESettingsIconTile(symbol: "person.crop.circle", tint: .slate, size: 40)
-      }
-      if account.isConfigured {
-        Button("Sign in to ADE", action: onSignIn)
-          .buttonStyle(ADEKitButtonStyle(prominent: true))
+        SettingsGeneralPlaceholderAvatar()
+      } trailing: {
+        if account.isConfigured {
+          Button("Sign in", action: onSignIn)
+            .buttonStyle(ADEKitButtonStyle(prominent: true))
+            .accessibilityLabel("Sign in to ADE")
+        }
       }
     }
   }
 
-  private var machineCard: some View {
-    ADEKitCard(title: "This machine", symbol: "desktopcomputer", action: {
-      SettingsCardHeadLink(title: SettingsRoute.machines.title, destination: machinesPage)
-    }) {
-      VStack(alignment: .leading, spacing: 14) {
-        SettingsCardIdentity(
-          title: primary?.name ?? "No machine yet",
-          subtitle: primary.map { machine in
-            [machine.appVersion.map { "ADE \($0)" }, machine.detail].compactMap { $0 }.joined(separator: " · ")
-          } ?? "The computer this phone works on."
-        ) {
-          ADESettingsIconTile(symbol: primary?.symbol ?? "desktopcomputer", tint: primary == nil ? .slate : .accent, size: 40)
+  @ViewBuilder
+  private var providerValue: some View {
+    if let summary = providerSummary {
+      HStack(spacing: 6) {
+        if summary.tone != .neutral {
+          ADEKitDot(tone: summary.tone, size: 6)
+        }
+        Text(summary.text)
+          .font(.system(size: 14))
+          .foregroundStyle(summary.tone == .warn ? ADEKitTone.warn.color : ADEColor.textMuted)
+          .lineLimit(1)
+      }
+    } else {
+      ProgressView().controlSize(.small)
+    }
+  }
+
+  @ViewBuilder
+  private var weekValue: some View {
+    HStack(spacing: 10) {
+      if let weekTotals, weekTotals.count >= 2 {
+        SettingsSparkline(values: weekTotals.map(Double.init), height: 20)
+          .frame(width: 56)
+          .accessibilityHidden(true)
+      }
+      Text(weekTotals.map { adeUsageCompact($0.reduce(0, +)) } ?? "—")
+        .font(.adeMono(13))
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+    }
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(weekTotals.map { "\(adeUsageCompact($0.reduce(0, +))) tokens" } ?? "No usage yet")
+  }
+
+  // MARK: This machine
+
+  private var machineSection: some View {
+    ADESettingsSection("This machine") {
+      ADESettingsRows {
+        ADESettingsPageLink(title: SettingsRoute.machines.title, destination: machinesPage) { _, pushes in
+          SettingsGeneralLeadRow(title: primary?.name ?? "No machine yet", subtitle: machineSubtitle) {
+            ADESettingsIconTile(
+              symbol: primary?.symbol ?? "desktopcomputer",
+              tint: primary == nil ? .slate : .accent,
+              size: 44
+            )
+          } trailing: {
+            if pushes { ADESettingsChevron() }
+          }
         }
         connection()
+          .padding(.horizontal, ADEKit.inset)
+          .padding(.vertical, 12)
       }
     }
-    .frame(maxHeight: .infinity, alignment: .top)
   }
 
-  private func statusLine(tone: ADEKitTone, text: String) -> some View {
-    HStack(spacing: 8) {
-      ADEKitDot(tone: tone, size: 7)
-      Text(text)
-        .font(.system(size: 13.5))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(2)
-    }
-    .accessibilityElement(children: .combine)
+  private var machineSubtitle: String {
+    guard let primary else { return "The computer this phone works on." }
+    return [primary.appVersion.map(adeVersionDisplayLabel), primary.detail]
+      .compactMap { $0 }
+      .joined(separator: " · ")
   }
 
   // MARK: Providers
 
   private var providerCounts: (detected: Int, signedIn: Int)? { aiStatus?.signInCounts }
 
-  /// The desktop's line, word for word, about the machine's providers.
-  private var providerLine: String {
-    guard connected else { return "Connect a machine to see its providers" }
-    if aiLoading && aiStatus == nil { return "Checking providers…" }
-    guard let counts = providerCounts else { return "Providers unknown on this machine" }
-    if counts.detected == 0 { return "No AI provider found here" }
+  /// The machine's providers in a few words; nil while the first check runs.
+  private var providerSummary: (text: String, tone: ADEKitTone)? {
+    guard connected else { return ("Not connected", .neutral) }
+    if aiLoading && aiStatus == nil { return nil }
+    guard let counts = providerCounts else { return ("Unknown", .neutral) }
+    if counts.detected == 0 { return ("None found", .neutral) }
     let needSignIn = counts.detected - counts.signedIn
-    if needSignIn > 0 {
-      return "\(counts.signedIn) signed in — \(needSignIn) need\(needSignIn == 1 ? "s" : "") sign-in"
-    }
-    return "\(counts.signedIn) \(counts.signedIn == 1 ? "provider" : "providers") signed in"
-  }
-
-  private var providerTone: ADEKitTone {
-    guard let counts = providerCounts, counts.detected > 0 else { return .neutral }
-    return counts.detected > counts.signedIn ? .warn : .ok
+    if needSignIn > 0 { return ("\(needSignIn) need\(needSignIn == 1 ? "s" : "") sign-in", .warn) }
+    return ("\(counts.signedIn) ready", .ok)
   }
 
   // MARK: Needs attention
@@ -215,77 +257,70 @@ struct SettingsGeneralPage: View {
   }
 }
 
-// MARK: - Card pieces
+// MARK: - Row pieces
 
-/// A card head's action: the page it opens, then an arrow ("Account →").
-struct SettingsCardHeadLink: View {
-  let title: String
-  let destination: () -> AnyView
-
-  var body: some View {
-    NavigationLink {
-      destination()
-    } label: {
-      HStack(spacing: 4) {
-        Text(title)
-        Image(systemName: "arrow.right")
-          .font(.system(size: 10, weight: .semibold))
-      }
-      .padding(.vertical, 8)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel("Open \(title)")
-  }
-}
-
-/// The 40pt picture, a name and one quiet line under it.
-struct SettingsCardIdentity<Leading: View>: View {
+/// The lead row of a General panel: a 44pt picture, a name, one quiet line,
+/// then a chevron or the one button the row needs.
+struct SettingsGeneralLeadRow<Leading: View, Trailing: View>: View {
   let title: String
   var subtitle: String?
   @ViewBuilder var leading: () -> Leading
+  @ViewBuilder var trailing: () -> Trailing
 
   var body: some View {
-    HStack(spacing: 12) {
+    HStack(spacing: 14) {
       leading()
-      VStack(alignment: .leading, spacing: 2) {
+      VStack(alignment: .leading, spacing: 3) {
         Text(title)
-          .font(.system(size: 16, weight: .semibold))
+          .font(.system(size: 17, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
         if let subtitle, !subtitle.isEmpty {
           Text(subtitle)
-            .font(.system(size: 12.5))
+            .font(.system(size: 13))
             .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
+            .lineLimit(2)
             .truncationMode(.middle)
         }
       }
-      Spacer(minLength: 0)
+      .layoutPriority(1)
+      Spacer(minLength: 8)
+      // The button keeps its full label; the text wraps instead.
+      trailing()
+        .fixedSize()
+        .layoutPriority(2)
     }
+    .padding(.horizontal, ADEKit.inset)
+    .padding(.vertical, 14)
+    .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
   }
 }
 
-/// A label and a mono figure over a small chart or meter ("This week  9.7M tokens").
-struct SettingsCardMeter<Chart: View>: View {
-  let label: String
-  let value: String
-  @ViewBuilder var chart: () -> Chart
+/// A row's value, then the chevron when the row pushes its page.
+struct SettingsGeneralTrailing<Value: View>: View {
+  let pushes: Bool
+  @ViewBuilder var value: () -> Value
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack {
-        Text(label)
-          .font(.system(size: 12.5))
-          .foregroundStyle(ADEColor.textSecondary)
-        Spacer(minLength: 8)
-        Text(value)
-          .font(.adeMono(12))
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-      chart()
+    HStack(spacing: 8) {
+      value()
+      if pushes { ADESettingsChevron() }
     }
+  }
+}
+
+/// The signed-out picture: an empty person in a soft circle, the same size
+/// and shape as the avatar that replaces it.
+struct SettingsGeneralPlaceholderAvatar: View {
+  var body: some View {
+    Image(systemName: "person.fill")
+      .font(.system(size: 19, weight: .medium))
+      .foregroundStyle(ADEColor.textMuted)
+      .frame(width: 44, height: 44)
+      .background(ADEKit.track, in: Circle())
+      .overlay(Circle().strokeBorder(ADEKit.rule, lineWidth: 1))
+      .accessibilityHidden(true)
   }
 }
 
@@ -522,11 +557,12 @@ struct SettingsAdeHeroCard: View {
         .font(.system(size: 14.5, weight: .medium))
         .foregroundStyle(ADEColor.textPrimary)
         .lineLimit(1)
-      if machine.appVersion != nil {
-        ADEKitTag(text: machine.runsBeta ? "Beta" : "Stable", tone: machine.runsBeta ? .warn : .neutral)
+      // Stable is the default and needs no tag; Beta does.
+      if machine.runsBeta {
+        ADEKitTag(text: "Beta", tone: .warn)
       }
       Spacer(minLength: 8)
-      Text(machine.appVersion ?? "—")
+      Text(machine.appVersion.map { adeVersionIsDevBuild($0) ? "dev build" : $0 } ?? "—")
         .font(.adeMono(12))
         .foregroundStyle(ADEColor.textSecondary)
         .lineLimit(1)

@@ -91,9 +91,9 @@ struct SettingsPushDeliverySection: View {
             }
         }
 
-        ADESettingsSection("Quiet hours", hint: "Mute pushes on a schedule.", symbol: "moon", tint: .violet) {
+        ADESettingsSection("Quiet hours", symbol: "moon", tint: .violet) {
             ADESettingsRows {
-                toggleRow("Quiet hours", hint: nil, isOn: quietHoursBinding)
+                toggleRow("Mute pushes on a schedule", hint: nil, isOn: quietHoursBinding)
                 if pushService.prefs.quietHoursEnabled {
                     ADESettingsRow(title: "From") {
                         DatePicker("", selection: quietHoursDateBinding(\.quietHoursStart), displayedComponents: .hourAndMinute)

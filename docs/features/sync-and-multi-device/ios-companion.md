@@ -1245,7 +1245,12 @@ iPhone are `compact` and use the same views stacked, never an older design.
   not a `NavigationSplitView`, because the split keeps a pushed page on top
   when another row is picked. A pick rebuilds the page column, and the page
   is built from the row's title, so it shows current values. The settings
-  rows and page shell are in `ADEKitSettings.swift`.
+  rows and page shell are in `ADEKitSettings.swift`. Each page shows its
+  one-line description in the page, under the large title
+  (`ADESettingsPageIntro`). The bar does not show it, because the bar cut it
+  off when the title collapsed. General shows "You" and "This machine" as
+  panels of rows. Each row opens the page that owns it: Account, Providers,
+  Usage, Machines.
 - **Lists and details.** Lanes, PRs and Files use `DuoSplitScaffold`: list
   column and detail side by side when wide, the list behind the detail
   (with a Back chevron) on a phone.

@@ -434,16 +434,34 @@ struct DiscoveredSyncHost: Codable, Equatable, Identifiable {
   var lastResolvedAt: String
 }
 
+/// The version without a leading "v" or build metadata ("v1.2.3+abc" → "1.2.3").
+private func adeVersionCore(_ version: String?) -> String {
+  var trimmed = (version ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+  if trimmed.first == "v" || trimmed.first == "V" { trimmed.removeFirst() }
+  if let plus = trimmed.firstIndex(of: "+") { trimmed = String(trimmed[..<plus]) }
+  return trimmed
+}
+
+/// A machine running ADE from source reports the package's placeholder
+/// version, which is neither the Stable nor the Beta channel.
+func adeVersionIsDevBuild(_ version: String?) -> Bool {
+  adeVersionCore(version) == "1.0.0-beta.1"
+}
+
+/// How a machine's ADE version reads in a row: "ADE 1.2.3", or "Dev build"
+/// for a machine running ADE from source.
+func adeVersionDisplayLabel(_ version: String) -> String {
+  adeVersionIsDevBuild(version) ? "Dev build" : "ADE \(version)"
+}
+
 /// Whether an ADE version is a Beta-track build. The same rule as desktop's
 /// `updateTrackOfVersion` (apps/desktop/src/shared/updateTrack.ts): Beta when
 /// the prerelease starts with `beta` (`1.2.128-beta.3`, and the one-off
 /// `1.2.128-beta.0.preview.7`). A `v` prefix and build metadata are ignored,
 /// and `1.0.0-beta.1` is the placeholder every dev build reports, so Stable.
 func adeVersionIsBetaTrack(_ version: String?) -> Bool {
-  var trimmed = (version ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-  if trimmed.first == "v" || trimmed.first == "V" { trimmed.removeFirst() }
-  if let plus = trimmed.firstIndex(of: "+") { trimmed = String(trimmed[..<plus]) }
-  guard trimmed != "1.0.0-beta.1", let dash = trimmed.firstIndex(of: "-") else { return false }
+  let trimmed = adeVersionCore(version)
+  guard !adeVersionIsDevBuild(version), let dash = trimmed.firstIndex(of: "-") else { return false }
   let prerelease = trimmed[trimmed.index(after: dash)...]
   return prerelease.split(separator: ".", omittingEmptySubsequences: false).first?.lowercased() == "beta"
 }

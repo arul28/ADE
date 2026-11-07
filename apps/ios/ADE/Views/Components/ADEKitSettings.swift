@@ -17,14 +17,33 @@ struct ADESettingsPage<Content: View>: View {
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
+        if let subtitle, !subtitle.isEmpty {
+          ADESettingsPageIntro(text: subtitle)
+        }
         content()
       }
       .padding(.horizontal, 16)
-      .padding(.top, 12)
+      .padding(.top, subtitle == nil ? 12 : 0)
       .padding(.bottom, 36)
     }
     .background(ADEColor.pageBackground.ignoresSafeArea())
-    .adeSettingsPageTitle(title, subtitle: subtitle)
+    .adeSettingsPageTitle(title)
+  }
+}
+
+/// The page's one-line description, in the page under its large title. Not
+/// the bar's subtitle: the bar cut it to "…" once the title collapsed.
+struct ADESettingsPageIntro: View {
+  let text: String
+
+  var body: some View {
+    Text(text)
+      .font(.system(size: 15))
+      .foregroundStyle(ADEColor.textSecondary)
+      .fixedSize(horizontal: false, vertical: true)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      // Sits under the title, so closer to it than to the first section.
+      .padding(.bottom, -6)
   }
 }
 
@@ -36,20 +55,14 @@ extension ADESettingsPage {
 }
 
 extension View {
-  /// The settings page title bar: the large title and description, the glass
-  /// bar, and Close where the stack has one. For a page that draws its own
-  /// scroll view instead of `ADESettingsPage`.
-  @ViewBuilder
-  func adeSettingsPageTitle(_ title: String, subtitle: String? = nil) -> some View {
-    let titled = adeNavigationGlass()
+  /// The settings page title bar: the large title, the glass bar, and Close
+  /// where the stack has one. For a page that draws its own scroll view
+  /// instead of `ADESettingsPage`, with `ADESettingsPageIntro` first in it.
+  func adeSettingsPageTitle(_ title: String) -> some View {
+    adeNavigationGlass()
       .navigationTitle(title)
       .navigationBarTitleDisplayMode(.large)
       .settingsPageClose()
-    if let subtitle, !subtitle.isEmpty {
-      titled.navigationSubtitle(subtitle)
-    } else {
-      titled
-    }
   }
 }
 
@@ -452,7 +465,7 @@ struct ADESettingsNotice: View {
 
   var body: some View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
-      Image(systemName: tone == .crit ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
+      Image(systemName: Self.symbol(for: tone))
         .font(.system(size: 11, weight: .semibold))
         .foregroundStyle(tone.color)
       VStack(alignment: .leading, spacing: 6) {
@@ -472,6 +485,15 @@ struct ADESettingsNotice: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(tone.color.opacity(0.07), in: RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous))
     .accessibilityElement(children: .combine)
+  }
+
+  /// A neutral notice is information, not a warning, so it gets no triangle.
+  private static func symbol(for tone: ADEKitTone) -> String {
+    switch tone {
+    case .crit: return "exclamationmark.octagon.fill"
+    case .neutral: return "info.circle.fill"
+    default: return "exclamationmark.triangle.fill"
+    }
   }
 }
 

@@ -151,7 +151,7 @@ struct ConnectionSettingsView: View {
   private var pairingOnlyGroup: some View {
     VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
       ADESettingsSection("Connection") {
-        connectionStatus.adeKitCard()
+        connectionStatus().adeKitCard()
       }
 
       SettingsPairingSection(
@@ -161,7 +161,7 @@ struct ConnectionSettingsView: View {
     }
   }
 
-  private var connectionStatus: some View {
+  private func connectionStatus(machineShownAbove: Bool = false) -> some View {
     SettingsConnectionHeader(
       snapshot: presentationModel.connectionSnapshot,
       onDisconnect: { syncService.disconnectForUserConnectionChange() },
@@ -173,7 +173,8 @@ struct ConnectionSettingsView: View {
           pinPreset = .discover(host)
         }
       },
-      onWake: wakeAsleepMachine
+      onWake: wakeAsleepMachine,
+      machineShownAbove: machineShownAbove
     )
   }
 
@@ -264,10 +265,12 @@ struct ConnectionSettingsView: View {
       syncService: syncService,
       machines: machines,
       onSignIn: { signInPresented = true },
-      accountPage: { AnyView(SettingsAccountPage(onSignIn: { signInPresented = true })) },
+      accountPage: { AnyView(page(.account)) },
+      usagePage: { AnyView(page(.usage)) },
+      providersPage: { AnyView(page(.providers)) },
       machinesPage: { AnyView(machinesPage) },
       advancedPage: { AnyView(advancedPage) },
-      connection: { AnyView(connectionStatus) }
+      connection: { AnyView(connectionStatus(machineShownAbove: true)) }
     )
   }
 
@@ -302,7 +305,7 @@ struct ConnectionSettingsView: View {
   private var advancedPage: some View {
     ADESettingsPage(route: .advanced) {
       SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot, content: .connection)
-      ADESettingsSection("Notifications") {
+      ADESettingsSection("Notifications", symbol: "bell.badge", tint: .red) {
         ADESettingsRows {
           ADESettingsLink(title: "Delivery diagnostics", symbol: "stethoscope") {
             ADESettingsPage(title: "Delivery diagnostics") {
@@ -797,13 +800,7 @@ struct SettingsAccountPage: View {
           }
         }
       } else {
-        ADESettingsRows {
-          if account.isConfigured {
-            ADESettingsActionRow(title: "Sign in to ADE", symbol: "person.crop.circle.badge.plus", action: onSignIn)
-          } else {
-            ADESettingsRow("Not signed in", hint: "This build has no ADE account. Pair a computer with a code instead.", symbol: "person.crop.circle")
-          }
-        }
+        signedOutPanel
       }
     }
     .confirmationDialog("Sign out of ADE?", isPresented: $confirmSignOut, titleVisibility: .visible) {
@@ -814,6 +811,43 @@ struct SettingsAccountPage: View {
     } message: {
       Text("Signing out removes this iPhone's access to your account and its account-connected machines. Devices paired directly with a code stay connected.")
     }
+  }
+}
+
+extension SettingsAccountPage {
+  /// Signed out: the empty avatar, what an account gives you, and one wide
+  /// Sign in, centred in one panel rather than a lone button on an empty page.
+  fileprivate var signedOutPanel: some View {
+    VStack(spacing: 14) {
+      Image(systemName: "person.fill")
+        .font(.system(size: 30, weight: .medium))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(width: 72, height: 72)
+        .background(ADEKit.track, in: Circle())
+        .overlay(Circle().strokeBorder(ADEKit.rule, lineWidth: 1))
+        .accessibilityHidden(true)
+      VStack(spacing: 6) {
+        Text("Not signed in")
+          .font(.system(size: 19, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(account.isConfigured
+          ? "Sign in to reach your machines from any network and keep your settings on every device."
+          : "This build has no ADE account. Pair a computer with a code instead.")
+          .font(.system(size: 14))
+          .foregroundStyle(ADEColor.textSecondary)
+          .multilineTextAlignment(.center)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      if account.isConfigured {
+        Button("Sign in to ADE", action: onSignIn)
+          .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
+          .padding(.top, 4)
+      }
+    }
+    .padding(.horizontal, 22)
+    .padding(.vertical, 26)
+    .frame(maxWidth: .infinity)
+    .adeKitCard(padding: nil)
   }
 }
 
