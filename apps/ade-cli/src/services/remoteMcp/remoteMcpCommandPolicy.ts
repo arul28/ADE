@@ -263,9 +263,15 @@ const ANDROID_SDK_PERSON_ONLY: ReadonlySet<string> = new Set(ANDROID_SDK_PERSON_
  */
 function namesRestartAdb(word: string): boolean {
   if (/restartadb/iu.test(word)) return true;
-  if (!word.trimStart().startsWith("{")) return false;
+  // A JSON value stands alone, or after `--input-json=` or `--arg-json key=`.
+  return [word, ...word.split("=").slice(1).map((_, index, parts) => parts.slice(index).join("="))]
+    .some((candidate) => jsonNamesRestartAdb(candidate));
+}
+
+function jsonNamesRestartAdb(text: string): boolean {
+  if (!text.trimStart().startsWith("{")) return false;
   try {
-    return /"restartadb"/iu.test(JSON.stringify(JSON.parse(word)));
+    return /"restartadb"/iu.test(JSON.stringify(JSON.parse(text)));
   } catch {
     // Not JSON: the CLI refuses it before anything runs.
     return false;

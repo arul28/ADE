@@ -6976,6 +6976,10 @@ describe("adeRpcServer", () => {
       const started = await call({ restartAdb: true }, "start");
       expect(started?.isError).toBe(restartAdb ? undefined : true);
       expect(start).toHaveBeenCalledTimes(restartAdb ? 1 : 0);
+      // The string spelling the Android domain also reads as yes.
+      const startedAsText = await call({ restartAdb: "true" }, "start");
+      expect(startedAsText?.isError).toBe(restartAdb ? undefined : true);
+      expect(start).toHaveBeenCalledTimes(restartAdb ? 2 : 0);
       if (restartAdb) expect((start.mock.calls.at(-1)?.[0] as Record<string, unknown>).restartAdb).toBe(true);
 
       const refused = await call({ x: 1, y: 1, laneId: "lane-3" });

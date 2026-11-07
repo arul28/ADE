@@ -13,7 +13,8 @@ import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 import type { createAndroidEmulatorLifecycle } from "./androidEmulatorLifecycle";
 import type { AdeStartedEmulators, AndroidDiscoveredEmulator } from "./androidEmulatorProcess";
 import type { AndroidEmulatorServiceDeps, AndroidLaneState as LaneState } from "./androidEmulatorServiceDeps";
-import { androidExtraKey, namesAndroidDevice, type AndroidLaneExtras } from "./androidLaneExtras";
+import { sameAvdName } from "./androidAvds";
+import { ambiguousWithLaneDevice, androidExtraKey, namesAndroidDevice, type AndroidLaneExtras } from "./androidLaneExtras";
 
 /*
  * `devicePromote`: one of the lane's extra devices becomes the lane's own
@@ -278,6 +279,10 @@ export function createAndroidDevicePromote(ctx: AndroidDevicePromoteContext) {
         const avdHome = ctx.avdHome();
         const current = deps.laneDevices.get(laneId);
         const extra = extras.find(laneId, wanted, avdHome);
+        // A shown name that the lane's device carries too is refused, as in every other verb.
+        if (extra && current && !sameAvdName(extra.avdName, wanted) && namesAndroidDevice(current, wanted, avdHome)) {
+          throw ambiguousWithLaneDevice(wanted, current, extra);
+        }
         if (!extra) {
           // Already the lane's device: the state the caller asked for.
           if (current && namesAndroidDevice(current, wanted, avdHome)) {

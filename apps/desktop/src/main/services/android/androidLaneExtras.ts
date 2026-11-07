@@ -81,6 +81,15 @@ export function namesAndroidDevice(device: Pick<AndroidLaneDevice, "avdName">, w
  * queue, where a promote cannot swap it. Else `ANDROID_DEVICE_NOT_LANE_OWNED`,
  * so a device-detach never deletes an AVD the caller did not name.
  */
+/** The lane's device and one of its extras both answer to `asked`. */
+export function ambiguousWithLaneDevice(asked: string, own: AndroidLaneDevice, extra: AndroidLaneDevice): AndroidEmulatorFailure {
+  return new AndroidEmulatorFailure(
+    "ANDROID_DEVICE_NOT_LANE_OWNED",
+    `${asked} is the name of this lane's device (${own.avdName}) and of an extra device (${extra.avdName}). `
+      + "Name one by its AVD name: ade android devices --text lists them.",
+  );
+}
+
 export function requireLaneDeviceNamed(
   repo: Pick<AndroidLaneDeviceRepo, "get">,
   laneId: string,
@@ -211,8 +220,15 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
     if (!asked) return null;
     const avdHome = ctx.avdHome();
     const own = repo.get(laneId);
-    if (own && namesAndroidDevice(own, asked, avdHome)) return null;
+    // An exact AVD name always picks its device.
+    if (own && sameAvdName(own.avdName, asked)) return null;
     const extra = find(laneId, asked, avdHome);
+    if (extra && sameAvdName(extra.avdName, asked)) return extra;
+    const ownByShownName = own !== null && namesAndroidDevice(own, asked, avdHome);
+    // Two devices from one catalog entry share a shown name: a guess could
+    // stop, or delete, the wrong one.
+    if (ownByShownName && extra) throw ambiguousWithLaneDevice(asked, own!, extra);
+    if (ownByShownName) return null;
     if (extra) return extra;
     throw new AndroidEmulatorFailure(
       "ANDROID_DEVICE_NOT_LANE_OWNED",
