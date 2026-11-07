@@ -1,0 +1,125 @@
+/* Publish to GitHub: a form inside the shared Dialog shell. Fields use the kit
+   input; visibility is a pair of choice cards; owner and name read as one
+   GitHub path (`owner / name`) with the owner's avatar. */
+
+.ade-gh-publish-body { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+
+.ade-gh-publish-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ade-gh-publish-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--kit-text-2);
+}
+.ade-gh-publish-optional { font-weight: 400; color: var(--kit-text-3); }
+.ade-gh-publish-hint { font-size: 11.5px; color: var(--kit-text-3); }
+.ade-gh-publish-hint[data-tone="crit"] { color: var(--kit-crit); }
+
+.ade-gh-publish-input,
+.ade-gh-publish-owner,
+.ade-gh-publish-textarea { height: 34px; width: 100%; box-sizing: border-box; font-size: 13px; }
+.ade-gh-publish-textarea {
+  height: auto;
+  min-height: 60px;
+  padding: 8px 10px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+/* `owner / name`: the owner well holds the avatar and its own input. */
+.ade-gh-publish-path {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) auto minmax(0, 1.2fr);
+  align-items: center;
+  gap: 8px;
+}
+.ade-gh-publish-owner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 7px;
+}
+.ade-gh-publish-owner:focus-within { border-color: color-mix(in srgb, var(--color-fg) 35%, transparent); }
+/* The inner input drops its own outline, so the well carries the kit input's focus ring. */
+.ade-gh-publish-owner:has(input:focus-visible) {
+  outline: 2px solid color-mix(in srgb, var(--color-fg) 60%, transparent);
+  outline-offset: 1px;
+}
+.ade-gh-publish-owner input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+}
+.ade-gh-publish-owner input::placeholder { color: var(--kit-text-3); }
+.ade-gh-publish-slash { font-size: 16px; color: var(--kit-text-3); }
+
+.ade-gh-publish-avatar {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  object-fit: cover;
+  background: var(--kit-active);
+  box-shadow: 0 0 0 1px var(--kit-rule);
+}
+.ade-gh-publish-avatar[data-fallback="true"] { color: var(--kit-text-2); }
+
+/* Visibility choice cards. */
+.ade-gh-publish-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.ade-gh-publish-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--kit-rule);
+  background: transparent;
+  color: var(--kit-text-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.ade-gh-publish-choice:hover:not(:disabled) { background: var(--kit-hover); }
+.ade-gh-publish-choice:disabled { cursor: not-allowed; opacity: 0.6; }
+.ade-gh-publish-choice[aria-checked="true"] {
+  color: var(--color-fg);
+  border-color: color-mix(in srgb, var(--color-accent) 60%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 11%, transparent);
+}
+.ade-gh-publish-choice > svg { flex: none; margin-top: 1px; }
+.ade-gh-publish-choice[aria-checked="true"] > svg { color: var(--color-accent); }
+.ade-gh-publish-choice > span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ade-gh-publish-choice b { font-size: 12.5px; font-weight: 600; color: var(--color-fg); }
+.ade-gh-publish-choice small { font-size: 11.5px; line-height: 1.4; }
+
+.ade-gh-publish-link { align-self: flex-start; gap: 5px; }
+
+/* Success: the new repository as one row. */
+.ade-gh-publish-repo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+}
+.ade-gh-publish-repo-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.ade-gh-publish-repo-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-fg);
+  overflow-wrap: anywhere;
+}
+.ade-gh-publish-repo-url {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--kit-text-3);
+  overflow-wrap: anywhere;
+}
+.ade-gh-publish-repo .kit-tag { display: inline-flex; align-items: center; gap: 4px; flex: none; }

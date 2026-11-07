@@ -951,6 +951,8 @@ export type PublishProjectResult = {
   name: string;
   fullName: string;
   htmlUrl: string;
+  /** The repository's real visibility. Optional for older runtimes. */
+  isPrivate?: boolean;
 };
 
 export type ProjectIcon = {

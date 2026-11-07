@@ -694,6 +694,62 @@ describe("headlessLinearServices", () => {
     }
   });
 
+  // The background service runs publish. `/orgs/{login}/repos` 404s for a
+  // personal login, and a leftover empty repo of the same name must not take
+  // a private project if it is public.
+  it("publishes a personal project through /user/repos and never into a public leftover", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-publish-", { emptyGhConfig: true });
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-publish-project-"));
+    execFileSync("git", ["init", "-q"], { cwd: projectRoot });
+    const requests: string[] = [];
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json", "x-oauth-scopes": "repo, workflow" },
+    });
+    globalThis.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const method = init?.method ?? "GET";
+      requests.push(`${method} ${url.pathname}`);
+      if (url.pathname === "/user") return json(200, { login: "octocat" });
+      if (method === "POST" && url.pathname === "/user/repos") {
+        return json(422, {
+          message: "Repository creation failed.",
+          errors: [{ message: "name already exists on this account" }],
+        });
+      }
+      if (method === "GET" && url.pathname === "/repos/octocat/proj") {
+        return json(200, {
+          owner: { login: "octocat" },
+          name: "proj",
+          full_name: "octocat/proj",
+          clone_url: "https://github.com/octocat/proj.git",
+          html_url: "https://github.com/octocat/proj",
+          size: 0,
+          private: false,
+        });
+      }
+      return json(404, { message: "Not Found" });
+    }) as unknown as typeof fetch;
+    try {
+      const githubService = createHeadlessGitHubService(
+        projectRoot,
+        { debug() {}, info() {}, warn() {}, error() {} } as any,
+      );
+      githubService.setToken("ghp_test_token");
+
+      const failure = await githubService
+        .publishCurrentProject({ owner: "octocat", name: "proj", isPrivate: true })
+        .then(() => null, (error: unknown) => error as Error & { code?: string });
+
+      expect(failure?.code).toBe("repo_name_taken");
+      expect(requests.filter((request) => request.startsWith("POST "))).toEqual(["POST /user/repos"]);
+      expect(execFileSync("git", ["remote"], { cwd: projectRoot, encoding: "utf8" }).trim()).toBe("");
+    } finally {
+      environment.restore();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("reuses identity sessions and exposes desktop-compatible session summaries", async () => {
     const services = createHeadlessLinearServices(createDeps());
 
