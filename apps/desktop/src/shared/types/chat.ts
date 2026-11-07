@@ -4916,7 +4916,12 @@ export type AgentChatCrossMachineRoute = {
   /** The source machine's copy of a saved preset, for a list not synced there yet. */
   presetSnapshot?: HarnessPreset;
   credentialId?: string;
-  instanceId?: string;
+  /**
+   * A Claude or Codex account. Account ids are per machine ("claude-2" can be
+   * another login elsewhere), so it travels as its signed-in email; null when
+   * the source never read it.
+   */
+  account?: { email: string | null };
 };
 
 /** What a batch item's capsule says about its batch (`capsule.batchMove`). */

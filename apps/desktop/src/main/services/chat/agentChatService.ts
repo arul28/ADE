@@ -12473,12 +12473,27 @@ export function createAgentChatService(args: {
     return trimmed;
   };
 
-  /** `instanceId` when that Claude or Codex account is signed in on this machine, else null. */
-  const localProviderAccount = (provider: string, instanceId: string): string | null => {
+  /**
+   * Account ids are per machine, so a moved chat names its account by email:
+   * the email of `instanceId` here (source side), and the signed-in account
+   * here with that email (destination side). Null when there is none.
+   */
+  const providerAccountEmail = (provider: string, instanceId: string | null | undefined): string | null => {
+    if (!instanceId?.trim() || !isProviderInstanceProvider(provider)) return null;
+    try {
+      const found = getMachineProviderInstanceStore().resolve(provider, instanceId.trim());
+      return found.fellBack ? null : found.instance.account?.email?.trim() || null;
+    } catch (error) {
+      logger.warn("agent_chat.cross_machine_account_resolve_failed", { provider, error: getErrorMessage(error) });
+      return null;
+    }
+  };
+  const localProviderAccountByEmail = (provider: string, email: string): string | null => {
     if (!isProviderInstanceProvider(provider)) return null;
     try {
-      const found = getMachineProviderInstanceStore().resolve(provider, instanceId);
-      return found.fellBack ? null : found.instance.id;
+      const wanted = email.trim().toLowerCase();
+      return getMachineProviderInstanceStore().list(provider)
+        .find((instance) => instance.signedIn && instance.account?.email?.trim().toLowerCase() === wanted)?.id ?? null;
     } catch (error) {
       logger.warn("agent_chat.cross_machine_account_resolve_failed", { provider, error: getErrorMessage(error) });
       return null;
@@ -52876,7 +52891,7 @@ export function createAgentChatService(args: {
       : managed.session.cursorModeId;
     // The chat's own sign-in route travels when the moved chat can keep it.
     const route = crossMachineRouteFor({
-      source: managed.session,
+      source: { ...managed.session, accountEmail: providerAccountEmail(managed.session.provider, managed.session.instanceId) },
       targetProvider,
       targetModelId: targetDescriptor.id,
       adeHome: resolveMachineAdeDir(),
@@ -53942,10 +53957,10 @@ export function createAgentChatService(args: {
       const deterministicSessionId = crossMachineDestinationSessionId(handoffId);
       const reusedSession = Boolean(sessionService.get(deterministicSessionId));
       // The source chat's route, kept where this machine can honour it. An
-      // account is machine-local, so it is kept only when it is signed in here.
+      // account is kept only when the same login (its email) is signed in here.
       const carriedRoute = readCrossMachineRoute(capsule.route);
       const route = carriedRoute && !carriedRoute.dropped ? carriedRoute : null;
-      const keptInstanceId = route?.instanceId ? localProviderAccount(targetProvider, route.instanceId) : null;
+      const keptInstanceId = route?.account?.email ? localProviderAccountByEmail(targetProvider, route.account.email) : null;
       const session = await createSessionInternal({
         laneId: destinationLane.id,
         provider: targetProvider,

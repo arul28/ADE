@@ -236,7 +236,9 @@ confirms the deletion.
 A machine removed from the account shows "Not in ADE" on its card, and its
 brain refuses the account until someone re-pairs it. **Reconnect to ADE** in
 the card's ⋯ menu does that re-pair for the person
-(`agent37Reconnect.ts`): ADE wakes the machine if it sleeps, runs `ade
+(`agent37Reconnect.ts`): ADE wakes the machine if it sleeps (refused past
+the month's cap, like any other wake), waits for its ADE to answer with the
+same bounded loop a new machine uses (`waitForAgent37BoxAuth`), runs `ade
 machines reconnect` on it over exec, and approves the code the same way as a
 new machine (`approveAgent37MachineSignIn`, the one approval seam). The box
 keeps its files and identity, so it comes back as the same machine, with its

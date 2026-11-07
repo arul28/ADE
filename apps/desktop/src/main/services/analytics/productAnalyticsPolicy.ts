@@ -246,7 +246,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // The box actions on an Agent 37 card (feature "connections"): which ones
   // people take from ADE. Outcome is the action, prefixed (box_sleep |
   // box_wake | box_resize | box_backup | box_delete | box_set_sleep |
-  // box_copy | box_move), only when it worked.
+  // box_copy | box_move | box_reconnect), only when it worked.
   // Never the box, its size, price, workspace, or a refusal.
   "agent37_machine_action",
   // Ready machines (feature "connections"): whether people keep a cloud
@@ -629,7 +629,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // confused with another action's outcome.
     "mode_focus", "mode_focus_grid",
     // The Agent 37 box actions, prefixed like the tool ids.
-    "box_sleep", "box_wake", "box_resize", "box_backup", "box_delete", "box_set_sleep", "box_copy", "box_move",
+    "box_sleep", "box_wake", "box_resize", "box_backup", "box_delete", "box_set_sleep", "box_copy", "box_move", "box_reconnect",
     // Where a chat that took a ready machine started, prefixed the same way.
     "ready_picker", "ready_cli",
     // The two iOS live-view backends, prefixed for the same reason the tool ids

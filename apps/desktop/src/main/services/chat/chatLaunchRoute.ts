@@ -73,7 +73,8 @@ export function launchRouteTransition(args: {
 /**
  * What a chat moved to another machine keeps of its route, by the rule above:
  * a preset only for the same model (it names the model it launches), a stored
- * key or an account only for the same provider. Null when the chat has no
+ * key or an account only for the same provider (an account as its email:
+ * its id means nothing on another machine). Null when the chat has no
  * route of its own; `dropped` when it has one the move can't keep.
  */
 export function crossMachineRouteFor(args: {
@@ -83,6 +84,8 @@ export function crossMachineRouteFor(args: {
     presetId?: string | null;
     credentialId?: string | null;
     instanceId?: string | null;
+    /** The signed-in email of `instanceId` on the source machine, when known. */
+    accountEmail?: string | null;
   };
   targetProvider: string;
   targetModelId: string;
@@ -107,8 +110,9 @@ export function crossMachineRouteFor(args: {
     return sameProvider ? { label, credentialId } : { label, dropped: true };
   }
   if (instanceId && (source.provider === "claude" || source.provider === "codex")) {
-    const label = `${source.provider === "claude" ? "Claude" : "Codex"} account · ${instanceId}`;
-    return sameProvider ? { label, instanceId } : { label, dropped: true };
+    const email = source.accountEmail?.trim() || null;
+    const label = `${source.provider === "claude" ? "Claude" : "Codex"} account · ${email ?? instanceId}`;
+    return sameProvider ? { label, account: { email } } : { label, dropped: true };
   }
   return null;
 }
@@ -124,14 +128,16 @@ export function readCrossMachineRoute(value: unknown): AgentChatCrossMachineRout
   const presetId = text(raw.presetId, 2_000);
   const snapshot = presetId ? normalizeHarnessPreset(raw.presetSnapshot) : null;
   const credentialId = text(raw.credentialId, 200);
-  const instanceId = text(raw.instanceId, 200);
+  const account = raw.account && typeof raw.account === "object"
+    ? { email: text((raw.account as Record<string, unknown>).email, 320) ?? null }
+    : null;
   return {
     label,
     ...(raw.dropped === true ? { dropped: true } : {}),
     ...(presetId ? { presetId } : {}),
     ...(snapshot && snapshot.id === presetId ? { presetSnapshot: snapshot } : {}),
     ...(credentialId ? { credentialId } : {}),
-    ...(instanceId ? { instanceId } : {}),
+    ...(account ? { account } : {}),
   };
 }
 
@@ -142,7 +148,7 @@ export function readCrossMachineRoute(value: unknown): AgentChatCrossMachineRout
 export function crossMachineRouteNotice(args: {
   route: AgentChatCrossMachineRoute;
   fromMachine: string;
-  /** The route's account is signed in here (only read when the route has one). */
+  /** The route's account (by its email) is signed in here; only read when the route has one. */
   accountKept: boolean;
   /** The account the chat uses here instead, when it has one. */
   accountHere: string | null;
@@ -153,7 +159,7 @@ export function crossMachineRouteNotice(args: {
   if (route.dropped) {
     return { message: `This chat used ${route.label} on ${from}. The move changed its model, so it uses this machine's own sign-in here.`, warning: true };
   }
-  if (route.instanceId && !args.accountKept) {
+  if (route.account && !args.accountKept) {
     const here = args.accountHere ? `the account ${args.accountHere}` : "this machine's own sign-in";
     return { message: `This chat used ${route.label} on ${from}. That account isn't signed in on this machine, so it uses ${here} here.`, warning: true };
   }

@@ -84,11 +84,15 @@ export function createAgent37BrainMaker(deps: {
     if (!make.selfApprove) return refuse("not_unattended");
     if (Date.now() - make.startedAt > SELF_APPROVAL_WINDOW_MS) return refuse("too_late");
     if (selfApproved.has(input.requestId)) return refuse("already_used");
-    const client = await deps.base.client().catch(() => null);
-    const instance = client ? await client.getInstance(input.instanceId).catch(() => null) : null;
+    const readFailed = (read: string) => (error: unknown) => {
+      deps.logger?.warn?.("agent37.self_approval_read_failed", { ...input, read, error: error instanceof Error ? error.message : String(error) });
+      return null;
+    };
+    const client = await deps.base.client().catch(readFailed("client"));
+    const instance = client ? await client.getInstance(input.instanceId).catch(readFailed("instance")) : null;
     if (instance?.metadata?.ade_request_id !== input.requestId) return refuse("request_id_mismatch");
     // A month this brain can't read counts as over the cap: no tap needs a known spend.
-    const month = await deps.base.spending?.().catch(() => null);
+    const month = await deps.base.spending?.().catch(readFailed("spending"));
     if (!month) return refuse("spend_unknown");
     if (month.capReached) return refuse("cap_reached");
     selfApproved.add(input.requestId);
