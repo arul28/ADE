@@ -104,10 +104,9 @@ struct SettingsChatPage: View {
         // gives instead of only that it is needed.
         VStack(alignment: .leading, spacing: 0) {
           ADESettingsRows {
-            ADESettingsRow("Next prompt", hint: "A guess at your next message", symbol: "text.cursor", tint: .blue)
-            ADESettingsRow("Smart decisions", hint: "Quick calls about your chats", symbol: "brain", tint: .teal)
-            ADESettingsRow("Claude mods", hint: "Plugins that draw in the chat", symbol: "puzzlepiece.extension", tint: .orange)
-            ADESettingsRow("Scheduled work", hint: "Jobs agents schedule", symbol: "clock", tint: .blue)
+            ForEach(SettingsChatTopic.allCases, id: \.self) { topic in
+              ADESettingsRow(topic.title, hint: topic.preview, symbol: topic.symbol, tint: topic.tint)
+            }
           }
           .opacity(0.5)
           .allowsHitTesting(false)
@@ -148,10 +147,10 @@ struct SettingsChatPage: View {
 
   private var nextPromptSection: some View {
     ADESettingsSection(
-      "Next prompt",
+      SettingsChatTopic.nextPrompt.title,
       hint: "A guess at your next message in an empty prompt box. Saved in \(projectName) on \(machine).",
-      symbol: "text.cursor",
-      tint: .blue
+      symbol: SettingsChatTopic.nextPrompt.symbol,
+      tint: SettingsChatTopic.nextPrompt.tint
     ) {
       ADESettingsRows {
         toggleRow(
@@ -169,7 +168,12 @@ struct SettingsChatPage: View {
   }
 
   private func smartDecisionsSection(_ config: SettingsProjectChatConfig) -> some View {
-    ADESettingsSection("Smart decisions", hint: "Quick calls ADE makes about your chats and prompts.", symbol: "brain", tint: .teal) {
+    ADESettingsSection(
+      SettingsChatTopic.smartDecisions.title,
+      hint: "Quick calls ADE makes about your chats and prompts.",
+      symbol: SettingsChatTopic.smartDecisions.symbol,
+      tint: SettingsChatTopic.smartDecisions.tint
+    ) {
       ADESettingsRows {
         toggleRow(
           "Smart decisions (Jev)",
@@ -257,7 +261,12 @@ struct SettingsChatPage: View {
   }
 
   private var claudeModsSection: some View {
-    ADESettingsSection("Claude mods", hint: "Claude Code plugins that draw in the chat.", symbol: "puzzlepiece.extension", tint: .orange) {
+    ADESettingsSection(
+      SettingsChatTopic.claudeMods.title,
+      hint: "Claude Code plugins that draw in the chat.",
+      symbol: SettingsChatTopic.claudeMods.symbol,
+      tint: SettingsChatTopic.claudeMods.tint
+    ) {
       ADESettingsRows {
         toggleRow(
           "Show what Claude mods draw",
@@ -271,7 +280,12 @@ struct SettingsChatPage: View {
   /// On the desktop this card is under Notifications; it is the same
   /// `ai.chat` key, so it sits with the other project chat settings here.
   private var scheduledWorkSection: some View {
-    ADESettingsSection("Scheduled work", hint: "Jobs agents schedule.", symbol: "clock", tint: .blue) {
+    ADESettingsSection(
+      SettingsChatTopic.scheduledWork.title,
+      hint: "Jobs agents schedule.",
+      symbol: SettingsChatTopic.scheduledWork.symbol,
+      tint: SettingsChatTopic.scheduledWork.tint
+    ) {
       ADESettingsRows {
         toggleRow(
           "Pause all scheduled work",
@@ -358,6 +372,48 @@ struct SettingsChatPage: View {
       ) {
         try await syncService.updateProjectChatConfig([Self.modelHintKey: next.rawValue])
       } ?? toast
+    }
+  }
+}
+
+/// The project's chat settings, one per section. The page without a project
+/// lists the same ones, dimmed, so the two never drift apart.
+private enum SettingsChatTopic: CaseIterable {
+  case nextPrompt, smartDecisions, claudeMods, scheduledWork
+
+  var title: String {
+    switch self {
+    case .nextPrompt: return "Next prompt"
+    case .smartDecisions: return "Smart decisions"
+    case .claudeMods: return "Claude mods"
+    case .scheduledWork: return "Scheduled work"
+    }
+  }
+
+  var symbol: String {
+    switch self {
+    case .nextPrompt: return "text.cursor"
+    case .smartDecisions: return "brain"
+    case .claudeMods: return "puzzlepiece.extension"
+    case .scheduledWork: return "clock"
+    }
+  }
+
+  var tint: ADESettingsTint {
+    switch self {
+    case .nextPrompt, .scheduledWork: return .blue
+    case .smartDecisions: return .teal
+    case .claudeMods: return .orange
+    }
+  }
+
+  /// The short line the dimmed list shows.
+  var preview: String {
+    switch self {
+    case .nextPrompt: return "A guess at your next message"
+    case .smartDecisions: return "Quick calls about your chats"
+    case .claudeMods: return "Plugins that draw in the chat"
+    case .scheduledWork: return "Jobs agents schedule"
     }
   }
 }

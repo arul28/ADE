@@ -64,7 +64,7 @@ struct SettingsIntegrationsPage: View {
     ) {
       ADEBrandTile(brand: .github, size: 42)
     } rows: {
-      if let notice = updateNotice(readBy: "github.getStatus") { notice }
+      updateNotice(readBy: "github.getStatus")
       if hasProject, let githubRepo {
         ADESettingsValueRow(title: "Repository", value: githubRepo, mono: true)
       }
@@ -102,7 +102,7 @@ struct SettingsIntegrationsPage: View {
     ) {
       ADEBrandTile(brand: .linear, size: 42)
     } rows: {
-      if let notice = updateNotice(readBy: "cto.getLinearConnectionStatus") { notice }
+      updateNotice(readBy: "cto.getLinearConnectionStatus")
       if hasProject, linearChecked {
         if canManageLinear {
           ADESettingsLink(
@@ -129,7 +129,7 @@ struct SettingsIntegrationsPage: View {
     ) {
       ADEBrandTile(brand: .jira, size: 42)
     } rows: {
-      if let notice = updateNotice(readBy: "jira.getConnectionStatus") { notice }
+      updateNotice(readBy: "jira.getConnectionStatus")
       if hasProject, jira == .notConnected {
         ADESettingsRow("Connect on your computer", hint: "Settings › Integrations › Jira")
       }
@@ -183,12 +183,13 @@ struct SettingsIntegrationsPage: View {
     return hasProject ? summary : IntegrationSummary(label: "No project open", tone: .neutral)
   }
 
-  private func updateNotice(readBy action: String) -> AnyView? {
-    guard !syncService.supportsRemoteAction(action) else { return nil }
-    return AnyView(
+  /// "Update ADE" on a card whose status the machine is too old to read.
+  @ViewBuilder
+  private func updateNotice(readBy action: String) -> some View {
+    if !syncService.supportsRemoteAction(action) {
       ADESettingsNotice(message: SettingsPageCopy.updateADE(on: machine))
         .padding(ADEKit.inset)
-    )
+    }
   }
 
   // MARK: - Loading
@@ -259,18 +260,7 @@ struct SettingsIntegrationCard<Mark: View, Rows: View>: View {
             .font(.system(size: 17, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
           if let status {
-            HStack(spacing: 6) {
-              if status == .checking {
-                ProgressView().controlSize(.mini)
-              } else {
-                Circle().fill(status.tone.color).frame(width: 6, height: 6)
-              }
-              Text(status.label)
-                .font(.system(size: 13.5, weight: .medium))
-                .foregroundStyle(status.tone == .neutral ? ADEColor.textSecondary : status.tone.color)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            }
+            ADESettingsStatus(text: status.label, tone: status.tone, checking: status == .checking, truncates: true)
           }
           Text(tagline)
             .font(.system(size: 13))
@@ -283,7 +273,7 @@ struct SettingsIntegrationCard<Mark: View, Rows: View>: View {
       .accessibilityElement(children: .combine)
       Group(subviews: rows()) { subviews in
         ForEach(subviews) { subview in
-          Rectangle().fill(ADEKit.rule).frame(height: 0.75).padding(.leading, ADEKit.inset)
+          ADESettingsHairline()
           subview
         }
       }

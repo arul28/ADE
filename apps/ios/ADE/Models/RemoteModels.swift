@@ -448,8 +448,13 @@ func adeVersionIsDevBuild(_ version: String?) -> Bool {
   adeVersionCore(version) == "1.0.0-beta.1"
 }
 
-/// How a machine's ADE version reads in a row: "ADE 1.2.3", or "Dev build"
-/// for a machine running ADE from source.
+/// A machine's ADE version as a value: "1.2.3", or "Dev build" for a machine
+/// running ADE from source.
+func adeVersionValue(_ version: String) -> String {
+  adeVersionIsDevBuild(version) ? "Dev build" : version
+}
+
+/// The same with the product name: "ADE 1.2.3", or "Dev build".
 func adeVersionDisplayLabel(_ version: String) -> String {
   adeVersionIsDevBuild(version) ? "Dev build" : "ADE \(version)"
 }

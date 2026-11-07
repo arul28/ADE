@@ -22,8 +22,9 @@ struct SettingsGeneralPage: View {
   let machinesPage: () -> AnyView
   let advancedPage: () -> AnyView
   /// The connection's status and its one action (Disconnect, Reconnect, Wake),
-  /// drawn as a row under the machine, without naming the machine again.
-  let connection: () -> AnyView
+  /// drawn as a row under the machine. Given whether the row above names the
+  /// machine, so the status line names it only when that row cannot.
+  let connection: (_ machineShownAbove: Bool) -> AnyView
 
   @ObservedObject private var account = AccountService.shared
   @EnvironmentObject private var appUpdateAdvisor: AppUpdateAdvisor
@@ -122,15 +123,7 @@ struct SettingsGeneralPage: View {
   @ViewBuilder
   private var providerValue: some View {
     if let summary = providerSummary {
-      HStack(spacing: 6) {
-        if summary.tone != .neutral {
-          ADEKitDot(tone: summary.tone, size: 6)
-        }
-        Text(summary.text)
-          .font(.system(size: 14))
-          .foregroundStyle(summary.tone == .warn ? ADEKitTone.warn.color : ADEColor.textMuted)
-          .lineLimit(1)
-      }
+      ADESettingsStatus(text: summary.text, tone: summary.tone)
     } else {
       ProgressView().controlSize(.small)
     }
@@ -169,7 +162,7 @@ struct SettingsGeneralPage: View {
             if pushes { ADESettingsChevron() }
           }
         }
-        connection()
+        connection(primary != nil)
           .padding(.horizontal, ADEKit.inset)
           .padding(.vertical, 12)
       }
@@ -562,12 +555,12 @@ struct SettingsAdeHeroCard: View {
         ADEKitTag(text: "Beta", tone: .warn)
       }
       Spacer(minLength: 8)
-      Text(machine.appVersion.map { adeVersionIsDevBuild($0) ? "dev build" : $0 } ?? "—")
+      Text(machine.appVersion.map(adeVersionValue) ?? "—")
         .font(.adeMono(12))
         .foregroundStyle(ADEColor.textSecondary)
         .lineLimit(1)
       if let status = status(machine) {
-        ADEKitTag(text: status.text, tone: status.tone)
+        ADESettingsStatus(text: status.text, tone: status.tone)
       }
     }
     .padding(.horizontal, ADEKit.inset)

@@ -126,7 +126,7 @@ struct SettingsPushDeliverySection: View {
             return ("No notifications yet", "Sign in or pair a computer to get them.", nil, nil)
         }
         if permissionStatus == .denied {
-            return ("Notifications are off", "Turn them on for ADE in iOS Settings.", "Turn on", {
+            return ("Notifications are off", "Turn them on for ADE in iOS Settings.", "Open Settings", {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(url)
                 }

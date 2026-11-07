@@ -591,6 +591,8 @@ struct SettingsMachineRow: View {
             .fixedSize(horizontal: false, vertical: true)
         }
       }
+      // The name gets the row's width before the status word does.
+      .layoutPriority(1)
       Spacer(minLength: 8)
       trailing
       ADESettingsChevron()
@@ -953,7 +955,7 @@ struct SettingsMachinePageContent: View {
 
   private func accountCountRow(_ provider: AccountMachineInventoryProvider, link: Bool) -> some View {
     HStack(spacing: 12) {
-      ADEBrandTile(brand: .provider(ADESharedTheme.providerFamilyKey(for: provider.provider)), size: 30)
+      ADEBrandTile(brand: .provider(provider.provider), size: 30)
       Text(ADESharedTheme.providerDisplayName(for: provider.provider) ?? provider.provider.capitalized)
         .font(.system(size: 15))
         .foregroundStyle(ADEColor.textPrimary)

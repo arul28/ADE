@@ -270,7 +270,7 @@ struct ConnectionSettingsView: View {
       providersPage: { AnyView(page(.providers)) },
       machinesPage: { AnyView(machinesPage) },
       advancedPage: { AnyView(advancedPage) },
-      connection: { AnyView(connectionStatus(machineShownAbove: true)) }
+      connection: { machineShownAbove in AnyView(connectionStatus(machineShownAbove: machineShownAbove)) }
     )
   }
 

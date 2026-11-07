@@ -1,4 +1,7 @@
+import OSLog
 import SwiftUI
+
+private let settingsLanesLog = Logger(subsystem: "com.ade.ios", category: "SettingsLanes")
 
 /// Settings › Lanes: how new lanes start in the active project, as the
 /// desktop's Lanes › New lanes view has it (`NewLaneSettingsSection.tsx`,
@@ -370,6 +373,7 @@ struct SettingsLanesPage: View {
         if !customPattern { patternDraft = snapshot.defaults.branchPattern ?? Self.defaultPattern }
       }
     } catch {
+      settingsLanesLog.warning("New lane defaults read failed: \(error.localizedDescription, privacy: .public)")
       if defaults == nil { defaultsError = SyncUserFacingError.message(for: error) }
     }
   }
@@ -380,11 +384,16 @@ struct SettingsLanesPage: View {
     do {
       let loaded = try await syncService.fetchLaneTemplates(disconnectOnTimeout: false)
       templates = loaded
-      // A failed read keeps the default shown so far rather than "None".
-      if let defaultId = try? await syncService.fetchDefaultLaneTemplateId(disconnectOnTimeout: false), !savingTemplate {
-        defaultTemplateId = defaultId
+      do {
+        // A successful nil is "None" and clears the pick.
+        let defaultId = try await syncService.fetchDefaultLaneTemplateId(disconnectOnTimeout: false)
+        if !savingTemplate { defaultTemplateId = defaultId }
+      } catch {
+        // A failed read keeps the default shown so far rather than "None".
+        settingsLanesLog.warning("Default lane template read failed: \(error.localizedDescription, privacy: .public)")
       }
     } catch {
+      settingsLanesLog.warning("Lane templates read failed: \(error.localizedDescription, privacy: .public)")
       if templates == nil { templatesError = SyncUserFacingError.message(for: error) }
     }
   }

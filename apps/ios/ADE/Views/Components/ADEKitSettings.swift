@@ -88,22 +88,40 @@ enum ADESettingsTint: Equatable {
   }
 }
 
-/// A glyph on a soft tinted tile (desktop `SettingsRowIcon`): 15% of the tone
-/// behind it, a 22% edge.
+/// A glyph on a tile of its tone. Soft (desktop `SettingsRowIcon`): 15% of
+/// the tone behind it, a 22% edge. Solid: a white glyph on the tone's
+/// gradient, as a settings list's rows carry them, so each page is found by
+/// colour and shape before its name.
 struct ADESettingsIconTile: View {
   let symbol: String
   var tint: ADESettingsTint = .accent
   var size: CGFloat = 30
+  var solid = false
 
   var body: some View {
-    let shape = RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-    Image(systemName: symbol)
-      .font(.system(size: size * 0.5, weight: .medium))
-      .foregroundStyle(tint.color)
-      .frame(width: size, height: size)
-      .background(tint.color.opacity(0.15), in: shape)
-      .overlay(shape.strokeBorder(tint.color.opacity(0.22), lineWidth: 1))
-      .accessibilityHidden(true)
+    if solid {
+      let shape = RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+      Image(systemName: symbol)
+        .symbolVariant(.fill)
+        .font(.system(size: size * 0.5, weight: .semibold))
+        .foregroundStyle(.white)
+        .frame(width: size, height: size)
+        .background(
+          LinearGradient(colors: [tint.color, tint.color.mix(with: .black, by: 0.22)], startPoint: .top, endPoint: .bottom),
+          in: shape
+        )
+        .overlay(shape.strokeBorder(Color.white.opacity(0.14), lineWidth: 0.75))
+        .accessibilityHidden(true)
+    } else {
+      let shape = RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+      Image(systemName: symbol)
+        .font(.system(size: size * 0.5, weight: .medium))
+        .foregroundStyle(tint.color)
+        .frame(width: size, height: size)
+        .background(tint.color.opacity(0.15), in: shape)
+        .overlay(shape.strokeBorder(tint.color.opacity(0.22), lineWidth: 1))
+        .accessibilityHidden(true)
+    }
   }
 }
 
@@ -150,17 +168,22 @@ struct ADESettingsRows<Content: View>: View {
     VStack(alignment: .leading, spacing: 0) {
       Group(subviews: content()) { subviews in
         ForEach(Array(subviews.enumerated()), id: \.element.id) { index, subview in
-          if index > 0 {
-            Rectangle()
-              .fill(ADEKit.rule)
-              .frame(height: 0.75)
-              .padding(.leading, ADEKit.inset)
-          }
+          if index > 0 { ADESettingsHairline() }
           subview
         }
       }
     }
     .adeKitCard(padding: nil)
+  }
+}
+
+/// The rule between two rows of one card, inset to the rows' text.
+struct ADESettingsHairline: View {
+  var body: some View {
+    Rectangle()
+      .fill(ADEKit.rule)
+      .frame(height: 0.75)
+      .padding(.leading, ADEKit.inset)
   }
 }
 
@@ -363,29 +386,6 @@ struct ADESettingsSidebarLink<Destination: View>: View {
   }
 }
 
-/// A white glyph on a solid tile of its colour, as a settings list's rows
-/// carry them: each page is found by colour and shape before its name.
-struct ADESettingsSolidTile: View {
-  let symbol: String
-  let tint: ADESettingsTint
-  var size: CGFloat = 30
-
-  var body: some View {
-    let shape = RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
-    Image(systemName: symbol)
-      .symbolVariant(.fill)
-      .font(.system(size: size * 0.5, weight: .semibold))
-      .foregroundStyle(.white)
-      .frame(width: size, height: size)
-      .background(
-        LinearGradient(colors: [tint.color, tint.color.mix(with: .black, by: 0.22)], startPoint: .top, endPoint: .bottom),
-        in: shape
-      )
-      .overlay(shape.strokeBorder(Color.white.opacity(0.14), lineWidth: 0.75))
-      .accessibilityHidden(true)
-  }
-}
-
 /// One row of the settings sidebar (desktop `SettingsSidebar`): outline glyph,
 /// title, an optional quiet value. The picked row turns the accent colour.
 struct ADESettingsSidebarRow: View {
@@ -402,7 +402,7 @@ struct ADESettingsSidebarRow: View {
   var body: some View {
     HStack(spacing: 12) {
       if let symbol, let tint {
-        ADESettingsSolidTile(symbol: symbol, tint: tint)
+        ADESettingsIconTile(symbol: symbol, tint: tint, solid: true)
       } else if let symbol {
         Image(systemName: symbol)
           .font(.system(size: 16, weight: .regular))
@@ -629,8 +629,10 @@ struct ADEBrand: Equatable {
     ADEBrand(colors: colors.map(rgb), asset: asset, ink: ink.map(rgb), monogram: monogram, scale: scale)
   }
 
-  /// A coding agent, by the desktop's provider id ("claude", "codex", …).
-  static func provider(_ id: String) -> ADEBrand {
+  /// A coding agent, by any of its provider slugs ("claude", "claude-chat",
+  /// "openai-codex", …), folded to the desktop's provider id first.
+  static func provider(_ slug: String) -> ADEBrand {
+    let id = ADESharedTheme.providerFamilyKey(for: slug)
     switch id {
     case "claude": return make([0xC9653F, 0xD97757, 0xE0896A], "ProviderClaude", ink: 0xFFF4EA)
     // Codex's mark is a gradient cloud: it keeps its colours on a light tile.
@@ -731,21 +733,30 @@ struct ADEBrandTileStack: View {
   }
 }
 
-/// A status in a row's trailing slot: a dot and a word in sentence case.
-/// Calm for a good state; the tone's colour for one that wants a tap.
+/// A status in sentence case after a dot (or a spinner while it is being
+/// checked). Calm for a good state; the tone's colour for one that wants a tap.
 struct ADESettingsStatus: View {
   let text: String
   var tone: ADEKitTone = .neutral
+  var checking = false
+  /// A row's trailing status keeps its full width. A status under a title
+  /// (an integration card's) may be long, so it shortens in the middle.
+  var truncates = false
 
   var body: some View {
     HStack(spacing: 6) {
-      Circle().fill(tone.color).frame(width: 6, height: 6)
+      if checking {
+        ProgressView().controlSize(.mini)
+      } else {
+        Circle().fill(tone.color).frame(width: 6, height: 6)
+      }
       Text(text)
         .font(.system(size: 13.5, weight: tone == .warn || tone == .crit ? .medium : .regular))
         .foregroundStyle(textColor)
         .lineLimit(1)
+        .truncationMode(.middle)
     }
-    .fixedSize()
+    .fixedSize(horizontal: !truncates, vertical: false)
   }
 
   private var textColor: Color {

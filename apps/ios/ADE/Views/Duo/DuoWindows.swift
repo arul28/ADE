@@ -220,7 +220,7 @@ struct DuoSettingsSplit<Sidebar: View, Landing: View, Page: View>: View {
               // A small title, as a split view's list column has.
               .navigationBarTitleDisplayMode(.inline)
               .environment(\.duoSettingsSelection, selectionBinding)
-              .environment(\.duoSettingsShow, { title in
+              .environment(\.duoSettingsShow, DuoSettingsShowAction { title in
                 selection = title
                 picks += 1
               })
@@ -273,7 +273,17 @@ extension EnvironmentValues {
   @Entry var duoSettingsSelection: Binding<String?>? = nil
   /// Shows the page for a row's title in the two-column Settings window's
   /// right column. Nil outside its list column, where rows push as usual.
-  @Entry var duoSettingsShow: ((String) -> Void)? = nil
+  @Entry var duoSettingsShow: DuoSettingsShowAction? = nil
+}
+
+/// `duoSettingsShow`'s action. It writes only the window's own state, so one
+/// action equals the next and a redraw of the window does not redraw each row.
+struct DuoSettingsShowAction: Equatable {
+  let show: (String) -> Void
+
+  func callAsFunction(_ title: String) { show(title) }
+
+  static func == (_: Self, _: Self) -> Bool { true }
 }
 
 extension EnvironmentValues {

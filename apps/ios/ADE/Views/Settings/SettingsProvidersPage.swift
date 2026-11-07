@@ -47,7 +47,7 @@ struct SettingsProvidersPage: View {
       let unset = rows.filter(\.state.isUnset)
       summaryCard(rows: rows, ready: ready, needsYou: needsYou)
       if !needsYou.isEmpty {
-        ADESettingsSection("Needs you", hint: "Sign in to these on \(machine).") {
+        ADESettingsSection("Needs you", hint: "Sign in or fix these on \(machine).") {
           ADESettingsRows {
             ForEach(needsYou) { providerRow($0) }
           }
