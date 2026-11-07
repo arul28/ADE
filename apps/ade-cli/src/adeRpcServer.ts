@@ -78,13 +78,13 @@ import {
   getAdeActionDomainServices,
   isAllowedAdeAction,
   isCtoOnlyAdeAction,
-  userSettingWrite,
   isSecretBearingAdeAction,
   isUserOnlyAdeAction,
   laneEnvironmentSetupDeps,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/registry";
+import { adeActionCallerRefusal } from "../../desktop/src/main/services/adeActions/actionPolicy";
 import { runLaneEnvironmentSetup } from "../../desktop/src/main/services/lanes/laneEnvironmentSetup";
 import { readRuntimeFileWatchSenderId, toRuntimeFileWatchArgs } from "../../desktop/src/main/services/adeActions/actionArgs";
 import { createFileWatchLedger } from "../../desktop/src/main/services/files/fileWatchLedger";
@@ -6399,27 +6399,15 @@ async function runTool(args: {
     // agent outside a chat (an orchestrator run, step or attempt) can keep the
     // operator role it asks for.
     const userAtControls = callerHasRoleAtLeast(callerCtx.role, "cto") && isUserClientSession(session);
-    const setting = userSettingWrite(domain, action);
-    if (setting && !userAtControls) {
-      // A setting only the user changes. Say so in words an agent can pass
-      // on, with the link that opens it when there is one.
+    const refusal = adeActionCallerRefusal(domain, action, {
+      role: callerCtx.role,
+      userClient: isUserClientSession(session),
+      remoteBrain: isRemoteBrainCallerClientName(session.clientName),
+    });
+    if (refusal) {
       throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        setting.entryId
-          ? `Only the user can change this setting (${domain}.${action}). It is at ade://settings/${setting.entryId}; give the user that link.`
-          : `Only the user can change this setting (${domain}.${action}). Tell the user; do not look for another way.`,
-      );
-    }
-    if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
-      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${domain}.${action}' requires elevated role.`);
-    }
-    if (isRemoteBrainCallerClientName(session.clientName) && isSecretBearingAdeAction(domain, action)) {
-      // A caller from another machine's brain is a model whose result lands in
-      // a transcript. The CTO's own tool refuses these first; this holds for
-      // any caller version.
-      throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        `${domain}.${action} returns secrets, so it can't run from another machine. Ask the user to read it in Settings.`,
+        refusal.kind === "role" ? JsonRpcErrorCode.methodNotFound : JsonRpcErrorCode.policyDenied,
+        refusal.message,
       );
     }
     const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;

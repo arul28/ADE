@@ -304,6 +304,7 @@ import { buildIntegrationConnectAdapters } from "../integrations/integrationConn
 import { agent37VaultFromStore, buildAgent37ConnectAdapter, type Agent37CredentialDeps } from "../agent37/agent37Credential";
 import { agent37MachineEnv, type Agent37CloudSignInVaults } from "../agent37/agent37CloudSignInStore";
 import { buildAgent37CloudSignInActions } from "../agent37/agent37CloudSignInActions";
+import { agent37OnlyVaultService } from "../agent37/agent37VaultItems";
 import { buildAgent37ReadyActions } from "../agent37/agent37ReadyActions";
 import { buildAgent37AgentActions } from "../agent37/agent37AgentActions";
 import { createAgent37BrainMaker, type Agent37BrainMaker } from "../agent37/agent37BrainMaker";
@@ -344,7 +345,6 @@ export {
   isUserOnlyAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
-  userSettingWrite,
 } from "./actionPolicy";
 export type { AdeActionRole, CtoOnlyRule } from "./actionPolicy";
 export {
@@ -610,6 +610,15 @@ function buildIssueDomainService(runtime: AdeRuntime): IssueDomainService | null
 
 type OpaqueService = Record<string, unknown>;
 
+/**
+ * What the account-level domains read from a runtime. A project runtime is
+ * one; a brain with no project builds one over the machine's account stores
+ * (buildMachineAccountDomainServices).
+ */
+export type AccountDomainRuntime = Pick<AdeRuntime, "logger">
+  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "agentChatService" | "getAgent37Desktop" | "productAnalyticsService">>
+  & { projectRoot?: string | null };
+
 function toService(value: unknown): OpaqueService | null {
   return (value ?? null) as OpaqueService | null;
 }
@@ -625,7 +634,7 @@ const ADE_MCP_ACCOUNT_ROWS_REFUSED =
  * MCP service reads and writes them in-process (remoteMcpShared.ts), never
  * through this domain.
  */
-function buildAccountVaultDomainService(runtime: AdeRuntime): OpaqueService | null {
+function buildAccountVaultDomainService(runtime: AccountDomainRuntime): OpaqueService | null {
   const store = runtime.accountVaultStore;
   if (!store) return null;
   const guard = (kind: unknown): void => {
@@ -4064,13 +4073,13 @@ function agent37MachineStore(): EncryptedFileCredentialStore {
 }
 
 /** The account vault's cloud sign-in items, or null when signed out of ADE (agent37CloudSignInStore.ts). */
-function agent37CloudSignInVaults(runtime: AdeRuntime): Agent37CloudSignInVaults | null {
+function agent37CloudSignInVaults(runtime: AccountDomainRuntime): Agent37CloudSignInVaults | null {
   const store = runtime.accountVaultStore;
   if (!store || runtime.accountAuthService?.getStatus().signedIn !== true) return null;
   return (vaultKey) => agent37VaultFromStore(store, vaultKey);
 }
 
-function agent37CredentialDeps(runtime: AdeRuntime): Agent37CredentialDeps {
+function agent37CredentialDeps(runtime: AccountDomainRuntime): Agent37CredentialDeps {
   return {
     vault: () => (runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore) : null),
     machineStore: () => agent37MachineStore(),
@@ -4099,9 +4108,9 @@ function integrationConnectAdapters(runtime: AdeRuntime) {
  * One maker per runtime: the domain services are rebuilt per call, and a
  * background make (the phone's) is read back by a later `make_status`.
  */
-const agent37BrainMakers = new WeakMap<AdeRuntime, Agent37BrainMaker | null>();
+const agent37BrainMakers = new WeakMap<AccountDomainRuntime, Agent37BrainMaker | null>();
 
-function agent37BrainMakerFor(runtime: AdeRuntime, machines: ReturnType<typeof createAgent37Machines>): Agent37BrainMaker | null {
+function agent37BrainMakerFor(runtime: AccountDomainRuntime, machines: ReturnType<typeof createAgent37Machines>): Agent37BrainMaker | null {
   if (agent37BrainMakers.has(runtime)) return agent37BrainMakers.get(runtime) ?? null;
   const account = runtime.accountAuthService ?? null;
   if (!account) {
@@ -4160,7 +4169,7 @@ function agent37BrainMakerFor(runtime: AdeRuntime, machines: ReturnType<typeof c
  * and the choice are the account's, so every brain answers the same; making a
  * machine goes to the desktop attached to this brain.
  */
-function buildAgent37DomainService(runtime: AdeRuntime): OpaqueService {
+function buildAgent37DomainService(runtime: AccountDomainRuntime): OpaqueService {
   const signedIn = () => runtime.accountAuthService?.getStatus().signedIn === true;
   const settings = createAgent37ReadySettingsStore({
     vault: () => (signedIn() && runtime.accountVaultStore
@@ -4247,6 +4256,23 @@ function buildAgent37DomainService(runtime: AdeRuntime): OpaqueService {
     logger: runtime.logger,
   });
   return { ...ready, ...verbs, ...cloudSignIns };
+}
+
+/**
+ * The account-level domains a brain serves with no project open, over the
+ * machine's account stores (`agent37.call` and `accountVault.call` in
+ * multiProjectRpcServer). The same services a project runtime builds, so
+ * every scope answers the same; which actions are served this way is
+ * `ADE_ACTION_MACHINE_SCOPED`. The vault opens only Agent 37's items.
+ */
+export function buildMachineAccountDomainServices(runtime: AccountDomainRuntime): {
+  agent37: OpaqueService;
+  account_vault: OpaqueService | null;
+} {
+  return {
+    agent37: buildAgent37DomainService(runtime),
+    account_vault: agent37OnlyVaultService(buildAccountVaultDomainService(runtime)),
+  };
 }
 
 /**
