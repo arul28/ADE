@@ -77,6 +77,8 @@ export type AccountActionPool = {
     rootPath: string,
     request: ActionRequest,
   ): Promise<{ result: unknown }>;
+  /** A machine-level brain method, for a bridge with `machineMethod`. */
+  callSync?(method: string, params?: Record<string, unknown>): Promise<unknown>;
 };
 
 export type AccountActionBridgeOptions<TRow> = {
@@ -88,6 +90,12 @@ export type AccountActionBridgeOptions<TRow> = {
   getPool: () => AccountActionPool | null | undefined;
   /** Any booted project root that can reach the machine store. */
   getRootPath: () => string | null;
+  /**
+   * The brain's machine-level method for this domain (`accountVault.call`),
+   * used when no project is booted: the store is the machine's, not a
+   * project's. Without one, no booted project means unavailable.
+   */
+  machineMethod?: string;
   logger?: { debug?(message: string, meta?: Record<string, unknown>): void };
   /** Decode one row and return null for an invalid wire value. */
   decodeRow: (value: unknown) => TRow | null;
@@ -140,18 +148,23 @@ export function createAccountActionBridge<TRow>(options: AccountActionBridgeOpti
     try {
       const pool = options.getPool();
       if (!pool) return unavailable<T>();
-      const rootPath = options.getRootPath();
-      if (!rootPath) return unavailable<T>();
       const extra = writeOptionsArg(callOptions);
-      const response = await withDeadline(
-        pool.callActionForRoot(rootPath, {
-          domain: options.domain,
-          action,
-          argsList: extra ? [...argsList, extra] : argsList,
-        }),
+      const fullArgsList = extra ? [...argsList, extra] : argsList;
+      const rootPath = options.getRootPath();
+      const { machineMethod } = options;
+      let send: Promise<unknown>;
+      if (rootPath) {
+        send = pool.callActionForRoot(rootPath, { domain: options.domain, action, argsList: fullArgsList })
+          .then((response) => response?.result);
+      } else if (machineMethod && pool.callSync) {
+        send = pool.callSync(machineMethod, { action, argsList: fullArgsList });
+      } else {
+        return unavailable<T>();
+      }
+      const raw = unwrap(await withDeadline(
+        send,
         action === "sync" ? ACCOUNT_ACTION_SYNC_TIMEOUT_MS : ACCOUNT_ACTION_TIMEOUT_MS,
-      );
-      const raw = unwrap(response?.result);
+      ));
       if (callOptions.rejectFalse && raw === false) return rejected<T>();
       return { ok: true, value: decode(raw) };
     } catch (error) {

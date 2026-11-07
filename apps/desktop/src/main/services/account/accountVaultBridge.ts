@@ -32,6 +32,12 @@ export type AccountVaultBridgeOptions = {
   getPool: () => AccountVaultActionPool | null | undefined;
   /** Any booted project root; null when none is open yet. */
   getRootPath: () => string | null;
+  /**
+   * With no booted project, ask the brain's `accountVault.call` instead of
+   * answering unavailable. It opens only Agent 37's items
+   * (agent37VaultItems.ts), so only the Agent 37 bridge sets this.
+   */
+  machineFallback?: boolean;
   logger?: { debug?(message: string, meta?: Record<string, unknown>): void };
 };
 
@@ -76,6 +82,7 @@ export function createAccountVaultBridge(options: AccountVaultBridgeOptions) {
     unavailableMessage: ACCOUNT_VAULT_UNAVAILABLE_MESSAGE,
     getPool: options.getPool,
     getRootPath: options.getRootPath,
+    ...(options.machineFallback ? { machineMethod: "accountVault.call" } : {}),
     logger: options.logger,
     decodeRow: toItem,
     rejectedMessage: ACCOUNT_VAULT_REJECTED_MESSAGE,

@@ -403,6 +403,28 @@ export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): bo
 }
 
 /**
+ * Actions about the account or this machine, never one project, that a brain
+ * also serves with no project open, to this computer's own connections only:
+ * `agent37.call` and `accountVault.call` (multiProjectRpcServer). Every rule
+ * above still applies to them.
+ *
+ * The other `agent37` actions stay with a project: a ready machine is a
+ * project's, and what spends money or deletes asks in the caller's own chat.
+ * The vault actions are for this computer's desktop and reach only Agent 37's
+ * items (agent37VaultItems.ts).
+ */
+export const ADE_ACTION_MACHINE_SCOPED = {
+  agent37: ["list", "spending", "limits", "sleep", "wake", "cloud_sign_in_status", ...AGENT37_CLOUD_SIGN_IN_WRITES],
+  account_vault: ["get", "set", "remove"],
+} as const satisfies Partial<Record<AdeActionDomain, readonly string[]>>;
+
+export type AdeMachineScopedDomain = keyof typeof ADE_ACTION_MACHINE_SCOPED;
+
+export function isMachineScopedAdeAction(domain: AdeMachineScopedDomain, action: string): boolean {
+  return (ADE_ACTION_MACHINE_SCOPED[domain] as readonly string[]).includes(action);
+}
+
+/**
  * Actions whose RESULT carries a secret: a credential, a token, an env file,
  * or raw artifact bytes. The CTO's generic action tool (`runMachineAction`)
  * refuses these outright, on its home machine and on any other, because the
@@ -453,6 +475,45 @@ export function isCtoOnlyAdeAction(domain: AdeActionDomain, action: string): boo
 export function callerHasRoleAtLeast(role: AdeActionRole | undefined | null, minRole: AdeActionRole): boolean {
   if (!role) return false;
   return ROLE_ORDER[role] >= ROLE_ORDER[minRole];
+}
+
+/**
+ * The first caller rule that refuses `domain.action`, or null: a setting only
+ * the user changes, an action that needs the operator role, a secret asked for
+ * by another machine's brain. Every route that runs ADE actions asks this
+ * (`run_ade_action`, `agent37.call`), so the routes cannot drift apart.
+ *
+ * `userClient`: the person's own client, not an agent and not another brain.
+ * `remoteBrain`: a caller from another machine's brain.
+ */
+export function adeActionCallerRefusal(
+  domain: AdeActionDomain,
+  action: string,
+  caller: { role: AdeActionRole | undefined | null; userClient: boolean; remoteBrain: boolean },
+): { kind: "policy" | "role"; message: string } | null {
+  const setting = userSettingWrite(domain, action);
+  if (setting && !(caller.userClient && callerHasRoleAtLeast(caller.role, "cto"))) {
+    // Words an agent can pass on, with the link that opens it when there is one.
+    return {
+      kind: "policy",
+      message: setting.entryId
+        ? `Only the user can change this setting (${domain}.${action}). It is at ade://settings/${setting.entryId}; give the user that link.`
+        : `Only the user can change this setting (${domain}.${action}). Tell the user; do not look for another way.`,
+    };
+  }
+  if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(caller.role, "cto")) {
+    return { kind: "role", message: `Action '${domain}.${action}' requires elevated role.` };
+  }
+  if (caller.remoteBrain && isSecretBearingAdeAction(domain, action)) {
+    // A caller from another machine's brain is a model whose result lands in
+    // a transcript. The CTO's own tool refuses these first; this holds for
+    // any caller version.
+    return {
+      kind: "policy",
+      message: `${domain}.${action} returns secrets, so it can't run from another machine. Ask the user to read it in Settings.`,
+    };
+  }
+  return null;
 }
 
 export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly string[]>> = {
