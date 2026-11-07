@@ -209,6 +209,11 @@ there. Skipped scheduled work, drafts and watches remain pending; a subagent
 completion is recorded in the parent transcript without waking it. Agent, CLI
 and remote turn requests receive a typed refusal naming the destination chat.
 
+A window that watched the move under way (pending, awaiting approval or
+sending) follows the chat when it lands: it opens the destination chat as
+soon as this window lists it (the other machine's next read, up to a minute),
+so the move reads as one chat. A chat opened after it moved stays where it is.
+
 On desktop, new messages from the source composer still go to the destination
 chat; the banner reads **Continues on <machine>** with **Open on <machine>**
 and **Work here instead**. That choice calls `acknowledgeCrossMachineHandoff`

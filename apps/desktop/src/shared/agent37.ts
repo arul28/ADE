@@ -130,6 +130,33 @@ export function agent37KindSpec(kind: Agent37MachineKind): Agent37KindSpec {
   return AGENT37_KINDS.find((spec) => spec.kind === kind) ?? AGENT37_KINDS[0]!;
 }
 
+/** The shape with this CPU count and memory (what a box sees from inside), or null. */
+export function agent37ShapeForResources(cpu: number, memoryBytes: number): Agent37Shape | null {
+  const memoryGb = Math.round(memoryBytes / 1024 ** 3);
+  return AGENT37_SHAPES.find((shape) => shape.cpu === cpu && shape.memoryGb === memoryGb) ?? null;
+}
+
+/** The smallest VM that runs the Android emulator well. */
+const AGENT37_ANDROID_VM_SHAPE = agent37Shape("4x8")!;
+
+/**
+ * Why an Agent 37 box can't run the Android emulator, in plain words for the
+ * person: a VM can, what that costs more, and what happens to the box. The
+ * agent's next steps are in the `ade-android` and `ade-agent37` skills.
+ */
+export function agent37AndroidNeedsVmMessage(boxShape: Agent37Shape | null): string {
+  // A box bigger than the Android VM moves to a VM of its own size.
+  const vmShape = boxShape && AGENT37_SHAPES.indexOf(boxShape) > AGENT37_SHAPES.indexOf(AGENT37_ANDROID_VM_SHAPE)
+    ? boxShape
+    : AGENT37_ANDROID_VM_SHAPE;
+  const vmHourly = agent37HourlyUsd("vm", vmShape);
+  const more = boxShape ? `, ${formatAgent37HourlyPrice(Math.max(0, vmHourly - agent37HourlyUsd("box", boxShape)))} more than this box` : "";
+  return "This machine is an Agent 37 box, and a box can't run the Android emulator. An Agent 37 VM can. "
+    + `A ${vmShape.id} VM costs ${formatAgent37HourlyPrice(vmHourly)} while it's awake${more}. `
+    + "ADE can make the VM and continue this chat there, with its history and changes. "
+    + "This box stays: it sleeps when idle, and you can delete it from the new chat.";
+}
+
 /** The integration's state, as Settings and the machine picker read it. Never the key. */
 export type Agent37Status = {
   connected: boolean;

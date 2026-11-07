@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
-import { ArrowsOutSimple, ArrowsLeftRight, CloudArrowUp, Copy, Moon, MoonStars, Sun, Trash, UserMinus } from "@phosphor-icons/react";
+import { ArrowsOutSimple, ArrowsLeftRight, CloudArrowUp, Copy, Moon, MoonStars, PlugsConnected, Sun, Trash, UserMinus } from "@phosphor-icons/react";
 import {
   AGENT37_DEFAULT_SLEEP_AFTER_MINUTES,
   AGENT37_SHAPES,
@@ -22,7 +22,7 @@ import { describeAgent37Rate, type Agent37BoxWork } from "./agent37MachineModel"
 import type { MachineAction } from "./MachineActionsMenu";
 
 /** What one box is doing in the list right now, shown on its card. */
-export type Agent37BoxPending = Agent37MachineActionKind | "remove" | "copy" | "move";
+export type Agent37BoxPending = Agent37MachineActionKind | "remove" | "copy" | "move" | "reconnect";
 
 export type Agent37BoxActionError = {
   message: string;
@@ -50,6 +50,7 @@ const PENDING_LABELS: Record<Agent37BoxPending, string> = {
   set_sleep: "Changing how it sleeps…",
   copy: "Copying it into a new machine. A big disk takes a few minutes…",
   move: "Moving it: a new machine, then every file copied over…",
+  reconnect: "Signing it back in to your account…",
 };
 
 export function agent37PendingLabel(pending: Agent37BoxPending): string {
@@ -234,10 +235,11 @@ export function useAgent37BoxActions(args: {
   }, [forgetTarget, onAccountChanged, refresh, setPending]);
 
   /**
-   * Copy and Move run for minutes in the main process and report like a
-   * create; the card shows the step meanwhile and a toast says how it ended.
+   * Copy, Move and Reconnect run for minutes in the main process and report
+   * like a create; the card shows the step meanwhile and a toast says how it
+   * ended.
    */
-  const runLong = useCallback(async (ctx: Agent37BoxContext, kind: "copy" | "move", start: (requestId: string) => Promise<{ started: boolean }>) => {
+  const runLong = useCallback(async (ctx: Agent37BoxContext, kind: "copy" | "move" | "reconnect", start: (requestId: string) => Promise<{ started: boolean }>) => {
     const bridge = window.ade?.agent37;
     if (!bridge?.onCreateProgress) return;
     const requestId = `${kind}-${ctx.box.instanceId}-${Date.now()}`;
@@ -249,7 +251,7 @@ export function useAgent37BoxActions(args: {
       if (progress.stage === "done") {
         off();
         setPending(instanceId, null);
-        showToast({ tone: "success", title: kind === "copy" ? `Copied ${ctx.name}` : `Moved ${ctx.name}`, message: progress.message, replayMask: { title: true } });
+        showToast({ tone: "success", title: kind === "copy" ? `Copied ${ctx.name}` : kind === "move" ? `Moved ${ctx.name}` : `Reconnected ${ctx.name}`, message: progress.message, replayMask: { title: true } });
         refresh();
         onAccountChanged?.();
       } else if (progress.stage === "failed") {
@@ -300,6 +302,16 @@ export function useAgent37BoxActions(args: {
     }));
   }, [runLong]);
 
+  /**
+   * Reconnect: a box removed from ADE keeps its files and identity, and its
+   * ADE refuses the account until it is signed in again. ADE does that on the
+   * box and approves it with this computer's account; it comes back as the
+   * same machine under Your computers.
+   */
+  const reconnectBox = useCallback(async (ctx: Agent37BoxContext) => {
+    await runLong(ctx, "reconnect", (requestId) => window.ade.agent37!.reconnectMachine!({ requestId, instanceId: ctx.box.instanceId }));
+  }, [runLong]);
+
   /** The ⋯ menu items for a box, after the row's own (Rename, Test…). */
   const actionsFor = useCallback((ctx: Agent37BoxContext, onAccountError: (message: string) => void): MachineAction[] => {
     const { box } = ctx;
@@ -337,6 +349,11 @@ export function useAgent37BoxActions(args: {
     if (box.state === "running" || box.state === "asleep" || box.state === "stopped") {
       items.push({ key: "a37-backup", label: "Back up now", icon: <CloudArrowUp size={14} />, disabled: busy, onSelect: () => void run(ctx, "backup") });
     }
+    // A box that joined once (it carries its machine key) and left the account.
+    if (!ctx.accountMachine && box.machineKey && !suspended && window.ade?.agent37?.reconnectMachine
+      && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
+      items.push({ key: "a37-reconnect", label: "Reconnect to ADE", icon: <PlugsConnected size={14} />, disabled: busy, onSelect: () => void reconnectBox(ctx) });
+    }
     if (ctx.accountMachine) {
       const accountMachine = ctx.accountMachine;
       items.push({
@@ -359,7 +376,7 @@ export function useAgent37BoxActions(args: {
       onSelect: () => void deleteBox(ctx),
     });
     return items;
-  }, [copyBox, deleteBox, moveBox, pendingById, removeFromAde, run, sleep]);
+  }, [copyBox, deleteBox, moveBox, pendingById, reconnectBox, removeFromAde, run, sleep]);
 
   const dialog: ReactNode = resizing ? (
     <Agent37ResizeDialog

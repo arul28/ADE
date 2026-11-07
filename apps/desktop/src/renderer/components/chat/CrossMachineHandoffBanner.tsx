@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   ArrowBendUpRight,
   ArrowSquareOut,
@@ -20,6 +20,7 @@ import { getModelById } from "../../../shared/modelRegistry";
 import { CROSS_MACHINE_HANDOFF_STEPS, crossMachineContinuation } from "../../../shared/crossMachineHandoff";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { navigateToAppTarget } from "../../lib/openExternal";
+import { openWhenOtherMachineListsSession } from "../../lib/otherMachineNavigation";
 import { useBannerDismissals } from "../../lib/bannerDismiss";
 import { showToast } from "../app/toast/toastStore";
 import { Banner, type BannerModel } from "../ui/notice";
@@ -109,6 +110,31 @@ export function CrossMachineHandoffBanner({
   // Where the chat already continues outlives later attempts, so a second
   // move that is cancelled or fails still shows it.
   const continuation = crossMachineContinuation(record);
+  // A move this window watched under way follows the chat when it lands, so
+  // the switch reads as one chat. A chat opened after it moved stays put.
+  const watchedMoveRef = useRef<string | null>(null);
+  const moveId = record?.handoffId ?? null;
+  const moveState = record?.state ?? null;
+  const followTo = moveState === "continued" && !record?.resumedHere ? record?.targetSessionId ?? null : null;
+  const [follow, setFollow] = useState<string | null>(null);
+  useEffect(() => {
+    if (!moveId) return;
+    if (moveState === "pending" || moveState === "awaiting_approval" || moveState === "sending") {
+      watchedMoveRef.current = moveId;
+    } else if (watchedMoveRef.current === moveId) {
+      watchedMoveRef.current = null;
+      setFollow(followTo);
+    }
+  }, [followTo, moveId, moveState]);
+  // The new chat opens here once this window lists it (the other machine's
+  // next read); leaving the chat first, or Work here instead, cancels it.
+  useEffect(() => {
+    if (!follow || follow !== followTo) return;
+    return openWhenOtherMachineListsSession(follow, () => {
+      setFollow(null);
+      openChatOnOtherMachine(follow);
+    });
+  }, [follow, followTo]);
   if (!record || (record.state === "cancelled" && !continuation)) return null;
 
   const machine = record.targetMachineName;

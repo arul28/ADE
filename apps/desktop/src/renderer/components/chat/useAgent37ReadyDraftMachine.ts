@@ -9,6 +9,8 @@ import type { DraftMachineOption } from "./DraftMachinePicker";
 export const AGENT37_READY_MACHINE_ID = "__ade_agent37_ready__";
 /** The picker row that makes a new Agent 37 machine for this chat (no ready machine for the project). */
 export const AGENT37_NEW_MACHINE_ID = "__ade_agent37_new__";
+/** The same row while Agent 37 is not connected: picking it opens the Agent 37 page to connect a key. */
+export const AGENT37_CONNECT_ID = "__ade_agent37_connect__";
 
 const CONNECT_RETRY_MS = 1_500;
 /** A connected machine shows up among the picker's machines within a moment; past this it isn't coming. */
@@ -148,7 +150,17 @@ export function useAgent37ReadyDraftMachine({
           cloudProvider: "agent37",
           unavailableReason: null,
         }
-      : null;
+      : agent37Status && !agent37Status.connected
+        ? {
+            // Not connected yet: the row says what a cloud machine needs first.
+            id: AGENT37_CONNECT_ID,
+            name: "New Agent 37 machine",
+            detail: "Connect Agent 37 first",
+            kind: "cloud",
+            cloudProvider: "agent37",
+            unavailableReason: null,
+          }
+        : null;
 
   /** "New Agent 37 machine": open the create form. */
   const chooseNew = useCallback(() => {

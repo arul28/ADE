@@ -81,6 +81,19 @@ export type Agent37MachineCreatorDeps = {
    * natively, any browser works). Used only when `approveInWindow` is unset.
    */
   handOffApproval?: (args: { url: string; userCode: string; name: string }) => void;
+  /**
+   * A brain with no window: the one-time link opened in a headless Chromium
+   * on this machine (agent37HeadlessApproval.ts). Used only when the sign-in
+   * passes `selfApproval`; anything short of signed in falls back to
+   * `handOffApproval` with a fresh code.
+   */
+  approveHeadless?: (args: { url: string; signal: AbortSignal }) => Promise<Agent37ApprovalWindowResult>;
+  /**
+   * Whether this brain may approve the new machine itself: a machine it made
+   * for this request, once, soon after the create, within the cap and the
+   * agent limits. Logged by the brain each time it answers yes.
+   */
+  selfApproval?: (args: { instanceId: string; requestId: string }) => Promise<boolean>;
   templateName?: () => string;
   /**
    * Env the new machine starts with: the person's Claude token, so Claude is
@@ -150,18 +163,25 @@ const RENAME_ATTEMPTS_AFTER_JOIN = 3;
 const AUTH_STATUS_COMMAND = "timeout 20 ade auth status --json 2>/dev/null";
 
 /**
- * Starts `ade login --headless` on the box in the background (it keeps polling
- * for the approval after exec returns) and prints the code it shows. Reuses a
- * sign-in that is already running, so a retried exec never makes a second code.
+ * Starts a device sign-in on the box in the background (it keeps polling for
+ * the approval after exec returns) and prints the code it shows: `ade login
+ * --headless` for a new machine, `ade machines reconnect` for one removed from
+ * the account. Reuses a sign-in that is already running, so a retried exec
+ * never makes a second code.
  */
-const START_SIGN_IN_COMMAND = [
-  'log="$ADE_HOME/logs/agent37-sign-in.log"; pidf="$ADE_HOME/logs/agent37-sign-in.pid"',
+function startSignInCommand(kind: "login" | "reconnect", fresh = false): string {
+  const command = kind === "login" ? "ade login --headless --max-wait 900" : "ade machines reconnect";
+  const files = `$ADE_HOME/logs/agent37-${kind === "login" ? "sign-in" : "reconnect"}`;
+  return [
+  `log="${files}.log"; pidf="${files}.pid"`,
   'mkdir -p "$ADE_HOME/logs"',
-  // A pid only counts while it is still an `ade login`: a copied disk (a fork)
+  // A fresh code: the running sign-in's code was already used.
+  ...(fresh ? [`if [ -f "$pidf" ] && grep -q ${kind} "/proc/$(cat "$pidf")/cmdline" 2>/dev/null; then kill "$(cat "$pidf")" 2>/dev/null; sleep 1; fi`] : []),
+  // A pid only counts while it is still that command: a copied disk (a fork)
   // carries its source's pid file, and the number can belong to anything here.
-  'if ! { [ -f "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null && grep -q login "/proc/$(cat "$pidf")/cmdline" 2>/dev/null; }; then',
+  `if ! { [ -f "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null && grep -q ${kind} "/proc/$(cat "$pidf")/cmdline" 2>/dev/null; }; then`,
   '  : > "$log"',
-  '  nohup setsid ade login --headless --max-wait 900 > "$log" 2>&1 < /dev/null &',
+  `  nohup setsid ${command} > "$log" 2>&1 < /dev/null &`,
   '  echo $! > "$pidf"',
   "fi",
   "i=0",
@@ -173,7 +193,8 @@ const START_SIGN_IN_COMMAND = [
   "done",
   'tail -n 5 "$log" >&2',
   "exit 3",
-].join("\n");
+  ].join("\n");
+}
 
 /** The box's own machine key: the row it publishes to the account directory. */
 const MACHINE_KEY_COMMAND = [
@@ -192,6 +213,24 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+/** The box's `ade auth status`, or null while its brain doesn't answer. */
+export async function readAgent37BoxAuth(client: Agent37Client, instanceId: string, signal?: AbortSignal): Promise<Record<string, unknown> | null> {
+  const result = await client.exec(instanceId, AUTH_STATUS_COMMAND, { timeoutMs: 40_000, signal }).catch(() => null);
+  return result && result.exitCode === 0 ? parseJsonObject(result.stdout) : null;
+}
+
+/** Starts a device sign-in on the box (see `startSignInCommand`) and returns its code, or null when none showed. */
+export async function startAgent37BoxSignIn(
+  client: Agent37Client,
+  instanceId: string,
+  kind: "login" | "reconnect",
+  signal?: AbortSignal,
+  options: { fresh?: boolean } = {},
+): Promise<{ userCode: string | null; exitCode: number }> {
+  const started = await client.exec(instanceId, startSignInCommand(kind, options.fresh === true), { timeoutMs: 120_000, signal });
+  return { userCode: /ADE_USER_CODE=([A-Za-z0-9-]+)/.exec(started.stdout)?.[1] ?? null, exitCode: started.exitCode };
 }
 
 /** `/device/approve`'s refusals, in words. */
@@ -345,6 +384,257 @@ export async function createAgent37Machine(
 }
 
 /**
+ * Approves a machine's pending device sign-in (its `userCode`) for this
+ * account, and resolves once the machine itself says it is signed in. One
+ * seam for every way a machine joins: a new machine, a copy, a reconnect.
+ *
+ * - With a window (`approveInWindow`, the desktop): `/device/approve` with this
+ *   computer's account mints a one-time link that a private window opens;
+ *   nothing to tap unless the page stops on a consent click.
+ * - Without one (`handOffApproval`, a brain on its own): the sign-in link goes
+ *   to the person, who approves it wherever they are signed in to ADE.
+ *
+ * `onApprovalSent` fires before the account is asked: from then on the
+ * machine may be signed in whatever this function answers.
+ */
+export async function approveAgent37MachineSignIn(
+  deps: Pick<Agent37MachineCreatorDeps, "approveInWindow" | "handOffApproval" | "approveHeadless" | "selfApproval" | "getAccountToken" | "fetch" | "logger" | "sleep">,
+  args: {
+    userCode: string;
+    name: string;
+    instanceId: string;
+    /** The create (or copy, move) this sign-in belongs to; a reconnect has none. */
+    requestId?: string;
+    /** A fresh code from the machine, after a headless approval claimed the first and failed. */
+    restartSignIn?: () => Promise<string | null>;
+    directory: string;
+    signal?: AbortSignal;
+    readSignedIn: () => Promise<boolean>;
+    onApprovalSent: () => void;
+    progress: (stage: Agent37CreateProgress["stage"], message: string, instanceId?: string, approvalUrl?: string) => void;
+  },
+): Promise<void> {
+  const { userCode, name, instanceId, directory, signal, readSignedIn, progress } = args;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const fetcher: FetchLike = deps.fetch ?? ((input, init) => fetch(input, init));
+  const logger = deps.logger ?? {};
+  const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  const checkCancelled = () => {
+    if (signal?.aborted) throw new Agent37CreateCancelled();
+  };
+  // Nobody here to approve: the person does, from the link. The code is
+  // left pending (not claimed by /device/approve), so the phone's own
+  // approval flow can take it.
+  const handOff = async (code: string) => {
+    if (!deps.handOffApproval) throw new Error("ADE has no window here to approve the machine's sign-in.");
+    args.onApprovalSent();
+    const url = `${directory.replace(/\/+$/, "")}/device?user_code=${encodeURIComponent(code)}`;
+    deps.handOffApproval({ url, userCode: code, name });
+    progress("approve_elsewhere", `Approve ${name} joining your account: open the link on your phone or in a browser signed in to ADE.`, instanceId, url);
+    const approveDeadline = Date.now() + APPROVE_ELSEWHERE_TIMEOUT_MS;
+    for (;;) {
+      checkCancelled();
+      if (await readSignedIn()) break;
+      if (Date.now() > approveDeadline) throw new Error(`Nobody approved ${name} joining your account in 10 minutes.`);
+      await sleep(POLL_MS);
+    }
+  };
+  if (!deps.approveInWindow) {
+    const headless = deps.approveHeadless;
+    const selfApproved = Boolean(headless && args.requestId && deps.selfApproval)
+      && await deps.selfApproval!({ instanceId, requestId: args.requestId! }).catch(() => false);
+    if (!headless || !selfApproved) return await handOff(userCode);
+    progress("signing_in", `Approving ${name} with this machine's ADE sign-in…`, instanceId);
+    try {
+      await approveWithTicket(({ url, mode, signal: windowSignal }) =>
+        // The approval page (mode "browser") needs a person's own sign-in.
+        mode === "ticket" ? headless({ url, signal: windowSignal }) : Promise.resolve("closed" as const));
+      logger.info?.("agent37.self_approval_signed_in", { instanceId, requestId: args.requestId });
+      return;
+    } catch (error) {
+      checkCancelled();
+      logger.warn?.("agent37.self_approval_failed", { instanceId, requestId: args.requestId, error: errorText(error) });
+      if (await readSignedIn()) return;
+      // /device/approve claimed the first code, so the link needs a new one.
+      const fresh = await args.restartSignIn?.().catch(() => null);
+      if (!fresh) throw error;
+      return await handOff(fresh);
+    }
+  }
+  await approveWithTicket(deps.approveInWindow);
+
+  async function approveWithTicket(openWindow: NonNullable<Agent37MachineCreatorDeps["approveInWindow"]>): Promise<void> {
+    const token = await deps.getAccountToken();
+    if (!token) throw new Error("Sign in to ADE on this computer first. The machine joins your account.");
+    // Bounded, and cancelled with the create: a stalled account service must
+    // not hold a cancel (and the box's deletion) for as long as it likes.
+    const approveController = new AbortController();
+    const approveTimer = setTimeout(() => approveController.abort(), APPROVE_TIMEOUT_MS);
+    const onCancelApprove = () => approveController.abort();
+    if (signal?.aborted) approveController.abort();
+    else signal?.addEventListener("abort", onCancelApprove, { once: true });
+    let response: Response;
+    let body: Record<string, unknown> | null;
+    try {
+      args.onApprovalSent();
+      response = await fetcher(`${directory.replace(/\/+$/, "")}/device/approve`, {
+        method: "POST",
+        headers: { accept: "application/json", "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ user_code: userCode }),
+        redirect: "error",
+        signal: approveController.signal,
+      });
+      body = await response.json().catch(() => {
+        if (approveController.signal.aborted) throw new Error("aborted");
+        return null;
+      }) as Record<string, unknown> | null;
+    } catch (approveError) {
+      checkCancelled();
+      if (approveController.signal.aborted) throw new Error("ADE's account service didn't answer in time to approve the machine's sign-in. Try again.");
+      throw new Error(`ADE couldn't reach its account service to approve the machine's sign-in: ${errorText(approveError)}`);
+    } finally {
+      clearTimeout(approveTimer);
+      signal?.removeEventListener("abort", onCancelApprove);
+    }
+    checkCancelled();
+    const ticketUrl = typeof body?.url === "string" && /^https:\/\//.test(body.url) ? body.url : null;
+    const refusal = typeof body?.error === "string" ? body.error : null;
+    let window: { url: string; mode: Agent37ApprovalMode };
+    if (response.ok && ticketUrl) {
+      window = { url: ticketUrl, mode: "ticket" };
+    } else if (response.status === 503 && refusal === "unavailable") {
+      // The account service can't mint a one-time ticket (no Clerk backend
+      // key). The code is still pending, so its own approval page works:
+      // the person confirms once, in ADE's browser session.
+      logger.warn?.("agent37.approve_ticket_unavailable", { instanceId });
+      window = { url: `${directory.replace(/\/+$/, "")}/device?user_code=${encodeURIComponent(userCode)}`, mode: "browser" };
+    } else {
+      throw new Error(approvalErrorMessage(response.status, refusal));
+    }
+
+    // The box itself is the authority: an approval from anywhere (this
+    // window, a phone, another browser) ends the wait, and closes the window.
+    const stopWatching = new AbortController();
+    // Cancelling the create closes the window too, including a cancel that
+    // came before this point.
+    const onCancelWatch = () => stopWatching.abort();
+    signal?.addEventListener("abort", onCancelWatch, { once: true });
+    if (signal?.aborted) stopWatching.abort();
+    try {
+      const boxSignedIn = (async () => {
+        while (!stopWatching.signal.aborted) {
+          if (await readSignedIn()) return true;
+          await sleep(POLL_MS);
+        }
+        return false;
+      })();
+      const windowOutcome = openWindow({
+        ...window,
+        title: `Sign in ${name}`,
+        signal: stopWatching.signal,
+        onNeedsPerson: () => progress("confirm_in_window", `Confirm in the window that opened to let ${name} use your account.`, instanceId),
+      });
+      const first = await Promise.race([
+        boxSignedIn.then((ok) => ({ kind: "box" as const, ok })),
+        windowOutcome.then((outcome) => ({ kind: "window" as const, outcome })),
+      ]);
+      stopWatching.abort();
+      checkCancelled();
+
+      if (first.kind === "window" && first.outcome !== "cancelled") {
+        if (first.outcome === "signed_in") {
+          // The approval landed; give the box a moment to collect its session.
+          const finishDeadline = Date.now() + SIGN_IN_FINISH_TIMEOUT_MS;
+          for (;;) {
+            checkCancelled();
+            if (await readSignedIn()) break;
+            if (Date.now() > finishDeadline) throw new Error(`${name} was approved but didn't finish signing in.`);
+            await sleep(POLL_MS);
+          }
+        } else if (!(await readSignedIn())) {
+          throw new Error(first.outcome === "closed"
+            ? `The sign-in window was closed before ${name} was approved.`
+            : `${name}'s sign-in didn't finish in time.`);
+        }
+      }
+    } finally {
+      stopWatching.abort();
+      signal?.removeEventListener("abort", onCancelWatch);
+    }
+  }
+}
+
+/**
+ * Waits for a signed-in box's row in the account list and gives it `name`.
+ * The row appears with the box's first publish, a moment before its relay
+ * route does; connecting in that moment fails, so it waits for a route. A box
+ * that isn't ready by the deadline is still a signed-in machine: the caller
+ * keeps watching the account list for it.
+ */
+export async function waitForAgent37AccountRow(
+  deps: Pick<Agent37MachineCreatorDeps, "listAccountMachines" | "renameMachine" | "logger" | "sleep">,
+  args: { client: Agent37Client; instanceId: string; name: string; requestId: string; signal?: AbortSignal },
+): Promise<{ machineKey: string | null; joined: boolean; renamed: boolean }> {
+  const { client, instanceId, name, requestId, signal } = args;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const logger = deps.logger ?? {};
+  const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  const joinDeadline = Date.now() + JOIN_TIMEOUT_MS;
+  let machineKey: string | null = null;
+  let joined = false;
+  let renamed = false;
+  let renameAttemptsAfterJoin = 0;
+  const warnedOnce = new Set<string>();
+  const warnOnce = (event: string, meta: Record<string, unknown>) => {
+    if (warnedOnce.has(event)) return;
+    warnedOnce.add(event);
+    logger.warn?.(event, meta);
+  };
+  while (Date.now() < joinDeadline) {
+    // Signed in already, so a cancel here keeps the box (it is a real machine)
+    // and only stops the wait; it is not reported as a finished create.
+    if (signal?.aborted) {
+      logger.info?.("agent37.machine_join_cancelled", { instanceId, requestId });
+      throw new Agent37CreateCancelled(`You stopped waiting. "${name}" had already signed in, so ADE kept it: it appears under Your computers when it's ready.`);
+    }
+    if (!machineKey) {
+      const read = await client.exec(instanceId, MACHINE_KEY_COMMAND).catch((error: unknown) => {
+        warnOnce("agent37.machine_key_read_failed", { instanceId, error: errorText(error) });
+        return null;
+      });
+      machineKey = read?.stdout.trim() || null;
+      // On the box itself, so every computer on the account can tell which
+      // row is this box, whatever it is named later.
+      if (machineKey) await recordAgent37MachineKey(client, instanceId, machineKey, logger);
+    }
+    if (machineKey) {
+      const listed = await deps.listAccountMachines().catch((error: unknown) => {
+        warnOnce("agent37.account_machines_read_failed", { instanceId, error: errorText(error) });
+        return null;
+      });
+      const row = listed?.machines.find((machine) => machine.machineKey === machineKey) ?? null;
+      if (row && !renamed) {
+        try {
+          await deps.renameMachine(machineKey, name);
+          renamed = true;
+        } catch (error) {
+          logger.warn?.("agent37.machine_rename_failed", { instanceId, error: errorText(error) });
+        }
+      }
+      if (row && accountMachineConnectionState(row) === "available") joined = true;
+      if (joined) {
+        if (renamed || renameAttemptsAfterJoin >= RENAME_ATTEMPTS_AFTER_JOIN) break;
+        renameAttemptsAfterJoin += 1;
+      }
+    }
+    await sleep(POLL_MS);
+  }
+  if (!renamed) logger.warn?.("agent37.machine_rename_gave_up", { instanceId, joined, hasMachineKey: machineKey != null });
+  if (!joined) logger.warn?.("agent37.machine_join_pending", { instanceId, hasMachineKey: machineKey != null });
+  return { machineKey, joined, renamed };
+}
+
+/**
  * Steps 2 to 6 for a box that exists on Agent 37 and runs ADE's template:
  * wait for its brain, sign it in with this computer's account, wait for its
  * row, name it, and turn its sleep on. A new box and a copy (a fork, which
@@ -365,7 +655,6 @@ export async function bringAgent37BoxIntoAde(
 ): Promise<Agent37CreateMachineResult> {
   const { client, instance, name, requestId, signal, progress, directory } = args;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const fetcher: FetchLike = deps.fetch ?? ((input, init) => fetch(input, init));
   const logger = deps.logger ?? {};
   const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
   const checkCancelled = () => {
@@ -378,10 +667,7 @@ export async function bringAgent37BoxIntoAde(
   try {
     checkCancelled();
     progress("waiting_for_brain", "Starting ADE on the new machine…", instance.id);
-    const readAuth = async (): Promise<Record<string, unknown> | null> => {
-      const result = await client.exec(instance.id, AUTH_STATUS_COMMAND, { timeoutMs: 40_000, signal }).catch(() => null);
-      return result && result.exitCode === 0 ? parseJsonObject(result.stdout) : null;
-    };
+    const readAuth = () => readAgent37BoxAuth(client, instance.id, signal);
     const brainDeadline = Date.now() + BRAIN_READY_TIMEOUT_MS;
     let auth = await readAuth();
     while (!auth) {
@@ -399,129 +685,26 @@ export async function bringAgent37BoxIntoAde(
 
     if (auth.signedIn !== true) {
       progress("signing_in", "Signing the new machine in to your account…", instance.id);
-      const started = await client.exec(instance.id, START_SIGN_IN_COMMAND, { timeoutMs: 120_000, signal });
+      const started = await startAgent37BoxSignIn(client, instance.id, "login", signal);
       checkCancelled();
-      const userCode = /ADE_USER_CODE=([A-Za-z0-9-]+)/.exec(started.stdout)?.[1] ?? null;
+      const userCode = started.userCode;
       if (!userCode) {
         logger.warn?.("agent37.sign_in_no_code", { instanceId: instance.id, exitCode: started.exitCode });
         throw new Error("The new machine didn't start its sign-in.");
       }
 
-      if (!deps.approveInWindow) {
-        // Nobody here to approve: the person does, from the link. The code is
-        // left pending (not claimed by /device/approve), so the phone's own
-        // approval flow can take it.
-        if (!deps.handOffApproval) throw new Error("ADE has no window here to approve the new machine's sign-in.");
-        approvalSent = true;
-        const url = `${directory.replace(/\/+$/, "")}/device?user_code=${encodeURIComponent(userCode)}`;
-        deps.handOffApproval({ url, userCode, name });
-        progress("approve_elsewhere", `Approve ${name} joining your account: open the link on your phone or in a browser signed in to ADE.`, instance.id, url);
-        const approveDeadline = Date.now() + APPROVE_ELSEWHERE_TIMEOUT_MS;
-        for (;;) {
-          checkCancelled();
-          if ((await readAuth())?.signedIn === true) break;
-          if (Date.now() > approveDeadline) throw new Error(`Nobody approved ${name} joining your account in 10 minutes.`);
-          await sleep(POLL_MS);
-        }
-      } else {
-      const token = await deps.getAccountToken();
-      if (!token) throw new Error("Sign in to ADE on this computer first. The new machine joins your account.");
-      // Bounded, and cancelled with the create: a stalled account service must
-      // not hold a cancel (and the box's deletion) for as long as it likes.
-      const approveController = new AbortController();
-      const approveTimer = setTimeout(() => approveController.abort(), APPROVE_TIMEOUT_MS);
-      const onCancelApprove = () => approveController.abort();
-      if (signal?.aborted) approveController.abort();
-      else signal?.addEventListener("abort", onCancelApprove, { once: true });
-      let response: Response;
-      let body: Record<string, unknown> | null;
-      try {
-        approvalSent = true;
-        response = await fetcher(`${directory.replace(/\/+$/, "")}/device/approve`, {
-          method: "POST",
-          headers: { accept: "application/json", "content-type": "application/json", authorization: `Bearer ${token}` },
-          body: JSON.stringify({ user_code: userCode }),
-          redirect: "error",
-          signal: approveController.signal,
-        });
-        body = await response.json().catch(() => {
-          if (approveController.signal.aborted) throw new Error("aborted");
-          return null;
-        }) as Record<string, unknown> | null;
-      } catch (approveError) {
-        checkCancelled();
-        if (approveController.signal.aborted) throw new Error("ADE's account service didn't answer in time to approve the new machine's sign-in. Try again.");
-        throw new Error(`ADE couldn't reach its account service to approve the new machine's sign-in: ${errorText(approveError)}`);
-      } finally {
-        clearTimeout(approveTimer);
-        signal?.removeEventListener("abort", onCancelApprove);
-      }
-      checkCancelled();
-      const ticketUrl = typeof body?.url === "string" && /^https:\/\//.test(body.url) ? body.url : null;
-      const refusal = typeof body?.error === "string" ? body.error : null;
-      let window: { url: string; mode: Agent37ApprovalMode };
-      if (response.ok && ticketUrl) {
-        window = { url: ticketUrl, mode: "ticket" };
-      } else if (response.status === 503 && refusal === "unavailable") {
-        // The account service can't mint a one-time ticket (no Clerk backend
-        // key). The code is still pending, so its own approval page works:
-        // the person confirms once, in ADE's browser session.
-        logger.warn?.("agent37.approve_ticket_unavailable", { instanceId: instance.id });
-        window = { url: `${directory.replace(/\/+$/, "")}/device?user_code=${encodeURIComponent(userCode)}`, mode: "browser" };
-      } else {
-        throw new Error(approvalErrorMessage(response.status, refusal));
-      }
-
-      // The box itself is the authority: an approval from anywhere (this
-      // window, a phone, another browser) ends the wait, and closes the window.
-      const stopWatching = new AbortController();
-      // Cancelling the create closes the window too, including a cancel that
-      // came before this point.
-      const onCancelWatch = () => stopWatching.abort();
-      signal?.addEventListener("abort", onCancelWatch, { once: true });
-      if (signal?.aborted) stopWatching.abort();
-      try {
-        const boxSignedIn = (async () => {
-          while (!stopWatching.signal.aborted) {
-            if ((await readAuth())?.signedIn === true) return true;
-            await sleep(POLL_MS);
-          }
-          return false;
-        })();
-        const windowOutcome = deps.approveInWindow({
-          ...window,
-          title: `Sign in ${name}`,
-          signal: stopWatching.signal,
-          onNeedsPerson: () => progress("confirm_in_window", `Confirm in the window that opened to let ${name} use your account.`, instance.id),
-        });
-        const first = await Promise.race([
-          boxSignedIn.then((ok) => ({ kind: "box" as const, ok })),
-          windowOutcome.then((outcome) => ({ kind: "window" as const, outcome })),
-        ]);
-        stopWatching.abort();
-        checkCancelled();
-
-        if (first.kind === "window" && first.outcome !== "cancelled") {
-          if (first.outcome === "signed_in") {
-            // The approval landed; give the box a moment to collect its session.
-            const finishDeadline = Date.now() + SIGN_IN_FINISH_TIMEOUT_MS;
-            for (;;) {
-              checkCancelled();
-              if ((await readAuth())?.signedIn === true) break;
-              if (Date.now() > finishDeadline) throw new Error("The new machine was approved but didn't finish signing in.");
-              await sleep(POLL_MS);
-            }
-          } else if ((await readAuth())?.signedIn !== true) {
-            throw new Error(first.outcome === "closed"
-              ? "The sign-in window was closed before the new machine was approved."
-              : "The new machine's sign-in didn't finish in time.");
-          }
-        }
-      } finally {
-        stopWatching.abort();
-        signal?.removeEventListener("abort", onCancelWatch);
-      }
-      }
+      await approveAgent37MachineSignIn(deps, {
+        userCode,
+        name,
+        instanceId: instance.id,
+        requestId,
+        restartSignIn: async () => (await startAgent37BoxSignIn(client, instance.id, "login", signal, { fresh: true })).userCode,
+        directory,
+        signal,
+        readSignedIn: async () => (await readAuth())?.signedIn === true,
+        onApprovalSent: () => { approvalSent = true; },
+        progress,
+      });
     }
     // Signed in: a real machine, kept from here on.
     deps.pendingCreates?.finish(requestId);
@@ -559,62 +742,7 @@ export async function bringAgent37BoxIntoAde(
   }
 
   progress("joining", `${name} is signed in. Adding it to your computers…`, instance.id);
-  // The row appears with the box's first publish, a moment before its relay
-  // route does; connecting in that moment fails, so wait for a route. A box
-  // that isn't ready by the deadline is still a signed-in machine: the caller
-  // keeps watching the account list for it.
-  const joinDeadline = Date.now() + JOIN_TIMEOUT_MS;
-  let machineKey: string | null = null;
-  let joined = false;
-  let renamed = false;
-  let renameAttemptsAfterJoin = 0;
-  const warnedOnce = new Set<string>();
-  const warnOnce = (event: string, meta: Record<string, unknown>) => {
-    if (warnedOnce.has(event)) return;
-    warnedOnce.add(event);
-    logger.warn?.(event, meta);
-  };
-  while (Date.now() < joinDeadline) {
-    // Signed in already, so a cancel here keeps the box (it is a real machine)
-    // and only stops the wait; it is not reported as a finished create.
-    if (signal?.aborted) {
-      logger.info?.("agent37.machine_join_cancelled", { instanceId: instance.id, requestId });
-      throw new Agent37CreateCancelled(`You stopped waiting. "${name}" had already signed in, so ADE kept it: it appears under Your computers when it's ready.`);
-    }
-    if (!machineKey) {
-      const read = await client.exec(instance.id, MACHINE_KEY_COMMAND).catch((error: unknown) => {
-        warnOnce("agent37.machine_key_read_failed", { instanceId: instance.id, error: errorText(error) });
-        return null;
-      });
-      machineKey = read?.stdout.trim() || null;
-      // On the box itself, so every computer on the account can tell which
-      // row is this box, whatever it is named later.
-      if (machineKey) await recordAgent37MachineKey(client, instance.id, machineKey, logger);
-    }
-    if (machineKey) {
-      const listed = await deps.listAccountMachines().catch((error: unknown) => {
-        warnOnce("agent37.account_machines_read_failed", { instanceId: instance.id, error: errorText(error) });
-        return null;
-      });
-      const row = listed?.machines.find((machine) => machine.machineKey === machineKey) ?? null;
-      if (row && !renamed) {
-        try {
-          await deps.renameMachine(machineKey, name);
-          renamed = true;
-        } catch (error) {
-          logger.warn?.("agent37.machine_rename_failed", { instanceId: instance.id, error: errorText(error) });
-        }
-      }
-      if (row && accountMachineConnectionState(row) === "available") joined = true;
-      if (joined) {
-        if (renamed || renameAttemptsAfterJoin >= RENAME_ATTEMPTS_AFTER_JOIN) break;
-        renameAttemptsAfterJoin += 1;
-      }
-    }
-    await sleep(POLL_MS);
-  }
-  if (!renamed) logger.warn?.("agent37.machine_rename_gave_up", { instanceId: instance.id, joined, hasMachineKey: machineKey != null });
-  if (!joined) logger.warn?.("agent37.machine_join_pending", { instanceId: instance.id, hasMachineKey: machineKey != null });
+  const { machineKey, joined, renamed } = await waitForAgent37AccountRow(deps, { client, instanceId: instance.id, name, requestId, signal });
   // Signed in, so its brain is up: hand it its wake URL and let Agent 37 sleep
   // it when nothing runs. A brain too old to keep itself awake stays awake;
   // the next pass (registerAgent37Ipc) tries again once it updates.

@@ -98,3 +98,36 @@ export async function findOnOtherMachines<T>(
     onWaitChange(false);
   }
 }
+
+/** How long a chat that just moved to another machine is waited on before the window gives up following it. */
+const FOLLOW_MOVED_CHAT_MS = 60_000;
+
+function unionListsSession(sessionId: string): boolean {
+  const machines = rootAppStoreApi.getState().crossMachineLanesByMachineId ?? {};
+  return Object.values(machines).some((machine) => machine.sessions.some((session) => session.id === sessionId));
+}
+
+/**
+ * Call `open` once another machine lists the chat. A chat that just moved
+ * there is listed after the union's next read of that machine, which can be
+ * well past {@link OTHER_MACHINES_LOOKUP_MS}. Gives up after a minute. Returns
+ * a cancel.
+ */
+export function openWhenOtherMachineListsSession(sessionId: string, open: () => void): () => void {
+  let done = false;
+  let unsubscribe: (() => void) | null = null;
+  const stop = () => {
+    done = true;
+    window.clearTimeout(timer);
+    unsubscribe?.();
+  };
+  const check = () => {
+    if (done || !unionListsSession(sessionId)) return;
+    stop();
+    open();
+  };
+  const timer = window.setTimeout(stop, FOLLOW_MOVED_CHAT_MS);
+  unsubscribe = rootAppStoreApi.subscribe(check);
+  check();
+  return stop;
+}

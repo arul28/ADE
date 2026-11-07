@@ -54338,6 +54338,7 @@ export function createAgentChatService(args: {
         awaitingInput: blocked?.kind === "awaiting_input",
         permissionLevel,
         provider: managed.session.provider,
+        modelId: managed.session.modelId ?? null,
         title: sessionService.get(sessionId)?.title ?? null,
       };
     },
@@ -55709,9 +55710,6 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "claude" && slashCommand === "/login") {
       throw new Error(CLAUDE_LOGIN_NOT_SDK_COMMAND);
     }
-    const claudeRuntimeHealth = managed.session.provider === "claude"
-      ? getProviderRuntimeHealth("claude")
-      : null;
     if (
       (managed.session.provider === "claude" || managed.session.provider === "codex")
       && accountUnknownFromOtherHome(readPersistedState(sessionId))
@@ -55720,12 +55718,14 @@ export function createAgentChatService(args: {
         `This chat ran on a ${managed.session.provider} account that this ADE (home ${brainAdeHome}) does not have, so it cannot resume its conversation here. Open it from the ADE where it was created, or start a new chat.`,
       );
     }
-    if (
-      managed.session.provider === "claude"
-      && claudeRuntimeHealth?.state === "auth-failed"
-    ) {
-      throw new Error(claudeRuntimeHealth.message ?? CLAUDE_RUNTIME_AUTH_ERROR);
-    }
+    // A Claude sign-out is not refused here. The turn runs, stops on the
+    // sign-in in a second or two, and records it as an `unauthenticated`
+    // error with the user's message, which is what puts the sign-in card in
+    // the composer and resends after it. A refusal here kept no message and no
+    // event, so the chat showed only the raw error (the first message on a
+    // new cloud machine, after its pre-warm failed). The health mark is also
+    // process-wide: it would refuse a chat on another Claude account, or one
+    // sent after a sign-in from a terminal.
     const cursorRuntimeHealth = managed.session.provider === "cursor"
       ? getProviderRuntimeHealth("cursor")
       : null;
