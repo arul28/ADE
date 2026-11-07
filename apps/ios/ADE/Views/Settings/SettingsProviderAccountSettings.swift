@@ -178,11 +178,12 @@ struct ProviderAccountCompactionPage: View {
       ADESettingsSection("Compaction") {
         ADESettingsRows {
           if isClaude {
-            windowRow(account, custom, key: \.atTokens, title: "Compact at", hint: "Applies at the next query start.", autoLabel: "Auto")
+            windowRow(account, custom, key: \.atTokens, autoKey: \.atTokensAuto, title: "Compact at", hint: "Applies at the next query start.", autoLabel: "Auto")
             windowRow(
               account,
               custom,
               key: \.subagentAtTokens,
+              autoKey: \.subagentAtTokensAuto,
               title: "Subagents compact at",
               hint: subagentHint(custom),
               autoLabel: "Same as the main chat"
@@ -217,6 +218,7 @@ struct ProviderAccountCompactionPage: View {
     _ account: ProviderAccount,
     _ custom: ProviderAccount.Compaction,
     key: WritableKeyPath<ProviderAccount.Compaction, Int?>,
+    autoKey: WritableKeyPath<ProviderAccount.Compaction, Bool>,
     title: String,
     hint: String,
     autoLabel: String
@@ -224,12 +226,13 @@ struct ProviderAccountCompactionPage: View {
     let value = custom[keyPath: key]
     return ADESettingsRow(title: title, hint: hint) {
       Menu {
-        Button { var next = custom; next[keyPath: key] = nil; save(account, next) } label: {
+        // Auto is sent as null, so it overrides a token limit set on the provider.
+        Button { var next = custom; next[keyPath: key] = nil; next[keyPath: autoKey] = true; save(account, next) } label: {
           Text(autoLabel)
           if value == nil { Image(systemName: "checkmark") }
         }
         ForEach(claudeCompactWindowSteps, id: \.self) { step in
-          Button { var next = custom; next[keyPath: key] = step; save(account, next) } label: {
+          Button { var next = custom; next[keyPath: key] = step; next[keyPath: autoKey] = false; save(account, next) } label: {
             Text("\(step / 1000)k")
             if value == step { Image(systemName: "checkmark") }
           }
@@ -291,6 +294,7 @@ struct ProviderAccountCompactionPage: View {
     guard parsed != custom.atTokens else { return }
     var next = custom
     next.atTokens = parsed
+    if parsed != nil { next.atTokensAuto = false }
     save(account, next)
   }
 

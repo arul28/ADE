@@ -34,6 +34,8 @@ struct SettingsLanesPage: View {
   /// The primary lane's checkout lists the branches a lane can start from.
   @State private var branchListLaneId: String?
   @State private var toast: ADEToastMessage?
+  /// The project the page's values were read from.
+  @State private var loadedProjectId: String?
 
   private var connected: Bool { syncService.connectionState == .connected }
   private var machine: String { syncService.machineDisplayName }
@@ -60,9 +62,21 @@ struct SettingsLanesPage: View {
       }
     }
     .adeToast($toast)
-    .task(id: connected) {
-      guard connected, syncService.activeProjectId != nil else { return }
-      await load()
+    .task(id: "\(connected):\(syncService.activeProjectId ?? "-")") {
+      guard connected, let projectId = syncService.activeProjectId else { return }
+      if loadedProjectId != projectId {
+        // Another project's defaults must never show, or save, under this one.
+        defaults = nil
+        defaultsError = nil
+        templates = nil
+        templatesError = nil
+        defaultTemplateId = nil
+        branchListLaneId = nil
+        customPattern = false
+        patternDraft = ""
+        loadedProjectId = projectId
+      }
+      await load(projectId)
     }
   }
 
@@ -112,7 +126,7 @@ struct SettingsLanesPage: View {
         ADESettingsNotice(
           message: "ADE couldn't read this project's new-lane settings on \(machine). \(defaultsError)",
           actionTitle: "Try again",
-          action: { Task { await loadDefaults() } }
+          action: { Task { if let id = syncService.activeProjectId { await loadDefaults(id) } } }
         )
       }
     } else {
@@ -316,7 +330,7 @@ struct SettingsLanesPage: View {
         ADESettingsNotice(
           message: "Couldn't read the templates on \(machine). \(templatesError)",
           actionTitle: "Try again",
-          action: { Task { await loadTemplates() } }
+          action: { Task { if let id = syncService.activeProjectId { await loadTemplates(id) } } }
         )
       } else {
         ADESettingsRows {
@@ -354,19 +368,23 @@ struct SettingsLanesPage: View {
 
   // MARK: - Loading
 
-  private func load() async {
-    await loadDefaults()
-    await loadTemplates()
+  /// Each read is dropped when the project changed while it was out; the new
+  /// project's load owns the page.
+  private func load(_ projectId: String) async {
+    await loadDefaults(projectId)
+    await loadTemplates(projectId)
     let lanes = (try? await syncService.fetchLanes()) ?? []
+    guard syncService.activeProjectId == projectId else { return }
     branchListLaneId = lanes.first(where: { $0.laneType == "primary" && $0.archivedAt == nil })?.id
       ?? lanes.first(where: { $0.archivedAt == nil })?.id
   }
 
-  private func loadDefaults() async {
+  private func loadDefaults(_ projectId: String) async {
     guard syncService.supportsRemoteAction("lanes.getNewLaneDefaults") else { return }
     defaultsError = nil
     do {
       let snapshot = try await syncService.loadNewLaneDefaults(disconnectOnTimeout: false)
+      guard syncService.activeProjectId == projectId else { return }
       // A save in flight keeps what the person just picked.
       if !savingStart && !savingPattern {
         defaults = snapshot
@@ -378,15 +396,17 @@ struct SettingsLanesPage: View {
     }
   }
 
-  private func loadTemplates() async {
+  private func loadTemplates(_ projectId: String) async {
     guard syncService.supportsRemoteAction("lanes.listTemplates") else { return }
     templatesError = nil
     do {
       let loaded = try await syncService.fetchLaneTemplates(disconnectOnTimeout: false)
+      guard syncService.activeProjectId == projectId else { return }
       templates = loaded
       do {
         // A successful nil is "None" and clears the pick.
         let defaultId = try await syncService.fetchDefaultLaneTemplateId(disconnectOnTimeout: false)
+        guard syncService.activeProjectId == projectId else { return }
         if !savingTemplate { defaultTemplateId = defaultId }
       } catch {
         // A failed read keeps the default shown so far rather than "None".
@@ -453,7 +473,7 @@ struct SettingsLanesPage: View {
       // The machine fills `{user}` into the prefix it reports; read it back
       // once this save no longer holds the row.
       savingPattern = false
-      await loadDefaults()
+      if let id = syncService.activeProjectId { await loadDefaults(id) }
     }
   }
 

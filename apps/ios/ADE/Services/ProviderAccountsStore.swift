@@ -17,10 +17,14 @@ struct ProviderAccount: Codable, Equatable, Identifiable {
   }
 
   /// ADE's own compaction overrides for this account (desktop
-  /// `ProviderCompactionSettings`). Absent fields keep the harness default.
+  /// `ProviderCompactionSettings`). Absent fields keep the provider's value.
   struct Compaction: Codable, Equatable {
     var atTokens: Int?
+    /// The window is set to Auto (`atTokens: null`), which overrides a
+    /// provider's token limit; an absent `atTokens` inherits it instead.
+    var atTokensAuto = false
     var subagentAtTokens: Int?
+    var subagentAtTokensAuto = false
     var reserveTokens: Int?
     var keepRecentTokens: Int?
     /// ask · always · never
@@ -28,8 +32,8 @@ struct ProviderAccount: Codable, Equatable, Identifiable {
 
     var wireValue: [String: Any] {
       var out: [String: Any] = [:]
-      if let atTokens { out["atTokens"] = atTokens }
-      if let subagentAtTokens { out["subagentAtTokens"] = subagentAtTokens }
+      if let atTokens { out["atTokens"] = atTokens } else if atTokensAuto { out["atTokens"] = NSNull() }
+      if let subagentAtTokens { out["subagentAtTokens"] = subagentAtTokens } else if subagentAtTokensAuto { out["subagentAtTokens"] = NSNull() }
       if let reserveTokens { out["reserveTokens"] = reserveTokens }
       if let keepRecentTokens { out["keepRecentTokens"] = keepRecentTokens }
       if let idleMode { out["idleMode"] = idleMode }
@@ -76,6 +80,33 @@ struct ProviderAccount: Codable, Equatable, Identifiable {
   private func nonEmpty(_ value: String?) -> String? {
     let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     return trimmed.isEmpty ? nil : trimmed
+  }
+}
+
+/// Keeps an explicit `null` window (Auto) apart from an absent one (inherit).
+extension ProviderAccount.Compaction {
+  private enum CodingKeys: String, CodingKey {
+    case atTokens, subagentAtTokens, reserveTokens, keepRecentTokens, idleMode
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    atTokens = try container.decodeIfPresent(Int.self, forKey: .atTokens)
+    atTokensAuto = try container.contains(.atTokens) && container.decodeNil(forKey: .atTokens)
+    subagentAtTokens = try container.decodeIfPresent(Int.self, forKey: .subagentAtTokens)
+    subagentAtTokensAuto = try container.contains(.subagentAtTokens) && container.decodeNil(forKey: .subagentAtTokens)
+    reserveTokens = try container.decodeIfPresent(Int.self, forKey: .reserveTokens)
+    keepRecentTokens = try container.decodeIfPresent(Int.self, forKey: .keepRecentTokens)
+    idleMode = try container.decodeIfPresent(String.self, forKey: .idleMode)
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    if let atTokens { try container.encode(atTokens, forKey: .atTokens) } else if atTokensAuto { try container.encodeNil(forKey: .atTokens) }
+    if let subagentAtTokens { try container.encode(subagentAtTokens, forKey: .subagentAtTokens) } else if subagentAtTokensAuto { try container.encodeNil(forKey: .subagentAtTokens) }
+    try container.encodeIfPresent(reserveTokens, forKey: .reserveTokens)
+    try container.encodeIfPresent(keepRecentTokens, forKey: .keepRecentTokens)
+    try container.encodeIfPresent(idleMode, forKey: .idleMode)
   }
 }
 

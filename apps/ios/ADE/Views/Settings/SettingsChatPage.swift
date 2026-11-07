@@ -28,6 +28,9 @@ struct SettingsChatPage: View {
   @State private var lastHintMode: SettingsModelHintMode = .modelAndEffort
   /// The machine's OpenCode Zen sign-in; nil hides Smart decisions, as on the desktop.
   @State private var zen: String?
+  /// The project `config` was read from, so another project's switches never
+  /// show, or save, under this one.
+  @State private var loadedProjectId: String?
   @State private var toast: ADEToastMessage?
 
   private var connected: Bool { syncService.connectionState == .connected }
@@ -47,8 +50,13 @@ struct SettingsChatPage: View {
       }
     }
     .adeToast($toast)
-    .task(id: connected) {
+    .task(id: "\(connected):\(syncService.activeProjectId ?? "-")") {
       guard connected else { return }
+      if loadedProjectId != syncService.activeProjectId {
+        config = nil
+        configError = nil
+        loadedProjectId = syncService.activeProjectId
+      }
       await load()
     }
   }
@@ -317,10 +325,12 @@ struct SettingsChatPage: View {
   }
 
   private func loadProjectConfig() async {
-    guard syncService.activeProjectId != nil, supportsProjectConfig else { return }
+    guard let projectId = syncService.activeProjectId, supportsProjectConfig else { return }
     configError = nil
     do {
       let loaded = try await syncService.fetchProjectChatConfig()
+      // The project changed while the read was out: the new load owns the page.
+      guard syncService.activeProjectId == projectId else { return }
       // A switch flipped while the read was out keeps its new value.
       var merged = loaded
       if let current = config {
