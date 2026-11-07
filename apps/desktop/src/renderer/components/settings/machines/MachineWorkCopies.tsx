@@ -4,10 +4,11 @@ import type { OpenProjectBinding } from "../../../../shared/types";
 import type { RemoteWorkCopyListing } from "../../../../shared/types/remoteWork";
 import { remoteProjectBindingKey } from "../../../../shared/projectIdentity";
 import { relativeWhen } from "../../../lib/format";
+import { formatStorageBytes } from "../../../../shared/formatting";
+import { rendererRuntimeTarget } from "../../../lib/platform";
 import { arePathsEqual } from "../../../lib/pathUtils";
 import { showToast } from "../../app/toast/toastStore";
 import { confirmDialog } from "../../ui/dialog/confirm";
-import { formatBytes } from "../storage/storageView";
 
 /**
  * "Work from other machines": the copies this machine keeps for chats on other
@@ -87,7 +88,7 @@ export function MachineWorkCopies({
               </span>
               <span className="ade-mx-srow-value">
                 {[
-                  copy.sizeBytes == null ? "Size unknown" : formatBytes(copy.sizeBytes),
+                  copy.sizeBytes == null ? "Size unknown" : formatStorageBytes(copy.sizeBytes, isThisMachine ? rendererRuntimeTarget().platform : null),
                   `used ${relativeWhen(copy.lastUsedAt)}`,
                   copy.running ? "a command is running" : null,
                 ].filter(Boolean).join(" · ")}

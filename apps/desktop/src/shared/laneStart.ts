@@ -1,4 +1,5 @@
 import { branchNameFromLaneRef } from "./laneBaseResolution";
+import { DEFAULT_LANE_BRANCH_PATTERN, normalizeLaneBranchPattern } from "./laneBranchName";
 
 /**
  * Where a new lane's branch starts: which branch, and on which copy of it.
@@ -30,24 +31,27 @@ export type LaneStart = {
 };
 
 /**
- * How every new lane in a project starts unless the caller picks otherwise.
- * A saved start is the default branch or the primary lane's branch, never a
- * named branch: whoever wants every lane to start from `develop` checks out
- * `develop` in the primary lane.
+ * How every new lane in a project starts unless the caller picks otherwise,
+ * and what its branch is called. A saved start is never `uncommitted`: copying
+ * a folder's changes is a pick made per lane, in the New lane dialog.
  */
 export type NewLaneDefaults = {
   start: LaneStart;
   /** The template a new lane is set up with; null for none. */
   templateId: string | null;
+  /** New branch names, e.g. `ade/{slug}` (see `laneBranchName.ts`). */
+  branchPattern: string;
 };
 
 export const LANE_START_FROM_VALUES: readonly LaneStartFrom[] = ["default", "primary", "branch"];
-/** The starts a project can save as its default. */
-export const LANE_START_DEFAULT_FROM_VALUES: readonly LaneStartFrom[] = ["default", "primary"];
 export const LANE_START_ON_VALUES: readonly LaneStartOn[] = ["remote", "local", "uncommitted"];
 
 export const DEFAULT_LANE_START: LaneStart = { from: "default", on: "remote" };
-export const DEFAULT_NEW_LANE_DEFAULTS: NewLaneDefaults = { start: DEFAULT_LANE_START, templateId: null };
+export const DEFAULT_NEW_LANE_DEFAULTS: NewLaneDefaults = {
+  start: DEFAULT_LANE_START,
+  templateId: null,
+  branchPattern: DEFAULT_LANE_BRANCH_PATTERN,
+};
 
 /** A branch name as the user would type it: no `refs/heads/`, `refs/remotes/` or `origin/` prefix. */
 export function plainLaneStartBranch(value: string | null | undefined): string {
@@ -70,18 +74,23 @@ export function normalizeLaneStart(value: unknown): LaneStart | null {
   return { from: from as LaneStartFrom, on: on as LaneStartOn };
 }
 
-/** A start a project may save as its default: not a named branch. */
+/** A start a project may save as its default as it is: anything but a copy of uncommitted changes. */
 export function isSavableDefaultLaneStart(start: LaneStart): boolean {
-  return (LANE_START_DEFAULT_FROM_VALUES as readonly string[]).includes(start.from);
+  return (LANE_START_FROM_VALUES as readonly string[]).includes(start.from) && start.on !== "uncommitted";
+}
+
+/** A start as it is saved: `uncommitted` (saved by older versions) reads as `local`. */
+export function savedDefaultLaneStart(start: LaneStart): LaneStart {
+  return start.on === "uncommitted" ? { ...start, on: "local" } : start;
 }
 
 export function normalizeNewLaneDefaults(value: unknown): NewLaneDefaults {
   if (!value || typeof value !== "object" || Array.isArray(value)) return DEFAULT_NEW_LANE_DEFAULTS;
   const record = value as Record<string, unknown>;
   const parsed = normalizeLaneStart(record.start);
-  const start = parsed && isSavableDefaultLaneStart(parsed) ? parsed : DEFAULT_LANE_START;
+  const start = parsed ? savedDefaultLaneStart(parsed) : DEFAULT_LANE_START;
   const templateId = typeof record.templateId === "string" && record.templateId.trim() ? record.templateId.trim() : null;
-  return { start, templateId };
+  return { start, templateId, branchPattern: normalizeLaneBranchPattern(record.branchPattern) };
 }
 
 export function sameLaneStart(a: LaneStart, b: LaneStart): boolean {

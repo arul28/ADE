@@ -751,6 +751,12 @@ apps/ios/
 │   │   │                            #   UIKit focus transitions; replaced the
 │   │   │                            #   WorkMentionsPickerSheet /
 │   │   │                            #   WorkSlashCommandsSheet modals),
+│   │   │                            # WorkComposerSuggestionStrip (the
+│   │   │                            #   sectioned @ / / / # list above the
+│   │   │                            #   field, with Show more per section),
+│   │   │                            # WorkComposerModelChips (the model
+│   │   │                            #   chip's look, pill image and part
+│   │   │                            #   picker),
 │   │   │                            # WorkChatAttachmentTray,
 │   │   │                            # WorkComposerAttachmentStaging (kind
 │   │   │                            #   detection, image vs chunked file/video
@@ -3107,6 +3113,20 @@ agent-reply entity chips, and copy behave the same on both devices:
   (`ade://pr/owner/repo/1237` → `#1237`). An unrecognised `ade://` shape keeps
   its descriptive path form rather than collapsing to a bare "ADE link". The
   `permission` and `skill` kinds mirror the desktop's two new chips.
+- **The `@` menu is sectioned like the desktop's.** Models lead, then chats,
+  lanes, files, terminals, PRs, machines and MCP servers. Each section shows
+  three rows and holds the rest behind a "Show N more" row; a kind word (`@pr`,
+  `@model`, …) shows one section in full. A model row wears the maker's mark,
+  the harness with its mark, and the thinking level a new chip starts on.
+- **A model chip is edited one part at a time.** `WorkComposerModelChips.swift`
+  draws `@model:` tokens as the desktop chip does (maker mark and name, the
+  thinking level in its tone, the permission mode's icon). Picking a model
+  opens only its thinking picker (a segmented low → high track); a pick moves
+  on to permissions (a track of the provider's modes, with the chosen mode's
+  one-line detail), and a permission pick closes it. A tap on one part of a
+  chip opens only that part, and VoiceOver offers the parts as actions on the
+  field. Permission words, short words, icons, tones and details come from one
+  table, `WorkModelMentionDetector.permissionOptions(provider:)`.
 - **Sent messages draw their chips.** The transcript
   (`WorkChatHeaderAndMessageViews.swift`) renders the same pills the composer
   did, over the unchanged stored text.

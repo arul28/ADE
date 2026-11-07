@@ -229,14 +229,17 @@ Main process:
   archive vocabulary (kinds, stale threshold, labels, `isArchiveStale`) shared
   by the service, the Settings page, the reminder, and `ade archive`.
 - `apps/desktop/src/renderer/components/settings/ArchiveSection.tsx` — the
-  Project → Storage & cleanup → Archive page: the list split at the two-week line, the
-  selection bar, restore, and delete. Deleting batches non-lane items together
+  Project → Storage & cleanup → Archive page: the list split at the host's
+  `staleAfterDays` (the "Free up space after" setting, 14 when off), the
+  selection bar, restore, Free up space (a lane's Archive & reclaim confirm,
+  through `useLaneReclaim` on the settings machine's pin), and delete. Deleting batches non-lane items together
   and at most five lanes per request, then offers a single forced retry by name
   for lanes with uncommitted changes.
 - `apps/desktop/src/renderer/components/app/useArchiveReminderBanner.tsx` — the
   weekly docked reminder. It asks at most once per project per
-  `ARCHIVE_REMINDER_INTERVAL_MS` (a week) when something is
-  `DEFAULT_ARCHIVE_STALE_DAYS` (14 days) old, and a summary read that lands
+  `ARCHIVE_REMINDER_INTERVAL_MS` (a week) when something is older than the
+  host's line (`archive.summary` without a number uses the "Free up space
+  after" setting, 14 days by default), and a summary read that lands
   after the person snoozed is dropped rather than re-shown.
 - `apps/ade-cli/src/services/providerInstances/providerInstanceStore.ts` — this
   machine's provider accounts (Claude and Codex only): the plain-JSON registry,
@@ -3361,8 +3364,8 @@ Project → Storage & cleanup → Archive page, an `ade archive` CLI, and a week
   its branch; a dirty worktree is refused unless the person confirms a forced
   delete.
 - **The reminder asks, never acts.** The desktop banner
-  appears at most once per project per week when something has been archived for
-  at least 14 days, and every answer (review, snooze, dismiss) pushes the next
+  appears at most once per project per week when something has been archived
+  longer than the "Free up space after" setting (14 days by default), and every answer (review, snooze, dismiss) pushes the next
   ask a week out.
 
 iOS reads archived lanes, chats, and shells from the same shared model, but the

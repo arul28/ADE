@@ -90,7 +90,9 @@ export function LaneBuildOutputNotice({
   const dismissKey = `${pinKey ?? "local"}:${laneId}:${removed.at}`;
   if (dismissed.has(dismissKey)) return null;
   const freed = removed.bytes > 0 || removed.partial
-    ? ` to free ${formatMeasuredBytes(removed.bytes, removed.partial)}`
+    // No storage snapshot here to say which platform's units the lane's
+    // machine uses; the size keeps the units it always had.
+    ? ` to free ${formatMeasuredBytes(removed.bytes, removed.partial, undefined)}`
     : "";
 
   return (

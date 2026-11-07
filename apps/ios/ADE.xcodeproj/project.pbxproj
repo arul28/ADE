@@ -426,6 +426,8 @@
 		E1000000000000000000BB03 /* WorkChatTranscriptCollectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000BB03 /* WorkChatTranscriptCollectionView.swift */; };
 		E1000000000000000000BB02 /* WorkChatFollowLatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000BB02 /* WorkChatFollowLatch.swift */; };
 		E20000000000000000000090 /* WorkComposerTypedTriggers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000090 /* WorkComposerTypedTriggers.swift */; };
+		E10000000000000000C0A7C2 /* WorkComposerSuggestionStrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7C2 /* WorkComposerSuggestionStrip.swift */; };
+		E10000000000000000C0A7C1 /* WorkComposerModelChips.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7C1 /* WorkComposerModelChips.swift */; };
 		E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000045 /* WorkSelectionActionBar.swift */; };
 		E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000046 /* WorkRootScreen+Selection.swift */; };
 		E10000000000000000000048 /* WorkTerminalEmulatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000048 /* WorkTerminalEmulatorView.swift */; };
@@ -738,6 +740,8 @@
 		D1000000000000000000BB03 /* WorkChatTranscriptCollectionView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatTranscriptCollectionView.swift; path = ADE/Views/Work/WorkChatTranscriptCollectionView.swift; sourceTree = "<group>"; };
 		D1000000000000000000BB02 /* WorkChatFollowLatch.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatFollowLatch.swift; path = ADE/Views/Work/WorkChatFollowLatch.swift; sourceTree = "<group>"; };
 		D20000000000000000000090 /* WorkComposerTypedTriggers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerTypedTriggers.swift; path = ADE/Views/Work/WorkComposerTypedTriggers.swift; sourceTree = "<group>"; };
+		D10000000000000000C0A7C2 /* WorkComposerSuggestionStrip.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerSuggestionStrip.swift; path = ADE/Views/Work/WorkComposerSuggestionStrip.swift; sourceTree = "<group>"; };
+		D10000000000000000C0A7C1 /* WorkComposerModelChips.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerModelChips.swift; path = ADE/Views/Work/WorkComposerModelChips.swift; sourceTree = "<group>"; };
 		D10000000000000000000045 /* WorkSelectionActionBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSelectionActionBar.swift; path = ADE/Views/Work/WorkSelectionActionBar.swift; sourceTree = "<group>"; };
 		D10000000000000000000046 /* WorkRootScreen+Selection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkRootScreen+Selection.swift"; path = "ADE/Views/Work/WorkRootScreen+Selection.swift"; sourceTree = "<group>"; };
 		D10000000000000000000048 /* WorkTerminalEmulatorView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTerminalEmulatorView.swift; path = ADE/Views/Work/WorkTerminalEmulatorView.swift; sourceTree = "<group>"; };
@@ -1327,6 +1331,8 @@
 				D1000000000000000000BB13 /* WorkChatTranscriptViewport.swift */,
 				D1000000000000000000BB02 /* WorkChatFollowLatch.swift */,
 				D20000000000000000000090 /* WorkComposerTypedTriggers.swift */,
+				D10000000000000000C0A7C2 /* WorkComposerSuggestionStrip.swift */,
+				D10000000000000000C0A7C1 /* WorkComposerModelChips.swift */,
 				D10000000000000000000045 /* WorkSelectionActionBar.swift */,
 				D10000000000000000000046 /* WorkRootScreen+Selection.swift */,
 				D10000000000000000000047 /* ADEInspectable.swift */,
@@ -2306,6 +2312,8 @@
 				E1000000000000000000BB13 /* WorkChatTranscriptViewport.swift in Sources */,
 				E1000000000000000000BB02 /* WorkChatFollowLatch.swift in Sources */,
 				E20000000000000000000090 /* WorkComposerTypedTriggers.swift in Sources */,
+				E10000000000000000C0A7C2 /* WorkComposerSuggestionStrip.swift in Sources */,
+				E10000000000000000C0A7C1 /* WorkComposerModelChips.swift in Sources */,
 				E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */,
 				E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */,
 				E10000000000000000000048 /* WorkTerminalEmulatorView.swift in Sources */,

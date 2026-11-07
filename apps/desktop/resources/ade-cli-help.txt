@@ -383,7 +383,8 @@ Lanes
                    [--linear-issue-json '{...}' [--start-chat --type subagent|peer --provider <p> --model <m>]]
                    [--linear-issues-json '[{...},{...}]'] [--text|--json]
   ade lanes defaults [--text|--json]
-  ade lanes defaults set [--from default|primary] [--on remote|local|uncommitted] [--template <id>|--no-template]
+  ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
+                         [--branch-pattern <pattern>]   (e.g. "ade/{slug}", "{user}/{slug}", "{slug}")
   ade lanes list | show | archive | unarchive | delete | appearance | templates | actions
 
   The project is the shell's project (ADE_PROJECT_ROOT, else the checkout you

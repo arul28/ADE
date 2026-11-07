@@ -185,6 +185,8 @@ export type ChatLaunchLaneConfig = {
   start?: LaneStart | null;
   /** existing mode: the local or remote branch ref the lane works on. */
   branchRef?: string | null;
+  /** new mode: the branch name the user typed; omitted = the project's branch pattern. */
+  branchName?: string | null;
   /** Lane template applied as this launch's environment; omitted = project default. */
   templateId?: string | null;
   /** Accent color applied once the lane row exists. */

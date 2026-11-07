@@ -727,6 +727,11 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `lanes` | `template_setup_started` | `from_banner`, `from_settings` | omitted; never the lane, template, or machine |
 | `lanes` | `template_suggestion_hidden` | `completed` | omitted; never the lane, template, or machine |
 | `lanes` | `deps_update_started` | `completed`, `failed` | omitted; never the lane, package details, machine, or error |
+| `lanes` | `branch_pattern_changed` | `pattern_ade`, `pattern_user`, `pattern_none`, `pattern_custom` (which kind of branch name pattern was saved) | omitted; never the pattern text, a branch, the repository, or the machine |
+| `lanes` | `start_default_changed` | `start_default`, `start_primary`, `start_branch` (where new lanes start) | omitted; never the branch name or the machine |
+| `lanes` | `branch_renamed` | `completed`, `failed` | omitted; never the lane, either branch name, the machine, or the error |
+| `lanes` | `auto_archive_changed`, `auto_free_up_changed`, `auto_delete_changed` | `enabled`, `disabled` (an automatic cleanup rule turned on or off) | omitted; never a day count, a lane, or the machine |
+| `lanes` | `space_freed` | `completed`, `failed` (Free up space on an archived lane in Settings › Archive) | omitted; never the lane, its size, the machine, or the error |
 | `star_prompt` | `star_prompt_shown`, `star_prompt_clicked`, `star_prompt_dismissed`, `repo_starred` | `prompt_first`, `prompt_second` (which showing of the pill) | omitted; never the GitHub account, a message count, or the machine |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
@@ -1950,6 +1955,19 @@ lane, path, lockfile name, package manager, folder count, template id or name,
 machine, or error text. A 24-hour per-action-and-outcome key allows at most five
 accepted events per installation per UTC day, inside the existing
 `ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was raised.
+
+The same helper records the lane settings a person chose, each only after the
+save or rename succeeded: `branch_pattern_changed` (which kind of branch name
+pattern: ADE's `ade/` prefix, the git user name, none, or custom; never the
+text), `start_default_changed` (the default branch, the primary lane's branch,
+or a named branch; never its name), `branch_renamed` from the lane menu,
+`auto_archive_changed` / `auto_free_up_changed` / `auto_delete_changed` when a
+save in Settings › Storage & cleanup › Rules turns that automatic rule on or off
+(never a day count), and `space_freed` for Free up space on an archived lane.
+The archive scan's own automatic archive, free up and delete record nothing:
+they are a timer with no person's action behind them, like the idle sweep. With
+the same 24-hour key the lane helper's worst case is 22 accepted events per
+installation per UTC day, inside the existing `ade_feature_used` limits.
 
 The desktop "Star ADE on GitHub" pill records `star_prompt_shown` when it is
 on screen, `star_prompt_clicked` when its link opens GitHub,

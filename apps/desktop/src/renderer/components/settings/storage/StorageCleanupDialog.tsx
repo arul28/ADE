@@ -9,7 +9,8 @@ import type {
 import { COLORS, SANS_FONT, fgTint } from "../../lanes/laneDesignTokens";
 import { Dialog, type DialogAction } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
-import { baseName, cleanupPartsLine, cleanupRunParts, formatBytes, groupRowsByLabel } from "./storageView";
+import { baseName, cleanupPartsLine, cleanupRunParts, groupRowsByLabel } from "./storageView";
+import { useStorageBytes } from "./useStorageBytes";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 
 /**
@@ -158,6 +159,7 @@ export function StorageCleanupDialog({
   onClose: () => void;
   onCleaned: (result: StorageCleanupResult) => void;
 }) {
+  const { bytes: storageBytes, platform } = useStorageBytes();
   // Removes files on the machine the Settings page is showing, never another.
   const { pin } = useSettingsMachineScope();
   const [stage, setStage] = React.useState<Stage>("loading");
@@ -278,7 +280,7 @@ export function StorageCleanupDialog({
         // `result.freedBytes` already adds the maintenance run's bytes; the
         // previewed files are the rest, on top of files the run removed itself.
         files: runParts.files + Math.max(0, result.freedBytes - Math.max(0, report.reclaimedBytes)),
-      })
+      }, platform)
     : "";
   const cleanupFailed = Boolean(result?.failed.length)
     || Boolean(report?.actions.some((action) => Boolean(action.error)));
@@ -374,11 +376,11 @@ export function StorageCleanupDialog({
                     {row.label}
                     {row.count > 1 ? <span className="ade-st-item-size kit-num"> · {row.count}</span> : null}
                   </span>
-                  <span className="ade-st-item-label kit-num">{formatBytes(row.bytes)}</span>
+                  <span className="ade-st-item-label kit-num">{storageBytes(row.bytes)}</span>
                 </div>
               ))}
               <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary, marginTop: 4 }}>
-                Frees {formatBytes(preview.totalBytes)} of files.
+                Frees {storageBytes(preview.totalBytes)} of files.
               </div>
             </div>
           ) : (
@@ -427,7 +429,7 @@ export function StorageCleanupDialog({
                   key={entry.path}
                   label={entry.label}
                   path={entry.path}
-                  size={formatBytes(entry.bytes)}
+                  size={storageBytes(entry.bytes)}
                   tone="remove"
                 />
               ))}
@@ -440,7 +442,7 @@ export function StorageCleanupDialog({
                   color: COLORS.textPrimary,
                 }}
               >
-                This will free about {formatBytes(preview.totalBytes)}.
+                This will free about {storageBytes(preview.totalBytes)}.
               </div>
             </div>
           ) : (
@@ -475,10 +477,10 @@ export function StorageCleanupDialog({
           >
             {cleanupFailed
               ? result.freedBytes > 0
-                ? `Freed ${formatBytes(result.freedBytes)}, but some cleanup steps couldn't finish.`
+                ? `Freed ${storageBytes(result.freedBytes)}, but some cleanup steps couldn't finish.`
                 : "Some cleanup steps couldn't finish."
               : result.freedBytes > 0
-                ? `Freed ${formatBytes(result.freedBytes)}.`
+                ? `Freed ${storageBytes(result.freedBytes)}.`
                 : "Nothing needed removing."}
           </div>
           {doneBreakdown ? (

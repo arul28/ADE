@@ -438,6 +438,12 @@ export type CreateLaneArgs = {
   start?: LaneStart | null;
   branchName?: string;
   /**
+   * An auto-create lane: the brain names the branch with a placeholder
+   * (`<prefix><8 hex>`) that the lane's AI naming replaces. Ignored when
+   * `branchName` is set.
+   */
+  autoNamedBranch?: boolean;
+  /**
    * An exact commit or ref to start from (e.g. "create a lane at this commit"
    * in History). Wins over `start`.
    */
@@ -549,6 +555,12 @@ export type LaneReclaimRisk = LaneDeleteRisk & {
   generatedBytes: number;
   reclaimableBytes: number;
   worktreeAvailable: boolean;
+  /**
+   * The folder is what an earlier removal left: git no longer lists it as a
+   * worktree, it is this lane's own folder inside ADE's worktrees folder, and
+   * its git metadata is gone. Reclaim finishes removing it.
+   */
+  finishRemoval?: boolean;
   blockedReasons: Array<{
     code: LaneReclaimBlockReason;
     message: string;
@@ -571,6 +583,11 @@ export type ArchiveAndReclaimLaneResult = {
   reclaimedBytes: number;
   worktreeRemoved: boolean;
   generatedDataRemoved: boolean;
+  /**
+   * Files in the folder were still in use, so nothing was removed. The lane is
+   * archived and ADE tries the removal again on its own. Absent on older builds.
+   */
+  keptForRetry?: boolean;
   warnings: string[];
 };
 
@@ -718,6 +735,13 @@ export type LaneLifecycleEvent = {
   branchRef?: string;
   /** True when ADE adopted the branch on its own because an agent in the lane switched to it. */
   adoptedByAgent?: boolean;
+  /**
+   * `lane-archived` by the archive rules rather than by a person: why, in a
+   * few plain words ("idle 3 days", "PR merged"). The notice offers Undo,
+   * sent to `projectRoot`: a local project's events reach every window that
+   * has it open, background tabs included.
+   */
+  autoArchive?: { reason: string; projectRoot?: string };
 };
 
 export type LaneDeleteRisk = {
@@ -913,6 +937,39 @@ export type NewLaneDefaultsSnapshot = {
   defaultBranch: string;
   /** The branch the primary lane has checked out, or null when detached. */
   primaryBranch: string | null;
+  /**
+   * The saved branch pattern's prefix with `{user}` filled in on this machine
+   * (`ade/`, `arul-sharma/`, ""). Absent from older brains.
+   */
+  branchPrefix?: string;
+  /** git `user.name` on this machine, slugged; null when it is not set. */
+  branchUser?: string | null;
+};
+
+/** `checkBranchName`: whether a new lane's branch can have this name on the lane's machine. */
+export type LaneBranchNameCheck = {
+  /** The name as the lane would get it. */
+  branchName: string;
+  /** Null when the name is free; otherwise why not, in a sentence. */
+  problem: string | null;
+};
+
+/**
+ * `renameBranch`. `dryRun` only answers whether the lane's branch may be
+ * renamed now (it was never pushed, tracks nothing, and has no PR).
+ */
+export type RenameLaneBranchArgs = {
+  laneId: string;
+  branchName?: string;
+  dryRun?: boolean;
+};
+
+export type RenameLaneBranchResult = {
+  /** The lane's branch after the call. */
+  branchRef: string;
+  renamed: boolean;
+  /** Why the branch can't be renamed (or wasn't), in a sentence; null when it can. */
+  blocked: string | null;
 };
 
 /** How a lane that was just created started; returned by `create` only. */

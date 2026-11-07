@@ -14467,6 +14467,9 @@ final class SyncService: ObservableObject {
     description: String,
     start: LaneStart? = nil,
     branchName: String? = nil,
+    // Auto-create: the host names a placeholder branch in the project's
+    // branch pattern, renamed once the lane is named. Ignored with branchName.
+    autoNamedBranch: Bool = false,
     startPoint: String? = nil,
     linearIssue: LaneLinearIssue? = nil,
     targetProjectId: String? = nil,
@@ -14488,6 +14491,11 @@ final class SyncService: ObservableObject {
     }
     if let branchName, !branchName.isEmpty {
       args["branchName"] = branchName
+    } else if autoNamedBranch {
+      args["autoNamedBranch"] = true
+      // An older host ignores the flag but still takes `ade/<8 hex>` as a
+      // placeholder to rename; a current one swaps it for its own pattern.
+      args["branchName"] = "ade/" + String(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(8))
     }
     if let startPoint, !startPoint.isEmpty {
       args["startPoint"] = startPoint

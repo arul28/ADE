@@ -2361,7 +2361,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                    [--linear-issue-json '{...}' [--start-chat --type subagent|peer --provider <p> --model <m>]]
                    [--linear-issues-json '[{...},{...}]'] [--text|--json]
   ade lanes defaults [--text|--json]
-  ade lanes defaults set [--from default|primary] [--on remote|local|uncommitted] [--template <id>|--no-template]
+  ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
+                         [--branch-pattern <pattern>]   (e.g. "ade/{slug}", "{user}/{slug}", "{slug}")
   ade lanes list | show | archive | unarchive | delete | appearance | templates | actions
 
   The project is the shell's project (ADE_PROJECT_ROOT, else the checkout you
@@ -6809,7 +6810,7 @@ function formatLaneDefaultsText(value: unknown): string {
   });
   const ref = laneStartRefLabel(start, branch);
   const scope = isRecord(snapshot.scope) ? snapshot.scope : {};
-  return `Start from: ${LANE_START_FROM_LABEL[start.from]}${branch ? ` (${branch})` : ""} on ${LANE_START_ON_LABEL[start.on]}${ref ? ` → ${ref}` : ""}\nTemplate: ${asString(defaults.templateId) ?? "none"}\nSaved for: ${scope.kind === "this-computer" ? "this computer only" : `your account · ${asString(scope.repo) ?? "project"}`}`;
+  return `Start from: ${LANE_START_FROM_LABEL[start.from]}${branch ? ` (${branch})` : ""} on ${LANE_START_ON_LABEL[start.on]}${ref ? ` → ${ref}` : ""}\nBranch names: ${asString(defaults.branchPattern) ?? "ade/{slug}"}\nTemplate: ${asString(defaults.templateId) ?? "none"}\nSaved for: ${scope.kind === "this-computer" ? "this computer only" : `your account · ${asString(scope.repo) ?? "project"}`}`;
 }
 
 function formatLaneCreateResultText(value: unknown): string {
@@ -7135,7 +7136,8 @@ function buildLanePlan(args: string[]): CliPlan {
     const set = args[0] === "set";
     if (set) args.shift();
     const changes = readLaneStartFlags(args);
-    if (set && changes.from && changes.from !== "default" && changes.from !== "primary") throw new CliUsageError("Saved defaults start from the default branch or the primary lane's branch. Use --from on `ade lanes create` for one lane.");
+    if (set && changes.on === "uncommitted") throw new CliUsageError("Copying uncommitted changes is picked per lane. Use --on uncommitted on `ade lanes create`, or save --on local.");
+    const branchPattern = readValue(args, ["--branch-pattern"]);
     const template = readValue(args, ["--template"]);
     const noTemplate = readFlag(args, ["--no-template"]);
     if (template != null && noTemplate) throw new CliUsageError("Choose --template or --no-template.");
@@ -7147,6 +7149,7 @@ function buildLanePlan(args: string[]): CliPlan {
       const patch: JsonObject = {
         ...(changes.from || changes.on ? { start: mergeLaneStart(changes, savedLaneStart(values.defaults)) } : {}),
         ...(template != null ? { templateId: template } : noTemplate ? { templateId: null } : {}),
+        ...(branchPattern != null ? { branchPattern } : {}),
       };
       return { name: "run_ade_action", arguments: { domain: "lane", action: "setNewLaneDefaults", args: { defaults: patch } } };
     }});

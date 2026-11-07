@@ -19,12 +19,13 @@ import {
 import type { OpenProjectBinding } from "../../../../shared/types";
 import type { MachinePlacementPreference, MachineStats } from "../../../../shared/types/machineStats";
 import { THIS_MACHINE_ID } from "../../../../shared/machineIdentity";
-import { relativeWhen } from "../../../lib/format";
+import { formatBytes, relativeWhen } from "../../../lib/format";
+import { formatStorageBytes } from "../../../../shared/formatting";
 import { useMachinePlacementPreferences } from "../../../state/machinePlacement";
 import { useMachineStatsMap } from "../../../state/machineStats";
 import { showToast } from "../../app/toast/toastStore";
 import { SettingsSelect } from "../primitives";
-import { formatBytes, freeSpaceLevel } from "../storage/storageView";
+import { freeSpaceLevel } from "../storage/storageView";
 
 /** Amber at 20% left, red at 5%: the one headroom rule every meter uses. */
 export function headroomLevel(percentLeft: number): "warn" | "crit" | undefined {
@@ -131,9 +132,9 @@ export function MachineCapabilitiesArea({
             {value.disk && !isThisMachine ? (
               <Tile
                 label="Disk free"
-                value={formatBytes(value.disk.freeBytes)}
+                value={formatStorageBytes(value.disk.freeBytes, value.platform)}
                 meter={<Meter percent={(value.disk.freeBytes / value.disk.totalBytes) * 100} level={freeSpaceLevel(value.disk.freeBytes, value.disk.totalBytes)} label="Disk free" />}
-                sub={`of ${formatBytes(value.disk.totalBytes)}`}
+                sub={`of ${formatStorageBytes(value.disk.totalBytes, value.platform)}`}
               />
             ) : null}
             <Tile

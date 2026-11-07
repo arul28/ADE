@@ -6,6 +6,7 @@ import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../../shared/machineId
 import { useAppStore } from "../../../state/appStore";
 import { accountSessionShortLabel, accountSessionState, useAccountStatus } from "../../../lib/account";
 import { formatTokens } from "../../../lib/format";
+import { formatStorageBytes } from "../../../../shared/formatting";
 import { AccountAvatar } from "../../account/AccountAvatar";
 import { useAutoUpdateSnapshot } from "../../app/useAutoUpdateSnapshot";
 import { requestDownloadedUpdateInstall } from "../../app/autoUpdateInstallAction";
@@ -14,7 +15,7 @@ import { UpdateTrackChip } from "../../app/ChannelBadge";
 import { MachineAvatar, machineFormFactor } from "../../remoteTargets/MachineIdentity";
 import { UsageSparkline } from "../../usage/UsageSparks";
 import { FreeSpaceMeter } from "../health/healthCharts";
-import { formatBytes, freeSpaceLevel } from "../storage/storageView";
+import { freeSpaceLevel } from "../storage/storageView";
 import { UpdateTrackControls } from "../UpdateTrackControls";
 import { AutoUpdatesControls } from "../AutoUpdatesSection";
 import { useNeedsAttention } from "../overview/useNeedsAttention";
@@ -171,7 +172,7 @@ function ThisMachineCard({
           <div className="ade-gen-meter">
             <div className="ade-gen-meter-label">
               <span>Disk</span>
-              <span className="kit-num">{formatBytes(pressure.freeBytes)} free</span>
+              <span className="kit-num">{formatStorageBytes(pressure.freeBytes, info?.platform)} free</span>
             </div>
             <FreeSpaceMeter freeBytes={pressure.freeBytes} totalBytes={pressure.totalBytes} level={level} />
           </div>

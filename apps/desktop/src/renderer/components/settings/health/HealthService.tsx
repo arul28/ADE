@@ -5,8 +5,8 @@ import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { BrainRepairButton } from "../BrainRepairButton";
 import { useBrainRepair } from "../../../hooks/useBrainRepair";
 import { appResourcePressureLevel } from "../../../lib/resourcePressure";
+import { formatBytes } from "../../../lib/format";
 import {
-  formatBytes,
   formatDurationMs,
   loadChip,
   responseHealth,

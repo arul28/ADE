@@ -59,6 +59,8 @@ import type {
 } from "../shared/types/appControl";
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
+import { renderLaneBranchPrefix } from "../shared/laneBranchName";
+import { branchNameFromLaneRef } from "../shared/laneBaseResolution";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
 import {
@@ -471,9 +473,16 @@ function createMockStorageSnapshot(now: string) {
       lastScanAt: daysAgo(0.1),
       nextScanAt: daysAgo(-0.9),
       scanInProgress: false,
-      policy: { maxActiveLanes: 0, cleanupIntervalHours: 24, autoArchiveAfterHours: 336, reclaimArchivedAfterHours: 0, cleanBuildOutputAfterDays: 7 },
+      policy: {
+        archiveIdleAfterDays: 14,
+        freeUpSpaceAfterDays: 14,
+        freeUpSpaceMode: "ask",
+        deleteArchivedAfterDays: 0,
+        deleteLocalBranchOnAutoDelete: false,
+        cleanBuildOutputAfterDays: 7,
+      },
       archivedAutomatically: 1,
-      reviewReadyCount: 0,
+      freeUpDueCount: 0,
       buildOutput: {
         lastCheckAt: daysAgo(0.2),
         totalFreedBytes: 4.1 * GB,
@@ -602,6 +611,7 @@ function createMockArchive() {
       items: items.filter((item) =>
         (!args?.kinds?.length || args.kinds.includes(item.kind))
         && (!args?.olderThanDays || ageDays(item) >= args.olderThanDays)),
+      staleAfterDays: DEFAULT_ARCHIVE_STALE_DAYS,
     }),
     summary: async (args?: ArchiveSummaryArgs, _pin?: unknown): Promise<ArchiveSummary> => {
       const olderThanDays = args?.olderThanDays ?? DEFAULT_ARCHIVE_STALE_DAYS;
@@ -3958,11 +3968,14 @@ const MOCK_LIVE_PR_FILES: Record<string, any[]> = {};
 })();
 
 // ── New lane defaults (one set per account per repo) ─────────
-const MOCK_NEW_LANE_DEFAULTS = {
-  defaults: { start: { from: "default", on: "remote" }, templateId: null },
+// `let`: a save keeps its result, so the next save and the next read see it.
+let MOCK_NEW_LANE_DEFAULTS = {
+  defaults: { start: { from: "default", on: "remote" } as any, templateId: null as string | null, branchPattern: "ade/{slug}" },
   scope: { kind: "account-repo", repo: "github.com/acme/app" },
   defaultBranch: "main",
   primaryBranch: "main",
+  branchPrefix: "ade/",
+  branchUser: "arul-sharma",
 };
 
 // ── Rebase Needs (all urgency categories) ─────────────────────
@@ -7171,6 +7184,24 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         activeWork: [],
       }),
       rename: resolvedArg(undefined),
+      renameBranch: async (args: { laneId: string; branchName?: string; dryRun?: boolean }) => {
+        const lane = MOCK_LANES.find((entry) => entry.id === args.laneId);
+        // Bare names, as the real API answers: never `refs/heads/…`.
+        const current = branchNameFromLaneRef(String(lane?.branchRef ?? "ade/mock-branch"));
+        if (args.dryRun || !args.branchName || !lane) return { branchRef: current, renamed: false, blocked: null };
+        lane.branchRef = args.branchName;
+        return { branchRef: args.branchName, renamed: true, blocked: null };
+      },
+      checkBranchName: async (args: { name: string }) => {
+        const branchName = args.name.trim();
+        const taken = MOCK_LANES
+          .map((entry) => branchNameFromLaneRef(String(entry.branchRef ?? "")))
+          .find((name) => name && name.toLowerCase() === branchName.toLowerCase());
+        return {
+          branchName,
+          problem: taken ? `Branch "${taken}" already exists. Choose a different branch name.` : null,
+        };
+      },
       updateAppearance: resolvedArg(undefined),
       archive: resolvedArg(undefined),
       archiveAndReclaim: resolvedArg({
@@ -7307,11 +7338,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onEnvEvent: noop,
       listTemplates: resolved([]),
       getTemplate: resolvedArg(null),
-      getNewLaneDefaults: resolvedArg(MOCK_NEW_LANE_DEFAULTS),
-      setNewLaneDefaults: async (args: { defaults: any }) => ({
-        ...MOCK_NEW_LANE_DEFAULTS,
-        defaults: { ...MOCK_NEW_LANE_DEFAULTS.defaults, ...args.defaults },
-      }),
+      getNewLaneDefaults: async () => MOCK_NEW_LANE_DEFAULTS,
+      setNewLaneDefaults: async (args: { defaults: any }) => {
+        const defaults = { ...MOCK_NEW_LANE_DEFAULTS.defaults, ...args.defaults };
+        MOCK_NEW_LANE_DEFAULTS = {
+          ...MOCK_NEW_LANE_DEFAULTS,
+          defaults,
+          branchPrefix: renderLaneBranchPrefix(defaults.branchPattern, MOCK_NEW_LANE_DEFAULTS.branchUser),
+        };
+        return MOCK_NEW_LANE_DEFAULTS;
+      },
       getDefaultTemplate: resolvedArg(null),
       setDefaultTemplate: resolvedArg(undefined),
       applyTemplate: resolvedArg({

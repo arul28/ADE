@@ -223,6 +223,10 @@ export function SettingsSegmented<T extends string>({
  * limit", "Never", "Disabled"), so an unset value and a value you couldn't
  * read looked the same. Here the sentinel is rendered as text beside the
  * field, and clearing the field means "use the sentinel".
+ *
+ * `commitOnBlur` holds what is typed and calls `onChange` only on blur or
+ * Enter (Escape drops it), for a value whose in-between digits must never be
+ * saved: typing 30 passes through 3.
  */
 export function SettingsNumber({
   value,
@@ -237,6 +241,7 @@ export function SettingsNumber({
   sentinelValue = 0,
   disabled = false,
   ariaLabel,
+  commitOnBlur = false,
 }: {
   value: number;
   onChange: (value: number) => void;
@@ -249,8 +254,25 @@ export function SettingsNumber({
   sentinelValue?: number;
   disabled?: boolean;
   ariaLabel?: string;
+  commitOnBlur?: boolean;
 }) {
   const atSentinel = sentinelLabel != null && value === sentinelValue;
+  // Only with `commitOnBlur`: the text typed since the last commit.
+  const [draft, setDraft] = useState<string | null>(null);
+  const parse = (text: string): number | null => {
+    const raw = text.trim();
+    if (raw === "") return sentinelValue;
+    const next = Number(raw);
+    if (!Number.isFinite(next)) return null;
+    const clampedLow = Math.max(min, next);
+    return max == null ? clampedLow : Math.min(max, clampedLow);
+  };
+  const commitDraft = () => {
+    if (draft == null) return;
+    setDraft(null);
+    const next = parse(draft);
+    if (next != null && next !== value) onChange(next);
+  };
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
       <input
@@ -258,22 +280,24 @@ export function SettingsNumber({
         type="number"
         inputMode="numeric"
         aria-label={ariaLabel}
-        value={String(value)}
+        value={draft ?? String(value)}
         min={min}
         max={max}
         step={step}
         disabled={disabled}
         onChange={(event) => {
-          const raw = event.target.value.trim();
-          if (raw === "") {
-            onChange(sentinelValue);
+          if (commitOnBlur) {
+            setDraft(event.target.value);
             return;
           }
-          const next = Number(raw);
-          if (!Number.isFinite(next)) return;
-          const clampedLow = Math.max(min, next);
-          onChange(max == null ? clampedLow : Math.min(max, clampedLow));
+          const next = parse(event.target.value);
+          if (next != null) onChange(next);
         }}
+        onBlur={commitOnBlur ? commitDraft : undefined}
+        onKeyDown={commitOnBlur ? (event) => {
+          if (event.key === "Enter") commitDraft();
+          else if (event.key === "Escape") setDraft(null);
+        } : undefined}
         style={{
           width: 72,
           height: 30,

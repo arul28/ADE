@@ -206,18 +206,31 @@ export function resolveAppliedAutoLaneBranchFragment(args: {
   aiBranchFragment: string;
   identityTitle: string;
   occupied: (branchRef: string) => boolean;
+  /** The branch pattern's rendered prefix; `ade/` before patterns existed. */
+  prefix?: string;
 }): string {
   const fromTitle = branchFragmentFromLaneTitle(args.identityTitle);
   const aiFragment = String(args.aiBranchFragment ?? "").trim().toLowerCase();
   const branchFragment = args.adoptedAiTitle && aiFragment ? aiFragment : fromTitle;
-  if (args.occupied(`ade/${branchFragment}`) && fromTitle !== branchFragment) {
+  if (args.occupied(`${args.prefix ?? "ade/"}${branchFragment}`) && fromTitle !== branchFragment) {
     return fromTitle;
   }
   return branchFragment;
 }
 
+/** ADE's legacy placeholder shape, `ade/<8 hex>`; the brain also accepts the current pattern's. */
 export function isAutoLaneTemporaryBranch(branchRef: string): boolean {
   return AUTO_LANE_TEMP_BRANCH_RE.test(branchRef);
+}
+
+/**
+ * A legacy `ade/<8 hex>` placeholder, sent beside `autoNamedBranch` by a
+ * client that may be talking to an older brain: that brain ignores the flag
+ * and still treats this name as a placeholder to rename. A current brain
+ * swaps it for one in the project's branch pattern.
+ */
+export function legacyAutoLaneTemporaryBranch(): string {
+  return `ade/${globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
 }
 
 export function genericSuffixFromLaneFallbackName(fallbackName: string | null | undefined): string | null {

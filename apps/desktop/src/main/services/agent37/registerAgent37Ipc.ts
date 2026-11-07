@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, shell } from "electron";
 import {
   AGENT37_DEFAULT_TEMPLATE,
   agent37StillStartingMessage,
@@ -10,6 +10,7 @@ import {
   AGENT37_MADE_BY_CHAT_METADATA,
   agent37CapReachedMessage,
   type Agent37Budget,
+  type Agent37ClaudeTokenStatus,
   type Agent37ShapeId,
   isAgent37InstanceId,
   type Agent37CreateMachineArgs,
@@ -25,6 +26,7 @@ import {
   type Agent37TemplateStatus,
 } from "../../../shared/agent37";
 import { IPC } from "../../../shared/ipc";
+import { AGENT37_CLAUDE_TOKEN_VAULT_KEY, agent37MachineEnv, createAgent37ClaudeToken } from "./agent37ClaudeToken";
 import type { AdeAccountMachinesResult } from "../../../shared/types/account";
 import { getSignedInAccountAccessToken } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import {
@@ -298,6 +300,39 @@ export function registerAgent37Ipc(args: {
   }, STARTUP_CHECK_DELAY_MS);
   startupTimer.unref?.();
 
+  // Claude on cloud machines: the person's long-lived token, kept in the
+  // account and given to every new machine (agent37ClaudeToken.ts).
+  const claudeTokenVault = () => (credentials.signedIn() ? agent37VaultFromBridge(args.vaultBridge, AGENT37_CLAUDE_TOKEN_VAULT_KEY) : null);
+  const claudeToken = createAgent37ClaudeToken({
+    vault: claudeTokenVault,
+    openExternal: (url) => {
+      if (/^https:\/\//i.test(url)) void shell.openExternal(url).catch(() => undefined);
+    },
+    onChanged: () => sendToAllWindows(IPC.agent37ClaudeTokenChanged),
+    logger,
+  });
+  app.once("before-quit", () => claudeToken.dispose());
+  ipcMain.handle(IPC.agent37ClaudeTokenStatus, async (event): Promise<Agent37ClaudeTokenStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ClaudeTokenStatus)) return null;
+    return await claudeToken.status();
+  });
+  ipcMain.handle(IPC.agent37ClaudeTokenStart, async (event): Promise<Agent37ClaudeTokenStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ClaudeTokenStart)) return null;
+    return await claudeToken.start();
+  });
+  ipcMain.handle(IPC.agent37ClaudeTokenSubmitCode, async (event, arg: { code?: unknown }): Promise<Agent37ClaudeTokenStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ClaudeTokenSubmitCode)) return null;
+    return await claudeToken.submitCode(typeof arg?.code === "string" ? arg.code : "");
+  });
+  ipcMain.handle(IPC.agent37ClaudeTokenCancel, async (event): Promise<Agent37ClaudeTokenStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ClaudeTokenCancel)) return null;
+    return await claudeToken.cancel();
+  });
+  ipcMain.handle(IPC.agent37ClaudeTokenRemove, async (event): Promise<Agent37ClaudeTokenStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ClaudeTokenRemove)) return null;
+    return await claudeToken.remove();
+  });
+
   const machineCreatorDeps: Parameters<typeof createAgent37Machine>[0] = {
     client: () => requireAgent37Client(credentials),
     getAccountToken,
@@ -313,6 +348,7 @@ export function registerAgent37Ipc(args: {
       return null;
     },
     onTemplateMissing: () => void builder.ensure(),
+    machineEnv: () => agent37MachineEnv(claudeTokenVault()),
     pendingCreates,
     logger,
   };

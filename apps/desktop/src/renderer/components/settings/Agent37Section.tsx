@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowClockwise, ArrowSquareOut, CircleNotch, LinkBreak, Warning } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, CircleNotch, LinkBreak, Wallet, Warning } from "@phosphor-icons/react";
 import {
   AGENT37_API_KEYS_URL,
   AGENT37_BILLING_URL,
+  AGENT37_DASHBOARD_URL,
+  formatAgent37Usd,
   type Agent37Status,
   type Agent37TemplateStatus,
 } from "../../../shared/agent37";
 import { SettingsTextField } from "./primitives";
 import {
-  credentialStorageFact,
   IntegrationCard,
   IntegrationColumns,
   IntegrationHero,
@@ -18,11 +19,14 @@ import {
 import { Banner } from "../ui/notice";
 import { ipcErrorMessage } from "../../lib/format";
 import { Agent37ReadyMachinesCard } from "./Agent37ReadyMachinesCard";
-import { Agent37SpendingCard } from "./Agent37SpendingCard";
+import { Agent37MachinesCard } from "./Agent37MachinesCard";
+import { Agent37ClaudeSignInCard } from "./Agent37ClaudeSignInCard";
+import { useAgent37Machines } from "../remoteTargets/useAgent37Machines";
+import { agent37GroupTotals } from "../remoteTargets/agent37MachineModel";
+import agent37ApiKeyShot from "./integrations/steps/agent37-api-key.webp";
 import { Agent37AgentLimitsCard } from "./Agent37AgentLimitsCard";
 import { Agent37Mark, AGENT37_NAME } from "../remoteTargets/agent37Brand";
 import { agent37RetryLabel, useAgent37Template } from "../remoteTargets/useAgent37Template";
-import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { openExternalUrl } from "../../lib/openExternal";
 import "./IntegrationsSettings.css";
 
@@ -30,41 +34,87 @@ function errorText(error: unknown, fallback: string): string {
   return ipcErrorMessage(error) || fallback;
 }
 
-/** The template card: a status tag, one line while building, the reason and Retry when it failed. */
+/** The template, as the hero's fact: Ready, Step 2 of 5, Updating, Failed. */
+function templateFact(status: Agent37TemplateStatus | null, loadError: string | null): IntegrationFact {
+  if (loadError && !status) return { label: "Template", value: "Failed", tone: "warn" };
+  if (!status || status.state === "checking" || status.state === "idle") return { label: "Template", value: "Checking…" };
+  if (status.state === "ready") return { label: "Template", value: "Ready" };
+  if (status.state === "failed") return { label: "Template", value: "Failed", tone: "warn" };
+  if (status.usable) return { label: "Template", value: "Updating" };
+  return {
+    label: "Template",
+    value: status.progress ? `Step ${status.progress.step} of ${status.progress.steps}` : "Building",
+    tone: "warn",
+  };
+}
+
 /**
- * The template card, only while it needs the person: still being set up (new
- * machines wait for it) or failed (Retry). A ready template is invisible.
+ * The template's state inside the hero, only while the person should see it:
+ * the first build (new machines wait for it), an update (a quiet line; new
+ * machines still work), a failure (the reason and Retry). Ready shows nothing.
  */
-function Agent37TemplateCard({ status, loadError, onRetry }: { status: Agent37TemplateStatus | null; loadError: string | null; onRetry: () => void }) {
-  // ADE couldn't ask at all: say so, with Retry, rather than "Checking…" forever.
-  const state = loadError && !status ? "failed" : status?.state ?? "checking";
-  if (state !== "failed" && !(state === "building" && status && !status.usable)) return null;
-  const failed = state === "failed";
+function Agent37TemplateFoot({ status, loadError, onRetry }: { status: Agent37TemplateStatus | null; loadError: string | null; onRetry: () => void }) {
+  if ((loadError && !status) || status?.state === "failed") {
+    const reason = status?.error ?? loadError ?? "The build failed.";
+    const retryLine = status?.nextRetryAt ? agent37RetryLabel(status.nextRetryAt) : null;
+    return (
+      <div className="ade-ig-hero-foot-row" role="alert">
+        <Warning size={14} weight="fill" />
+        <b>New machines can't be made yet.</b>
+        <span>{reason}{retryLine ? ` ${retryLine}` : ""}</span>
+        <button type="button" className="ade-modern-btn" data-size="sm" onClick={onRetry}>
+          <ArrowClockwise size={12} /> Retry
+        </button>
+      </div>
+    );
+  }
+  if (status?.state !== "building") return null;
+  const progress = status.progress ?? null;
+  if (status.usable) {
+    return (
+      <div className="ade-ig-hero-foot-row" role="status">
+        <CircleNotch size={13} className="animate-spin" />
+        <span>
+          Updating the machine template{status.adeVersion ? ` to ADE ${status.adeVersion}` : ""}. New machines still work.
+          {progress ? ` Step ${progress.step} of ${progress.steps}: ${progress.label}.` : ""}
+        </span>
+      </div>
+    );
+  }
+  const percent = progress && progress.steps > 0 ? Math.min(100, Math.max(4, (progress.step / progress.steps) * 100)) : null;
   return (
-    <IntegrationCard
-      anchor="agent37-template"
-      icon={failed ? <Warning size={15} weight="fill" /> : <CircleNotch size={15} className="animate-spin" />}
-      title={failed ? "Machine template failed" : "Setting up machines"}
-      badge={failed ? null : (
-        <span className="kit-tag" data-tone="warn">{status?.minutesLeft != null ? `About ${status.minutesLeft} min` : "Building"}</span>
-      )}
-      tone={failed ? "focus" : undefined}
-      hint={failed ? undefined : `New machines can be made once ADE finishes its template in your ${AGENT37_NAME} workspace.`}
-    >
-      {failed ? (
-        <Banner
-          layout="inline"
-          model={{
-            id: "agent37-template-failed",
-            tone: "error",
-            title: "New machines can't be made until this is fixed",
-            detail: `${status?.error ?? loadError ?? "The build failed."}${status?.nextRetryAt ? ` ${agent37RetryLabel(status.nextRetryAt)}` : ""}`,
-            actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: onRetry }],
-          }}
-        />
+    <>
+      <div className="ade-ig-hero-foot-row" role="status">
+        <CircleNotch size={14} className="animate-spin" />
+        <b>Getting {AGENT37_NAME} ready for ADE. This happens once.</b>
+        <span>You can leave this page.</span>
+      </div>
+      <div
+        className="ade-ig-progress"
+        data-indeterminate={percent == null ? "true" : undefined}
+        role="progressbar"
+        aria-label="Template build"
+        aria-valuemin={percent == null ? undefined : 0}
+        aria-valuemax={percent == null ? undefined : 100}
+        aria-valuenow={percent == null ? undefined : Math.round(percent)}
+      >
+        <i style={percent == null ? undefined : { width: `${percent}%` }} />
+      </div>
+      {progress ? (
+        <div className="ade-ig-hero-foot-row"><span>Step {progress.step} of {progress.steps}: {progress.label}</span></div>
       ) : null}
-    </IntegrationCard>
+    </>
   );
+}
+
+/** "about 2 days" at this rate, or null when it lasts more than three days or nothing bills. */
+function walletRunwayWarning(balanceUsd: number | null, hourlyUsd: number): string | null {
+  if (balanceUsd == null || hourlyUsd <= 0) return null;
+  if (balanceUsd <= 0) return `Your ${AGENT37_NAME} wallet is empty. ${AGENT37_NAME} suspends your machines at the next hourly settle unless you top up.`;
+  const hours = balanceUsd / hourlyUsd;
+  if (hours > 72) return null;
+  const left = hours < 2 ? "about an hour" : hours < 48 ? `about ${Math.floor(hours)} hours` : `about ${Math.floor(hours / 24)} days`;
+  return `Your wallet lasts ${left} at this rate. When it runs out, ${AGENT37_NAME} suspends your machines.`;
 }
 
 /**
@@ -83,6 +133,8 @@ export function Agent37Section() {
   const [errorRetry, setErrorRetry] = useState<"load" | "disconnect">("load");
   const connected = status?.connected === true;
   const template = useAgent37Template(connected && !status?.error);
+  // One read of the workspace's machines for the hero's month, the warnings and the machines card.
+  const machines = useAgent37Machines(connected && !status?.error);
 
   const load = useCallback(async () => {
     if (!bridge) return;
@@ -164,34 +216,43 @@ export function Agent37Section() {
       : connected
         ? { tone: "ok" as const, label: "Connected" }
         : { tone: "neutral" as const, label: "Not connected" };
-  const facts: IntegrationFact[] = connected && !status?.error
+  const live = connected && !status?.error;
+  const spending = machines.result?.state === "ok" ? machines.result.spending : null;
+  const cap = spending?.monthlyCapUsd ?? null;
+  const facts: IntegrationFact[] = live
     ? [
-        { label: "Wallet", value: status?.balanceUsd != null ? `$${status.balanceUsd.toFixed(2)}` : "—", mono: true },
-        status?.tier === 0
-          ? {
-              label: "Machines",
-              value: status.instanceCount != null && status.instanceLimit != null
-                ? `${status.instanceCount} of ${status.instanceLimit}`
-                : "—",
-              title: `Until your first top-up, ${AGENT37_NAME} counts sleeping and stopped machines toward the limit.`,
-            }
-          : {
-              label: "Awake",
-              value: status?.runningCount != null && status.instanceLimit != null
-                ? `${status.runningCount} of ${status.instanceLimit}`
-                : "—",
-              title: status?.instanceCount != null
-                ? `${AGENT37_NAME} counts only awake machines toward the limit. You have ${status.instanceCount} in all.`
-                : `${AGENT37_NAME} counts only awake machines toward the limit.`,
-            },
         {
-          label: "Sizes",
-          value: status?.tier === 0 ? "Smallest box only" : "All sizes and VMs",
-          title: status?.tier === 0 ? `${AGENT37_NAME} unlocks VMs and bigger sizes after your first top-up.` : undefined,
+          label: "Machines",
+          value: status?.instanceCount == null
+            ? "—"
+            : status.instanceCount === 0
+              ? "None yet"
+              : `${status.instanceCount} · ${status.runningCount ?? 0} awake`,
         },
-        ...[credentialStorageFact(status?.credentialStorage)].filter((fact): fact is IntegrationFact => fact != null),
+        {
+          label: "This month",
+          value: spending?.monthSpentUsd != null
+            ? `${formatAgent37Usd(spending.monthSpentUsd)}${cap != null ? ` of ${formatAgent37Usd(cap)}` : ""}`
+            : "—",
+          mono: true,
+          tone: spending?.capReached || spending?.capNear ? "warn" : undefined,
+          title: `${AGENT37_NAME} settles spend once an hour, so the newest hour shows later.`,
+        },
+        templateFact(template.status, template.loadError),
       ]
     : [];
+  const templateFoot = live ? <Agent37TemplateFoot status={template.status} loadError={template.loadError} onRetry={template.retry} /> : null;
+  const templateReady = template.status?.usable === true && template.status.state !== "failed";
+  const showNext = live && templateReady && template.status?.state === "ready" && status?.instanceCount === 0;
+  const heroFoot = templateFoot && (template.status?.state === "building" || template.status?.state === "failed" || (template.loadError && !template.status))
+    ? templateFoot
+    : showNext
+      ? <div className="ade-ig-hero-foot-row"><b>Next</b><span>Make a machine below, or pick {AGENT37_NAME} when you start a chat.</span></div>
+      : null;
+  const storage = status?.credentialStorage ?? null;
+  const walletWarning = machines.result?.state === "ok" && !machines.result.pastDue
+    ? walletRunwayWarning(machines.result.balanceUsd, agent37GroupTotals(machines.result.machines).hourlyUsd)
+    : null;
 
   return (
     <IntegrationPage id="agent37">
@@ -199,25 +260,38 @@ export function Agent37Section() {
         id="agent37"
         anchor={connected ? "agent37-connection" : undefined}
         status={heroStatus}
-        account={connected ? {
-          avatar: <Agent37Mark size={16} />,
-          title: `${AGENT37_NAME} workspace`,
-          detail: status?.balanceUsd != null ? `$${status.balanceUsd.toFixed(2)} in the wallet` : undefined,
-        } : null}
-        actions={connected ? (
+        panel={connected ? (
           <>
-            <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => openConnectionsPanel("machines")}>
-              Your machines
-            </button>
-            <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" onClick={() => openExternalUrl(AGENT37_BILLING_URL)}>
-              <ArrowSquareOut size={12} /> Wallet
-            </button>
-            <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" disabled={busy} onClick={() => void disconnect()}>
-              <LinkBreak size={12} /> Disconnect
-            </button>
+            <div className="ade-ig-account">
+              <span className="ade-ig-avatar" aria-hidden><Agent37Mark size={16} /></span>
+              <div className="ade-ig-account-id">
+                <b>{AGENT37_NAME} workspace</b>
+                {status?.balanceUsd != null ? <span>{formatAgent37Usd(status.balanceUsd)} in the wallet</span> : null}
+              </div>
+            </div>
+            {status?.tier === 0 ? (
+              <p className="ade-ig-hero-panel-warn">Top up once to unlock VMs and bigger sizes.</p>
+            ) : null}
+            <div className="ade-ig-hero-panel-actions">
+              <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => openExternalUrl(AGENT37_DASHBOARD_URL)}>
+                <ArrowSquareOut size={12} /> Open dashboard
+              </button>
+              <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" onClick={() => openExternalUrl(AGENT37_BILLING_URL)}>
+                <Wallet size={12} /> Top up
+              </button>
+              <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" disabled={busy} onClick={() => void disconnect()}>
+                <LinkBreak size={12} /> Disconnect
+              </button>
+            </div>
+            {storage ? (
+              <p className="ade-ig-hero-panel-quiet" title={storage.storage === "account" ? undefined : storage.message ?? undefined}>
+                {storage.storage === "account" ? "Key kept in your ADE account" : "Key kept on this computer only"}
+              </p>
+            ) : null}
           </>
-        ) : null}
+        ) : undefined}
         facts={facts}
+        footer={heroFoot}
       />
 
       {error ? (
@@ -238,20 +312,40 @@ export function Agent37Section() {
         <Banner layout="inline" model={{ id: "agent37-saved-key-error", tone: "warning", title: connected ? `Couldn't reach ${AGENT37_NAME}` : `${AGENT37_NAME} refused the saved key`, detail: status.error, actions: [{ label: "Check again", onClick: () => { void load(); } }] }} />
       ) : null}
 
+      {live && machines.result?.state === "ok" && machines.result.pastDue ? (
+        <Banner layout="inline" model={{ id: "agent37-suspended", tone: "error", title: `${AGENT37_NAME} suspended your machines`, detail: "Your wallet ran out, so every machine is asleep and not billing. Top up to wake them. A machine left suspended for 30 days is deleted.", actions: [{ label: "Top up", href: AGENT37_BILLING_URL }], report: false }} />
+      ) : walletWarning ? (
+        <Banner layout="inline" model={{ id: "agent37-wallet-low", tone: "warning", title: "Your wallet is running low", detail: walletWarning, actions: [{ label: "Top up", href: AGENT37_BILLING_URL }], report: false }} />
+      ) : null}
+      {live && spending && (spending.capReached || spending.capNear) ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: spending.capReached ? "agent37-cap-reached" : "agent37-cap-near",
+            tone: spending.capReached ? "warning" : "info",
+            title: spending.capReached ? "You reached this month's cap" : "Close to this month's cap",
+            detail: spending.capReached
+              ? "ADE makes, wakes and resizes nothing until the 1st or until you raise the cap below. Running work carries on."
+              : "At the cap ADE stops making and waking machines. You can raise it below.",
+            report: false,
+          }}
+        />
+      ) : null}
+
       <IntegrationColumns>
         {connected ? (
           <>
-            {!status?.error ? <Agent37TemplateCard status={template.status} loadError={template.loadError} onRetry={template.retry} /> : null}
-            {!status?.error ? <Agent37ReadyMachinesCard status={status} /> : null}
-            {!status?.error ? <Agent37SpendingCard /> : null}
-            {!status?.error ? <Agent37AgentLimitsCard /> : null}
+            {live ? <Agent37ClaudeSignInCard /> : null}
+            {live ? <Agent37ReadyMachinesCard status={status} /> : null}
+            {live ? <Agent37MachinesCard status={status} machines={machines} /> : null}
+            {live ? <Agent37AgentLimitsCard /> : null}
           </>
         ) : (
           <IntegrationCard
             anchor="agent37-connection"
             icon={<Agent37Mark size={15} />}
             title={`Connect ${AGENT37_NAME}`}
-            hint="Paste a workspace API key. ADE keeps it in your account, so every computer you sign in to can make machines with it."
+            hint="ADE keeps the key in your ADE account, so every computer you sign in to can use it."
             actions={loading ? <CircleNotch size={14} className="animate-spin" /> : null}
           >
             <ol className="ade-ig-steps">
@@ -260,6 +354,7 @@ export function Agent37Section() {
                 <div className="ade-ig-step-main">
                   <div className="ade-ig-step-head"><b>Create an API key</b></div>
                   <p className="ade-ig-note">In your {AGENT37_NAME} dashboard, under API keys. It starts with sk_live_.</p>
+                  <img className="ade-ig-step-shot" src={agent37ApiKeyShot} alt={`${AGENT37_NAME}'s API keys page, with the Create API key button at the top right`} loading="lazy" draggable={false} />
                   <div className="ade-ig-step-actions">
                     <button type="button" className="ade-modern-btn" onClick={() => openExternalUrl(AGENT37_API_KEYS_URL)}>
                       <ArrowSquareOut size={12} /> Open {AGENT37_NAME}

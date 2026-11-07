@@ -692,6 +692,8 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
 
     /** True while an agent holds the lane's device lease: the emulator is in use even between its calls. */
     isLeased: (laneId: string): boolean => leases.status(laneId).held,
+    /** The lane's emulator booted: per-boot device setup (Chrome's first run) runs again. */
+    onDeviceBooted: (laneId: string): void => apps.forgetBoot(laneId),
 
     /** The lane's stream is about to stop (the device stopped or crashed): end its recording first. */
     async onStreamEnding(laneId: string): Promise<void> {

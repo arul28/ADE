@@ -548,12 +548,15 @@ ade projects list --text
 ade projects inspect /path/to/checkout --json   # classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 ade init
 ade lanes list --text                             # every git worktree of the project is a lane: this reconciles against git on each call, adopting worktrees made outside ADE and dropping lanes whose worktree is gone from git and disk. There is no attach/adopt step
-ade lanes create --name fix-login --text
+ade lanes create --name fix-login --text            # branch from the project's pattern (ade/fix-login by default)
+ade lanes create --name fix-login --branch-name JIRA-123-fix-login   # name the branch yourself; a taken name (any case) is refused
 ade lanes create --name followup --from feature/login --on local
 ade lanes create --name followup --from feature/login --on uncommitted # copies changes
 ade lanes create --name login --existing-branch feature/login
 ade lanes defaults --text
 ade lanes defaults set --from primary --on local
+ade lanes defaults set --from develop --on remote           # a named branch; falls back to the default branch if it is deleted
+ade lanes defaults set --branch-pattern "{user}/{slug}"     # new branch names: "ade/{slug}" (default), "{user}/{slug}", "{slug}" (no prefix)
 ade lanes create --linear-issue-json '{"id":"...","identifier":"ENG-431"}' --start-chat --provider codex --model <model>
 ade lanes create --linear-issues-json '[{"id":"...","identifier":"ENG-431"},{"id":"...","identifier":"ENG-440"}]'
 ade lane drift --lane lane-id --text              # did someone `git checkout` inside the worktree? compares live HEAD to the lane's recorded branch

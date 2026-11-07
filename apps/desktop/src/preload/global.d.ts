@@ -1,5 +1,5 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
-import type { Agent37Budget, Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus, Agent37Status, Agent37TemplateStatus, Agent37WakeForUseResult } from "../shared/agent37";
+import type { Agent37Budget, Agent37ClaudeTokenStatus, Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus, Agent37Status, Agent37TemplateStatus, Agent37WakeForUseResult } from "../shared/agent37";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
@@ -806,6 +806,9 @@ import type {
   PtyExitEvent,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
+  RenameLaneBranchArgs,
+  RenameLaneBranchResult,
+  LaneBranchNameCheck,
   RiskMatrixEntry,
   RunTestSuiteArgs,
   PrepareConflictProposalArgs,
@@ -1378,7 +1381,7 @@ declare global {
       };
       storage: {
         getPressure: () => Promise<DiskPressureSnapshot>;
-        getSnapshot: (args?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<StorageSnapshot>;
+        getSnapshot: (args?: { forceRefresh?: boolean; measureLanes?: boolean }, pin?: OpenProjectBinding | null) => Promise<StorageSnapshot>;
         compressNow: (pin?: OpenProjectBinding | null) => Promise<StorageCompressionResult>;
         runMaintenanceNow: (pin?: OpenProjectBinding | null) => Promise<MaintenanceRunReport>;
         deletedLaneChatsSummary: (pin?: OpenProjectBinding | null) => Promise<DeletedLaneChatsSummary>;
@@ -2276,6 +2279,10 @@ declare global {
           args: ResolveLaneBranchDriftArgs,
         ) => Promise<ResolveLaneBranchDriftResult>;
         rename: (args: RenameLaneArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        /** Rename the lane's branch while it is unpushed, untracked and has no PR; `dryRun` only checks. */
+        renameBranch: (args: RenameLaneBranchArgs, pin?: OpenProjectBinding | null) => Promise<RenameLaneBranchResult>;
+        /** Whether a new lane's branch can have this name on the lane's machine. */
+        checkBranchName: (args: { name: string }, pin?: OpenProjectBinding | null) => Promise<LaneBranchNameCheck>;
         updateAppearance: (
           args: UpdateLaneAppearanceArgs,
           pin?: OpenProjectBinding | null,
@@ -4702,6 +4709,12 @@ declare global {
          * for the next chat. The choice is in the account vault and the pool
          * on Agent37, so no pin: every computer answers the same.
          */
+        claudeTokenStatus?: () => Promise<Agent37ClaudeTokenStatus | null>;
+        claudeTokenStart?: () => Promise<Agent37ClaudeTokenStatus | null>;
+        claudeTokenSubmitCode?: (code: string) => Promise<Agent37ClaudeTokenStatus | null>;
+        claudeTokenCancel?: () => Promise<Agent37ClaudeTokenStatus | null>;
+        claudeTokenRemove?: () => Promise<Agent37ClaudeTokenStatus | null>;
+        onClaudeTokenChanged?: (cb: () => void) => () => void;
         readyStatus?: () => Promise<Agent37ReadyStatus | null>;
         readySetProject?: (settings: Partial<Agent37ReadyProjectSettings>) => Promise<Agent37ReadyStatus | null>;
         readyRemoveProject?: (identity: string) => Promise<Agent37ReadyStatus | null>;

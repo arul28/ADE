@@ -649,6 +649,9 @@ import type {
   ChatTerminalSignalArgs,
   ChatTerminalWriteArgs,
   RenameLaneArgs,
+  RenameLaneBranchArgs,
+  RenameLaneBranchResult,
+  LaneBranchNameCheck,
   RebaseAbortArgs,
   RebasePushArgs,
   RebaseRollbackArgs,
@@ -4217,7 +4220,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.storageGetSnapshot, async (
     _event,
-    args: { forceRefresh?: boolean } | undefined,
+    args: { forceRefresh?: boolean; measureLanes?: boolean } | undefined,
   ): Promise<StorageSnapshot> => {
     const service = requireAppContextValue(getCtx(), "storageInsightsService");
     return service.getSnapshot(args ?? {});
@@ -7578,6 +7581,7 @@ export function registerIpc({
       description: arg.description,
       start: arg.start ?? null,
       branchName: arg.branchName,
+      ...(arg.autoNamedBranch === true ? { autoNamedBranch: true } : {}),
       ...(arg.startPoint ? { startPoint: arg.startPoint } : {}),
       linearIssue: arg.linearIssue ?? null,
       githubIssue: arg.githubIssue ?? null,
@@ -7621,6 +7625,12 @@ export function registerIpc({
     const ctx = ensureLaneContext();
     ctx.laneService.rename(arg);
   });
+
+  ipcMain.handle(IPC.lanesRenameBranch, async (_event, arg: RenameLaneBranchArgs): Promise<RenameLaneBranchResult> =>
+    ensureLaneContext().laneService.renameBranch(arg));
+
+  ipcMain.handle(IPC.lanesCheckBranchName, async (_event, arg: { name: string }): Promise<LaneBranchNameCheck> =>
+    ensureLaneContext().laneService.checkBranchName(arg));
 
   ipcMain.handle(IPC.lanesUpdateAppearance, async (_event, arg: UpdateLaneAppearanceArgs): Promise<void> => {
     const ctx = ensureLaneContext();

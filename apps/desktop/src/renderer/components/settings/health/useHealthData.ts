@@ -41,6 +41,8 @@ export type ReportData = {
 };
 
 const EMPTY_POLICY: LaneCleanupConfig = {};
+/** How often the page re-reads the snapshot while lane folders are measured. */
+const LANE_SIZING_REFRESH_MS = 3_000;
 
 function emptyStorage(loading: boolean): StorageData {
   return {
@@ -100,7 +102,7 @@ export function useHealthData(
   const diagnosticsRequest = React.useRef(0);
   const reportRequest = React.useRef(0);
 
-  const loadStorage = React.useCallback(async (opts: { force?: boolean; silent?: boolean } = {}) => {
+  const loadStorage = React.useCallback(async (opts: { force?: boolean; silent?: boolean; measureLanes?: boolean } = {}) => {
     if (!wantStorage) return;
     const request = ++storageRequest.current;
     setStorage((current) => ({
@@ -111,7 +113,7 @@ export function useHealthData(
     }));
     try {
       const [snap, pressure, lanes, config] = await Promise.all([
-        window.ade.storage.getSnapshot({ forceRefresh: opts.force }, pin),
+        window.ade.storage.getSnapshot({ forceRefresh: opts.force, ...(opts.measureLanes ? { measureLanes: true } : {}) }, pin),
         isThisMachine ? window.ade.storage.getPressure().catch(() => null) : Promise.resolve(null),
         window.ade.lanes?.list?.({ includeArchived: true }, pin).catch(() => []) ?? Promise.resolve([]),
         window.ade.projectConfig.get(pin).catch(() => null),
@@ -129,13 +131,8 @@ export function useHealthData(
         pressureState: pressure?.state,
         laneIdByKey: ids,
         archivedAtByKey: archivedAt,
-        policy: config
-          ? {
-              ...(config.local.laneCleanup ?? {}),
-              autoDeleteArchivedAfterHours: undefined,
-              deleteRemoteBranchOnCleanup: undefined,
-            }
-          : EMPTY_POLICY,
+        // The brain reads older hour keys into these day keys (`coerceLaneCleanupConfig`).
+        policy: config?.local.laneCleanup ?? EMPTY_POLICY,
         effectivePolicy: config?.effective.laneCleanup ?? EMPTY_POLICY,
         loading: false,
         refreshing: false,
@@ -151,6 +148,33 @@ export function useHealthData(
       }));
     }
   }, [isThisMachine, pin, wantStorage]);
+
+  // While the background lane measurement runs, re-read only the snapshot now
+  // and then (the brain answers from its cache with the live progress), so the
+  // page shows "3 of 18" and then the measured sizes. Stops when it finishes.
+  // A failed read tries again on the same beat (a brain restart, a remote
+  // machine that dropped for a moment), so the page never sticks on
+  // "Measuring lanes" with Check again disabled.
+  const laneSizingRunning = Boolean(storage.snapshot?.laneSizing?.running);
+  const [laneSizingRetry, setLaneSizingRetry] = React.useState(0);
+  React.useEffect(() => {
+    if (!wantStorage || !laneSizingRunning) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const request = storageRequest.current;
+      void window.ade.storage.getSnapshot({}, pin).then((snap) => {
+        if (cancelled || request !== storageRequest.current) return;
+        setStorage((current) => ({ ...current, snapshot: snap }));
+      }).catch((error: unknown) => {
+        console.warn("storage.lane_sizing_poll_failed", error);
+        if (!cancelled) setLaneSizingRetry((count) => count + 1);
+      });
+    }, LANE_SIZING_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [laneSizingRunning, laneSizingRetry, storage.snapshot, pin?.key, wantStorage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadDiagnostics = React.useCallback(async () => {
     if (!wantDiagnostics) return;

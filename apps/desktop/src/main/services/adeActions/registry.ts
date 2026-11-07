@@ -300,6 +300,7 @@ import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { agent37VaultFromStore, buildAgent37ConnectAdapter, type Agent37CredentialDeps } from "../agent37/agent37Credential";
+import { AGENT37_CLAUDE_TOKEN_VAULT_KEY, agent37MachineEnv } from "../agent37/agent37ClaudeTokenStore";
 import { buildAgent37ReadyActions } from "../agent37/agent37ReadyActions";
 import { buildAgent37AgentActions } from "../agent37/agent37AgentActions";
 import { createAgent37BrainMaker, type Agent37BrainMaker } from "../agent37/agent37BrainMaker";
@@ -4105,6 +4106,12 @@ function agent37BrainMakerFor(runtime: AdeRuntime, machines: ReturnType<typeof c
       listAccountMachines: () => directory().listMachines(),
       renameMachine: (machineKey, name) => directory().renameMachine(machineKey, name),
       templateName: () => process.env.ADE_AGENT37_TEMPLATE?.trim() || AGENT37_DEFAULT_TEMPLATE,
+      // The person's Claude token, so Claude is signed in on the new machine (agent37ClaudeToken.ts).
+      machineEnv: () => agent37MachineEnv(
+        account.getStatus().signedIn && runtime.accountVaultStore
+          ? agent37VaultFromStore(runtime.accountVaultStore, AGENT37_CLAUDE_TOKEN_VAULT_KEY)
+          : null,
+      ),
       spending: () => machines.spending(),
       removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
       logger: runtime.logger,
@@ -4316,7 +4323,7 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
   const storageInsightsService = runtime.storageInsightsService;
   if (!storageInsightsService) return null;
   return {
-    getSnapshot: (args?: { forceRefresh?: boolean }) => storageInsightsService.getSnapshot(args),
+    getSnapshot: (args?: { forceRefresh?: boolean; measureLanes?: boolean }) => storageInsightsService.getSnapshot(args),
     compressNow: () => storageInsightsService.compressNow(),
     runMaintenanceNow: () => storageInsightsService.runMaintenanceNow(),
     deletedLaneChatsSummary: () => storageInsightsService.deletedLaneChatsSummary(),

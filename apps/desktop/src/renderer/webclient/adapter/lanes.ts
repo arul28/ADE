@@ -1,9 +1,11 @@
 import {
   LANES_INVALIDATED_LANE_ID,
   type ArchiveAndReclaimLaneResult,
+  type LaneBranchNameCheck,
   type LaneLifecycleEvent,
   type LaneListSnapshot,
   type NewLaneDefaultsSnapshot,
+  type RenameLaneBranchResult,
   type ResolveLaneBranchDriftResult,
   type RestoreLaneResult,
 } from "../../../shared/types";
@@ -94,6 +96,16 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     rename: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("rename", pin);
       await call("lanes.rename", args, undefined, false);
+    },
+    // Neither answer may come from a cache: a branch can be pushed, or a
+    // name taken, a moment later.
+    renameBranch: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("renameBranch", pin);
+      return commands.call<RenameLaneBranchResult>("lanes.renameBranch", asRecord(args), mutation);
+    },
+    checkBranchName: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("checkBranchName", pin);
+      return commands.call<LaneBranchNameCheck>("lanes.checkBranchName", asRecord(args), mutation);
     },
     updateAppearance: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("updateAppearance", pin);

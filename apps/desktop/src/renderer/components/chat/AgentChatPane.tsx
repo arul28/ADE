@@ -141,6 +141,7 @@ import {
 import {
   deriveDeterministicLaneNameFromPrompt,
   deriveDeterministicLaneTitleFromPrompt,
+  legacyAutoLaneTemporaryBranch,
 } from "../../../shared/laneNameFallback";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import {
@@ -396,7 +397,8 @@ import {
 import { peekNewLaneDefaultsCached, useNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { describeAutoCreateStart } from "../lanes/laneStartOptions";
 import { autoLaneMachine, originUrlForBinding } from "../lanes/laneMachines";
-import { AGENT37_READY_MACHINE_ID, useAgent37ReadyDraftMachine } from "./useAgent37ReadyDraftMachine";
+import { AGENT37_NEW_MACHINE_ID, AGENT37_READY_MACHINE_ID, useAgent37ReadyDraftMachine } from "./useAgent37ReadyDraftMachine";
+import { NewAgent37MachineDialog } from "../remoteTargets/NewAgent37MachineDialog";
 import { autoPickSummary } from "../lanes/machineLoadText";
 import { useMachinePlacement } from "../lanes/useMachinePlacement";
 import { chatLaunchLaneStart } from "../../../shared/chatLaunch";
@@ -1389,11 +1391,6 @@ function chatLaunchLaneConfigFromDraft(config: NewLaneDraftConfig): ChatLaunchLa
   return recipe.mode === "new" && !name.trim() ? { ...recipe, autoName: true } : recipe;
 }
 
-function createTemporaryAutoLaneBranch(): string {
-  const bytes = new Uint8Array(4);
-  crypto.getRandomValues(bytes);
-  return `ade/${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-}
 
 /**
  * What a host may put into the pane's composer (`composerHandleRef`).
@@ -12774,8 +12771,14 @@ export function AgentChatPane({
         assertActive?.();
         const createArgs = {
           name: laneName,
-          // A lane the user named derives its branch from that name.
-          ...(configuredName ? {} : { branchName: createTemporaryAutoLaneBranch() }),
+          // A lane the user named derives its branch from that name (or takes
+          // the one they typed); otherwise the lane's machine picks a
+          // placeholder in the project's branch pattern, renamed once named.
+          // The legacy `ade/<8 hex>` rides along for an older machine, which
+          // ignores `autoNamedBranch`.
+          ...(configuredName
+            ? configured?.branchName ? { branchName: configured.branchName } : {}
+            : { autoNamedBranch: true, branchName: legacyAutoLaneTemporaryBranch() }),
           ...(configured?.start ? { start: configured.start } : {}),
           ...(configured?.linearIssue ? { linearIssue: configured.linearIssue } : {}),
         };
@@ -16450,8 +16453,10 @@ export function AgentChatPane({
   const {
     option: agent37ReadyOption,
     choose: chooseAgent37ReadyMachine,
+    chooseNew: chooseNewAgent37Machine,
     abandon: abandonAgent37ReadyMachine,
     waking: agent37ReadyWaking,
+    create: agent37CreateDialog,
   } = useAgent37ReadyDraftMachine({
     enabled: showDraftLaunchControls,
     originUrl: originUrlForBinding(projectBinding),
@@ -16541,7 +16546,7 @@ export function AgentChatPane({
     return machine ? { machineId: machine.id, summary: autoPickSummary(machine) } : null;
   }, [placedDraftMachines]);
   const draftShelfMachineValue = agent37ReadyWaking
-    ? AGENT37_READY_MACHINE_ID
+    ? (agent37ReadyOption?.id ?? AGENT37_READY_MACHINE_ID)
     : cursorCloudMode
       ? CURSOR_CLOUD_MACHINE_ID
       : devinCloudMode
@@ -16553,6 +16558,11 @@ export function AgentChatPane({
       setCursorCloudMode(false);
       setDevinCloudMode(false);
       void chooseAgent37ReadyMachine();
+      return;
+    }
+    if (nextMachineId === AGENT37_NEW_MACHINE_ID) {
+      // Opens the create form; the chat keeps its machine until the new one is connected.
+      chooseNewAgent37Machine();
       return;
     }
     abandonAgent37ReadyMachine();
@@ -16574,7 +16584,7 @@ export function AgentChatPane({
     setDevinCloudMode(false);
     keepLaneOnMachine(null);
     handleDraftMachineChange(nextMachineId);
-  }, [abandonAgent37ReadyMachine, chooseAgent37ReadyMachine, handleDraftMachineChange, keepLaneOnMachine, setCursorCloudMode, workDraftProjectStateKey]);
+  }, [abandonAgent37ReadyMachine, chooseAgent37ReadyMachine, chooseNewAgent37Machine, handleDraftMachineChange, keepLaneOnMachine, setCursorCloudMode, workDraftProjectStateKey]);
   // A draft opened in a cloud lane (from the sidebar, a deeplink) is on that
   // cloud: the lane has no other machine.
   useEffect(() => {
@@ -19666,6 +19676,13 @@ export function AgentChatPane({
                                 onOpen={handleDraftMachinePickerOpen}
                                 autoPick={draftAutoMachine}
                               />
+                              {agent37CreateDialog ? (
+                                <NewAgent37MachineDialog
+                                  status={agent37CreateDialog.status}
+                                  onCreated={(result) => void agent37CreateDialog.onCreated(result)}
+                                  onClose={agent37CreateDialog.onClose}
+                                />
+                              ) : null}
                               <LaneCombobox
                                 lanes={draftShelfLanes}
                                 value={draftShelfLaneValue}

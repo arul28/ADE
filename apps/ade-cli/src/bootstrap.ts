@@ -30,6 +30,7 @@ import { mapKvDbOpenErrorCode } from "../../desktop/src/shared/types/recovery";
 import { codedError } from "../../desktop/src/shared/codedError";
 import { markExpected } from "../../desktop/src/shared/expectedError";
 import { shippedVersionOrNull } from "../../desktop/src/shared/updateTrack";
+import { staleLaneDays } from "../../desktop/src/shared/laneCleanup";
 import {
   detectCloudPlaceholderFile,
   detectCloudStorageProvider,
@@ -3845,6 +3846,8 @@ export async function createAdeRuntime(args: {
       logger,
       listLanes: () => laneService.list({ includeArchived: false }),
       readChatTurnStates: createProjectHealthTurnStateReader(agentChatService),
+      // The "Archive idle lanes after" rule, when on, is where a lane turns stale.
+      staleAfterDays: () => staleLaneDays(projectConfigService.get().effective.laneCleanup),
       openTerminal: async (request) => {
         await ptyService.create({
           laneId: request.laneId,

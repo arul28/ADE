@@ -1481,6 +1481,7 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "local_lane_storage_state",
   "local_storage_lifecycle_runs",
   "local_lane_build_output_cleanups",
+  "local_lane_size_measurements",
   // Host-local settle concurrency token. Never replicated: it is meaningless
   // off the host that issued it, and putting it on the CRR `terminal_sessions`
   // row would add a per-column clock entry to the per-output-chunk write path.
@@ -4889,6 +4890,9 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     )
   `);
   db.run("create index if not exists idx_local_lane_storage_state_project on local_lane_storage_state(project_id, updated_at desc)");
+  // A reclaim that found the folder still in use: when it was first kept, so
+  // the storage doctor finishes the removal later without an error.
+  safeAddColumn(db, "alter table local_lane_storage_state add column pending_removal_at text");
   db.run(`
     create table if not exists local_storage_lifecycle_runs (
       project_id text primary key,
@@ -4900,6 +4904,11 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   // When the idle-lane build output cleanup last looked at this project's lanes.
   safeAddColumn(db, "alter table local_storage_lifecycle_runs add column build_output_checked_at text");
+  // When the archive rules last started a scan (finished or not), so a scan
+  // that fails backs off instead of rerunning every minute, and what the last
+  // scan did per lane (JSON), for Settings' "Last run".
+  safeAddColumn(db, "alter table local_storage_lifecycle_runs add column last_attempt_at text");
+  safeAddColumn(db, "alter table local_storage_lifecycle_runs add column last_run_json text");
   // Machine-local record of build output (node_modules, dist, ...) removed
   // from idle lane folders: what went, when, how much it freed, and why a
   // folder could not be removed. Paths and results describe this checkout only.
@@ -4917,6 +4926,24 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     )
   `);
   db.run("create index if not exists idx_local_lane_build_output_cleanups_project on local_lane_build_output_cleanups(project_id, removed_at desc)");
+  // The folder as it was when its removal failed (inode and change time), so
+  // a failed folder is retried only once something changed it.
+  safeAddColumn(db, "alter table local_lane_build_output_cleanups add column fingerprint text");
+  // Machine-local full size of each lane folder, measured in the background
+  // by the storage doctor (no entry cap), so Settings shows a lane's real size
+  // and when it was measured instead of a capped walk's lower bound.
+  db.run(`
+    create table if not exists local_lane_size_measurements (
+      lane_id text primary key,
+      project_id text not null,
+      worktree_path text not null,
+      bytes integer not null default 0,
+      file_count integer not null default 0,
+      last_modified_at text,
+      measured_at text not null,
+      duration_ms integer not null default 0
+    )
+  `);
 
   // Host-local concurrency token for the session settle lifecycle. Every
   // mutation of the settle tuple (`settled_at` / `settle_override` /

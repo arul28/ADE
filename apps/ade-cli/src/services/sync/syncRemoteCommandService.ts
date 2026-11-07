@@ -2020,6 +2020,7 @@ function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
     ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
     ...(start ? { start } : {}),
     ...(asTrimmedString(value.branchName) ? { branchName: asTrimmedString(value.branchName)! } : {}),
+    ...(value.autoNamedBranch === true ? { autoNamedBranch: true } : {}),
     ...(asTrimmedString(value.startPoint) ? { startPoint: asTrimmedString(value.startPoint)! } : {}),
     ...(isRecord(value.linearIssue) ? { linearIssue: value.linearIssue as CreateLaneArgs["linearIssue"] } : {}),
     ...(isRecord(value.githubIssue) ? { githubIssue: value.githubIssue as CreateLaneArgs["githubIssue"] } : {}),
@@ -4302,6 +4303,18 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     args.laneService.rename(parseRenameLaneArgs(payload));
     return { ok: true };
   });
+  register("lanes.renameBranch", { viewerAllowed: true }, async (payload) => {
+    const branchName = asTrimmedString(payload.branchName);
+    return args.laneService.renameBranch({
+      laneId: requireString(payload.laneId, "lanes.renameBranch requires laneId."),
+      ...(branchName ? { branchName } : {}),
+      ...(payload.dryRun === true ? { dryRun: true } : {}),
+    });
+  });
+  register("lanes.checkBranchName", { viewerAllowed: true }, async (payload) =>
+    args.laneService.checkBranchName({
+      name: requireString(payload.name, "lanes.checkBranchName requires name."),
+    }));
   register("lanes.updateAppearance", { viewerAllowed: true, queueable: true }, async (payload) => {
     args.laneService.updateAppearance(parseUpdateLaneAppearanceArgs(payload));
     return { ok: true };
@@ -4383,7 +4396,11 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
       }
       defaults.templateId = raw.templateId;
     }
-    return args.laneService.setNewLaneDefaults({ defaults });
+    if (raw.branchPattern !== undefined) {
+      if (typeof raw.branchPattern !== "string") throw new Error("lanes.setNewLaneDefaults branchPattern must be a string.");
+      defaults.branchPattern = raw.branchPattern;
+    }
+    return await args.laneService.setNewLaneDefaults({ defaults });
   });
   // The template reads above shipped without their writes, so a remote client
   // could list templates and "save" one into nothing.

@@ -10,11 +10,6 @@ struct WorkAutoLaneNameSuggestion {
   let hostApplied: Bool
 }
 
-func workAutoLaneTemporaryBranch() -> String {
-  let hex = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-  return "ade/\(hex.prefix(8))"
-}
-
 func workCursorCloudLaunchFingerprint(
   projectId: String?,
   laneId: String,
@@ -1636,11 +1631,10 @@ struct WorkNewChatScreen: View {
       }
       do {
         let laneName = autoCreatedLaneName(opener: opener)
-        let temporaryBranch = workAutoLaneTemporaryBranch()
         let lane = try await syncService.createLane(
           name: laneName,
           description: opener.isEmpty ? "" : String(opener.prefix(280)),
-          branchName: temporaryBranch,
+          autoNamedBranch: true,
           targetProjectId: remoteRepo?.markedProjectId,
           targetProjectRootPath: remoteRepo?.rootPath,
           setUpLane: true
@@ -1649,7 +1643,8 @@ struct WorkNewChatScreen: View {
         targetLaneForScope = lane
         createdLaneId = lane.id
         autoCreatedFallbackName = laneName
-        autoCreatedTemporaryBranch = temporaryBranch
+        // The host chose the placeholder in the project's branch pattern.
+        autoCreatedTemporaryBranch = lane.branchRef
         await onRefreshLanes()
       } catch {
         ADEHaptics.error()

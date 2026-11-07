@@ -92,7 +92,7 @@ export type TreeMeasurement = {
   /** Entries looked at (files and folders). */
   entries: number;
   lastModifiedMs: number | null;
-  /** Stopped at the entry limit or the deadline: `bytes` is a lower bound. */
+  /** Stopped at the entry limit, the deadline or the signal: `bytes` is a lower bound. */
   truncated: boolean;
 };
 
@@ -101,6 +101,8 @@ export type MeasureTreeOptions = {
   /** Absolute `Date.now()` time to stop at. */
   deadline?: number;
   concurrency?: number;
+  /** Stops the walk (shutdown); the result is then `truncated`. */
+  signal?: AbortSignal;
 };
 
 const DEFAULT_CONCURRENCY = 8;
@@ -115,13 +117,25 @@ export async function measureTree(rootPath: string, options: MeasureTreeOptions 
   const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
   const tally = createLinkedFileTally();
   const skipped = new Set<string>();
-  const pending = [path.resolve(rootPath)];
-  while (pending.length > 0) {
-    if (result.entries >= entryLimit || (options.deadline != null && Date.now() >= options.deadline)) {
+  // A queue read from `head`, not `splice(0, n)`: shifting the whole list per
+  // batch is quadratic on an uncapped walk of a lane with a million files.
+  let pending = [path.resolve(rootPath)];
+  let head = 0;
+  while (head < pending.length) {
+    if (
+      result.entries >= entryLimit
+      || (options.deadline != null && Date.now() >= options.deadline)
+      || options.signal?.aborted
+    ) {
       result.truncated = true;
       break;
     }
-    const batch = pending.splice(0, Math.min(concurrency, Math.max(1, entryLimit - result.entries)));
+    if (head > 4096 && head * 2 > pending.length) {
+      pending = pending.slice(head);
+      head = 0;
+    }
+    const batch = pending.slice(head, head + Math.min(concurrency, Math.max(1, entryLimit - result.entries)));
+    head += batch.length;
     result.entries += batch.length;
     const inspected = await Promise.all(batch.map(async (current) => {
       if (skipped.has(current)) return null;
@@ -149,7 +163,8 @@ export async function measureTree(rootPath: string, options: MeasureTreeOptions 
       result.lastModifiedMs = Math.max(result.lastModifiedMs ?? 0, entry.stat.mtimeMs);
       if (entry.stat.isSymbolicLink()) continue;
       if (entry.stat.isDirectory()) {
-        pending.push(...entry.children);
+        // One push per child: spreading a folder of 200k names overflows the stack.
+        for (const child of entry.children) pending.push(child);
       } else {
         result.bytes += tally(entry.stat);
         result.fileCount += 1;
