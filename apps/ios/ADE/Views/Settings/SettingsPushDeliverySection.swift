@@ -75,15 +75,17 @@ struct SettingsPushDeliverySection: View {
     @ViewBuilder
     private var controls: some View {
         if let notice = permissionNotice {
-            ADESettingsNotice(
-                message: notice.message,
+            ADESettingsCallout(
+                symbol: "bell.slash",
                 tone: .warn,
+                title: notice.title,
+                detail: notice.detail,
                 actionTitle: notice.actionTitle,
                 action: notice.action
             )
         }
 
-        ADESettingsSection("Push delivery", hint: "Alerts and Live Activities from your computers.") {
+        ADESettingsSection("Push delivery", hint: "Alerts and Live Activities from your computers.", symbol: "bell.badge", tint: .red) {
             ADESettingsRows {
                 toggleRow("Notifications", hint: "Approvals, replies and failures", isOn: notificationsBinding)
                 toggleRow("Live Activities", hint: "Agent runs on the Lock Screen", isOn: liveActivitiesBinding)
@@ -91,9 +93,9 @@ struct SettingsPushDeliverySection: View {
             }
         }
 
-        ADESettingsSection("Quiet hours", hint: "Mute pushes on a schedule.") {
+        ADESettingsSection("Quiet hours", symbol: "moon", tint: .violet) {
             ADESettingsRows {
-                toggleRow("Quiet hours", hint: nil, isOn: quietHoursBinding)
+                toggleRow("Mute pushes on a schedule", hint: nil, isOn: quietHoursBinding)
                 if pushService.prefs.quietHoursEnabled {
                     ADESettingsRow(title: "From") {
                         DatePicker("", selection: quietHoursDateBinding(\.quietHoursStart), displayedComponents: .hourAndMinute)
@@ -114,30 +116,24 @@ struct SettingsPushDeliverySection: View {
     }
 
     private func toggleRow(_ title: String, hint: String?, isOn: Binding<Bool>) -> some View {
-        ADESettingsRow(title: title, hint: hint) {
-            Toggle("", isOn: isOn)
-                .labelsHidden()
-                .tint(ADEColor.accent)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(title)
+        ADESettingsToggleRow(title: title, hint: hint, isOn: isOn)
     }
 
     /// What stands between this phone and its first push, with the fix.
-    private var permissionNotice: (message: String, actionTitle: String?, action: (() -> Void)?)? {
+    private var permissionNotice: (title: String, detail: String, actionTitle: String?, action: (() -> Void)?)? {
         let permissionStatus = pushService.permissionStatus
         if !snapshot.canEnableNotifications {
-            return ("Sign in or pair a computer to get notifications.", nil, nil)
+            return ("No notifications yet", "Sign in or pair a computer to get them.", nil, nil)
         }
         if permissionStatus == .denied {
-            return ("Notifications are off for ADE in iOS Settings.", "Open iOS Settings", {
+            return ("Notifications are off", "Turn them on for ADE in iOS Settings.", "Open Settings", {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(url)
                 }
             })
         }
         if permissionStatus == .notDetermined {
-            return ("Notifications are not on yet.", "Enable notifications", {
+            return ("Notifications are not on yet", "Get approvals, replies and failures as they happen.", "Turn on", {
                 Task { await pushService.enableIfPaired() }
             })
         }
@@ -148,7 +144,7 @@ struct SettingsPushDeliverySection: View {
 
     @ViewBuilder
     private var diagnosticsContent: some View {
-        ADESettingsSection("This device") {
+        ADESettingsSection("This device", symbol: "iphone", tint: .slate) {
             ADESettingsRows {
                 ADESettingsValueRow(title: "Status", value: statusValue, tone: statusTone)
                 if let tokenSuffix = snapshot.tokenSuffix {
@@ -163,7 +159,7 @@ struct SettingsPushDeliverySection: View {
             }
         }
 
-        ADESettingsSection("Relay", trailing: {
+        ADESettingsSection("Relay", symbol: "antenna.radiowaves.left.and.right", tint: .blue, trailing: {
             Button {
                 Task { await pushService.refreshStatus() }
             } label: {

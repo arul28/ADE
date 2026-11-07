@@ -1323,6 +1323,7 @@ import type { IssueTracker } from "../cto/issueTracker";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { notifySimRecordingTurnEnded } from "../ios/recording/simRecordingService";
+import { notifyAndroidRecordingTurnEnded } from "../android/androidAutoRecord";
 import { createLaneAppleDeviceLookup, type LaneAppleDeviceLookup } from "./laneAppleDeviceDirective";
 import {
   createLaneAndroidDeviceLookup,
@@ -22443,7 +22444,11 @@ export function createAgentChatService(args: {
     // place every turn settles, so it is the only place the hook belongs.
     // `turnStartedAt` is the same guard `maybeRefreshIdleStatusLine` uses: no
     // turn ran, nothing ended. Fire-and-forget and error-safe by construction.
-    if (turnStartedAt) notifySimRecordingTurnEnded(managed.session.id);
+    if (turnStartedAt) {
+      notifySimRecordingTurnEnded(managed.session.id);
+      // The same contract for the lane's Android emulator (`androidAutoRecord.ts`).
+      notifyAndroidRecordingTurnEnded(managed.session.id);
+    }
   };
 
   /**

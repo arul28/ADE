@@ -90,6 +90,7 @@ import {
   type ChatLaunchLaneConfig,
   TerminalSessionChangedEvent,
   TerminalSessionSummary,
+  ANDROID_CONTEXT_SURFACE,
 } from "../../../shared/types";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import type { LaneJiraIssue } from "../../../shared/types/jira";
@@ -304,6 +305,7 @@ import { CHAT_COMPOSER_CHIP_ROW_ATTR, CHAT_COMPOSER_JUMP_SLOT_ATTR, ChatComposer
 import { chatAccentForRenderedChat, chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { IosSimulatorRunningPill } from "../work/IosSimulatorRunningPill";
+import { AndroidEmulatorRunningPill } from "../work/AndroidEmulatorRunningPill";
 import { openAppleMiniPlayer } from "../apple/appleMiniPlayerStore";
 import { useChatPaneShowRequests } from "./useChatPaneShowRequests";
 import { appleEventAddresses } from "../apple/appleDeviceState";
@@ -11164,10 +11166,11 @@ export function AgentChatPane({
       .filter((path): path is string => Boolean(path));
     let attachmentPath = getIosContextAttachmentPath(item);
     if (item.screenshotDataUrl && !attachmentPath) {
+      const android = nextSurface === ANDROID_CONTEXT_SURFACE;
       const saved = await saveContextScreenshot({
         dataUrl: item.screenshotDataUrl,
-        filename: "ios-element.png",
-        surfaceLabel: "iOS",
+        filename: android ? "android-element.png" : "ios-element.png",
+        surfaceLabel: android ? "Android" : "iOS",
       });
       if (saved.cancelled) return;
       attachmentPath = saved.path;
@@ -17815,8 +17818,18 @@ export function AgentChatPane({
     lockedSingleSessionMode,
     handleDeleteSelectedChat,
     deletingChatSessionId,
+    chatRuntimePin,
   ], () => (
     <>
+      {laneToolsVisible ? (
+        // The chat's lane on the chat's own machine: a chat on another machine
+        // (a remote VM driving its own emulator) reads that machine's emulator.
+        <AndroidEmulatorRunningPill
+          laneId={selectedSession?.laneId ?? laneId ?? null}
+          chatSessionId={selectedSessionId}
+          runtimePin={chatRuntimePin}
+        />
+      ) : null}
       {iosSimulatorSessionChip && !effectiveIosSimulatorOpen && laneToolsVisible && iosSimulatorAvailable ? (
         <IosSimulatorRunningPill
           deviceName={iosSimulatorSessionChip.deviceName}

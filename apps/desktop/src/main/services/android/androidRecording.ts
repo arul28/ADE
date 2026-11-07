@@ -29,14 +29,16 @@ import type { ScrcpyVideoPacket } from "./scrcpyVideo";
  *
  * - A segment starts at a keyframe, so its first frame decodes.
  * - A config with a new size (a rotation) ends the segment and starts the
- *   next: one MP4 track keeps one size. The same size with new parameter sets
+ *   next: one MP4 track keeps one size. The stop joins the segments into one
+ *   video (`androidDemoRecording.ts`). The same size with new parameter sets
  *   (an encoder reset) goes on in the same file, with the new SPS and PPS in
  *   the keyframe's sample.
  * - Timestamps start at 0. A stream restart starts its timestamps again; the
  *   writer moves them on past the last frame, so time never runs backwards.
  *
- * Files: `<dataDir>/recordings/<lane>/<id>.mp4` (more segments as
- * `<id>-2.mp4`, …) and a `<id>.json` sidecar with the `AndroidRecording`.
+ * Files while it records: `<dataDir>/recordings/<lane>/<id>.mp4` (more
+ * segments as `<id>-2.mp4`, …). After the stop only the demo `<id>.mp4` and
+ * a `<id>.json` sidecar with the `AndroidRecording` stay.
  *
  * Node built-ins, `mp4-muxer` and relative imports only, so it runs under `tsx`.
  */
@@ -50,7 +52,7 @@ const LAST_FRAME_US = 33_333;
 const MIN_FRAME_STEP_US = 1_000;
 
 /** An `AVCDecoderConfigurationRecord` for one SPS and one PPS, 4-byte lengths. */
-function buildAvcC(sps: Uint8Array, pps: Uint8Array): Uint8Array {
+export function buildAvcC(sps: Uint8Array, pps: Uint8Array): Uint8Array {
   const out = new Uint8Array(11 + sps.length + pps.length);
   out[0] = 1;
   out[1] = sps[1] ?? 0x42;
@@ -287,6 +289,11 @@ export function createAndroidMp4Recorder(input: { basePath: string }) {
       writer.add(toLengthPrefixed(nals), packet.keyframe, timeUs);
     },
 
+    /** The stream picture's size now (it turns with the screen), or null before the first config. */
+    pictureSize(): { width: number; height: number } | null {
+      return sets ? { width: sets.width, height: sets.height } : null;
+    },
+
     /** The time recorded so far, in milliseconds. */
     elapsedMs(): number {
       const closed = segments.reduce((sum, segment) => sum + segment.durationMs, 0);
@@ -359,7 +366,13 @@ export function deleteAndroidRecording(dataDir: string, laneId: string, id: stri
   const sidecar = path.join(dir, `${id}.json`);
   const known = listAndroidRecordings(dataDir, laneId).find((recording) => recording.id === id) ?? null;
   if (!known && !fs.existsSync(path.join(dir, `${id}.mp4`))) return false;
-  const files = new Set<string>([path.join(dir, `${id}.mp4`), sidecar]);
+  const files = new Set<string>([path.join(dir, `${id}.mp4`), path.join(dir, `${id}.raw.mp4`), sidecar]);
+  // A stop cut short (ADE quit while the demo rendered) can leave the raw
+  // video and the rotation parts (`<id>-2.mp4`, ...) behind.
+  const part = new RegExp(`^${id}-\\d+\\.mp4$`, "u");
+  for (const name of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+    if (part.test(name)) files.add(path.join(dir, name));
+  }
   for (const segment of known?.segments ?? []) {
     // Only files inside the lane's folder: a sidecar is data, not a delete list.
     if (path.dirname(path.resolve(segment.path)) === path.resolve(dir)) files.add(segment.path);

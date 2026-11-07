@@ -185,7 +185,7 @@ async function buildBody(context: Shared, spec: AndroidTileSpec): Promise<Built 
   const texture = new THREE.CanvasTexture(wallpaper(spec));
   texture.colorSpace = THREE.SRGBColorSpace;
   const source = androidBodySource({ entry: spec.entry, profile: spec.profile ?? null, colorId: spec.colorId }, spec.aspect);
-  const body = await source.build({ THREE, GLTFLoader, texture, layout: { rotation: 0, rawLandscape: false, aspect: spec.aspect } });
+  const body = await source.build({ THREE, GLTFLoader, texture, layout: { rotation: 0, rawLandscape: false, aspect: spec.aspect, flipped: false } });
   if (!body) {
     texture.dispose();
     return null;

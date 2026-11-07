@@ -337,66 +337,6 @@ export function appleElementContextItem(
   };
 }
 
-/* ── Orientation control (round 5 §V2) ────────────────────────────────────── */
-
-/**
- * What the rail's orientation control calls each value.
- *
- * Round 4 had one "Rotate device" button that cycled blind: nothing on screen
- * said which way up the device was, and the owner could not find the control
- * at all. §V2 replaces it with a menu that NAMES the current orientation, so
- * these strings are the control's whole vocabulary — they are what the button
- * announces and what each menu item reads.
- */
-export function appleOrientationLabel(orientation: AppleDeviceOrientation): string {
-  switch (orientation) {
-    case "portrait":
-      return "Portrait";
-    case "portrait-upside-down":
-      return "Portrait upside down";
-    case "landscape-left":
-      return "Landscape left";
-    case "landscape-right":
-      return "Landscape right";
-    default: {
-      const _exhaustive: never = orientation;
-      return _exhaustive;
-    }
-  }
-}
-
-/** The menu's order: the two portraits, then the two landscapes. */
-export const APPLE_ORIENTATION_CHOICES = [
-  "portrait",
-  "portrait-upside-down",
-  "landscape-left",
-  "landscape-right",
-] as const satisfies readonly AppleDeviceOrientation[];
-
-/**
- * How far to turn the control's own glyph so it reads as the device's pose.
- *
- * The same sign convention as the picture (`screenRotationFor`): positive is
- * clockwise, so a device in `landscape-left` shows an icon turned the way the
- * device itself is turned.
- */
-export function appleOrientationIconDegrees(orientation: AppleDeviceOrientation): number {
-  switch (orientation) {
-    case "portrait":
-      return 0;
-    case "portrait-upside-down":
-      return 180;
-    case "landscape-left":
-      return 90;
-    case "landscape-right":
-      return -90;
-    default: {
-      const _exhaustive: never = orientation;
-      return _exhaustive;
-    }
-  }
-}
-
 /** Portrait and upside-down are one shape; the two landscapes are the other. */
 export { appleOrientationFamily } from "../../../shared/appleOrientation";
 

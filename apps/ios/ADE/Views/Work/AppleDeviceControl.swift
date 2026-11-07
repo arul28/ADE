@@ -327,6 +327,13 @@ enum AppleTouchPhase: String, Equatable {
   case end
 }
 
+/// The phone in the person's hand, as both device viewers see it.
+enum PhoneInHand {
+  /// Whether it folds. Sticky for the app's life: the front screen may not
+  /// report the hinge.
+  @MainActor static var folds = false
+}
+
 /// A live finger, sent as it moves, one call in flight at a time.
 ///
 /// `begin` and `end` are never dropped and never reordered; a `move` that has
@@ -395,6 +402,40 @@ final class AppleLiveTouchSender {
       await send(next.phase, next.point)
     }
     busy = false
+  }
+}
+
+/// Sends one value at a time and keeps only the newest value that waits, so
+/// a hinge swung quickly sends where it is, not every step it passed.
+/// `send` returns false to stop; a value that arrives later starts again.
+@MainActor
+final class LatestOnlySender<Value> {
+  private var pending: Value?
+  private var busy = false
+  private let send: (Value) async -> Bool
+
+  init(send: @escaping (Value) async -> Bool) {
+    self.send = send
+  }
+
+  func push(_ value: Value) {
+    pending = value
+    guard !busy else { return }
+    busy = true
+    Task { await drain() }
+  }
+
+  /// Drops the value that waits, if any. A send in flight still finishes.
+  func cancel() {
+    pending = nil
+  }
+
+  private func drain() async {
+    defer { busy = false }
+    while let next = pending {
+      pending = nil
+      guard await send(next) else { return }
+    }
   }
 }
 

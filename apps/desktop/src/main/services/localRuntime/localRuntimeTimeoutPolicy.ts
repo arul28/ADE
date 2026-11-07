@@ -468,6 +468,17 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // then a logcat dump of up to 30 s.
   ["android_emulator.recordStart", ANDROID_EMULATOR_UI_TIMEOUT_MS],
   ["android_emulator.readLog", ANDROID_EMULATOR_UI_TIMEOUT_MS],
+  // Parity: a cleanup stops emulators; relaunch waits for the app to draw;
+  // foreground --wait polls up to 30 s; Inspect reads the tree, a screenshot and the lane's source.
+  ["android_emulator.deviceCleanup", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
+  ["android_emulator.relaunchApp", ANDROID_EMULATOR_UI_TIMEOUT_MS],
+  ["android_emulator.getForegroundApp", ANDROID_EMULATOR_UI_TIMEOUT_MS],
+  ["android_emulator.inspectPoint", ANDROID_EMULATOR_UI_TIMEOUT_MS],
+  ["android_emulator.selectPoint", ANDROID_EMULATOR_UI_TIMEOUT_MS],
+  // Parity (device track): Play Store screenshots fold twice and capture large
+  // screens; a window layout waits for the window manager after each step.
+  ["android_emulator.storeScreenshots", ANDROID_EMULATOR_UI_TIMEOUT_MS],
+  ["android_emulator.windowLayout", ANDROID_EMULATOR_UI_TIMEOUT_MS],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

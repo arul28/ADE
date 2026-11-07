@@ -2389,6 +2389,9 @@ export async function createAdeRuntime(args: {
         sdkSettingsFile: path.join(resolveMachineAdeLayout().adeDir, "android", "settings.json"),
         // P1: screenshots, recordings, proof bundles and renders file
         // themselves into the calling chat's proof drawer.
+        // Rec: each lane's auto-record switch (`ade android auto-record`), in the project's KV.
+        readSetting: <T,>(key: string): T | null => db.getJson<T>(key),
+        writeSetting: (key: string, value: unknown) => db.setJson(key, value),
         artifactFiler: computerUseArtifactBrokerService,
         captureAnalytics: (outcome) => captureAndroidDeviceAnalytics({ analytics: productAnalyticsService, outcome }),
         logger,
@@ -2402,7 +2405,9 @@ export async function createAdeRuntime(args: {
     const androidStreamRelay = androidEmulatorService
       ? createAppleStreamRelayForService({
         service: androidEmulatorService.streamRelaySource,
-        remoteBitrateKbpsCap: () => null,
+        // The machine's Android cap: the ceiling the relay's pacing lowers from
+        // and climbs back to. Viewers on this machine never get it.
+        remoteBitrateKbpsCap: () => androidEmulatorService.streamRemoteBitrateKbpsCap(),
         logger,
       })
       : null;

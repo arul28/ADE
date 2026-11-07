@@ -13,6 +13,7 @@ import { closeWorkToolForReal } from "./closeWorkToolForReal";
 import { isDesktopWorkTool } from "./workTools";
 import { subscribeRemoteRuntimeIdentityChanges, subscribeRuntimeIdentityChanges } from "../../lib/runtimeIdentity";
 import { confirmAppleToolClose } from "../apple/AppleShutdownConfirm";
+import { confirmAndroidToolClose } from "../android/AndroidShutdownConfirm";
 import { confirmMacDesktopToolClose } from "../chat/MacDesktopStopConfirm";
 import { confirmSideChatToolClose } from "../chat/sideChatState";
 
@@ -253,11 +254,11 @@ export function useWorkSidebarTool(
 
   const closeTool = useCallback(
     (target: WorkSidebarTab) => {
-      const drop = (stopTool = true) => {
+      const drop = (stopTool = true, powerOff = false) => {
         // A4: closing a tab closes the tool behind it. Dispatched before the
         // strip write, and never awaited — the tab leaves the strip even if the
         // runtime refuses or is unreachable (see `closeWorkToolForReal`).
-        if (stopTool) closeWorkToolForReal(target, { laneId, chatSessionId, runtimePin });
+        if (stopTool) closeWorkToolForReal(target, { laneId, chatSessionId, runtimePin, powerOff });
         const current = latestStrip.current;
         const next = closeWorkToolTab(current.openTools, current.tool, target);
         // No reveal: a tab is closed from the pane's own strip, so the pane is
@@ -292,6 +293,19 @@ export function useWorkSidebarTool(
         void confirmMacDesktopToolClose({ laneId, chatSessionId, runtimePin }).then((answer) => {
           if (answer === "stop") drop();
           else if (answer === "keep") drop(false);
+        });
+        return;
+      }
+      /*
+       * Android asks like the Mac Desktop while its emulator runs: shut down,
+       * keep running (the brain's idle power-off stops an ADE-made emulator
+       * later), or cancel. Either close still runs the tool's close, which
+       * keeps the emulator from floating on its way down.
+       */
+      if (target === "android") {
+        void confirmAndroidToolClose({ laneId, runtimePin }).then((answer) => {
+          if (answer === "stop") drop(true, true);
+          else if (answer === "keep") drop(true, false);
         });
         return;
       }

@@ -3,6 +3,7 @@ import type {
   AndroidEmulatorError,
   AndroidEmulatorEvent,
 } from "../../../shared/types/androidEmulator";
+import type { DemoEngineSet } from "../demoVideo/demoEngines";
 import type { Logger } from "../logging/logger";
 import type { AndroidEmulatorLaunch } from "./androidEmulatorProcess";
 import type { AndroidEmulatorLifecycle } from "./androidEmulatorSweep";
@@ -71,8 +72,10 @@ export type AndroidEmulatorServiceDeps = {
    * process: the machine-wide owner record of each emulator this service
    * starts, the "last used" clock and the pin, the sweep that stops idle and
    * abandoned emulators, and the memory guard's count of other brains'
-   * boots. Absent (tests, the desktop's in-process copy): none of that, and
-   * the guard counts this process's boots only.
+   * boots. Its idle limit is the one Android idle stop
+   * (`ADE_ANDROID_IDLE_POWER_OFF_MINUTES`, 20 min by default). Absent (tests,
+   * the desktop's in-process copy): none of that, no idle stop, and the guard
+   * counts this process's boots only.
    */
   emulatorLifecycle?: AndroidEmulatorLifecycle | null;
   now?: () => Date;
@@ -91,6 +94,15 @@ export type AndroidEmulatorServiceDeps = {
    * run; `captureAndroidDeviceAnalytics`). A failed or refused call sends nothing.
    */
   captureAnalytics?: (outcome: AndroidDeviceAnalyticsOutcome) => void;
+  /**
+   * Rec: the engines that turn a stopped recording into its demo. Absent =
+   * this process's own set (Swift on macOS, then ffmpeg, which ADE downloads
+   * on Windows and Linux when the machine has none).
+   */
+  demoEngines?: DemoEngineSet | null;
+  /** Rec: the project's KV (`db.getJson`/`db.setJson`), for each lane's auto-record switch. */
+  readSetting?: (<T>(key: string) => T | null) | null;
+  writeSetting?: ((key: string, value: unknown) => void) | null;
 };
 
 /** The service's state for one lane. */

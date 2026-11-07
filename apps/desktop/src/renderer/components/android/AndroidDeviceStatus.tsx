@@ -65,7 +65,8 @@ export function AndroidDeviceLoadingCard({
 
 /**
  * The foot of the picture: `● Live · 58 fps · lane checkout-flow · windows`
- * (`idle` in place of the fps while the screen does not change).
+ * (`idle` in place of the fps while the screen does not change). A viewer on
+ * another machine also sees the bit rate it receives (`1.8 Mbit/s`).
  * The machine is named only when the emulator runs on another one.
  *
  * `reconnecting` is an open stream whose frames stopped arriving while the
@@ -75,11 +76,14 @@ export function AndroidDeviceLoadingCard({
 export function AndroidLiveLine({
   state,
   fps,
+  bitrateKbps = null,
   laneName,
   machineName,
 }: {
   state: "live" | "reconnecting" | "lost";
   fps: number | null;
+  /** Shown for a viewer on another machine, whose stream may run at the remote cap. */
+  bitrateKbps?: number | null;
   laneName: string | null;
   machineName: string | null;
 }) {
@@ -89,6 +93,9 @@ export function AndroidLiveLine({
     // scrcpy sends a frame only when the screen changes, so a still screen
     // reads 0 fps: say "idle" rather than drop the value.
     state === "live" && fps != null ? (fps > 0 ? `${Math.round(fps)} fps` : "idle") : null,
+    state === "live" && machineName && bitrateKbps != null && bitrateKbps > 0
+      ? bitrateKbps >= 1000 ? `${(bitrateKbps / 1000).toFixed(1)} Mbit/s` : `${bitrateKbps} kbit/s`
+      : null,
     laneName ? `lane ${laneName}` : null,
     machineName ? `on ${machineName}` : null,
   ].filter((part): part is string => Boolean(part));

@@ -613,6 +613,9 @@ struct Agent37MachineControls: View {
         if let key = machine.machineKey {
           Agent37ActionButton("Open its work", symbol: "arrow.up.forward.app", primary: true, disabled: busy) {
             store.syncService.agent37PanePresented = false
+            // Opened from Settings › Integrations the pane is Settings' own
+            // sheet; closing Settings closes it too, so the work shows.
+            store.syncService.settingsPresented = false
             Task { _ = await store.syncService.ensureAccountMachineForNavigation(key) }
           }
         }

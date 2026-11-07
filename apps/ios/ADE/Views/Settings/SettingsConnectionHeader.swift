@@ -272,6 +272,9 @@ struct SettingsConnectionHeader: View {
   /// connect attempt as every other path, so the card always lands back on a
   /// definite state.
   var onWake: ((String) -> Void)?
+  /// General draws the machine's name and network in the row above, so the
+  /// status line leaves them out instead of saying them twice.
+  var machineShownAbove = false
 
   private var health: SyncConnectionHealth {
     snapshot.health
@@ -296,6 +299,8 @@ struct SettingsConnectionHeader: View {
     }
   }
 
+  /// Without a card of its own: the caller frames it, alone or inside
+  /// General's "This machine".
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .center, spacing: 12) {
@@ -310,6 +315,7 @@ struct SettingsConnectionHeader: View {
               .foregroundStyle(ADEColor.textPrimary)
             if health.transport.isConnected,
                outcome == .standard,
+               !machineShownAbove,
                let routeLabel = syncTransportBadgeText(routeKind: snapshot.routeKind) {
               ADEKitTag(text: routeLabel)
             }
@@ -395,7 +401,6 @@ struct SettingsConnectionHeader: View {
         ADESettingsNotice(message: stall.message, tone: .warn)
       }
     }
-    .adeKitCard()
   }
 
   private var errorMessage: String? {
@@ -438,7 +443,7 @@ struct SettingsConnectionHeader: View {
     switch health.transport {
     case .connected:
       // Name the machine you're attached to, right under the status word.
-      return snapshot.hostDisplayName
+      return machineShownAbove ? nil : snapshot.hostDisplayName
     case .connecting:
       // Never claim the target is a *saved* machine — an account adoption can
       // be reaching a Mac this phone has never paired with. With no stage
@@ -454,7 +459,7 @@ struct SettingsConnectionHeader: View {
       // Returning users see where they left off. Brand-new users (no saved
       // machine) get no caption here at all — the pairing onboarding copy
       // below carries the message instead.
-      if snapshot.canReconnectToSavedHost, let host = snapshot.hostDisplayName {
+      if snapshot.canReconnectToSavedHost, !machineShownAbove, let host = snapshot.hostDisplayName {
         return "Last connected to: \(host)"
       }
       return nil

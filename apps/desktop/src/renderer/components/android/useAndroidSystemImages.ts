@@ -6,6 +6,7 @@ import type {
   AndroidSystemImageInventory,
 } from "../../../shared/types/androidEmulator";
 import { showToast } from "../app/toast/toastStore";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 import { describeAndroidError, type AndroidErrorDescription } from "./androidDeviceState";
 import { formatAndroidBytes } from "../../../shared/androidFormat";
 
@@ -120,8 +121,8 @@ export function useAndroidSystemImages(pin: OpenProjectBinding | null, open: boo
     if (!api || !open || !running) return undefined;
     const timer = window.setInterval(() => {
       void api.getSdkInstallState({}, pinRef.current).then(settle).catch((caught: unknown) => {
-        // The next event or read answers; keep the failure for the console.
-        console.warn("[android] system image install state read failed", caught);
+        // The next event or read answers; keep the failure in the debug log.
+        logRendererDebugEvent("android.system_image_install_state_failed", { error: caught instanceof Error ? caught.message : String(caught) });
       });
     }, RUNNING_STATE_READ_MS);
     return () => window.clearInterval(timer);

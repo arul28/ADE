@@ -1435,22 +1435,34 @@ system image install from the device picker finished and put the image in
 place), `tests_run` (an instrumentation test run ran at least one test,
 passed or failed), `device_folded` (a fold of a foldable AVD that the
 emulator settled), `previews_rendered` (a Compose preview render wrote at
-least one image), or `emulator_auto_stopped` (ADE stopped an emulator by
-itself: nobody used it for the idle limit, or the brain that started it was
-gone and no brain adopted it). A failed, refused
+least one image), `store_screenshots` (a Play Store screenshot set was
+taken: the cover and inner screens of a foldable, else one screen), or
+`emulator_auto_stopped` (ADE stopped an emulator by itself: nobody used it
+for the one Android idle limit, or the brain that started it was gone and no
+brain adopted it). A failed, refused
 or no-op call emits nothing; the guard's own refusal is not an event (it is
 the `android.start_low_memory` log line, with the reason and the numbers).
+Android has one idle policy: the brain's machine-wide sweep
+(`androidEmulatorSweep.ts`) stops an unpinned emulator ADE started that
+nothing used for `ADE_ANDROID_IDLE_POWER_OFF_MINUTES` (or its other name
+`ADE_ANDROID_IDLE_STOP_MINUTES`; 20 minutes by default, 0 turns it off). Use
+is any lane call but the status reads, a stream someone holds, a recording, a
+lease, and, checked just before the stop, input on the device itself or
+another scrcpy viewer (`android.idle_stop_skipped`, with `device_input` or
+`other_viewer`). The cleanup pass (`androidLaneMaintenance.ts`) runs no idle
+timer of its own; it records the stop for the lane's status (`poweredOff`).
 Every emulator stop also writes the operational log line
 `android.emulator_stopped` with its reason (`user`, `released`,
-`lane_released`, `idle`, `owner_gone`, `orphan`, `project_closed`) and the
-AVD name; that stays in the local log and Sentry Logs, never PostHog. An owner
-record that could not be written (`android.owner_record_failed`, warn, with the
-AVD name) leaves that emulator outside the idle stop and cleanup. Nothing
+`lane_released`, `idle`, `owner_gone`, `orphan`, `cleanup`,
+`project_closed`) and the AVD name; that stays in the local log and Sentry
+Logs, never PostHog. An owner record that could not be written
+(`android.owner_record_failed`, warn, with the AVD name) leaves that emulator
+outside the idle stop and cleanup. Nothing
 finer crosses: no SDK path, AVD, package, APK, angle, lane, chat, machine,
 memory size, image, test class, test count, module, or preview name. A hinge
 drag sends one fold when it is released, never per frame. A per-outcome
 `work_android_device:<outcome>` key with a 24-hour minimum interval bounds this
-to at most eleven accepted events per installation per UTC day, inside the same
+to at most twelve accepted events per installation per UTC day, inside the same
 `ade_feature_used` limits; no ceiling was raised. The dashboard spec is
 untouched.
 

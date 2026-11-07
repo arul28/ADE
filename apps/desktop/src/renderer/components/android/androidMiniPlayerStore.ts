@@ -69,8 +69,13 @@ let current: AndroidMiniPlayerTarget | null = null;
 const listeners = new Set<() => void>();
 /** Emulators the person closed the player for on a surface with no chat. */
 const dismissed = new Set<string>();
-/** Set while a tab close stops the tool for real: the next handoff is not a minimize. */
-let closingForReal = false;
+/**
+ * Lanes (on their machine) whose Android tab a close is stopping for real:
+ * that lane's next handoff is not a minimize. The pane's own unmount takes
+ * the mark, whenever React gets to it; the pane's next mount clears a mark
+ * that no unmount took (a closed tab that was not on screen).
+ */
+const closingForReal = new Set<string>();
 const laneDevices = new Map<string, AndroidMiniPlayerLaneDevice>();
 
 function emit(): void {
@@ -128,15 +133,23 @@ export function retakeAndroidMiniPlayer(where?: AndroidMiniPlayerLaneRef): void 
 
 /**
  * A tab close stops the tool: the handoff of the unmount it causes floats
- * nothing. That unmount runs in the same task, so the flag clears after it; a
- * close of a tab that was not on screen (no unmount) cannot leave it set for
- * a later, real minimize.
+ * nothing. Keyed by the lane on its machine and taken by that unmount, so it
+ * holds however late the unmount comes (the close runs after a dialog, and
+ * the commit that unmounts the pane can come after other work). It never
+ * reaches another lane's pane.
  */
-export function suppressAndroidMiniPlayerHandoff(): void {
-  closingForReal = true;
-  setTimeout(() => {
-    closingForReal = false;
-  }, 0);
+export function suppressAndroidMiniPlayerHandoff(where: AndroidMiniPlayerLaneRef): void {
+  const key = laneDeviceKey(where);
+  if (key) closingForReal.add(key);
+}
+
+/**
+ * The lane's Android pane mounted: a close mark that no unmount took is old
+ * (its tab was not on screen), so a later minimize of this pane floats again.
+ */
+export function clearAndroidMiniPlayerHandoffSuppression(where: AndroidMiniPlayerLaneRef): void {
+  const key = laneDeviceKey(where);
+  if (key) closingForReal.delete(key);
 }
 
 /** The pane's cache write, one per status read. A null device forgets the lane. */
@@ -182,10 +195,8 @@ export function handoffAndroidMiniPlayer(args: {
   chatSessionId: string | null;
   runtimePin: OpenProjectBinding | null;
 }): boolean {
-  if (closingForReal) {
-    closingForReal = false;
-    return false;
-  }
+  const closingKey = laneDeviceKey(args);
+  if (closingKey && closingForReal.delete(closingKey)) return false;
   const { laneId } = args;
   if (!laneId || current) return false;
   const key = androidStreamLeaseKey({ pin: args.runtimePin, bound: boundBinding(), laneId });

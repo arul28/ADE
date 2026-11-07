@@ -13,12 +13,14 @@ final class ProviderAccountsMachineTests: XCTestCase {
   private final class FakeHost: ProviderAccountsHost {
     var responses: [String: Any]
     private(set) var actions: [String] = []
+    private(set) var calls: [(action: String, args: [String: Any])] = []
     init(responses: [String: Any]) { self.responses = responses }
     var supportsProviderAccounts: Bool { true }
     var canChangeProviderAccounts: Bool { true }
     var providerAccountsConnected: Bool { true }
     func runProviderAccountsCommand(_ action: String, args: [String: Any]) async throws -> Any {
       actions.append(action)
+      calls.append((action, args))
       guard let response = responses[action] else {
         throw NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "no \(action)"])
       }
@@ -79,5 +81,43 @@ final class ProviderAccountsMachineTests: XCTestCase {
     XCTAssertTrue(changed)
     XCTAssertTrue(laptop.actions.contains("providerAccounts.setDefault"))
     XCTAssertFalse(studio.actions.contains("providerAccounts.setDefault"))
+  }
+
+  /// An account setting names its account, and an older ADE that accepts the
+  /// call but drops the setting is an error, not a menu that shows it saved.
+  /// "Use for new chats" turns smart balance off before it moves the default.
+  func testAccountSettingsNameTheAccountAndCatchADroppedSetting() async throws {
+    var work = account("work", email: "work@example.com", isDefault: false)
+    let host = FakeHost(responses: [
+      "providerAccounts.list": ["instances": [account("claude", email: "me@example.com", isDefault: true), work]],
+      "providerAccounts.getSettings": ["settings": ["smartBalance": true, "autoStartWindows": false]],
+      "providerAccounts.setSettings": ["settings": ["smartBalance": false, "autoStartWindows": false]],
+      "providerAccounts.setDefault": ["instance": account("work", email: "work@example.com", isDefault: true)],
+    ])
+    let store = ProviderAccountsMachine(id: "machine:studio", name: "Studio", host: host).claude
+    await store.load()
+
+    // The host read back no cache setting: an older ADE dropped it.
+    let dropped = await store.setAccountSetting(id: "work", .mainPromptCache("1h"))
+    XCTAssertFalse(dropped)
+    XCTAssertNotNil(store.errorMessage)
+    let sent = try XCTUnwrap(host.calls.last { $0.action == "providerAccounts.setSettings" }?.args)
+    XCTAssertEqual(sent["instanceId"] as? String, "work")
+    XCTAssertEqual((sent["settings"] as? [String: Any])?["mainPromptCacheTtl"] as? String, "1h")
+
+    // A host that keeps it reports success; nil restores the default as JSON null.
+    work["mainPromptCacheTtl"] = "1h"
+    host.responses["providerAccounts.list"] = ["instances": [account("claude", email: "me@example.com", isDefault: true), work]]
+    let saved = await store.setAccountSetting(id: "work", .mainPromptCache("1h"))
+    XCTAssertTrue(saved)
+    _ = await store.setAccountSetting(id: "work", .onExtraUsage(nil))
+    let cleared = try XCTUnwrap(host.calls.last { $0.action == "providerAccounts.setSettings" }?.args["settings"] as? [String: Any])
+    XCTAssertTrue(cleared["onExtraUsage"] is NSNull)
+
+    let used = await store.useForNewChats(id: "work")
+    XCTAssertTrue(used)
+    let order = host.actions.filter { $0 == "providerAccounts.setSettings" || $0 == "providerAccounts.setDefault" }
+    XCTAssertEqual(Array(order.suffix(2)), ["providerAccounts.setSettings", "providerAccounts.setDefault"])
+    XCTAssertEqual(store.settings?.smartBalance, false)
   }
 }

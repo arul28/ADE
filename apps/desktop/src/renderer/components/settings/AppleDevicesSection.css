@@ -34,6 +34,8 @@
   background: color-mix(in srgb, var(--color-fg) 2%, transparent);
 }
 .ade-as-feature-text { flex: 1; min-width: 0; }
+/* A feature card without a drawing keeps the text off the card's edge. */
+.ade-as-feature:not([data-art]) { padding: 14px 16px; }
 
 .ade-as-phone {
   position: relative;
@@ -88,6 +90,37 @@
 }
 .ade-as-phone[data-realistic="true"] .ade-as-phone-island { opacity: 1; }
 .ade-as-phone-screen .ade-as-line { height: 3px; }
+
+/* Android: squarer corners, a punch-hole camera instead of the island, a
+   gesture bar, and power plus volume both on the right edge. */
+.ade-as-phone[data-platform="android"] { width: 48px; border-radius: 7px; }
+.ade-as-phone[data-platform="android"][data-realistic="true"] { padding: 2px; border-radius: 10px; }
+.ade-as-phone[data-platform="android"][data-realistic="true"] .ade-as-phone-screen { border-radius: 8px; }
+.ade-as-phone[data-platform="android"][data-realistic="true"]::before { left: auto; right: -2px; top: 18px; height: 8px; }
+.ade-as-phone[data-platform="android"][data-realistic="true"]::after { right: -2px; top: 30px; height: 16px; }
+.ade-as-phone-punch {
+  position: absolute;
+  top: 5px;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  background: color-mix(in srgb, var(--color-fg) 70%, transparent);
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+.ade-as-phone[data-realistic="true"] .ade-as-phone-punch { opacity: 1; }
+.ade-as-phone-navbar {
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  width: 16px;
+  height: 2px;
+  border-radius: 1px;
+  transform: translateX(-50%);
+  background: color-mix(in srgb, var(--color-fg) 35%, transparent);
+}
 .ade-as-phone-tile { display: block; height: 14px; border-radius: 3px; background: color-mix(in srgb, var(--color-fg) 9%, transparent); }
 
 /* ── recording overlays ─────────────────────────────────────────────── */

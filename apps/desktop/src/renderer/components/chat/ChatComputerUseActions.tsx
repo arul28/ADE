@@ -22,6 +22,7 @@
  */
 import React, { useEffect, useMemo, useState } from "react";
 import {
+  AndroidLogo,
   AppWindow,
   AppleLogo,
   ArrowsDownUp,
@@ -156,8 +157,8 @@ function adeIconUrl(): string {
   return `./${path}`;
 }
 
-/** The surface glyphs drawn as one icon; `user` and `apple` draw their own (`SurfaceGlyph`). */
-const SURFACE_GLYPH: Record<Exclude<ComputerUseSurfaceGlyph, "user" | "apple">, Icon> = {
+/** The surface glyphs drawn as one icon; `user`, `apple` and `android` draw their own (`SurfaceGlyph`). */
+const SURFACE_GLYPH: Record<Exclude<ComputerUseSurfaceGlyph, "user" | "apple" | "android">, Icon> = {
   screen: Monitor,
   app: AppWindow,
   globe: Globe,
@@ -172,6 +173,7 @@ function fallbackGlyph(summary: ComputerUseActionSummary): Icon {
     case "ade_browser": return Globe;
     case "user_browser": return Browser;
     case "apple_device": return DeviceMobile;
+    case "android_device": return DeviceMobile;
     case "proof": return Seal;
   }
 }
@@ -319,12 +321,13 @@ function actionGlyph(summary: ComputerUseActionSummary): Icon {
   }
 }
 
-/** The surface's icon: the device for an Apple row, else the surface's glyph. */
+/** The surface's icon: the device for an Apple or Android row, else the surface's glyph. */
 function SurfaceGlyph({ summary, glyph, size }: { summary: ComputerUseActionSummary; glyph: ComputerUseSurfaceGlyph; size: number }) {
-  if (glyph === "apple") {
+  if (glyph === "apple" || glyph === "android") {
+    const Logo = glyph === "apple" ? AppleLogo : AndroidLogo;
     return (
       <span aria-hidden className="inline-flex items-center gap-px">
-        <AppleLogo size={size} weight="fill" />
+        <Logo size={size} weight="fill" />
         <DeviceMobile size={size} />
       </span>
     );

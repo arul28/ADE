@@ -79,6 +79,28 @@ export function encodeHardwareKeyPress(key: AndroidHardwareKey): Buffer[] {
 }
 
 /**
+ * Parity (`ade android key`): one key press with modifiers held around it.
+ * Each modifier goes down in order (its meta bits added), then the key down
+ * and up with every held bit, then the modifiers up in reverse, as a hardware
+ * keyboard sends them. `modifiers` are `{ keycode, meta }` pairs.
+ */
+export function encodeKeyCombo(keycode: number, modifiers: ReadonlyArray<{ keycode: number; meta: number }>): Buffer[] {
+  const messages: Buffer[] = [];
+  let meta = 0;
+  for (const modifier of modifiers) {
+    meta |= modifier.meta;
+    messages.push(encodeInjectKeycode({ action: "down", keycode: modifier.keycode, metaState: meta }));
+  }
+  messages.push(encodeInjectKeycode({ action: "down", keycode, metaState: meta }));
+  messages.push(encodeInjectKeycode({ action: "up", keycode, metaState: meta }));
+  for (const modifier of [...modifiers].reverse()) {
+    meta &= ~modifier.meta;
+    messages.push(encodeInjectKeycode({ action: "up", keycode: modifier.keycode, metaState: meta }));
+  }
+  return messages;
+}
+
+/**
  * Text as one or more inject-text messages.
  *
  * The server truncates a message at 300 bytes, so longer text is split, and

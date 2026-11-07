@@ -373,6 +373,19 @@ export type WorkLiveSourceState = {
     handoff?: unknown;
   } | null;
   /**
+   * The lane's Android emulator, from its status read and the recording
+   * list. Optional: a caller with no Android state leaves it out.
+   */
+  androidDevice?: {
+    avdName?: string | null;
+    deviceName?: string | null;
+    /** True while the emulator is booted. */
+    booted?: boolean | null;
+    /** The chat whose agent drives it now (its active recording), or null. */
+    ownerChatSessionId?: string | null;
+    recording?: unknown;
+  } | null;
+  /**
    * The lane's last desktop frame, straight from `macDesktopFrameStore`.
    *
    * The Mac Desktop source is the odd one out: the other three describe a
@@ -496,9 +509,22 @@ export const WORK_LIVE_SOURCES: Record<
     // this display is replaced (or the user floats it back).
     sessionKey: macDesktopFrame?.displayKey ?? macDesktopFrame?.laneId ?? null,
   }),
-  // The emulator floats in its own player (`AndroidDeviceMiniPlayer`); this
-  // card never pictures it.
-  android: () => ({ live: false, ownerLabel: null, caption: null, handoff: null, recording: null, sessionKey: null }),
+  // The emulator floats in its own player (`AndroidDeviceMiniPlayer`), like the
+  // Apple device, so this card never pictures it. Its adapter still answers
+  // like Apple's: the session key ends a float when the emulator stops, and
+  // the owner, caption and recording read the same as an Apple device's.
+  android: ({ androidDevice }) => {
+    const live = androidDevice?.booted === true;
+    return {
+      live,
+      ownerLabel: live && androidDevice?.ownerChatSessionId ? AGENT_OWNER_LABEL : null,
+      caption: androidDevice?.deviceName?.trim() || null,
+      handoff: null,
+      recording: androidDevice?.recording ? true : null,
+      // One emulator boot of one AVD: a stop ends it, a new device is a new one.
+      sessionKey: live && androidDevice?.avdName ? `android:${androidDevice.avdName}` : null,
+    };
+  },
   ios: ({ iosSession }) => ({
     live: Boolean(iosSession),
     ownerLabel: iosSession?.chatSessionId ? AGENT_OWNER_LABEL : null,

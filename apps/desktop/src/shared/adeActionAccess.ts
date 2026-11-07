@@ -626,6 +626,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getSdkSetupPlan", "getSdkInstallState",
       // P3: the system image list.
       "listSystemImages",
+      // Rec: the lane's auto-record switch and the machine preferences.
+      "getAutoRecord", "getMachinePreferences",
+      // Parity: an app's state and the app in front.
+      "getAppState", "getForegroundApp",
     ],
     write: [
       "createDevice", "attachDevice", "start", "stop", "setKeepRunning", "releaseDevice", "deleteDevice",
@@ -640,10 +644,16 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "captureProofBundle", "setDeviceSetting",
       // P3 fold and Compose previews (a render writes images and files proof).
       "setPosture", "renderComposePreviews",
+      // Rec: the lane's auto-record switch; the machine preferences (user-only).
+      "setAutoRecord", "setMachinePreferences",
       // P1 setup (user-only: the licences and the SDK folder are the person's).
       "installSdk", "cancelSdkInstall", "setSdkPath",
       // P3: system images (user-only, as the SDK install) and instrumentation tests.
       "installSystemImage", "removeSystemImage", "runInstrumentationTests",
+      // Parity: keys, relaunch, one frame, Inspect at a point, the cleanup pass (Apple files them under write too).
+      "pressKey", "relaunchApp", "frame", "inspectPoint", "selectPoint", "deviceCleanup",
+      // Parity (device track): status bar, Clear location, Play Store screenshots (files proof), windows.
+      "setStatusBar", "clearStatusBar", "clearLocation", "storeScreenshots", "windowLayout",
     ],
   },
   app_control: {

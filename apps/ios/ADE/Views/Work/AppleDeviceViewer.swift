@@ -245,7 +245,7 @@ struct AppleDeviceViewer: View {
       // The phone in the hand folds: mirror it into a Duo simulator while
       // controlling.
       .onChange(of: duo.hasFold || duo.hingeAngle != nil, initial: true) { _, folds in
-        if folds { AppleDeviceViewerModel.phoneFolds = true }
+        if folds { PhoneInHand.folds = true }
       }
       .onChange(of: foldTarget) { _, target in
         if let target { model.mirrorFold(target) }
@@ -277,7 +277,7 @@ struct AppleDeviceViewer: View {
       isInnerDisplay: duo.hasFold,
       isLandscape: duo.isLandscape,
       hingeAngle: duo.hingeAngle,
-      phoneFolds: AppleDeviceViewerModel.phoneFolds || duo.hasFold || duo.hingeAngle != nil
+      phoneFolds: PhoneInHand.folds || duo.hasFold || duo.hingeAngle != nil
     )
   }
 

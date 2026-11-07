@@ -10,7 +10,7 @@ import {
   type AndroidSetPostureResult,
 } from "../../../shared/types/androidEmulator";
 import { sleep } from "../shared/utils";
-import { runAdbOutput, runDeviceScript, runEmulatorConsole, type BootedDevice } from "./androidDeviceShell";
+import { parseWmSize, runAdbOutput, runDeviceScript, runEmulatorConsole, type BootedDevice } from "./androidDeviceShell";
 import { requireLaneId } from "./androidEmulatorErrors";
 import { createAndroidLaneQueue } from "./androidLaneQueue";
 
@@ -82,13 +82,13 @@ export function parseHingeAngle(text: string): number | null {
 export function parseDevicePosture(text: string): AndroidDevicePostureRead {
   const committed = /mCommittedState=Optional\[DeviceState\{[^}]*name='([A-Z_]+)'/u.exec(text)?.[1] ?? null;
   const sensor = /hinge sensor\d* \(in degrees\)\s*:\s*\[(-?\d+(?:\.\d+)?)/u.exec(text)?.[1];
-  const size = /Override size:\s*(\d+)x(\d+)/u.exec(text) ?? /Physical size:\s*(\d+)x(\d+)/u.exec(text);
+  const screen = parseWmSize(text);
   const capture = /capture=\s*(\d+)\s+(\d+)/u.exec(text);
   return {
     state: committed ? FOLD_STATE_NAMES[committed] ?? null : null,
     pending: /mPendingState=Optional\[/u.test(text),
     sensorAngle: sensor === undefined ? null : Number(sensor),
-    screen: size ? { width: Number(size[1]), height: Number(size[2]) } : null,
+    screen,
     capture: capture ? { width: Number(capture[1]), height: Number(capture[2]) } : null,
   };
 }

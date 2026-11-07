@@ -3,6 +3,8 @@ import type { OpenProjectBinding } from "../shared/types";
 import type {
   AndroidAttachRenderProofArgs,
   AndroidListDevicesArgs,
+  AndroidMachinePreferences,
+  AndroidMachinePreferencesResult,
   AndroidRenderAckArgs,
   AndroidRenderCompleteArgs,
   AndroidRenderProofResult,
@@ -95,6 +97,10 @@ export function createAndroidEmulatorBridge(deps: AndroidEmulatorBridgeDeps): An
     return (args: A = {} as A, pin?: OpenProjectBinding | null): Promise<R> => routed(args, pin);
   };
 
+  /** Stamps `source: "user"` on a pane call's args. */
+  const asUser = <A, R>(method: (args: A, pin?: OpenProjectBinding | null) => Promise<R>) =>
+    (args: A, pin?: OpenProjectBinding | null): Promise<R> => method({ ...(args as object), source: "user" } as A, pin);
+
   return {
     getStatus: callOptional<{ laneId?: string | null }, AndroidEmulatorStatus>(
       "getStatus",
@@ -117,9 +123,10 @@ export function createAndroidEmulatorBridge(deps: AndroidEmulatorBridgeDeps): An
     startStream: call<AndroidStartStreamArgs, AndroidStreamStatus>("startStream", IPC.androidEmulatorStartStream),
     stopStream: call<AndroidLaneArgs, AndroidStreamStatus>("stopStream", IPC.androidEmulatorStopStream),
     getStreamStatus: call<AndroidLaneArgs, AndroidStreamStatus>("getStreamStatus", IPC.androidEmulatorGetStreamStatus),
-    sendTouch: call<AndroidTouchArgs, void>("sendTouch", IPC.androidEmulatorSendTouch),
-    sendKey: call<AndroidKeyArgs, void>("sendKey", IPC.androidEmulatorSendKey),
-    sendText: call<AndroidTextArgs, void>("sendText", IPC.androidEmulatorSendText),
+    // The pane's input is the person's (`source: "user"`): it never starts an automatic recording.
+    sendTouch: asUser(call<AndroidTouchArgs, void>("sendTouch", IPC.androidEmulatorSendTouch)),
+    sendKey: asUser(call<AndroidKeyArgs, void>("sendKey", IPC.androidEmulatorSendKey)),
+    sendText: asUser(call<AndroidTextArgs, void>("sendText", IPC.androidEmulatorSendText)),
     rotate: call<AndroidRotateArgs, void>("rotate", IPC.androidEmulatorRotate),
     screenshot: call<AndroidScreenshotArgs, AndroidScreenshot>("screenshot", IPC.androidEmulatorScreenshot),
     // P1 look: the body colour and the window side of a render.
@@ -133,13 +140,24 @@ export function createAndroidEmulatorBridge(deps: AndroidEmulatorBridgeDeps): An
     cancelSdkInstall: callOptional<Record<string, never>, AndroidSdkInstallState>("cancelSdkInstall", IPC.androidEmulatorCancelSdkInstall),
     getSdkInstallState: callOptional<Record<string, never>, AndroidSdkInstallState>("getSdkInstallState", IPC.androidEmulatorGetSdkInstallState),
     setSdkPath: call<AndroidSetSdkPathArgs, AndroidEmulatorStatus>("setSdkPath", IPC.androidEmulatorSetSdkPath),
+    // Rec: the machine preferences (the settings page) and the lane's auto-record switch.
+    getMachinePreferences: callOptional<Record<string, never>, AndroidMachinePreferencesResult>(
+      "getMachinePreferences",
+      IPC.androidEmulatorGetMachinePreferences,
+    ),
+    setMachinePreferences: call<Partial<AndroidMachinePreferences>, AndroidMachinePreferencesResult>(
+      "setMachinePreferences",
+      IPC.androidEmulatorSetMachinePreferences,
+    ),
+    getAutoRecord: runtimeOnly("getAutoRecord"),
+    setAutoRecord: runtimeOnly("setAutoRecord"),
     // P1 tools: the drawer, Inspect and Record call the agent verbs.
     listApps: runtimeOnly("listApps"),
     installApp: runtimeOnly("installApp"),
     launchApp: runtimeOnly("launchApp"),
     terminateApp: runtimeOnly("terminateApp"),
     uninstallApp: runtimeOnly("uninstallApp"),
-    openUrl: runtimeOnly("openUrl"),
+    openUrl: asUser(runtimeOnly("openUrl")),
     getScreenSnapshot: runtimeOnly("getScreenSnapshot"),
     recordStart: runtimeOnly("recordStart"),
     recordStop: runtimeOnly("recordStop"),
@@ -160,6 +178,21 @@ export function createAndroidEmulatorBridge(deps: AndroidEmulatorBridgeDeps): An
     runInstrumentationTests: runtimeOnly("runInstrumentationTests"),
     listComposePreviews: runtimeOnly("listComposePreviews"),
     renderComposePreviews: runtimeOnly("renderComposePreviews"),
+    // Parity: on the lane's machine (the pin). The pane's key and pick are the person's input.
+    pressKey: asUser(runtimeOnly("pressKey")),
+    relaunchApp: runtimeOnly("relaunchApp"),
+    getAppState: runtimeOnly("getAppState"),
+    getForegroundApp: runtimeOnly("getForegroundApp"),
+    frame: runtimeOnly("frame"),
+    inspectPoint: runtimeOnly("inspectPoint"),
+    selectPoint: asUser(runtimeOnly("selectPoint")),
+    deviceCleanup: runtimeOnly("deviceCleanup"),
+    // Parity (device track): on the lane's machine (the pin).
+    setStatusBar: runtimeOnly("setStatusBar"),
+    clearStatusBar: runtimeOnly("clearStatusBar"),
+    clearLocation: runtimeOnly("clearLocation"),
+    storeScreenshots: runtimeOnly("storeScreenshots"),
+    windowLayout: runtimeOnly("windowLayout"),
     // The rail's "Keep running", on the emulator's machine.
     setKeepRunning: runtimeOnly("setKeepRunning"),
     /**

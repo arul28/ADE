@@ -44,6 +44,7 @@ import {
   type AgentChatModelCatalogRefreshProvider,
   type DraftEntry,
   type DraftScheduleInput,
+  ANDROID_CONTEXT_SURFACE,
 } from "../../../shared/types";
 import {
   AGENT_CHAT_STOP_MODES,
@@ -678,7 +679,7 @@ function iosContextDisplayLabel(item: IosElementContextItem): string {
   for (const value of [metadata.label, metadata.value, item.componentId, metadata.role, metadata.elementType]) {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
-  return "iOS element";
+  return metadata.contextSurface === ANDROID_CONTEXT_SURFACE ? "Android element" : "iOS element";
 }
 
 function iosContextSourceDescription(item: IosElementContextItem): string {
@@ -5494,7 +5495,8 @@ function AgentChatComposerImpl({
     chip.appendChild(label);
 
     const source = document.createElement("span");
-    source.className = "max-w-[90px] truncate text-cyan-100/45";
+    // Cut the start, not the end, so the line number of `File.kt:80` stays.
+    source.className = "max-w-[90px] truncate text-left text-cyan-100/45 [direction:rtl]";
     source.textContent = iosContextSourceDescription(item);
     chip.appendChild(source);
 

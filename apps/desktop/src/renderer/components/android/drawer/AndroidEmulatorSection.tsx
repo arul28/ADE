@@ -25,8 +25,10 @@ export function AndroidEmulatorSection({ ctx }: { ctx: AndroidDrawerContext }) {
   const settings = actions.settings;
   const disabled = actions.disabled;
   const set = deviceSettingSetter(ctx);
-  // The emulator cannot report a location it was given, so the card shows the last one it took.
+  // The emulator cannot report a location it was given, so the card shows the
+  // brain's record of the last one ADE set on this boot (an older brain: this window's own).
   const [placed, setPlaced] = useState<{ latitude: number; longitude: number } | null>(null);
+  const current = settings?.location !== undefined ? settings.location : placed;
   const setLocation = (point: { latitude: number; longitude: number }) => {
     void actions.act(() => window.ade.androidEmulator.setLocation({ laneId, ...point }, pinRef.current))
       .then((accepted) => { if (accepted) setPlaced(point); });
@@ -49,7 +51,16 @@ export function AndroidEmulatorSection({ ctx }: { ctx: AndroidDrawerContext }) {
       </Row>
 
       <Subhead label="Location" />
-      <DeviceLocationRows tool="android" disabled={disabled} current={placed} onSet={setLocation} />
+      <DeviceLocationRows
+        tool="android"
+        disabled={disabled}
+        current={current}
+        onSet={setLocation}
+        onClear={() => {
+          void actions.act(() => window.ade.androidEmulator.clearLocation({ laneId }, pinRef.current))
+            .then((accepted) => { if (accepted) setPlaced(null); });
+        }}
+      />
 
       <Subhead label="Battery" />
       <Row label="Level">

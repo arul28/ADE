@@ -53,6 +53,13 @@ extension LiveInspectMarkupModel {
         "Use exactSource when sourceConfidence is exact. Treat sourceCandidates as ranked best guesses, not proof; prefer nearbyElements and the screenshot when the source is missing or only candidate quality.",
         "The attached picture is the frozen screen; any marks drawn on it are the user's markup.",
       ].joined(separator: "\n")
+    case .android:
+      return [
+        surface.packetName,
+        "Each packet came from the user clicking a UI element on the lane's real Android emulator. Frames are the emulator's screen pixels, the same space as the attached picture.",
+        "The element's identifier is its resource id; ref is the id `ade android tap-element --ref` takes. Android views carry no source file: search the app's layouts and Compose code for the resource id or the text.",
+        "The attached picture is the frozen screen; any marks drawn on it are the user's markup.",
+      ].joined(separator: "\n")
     case .appControl:
       return [
         surface.packetName,
@@ -106,6 +113,18 @@ extension LiveInspectMarkupModel {
       selected["elementType"] = element.elementType ?? NSNull()
       selected["screenshotFrame"] = packetFrame(element.frame)
       packet["selectedElement"] = selected
+    case .android:
+      var selected: [String: Any] = [
+        "ref": element.id,
+        "resourceId": element.componentId ?? NSNull(),
+        "identifier": element.identifier ?? NSNull(),
+      ]
+      selected["label"] = element.label ?? NSNull()
+      selected["text"] = element.value ?? NSNull()
+      selected["role"] = element.role ?? NSNull()
+      selected["className"] = element.elementType ?? NSNull()
+      selected["screenshotFrame"] = packetFrame(element.frame)
+      packet["selectedElement"] = selected
     case .appControl:
       packet["appKind"] = "electron"
       packet["provider"] = element.role ?? "cdp"
@@ -147,7 +166,7 @@ extension LiveInspectMarkupModel {
   private func nearbyElements(for element: LiveInspectElement) -> [[String: Any]] {
     let nearby: [LiveInspectElement]
     switch surface {
-    case .simulator:
+    case .simulator, .android:
       nearby = LiveInspectGeometry.nearbyByOverlap(element, in: elements)
     case .appControl, .macDesktop:
       nearby = LiveInspectGeometry.nearbyByDistance(element, in: elements)
@@ -163,7 +182,7 @@ extension LiveInspectMarkupModel {
         "source": other.sourceLabel ?? NSNull(),
         "screenshotFrame": packetFrame(other.frame),
       ]
-      if surface == .simulator {
+      if surface.isPhoneScreen {
         row["relation"] = LiveInspectGeometry.relation(of: other, to: element)
       }
       return row

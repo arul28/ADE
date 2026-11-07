@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import type { SyncRemoteCommandAction, SyncRemoteCommandPolicy } from "../../../../desktop/src/shared/types/sync";
 import { isAllowedAdeAction, isSecretBearingAdeAction } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
 import { buildAndroidDomainService } from "../../../../desktop/src/main/services/android/androidActionDomain";
@@ -7,6 +8,11 @@ import type {
   AndroidTouchEvent,
 } from "../../../../desktop/src/shared/types/androidEmulator";
 import type { AppleStreamTicketIssuer } from "./appleRemoteCommands";
+import { externalChatContext } from "../../../../desktop/src/main/services/chat/externalChats";
+import {
+  parseForeignCallerSessionId,
+  remoteAgentHolderLabel,
+} from "../../../../desktop/src/shared/runtimeClientNames";
 import {
   ANDROID_HARDWARE_KEYS,
   ANDROID_LANE_FREE_ACTIONS,
@@ -60,6 +66,13 @@ export type AndroidStatusPayload = {
   capabilities: unknown;
   /** True when this brain serves `android.streamTicket` (it has the stream relay). */
   liveView: boolean;
+  /** The lane's recording now, while the emulator runs; null when none runs or it cannot be read. */
+  recording: { active: true; id: string; startedAt: string | null; chatSessionId: string | null } | null;
+  /**
+   * Who holds the emulator's lease (`ade android lease`): an agent says it is
+   * driving. `chatTitle` is resolved here, null when there is no name to give.
+   */
+  owner: { holder: string; chatSessionId: string | null; chatTitle: string | null; expiresAt: string | null } | null;
   raw?: unknown;
 };
 
@@ -120,7 +133,42 @@ export function buildAndroidStatusPayload(laneId: string, status: unknown, liveV
     appCrash: crashId ? { id: crashId, packageName: asString(crash?.packageName), summary: asString(crash?.summary) } : null,
     capabilities: source.capabilities ?? null,
     liveView,
+    recording: null,
+    owner: null,
   };
+}
+
+/** The recording and the lease, read only while the emulator runs. A failed read leaves the field null. */
+async function readAndroidActivity(
+  service: AndroidDeviceRemoteService,
+  laneId: string,
+  resolveChatTitle: ((chatSessionId: string) => Promise<string | null>) | undefined,
+): Promise<Pick<AndroidStatusPayload, "recording" | "owner">> {
+  const [records, lease] = await Promise.all([
+    service.recordList({ laneId }).catch(() => null),
+    service.deviceLeaseStatus({ laneId }).catch(() => null),
+  ]);
+  const active = records?.recordings.find((recording) => recording.active) ?? null;
+  const recording = active
+    ? { active: true as const, id: active.id, startedAt: asString(active.startedAt), chatSessionId: asString(active.chatSessionId) }
+    : null;
+  const current = lease?.held ? lease.current : null;
+  if (!current) return { recording, owner: null };
+  // An agent's lease names its chat (the holder defaults to the chat id).
+  const holder = current.holder;
+  let chatSessionId: string | null = null;
+  let chatTitle: string | null = null;
+  if (parseForeignCallerSessionId(holder)) {
+    chatSessionId = holder;
+    chatTitle = remoteAgentHolderLabel(externalChatContext(holder)?.machineName);
+  } else if (resolveChatTitle && holder !== "agent") {
+    const title = await resolveChatTitle(holder).catch(() => null);
+    if (title !== null) {
+      chatSessionId = holder;
+      chatTitle = asString(title);
+    }
+  }
+  return { recording, owner: { holder, chatSessionId, chatTitle, expiresAt: asString(current.expiresAt) } };
 }
 
 /**
@@ -172,6 +220,8 @@ export function createAndroidRemoteCommandHandlers(deps: {
   service: AndroidDeviceRemoteService;
   /** The brain's stream relay for Android; null hides the live view (screenshots only). */
   streamRelay?: AppleStreamTicketIssuer | null;
+  /** A chat's title, for the owner ribbon; null when the id names no chat here. */
+  resolveChatTitle?: (chatSessionId: string) => Promise<string | null>;
 }): AndroidRemoteCommandEntry[] {
   const { service } = deps;
   const streamRelay = deps.streamRelay ?? null;
@@ -194,7 +244,11 @@ export function createAndroidRemoteCommandHandlers(deps: {
       handler: async (payload) => {
         const laneId = laneOf(payload, "android.status");
         const raw = await service.getStatus({ laneId });
-        const status = buildAndroidStatusPayload(laneId, raw, streamRelay !== null);
+        const base = buildAndroidStatusPayload(laneId, raw, streamRelay !== null);
+        // The recording dot and the owner ribbon, as on the simulator viewer.
+        const status = base.device?.state === "booted"
+          ? { ...base, ...(await readAndroidActivity(service, laneId, deps.resolveChatTitle)) }
+          : base;
         return payload.full === true ? { ...status, raw } : status;
       },
     },
@@ -234,7 +288,12 @@ export function createAndroidRemoteCommandHandlers(deps: {
       action: "android.input",
       policy: { viewerAllowed: false, controllerAllowed: true },
       handler: async (payload) => {
+        // A phone or a web tab is a person: every input here is stamped
+        // `source: "user"` by this path, never read from the payload, so it
+        // never starts an agent's auto-recording (Apple's `appleRemoteCommands.ts`).
+        // A live finger (`touch`) is always the person's already.
         const laneId = laneOf(payload, "android.input");
+        const source = "user" as const;
         const kind = requireString(payload.kind, "android.input requires a kind.");
         switch (kind) {
           case "touch": {
@@ -249,11 +308,12 @@ export function createAndroidRemoteCommandHandlers(deps: {
             return { ok: true };
           }
           case "tap":
-            await service.tap({ laneId, x: requireFiniteNumber(payload.x, "x"), y: requireFiniteNumber(payload.y, "y") });
+            await service.tap({ laneId, source, x: requireFiniteNumber(payload.x, "x"), y: requireFiniteNumber(payload.y, "y") });
             return { ok: true };
           case "long-press":
             await service.longPress({
               laneId,
+              source,
               x: requireFiniteNumber(payload.x, "x"),
               y: requireFiniteNumber(payload.y, "y"),
               durationMs: asNumber(payload.durationMs),
@@ -263,6 +323,7 @@ export function createAndroidRemoteCommandHandlers(deps: {
           case "drag": {
             const stroke = {
               laneId,
+              source,
               fromX: requireFiniteNumber(payload.fromX, "fromX"),
               fromY: requireFiniteNumber(payload.fromY, "fromY"),
               toX: requireFiniteNumber(payload.toX, "toX"),
@@ -275,6 +336,7 @@ export function createAndroidRemoteCommandHandlers(deps: {
           case "scroll":
             await service.scroll({
               laneId,
+              source,
               direction: direction(payload.direction),
               amount: asNumber(payload.amount),
               anchorX: asNumber(payload.anchorX),
@@ -282,17 +344,18 @@ export function createAndroidRemoteCommandHandlers(deps: {
             });
             return { ok: true };
           case "type":
-            await service.sendText({ laneId, text: requireString(payload.text, "android.input type requires text.") });
+            await service.sendText({ laneId, source, text: requireString(payload.text, "android.input type requires text.") });
             return { ok: true };
           case "key": {
             const key = requireString(payload.key, "android.input key requires a key.");
             if (!ANDROID_BUTTONS.has(key)) throw new Error(`android.input key must be one of ${ANDROID_HARDWARE_KEYS.join(", ")}.`);
-            await service.sendKey({ laneId, key: key as AndroidHardwareKey });
+            await service.sendKey({ laneId, source, key: key as AndroidHardwareKey });
             return { ok: true };
           }
           case "tap-element":
             await service.tapElement({
               laneId,
+              source,
               query: {
                 ...(asString(payload.ref) ? { ref: asString(payload.ref) } : {}),
                 ...(asString(payload.label) ? { label: asString(payload.label) } : {}),
@@ -301,7 +364,7 @@ export function createAndroidRemoteCommandHandlers(deps: {
             });
             return { ok: true };
           case "open-url":
-            await service.openUrl({ laneId, url: requireString(payload.url, "android.input open-url requires url.") });
+            await service.openUrl({ laneId, source, url: requireString(payload.url, "android.input open-url requires url.") });
             return { ok: true };
           default:
             throw new Error(`android.input does not support '${kind}'.`);
@@ -334,6 +397,8 @@ export function createAndroidRemoteCommandHandlers(deps: {
           ...methodArgs,
           ...(laneId ? { laneId } : {}),
           ...(chatSessionId ? { chatSessionId } : {}),
+          // A person's call, as on `android.input`; the payload cannot change it.
+          source: "user",
         });
       },
     },
@@ -365,6 +430,53 @@ export function createAndroidRemoteCommandHandlers(deps: {
         discard: payload.discard === true,
       }),
     },
+    {
+      // The phone's Live Inspect: one still and the elements on it, in the
+      // shape of `apple.invoke getScreenSnapshot`, so the phone's frozen
+      // inspector reads both. Controller-only, as Apple's: the UI tree read
+      // can wake the device's accessibility service.
+      action: "android.inspectSnapshot",
+      policy: { viewerAllowed: false, controllerAllowed: true },
+      handler: async (payload) => buildAndroidInspectSnapshot(service, laneOf(payload, "android.inspectSnapshot")),
+    },
   ];
+}
+
+/** The PNG bytes past this are not sent: the sync channel carries the picture inline. */
+const MAX_INSPECT_PNG_BYTES = 8 * 1024 * 1024;
+
+/**
+ * One screenshot (no proof row: nobody asked for one) and one fresh UI tree.
+ * The PNG goes inline as a data URL and its file is removed after the read.
+ * Element frames are device pixels, the screenshot's own space.
+ */
+export async function buildAndroidInspectSnapshot(service: AndroidDeviceRemoteService, laneId: string) {
+  const shot = await service.screenshot({ laneId, proof: false });
+  let png: Buffer;
+  try {
+    png = await fs.readFile(shot.path);
+  } finally {
+    await fs.rm(shot.path, { force: true }).catch(() => undefined);
+  }
+  if (png.byteLength > MAX_INSPECT_PNG_BYTES) {
+    throw new Error(`The emulator's screenshot is ${Math.round(png.byteLength / 1_048_576)} MB, too large to send for inspect.`);
+  }
+  const tree = await service.getScreenSnapshot({ laneId, fresh: true });
+  return {
+    screenshot: { dataUrl: `data:image/png;base64,${png.toString("base64")}`, width: shot.width, height: shot.height },
+    screen: { width: tree.width ?? shot.width, height: tree.height ?? shot.height, scale: 1 },
+    foregroundPackage: tree.foregroundPackage,
+    elements: tree.elements.map((element) => ({
+      id: element.ref,
+      label: element.label,
+      value: element.text,
+      role: element.role,
+      elementType: element.className,
+      identifier: element.identifier ?? element.resourceId,
+      componentId: element.resourceId,
+      frame: element.bounds,
+      pixelFrame: element.bounds,
+    })),
+  };
 }
 

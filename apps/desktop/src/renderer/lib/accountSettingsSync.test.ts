@@ -187,6 +187,8 @@ describe("accountSettingsSync (renderer)", () => {
       "apple.autoRecordAgentInput",
       "apple.remoteBitrateKbpsCap",
       "apple.recordingsWarnBytes",
+      // Per computer like Apple's; the other Android choices live in the emulator machine's brain.
+      "android.realisticBody",
     ]);
     // The screen-specific auto-size lock is deliberately machine-local.
     expect(ACCOUNT_SYNCED_SETTINGS.map((entry) => entry.key)).not.toContain(

@@ -18,79 +18,49 @@ import type { AndroidLaneDeviceRepo } from "./androidLaneRelease";
  */
 
 /**
- * The calls that count as using the lane's emulator: driving it, streaming,
- * installing, capturing, recording, reading its log, a lease. Each one moves
- * the emulator's idle clock, and while one is in flight (a Gradle build, a
- * test run, a lease wait) the emulator counts as busy. Status reads do not:
- * a pane that only looks must not keep an emulator alive forever.
+ * The calls that do NOT count as using the lane's emulator. Every other call
+ * that names a lane does: driving it (taps, keys, text, Inspect, a relaunch),
+ * streaming, installing, capturing, recording, reading its log or its
+ * screen, a lease, a fold, a test run, so a method added later counts by
+ * default. Each one moves the emulator's idle clock, and while one is in
+ * flight (a Gradle build, a test run, a lease wait) the emulator counts as
+ * busy. The reads a pane or the mini player polls do not, or an open window
+ * would keep an emulator up forever; a viewer's stream counts by itself
+ * while someone holds it. Nor do the stops, the pin and the cleanup pass.
  */
-export const ANDROID_USE_METHODS = [
-  "start",
-  "startStream",
-  "sendTouch",
-  "tap",
-  "swipe",
-  "sendKey",
-  "sendText",
-  "rotate",
-  "screenshot",
-  "installApp",
-  "launchApp",
-  "terminateApp",
-  "uninstallApp",
-  "openUrl",
-  "longPress",
-  "drag",
-  "scroll",
-  "getScreenSnapshot",
-  "findElement",
-  "tapElement",
-  "fillElement",
-  "waitForElement",
-  "assertVisible",
-  "readLog",
-  "recordStart",
-  "recordStop",
-  "captureProofBundle",
-  "deviceLease",
-  "setLocation",
-  "setAppearance",
-  "setPermission",
-  "setDeviceSetting",
-  "setPosture",
-  "runInstrumentationTests",
-] as const satisfies readonly LaneMethodName<AndroidEmulatorServiceApi>[];
+export const ANDROID_NOT_USE_METHODS: ReadonlySet<string> = new Set([
+  "getStatus", "listDevices", "getStreamStatus", "deviceLeaseStatus", "recordList", "getAutoRecord",
+  "getMachinePreferences", "getSdkSetupPlan", "getSdkInstallState", "listSystemImages", "deviceCleanup",
+  "stop", "stopForLane", "releaseDevice", "dispose", "onEvent", "releaseIfOwnedBy", "streamRemoteBitrateKbpsCap",
+  "setKeepRunning",
+]);
 
 /** A lane's use is passed to the lifecycle at most this often; the lifecycle writes the file once a minute. */
 const LANE_TOUCH_EVERY_MS = 15_000;
 
-/** The methods of `S` whose one argument names a lane. */
-export type LaneMethodName<S> = {
-  [K in keyof S]-?: S[K] extends (args: infer A) => unknown ? (A extends { laneId: string } ? K : never) : never;
-}[keyof S];
-
 /**
  * `service` with each of `methods` wrapped: `onUse(laneId)` runs as a call
  * starts, and the function it returns once the call settles (sync, async,
- * thrown). A call without a lane goes straight through. A new object; the
- * service itself is not changed.
+ * thrown). A call whose first argument names no lane goes straight through.
+ * A new object; the service itself is not changed.
  */
-export function withUseTracking<S extends object, K extends LaneMethodName<S>>(
+export function withUseTracking<S extends object>(
   service: S,
-  methods: readonly K[],
+  methods: readonly (keyof S & string)[],
   hooks: { onUse: (laneId: string) => () => void },
 ): S {
   const tracked: S = { ...service };
   for (const name of methods) {
-    const original = service[name] as unknown as (args: { laneId?: unknown } | null) => unknown;
+    const original = service[name] as unknown as (args: unknown, ...rest: unknown[]) => unknown;
     if (typeof original !== "function") continue;
-    const wrapped = (args: { laneId?: unknown } | null) => {
-      const laneId = typeof args?.laneId === "string" ? args.laneId.trim() : "";
-      if (!laneId) return original.call(service, args);
+    const wrapped = (args: unknown, ...rest: unknown[]) => {
+      const named = args && typeof args === "object" ? (args as { laneId?: unknown }).laneId : undefined;
+      const laneId = typeof named === "string" ? named.trim() : "";
+      if (!laneId) return original.call(service, args, ...rest);
       const done = hooks.onUse(laneId);
       let result: unknown;
       try {
-        result = original.call(service, args);
+        result = original.call(service, args, ...rest);
       } catch (error) {
         done();
         throw error;
@@ -99,7 +69,7 @@ export function withUseTracking<S extends object, K extends LaneMethodName<S>>(
       done();
       return result;
     };
-    (tracked as Record<K, unknown>)[name] = wrapped;
+    (tracked as Record<string, unknown>)[name] = wrapped;
   }
   return tracked;
 }
@@ -111,8 +81,15 @@ export type AndroidEmulatorUseDeps = {
   logger: Logger | null;
   now: () => Date;
   isDisposed: () => boolean;
-  /** In use for what the service itself tracks: a boot or stop, a stream, a recording, a lease. */
+  /** In use for what the service itself tracks: a boot or stop, a stream someone holds, a recording, a lease. */
   busyHere: (laneId: string) => boolean;
+  /**
+   * Asked on the lane's queue just before an idle stop: the device shows use
+   * ADE's calls do not (input from adb or Android Studio, `dumpsys power`; or
+   * another brain's or tool's scrcpy viewer). Null when it shows none or
+   * cannot say.
+   */
+  usedOnDevice: (laneId: string, idleMs: number) => Promise<"device_input" | "other_viewer" | null>;
   /** The running emulator of this AVD when ADE started it, else null. */
   ownedRunning: (avdName: string) => AndroidDiscoveredEmulator | null;
   /** The running emulators ADE started for this project (its state file). */
@@ -120,19 +97,26 @@ export type AndroidEmulatorUseDeps = {
   /** The adb and the guest RAM to record for an emulator taken in. */
   describe: (avdName: string) => { adbPath: string | null; guestRamMb: number | null };
   serialize: <T>(laneId: string, step: () => Promise<T>) => Promise<T>;
-  /** Stops the lane's emulator as idle and says so; the caller holds the lane's queue. */
-  stopIdleLocked: (laneId: string, device: AndroidLaneDevice) => Promise<void>;
+  /** Stops the lane's emulator as idle and says so (`poweredOff`); the caller holds the lane's queue. */
+  stopIdleLocked: (laneId: string, device: AndroidLaneDevice, idleMinutes: number) => Promise<void>;
   onAutoStopped?: () => void;
 };
 
 export function createAndroidEmulatorUse(deps: AndroidEmulatorUseDeps) {
   const { lifecycle, logger } = deps;
-  /** Calls in flight that count as use, by lane (`ANDROID_USE_METHODS`). */
+  /** Calls in flight that count as use, by lane (every lane call but `ANDROID_NOT_USE_METHODS`). */
   const useInFlight = new Map<string, number>();
   const laneTouchThrottle = createPerKeyThrottle(LANE_TOUCH_EVERY_MS, () => deps.now().getTime());
 
   /** The lane's emulator in use here now: a boot or stop, a stream, a recording, a lease, a call in flight. */
   const laneBusy = (laneId: string): boolean => deps.busyHere(laneId) || (useInFlight.get(laneId) ?? 0) > 0;
+
+  /** Minutes since the AVD's emulator was used: this process's own clock, else the owner file's. */
+  const idleMinutesFor = (avdName: string, record: AndroidEmulatorOwnerRecord | null = lifecycle?.recordFor(avdName) ?? null): number => {
+    const fileMs = record ? Date.parse(record.lastUsedAt) : Number.NaN;
+    const lastMs = Math.max(lifecycle?.lastUsedHereMs(avdName) ?? Number.NEGATIVE_INFINITY, Number.isFinite(fileMs) ? fileMs : Number.NEGATIVE_INFINITY);
+    return Number.isFinite(lastMs) ? Math.max(0, Math.round((deps.now().getTime() - lastMs) / 60_000)) : 0;
+  };
 
   /** Something used the lane's emulator: move its idle clock. Throttled; never throws. */
   const touchLane = (laneId: string): void => {
@@ -163,7 +147,13 @@ export function createAndroidEmulatorUse(deps: AndroidEmulatorUseDeps) {
       if (current && (current.pinned || current.owner.brainPid !== record.owner.brainPid)) return "kept";
       const lastHere = lifecycle?.lastUsedHereMs(record.avdName) ?? null;
       if (laneBusy(laneId) || (lastHere !== null && deps.now().getTime() - lastHere < idleMs)) return "busy";
-      await deps.stopIdleLocked(laneId, device);
+      // Use ADE's calls cannot see. "busy" moves the idle clock to now.
+      const used = await deps.usedOnDevice(laneId, idleMs);
+      if (used) {
+        logger?.info("android.idle_stop_skipped", { laneId, avdName: record.avdName, reason: used });
+        return "busy";
+      }
+      await deps.stopIdleLocked(laneId, device, idleMinutesFor(record.avdName, current ?? record));
       return "stopped";
     });
   };
@@ -232,6 +222,18 @@ export function createAndroidEmulatorUse(deps: AndroidEmulatorUseDeps) {
       };
     },
 
+    /** In use here now (`busyHere`, or a use call in flight): the cleanup pass's power-off leaves it alone. */
+    laneBusy,
+    /** The person pinned the AVD's running emulator ("Keep running"). */
+    isPinned(avdName: string): boolean {
+      return lifecycle?.recordFor(avdName)?.pinned === true;
+    },
+    idleMinutes: (avdName: string): number => idleMinutesFor(avdName),
+    /** The idle limit in minutes; 0 when the idle stop is off or there is no lifecycle. */
+    idleStopMinutes(): number {
+      return lifecycle && lifecycle.idleMs > 0 ? Math.round(lifecycle.idleMs / 60_000) : 0;
+    },
+
     /** "Keep running" on or off for a running emulator ADE started. */
     setKeepRunning(laneId: string, avdName: string, keepRunning: boolean): void {
       if (!lifecycle) return;
@@ -239,11 +241,15 @@ export function createAndroidEmulatorUse(deps: AndroidEmulatorUseDeps) {
       if (lifecycle.setPinned(avdName, keepRunning)) logger?.info("android.keep_running_set", { laneId, avdName, keepRunning });
     },
 
-    /** The service, with each use call moving its lane's idle clock and keeping it busy while it runs. */
+    /**
+     * The service, with each use call (every lane call but `ANDROID_NOT_USE_METHODS`)
+     * moving its lane's idle clock and keeping it busy while it runs.
+     */
     track<S extends AndroidEmulatorServiceApi>(service: S): S {
-      if (!lifecycle) return service;
+      const methods = (Object.keys(service) as (keyof S & string)[]).filter((name) =>
+        typeof service[name] === "function" && !ANDROID_NOT_USE_METHODS.has(name));
       // A copy of every property of `service`, so the cast back is exact.
-      return withUseTracking<AndroidEmulatorServiceApi, (typeof ANDROID_USE_METHODS)[number]>(service, ANDROID_USE_METHODS, {
+      return withUseTracking(service, methods, {
         onUse: (laneId) => {
           touchLane(laneId);
           useInFlight.set(laneId, (useInFlight.get(laneId) ?? 0) + 1);
@@ -253,7 +259,7 @@ export function createAndroidEmulatorUse(deps: AndroidEmulatorUseDeps) {
             else useInFlight.delete(laneId);
           };
         },
-      }) as S;
+      });
     },
 
     /** Leaves the lifecycle: a sweep never asks a service that is going away. */

@@ -2,7 +2,8 @@
  * What a computer-use shell command did, in words a reader can follow.
  *
  * Agents drive screens through the ADE CLI from their own shell tool
- * (`ade screen click …`, `ade browser fill …`, `"$ADE_CLI_PATH" apple tap …`).
+ * (`ade screen click …`, `ade browser fill …`, `"$ADE_CLI_PATH" apple tap …`,
+ * `ade android tap-element …`).
  * The transcript used to show those as generic shell rows. This module reads
  * the command and its output and returns a small structured summary — the verb,
  * the element actually hit, the app, the surface, and whether the screen
@@ -37,6 +38,8 @@ import {
   readUserBrowser,
   type ParsedOutput,
 } from "./computerUseActionOutput";
+import { androidSummaryParts, resolveAndroidVerb } from "./computerUseAndroid";
+import { appNameFromBundleId, flagValue, NUMBER, type TargetShape, type VerbSpec } from "./computerUseCommandReaders";
 import { readRecord } from "./readRecord";
 
 export type ComputerUseSurfaceKind =
@@ -45,6 +48,7 @@ export type ComputerUseSurfaceKind =
   | "ade_browser"
   | "user_browser"
   | "apple_device"
+  | "android_device"
   | "proof";
 
 export type ComputerUseActionOutcome =
@@ -59,7 +63,7 @@ export type ComputerUseActionOutcome =
 
 export type ComputerUseActionSummary = {
   surface: ComputerUseSurfaceKind;
-  /** Canonical CLI domain: `screen`, `app-control`, `browser`, `apple`, `proof`. */
+  /** Canonical CLI domain: `screen`, `app-control`, `browser`, `apple`, `android`, `proof`. */
   domain: ComputerUseDomain;
   /** Canonical verb, e.g. `click`, `type`, `proof`. */
   verb: string;
@@ -85,7 +89,7 @@ export type ComputerUseActionSummary = {
   browserName: string | null;
   /** Machine label for the user's browser: "studio-mac". */
   hostLabel: string | null;
-  /** Apple device, when the command or its output named it. */
+  /** Apple device or Android emulator, when the command or its output named it. */
   device: { name: string | null; os: string | null } | null;
   /** Which lane screen the command named: `ade mac-desktop` or `ade windows-desktop`; null for `ade screen`. */
   screenProduct: "mac" | "windows" | null;
@@ -112,7 +116,7 @@ export type ComputerUseActionPlace = {
   kind: "app" | "site" | "other";
 };
 
-export type ComputerUseDomain = "screen" | "app-control" | "browser" | "apple" | "proof";
+export type ComputerUseDomain = "screen" | "app-control" | "browser" | "apple" | "android" | "proof";
 
 export type ComputerUseCommandInput = {
   command: string | readonly string[] | null | undefined;
@@ -142,6 +146,7 @@ const DOMAIN_ALIASES: Readonly<Record<string, ComputerUseDomain>> = {
   "ios-sim": "apple",
   ios: "apple",
   simulator: "apple",
+  android: "android",
   proof: "proof",
   computer: "proof",
   "computer-use": "proof",
@@ -442,16 +447,6 @@ function isSubcommandWord(domain: ComputerUseDomain, words: readonly string[], t
 
 /* ── Verbs ───────────────────────────────────────────────────────────────── */
 
-type VerbSpec = {
-  past: string;
-  progressive: string;
-  infinitive: string;
-  /** How the target is read when the output names no element. */
-  target: "element" | "typed" | "key" | "app" | "url" | "caption" | "direction" | "file" | "page" | "none";
-  /** An observation, not an action: compact rows still read well. */
-  passive?: boolean;
-};
-
 const VERBS: Readonly<Record<string, VerbSpec>> = {
   click: { past: "Clicked", progressive: "Clicking", infinitive: "click", target: "element" },
   "double-click": { past: "Double-clicked", progressive: "Double-clicking", infinitive: "double-click", target: "element" },
@@ -528,6 +523,7 @@ function resolveVerb(invocation: ParsedInvocation): { key: string; spec: VerbSpe
   if ((first === "observe" || first === "snapshot") && invocation.domain === "browser") {
     return { key: first, spec: { past: "Read", progressive: "Reading", infinitive: "read", target: "page", passive: true } };
   }
+  if (invocation.domain === "android") return resolveAndroidVerb(first, invocation, VERBS);
   // `apple start` names the device, which later rows in the run borrow.
   if (first === "start" && invocation.domain === "apple") {
     return { key: "start", spec: { past: "Started", progressive: "Starting", infinitive: "start", target: "none", passive: true } };
@@ -537,14 +533,6 @@ function resolveVerb(invocation: ParsedInvocation): { key: string; spec: VerbSpe
 }
 
 /* ── Field readers ───────────────────────────────────────────────────────── */
-
-function flagValue(invocation: ParsedInvocation, ...names: string[]): string | null {
-  for (const name of names) {
-    const value = invocation.flags.get(name);
-    if (typeof value === "string" && value.trim().length) return value.trim();
-  }
-  return null;
-}
 
 function urlHost(value: string | null): string | null {
   if (!value) return null;
@@ -558,23 +546,6 @@ function urlHost(value: string | null): string | null {
   }
 }
 
-function appNameFromBundleId(bundleId: string | null): string | null {
-  if (!bundleId) return null;
-  const last = bundleId.split(".").pop() ?? "";
-  if (!last) return null;
-  const known: Record<string, string> = {
-    mobilesafari: "Safari",
-    preferences: "Settings",
-    mobileslideshow: "Photos",
-    mobilenotes: "Notes",
-    mobilemail: "Mail",
-    mobilecal: "Calendar",
-    mobiletimer: "Clock",
-    maps: "Maps",
-  };
-  return known[last.toLowerCase()] ?? `${last.charAt(0).toUpperCase()}${last.slice(1)}`;
-}
-
 /* ── Summary ─────────────────────────────────────────────────────────────── */
 
 function surfaceFor(domain: ComputerUseDomain): ComputerUseSurfaceKind {
@@ -583,6 +554,7 @@ function surfaceFor(domain: ComputerUseDomain): ComputerUseSurfaceKind {
     case "app-control": return "app_control";
     case "browser": return "ade_browser";
     case "apple": return "apple_device";
+    case "android": return "android_device";
     case "proof": return "proof";
   }
 }
@@ -710,18 +682,7 @@ export function summarizeComputerUseCommand(input: ComputerUseCommandInput): Com
   return summary;
 }
 
-/** The object of the sentence, and how the verb reads around it. */
-type TargetShape = {
-  target: string | null;
-  quoted: boolean;
-  /** "up", "down", …: "Scrolled down in “Notes list”". */
-  direction: string | null;
-  /** A screen point, not a name: "Clicked at 412, 300". */
-  point: boolean;
-};
-
 const DIRECTIONS = new Set(["up", "down", "left", "right"]);
-const NUMBER = /^-?\d+(\.\d+)?$/;
 
 /** Verbs that press on one spot, which can be a point with no element under it. */
 const CLICKS = new Set(["click", "double-click", "dblclick", "right-click", "tap", "tap-element"]);
@@ -869,6 +830,8 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
   const parsed = parseOutput(output);
   const json = parsed.json;
   const domain = invocation.domain;
+  // `ade android`: its own fill check, app, device and target (`computerUseAndroid.ts`).
+  const android = domain === "android" ? androidSummaryParts(verb.key, invocation, parsed, output) : null;
 
   /* Outcome. */
   const exitFailed = typeof input.exitCode === "number" && input.exitCode !== 0;
@@ -884,6 +847,8 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
   else if (input.status === "running" && !parsed.effect) outcome = "running";
   else if (parsed.effect === "observed") outcome = "observed";
   else if (parsed.effect === "unconfirmed" || parsed.effect === "waiting") outcome = "unconfirmed";
+  // `ade android fill-element`: the field does not show the text afterwards.
+  else if (android?.fillUnseen) outcome = "unconfirmed";
   else outcome = "not_checked";
   // A filed proof prints its id. A call that exits 0 without one did not file
   // it: the exit code can be a later command's in the same call. No output at
@@ -908,7 +873,9 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
     : null;
   const reason = outcome === "failed"
     ? failureReason
-    : outcome === "unconfirmed" ? missingProof ?? parsed.effectReason : null;
+    : outcome === "unconfirmed"
+      ? missingProof ?? parsed.effectReason ?? android?.unconfirmedReason ?? null
+      : null;
 
   /* Surface and browser. */
   let surface = surfaceFor(domain);
@@ -944,21 +911,25 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
     appName = parsed.values.get("app name")
       ?? readString(json?.appName)
       ?? appNameFromBundleId(flagValue(invocation, "--bundle-id", "--bundle") ?? parsed.values.get("active app") ?? null);
+  } else if (android) {
+    appName = android.appName;
   } else if (surface === "user_browser" && browserName) {
     appName = browserName;
   }
   if (appName) appName = clip(appName, 48);
 
   /* Target and the words around it. */
-  const device = domain === "apple" ? readAppleDevice(
+  const device = domain === "apple"
+    ? readAppleDevice(
       flagValue(invocation, "--device-type", "--device-name", "--simulator"),
       flagValue(invocation, "--runtime"),
       output,
-    ) : null;
-  // `apple start` names the device it booted.
+    )
+    : android?.device ?? null;
+  // `apple start` names the device (the Android lifecycle verbs do in `android.shape`).
   const shape: TargetShape = verb.key === "start" && domain === "apple"
     ? { target: device?.name ?? null, quoted: false, direction: null, point: false }
-    : describeTarget(spec, verb.key, invocation, parsed, appName);
+    : android?.shape ?? describeTarget(spec, verb.key, invocation, parsed, appName);
   let target = shape.target ? clip(shape.target) : null;
   let targetQuoted = shape.quoted;
   const at = shape.point ? " at" : "";
@@ -972,7 +943,7 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
   } else if (domain === "browser") {
     const host = urlHost(parsed.values.get("url") ?? readString(readRecord(json?.observation)?.url) ?? readString(json?.url) ?? parsed.openedUrl);
     if (host && host !== target) place = { preposition: "on", label: host, kind: "site" };
-  } else if (domain === "screen" || domain === "app-control" || domain === "apple") {
+  } else if (domain === "screen" || domain === "app-control" || domain === "apple" || domain === "android") {
     // `screen open` happens on the lane screen, which "using …" names.
     const opensApp = domain === "screen" && verb.key === "open";
     if (!opensApp && appName && appName !== target) place = { preposition: "in", label: appName, kind: "app" };

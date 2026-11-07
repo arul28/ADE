@@ -63,9 +63,10 @@ Plain `adb shell …` reads (`dumpsys`, `getprop`, `pm list`) are fine, with
   the user. Ask the user before `android start --force`.
 - `state: booted`: drive it.
 
-ADE stops an emulator nobody has used for 20 minutes (`keep running: no` in
-`status`). It boots again with `android start`. If you need it up through a
-long pause, run `android keep-running on --text`, and `off` when you are done.
+ADE stops an emulator it started that nobody has used for 20 minutes
+(`keep running: no` in `status`). It boots again with `android start`. If you
+need it up through a long pause, run `android keep-running on --text`, and
+`off` when you are done.
 
 `status` also shows `capabilities`: whether this machine can record, read the
 UI tree (and with which tool), read logcat and build with Gradle, and the
@@ -82,6 +83,10 @@ screenshot and the snapshot.
 | Build and install only | `"$A" android install --gradle --text` |
 | Install an APK | `"$A" android install --apk app/build/outputs/apk/debug/app-debug.apk --text` (inside the lane worktree) |
 | Open an installed app | `"$A" android launch --package com.example.app --text` (`--activity .MainActivity`) |
+| Open it with intent extras | `"$A" android launch --package <name> --extra user=ada --extra count=3 --text` (true/false, a number or text is typed; `--extra-string k=v` keeps text; `am start` options: `--launch-arg <word>` or `-- <words>`) |
+| Restart an app | `"$A" android relaunch --package <name> --text` (takes the launch's `--activity` and extras) |
+| Is it installed, running, in front | `"$A" android app-state <name> --text` (pid and version too) |
+| Which app is in front | `"$A" android foreground --text` (`--wait 10` asks again until one is; `--package <name>` waits for that one and exits 1 when it does not come) |
 | Stop an app / remove it | `"$A" android terminate --package <name> --text` / `uninstall --package <name>` |
 | Which apps are on it | `"$A" android apps --text` |
 | Open a URL or deep link | `"$A" android open-url "myapp://item/42" --text` |
@@ -94,9 +99,20 @@ screenshot and the snapshot.
 | Scroll a list | `"$A" android scroll --direction down --text` (`--amount 0.6`, `--anchor-x/-y`) |
 | Drag and drop | `"$A" android drag 200 900 800 900 --duration-ms 800 --text` |
 | Back, home, recents | `"$A" android button back --text` |
+| Press a key | `"$A" android key tab --text` (return, escape, delete, space, arrows, home, end, page-up/-down, f1-f12, a letter or digit); with modifiers `key ctrl+a` or `key a --ctrl` (`--shift`, `--alt`, `--meta`) |
+| Type and submit | `"$A" android type "coffee" --submit --text` (Enter after the text; `type --submit` alone presses Enter) |
+| What is at a point, and its code | `"$A" android inspect 540 1200 --text` (the element, and its file:line in the lane's Kotlin/Java/XML when its id, test tag or text names it; `--screenshot` adds a crop) |
+| One quick picture, not proof | `"$A" android frame --text` (`--out <path>`) |
+| Clean up devices | `"$A" android device-cleanup --dry-run --text` shows what it would do; `--power-off-idle` powers off your lane's emulator now when it is idle |
 | Logs of the app | `"$A" android log --package <name> --level warn --text` (then `--since <cursor>` for newer lines) |
 | Dark mode, location, a permission | `"$A" android appearance dark`, `android location 37.77 -122.42`, `android permission grant camera --package <name>` (camera, location, microphone, notifications, contacts, photos, calendar, or `android.permission.<NAME>`) |
 | Offline, low battery, big text, no animations | `"$A" android settings --airplane on` (one change per call: `--wifi`, `--data`, `--battery 5`, `--charging off`, `--text-size largest`, `--display-size large`, `--animations off`, `--show-taps on`, `--layout-bounds on`); `"$A" android settings` reads them all |
+| Turn the device | `"$A" android rotate landscape-left --text` (`portrait`, `portrait-upside-down`, `landscape-left`, `landscape-right`; `landscape` is `landscape-right`) |
+| Accessibility | `"$A" android accessibility bold-text on` (`increase-contrast`, `bold-text`, `invert-colors`, `grayscale`, `color-correction`, `talkback`); `"$A" android settings` reads them back |
+| Status bar for screenshots | `"$A" android status-bar --time 9:41 --text` (`--data-network wifi\|5g\|lte\|4g\|3g\|e\|g`, `--wifi-bars 0-4`, `--cellular-bars 0-4`, `--battery-level 0-100`, `--battery-state charging\|charged\|discharging`); `status-bar --clear` ends it |
+| Clear the location | `"$A" android location --clear --text` (the GPS goes back to the emulator's default point) |
+| Google Play screenshots | `"$A" android play-store-shots --text`: one PNG per screen at Play's rules (a foldable: the cover screen shut, the inner screen open), filed as proof |
+| Split screen, free windows | `"$A" android window split --package <a> --with <b> --text` (`left`, `right`, `top`, `bottom`, `swap`, `freeform`, `size --size 1200x900`, `move --move 100,200`, `fill`, `close`, `status`); a large screen only, exits 1 when Android did not make the change |
 | Screenshot (filed as proof) | `"$A" android screenshot --caption "<what it shows>" --text` |
 | Video proof | `"$A" android record-start --label "<what>" --text`, do the steps, then `"$A" android record-stop --text` |
 | Proof bundle | `"$A" android proof-bundle --caption "<what>" --package <name> --text` (screenshot, elements, log, meta) |
@@ -143,14 +159,37 @@ a tap is fresh. `--fresh` reads again anyway.
   user's own AVD (attached), it removes only apps ADE installed, and ADE
   removes those again when the lane lets the AVD go.
 
+- The 20-minute idle stop counts any call on the lane's emulator, input on
+  the device itself, another viewer, a recording, a lease and a test run as use
+  (`ADE_ANDROID_IDLE_POWER_OFF_MINUTES`, 0 turns it off). The lane keeps its
+  device: `"$A" android start` boots it again, and `status` says when it was
+  powered off. ADE never powers off an emulator it did not start. Take a
+  `lease`, or `keep-running on`, when you need it to stay up between turns.
+- `open-url` with an `http(s)` URL that opens in Chrome skips Chrome's first
+  run ("Welcome to Chrome" and the notifications prompt), once per boot.
+- You cannot start or stop the live view: it belongs to the user (its start
+  hands out the stream's token). `frame` and `screenshot` do not need it.
+
 ## Recordings and proof
 
 - `screenshot`, `record-stop` and `proof-bundle` file to this chat's proof
   drawer by themselves. Do not capture with `adb exec-out screencap` or
   `adb shell screenrecord`: those files have no owner and nobody sees them.
-- A recording stops at `--max-seconds` (up to 300) and when the emulator
-  stops. When the screen turns, the recording goes on in a new part; each
-  part is its own MP4 and its own proof row.
+- `screenshot` and `record-stop` print a `cite:` line. Paste it to show the
+  user that proof. `screenshot --no-proof` writes the file only.
+- Your input records itself. A tap, swipe, type, key, button, open-url,
+  long-press, drag, scroll, tap-element or fill-element starts a recording
+  when none runs, and the recording stops when your turn ends (or after
+  2 minutes with no change). The stop files one demo video: idle time cut,
+  tap rings, typed-text badges (never a password), `ade proof step`
+  chapters, under 10 MB. A rotation stays one video.
+- Turn it off for one command with `--no-record`, or for the lane with
+  `android auto-record off` (`on`, `status`). The user can turn it off for
+  the machine in Settings › Android devices.
+- `record-start --label "<what>"` starts a recording you stop yourself; it
+  also keeps an automatic one that runs. `--plain` files the video as
+  recorded, `--zoom` follows the taps. A recording stops at `--max-seconds`
+  (up to 300), after 2 minutes with no change, and when the emulator stops.
 - `record-stop --discard` keeps nothing.
 
 ## Foldables and Compose previews

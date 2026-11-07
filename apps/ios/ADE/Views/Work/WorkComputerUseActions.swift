@@ -551,6 +551,7 @@ struct WorkComputerUseIcon: View {
     case .laneScreen, .appControl: return "macwindow"
     case .adeBrowser, .userBrowser: return "globe"
     case .appleDevice: return "iphone"
+    case .androidDevice: return "smartphone"
     case .proof: return "checkmark.seal"
     }
   }

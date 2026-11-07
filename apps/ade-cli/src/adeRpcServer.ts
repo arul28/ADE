@@ -4794,7 +4794,9 @@ export function scopeAppleAdeActionArgs(
   appleArgs: Record<string, unknown>,
 ): Record<string, unknown> {
   const method = `run_ade_action:ios_simulator.${action}`;
-  const { agentCaller: _callerSupplied, chatSessionId: _callerChat, ...rest } = appleArgs;
+  // `source` is set by the brain, never by the caller: an agent that sent
+  // `source: "user"` would skip auto-record and draw its input as the person's.
+  const { agentCaller: _callerSupplied, chatSessionId: _callerChat, source: _callerSource, ...rest } = appleArgs;
   // An agent speaks only for its own chat: the chat id is who holds the
   // device's single-owner claim, so a foreign one would act as that chat.
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
@@ -4818,7 +4820,7 @@ export async function scopeUnboundAppleAdeActionArgs(
   appleArgs: Record<string, unknown>,
   callerRootRaw: unknown,
 ): Promise<Record<string, unknown>> {
-  const { agentCaller: _callerSupplied, chatSessionId: _callerChat, ...rest } = appleArgs;
+  const { agentCaller: _callerSupplied, chatSessionId: _callerChat, source: _callerSource, ...rest } = appleArgs;
   const laneId = await resolveUnboundCallerLane(runtime, session, {
     method: `run_ade_action:ios_simulator.${action}`,
     callerRoot: callerRootRaw,
@@ -4852,6 +4854,19 @@ const ANDROID_COPY_MAKING_ACTIONS = new Set<string>([
  * there gets the caller's code first. Every other action uses the copy as it is.
  */
 const ANDROID_CODE_SYNC = new Set<string>(ANDROID_CODE_SYNC_ACTIONS);
+
+/** Why an `android_emulator` action is the user's own, after "is limited to user clients"; empty for any other. */
+function androidUserOnlyReason(domain: string, action: string): string {
+  if (domain !== "android_emulator") return "";
+  if (action === "setMachinePreferences") {
+    return ": only the user changes this machine's Android preferences, in the ADE desktop app (Settings › Android devices)";
+  }
+  if (ANDROID_SDK_PERSON_ONLY.has(action)) {
+    return ": only the user installs the Android SDK and accepts Google's licences, "
+      + "in the ADE desktop app (the setup card in the Android tool, or Settings › Android devices)";
+  }
+  return "";
+}
 
 function androidMissingLaneMessage(action: string): string | null {
   return ANDROID_LANE_FREE.has(action)
@@ -4899,9 +4914,17 @@ export function scopeAndroidAdeActionArgs(
     device: "Android emulator",
     missingLaneMessage: androidMissingLaneMessage(action),
   });
-  const { chatSessionId: _callerChat, ...rest } = androidArgs;
+  // `source` is set by the brain, never by the caller: an agent that sent
+  // `source: "user"` would skip auto-record and draw its input as the person's.
+  const { chatSessionId: _callerChat, agentCaller: _agentCaller, source: _callerSource, ...rest } = androidArgs;
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-  return { ...rest, ...(laneId ? { laneId } : {}), ...(callerChatSessionId ? { chatSessionId: callerChatSessionId } : {}) };
+  return {
+    ...rest,
+    ...(laneId ? { laneId } : {}),
+    ...(callerChatSessionId ? { chatSessionId: callerChatSessionId } : {}),
+    // Parity, as Apple's: an agent's `device-cleanup --power-off-idle` reaches its own lane only.
+    ...(action === "deviceCleanup" ? { agentCaller: true } : {}),
+  };
 }
 
 /**
@@ -4925,8 +4948,8 @@ export async function scopeUnboundAndroidAdeActionArgs(
     requestedLaneId: asOptionalTrimmedString(androidArgs.laneId),
     missingLaneMessage: androidMissingLaneMessage(action),
   });
-  const { chatSessionId: _callerChat, ...rest } = androidArgs;
-  return { ...rest, ...(laneId ? { laneId } : {}) };
+  const { chatSessionId: _callerChat, agentCaller: _agentCaller, source: _callerSource, ...rest } = androidArgs;
+  return { ...rest, ...(laneId ? { laneId } : {}), ...(action === "deviceCleanup" ? { agentCaller: true } : {}) };
 }
 
 /**
@@ -5145,8 +5168,14 @@ const ANDROID_AGENT_DRIVING_ACTIONS = new Set([
   "scroll",
   "sendKey",
   "sendText",
+  // Parity: a key press, a relaunch and a pick drive the emulator too.
+  "pressKey",
+  "relaunchApp",
+  "selectPoint",
   "rotate",
   "setPosture",
+  // Parity: a window layout moves apps on the lane's screen.
+  "windowLayout",
   "openUrl",
   "launchApp",
   "tapElement",
@@ -6490,10 +6519,7 @@ async function runTool(args: {
     if (isUserOnlyAdeAction(domain, action) && !mayUseUserOnlyActions(session)) {
       // Deleting a simulator is the user's call, made from the device picker.
       scopeAccessDenied(
-        domain === "android_emulator" && ANDROID_SDK_PERSON_ONLY.has(action)
-          ? `${domain}.${action} is limited to user clients: only the user installs the Android SDK and accepts Google's licences, `
-            + "in the ADE desktop app (the setup card in the Android tool, or Settings › Android devices)"
-          : `${domain}.${action} is limited to user clients`,
+        `${domain}.${action} is limited to user clients${androidUserOnlyReason(domain, action)}`,
         `run_ade_action:${domain}.${action}`,
       );
     }

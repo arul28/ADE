@@ -242,6 +242,18 @@ struct LiveInspectMacDesktopReply: Decodable {
 
 // MARK: - Sync commands
 
+/// The error a Live Inspect fetch throws when the host's ADE is too old for it.
+private func liveInspectUnsupported(_ sentence: String) -> NSError {
+  NSError(
+    domain: "ADE",
+    code: 17,
+    userInfo: [
+      NSLocalizedDescriptionKey: sentence,
+      "ADEErrorCode": "unsupported_action",
+    ]
+  )
+}
+
 extension SyncService {
   /// One still plus every element the lane's simulator can name, for the frozen
   /// inspect view.
@@ -253,14 +265,7 @@ extension SyncService {
   func fetchLiveInspectSimulatorSnapshot(laneId: String) async throws -> LiveInspectIosSnapshot {
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard supportsAppleDeviceControl(laneId: trimmed) else {
-      throw NSError(
-        domain: "ADE",
-        code: 17,
-        userInfo: [
-          NSLocalizedDescriptionKey: "Update ADE on your Mac to inspect its simulator from here.",
-          "ADEErrorCode": "unsupported_action",
-        ]
-      )
+      throw liveInspectUnsupported("Update ADE on your Mac to inspect its simulator from here.")
     }
     return try decode(
       try await sendCommand(
@@ -277,18 +282,32 @@ extension SyncService {
     )
   }
 
+  /// One still plus every element the lane's Android emulator names, for the
+  /// frozen inspect view: `android.inspectSnapshot`, which answers in the
+  /// simulator's shape (frames in screenshot pixels) and files no proof row.
+  /// Controller-only on the host, as the simulator's.
+  func fetchLiveInspectAndroidSnapshot(laneId: String) async throws -> LiveInspectIosSnapshot {
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard supportsAndroidLiveInspect(laneId: trimmed) else {
+      throw liveInspectUnsupported("Update ADE on the computer to inspect its emulator from here.")
+    }
+    return try decode(
+      try await sendCommand(
+        action: "android.inspectSnapshot",
+        args: ["laneId": trimmed],
+        disconnectOnTimeout: false,
+        // A fresh UI tree read on a busy host took 28 s in testing.
+        timeoutNanoseconds: 45_000_000_000
+      ),
+      as: LiveInspectIosSnapshot.self
+    )
+  }
+
   /// One host-side hit-test on the lane's App Control frame.
   func appControlInspectPoint(laneId: String, x: Double, y: Double) async throws -> LiveInspectAppControlReply {
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard supportsViewerRemoteAction("appControl.inspectPoint") else {
-      throw NSError(
-        domain: "ADE",
-        code: 17,
-        userInfo: [
-          NSLocalizedDescriptionKey: "Update ADE on your Mac to inspect its app from here.",
-          "ADEErrorCode": "unsupported_action",
-        ]
-      )
+      throw liveInspectUnsupported("Update ADE on your Mac to inspect its app from here.")
     }
     return try decode(
       try await sendCommand(
@@ -312,14 +331,7 @@ extension SyncService {
   func macDesktopObserve(laneId: String, limit: Int = 200) async throws -> LiveInspectMacDesktopReply {
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard supportsViewerRemoteAction("macDesktop.observe") else {
-      throw NSError(
-        domain: "ADE",
-        code: 17,
-        userInfo: [
-          NSLocalizedDescriptionKey: "Update ADE on your Mac to inspect its desktop from here.",
-          "ADEErrorCode": "unsupported_action",
-        ]
-      )
+      throw liveInspectUnsupported("Update ADE on your Mac to inspect its desktop from here.")
     }
     return try decode(
       try await sendCommand(

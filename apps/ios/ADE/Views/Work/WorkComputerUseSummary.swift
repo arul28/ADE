@@ -5,7 +5,7 @@ import Foundation
 // A faithful port of the desktop parser,
 // `apps/desktop/src/shared/computerUseActionSummary.ts` and
 // `computerUseActionOutput.ts`: an agent's `ade screen click …` / `ade browser
-// fill …` / `"$ADE_CLI_PATH" apple tap …` shell call becomes "Clicked
+// fill …` / `"$ADE_CLI_PATH" apple tap …` / `ade android tap-element …` shell call becomes "Clicked
 // “Checkout” on localhost:5173".
 // Keep them in step — the same command and output must read the same on the
 // phone and on the desktop. Anything this cannot describe with confidence
@@ -13,10 +13,11 @@ import Foundation
 // `WorkComputerUsePresentation.swift` (desktop
 // `computerUseActionPresentation.ts`); reading a shell tool call (desktop
 // `chatComputerUseRows.ts`) and the rows themselves are in
-// `WorkComputerUseActions.swift`.
+// `WorkComputerUseActions.swift`. The `ade android` verbs are in
+// `WorkComputerUseSummaryAndroid.swift`.
 
 enum WorkComputerUseSurface: String, Hashable {
-  case laneScreen, appControl, adeBrowser, userBrowser, appleDevice, proof
+  case laneScreen, appControl, adeBrowser, userBrowser, appleDevice, androidDevice, proof
 }
 
 enum WorkComputerUseOutcome: String, Hashable {
@@ -125,6 +126,7 @@ private let cuDomainAliases: [String: String] = [
   "app-control": "app-control", "app": "app-control", "apps": "app-control", "electron": "app-control",
   "browser": "browser", "ade-browser": "browser", "built-in-browser": "browser", "builtin-browser": "browser",
   "apple": "apple", "ios-sim": "apple", "ios": "apple", "simulator": "apple",
+  "android": "android",
   "proof": "proof", "computer": "proof", "computer-use": "proof", "artifact": "proof", "artifacts": "proof",
 ]
 
@@ -141,7 +143,7 @@ private let cuShells: Set<String> = ["bash", "sh", "zsh", "dash", "fish", "pwsh"
 private let cuWrappers: Set<String> = ["env", "time", "command", "exec", "nohup", "sudo", "caffeinate"]
 private let cuControlWords: Set<String> = ["for", "while", "until", "if", "then", "else", "elif", "do", "done", "fi", "case", "esac", "function"]
 
-private struct CUInvocation {
+struct CUInvocation {
   let domain: String
   /// The domain word as typed: `mac-desktop`, `windows-desktop`, `screen`, …
   var alias: String = ""
@@ -170,9 +172,9 @@ private struct CUInvocation {
   func has(_ name: String) -> Bool { flags.keys.contains(name) }
 }
 
-private enum CUShellConditional { case or, and }
+enum CUShellConditional { case or, and }
 
-private enum CUOutputFilter { case none, cite, other }
+enum CUOutputFilter { case none, cite, other }
 
 /// One simple command, whether a `||` or `&&` makes it conditional, and the
 /// command its output is piped into. `redirections` are what the shell
@@ -407,9 +409,9 @@ private func cuParseInvocation(_ tokens: [String], aliasVars: Set<String>) -> CU
 
 // MARK: - Verbs
 
-private enum CUTargetKind { case element, typed, key, app, url, caption, direction, file, page, none }
+enum CUTargetKind { case element, typed, key, app, url, caption, direction, file, page, none }
 
-private struct CUVerbSpec {
+struct CUVerbSpec {
   let past: String
   let progressive: String
   let infinitive: String
@@ -417,7 +419,7 @@ private struct CUVerbSpec {
   var passive = false
 }
 
-private let cuVerbs: [String: CUVerbSpec] = [
+let cuVerbs: [String: CUVerbSpec] = [
   "click": .init(past: "Clicked", progressive: "Clicking", infinitive: "click", target: .element),
   "double-click": .init(past: "Double-clicked", progressive: "Double-clicking", infinitive: "double-click", target: .element),
   "dblclick": .init(past: "Double-clicked", progressive: "Double-clicking", infinitive: "double-click", target: .element),
@@ -487,6 +489,7 @@ private func cuResolveVerb(_ invocation: CUInvocation) -> (key: String, spec: CU
   if (first == "observe" || first == "snapshot"), invocation.domain == "browser" {
     return (first, .init(past: "Read", progressive: "Reading", infinitive: "read", target: .page, passive: true))
   }
+  if invocation.domain == "android" { return cuResolveAndroidVerb(first, invocation) }
   if first == "start", invocation.domain == "apple" {
     return ("start", .init(past: "Started", progressive: "Starting", infinitive: "start", target: .none, passive: true))
   }
@@ -517,7 +520,7 @@ private func cuReadAppleDevice(_ invocation: CUInvocation, output: String) -> (n
   return (name, os)
 }
 
-private func cuAppName(fromBundleId bundleId: String?) -> String? {
+func cuAppName(fromBundleId bundleId: String?) -> String? {
   guard let bundleId, let last = bundleId.split(separator: ".").last.map(String.init), !last.isEmpty else { return nil }
   let known = ["mobilesafari": "Safari", "preferences": "Settings", "mobileslideshow": "Photos", "mobilenotes": "Notes",
                "mobilemail": "Mail", "mobilecal": "Calendar", "mobiletimer": "Clock", "maps": "Maps"]
@@ -530,6 +533,7 @@ private func cuSurface(_ domain: String) -> WorkComputerUseSurface {
   case "app-control": return .appControl
   case "browser": return .adeBrowser
   case "apple": return .appleDevice
+  case "android": return .androidDevice
   default: return .proof
   }
 }
@@ -642,14 +646,14 @@ func workComputerUseSummary(command: String, output: String?, status: String, ex
 }
 
 /// The object of the sentence, and how the verb reads around it (desktop `TargetShape`).
-private struct CUTargetShape {
+struct CUTargetShape {
   var target: String?
   var quoted = true
   var direction: String?
   var point = false
 }
 
-private let cuNumberPattern = #"^-?\d+(\.\d+)?$"#
+let cuNumberPattern = #"^-?\d+(\.\d+)?$"#
 
 /// Verbs that press on one spot, which can be a point with no element under it.
 private let cuClickVerbs: Set<String> = ["click", "double-click", "dblclick", "right-click", "tap", "tap-element"]
@@ -711,7 +715,7 @@ private func cuUnnamedElement(_ role: String?) -> String {
 
 /// JavaScript `Math.round` as text: halves round up, toward +∞. A value too large
 /// for `Int` prints as a Double, like JavaScript does, instead of trapping.
-private func cuJSRound(_ value: Double) -> String {
+func cuJSRound(_ value: Double) -> String {
   let rounded = (value + 0.5).rounded(.down)
   guard rounded.isFinite, abs(rounded) < 1e15 else { return "\(rounded)" }
   return String(Int(rounded))
@@ -815,6 +819,8 @@ private func cuBuildSummary(invocations: [CUInvocation], output: String, status:
   else if status == "running", parsed.effect == nil { outcome = .running }
   else if parsed.effect == "observed" { outcome = .observed }
   else if parsed.effect == "unconfirmed" || parsed.effect == "waiting" { outcome = .unconfirmed }
+  // `ade android fill-element`: the field does not show the text afterwards.
+  else if domain == "android", verbKey == "fill", cuReadAndroidFillUnseen(parsed, output: output) { outcome = .unconfirmed }
   else { outcome = .notChecked }
   // A filed proof prints its id. A call that exits 0 without one did not file
   // it: the exit code can be a later command's in the same call. No output at
@@ -839,6 +845,7 @@ private func cuBuildSummary(invocations: [CUInvocation], output: String, status:
       ?? missingProof
   } else if outcome == .unconfirmed {
     reason = missingProof ?? parsed.effectReason
+      ?? (domain == "android" && verbKey == "fill" ? "The field does not show the text." : nil)
   }
 
   // Surface and browser.
@@ -871,17 +878,24 @@ private func cuBuildSummary(invocations: [CUInvocation], output: String, status:
   case "apple":
     appName = parsed.values["app name"] ?? cuReadString(json?["appName"])
       ?? cuAppName(fromBundleId: invocation.flag("--bundle-id", "--bundle") ?? parsed.values["active app"])
+  case "android":
+    appName = parsed.values["app name"] ?? cuReadString(json?["appName"])
+      ?? cuAppName(fromPackage: invocation.flag("--package") ?? cuReadString(json?["packageName"]))
   default:
     if surface == .userBrowser { appName = browserName }
   }
   if let name = appName, !name.isEmpty { appName = cuClip(name, 48) } else { appName = nil }
 
   // Target and the words around it.
-  let device = domain == "apple" ? cuReadAppleDevice(invocation, output: output) : (name: nil, os: nil)
-  // `apple start` names the device it booted.
-  let shape = verbKey == "start" && domain == "apple"
-    ? CUTargetShape(target: device.name, quoted: false, direction: nil, point: false)
-    : cuDescribeTarget(spec: spec, verbKey: verbKey, invocation: invocation, parsed: parsed, appName: appName)
+  let device: (name: String?, os: String?) = domain == "apple"
+    ? cuReadAppleDevice(invocation, output: output)
+    : domain == "android" ? cuReadAndroidDevice(parsed) : (name: nil, os: nil)
+  // `apple start` and the Android lifecycle verbs name the device.
+  let namesDevice = (verbKey == "start" && domain == "apple") || (domain == "android" && cuAndroidLifecycleVerbs.contains(verbKey))
+  let shape = namesDevice
+    ? CUTargetShape(target: device.name ?? (domain == "android" ? "the emulator" : nil), quoted: false, direction: nil, point: false)
+    : (domain == "android" ? cuAndroidTarget(verbKey: verbKey, invocation: invocation, parsed: parsed, output: output) : nil)
+      ?? cuDescribeTarget(spec: spec, verbKey: verbKey, invocation: invocation, parsed: parsed, appName: appName)
   var target = shape.target.flatMap { raw -> String? in
     let clipped = cuClip(raw)
     return clipped.isEmpty ? nil : clipped
@@ -898,7 +912,7 @@ private func cuBuildSummary(invocations: [CUInvocation], output: String, status:
   } else if domain == "browser" {
     let host = cuUrlHost(parsed.values["url"] ?? cuReadString(observation?["url"]) ?? cuReadString(json?["url"]) ?? parsed.openedUrl)
     if let host, host != target { place = WorkComputerUsePlace(preposition: "on", label: host, kind: .site) }
-  } else if domain == "screen" || domain == "app-control" || domain == "apple" {
+  } else if domain == "screen" || domain == "app-control" || domain == "apple" || domain == "android" {
     // `screen open` happens on the lane screen, which "using …" names.
     let opensApp = domain == "screen" && verbKey == "open"
     if !opensApp, let appName, appName != target { place = WorkComputerUsePlace(preposition: "in", label: appName, kind: .app) }

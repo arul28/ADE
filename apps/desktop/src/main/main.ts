@@ -5889,6 +5889,9 @@ app.whenReady().then(async () => {
       // The machine's SDK choice ("Use mine…", a chosen install folder), shared with the brain.
       sdkSettingsFile: path.join(resolveMachineAdeLayout().adeDir, "android", "settings.json"),
       // P1: captures file themselves into the calling chat's proof drawer.
+      // Rec: each lane's auto-record switch (`ade android auto-record`), in the project's KV.
+      readSetting: <T,>(key: string): T | null => db.getJson<T>(key),
+      writeSetting: (key: string, value: unknown) => db.setJson(key, value),
       artifactFiler: computerUseArtifactBrokerService,
       logger,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.androidEmulatorEvent, event),
@@ -5904,7 +5907,9 @@ app.whenReady().then(async () => {
     // Apple's relay above: only beside an in-process Android service.
     const androidStreamRelay = androidEmulatorService ? createAppleStreamRelayForService({
       service: androidEmulatorService.streamRelaySource,
-      remoteBitrateKbpsCap: () => null,
+      // The machine's Android cap: the ceiling the relay's pacing lowers from
+      // and climbs back to. Viewers on this machine never get it.
+      remoteBitrateKbpsCap: () => androidEmulatorService.streamRemoteBitrateKbpsCap(),
       logger,
     }) : null;
     if (androidStreamRelay) {

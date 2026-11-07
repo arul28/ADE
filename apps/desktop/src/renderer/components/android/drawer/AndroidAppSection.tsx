@@ -18,6 +18,7 @@ import {
 } from "../../ui/drawerPrimitives";
 import type { AndroidDrawerContext } from "./androidDrawerState";
 import { AndroidInstrumentationTestsRow } from "./AndroidInstrumentationTestsRow";
+import { AndroidWindowsRow } from "./AndroidWindowsRow";
 
 /*
  * The **App** group: the app in front and what you do to it, in the order you
@@ -173,6 +174,7 @@ export function AndroidAppSection({ ctx }: { ctx: AndroidDrawerContext }) {
         onSubmit={(apkPath) => install(() => api.installApp({ laneId, apkPath }, pinRef.current))}
       />
       <AndroidInstrumentationTestsRow ctx={ctx} />
+      <AndroidWindowsRow ctx={ctx} packageName={packageInput.trim() || null} />
 
       <Subhead label="Permissions" />
       <div className="flex min-h-7 items-center">

@@ -33,7 +33,12 @@ import { sameAvdName } from "./androidAvds";
  * Node built-ins and relative imports only, so it runs under `tsx`.
  */
 
-/** An unpinned emulator nobody used for this long is stopped. `ADE_ANDROID_IDLE_STOP_MINUTES` overrides; 0 turns it off. */
+/**
+ * An unpinned emulator nobody used for this long is stopped. The one idle
+ * limit for Android: `ADE_ANDROID_IDLE_POWER_OFF_MINUTES` (Apple's
+ * `ADE_APPLE_IDLE_POWER_OFF_MINUTES`) or `ADE_ANDROID_IDLE_STOP_MINUTES`
+ * overrides it; 0 turns the idle stop off.
+ */
 export const ANDROID_EMULATOR_IDLE_MS = 20 * 60_000;
 /**
  * How long an emulator whose brain is gone waits to be adopted before it is
@@ -51,9 +56,13 @@ const STOP_CLAIM_MAX_AGE_MS = 2 * 60_000;
 /** A boot reservation older than this is a start that never released it. */
 const RESERVATION_MAX_AGE_MS = 10 * 60_000;
 
-/** The idle limit, from `ADE_ANDROID_IDLE_STOP_MINUTES` when set; 0 = never. */
+/**
+ * The idle limit: `ADE_ANDROID_IDLE_POWER_OFF_MINUTES` when set, else
+ * `ADE_ANDROID_IDLE_STOP_MINUTES` (the two names of one setting); 0 = never.
+ */
 export function androidEmulatorIdleMs(env: NodeJS.ProcessEnv = process.env): number {
-  return deviceIdleMsFromEnv(env, "ADE_ANDROID_IDLE_STOP_MINUTES", ANDROID_EMULATOR_IDLE_MS);
+  const name = env.ADE_ANDROID_IDLE_POWER_OFF_MINUTES?.trim() ? "ADE_ANDROID_IDLE_POWER_OFF_MINUTES" : "ADE_ANDROID_IDLE_STOP_MINUTES";
+  return deviceIdleMsFromEnv(env, name, ANDROID_EMULATOR_IDLE_MS);
 }
 
 /** The machine's owner file: under the user's default ADE home, whatever `ADE_HOME` says. */
@@ -82,8 +91,10 @@ export type AndroidEmulatorStopReason =
   | "idle"
   /** Its brain is gone and no brain on that ADE home adopted it. */
   | "owner_gone"
-  /** ADE started it and no lane holds it (the service's start-up cleanup). */
+  /** ADE started it and no lane holds it (the service's start-up reconcile, or its cleanup pass). */
   | "orphan"
+  /** `ade android device-cleanup --power-off-idle`: powered off now, unused and not pinned. */
+  | "cleanup"
   /** The project's service closed without handing it off. */
   | "project_closed";
 
