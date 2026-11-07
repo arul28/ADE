@@ -428,7 +428,7 @@ agent, under that machine's own policy.
 ade machines list --projects --text              # who is online, what projects each has
 ade chat list --all-machines --text              # every machine in one table
 ade chat create --machine "Mac mini" --lane <lane there> \
-  --provider claude --model anthropic/claude-opus-5 --prompt "…"   # your subagent there
+  --provider claude --model anthropic/claude-opus-5 --prompt "…"   # your subagent there (no --lane: the primary lane there)
 ade chat read <id> --machine "Mac mini" --text
 ade shell start --machine "Windows PC" --wait -- npm test   # one command there, in this chat's work copy
 ade files push --machine "Windows PC" ./fixture.bin test/   # one file into that work copy (pull copies back)
