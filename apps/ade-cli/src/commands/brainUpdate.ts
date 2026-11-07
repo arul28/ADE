@@ -406,15 +406,15 @@ export function requestBrainServiceRestart(
  * JSON, so the status shows the message, not the raw object.
  */
 function serviceCommandFailure(result: BrainServiceRestartResult, fallback: string): string {
-  if (result.stderr) return result.stderr;
+  // The JSON result names the failure; stderr can hold only a notice (the proxy line).
   try {
     const parsed: unknown = JSON.parse(result.stdout);
     const message = parsed && typeof parsed === "object" ? (parsed as { message?: unknown }).message : null;
     if (typeof message === "string" && message.trim()) return message.trim();
   } catch {
-    // Not JSON: the output is the message.
+    // Not JSON: stderr or the output is the message.
   }
-  return result.stdout || fallback;
+  return result.stderr || result.stdout || fallback;
 }
 
 export function requestBrainServiceStop(

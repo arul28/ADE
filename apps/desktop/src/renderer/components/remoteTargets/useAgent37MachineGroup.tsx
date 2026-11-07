@@ -170,15 +170,16 @@ export function useAgent37MachineGroup(args: {
     }
     if (!accountMachine) return {};
     const name = row.kind === "saved" ? row.target.name : accountMachineDisplayName(accountMachine) ?? "this computer";
+    // A box deleted on the Agent 37 site leaves its row on the account, offline for good.
+    const deletedBox = agent37Result?.state === "ok" && isDeletedAgent37Row(accountMachine, agent37Result.deletedInstanceIds ?? []);
     const removeFromAde = () => void agent37Actions.removeFromAde({
       machine: accountMachine,
       name,
       targetId: row.kind === "saved" ? row.target.id : row.kind === "account" ? row.matchedTargetId : null,
       box: null,
+      deletedOnAgent37: deletedBox,
       onError: onAccountError,
     });
-    // A box deleted on the Agent 37 site leaves its row on the account, offline for good.
-    const deletedBox = agent37Result?.state === "ok" && isDeletedAgent37Row(accountMachine, agent37Result.deletedInstanceIds ?? []);
     return {
       extraActions: [{
         key: "remove-ade",

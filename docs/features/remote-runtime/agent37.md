@@ -547,10 +547,13 @@ failure.
 - **Preparing runs in the desktop** (`agent37ReadyMachines.ts`), because
   signing a new machine in uses the approval window. It makes the machine
   with the New Agent 37 machine flow, then writes a setup job to
-  `$ADE_HOME/ready/job.sh`: clone with `ade projects clone`, which uses the
-  GitHub sign-in the account syncs to the machine, so a private repo works
-  (plain `git clone` for a public one when that fails; with neither, the
-  job says to sign in to GitHub in ADE), `ade projects add`, wait for
+  `$ADE_HOME/ready/job.sh`: clone with `ade projects clone`. A new machine
+  has no project open yet, so the clone first reads the account's GitHub
+  token from the machine's account vault (`multiProjectRpcServer.ts`,
+  `machineAccountStores.ts`), and a private repo works. Only a pasted token
+  travels this way; a GitHub App sign-in stays on the computer it was made
+  on. Plain `git clone` runs for a public repo when that fails; with
+  neither, the job says to sign in to GitHub in ADE. Then `ade projects add`, wait for
   Docker on a VM, the person's commands. The template's entrypoint runs the
   job, so what it starts is part of the entrypoint's process tree and
   survives sleep. Then ADE tags the machine `ready` and sleeps it.

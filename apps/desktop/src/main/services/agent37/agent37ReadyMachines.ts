@@ -136,7 +136,9 @@ export function buildAgent37ReadySetupScript(settings: Pick<Agent37ReadyProjectS
     // The box's ADE clones with the account's GitHub sign-in (the token the
     // account vault gives every signed-in machine), so a private repository
     // clones too. A non-GitHub origin, or no GitHub sign-in, falls back to git.
+    // A clone that worked but failed to register is kept; `ade projects add` below registers it.
     `  ade projects clone ${url} --path "$HOME" --name ${shellQuote(folder)} >/dev/null 2>&1`
+      + ' || [ -d "$dir/.git" ]'
       + ` || GIT_TERMINAL_PROMPT=0 git clone ${url} "$dir"`
       + ' || { echo "ADE couldn\'t clone the repository. A private repository needs a GitHub sign-in in ADE (Settings › Integrations › GitHub)." >&2; exit 1; }',
     "fi",
@@ -299,15 +301,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
         startedAt: elsewhere.created != null ? elsewhere.created * 1000 : null,
       };
     }
-    const used = pool ? usedAsleep(pool) : 0;
-    if (used >= AGENT37_READY_USED_ASLEEP_LIMIT) {
-      return {
-        ...base,
-        state: "waiting",
-        message: `${used} machines from earlier ready chats on "${settings.projectName}" are asleep. `
-          + "Delete one you no longer need, and ADE prepares the next ready machine.",
-      };
-    }
+    // A failure blocks the next prepare even after a deletion, so it shows first.
     const failure = failureOf(settings);
     if (failure) {
       const minutes = failure.retryAt != null ? Math.max(1, Math.ceil((failure.retryAt - now()) / 60_000)) : null;
@@ -318,6 +312,15 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
           ? `ADE couldn't prepare it, and tries again in about ${minutes} min: ${failure.error}`
           : `ADE couldn't prepare it: ${failure.error}`,
         error: failure.error,
+      };
+    }
+    const used = pool ? usedAsleep(pool) : 0;
+    if (used >= AGENT37_READY_USED_ASLEEP_LIMIT) {
+      return {
+        ...base,
+        state: "waiting",
+        message: `${used} machines from earlier ready chats on "${settings.projectName}" are asleep. `
+          + "Delete one you no longer need, and ADE prepares the next ready machine.",
       };
     }
     return { ...base, state: "waiting", message: "ADE will prepare one shortly." };
