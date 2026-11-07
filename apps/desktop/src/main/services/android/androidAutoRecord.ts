@@ -151,20 +151,19 @@ export function createAndroidAutoRecord(deps: AndroidAutoRecordDeps) {
 
     /**
      * One input: `beforeInput`, then `run`, then the note `event` makes from
-     * the time `run` began and its answer (null draws nothing). The chat and
+     * the time `run` began and its answer. The chat and
      * who sent it come from `args`.
      */
     async around<T>(
       laneId: string,
       args: AndroidInputRecordArgs | null | undefined,
       run: () => Promise<T>,
-      event: (atMs: number, result: T) => AndroidInputNote | null,
+      event: (atMs: number, result: T) => AndroidInputNote,
     ): Promise<T> {
       await beforeInput(laneId, args);
       const atMs = Date.now();
       const result = await run();
-      const drawn = event(atMs, result);
-      if (drawn) note({ laneId, chatSessionId: args?.chatSessionId ?? null, source: args?.source, atMs, ...drawn });
+      note({ laneId, chatSessionId: args?.chatSessionId ?? null, source: args?.source, atMs, ...event(atMs, result) });
       return result;
     },
 

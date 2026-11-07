@@ -30,10 +30,7 @@
  */
 
 import {
-  appNameFromBundleId,
   clip,
-  flagValue,
-  NUMBER,
   parseOutput,
   PROOF_ID,
   readAppleDevice,
@@ -42,6 +39,7 @@ import {
   type ParsedOutput,
 } from "./computerUseActionOutput";
 import { androidSummaryParts, resolveAndroidVerb } from "./computerUseAndroid";
+import { appNameFromBundleId, flagValue, NUMBER, type TargetShape, type VerbSpec } from "./computerUseCommandReaders";
 import { readRecord } from "./readRecord";
 
 export type ComputerUseSurfaceKind =
@@ -173,7 +171,7 @@ const SHELLS = new Set(["bash", "sh", "zsh", "dash", "fish", "pwsh", "powershell
 const WRAPPERS = new Set(["env", "time", "command", "exec", "nohup", "sudo", "caffeinate"]);
 const CONTROL_WORDS = new Set(["for", "while", "until", "if", "then", "else", "elif", "do", "done", "fi", "case", "esac", "function"]);
 
-export type ParsedInvocation = {
+type ParsedInvocation = {
   domain: ComputerUseDomain;
   /** The domain word as typed: `mac-desktop`, `windows-desktop`, `screen`, … */
   alias: string;
@@ -449,15 +447,6 @@ function isSubcommandWord(domain: ComputerUseDomain, words: readonly string[], t
 
 /* ── Verbs ───────────────────────────────────────────────────────────────── */
 
-export type VerbSpec = {
-  past: string;
-  progressive: string;
-  infinitive: string;
-  /** How the target is read when the output names no element. */
-  target: "element" | "typed" | "key" | "app" | "url" | "caption" | "direction" | "file" | "page" | "none";
-  /** An observation, not an action: compact rows still read well. */
-  passive?: boolean;
-};
 
 const VERBS: Readonly<Record<string, VerbSpec>> = {
   click: { past: "Clicked", progressive: "Clicking", infinitive: "click", target: "element" },
@@ -695,14 +684,6 @@ export function summarizeComputerUseCommand(input: ComputerUseCommandInput): Com
 }
 
 /** The object of the sentence, and how the verb reads around it. */
-export type TargetShape = {
-  target: string | null;
-  quoted: boolean;
-  /** "up", "down", …: "Scrolled down in “Notes list”". */
-  direction: string | null;
-  /** A screen point, not a name: "Clicked at 412, 300". */
-  point: boolean;
-};
 
 const DIRECTIONS = new Set(["up", "down", "left", "right"]);
 

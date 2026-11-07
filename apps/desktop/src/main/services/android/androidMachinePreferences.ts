@@ -28,6 +28,8 @@ export class AndroidSettingsFileBrokenError extends Error {}
  * told apart.
  */
 export type AndroidSettingsFile = {
+  /** False when there is no file path (a test host): the keys live in memory only. */
+  persistent: boolean;
   /** The file's keys; empty when it is missing or broken (a broken file reads as defaults). */
   read(): Record<string, unknown>;
   /**
@@ -38,23 +40,26 @@ export type AndroidSettingsFile = {
   writeKeys(keys: Record<string, unknown>): void;
 };
 
-type SettingsRead = { body: Record<string, unknown>; broken: boolean };
+/** `broken`: the file is there but ADE could not read it or parse it, so a write must not replace it. */
+type SettingsRead = { body: Record<string, unknown>; broken: boolean; reason?: string };
 
 function readSettingsBody(file: string): SettingsRead {
   let text: string;
   try {
     text = fs.readFileSync(file, "utf8");
-  } catch {
-    // Missing: there is nothing to keep.
-    return { body: {}, broken: false };
+  } catch (error) {
+    // Missing: there is nothing to keep. Any other read error (a permission
+    // error, a lock on Windows) is broken, so a write does not replace the file.
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return { body: {}, broken: false };
+    return { body: {}, broken: true, reason: "could not be read" };
   }
   try {
     const parsed: unknown = JSON.parse(text);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? { body: parsed as Record<string, unknown>, broken: false }
-      : { body: {}, broken: true };
+      : { body: {}, broken: true, reason: "is not valid JSON" };
   } catch {
-    return { body: {}, broken: true };
+    return { body: {}, broken: true, reason: "is not valid JSON" };
   }
 }
 
@@ -63,14 +68,17 @@ export function createAndroidSettingsFile(file: string | null | undefined): Andr
   let memory: Record<string, unknown> = {};
   let cache: { mtimeMs: number; size: number; value: Record<string, unknown> } | null = null;
   return {
+    persistent: Boolean(file),
     read() {
       if (!file) return memory;
       try {
         const stat = fs.statSync(file);
         if (cache && cache.mtimeMs === stat.mtimeMs && cache.size === stat.size) return cache.value;
-        const value = readSettingsBody(file).body;
-        cache = { mtimeMs: stat.mtimeMs, size: stat.size, value };
-        return value;
+        const current = readSettingsBody(file);
+        // A file that could not be read is not cached, so the next read tries again.
+        if (current.broken && current.reason === "could not be read") return current.body;
+        cache = { mtimeMs: stat.mtimeMs, size: stat.size, value: current.body };
+        return current.body;
       } catch {
         return {};
       }
@@ -83,7 +91,7 @@ export function createAndroidSettingsFile(file: string | null | undefined): Andr
       const current = readSettingsBody(file);
       if (current.broken) {
         throw new AndroidSettingsFileBrokenError(
-          `The Android settings file ${file} is not valid JSON, so ADE did not change it. Fix the file or delete it, then try again.`,
+          `The Android settings file ${file} ${current.reason}, so ADE did not change it. Fix the file or delete it, then try again.`,
         );
       }
       fs.mkdirSync(path.dirname(file), { recursive: true });

@@ -56,6 +56,7 @@ import { createMockAndroidTools } from "./browserMockAndroidTools";
 import { createMockAndroidImages } from "./browserMockAndroidImages";
 import { createMockAndroidPreferences } from "./browserMockAndroidPreferences";
 import { androidCatalogColor, androidCatalogEntry, resolveAndroidCatalogProfile } from "../shared/androidDeviceCatalog";
+import { mockParam } from "./browserMockAndroidUtil";
 
 type Scenario = "live" | "picker" | "setup" | "noaccel" | "starting" | "off" | "crashed" | "unsupported";
 
@@ -68,14 +69,6 @@ const VIDEO_HEIGHT = 1280;
 /** What `rotate` last set; the stream turns to it ~0.9 s later, as the brain's does. */
 let mockOrientation: "portrait" | "landscape" = mockParam("mockAndroidLandscape") !== null ? "landscape" : "portrait";
 const LCD = { width: 1080, height: 2400 };
-
-function mockParam(name: string): string | null {
-  try {
-    return new URLSearchParams(window.location.search).get(name);
-  } catch {
-    return null;
-  }
-}
 
 function remoteWorkCopyEmpty(): boolean {
   try {

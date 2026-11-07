@@ -327,6 +327,13 @@ enum AppleTouchPhase: String, Equatable {
   case end
 }
 
+/// The phone in the person's hand, as both device viewers see it.
+enum PhoneInHand {
+  /// Whether it folds. Sticky for the app's life: the front screen may not
+  /// report the hinge.
+  @MainActor static var folds = false
+}
+
 /// A live finger, sent as it moves, one call in flight at a time.
 ///
 /// `begin` and `end` are never dropped and never reordered; a `move` that has

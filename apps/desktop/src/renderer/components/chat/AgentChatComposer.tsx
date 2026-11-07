@@ -44,6 +44,7 @@ import {
   type AgentChatModelCatalogRefreshProvider,
   type DraftEntry,
   type DraftScheduleInput,
+  ANDROID_CONTEXT_SURFACE,
 } from "../../../shared/types";
 import {
   AGENT_CHAT_STOP_MODES,
@@ -678,7 +679,7 @@ function iosContextDisplayLabel(item: IosElementContextItem): string {
   for (const value of [metadata.label, metadata.value, item.componentId, metadata.role, metadata.elementType]) {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
-  return metadata.contextSurface === "android-emulator" ? "Android element" : "iOS element";
+  return metadata.contextSurface === ANDROID_CONTEXT_SURFACE ? "Android element" : "iOS element";
 }
 
 function iosContextSourceDescription(item: IosElementContextItem): string {

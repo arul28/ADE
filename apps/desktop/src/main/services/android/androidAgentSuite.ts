@@ -271,11 +271,11 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
     async launchApp(args) {
       const laneId = laneOf(args);
       deps.assertWorkCopyLive(laneId);
+      // Checked before anything builds, installs or starts: a bad extra refuses the whole launch.
+      const launchWords = androidLaunchWords(args);
       const wantsInstall = Boolean(args.apkPath?.trim() || args.gradle);
       const install = wantsInstall ? await apps.install(laneId, { apkPath: args.apkPath ?? null, gradle: args.gradle ?? null }) : null;
       if (install) deps.captureAnalytics?.("app_installed");
-      // Checked before anything installs or starts: a bad extra refuses the whole launch.
-      const launchWords = androidLaunchWords(args);
       const named = args.packageName?.trim() || null;
       const packageName = named ? assertPackageName(named) : install?.packageName ?? null;
       if (!packageName) {
@@ -395,24 +395,25 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       // 70% of the screen; a longer scroll is several strokes.
       const sign = direction === "down" || direction === "right" ? -1 : 1;
       const stroke = Math.round(axis * 0.7);
-      await autoRecord.beforeInput(laneId, args);
-      const scrolledAtMs = Date.now();
-      let left = amount;
-      while (left > 0) {
-        const step = Math.min(left, stroke);
-        left -= step;
-        const along = vertical ? anchorY : anchorX;
-        const from = Math.min(axis - 1, Math.max(0, along - (sign * step) / 2));
-        const to = Math.min(axis - 1, Math.max(0, along + (sign * step) / 2));
-        await deps.input.swipe(vertical
-          ? { laneId, fromX: anchorX, fromY: from, toX: anchorX, toY: to, durationMs: SCROLL_STROKE_MS }
-          : { laneId, fromX: from, fromY: anchorY, toX: to, toY: anchorY, durationMs: SCROLL_STROKE_MS });
-      }
+      await autoRecord.around(
+        laneId,
+        args,
+        async () => {
+          let left = amount;
+          while (left > 0) {
+            const step = Math.min(left, stroke);
+            left -= step;
+            const along = vertical ? anchorY : anchorX;
+            const from = Math.min(axis - 1, Math.max(0, along - (sign * step) / 2));
+            const to = Math.min(axis - 1, Math.max(0, along + (sign * step) / 2));
+            await deps.input.swipe(vertical
+              ? { laneId, fromX: anchorX, fromY: from, toX: anchorX, toY: to, durationMs: SCROLL_STROKE_MS }
+              : { laneId, fromX: from, fromY: anchorY, toX: to, toY: anchorY, durationMs: SCROLL_STROKE_MS });
+          }
+        },
+        (atMs) => ({ kind: "scroll", x: anchorX, y: anchorY, seconds: (Date.now() - atMs) / 1000 }),
+      );
       ui.invalidate(laneId);
-      autoRecord.note({
-        laneId, chatSessionId: args.chatSessionId ?? null, kind: "scroll", x: anchorX, y: anchorY,
-        atMs: scrolledAtMs, seconds: (Date.now() - scrolledAtMs) / 1000, source: args.source,
-      });
     },
 
     async getScreenSnapshot(args) {

@@ -4,22 +4,19 @@
  * calls `resolveAndroidVerb` and `androidSummaryParts`, and nothing else
  * here. The iOS app ports it in `WorkComputerUseSummary.swift`; keep them in step.
  *
- * Pure and platform-neutral, as the summary. Only types come from the
- * summary, so the two files do not import each other at run time.
+ * Pure and platform-neutral, as the summary. It does not import the
+ * summary: the readers and shapes both use are in `computerUseCommandReaders.ts`.
  */
 
 import { ANDROID_SETTINGS_FLAGS } from "./types/androidEmulatorDrawer";
 import {
-  appNameFromBundleId,
-  flagValue,
-  NUMBER,
   readAndroidDevice,
   readAndroidElementName,
   readAndroidFillUnseen,
   readString,
   type ParsedOutput,
 } from "./computerUseActionOutput";
-import type { ParsedInvocation, TargetShape, VerbSpec } from "./computerUseActionSummary";
+import { appNameFromBundleId, flagValue, NUMBER, type CommandArgs, type TargetShape, type VerbSpec } from "./computerUseCommandReaders";
 
 const passiveSpec = (past: string, progressive: string, infinitive: string, target: VerbSpec["target"] = "none"): VerbSpec => (
   { past, progressive, infinitive, target, passive: true }
@@ -76,7 +73,7 @@ const ANDROID_SHARED_VERBS = new Set([
 /** The verb of an `ade android` command; `verbs` is the summary's shared table. */
 export function resolveAndroidVerb(
   first: string,
-  invocation: ParsedInvocation,
+  invocation: CommandArgs,
   verbs: Readonly<Record<string, VerbSpec>>,
 ): { key: string; spec: VerbSpec } | null {
   // `preview list` and `settings` with no setting are reads.
@@ -107,7 +104,7 @@ export function resolveAndroidVerb(
 }
 
 /** The setting `ade android settings` changed, as words: "text size to large". Null for a read. */
-function androidSettingChange(invocation: ParsedInvocation): string | null {
+function androidSettingChange(invocation: CommandArgs): string | null {
   // In the CLI's order, not the typed order: the iOS port reads an unordered map.
   for (const flag of ANDROID_SETTINGS_FLAGS) {
     const value = invocation.flags.get(flag);
@@ -160,7 +157,7 @@ function pointTarget(x: string | null, y: string | null): TargetShape | null {
  * reading (`--package` for the app, `--name` for a button, a stroke's way).
  * Undefined hands the verb to `describeTarget`.
  */
-function androidTarget(verbKey: string, invocation: ParsedInvocation, parsed: ParsedOutput, output: string): TargetShape | undefined {
+function androidTarget(verbKey: string, invocation: CommandArgs, parsed: ParsedOutput, output: string): TargetShape | undefined {
   const shape = (target: string | null, quoted = false, direction: string | null = null): TargetShape => (
     { target, quoted, direction, point: false }
   );
@@ -261,7 +258,7 @@ export type AndroidSummaryParts = {
   shape: TargetShape | undefined;
 };
 
-export function androidSummaryParts(verbKey: string, invocation: ParsedInvocation, parsed: ParsedOutput, output: string): AndroidSummaryParts {
+export function androidSummaryParts(verbKey: string, invocation: CommandArgs, parsed: ParsedOutput, output: string): AndroidSummaryParts {
   const json = parsed.json;
   const device = readAndroidDevice(parsed);
   const fill = verbKey === "fill";

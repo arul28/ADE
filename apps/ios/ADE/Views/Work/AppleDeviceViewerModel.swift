@@ -32,10 +32,6 @@ final class AppleDeviceViewerModel: ObservableObject {
   /// from hosts that do not send it.
   @Published private(set) var posture: AppleStreamPosture?
 
-  /// Whether the phone in the person's hand folds. Sticky for the app's life:
-  /// the front screen may not report the hinge. The emulator viewer reads it
-  /// too: it is the same phone.
-  static var phoneFolds = false
 
   /// The socket, decoder, health clock, speed and redials, shared with the
   /// emulator's model. The config record's size is the helper's metrics in

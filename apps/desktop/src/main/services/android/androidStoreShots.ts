@@ -9,7 +9,7 @@ import type {
   AndroidStoreShot,
   AndroidStoreShotSlot,
 } from "../../../shared/types/androidEmulator";
-import { androidStoreShotCaption } from "../../../shared/types/androidEmulator";
+import { androidStoreShotCaption } from "../../../shared/androidDevicePresentation";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import { runAdb } from "./adb";

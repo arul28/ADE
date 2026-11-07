@@ -81,12 +81,14 @@ export type AndroidRecordingSessionDeps = {
   deviceName?: (laneId: string) => string | null;
 };
 
+/** A stopped recording whose video is still made. */
+type Render = { id: string; promise: Promise<AndroidRecording> };
+
 type ActiveRecording = {
   recording: AndroidRecording;
   recorder: ReturnType<typeof createAndroidMp4Recorder>;
   untap: () => void;
   capTimer: ReturnType<typeof setTimeout> | null;
-  finishing: Promise<AndroidRecording> | null;
   /** The first packet the recorder could not write; the recording ends with it. */
   writeError: string | null;
   /** Ends the idle, size and disk watch. */
@@ -137,9 +139,11 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
   /**
    * A stopped recording whose video is still made and filed (up to the demo
    * budget). It no longer holds the lane's slot, as Apple's: the next turn
-   * may record while it renders. A second stop waits on this one.
+   * may record while it renders. The newest per lane; a second stop waits on it.
    */
-  const rendering = new Map<string, Promise<AndroidRecording>>();
+  const rendering = new Map<string, Render>();
+  /** Every video still made, on every lane: `dispose` waits for all of them. */
+  const renders = new Set<Render>();
   /** `totalBytes`, until a recording starts, ends or is deleted. */
   let bytesOnDisk: number | null = null;
 
@@ -201,11 +205,12 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
 
   const finish = (laneId: string, reason: AndroidRecordingStopReason, options: FinishOptions = {}): Promise<AndroidRecording> => {
     const active = recordings.get(laneId);
+    // The slot is freed before the first await below, so a second finish
+    // finds no recording and gets the render already on its way.
     if (!active) {
-      return rendering.get(laneId)
+      return rendering.get(laneId)?.promise
         ?? Promise.reject(new AndroidEmulatorFailure("ANDROID_RECORDING_NOT_FOUND", "No recording is running on this lane."));
     }
-    if (active.finishing) return active.finishing;
     const finishing = (async () => {
       // The capture ends now: the slot is free before the video is made.
       recordings.delete(laneId);
@@ -287,7 +292,8 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
         }
       }
       bytesOnDisk = null;
-      if (reason !== "requested") uncollected.set(laneId, recording);
+      // A newer recording on the lane makes this one stale: a later stop answers the newer one.
+      if (reason !== "requested" && !recordings.has(laneId) && !starting.has(laneId)) uncollected.set(laneId, recording);
       // A newer recording may run by now: the panes then read that one.
       deps.onRecordingChanged?.(laneId, recordings.get(laneId)?.recording ?? recording);
       logger?.info("android.recording_stopped", {
@@ -305,10 +311,12 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
       await releaseStream;
       return recording;
     })();
-    active.finishing = finishing;
-    rendering.set(laneId, finishing);
+    const render: Render = { id: active.recording.id, promise: finishing };
+    rendering.set(laneId, render);
+    renders.add(render);
     void finishing.finally(() => {
-      if (rendering.get(laneId) === finishing) rendering.delete(laneId);
+      renders.delete(render);
+      if (rendering.get(laneId) === render) rendering.delete(laneId);
     }).catch(() => undefined);
     return finishing;
   };
@@ -414,7 +422,6 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
       recorder,
       untap: () => undefined,
       capTimer: null,
-      finishing: null,
       writeError: null,
       stopWatch: () => undefined,
       deviceSize: null,
@@ -495,7 +502,7 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
       deps.assertWorkCopyLive(laneId);
       await starting.get(laneId)?.catch(() => null);
       const running = recordings.get(laneId);
-      if (running && running.recording.mode === "auto" && !running.finishing) {
+      if (running && running.recording.mode === "auto") {
         // Conversion, not restart: the file keeps going, the auto cap goes,
         // and the manual cap counts from now.
         const capMs = androidRecordingCapMs(args.maxSeconds);
@@ -532,7 +539,7 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
         // Stopped by its turn or its cap, and its video is still made: answer that one when it is filed.
         const inFlight = rendering.get(laneId);
         if (inFlight) {
-          const ended = await inFlight;
+          const ended = await inFlight.promise;
           if (uncollected.get(laneId) === ended) uncollected.delete(laneId);
           return ended;
         }
@@ -561,6 +568,9 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
       if (!id) throw new Error("record-delete needs --id <recording id> (ade android record-list shows them).");
       if (recordings.get(laneId)?.recording.id === id) {
         throw new AndroidEmulatorFailure("ANDROID_RECORDING_ACTIVE", "That recording is still running. Stop it first (ade android record-stop --discard drops it).");
+      }
+      if ([...renders].some((render) => render.id === id)) {
+        throw new AndroidEmulatorFailure("ANDROID_RECORDING_ACTIVE", "That recording's video is still being made. Delete it when record-stop answers.");
       }
       const deleted = deleteAndroidRecording(deps.dataDir, laneId, id);
       bytesOnDisk = null;
@@ -613,7 +623,7 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
      */
     async noteInput(input: AndroidRecordingInput): Promise<void> {
       const active = recordings.get(input.laneId);
-      if (!active || active.finishing) return;
+      if (!active) return;
       try {
         const atMs = input.atMs ?? Date.now();
         const overlays = active.recording.overlays === true;
@@ -664,7 +674,7 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
         await finishQuietly(laneId, "device-off", "android.recording_dispose_stop_failed", { budgetMs: ANDROID_DISPOSE_DEMO_BUDGET_MS });
       }
       // A video still made from an earlier stop is filed before the service goes.
-      await Promise.all([...rendering.values()].map((render) => render.catch(() => null)));
+      await Promise.all([...renders].map((render) => render.promise.catch(() => null)));
     },
   };
 }

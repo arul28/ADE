@@ -8,7 +8,7 @@ import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
 import { PROOF_DUPLICATE_CODE } from "../../desktop/src/shared/proofProvenance";
-import { androidStoreShotCaption } from "../../desktop/src/shared/types/androidEmulator";
+import { androidStoreShotCaption } from "../../desktop/src/shared/androidDevicePresentation";
 import {
   CLI_COMMAND_ALIASES,
   CliExecutionError,

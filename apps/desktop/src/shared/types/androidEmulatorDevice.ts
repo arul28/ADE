@@ -167,12 +167,6 @@ export type AndroidStoreScreenshotsArgs = AndroidLaneArgs & {
   proof?: boolean | null;
 };
 
-/** A Play shot's proof caption: `Google Play · phone screenshot (cover screen) 1080×1920`. */
-export function androidStoreShotCaption(slot: string | null | undefined, display: string | null | undefined, width: unknown, height: unknown): string {
-  const where = display === "cover" ? " (cover screen)" : display === "inner" ? " (inner screen)" : "";
-  return `Google Play · ${slot === "large-screen" ? "large screen" : "phone"} screenshot${where} ${String(width)}×${String(height)}`;
-}
-
 export type AndroidStoreShot = {
   /** `cover` (shut) and `inner` (open) on a foldable; `screen` on any other device. */
   display: "cover" | "inner" | "screen";

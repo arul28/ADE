@@ -234,7 +234,7 @@ struct AndroidDeviceViewer: View {
       // The phone in the hand folds: mirror it into a foldable emulator while
       // controlling, as the simulator viewer does for a Duo.
       .onChange(of: duo.hasFold || duo.hingeAngle != nil, initial: true) { _, folds in
-        if folds { AppleDeviceViewerModel.phoneFolds = true }
+        if folds { PhoneInHand.folds = true }
       }
       .onChange(of: foldAngle) { _, angle in
         if let angle { model.mirrorFold(angle: angle) }
@@ -259,7 +259,7 @@ struct AndroidDeviceViewer: View {
     androidFoldAngle(
       isInnerDisplay: duo.hasFold,
       hingeAngle: duo.hingeAngle,
-      phoneFolds: AppleDeviceViewerModel.phoneFolds || duo.hasFold || duo.hingeAngle != nil
+      phoneFolds: PhoneInHand.folds || duo.hasFold || duo.hingeAngle != nil
     )
   }
 

@@ -54,13 +54,24 @@ export function useAndroidMachinePreferences(
   const confirmedRef = useRef<AndroidMachinePreferences | null>(null);
   /** Bumped by every read and write; a late answer from an older one is dropped. */
   const seqRef = useRef(0);
+  /**
+   * The sequence of the read, write or event that set `confirmedRef`. An
+   * answer from an older one (a write reply that arrives after a newer write
+   * or a `preferences.changed` event) does not replace it.
+   */
+  const confirmedSeqRef = useRef(0);
+  const confirm = useCallback((seq: number, preferences: AndroidMachinePreferences) => {
+    if (seq < confirmedSeqRef.current) return;
+    confirmedSeqRef.current = seq;
+    confirmedRef.current = preferences;
+  }, []);
 
-  const apply = useCallback((result: AndroidMachinePreferencesResult) => {
-    confirmedRef.current = result.preferences;
+  const apply = useCallback((seq: number, result: AndroidMachinePreferencesResult) => {
+    confirm(seq, result.preferences);
     setPreferences(result.preferences);
     setRecordingsBytes(typeof result.recordingsBytes === "number" ? result.recordingsBytes : null);
     setError(null);
-  }, []);
+  }, [confirm]);
 
   const read = useCallback(async () => {
     if (!api?.getMachinePreferences) return;
@@ -68,7 +79,7 @@ export function useAndroidMachinePreferences(
     setLoading(true);
     try {
       const result = await api.getMachinePreferences({}, pinRef.current);
-      if (seq === seqRef.current) apply(result);
+      if (seq === seqRef.current) apply(seq, result);
     } catch (caught) {
       if (seq === seqRef.current) setError(describeAndroidError(caught));
     } finally {
@@ -89,13 +100,12 @@ export function useAndroidMachinePreferences(
     return api.onEvent((event) => {
       if (event.type !== "android.preferences.changed") return;
       // A write in flight owns the shown values until it answers.
-      seqRef.current += 1;
-      confirmedRef.current = event.preferences;
+      confirm(++seqRef.current, event.preferences);
       setPreferences(event.preferences);
       // The event carries no size; read it again for the meter.
       void read();
     }, pinRef.current);
-  }, [api, listen, pinKey, read]);
+  }, [api, confirm, listen, pinKey, read]);
 
   const update = useCallback((partial: Partial<AndroidMachinePreferences>) => {
     if (!api?.setMachinePreferences) return;
@@ -111,11 +121,12 @@ export function useAndroidMachinePreferences(
         if (machineMoved()) return;
         if (seq !== seqRef.current) {
           // A newer read or write owns the shown values. This reply is still
-          // this machine's saved state, so a refused newer write goes back to it.
-          confirmedRef.current = result.preferences;
+          // this machine's saved state, so a refused newer write goes back to
+          // it, unless a newer answer already set that state.
+          confirm(seq, result.preferences);
           return;
         }
-        apply(result);
+        apply(seq, result);
       },
       (caught: unknown) => {
         if (machineMoved()) return;
@@ -140,7 +151,7 @@ export function useAndroidMachinePreferences(
         });
       },
     );
-  }, [api, apply]);
+  }, [api, apply, confirm]);
 
   return {
     preferences,

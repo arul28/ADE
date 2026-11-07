@@ -6,6 +6,7 @@ import type {
 } from "../../../shared/types/androidEmulator";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
+import { runDeviceScript, type BootedDevice } from "./androidDeviceShell";
 import type { AndroidDiscoveredEmulator } from "./androidEmulatorProcess";
 
 /*
@@ -69,6 +70,27 @@ export function parseDeviceIdleMs(text: string): number | null {
   if (!last || !uptime) return null;
   const idle = Number(uptime[1]) * 1000 - Number(last[1]);
   return Number.isFinite(idle) && idle >= 0 ? idle : null;
+}
+
+/** How many ms ago the device saw user activity (`parseDeviceIdleMs`): one device shell. */
+export async function readDeviceIdleMs(booted: BootedDevice, signal: AbortSignal): Promise<number | null> {
+  const result = await runDeviceScript(
+    booted,
+    "dumpsys power | grep -m1 -oE 'mLastUserActivityTime=[0-9]+'; echo \"uptime=$(cut -d' ' -f1 /proc/uptime)\"",
+    { timeoutMs: 10_000, signal },
+  );
+  return parseDeviceIdleMs(result.stdout);
+}
+
+/** A scrcpy server runs on the device (any brain's or tool's viewer): one device shell. */
+export async function readOtherScrcpyViewer(booted: BootedDevice, signal: AbortSignal): Promise<boolean> {
+  const result = await runDeviceScript(
+    booted,
+    // `[S]` keeps the pattern from matching this shell's own command line.
+    "pgrep -f 'com[.]genymobile[.]scrcpy[.][S]erver' >/dev/null 2>&1 && echo scrcpy=1 || echo scrcpy=0",
+    { timeoutMs: 10_000, signal },
+  );
+  return /scrcpy=1/u.test(result.stdout);
 }
 
 export type AndroidLaneMaintenanceDeps = {

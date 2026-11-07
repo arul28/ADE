@@ -9,7 +9,7 @@ import {
 } from "../shared/types/androidEmulator";
 import type { OpenProjectBinding } from "../shared/types";
 import { GIB } from "../shared/appleDeviceSettings";
-import { mockDelay as later, mockParam as param } from "./browserMockAndroidUtil";
+import { mockDelay, mockParam } from "./browserMockAndroidUtil";
 
 /*
  * The browser preview's machine preferences (Settings › Android devices):
@@ -25,7 +25,7 @@ import { mockDelay as later, mockParam as param } from "./browserMockAndroidUtil
  */
 
 function recordingsBytes(): number | null {
-  const raw = param("mockAndroidRecordingsBytes");
+  const raw = mockParam("mockAndroidRecordingsBytes");
   if (raw === "none") return null;
   const value = raw == null ? Number.NaN : Number(raw);
   return Number.isFinite(value) && value >= 0 ? value : Math.round(1.2 * GIB);
@@ -40,7 +40,7 @@ export function createMockAndroidPreferences(input: {
   emit: (event: AndroidEmulatorEvent) => void;
 }): MockAndroidPreferencesApi {
   // Read once: the app's router drops the query string on its first navigation.
-  const mode = param("mockAndroidPrefs");
+  const mode = mockParam("mockAndroidPrefs");
   const bytes = recordingsBytes();
   const byMachine = new Map<string, AndroidMachinePreferences>();
   const read = (pin: OpenProjectBinding | null | undefined): AndroidMachinePreferences =>
@@ -52,10 +52,10 @@ export function createMockAndroidPreferences(input: {
   return {
     getMachinePreferences: async (_args, pin) => {
       if (mode === "old") throw new Error("Unknown action android_emulator.getMachinePreferences (mock).");
-      return later(answer(read(pin)), 80);
+      return mockDelay(answer(read(pin)), 80);
     },
     setMachinePreferences: async (partial, pin) => {
-      await later(null, 120);
+      await mockDelay(null, 120);
       if (mode === "fail" || mode === "old") throw new Error("The machine refused the change (mock).");
       const next = normalizeAndroidMachinePreferences(partial, read(pin));
       byMachine.set(pin?.key ?? "", next);

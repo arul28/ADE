@@ -90,6 +90,7 @@ import {
   type ChatLaunchLaneConfig,
   TerminalSessionChangedEvent,
   TerminalSessionSummary,
+  ANDROID_CONTEXT_SURFACE,
 } from "../../../shared/types";
 import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import type { LaneJiraIssue } from "../../../shared/types/jira";
@@ -11159,7 +11160,7 @@ export function AgentChatPane({
       .filter((path): path is string => Boolean(path));
     let attachmentPath = getIosContextAttachmentPath(item);
     if (item.screenshotDataUrl && !attachmentPath) {
-      const android = nextSurface === "android-emulator";
+      const android = nextSurface === ANDROID_CONTEXT_SURFACE;
       const saved = await saveContextScreenshot({
         dataUrl: item.screenshotDataUrl,
         filename: android ? "android-element.png" : "ios-element.png",

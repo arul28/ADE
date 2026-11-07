@@ -2,6 +2,9 @@ import type {
   AndroidAppState,
   AndroidForegroundApp,
   AndroidForegroundArgs,
+  AndroidIntentExtra,
+  AndroidIntentExtraInput,
+  AndroidIntentExtraType,
   AndroidLaunchExtrasArgs,
   AndroidPackageArgs,
 } from "../../../shared/types/androidEmulator";
@@ -29,23 +32,26 @@ const LAUNCH_WORDS_MAX = 64;
 
 /** `am start` words for the caller's launch arguments and extras, checked. */
 export function androidLaunchWords(args: AndroidLaunchExtrasArgs | null | undefined): string[] {
-  const raw = Array.isArray(args?.arguments) ? args.arguments : [];
+  const raw: readonly unknown[] = Array.isArray(args?.arguments) ? args.arguments : [];
   const words = raw.filter((word): word is string => typeof word === "string");
   if (words.length !== raw.length) throw new Error("arguments must be a list of strings.");
-  const extras = Array.isArray(args?.extras) ? args.extras : [];
-  for (const extra of extras) {
-    if (!extra || typeof extra.key !== "string" || !ANDROID_INTENT_EXTRA_KEY.test(extra.key)) {
+  const given: readonly unknown[] = Array.isArray(args?.extras) ? args.extras : [];
+  const extras: AndroidIntentExtra[] = given.map((entry) => {
+    const extra = (entry && typeof entry === "object" ? entry : {}) as Partial<AndroidIntentExtraInput>;
+    const { key, type, value } = extra;
+    if (typeof key !== "string" || !ANDROID_INTENT_EXTRA_KEY.test(key)) {
       throw new Error("Each extra needs a key name (letters, digits, `.`, `_`, `$`, `-`).");
     }
-    if (!(ANDROID_INTENT_EXTRA_TYPES as readonly string[]).includes(extra.type)) {
+    if (typeof type !== "string" || !(ANDROID_INTENT_EXTRA_TYPES as readonly string[]).includes(type)) {
       throw new Error(`An extra's type must be ${ANDROID_INTENT_EXTRA_TYPES.join(", ")}.`);
     }
-    if (typeof extra.value !== "string") throw new Error(`The extra ${extra.key} needs a value.`);
+    if (typeof value !== "string") throw new Error(`The extra ${key} needs a value.`);
     // `am start --ei k ""` fails with an unclear message; only a string may be empty.
-    if (extra.type !== "string" && extra.value.trim() === "") {
-      throw new Error(`The extra ${extra.key} is a${extra.type === "int" ? "n" : ""} ${extra.type}, so it needs a value.`);
+    if (type !== "string" && value.trim() === "") {
+      throw new Error(`The extra ${key} is a${type === "int" ? "n" : ""} ${type}, so it needs a value.`);
     }
-  }
+    return { key, type: type as AndroidIntentExtraType, value };
+  });
   const all = [...words, ...androidIntentExtraWords(extras)];
   if (all.length > LAUNCH_WORDS_MAX) throw new Error(`A launch takes at most ${LAUNCH_WORDS_MAX} extra words.`);
   // `-n` names the component; a second one would start another app than the one asked for.

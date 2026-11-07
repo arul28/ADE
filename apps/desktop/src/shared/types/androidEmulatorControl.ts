@@ -160,10 +160,17 @@ export type AndroidLaunchExtrasArgs = {
    * `--activity-clear-task`). Android apps have no argv; these are the
    * launch's own options. `ade android launch … -- <words>`.
    */
-  arguments?: string[] | null;
-  /** Intent extras (`--extra key=value`). */
-  extras?: AndroidIntentExtra[] | null;
+  arguments?: readonly unknown[] | null;
+  /**
+   * Intent extras (`--extra key=value`). Unchecked at this seam: a JSON
+   * caller can send any value, and the brain's `androidLaunchWords` checks
+   * each key, type and value before the launch.
+   */
+  extras?: readonly AndroidIntentExtraInput[] | null;
 };
+
+/** An intent extra as a caller sent it, before the brain checks it. */
+export type AndroidIntentExtraInput = { key: unknown; type: unknown; value: unknown };
 
 export type AndroidRelaunchArgs = AndroidPackageArgs & AndroidLaunchExtrasArgs & {
   activity?: string | null;

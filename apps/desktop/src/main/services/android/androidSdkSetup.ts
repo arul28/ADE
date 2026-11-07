@@ -23,14 +23,14 @@ import type { AndroidSettingsFile } from "./androidMachinePreferences";
  */
 
 /** Reads and writes the SDK folder in the machine's Android settings file; a missing or broken file reads as none. */
-export function createAndroidSdkSettingStore(settings: AndroidSettingsFile, options: { canWrite: boolean }) {
+export function createAndroidSdkSettingStore(settings: AndroidSettingsFile) {
   return {
     read(): string | null {
       const sdkPath = settings.read().sdkPath;
       return typeof sdkPath === "string" && sdkPath.trim() ? sdkPath.trim() : null;
     },
     write(sdkPath: string | null): void {
-      if (!options.canWrite) throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", "This ADE cannot save an SDK folder.");
+      if (!settings.persistent) throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", "This ADE cannot save an SDK folder.");
       // Merged into the file: its other keys (the machine `preferences`) stay.
       settings.writeKeys({ sdkPath });
     },

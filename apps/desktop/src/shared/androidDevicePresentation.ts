@@ -54,3 +54,9 @@ export function androidAvdDisplayName(avdName: string): string {
       : `${word.charAt(0).toUpperCase()}${word.slice(1)}`))
     .join(" ");
 }
+
+/** A Play shot's proof caption: `Google Play · phone screenshot (cover screen) 1080×1920`. */
+export function androidStoreShotCaption(slot: string | null | undefined, display: string | null | undefined, width: unknown, height: unknown): string {
+  const where = display === "cover" ? " (cover screen)" : display === "inner" ? " (inner screen)" : "";
+  return `Google Play · ${slot === "large-screen" ? "large screen" : "phone"} screenshot${where} ${String(width)}×${String(height)}`;
+}

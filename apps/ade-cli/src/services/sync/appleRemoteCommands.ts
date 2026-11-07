@@ -103,6 +103,7 @@ export type AppleDeviceRemoteService = {
     chatSessionId?: string | null;
     ref?: string;
     label?: string;
+    noRecord?: boolean;
   }): Promise<unknown>;
   openUrl(args: {
     deviceUdid?: string | null;
@@ -602,6 +603,8 @@ export function createAppleRemoteCommandHandlers(deps: {
               laneId,
               deviceUdid,
               chatSessionId,
+              // The element tap takes no source: a person's tap never starts a recording.
+              noRecord: true,
               ...(asString(payload.ref) ? { ref: asString(payload.ref)! } : {}),
               ...(asString(payload.label) ? { label: asString(payload.label)! } : {}),
             });
@@ -656,6 +659,10 @@ export function createAppleRemoteCommandHandlers(deps: {
           ...(laneId ? { laneId } : {}),
           ...(inputDevice ? { deviceUdid: inputDevice } : {}),
           ...(chatSessionId ? { chatSessionId } : {}),
+          // A person's call, set by this path and never read from the payload:
+          // it never starts an agent's auto-recording.
+          source: "user",
+          noRecord: true,
         });
       },
     },

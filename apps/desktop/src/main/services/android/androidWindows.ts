@@ -417,11 +417,10 @@ export function createAndroidWindows(deps: AndroidWindowsDeps) {
           ?? task;
       }
     }
-    const target = closing;
-    const rootNow = (await list(booted)).tasks.find((entry) => entry.taskId === target.taskId)?.rootId ?? target.rootId;
+    const rootNow = (await list(booted)).tasks.find((entry) => entry.taskId === closing.taskId)?.rootId ?? closing.rootId;
     await run(booted, `am stack remove ${rootNow}`, "close the window");
     deps.onScreenChanged(laneId);
-    const gone = (tasks: ListedTask[]) => !tasks.some((entry) => entry.taskId === target.taskId);
+    const gone = (tasks: ListedTask[]) => !tasks.some((entry) => entry.taskId === closing.taskId);
     const state = await settle(booted, gone);
     return gone(state.tasks) ? answer(state, packageName, true) : answer(state, packageName, false, "The window is still open.");
   };

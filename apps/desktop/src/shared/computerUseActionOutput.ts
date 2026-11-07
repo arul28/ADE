@@ -374,33 +374,3 @@ export function readAndroidElementName(output: string): string | null {
 export function readAndroidFillUnseen(parsed: ParsedOutput, output: string): boolean {
   return readString(parsed.json?.typed) === "not-seen" || /\bthe field does NOT show the text\b/.test(output);
 }
-
-/* ── Command readers (shared by the summary and its Android part) ───────── */
-
-export const NUMBER = /^-?\d+(\.\d+)?$/;
-
-/** The first of `names` the command set to a non-empty value, trimmed. */
-export function flagValue(invocation: { flags: ReadonlyMap<string, string | true> }, ...names: string[]): string | null {
-  for (const name of names) {
-    const value = invocation.flags.get(name);
-    if (typeof value === "string" && value.trim().length) return value.trim();
-  }
-  return null;
-}
-
-export function appNameFromBundleId(bundleId: string | null): string | null {
-  if (!bundleId) return null;
-  const last = bundleId.split(".").pop() ?? "";
-  if (!last) return null;
-  const known: Record<string, string> = {
-    mobilesafari: "Safari",
-    preferences: "Settings",
-    mobileslideshow: "Photos",
-    mobilenotes: "Notes",
-    mobilemail: "Mail",
-    mobilecal: "Calendar",
-    mobiletimer: "Clock",
-    maps: "Maps",
-  };
-  return known[last.toLowerCase()] ?? `${last.charAt(0).toUpperCase()}${last.slice(1)}`;
-}

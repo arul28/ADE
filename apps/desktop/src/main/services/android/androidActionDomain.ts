@@ -25,7 +25,8 @@ import {
   ANDROID_STATUS_BAR_BATTERY_STATES,
   ANDROID_WINDOW_LAYOUT_ACTIONS,
   type AndroidElementQuery,
-  type AndroidIntentExtra,
+  type AndroidIntentExtraInput,
+  type AndroidLaunchExtrasArgs,
   type AndroidEmulatorServiceApi,
   type AndroidGradleTarget,
   type AndroidTouchEvent,
@@ -147,23 +148,23 @@ export function inputRecordArgs(args: unknown): { source?: "user" | "agent"; noR
  * (`androidLaunchWords`) is the one validator of keys, types and values. A
  * JSON caller may send a number or a bool as the value; it becomes a string.
  */
-function launchExtrasArgs(args: unknown, action: string): { arguments?: string[]; extras?: AndroidIntentExtra[] } {
+function launchExtrasArgs(args: unknown, action: string): AndroidLaunchExtrasArgs {
   const raw = objectArgs(args);
-  const out: { arguments?: string[]; extras?: AndroidIntentExtra[] } = {};
+  const out: AndroidLaunchExtrasArgs = {};
   if (raw.arguments != null) {
     if (!Array.isArray(raw.arguments)) throw new Error(`androidEmulator.${action} arguments must be a list of strings.`);
-    out.arguments = raw.arguments as string[];
+    out.arguments = raw.arguments;
   }
   if (raw.extras != null) {
     if (!Array.isArray(raw.extras)) throw new Error(`androidEmulator.${action} extras must be a list of {key, type, value}.`);
-    out.extras = raw.extras.map((entry) => {
+    out.extras = raw.extras.map((entry): AndroidIntentExtraInput => {
       const extra = objectArgs(entry);
       const value = extra.value;
       return {
-        key: extra.key as string,
-        type: (optionalString(extra, "type") ?? "string") as AndroidIntentExtra["type"],
+        key: extra.key,
+        type: optionalString(extra, "type") ?? "string",
         value: typeof value === "string" ? value : typeof value === "number" || typeof value === "boolean" ? String(value) : "",
-      } as AndroidIntentExtra;
+      };
     });
   }
   return out;

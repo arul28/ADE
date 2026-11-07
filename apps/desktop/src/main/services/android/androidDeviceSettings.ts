@@ -95,14 +95,14 @@ const ACCESSIBILITY_KEYS = [
   "accessibility_enabled",
 ] as const;
 
+/** Prints `boot=<id>`: one boot of the emulator. */
+const BOOT_ID_LINE = "echo \"boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\"";
+
 /**
  * How the display is turned: the window manager's rotation (0 to 3), the
  * natural size and the boot id. The boot id ties ADE's location record to
  * one boot of the emulator.
  */
-/** Prints `boot=<id>`: one boot of the emulator. */
-const BOOT_ID_LINE = "echo \"boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\"";
-
 const ORIENTATION_LINES = [
   `echo "rotation=$(${ROTATION_PROBE} | cut -d= -f2)"`,
   "wm size | sed 's/^/size:/'",

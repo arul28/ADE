@@ -168,6 +168,11 @@ const ANDROID_SDK_VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([...ANDROID_V
 const ANDROID_KEY_VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set(
   [...ANDROID_VALUE_CARRIER_FLAGS].filter((flag) => !ANDROID_KEY_MODIFIER_FLAGS.some(([, names]) => names.includes(flag))),
 );
+/** The verbs whose value flags differ from the rest. */
+const ANDROID_VERB_VALUE_CARRIER_FLAGS = new Map<string, ValueCarrierFlags>([
+  ["sdk", ANDROID_SDK_VALUE_CARRIER_FLAGS],
+  ["key", ANDROID_KEY_VALUE_CARRIER_FLAGS],
+]);
 
 /** The element query flags, `ade apple`'s (`--text` is the element's text). */
 const ANDROID_QUERY_FLAGS = ["--ref", "--identifier", "--label", "--text", "--role", "--index"] as const;
@@ -422,7 +427,7 @@ export function readStroke(rest: readonly string[], verb: string): { fromX: numb
 
 export function buildAndroidPlan(args: string[], options: { remote?: boolean } = {}): CliPlan {
   const typedSub = firstStandalonePositional(args, ANDROID_VALUE_CARRIER_FLAGS) ?? "status";
-  const sub = ANDROID_VERB_ALIASES[typedSub] ?? typedSub;
+  const sub = Object.hasOwn(ANDROID_VERB_ALIASES, typedSub) ? ANDROID_VERB_ALIASES[typedSub]! : typedSub;
   // `launch … -- <am words>`: everything after `--` is the launch's, as `ade apple launch -- <args>`.
   // Taken out first, so no flag reader sees a word meant for `am start`.
   const fence = sub === "launch" || sub === "relaunch" ? args.indexOf("--") : -1;
@@ -430,9 +435,7 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
   const launchPassthrough = fence >= 0 ? args.splice(fence).slice(1).filter((word) => word !== "--text" && word !== "--json") : [];
   // `sdk install --wait` is a switch, `lease --wait <s>` takes seconds. In
   // `key`, `--option` is the alt switch, so `key --option tab` keeps its key.
-  const carriers = sub === "sdk"
-    ? ANDROID_SDK_VALUE_CARRIER_FLAGS
-    : sub === "key" ? ANDROID_KEY_VALUE_CARRIER_FLAGS : ANDROID_VALUE_CARRIER_FLAGS;
+  const carriers = ANDROID_VERB_VALUE_CARRIER_FLAGS.get(sub) ?? ANDROID_VALUE_CARRIER_FLAGS;
   const positionals = (): string[] => standalonePositionals(args, carriers);
   const verbFlags = ANDROID_VERB_FLAGS[sub];
   if (verbFlags) {

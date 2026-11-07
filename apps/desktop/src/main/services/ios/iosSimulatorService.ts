@@ -6836,7 +6836,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         udid: deviceUdid,
         kind: "type",
         // A secure field's text never shows on a recording ("Never for password fields").
-        ...(focused && isSecureField(focused) ? {} : { text: input.text }),
+        // Fail closed: the text goes on only when the focus was read and is not a secure field.
+        ...(focused !== undefined && !(focused && isSecureField(focused)) ? { text: input.text } : {}),
         source: input.source,
         noRecord: input.noRecord,
         ...(pace ? { startedAtMs, seconds: pace.seconds } : {}),

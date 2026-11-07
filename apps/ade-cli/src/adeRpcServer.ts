@@ -4793,7 +4793,9 @@ export function scopeAppleAdeActionArgs(
   appleArgs: Record<string, unknown>,
 ): Record<string, unknown> {
   const method = `run_ade_action:ios_simulator.${action}`;
-  const { agentCaller: _callerSupplied, chatSessionId: _callerChat, ...rest } = appleArgs;
+  // `source` is set by the brain, never by the caller: an agent that sent
+  // `source: "user"` would skip auto-record and draw its input as the person's.
+  const { agentCaller: _callerSupplied, chatSessionId: _callerChat, source: _callerSource, ...rest } = appleArgs;
   // An agent speaks only for its own chat: the chat id is who holds the
   // device's single-owner claim, so a foreign one would act as that chat.
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
@@ -4817,7 +4819,7 @@ export async function scopeUnboundAppleAdeActionArgs(
   appleArgs: Record<string, unknown>,
   callerRootRaw: unknown,
 ): Promise<Record<string, unknown>> {
-  const { agentCaller: _callerSupplied, chatSessionId: _callerChat, ...rest } = appleArgs;
+  const { agentCaller: _callerSupplied, chatSessionId: _callerChat, source: _callerSource, ...rest } = appleArgs;
   const laneId = await resolveUnboundCallerLane(runtime, session, {
     method: `run_ade_action:ios_simulator.${action}`,
     callerRoot: callerRootRaw,
