@@ -326,11 +326,14 @@ export async function createAgent37Machine(
   // or cancelled read leaves no half-made create behind. An unreadable vault
   // gives none; the machine is still made and asks to sign in like before.
   const minAdeVersion = agent37MinAdeVersion(deps.minAdeVersion?.() ?? null);
+  // The async wrapper also catches a throw before the read starts. Only the
+  // error's name is logged: its message could quote a vault value.
+  const signInEnv: Record<string, string> = await (async () => (await deps.machineEnv?.()) ?? {})().catch((error: unknown) => {
+    logger.warn?.("agent37.machine_env_read_failed", { error: error instanceof Error ? error.name : typeof error });
+    return {};
+  });
   const machineEnv = {
-    ...await (deps.machineEnv?.() ?? Promise.resolve({})).catch(() => {
-      logger.warn?.("agent37.machine_env_read_failed", { reason: "vault_read_failed" });
-      return {} as Record<string, string>;
-    }),
+    ...signInEnv,
     ...(minAdeVersion ? { ADE_MIN_VERSION: minAdeVersion } : {}),
   };
   checkCancelled();
