@@ -2701,3 +2701,58 @@ Not measured as rows:
 - **A real-device stream in the dev app**: the encoder and relay are the
   same code as the merge base for a viewer on this machine; the mock rows
   cover the renderer.
+
+**Re-measured at `b88155926`,** after the review fixes (the device status
+pill store, the lane marks that read again on a new brain, the orientation
+read on each live stream, the Android preferences, the idle power-off race).
+A is the last perf pass, `a762a2269`; B is `b88155926`. The same machine,
+scripts and method as above: a new scratch project with 9 lanes and 24 ended
+shell sessions, DevTools closed, no perf run, one dev window, the Work tab on
+screen for the idle rows. A and B ran back to back. Each pass waited for a
+1-minute load average under 8 (other lanes ran `tsc` and a dev brain at
+about 100% CPU); the load is in the table. Each cell is the median, then the
+range. The idle GPU and renderer CPU read lower in both trees than on
+2026-11-06 (0.0–0.1% against 1.9 and 4.2%), and the mock floor read higher
+(flat 34–37 against 25–31 ms/s). Compare A and B only within this table.
+
+| Metric | A (`a762a2269`) | B (`b88155926`) | Ceiling |
+|---|---:|---:|---:|
+| Tabs: first frame / settled / worst settled (4 rounds, warm median) | 20.0 / 38.5 / 182.4 ms (load 3.4) | 18.4 / 32.7 / 176.8 ms (load 6.2) | 22 / 40 / 225 ms |
+| Tabs: long frames | 0 | 0 | 0 |
+| Chats (6 cards): first frame / settled | 7.1 / 7.1 ms (worst 11.1) | 5.7 / 5.7 ms (worst 5.8) | 10 / 10 ms |
+| Settings › Android devices: settled / long tasks (4 runs) | 371 (363–377) ms / 0 | 363 (361–367) ms / 0 | 460 ms / 0 |
+| Settings › Android devices: idle main-thread work | 3.0 (2.2–3.4) ms/s | 2.5 (2.4–2.6) ms/s | 30 ms/s |
+| Settings › Android devices: page elements | 1,392 | 1,409 | 3k |
+| Settings › Apple devices: settled / idle (4 runs) | 368 (363–371) ms / 3.2 (2.9–3.3) ms/s | 369 (364–370) ms / 2.4 (2.1–2.5) ms/s | 460 ms; 30 ms/s |
+| Settings › Apple devices: page elements | 1,337 | 1,354 | 3k |
+| Idle 5 min, no Android: child processes | 107 (0 Android; load 4.0→3.4) | 102 (0 Android; load 23→6.2) | 400 per 5 min |
+| Idle 5 min, no Android: main / GPU / renderer / brain CPU | 0.3 / 0.0 / 0.1 / 0.6% | 0.2 / 0.0 / 0.1 / 0.4% | 15% / — / — / 10% |
+| Idle 5 min, one lane emulator booted (adopted from the last brain): child processes | 107 (0 adb; load 4.1→4.0) | 107 (0 adb; load 5.7→4.4) | 400 per 5 min |
+| Idle 5 min, emulator booted: main / GPU / renderer / brain CPU | 0.4 / 0.0 / 0.1 / 0.6% | 0.3 / 0.0 / 0.1 / 0.6% | 15% / — / — / 10% |
+| Renderer JS heap after a forced GC, Work | 116 MB; 102 MB with the emulator | 117 MB; 100–102 MB with the emulator | 220 MB |
+| Mock: Android live, 3D, Realistic body on (3 runs) | 42.2 (37.7–45.2) ms/s | 43.9 (38.9–47.1) ms/s | +25% over A |
+| Mock: Android live, 3D, Realistic body off | 43.9 (43.2–45.7) ms/s | 44.7 (44.3–47.7) ms/s | 52 ms/s |
+| Mock: Android live, flat | 35.0 (34.0–36.7) ms/s | 36.2 (34.3–37.3) ms/s | +25% over A |
+| Mock: renderer JS heap after a forced GC, Android live 3D, a new tab | 115 MB (2 runs) | 115 MB (2 runs) | 220 MB |
+| Mock: React commits on the 3D stage (20 s, 2 runs) | 0.7/s | 0.7/s | 2/s |
+
+No row is more than 25% worse than A, and no row crossed its ceiling. The
+mock rows overlap within their spread (±5 ms/s). B adds 17 page elements on
+each devices page; both pages now use the shared device settings cards.
+
+Two method notes:
+
+- **Mock heap: measure on a new tab.** In the 3-run matrix the heap after GC
+  grew about 25 MB with each reload of the same tab, in both trees (A 191,
+  219, 246 MB; B 211, 230, 240 MB). On a new tab both trees read 115 MB.
+- **An emulator that this brain started counted as ADE memory.** With the
+  emulator a child of B's brain (qemu at 4.6–5.4 GB), the app's own memory
+  read 6.3 GB, 17% of RAM. That is over the top bar's 8% pressure step, so
+  its resource chip sampled every 2 s instead of every 10 s: 227 child
+  processes in 5 min (148 `ps`). The same emulator adopted by a new brain is
+  not in the app's tree and gave 107 in both trees. The behavior came from
+  main, not from this branch. It is now fixed: the process sampler reads each
+  process's file name (`ps … comm=`) and leaves the emulator launcher and its
+  `qemu-system-*` subtree out of ADE's count, the same as a simulator. The
+  `ps` output grows to about 160 KB for 1,100 processes, far under its 2 MB
+  limit.
