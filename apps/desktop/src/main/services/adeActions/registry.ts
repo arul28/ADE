@@ -5,6 +5,7 @@ import {
 } from "../../../../../ade-cli/src/services/runtime/continueAfterRestartStore";
 import { readSavedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
 import { encodeCodedErrorMessage, isErrnoLikeCode } from "../../../shared/codedError";
+import { stampedAdeVersion } from "../../../../../ade-cli/src/services/remoteMcp/remoteMcpAccount";
 import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 import fs from "node:fs";
 import os from "node:os";
@@ -4117,6 +4118,9 @@ function agent37BrainMakerFor(runtime: AdeRuntime, machines: ReturnType<typeof c
           ? agent37VaultFromStore(runtime.accountVaultStore, AGENT37_CLAUDE_TOKEN_VAULT_KEY)
           : null,
       ),
+      // This brain's release: a machine made from an older template installs it on boot.
+      // Only a released build: a development build's version may not be published.
+      minAdeVersion: () => stampedAdeVersion(),
       spending: () => machines.spending(),
       removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
       logger: runtime.logger,

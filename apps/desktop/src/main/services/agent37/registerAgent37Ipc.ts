@@ -54,13 +54,14 @@ import { createAgent37Client } from "./agent37Client";
 import { createAgent37Machines } from "./agent37Machines";
 import { claimAgent37ReadyMachine, releaseAgent37ReadyMachine } from "./agent37ReadyClaim";
 import { createAgent37ReadyKeeper } from "./agent37ReadyMachines";
-import { setAgent37WakeForUse } from "./agent37WakeHook";
+import { setAgent37UpdateBlocker, setAgent37WakeForUse } from "./agent37WakeHook";
 import { startAgent37MoneyWatch } from "./agent37MoneyWatch";
 import { setAgent37DesktopActions } from "./agent37DesktopActions";
 import { copyAgent37Machine, moveAgent37Machine, type Agent37CopyDeps } from "./agent37MachineCopy";
 import {
   AGENT37_BUDGET_VAULT_KEY,
   createAgent37BudgetStore,
+  agent37InstanceForMachine,
   wakeAgent37MachineForUse,
 } from "./agent37Sleep";
 import { AGENT37_READY_VAULT_KEY, createAgent37ReadySettingsStore } from "./agent37ReadySettings";
@@ -349,6 +350,7 @@ export function registerAgent37Ipc(args: {
     },
     onTemplateMissing: () => void builder.ensure(),
     machineEnv: () => agent37MachineEnv(claudeTokenVault()),
+    minAdeVersion: releasedAdeVersion,
     pendingCreates,
     logger,
   };
@@ -420,6 +422,33 @@ export function registerAgent37Ipc(args: {
     if (result.state === "refused") throw new Error(result.message);
     if (result.state === "woken") sendToAllWindows(IPC.agent37StatusChanged);
     return result.state === "woken";
+  });
+
+  // A box from a template older than the entrypoint-supervised one always
+  // starts the ADE its image has, so an update installs and then never runs.
+  // Asked before the update goes out, so the card says so at once.
+  setAgent37UpdateBlocker(async (target) => {
+    const machineKey = target.pairedMachine?.machineKey?.trim();
+    if (!machineKey || !machines.isKnownBox(machineKey)) return null;
+    let probe: { exitCode: number } | null = null;
+    let instance: ReturnType<typeof agent37InstanceForMachine> = null;
+    try {
+      const client = await savedClient();
+      if (!client) return null;
+      instance = agent37InstanceForMachine(await client.listInstances(), machineKey, target.hostname);
+      if (!instance || instance.status !== "running") return null;
+      probe = await client.exec(instance.id, AGENT37_ENTRYPOINT_SUPERVISOR_PROBE, { timeoutMs: 15_000 });
+    } catch (error) {
+      // Unknown is not "blocked": the update goes out, and the box's own ADE
+      // refuses it there if its template is too old.
+      logger.warn("agent37.update_blocker_check_failed", { error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }
+    if (probe.exitCode !== 1) return null;
+    logger.info("agent37.update_blocked_old_template", { instanceId: instance.id });
+    return "This machine was made from an older ADE machine template, which always starts the ADE it was built with, "
+      + "so an update can't take effect on it. Make a new Agent 37 machine to get the current version, and move your lanes to it. "
+      + "A copy keeps the old template.";
   });
 
   ipcMain.handle(IPC.agent37GetStatus, async (event): Promise<Agent37Status | null> => {
@@ -782,6 +811,13 @@ function readyPreparerId(logger: Logger): string {
 
 /** Long enough that the boot path, the brain and the vault are settled first. */
 const STARTUP_CHECK_DELAY_MS = 20_000;
+
+/**
+ * Exits 0 when the box's entrypoint supervises the brain so that an update can
+ * restart it on the new ADE (infra/agent37/template/ade-entrypoint.sh), 1 when
+ * it is an older ADE entrypoint, 2 when the box has no ADE entrypoint at all.
+ */
+const AGENT37_ENTRYPOINT_SUPERVISOR_PROBE = "grep -q 'ADE_BRAIN_SUPERVISOR=entrypoint' /usr/local/bin/ade-entrypoint.sh";
 
 /**
  * The ADE release this app is, for the template to install; null for a build

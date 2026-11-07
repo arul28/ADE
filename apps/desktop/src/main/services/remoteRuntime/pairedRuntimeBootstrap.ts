@@ -29,6 +29,7 @@ import {
   classifyPairedRuntimeFailure,
   createRouteAttemptRecorder,
   dominantPairedRuntimeFailure,
+  isRelayHostReplacedError,
   orderPairedCandidates,
   pairedRuntimeFailureMessage,
   pairedRouteConnectTimeoutMs,
@@ -128,18 +129,26 @@ export async function bootstrapPairedRuntime(args: {
   const { attempts, record: recordAttempt } = attemptRecorder;
   let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
   let accountHelloCode: PairedRuntimeAccountHelloCode | null = null;
+  let relayRetried = false;
   // Keep the phases explicit even if a future candidate-builder change
   // accidentally reorders endpoints.
   const orderedCandidates = orderPairedCandidates(candidates);
-  const markEndpointFailed = (
+  // The host just opened a new relay link (a machine back from sleep), during
+  // the connect or the first calls: try the relay once more now, and don't
+  // count it against the route.
+  const failEndpoint = (
     candidate: PairedRuntimeEndpointCandidate,
+    candidateIndex: number,
+    error: unknown,
     failure: RemoteRuntimeConnectionAttemptFailure,
-  ): void => recordPairedRouteFailure(
-    args.pairedStore,
-    credentials.hostIdentity.deviceId,
-    candidate.endpoint,
-    failure,
-  );
+  ): void => {
+    if (candidate.kind === "relay" && !relayRetried && isRelayHostReplacedError(error)) {
+      relayRetried = true;
+      orderedCandidates.splice(candidateIndex + 1, 0, candidate);
+      return;
+    }
+    recordPairedRouteFailure(args.pairedStore, credentials.hostIdentity.deviceId, candidate.endpoint, failure);
+  };
   for (const [candidateIndex, candidate] of orderedCandidates.entries()) {
     const attemptStartedAt = Date.now();
     const hasFallback = candidateIndex < orderedCandidates.length - 1;
@@ -202,7 +211,7 @@ export async function bootstrapPairedRuntime(args: {
         accountHelloCode = error.helloCode;
       }
       const failure = classifyPairedRuntimeFailure(error);
-      markEndpointFailed(candidate, failure);
+      failEndpoint(candidate, candidateIndex, error, failure);
       recordAttempt({
         kind: candidate.kind,
         host: safeHost,
@@ -247,7 +256,7 @@ export async function bootstrapPairedRuntime(args: {
       client.close();
       if (isPairedTransportFailure(error)) {
         const failure = classifyPairedRuntimeFailure(error);
-        markEndpointFailed(candidate, failure);
+        failEndpoint(candidate, candidateIndex, error, failure);
         recordAttempt({
           kind: candidate.kind,
           host: safeHost,
@@ -283,7 +292,7 @@ export async function bootstrapPairedRuntime(args: {
       client.close();
       if (isPairedTransportFailure(error)) {
         const failure = classifyPairedRuntimeFailure(error);
-        markEndpointFailed(candidate, failure);
+        failEndpoint(candidate, candidateIndex, error, failure);
         recordAttempt({
           kind: candidate.kind,
           host: safeHost,

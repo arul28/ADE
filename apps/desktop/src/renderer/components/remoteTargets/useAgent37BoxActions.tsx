@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import { ArrowsOutSimple, ArrowsLeftRight, CloudArrowUp, Copy, Moon, MoonStars, Sun, Trash, UserMinus } from "@phosphor-icons/react";
 import {
   AGENT37_DEFAULT_SLEEP_AFTER_MINUTES,
@@ -171,6 +171,8 @@ export function useAgent37BoxActions(args: {
     }
   }, [forgetTarget, onAccountChanged, run]);
 
+  // Machine keys with a removal running (its confirmation included), so a second click starts nothing.
+  const removing = useRef(new Set<string>());
   /**
    * Remove from ADE: the account row goes (on every computer), and this
    * computer's saved connection with it. Any machine can be removed; an
@@ -181,42 +183,53 @@ export function useAgent37BoxActions(args: {
     name: string;
     targetId: string | null;
     box: Agent37Machine | null;
+    /** The row is a box deleted on the Agent 37 site: only its ADE entry is left. */
+    deletedOnAgent37?: boolean;
     onError: (message: string) => void;
   }) => {
-    const rate = input.box && !input.box.pastDue ? describeAgent37Rate(input.box) : null;
-    const message = input.box
-      ? `${input.name} leaves your computers on every device. The box stays on Agent 37 and keeps billing${rate ? ` (${rate})` : ""}. To stop the bill, use Delete box instead.`
-      : `${input.name} leaves your computers on every device.\n\n${accountMachineRemovalConfirmBody(input.machine)}`;
-    const ok = await confirmDialog({
-      title: `Remove ${input.name} from ADE?`,
-      message: <span style={{ whiteSpace: "pre-line" }}>{message}</span>,
-      confirmLabel: "Remove from ADE",
-      destructive: true,
-      size: "md",
-    });
-    if (!ok) return;
-    const removeMachine = window.ade?.account?.removeMachine;
-    if (!removeMachine) return;
-    if (input.box) setPending(input.box.instanceId, "remove");
+    const key = input.machine.machineKey;
+    if (removing.current.has(key)) return;
+    removing.current.add(key);
     try {
-      await removeMachine(input.machine.machineKey);
-      if (input.targetId) {
-        await forgetTarget(input.targetId).catch((error: unknown) =>
-          captureError(error, { fingerprint: ["agent37", "forget_removed_target"], handled: true }));
-      }
-      showToast({
-        tone: "success",
-        title: `Removed ${input.name} from ADE`,
-        message: input.box ? "It still runs on Agent 37. Delete box stops the bill." : undefined,
-        replayMask: { title: true },
+      const rate = input.box && !input.box.pastDue ? describeAgent37Rate(input.box) : null;
+      const message = input.box
+        ? `${input.name} leaves your computers on every device. The box stays on Agent 37 and keeps billing${rate ? ` (${rate})` : ""}. To stop the bill, use Delete box instead.`
+        : input.deletedOnAgent37
+          ? `${input.name} was deleted on Agent 37, so it no longer exists and costs nothing. This removes its entry from your computers on every device.`
+          : `${input.name} leaves your computers on every device.\n\n${accountMachineRemovalConfirmBody(input.machine)}`;
+      const ok = await confirmDialog({
+        title: `Remove ${input.name} from ADE?`,
+        message: <span style={{ whiteSpace: "pre-line" }}>{message}</span>,
+        confirmLabel: "Remove from ADE",
+        destructive: true,
+        size: "md",
       });
-    } catch (error) {
-      captureError(error, { fingerprint: ["agent37", "remove_from_ade"], handled: true });
-      input.onError(extractError(error));
+      if (!ok) return;
+      const removeMachine = window.ade?.account?.removeMachine;
+      if (!removeMachine) return;
+      if (input.box) setPending(input.box.instanceId, "remove");
+      try {
+        await removeMachine(input.machine.machineKey);
+        if (input.targetId) {
+          await forgetTarget(input.targetId).catch((error: unknown) =>
+            captureError(error, { fingerprint: ["agent37", "forget_removed_target"], handled: true }));
+        }
+        showToast({
+          tone: "success",
+          title: `Removed ${input.name} from ADE`,
+          message: input.box ? "It still runs on Agent 37. Delete box stops the bill." : undefined,
+          replayMask: { title: true },
+        });
+      } catch (error) {
+        captureError(error, { fingerprint: ["agent37", "remove_from_ade"], handled: true });
+        input.onError(extractError(error));
+      } finally {
+        if (input.box) setPending(input.box.instanceId, null);
+        onAccountChanged?.();
+        refresh();
+      }
     } finally {
-      if (input.box) setPending(input.box.instanceId, null);
-      onAccountChanged?.();
-      refresh();
+      removing.current.delete(key);
     }
   }, [forgetTarget, onAccountChanged, refresh, setPending]);
 

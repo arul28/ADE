@@ -39,9 +39,17 @@ export type ServiceManagerResult = {
    * ADE is switched off under Login Items → "Allow in the Background"; no
    * restart can fix that, only the person at the keyboard can.
    * `launchd_register` is launchd refusing to register the job at all; the
-   * message carries launchctl's own error.
+   * message carries launchctl's own error. `entrypoint_too_old` is a Linux
+   * container whose start script (an older ADE machine template) always runs
+   * the ADE it was built with, so no restart can bring a newer one up.
    */
-  failureStep?: "predecessor_exit" | "replacement_pid" | "replacement_responsive" | "background_item_blocked" | "launchd_register";
+  failureStep?:
+    | "predecessor_exit"
+    | "replacement_pid"
+    | "replacement_responsive"
+    | "background_item_blocked"
+    | "launchd_register"
+    | "entrypoint_too_old";
   /**
    * The service is registered and its brain process is alive, but it had not
    * answered on the socket when the install's wait budget ran out. That is a
@@ -1042,7 +1050,7 @@ function isWindowsNamedPipePath(value: string): boolean {
  * rejects genuine matches on Windows. POSIX socket paths ARE case-sensitive, so
  * that branch keeps the exact comparison it has always had.
  */
-function isSameServeSocketPath(left: string, right: string): boolean {
+export function isSameServeSocketPath(left: string, right: string): boolean {
   if (isWindowsNamedPipePath(left) || isWindowsNamedPipePath(right)) {
     const normalize = (value: string): string =>
       value.trim().replace(/\//g, "\\").toLowerCase();
@@ -1052,7 +1060,7 @@ function isSameServeSocketPath(left: string, right: string): boolean {
 }
 
 /** The `--socket` a serve command line names, or null when it names none. */
-function serveSocketArgument(commandLine: string): string | null {
+export function serveSocketArgument(commandLine: string): string | null {
   return commandLine.match(/--socket"?(?:=|\s+)"?([^"\s]+)/)?.[1] ?? null;
 }
 

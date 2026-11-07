@@ -45,6 +45,22 @@ export function matchAgent37Boxes(
   return byKey;
 }
 
+/**
+ * Whether an account row is an Agent 37 box that no longer exists: an offline
+ * Linux row named by the id of an instance that spent in the workspace and is
+ * gone from it (a box's hostname is its instance id until someone renames
+ * it). That is a box deleted on the Agent 37 site, whose row stays on the
+ * account until someone removes it. Pass the ids from a list that was read.
+ */
+export function isDeletedAgent37Row(
+  machine: AdeAccountMachine,
+  deletedInstanceIds: readonly string[],
+): boolean {
+  if (machine.online || machine.platform?.toLowerCase() !== "linux") return false;
+  const host = machine.name?.trim().toLowerCase() ?? "";
+  return host.length > 0 && deletedInstanceIds.includes(host);
+}
+
 export type Agent37BoxWork = {
   /** Lanes with chats on this box, newest first (from account Activity). */
   lanes: Array<{ name: string; projectName: string | null }>;

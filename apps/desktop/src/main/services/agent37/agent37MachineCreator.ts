@@ -88,6 +88,14 @@ export type Agent37MachineCreatorDeps = {
    * keeps it with the machine and gives it back on every boot.
    */
   machineEnv?: () => Promise<Record<string, string>>;
+  /**
+   * The ADE release this computer runs, or null for a build that is not a
+   * published release. The machine installs it on boot when its template is
+   * older (`ADE_MIN_VERSION` in infra/agent37/template/ade-entrypoint.sh), so a
+   * machine made while the template is still being rebuilt for this release
+   * joins on it anyway.
+   */
+  minAdeVersion?: () => string | null;
   fetch?: FetchLike;
   logger?: {
     info?(event: string, meta?: Record<string, unknown>): void;
@@ -201,6 +209,14 @@ export function normalizeAgent37MachineName(raw: string): string {
   return cleaned || "Agent 37 box";
 }
 
+/** A published release a machine can install (`ade brain update --version`), or null. */
+export function agent37MinAdeVersion(version: string | null | undefined): string | null {
+  const trimmed = version?.trim().replace(/^v/, "") ?? "";
+  // 0.0.0 is an unstamped development build; alpha builds are not published.
+  if (trimmed === "0.0.0" || !/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(trimmed)) return null;
+  return trimmed;
+}
+
 export async function createAgent37Machine(
   deps: Agent37MachineCreatorDeps,
   requestId: string,
@@ -251,7 +267,11 @@ export async function createAgent37Machine(
     logger.warn?.("agent37.machine_create_not_recorded", { error: errorText(error) });
     throw new Error("ADE couldn't save a note of the machine it's about to make, so it didn't make one. Check that ADE can write to its folder, then try again.");
   }
-  const machineEnv = await (deps.machineEnv?.() ?? Promise.resolve({})).catch(() => ({} as Record<string, string>));
+  const minAdeVersion = agent37MinAdeVersion(deps.minAdeVersion?.() ?? null);
+  const machineEnv = {
+    ...await (deps.machineEnv?.() ?? Promise.resolve({})).catch(() => ({} as Record<string, string>)),
+    ...(minAdeVersion ? { ADE_MIN_VERSION: minAdeVersion } : {}),
+  };
   checkCancelled();
   progress("creating", `Making ${name} on Agent 37…`);
   let instance: Agent37Instance;
