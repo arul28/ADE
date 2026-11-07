@@ -2,9 +2,10 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AdeStartedEmulators, androidDiscoveryDirs, readAndroidDiscoveryFiles } from "./androidEmulatorProcess";
+import { AdeStartedEmulators, androidDiscoveryDirs, readAndroidDiscoveryFiles, waitForAndroidBoot, type AndroidEmulatorLaunch } from "./androidEmulatorProcess";
+import type { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { AndroidEmulatorOwnersStore, type AndroidEmulatorOwnerRecord } from "./androidEmulatorOwners";
 import { createAndroidEmulatorLifecycle } from "./androidEmulatorSweep";
 
@@ -295,5 +296,106 @@ describe("the emulator sweep", () => {
     await lifecycle.sweep();
     expect(stops).toEqual(expected);
     if (expected.length === 0) expect(store.read().emulators).toEqual([]);
+  });
+});
+
+
+// An adb server that started before ~/.android/adbkey changed refuses every new
+// emulator as `unauthorized`, and it never reads the key again. The boot wait
+// must say so in seconds (not wait out the whole timeout), restart the server
+// only when that costs no other device its connection, and never restart twice.
+describe.skipIf(process.platform === "win32")("the boot wait when adb refuses the device", () => {
+  let root: string;
+  let ticker: ReturnType<typeof setInterval> | null = null;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-android-unauthorized-"));
+  });
+
+  afterEach(() => {
+    if (ticker) clearInterval(ticker);
+    ticker = null;
+    vi.useRealTimers();
+    delete process.env.ADE_FAKE_ADB_DIR;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** A fake `adb` (the child-process boundary): its device state lives in files. */
+  const fakeAdb = (setup: { otherDevice: boolean; restartFixes: boolean }) => {
+    const dir = path.join(root, "adb");
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, "state"), "unauthorized\n");
+    if (setup.otherDevice) fs.writeFileSync(path.join(dir, "other"), "");
+    if (setup.restartFixes) fs.writeFileSync(path.join(dir, "fixed-by-restart"), "");
+    const adbPath = path.join(dir, "adb");
+    fs.writeFileSync(adbPath, [
+      "#!/bin/sh",
+      'd="$ADE_FAKE_ADB_DIR"',
+      '[ "$1" = "-s" ] && shift 2',
+      'case "$1" in',
+      '  wait-for-device) [ "$(cat "$d/state")" = device ] && exit 0; sleep 0.1; exit 1;;',
+      '  devices) echo "List of devices attached"; printf "emulator-5554\\t%s\\n" "$(cat "$d/state")"; [ -f "$d/other" ] && printf "emulator-5556\\tdevice\\n"; exit 0;;',
+      '  kill-server) echo kill >> "$d/kills"; exit 0;;',
+      '  start-server) [ -f "$d/fixed-by-restart" ] && echo device > "$d/state"; exit 0;;',
+      "  shell) echo 1; exit 0;;",
+      "esac",
+      "exit 0",
+      "",
+    ].join("\n"));
+    fs.chmodSync(adbPath, 0o755);
+    process.env.ADE_FAKE_ADB_DIR = dir;
+    const kills = () => (fs.existsSync(path.join(dir, "kills")) ? fs.readFileSync(path.join(dir, "kills"), "utf8").trim().split("\n").length : 0);
+    return { adbPath, kills };
+  };
+
+  const launch = (): AndroidEmulatorLaunch => ({
+    avdName: "ade_lane_galaxy_s25",
+    serial: "emulator-5554",
+    consolePort: 5554,
+    adbPort: 5555,
+    grpcPort: 8554,
+    launcherPid: LIVE,
+    logPath: path.join(root, "emulator.log"),
+    startedAt: Date.now(),
+    child: null as never,
+    exit: new Promise(() => undefined),
+    exited: () => null,
+  });
+
+  it.each<[string, { policy: "auto" | "always"; otherDevice: boolean; restartFixes: boolean }, { booted: boolean; kills: number; restartedFlag: boolean }]>([
+    ["restarts a server no other device uses, and the boot goes on", { policy: "auto", otherDevice: false, restartFixes: true }, { booted: true, kills: 1, restartedFlag: false }],
+    ["refuses, and leaves alone, a server another device uses", { policy: "auto", otherDevice: true, restartFixes: true }, { booted: false, kills: 0, restartedFlag: false }],
+    ["restarts it anyway when the person asked for it", { policy: "always", otherDevice: true, restartFixes: true }, { booted: true, kills: 1, restartedFlag: false }],
+    ["restarts once, then refuses with the after-restart flag", { policy: "auto", otherDevice: false, restartFixes: false }, { booted: false, kills: 1, restartedFlag: true }],
+  ])("%s", async (_name, setup, expected) => {
+    const adb = fakeAdb(setup);
+    const discovery = path.join(root, "running");
+    fs.mkdirSync(discovery);
+    fs.writeFileSync(path.join(discovery, `pid_${LIVE}.ini`), "port.serial=5554\nport.adb=5555\navd.id=ade_lane_galaxy_s25\n");
+    // Only the clock is fake: each real loop of the wait sees ten seconds pass,
+    // so the 20 s grace runs out in a few real loops and the 30 min timeout never does.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    ticker = setInterval(() => vi.setSystemTime(Date.now() + 2_000), 20);
+    const restarts: number[] = [];
+
+    const result = await waitForAndroidBoot(launch(), {
+      adbPath: adb.adbPath,
+      timeoutMs: 30 * 60_000,
+      discoveryDirs: [discovery],
+      restartAdb: setup.policy,
+      onAdbRestarted: (others) => restarts.push(others),
+    }).then((boot) => ({ boot, error: null }), (error: AndroidEmulatorFailure) => ({ boot: null, error }));
+
+    expect(adb.kills()).toBe(expected.kills);
+    expect(restarts).toHaveLength(expected.kills);
+    if (expected.booted) {
+      expect(result.error).toBeNull();
+      expect(result.boot?.adbRestarted).toBe(true);
+    } else {
+      expect(result.error?.code).toBe("ANDROID_ADB_UNAUTHORIZED");
+      expect(result.error?.toAndroidEmulatorError().adbRestarted === true).toBe(expected.restartedFlag);
+    }
+    // "Open log" tells the person what ADE saw and did.
+    expect(fs.readFileSync(path.join(root, "emulator.log"), "utf8")).toContain("unauthorized");
   });
 });

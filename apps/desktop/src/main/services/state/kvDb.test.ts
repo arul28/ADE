@@ -963,13 +963,13 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
     ).toBe(0);
   });
 
-  it("keeps the config-snapshot test_suites table local-only", async () => {
+  it("keeps machine-local tables local-only: config-snapshot test_suites, and a lane's Android devices (an AVD lives on one machine)", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-config-snapshot-local-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
     const db = await openKvDb(dbPath, createLogger() as any);
     activeDisposers.push(async () => db.close());
 
-    for (const table of ["test_suites"]) {
+    for (const table of ["test_suites", "lane_android_devices", "lane_android_extra_devices"]) {
       expect(
         db.get<{ present: number }>(
           `select 1 as present from sqlite_master where type = 'table' and name = '${table}__crsql_clock' limit 1`,

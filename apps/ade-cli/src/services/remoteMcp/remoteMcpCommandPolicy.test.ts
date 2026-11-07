@@ -33,6 +33,8 @@ describe("checkRemoteAdeCommand", () => {
     ["write", "signing OpenCode out", ["providers", "opencode", "accounts", "rm", "acct"]],
     ["write", "installing the Android SDK", ["android", "sdk", "install", "--folder", "/x"]],
     ["write", "the Android SDK folder behind a flag and its value", ["android", "sdk", "--folder", "/x", "use"]],
+    ["write", "restarting the computer's adb server", ["android", "start", "--restart-adb"]],
+    ["write", "restarting adb through actions", ["actions", "run", "android_emulator.start", "--input-json", '{"laneId":"l","restartAdb":true}']],
     ["read", "creating a lane", ["lanes", "create", "--name", "x"]],
     ["read", "a flag before the subcommand", ["lanes", "--text", "create"]],
     ["read", "a write action through actions", ["actions", "run", "lane", "create"]],
