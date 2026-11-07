@@ -1732,6 +1732,20 @@ per outcome bounds it to 24 accepted events per installation per UTC day,
 inside the existing `ade_feature_used` ceilings. The keeper's pool reads are
 not analytics.
 
+Sign-ins for cloud machines record `feature: "connections"`, `action:
+"agent37_cloud_sign_in"` in the brain, when a sign-in is saved
+(`agent37CloudSignInActions.ts`, called from `adeActions/registry.ts`). The
+outcome is the provider, prefixed: `signin_claude` once Claude Code's token is
+kept, or `signin_codex`, `signin_cursor`, `signin_droid`, `signin_grok`,
+`signin_copilot`, `signin_devin`, `signin_muse` or `signin_openrouter` when a
+key is saved. The product question is which providers people want signed in on
+their cloud machines. No key, token, account, link, code or error travels; a
+failed or cancelled sign-in is not an event and stays in the local
+`agent37.*` log lines. Removing one is not an event. A six-hour key per
+provider bounds it to 36 accepted events per installation per UTC day, inside
+the existing `ade_feature_used` ceilings. The card's status reads, and the
+1.5-second poll while Claude's sign-in runs, are not analytics.
+
 `ade_brain_action_failed` is the one new event. Every brain action the desktop
 performs goes through the single `ade.localRuntime.callAction` IPC channel, and
 that channel is not a meaningful usage action, so the existing `ade_error`

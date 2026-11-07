@@ -302,7 +302,8 @@ import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { agent37VaultFromStore, buildAgent37ConnectAdapter, type Agent37CredentialDeps } from "../agent37/agent37Credential";
-import { AGENT37_CLAUDE_TOKEN_VAULT_KEY, agent37MachineEnv } from "../agent37/agent37ClaudeTokenStore";
+import { agent37MachineEnv, type Agent37CloudSignInVaults } from "../agent37/agent37CloudSignInStore";
+import { buildAgent37CloudSignInActions } from "../agent37/agent37CloudSignInActions";
 import { buildAgent37ReadyActions } from "../agent37/agent37ReadyActions";
 import { buildAgent37AgentActions } from "../agent37/agent37AgentActions";
 import { createAgent37BrainMaker, type Agent37BrainMaker } from "../agent37/agent37BrainMaker";
@@ -4051,6 +4052,13 @@ function agent37MachineStore(): EncryptedFileCredentialStore {
   return agent37MachineCredentialStore;
 }
 
+/** The account vault's cloud sign-in items, or null when signed out of ADE (agent37CloudSignInStore.ts). */
+function agent37CloudSignInVaults(runtime: AdeRuntime): Agent37CloudSignInVaults | null {
+  const store = runtime.accountVaultStore;
+  if (!store || runtime.accountAuthService?.getStatus().signedIn !== true) return null;
+  return (vaultKey) => agent37VaultFromStore(store, vaultKey);
+}
+
 function agent37CredentialDeps(runtime: AdeRuntime): Agent37CredentialDeps {
   return {
     vault: () => (runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore) : null),
@@ -4116,12 +4124,8 @@ function agent37BrainMakerFor(runtime: AdeRuntime, machines: ReturnType<typeof c
       listAccountMachines: () => directory().listMachines(),
       renameMachine: (machineKey, name) => directory().renameMachine(machineKey, name),
       templateName: () => process.env.ADE_AGENT37_TEMPLATE?.trim() || AGENT37_DEFAULT_TEMPLATE,
-      // The person's Claude token, so Claude is signed in on the new machine (agent37ClaudeToken.ts).
-      machineEnv: () => agent37MachineEnv(
-        account.getStatus().signedIn && runtime.accountVaultStore
-          ? agent37VaultFromStore(runtime.accountVaultStore, AGENT37_CLAUDE_TOKEN_VAULT_KEY)
-          : null,
-      ),
+      // The person's provider sign-ins, so they are signed in on the new machine (agent37CloudSignInStore.ts).
+      machineEnv: () => agent37MachineEnv(agent37CloudSignInVaults(runtime), runtime.logger),
       // This brain's release: a machine made from an older template installs it on boot.
       // Only a released build: a development build's version may not be published.
       minAdeVersion: () => stampedAdeVersion(),
@@ -4216,7 +4220,22 @@ function buildAgent37DomainService(runtime: AdeRuntime): OpaqueService {
       : null,
     logger: runtime.logger,
   });
-  return { ...ready, ...verbs };
+  const cloudSignIns = buildAgent37CloudSignInActions({
+    vaults: () => agent37CloudSignInVaults(runtime),
+    accountId: () => runtime.accountAuthService?.getStatus().userId ?? null,
+    // Which providers people sign in for cloud machines. A six-hour dedupe per
+    // provider: at most 36 accepted events a day.
+    onSaved: (id) => runtime.productAnalyticsService?.capture({
+      event: "ade_feature_used",
+      surface: "api",
+      properties: { feature: "connections", action: "agent37_cloud_sign_in", outcome: `signin_${id}` },
+      projectId: null,
+      dedupeKey: `agent37_cloud_sign_in:${id}`,
+      minimumIntervalMs: 6 * 60 * 60 * 1_000,
+    }),
+    logger: runtime.logger,
+  });
+  return { ...ready, ...verbs, ...cloudSignIns };
 }
 
 /**

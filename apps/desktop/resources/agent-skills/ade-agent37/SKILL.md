@@ -115,7 +115,8 @@ approve it joining, and the command waits up to 10 minutes for that.
 - Never ask for the Agent 37 key or print it. If Agent 37 isn't connected,
   `ade integrations connect agent37 --reason "…"` shows the person a card.
 - Never sign Claude or another provider in on a cloud machine for the person;
-  they do that themselves. One sign-in covers every new machine: **Claude on
-  your cloud machines** on the Agent 37 page (ade://settings/integrations.agent37).
-  Machines made before it keep what they had.
+  they do that themselves. One sign-in covers every new machine: **Sign-ins
+  for your cloud machines** on the Agent 37 page
+  (ade://settings/integrations.agent37-sign-ins). Machines made before it keep
+  what they had. You cannot save these sign-ins: ADE refuses an agent.
 - Don't delete a machine you didn't make unless the person asked for that one.
