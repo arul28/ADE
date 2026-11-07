@@ -782,6 +782,10 @@ const REPAIR_SYNC_HOST_START_TIMEOUT_MS = 20_000;
 // start on a slow or busy machine takes longer than the 5 seconds an
 // already-running brain gets to answer.
 const SPAWNED_RUNTIME_CONNECT_WINDOW_MS = 20_000;
+// How long the first no-project Agent 37 or vault call waits for the account
+// vault's first pull before it answers from the local copy (the desktop gives
+// a vault call 8 seconds).
+const MACHINE_VAULT_FIRST_PULL_WAIT_MS = 3_000;
 
 export type InvocationStep = {
   key: string;
@@ -29552,15 +29556,29 @@ async function runServe(
         // With no project open, no project runtime keeps the vault in step
         // with the account. Join (or start) its background sync for the life
         // of the process, as ADE MCP does for the settings store, and pull
-        // once before the first read.
+        // once before the first read. The desktop stops waiting for a vault
+        // call after 8 s, so the wait is bounded: a slow pull finishes in the
+        // background and the call answers from the local copy.
         vault.startPeriodicSync();
-        const status = await vault.sync().catch((error: unknown) => {
-          headlessProjectLogger.warn("account.machine_vault_initial_sync_failed", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-          return null;
-        });
-        if (status === "failed") headlessProjectLogger.warn("account.machine_vault_initial_sync_failed", { status });
+        const firstPull = vault.sync().then(
+          (status) => {
+            if (status === "failed") headlessProjectLogger.warn("account.machine_vault_initial_sync_failed", { status });
+          },
+          (error: unknown) => {
+            headlessProjectLogger.warn("account.machine_vault_initial_sync_failed", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          },
+        );
+        let waitTimer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          firstPull,
+          new Promise<void>((resolve) => {
+            waitTimer = setTimeout(resolve, MACHINE_VAULT_FIRST_PULL_WAIT_MS);
+            waitTimer.unref?.();
+          }),
+        ]);
+        clearTimeout(waitTimer);
       }
       return {
         logger: headlessProjectLogger,

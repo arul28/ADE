@@ -576,6 +576,9 @@ choice and the template build, and only reads the saved sign-ins; any other
 item, kind, scope or operation still needs a project. On the first call the
 route pulls the vault once and joins its background sync (a project runtime
 does this too), so a key saved on another computer shows with no project open.
+The first call waits at most 3 seconds for that pull (the desktop gives a vault
+call 8); a slower pull finishes in the background, and the call answers from
+the local copy.
 A brain with sync off (a test brain) has no vault there, as its project
 runtimes have none. What spends
 money or deletes (`create`, `resize`, `copy`, `move`, `delete`, `ready …`,
