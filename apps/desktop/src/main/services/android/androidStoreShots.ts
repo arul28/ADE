@@ -68,6 +68,8 @@ export type AndroidStoreShotsDeps = {
   logger?: Logger | null;
   now: () => Date;
   sleep: (ms: number) => Promise<void>;
+  /** One coarse fact when a screenshot set was taken; nothing on a failure. */
+  captureAnalytics?: (outcome: "store_screenshots") => void;
 };
 
 /** One raw capture: RGBA pixels, row by row. */
@@ -293,7 +295,9 @@ export function createAndroidStoreShots(deps: AndroidStoreShotsDeps) {
     const before = await deps.posture.getPosture({ laneId });
     if (!before.supported) {
       const frame = await capture(booted);
-      return { laneId, foldable: false, shots: [await write(laneId, args, frame, "screen", await slotFor(booted, frame))] };
+      const shot = await write(laneId, args, frame, "screen", await slotFor(booted, frame));
+      deps.captureAnalytics?.("store_screenshots");
+      return { laneId, foldable: false, shots: [shot] };
     }
     const shots: AndroidStoreShot[] = [];
     try {
@@ -318,6 +322,7 @@ export function createAndroidStoreShots(deps: AndroidStoreShotsDeps) {
         });
       }
     }
+    deps.captureAnalytics?.("store_screenshots");
     return { laneId, foldable: true, shots };
   };
 

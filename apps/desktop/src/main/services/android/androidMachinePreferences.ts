@@ -4,6 +4,7 @@ import {
   normalizeAndroidMachinePreferences,
   type AndroidMachinePreferences,
 } from "../../../shared/types/androidEmulator";
+import type { Logger } from "../logging/logger";
 import { writeFileAtomic } from "../state/durableFile";
 
 /*
@@ -73,10 +74,11 @@ function readSettingsBody(file: string): SettingsRead {
   }
 }
 
-/** With no file (a test host), the keys live in memory. */
-export function createAndroidSettingsFile(file: string | null | undefined): AndroidSettingsFile {
+/** With no file (a test host), the keys live in memory. A broken file is logged once per change. */
+export function createAndroidSettingsFile(file: string | null | undefined, logger?: Logger | null): AndroidSettingsFile {
   let memory: Record<string, unknown> = {};
   let cache: { mtimeMs: number; size: number; value: Record<string, unknown> } | null = null;
+  let warnedFor: string | null = null;
   return {
     persistent: Boolean(file),
     read() {
@@ -85,6 +87,11 @@ export function createAndroidSettingsFile(file: string | null | undefined): Andr
         const stat = fs.statSync(file);
         if (cache && cache.mtimeMs === stat.mtimeMs && cache.size === stat.size) return cache.value;
         const current = readSettingsBody(file);
+        const seen = `${current.problem}:${stat.mtimeMs}:${stat.size}`;
+        if (current.problem && warnedFor !== seen) {
+          warnedFor = seen;
+          logger?.warn("android.settings_file_broken", { problem: current.problem });
+        }
         // A file that could not be read is not cached, so the next read tries again.
         if (current.problem === "unreadable") return current.body;
         cache = { mtimeMs: stat.mtimeMs, size: stat.size, value: current.body };

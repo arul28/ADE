@@ -6895,11 +6895,13 @@ describe("adeRpcServer", () => {
 
       // A forged `agentCaller: false` does not survive.
       // Nor does another chat's id: the agent speaks only for its own chat.
-      const started = await call("deviceStart", { udid: "SIM-BUSY", agentCaller: false, chatSessionId: "chat-b" }, callerRoot);
+      // Nor does `source: "user"`, which would pass its input off as the person's.
+      const started = await call("deviceStart", { udid: "SIM-BUSY", agentCaller: false, chatSessionId: "chat-b", source: "user" }, callerRoot);
       expect(started?.isError).toBeUndefined();
       const forwarded = deviceStart.mock.calls.at(-1)?.[0] as Record<string, unknown>;
       expect(forwarded).toMatchObject({ udid: "SIM-BUSY", laneId: ownLane, agentCaller: true });
       expect(forwarded.chatSessionId).toBe(ownChat);
+      expect(forwarded.source).toBeUndefined();
 
       const refused = await call("deviceAttach", { simulator: "SIM-BUSY", laneId: "lane-3" }, callerRoot);
       expect(refused?.isError).toBe(true);
@@ -6931,6 +6933,45 @@ describe("adeRpcServer", () => {
 
       expect(attached?.isError).toBeUndefined();
       expect(deviceAttach).toHaveBeenCalledWith({ simulator: "SIM-BUSY", laneId: "lane-3" });
+    });
+  });
+
+  describe("android_emulator for agent callers", () => {
+    // `source: "user"` skips auto-record and draws the input as the person's,
+    // so only the brain sets it; an agent's own lane and chat are the brain's too.
+    it.each([
+      ["a bound agent, pinned to its chat's lane", { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" }, "lane-2", false, "chat-a"],
+      ["an ade process with no chat, placed by its worktree", { callerId: "ade-rpc-stdio-proxy:77355", role: "agent" }, "lane-1", true, undefined],
+    ])("drops the forged caller fields of %s", async (_label, identity, ownLane, fromWorktree, ownChat) => {
+      const fixture = createRuntime();
+      fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+        sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-2" } : null
+      ));
+      const tap = vi.fn(async (args: unknown) => args);
+      fixture.runtime.androidEmulatorService = { tap };
+      const lane1Root = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
+      fs.mkdirSync(lane1Root, { recursive: true });
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, identity, {});
+      const call = (args: Record<string, unknown>) => callTool(handler, "run_ade_action", {
+        domain: "android_emulator",
+        action: "tap",
+        args,
+        ...(fromWorktree ? { callerRoot: lane1Root } : {}),
+      });
+
+      const tapped = await call({ x: 10, y: 20, source: "user", agentCaller: false, chatSessionId: "chat-b" });
+
+      expect(tapped?.isError).toBeUndefined();
+      const forwarded = tap.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+      expect(forwarded).toMatchObject({ x: 10, y: 20, laneId: ownLane });
+      expect(forwarded.source).toBeUndefined();
+      expect(forwarded.agentCaller).toBeUndefined();
+      expect(forwarded.chatSessionId).toBe(ownChat);
+
+      const refused = await call({ x: 1, y: 1, laneId: "lane-3" });
+      expect(refused?.isError).toBe(true);
+      expect(tap).toHaveBeenCalledTimes(1);
     });
   });
 

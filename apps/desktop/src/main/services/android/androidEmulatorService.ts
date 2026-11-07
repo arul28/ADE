@@ -188,7 +188,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   /* ---------- the SDK, read on use ---------- */
 
   /** The machine's Android settings file: the SDK folder and the machine preferences (read per use; cached per change). */
-  const settingsFile = createAndroidSettingsFile(deps.sdkSettingsFile);
+  const settingsFile = createAndroidSettingsFile(deps.sdkSettingsFile, logger);
   const sdkSettings = createAndroidSdkSettingStore(settingsFile);
   const streamPreferences = createAndroidMachinePreferenceStore(settingsFile);
   const readSdkSettingPath = deps.readSdkSettingPath ?? (() => sdkSettings.read());
@@ -423,6 +423,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     logger,
     now,
     sleep,
+    captureAnalytics: deps.captureAnalytics,
   });
 
   const windows = createAndroidWindows({

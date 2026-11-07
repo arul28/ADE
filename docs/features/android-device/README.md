@@ -1058,7 +1058,8 @@ The emulator service in the brain records one coarse `ade_feature_used` fact
 an app installs, a 3D render files as proof, an agent takes a new lease, a
 system image installs (`image_installed`), an instrumentation run runs at
 least one test (`tests_run`), a fold settles (`device_folded`), or a Compose
-preview render writes an image (`previews_rendered`). Each outcome counts at
+preview render writes an image (`previews_rendered`), or a Play Store
+screenshot set is taken (`store_screenshots`). Each outcome counts at
 most once a day. No path, AVD, package, lane, image, angle or preview name
 goes with it. `docs/logging.md` holds the contract.
 
@@ -1068,6 +1069,9 @@ goes with it. `docs/logging.md` holds the contract.
 |---|---|
 | `apps/desktop/src/shared/types/androidEmulator.ts` | The contract: SDK, AVD and lane types, error codes, the service API, the action lists (`ANDROID_AGENT_ACTIONS`, `ANDROID_USER_ONLY_ACTIONS`, `ANDROID_PERSON_ONLY_ACTIONS`, `ANDROID_LANE_FREE_ACTIONS`, `ANDROID_CODE_SYNC_ACTIONS`), and the preload API. It re-exports its siblings: `androidEmulatorAgent.ts` (the agent suite, `ANDROID_PERMISSIONS`), `androidEmulatorSetup.ts` (the SDK install), `androidEmulatorLook.ts` (colour and render) and `androidEmulatorDrawer.ts` (the Tools drawer, `ANDROID_TEXT_SIZES`, `ANDROID_DISPLAY_SIZES`). |
 | `apps/desktop/src/main/services/android/androidEmulatorService.ts`, `androidEmulatorServiceDeps.ts` | The service: lane queue, start, stop, input, screenshot, the work-copy lanes, the start-up cleanup, and the hand-off. Its inputs and its state for one lane are in `androidEmulatorServiceDeps.ts`. |
+| `apps/desktop/src/main/services/android/androidEmulatorLifecycle.ts` | The boot and the stop that run on the lane's queue (`startLocked`, `stopLocked`), the mid-boot abort, and the boot timeout. |
+| `apps/desktop/src/main/services/android/androidMachinePreferences.ts`, `apps/desktop/src/shared/types/androidEmulatorRecording.ts` | The machine's Android settings file (`sdkPath` and `preferences`, atomic writes, a broken file refused), the machine preferences, and the recording types. |
+| `apps/desktop/src/main/services/android/androidAutoRecord.ts` | Auto-record: an agent's input starts a recording, the end of its turn stops it, and the opt-outs (`--no-record`, the lane switch, the person's own input). |
 | `apps/desktop/src/main/services/android/androidHandedOffEmulators.ts` | The state file of the emulators ADE started, and the stops that use it: on dispose, and when a project is removed after a hand-off. |
 | `apps/desktop/src/main/services/android/androidDeviceInventory.ts` | The lane's AVD: the device list, create, attach, release, delete and colour, and the work copy's borrow rule. |
 | `apps/desktop/src/main/services/android/androidSdk.ts` | SDK detection, tools and acceleration. |
@@ -1089,7 +1093,7 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/main/services/android/androidLaneQueue.ts` | P3: one step at a time per lane, for folds and Compose preview runs. A failed step does not stop the next one. |
 | `apps/desktop/src/main/services/android/androidComposePreviews.ts`, `apps/desktop/src/shared/types/androidEmulatorPreviews.ts` | P3: `ade android preview`: the Android CLI runs, the module check, the proof filing, and their types. |
 | `apps/desktop/src/main/services/android/androidUiSnapshot.ts`, `androidUiTree.ts` | The UI tree (the Android CLI, or uiautomator), its cache, and the element queries. |
-| `apps/desktop/src/main/services/android/androidRecordingSession.ts`, `androidRecording.ts` | The lane's recording sessions, and the MP4 writer and store. |
+| `apps/desktop/src/main/services/android/androidRecordingSession.ts`, `androidRecording.ts`, `androidDemoRecording.ts` | The lane's recording sessions (the slot is freed before the demo renders), the MP4 writer and store, and the demo video. |
 | `apps/desktop/src/main/services/android/androidDeviceSettings.ts` | The Tools drawer's settings read and its changes (accessibility too), the app in front, the orientation, location and Clear location, the status bar (demo mode), appearance and permissions. |
 | `apps/desktop/src/main/services/android/androidStoreShots.ts`, `androidWindows.ts`, `apps/desktop/src/shared/types/androidEmulatorDevice.ts`, `apps/ade-cli/src/cliAndroidDevice.ts` | Parity: Play Store screenshots, the window layout, their types, and the CLI verbs for accessibility, status bar, Clear location, Play Store screenshots and windows. |
 | `apps/desktop/src/main/services/android/androidDeviceShell.ts`, `androidProof.ts` | Device shell, adb and emulator console helpers, and the proof filer. |
@@ -1103,7 +1107,12 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/renderer/components/android/AndroidSystemImagesSection.tsx`, `useAndroidSystemImages.ts`, `drawer/AndroidInstrumentationTestsRow.tsx` | P3: the picker's System images section and its data, and the App group's Run tests row. |
 | `apps/desktop/src/renderer/components/android/useAndroidPosture.ts`, `AndroidFoldDock.tsx`, `apps/desktop/src/renderer/components/device/proceduralFoldBody.ts`, `device/HingeSlider.tsx` | P3: the pane's hinge state, the fold dock, and the two-panel body and hinge slider that the iPhone Duo shares. |
 | `apps/desktop/src/renderer/components/android/drawer/AndroidPreviewsSection.tsx` | P3: the Tools drawer's Previews group. |
-| `apps/desktop/src/renderer/components/settings/AndroidDevicesSection.tsx` | Settings › Android devices: the setup card for the picked machine. |
+| `apps/desktop/src/renderer/components/settings/AndroidDevicesSection.tsx`, `deviceSettingsCards.tsx`, `AndroidRecordingsWarning.tsx`, `apps/desktop/src/renderer/components/android/useAndroidMachinePreferences.ts` | Settings › Android devices: the setup card for the picked machine, the cards shared with Apple (Realistic body, recording overlays, Record agent input, the bitrate cap), the recordings storage warning, and the machine preferences read and write. |
+| `apps/desktop/src/renderer/components/android/AndroidToolCardMenu.tsx`, `AndroidRecordingReceipts.tsx`, `AndroidShutdownConfirm.tsx`, `LaneAndroidDeviceMarker.tsx`, `useLaneAndroidDevices.ts`, `apps/desktop/src/renderer/components/device/LaneDeviceMarker.tsx`, `device/useLaneDeviceMarks.ts` | Work tab and chat: the tool-card menu, the recording receipts, the confirm when a tab with a running emulator closes, and the lane device mark (shared with Apple). |
+| `apps/desktop/src/renderer/components/work/AndroidEmulatorRunningPill.tsx`, `DeviceRunningPill.tsx`, `apps/desktop/src/renderer/lib/askOnceStore.ts`, `useConfirmKeys.ts` | The chat's "Emulator running" pill on one status read per machine, and the ask-once and confirm-key helpers. |
+| `apps/desktop/src/renderer/components/android/useAndroidOrientation.ts`, `useAndroidScreenCaptures.ts`, `androidPickerRequests.ts`, `drawer/AndroidWindowsRow.tsx`, `apps/desktop/src/renderer/components/device/OrientationMenuItems.tsx` | The rotation (reverse rotations too), the screen captures, the picker's requests, and the drawer's split screen and free window row. |
+| `apps/desktop/src/shared/androidDevicePresentation.ts`, `computerUseAndroid.ts`, `computerUseCommandReaders.ts`, `apps/ios/ADE/Views/Work/WorkComputerUseSummaryAndroid.swift` | The device's readable name, and the chat summaries of `ade android` commands on the desktop and the phone. |
+| `apps/desktop/src/renderer/browserMockAndroid.ts`, `browserMockAndroidPreferences.ts`, `browserMockAndroidUtil.ts` | The browser mock's emulator, preferences and helpers. |
 | `apps/desktop/src/renderer/components/android/AndroidDeviceStage.tsx`, `AndroidDeviceRail.tsx`, `AndroidDeviceStatus.tsx` | The stage (on the shared `device/DeviceFlatView.tsx`), the rail (on `device/DeviceRail.tsx`), and the strips, cards and live line (on `device/DeviceStatusStrip.tsx` and `device/DeviceLoadingCard.tsx`). |
 | `apps/desktop/src/renderer/components/android/AndroidCatalogGrid.tsx`, `androidTileRenderer.ts` | The brand grid tiles and their details, and the one shared WebGL renderer for the tile stills and the hover turn. |
 | `apps/desktop/src/renderer/components/android/androidDeviceBody.ts`, `androidDeviceModels.ts`, `useAndroidBootScreen.ts` | The procedural device bodies (and any model file), and the boot screen drawn on the 3D model. |

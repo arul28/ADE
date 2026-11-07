@@ -47,6 +47,8 @@ export const ANDROID_DEVICE_ANALYTICS_OUTCOMES = [
   // P3: a fold the emulator settled, and a Compose preview render that wrote an image.
   "device_folded",
   "previews_rendered",
+  // Parity: a Play Store screenshot set was taken (Apple's `duo_app_store_shots`).
+  "store_screenshots",
 ] as const;
 export type AndroidDeviceAnalyticsOutcome = (typeof ANDROID_DEVICE_ANALYTICS_OUTCOMES)[number];
 
