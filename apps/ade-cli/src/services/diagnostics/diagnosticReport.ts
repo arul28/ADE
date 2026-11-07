@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { StorageEnvironment } from "./storageEnvironmentProbe";
+import type { DiagnosticMachineHardware, DiagnosticMachineHealth } from "./machineHealth";
 
 /**
  * Diagnostic-report assembly and redaction, shared by the desktop
@@ -51,6 +52,12 @@ export const LOG_TAIL_COMPACT_MAX_BYTES = 16 * 1024;
  * launcher, whose first 8 KB still carry the whole environment block.
  */
 export const SERVICE_DEFINITION_MAX_BYTES = 8 * 1024;
+
+/** A last wedge older than this says nothing about today's report, so it is left out. */
+export const LAST_WEDGE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
+
+/** An event repeated at least this often in one tail is kept once, with its count. */
+export const LOG_REPEAT_COLLAPSE_MIN = 5;
 
 export type DiagnosticRedactionContext = {
   homeDir?: string | null;
@@ -123,6 +130,12 @@ export type DiagnosticReportInput = {
   app: {
     version: string | null;
     packageChannel?: string | null;
+    /**
+     * `stable`, `beta`, `alpha` or `development` (`resolveReleaseChannel`), as
+     * Sentry and PostHog name this build. Read from the build itself, because a
+     * brain launchd started has no `ADE_PACKAGE_CHANNEL` in its environment.
+     */
+    releaseChannel?: string | null;
     isPackaged?: boolean | null;
     platform: string;
     arch: string;
@@ -140,7 +153,11 @@ export type DiagnosticReportInput = {
     /** Truncated one-way hash of the signed-in account id; never the email. */
     accountHash?: string | null;
     machineKeyFingerprint?: string | null;
+    /** `machine_id` (`machineTelemetryId.ts`): the same value Sentry and PostHog carry. */
+    machineId?: string | null;
   };
+  hardware?: DiagnosticMachineHardware | null;
+  machineHealth?: DiagnosticMachineHealth | null;
   context: DiagnosticReportContext;
   /** JSON blobs rendered verbatim (after redaction). */
   state?: {
@@ -214,6 +231,13 @@ function alternationRegExp(values: readonly string[], flags = "gi"): RegExp | nu
   const parts = [...new Set(values)].filter(Boolean).sort((a, b) => b.length - a.length);
   if (parts.length === 0) return null;
   return new RegExp(parts.map(escapeRegExp).join("|"), flags);
+}
+
+/** Truncated one-way hash of an account id: correlatable across reports, never reversible. */
+export function hashAccountUserId(userId: string | null | undefined): string | null {
+  const trimmed = userId?.trim();
+  if (!trimmed) return null;
+  return createHash("sha256").update(`ade-account:${trimmed}`).digest("hex").slice(0, 12);
 }
 
 /**
@@ -637,6 +661,110 @@ function remoteMachinesBlock(
   );
 }
 
+function mb(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "unknown";
+  return value >= 1024 ? `${(value / 1024).toFixed(1)} GB` : `${Math.round(value)} MB`;
+}
+
+function machineHealthBlock(health: DiagnosticReportInput["machineHealth"]): string | null {
+  if (!health) return null;
+  const rows: string[] = [];
+  const memory = health.memory;
+  if (memory) {
+    const share = memory.availableMb != null && memory.totalMb > 0
+      ? ` (${Math.round((memory.availableMb / memory.totalMb) * 100)}%)`
+      : "";
+    rows.push(`- Memory: ${mb(memory.availableMb)} available of ${mb(memory.totalMb)}${share}; pressure ${memory.pressure ?? "unknown"}`);
+    if (memory.swapUsedMb != null) rows.push(`- Swap: ${mb(memory.swapUsedMb)} used of ${mb(memory.swapTotalMb)}`);
+    if (memory.commitUsedMb != null) rows.push(`- Commit charge: ${mb(memory.commitUsedMb)} of ${mb(memory.commitLimitMb)}`);
+    if (memory.psiSomeAvg10 != null) rows.push(`- Memory stall (PSI some avg10): ${memory.psiSomeAvg10}%`);
+  }
+  if (health.loadAverage) rows.push(`- Load average: ${health.loadAverage.join(" / ")} on ${health.cpuCount} CPUs`);
+  for (const group of health.processes ?? []) {
+    const cpu = group.cpuPercent == null ? "" : `, ${group.cpuPercent}% CPU`;
+    rows.push(`- ${group.group.replace(/_/g, " ")}: ${group.count} process${group.count === 1 ? "" : "es"}, ${mb(group.mb)}${cpu}`);
+  }
+  if (health.emulatorCount != null) rows.push(`- Android emulators running: ${health.emulatorCount}`);
+  if (health.walMb) {
+    const sizes = health.walMb.length ? health.walMb.map((size) => mb(size)).join(", ") : "none open";
+    rows.push(`- Database write-ahead logs${health.walSampledAt ? ` (brain's read at ${health.walSampledAt})` : ""}: ${sizes}`);
+  }
+  for (const episode of [...health.episodes].reverse()) {
+    const memoryNote = episode.memory
+      ? `; available ${mb(episode.memory.availableMb)}, swap ${mb(episode.memory.swapUsedMb)}`
+      : "";
+    const processNote = episode.processes?.length
+      ? `; ${episode.processes.map((group) => `${group.group} ${mb(group.mb)}`).join(", ")}`
+      : "";
+    rows.push(
+      `- Resource pressure ${episode.openedAt}${episode.closedAt ? ` to ${episode.closedAt}` : " (still open)"}: ${episode.kinds.join(", ")} (${episode.severity})${memoryNote}; WAL ${mb(episode.walMaxMb)}${episode.emulatorCount != null ? `; emulators ${episode.emulatorCount}` : ""}${episode.topTables[0] ? `; most writes ${episode.topTables[0].table}` : ""}${processNote}`,
+    );
+  }
+  if (health.episodes.length === 0) rows.push("- Resource pressure: no episodes recorded");
+  return rows.join("\n");
+}
+
+/** When a recorded wedge happened, from its `ts`, or null when it carries none. */
+function wedgeAtMs(lastWedge: unknown): number | null {
+  if (!lastWedge || typeof lastWedge !== "object") return null;
+  const ts = (lastWedge as { ts?: unknown }).ts;
+  const at = typeof ts === "string" ? Date.parse(ts) : Number.NaN;
+  return Number.isFinite(at) ? at : null;
+}
+
+function ageText(ms: number): string {
+  const minutes = Math.max(0, Math.round(ms / 60_000));
+  if (minutes < 120) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`;
+}
+
+/** The event name of a JSON log line, or null for anything else. */
+function logLineEvent(line: string): string | null {
+  if (!line.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(line) as Record<string, unknown>;
+    for (const key of ["event", "msg", "message"]) {
+      const value = parsed[key];
+      if (typeof value === "string" && value.length > 0 && value.length <= 120) return value;
+    }
+  } catch {
+    // Not one JSON object: compared as it is.
+  }
+  return null;
+}
+
+/**
+ * Keeps only the newest line of an event that repeats {@link LOG_REPEAT_COLLAPSE_MIN}
+ * or more times in one tail, preceded by one line saying how many there were.
+ * A provider probe that failed 56 times otherwise spent most of a tail's
+ * budget on one fact. Order is kept; the kept line is the last occurrence.
+ */
+export function collapseRepeatedLogLines(text: string, minRepeats = LOG_REPEAT_COLLAPSE_MIN): string {
+  const lines = text.split(/\r?\n/);
+  const keys = lines.map((line) => logLineEvent(line) ?? (line.trim() ? `line:${line.replace(/^\S*\d{2}:\d{2}:\d{2}\S*\s*/, "")}` : null));
+  const counts = new Map<string, number>();
+  for (const key of keys) if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
+  const lastIndex = new Map<string, number>();
+  keys.forEach((key, index) => {
+    if (key) lastIndex.set(key, index);
+  });
+  const out: string[] = [];
+  lines.forEach((line, index) => {
+    const key = keys[index];
+    const count = key ? counts.get(key) ?? 0 : 0;
+    if (!key || count < minRepeats) {
+      out.push(line);
+      return;
+    }
+    if (lastIndex.get(key) !== index) return;
+    const name = key.startsWith("line:") ? "the next line" : key;
+    out.push(`[×${count}] ${name}: ${count - 1} earlier occurrence${count === 2 ? "" : "s"} in this tail left out`);
+    out.push(line);
+  });
+  return out.join("\n");
+}
+
 /**
  * Renders the Markdown report, then redacts the whole thing. Redaction runs on
  * the assembled text rather than per-field on purpose: a future section cannot
@@ -671,9 +799,23 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
       "Install",
       lines(
         bullet("ADE version", app.version),
-        optionalBullet("Channel", app.packageChannel),
-        optionalBullet("Packaged", app.isPackaged == null ? null : String(app.isPackaged)),
+        // Always printed: a report that cannot say whether it came from a
+        // release or a developer's build sent a triage after the wrong one.
+        bullet("Channel", app.releaseChannel ?? app.packageChannel),
+        optionalBullet(
+          "Package",
+          app.releaseChannel && app.packageChannel && app.packageChannel !== app.releaseChannel ? app.packageChannel : null,
+        ),
+        bullet("Packaged", app.isPackaged == null ? null : String(app.isPackaged)),
         bullet("Platform", `${app.platform} ${app.arch}`),
+        optionalBullet(
+          "Hardware",
+          input.hardware
+            ? [input.hardware.model, input.hardware.cpuModel, `${input.hardware.cpuCount} CPUs`, `${input.hardware.ramGb} GB RAM`]
+              .filter(Boolean)
+              .join(" · ")
+            : null,
+        ),
         optionalBullet("OS", osLine),
         optionalBullet("Electron", app.electronVersion),
         optionalBullet("Node", app.nodeVersion),
@@ -685,12 +827,17 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
         // The one line that makes the whole report correlatable: this is the
         // PostHog `distinct_id` for anonymous events from this installation.
         bullet("Install id (PostHog distinct_id)", identity.installId),
+        // The install on this computer, as Sentry's `machine_id` tag and
+        // PostHog's `machine_id` property name it.
+        optionalBullet("Machine id", identity.machineId),
         optionalBullet("Account hash", identity.accountHash),
         optionalBullet("Machine key fingerprint", identity.machineKeyFingerprint),
         bullet("Project", context.projectRoot ? projectPathLabel(context.projectRoot) : "none"),
       ),
     ),
   );
+
+  parts.push(section("Machine health", machineHealthBlock(input.machineHealth)));
 
   parts.push(section("Technical detail", context.technicalDetail ? fence(context.technicalDetail) : null));
 
@@ -699,7 +846,18 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
   parts.push(section("Recovery diagnosis", state.recoveryDiagnosis == null ? null : jsonBlock(state.recoveryDiagnosis)));
   parts.push(section("Last failure (machine)", state.machineLastFailure == null ? null : jsonBlock(state.machineLastFailure)));
   parts.push(section("Last failure (project)", state.projectLastFailure == null ? null : jsonBlock(state.projectLastFailure)));
-  parts.push(section("Last wedge", state.lastWedge == null ? null : jsonBlock(state.lastWedge)));
+  // A wedge a week old is history, not context for this report; a recent one
+  // says how recent, so nobody reads last month's freeze as today's.
+  const generatedAtMs = Date.parse(input.generatedAt);
+  const lastWedgeAtMs = wedgeAtMs(state.lastWedge);
+  const wedgeAgeMs = lastWedgeAtMs != null && Number.isFinite(generatedAtMs) ? generatedAtMs - lastWedgeAtMs : null;
+  const showWedge = state.lastWedge != null && (wedgeAgeMs == null || wedgeAgeMs <= LAST_WEDGE_MAX_AGE_MS);
+  parts.push(
+    section(
+      wedgeAgeMs == null ? "Last wedge" : `Last wedge (${ageText(wedgeAgeMs)})`,
+      showWedge ? jsonBlock(state.lastWedge) : null,
+    ),
+  );
   parts.push(section("Update transaction", state.updateTransaction == null ? null : jsonBlock(state.updateTransaction)));
   parts.push(section("Remote machines", remoteMachinesBlock(input.remoteMachines)));
 

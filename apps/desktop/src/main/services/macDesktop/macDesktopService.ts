@@ -141,6 +141,8 @@ import {
   LINUX_DESKTOP_ENCODER_MESSAGE,
 } from "../linuxDesktop/linuxDesktopSetup";
 import {
+  linuxScreenFailureCause,
+  linuxScreenFailureDetail,
   logLinuxHostReport,
   reportLinuxScreenProblem,
   reportLinuxSetupOutcome,
@@ -1432,7 +1434,12 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         await driverLifecycle.ensureDriver().catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
           deps.logger.warn("mac_desktop.status_driver_start_failed", { error: message });
-          if (isLinuxSeat) reportLinuxScreenProblem("helper_start_failed");
+          // With the reason (its code, its message, the helper's exit and last
+          // stderr lines, scrubbed): the report used to carry none.
+          if (isLinuxSeat) {
+            const cause = linuxScreenFailureCause(error);
+            reportLinuxScreenProblem("helper_start_failed", cause, linuxScreenFailureDetail(cause));
+          }
         });
       } else if (driverLifecycle.isDriverRunning()) {
         await driverLifecycle.refreshDriverHealth();

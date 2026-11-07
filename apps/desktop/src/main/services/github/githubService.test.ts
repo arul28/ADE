@@ -64,6 +64,7 @@ import {
   createGithubService,
   fetchAdeLatestRelease,
 } from "./githubService";
+import { expectedErrorKind } from "../../../shared/expectedError";
 import { GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES } from "./githubRestPagination";
 import {
   clearGithubCredentialHealth,
@@ -2741,18 +2742,32 @@ describe("githubService.publishCurrentProject", () => {
     ]);
   });
 
-  it("refuses a user owner it cannot confirm as the signed-in account", async () => {
+  // GET /user failed, so ADE can't tell whether the owner is this account.
+  // `/user/repos` would create under whoever the credential is, so unless
+  // GitHub says the owner is an organization the publish stops, retryable.
+  it.each([
+    { label: "the owner is a user", users: () => Promise.resolve(jsonResponse(200, { login: "bob", type: "User" })) },
+    { label: "the owner lookup fails too", users: () => Promise.reject(new TypeError("fetch failed")) },
+  ])("creates nothing and asks for a retry when the login can't be read and $label", async ({ users }) => {
     runGitMock.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" }); // get-url origin
     mockFetch.mockImplementation((rawUrl: string) => {
       const url = new URL(rawUrl);
       if (url.pathname === "/user") return Promise.reject(new TypeError("fetch failed"));
-      if (url.pathname === "/users/bob") return Promise.resolve(jsonResponse(200, { login: "bob", type: "User" }));
-      return Promise.resolve(jsonResponse(201, { owner: { login: "alice" }, full_name: "alice/proj" }));
+      if (url.pathname === "/users/bob") return users();
+      return Promise.resolve(jsonResponse(201, {
+        owner: { login: "alice" },
+        name: "proj",
+        full_name: "alice/proj",
+        clone_url: "https://github.com/alice/proj.git",
+      }));
     });
 
-    await expect(makeService().publishCurrentProject({ owner: "bob", name: "proj", isPrivate: true }))
-      .rejects.toThrow(/couldn't confirm which GitHub account/);
+    const failure = await makeService()
+      .publishCurrentProject({ owner: "bob", name: "proj", isPrivate: true })
+      .then(() => null, (error: unknown) => error);
 
+    expect(failure).toMatchObject({ code: "github_owner_unverified", message: expect.stringMatching(/try again/i) });
+    expect(expectedErrorKind(failure)).not.toBeNull();
     expect(mockFetch.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === "POST")).toEqual([]);
     expect(runGitMock.mock.calls.map((c) => c[0])).toEqual([["remote", "get-url", "origin"]]);
   });

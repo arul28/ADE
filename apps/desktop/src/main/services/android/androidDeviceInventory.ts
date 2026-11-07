@@ -1,3 +1,4 @@
+import type { AndroidEmulatorStopReason } from "./androidEmulatorOwners";
 import type {
   AndroidAvdListing,
   AndroidCreateDeviceArgs,
@@ -81,7 +82,7 @@ export type AndroidDeviceInventoryDeps<S extends AndroidInventoryLaneState> = {
   /** Boots the lane's device. The caller holds the lane's queue. */
   startLocked: (state: S) => Promise<AndroidLaneDeviceStatus>;
   /** Stops the lane's emulator if ADE started it. The caller holds the lane's queue. */
-  stopLocked: (state: S, device: AndroidLaneDevice, options: { refuseForeign: boolean }) => Promise<void>;
+  stopLocked: (state: S, device: AndroidLaneDevice, options: { refuseForeign: boolean; reason?: AndroidEmulatorStopReason }) => Promise<void>;
   emitDeviceState: (laneId: string) => Promise<AndroidLaneDeviceStatus>;
   discovered: () => AndroidDiscoveredEmulator[];
   ownsEmulator: (emulator: AndroidDiscoveredEmulator) => boolean;
@@ -370,7 +371,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
         const device = laneDevices.get(laneId);
         if (!device) return { released: false, deletedAvd: null };
         await deps.beforeRelease(laneId);
-        await deps.stopLocked(state, device, { refuseForeign: false });
+        await deps.stopLocked(state, device, { refuseForeign: false, reason: "released" });
         const result = await releaseAndroidLaneDevice(laneId, laneDevices, releaseOptions(args.deleteCreated !== false));
         if (!result.released) {
           throw new AndroidEmulatorFailure("ANDROID_AVD_RUNNING", result.reason ?? `${device.avdName} could not be released.`);
@@ -451,7 +452,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
      */
     async endLaneLocked(device: AndroidLaneDevice) {
       await deps.beforeRelease(device.laneId);
-      await deps.stopLocked(deps.laneState(device.laneId), device, { refuseForeign: false });
+      await deps.stopLocked(deps.laneState(device.laneId), device, { refuseForeign: false, reason: "lane_released" });
       const result = await releaseAndroidLaneDevice(device.laneId, laneDevices, releaseOptions());
       deps.forgetLane(device.laneId);
       return result;

@@ -372,8 +372,9 @@ function pidAlive(pid: number): boolean {
  * cross-platform unit tests for this module take the win32 path when they run
  * on a Windows host.
  */
-function launchdTerminateDeps(deps: TerminatePidDeps | undefined): TerminatePidDeps {
-  return { ...deps, platform: deps?.platform ?? "darwin" };
+/** The stopped brain is this home's: its socket names the `runtime` folder its start record is in. */
+function launchdTerminateDeps(deps: TerminatePidDeps | undefined, runtimeSocketPath: string): TerminatePidDeps {
+  return { ...deps, platform: deps?.platform ?? "darwin", runtimeSocketPath: deps?.runtimeSocketPath ?? runtimeSocketPath };
 }
 
 const LAUNCHD_REGISTER_RETRY_MS = 1_000;
@@ -579,7 +580,7 @@ export async function installLaunchdService(
         fs.writeFileSync(servicePath, plist, "utf8");
         if (loaded?.running === true) {
           run("launchctl", ["unload", servicePath], { stdio: "ignore" });
-          await terminatePidGracefullyAsync(loaded.pid, launchdTerminateDeps(deps.terminateDeps));
+          await terminatePidGracefullyAsync(loaded.pid, launchdTerminateDeps(deps.terminateDeps, socketPath));
         }
       }
       return {
@@ -590,7 +591,7 @@ export async function installLaunchdService(
         message: `${formatSyncHostSingletonConflictMessage(conflict)} The ${ADE_RUNTIME_SERVICE_NAME} launch agent was updated for this ADE channel and will start when mobile sync is available.`,
       };
     }
-    await terminatePidGracefullyAsync(conflict.owner.pid, launchdTerminateDeps(deps.terminateDeps));
+    await terminatePidGracefullyAsync(conflict.owner.pid, launchdTerminateDeps(deps.terminateDeps, socketPath));
   }
 
   if (!plistUnchanged) {
@@ -601,7 +602,7 @@ export async function installLaunchdService(
   // orphaned brain keeps the channel socket and sync lock hostage. Reap the
   // previous service child plus any stale same-channel serve processes
   // before loading the replacement.
-  await terminatePidGracefullyAsync(loaded?.pid ?? null, launchdTerminateDeps(deps.terminateDeps));
+  await terminatePidGracefullyAsync(loaded?.pid ?? null, launchdTerminateDeps(deps.terminateDeps, socketPath));
   // A failed scan is not "nothing to reap"; on macOS `ps` is part of the base
   // system, so a failure here means the host is broken in a way this install
   // cannot repair. Reaping nothing preserves the pre-existing behaviour.
@@ -611,7 +612,7 @@ export async function installLaunchdService(
     excludePids: loaded?.pid ? [loaded.pid] : [],
   }, "darwin");
   for (const pid of staleScan.ok ? staleScan.pids : []) {
-    await terminatePidGracefullyAsync(pid, launchdTerminateDeps(deps.terminateDeps));
+    await terminatePidGracefullyAsync(pid, launchdTerminateDeps(deps.terminateDeps, socketPath));
   }
   let load = loadLaunchAgent(servicePath, ADE_RUNTIME_SERVICE_NAME, run);
   if (!load.ok) {
@@ -724,7 +725,8 @@ export function uninstallLaunchdService(deps: LaunchdServiceUninstallDeps = {}):
   run("launchctl", ["bootout", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
   run("launchctl", ["bootout", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
   run("launchctl", ["unload", servicePath], { stdio: "ignore" });
-  terminatePidGracefully(loaded?.pid ?? null, launchdTerminateDeps(deps.terminateDeps));
+  const uninstallHome = env.ADE_HOME?.trim() || path.join(deps.homeDir ?? os.homedir(), ".ade");
+  terminatePidGracefully(loaded?.pid ?? null, launchdTerminateDeps(deps.terminateDeps, path.join(uninstallHome, "sock", "ade.sock")));
   // Remove the watchdog with the brain it guards. Left behind, it would keep
   // waking every minute to read a heartbeat file nobody writes.
   uninstallLaunchdWatchdogAgent({ homeDir: deps.homeDir, spawnSync: run });

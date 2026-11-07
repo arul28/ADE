@@ -98,7 +98,9 @@ import { isSyncServiceUnavailableError } from "../../../shared/runtimeErrors";
 import { createSyncStatusReaders } from "../sync/syncStatusReaders";
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
-import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
+import { normalizeAppPackageChannel, resolveReleaseChannel } from "../../../shared/packageChannel";
+import { loadMachineTelemetryId } from "../analytics/machineTelemetryId";
+import { reportsAsPackagedRelease } from "../../sentry/releaseBuild";
 import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import { isAgentChatTurnRecoveryAction } from "../../../shared/types/chat";
 import { isAgentChatStopMode } from "../../../shared/chatStopModes";
@@ -1024,7 +1026,7 @@ import {
   getSharedAccountAuthService,
   setSharedAccountRefreshBroker,
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
-import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { DevToolsCheckResult } from "../../../shared/types/devTools";
@@ -1090,6 +1092,7 @@ import type { ConfigReloadService } from "../projects/configReloadService";
 import type { createProjectScaffoldService } from "../projects/projectScaffoldService";
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
+import { withTimeout } from "../shared/withTimeout";
 import { createComputerUseArtifactPath, toProjectArtifactUri } from "../computerUse/localComputerUse";
 import { prepareMcpAppDocument, prepareSceneDocument } from "../scenes/sceneDocumentStore";
 import {
@@ -1586,11 +1589,20 @@ function redactedCliAuthFromStatuses(
     }));
 }
 
-async function buildGlobalAiStatus(args?: { force?: boolean }): Promise<AiSettingsStatus> {
+/**
+ * How long the no-project status read may take before the window gets the
+ * "unavailable" status instead of an IPC timeout. A cold Windows machine took
+ * all 30 s here; the read keeps going and fills the cache for the next call.
+ */
+const GLOBAL_AI_STATUS_BUDGET_MS = 20_000;
+
+async function buildGlobalAiStatus(args?: { force?: boolean; onPhase?: (phase: string) => void }): Promise<AiSettingsStatus> {
+  args?.onPhase?.("cli_auth");
   const cliStatuses = await detectCliAuthStatuses({
     force: args?.force === true,
     skipAuthProbe: args?.force !== true,
   });
+  args?.onPhase?.("provider_connections");
   // No live sign-in probe here, but ADE's own Copilot runtime still counts as
   // installed; the disk check answers for the sign-in.
   const providerConnections = await buildProviderConnections(cliStatuses, {
@@ -1786,6 +1798,7 @@ export function registerIpc({
   runWithIpcWindow,
   getWindowSession,
   waitForStartupProjectOpen,
+  getProjectContext,
   setWindowProjectTabs,
   bindRemoteProject,
   localRuntimeConnectionPool,
@@ -2715,7 +2728,11 @@ export function registerIpc({
   const ensureAppControl = (): NonNullable<AppContext["appControlService"]> => {
     const service = getCtx().appControlService;
     if (!service) {
-      throw new Error("App Control service is not available.");
+      // Expected, not a wiring bug: a project's App Control runs in its ADE
+      // brain, so this window builds none (only the in-process test runtime
+      // does). A call lands here when the window is not bound to that brain
+      // yet: before the project connects, or with no project open.
+      throw new AdeExpectedError("App Control service is not available.", "environment");
     }
     return service;
   };
@@ -2874,6 +2891,17 @@ export function registerIpc({
    */
   const builtInBrowserRemoteRequestClaims = createRemoteRequestClaims();
 
+  // The scheme and the sender kind only: a page name can be a local file's.
+  const describeUntrustedSender = (hasWindow: boolean, senderUrl: string | null | undefined): string => {
+    let scheme = "no url";
+    try {
+      if (senderUrl) scheme = new URL(senderUrl).protocol.replace(/:$/, "") || "unknown";
+    } catch {
+      scheme = "unparsable url";
+    }
+    return `${hasWindow ? "window" : "no window"}, ${scheme}`;
+  };
+
   const guardBuiltInBrowserIpc = (
     event: IpcMainInvokeEvent,
     channel: string,
@@ -2881,13 +2909,19 @@ export function registerIpc({
   ): BrowserWindow => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || !isTrustedAdeRendererSender(event)) {
+      const refusal = "Built-in browser is only available to the ADE renderer.";
+      // A window closing while its last calls (a preview's stop) are in
+      // flight: nothing is left to serve, so the refusal is its answer.
+      if (event.sender.isDestroyed() || win?.isDestroyed()) throw new AdeExpectedError(refusal, "user");
       const senderUrl = event.senderFrame?.url || event.sender.getURL();
       getCtx().logger.warn("ipc.built_in_browser.untrusted_sender", {
         channel,
         windowId: win?.id ?? null,
         senderUrl: senderUrl || null,
       });
-      throw new Error("Built-in browser is only available to the ADE renderer.");
+      // Which sender it was, without its path, so a report says whether ADE's
+      // own renderer was refused (a defect) or another page asked.
+      throw new Error(`${refusal} (sender: ${describeUntrustedSender(win != null, senderUrl)})`);
     }
     assertBuiltInBrowserRateLimit(event, channel, limit);
     return win;
@@ -3517,6 +3551,8 @@ export function registerIpc({
   ipcMain.handle(IPC.appGetWindowSession, async (event) => {
     // The first window can load before the launch has opened its project.
     await waitForStartupProjectOpen?.();
+    // The window can close while the launch is still opening its project.
+    if (event.sender.isDestroyed()) return null;
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
     if (getWindowSession) return getWindowSession(windowId);
     const ctx = getCtx();
@@ -4306,7 +4342,8 @@ export function registerIpc({
         properties: ["openDirectory"]
       };
       const result = await showRememberedOpenDialog(win, options);
-      if (result.canceled || result.filePaths.length === 0) {
+      // The window can close while the dialog is up; its id is gone with it.
+      if (result.canceled || result.filePaths.length === 0 || event.sender.isDestroyed()) {
         return null;
       }
       const selected = result.filePaths[0]!;
@@ -5130,7 +5167,13 @@ export function registerIpc({
       {
         appVersion: app.getVersion(),
         packageChannel: normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+        releaseChannel: resolveReleaseChannel({
+          env: process.env,
+          packaged: reportsAsPackagedRelease(app.isPackaged),
+          version: app.getVersion(),
+        }),
         isPackaged: app.isPackaged,
+        machineId: await loadMachineTelemetryId(resolveMachineAdeDir()),
         userDataPath: app.getPath("userData"),
         reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
         installId: productAnalyticsService?.getDistinctId() ?? null,
@@ -5399,8 +5442,22 @@ export function registerIpc({
     const ctx = getCtx();
     const aiIntegrationService = ctx.aiIntegrationService;
     if (!aiIntegrationService) {
+      const force = arg?.force === true;
+      let phase = "start";
+      const startedAt = Date.now();
       try {
-        return await buildGlobalAiStatus({ force: arg?.force === true });
+        const read = buildGlobalAiStatus({ force, onPhase: (next) => { phase = next; } });
+        // A forced refresh has its own, longer IPC deadline for the probes.
+        if (force) return await read;
+        // A failed read is logged as a failure here; null below means only slow.
+        const status = await withTimeout(read.catch((error: unknown) => {
+          ctx.logger.warn("ai.get_status.global_fallback_failed", { error: getErrorMessage(error) });
+          return getUnavailableAiStatus();
+        }), GLOBAL_AI_STATUS_BUDGET_MS);
+        if (status) return status;
+        // Which step was still running, for the next report of a slow machine.
+        ctx.logger.warn("ai.get_status.global_slow", { phase, budgetMs: GLOBAL_AI_STATUS_BUDGET_MS, elapsedMs: Date.now() - startedAt });
+        return getUnavailableAiStatus();
       } catch (error) {
         ctx.logger.warn("ai.get_status.global_fallback_failed", {
           error: getErrorMessage(error),
@@ -7815,22 +7872,51 @@ export function registerIpc({
     return lanes.find((lane) => lane.id === laneId)?.worktreePath ?? null;
   };
 
+  // A leftover folder belongs to the project whose delete left it, named by
+  // `rootPath` (the window may show another tab by now). Only a project ADE
+  // knows; never a path the renderer made up, nor a folder inside a project
+  // (runtimes and project contexts are keyed by the root itself), so the
+  // answer is the known root's own spelling. Without one, the active tab.
+  const leftoverProjectRoot = (rootPath: unknown): string | null => {
+    if (typeof rootPath !== "string" || !rootPath.trim()) return null;
+    const resolved = resolveAllowedProjectRoot(rootPath);
+    const knownRoot = getAllowedProjectRoots().find((root) => {
+      try {
+        return path.relative(fs.realpathSync.native(path.resolve(root)), resolved) === "";
+      } catch {
+        return false;
+      }
+    });
+    if (!knownRoot) throw new Error("rootPath is not a known project root.");
+    return knownRoot;
+  };
+
+  /** That project's runtime answer for a leftover-folder action, then its in-process lane service. */
+  const leftoverLaneTarget = async (
+    event: { sender: Electron.WebContents },
+    projectRoot: string | null,
+    action: "getLeftoverWorktree" | "deleteLeftoverWorktree",
+    laneId: string,
+  ) => {
+    const call = (pool: LocalRuntimeConnectionPool, rootPath: string) =>
+      pool.callActionForRoot(rootPath, { domain: "lane", action, args: { laneId } });
+    const fromRuntime = projectRoot
+      ? (localRuntimeConnectionPool ? await call(localRuntimeConnectionPool, projectRoot) : null)
+      : await tryLocalRuntimeSync(event, call);
+    const ctx = projectRoot ? getProjectContext?.(projectRoot) ?? null : getCtx();
+    return { runtimeResult: fromRuntime?.result, laneService: ctx?.laneService ?? null };
+  };
+
   const readLeftoverWorktree = async (
     event: { sender: Electron.WebContents },
     laneId: string,
+    projectRoot: string | null,
   ): Promise<LaneDeleteLeftoverWorktree | null> => {
-    const fromRuntime = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.callActionForRoot(rootPath, {
-        domain: "lane",
-        action: "getLeftoverWorktree",
-        args: { laneId },
-      }),
-    );
-    const runtimeLeftover = fromRuntime?.result;
-    if (runtimeLeftover && typeof runtimeLeftover === "object" && typeof (runtimeLeftover as LaneDeleteLeftoverWorktree).path === "string") {
-      return runtimeLeftover as LaneDeleteLeftoverWorktree;
+    const { runtimeResult, laneService } = await leftoverLaneTarget(event, projectRoot, "getLeftoverWorktree", laneId);
+    if (runtimeResult && typeof runtimeResult === "object" && typeof (runtimeResult as LaneDeleteLeftoverWorktree).path === "string") {
+      return runtimeResult as LaneDeleteLeftoverWorktree;
     }
-    return getCtx().laneService?.getLeftoverWorktree(laneId) ?? null;
+    return laneService?.getLeftoverWorktree(laneId) ?? null;
   };
 
   ipcMain.handle(IPC.lanesRevealWorktree, async (event, arg: { laneId: string }): Promise<void> => {
@@ -7840,27 +7926,23 @@ export function registerIpc({
     shell.showItemInFolder(worktreePath);
   });
 
-  ipcMain.handle(IPC.lanesRevealLeftoverWorktree, async (event, arg: { laneId: string }): Promise<void> => {
-    const leftover = await readLeftoverWorktree(event, arg.laneId);
+  ipcMain.handle(IPC.lanesRevealLeftoverWorktree, async (event, arg: { laneId: string; rootPath?: string }): Promise<void> => {
+    const leftover = await readLeftoverWorktree(event, arg.laneId, leftoverProjectRoot(arg?.rootPath));
     if (!leftover?.path) throw new Error("That folder is no longer available to reveal.");
     if (!fs.existsSync(leftover.path)) throw new Error("That folder is no longer on disk.");
     shell.showItemInFolder(leftover.path);
   });
 
-  ipcMain.handle(IPC.lanesDeleteLeftoverWorktree, async (event, arg: { laneId: string }): Promise<{ removed: boolean }> => {
-    const fromRuntime = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.callActionForRoot(rootPath, {
-        domain: "lane",
-        action: "deleteLeftoverWorktree",
-        args: { laneId: arg.laneId },
-      }),
+  ipcMain.handle(IPC.lanesDeleteLeftoverWorktree, async (event, arg: { laneId: string; rootPath?: string }): Promise<{ removed: boolean }> => {
+    const { runtimeResult, laneService } = await leftoverLaneTarget(
+      event,
+      leftoverProjectRoot(arg?.rootPath),
+      "deleteLeftoverWorktree",
+      arg.laneId,
     );
-    if (fromRuntime?.result && typeof fromRuntime.result === "object") {
-      return fromRuntime.result as { removed: boolean };
-    }
-    const service = getCtx().laneService;
-    if (!service) throw new Error("That folder is no longer waiting to be deleted.");
-    return service.deleteLeftoverWorktree(arg.laneId);
+    if (runtimeResult && typeof runtimeResult === "object") return runtimeResult as { removed: boolean };
+    if (!laneService) throw new Error("That folder is no longer waiting to be deleted.");
+    return laneService.deleteLeftoverWorktree(arg.laneId);
   });
 
   ipcMain.handle(IPC.lanesOpenFolder, async (event, arg: { laneId: string }): Promise<void> => {
@@ -12278,16 +12360,22 @@ export function registerIpc({
     isTargetConnected: runtimeBridge.isTargetConnected,
     callMachineMethod: runtimeBridge.callMachineMethod,
     callLocalMachineMethod: async (machineKey) => {
-      if (!localRuntimeConnectionPool) throw new Error("The local runtime is unavailable.");
-      const rootPath = getCtx().project?.rootPath?.trim();
-      // A window with no project open (Settings › Account on the welcome
-      // screen) has no local runtime to ask; the row shows that state.
-      if (!rootPath) throw new AdeExpectedError("The local project runtime is unavailable.", "environment");
+      // This computer's inventory is machine data; any booted project scope
+      // can answer for it. A window with no project open (Settings › Account
+      // on the welcome screen) may have none, and a desktop without a local
+      // runtime has no brain to ask: the accounts come from the machine's own
+      // store and the presets from its settings cache, and only the model
+      // counts and CLI sign-ins, which need the brain, stay unknown.
+      const pool = localRuntimeConnectionPool;
+      const rootPath = pool
+        ? getCtx().project?.rootPath?.trim() || bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []) || null
+        : null;
       return await readLocalMachineInventoryDetail({
         machineKey,
         providerInstanceStore: getMachineProviderInstanceStore(),
         readPresetValue: async () => {
-          const response = await localRuntimeConnectionPool.callActionForRoot(rootPath, {
+          if (!pool || !rootPath) return readHarnessPresetsFromMachine(resolveMachineAdeLayout().adeDir) ?? undefined;
+          const response = await pool.callActionForRoot(rootPath, {
             domain: "account_settings",
             action: "get",
             argsList: ["all", "harnessPresets"],
@@ -12295,7 +12383,8 @@ export function registerIpc({
           return response.result;
         },
         readAiStatus: async () => {
-          const response = await localRuntimeConnectionPool.callActionForRoot(rootPath, {
+          if (!pool || !rootPath) return undefined;
+          const response = await pool.callActionForRoot(rootPath, {
             domain: "ai",
             action: "getStatus",
             args: {},
@@ -12907,11 +12996,11 @@ export function registerIpc({
   const ensurePrReadContext = (): AppContextWith<"prService" | "prPollingService"> => {
     const ctx = ensurePrPolling();
     if (!ctx) {
-      const message = "PR service is not available for this project window.";
-      // Expected in the no-project window, as for terminals above; a project
-      // context without one is a wiring bug.
-      if (!getCtx().projectId) throw new AdeExpectedError(message, "environment");
-      throw new Error(message);
+      // Expected, not a wiring bug: a project's PR service runs in its ADE
+      // brain, so this window builds none (only the in-process test runtime
+      // does). The preload falls back here only while the window is not bound
+      // to that brain: before the project connects, or with no project open.
+      throw new AdeExpectedError("PR service is not available for this project window.", "environment");
     }
     return ctx;
   };

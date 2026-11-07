@@ -20,6 +20,9 @@ const EXPECTED_KIND: Partial<Record<AndroidErrorCode, "user" | "environment">> =
   ANDROID_NO_ACCELERATION: "environment",
   ANDROID_NO_SYSTEM_IMAGE: "environment",
   ANDROID_NO_FREE_PORT: "environment",
+  // The memory guard's refusal: the machine is short of memory, and the
+  // message says which emulator to stop. Not a fault of ADE.
+  ANDROID_LOW_MEMORY: "environment",
   ANDROID_AVD_NOT_FOUND: "user",
   ANDROID_AVD_HELD_BY_OTHER_LANE: "user",
   ANDROID_LANE_HAS_DEVICE: "user",

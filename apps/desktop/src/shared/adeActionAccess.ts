@@ -632,7 +632,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getAppState", "getForegroundApp",
     ],
     write: [
-      "createDevice", "attachDevice", "start", "stop", "releaseDevice", "deleteDevice",
+      "createDevice", "attachDevice", "start", "stop", "setKeepRunning", "releaseDevice", "deleteDevice",
       // Extra devices: one of the lane's extras becomes its device.
       "devicePromote",
       "startStream", "stopStream", "sendTouch", "tap", "swipe", "sendKey", "sendText",

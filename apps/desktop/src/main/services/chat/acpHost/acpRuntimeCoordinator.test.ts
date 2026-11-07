@@ -9,7 +9,7 @@ const openAcpSessionMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./acpSession", () => ({ openAcpSession: openAcpSessionMock }));
 
-import { acpInvocationKey, createAcpRuntime, resolveAcpConfigValue, setAcpReasoningEffort } from "./acpRuntimeCoordinator";
+import { AcpModeUnsupportedError, acpInvocationKey, createAcpRuntime, resolveAcpConfigValue, setAcpReasoningEffort } from "./acpRuntimeCoordinator";
 import { AcpRpcError } from "./acpConnection";
 
 describe("createAcpRuntime", () => {
@@ -81,6 +81,87 @@ describe("createAcpRuntime", () => {
 
     expect(session.close).not.toHaveBeenCalled();
     expect(onReady).toHaveBeenCalledOnce();
+  });
+
+  // A Qwen build without `session/set_config_option` (-32601): the mode goes
+  // through `session/set_mode`, or needs nothing when the session already runs
+  // in it. Only a build that takes neither fails closed, as its own answer.
+  it.each([
+    { name: "takes the mode through session/set_mode", initialModeId: "default", mode: "yolo", setMode: "ok", opens: true, setModeCalls: 1 },
+    { name: "needs no call when the session already runs in the mode", initialModeId: "yolo", mode: "yolo", setMode: "fails", opens: true, setModeCalls: 0 },
+    { name: "fails closed when the build takes neither", initialModeId: "default", mode: "yolo", setMode: "fails", opens: false, setModeCalls: 1 },
+  ])("a Qwen build without session/set_config_option $name", async ({ initialModeId, mode, setMode, opens, setModeCalls }) => {
+    const methodMissing = new AcpRpcError("session/set_config_option", { code: -32601, message: "Method not found" });
+    const session = {
+      providerId: "qwen",
+      dialect: qwenDialect,
+      sessionId: "acp-session-1",
+      entryPlan: { mode: "new", suppressReplay: false, reason: "test" },
+      connection: { isAlive: () => true, initializeResult: null },
+      initialConfigOptions: [],
+      initialModeId,
+      unsupervised: false,
+      turnAnswered: false,
+      prompt: vi.fn(),
+      cancel: vi.fn(),
+      setConfigOption: vi.fn().mockRejectedValue(methodMissing),
+      setMode: setMode === "ok"
+        ? vi.fn().mockResolvedValue(undefined)
+        : vi.fn().mockRejectedValue(new AcpRpcError("session/set_mode", { code: -32601, message: "Method not found" })),
+      noteCurrentModel: vi.fn(),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    openAcpSessionMock.mockResolvedValue(session);
+    const onReady = vi.fn();
+    const onOpenFailed = vi.fn();
+
+    const opened = createAcpRuntime({
+      owner: { session: { id: "chat-1" } as never, laneWorktreePath: "/lane/worktree", eventSequence: 0, transcriptBytesWritten: 0 },
+      provider: "qwen",
+      dialect: qwenDialect,
+      spawnPlan: { command: "qwen", args: ["--acp"], env: {}, cwd: "/lane/worktree" },
+      invocationKey: "invocation-1",
+      permissionMode: "yolo",
+      modelToken: null,
+      existingSessionId: null,
+      supervisionPreflight: null,
+      supervisionAlreadyNotified: false,
+      logger: { warn: vi.fn(), info: vi.fn() } as unknown as Logger,
+      runtimeBudget: { enforce: vi.fn() },
+      existingRuntime: null,
+      runtimeInvalidated: false,
+      hasExistingRuntime: false,
+      teardownExistingRuntime: vi.fn(),
+      nativeModeValue: mode,
+      reasoningEffort: null,
+      setResumeCommand: vi.fn(),
+      binarySource: "test",
+      callbacks: {
+        onEvents: vi.fn(),
+        onPermissionRequested: vi.fn(),
+        onPermissionSettled: vi.fn(),
+        onSlashCommands: vi.fn(),
+        onConfigOptions: vi.fn(),
+        onSessionInfo: vi.fn(),
+        onProcessExit: vi.fn(),
+        onRuntimeCreated: vi.fn(),
+        onOpenFailed,
+        onReady,
+      },
+    });
+
+    if (opens) {
+      await expect(opened).resolves.toBeDefined();
+      expect(onReady).toHaveBeenCalledOnce();
+      expect(session.close).not.toHaveBeenCalled();
+    } else {
+      await expect(opened).rejects.toBeInstanceOf(AcpModeUnsupportedError);
+      expect(onReady).not.toHaveBeenCalled();
+      expect(session.close).toHaveBeenCalledOnce();
+      expect(onOpenFailed).toHaveBeenCalledWith(expect.any(AcpModeUnsupportedError));
+    }
+    expect(session.setMode).toHaveBeenCalledTimes(setModeCalls);
+    if (setModeCalls) expect(session.setMode).toHaveBeenCalledWith(mode);
   });
 
   it("opens the session with the launch model token as the requested model", async () => {

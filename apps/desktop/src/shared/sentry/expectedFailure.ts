@@ -122,6 +122,8 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /This chat requires an explicit continuity recovery action before another turn can be sent/,
   new RegExp(`^${escapeRegExp(PENDING_INPUT_SEND_BLOCKED_MESSAGE)}`),
   /^Wait for the current response to finish before /,
+  // `turn_in_flight` refusals (marked where thrown now; older brains send only the text).
+  /^(?:turn_in_flight: )?(?:Turn is already active\.$|A turn is running\. Stop it first)/,
   /^This chat is still responding\. Wait for the turn to end/,
   /\bis still owned by another ADE runtime\. Stop it from that runtime/,
   // Lane rules the user is told about.
@@ -166,6 +168,11 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // A second viewer asking for a lane's live stream while the first start is
   // still running; the answer says to try again once it answers.
   /^capture_starting: Lane \S+'s (?:live stream|recording) is already starting\. Try again once that start answers\.$/,
+  // Added from Sentry traffic, 2026-11-07. Marked where thrown now; the text
+  // stays for older brains. A Claude Code that is signed out (the chat shows
+  // the re-login card), and a move refused until the user publishes or commits.
+  /^Claude Code is detected, but ADE chat could not authenticate it\. /,
+  /^(?:Lane '.+'|Chat '.+'|This chat) can't move yet:\n/,
 ];
 
 /**
@@ -246,7 +253,21 @@ export function isExpectedOutcomeText(text: string): boolean {
  * same expected states the text patterns name once the code crosses the wire
  * as a `code: message` prefix.
  */
-const EXPECTED_OUTCOME_CODES: ReadonlySet<string> = new Set(["project_data_missing", "project_moving", "db_path_changed", "git_untrusted_folder"]);
+// `storage_read_failed` is ADE's "unreadable, not corrupt" verdict and
+// `storage_io_failed` a drive that stopped answering mid-open: the machine's
+// drive (a prompt, a placeholder, a hung disk), not a defect. `db_busy` is
+// another ADE process holding the project database through every retry.
+const EXPECTED_OUTCOME_CODES: ReadonlySet<string> = new Set([
+  "project_data_missing",
+  "project_moving",
+  "db_path_changed",
+  "git_untrusted_folder",
+  "storage_read_failed",
+  "storage_io_failed",
+  "db_busy",
+  // A chat refusing a send or restart while its turn runs; the caller waits or stops it.
+  "turn_in_flight",
+]);
 
 /**
  * An answer the caller gets, worth a Sentry Log but not an issue. The throw

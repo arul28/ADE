@@ -8,6 +8,7 @@ import { getErrorMessage } from "../shared/utils";
 import { readAndroidAvd } from "./androidAvds";
 import type { createAndroidCrashWatch } from "./androidCrashWatch";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
+import type { AndroidEmulatorStopReason } from "./androidEmulatorOwners";
 import {
   launchAndroidEmulator,
   stopAndroidEmulator,
@@ -17,8 +18,9 @@ import {
   type AndroidEmulatorLaunch,
 } from "./androidEmulatorProcess";
 import { ANDROID_BOOT_TIMEOUT_MS, type AndroidEmulatorServiceDeps, type AndroidLaneState as LaneState } from "./androidEmulatorServiceDeps";
+import type { AndroidEmulatorLifecycle as AndroidMachineEmulatorLifecycle } from "./androidEmulatorSweep";
 import type { openStartedEmulators } from "./androidHandedOffEmulators";
-import { reserveAndroidMemoryForStart } from "./androidMemoryGuard";
+import { reserveAndroidMemoryForStart, type AndroidBootReservation } from "./androidMemoryGuard";
 import type { AndroidEnv, ReadyAndroidSdk } from "./androidSdk";
 
 /*
@@ -31,11 +33,19 @@ import type { AndroidEnv, ReadyAndroidSdk } from "./androidSdk";
  * boot. This module keeps no state of its own: the lane state, the started
  * emulators file and the booted set belong to the service.
  *
+ * Every start passes the memory guard first (`androidMemoryGuard.ts`), which
+ * counts every running emulator and the boots in flight in every brain (the
+ * machine lifecycle's ledger). A launch writes the emulator's machine-wide
+ * owner record (`androidEmulatorSweep.ts`), the boot pins it to qemu's pid,
+ * and a boot that never finished forgets it. Every stop says why
+ * (`AndroidEmulatorStopReason`), so the machine lifecycle drops the record and
+ * logs `android.emulator_stopped` once.
+ *
  * Node built-ins and relative imports only, so it runs under `tsx`.
  */
 
 export type AndroidEmulatorLifecycleContext = {
-  deps: Pick<AndroidEmulatorServiceDeps, "laneDevices" | "dataDir" | "captureAnalytics" | "handOffOnDispose" | "bootTimeoutMs">;
+  deps: Pick<AndroidEmulatorServiceDeps, "laneDevices" | "dataDir" | "captureAnalytics" | "handOffOnDispose" | "bootTimeoutMs" | "projectRoot">;
   env: AndroidEnv;
   platform: NodeJS.Platform;
   logger: Logger | null;
@@ -43,6 +53,16 @@ export type AndroidEmulatorLifecycleContext = {
   discoveryDirs: readonly string[];
   /** `serial:pid` of emulators seen booted (the service's set). */
   bootedSeen: Set<string>;
+  /**
+   * The brain's emulator lifecycle (`androidEmulatorSweep.ts`): the owner
+   * records, the memory guard's cross-brain ledger. Null without one (tests,
+   * the desktop's in-process copy).
+   */
+  machineLifecycle: AndroidMachineEmulatorLifecycle | null;
+  /** Every running emulator (the discovery files), the user's and other brains' too: the memory guard counts them all. */
+  discovered: () => AndroidDiscoveredEmulator[];
+  /** One emulator ADE started stopped: its owner record goes and the stop is logged with why (`androidEmulatorUse.ts`). */
+  noteStopped: (emulator: AndroidDiscoveredEmulator, reason: AndroidEmulatorStopReason, laneId: string | null) => void;
   crashWatch: ReturnType<typeof createAndroidCrashWatch>;
   emit: (event: AndroidEmulatorEvent) => void;
   runningFor: (avdName: string) => AndroidDiscoveredEmulator | null;
@@ -61,16 +81,22 @@ export type AndroidEmulatorLifecycleContext = {
 
 export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleContext) {
   const {
-    deps, env, platform, logger, registry, discoveryDirs, bootedSeen, crashWatch,
+    deps, env, platform, logger, registry, discoveryDirs, bootedSeen, machineLifecycle, discovered, noteStopped, crashWatch,
     emit, runningFor, ownsEmulator, requireSdk, laneStatus, emitDeviceState, stopLaneStream, isDisposed, onBooted,
   } = ctx;
   const bootTimeoutMs = Math.max(deps.bootTimeoutMs ?? ANDROID_BOOT_TIMEOUT_MS, 120_000);
 
   /* ---------- stop ---------- */
 
-  /** Stops one running emulator ADE started; the stop forgets it in the state file. */
-  const stopEmulator = (emulator: AndroidDiscoveredEmulator, adbPath: string, launcherPid: number | null = null) =>
-    stopAndroidEmulator({
+  /** Stops one running emulator ADE started; the stop forgets it in the state file and in the owner file. */
+  const stopEmulator = async (
+    emulator: AndroidDiscoveredEmulator,
+    adbPath: string,
+    reason: AndroidEmulatorStopReason,
+    laneId: string | null,
+    launcherPid: number | null = null,
+  ) => {
+    const result = await stopAndroidEmulator({
       adbPath,
       serial: emulator.serial,
       consolePort: emulator.consolePort,
@@ -80,10 +106,15 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
       registry,
       discoveryDirs,
     });
+    noteStopped(emulator, reason, laneId);
+    return result;
+  };
 
-  /** Stops an emulator this process launched, at any point of its boot. */
-  const stopLaunch = (launch: AndroidEmulatorLaunch, adbPath: string): Promise<void> =>
-    stopAndroidLaunch(launch, { adbPath, registry, discoveryDirs, logger });
+  /** Stops an emulator this process launched, at any point of its boot. A boot that never finished leaves no owner record. */
+  const stopLaunch = async (launch: AndroidEmulatorLaunch, adbPath: string): Promise<void> => {
+    await stopAndroidLaunch(launch, { adbPath, registry, discoveryDirs, logger });
+    machineLifecycle?.forget({ avdName: launch.avdName, consolePort: launch.consolePort });
+  };
 
   /**
    * Ends the lane's boot in progress: the failing start then reads
@@ -102,8 +133,12 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
     });
   };
 
-  /** Stops the lane's emulator if ADE started it. The caller holds the lane's queue. */
-  const stopLocked = async (state: LaneState, device: AndroidLaneDevice, options: { refuseForeign: boolean }): Promise<void> => {
+  /** Stops the lane's emulator if ADE started it, saying why (default `user`). The caller holds the lane's queue. */
+  const stopLocked = async (
+    state: LaneState,
+    device: AndroidLaneDevice,
+    options: { refuseForeign: boolean; reason?: AndroidEmulatorStopReason },
+  ): Promise<void> => {
     crashWatch.stop(state.laneId);
     const emulator = runningFor(device.avdName);
     if (!emulator) {
@@ -123,7 +158,13 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
     emit({ type: "android.device.state", laneId: state.laneId, state: "stopping" });
     try {
       await stopLaneStream(state);
-      await stopEmulator(emulator, adbPath, state.launch?.consolePort === emulator.consolePort ? state.launch.launcherPid : null);
+      await stopEmulator(
+        emulator,
+        adbPath,
+        options.reason ?? "user",
+        state.laneId,
+        state.launch?.consolePort === emulator.consolePort ? state.launch.launcherPid : null,
+      );
       bootedSeen.delete(`${emulator.serial}:${emulator.pid}`);
       state.launch = null;
       state.error = null;
@@ -146,13 +187,17 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
         logPath: launch.logPath,
       };
       logger?.warn("android.emulator_exited", { laneId: state.laneId, avdName: launch.avdName, how });
+      machineLifecycle?.forget({ avdName: launch.avdName, consolePort: launch.consolePort });
       crashWatch.stop(state.laneId);
       await stopLaneStream(state);
       emit({ type: "android.device.state", laneId: state.laneId, state: "crashed" });
     });
   };
 
-  const startLocked = async (state: LaneState, options: { force?: boolean; restartAdb?: boolean } = {}): Promise<AndroidLaneDeviceStatus> => {
+  const startLocked = async (
+    state: LaneState,
+    options: { force?: boolean; restartAdb?: boolean; chatSessionId?: string | null } = {},
+  ): Promise<AndroidLaneDeviceStatus> => {
     const laneId = state.laneId;
     // The machine first: a lane without a device on a machine that can't run one needs the machine's answer.
     const ready = await requireSdk({ emulator: true });
@@ -174,9 +219,22 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
     // emulator for an attached AVD): use it as it is.
     if (runningFor(device.avdName)) return laneStatus(laneId, ready.sdk);
     const force = options.force === true;
-    const reservation = await reserveAndroidMemoryForStart({ laneId, avd, force, platform, logger });
+    const reservation = await reserveAndroidMemoryForStart({
+      laneId,
+      avd,
+      force,
+      platform,
+      logger,
+      // Every running emulator counts, the user's and other brains' too.
+      discovered: discovered(),
+      ledger: machineLifecycle?.ledger ?? null,
+    });
     try {
-      const status = await bootLocked(state, device, ready, options.restartAdb === true);
+      const status = await bootLocked(state, device, ready, {
+        guestRamMb: reservation.cost.guestRamMb,
+        costMb: reservation.cost.costMb,
+        chatSessionId: options.chatSessionId?.trim() || null,
+      }, reservation, options.restartAdb === true);
       // Started past the RAM guard: how often the guard's answer is overruled.
       if (force && status.state === "booted") deps.captureAnalytics?.("start_forced");
       return status;
@@ -190,6 +248,8 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
     state: LaneState,
     device: AndroidLaneDevice,
     ready: ReadyAndroidSdk,
+    owner: { guestRamMb: number; costMb: number; chatSessionId: string | null },
+    reservation: Pick<AndroidBootReservation, "launched">,
     restartAdb: boolean,
   ): Promise<AndroidLaneDeviceStatus> => {
     const laneId = state.laneId;
@@ -218,6 +278,11 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
         detached: deps.handOffOnDispose === true,
       });
       state.launch = launch;
+      // The machine-wide owner record: this brain owns it from now on.
+      const { avdName, consolePort, launcherPid } = launch;
+      machineLifecycle?.recordLaunch({ ...owner, avdName, consolePort, launcherPid, adbPath: ready.adbPath, laneId, projectRoot: deps.projectRoot ?? null });
+      // From here a later start finds this boot's qemu and counts only what it has not taken yet.
+      reservation.launched({ avdName, consolePort, launcherPid });
       // A stop that came while the launch was still picking ports.
       if (state.stopRequested) throw new AndroidEmulatorFailure("ANDROID_NOT_RUNNING", "The emulator was stopped while it was starting.");
       const startedAt = Date.now();
@@ -234,6 +299,10 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
       });
       if (state.stopRequested) throw new AndroidEmulatorFailure("ANDROID_NOT_RUNNING", "The emulator was stopped while it was starting.");
       bootedSeen.add(`${launch.serial}:${boot.pid}`);
+      void machineLifecycle?.recordBooted({ avdName: launch.avdName, consolePort: launch.consolePort, pid: boot.pid }).catch((error: unknown) => {
+        // Without its owner record the emulator is never idle-stopped or cleaned up.
+        logger?.warn("android.owner_record_failed", { avdName: launch?.avdName ?? null, error: getErrorMessage(error) });
+      });
       logger?.info("android.emulator_booted", {
         laneId,
         avdName: device.avdName,
@@ -260,6 +329,9 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
         await ending.catch((stopError: unknown) => {
           logger?.warn("android.failed_boot_stop_failed", { laneId, error: getErrorMessage(stopError) });
         });
+        // A boot that never finished leaves no owner record (one that outlived
+        // its stop stays ADE's in the project's state file).
+        machineLifecycle?.forget({ avdName: launch.avdName, consolePort: launch.consolePort });
       }
       state.transient = null;
       state.launchStop = null;

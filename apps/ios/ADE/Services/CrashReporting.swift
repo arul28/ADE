@@ -42,9 +42,12 @@ enum CrashReporting {
     didStart = true
     let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
     let firstPartyTargets = firstPartyURLPatterns()
+    let distribution = ADEAnalyticsDistribution.current
     SentrySDK.start { options in
       options.dsn = dsn
-      options.environment = isDevelopmentRun ? "development" : "production"
+      // The ADE Beta app reports as `beta`, never as production, so a beta's
+      // errors cannot read as the store app's (`sentryEnvironment`).
+      options.environment = sentryEnvironment(isDevelopmentRun: isDevelopmentRun, releaseChannel: distribution.releaseChannel)
       options.dist = build
       // releaseName stays unset: the SDK sends bundleId@shortVersion+build,
       // which matches the App Store Connect build.
@@ -69,7 +72,7 @@ enum CrashReporting {
       options.beforeBreadcrumb = { crumb in ADECrashScrubber.scrub(crumb) }
       // The budget decides first, on the raw event; the scrubber only cleans.
       options.beforeSend = { event in
-        if isIdleRunLoopAppHang(event) { return nil }
+        if isIdleRunLoopAppHang(event) || isNoiseHang(event) { return nil }
         groupAppHang(event)
         guard ADECrashEventLimiter.shared.admit(ADECrashScrubber.fingerprint(for: event)) else { return nil }
         let scrubbed = ADECrashScrubber.scrub(event)
@@ -82,13 +85,16 @@ enum CrashReporting {
     }
     // The tags every ADE Sentry project carries (`sentryCommonTags` in
     // `shared/sentry/config.ts`). No `is_internal`: a phone has no team-install
-    // marker. The OS is Sentry's own `os` tag.
-    let distribution = ADEAnalyticsDistribution.current
+    // marker. The OS is Sentry's own `os` tag. `machine_id` is this app on this
+    // phone, the value PostHog events carry (`DirectPostHogProductAnalyticsSink.machineID`).
     SentrySDK.configureScope { scope in
       scope.setTag(value: "ios", key: "surface")
       scope.setTag(value: "ios", key: "client")
       scope.setTag(value: isDevelopmentRun ? "development" : distribution.releaseChannel, key: "release_channel")
       scope.setTag(value: distribution.rawValue, key: "distribution")
+      if let machineID = DirectPostHogProductAnalyticsSink.machineID {
+        scope.setTag(value: machineID, key: "machine_id")
+      }
     }
     setUser(accountId: nil)
   }
@@ -103,12 +109,52 @@ enum CrashReporting {
     // told to try again, and nothing on the phone failed.
     if error.localizedDescription == SyncRequestTimeout.message { return }
     let area = context["area"] ?? "unknown"
-    let fingerprint = ["ios", area, String(describing: type(of: error))]
-    _ = SentrySDK.capture(error: error) { scope in
+    let typeName = errorTypeName(error)
+    let fingerprint = ["ios", area, typeName]
+    _ = SentrySDK.capture(error: reportableError(error, typeName: typeName)) { scope in
       scope.setFingerprint(fingerprint)
       scope.setTag(value: area, key: "area")
       scope.setContext(value: ADECrashScrubber.scrubDictionary(context as [String: Any]), key: "ade")
+      // The associated values, which the title must not carry, with every
+      // quoted value (a machine name, a route label) left out.
+      scope.setExtra(value: redactedErrorDescription(error), key: "error_description")
     }
+  }
+
+  /// `production` for the store app (TestFlight or App Store), `beta` for the
+  /// ADE Beta app, `development` for a debug or simulator run: the desktop's
+  /// rule (`resolveSentryEnvironment`), from the same `releaseChannel`.
+  static func sentryEnvironment(isDevelopmentRun: Bool, releaseChannel: String) -> String {
+    if isDevelopmentRun || releaseChannel == "development" { return "development" }
+    return releaseChannel == "stable" ? "production" : releaseChannel
+  }
+
+  /// The error's type, bare: `AccountAdoptionRoutesExhaustedError`, never the
+  /// module path with its per-build `(unknown context at $10422b9a4)`.
+  static func errorTypeName(_ error: Error) -> String {
+    let described = String(describing: type(of: error))
+    let bare = described.split(separator: ".").last.map(String.init) ?? described
+    return bare.isEmpty ? "Error" : bare
+  }
+
+  /// What Sentry titles the issue by. A Swift error is reported under its bare
+  /// type name with no description: sentry-cocoa otherwise titles it
+  /// `String(describing:)`, associated values and all (a machine's name), and
+  /// its domain carries a per-build address. A Foundation error keeps its
+  /// domain and code; its description is scrubbed like everything else.
+  static func reportableError(_ error: Error, typeName: String) -> Error {
+    let nsError = error as NSError
+    let swiftNative = nsError.domain.contains("unknown context at")
+      || nsError.domain == String(reflecting: type(of: error))
+      || nsError.domain.hasSuffix(".\(typeName)")
+    guard swiftNative else { return error }
+    return NSError(domain: typeName, code: nsError.code, userInfo: [NSLocalizedDescriptionKey: typeName])
+  }
+
+  static func redactedErrorDescription(_ error: Error) -> String {
+    let described = String(describing: error)
+    let unquoted = described.replacingOccurrences(of: #""(?:[^"\\]|\\.)*""#, with: "\"<redacted>\"", options: .regularExpression)
+    return String(ADECrashScrubber.scrubString(unquoted).prefix(1_000))
   }
 
   /// Adds a breadcrumb. Put only names and counts in `data`, never prompt,
@@ -189,6 +235,16 @@ enum CrashReporting {
     return ADEAppHangStack.isIdleRunLoop(frames.map {
       ADEAppHangStack.Frame(package: $0.package, inApp: $0.inApp?.boolValue == true)
     })
+  }
+
+  /// A hang report that is not a freeze someone saw: see `ADEHangReportFilter`.
+  private static func isNoiseHang(_ event: Sentry.Event) -> Bool {
+    guard let exception = event.exceptions?.last else { return false }
+    return ADEHangReportFilter.isNoise(
+      type: exception.type,
+      value: exception.value,
+      isFatal: event.level == .fatal
+    )
   }
 
   /// One issue per kind of app hang, not per duration. The SDK titles a hang
@@ -278,7 +334,8 @@ enum CrashReporting {
       exceptions: exceptions,
       level: level,
       fingerprint: fingerprint,
-      replaySessionId: SessionReplay.currentSessionId()
+      replaySessionId: SessionReplay.currentSessionId(),
+      screen: event.tags?["screen"]
     )
   }
 
@@ -348,6 +405,56 @@ enum ADEAppHangStack {
   private static func library(_ frame: Frame) -> String {
     guard let package = frame.package else { return "" }
     return package.split(separator: "/").last.map(String.init) ?? package
+  }
+}
+
+/// Hang reports that describe no freeze a person saw, read from the exception
+/// Sentry builds:
+/// - A non-fatal `App Hang …` lasting over `maxNonFatalAppHangSeconds`. The
+///   detector measured the app suspended in the background (reports ran from
+///   200 s to 23,000 s); a real freeze that long ends in a watchdog kill, which
+///   arrives as the fatal type and is always kept.
+/// - A MetricKit `MXHangDiagnostic` under `minMetricKitHangSeconds`: the
+///   keyboard and other system work the OS counts as a hang, not one of ours.
+/// A value this cannot read is kept.
+enum ADEHangReportFilter {
+  static let maxNonFatalAppHangSeconds: Double = 60
+  static let minMetricKitHangSeconds: Double = 2
+
+  static func isNoise(type: String?, value: String?, isFatal: Bool) -> Bool {
+    guard let type, let value else { return false }
+    if type == "MXHangDiagnostic" {
+      guard let seconds = metricKitHangSeconds(value) else { return false }
+      return seconds < minMetricKitHangSeconds
+    }
+    guard type.contains("App Hang"), !isFatal, !type.hasPrefix("Fatal") else { return false }
+    guard let seconds = appHangMinimumSeconds(value) else { return false }
+    return seconds > maxNonFatalAppHangSeconds
+  }
+
+  /// "App hanging between 235.3 and 236.1 seconds." -> 235.3
+  static func appHangMinimumSeconds(_ value: String) -> Double? {
+    guard let range = value.range(of: "between ") else { return nil }
+    let number = value[range.upperBound...].prefix { $0.isNumber || $0 == "." }
+    return Double(number)
+  }
+
+  /// "MXHangDiagnostic hangDuration:1.603 sec" -> 1.603. Sentry formats the
+  /// OS's measurement in en_US with the unit it came in.
+  static func metricKitHangSeconds(_ value: String) -> Double? {
+    guard let range = value.range(of: "hangDuration:") else { return nil }
+    let parts = value[range.upperBound...].trimmingCharacters(in: .whitespaces)
+      .split(separator: " ", maxSplits: 1)
+    guard let first = parts.first, let amount = Double(first.replacingOccurrences(of: ",", with: "")) else {
+      return nil
+    }
+    switch parts.count > 1 ? String(parts[1]) : "" {
+    case "ms": return amount / 1_000
+    case "sec", "s": return amount
+    case "min": return amount * 60
+    case "hr", "h": return amount * 3_600
+    default: return nil
+    }
   }
 }
 

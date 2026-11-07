@@ -17,10 +17,13 @@ import { ANDROID_DEFAULT_LOCATION, ANDROID_FOLD_POSE_ANGLES } from "../shared/ty
 const DISPLAY_SCALE = { small: 0.85, default: 1, large: 1.15, larger: 1.3 } as const;
 const TEXT_SCALE = { small: 0.85, default: 1, large: 1.15, largest: 1.3 } as const;
 
-/** P3's System images and "Run tests" come from `browserMockAndroidImages.ts`. */
+/**
+ * P3's System images and "Run tests" come from `browserMockAndroidImages.ts`;
+ * "Keep running" and the extras' promote from `browserMockAndroid.ts`, which keeps the lane's state.
+ */
 type MockToolsApi = Omit<
   AndroidEmulatorToolsPreloadApi,
-  "listSystemImages" | "installSystemImage" | "removeSystemImage" | "runInstrumentationTests" | "devicePromote"
+  "listSystemImages" | "installSystemImage" | "removeSystemImage" | "runInstrumentationTests" | "devicePromote" | "setKeepRunning"
 >;
 
 const MOCK_PREVIEWS = [
@@ -302,7 +305,7 @@ export function createMockAndroidTools({ fail }: { fail: boolean }): MockToolsAp
     inspectPoint: async () => delay({ item: null, source: "none" as const, element: null }),
     selectPoint: async () => delay({ item: null, source: "none" as const, element: null }),
     deviceCleanup: async (args) => delay({
-      dryRun: args?.dryRun === true, released: [], stoppedOrphans: [], forgottenRows: [], poweredOff: [], unheld: [], errors: [], idlePowerOffMinutes: 30,
+      dryRun: args?.dryRun === true, released: [], stoppedOrphans: [], forgottenRows: [], poweredOff: [], unheld: [], errors: [], idlePowerOffMinutes: 20,
     }),
   };
 }

@@ -12,7 +12,7 @@
  * offers them; the window verbs (focus, minimize, close) are answered.
  */
 
-import { expectedErrorKind } from "../../../shared/expectedError";
+import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
 import {
   LINUX_DESKTOP_LINUX_ONLY_MESSAGE,
   macDesktopDisplayName,
@@ -27,7 +27,12 @@ import {
   type MacDesktopDriverClientFactory,
 } from "../macDesktop/macDesktopSeatProvider";
 import { resolveLinuxDesktopDriverBinary } from "../native/nativeHelperPaths";
-import { logLinuxScreenFact, reportLinuxScreenProblem } from "./linuxScreenTelemetry";
+import {
+  linuxScreenFailureCause,
+  linuxScreenFailureDetail,
+  logLinuxScreenFact,
+  reportLinuxScreenProblem,
+} from "./linuxScreenTelemetry";
 
 /** What the pane and the CLI call a lane's Linux screen. */
 const LINUX_DISPLAY_NAME_PREFIX = "Linux Desktop";
@@ -56,10 +61,18 @@ export function createLinuxSeatProvider(client: Parameters<typeof createSeatProv
       try {
         reply = await provider.create(args);
       } catch (error) {
-        const code = (error as { code?: unknown } | null)?.code;
+        // No Xvfb on this host: the machine's state, which `ade screen setup`
+        // fixes, so a log line and an expected answer, not an issue. The
+        // helper gives "Xvfb did not start" the same code, so the sentence
+        // tells them apart; that one stays a reported fault.
+        if (isXvfbMissing(error)) {
+          logLinuxScreenFact("xvfb_missing", {});
+          throw markExpected(error, "environment");
+        }
         // A refusal the caller caused (a bad size, a lane already busy) is its answer, not a host fault.
         if (expectedErrorKind(error) !== "user") {
-          reportLinuxScreenProblem("display_create_failed", { code }, typeof code === "string" ? code : "");
+          const cause = linuxScreenFailureCause(error);
+          reportLinuxScreenProblem("display_create_failed", cause, linuxScreenFailureDetail(cause));
         }
         throw error;
       }
@@ -67,6 +80,13 @@ export function createLinuxSeatProvider(client: Parameters<typeof createSeatProv
       return reply;
     },
   };
+}
+
+/** The helper's answer when no Xvfb is on PATH (`Lane::create` in the Rust helper). */
+function isXvfbMissing(error: unknown): error is Error {
+  return error instanceof Error
+    && (error as { code?: unknown }).code === "MAC_DESKTOP_DISPLAY_UNAVAILABLE"
+    && /\bXvfb is not installed\b/.test(error.message);
 }
 
 /** A missing package is the machine's state (a log); a daemon that would not start is a defect (an issue). */

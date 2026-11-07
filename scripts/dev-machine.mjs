@@ -139,6 +139,8 @@ function machineEnv(paths) {
     ADE_RUNTIME_SOCKET_PATH: paths.socketPath,
     ADE_RPC_SOCKET_PATH: paths.socketPath,
     ADE_CLI_VERSION: resolveDevAppVersion(),
+    // Development to Sentry, PostHog and automatic reports (`sentry/brainBuild.ts`).
+    ADE_DEV_BRAIN: "1",
     ADE_DEFAULT_ROLE: "cto",
     ADE_SYNC_HOST_LOCK_PATH: path.join(paths.home, "sync-host-lock.json"),
   };

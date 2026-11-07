@@ -8,6 +8,7 @@ import {
   type GithubRepoSlug,
 } from "../../../shared/githubRemote";
 import type { GitHubRepoRef } from "../../../shared/types/git";
+import { createRepeatedFailureGate } from "../logging/repeatedFailure";
 
 /**
  * Resolves SSH host aliases that point at GitHub.
@@ -24,14 +25,23 @@ import type { GitHubRepoRef } from "../../../shared/types/git";
  * lives in that machine's ssh config.
  */
 
-const SSH_CONFIG_TIMEOUT_MS = 3_000;
-// The synchronous lookup blocks its process, so it gets a shorter limit. It
-// runs once for each alias host; later reads use the cache.
+// Windows starts processes slowly (and antivirus scans each new ssh.exe), so a
+// healthy but busy Windows host needs more time than 3 s to answer.
+const IS_WINDOWS = process.platform === "win32";
+const SSH_CONFIG_TIMEOUT_MS = IS_WINDOWS ? 10_000 : 3_000;
+// The synchronous lookup blocks its process (the desktop main process, for
+// the recent-projects list), so it keeps the short limit on every platform. It
+// runs once for each alias host; later reads use the cache (a failure for
+// FAILED_LOOKUP_TTL_MS), and refreshes go through the async lookup above.
 const SSH_CONFIG_SYNC_TIMEOUT_MS = 1_500;
 const SSH_CONFIG_MAX_OUTPUT_BYTES = 64 * 1024;
 const CACHE_TTL_MS = 60_000;
-// A failed lookup (timeout, broken config) is retried sooner than an answer.
-const FAILED_LOOKUP_TTL_MS = 10_000;
+// No ssh on PATH is retried soon, so a newly installed ssh is used promptly.
+const MISSING_SSH_TTL_MS = 10_000;
+// A failed lookup (timeout, broken config) is kept for a minute: re-running a
+// slow or broken ssh every few seconds costs a process each time and gives
+// the same answer, while a repaired config is still picked up soon.
+const FAILED_LOOKUP_TTL_MS = 60_000;
 const CACHE_CAPACITY = 128;
 // Public forges that are never an alias of GitHub: their origins skip ssh.
 const KNOWN_FORGE_HOSTS = new Set([
@@ -53,7 +63,16 @@ type SshRemote = {
   withGithubHost: string;
 };
 
-type CacheEntry = SshConfigLookup & { expiresAt: number };
+type CacheEntry = SshConfigLookup & {
+  expiresAt: number;
+  /**
+   * A failure of the synchronous lookup, whose time limit is short so it does
+   * not block its process. It answers synchronous reads only: the async
+   * lookup, with the longer limit a slow Windows host needs, still runs and
+   * replaces it.
+   */
+  syncFailure?: boolean;
+};
 
 const cache = new Map<string, CacheEntry>();
 const inFlight = new Map<string, Promise<string | null>>();
@@ -120,9 +139,20 @@ function isMissingSsh(error: { code?: unknown } | null | undefined): boolean {
   return error?.code === "ENOENT";
 }
 
-function reportLookupFailure(error: { code?: unknown; killed?: boolean }, timedOut = Boolean(error.killed)): void {
+// The kind each host last failed with. A slow machine times out the same way
+// on every retry; the first report says all there is to say. A host that
+// answers again is cleared, so its next failure is reported. A host's record
+// goes when its cache entry is evicted, so this stays within CACHE_CAPACITY.
+const lookupFailures = createRepeatedFailureGate();
+
+function reportLookupFailure(
+  remote: SshRemote,
+  error: { code?: unknown; killed?: boolean },
+  timedOut = Boolean(error.killed),
+): void {
   if (isMissingSsh(error)) return;
   const kind = timedOut ? "timeout" : "failed";
+  if (lookupFailures.repeated(kind, cacheKey(remote))) return;
   captureProblem(`ssh -G lookup for a git remote alias ${kind}`, {
     fingerprint: ["github-ssh-alias", kind],
     tags: { kind },
@@ -151,7 +181,7 @@ function runSshConfigLookupSync(remote: SshRemote): SshConfigLookup {
     if (result.error || result.status !== 0) {
       const error = (result.error ?? {}) as { code?: unknown };
       const timedOut = (result.error as { code?: unknown } | undefined)?.code === "ETIMEDOUT" || result.signal != null;
-      reportLookupFailure(error, timedOut);
+      reportLookupFailure(remote, error, timedOut);
       return { hostname: null, failed: !isMissingSsh(error), missing: isMissingSsh(error) };
     }
     return { hostname: readHostname(String(result.stdout ?? "")), failed: false, missing: false };
@@ -179,7 +209,7 @@ function runSshConfigLookup(remote: SshRemote): Promise<SshConfigLookup> {
           // GitHub, as before ADE read ssh config.
           if (error) {
             resolve({ hostname: null, failed: !isMissingSsh(error), missing: isMissingSsh(error) });
-            reportLookupFailure(error);
+            reportLookupFailure(remote, error);
             return;
           }
           resolve({ hostname: readHostname(String(stdout ?? "")), failed: false, missing: false });
@@ -196,32 +226,42 @@ function cacheKey(remote: SshRemote): string {
   return `${remote.user ?? ""}\u0000${remote.host.toLowerCase()}\u0000${remote.port ?? ""}`;
 }
 
-function storeLookup(key: string, result: SshConfigLookup): void {
+function evictLookup(key: string): void {
+  cache.delete(key);
+  lookupFailures.clear(key);
+}
+
+function storeLookup(key: string, result: SshConfigLookup, options: { sync?: boolean } = {}): void {
   const previous = cache.get(key);
   // A failed refresh keeps the last answer, so the repository key does not
   // flip back to the alias while ssh is briefly unable to answer.
   const kept = (result.failed || result.missing) && previous?.hostname
     ? { ...previous, failed: false, missing: false }
     : result;
+  const keepsPrevious = kept !== result;
+  if (!result.failed && !result.missing) lookupFailures.clear(key);
   cache.delete(key);
   if (cache.size >= CACHE_CAPACITY) {
     for (const [entryKey, entry] of cache) {
-      if (entry.expiresAt <= Date.now()) cache.delete(entryKey);
+      if (entry.expiresAt <= Date.now()) evictLookup(entryKey);
     }
   }
   if (cache.size >= CACHE_CAPACITY) {
     const oldest = cache.keys().next().value;
-    if (oldest !== undefined) cache.delete(oldest);
+    if (oldest !== undefined) evictLookup(oldest);
   }
-  // Missing ssh retries soon too, so a newly installed ssh is used promptly.
-  const retrySoon = result.failed || result.missing;
-  cache.set(key, { ...kept, expiresAt: Date.now() + (retrySoon ? FAILED_LOOKUP_TTL_MS : CACHE_TTL_MS) });
+  // A kept answer is refreshed on the normal schedule.
+  const ttlMs = keepsPrevious || !(result.failed || result.missing)
+    ? CACHE_TTL_MS
+    : result.missing ? MISSING_SSH_TTL_MS : FAILED_LOOKUP_TTL_MS;
+  const syncFailure = options.sync === true && !keepsPrevious && result.failed;
+  cache.set(key, { ...kept, expiresAt: Date.now() + ttlMs, ...(syncFailure ? { syncFailure } : {}) });
 }
 
 function resolveSshHostname(remote: SshRemote): Promise<string | null> {
   const key = cacheKey(remote);
   const cached = cache.get(key);
-  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.hostname);
+  if (cached && cached.expiresAt > Date.now() && !cached.syncFailure) return Promise.resolve(cached.hostname);
   const pending = inFlight.get(key);
   if (pending) return pending;
   const lookup = runSshConfigLookup(remote)
@@ -267,7 +307,7 @@ function resolveSshHostnameSync(remote: SshRemote): SshConfigLookup {
     return { hostname: cached.hostname, failed: cached.failed, missing: cached.missing };
   }
   const result = runSshConfigLookupSync(remote);
-  storeLookup(key, result);
+  storeLookup(key, result, { sync: true });
   return result;
 }
 

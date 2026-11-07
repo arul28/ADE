@@ -36,12 +36,17 @@ const packageRoot = path.dirname(fileURLToPath(import.meta.url));
 const cliNodeModules = path.join(packageRoot, "node_modules");
 const packageJson = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8")) as { version?: string };
 const version = process.env.ADE_CLI_VERSION?.trim() || packageJson.version || "0.0.0";
-// A release stamps this package's version from the git tag
-// (`apps/desktop/scripts/set-release-version.mjs`), so an unstamped `0.0.0`
-// was never released. The dev launcher passes the desktop source version
-// instead and says so with `ADE_CLI_DEV_BUILD=1` (`scripts/dev-shared.mjs`).
-// Either way the bundle's Sentry client stays off wherever it is copied to.
-const unreleasedVersion = version === "0.0.0" || process.env.ADE_CLI_DEV_BUILD === "1";
+// Only the release workflows build a release: they set `ADE_RELEASE_BUILD=1`
+// (`.github/workflows/release-core.yml`), and an Alpha package
+// (`scripts/package-channel.mjs`) is a release of its own channel. Anything
+// else is a development build wherever it runs or is copied to, whatever its
+// version says: the dev launcher stamps the desktop's source version
+// (`1.0.0-beta.1`) and says so with `ADE_CLI_DEV_BUILD=1`, and a plain
+// `npm run build` keeps `0.0.0`. A development bundle's Sentry client stays
+// off and its PostHog `release_channel` is `development`.
+const releaseBuild = process.env.ADE_RELEASE_BUILD === "1"
+  || process.env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase() === "alpha";
+const unreleasedVersion = !releaseBuild || version === "0.0.0" || process.env.ADE_CLI_DEV_BUILD === "1";
 const posthogProjectToken = process.env.ADE_POSTHOG_PROJECT_TOKEN?.trim() ?? "";
 if (posthogProjectToken && !/^phc_[A-Za-z0-9_-]{8,}$/.test(posthogProjectToken)) {
   throw new Error("ADE_POSTHOG_PROJECT_TOKEN must be a public phc_ project token; personal API keys must never be bundled.");

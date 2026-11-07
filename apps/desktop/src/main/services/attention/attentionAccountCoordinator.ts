@@ -1,5 +1,6 @@
 import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import {
+  isPushRelayNoAccountTokenError,
   PushRelayRequestError,
   PushRelayUnreachableError,
 } from "../../../../../ade-cli/src/services/push/pushRelayClient";
@@ -18,6 +19,7 @@ import {
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import type { Logger } from "../logging/logger";
 import { withDeadline } from "../shared/withTimeout";
+import { markExpected } from "../../../shared/expectedError";
 
 type AccountAttentionClient = Pick<
   PushRelayClient,
@@ -128,6 +130,9 @@ export const ATTENTION_ACCOUNT_SNAPSHOT_BUDGET_MS = 18_000;
 /** First pause after the relay could not be reached; doubles to the max. */
 const RELAY_BACKOFF_BASE_MS = 5_000;
 const RELAY_BACKOFF_MAX_MS = 5 * 60_000;
+/** Pause after presence found no usable account token; doubles to the max. */
+const PRESENCE_NO_TOKEN_BACKOFF_BASE_MS = 15_000;
+const PRESENCE_NO_TOKEN_BACKOFF_MAX_MS = 3 * 60_000;
 
 /**
  * The relay did not give an answer worth surfacing: no HTTP response at all,
@@ -199,6 +204,11 @@ export class AttentionAccountCoordinator {
   /** The last presence a window reported, resent on lock, sleep and wake. */
   private lastPresence: Record<string, unknown> | null = null;
   private presenceChanges: Promise<void> = Promise.resolve();
+  /**
+   * A signed-in account whose presence sends found no usable token (a session
+   * that could not refresh): how many in a row, and when to try again.
+   */
+  private presenceNoToken: { ownerId: string; failures: number; retryAtMs: number } | null = null;
 
   constructor(private readonly options: AttentionAccountCoordinatorOptions) {}
 
@@ -624,18 +634,50 @@ export class AttentionAccountCoordinator {
     });
   }
 
+  /**
+   * Presence found no usable account token while signed in. Backs off (per
+   * account, doubling to a few minutes) and logs the edge into it, rather than
+   * asking for a token on every heartbeat and saying nothing.
+   */
+  private notePresenceNoToken(ownerId: string, error: unknown): void {
+    const failures = this.presenceNoToken?.ownerId === ownerId ? this.presenceNoToken.failures + 1 : 1;
+    const backoffMs = Math.min(
+      PRESENCE_NO_TOKEN_BACKOFF_MAX_MS,
+      PRESENCE_NO_TOKEN_BACKOFF_BASE_MS * 2 ** Math.min(failures - 1, 16),
+    );
+    this.presenceNoToken = { ownerId, failures, retryAtMs: Date.now() + backoffMs };
+    if (failures === 1) {
+      this.options.getLogger().warn("attention.presence_no_account_token", {
+        error: error instanceof Error ? error.message : String(error),
+        retryInMs: backoffMs,
+      });
+    }
+  }
+
   private async sendPresence(presence: Record<string, unknown>): Promise<void> {
-    if (this.currentAccountOwnerId() && this.options.accountAttentionClient) {
+    const ownerId = this.currentAccountOwnerId();
+    // A sign-in after a session that could not refresh starts fresh.
+    if (!ownerId) this.presenceNoToken = null;
+    if (ownerId && this.options.accountAttentionClient) {
       // Presence is a best-effort heartbeat with nobody waiting on it, and the
-      // next one carries the latest state. While the relay is unreachable the
-      // report is dropped, not failed.
+      // next one carries the latest state. While the relay is unreachable, or
+      // this account has no usable token, the report is dropped, not failed.
       if (this.relayBackingOff()) return;
+      const noToken = this.presenceNoToken;
+      if (noToken?.ownerId === ownerId && Date.now() < noToken.retryAtMs) return;
       try {
         await this.options.accountAttentionClient.reportAttentionPresence(
           presence as AttentionPresence,
         );
+        this.presenceNoToken = null;
         this.noteRelayAvailable();
       } catch (error) {
+        // No account token to send (a session that could not refresh, or a
+        // sign-out racing this send): nothing to report until one comes back.
+        if (isPushRelayNoAccountTokenError(error)) {
+          this.notePresenceNoToken(ownerId, error);
+          return;
+        }
         if (!isRelayUnavailable(error)) throw error;
         this.noteRelayUnavailable("presence", error);
       }
@@ -862,7 +904,12 @@ export class AttentionAccountCoordinator {
       throw new Error("A valid Activity account owner is required.");
     }
     if (this.currentAccountOwnerId() !== accountOwnerId) {
-      throw new Error("The ADE account changed before Activity preferences could be used.");
+      // A real switch (or sign-out) between the window's read and this call:
+      // the right answer, and the window retries with the new account.
+      throw markExpected(
+        new Error("The ADE account changed before Activity preferences could be used."),
+        "user",
+      );
     }
     return accountOwnerId;
   }

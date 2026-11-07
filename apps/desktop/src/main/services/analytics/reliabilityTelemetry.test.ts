@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createSyncAccountDirectoryHealth } from "../../../shared/types";
 import type { SyncAccountDirectoryHealth, SyncRoleSnapshot } from "../../../shared/types";
 import { sanitizeProductAnalyticsProperties } from "./productAnalyticsPolicy";
+import { expectedErrorKind } from "../../../shared/expectedError";
+import { brainStackFrames, readBrainFrames, runtimeActionReplyError } from "../../../shared/runtimeActionReplyError";
 import {
   brainActionErrorCode,
   createMachineRegisterRefusalObserver,
@@ -39,6 +41,35 @@ describe("brainActionErrorCode", () => {
       + "storage_read_failed: ADE could not open the project data store.",
     );
     expect(brainActionErrorCode(wrapped, false)).toBe("storage_read_failed");
+  });
+
+  // The brain answers a failed action with `{ ok: false, error }`; the desktop
+  // rebuilds the error from that reply (`runtimeActionReplyError`). Before, the
+  // rebuild kept only the message, so every such failure read as `unknown`.
+  it.each([
+    ["an ADE code", { code: "storage_read_failed", message: "ADE can't read /Volumes/Dev/x" }, "storage_read_failed"],
+    ["a JSON-RPC refusal", { code: -32011, message: "Lane 'x' is archived." }, "rpc_tool_failed"],
+    ["a brain runtime fault", { code: -32603, message: "Internal error in lanes.list (ref 1a2b3c)" }, "brain_internal_error"],
+    ["a platform errno, which the brain never sends", { code: "ENOENT", message: "no such file" }, "unknown"],
+  ])("keeps %s across the ok:false reply", (_label, reply, expected) => {
+    expect(brainActionErrorCode(runtimeActionReplyError(reply, "Local ADE service action failed."), false)).toBe(expected);
+  });
+
+  it("carries the brain's expected mark and top frames, never a path, across the reply", () => {
+    const thrown = new Error("boom");
+    thrown.stack = [
+      "Error: boom",
+      "    at LaneService.archive (/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs:41234:11)",
+      "    at node:internal/process/task_queues:95:5",
+      "    at async runAdeAction (/Users/ada/ADE/apps/ade-cli/dist/cli.cjs:9001:3)",
+      "    at /Users/ada/node_modules/foo/index.js:1:1",
+    ].join("\n");
+    const frames = brainStackFrames(thrown);
+    expect(frames).toEqual(["LaneService.archive:41234", "runAdeAction:9001"]);
+    const rebuilt = runtimeActionReplyError({ code: "lane_busy", message: "busy", expected: "user", frames }, "failed");
+    expect(readBrainFrames(rebuilt)).toEqual(frames);
+    expect(expectedErrorKind(rebuilt)).toBe("user");
+    expect(JSON.stringify(readBrainFrames(rebuilt))).not.toMatch(/Users|Applications|cli\.cjs/);
   });
 
   it("names a wrapper timeout instead of borrowing an unrelated code", () => {

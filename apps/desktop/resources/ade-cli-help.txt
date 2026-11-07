@@ -1666,8 +1666,12 @@ Android Emulator
                                                    Hold an existing AVD no other lane holds (--no-start)
     $ ade android start --text                     Boot the lane's AVD (waits for boot completed).
                                                    Refused with ANDROID_LOW_MEMORY when the machine
-                                                   would swap; --force boots anyway (ask the user first)
+                                                   is short of memory or swapping, or its emulators
+                                                   would pass half of its memory; --force boots
+                                                   anyway (ask the user first)
     $ ade android stop --text                      Stop it; the lane keeps its AVD
+    $ ade android keep-running on|off --text       ADE stops an emulator nobody used for 20 min;
+                                                   "on" keeps the lane's running one up
     $ ade android device-detach --text             Stop it and let the AVD go. An AVD ADE made
                                                    for the lane is deleted; --keep keeps it.
                                                    The user's own AVD is never deleted.
@@ -1695,8 +1699,9 @@ Android Emulator
                                                    emulators ADE started that no lane holds, forget rows
                                                    whose AVD is gone (--power-off-idle: also idle ones;
                                                    an agent reaches only its own lane). It runs by itself
-                                                   too. An ADE-made emulator with no input, view,
-                                                   recording, lease or test for 30 min powers off
+                                                   too. An emulator ADE started with no input, view,
+                                                   recording, lease or test for 20 min powers off
+                                                   unless kept running
                                                    (ADE_ANDROID_IDLE_POWER_OFF_MINUTES, 0 = never).
 
   Input and capture:

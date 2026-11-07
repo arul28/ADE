@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { codedError } from "../../../../desktop/src/shared/codedError";
+import { markExpected } from "../../../../desktop/src/shared/expectedError";
 
 /**
  * How long a project folder gets to answer a listing before the project is
@@ -56,5 +57,7 @@ export async function assertProjectRootReadable(projectRoot: string): Promise<vo
   );
   // A listing left waiting (a prompt, a hung drive), not refused.
   if (timedOut) Object.assign(error, { timedOut: true });
-  throw error;
+  // This Mac's folder or drive, not a defect: every caller's failure carries the
+  // mark across RPC, so it is a Sentry Log and `expected_kind` reads environment.
+  throw markExpected(error, "environment");
 }

@@ -240,10 +240,16 @@ async function fetchImageDataUrl(wc: WebContents, url: string): Promise<string |
 
 /** Main frame first, then a few subframes (an embedded player). */
 function framesOf(wc: WebContents): WebFrameMain[] {
-  const main = wc.mainFrame;
-  if (!main) return [];
-  const rest = main.framesInSubtree.filter((frame) => frame !== main).slice(0, 8);
-  return [main, ...rest];
+  try {
+    const main = wc.mainFrame;
+    if (!main) return [];
+    const rest = main.framesInSubtree.filter((frame) => frame !== main).slice(0, 8);
+    return [main, ...rest];
+  } catch {
+    // Electron throws "Render frame was disposed" for a tab that closed,
+    // navigated or crashed between the timer and this read: nothing to read.
+    return [];
+  }
 }
 
 function sameSession(a: HomeNowPlayingSession, b: HomeNowPlayingSession): boolean {

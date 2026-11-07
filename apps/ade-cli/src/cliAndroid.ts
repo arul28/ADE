@@ -198,6 +198,7 @@ const ANDROID_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
   "device-attach": ["--avd", "--no-start"],
   start: ["--force", "--restart-adb", "--device"],
   stop: ["--device"],
+  "keep-running": [],
   "device-detach": ["--keep", "--device"],
   // One of the lane's extras becomes its device (`ade apple device-promote`).
   "device-promote": ["--device"],
@@ -352,7 +353,7 @@ const ANDROID_ERROR_HINTS: Record<AndroidErrorCode, string> = {
     "hint: Run `ade android sdk status` to see what is missing. The user installs again from the setup card; finished parts stay.",
   ANDROID_SDK_PATH_INVALID: "hint: Pick the folder that holds platform-tools, emulator or system-images.",
   ANDROID_LOW_MEMORY:
-    "hint: close apps or stop an emulator you do not need, then try again. Ask the user before you run `ade android start --force`: it boots anyway, and the machine can swap.",
+    "hint: stop an emulator you do not need (`ade android stop` in its lane) or close apps, then try again. Never start one with the raw `emulator` binary instead. Ask the user before you run `ade android start --force`: it boots anyway, and the machine can swap.",
   // P1 agent suite.
   ANDROID_ELEMENT_NOT_FOUND:
     "hint: run `ade android snapshot --text` to see the screen's elements, then aim with --ref, --identifier, --label or --text.",
@@ -580,6 +581,12 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
   }
   if (sub === "stop")
     return androidAction("android stop", "stop", { ...laneClaim(), ...deviceClaim() }, "android-device");
+  if (sub === "keep-running") {
+    // The pin against ADE's idle stop. On the lane's machine, like every lane verb.
+    const value = requireValue(positionals()[0] ?? null, "on or off").toLowerCase();
+    if (value !== "on" && value !== "off") throw new CliUsageError(`android keep-running: say on or off, not '${value}'.`);
+    return androidAction("android keep-running", "setKeepRunning", { ...laneClaim(), keepRunning: value === "on" }, "android-device");
+  }
   if (sub === "device-detach") {
     // An AVD ADE made for the lane is deleted on release; --keep keeps it on
     // disk. The user's own AVD is never deleted either way. --device <avd>

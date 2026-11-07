@@ -26,6 +26,10 @@ export const PRODUCT_ANALYTICS_EVENTS = [
   "ade_account_session_unreadable",
   "ade_tool_fetched",
   "ade_brain_action_failed",
+  // One per resource-pressure episode on this machine (memory, swap, a
+  // write-ahead log or the brain's own CPU), from the brain's five-minute
+  // sample (`resourcePressureMonitor.ts`). Brain only; never accepted over IPC.
+  "ade_resource_pressure",
   // PostHog's own survey events, spelled exactly as PostHog's survey results
   // read them. Main-process only (`surveyService.ts`).
   "survey shown",
@@ -116,6 +120,8 @@ export type ProductAnalyticsAiGeneration = {
   reasoningTokens?: number | null;
   costUsd?: number | null;
   durationMs?: number | null;
+  /** A failed turn's closed `error_kind` (`TURN_FAILURE_KINDS`); anything else is dropped. */
+  errorKind?: string | null;
 };
 
 export type ProductAnalyticsCaptureResult = {

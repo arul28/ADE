@@ -1,4 +1,5 @@
 import { appControlFrameDemandParams, type AppControlFrameDemand } from "../../../shared/appControlFrameDemand";
+import { readWindowsProcessImages } from "../android/androidEmulatorImage";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -53,10 +54,12 @@ import { RuntimeRpcClient, type RuntimeRpcTransport } from "../remoteRuntime/run
 import { coerceProjects } from "../remoteRuntime/remoteBootstrap";
 import type { Logger } from "../logging/logger";
 import { getRuntimeServiceStatus, type ServiceManagerStatusResult } from "../../../../../ade-cli/src/serviceManager";
-import { ADE_RUNTIME_SERVICE_NAME as RUNTIME_SERVICE_NAME } from "../../../../../ade-cli/src/serviceManager/common";
+import { ADE_RUNTIME_SERVICE_NAME as RUNTIME_SERVICE_NAME, isPidAlive } from "../../../../../ade-cli/src/serviceManager/common";
+import { readWindowsServicePidRecord } from "../../../../../ade-cli/src/serviceManager/installWindows";
 import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { buildPackagedRuntimeNodePath, type PackagedRuntimeNodePathOptions } from "../runtime/packagedNodePath";
 import { readLastFailure } from "../runtime/lastFailureStore";
+import { withTimeout } from "../shared/withTimeout";
 import { readProcessStartTimeMs } from "../processes/processStartTime";
 import { askOlderBrainToShutDown, decideOlderBrainRetirement } from "./olderBrainRetirement";
 import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
@@ -66,7 +69,7 @@ import {
 } from "../../../shared/runtimeErrors";
 import type { RuntimeHealthSnapshot } from "../../../shared/types/storage";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
-import { markExpectedFromWire } from "../../../shared/expectedError";
+import { runtimeActionReplyError } from "../../../shared/runtimeActionReplyError";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS,
@@ -218,6 +221,12 @@ const LOCAL_RUNTIME_SERVICE_STATUS_TIMEOUT_MS = 15_000;
 // connected to the machine service's own brain a snapshot is kept for the long
 // window instead; see `serviceHealthReadMaxAgeMs`.
 const SERVICE_HEALTH_READ_MAX_AGE_MS = 2_000;
+/**
+ * An unreadable service status is read once more after this long before the
+ * window falls back to a brain of its own: a cold PowerShell or a supervisor
+ * between two restarts reads as "unreadable" for a moment.
+ */
+const SERVICE_STATUS_UNREADABLE_RECHECK_MS = 3_000;
 const SERVICE_HEALTH_STEADY_MAX_AGE_MS = 5 * 60_000;
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
@@ -446,6 +455,10 @@ export function buildLocalRuntimeNodeEnv(
 }
 
 type RuntimeOutputStreamName = "stdout" | "stderr";
+
+/** The last stderr of each brain this process spawned, for a boot that fails before it answers. */
+const spawnedRuntimeStderrTails = new WeakMap<ChildProcess, string>();
+const SPAWNED_RUNTIME_STDERR_TAIL_CHARS = 400;
 
 export function createLocalRuntimeOutputLogger(args: {
   logger: Logger;
@@ -2513,13 +2526,9 @@ export class LocalRuntimeConnectionPool {
         if (value && typeof value === "object" && !Array.isArray(value)) {
           const record = value as Record<string, unknown>;
           if (record.ok === false) {
-            const error = record.error && typeof record.error === "object" && !Array.isArray(record.error)
-              ? record.error as Record<string, unknown>
-              : {};
-            throw markExpectedFromWire(
-              new Error(typeof error.message === "string" ? error.message : "Local ADE service action failed."),
-              error.expected,
-            );
+            // The reply's code, expected mark and the brain's top frames ride
+            // on the rebuilt error (`runtimeActionReplyError.ts`).
+            throw runtimeActionReplyError(record.error, "Local ADE service action failed.");
           }
         }
       } catch (error) {
@@ -3391,6 +3400,38 @@ export class LocalRuntimeConnectionPool {
     }
   }
 
+  /**
+   * "The service status could not be read" before a fallback: read it once
+   * more after `SERVICE_STATUS_UNREADABLE_RECHECK_MS`, and keep that reason
+   * only if it is still unreadable, nothing owns the socket, and no service
+   * brain for this channel is running or starting (the Windows supervisor's
+   * pid record). Otherwise the reason the second read gives, or none. Bounded
+   * by the wait plus one status read.
+   */
+  private async recheckUnreadableServiceStatus(socketPath: string): Promise<AppFallbackReason | null> {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, SERVICE_STATUS_UNREADABLE_RECHECK_MS);
+    });
+    this.assertNotDisposed();
+    const reread = await withTimeout(this.refreshServiceHealth(0).then(() => true), LOCAL_RUNTIME_SERVICE_STATUS_TIMEOUT_MS + 1_000);
+    const reason = reread
+      ? appFallbackReason({ serviceInstall: this.serviceInstallStatus, serviceHealth: this.serviceHealthStatus })
+      : "service_status_unreadable";
+    if (reason !== "service_status_unreadable") return reason;
+    if (await probeSocketHasOwner(socketPath)) return null;
+    if (process.platform === "win32") {
+      const record = readWindowsServicePidRecord();
+      if (record && await windowsServiceRecordIsLive(record)) {
+        this.logger.info("local_runtime.app_fallback_skipped_service_alive", {
+          supervisorPid: record.supervisorPid,
+          runtimePid: record.runtimePid,
+        });
+        return null;
+      }
+    }
+    return reason;
+  }
+
   private async createConnection(): Promise<LocalRuntimeConnection> {
     const layout = resolveMachineAdeLayout();
     const socketPath = machineRuntimeSocketPathToDial();
@@ -3432,10 +3473,13 @@ export class LocalRuntimeConnectionPool {
     if (isPrimaryMachineRuntimeSocketPath(socketPath, layout.socketPath)) {
       const lastFailure = readLastFailure({ kind: "machine" });
       await this.refreshServiceHealth(0);
-      const fallbackReason = appFallbackReason({
+      let fallbackReason = appFallbackReason({
         serviceInstall: this.serviceInstallStatus,
         serviceHealth: this.serviceHealthStatus,
       });
+      if (fallbackReason === "service_status_unreadable" && this.options.preferServiceRepair) {
+        fallbackReason = await this.recheckUnreadableServiceStatus(socketPath);
+      }
       if (
         this.options.preferServiceRepair
         && fallbackReason
@@ -3487,8 +3531,12 @@ export class LocalRuntimeConnectionPool {
       const reportDetail = lastFailure?.detail
         ? ` Last recorded failure: ${lastFailure.detail}`
         : "";
+      // What the service manager said, so a report shows why no fallback ran.
+      const install = this.serviceInstallStatus;
+      const serviceDetail = ` Service: install ${install.state}${install.failureStep ? ` at ${install.failureStep}` : ""}, `
+        + `health ${this.serviceHealthStatus.state}${this.serviceHealthStatus.running == null ? "" : `, running ${this.serviceHealthStatus.running}`}.`;
       throw codedRecoveryError(
-        `ADE's background service could not open this project. Technical details: ${message}${crashLoopDetail}${reportDetail}`,
+        `ADE's background service could not open this project. Technical details: ${message}${serviceDetail}${crashLoopDetail}${reportDetail}`,
         recoveryCode,
       );
     }
@@ -4052,9 +4100,14 @@ export class LocalRuntimeConnectionPool {
     let lastError: Error | null = null;
     while (Date.now() < deadline) {
       if (child.exitCode != null || child.signalCode != null) {
+        // How it ended and the last thing it wrote: a brain that dies at boot
+        // says why only there.
+        const stderrTail = spawnedRuntimeStderrTails.get(child)?.trim();
         throw new Error(
-          `Spawned ADE runtime PID ${child.pid ?? "unknown"} exited before becoming ready.` +
-          (lastError ? ` Last connection error: ${lastError.message}` : ""),
+          `Spawned ADE runtime PID ${child.pid ?? "unknown"} exited before becoming ready ` +
+          `(${child.signalCode ? `signal ${child.signalCode}` : `exit code ${child.exitCode}`}).` +
+          (lastError ? ` Last connection error: ${lastError.message}` : "") +
+          (stderrTail ? ` Last output: ${stderrTail}` : ""),
         );
       }
       const remainingMs = Math.max(1, deadline - Date.now());
@@ -4131,6 +4184,10 @@ export class LocalRuntimeConnectionPool {
     const stderrLogger = createLocalRuntimeOutputLogger({ ...outputBase, stream: "stderr" });
     child.stdout?.on("data", stdoutLogger.push);
     child.stderr?.on("data", stderrLogger.push);
+    child.stderr?.on("data", (chunk: Buffer | string) => {
+      const text = `${spawnedRuntimeStderrTails.get(child) ?? ""}${String(chunk)}`;
+      spawnedRuntimeStderrTails.set(child, text.slice(-SPAWNED_RUNTIME_STDERR_TAIL_CHARS));
+    });
     const flushOutput = (): void => {
       stdoutLogger.flush();
       stderrLogger.flush();
@@ -4366,4 +4423,19 @@ function normalizeRuntimeEventNotification(value: unknown): RuntimeEventNotifica
     : null;
   if (subscriptionId == null || !projectId || !event) return null;
   return { subscriptionId, projectId, event, eventEpoch };
+}
+
+/**
+ * Whether the Windows supervisor record names a running supervisor or brain.
+ * Windows has no process start times and a crashed supervisor leaves its
+ * record behind, so a live pid counts only while its image is still the
+ * supervisor's powershell or the brain's runtime; an image that cannot be
+ * read counts as live, so ADE never starts a second brain on a guess.
+ */
+async function windowsServiceRecordIsLive(record: { supervisorPid: number; runtimePid?: number | null }): Promise<boolean> {
+  const pids = [record.supervisorPid, record.runtimePid].filter((pid): pid is number => typeof pid === "number" && pid > 0 && isPidAlive(pid));
+  if (pids.length === 0) return false;
+  const images = await readWindowsProcessImages(pids);
+  if (!images) return true;
+  return pids.some((pid) => /^(powershell|pwsh|node|ade)(\.exe)?$/iu.test(images.get(pid) ?? ""));
 }

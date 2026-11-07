@@ -232,6 +232,11 @@ export type AcpSession = {
    */
   setConfigOption(args: { configId: string; value: string | boolean }): Promise<AcpSessionConfigOption[]>;
   /**
+   * Standard `session/set_mode`, for an agent build that answers
+   * `session/set_config_option` with -32601.
+   */
+  setMode(modeId: string): Promise<void>;
+  /**
    * Record the model that ADE put on the session, for an agent that accepted
    * the change without reporting its option set (Kimi's `session/set_config_option`).
    * A turn whose provider names no served
@@ -697,6 +702,10 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
       const options = normalizeAcpConfigOptions(response?.configOptions ?? []);
       noteAgentConfigOptions(options);
       return options;
+    },
+
+    setMode: async (modeId: string) => {
+      await connection.request(ACP_METHOD.sessionSetMode, { sessionId, modeId });
     },
 
     noteCurrentModel: (modelId: string) => {

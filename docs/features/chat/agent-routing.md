@@ -1415,7 +1415,12 @@ carrying the current mode, available mode IDs, and selected config
 options. Cursor model descriptors also carry `cursorAvailability`:
 SDK-capable rows are eligible for chat sessions, CLI-capable rows are
 eligible for Work CLI launches, and rows with both flags appear in both
-surfaces.
+surfaces. Until this API key's SDK list has loaded, SDK availability is
+unknown, not "no": a chat start waits up to 3 seconds for a list already
+loading (`resolveCursorModelAvailability`) and then lets the model through,
+so a fresh launch never refuses Auto. Once the list is in, a CLI-only model
+is refused with a clear message. An SDK list that loads empty also stays
+unknown, because reading it as "no SDK models" would refuse every model.
 
 Cursor Cloud keeps its catalog namespace in ADE model IDs: the Cursor Grok row
 is `cursor/grok-4.6` (the SDK receives `grok-4.6`), not ACP's `xai/grok-4-6`.

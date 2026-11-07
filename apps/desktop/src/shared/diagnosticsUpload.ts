@@ -124,6 +124,12 @@ export type DiagnosticUploadRequest = {
   installId?: string | null;
   appVersion?: string | null;
   /**
+   * `machine_id` (`machineTelemetryId.ts`), stored as the object's metadata so
+   * a report can be found from a Sentry event or a PostHog machine. 16 hex
+   * characters; anything else is dropped here.
+   */
+  machineId?: string | null;
+  /**
    * Clerk access token, when a caller has one. `ade report-issue --send` reads
    * the machine's credential store and does send one; the desktop does not and
    * uploads anonymously against the install id the report already carries.
@@ -171,6 +177,7 @@ export async function uploadDiagnosticReport(
     report,
     ...(request.installId ? { installId: request.installId } : {}),
     ...(request.appVersion ? { appVersion: request.appVersion } : {}),
+    ...(request.machineId && /^[0-9a-f]{16}$/.test(request.machineId) ? { machineId: request.machineId } : {}),
     ...(request.auto ? { auto: true } : {}),
     ...(FAILURE_CODE_PATTERN.test(failureCode) ? { failureCode } : {}),
   });

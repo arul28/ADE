@@ -109,6 +109,7 @@ export {
 export {
   acpHasTranscript,
   acpInvocationKey,
+  AcpModeUnsupportedError,
   createAcpRuntime,
   resolveAcpConfigValue,
   setAcpReasoningEffort,

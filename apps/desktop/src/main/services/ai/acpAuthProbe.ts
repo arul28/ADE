@@ -24,9 +24,12 @@
 
 import type { AcpChatProvider } from "../../../shared/types/chat";
 import {
+  AcpRequestTimeoutError,
   AcpRpcError,
   createAcpConnection,
   initializeAcpConnection,
+  ACP_DEFAULT_REQUEST_TIMEOUT_MS,
+  ACP_HANDSHAKE_TIMEOUT_MS,
 } from "../chat/acpHost/acpConnection";
 import { acpDialectFor } from "../chat/acpHost/acpDialects";
 import { ACP_METHOD } from "../chat/acpHost/acpProtocolTypes";
@@ -46,6 +49,13 @@ import {
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
 
+/**
+ * The probe waits as long as a real chat would: a slower answer here than a
+ * chat allows reported "runtime-failed" for an agent whose chats open fine
+ * (Antigravity's session/new on a loaded machine). Authenticate keeps the
+ * shorter bound; it is only reached after a sign-in failure, so running out
+ * of it means "not signed in" too.
+ */
 const PROBE_TIMEOUT_MS = 15_000;
 const PROBE_CACHE_TTL_MS = 60_000;
 
@@ -146,7 +156,7 @@ function loginBlocker(provider: AcpChatProvider): string {
   return `${dialect.displayName} is not signed in. Run \`${dialect.authProbe.loginCommand}\` in a terminal${keyHint}, then refresh AI settings.`;
 }
 
-function publishResult(provider: AcpChatProvider, result: AcpAuthProbeResult): void {
+function publishResult(provider: AcpChatProvider, result: AcpAuthProbeResult, stderrTail?: string | null): void {
   // A sign-in that changed state may now be a different account, whose models differ.
   const before = getProviderRuntimeHealth(provider)?.state ?? null;
   if (before !== null && before !== result.state && (before === "ready" || result.state === "ready")) {
@@ -163,7 +173,7 @@ function publishResult(provider: AcpChatProvider, result: AcpAuthProbeResult): v
       reportProviderRuntimeAuthFailure(provider, result.message);
       return;
     case "runtime-failed":
-      reportProviderRuntimeFailure(provider, result.message);
+      reportProviderRuntimeFailure(provider, result.message, stderrTail ? { stderrTail } : undefined);
       return;
   }
 }
@@ -251,6 +261,9 @@ export async function probeAcpProviderAuth(
     };
   }
 
+  // What the agent wrote to stderr before the probe gave up: the only account
+  // of an agent that never answered `initialize` (Antigravity on Windows).
+  const probeOutput: { stderrTail: string | null } = { stderrTail: null };
   const probe = (async (): Promise<AcpAuthProbeResult> => {
     const dialect = acpDialectFor(provider);
     let connection: ReturnType<typeof createAcpConnection> | null = null;
@@ -272,7 +285,7 @@ export async function probeAcpProviderAuth(
       const response = await initializeAcpConnection({
         connection,
         dialect,
-        timeoutMs: PROBE_TIMEOUT_MS,
+        timeoutMs: ACP_HANDSHAKE_TIMEOUT_MS,
       });
 
       const advertised = response.authMethods ?? [];
@@ -286,7 +299,7 @@ export async function probeAcpProviderAuth(
         await connection.request(
           ACP_METHOD.sessionNew,
           { cwd, mcpServers: [] },
-          { timeoutMs: PROBE_TIMEOUT_MS },
+          { timeoutMs: ACP_DEFAULT_REQUEST_TIMEOUT_MS },
         );
         return { state: "ready", message: null };
       } catch (error) {
@@ -318,7 +331,10 @@ export async function probeAcpProviderAuth(
           // auth, so this is still a sign-in problem.
           return { state: "auth-failed", message: loginBlocker(provider) };
         }
-        if (isAcpAuthError(error)) {
+        // An `authenticate` that never answers headlessly is waiting on a
+        // login the user has to do (Grok's), and session/new already failed
+        // as sign-in: still not signed in, not a broken agent.
+        if (isAcpAuthError(error) || error instanceof AcpRequestTimeoutError) {
           return { state: "auth-failed", message: loginBlocker(provider) };
         }
         return {
@@ -336,6 +352,7 @@ export async function probeAcpProviderAuth(
         message: `ADE could not start its ${dialect.displayName} at ${executable.path}: ${detail}`,
       };
     } finally {
+      probeOutput.stderrTail = connection?.readStderrTail().trim() || null;
       connection?.dispose("auth probe finished");
     }
   })().then((result) => {
@@ -346,7 +363,8 @@ export async function probeAcpProviderAuth(
   inFlightProbes.set(key, probe);
   try {
     const result = await probe;
-    publishResult(provider, result);
+    const stderrTail = result.state === "runtime-failed" ? probeOutput.stderrTail : null;
+    publishResult(provider, result, stderrTail);
     if (result.state === "ready") {
       args.logger?.info?.("ai.acp_auth_probe.ready", { provider, cwd });
     } else {
@@ -355,6 +373,7 @@ export async function probeAcpProviderAuth(
         cwd,
         state: result.state,
         message: result.message,
+        ...(stderrTail ? { stderrTail: stderrTail.slice(-1_000) } : {}),
       });
     }
     return result;

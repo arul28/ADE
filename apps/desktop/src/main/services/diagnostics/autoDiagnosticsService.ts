@@ -75,6 +75,8 @@ export type AutoDiagnosticsReport = {
   report: string;
   filePath: string;
   installId: string;
+  /** Upload metadata, so the stored report names its machine. */
+  machineId?: string | null;
 };
 
 export type AutoDiagnosticsServiceDeps = {
@@ -90,6 +92,8 @@ export type AutoDiagnosticsServiceDeps = {
   onSent?: (notice: AutoDiagnosticsSentNotice) => void;
   capture?: (input: ProductAnalyticsCapture) => void;
   logger?: AutoDiagnosticsLogger;
+  /** A development build sends nothing on its own (`runAutoDiagnosticsSend`). */
+  devBuild?: boolean;
   /**
    * Test seams. `upload` is typed by what this service needs of an answer
    * rather than as `typeof uploadDiagnosticReport`, so a test can pass a plain
@@ -160,6 +164,7 @@ export function createAutoDiagnosticsService(
             baseUrl: resolveDiagnosticsUploadBaseUrl(env.ADE_ACCOUNT_DIRECTORY_URL),
             report: built.report,
             installId: built.installId === "unknown" ? null : built.installId,
+            machineId: built.machineId ?? null,
             appVersion: deps.appVersion,
             auto: true,
             failureCode,
@@ -167,6 +172,7 @@ export function createAutoDiagnosticsService(
         onSent: deps.onSent,
         logger: deps.logger,
         capture: deps.capture,
+        devBuild: deps.devBuild,
         now,
       });
     } finally {
@@ -250,6 +256,7 @@ export function createAutoDiagnosticsService(
           baseUrl: resolveDiagnosticsUploadBaseUrl(env.ADE_ACCOUNT_DIRECTORY_URL),
           report: built.report,
           installId: built.installId === "unknown" ? null : built.installId,
+          machineId: built.machineId ?? null,
           appVersion: deps.appVersion,
           // `auto: false` is the whole point of the flag: server-side these have
           // to stay separable from the reports nobody chose to file.

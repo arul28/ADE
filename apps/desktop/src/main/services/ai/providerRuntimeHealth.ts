@@ -26,7 +26,13 @@ export type ProviderRuntimeHealth = {
 const providerHealth = new Map<ProviderRuntimeHealthProvider, ProviderRuntimeHealth>();
 let providerHealthVersion = 0;
 
-function setProviderRuntimeHealth(next: ProviderRuntimeHealth): void {
+/** What a failure report carries beyond the health row: never shown, never part of its identity. */
+type ProviderRuntimeFailureDetail = {
+  /** The provider process's last stderr lines, already scrubbed and bounded. */
+  stderrTail?: string | null;
+};
+
+function setProviderRuntimeHealth(next: ProviderRuntimeHealth, detail?: ProviderRuntimeFailureDetail): void {
   const previous = providerHealth.get(next.provider);
   if (
     previous
@@ -41,7 +47,7 @@ function setProviderRuntimeHealth(next: ProviderRuntimeHealth): void {
   }
   providerHealth.set(next.provider, next);
   providerHealthVersion += 1;
-  reportHealthTransition(previous ?? null, next);
+  reportHealthTransition(previous ?? null, next, detail);
 }
 
 /**
@@ -91,7 +97,11 @@ const reportedRuntimeFailures = new Set<string>();
  * A recovery leaves a breadcrumb. Auth failures are only logged, since
  * signing out is not a bug.
  */
-function reportHealthTransition(previous: ProviderRuntimeHealth | null, next: ProviderRuntimeHealth): void {
+function reportHealthTransition(
+  previous: ProviderRuntimeHealth | null,
+  next: ProviderRuntimeHealth,
+  detail?: ProviderRuntimeFailureDetail,
+): void {
   if (next.state === "ready") {
     if (previous && previous.state !== "ready") {
       addSentryBreadcrumb("provider", `${next.provider} recovered`, { from: previous.state });
@@ -105,8 +115,13 @@ function reportHealthTransition(previous: ProviderRuntimeHealth | null, next: Pr
   }
   const kind = runtimeFailureKind(next.message);
   const reportKey = `${next.provider}:${kind}`;
+  const stderrTail = detail?.stderrTail?.trim() || null;
   if (reportedRuntimeFailures.has(reportKey)) {
-    forwardLogToSentry("warn", `provider.${next.provider}.runtime_failed`, { message: next.message ?? null, kind });
+    forwardLogToSentry("warn", `provider.${next.provider}.runtime_failed`, {
+      message: next.message ?? null,
+      kind,
+      ...(stderrTail ? { stderrTail } : {}),
+    });
     return;
   }
   reportedRuntimeFailures.add(reportKey);
@@ -114,6 +129,7 @@ function reportHealthTransition(previous: ProviderRuntimeHealth | null, next: Pr
     tags: { provider: next.provider, "provider.state": next.state, "provider.failure": kind },
     fingerprint: ["provider", next.provider, next.state, kind],
     level: "warning",
+    ...(stderrTail ? { extra: { stderrTail } } : {}),
   });
 }
 
@@ -141,13 +157,14 @@ export function reportProviderRuntimeAuthFailure(
 export function reportProviderRuntimeFailure(
   provider: ProviderRuntimeHealthProvider,
   message: string,
+  detail?: ProviderRuntimeFailureDetail,
 ): void {
   setProviderRuntimeHealth({
     provider,
     state: "runtime-failed",
     message: message.trim() || null,
     checkedAt: nowIso(),
-  });
+  }, detail);
 }
 
 export function getProviderRuntimeHealth(

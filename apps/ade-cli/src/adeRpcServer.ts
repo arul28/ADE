@@ -129,6 +129,7 @@ import { isExpectedFailure, isExpectedOutcome, isOfflineFetchError, isProgrammin
 import { describeFetchTransportFailure } from "../../desktop/src/shared/fetchTransportFailure";
 import { forwardLogToSentry } from "../../desktop/src/shared/sentry/logBridge";
 import { expectedErrorKind } from "../../desktop/src/shared/expectedError";
+import { brainStackFrames } from "../../desktop/src/shared/runtimeActionReplyError";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   joinAdeAgentSkillRoots,
@@ -9749,6 +9750,11 @@ export function createAdeRpcRequestHandler(args: {
             message,
           });
         }
+        // A defect's top three frames of ADE's own code (`function:line`, no
+        // paths), so the desktop's report of it says where the brain failed:
+        // the error it rebuilds has no stack of the brain's. Additive; older
+        // callers ignore it.
+        const frames = !expected && !movedAway && !(error instanceof JsonRpcError) ? brainStackFrames(error) : [];
         return {
           ok: false,
           error: {
@@ -9757,6 +9763,7 @@ export function createAdeRpcRequestHandler(args: {
               : adeCode ?? (error instanceof JsonRpcError ? error.code : JsonRpcErrorCode.toolFailed),
             message,
             ...(expected ? { expected } : {}),
+            ...(frames.length ? { frames } : {}),
             ...(movedAway ? {
               sessionId: error.sessionId,
               destinationSessionId: error.targetSessionId,

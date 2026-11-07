@@ -1,4 +1,5 @@
 import type { AgentChatSessionSummary } from "./chat";
+import type { OpenProjectBinding } from "./core";
 import type { LaneEnvInitProgress } from "./config";
 import type { ConflictOverlap, ConflictStatus } from "./conflicts";
 import type { LaneJiraIssue } from "./jira";
@@ -681,6 +682,13 @@ export type LaneDeleteProgress = {
 export type LaneDeleteEvent = {
   type: "lane-delete";
   progress: LaneDeleteProgress;
+  /**
+   * The project binding the delete was started with, when this window started
+   * it. Set by the preload, never sent by a runtime: the user can switch tabs
+   * before the delete finishes, and the completion still belongs to the
+   * project it ran in.
+   */
+  origin?: OpenProjectBinding | null;
 };
 
 /**

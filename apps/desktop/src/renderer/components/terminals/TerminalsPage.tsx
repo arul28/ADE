@@ -397,9 +397,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       }
       // Opening the row IS the acknowledgement — the "woke" marker only exists
       // to explain an unexpected return, so it goes as soon as it is seen.
-      const opened = selectableSessions.find((session) => session.id === id);
+      // Foreign rows are in the lookup too, so only a row that actually has a
+      // marker calls its machine. Clearing for every foreign row reached into
+      // sessions that machine no longer has ("Session '…' was not found").
+      const opened = selectableSessionsById.get(id);
       const acknowledge = () => {
-        if (opened?.wokeAt || binding) clearSessionWokeMarker(id, binding);
+        if (opened?.wokeAt) clearSessionWokeMarker(id, binding);
       };
       if (!before) {
         acknowledge();
@@ -416,7 +419,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         before.restoreWork();
       };
     },
-    [focusGridMode, focusSession, selectableSessions, selectedSessionIds, selectionAnchorId, work],
+    [focusGridMode, focusSession, selectableSessions, selectableSessionsById, selectedSessionIds, selectionAnchorId, work],
   );
 
   const handleSelectForeignRuntimeSession = useCallback(

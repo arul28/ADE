@@ -152,7 +152,9 @@ export type AndroidToolsPreloadAction =
   | "storeScreenshots"
   | "windowLayout"
   // Extra devices: the picker makes one of the lane's extras its device.
-  | "devicePromote";
+  | "devicePromote"
+  // The rail's "Keep running".
+  | "setKeepRunning";
 
 /** What one service method answers, without the promise. */
 export type AndroidServiceResult<K extends keyof AndroidEmulatorServiceApi> = Awaited<ReturnType<AndroidEmulatorServiceApi[K]>>;

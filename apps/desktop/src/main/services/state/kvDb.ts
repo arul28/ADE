@@ -4,10 +4,10 @@ import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType, StatementSync } from "node:sqlite";
-import { codedError, isCodedError } from "../../../shared/codedError";
-import { markExpected } from "../../../shared/expectedError";
+import { codedError, isCodedError, isErrnoLikeCode } from "../../../shared/codedError";
+import { carryExpected, expectedErrorKind, markExpected } from "../../../shared/expectedError";
 import type { Logger } from "../logging/logger";
-import { isSqliteBusyOrLockedError } from "./sqliteErrors";
+import { isSqliteBusyOrLockedError, isSqliteIoError } from "./sqliteErrors";
 import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { clearProvenDatabaseCopies, snapshotDatabaseBeforeVersionChange, writeDbCompatRecord } from "./dbCompatRecord";
@@ -23,6 +23,7 @@ import {
   type ExportHelper,
 } from "./crsqlExport";
 import { stripCrrUnsupportedTableConstraints } from "./sqliteDdl";
+import { noteDbClosed, noteDbOpened, noteDbWrite } from "./dbActivity";
 import {
   EVENT_LOG_RETENTION_DAYS,
   INGRESS_EVENT_RETENTION_MS,
@@ -123,6 +124,8 @@ export type KvDbOpenErrorCode =
   | "migration_incomplete"
   | "migration_unknown_state"
   | "storage_read_failed"
+  | "storage_io_failed"
+  | "db_busy"
   | "unknown";
 
 const KV_DB_OPEN_ERROR_CODES = new Set<KvDbOpenErrorCode>([
@@ -132,6 +135,8 @@ const KV_DB_OPEN_ERROR_CODES = new Set<KvDbOpenErrorCode>([
   "migration_incomplete",
   "migration_unknown_state",
   "storage_read_failed",
+  "storage_io_failed",
+  "db_busy",
   "unknown",
 ]);
 
@@ -162,6 +167,11 @@ export function classifySqliteOpenError(
   // One classifier decides this for the whole app — the brain's sync-host loop
   // reaches the same verdict through the same function.
   if (classifyStorageFault(error, { path: options.path })) return "storage_read_failed";
+  // The drive under the project stopped answering mid-open (a removed or
+  // failing external disk): not corruption, and nothing a repair can rewrite.
+  if (isSqliteIoError(error)) return "storage_io_failed";
+  // Another ADE process held the project's database past every retry.
+  if (isSqliteBusyOrLockedError(error)) return "db_busy";
   if (/malformed|not a database|integrity/i.test(message)) return "db_integrity";
   return "unknown";
 }
@@ -675,14 +685,32 @@ function preparedStatement(db: DatabaseSyncType, sql: string): StatementSync {
   return statement;
 }
 
+/**
+ * A failed statement, rethrown with its SQL. ADE's own code and expected mark
+ * travel with it (a drive that is not answering stays `storage_read_failed`
+ * and an answer, not an issue); a platform code is left behind with the
+ * original error.
+ */
+function statementError(error: unknown, sql: string): Error {
+  const statement = sql.replace(/\s+/g, " ").trim();
+  const message = error instanceof Error ? error.message : String(error);
+  const wrapped = new Error(`${message} [sql=${statement}]`);
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && code.trim() && !isErrnoLikeCode(code)) Object.assign(wrapped, { code });
+  // SQLite's own result code, so busy and I/O failures are classified by it
+  // and not by the wrapped message (which now carries the SQL).
+  const errcode = (error as { errcode?: unknown } | null)?.errcode;
+  if (typeof errcode === "number") Object.assign(wrapped, { errcode });
+  return carryExpected(error, wrapped);
+}
+
 function runStatement(db: DatabaseSyncType, sql: string, params: Array<SqlValue | SyncScalar> = []): { changes: number } {
+  noteDbWrite(sql);
   try {
     return preparedStatement(db, sql).run(...params.map((param, index) => toDbValue(param, index))) as { changes: number };
   } catch (error) {
     if (isCodedError(error, "db_path_changed")) throw error;
-    const statement = sql.replace(/\s+/g, " ").trim();
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${message} [sql=${statement}]`);
+    throw statementError(error, sql);
   }
 }
 
@@ -691,9 +719,7 @@ function getRow<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | S
     return (preparedStatement(db, sql).get(...params.map((param, index) => toDbValue(param, index))) as T | undefined) ?? null;
   } catch (error) {
     if (isCodedError(error, "db_path_changed")) throw error;
-    const statement = sql.replace(/\s+/g, " ").trim();
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${message} [sql=${statement}]`);
+    throw statementError(error, sql);
   }
 }
 
@@ -702,9 +728,7 @@ function allRows<T>(db: DatabaseSyncType, sql: string, params: Array<SqlValue | 
     return preparedStatement(db, sql).all(...params.map((param, index) => toDbValue(param, index))) as T[];
   } catch (error) {
     if (isCodedError(error, "db_path_changed")) throw error;
-    const statement = sql.replace(/\s+/g, " ").trim();
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${message} [sql=${statement}]`);
+    throw statementError(error, sql);
   }
 }
 
@@ -5125,10 +5149,60 @@ function sqliteFootprintBytes(dbPath: string): number {
   return total;
 }
 
+/**
+ * Whole-open retries when a sibling ADE process holds the project database.
+ *
+ * Only the WAL and CRR conversions wait out a peer's lock in short attempts;
+ * every other open step (the site-id preset, the migrations, the retrofits)
+ * waits the connection's 5,000 ms busy timeout once and then failed the whole
+ * project open with `database is locked`. Every step of the open is
+ * idempotent, and a busy failure closes the handle before it escapes, so the
+ * open simply runs again from the start: the same thing a person's "try again"
+ * does, a bounded number of times.
+ */
+const OPEN_BUSY_ATTEMPTS = 3;
+const OPEN_BUSY_RETRY_DELAY_MS = 1_000;
+
 export async function openKvDb(
   dbPath: string,
   logger: Logger,
   options: OpenKvDbOptions = {},
+): Promise<AdeDb> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const db = await openKvDbOnce(dbPath, logger, options);
+      if (attempt > 1) logger.info("db.open_busy_settled", { attempt });
+      return db;
+    } catch (error) {
+      if (!isSqliteBusyOrLockedError(error)) {
+        // Also for a failure before the open's own handler (opening the file,
+        // the first metadata read): a drive that stopped answering is this
+        // machine's state, not a defect, wherever the open noticed it.
+        if (isSqliteIoError(error) && error instanceof Error && !expectedErrorKind(error)) {
+          markExpected(error, "environment");
+        }
+        throw error;
+      }
+      if (attempt >= OPEN_BUSY_ATTEMPTS) {
+        // A peer that never let go is this machine's state, not a defect: a
+        // Sentry Log, not an issue. Only the last attempt's failure is news.
+        if (error instanceof Error) markExpected(error, "environment");
+        logger.error("db.init_failed", { dbPath, error, errorText: String(error) });
+        throw error;
+      }
+      logger.info("db.open_busy_retry", {
+        attempt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    await new Promise<void>((resolve) => { setTimeout(resolve, OPEN_BUSY_RETRY_DELAY_MS); });
+  }
+}
+
+async function openKvDbOnce(
+  dbPath: string,
+  logger: Logger,
+  options: OpenKvDbOptions,
 ): Promise<AdeDb> {
   const extensionPath = resolveCrsqliteExtensionPath();
   const hasCrsqlite = extensionPath != null;
@@ -5297,6 +5371,11 @@ export async function openKvDb(
     } catch {
       // best effort cleanup
     }
+    // `openKvDb` runs a busy open again, and reports the last one itself.
+    if (isSqliteBusyOrLockedError(err)) throw err;
+    // A drive that stopped answering is this machine's state, not a defect: a
+    // Sentry Log, not an issue.
+    if (isSqliteIoError(err) && err instanceof Error) markExpected(err, "environment");
     // The Error itself, so `logBridge` lifts it into the Sentry event and the
     // issue groups by the real failure; `errorText` keeps the sentence on disk,
     // which `JSON.stringify` writes an Error without.
@@ -5794,6 +5873,9 @@ export async function openKvDb(
     },
   };
 
+  // Open databases, for the brain's write-ahead-log sampling (`dbActivity.ts`).
+  noteDbOpened(dbPath);
+  let closed = false;
   return {
     getJson: <T,>(key: string): T | null => {
       const raw = getString(key);
@@ -5813,6 +5895,10 @@ export async function openKvDb(
       getRow(db, "pragma wal_checkpoint(TRUNCATE)");
     },
     close: () => {
+      if (!closed) {
+        closed = true;
+        noteDbClosed(dbPath);
+      }
       stopExportHelper(true);
       closeDatabase(db);
     },

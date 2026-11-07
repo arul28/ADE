@@ -27,6 +27,8 @@ export const EVENTS = Object.freeze({
   PUBLISH_FAILING: "ade_publish_failing",
   RELAY_SUPPRESSED: "ade_relay_suppressed",
   ACCOUNT_SESSION_UNREADABLE: "ade_account_session_unreadable",
+  // One per resource-pressure episode, from the machine brain's five-minute sample.
+  RESOURCE_PRESSURE: "ade_resource_pressure",
   // Recorded server-side by the account-directory Worker's Clerk webhook.
   SIGNED_UP: "ade_signed_up",
   ACCOUNT_DELETED: "ade_account_deleted",
@@ -116,6 +118,16 @@ export const PROPERTIES = Object.freeze({
   AI_IS_ERROR: "$ai_is_error",
   AI_TOTAL_COST_USD: "$ai_total_cost_usd",
   AI_LATENCY: "$ai_latency",
+  // The install on one computer (`machineTelemetryId.ts`), sent by builds after
+  // 1.2.129. The distinct id is the person once they sign in, so it counts
+  // people, not machines.
+  MACHINE_ID: "machine_id",
+  ERROR_CODE: "error_code",
+  ACTION_DOMAIN: "action_domain",
+  BRAIN_ACTION: "brain_action",
+  KIND: "kind",
+  SEVERITY: "severity",
+  EXCEPTION_FINGERPRINT: "$exception_fingerprint",
 });
 
 /**
@@ -123,12 +135,26 @@ export const PROPERTIES = Object.freeze({
  * keeps events that lack the property (older builds, iOS, the marketing
  * site), so only events that say `is_internal: true` drop out.
  */
-const EXCLUDE_INTERNAL = Object.freeze({
+const EXCLUDE_INTERNAL_EVENT = Object.freeze({
   key: "is_internal",
   value: ["true"],
   operator: "is_not",
   type: "event",
 });
+/**
+ * The person's flag too: an internal account (`ade_internal` in Clerk, copied
+ * to the person by the sign-up webhook) signed in on a machine that was never
+ * marked internal sends `is_internal: false` events, and they merge into that
+ * person. Events of a person-less install pass, as `is_not` keeps a missing
+ * property.
+ */
+const EXCLUDE_INTERNAL_PERSON = Object.freeze({
+  key: "is_internal",
+  value: ["true"],
+  operator: "is_not",
+  type: "person",
+});
+const EXCLUDE_INTERNAL = Object.freeze([EXCLUDE_INTERNAL_EVENT, EXCLUDE_INTERNAL_PERSON]);
 
 /**
  * Events no person caused, as `BACKGROUND_EVENTS` in
@@ -143,6 +169,7 @@ const BACKGROUND_EVENT_NAMES = Object.freeze([
   EVENTS.UPDATE_AUTO_APPLIED, EVENTS.UPDATE_AUTO_APPLY_CANCELLED, EVENTS.UPDATE_PROMPTED,
   EVENTS.BRAIN_RECOVERED, EVENTS.RENDERER_RECOVERED, EVENTS.PUBLISH_FAILING, EVENTS.RELAY_SUPPRESSED,
   EVENTS.ACCOUNT_SESSION_UNREADABLE, EVENTS.TOOL_FETCHED, EVENTS.BRAIN_ACTION_FAILED,
+  EVENTS.RESOURCE_PRESSURE,
   EVENTS.MOBILE_ERROR, EVENTS.EXCEPTION, "$identify",
 ]);
 /**
@@ -180,6 +207,22 @@ const PERSON_ACTIVITY = Object.freeze({
 
 const dateRange = (dateFrom) => ({ date_from: dateFrom, explicitDate: false });
 
+/**
+ * Counts machines, not people: `machine_id` where the build sends it, else the
+ * distinct id (older builds, which send no `machine_id`). A person with a
+ * laptop and a desktop is two installs here and one `dau`.
+ */
+const MACHINES = Object.freeze({
+  math: "hogql",
+  mathHogql: `count(distinct coalesce(properties.${PROPERTIES.MACHINE_ID}, distinct_id))`,
+});
+
+/**
+ * Beta has a few dozen installs to stable's hundreds, so one machine's bad day
+ * can double its rate. Said on every beta-vs-stable card.
+ */
+const MINIMUM_VOLUME_NOTE = " Read a channel's line only on a day it has at least 20 active installs (or 200 turns): below that, one machine moves it.";
+
 const eventNode = (event, customName, options = {}) => ({
   kind: "EventsNode",
   event,
@@ -187,6 +230,7 @@ const eventNode = (event, customName, options = {}) => ({
   ...(options.properties ? { properties: options.properties } : {}),
   ...(options.math ? { math: options.math } : {}),
   ...(options.mathProperty ? { math_property: options.mathProperty } : {}),
+  ...(options.mathHogql ? { math_hogql: options.mathHogql } : {}),
 });
 
 /** Every button that starts a download: the Mac/Windows dialog openers, the dialog's own buttons, and iPhone. */
@@ -220,6 +264,7 @@ function trends({
   dateFrom = "-90d",
   display = "ActionsLineGraph",
   breakdown,
+  breakdowns,
   breakdownLimit = 20,
   properties = [],
   formula,
@@ -234,7 +279,7 @@ function trends({
       series,
       interval,
       dateRange: dateRange(dateFrom),
-      properties: includeInternal ? properties : [...properties, EXCLUDE_INTERNAL],
+      properties: includeInternal ? properties : [...properties, ...EXCLUDE_INTERNAL],
       trendsFilter: {
         display,
         showLegend: !formula && (series.length > 1 || Boolean(breakdown)),
@@ -251,7 +296,14 @@ function trends({
               breakdown_limit: breakdownLimit,
             },
           }
-        : {}),
+        : breakdowns
+          ? {
+              breakdownFilter: {
+                breakdowns: breakdowns.map((property) => ({ property, type: "event" })),
+                breakdown_limit: breakdownLimit,
+              },
+            }
+          : {}),
       filterTestAccounts: false,
     },
   };
@@ -264,7 +316,7 @@ function funnel({ series, dateFrom = "-90d", windowInterval = 7, windowUnit = "d
       kind: "FunnelsQuery",
       series,
       dateRange: dateRange(dateFrom),
-      properties: [EXCLUDE_INTERNAL],
+      properties: [...EXCLUDE_INTERNAL],
       funnelsFilter: {
         layout: "horizontal",
         funnelVizType: "steps",
@@ -300,7 +352,7 @@ function retention({
     source: {
       kind: "RetentionQuery",
       dateRange: dateRange(dateFrom),
-      properties: [EXCLUDE_INTERNAL],
+      properties: [...EXCLUDE_INTERNAL],
       retentionFilter: {
         period,
         targetEntity: entity,
@@ -322,11 +374,22 @@ function eventsTable({ event, select, properties = [], dateFrom = "-90d", limit 
       kind: "EventsQuery",
       event,
       select,
-      properties: [...properties, EXCLUDE_INTERNAL],
+      properties: [...properties, ...EXCLUDE_INTERNAL],
       after: dateFrom,
       orderBy: ["timestamp DESC"],
       limit,
     },
+  };
+}
+
+/**
+ * A HogQL table. The query names its events and properties the same way a
+ * HogQL filter does, so the validator checks them against the catalog.
+ */
+function hogqlTable(query) {
+  return {
+    kind: "DataTableNode",
+    source: { kind: "HogQLQuery", query },
   };
 }
 
@@ -390,9 +453,9 @@ export const dashboardSpec = Object.freeze({
         insight(
           "weekly-active-installations",
           "Weekly active installations",
-          "Unique installations where a person used an ADE feature in each week. Work the app did on its own (storage sweeps, regenerated titles, automatic diagnostics) does not count.",
+          "Installations (machines, by `machine_id`; the distinct id for builds that send none) where a person used an ADE feature in each week. Work the app did on its own (storage sweeps, regenerated titles, automatic diagnostics) does not count.",
           trends({
-            series: [eventNode(EVENTS.FEATURE_USED, "Active installations", { math: "dau", properties: [PERSON_ACTIVITY] })],
+            series: [eventNode(EVENTS.FEATURE_USED, "Active installations", { ...MACHINES, properties: [PERSON_ACTIVITY] })],
           }),
         ),
         insight(
@@ -455,7 +518,7 @@ export const dashboardSpec = Object.freeze({
           "Feature-active installations by surface",
           "Unique installations where a person used a feature, on desktop, mobile, CLI, web, or API surfaces. Work the app did on its own does not count.",
           trends({
-            series: [eventNode(EVENTS.FEATURE_USED, "Feature-active installations", { math: "dau", properties: [PERSON_ACTIVITY] })],
+            series: [eventNode(EVENTS.FEATURE_USED, "Feature-active installations", { ...MACHINES, properties: [PERSON_ACTIVITY] })],
             breakdown: PROPERTIES.SURFACE,
           }),
         ),
@@ -829,13 +892,13 @@ export const dashboardSpec = Object.freeze({
         insight(
           "reliability-per-install-by-channel",
           "Failures per active install: beta vs stable",
-          "Brain wedge recoveries, failed brain actions and route-publish failures per install that opened ADE, split by release channel. Beta has far fewer installs, so compare rates, not counts: a beta line that climbs above stable is a regression to stop before it reaches stable.",
+          `Brain wedge recoveries, failed brain actions and route-publish failures per install (machine) that opened ADE, split by release channel. Beta has far fewer installs, so compare rates, not counts: a beta line that climbs above stable is a regression to stop before it reaches stable.${MINIMUM_VOLUME_NOTE}`,
           trends({
             series: [
               eventNode(EVENTS.BRAIN_RECOVERED, "Brain recoveries"),
               eventNode(EVENTS.BRAIN_ACTION_FAILED, "Brain action failures"),
               eventNode(EVENTS.PUBLISH_FAILING, "Publish failing"),
-              eventNode(EVENTS.APP_OPENED, "Active installs", { math: "dau" }),
+              eventNode(EVENTS.APP_OPENED, "Active installs", MACHINES),
             ],
             formula: "(A + B + C) / D",
             interval: "day",
@@ -999,9 +1062,9 @@ export const dashboardSpec = Object.freeze({
         insight(
           "weekly-active-installs",
           "Weekly installs that opened ADE",
-          "Installs that opened ADE in each week. PostHog's lifecycle chart cannot be used here: it needs person profiles, and ADE's ordinary events have person processing off. Pair this with the retention card above; the in-app `[ade:returning]` survey asks people who come back what pulled them away.",
+          "Installs (machines, by `machine_id`) that opened ADE in each week. PostHog's lifecycle chart cannot be used here: it needs person profiles, and ADE's ordinary events have person processing off. Pair this with the retention card above; the in-app `[ade:returning]` survey asks people who come back what pulled them away.",
           trends({
-            series: [eventNode(EVENTS.APP_OPENED, "Active installs", { math: "dau" })],
+            series: [eventNode(EVENTS.APP_OPENED, "Active installs", MACHINES)],
             interval: "week",
           }),
         ),
@@ -1057,7 +1120,7 @@ export const dashboardSpec = Object.freeze({
         insight(
           "agent-turn-failure-rate-by-channel",
           "Agent turn failure rate: beta vs stable",
-          "Failed turns over all turns per week, by release channel. A provider or harness update lands on beta first; this is where it shows.",
+          `Failed turns over all turns per week, by release channel. A provider or harness update lands on beta first; this is where it shows.${MINIMUM_VOLUME_NOTE}`,
           trends({
             series: [
               eventNode(EVENTS.AI_GENERATION, "Failed", { properties: [eventProperty(PROPERTIES.AI_IS_ERROR, "true")] }),
@@ -1084,6 +1147,81 @@ export const dashboardSpec = Object.freeze({
           trends({
             series: [eventNode(EVENTS.AI_GENERATION, "Median latency (s)", { math: "median", mathProperty: PROPERTIES.AI_LATENCY })],
             breakdown: PROPERTIES.AI_PROVIDER,
+          }),
+        ),
+      ],
+    },
+    {
+      key: "triage",
+      name: "ADE · Triage",
+      description: "Where to look first when something breaks: failing brain actions by code and channel, what started failing in which build, errors per machine on beta and stable, machines short of memory, and failed agent turns by provider and kind. Counts are machines (`machine_id`), so one broken computer is one, not hundreds.",
+      pinned: true,
+      insights: [
+        insight(
+          "brain-failures-by-code-and-channel",
+          "Brain action failures by code and channel",
+          `Machines whose brain refused or failed an action, per error code and release channel, over the last 14 days. \`unknown\` is a failure that carries no code; a code that appears only on beta is the next stable's regression.${MINIMUM_VOLUME_NOTE}`,
+          trends({
+            series: [eventNode(EVENTS.BRAIN_ACTION_FAILED, "Machines", MACHINES)],
+            breakdowns: [PROPERTIES.ERROR_CODE, PROPERTIES.RELEASE_CHANNEL],
+            dateFrom: "-14d",
+            interval: "day",
+            display: "ActionsBarValue",
+            breakdownLimit: 30,
+          }),
+        ),
+        insight(
+          "brain-failures-first-seen",
+          "Newest failing brain actions",
+          "Each failing domain and action with the build it first failed on, newest first: a row whose first build is the current beta is new. Events and machines over the last 30 days; ADE's own installs and accounts left out.",
+          hogqlTable([
+            `select properties.${PROPERTIES.ACTION_DOMAIN} as domain, properties.${PROPERTIES.BRAIN_ACTION} as action,`,
+            `  argMin(properties.${PROPERTIES.APP_VERSION}, timestamp) as first_seen_version, min(timestamp) as first_seen,`,
+            `  count() as events, count(distinct coalesce(properties.${PROPERTIES.MACHINE_ID}, distinct_id)) as machines`,
+            "from events",
+            `where event = '${EVENTS.BRAIN_ACTION_FAILED}' and timestamp > now() - interval 30 day`,
+            `  and ifNull(toString(properties.${PROPERTIES.IS_INTERNAL}), '') != 'true'`,
+            `  and ifNull(toString(person.properties.${PROPERTIES.IS_INTERNAL}), '') != 'true'`,
+            "group by domain, action",
+            "order by first_seen desc",
+            "limit 50",
+          ].join("\n")),
+        ),
+        insight(
+          "exceptions-by-fingerprint-and-channel",
+          "Errors per machine: beta vs stable",
+          `Machines reporting each error (\`$exception\`, by PostHog's fingerprint) per release channel over the last 14 days. An error on many machines outranks one that one machine sends a hundred times.${MINIMUM_VOLUME_NOTE}`,
+          trends({
+            series: [eventNode(EVENTS.EXCEPTION, "Machines", MACHINES)],
+            breakdowns: [PROPERTIES.EXCEPTION_FINGERPRINT, PROPERTIES.RELEASE_CHANNEL],
+            dateFrom: "-14d",
+            interval: "day",
+            display: "ActionsBarValue",
+            breakdownLimit: 30,
+          }),
+        ),
+        insight(
+          "resource-pressure-by-kind",
+          "Machines under resource pressure",
+          "Machines whose brain opened a resource-pressure episode (`ade_resource_pressure`) per day, by what ran short: memory, swap, a database write-ahead log, or the brain's own CPU. Each machine sends at most one per kind per six hours. The diagnostic report's Machine health section holds the episode's numbers.",
+          trends({
+            series: [eventNode(EVENTS.RESOURCE_PRESSURE, "Machines", MACHINES)],
+            breakdown: PROPERTIES.KIND,
+            interval: "day",
+            dateFrom: "-30d",
+          }),
+        ),
+        insight(
+          "failed-turns-by-provider-and-kind",
+          "Failed agent turns by provider and kind",
+          "Failed turns (`$ai_generation` with `$ai_is_error`) over the last 14 days, by provider and the turn's closed `error_kind`: timeout, server_overloaded, context_too_long, model_unavailable, process_exited, rate_limit, permission, network and the rest. Builds before this kind existed have none.",
+          trends({
+            series: [eventNode(EVENTS.AI_GENERATION, "Failed turns", { properties: [eventProperty(PROPERTIES.AI_IS_ERROR, "true")] })],
+            breakdowns: [PROPERTIES.AI_PROVIDER, PROPERTIES.ERROR_KIND],
+            dateFrom: "-14d",
+            interval: "day",
+            display: "ActionsBarValue",
+            breakdownLimit: 30,
           }),
         ),
       ],

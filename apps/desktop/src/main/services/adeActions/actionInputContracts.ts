@@ -1163,8 +1163,9 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     start: {
       description: "Boot the lane's AVD and wait until Android reports boot completed. No-op when it is already booted. "
-        + "force boots past the RAM guard. When adb refuses the device (ANDROID_ADB_UNAUTHORIZED), ADE restarts the adb server itself if no other device uses it; restartAdb restarts it even then. "
-        + "device names one of the lane's extra devices to boot beside the lane's device instead (the same RAM guard).",
+        + "Refused with ANDROID_LOW_MEMORY when the machine is under memory pressure, swapping, or its emulators would pass half of its memory; force boots anyway. "
+        + "When adb refuses the device (ANDROID_ADB_UNAUTHORIZED), ADE restarts the adb server itself if no other device uses it; restartAdb restarts it even then. "
+        + "device names one of the lane's extra devices to boot beside the lane's device instead (the same memory guard).",
       input: "object { laneId: string, force?: boolean, restartAdb?: boolean, device?: string }",
       example: "ade android start --json",
     },
@@ -1172,6 +1173,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Stop the lane's emulator, if ADE started it. The lane keeps its AVD. device names one of the lane's extra devices to stop instead.",
       input: "object { laneId: string, device?: string }",
       example: "ade android stop --json",
+    },
+    setKeepRunning: {
+      description: "Pin the lane's running emulator (\"Keep running\") so ADE does not stop it after 20 minutes unused, or unpin it. Answers the lane's device status.",
+      input: "object { laneId: string, keepRunning: boolean }",
+      example: "ade android keep-running on --json",
     },
     releaseDevice: {
       description:

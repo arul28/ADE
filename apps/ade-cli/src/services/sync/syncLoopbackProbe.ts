@@ -31,6 +31,16 @@ export const SYNC_LOOPBACK_PROBE_TIMEOUT_MS = 1_500;
 export const SYNC_LOOPBACK_PROBE_ATTEMPTS = 2;
 
 /**
+ * The deadline of one last probe, after every attempt above read no answer at
+ * all. A machine out of memory and CPU (Sentry: load average 27 on 10 cores,
+ * 248 MB free) can starve this process past 1.5 s twice in a row, and calling
+ * that a shadow stops the project's sync host. A silent foreign peer stays
+ * silent however long ADE waits, so the longer wait costs a real shadow only
+ * these seconds, once, and never lets one through.
+ */
+export const SYNC_LOOPBACK_PROBE_SLOW_TIMEOUT_MS = 8_000;
+
+/**
  * Identity header ADE's sync WebSocket servers stamp on the 426 Upgrade
  * Required response they return for non-upgrade HTTP requests. Its value is a
  * fresh per-listener nonce known to in-process validators. A bare `ws` server
@@ -190,7 +200,7 @@ export async function probeAdeLoopbackListener(
 export async function assertAdeLoopbackListener(
   port: number,
   expectedNonce: string,
-  probe: (port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult> = probeAdeLoopbackListener,
+  probe: (port: number, expectedNonce: string, timeoutMs?: number) => Promise<SyncLoopbackProbeResult> = probeAdeLoopbackListener,
 ): Promise<SyncLoopbackProbeResult> {
   let result = await probe(port, expectedNonce);
   // Only a probe that read no answer is repeated (see
@@ -204,6 +214,9 @@ export async function assertAdeLoopbackListener(
     attempt += 1
   ) {
     result = await probe(port, expectedNonce);
+  }
+  if (!result.ok && result.timedOut === true) {
+    result = await probe(port, expectedNonce, SYNC_LOOPBACK_PROBE_SLOW_TIMEOUT_MS);
   }
   if (!result.ok) {
     throw new LoopbackShadowedError(

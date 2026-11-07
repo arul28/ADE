@@ -463,6 +463,52 @@ const TURN_ERROR_KIND: Readonly<Record<AgentChatTurnErrorCategory, string>> = {
   unknown: "other",
 };
 
+/**
+ * The closed set a failed turn's `error_kind` takes (`ade_error`, and
+ * `$ai_generation`). The provider classifier's categories, plus five read off
+ * the error's own words where the classifier has no category for them: most
+ * failed turns were `network` or `other`, which hid the overloaded server and
+ * the conversation that outgrew its model behind one bucket.
+ */
+export const TURN_FAILURE_KINDS = [
+  "permission", "rate_limit", "budget", "network", "busy", "cli_missing",
+  "timeout", "server_overloaded", "context_too_long", "model_unavailable", "process_exited",
+  "other",
+] as const;
+export type TurnFailureKind = (typeof TURN_FAILURE_KINDS)[number];
+
+const CONTEXT_TOO_LONG = /context (?:length|window|limit)|prompt is too long|input is too long|too many (?:input )?tokens|maximum context|context_length_exceeded|exceeds? (?:the )?(?:model'?s? )?(?:maximum )?context/i;
+const MODEL_UNAVAILABLE = /model\b[^\n]{0,60}\b(?:not found|not available|unavailable|does not exist|not supported|unsupported|deprecated|retired)|unknown model|invalid model|model_not_found|no such model/i;
+const SERVER_OVERLOADED = /overloaded|\b(?:500|502|503|529)\b|service unavailable|bad gateway|internal server error|server error|over capacity/i;
+const PROCESS_EXITED = /exited with (?:code|signal)|process exited|exited unexpectedly|terminated unexpectedly|was killed|\bSIG(?:KILL|TERM|SEGV|ABRT)\b|crashed/i;
+const TIMED_OUT = /timed? ?out|timeout|deadline exceeded|ETIMEDOUT/i;
+
+/**
+ * A failed turn's `error_kind`, from the provider classifier's category and the
+ * error's message. Pure and content-free on the way out: only one of
+ * {@link TURN_FAILURE_KINDS} leaves, never the text it was read from.
+ */
+export function turnFailureKind(
+  category: AgentChatTurnErrorCategory | null | undefined,
+  text: string | null | undefined,
+): TurnFailureKind {
+  const fromCategory = category ? TURN_ERROR_KIND[category] as TurnFailureKind : "other";
+  // A category the classifier is sure of (a sign-in, a rate limit) wins; the
+  // words only refine its two catch-alls.
+  if (fromCategory !== "network" && fromCategory !== "other") return fromCategory;
+  const words = text ?? "";
+  if (CONTEXT_TOO_LONG.test(words)) return "context_too_long";
+  if (MODEL_UNAVAILABLE.test(words)) return "model_unavailable";
+  if (SERVER_OVERLOADED.test(words)) return "server_overloaded";
+  if (PROCESS_EXITED.test(words)) return "process_exited";
+  if (TIMED_OUT.test(words)) return "timeout";
+  return fromCategory;
+}
+
+function failedTurnKind(event: AgentChatTurnSettledEvent): TurnFailureKind {
+  return event.errorKind ?? (event.errorCategory ? TURN_ERROR_KIND[event.errorCategory] as TurnFailureKind : "other");
+}
+
 export function captureAgentTurnSettledAnalytics(args: {
   analytics: AgentTurnAnalytics;
   projectId: string;
@@ -497,6 +543,7 @@ export function captureAgentTurnSettledAnalytics(args: {
       reasoningTokens: event.usage?.reasoningTokens ?? null,
       costUsd: event.costUsd ?? null,
       durationMs: event.durationMs ?? null,
+      errorKind: event.status === "failed" ? failedTurnKind(event) : null,
     },
   });
 
@@ -551,7 +598,7 @@ export function captureAgentTurnSettledAnalytics(args: {
     minimumIntervalMs: 24 * 60 * 60_000,
     properties: {
       feature,
-      error_kind: event.errorCategory ? TURN_ERROR_KIND[event.errorCategory] : "other",
+      error_kind: failedTurnKind(event),
       outcome: "failure",
       recoverable: true,
       source: "runtime",

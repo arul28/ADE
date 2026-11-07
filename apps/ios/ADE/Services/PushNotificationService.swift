@@ -261,7 +261,7 @@ final class PushNotificationService: ObservableObject {
     // MARK: - APNs token lifecycle (from ADEAppDelegate)
 
     func didRegisterForRemoteNotifications(deviceToken: Data) {
-        let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
+        let hex = deviceToken.adeLowercaseHex
         apnsTokenHex = hex
         updateDiagnostics { diag in
             diag.tokenSuffix = String(hex.suffix(8))

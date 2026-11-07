@@ -2635,6 +2635,7 @@ describe("TerminalsPage chat session activation", () => {
     // against the tab's bound runtime instead, leaving the foreign row "woke".
     const foreignChat = workMocks.makeTerminalSession("chat-foreign-handoff", "lane-foreign", "codex-chat", {
       ptyId: null,
+      wokeAt: "2026-11-06T00:00:00.000Z",
     });
     const clearWokeMarker = vi.fn().mockResolvedValue(undefined);
     mountForeignMachine([foreignChat]);

@@ -45,6 +45,7 @@ import {
   IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS,
   IOS_SIMULATOR_RUN_TESTS_REMOTE_TRANSPORT_TIMEOUT_MS,
   USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS,
+  AI_STATUS_TIMEOUT_MS,
   WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS,
   WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS,
   ANDROID_EMULATOR_LIFECYCLE_REMOTE_TRANSPORT_TIMEOUT_MS,
@@ -78,7 +79,8 @@ import {
 import { classifyPairedRuntimeEndpoint } from "./pairedRuntimeRoutes";
 import { getSshHostKeyTrustForTarget } from "./sshTransport";
 import { callerReportsFailureParam } from "../../sentry/ipcCallScope";
-import { expectedErrorKind, markExpected, markExpectedFromWire } from "../../../shared/expectedError";
+import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
+import { runtimeActionReplyError } from "../../../shared/runtimeActionReplyError";
 import { compareUpdateVersions } from "../../../shared/updateVersions";
 import { isPeerVersionGapMessage } from "../../../shared/sentry/expectedFailure";
 
@@ -210,6 +212,9 @@ const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
 export const REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS = 30_000;
 const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["file.deletePath", FILE_DELETE_TIMEOUT_MS],
+  // A forced refresh waits on the other machine's ACP auth probes; see
+  // AI_STATUS_TIMEOUT_MS. The renderer's budget for it sits above this.
+  ["ai.getStatus", AI_STATUS_TIMEOUT_MS],
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
   ["chat.prepareCrossMachineHandoff", 120_000],
@@ -1208,7 +1213,9 @@ export class RemoteConnectionPool {
           this.unsupportedOptionalActionKeys.add(optionalFallbackKey);
           return optionalFallback;
         }
-        throw markPeerVersionGap(markExpectedFromWire(new Error(message), error.expected), entry.result.version, this.appVersion);
+        // The reply's code, expected mark and the brain's top frames ride on
+        // the rebuilt error (`runtimeActionReplyError.ts`).
+        throw markPeerVersionGap(runtimeActionReplyError({ ...error, message }, message), entry.result.version, this.appVersion);
       }
       return {
         domain:

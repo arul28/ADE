@@ -410,22 +410,51 @@ window until the next one. The source is the brain, not the pane
   prints it with the next `ade android log` command. The pin ends when the
   emulator stops.
 
-### The RAM guard (P2)
+### The memory guard (P2)
 
-Before a boot, the brain compares what the emulator needs with the memory the
-machine can give without swapping (`androidMemoryGuard.ts`):
+Before a boot, the brain decides on what the machine has already committed,
+not on a free-memory snapshot (`androidMemoryGuard.ts`): a machine already
+pushing the emulators into swap still reads as having memory free
+(`hostMemorySignals.ts` has the measured case). A start is refused with
+`ANDROID_LOW_MEMORY` when any one of these holds:
 
-- Need: the AVD's `hw.ramSize` (2 GB when it does not say) plus about 900 MB
-  for the emulator process.
-- Free: on macOS, `kern.memorystatus_level` (the percent that
-  `memory_pressure` prints) times the total. `os.freemem()` leaves out the file
-  cache there and reads far too low. On Windows and Linux, `os.freemem()`
-  (available memory).
-- A start that would leave less than 1 GB free fails with
-  `ANDROID_LOW_MEMORY`: "{device} needs about X GB of memory, and this machine
-  has Y GB free." The pane shows a warning strip with **Start anyway**, the
-  floating player's Start becomes **Start anyway**, and the CLI takes `ade
-  android start --force`. An emulator that already runs is never checked.
+1. **Pressure.** The OS says memory is under pressure, warn or worse. macOS:
+   `kern.memorystatus_vm_pressure_level` (1 normal, 2 warn, 4 critical).
+   Linux: PSI `/proc/pressure/memory` (`some avg10` ≥ 10% is warn; `full
+   avg10` ≥ 10% or `some` ≥ 40% is critical). Windows: the commit charge
+   against the commit limit (≥ 90% warn, ≥ 97% critical).
+2. **Paging.** The machine writes to swap at 4 MB/s or more, sampled over
+   2 s at the start only (`vm_stat` swap-outs, `/proc/vmstat` `pswpout`, or
+   Windows `PagesOutputPersec`). Nothing polls.
+3. **Budget.** All running emulators (the user's and other brains' too), the
+   boots in flight on the machine, and this one would pass half of physical
+   memory. The first emulator is never refused by this rule alone, so a small
+   machine can still run one.
+4. **Available.** What the OS can hand out (macOS `kern.memorystatus_level`
+   times the total, Linux `MemAvailable`, Windows free physical memory), less
+   the boots in flight and this one, would leave less than 1 GB.
+
+"Running emulators" is every `qemu-system-*` process and every discovery
+file's pid, measured as the OS counts real memory: macOS `phys_footprint`
+(`footprint`, which includes compressed and swapped memory; plain RSS read
+2.3 GB for an emulator whose footprint was 8.4 GB), Linux RSS + swap, Windows
+the private commit. One process listing per start.
+
+"This one" is the AVD's `hw.ramSize` (2 GB when it does not say) plus its
+overhead: the overhead last measured for that AVD (from one of ADE's
+emulators that ran at least 5 minutes, kept in the owner file), else the
+largest one measured on the machine, else as much again as the guest plus
+1.5 GB. A 2 GB foldable measured 6.4 GB over its guest after a day of use.
+
+Boots in flight are held in this process (two lanes that start together
+cannot both fit) and in the owner file for other brains. The refusal is one
+sentence under 140 characters that names the numbers and the way out, for
+example "Pixel 9 needs about 5.5 GB; emulators already use 14.0 GB of the
+18.0 GB ADE allows. Stop an emulator first." It is an expected answer
+(`environment`), so it never reaches Sentry as an issue. The pane shows a
+warning strip with **Start anyway**, the floating player's Start becomes
+**Start anyway**, and the CLI takes `ade android start --force` (its hint
+says to ask the user first). An emulator that already runs is never checked.
 
 ### States
 
@@ -438,7 +467,7 @@ machine can give without swapping (`androidMemoryGuard.ts`):
 | Video stopped | The picture dims. The strip says "Video stopped." with **Reconnect**. |
 | Off | "{name} is off." with **Start** and **Choose another device**. |
 | Crashed | An error strip with one line on why the emulator stopped (often the last error line of its log), one action (**Restart**, or **Restart adb and start** when adb refused the device) and an **Open log** link. The card below says "{name} is off." with **Choose another device**. The strip reports the failure to Sentry under `android_device_boot` with its code. |
-| Low memory | A warning strip with the numbers and **Start anyway** (the RAM guard). |
+| Low memory | A warning strip with the numbers and **Start anyway** (the memory guard). |
 | Unsupported | "This machine can't run the Android emulator." with the host's reason. |
 
 A failed status read shows an inline banner with **Retry**. When the
@@ -517,8 +546,11 @@ The rules:
   ADE's marker counts as the user's.
 - ADE never stops an emulator it did not start. It keeps the list of the
   emulators it started in `<project>/.ade/android/started-emulators.json`, so
-  the list survives a restart. `ade android stop` on an emulator that another
-  app started fails with `ANDROID_AVD_RUNNING`.
+  the list survives a restart, and an owner record of each in the machine's
+  owner file (see [Emulator lifecycle](#emulator-lifecycle)). `ade android
+  stop` on an emulator that another app started fails with
+  `ANDROID_AVD_RUNNING`. Emulators that ADE did not start are listed and count
+  against the memory guard, and are never stopped.
 - An AVD that ADE made for a lane outside this project can be attached, but
   this project never deletes it.
 - An AVD boots once at a time. Each emulator gets its own even console port in
@@ -597,8 +629,10 @@ keeps a created AVD on disk.
 
 ### Brain restarts and the start-up cleanup
 
-- **Hand-off.** When the brain exits, ADE's emulators keep running and stay in
-  the state file. The next brain adopts them again. A boot that was in
+- **Hand-off.** When a brain on the installed app's ADE home (`~/.ade`,
+  `~/.ade-alpha`) exits, ADE's emulators keep running and stay in the state
+  file. The next brain adopts them again. A brain on any other home (a dev or
+  test brain) has no next brain: it stops them. A boot that was in
   progress finishes by itself and reads as Starting until it is done. A
   service that the desktop runs in its own process does not hand off: when it
   closes, it stops every emulator that ADE started for the project.
@@ -619,30 +653,106 @@ keeps a created AVD on disk.
 A desktop that does not run the project's runtime in its own process does not
 build an Android service. So one service owns a project's emulators.
 
-### Idle power-off and the cleanup pass
+### Emulator lifecycle
 
-`androidLaneMaintenance.ts`, as Apple's lane device maintenance:
+An emulator runs only as long as something is going to use it
+(`androidEmulatorOwners.ts`, `androidEmulatorSweep.ts`, `androidEmulatorUse.ts`).
+There is one idle policy and one orphan policy, and both live here and in
+the service, not in the cleanup pass below.
 
-- **Idle power-off.** An emulator ADE made (`origin: "created"`) and started
-  powers off after 30 min with no use (`ADE_ANDROID_IDLE_POWER_OFF_MINUTES`; 0
-  turns it off). Use is any service call for the lane except the reads, a
-  viewer or a recording on its stream, a held lease, running tests, and input
-  on the device itself (`dumpsys power` `mLastUserActivityTime`). The service
-  start counts as use, so a brain restart or a hand-off never reads as idle.
-  An emulator the user attached, or one ADE did not start, is never powered
-  off. The lane keeps its device; `status` shows `poweredOff` (when, and the
-  idle minutes) until the next start. Each extra device has its own idle
-  clock (an install or a launch on it counts as use) and powers off the same
-  way.
+- **Owner records.** Every emulator ADE starts gets a record in one file for
+  the whole machine, `~/.ade/android/emulator-owners.json` (under the user's
+  default home whatever `ADE_HOME` says, so the installed brain, a dev brain
+  and a test brain on a scratch home all see it): the AVD and console port,
+  qemu's pid and its start time, the owning brain's pid, start time and ADE
+  home, the lane, the project, the chat, the machine id, when it started and
+  was last used, and the pin. Writes take a lock file and rename into place.
+  Emulators that were already running when a brain first used this file are
+  taken in with a fresh idle clock.
+- **Last used.** Every service call that names the lane moves its clock (a
+  tap, key, text or touch, Inspect, a relaunch, a stream, an install or
+  launch, a screenshot, a recording, a log read, a lease, a fold, a test
+  run), except the reads a pane or the mini player polls, the stops, the pin
+  and the cleanup pass (`ANDROID_NOT_USE_METHODS`), so a new method counts by
+  default. While a stream someone holds (a viewer or a recording), a lease, a
+  boot or one of those calls is in progress, the emulator is in use.
+- **Idle stop.** An emulator ADE started (made or attached AVD alike) that is
+  not pinned and that nobody used for 20 minutes is stopped
+  (`ADE_ANDROID_IDLE_POWER_OFF_MINUTES`, or its other name
+  `ADE_ANDROID_IDLE_STOP_MINUTES`; `0` turns it off). Just before the stop, on
+  the lane's queue, the device is asked for use ADE's calls cannot see: input
+  from outside ADE (`dumpsys power` `mLastUserActivityTime`, which adb and
+  Android Studio move) inside the limit, or a scrcpy viewer that is not this
+  brain's (another brain on the project, another tool). Either one restarts
+  the clock instead (`android.idle_stop_skipped`). The lane keeps its device;
+  `status` shows `poweredOff` (when, and the idle minutes) until the next
+  start, and `ade android start` boots it again.
+- **Keep running.** The rail's More menu has **Keep running**, and agents have
+  `ade android keep-running on|off`. It pins the running emulator against the
+  idle stop and `device-cleanup --power-off-idle`, on the emulator's machine (a pinned call through the
+  `android_emulator` action domain, `setKeepRunning`). A stop ends the pin.
+  `status` shows `keep running: yes`, or `no (ADE stops it after 20 min
+  unused)`.
+- **Owner gone.** When the owning brain is gone, a live brain on the same ADE
+  home adopts the emulator (a restart or an update), as the hand-off above
+  does. A brain on a dev or test home does not hand off on exit: it stops its
+  emulators, and nothing adopts them. One that crashed is stopped by any
+  brain's sweep after a grace: 2 minutes for a scratch home, 10 for the
+  installed app's home (its service can take minutes to come back). A pinned
+  emulator on the installed app's home is never stopped this way: it waits
+  for a brain on that home to adopt it. A stop re-reads the record just
+  before it is taken, and is called off when the record changed since the
+  sweep looked (pinned, adopted, used).
+- **The sweep.** Each brain sweeps 30 s after its first Android service
+  starts and then every 5 minutes, on unref'd timers. A sweep reads the owner
+  file and the discovery folders, and only when there are records runs one
+  `ps` for start times (on Windows, one `tasklist` for image names instead).
+  It stops nothing that has no record, and nothing whose discovery file no
+  longer names the recorded AVD, port and pid; a record whose emulator is
+  gone is dropped. Windows has no start times to compare and keeps a crashed
+  emulator's discovery file, so there a pid counts as the emulator only while
+  its image is `qemu-system-*` or `emulator*`.
+- **Stopping.** `adb -s emulator-<port> emu kill`, then (only if qemu has not
+  exited after 20 s, and only after checking the discovery file again) SIGTERM,
+  then SIGKILL. On Windows, `taskkill /T`, then `taskkill /T /F`, each only
+  after `tasklist` shows the pid is still an emulator's image; a user's stop
+  goes through the same checks. Every stop
+  logs `android.emulator_stopped` with its reason: `user`, `released`,
+  `lane_released`, `idle`, `owner_gone`, `orphan`, `cleanup` or
+  `project_closed`.
+- **Orphans.** An emulator ADE started for the project that no lane holds
+  any more is stopped (`orphan`) by one stop, which the start-up cleanup
+  above and the cleanup pass below both use. The pin does not keep one: with
+  no lane, nothing could unpin it.
+- **Dev and test brains.** A brain a dev or test launcher marked
+  (`ADE_DEV_BRAIN=1`, `--dev-test-machine`, the dev launcher's socket
+  variable), on a home other than the installed app's, exits after 30
+  minutes with no clients, no chat or terminal work and no synced device
+  once its parent is gone (`unmanagedBrainIdleExit.ts`), and stops its
+  emulators on the way out. A brain nothing marked (`nohup`, cron, a cloud
+  box) never idles out.
+
+### The cleanup pass
+
+`androidLaneMaintenance.ts`, as Apple's lane device maintenance, without its
+idle timer (the idle stop above is the only one):
+
+- **Extra devices and the idle stop.** Each extra device has its own owner
+  record, under the lane that holds it, so the machine sweep stops an idle
+  extra by the same rules as the lane's device (an install or a launch on it
+  counts as use, and so does its boot). The stop runs on the extra's own
+  queue; `status` shows the extra's `poweredOff` until its next start.
 - **Cleanup.** 60 s after the service starts, then every 15 min: release the
   device of each ended lane, stop each emulator ADE started that no lane
-  holds (by its process tree, so Windows too), forget each lane row whose AVD
+  holds (the `orphan` stop above, by its process tree, so Windows too),
+  forget each lane row whose AVD
   is gone from disk, and list ADE-made AVDs that no lane holds (never deleted:
   the marker does not name the project). `deviceCleanup` (`ade android
   device-cleanup`) runs the same pass now; `--dry-run` reports and changes
-  nothing; `--power-off-idle` also powers off idle emulators now. An agent's
-  `--power-off-idle` reaches only its own lane (the RPC server sets
-  `agentCaller`).
+  nothing; `--power-off-idle` also powers off now each emulator ADE started
+  that nothing uses and nobody pinned (`cleanup`), whatever its idle time. An
+  agent's `--power-off-idle` reaches only its own lane (the RPC server sets
+  `agentCaller`). The report's `idlePowerOffMinutes` is the idle stop's limit.
 - **Chrome's first run.** Before the first `open-url` whose `http(s)` URL
   opens in Chrome (`cmd package resolve-activity`), and before `launch
   --package com.android.chrome`, ADE makes Chrome skip "Welcome to Chrome"
@@ -666,8 +776,9 @@ any flag that a verb does not take.
 | `device-create --catalog <id> [--color <id>] [--image <package>] [--name <shown name>] [--no-start]` | Make an AVD of a brand-grid device (`pixel-10-pro`, `galaxy-s25`, …) in that colour, and boot it. |
 | `render [--angles <a,b>] [--lighting transparent\|studio\|dusk] [--no-shadow] [--video] [--sheet]` | 3D renders of the lane's live device, drawn by the open Android pane and filed as proof. It fails when no window shows the lane's device. |
 | `device-attach --avd <name> [--no-start]` | Hold an AVD that no other lane holds, and boot it. |
-| `start` | Boot the lane's AVD. It waits for boot completed. |
+| `start` | Boot the lane's AVD. It waits for boot completed. Refused with `ANDROID_LOW_MEMORY` by the [memory guard](#the-memory-guard-p2); `--force` boots anyway. |
 | `stop` | Stop the lane's emulator. The lane keeps its AVD. |
+| `keep-running on\|off` | Pin the lane's running emulator against ADE's 20-minute idle stop, or unpin it ([Emulator lifecycle](#emulator-lifecycle)). |
 | `device-detach [--keep]` | Stop the emulator and release the AVD (see [When a lane ends](#when-a-lane-ends)). |
 | `device-create --extra (--catalog <id> \| --profile <id>) [--no-start]` | Make an extra AVD beside the lane's device and boot it ([Extra devices](#extra-devices)). |
 | `start --device <avd>`, `stop --device <avd>` | Boot or stop one of the lane's extras (the RAM guard applies; `--force` boots past it). |
@@ -1120,8 +1231,9 @@ The emulator service in the brain records one coarse `ade_feature_used` fact
 an app installs, a 3D render files as proof, an agent takes a new lease, a
 system image installs (`image_installed`), an instrumentation run runs at
 least one test (`tests_run`), a fold settles (`device_folded`), or a Compose
-preview render writes an image (`previews_rendered`), or a Play Store
-screenshot set is taken (`store_screenshots`). Boot health has three
+preview render writes an image (`previews_rendered`), a Play Store
+screenshot set is taken (`store_screenshots`), or ADE stops an emulator by
+itself (`emulator_auto_stopped`: idle, or its brain was gone). Boot health has three
 outcomes: a start that booted (`device_booted`), one that did not
 (`boot_failed`), and an adb server restart that ADE made so a refused
 device could boot (`adb_restarted`). Extra devices have two: a lane made an
@@ -1139,7 +1251,7 @@ goes with it. `docs/logging.md` holds the contract.
 |---|---|
 | `apps/desktop/src/shared/types/androidEmulator.ts` | The contract: SDK, AVD and lane types, error codes, the service API, the action lists (`ANDROID_AGENT_ACTIONS`, `ANDROID_USER_ONLY_ACTIONS`, `ANDROID_PERSON_ONLY_ACTIONS`, `ANDROID_LANE_FREE_ACTIONS`, `ANDROID_CODE_SYNC_ACTIONS`), and the preload API. It re-exports its siblings: `androidEmulatorAgent.ts` (the agent suite, `ANDROID_PERMISSIONS`), `androidEmulatorSetup.ts` (the SDK install), `androidEmulatorLook.ts` (colour and render) and `androidEmulatorDrawer.ts` (the Tools drawer, `ANDROID_TEXT_SIZES`, `ANDROID_DISPLAY_SIZES`). |
 | `apps/desktop/src/main/services/android/androidEmulatorService.ts`, `androidEmulatorServiceDeps.ts` | The service: lane queue, start, stop, input, screenshot, the work-copy lanes, the start-up cleanup, and the hand-off. Its inputs and its state for one lane are in `androidEmulatorServiceDeps.ts`. |
-| `apps/desktop/src/main/services/android/androidEmulatorLifecycle.ts` | The boot and the stop that run on the lane's queue (`startLocked`, `stopLocked`), the mid-boot abort, and the boot timeout. |
+| `apps/desktop/src/main/services/android/androidEmulatorLifecycle.ts` | The boot and the stop that run on the lane's queue (`startLocked`, `stopLocked`): the memory guard's reservation, the owner record's launch, boot and forget, the stop reason, the mid-boot abort, and the boot timeout. |
 | `apps/desktop/src/main/services/android/androidMachinePreferences.ts`, `apps/desktop/src/shared/types/androidEmulatorRecording.ts` | The machine's Android settings file (`sdkPath` and `preferences`, atomic writes, a broken file refused), the machine preferences, and the recording types. |
 | `apps/desktop/src/main/services/android/androidAutoRecord.ts` | Auto-record: an agent's input starts a recording, the end of its turn stops it, and the opt-outs (`--no-record`, the lane switch, the person's own input). |
 | `apps/desktop/src/main/services/android/androidHandedOffEmulators.ts` | The state file of the emulators ADE started, and the stops that use it: on dispose, and when a project is removed after a hand-off. |
@@ -1155,8 +1267,14 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/main/services/android/androidStream.ts`, `androidStreamServer.ts`, `androidLaneStreams.ts` | Streams by adb serial, the defaults, restarts, and the loopback stream server; the lane's side of its stream (a viewer, a recording). |
 | `apps/desktop/src/main/services/android/scrcpyServer.ts`, `scrcpyVideo.ts`, `scrcpyControl.ts` | The scrcpy session, video records and control messages. |
 | `apps/desktop/src/main/services/android/androidActionDomain.ts` | The `android_emulator` action domain. |
-| `apps/desktop/src/main/services/android/androidMemoryGuard.ts`, `androidCrashWatch.ts` | P2: the RAM guard (the check before each start, with the machine-wide count of boots in flight), and the crash-buffer reader behind the crash pin. |
-| `apps/desktop/src/shared/types/androidEmulatorControl.ts`, `apps/desktop/src/main/services/android/androidAppState.ts`, `androidInspect.ts`, `androidLaneMaintenance.ts`, `androidChromeSetup.ts` | Parity with `ade apple`: the key names and modifiers, intent extras, app state and the app in front, Inspect's packet and source search, the idle power-off and cleanup pass, and Chrome's first run. |
+| `apps/desktop/src/main/services/android/androidMemoryGuard.ts`, `androidCrashWatch.ts` | P2: the memory guard (the decision before each start: pressure, paging, the emulators' budget, available memory, and the boots in flight), and the crash-buffer reader behind the crash pin. |
+| `apps/desktop/src/main/services/machineStats/hostMemorySignals.ts` | The machine's memory signals per OS (pressure, available, swap, commit, PSI, the paging rate) and the real memory of chosen processes. Shared with the brain's resource-pressure sampling. |
+| `apps/desktop/src/main/services/android/androidEmulatorOwners.ts`, `androidEmulatorSweep.ts` | The machine's owner file (`~/.ade/android/emulator-owners.json`) and the sweep's decision for one record; the lifecycle of one brain (owner records, last used, the pin, the guard's cross-brain ledger, the sweep). |
+| `apps/desktop/src/main/services/android/androidEmulatorUse.ts` | One service as the lifecycle sees it: the calls that count as use, busy, the idle stop through the lane's queue (with the device's own input and other viewers), the pin, and emulators taken in from before the owner file. |
+| `apps/desktop/src/main/services/android/androidEmulatorImage.ts` | Which processes are emulators by image name (memory guard, process groups), and the Windows `tasklist` check before a kill. |
+| `apps/desktop/src/main/services/device/deviceMaintenance.ts` | The timers, idle limit and touch throttle that the Apple devices' upkeep and the Android sweep share. |
+| `apps/ade-cli/src/services/runtime/unmanagedBrainIdleExit.ts` | The idle exit of a brain a dev or test launcher marked, once its launcher is gone. |
+| `apps/desktop/src/shared/types/androidEmulatorControl.ts`, `apps/desktop/src/main/services/android/androidAppState.ts`, `androidInspect.ts`, `androidLaneMaintenance.ts`, `androidChromeSetup.ts` | Parity with `ade apple`: the key names and modifiers, intent extras, app state and the app in front, Inspect's packet and source search, the cleanup pass and the "powered off" record, and Chrome's first run. |
 | `apps/desktop/src/main/services/android/androidAgentSuite.ts`, `androidJdk.ts` | The agent verbs (elements, apps, logcat, proof, lease), and the JDK that Gradle runs with. |
 | `apps/desktop/src/main/services/android/androidSystemImages.ts`, `apps/desktop/src/shared/types/androidEmulatorImages.ts` | P3: the system image list, install (on the guided install's job) and removal, and their types. |
 | `apps/desktop/src/main/services/android/androidInstrumentationTests.ts`, `apps/desktop/src/shared/types/androidEmulatorInstrumentation.ts` | P3: `ade android test`: the Gradle run, the JUnit XML and Gradle-output readers, and their types. |
@@ -1246,4 +1364,6 @@ The full list is in §6 of the [plan](../../plans/android-emulator.md).
 | "This emulator has no hinge" | Fold works on a foldable AVD only. Make one from a Pixel Fold or Galaxy Z Fold tile. |
 | `preview`: "has no build.gradle" | Pass `--module <folder>`: the Gradle module that holds the `@Preview` functions, not the project's root. |
 | `ANDROID_NO_FREE_PORT` | All ports 5554–5682 are in use. Stop an emulator you do not need. |
+| `ANDROID_LOW_MEMORY` | The [memory guard](#the-memory-guard-p2) refused the start: the sentence says why (pressure, swapping, the emulators' budget, or free memory). Stop an emulator you do not need, or close apps. **Start anyway** (`--force`) boots past it. `android.start_low_memory` in the brain log has the numbers. |
+| The emulator stopped by itself | ADE stops an emulator nobody used for 20 minutes, and one whose brain is gone ([Emulator lifecycle](#emulator-lifecycle)). Start it again, or turn on **Keep running** (`ade android keep-running on`). `android.emulator_stopped` in the brain log says why. |
 | `ANDROID_STREAM_FAILED` | The live view failed. `tap`, `swipe`, `button`, `type` and `screenshot` do not need it. Press **Reconnect** in the pane. |

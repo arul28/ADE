@@ -9,11 +9,14 @@
  * dying is one event, not one per restart.
  *
  * Nothing here carries user content or terminal output: kinds, the helper's
- * error messages, package names and host facts only.
+ * error messages and last stderr lines (paths and home folders taken out, see
+ * `linuxScreenFailureCause`), package names and host facts only.
  */
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { captureProblem, sendSentryLog } from "../../../shared/sentry/capture";
+import { scrubFreeTextThenCut, scrubOutputTail } from "../../../shared/sentry/scrub";
 import type { LinuxDesktopSetupResult } from "../../../shared/types/macDesktop";
 import { linuxPackageManagerId } from "./linuxDesktopSetup";
 
@@ -104,6 +107,67 @@ export function reportLinuxScreenProblem(
     extra: { ...extra, ...(detail ? { detail } : {}) },
     fingerprint: ["linux_screen", kind, host["linux.distro"], detail],
   });
+}
+
+const CAUSE_TEXT_MAX_CHARS = 500;
+const CAUSE_STDERR_LINE_MAX_CHARS = 300;
+const CAUSE_CODE_MAX_CHARS = 100;
+
+/**
+ * Why a helper start or a screen failed, for the report's extras: the error's
+ * code, its message, and, when the helper exited, its exit code or signal and
+ * the last lines it wrote to stderr (the driver client puts those on the error
+ * as `driverExit`). Every text, the code too (it is also the dedupe detail),
+ * goes through `scrubFreeText`, which takes out secrets, email addresses and
+ * absolute paths (so no home folder or user name).
+ */
+export type LinuxScreenFailureCause = {
+  code: string | null;
+  reason: string | null;
+  exitCode?: number | null;
+  exitSignal?: string | null;
+  stderrTail?: string[];
+};
+
+export function linuxScreenFailureCause(error: unknown): LinuxScreenFailureCause {
+  const record = error && typeof error === "object" ? error as {
+    code?: unknown;
+    message?: unknown;
+    driverExit?: { code?: unknown; signal?: unknown; stderrTail?: unknown };
+  } : null;
+  const exit = record?.driverExit;
+  // Scrubbed as one text before it is split (`scrubOutputTail`): a private
+  // key spans lines, and line by line its body lines would read as ordinary.
+  const stderrLines = Array.isArray(exit?.stderrTail)
+    ? exit.stderrTail.filter((line): line is string => typeof line === "string")
+    : [];
+  const stderrTail = stderrLines.length > 0
+    ? scrubOutputTail(stderrLines.join("\n"), { maxLines: stderrLines.length, lineChars: CAUSE_STDERR_LINE_MAX_CHARS })
+    : [];
+  const message = typeof record?.message === "string"
+    ? record.message
+    : typeof error === "string" ? error : "";
+  return {
+    code: typeof record?.code === "string" ? scrubFreeTextThenCut(record.code, CAUSE_CODE_MAX_CHARS) : null,
+    reason: message ? scrubFreeTextThenCut(message, CAUSE_TEXT_MAX_CHARS) : null,
+    ...(exit ? {
+      exitCode: typeof exit.code === "number" ? exit.code : null,
+      exitSignal: typeof exit.signal === "string" ? exit.signal : null,
+    } : {}),
+    ...(stderrTail.length > 0 ? { stderrTail } : {}),
+  };
+}
+
+/**
+ * The dedupe detail for a failure: its code and a short hash of its scrubbed
+ * reason, so two causes with one code (or none) are reported once each, not
+ * once between them. Digits are folded first, so a pid, port or timeout in
+ * the message does not make every occurrence a new cause.
+ */
+export function linuxScreenFailureDetail(cause: LinuxScreenFailureCause): string {
+  const reason = cause.reason?.replace(/\d+/g, "#") ?? "";
+  const hash = reason ? createHash("sha256").update(reason).digest("hex").slice(0, 8) : "";
+  return [cause.code ?? "", hash].filter(Boolean).join(":");
 }
 
 /**

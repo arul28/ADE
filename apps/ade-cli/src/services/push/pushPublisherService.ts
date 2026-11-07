@@ -560,7 +560,28 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
    */
   const lastAlertFingerprintById = new Map<string, string>();
   /** Agent messages still inside their lifetime, oldest first (durable). */
-  let userMessages: StoredUserMessage[] = deps.store.listUserMessages?.() ?? [];
+  const startupUserMessages = deps.store.listUserMessages?.();
+  let userMessages: StoredUserMessage[] = startupUserMessages ?? [];
+  /**
+   * The store could not read its file at startup (it answers null), so
+   * `userMessages` holds only what this process sent since. Until a read
+   * works it is never persisted (that would replace the stored messages with
+   * a smaller set) and Activity is not published (a reconcile from it would
+   * tombstone delivered messages).
+   */
+  let userMessagesPending = startupUserMessages === null;
+  /** Read the stored messages again if the startup read failed; true once they are known. */
+  const hydrateUserMessages = (): boolean => {
+    if (!userMessagesPending) return true;
+    const persisted = deps.store.listUserMessages?.() ?? null;
+    if (!persisted) return false;
+    userMessagesPending = false;
+    const persistedIds = new Set(persisted.map((message) => message.id));
+    const sentMeanwhile = userMessages.filter((message) => !persistedIds.has(message.id));
+    userMessages = [...persisted, ...sentMeanwhile].slice(-USER_MESSAGES_KEPT);
+    if (sentMeanwhile.length > 0) deps.store.setUserMessages?.(userMessages);
+    return true;
+  };
   /**
    * Whether the relay said it accepts `message` items. Until it does they stay
    * out of publishes: an older relay rejects a whole publish carrying a kind it
@@ -575,6 +596,28 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   let lastReconcileAt = 0;
   let lastActivityAccountOwnerId: string | null | undefined =
     persistedPublishedRevisions?.accountOwnerId ?? initialAccountOwnerId;
+  /**
+   * The store could not read its file at startup (it answers null), so the
+   * maps above started empty. Read again before each publish until it can:
+   * publishing from the empty start would persist a smaller revision map over
+   * the larger one on disk, and let a reconcile tombstone delivered messages.
+   */
+  let persistedRevisionsPending =
+    typeof deps.store.getLastPublishedActivityRevisions === "function" && persistedPublishedRevisions === null;
+  const hydratePersistedRevisions = (): void => {
+    if (!persistedRevisionsPending) return;
+    const persisted = deps.store.getLastPublishedActivityRevisions?.() ?? null;
+    if (!persisted) return;
+    persistedRevisionsPending = false;
+    // As if the startup read had worked: its account (a different current one
+    // then resets below, as a switch does), then its revisions, never lowering
+    // one this process already published.
+    lastActivityAccountOwnerId = persisted.accountOwnerId ?? lastActivityAccountOwnerId;
+    for (const [id, revision] of Object.entries(persisted.revisions)) {
+      lastPublishedRevisionById.set(id, Math.max(revision, lastPublishedRevisionById.get(id) ?? 0));
+      if (id.startsWith("message:")) persistedMessageItemIds.add(id);
+    }
+  };
   /**
    * Content hash of the last roster the relay accepted, or null when there
    * isn't one to compare against (nothing published yet, a failed publish, a
@@ -622,7 +665,25 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
    * `machine_revoked`. Seeded from the durable store so a brain restart does
    * not resume publishing at a machine the account has already let go.
    */
-  let machineRevoked = deps.store.isMachineRevoked?.() === true;
+  const startupMachineRevoked = deps.store.isMachineRevoked?.();
+  let machineRevoked = startupMachineRevoked === true;
+  /** The startup read could not tell (null): read again before relying on it. */
+  let machineRevokedPending = startupMachineRevoked === null;
+  /**
+   * The revocation gate. Reads the store again while the startup read is
+   * unanswered, so a machine removed before an unreadable start is not
+   * treated as still on the account once the file reads.
+   */
+  const isMachineRevoked = (): boolean => {
+    if (machineRevokedPending) {
+      const persisted = deps.store.isMachineRevoked?.() ?? null;
+      if (persisted !== null) {
+        machineRevokedPending = false;
+        if (persisted) machineRevoked = true;
+      }
+    }
+    return machineRevoked;
+  };
 
   type AttachedScope = {
     agentChatService?: PushAgentChatService | null;
@@ -674,7 +735,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const isGated = (): boolean => {
     // A revoked machine may not deliver anything: not Activity, not alerts, not
     // badge updates. The account no longer includes it.
-    if (machineRevoked) return true;
+    if (isMachineRevoked()) return true;
     if (!deps.store.hasRegisteredDevices()) return true;
     if (!deps.store.getStatusSnapshot().enabled) return true;
     return false;
@@ -995,10 +1056,11 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
   /** Drop expired messages, persisting only when something left. */
   const liveUserMessages = (nowMs: number): StoredUserMessage[] => {
+    const known = hydrateUserMessages();
     const live = userMessages.filter((message) => Date.parse(message.expiresAt) > nowMs);
     if (live.length !== userMessages.length) {
       userMessages = live;
-      deps.store.setUserMessages?.(live);
+      if (known) deps.store.setUserMessages?.(live);
     }
     return live;
   };
@@ -1152,7 +1214,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   };
 
   const scheduleFlush = (immediate: boolean, activityChanged = true): void => {
-    if (disposed || machineRevoked) return;
+    if (disposed || isMachineRevoked()) return;
     if (activityChanged) scheduledFlushIncludesActivity = true;
     const delay = immediate ? promptFlushMs : flushDebounceMs;
     const fireAt = now() + delay;
@@ -1652,6 +1714,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     if (typeof deps.relayClient.publishAttention !== "function") return "unavailable";
     const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
     if (!accountOwnerId) return "unavailable";
+    hydratePersistedRevisions();
+    // Not from the fallback start: a reconcile omitting the stored messages
+    // would tombstone them on the relay for good.
+    if (persistedRevisionsPending || !hydrateUserMessages()) return "unavailable";
     if (lastActivityAccountOwnerId !== accountOwnerId) {
       lastPublishedFingerprintById.clear();
       lastPublishedRevisionById.clear();
@@ -1774,7 +1840,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const accountAttentionPublished = attentionPublishResult === "published";
     // Before the phone gate: the desktop is told even when no phone is paired.
     // Best effort, and never allowed to stop the phone delivery below.
-    if (!machineRevoked) {
+    if (!isMachineRevoked()) {
       try {
         announceDesktopAlerts(pendingAlerts, nowMs);
       } catch (error) {
@@ -2005,7 +2071,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     // detach snapshot is deliberately one-shot/nonblocking; a later attach or
     // heartbeat will naturally reconcile if that best-effort publish failed.
     // A revoked machine has nothing to retry toward at all.
-    if (disposed || machineRevoked || scopes.size === 0) return;
+    if (disposed || isMachineRevoked() || scopes.size === 0) return;
     const fireAt = now() + PUBLISH_RETRY_MS;
     if (flushTimer && flushFireAt > 0 && flushFireAt <= fireAt) return;
     if (flushTimer) clearTimeout(flushTimer);
@@ -2018,7 +2084,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   };
 
   const runFlush = async (presenceOnly = false): Promise<void> => {
-    if (disposed || machineRevoked) return;
+    if (disposed || isMachineRevoked()) return;
     if (flushing) {
       if (scopes.size > 0) scheduleFlush(false, !presenceOnly);
       return;
@@ -2355,12 +2421,13 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     recentRuns.delete(sessionId);
     pendingAlerts = pendingAlerts.filter((alert) => alert.sessionId !== sessionId);
     // Its messages link to a chat that no longer exists.
+    const messagesKnown = hydrateUserMessages();
     const keptMessages = userMessages.filter(
       (message) => !(message.sessionId === sessionId && message.scopeKey === scopeKey),
     );
     if (keptMessages.length !== userMessages.length) {
       userMessages = keptMessages;
-      deps.store.setUserMessages?.(keptMessages);
+      if (messagesKnown) deps.store.setUserMessages?.(keptMessages);
     }
     // The roster is read from disk behind a 10s cache; without dropping it the
     // deleted row would be republished from the stale snapshot.
@@ -2588,7 +2655,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
      */
     getMachineRevocation(): { revoked: boolean; revokedAt: string | null } {
       return {
-        revoked: machineRevoked,
+        revoked: isMachineRevoked(),
         revokedAt: deps.store.getStatusSnapshot().machineRevokedAt ?? null,
       };
     },
@@ -2604,6 +2671,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
      */
     clearMachineRevocation(): void {
       deps.store.clearMachineRevoked?.();
+      // The store just answered, and the answer is "not revoked".
+      machineRevokedPending = false;
       if (!machineRevoked) return;
       machineRevoked = false;
       // Everything published before the removal was dropped, so the next flush
@@ -3103,7 +3172,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         expiresAt: new Date(nowMs + USER_MESSAGE_TTL_MS).toISOString(),
       };
       userMessages = [...live, message].slice(-USER_MESSAGES_KEPT);
-      deps.store.setUserMessages?.(userMessages);
+      // While the stored set is unknown it stays in memory; the first read
+      // that works merges it in (`hydrateUserMessages`).
+      if (!userMessagesPending) deps.store.setUserMessages?.(userMessages);
       scheduleFlush(true);
       try {
         scope.agentChatService?.recordUserNotification?.({ sessionId, title, body });

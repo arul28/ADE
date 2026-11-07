@@ -9,7 +9,7 @@
  * (the error's code or type, and its message with the ids, paths and numbers
  * taken out), and keep the action as the `runtime.action` tag.
  */
-import { parseCodedErrorMessage } from "../codedError";
+import { isErrnoLikeCode, parseCodedErrorMessage } from "../codedError";
 
 const MAX_GROUPING_TEXT = 200;
 
@@ -44,17 +44,31 @@ function normalizeErrorMessageForGrouping(message: string): string {
 const PROGRAMMING_ERROR_NAMES: ReadonlySet<string> = new Set(["TypeError", "ReferenceError", "RangeError", "SyntaxError"]);
 const PROGRAMMING_ERROR_MESSAGE = /Cannot read properties of|is not a function|is not defined|is not iterable/;
 
+/** Message prefixes that read as a code but name no failure: git's `fatal:`, a stray `Error:`. */
+const GENERIC_CODE = /^(?:fatal|error)$/i;
+
 /**
- * The fingerprint for a failed runtime action: the error's code (or its type)
- * and its normalized message. The action name stays a tag, except for a
- * programming error: "Cannot read properties of undefined" in two actions is
- * two bugs, so those keep the action in the fingerprint.
+ * The fingerprint for a failed runtime action. An error carrying an ADE code
+ * on `error.code` groups on that code alone: ADE authored it for exactly one
+ * failure. Anything else (a code read off the message, an errno such as
+ * `ENOENT`, a `fatal:` prefix) can name many faults, so it keeps the
+ * normalized message, read past the transport wrapper ("Remote ADE service
+ * method ade/actions/call failed" against "… runtimeEvents.subscribe
+ * failed"), which would otherwise split one fault into an issue per RPC
+ * method. The action name stays a tag, except for a programming error:
+ * "Cannot read properties of undefined" in two actions is two bugs, so those
+ * keep the action in the fingerprint.
  */
 export function runtimeActionFingerprint(error: unknown, action: string): string[] {
-  const code = parseCodedErrorMessage(error).code;
+  const parsed = parseCodedErrorMessage(error);
+  const directCode = (error as { code?: unknown } | null)?.code;
+  const adeCode = typeof directCode === "string" && directCode.trim() && !isErrnoLikeCode(directCode) && !GENERIC_CODE.test(directCode.trim())
+    ? directCode.trim()
+    : null;
   const name = error instanceof Error ? error.name : "unknown";
   const message = error instanceof Error ? error.message : String(error);
-  const fingerprint = ["runtime-action", code ?? name, normalizeErrorMessageForGrouping(message)];
   const programmingError = PROGRAMMING_ERROR_NAMES.has(name) || PROGRAMMING_ERROR_MESSAGE.test(message);
+  if (adeCode && !programmingError) return ["runtime-action", adeCode];
+  const fingerprint = ["runtime-action", parsed.code ?? name, normalizeErrorMessageForGrouping(parsed.message || message)];
   return programmingError ? [...fingerprint, action] : fingerprint;
 }

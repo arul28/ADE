@@ -692,6 +692,6 @@ final class LiveActivityService {
 private extension Data {
     /// Lowercase hex encoding used for APNs / ActivityKit tokens.
     var adePushHexString: String {
-        map { String(format: "%02x", $0) }.joined()
+        adeLowercaseHex
     }
 }

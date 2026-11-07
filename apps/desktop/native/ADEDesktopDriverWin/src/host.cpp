@@ -670,7 +670,11 @@ class Host {
           forgetCredential(credentialTarget(home_));
           fail(code::kWrongPassword, "Windows rejected the saved password. It was forgotten; save your current password in Windows Desktop.");
         }
-        fail(code::kSignInFailed, "Windows sign-in did not complete. Try again from Windows Desktop.");
+        // The settle state and Remote Desktop's disconnect reasons, so a report
+        // tells a session Windows refused from one that never settled.
+        fail(code::kSignInFailed, "Windows sign-in did not complete (state " + std::to_string(static_cast<int>(settled)) +
+            ", reason " + std::to_string(rdp_.disconnectReason()) + "/" + std::to_string(rdp_.extendedDisconnectReason()) +
+            "). Try again from Windows Desktop.");
       }
       credential.reset();
       setPhase("starting");

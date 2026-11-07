@@ -924,7 +924,11 @@ for a folder Git had already forgotten. Any other refusal is the delete failure
 the user gets. The user can delete the offered folder afterward from the desktop
 dialog, which refuses the project root, a symlink, and a path Git has registered
 again, and which retries the same Windows lock failures (EBUSY / EPERM / EACCES
-/ ENOTEMPTY, about 5 s) as a full lane delete.
+/ ENOTEMPTY, about 5 s) as a full lane delete. The dialog keeps, with each
+offered folder, the project it came from: a pin for a project on another
+machine, its root path for one on this machine (the main process accepts only
+an exact known project root). Delete and Reveal go there, not to whatever tab
+is active by then.
 
 ## What a deleted lane leaves behind
 

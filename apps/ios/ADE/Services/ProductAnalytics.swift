@@ -308,7 +308,7 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
   /// Added to every event this sink sends: which surface, app and build sent
   /// it. No `is_internal`: a phone has no team-install marker to read.
   private static func commonProperties(interactive: Bool) -> [String: Any] {
-    [
+    var properties: [String: Any] = [
       "surface": "mobile",
       "platform": "ios",
       "client": "ios",
@@ -320,6 +320,8 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
       "$process_person_profile": false,
       "$geoip_disable": true,
     ]
+    if let machineID { properties["machine_id"] = machineID }
+    return properties
   }
 
   func captureException(properties: [String: Any]) {
@@ -594,6 +596,18 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
   }
 
   private static let distribution = ADEAnalyticsDistribution.current
+
+  /// `machine_id` on the phone: this app on this device, as the desktop's is
+  /// one install on one computer. A one-way hash of `identifierForVendor`
+  /// with the same telemetry-only domain, cut to 16 hex characters; the raw
+  /// identifier never leaves. Every event and Sentry's `machine_id` tag carry
+  /// it. It changes when every ADE app is removed from the phone, as a
+  /// reinstall should.
+  static let machineID: String? = {
+    guard let vendor = UIDevice.current.identifierForVendor?.uuidString.lowercased() else { return nil }
+    let digest = SHA256.hash(data: Data("ade-telemetry-machine-v1:\(vendor)".utf8))
+    return String(digest.map { String(format: "%02x", $0) }.joined().prefix(16))
+  }()
 
   /// `CFBundleVersion`, the TestFlight build number, under the same rules as
   /// the marketing version.

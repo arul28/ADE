@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -221,6 +221,54 @@ function probeAnchorUuid(deps: HardwareAnchorDeps): string | null {
     if (normalized) return normalized;
   }
   return null;
+}
+
+function runProbeAsync(command: string, args: readonly string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        command,
+        [...args],
+        { encoding: "utf8", timeout: PROBE_TIMEOUT_MS, windowsHide: true, maxBuffer: PROBE_MAX_OUTPUT_BYTES },
+        (error, stdout) => resolve(error || typeof stdout !== "string" ? null : stdout),
+      );
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+/**
+ * The same probe without blocking the caller's event loop, for Electron's main
+ * process, where a synchronous `ioreg` or `reg` would hold every window for its
+ * duration. It fills the same process cache, so a later synchronous read is
+ * free; the answer is the same one `readHardwareAnchorUuid` gives.
+ */
+export async function readHardwareAnchorUuidAsync(): Promise<string | null> {
+  if (cachedAnchorUuid) return cachedAnchorUuid.value;
+  let value: string | null = null;
+  try {
+    const platform = process.platform;
+    if (platform === "darwin") {
+      const output = await runProbeAsync("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]);
+      value = output ? parseIoregPlatformUuid(output) : null;
+    } else if (platform === "win32") {
+      const output = await runProbeAsync(resolveTrustedWindowsTool("reg"), [
+        "query",
+        String.raw`HKLM\SOFTWARE\Microsoft\Cryptography`,
+        "/v",
+        "MachineGuid",
+      ]);
+      value = output ? parseWindowsMachineGuid(output) : null;
+    } else {
+      value = probeAnchorUuid({ platform });
+    }
+  } catch {
+    value = null;
+  }
+  // A synchronous read that finished first wins; both read the same machine.
+  if (!cachedAnchorUuid) cachedAnchorUuid = { value };
+  return cachedAnchorUuid.value;
 }
 
 /**

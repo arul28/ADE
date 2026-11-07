@@ -213,8 +213,15 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
       ...(readBoolean(args, "force") === true ? { force: true } : {}),
       ...(readBoolean(args, "restartAdb") === true ? { restartAdb: true } : {}),
       ...deviceArg(args),
+      // Set by the RPC server for an agent: the chat named in the emulator's owner record.
+      chatSessionId: optionalString(args, "chatSessionId"),
     }),
     stop: (args?: unknown) => service.stop({ ...laneArgs(args, "stop"), ...deviceArg(args) }),
+    setKeepRunning: (args?: unknown) => {
+      const keepRunning = readBoolean(args, "keepRunning");
+      if (keepRunning == null) throw new Error("androidEmulator.setKeepRunning requires keepRunning (true or false).");
+      return service.setKeepRunning({ ...laneArgs(args, "setKeepRunning"), keepRunning });
+    },
     releaseDevice: (args?: unknown) => service.releaseDevice({
       ...laneArgs(args, "releaseDevice"),
       deleteCreated: optionalBoolean(args, "deleteCreated"),

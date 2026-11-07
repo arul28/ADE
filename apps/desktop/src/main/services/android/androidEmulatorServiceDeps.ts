@@ -6,6 +6,7 @@ import type {
 import type { DemoEngineSet } from "../demoVideo/demoEngines";
 import type { Logger } from "../logging/logger";
 import type { AndroidEmulatorLaunch } from "./androidEmulatorProcess";
+import type { AndroidEmulatorLifecycle } from "./androidEmulatorSweep";
 import type { AndroidLaneDeviceRepo } from "./androidLaneRelease";
 import type { AndroidArtifactFiler } from "./androidProof";
 import type { AndroidEnv } from "./androidSdk";
@@ -66,12 +67,18 @@ export type AndroidEmulatorServiceDeps = {
    * project there stops every emulator ADE started for it.
    */
   handOffOnDispose?: boolean;
-  now?: () => Date;
   /**
-   * Parity: how long an ADE emulator may sit unused before ADE stops it.
-   * Default `ADE_ANDROID_IDLE_POWER_OFF_MINUTES` (30 min); 0 turns it off.
+   * The brain's emulator lifecycle (`androidEmulatorSweep.ts`), one per
+   * process: the machine-wide owner record of each emulator this service
+   * starts, the "last used" clock and the pin, the sweep that stops idle and
+   * abandoned emulators, and the memory guard's count of other brains'
+   * boots. Its idle limit is the one Android idle stop
+   * (`ADE_ANDROID_IDLE_POWER_OFF_MINUTES`, 20 min by default). Absent (tests,
+   * the desktop's in-process copy): none of that, no idle stop, and the guard
+   * counts this process's boots only.
    */
-  idlePowerOffMs?: number;
+  emulatorLifecycle?: AndroidEmulatorLifecycle | null;
+  now?: () => Date;
   onEvent?: (event: AndroidEmulatorEvent) => void;
   /**
    * P1 agent suite: the proof drawer (`computerUseArtifactBrokerService`). A

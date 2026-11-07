@@ -245,6 +245,8 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
       sizeBytes: 2.6e9,
     });
   };
+  /** "Keep running" on the mock lane's emulator; a stop ends it, as in the brain. */
+  let keepRunning = false;
   const laneStatus = (): AndroidLaneDeviceStatus => {
     const record = laneAvdRecord();
     return {
@@ -264,6 +266,8 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
         : which === "refused"
           ? { code: "ANDROID_ADB_UNAUTHORIZED", message: "adb refused Medium Phone: the adb server uses an older key.", logPath: "/Users/mock/.ade/android/logs/ade_lane_medium_phone.log" }
           : { code: "ANDROID_EMULATOR_EXITED", message: "The emulator exited during boot (exit code 1).", logPath: "/Users/mock/.ade/android/logs/ade_lane_medium_phone-2026-11-03.log" },
+      keepRunning: record && laneState === "booted" ? keepRunning : null,
+      idleStopMinutes: 20,
     };
   };
   /** `remote`: another machine answers (a pinned call), which can always run an emulator. */
@@ -351,8 +355,15 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
       if (laneAvd) boot(laneAvd);
       return delay(laneStatus(), 2_000);
     },
+    setKeepRunning: async (args) => {
+      laneId = args.laneId;
+      keepRunning = args.keepRunning;
+      emit({ type: "android.device.state", laneId: args.laneId, state: laneState });
+      return delay(laneStatus());
+    },
     stop: async (args) => {
       laneId = args.laneId;
+      keepRunning = false;
       laneState = "off";
       streamRunning = false;
       emit({ type: "android.device.state", laneId: args.laneId, state: "off" });

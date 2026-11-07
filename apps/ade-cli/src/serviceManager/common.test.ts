@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { spawn, spawnSync as spawnChildSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   buildWindowsParentPidQueryArgs,
@@ -697,6 +697,16 @@ describe("listStaleChannelServePids", () => {
 });
 
 describe("terminatePidGracefullyAsync on win32", () => {
+  // A forced stop records itself in the stopped brain's home; never the real one.
+  let home: string;
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-terminate-home-"));
+    vi.stubEnv("ADE_HOME", home);
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(home, { recursive: true, force: true });
+  });
   const channelPipe = "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef";
   const channelServe: ChannelServeMatch = {
     cliScriptPath: "C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs",
