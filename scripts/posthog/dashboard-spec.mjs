@@ -892,7 +892,7 @@ export const dashboardSpec = Object.freeze({
         insight(
           "reliability-per-install-by-channel",
           "Failures per active install: beta vs stable",
-          `Brain wedge recoveries, failed brain actions and route-publish failures per install (machine) that opened ADE, split by release channel. Beta has far fewer installs, so compare rates, not counts: a beta line that climbs above stable is a regression to stop before it reaches stable.${MINIMUM_VOLUME_NOTE}`,
+          `Brain wedge recoveries, failed brain actions and route-publish failures per install (machine) that opened ADE, by release channel. Beta has far fewer installs, so compare rates, not counts: a beta line above stable is a regression to stop before stable.${MINIMUM_VOLUME_NOTE}`,
           trends({
             series: [
               eventNode(EVENTS.BRAIN_RECOVERED, "Brain recoveries"),
