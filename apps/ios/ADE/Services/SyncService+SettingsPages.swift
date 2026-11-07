@@ -247,11 +247,12 @@ extension SyncService {
   }
 
   /// The project to name on a machine-wide read the brain files under a
-  /// project (`ai.getStatus`, `usage.getAdeStats`) while the phone has none
-  /// open, as on the hub. Only one already open there: naming a closed one
-  /// would make the brain start that project just to answer.
+  /// project (`ai.getStatus`, `usage.getAdeStats`) while the phone's active
+  /// project cannot carry it: none, as on the hub, or one kept after it closed
+  /// on the machine. Only one already open there: naming a closed one would
+  /// make the brain start that project just to answer.
   var machineWideTarget: MobileProjectSummary? {
-    guard activeProject == nil else { return nil }
+    if activeProject?.isOpen == true { return nil }
     return projects.first { $0.isOpen == true && $0.isAvailable }
   }
 

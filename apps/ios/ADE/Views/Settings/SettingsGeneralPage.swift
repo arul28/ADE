@@ -209,7 +209,8 @@ struct SettingsGeneralPage: View {
       items.append(.init(text: "\(count) \(count == 1 ? "provider needs" : "providers need") sign-in", tone: .warn))
     }
     for machine in machines where !machine.isPrimary && machine.isConnectedSet && machine.subtitleIsProblem {
-      items.append(.init(text: "\(machine.name): \(machine.subtitle)", tone: .warn))
+      // Two machines can share a name, so the machine's id keeps each row its own.
+      items.append(.init(id: "machine:\(machine.id)", text: "\(machine.name): \(machine.subtitle)", tone: .warn))
     }
     return items
   }
@@ -367,9 +368,16 @@ struct SettingsSparkline: View {
 // MARK: - Needs attention
 
 struct SettingsAttentionItem: Identifiable, Equatable {
-  var id: String { text }
+  let id: String
   let text: String
   let tone: ADEKitTone
+
+  /// `id` defaults to the text, which is unique for every reason but a machine's.
+  init(id: String? = nil, text: String, tone: ADEKitTone) {
+    self.id = id ?? text
+    self.text = text
+    self.tone = tone
+  }
 }
 
 /// The desktop's "N things need attention" strip: one line with the reasons,
