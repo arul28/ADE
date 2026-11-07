@@ -32,7 +32,10 @@ afterEach(async () => {
 /** A brain whose other machine has these lanes; records every chat it creates there. */
 async function startBrain(lanesThere: Array<{ id: string; laneType: string }>) {
   const created: Array<Record<string, unknown>> = [];
-  const socketPath = path.join(dir, "b.sock");
+  // Windows serves a named pipe, never a socket file.
+  const socketPath = process.platform === "win32"
+    ? `\\\\.\\pipe\\${path.basename(dir)}`
+    : path.join(dir, "b.sock");
   const answer = (method: string, params: Record<string, any>): unknown => {
     if (method === "ade/initialize") return { serverInfo: { name: "test" }, capabilities: {}, runtimeInfo: { defaultRole: "cto" } };
     if (method !== "machines.call") return {};
