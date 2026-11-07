@@ -433,6 +433,12 @@ function reconcilePersistedUpdateState(args: {
   recentlyInstalled: RecentlyInstalledUpdate | null;
   cacheCleanupReason: string | null;
   failedInstall: { targetVersion: string; attempt: number } | null;
+  /**
+   * This launch is the one that found `failedInstall` (its pending install did
+   * not land). False when the failure is only carried over from an earlier
+   * launch for the notice, which was reported then.
+   */
+  failedInstallFoundNow: boolean;
   /** The install a quit started (`closeAfterInstall`) that this launch landed. */
   landedQuitInstall: { requestedAt: string } | null;
   /** This launch landed an install that moved the machine to another track. */
@@ -444,6 +450,7 @@ function reconcilePersistedUpdateState(args: {
   let landedTrackSwitch = false;
   let cacheCleanupReason: string | null = null;
   let failedInstall: { targetVersion: string; attempt: number } | null = null;
+  let failedInstallFoundNow = false;
 
   if (
     nextState.recentlyInstalledUpdate
@@ -515,6 +522,7 @@ function reconcilePersistedUpdateState(args: {
         lastFailedAt: args.now,
       };
       failedInstall = { targetVersion: pendingInstall.targetVersion, attempt };
+      failedInstallFoundNow = true;
       // First failure: the archive passed its checksum before it ever went
       // "ready", so the quit lost a race rather than the bytes being bad.
       // Keeping it turns a retry into a click instead of a fresh download of
@@ -548,6 +556,7 @@ function reconcilePersistedUpdateState(args: {
     recentlyInstalled,
     cacheCleanupReason,
     failedInstall,
+    failedInstallFoundNow,
     landedQuitInstall,
     landedTrackSwitch,
   };
@@ -688,10 +697,14 @@ export function createAutoUpdateService({
       reason: initialState.cacheCleanupReason,
     });
   }
-  if (initialState.failedInstall) {
+  if (initialState.failedInstall && initialState.failedInstallFoundNow) {
     // Relaunching on the old version after an install was requested means the
     // handoff never landed. Say so plainly: silently re-offering the same
     // update is what made this look like the update "did nothing".
+    //
+    // Reported by the launch that found it. The failure stays saved for the
+    // notice (and the retry count), and later launches that only carry it
+    // over used to report the same failure again every time.
     logger.error("autoUpdate.install_did_not_land", {
       targetVersion: initialState.failedInstall.targetVersion,
       currentVersion,

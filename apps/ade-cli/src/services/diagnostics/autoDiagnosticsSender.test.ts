@@ -7,6 +7,8 @@ import {
   resolveAutoDiagnosticsStateFile,
   setAutoDiagnosticsEnabled,
 } from "../../../../desktop/src/main/services/diagnostics/autoDiagnosticsStore";
+import { resolveReleaseChannel } from "../../../../desktop/src/shared/packageChannel";
+import { brainReportsAsRelease } from "../../sentry/brainBuild";
 import {
   createBrainAutoDiagnostics,
   type BrainDiagnosticsBuild,
@@ -24,7 +26,7 @@ function adeHome(): string {
 
 type SendResult = { ok: true; reference: string } | { ok: false; reason: string };
 
-function harness(options: { home?: string; sendResult?: SendResult } = {}) {
+function harness(options: { home?: string; sendResult?: SendResult; devBuild?: boolean } = {}) {
   const home = options.home ?? adeHome();
   const env = { ADE_HOME: home } as NodeJS.ProcessEnv;
   const stateFilePath = resolveAutoDiagnosticsStateFile(home, env);
@@ -47,6 +49,7 @@ function harness(options: { home?: string; sendResult?: SendResult } = {}) {
     build,
     send,
     writeReportFile,
+    devBuild: options.devBuild,
   });
   return { sender, stateFilePath, send, build, writeReportFile, home };
 }
@@ -57,6 +60,29 @@ afterEach(() => {
 });
 
 describe("createBrainAutoDiagnostics", () => {
+  it("a development brain reports as development and never sends a report on its own", async () => {
+    const installed = "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs";
+    const channelOf = (env: NodeJS.ProcessEnv, modulePath: string) =>
+      resolveReleaseChannel({ env, packaged: brainReportsAsRelease(env, modulePath), version: "1.2.130" });
+    // A source checkout's bundle, wherever it was started from, and a brain the
+    // dev launcher started (even one running an installed bundle) are
+    // development; only an installed bundle on its own is the release.
+    expect(channelOf({ ADE_RUNTIME_PACKAGED: "1" }, "/Users/ada/ADE/apps/ade-cli/dist/cli.cjs")).toBe("development");
+    expect(channelOf({ ADE_DEV_BRAIN: "1" }, installed)).toBe("development");
+    expect(channelOf({}, installed)).toBe("stable");
+
+    const home = adeHome();
+    const dev = harness({ home, devBuild: !brainReportsAsRelease({ ADE_DEV_BRAIN: "1" }, installed) });
+    await expect(dev.sender.report({ failureCode: "machine_revoked", surface: "machine_pairing_recovery" }))
+      .resolves.toBe("skipped_ineligible");
+    expect(dev.build).not.toHaveBeenCalled();
+    expect(dev.send).not.toHaveBeenCalled();
+    // Nothing was spent: the release brain on the same machine still sends.
+    const release = harness({ home, devBuild: !brainReportsAsRelease({}, installed) });
+    await expect(release.sender.report({ failureCode: "machine_revoked", surface: "machine_pairing_recovery" }))
+      .resolves.toBe("completed");
+  });
+
   it("sends with the failure code and leaves the toast for the desktop to show", async () => {
     const { sender, send, build, writeReportFile, stateFilePath, home } = harness();
 

@@ -7,6 +7,7 @@ import type { KeepAwakeSnapshot } from "../../../shared/types/keepAwake";
 import { ghHostsFiles } from "../shared/providerConfigHomes";
 import { parseTasklist, runTasklistCsv, runText, windowsSystemTool } from "../home/homeMachine";
 import { listMachineRemoteWorkCopies, measureRemoteWorkCopy } from "../remoteWork/remoteWorkCopyService";
+import { readHostMemorySignals } from "./hostMemorySignals";
 
 /**
  * This machine's load and capabilities for `machine_stats.get`: what Settings
@@ -18,8 +19,9 @@ import { listMachineRemoteWorkCopies, measureRemoteWorkCopy } from "../remoteWor
  * - fast, on every uncached read: whole-host CPU (`os.cpus()` deltas — the
  *   same on Windows, which has no load average), memory, disk;
  * - medium, every 15 s at most, awaited for up to 1 s: running build tools
- *   (`ps` / `tasklist`), battery (`pmset`, `/sys`), available memory on a Mac
- *   (`vm_stat`; `os.freemem()` there counts only free pages);
+ *   (`ps` / `tasklist`), battery (`pmset`, `/sys`), available memory on macOS
+ *   and Linux as `hostMemorySignals.ts` reads it (`os.freemem()` on a Mac
+ *   counts only free pages);
  * - slow, every 3 minutes at most, never awaited: signed-in CLIs (config
  *   files, never a token), Xcode and simulators, the OS name, work copies and
  *   their size, and the battery on Windows (PowerShell is slow to start).
@@ -91,15 +93,6 @@ function countBuildTools(names: Iterable<string>): Array<{ tool: string; count: 
     if (tool) counts.set(tool, (counts.get(tool) ?? 0) + 1);
   }
   return [...counts].map(([tool, count]) => ({ tool, count })).sort((a, b) => b.count - a.count || a.tool.localeCompare(b.tool));
-}
-
-/** `vm_stat`: free + inactive + speculative pages, what macOS can hand out without swapping. */
-function parseVmStatAvailable(text: string): number | null {
-  const pageSize = Number(/page size of (\d+) bytes/.exec(text)?.[1]);
-  if (!Number.isFinite(pageSize) || pageSize <= 0) return null;
-  const pages = (label: string) => Number(new RegExp(`Pages ${label}:\\s+(\\d+)`).exec(text)?.[1] ?? 0);
-  const available = (pages("free") + pages("inactive") + pages("speculative")) * pageSize;
-  return available > 0 ? available : null;
 }
 
 /** `pmset -g batt`. */
@@ -307,8 +300,12 @@ export function createMachineStatsReader(deps: MachineStatsReaderDeps = {}) {
           ? runText("/usr/bin/pmset", ["-g", "batt"], 3_000).then(parsePmsetBattery)
           : platform === "linux" ? readLinuxBattery() : Promise.resolve(null))
           .catch(unknownAfter("battery")),
-        platform === "darwin"
-          ? runText("/usr/bin/vm_stat", [], 3_000).then(parseVmStatAvailable).catch(unknownAfter("memory"))
+        // One definition of "available" for the whole app. Windows' is `os.freemem()`
+        // already, and its reader is a PowerShell start.
+        platform === "darwin" || platform === "linux"
+          ? readHostMemorySignals({ platform, pagingSampleMs: 0 })
+            .then((signals) => (signals.availableMb === null ? null : signals.availableMb * 1024 * 1024))
+            .catch(unknownAfter("memory"))
           : Promise.resolve(null),
       ]);
       const value: Medium = { builds, power, availableBytes };

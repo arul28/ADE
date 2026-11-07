@@ -132,6 +132,7 @@ running, the ADE repository open, and its lanes changing under other agents.
 | Machine-wide `ps` runs (Electron main, top bar load indicator) | 152 (every 2 s) | 30 (every 10 s while calm) | 40 |
 | CPU in those child processes | ~6.4% of a core | ~1.2% of a core | 2% |
 | Electron main / brain process CPU (`process-cpu.sh`) | 1.7% / 4.3% | 1.3% / 4.4% | 15% / 10% (the Processes table) |
+| Brain resource-pressure sample (`resourcePressureMonitor.ts`, machine brain, on the existing 5-minute watchdog tick): child processes and brain CPU per tick | — (new) | 1 `sysctl` per 5 min on macOS (1.2 ms each), 0 on Linux, 0 on Windows unless under 15% of memory is free; 2.4 ms brain CPU per tick; an episode (at most one per breach, re-armed after 30 healthy min) adds 3 spawns (`ps`, `ps`, `footprint`) and ~1.3 s off the loop. Micro-measured with `vite-node` (20 ticks, real readers) on a Mac16,9 (M4 Max), 2026-11-06; the app-level `spawn-trace`/`process-cpu.sh` pass was not run (no dev app or brain may run in this lane) | 2 spawns per 5 min; 10 ms per tick |
 
 What is left is mostly git run by the brain as lanes change (`git remote
 get-url`, `worktree list`, `rev-parse` from the lane list and the search
@@ -187,6 +188,7 @@ Run without the app (`scripts/perf/service/`).
 | Metric | Bench | Before #1560 | Baseline | Ceiling |
 |---|---|---|---|---|
 | `machine_stats.get` (CPU over a 200 ms sample, memory, disk; `ps`, `pmset`, `vm_stat` at most every 15 s; CLIs, Xcode, simulators at most every 3 min, in the background) | one-off `tsx` call of `createMachineStatsReader` (no bench file yet) | — | cold 206 ms (the CPU sample), cached 0 ms; 0 runs while nobody asks (Mac Studio M4 Max, 2026-10-30, not the baseline machine) | not set yet; needs approval |
+| Android emulator sweep (each brain with an Android service, every 5 min: the owner file, the discovery folders, and one `ps` for start times only when there are records) and the memory guard before each emulator start (`sysctl`, two `vm_stat`s 2 s apart, `ps` + `footprint` for the running emulators) | one-off `tsx` loop over `createAndroidEmulatorLifecycle().sweep()` against this machine's real discovery folders (no bench file yet) | — (no sweep, no guard read) | sweep: 0.06 ms wall / 0.08 ms CPU with no records and 0 processes started; 2.4 ms wall / 2.0 ms CPU and 1 `ps` with a record; at most 12 sweeps per hour, so ≤ 1 extra process per 5 min (spawn row above: 293 → ≤ 294). Guard: 2.0 s wall (the paging sample), 0.1 s for the emulators' memory, once per start only. "Last used" writes the owner file at most once a minute per emulator; a touch costs < 1 µs (Mac Studio M4 Max dev build, 2026-11-06, branch `ade/unreleased-issues-triage-before-stable`, not the baseline machine) | not set yet; needs approval |
 | Files quick-open index build (this repo) | `file-index.bench.mts` | 17.5 s, ~540 git processes | 120–183 ms, 1 git process | 500 ms |
 | Quick-open lookup | `file-index.bench.mts` | — | 2–13 ms | 50 ms |
 | Project registry: one read per project (35) | `registry-read.bench.mts` | 360 ms | 0.3 ms | 5 ms |

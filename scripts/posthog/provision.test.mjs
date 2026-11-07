@@ -27,7 +27,12 @@ function findInsight(key) {
 // What a first run must create: every dashboard plus every insight in the spec.
 const SPEC_INSIGHTS = dashboardSpec.dashboards.reduce((total, dashboard) => total + dashboard.insights.length, 0);
 const SPEC_OBJECTS = dashboardSpec.dashboards.length + SPEC_INSIGHTS;
-const NOT_INTERNAL = { key: "is_internal", value: ["true"], operator: "is_not", type: "event" };
+// Internal traffic is filtered on the event and on the person (an install can
+// predate its account being marked internal).
+const NOT_INTERNAL = [
+  { key: "is_internal", value: ["true"], operator: "is_not", type: "event" },
+  { key: "is_internal", value: ["true"], operator: "is_not", type: "person" },
+];
 
 test("dashboard spec is valid and excludes replay queries", () => {
   assert.deepEqual(validateDashboardSpec(), { dashboards: dashboardSpec.dashboards.length, insights: SPEC_INSIGHTS });
@@ -50,9 +55,9 @@ test("dashboard queries match the bounded instrumentation semantics", () => {
   assert.equal(outcomes.query.source.breakdownFilter.breakdown, "outcome");
 
   const provider = findInsight("provider-adoption");
-  assert.deepEqual(provider.query.source.properties, [{ key: "summary_kind", value: "provider", operator: "exact", type: "event" }, NOT_INTERNAL]);
+  assert.deepEqual(provider.query.source.properties, [{ key: "summary_kind", value: "provider", operator: "exact", type: "event" }, ...NOT_INTERNAL]);
   const model = findInsight("model-family-adoption");
-  assert.deepEqual(model.query.source.properties, [{ key: "summary_kind", value: "model", operator: "exact", type: "event" }, NOT_INTERNAL]);
+  assert.deepEqual(model.query.source.properties, [{ key: "summary_kind", value: "model", operator: "exact", type: "event" }, ...NOT_INTERNAL]);
 
   const budget = findInsight("analytics-sent-vs-dropped");
   assert.match(budget.description, /accepted means admitted.+not confirmed delivered/i);

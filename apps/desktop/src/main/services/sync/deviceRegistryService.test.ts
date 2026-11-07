@@ -81,6 +81,33 @@ describe("deviceRegistryService", () => {
     db2.close();
   });
 
+  // A refresh loop that called this on every lap committed about a thousand
+  // replicated writes a second and froze a Mac with a WAL write storm.
+  it.skipIf(!isCrsqliteAvailable())("does not rewrite an unchanged local device row on every call", async () => {
+    const projectRoot = makeProjectRoot("ade-device-registry-churn-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-11-06T12:00:00.000Z"));
+      const registry = createDeviceRegistryService({ db, logger: createLogger() as any, projectRoot });
+      const first = registry.ensureLocalDevice();
+      const versionAfterFirst = db.sync.getDbVersion();
+
+      for (let lap = 0; lap < 50; lap += 1) registry.ensureLocalDevice();
+      expect(db.sync.getDbVersion()).toBe(versionAfterFirst);
+      expect(registry.ensureLocalDevice().lastSeenAt).toBe(first.lastSeenAt);
+
+      // Past the refresh window, the stamp moves again.
+      vi.setSystemTime(new Date("2026-11-06T12:00:31.000Z"));
+      const refreshed = registry.ensureLocalDevice();
+      expect(refreshed.lastSeenAt).toBe("2026-11-06T12:00:31.000Z");
+      expect(db.sync.getDbVersion()).toBeGreaterThan(versionAfterFirst);
+    } finally {
+      vi.useRealTimers();
+      db.close();
+    }
+  });
+
   it("can share a desktop device identity across project registries", async () => {
     const projectRootA = makeProjectRoot("ade-device-registry-global-a-");
     const projectRootB = makeProjectRoot("ade-device-registry-global-b-");

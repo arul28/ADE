@@ -21,6 +21,7 @@ import {
   type CloudLaneProvider,
 } from "../../../../shared/cloudLanes";
 import { repoMatchKey } from "../../../../shared/cursorCloudRepoMatch";
+import { AdeExpectedError } from "../../../../shared/expectedError";
 import type { Logger } from "../../logging/logger";
 import type { AgentChatDevinCloudConfig } from "../../../../shared/types/chat";
 import type { CursorCloudFleetResult } from "../../../../shared/types/config";
@@ -244,7 +245,7 @@ export function createCloudAgentsContext(deps: CloudAgentsServiceDeps) {
     const prompt = args.prompt.trim();
     if (!prompt) throw new Error("Tell the agent what to do.");
     const { slug } = await origin();
-    if (!slug) throw new Error("This project has no GitHub origin, so a cloud agent cannot clone it.");
+    if (!slug) throw new AdeExpectedError("This project has no GitHub origin, so a cloud agent cannot clone it.", "user");
     if (!args.laneId) {
       const name = cloudLaneNameFromPrompt(prompt);
       const suffix = Math.random().toString(36).slice(2, 6);

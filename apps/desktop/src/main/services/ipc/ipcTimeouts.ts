@@ -20,6 +20,8 @@ import {
   WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS,
   REMOTE_MACHINE_UPDATE_IPC_TIMEOUT_MS,
   ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS,
+  AI_STATUS_TIMEOUT_MS,
+  LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { AGENT37_LIST_MACHINES_IPC_TIMEOUT_MS, AGENT37_MACHINE_ACTION_IPC_TIMEOUT_MS } from "../agent37/agent37Client";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
@@ -210,6 +212,12 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return PI_LOGIN_IPC_TIMEOUT_MS;
     case IPC.aiCursorAuthLogin:
       return CURSOR_LOGIN_IPC_TIMEOUT_MS;
+    // A forced refresh waits on the ACP auth probes; see AI_STATUS_TIMEOUT_MS.
+    // A plain read keeps the default.
+    case IPC.aiGetStatus:
+      return isRecord(args[0]) && args[0].force === true
+        ? AI_STATUS_TIMEOUT_MS + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS
+        : 30_000;
     // Awaits the user approving an MCP server's sign-in in a browser; the
     // sign-in gives up on its own first, so the renderer hears why.
     case IPC.mcpRegistrySignIn:

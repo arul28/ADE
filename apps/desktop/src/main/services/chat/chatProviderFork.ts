@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import type { AgentChatProvider, AgentChatSession } from "../../../shared/types";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { pinnedToolNotReadyError } from "../ai/pinnedProviderTools";
@@ -144,7 +145,7 @@ export function createChatProviderFork<
     const sourceId = piRuntime.sdk.sessionId?.trim() || "";
     // Pi writes a new session's file with its first answer.
     if (!sourceFile || !sourceId || !fs.existsSync(sourceFile)) {
-      throw new Error("This Pi chat has no finished turn yet. Send it a message first.");
+      throw new AdeExpectedError("This Pi chat has no finished turn yet. Send it a message first.", "user");
     }
     const forked = await piRuntime.sdk.fork({ sessionFile: sourceFile, sessionId: sourceId, ...(entryId ? { entryId } : {}) });
     if (!forked.sessionFile || !forked.sessionId) throw new Error("Pi did not return a session for the fork.");

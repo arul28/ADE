@@ -169,6 +169,12 @@ class FakeD1Database {
         )
         .map((row) => ({ ...row })) as T[];
     }
+    if (sql.includes("from publish_suppression") && sql.includes("suppression_key in (")) {
+      const [machineKey, ...keys] = values;
+      return this.suppressions
+        .filter((row) => row.machine_key === machineKey && keys.includes(row.suppression_key))
+        .map((row) => ({ suppression_key: row.suppression_key, content_hash: row.content_hash })) as T[];
+    }
     return [];
   }
 
@@ -889,6 +895,28 @@ describe("push relay", () => {
     const second = (await (await publishOnce()).json()) as { delivered: number; suppressed: number };
     expect(second.suppressed).toBe(1);
     expect(sends).toBe(1);
+
+    // One publish, several items: the delivered key above is suppressed, a key
+    // whose content changed and a new key are sent, and a key repeated with
+    // the same content later in the same publish sees the earlier delivery.
+    const notification = (dedupeKey: string, body: string) => ({ title: "Awaiting input", body, dedupeKey, phase: "waiting" });
+    const batch = (await (await handleRequest(
+      await signedRequest({
+        method: "POST",
+        path: `/machines/${MACHINE_KEY}/publish`,
+        body: {
+          notifications: [
+            notification("session-abc123:awaiting", "same content"),
+            notification("session-def456:awaiting", "first"),
+            notification("session-abc123:awaiting", "changed content"),
+            notification("session-def456:awaiting", "first"),
+          ],
+        },
+      }),
+      env,
+    )).json()) as { delivered: number; suppressed: number };
+    expect(batch).toMatchObject({ delivered: 2, suppressed: 2 });
+    expect(sends).toBe(3);
   });
 
   it("lets an older brain end its Live Activity but never start or update one", async () => {

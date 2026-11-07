@@ -8,6 +8,7 @@ import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { getMachineMainLogger } from "../logging/machineLogger";
 import { markExpected } from "../../../shared/expectedError";
+import { markExpectedGithubFailure } from "./githubExpectedFailure";
 import { runGit } from "../git/git";
 import { gitPushError } from "../git/gitPushFailure";
 import type {
@@ -45,6 +46,7 @@ import {
   type GithubOperationCredentialCapability,
 } from "../../../shared/githubOperationCredential";
 import {
+  assertGithubRepositoryOwner,
   classifyGitHubRepositoryApiPath,
   createGithubRepositoryRequestFallback,
   GITHUB_OWNER_NOT_FOUND_CODE,
@@ -278,12 +280,10 @@ class GithubCredentialAttemptError extends Error {
   ) {
     super(message);
     this.name = "GithubCredentialAttemptError";
-    // A token GitHub refused or that cannot see the repository ("Resource not
-    // accessible by personal access token") is the user's to fix in Settings
-    // or on GitHub, not a defect in ADE.
-    if (authFailure.kind === "permission_denied" || authFailure.kind === "invalid_token") {
-      markExpected(this, "user");
-    }
+    // A refused token, a repository it cannot see, a rate limit or GitHub's
+    // own outage is an answer, not a defect in ADE. One classifier for this
+    // and the brain's copy (`githubExpectedFailure.ts`).
+    markExpectedGithubFailure(this, authFailure);
   }
 }
 
@@ -1700,12 +1700,16 @@ export function createGithubService({
         if (!repositoryNotFound) {
           recordGithubOperationFailure(candidate, failure.authFailure, failure.rateLimit);
         }
-        const attemptError = new GithubCredentialAttemptError(
-          detailed,
+        const attemptError = markExpectedGithubFailure(
+          new GithubCredentialAttemptError(
+            detailed,
+            failure.authFailure,
+            failure.rateLimit,
+            response.status,
+            data,
+          ),
           failure.authFailure,
-          failure.rateLimit,
-          response.status,
-          data,
+          { repositoryNotFound: ambiguousRepositoryNotFound },
         );
         lastAttemptError = attemptError;
         if (attemptError.authFailure.kind === "rate_limited") {
@@ -2669,6 +2673,8 @@ export function createGithubService({
         isPrivate: existing.isPrivate,
       };
     }
+    // Never push anywhere but the owner the user picked.
+    assertGithubRepositoryOwner(requestedOwner, created);
 
     // After createRepository succeeds, the GitHub repo exists. If we then
     // fail to add the local origin or push to it, we must remove the local

@@ -23,6 +23,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { PROCESS_START_TIME_TOLERANCE_MS } from "../../../../desktop/src/main/services/processes/processStartTime";
 
 export type BrainRegistryRecord = {
   pid: number;
@@ -46,8 +47,6 @@ export type BrainHomeRegistryDeps = {
 };
 
 const REGISTRY_DIR = "brains";
-/** A start time read twice can differ by rounding; a second is generous. */
-const START_TIME_TOLERANCE_MS = 1_000;
 
 function registryDir(home: string): string {
   return path.join(home, REGISTRY_DIR);
@@ -73,7 +72,7 @@ export function isBrainRecordLive(
   if (record.startedAtMs == null) return true;
   const actual = deps.readProcessStartTimeMs(record.pid);
   if (actual == null) return true;
-  return Math.abs(actual - record.startedAtMs) <= START_TIME_TOLERANCE_MS;
+  return Math.abs(actual - record.startedAtMs) <= PROCESS_START_TIME_TOLERANCE_MS;
 }
 
 export function createBrainHomeRegistry(deps: BrainHomeRegistryDeps) {

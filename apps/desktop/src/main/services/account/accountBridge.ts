@@ -29,6 +29,7 @@ import {
 } from "../../../shared/accountDirectory";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
+import { expectedErrorKind, markExpected, type ExpectedErrorKind } from "../../../shared/expectedError";
 import { createFileLogger, type Logger } from "../logging/logger";
 import { logMachineEvent } from "../logging/machineLogger";
 import os from "node:os";
@@ -255,24 +256,45 @@ export function readAccountDeviceLoginProgress(
   };
 }
 
+const DEVICE_LOGIN_TIMED_OUT = "Starting the sign-in timed out. Check your internet connection, then try again.";
+const DEVICE_LOGIN_FAILED = "ADE couldn't start a sign-in on this computer. Try again in a moment.";
+
+/**
+ * What a failed sign-in says, first match wins, and whether it is an answer
+ * rather than a defect. The sign-in service that never answered (the brain's
+ * "device service could not be reached / timed out") is the network, and a
+ * machine signed in by ADE_ACCOUNT_TOKEN is its setup. Any other timeout is
+ * ADE's own (the local brain not answering) and stays reported.
+ */
+const DEVICE_LOGIN_FAILURES: ReadonlyArray<{ test: RegExp; message: string; kind: ExpectedErrorKind | null }> = [
+  {
+    test: /ADE_ACCOUNT_TOKEN/i,
+    message: "This computer signs in with ADE_ACCOUNT_TOKEN, so it can't sign in interactively. Reconnect it from a computer that signs in normally.",
+    kind: "environment",
+  },
+  { test: /device service timed out/i, message: DEVICE_LOGIN_TIMED_OUT, kind: "network" },
+  { test: /device service could not be reached/i, message: DEVICE_LOGIN_FAILED, kind: "network" },
+  {
+    test: /econnrefused|enoent|not running|socket|connection (refused|closed|reset)|service is unavailable/i,
+    message: "ADE's background service isn't running on this computer, so it can't sign in. Reopen ADE, then try again.",
+    kind: null,
+  },
+  { test: /timed out|etimedout/i, message: DEVICE_LOGIN_TIMED_OUT, kind: null },
+];
+
 /**
  * Translate a failed brain-routed sign-in into one sentence. Same contract as
  * `describeMachinePairingRepairFailure`: the raw text stays on `cause` for the
- * logs, and no JSON-RPC string ever reaches the card.
+ * logs, and no JSON-RPC string ever reaches the card. A cause already marked
+ * keeps its kind.
  */
 export function describeAccountDeviceLoginFailure(error: unknown): Error {
   const raw = error instanceof Error ? error.message : String(error ?? "");
-  const message =
-    /ADE_ACCOUNT_TOKEN/i.test(raw)
-      ? "This computer signs in with ADE_ACCOUNT_TOKEN, so it can't sign in interactively. Reconnect it from a computer that signs in normally."
-      : /econnrefused|enoent|not running|socket|connection (refused|closed|reset)|service is unavailable/i.test(raw)
-        ? "ADE's background service isn't running on this computer, so it can't sign in. Reopen ADE, then try again."
-        : /timed out|etimedout/i.test(raw)
-          ? "Starting the sign-in timed out. Check your internet connection, then try again."
-          : "ADE couldn't start a sign-in on this computer. Try again in a moment.";
-  const failure = new Error(message);
+  const match = DEVICE_LOGIN_FAILURES.find((row) => row.test.test(raw));
+  const failure = new Error(match?.message ?? DEVICE_LOGIN_FAILED);
   if (raw) failure.cause = error;
-  return failure;
+  const kind = expectedErrorKind(error) ?? match?.kind ?? null;
+  return kind ? markExpected(failure, kind) : failure;
 }
 
 /** The subset of the local runtime pool this bridge needs. */

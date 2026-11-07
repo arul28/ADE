@@ -127,6 +127,74 @@ describe("createClaudeSubprocessReaper", () => {
     }));
   });
 
+  it("reports a chat's stderr tail scrubbed, without the rest of a line whose secret prefix was cut", () => {
+    // The tail goes to Sentry with a runtime-failed report. A cut that lands
+    // inside a line must not leave a secret's value behind without the
+    // `api_key=` prefix the scrubber recognizes it by.
+    const child = Object.assign(createProcess(4321), { stderr: new PassThrough() });
+    const reaper = createClaudeSubprocessReaper({
+      logger: createLogger(),
+      platform: "darwin",
+      spawnProcess: vi.fn(() => child) as any,
+    });
+    reaper.spawnClaudeCodeProcess({
+      command: "/bin/claude",
+      args: [],
+      cwd: "/tmp/lane",
+      env: {},
+      signal: new AbortController().signal,
+    }, { sessionId: "chat-tail", sdkSessionId: null, laneId: "lane-1", cwd: "/tmp/lane" });
+
+    child.stderr.write(`starting\n${"x".repeat(4_100)}api_key=`);
+    child.stderr.write("CUTSECRETVALUE0123456789\nAuthorization: Bearer abcdefghijklmnopqrstuvwxyz0123\n");
+    child.stderr.write("provider refused the request\n");
+
+    const tail = reaper.stderrTail("chat-tail") ?? "";
+    expect(tail).toContain("provider refused the request");
+    expect(tail).not.toContain("CUTSECRETVALUE");
+    expect(tail).not.toContain("abcdefghijklmnopqrstuvwxyz0123");
+    expect(reaper.stderrTail("chat-unknown")).toBeNull();
+
+    // A private key spans lines. Its body goes whether the key arrives whole
+    // or the kept buffer cut its BEGIN line off (only the body and END remain).
+    const keyBody = [
+      "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7",
+      "Zb1kq2vXyLm9TfP0nQe8sR3uWcYdHaJ4oG6iE5tKxN7MlBpVrSgU",
+    ];
+    const keyTail = (sessionId: string, written: string): string => {
+      const keyChild = Object.assign(createProcess(4322), { stderr: new PassThrough() });
+      const keyReaper = createClaudeSubprocessReaper({
+        logger: createLogger(),
+        platform: "darwin",
+        spawnProcess: vi.fn(() => keyChild) as any,
+      });
+      keyReaper.spawnClaudeCodeProcess({
+        command: "/bin/claude",
+        args: [],
+        cwd: "/tmp/lane",
+        env: {},
+        signal: new AbortController().signal,
+      }, { sessionId, sdkSessionId: null, laneId: "lane-1", cwd: "/tmp/lane" });
+      keyChild.stderr.write(written);
+      return keyReaper.stderrTail(sessionId) ?? "";
+    };
+    // Built at runtime so the source holds no key-shaped block for secret scanners.
+    const pemMarker = (edge: "BEGIN" | "END") => `-----${edge} PRIVATE KEY-----`;
+    const keyLines = `${keyBody.join("\n")}\n${pemMarker("END")}\nafter the key\n`;
+    const filler = `${"A".repeat(60)}\n`.repeat(70);
+    for (const keptTail of [
+      keyTail("chat-key", `before the key\n${pemMarker("BEGIN")}\n${keyLines}`),
+      keyTail("chat-key-cut", `${pemMarker("BEGIN")}\n${filler}${keyLines}`),
+    ]) {
+      expect(keptTail).toContain("after the key");
+      for (const bodyLine of [...keyBody, "A".repeat(60)]) expect(keptTail).not.toContain(bodyLine);
+    }
+    // A key longer than the kept buffer that has not ended yet: the cut took
+    // its BEGIN line and no END has come, so nothing marks the body as a key.
+    const openKeyTail = keyTail("chat-key-open", `before the key\n${pemMarker("BEGIN")}\n${`${keyBody.join("\n")}\n`.repeat(50)}`);
+    for (const bodyLine of keyBody) expect(openKeyTail).not.toContain(bodyLine);
+  });
+
   it("spawns through the hook and records process metadata", () => {
     const logger = createLogger();
     const child = createProcess(5678);
@@ -154,7 +222,7 @@ describe("createClaudeSubprocessReaper", () => {
     expect(spawnProcess).toHaveBeenCalledWith("/bin/claude", ["--model", "sonnet"], expect.objectContaining({
       cwd: "/tmp/lane",
       env: { FOO: "bar" },
-      stdio: ["pipe", "pipe", "ignore"],
+      stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       // POSIX only: the child has to lead its own process group or the reaper
       // can never reach its MCP servers.

@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { markBrainStoppedBy } from "../sentry/brainStartsFile";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -1389,6 +1390,8 @@ async function stopWindowsPredecessors(
           message: `Could not stop the ADE brain process ${child.pid}; it was left running.`,
         };
       }
+      // Replaced on purpose, not a crash, for the restart-loop record.
+      if (outcome === "killed") markBrainStoppedBy(child.pid, "service_reinstall");
     }
   }
   return { ok: true, removed };

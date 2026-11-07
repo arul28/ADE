@@ -234,8 +234,15 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
   // database is closed. Its failure is then expected and must not be written.
   let stopped = false;
 
+  // Best-effort: it runs in the failure paths, and a project database that
+  // stopped answering (a hung drive) would throw again from inside the catch
+  // and leave the poll's promise rejected with nobody awaiting it.
   const setLastError = (message: string | null): void => {
-    deps.db.setJson(LINEAR_RELAY_LAST_ERROR_REF, message);
+    try {
+      deps.db.setJson(LINEAR_RELAY_LAST_ERROR_REF, message);
+    } catch (error) {
+      deps.logger.warn("automations.linear_relay_last_error_write_failed", { error: errorMessage(error) });
+    }
   };
 
   const getStatus = (): LinearIngressStatus => {

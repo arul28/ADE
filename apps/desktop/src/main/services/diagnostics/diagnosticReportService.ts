@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import {
   buildDiagnosticIssueUrl,
   buildDiagnosticReport,
   diagnosticReportFilePath,
+  hashAccountUserId,
   summarizeDiagnosticRemoteMachines,
   type DiagnosticLogTail,
   type DiagnosticReportContext,
@@ -15,6 +15,14 @@ import {
   collectMachineDiagnosticSourcesAsync,
   readLogTail,
 } from "../../../../../ade-cli/src/services/diagnostics/diagnosticSources";
+import {
+  collectMachineHealth,
+  readMachineHardware,
+  readMachineKeyFingerprint,
+  type DiagnosticMachineHardware,
+  type DiagnosticMachineHealth,
+} from "../../../../../ade-cli/src/services/diagnostics/machineHealth";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { readVolumeSpace } from "../storage/volume";
 import { readLastFailure } from "../runtime/lastFailureStore";
 import { resolvePathWithinRoot } from "../shared/utils";
@@ -81,7 +89,11 @@ export type DiagnosticReportRequest = DiagnosticReportContext & {
 export type DiagnosticReportDeps = {
   appVersion: string | null;
   packageChannel: string | null;
+  /** `resolveReleaseChannel` as Sentry and PostHog read it; a package no release built is `development`. */
+  releaseChannel?: string | null;
   isPackaged: boolean;
+  /** `machine_id` (`machineTelemetryId.ts`), when this install has one. */
+  machineId?: string | null;
   /** `app.getPath("userData")` — where the desktop's own jsonl logs live. */
   userDataPath: string;
   /** Directory the written report file goes in. */
@@ -95,6 +107,10 @@ export type DiagnosticReportDeps = {
   diagnoseProject?: (projectRoot: string) => Promise<unknown>;
   /** Deadline for each optional step above. Test seam; defaults to 8s. */
   stepTimeoutMs?: number;
+  /** The machine-health section: live (`sysctl`, `ps`, `footprint`; PowerShell on Windows) by default. */
+  readMachineHealth?: (runtimeDir: string) => Promise<DiagnosticMachineHealth>;
+  /** The hardware line (the model from `sysctl`, `/sys` or the registry) by default. */
+  readMachineHardware?: () => Promise<DiagnosticMachineHardware>;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
 };
@@ -104,14 +120,12 @@ export type DiagnosticReportResult = {
   filePath: string;
   issueUrl: string;
   installId: string;
+  /** Sent beside the report as upload metadata, so the stored object names its machine. */
+  machineId: string | null;
 };
 
-/** Truncated one-way hash: correlatable across reports, never reversible. */
-export function hashAccountUserId(userId: string | null | undefined): string | null {
-  const trimmed = userId?.trim();
-  if (!trimmed) return null;
-  return createHash("sha256").update(`ade-account:${trimmed}`).digest("hex").slice(0, 12);
-}
+/** Truncated one-way hash: correlatable across reports, never reversible (shared with `ade report-issue`). */
+export { hashAccountUserId };
 
 function readMacProductVersion(): Promise<string | null> {
   if (process.platform !== "darwin") return Promise.resolve(null);
@@ -190,7 +204,8 @@ export async function collectDiagnosticReport(
   // window and every IPC call for as long as they take, on a report the user
   // often did not ask for. The Electron-only extras below are the only thing
   // this report adds.
-  const [sources, osProductVersion, localRuntimeStatus, remoteRuntimeSnapshot, recoveryDiagnosis] = await Promise.all([
+  const machineLayout = resolveMachineAdeLayout(env);
+  const [sources, osProductVersion, localRuntimeStatus, remoteRuntimeSnapshot, recoveryDiagnosis, machineHealth, hardware] = await Promise.all([
     collectMachineDiagnosticSourcesAsync({ env, projectRoot, readVolume: volumeEntry }),
     readMacProductVersion().catch(() => null),
     bestEffortStep(() => deps.getLocalRuntimeStatus?.() ?? null, deps.stepTimeoutMs),
@@ -198,6 +213,13 @@ export async function collectDiagnosticReport(
     projectRoot && deps.diagnoseProject
       ? bestEffortStep(() => deps.diagnoseProject?.(projectRoot) ?? null, deps.stepTimeoutMs)
       : Promise.resolve(null),
+    // Off the main thread like everything above: a `sysctl`, a `ps` and a
+    // `footprint` on macOS, PowerShell on Windows.
+    bestEffortStep(
+      () => (deps.readMachineHealth ?? ((runtimeDir) => collectMachineHealth({ runtimeDir, live: true })))(machineLayout.runtimeDir),
+      deps.stepTimeoutMs,
+    ),
+    bestEffortStep(() => (deps.readMachineHardware ?? readMachineHardware)(), deps.stepTimeoutMs),
   ]);
 
   // Only what lives under Electron's userData is added here. The project's
@@ -243,6 +265,7 @@ export async function collectDiagnosticReport(
     app: {
       version: deps.appVersion,
       packageChannel: deps.packageChannel,
+      releaseChannel: deps.releaseChannel ?? null,
       isPackaged: deps.isPackaged,
       platform: process.platform,
       arch: process.arch,
@@ -256,7 +279,11 @@ export async function collectDiagnosticReport(
     identity: {
       installId,
       accountHash: hashAccountUserId(deps.accountUserId),
+      machineKeyFingerprint: readMachineKeyFingerprint(machineLayout.secretsDir),
+      machineId: deps.machineId ?? null,
     },
+    hardware,
+    machineHealth,
     context: {
       surface: request.surface,
       headline: request.headline ?? null,
@@ -293,5 +320,5 @@ export async function collectDiagnosticReport(
     redaction,
   });
 
-  return { report, filePath, issueUrl, installId };
+  return { report, filePath, issueUrl, installId, machineId: deps.machineId ?? null };
 }

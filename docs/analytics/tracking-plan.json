@@ -12,6 +12,7 @@
       "platform",
       "arch",
       "release_channel",
+      "machine_id",
       "project_id",
       "session_id",
       "first_open"
@@ -24,7 +25,8 @@
       "app_version",
       "build_number",
       "distribution",
-      "release_channel"
+      "release_channel",
+      "machine_id"
     ],
     "marketing": [
       "$referrer",
@@ -427,6 +429,22 @@
       ]
     },
     {
+      "name": "ade_resource_pressure",
+      "platforms": [
+        "runtime"
+      ],
+      "owner": "apps/ade-cli/src/services/runtime/resourcePressureMonitor.ts",
+      "source": "desktop_policy",
+      "purpose": "One per resource-pressure episode on this machine (memory, swap, a database write-ahead log, or the brain's own CPU), from the machine brain's five-minute sample: what ran short, how badly, the Android emulator count bucket, whether a developer's brain ran beside the installed one, and ADE's busiest table. Deduped per kind for six hours, four a day.",
+      "properties": [
+        "kind",
+        "severity",
+        "emulator_count",
+        "dev_brain_running",
+        "top_table"
+      ]
+    },
+    {
       "name": "$exception",
       "platforms": [
         "desktop",
@@ -467,7 +485,8 @@
         "$ai_latency",
         "$ai_trace_id",
         "feature",
-        "outcome"
+        "outcome",
+        "error_kind"
       ]
     },
     {

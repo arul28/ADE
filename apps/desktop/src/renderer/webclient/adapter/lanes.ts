@@ -229,8 +229,12 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     revealLeftoverWorktree: async () => {
       throw new Error("Reveal in Finder is available in the desktop app.");
     },
-    deleteLeftoverWorktree: async (args: unknown) =>
-      call("lanes.deleteLeftoverWorktree", args, { removed: false }, false),
+    // The folder belongs to the pinned lane's machine and project; a pin this
+    // adapter cannot reach is refused rather than deleting on the bound one.
+    deleteLeftoverWorktree: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("deleteLeftoverWorktree", pin);
+      return call("lanes.deleteLeftoverWorktree", args, { removed: false }, false);
+    },
     initEnv: (args: unknown) => call("lanes.initEnv", args, null, false),
     getEnvStatus: (args: unknown) => call("lanes.getEnvStatus", args, null),
     listTemplates: () => call("lanes.listTemplates", {}, []),

@@ -6,10 +6,20 @@ export const ADE_RECOVERY_ERROR_CODES = [
   "migration_unknown_state",
   /** The data files exist but the filesystem refuses to read them. */
   "storage_read_failed",
+  /** The drive under the project stopped answering while ADE opened its data (SQLite "disk I/O error"). */
+  "storage_io_failed",
+  /** Another ADE process held the project's database locked past every retry of the open. */
+  "db_busy",
   /** ADE opened this project's data before, and its .ade folder or database is gone. */
   "project_data_missing",
   /** The open database was moved or replaced while ADE was using it. */
   "db_path_changed",
+  /**
+   * The project's database would not open for a reason no bucket above names;
+   * the failure's SQLite class (`sqliteErrorClass`) rides beside it. Was
+   * `unknown`, which told triage nothing.
+   */
+  "db_open_failed",
   "brain_not_installed",
   "brain_crash_looping",
   /** macOS loaded the launch agent but "Allow in the Background" is off for ADE. */
@@ -65,6 +75,13 @@ export type ProjectRecoveryDiagnosis = {
      */
     | "storage_unreadable"
     /**
+     * The drive under the project stopped answering while ADE opened its data
+     * (SQLite's "disk I/O error"): disconnected, asleep or full. Nothing in the
+     * files is known to be wrong, so no repair is offered; Try again once the
+     * drive answers.
+     */
+    | "drive_unreadable"
+    /**
      * The project's .ade folder or its database was moved or deleted. Nothing
      * is repaired automatically: the person puts it back, or starts fresh.
      */
@@ -89,6 +106,12 @@ export type ProjectRecoveryDiagnosis = {
     | "brain_not_running"
     | "socket_stale_no_owner"
     | "socket_owned_by_other"
+    /**
+     * Another ADE process held the project's database locked through every
+     * retry of the open. Nothing is broken, so no repair is offered: the lock
+     * goes when that process finishes or closes.
+     */
+    | "project_busy"
     /**
      * The background service is registered and its brain is alive but has not
      * bound the socket yet. Nothing to repair — the desktop keeps checking and
@@ -216,6 +239,15 @@ export const RECOVERY_COPY: Record<RecoveryState, {
       "Then choose Try again.",
     ],
   },
+  drive_unreadable: {
+    headline: "ADE can't read this project's data from its drive",
+    body: "The drive stopped answering while ADE opened the project.",
+    canAutoRepair: false,
+    steps: [
+      "Check that the drive is connected, awake and has free space.",
+      "Then choose Try again.",
+    ],
+  },
   data_missing: {
     headline: "This project's ADE data is missing",
     body: "Your code is safe. Only ADE's lanes and chat history for it are gone.",
@@ -261,6 +293,15 @@ export const RECOVERY_COPY: Record<RecoveryState, {
     canAutoRepair: false,
     steps: [
       "Quit the other copy of ADE.",
+      "Then choose Try again.",
+    ],
+  },
+  project_busy: {
+    headline: "Another ADE process is using this project",
+    body: "Your work is safe.",
+    canAutoRepair: false,
+    steps: [
+      "Wait a moment, or close the other ADE.",
       "Then choose Try again.",
     ],
   },
@@ -322,9 +363,11 @@ export function mapKvDbOpenErrorCode(code: string): AdeRecoveryErrorCode {
     case "migration_incomplete":
     case "migration_unknown_state":
     case "storage_read_failed":
+    case "storage_io_failed":
+    case "db_busy":
       return code;
     default:
-      return "unknown";
+      return "db_open_failed";
   }
 }
 
@@ -343,6 +386,8 @@ export function stateForCode(code: AdeRecoveryErrorCode): ProjectRecoveryDiagnos
     case "migration_incomplete":
     case "migration_unknown_state": return "db_repair_needed";
     case "storage_read_failed": return "storage_unreadable";
+    case "storage_io_failed": return "drive_unreadable";
+    case "db_busy": return "project_busy";
     case "project_data_missing": return "data_missing";
     case "db_path_changed": return "data_replaced";
     case "brain_crash_looping": return "brain_crash_looping";

@@ -830,9 +830,10 @@ describe("project database open failure", () => {
   /**
    * A directory where the database belongs, so SQLite answers "unable to open
    * database file" — a failure `classifySqliteOpenError` has no bucket for.
-   * The code the recovery UI reads is then `unknown` and the sentence every
-   * caller gets is the generic one, which is correct: raw platform text must
-   * not cross to a renderer or a phone. The platform's own words must still be
+   * The code the recovery UI reads is then `db_open_failed`, and the sentence
+   * every caller gets is the generic one plus SQLite's error class
+   * (`sqlite_cantopen`), never the raw platform text, which must not cross to
+   * a renderer or a phone. The platform's own words must still be
    * reported somewhere, or "ADE could not open the project" reaches every
    * surface with nothing that says why — the state that made this failure
    * class unreadable.
@@ -852,8 +853,8 @@ describe("project database open failure", () => {
       (error: unknown) => error as Error & { code?: string; detail?: string },
     );
 
-    expect(failure?.message).toBe("ADE could not open the project data store.");
-    expect(failure?.code).toBe("unknown");
+    expect(failure?.message).toBe("ADE could not open the project data store (sqlite_cantopen).");
+    expect(failure?.code).toBe("db_open_failed");
     expect(failure?.detail).toContain("unable to open database file");
 
     const logPath = path.join(projectRoot, ".ade", "transcripts", "logs", "ade-cli.jsonl");
@@ -864,7 +865,7 @@ describe("project database open failure", () => {
       .split("\n")
       .find((entry) => entry.includes("project.db_open_failed"));
     const meta = JSON.parse(line ?? "{}").meta ?? {};
-    expect(meta.code).toBe("unknown");
+    expect(meta.code).toBe("db_open_failed");
     expect(meta.detail).toContain("unable to open database file");
     // The raw Error travels as a live object so `logBridge` titles the Sentry
     // issue by it. `JSON.stringify` drops an Error's non-enumerable name and

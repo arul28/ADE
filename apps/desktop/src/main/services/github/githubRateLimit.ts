@@ -1,5 +1,6 @@
 import type { GitHubAuthFailure, GitHubRateLimitState } from "../../../shared/types";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
+import { markExpected } from "../../../shared/expectedError";
 
 /**
  * OAuth error codes that mean "this credential will never work again".
@@ -32,6 +33,8 @@ export class GitHubRateLimitError extends Error {
   ) {
     super(message);
     this.name = "GitHubRateLimitError";
+    // The account's quota, not a defect: never a Sentry issue.
+    markExpected(this, "environment");
   }
 }
 

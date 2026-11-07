@@ -57,6 +57,27 @@ export async function detectDefaultBaseRef(repoRoot: string): Promise<string> {
     if (name && name !== "HEAD") return name;
   }
 
+  // A detached HEAD and no origin/HEAD (a clone made without it, a remote
+  // added by hand): use whichever of the usual defaults the repository has,
+  // so a `master` repository does not get a `main` base that is not there.
+  const known = await runGit(
+    [
+      "for-each-ref",
+      "--format=%(refname)",
+      "refs/heads/main",
+      "refs/heads/master",
+      "refs/remotes/origin/main",
+      "refs/remotes/origin/master",
+    ],
+    { cwd: repoRoot, timeoutMs: 6_000 },
+  );
+  if (known.exitCode === 0) {
+    const refs = new Set(known.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+    for (const candidate of ["main", "master"]) {
+      if (refs.has(`refs/heads/${candidate}`) || refs.has(`refs/remotes/origin/${candidate}`)) return candidate;
+    }
+  }
+
   return "main";
 }
 

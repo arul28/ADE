@@ -434,6 +434,32 @@ func decodeHydrationPayload<T: Decodable>(_ raw: Any, as type: T.Type, domainLab
   }
 }
 
+/// Hydration decodes of the big lists (lanes, work sessions, PRs) run here,
+/// off the main actor: a project's PR list or session list took the main
+/// thread long enough to hang the app. One queue, one job at a time in the
+/// order the main actor sent them, so answers still apply in the order they
+/// arrived, as when the decode was synchronous.
+private let syncHydrationDecodeQueue = DispatchQueue(label: "com.ade.sync.hydration-decode", qos: .userInitiated)
+
+/// `decodeHydrationPayload` on `syncHydrationDecodeQueue`. Callers keep every
+/// state change on the main actor and recheck their scope after the await.
+func decodeHydrationPayloadOffMain<T: Decodable>(_ raw: Any, as type: T.Type, domainLabel: String, decoder: JSONDecoder) async throws -> T {
+  try await withCheckedThrowingContinuation { continuation in
+    syncHydrationDecodeQueue.async {
+      continuation.resume(with: Result { try decodeHydrationPayload(raw, as: type, domainLabel: domainLabel, decoder: decoder) })
+    }
+  }
+}
+
+/// Waits for every hydration decode sent before it. An answer that reuses a
+/// saved list (nothing to decode) waits here, so it still applies after an
+/// earlier answer that is still decoding.
+func awaitEarlierHydrationDecodes() async {
+  await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+    syncHydrationDecodeQueue.async { continuation.resume() }
+  }
+}
+
 func adeJSONData(withJSONObject object: Any, options: JSONSerialization.WritingOptions = []) throws -> Data {
   let writingOptions = options.union(.fragmentsAllowed)
   guard JSONSerialization.isValidJSONObject(object) || adeIsValidJSONFragment(object) else {
@@ -657,6 +683,15 @@ func syncConnectFailureIsUnreachableMachine(_ error: Error) -> Bool {
     guard let finalFailure = exhausted.finalFailure else { return true }
     return syncConnectFailureIsUnreachableMachine(finalFailure)
   }
+  if let mailboxError = error as? SyncConnectionRaceMailboxError {
+    // A candidate's reader only runs until the hello finishes, so this socket
+    // dropped before the machine said anything. A drop there (the route went
+    // away under it) is an unreachable machine; anything else keeps its own
+    // classification.
+    guard let underlying = mailboxError.underlying else { return false }
+    return syncConnectFailureIsSocketDropBeforeHello(underlying)
+      || syncConnectFailureIsUnreachableMachine(underlying)
+  }
   if let urlError = error as? URLError {
     return syncUnreachableURLErrorCodes.contains(urlError.code)
   }
@@ -674,6 +709,18 @@ func syncConnectFailureIsUnreachableMachine(_ error: Error) -> Bool {
   default:
     return false
   }
+}
+
+/// The socket was torn down under the candidate ("Socket is not connected",
+/// a reset or an abort). Only meaningful before hello: after it, the same
+/// codes are an ordinary disconnect, not proof the machine was out of reach.
+private func syncConnectFailureIsSocketDropBeforeHello(_ error: Error) -> Bool {
+  if let urlError = error as? URLError {
+    return urlError.code == .networkConnectionLost
+  }
+  let nsError = error as NSError
+  guard nsError.domain == NSPOSIXErrorDomain else { return false }
+  return [ENOTCONN, ECONNRESET, ECONNABORTED].contains(Int32(nsError.code))
 }
 
 /// The machine answered and said why it can't take this sign-in, with the
@@ -3044,8 +3091,17 @@ enum SyncUserFacingError {
     guard !rawMessage.isEmpty else {
       return "Something interrupted sync. Reconnect to the machine and try again."
     }
+    // Request timeouts carry copy written for people already, and they fire
+    // in bursts on the main actor (every pending request at once when the app
+    // resumes), so they skip the phrase scan below (ADE-IOS-1R).
+    if isSyncRequestTimeoutError(error) {
+      return rawMessage
+    }
 
-    let lowered = rawMessage.lowercased()
+    // Every phrase sits near the start of a message; a host error that carries
+    // a long body (a stack, a JSON dump) is scanned only that far.
+    let scanned = rawMessage.utf8.count > 4_096 ? String(rawMessage.prefix(4_096)) : rawMessage
+    let lowered = scanned.lowercased()
     if lowered.contains("timed out waiting for host to sync project data") {
       return "Timed out waiting for the machine to sync project data. Try reconnecting."
     }
@@ -4613,6 +4669,14 @@ final class SyncService: ObservableObject {
   private let outboundSyncCursorsKey = "ade.sync.outboundSyncCursors"
   private let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
   private let outboundSyncStateMaxEntries = 128
+  private let syncChangeLogPruneLastRunKey = "ade.sync.changeLogPrune.lastRunAt"
+  private let syncChangeLogPruneNextRowIdKey = "ade.sync.changeLogPrune.nextRowId"
+  /// One prune run an hour (every five minutes while an old log is still being
+  /// swept), each scanning at most 100 windows of 2,000 change-log rows, one
+  /// short transaction per window (about 10 ms on a Mac for a full window).
+  private let syncChangeLogPruneInterval: TimeInterval = 60 * 60
+  private let syncChangeLogPruneWindowRows = 2_000
+  private let syncChangeLogPruneMaxWindowsPerRun = 100
   private let maxChangesetAckRetries = 6
   private let defaultOutboundChangesetRowLimit = 64
   private let defaultOutboundChangesetByteLimit = 64 * 1_024
@@ -4755,6 +4819,13 @@ final class SyncService: ObservableObject {
   private var outboundLocalDbVersion = 0
   private var outboundCursorPersistTask: Task<Void, Never>?
   private var pendingOutboundCursorPersistVersion: Int?
+  private var syncChangeLogPruneTask: Task<Void, Never>?
+  /// The connection whose `hello_ok` showed the host's history went backwards
+  /// (see `resetBackwardsHostHistoryIfNeeded`), and the task that clears that
+  /// host's stale change-log rows and reconnects for a full replay. While it
+  /// runs, batches on that connection must not move the host cursor off 0.
+  private var hostHistoryResetGeneration: UInt64?
+  private var hostHistoryResetTask: Task<Void, Never>?
   private var remoteCursorProfilePersistTask: Task<Void, Never>?
   private var pendingRemoteProfileDbVersion: Int?
   private var pendingRemoteProfileDbVersionBySite: [String: Int] = [:]
@@ -8167,7 +8238,7 @@ final class SyncService: ObservableObject {
               if self.isCandidateHelloTerminalFrame(text) { return }
             }
           } catch {
-            await mailbox.finish(message: error.localizedDescription)
+            await mailbox.finish(message: error.localizedDescription, underlying: error)
           }
         }
         defer { reader.cancel() }
@@ -9559,9 +9630,18 @@ final class SyncService: ObservableObject {
   /// True when the "iPhone isn't on Tailscale" hint should show on connection
   /// surfaces (Hub blank states, Settings header). See
   /// `syncShouldShowTailscaleOffHint` for the gating rationale.
+  ///
+  /// View bodies read this on every render, so it reads only the active
+  /// profile — never `loadProfile()`, which decodes, migrates Keychain tokens
+  /// and can save a fallback machine (a publish inside a view update) — and it
+  /// asks the Keychain for the token last, after the cheap gates that already
+  /// rule the hint out (a fatal main-thread hang, ADE-IOS-1V).
   var tailscaleOffHintVisible: Bool {
-    guard let profile = activeHostProfile ?? loadProfile(),
-          tokenForProfile(profile) != nil else {
+    guard let profile = activeHostProfile,
+          !phoneHasTailnetInterface,
+          connectionHealth.transport != .connected,
+          profileHasTailnetRoute(profile),
+          relayFallbackCandidates(for: profile).isEmpty else {
       return false
     }
     // Any live discovery hit means the current network already reaches the
@@ -9570,13 +9650,14 @@ final class SyncService: ObservableObject {
     let machineDiscoveredNearby = discoveredHosts.contains { host in
       matchesDiscoveredHost(host, profile: profile)
     }
+    guard !machineDiscoveredNearby, tokenForProfile(profile) != nil else { return false }
     return syncShouldShowTailscaleOffHint(
       transport: connectionHealth.transport,
       hasSavedMachine: true,
-      savedMachineHasTailnetRoute: profileHasTailnetRoute(profile),
-      phoneHasTailnetInterface: phoneHasTailnetInterface,
-      machineDiscoveredNearby: machineDiscoveredNearby,
-      hasRelayCandidate: !relayFallbackCandidates(for: profile).isEmpty
+      savedMachineHasTailnetRoute: true,
+      phoneHasTailnetInterface: false,
+      machineDiscoveredNearby: false,
+      hasRelayCandidate: false
     )
   }
 
@@ -10460,7 +10541,7 @@ final class SyncService: ObservableObject {
           try requireCurrentHydrationProjectScope(scope)
         }
       }
-      let payload = try decodeHydrationPayload(raw, as: LaneRefreshPayload.self, domainLabel: "lane", decoder: decoder)
+      let payload = try await decodeHydrationPayloadOffMain(raw, as: LaneRefreshPayload.self, domainLabel: "lane", decoder: decoder)
       if payload.notModified == true {
         try requireCurrentHydrationProjectScope(scope)
         if let signature = payload.signature {
@@ -10773,7 +10854,7 @@ final class SyncService: ObservableObject {
       if let conditional = raw as? [String: Any], conditional["partial"] as? Bool == true {
         // Head rows only: keep what the database already has, and fetch the
         // full list shortly.
-        sessions = try decodeHydrationPayload(
+        sessions = try await decodeHydrationPayloadOffMain(
           conditional["sessions"] ?? raw,
           as: [TerminalSessionSummary].self,
           domainLabel: "work session",
@@ -10787,7 +10868,14 @@ final class SyncService: ObservableObject {
            let cached = workSessionsConditionalCache,
            cached.key == cacheKey,
            cached.signature == signature {
-          sessions = cached.sessions
+          await awaitEarlierHydrationDecodes()
+          // An earlier full list may have landed during the wait; the newest
+          // cached list for this key wins over the one this reply named.
+          if let current = workSessionsConditionalCache, current.key == cacheKey {
+            sessions = current.sessions
+          } else {
+            sessions = cached.sessions
+          }
         } else if conditional["notModified"] as? Bool == true || conditional["delta"] != nil {
           let delta = conditional["delta"] as? [String: Any]
           if let delta,
@@ -10795,7 +10883,7 @@ final class SyncService: ObservableObject {
              cached.key == cacheKey,
              cached.signature == delta["baseSignature"] as? String,
              let signature {
-            let upserted = try decodeHydrationPayload(
+            let upserted = try await decodeHydrationPayloadOffMain(
               delta["upserted"] ?? [Any](),
               as: [TerminalSessionSummary].self,
               domainLabel: "work session",
@@ -10822,7 +10910,7 @@ final class SyncService: ObservableObject {
             )
             try requireCurrentHydrationProjectScope(scope)
             let fullObject = fullRaw as? [String: Any]
-            sessions = try decodeHydrationPayload(
+            sessions = try await decodeHydrationPayloadOffMain(
               fullObject?["sessions"] ?? fullRaw,
               as: [TerminalSessionSummary].self,
               domainLabel: "work session",
@@ -10836,7 +10924,7 @@ final class SyncService: ObservableObject {
           // An object without a list is not an answer to this request: it
           // fails to decode, as before, instead of reading as "no sessions",
           // which would delete every row.
-          sessions = try decodeHydrationPayload(
+          sessions = try await decodeHydrationPayloadOffMain(
             conditional["sessions"] ?? raw,
             as: [TerminalSessionSummary].self,
             domainLabel: "work session",
@@ -10845,9 +10933,11 @@ final class SyncService: ObservableObject {
           workSessionsConditionalCache = signature.map { (key: cacheKey, signature: $0, sessions: sessions) }
         }
       } else {
-        sessions = try decodeHydrationPayload(raw, as: [TerminalSessionSummary].self, domainLabel: "work session", decoder: decoder)
+        sessions = try await decodeHydrationPayloadOffMain(raw, as: [TerminalSessionSummary].self, domainLabel: "work session", decoder: decoder)
         workSessionsConditionalCache = nil
       }
+      // The decode above runs off the main actor; the project may have changed.
+      try requireCurrentHydrationProjectScope(scope)
       // Captured from the wire, not from the database: `replaceTerminalSessions`
       // below writes only the columns `terminal_sessions` has, and this is not
       // one of them. A full list is authoritative for the rows it names, so a
@@ -11403,7 +11493,14 @@ final class SyncService: ObservableObject {
          let cached = pullRequestListConditionalCache,
          cached.key == cacheKey,
          cached.signature == signature {
-        prs = cached.prs
+        await awaitEarlierHydrationDecodes()
+        // An earlier full list may have landed during the wait; the newest
+        // cached list for this key wins over the one this reply named.
+        if let current = pullRequestListConditionalCache, current.key == cacheKey {
+          prs = current.prs
+        } else {
+          prs = cached.prs
+        }
       } else if conditional["notModified"] as? Bool == true {
         // "Not modified" for a list this app no longer holds: ask in full.
         pullRequestListConditionalCache = nil
@@ -11416,16 +11513,16 @@ final class SyncService: ObservableObject {
         )
         try requireCurrentHydrationProjectScope(scope)
         let fullObject = fullRaw as? [String: Any]
-        prs = try decodeHydrationPayload(fullObject?["prs"] ?? fullRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
+        prs = try await decodeHydrationPayloadOffMain(fullObject?["prs"] ?? fullRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
         pullRequestListConditionalCache = (fullObject?["signature"] as? String).map { (key: cacheKey, signature: $0, prs: prs) }
       } else {
-        prs = try decodeHydrationPayload(conditional["prs"] ?? listRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
+        prs = try await decodeHydrationPayloadOffMain(conditional["prs"] ?? listRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
         if !activeOnly {
           pullRequestListConditionalCache = signature.map { (key: cacheKey, signature: $0, prs: prs) }
         }
       }
     } else {
-      prs = try decodeHydrationPayload(listRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
+      prs = try await decodeHydrationPayloadOffMain(listRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
       if !activeOnly { pullRequestListConditionalCache = nil }
     }
     try requireCurrentHydrationProjectScope(scope)
@@ -11450,7 +11547,7 @@ final class SyncService: ObservableObject {
         fallbackToActiveProjectScope: false
       )
       try requireCurrentHydrationProjectScope(scope)
-      var payload = try decodeHydrationPayload(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
+      var payload = try await decodeHydrationPayloadOffMain(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
       try requireCurrentHydrationProjectScope(scope)
       // Hydrate exactly what was asked for, whatever the brain sent back.
       let batchIds = Set(batch)
@@ -11540,7 +11637,7 @@ final class SyncService: ObservableObject {
           fallbackToActiveProjectScope: false
         )
         try requireCurrentHydrationProjectScope(scope)
-        let payload = try decodeHydrationPayload(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
+        let payload = try await decodeHydrationPayloadOffMain(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
         try requireCurrentHydrationProjectScope(scope)
         let pruneStale = prId == nil
         try await performDatabaseOffMain {
@@ -17953,11 +18050,86 @@ final class SyncService: ObservableObject {
   /// forever. Batches arrive in order on one connection, and a new connection
   /// re-seeds this from the profile, so plain assignment is correct.
   private func advanceRemoteDbCursor(appliedBatchToDbVersion: Int) {
+    if hostHistoryResetGeneration == connectionGeneration { return }
     latestRemoteDbVersion = appliedBatchToDbVersion
     scheduleRemoteDbCursorProfilePersist(
       dbVersion: latestRemoteDbVersion,
       cursorSite: activeRemoteDbSiteId
     )
+  }
+
+  /// The host's history went backwards when the cursor it delivered to this
+  /// phone from its own site is past the db_version it now advertises in
+  /// `hello_ok`. Its site id lives outside ade.db (`.ade/secrets`), so a
+  /// deleted, recreated or restored-from-backup ade.db keeps the site and
+  /// restarts its numbering and clocks lower. The phone's rows from the lost
+  /// history then make `applyChangesLocked` ignore the host's new writes for
+  /// every cell they cover, and the phone stays on old values for good.
+  ///
+  /// The cursor is the right witness: only batches from this host advance it,
+  /// in this host's own numbering, and the host never sends past its own
+  /// version, so another host relaying this site's rows can never move it.
+  /// (The log is not: a relayed row carries the relaying host's db_version.)
+  ///
+  /// Recovery: delete this site's rows from the change log, set the cursor to
+  /// 0, and reconnect. A hello that claims 0 makes the host export from 0
+  /// (`min(claim, watermark)`), so every current value arrives again and
+  /// lands. The next hello no longer trips: the cursor is 0.
+  private func resetBackwardsHostHistoryIfNeeded(hostDbVersion: Int?) {
+    // 0 is also what a host without cr-sqlite advertises; there is nothing to
+    // resync from yet, and a later hello with real history catches it.
+    guard hostHistoryResetTask == nil,
+          let siteId = activeRemoteDbSiteId,
+          let hostDbVersion, hostDbVersion > 0,
+          latestRemoteDbVersion > hostDbVersion
+    else { return }
+    let heldCursor = latestRemoteDbVersion
+    let generation = connectionGeneration
+    hostHistoryResetGeneration = generation
+    syncConnectLog.notice(
+      "host history went backwards cursor=\(heldCursor, privacy: .public) hostDbVersion=\(hostDbVersion, privacy: .public); resyncing from 0"
+    )
+    CrashReporting.breadcrumb("sync.changeset", message: "host history went backwards; resyncing from 0", data: [
+      "cursor": String(heldCursor),
+      "hostDbVersion": String(hostDbVersion),
+    ])
+    let database = self.database
+    hostHistoryResetTask = Task { @MainActor [weak self] in
+      let deleted = await Task.detached(priority: .userInitiated) {
+        database.discardSyncChanges(fromSiteId: siteId)
+      }.value
+      guard let self else { return }
+      self.hostHistoryResetTask = nil
+      guard let deleted else {
+        // Keep this connection's data flowing; its batches move the cursor
+        // to this host's real numbering again, so a failed reset is not
+        // retried on every hello.
+        if self.hostHistoryResetGeneration == generation { self.hostHistoryResetGeneration = nil }
+        syncConnectLog.error("host history reset failed to clear the change log")
+        CrashReporting.breadcrumb("sync.changeset", message: "host history reset failed to clear the change log")
+        return
+      }
+      syncConnectLog.notice("host history reset cleared rows=\(deleted, privacy: .public)")
+      // Persist 0 now, so the hello that follows claims it.
+      if self.activeRemoteDbSiteId == siteId {
+        self.latestRemoteDbVersion = 0
+        self.pendingRemoteProfileDbVersion = 0
+        self.pendingRemoteProfileDbVersionBySite[siteId] = 0
+        self.persistPendingRemoteDbCursorProfile()
+      } else {
+        self.updateProfile { profile in
+          if profile.remoteDbVersionBySite?[siteId] != nil {
+            profile.remoteDbVersionBySite?[siteId] = 0
+          }
+        }
+      }
+      // Nothing runs between here and the teardown, so no batch of this
+      // connection can move the cursor once the flag is cleared.
+      if self.hostHistoryResetGeneration == generation { self.hostHistoryResetGeneration = nil }
+      guard self.isCurrentConnectionGeneration(generation) else { return }
+      self.teardownSocket(reason: "Resyncing with the machine.")
+      await self.reconnectIfPossible()
+    }
   }
 
   /// The debounce coalesces to the LAST value seen, not the highest: every
@@ -19595,7 +19767,7 @@ final class SyncService: ObservableObject {
               if self.isCandidateHelloTerminalFrame(text) { return }
             }
           } catch {
-            await mailbox.finish(message: error.localizedDescription)
+            await mailbox.finish(message: error.localizedDescription, underlying: error)
           }
         }
         defer { reader.cancel() }
@@ -21449,6 +21621,10 @@ final class SyncService: ObservableObject {
     )
   }
 
+  func awaitHostHistoryResetForTesting() async {
+    await hostHistoryResetTask?.value
+  }
+
   func awaitReconnectStabilityResetForTesting() async {
     let scheduledTask = reconnectStabilityTask
     await scheduledTask?.value
@@ -21620,6 +21796,9 @@ final class SyncService: ObservableObject {
     } else {
       activeRemoteDbSiteId = nil
     }
+    resetBackwardsHostHistoryIfNeeded(
+      hostDbVersion: (payload["serverDbVersion"] as? NSNumber)?.intValue
+    )
 
     let negotiation = SyncHelloNegotiation(helloPayload: payload)
     let features = negotiation.features
@@ -22209,6 +22388,7 @@ final class SyncService: ObservableObject {
         )
         resolve(requestId: requestId, result: .success(payload))
         wakeChangesetApplyWaiters()
+        scheduleSyncChangeLogPruneIfDue()
       } catch {
         guard isCurrentConnectionGeneration(generation) else { return }
         changesetApplyBlockedAfterFailure = (connectionGeneration, latestRemoteDbVersion)
@@ -22622,6 +22802,98 @@ final class SyncService: ObservableObject {
     pendingOutboundChangeset = pending
     persistPendingOutboundChangesetForActiveProject(pending)
     lastError = ack.error?.message ?? "The machine could not apply the latest phone changes."
+  }
+
+  /// The highest phone db_version that no host can still need from the change
+  /// log: the lowest acknowledged cursor over every saved project and host,
+  /// the live cursor, and the start of every batch still waiting for its ack.
+  /// 0 (keep every phone row) when no cursor was ever saved.
+  private func syncChangeLogLocalAckFloor() -> Int {
+    let siteId = database.localSiteId().trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let ownSite = { (candidate: String) in
+      candidate.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == siteId
+    }
+    let ackedCursors = loadOutboundSyncCursors().values
+      .filter { ownSite($0.siteId) }
+      .map(\.lastAckedDbVersion)
+    guard var floor = ackedCursors.min() else { return 0 }
+    floor = min(floor, outboundLocalDbVersion)
+    if let pending = pendingOutboundChangeset {
+      floor = min(floor, pending.payload.fromDbVersion)
+    }
+    for pending in loadPendingOutboundChangesets().values where ownSite(pending.siteId) {
+      floor = min(floor, pending.payload.fromDbVersion)
+    }
+    return max(0, floor)
+  }
+
+  /// After a changeset batch applies, delete change-log rows no reader needs
+  /// (see `DatabaseService.pruneSupersededSyncChanges`), at most once an hour,
+  /// off the main actor, one short transaction per window so main-actor reads
+  /// wait at most one window. A run that stops early resumes from its rowid on
+  /// the next run.
+  private func scheduleSyncChangeLogPruneIfDue(now: Date = Date()) {
+    guard syncChangeLogPruneTask == nil else { return }
+    let defaults = UserDefaults.standard
+    if let lastRun = defaults.object(forKey: syncChangeLogPruneLastRunKey) as? Date,
+       now.timeIntervalSince(lastRun) < syncChangeLogPruneInterval,
+       now >= lastRun {
+      return
+    }
+    defaults.set(now, forKey: syncChangeLogPruneLastRunKey)
+    let floor = syncChangeLogLocalAckFloor()
+    let startRowId = Int64(max(0, defaults.integer(forKey: syncChangeLogPruneNextRowIdKey)))
+    let database = self.database
+    let windowRows = syncChangeLogPruneWindowRows
+    let maxWindows = syncChangeLogPruneMaxWindowsPerRun
+    syncChangeLogPruneTask = Task.detached(priority: .utility) { [weak self] in
+      var rowId = startRowId
+      var deleted = 0
+      var failed = false
+      for window in 0..<maxWindows {
+        if Task.isCancelled { break }
+        if window > 0 {
+          try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let result = database.pruneSupersededSyncChanges(
+          localAckedThroughDbVersion: floor,
+          afterRowId: rowId,
+          scanLimit: windowRows
+        )
+        deleted += result.deletedCount
+        rowId = result.nextRowId
+        // A failed window would fail the same way again right away: stop, and
+        // let the next hourly run retry it.
+        if result.failed {
+          failed = true
+          break
+        }
+        if rowId == 0 { break }
+      }
+      if deleted > 0 {
+        database.checkpointWalTruncate()
+      }
+      await self?.finishSyncChangeLogPrune(nextRowId: rowId, deletedCount: deleted, floor: floor, failed: failed)
+    }
+  }
+
+  private func finishSyncChangeLogPrune(nextRowId: Int64, deletedCount: Int, floor: Int, failed: Bool) {
+    UserDefaults.standard.set(Int(nextRowId), forKey: syncChangeLogPruneNextRowIdKey)
+    if failed {
+      syncChangeLogPruneTask = nil
+      syncConnectLog.error("sync change log prune failed rows=\(deletedCount, privacy: .public) floor=\(floor, privacy: .public) nextRowId=\(nextRowId, privacy: .public)")
+      return
+    }
+    if nextRowId != 0 {
+      // A large old log is not through yet: come back in five minutes instead
+      // of an hour.
+      UserDefaults.standard.set(
+        Date().addingTimeInterval(5 * 60 - syncChangeLogPruneInterval),
+        forKey: syncChangeLogPruneLastRunKey
+      )
+    }
+    syncChangeLogPruneTask = nil
+    syncConnectLog.info("sync change log pruned rows=\(deletedCount, privacy: .public) floor=\(floor, privacy: .public) nextRowId=\(nextRowId, privacy: .public)")
   }
 
   private func sendOutboundChangeset(_ pending: PendingOutboundChangeset) {
@@ -23243,7 +23515,8 @@ final class SyncService: ObservableObject {
       // request, then actively probe the transport; only a probe that hears
       // nothing back tears the socket down.
       markConnectionLoadStrained()
-      resolve(requestId: requestId, result: .failure(SyncUserFacingError.error(from: policy.error)))
+      // `resolve` maps the error for the caller.
+      resolve(requestId: requestId, result: .failure(policy.error))
       syncChatLog.notice(
         "request_timeout_probe_scheduled requestId=\(requestId, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public)"
       )

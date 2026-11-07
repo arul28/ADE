@@ -26,6 +26,7 @@ import { registerDesktopSentryDiagnostics } from "./desktopDiagnostics";
 import { installIpcErrorCapture } from "./ipcCapture";
 import { sentryMachineContext, sentryProcessTags, startNodeSentryDiagnostics } from "./machineContext";
 import { hasPriorTelemetryOptOut } from "./priorOptOut";
+import { reportsAsPackagedRelease } from "./releaseBuild";
 
 let started = false;
 
@@ -37,7 +38,7 @@ export function initMainSentry(options: {
   ipcLabel: (channel: string, args: readonly unknown[]) => string;
 }): boolean {
   if (started) return true;
-  const packaged = app.isPackaged;
+  const packaged = reportsAsPackagedRelease(app.isPackaged);
   if (!shouldEnableSentry({ env: process.env, packaged, priorOptOut: hasPriorTelemetryOptOut() })) return false;
   started = true;
   const hooks = createSentryEventHooks();

@@ -5,6 +5,8 @@ import { createHash, randomUUID } from "node:crypto";
 // strip-types loader, which requires the explicit source extension.
 // @ts-expect-error TS5097: the bundler resolves the sibling TypeScript module.
 import { pathKey } from "../shared/pathCompare.ts";
+// @ts-expect-error TS5097: same as above.
+import { AdeExpectedError } from "../../../shared/expectedError.ts";
 
 export type PiSessionLeaseOwner = "sdk" | "cli";
 
@@ -26,8 +28,19 @@ export type PiSessionLease = {
   lockPath: string;
   token: string;
   owner: PiSessionLeaseOwner;
+  ownerId: string;
   release: () => void;
 };
+
+/**
+ * Another writer (a second chat, a Pi terminal) holds the session: the user
+ * stops it or forks. An answer, not a provider failure.
+ */
+export class PiSessionLeaseConflictError extends AdeExpectedError {
+  constructor(message: string) {
+    super(message, "user");
+  }
+}
 
 const localLeases = new Map<string, PiSessionLease>();
 
@@ -213,8 +226,12 @@ export function acquirePiSessionLease(args: {
 }): PiSessionLease {
   const sessionFile = path.resolve(args.sessionFile);
   const lockPath = lockPathFor(sessionFile);
-  if (localLeases.has(lockPath)) {
-    throw new Error(`Pi session is already owned by another ${args.owner === "sdk" ? "ADE chat" : "CLI"} writer.`);
+  const localHolder = localLeases.get(lockPath);
+  if (localHolder) {
+    const message = `Pi session is already owned by another ${args.owner === "sdk" ? "ADE chat" : "CLI"} writer.`;
+    // The same owner still holding its own lease is a lease ADE never
+    // released, a defect, and stays reported as one.
+    throw localHolder.ownerId === args.ownerId ? new Error(`${message} (held by the same owner)`) : new PiSessionLeaseConflictError(message);
   }
   const record: LeaseRecord = {
     version: 2,
@@ -229,12 +246,12 @@ export function acquirePiSessionLease(args: {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const reclaimClaim = liveReclaimClaim(lockPath, args.isProcessIdentityLive);
     if (reclaimClaim) {
-      throw new Error(`Pi session is already being reclaimed by ${reclaimClaim.owner === "sdk" ? "ADE chat" : "Pi CLI"}. Stop that writer or fork the session before continuing.`);
+      throw new PiSessionLeaseConflictError(`Pi session is already being reclaimed by ${reclaimClaim.owner === "sdk" ? "ADE chat" : "Pi CLI"}. Stop that writer or fork the session before continuing.`);
     }
     if (writeLease(lockPath, record)) break;
     const current = readLease(lockPath);
     if (current && leaseOwnerIsLive(current, args.isProcessIdentityLive)) {
-      throw new Error(`Pi session is already owned by ${current.owner === "sdk" ? "ADE chat" : "Pi CLI"}. Stop that writer or fork the session before continuing.`);
+      throw new PiSessionLeaseConflictError(`Pi session is already owned by ${current.owner === "sdk" ? "ADE chat" : "Pi CLI"}. Stop that writer or fork the session before continuing.`);
     }
     if (reclaimStaleLease(lockPath, current, args.isProcessIdentityLive)) {
       if (writeLease(lockPath, record)) break;
@@ -247,6 +264,7 @@ export function acquirePiSessionLease(args: {
     lockPath,
     token: record.token,
     owner: args.owner,
+    ownerId: args.ownerId,
     release: () => {
       releaseLease(lockPath, record.token);
       localLeases.delete(lockPath);

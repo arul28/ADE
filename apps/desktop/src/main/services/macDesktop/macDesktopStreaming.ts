@@ -9,6 +9,7 @@
  * its registries and its gates in, and keeps the API surface.
  */
 
+import { AdeExpectedError } from "../../../shared/expectedError";
 import {
   MAC_DESKTOP_ACTIVE_FPS,
   MAC_DESKTOP_IDLE_FPS,
@@ -120,7 +121,7 @@ export function createMacDesktopStreaming(deps: MacDesktopStreamingDeps) {
   };
   /** What a start a stop or a lane teardown overtook rejects with. */
   const stoppedWhileStarting = (laneId: string): Error =>
-    new Error(`Lane ${laneId}'s stream was stopped while it was starting.`);
+    new AdeExpectedError(`Lane ${laneId}'s stream was stopped while it was starting.`, "user");
 
   /**
    * Waits out any start in flight — one lane's, or every lane's — so a release

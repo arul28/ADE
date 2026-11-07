@@ -10,6 +10,9 @@ import {
   resolveReachableMachineRuntimeSocketPath,
 } from "../services/projects/machineLayout";
 import { requestAdeRuntimeShutdown } from "./runtimeShutdownRequest";
+import { markBrainStoppedBy } from "../sentry/brainStartsFile";
+import { isAdeRuntimeNamedPipePath } from "../../../desktop/src/shared/adeRuntimeIpc";
+import { lastFailurePathForMachine } from "../../../desktop/src/main/services/runtime/lastFailureStore";
 import { buildPackagedRuntimeNodeModulePaths } from "../../../desktop/src/main/services/runtime/packagedNodePath";
 
 /**
@@ -811,7 +814,26 @@ export type TerminatePidDeps = {
    * run through. Defaults to `powershell.exe`, run off the event loop.
    */
   runWindowsPowerShell?: WindowsPowerShell;
+  /**
+   * The stopped brain's `runtime` folder, where its `brain-starts.json` is.
+   * Defaults to the one of the home `runtimeSocketPath` sits in
+   * (`<home>/sock/…` → `<home>/runtime`), else this process's machine home.
+   */
+  runtimeDir?: string;
+  /** A forced stop, recorded for the brain's next start. Defaults to `markBrainStoppedBy(pid, "forced_stop", runtimeDir)`. */
+  onForcedStop?: (pid: number, runtimeDir: string) => void;
 };
+
+/**
+ * The `runtime` folder of the ADE home a brain's socket lives in
+ * (`<home>/sock/ade.sock`), or null for an endpoint outside one (a Windows
+ * pipe, a scratch socket).
+ */
+export function runtimeDirForEndpoint(socketPath: string | null | undefined): string | null {
+  if (!socketPath || isAdeRuntimeNamedPipePath(socketPath)) return null;
+  const sockDir = path.dirname(socketPath);
+  return path.basename(sockDir) === "sock" ? path.join(path.dirname(sockDir), "runtime") : null;
+}
 
 function defaultKill(pid: number, signal: NodeJS.Signals | number): void {
   process.kill(pid, signal);
@@ -1008,6 +1030,19 @@ export async function terminatePidGracefullyAsync(
   deps: TerminatePidDeps = {},
 ): Promise<PidStopOutcome> {
   if (!pid || pid <= 0 || pid === process.pid) return "stopped";
+  const outcome = await terminatePidOnPlatformAsync(pid, deps);
+  // A brain this stop had to force could not record its own orderly stop;
+  // without this its next start reads it as a crash (`brainRestartLoop.ts`).
+  if (outcome === "killed") {
+    const runtimeDir = deps.runtimeDir
+      ?? runtimeDirForEndpoint(deps.runtimeSocketPath)
+      ?? path.dirname(lastFailurePathForMachine());
+    (deps.onForcedStop ?? ((stoppedPid, dir) => markBrainStoppedBy(stoppedPid, "forced_stop", dir)))(pid, runtimeDir);
+  }
+  return outcome;
+}
+
+async function terminatePidOnPlatformAsync(pid: number, deps: TerminatePidDeps): Promise<PidStopOutcome> {
   if ((deps.platform ?? process.platform) === "win32") {
     return terminateWindowsPidGracefullyAsync(pid, deps);
   }

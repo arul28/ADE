@@ -45,6 +45,7 @@ import {
   type ProductAnalyticsService,
 } from "./productAnalyticsService";
 import { createUsageProductAnalyticsExporter } from "./usageProductAnalyticsExporter";
+import { machineTelemetryIdFor } from "./machineTelemetryId";
 import { detectInstallSource } from "./installSource";
 import {
   usageScopeSelectedCapture,
@@ -62,6 +63,7 @@ function makeHarness(options: {
   runtimeMode?: string;
   captureClientMessage?: ProductAnalyticsClient["capture"];
   flush?: () => Promise<void>;
+  machineId?: () => string | null | undefined;
 } = {}) {
   const root = options.root ?? fs.mkdtempSync(path.join(os.tmpdir(), "ade-product-analytics-"));
   const messages = options.messages ?? [];
@@ -88,6 +90,7 @@ function makeHarness(options: {
     dailyBudget: options.dailyBudget,
     now: options.now,
     makeClient: () => client,
+    machineId: options.machineId,
   });
   return {
     root,
@@ -1174,6 +1177,51 @@ describe("productAnalyticsService", () => {
     });
     expect(first.messages).toHaveLength(25);
     expect(fs.readFileSync(path.join(first.root, "analytics.json"), "utf8")).not.toContain("shared-secret-key");
+    fs.rmSync(first.root, { recursive: true, force: true });
+  });
+
+  it("names the machine on every event, and a state file copied to another computer becomes a new install", () => {
+    let nowMs = Date.parse("2026-07-13T12:00:00.000Z");
+    const machineA = machineTelemetryIdFor("4c4c4544-0042-3510-8051-b4c04f4d3232", "/Users/ada/.ade", "darwin");
+    const machineB = machineTelemetryIdFor("1d0e2f3a-4b5c-6d7e-8f90-a1b2c3d4e5f6", "/Users/ada/.ade", "darwin");
+    // One computer, one home: the same id every time, never the raw identifier;
+    // another ADE home on it (Alpha) is another install.
+    expect(machineA).toMatch(/^[0-9a-f]{16}$/);
+    expect(machineTelemetryIdFor("4c4c4544-0042-3510-8051-b4c04f4d3232", "/Users/ada/.ade/", "darwin")).toBe(machineA);
+    expect(machineTelemetryIdFor("4c4c4544-0042-3510-8051-b4c04f4d3232", "/Users/ada/.ade-alpha", "darwin")).not.toBe(machineA);
+    expect(machineA).not.toBe(machineB);
+
+    const event = { event: "ade_feature_used" as const, surface: "api" as const, projectId: "project-1", properties: { feature: "work", action: "chat.create" } };
+    const capture = (machineId: () => string | null | undefined) => {
+      nowMs += 61_000;
+      const harness = makeHarness({ root: first.root, messages: first.messages, now: () => nowMs, machineId });
+      expect(harness.service.capture(event).accepted).toBe(true);
+      return first.messages[first.messages.length - 1] as { distinctId: string; properties: Record<string, unknown> };
+    };
+    const first = makeHarness({ now: () => nowMs, machineId: () => machineA });
+    expect(first.service.capture(event).accepted).toBe(true);
+    const original = first.messages[0] as { distinctId: string; properties: Record<string, unknown> };
+    expect(original.properties.machine_id).toBe(machineA);
+
+    // The same computer in a later process: the same install.
+    const restarted = capture(() => machineA);
+    expect(restarted.distinctId).toBe(original.distinctId);
+    expect(restarted.properties.project_id).toBe(original.properties.project_id);
+
+    // The whole home copied onto another computer: a new install, whose
+    // events do not pass as the first one's and hash its projects anew.
+    const copied = capture(() => machineB);
+    expect(copied.properties.machine_id).toBe(machineB);
+    expect(copied.distinctId).not.toBe(original.distinctId);
+    expect(copied.properties.project_id).not.toBe(original.properties.project_id);
+    const state = JSON.parse(fs.readFileSync(path.join(first.root, "analytics.json"), "utf8")) as Record<string, unknown>;
+    expect(state.machineId).toBe(machineB);
+    expect(JSON.stringify(state)).not.toContain("4c4c4544");
+
+    // An OS with no machine identifier sends no `machine_id` and keeps the install.
+    const unknown = capture(() => null);
+    expect(unknown.properties).not.toHaveProperty("machine_id");
+    expect(unknown.distinctId).toBe(copied.distinctId);
     fs.rmSync(first.root, { recursive: true, force: true });
   });
 

@@ -204,19 +204,26 @@ describe("parseCursorCliModelsStdout", () => {
     expect(mergeCursorModelDescriptorSources({ cliDescriptors: [], sdkDescriptors: [] })).toEqual([]);
   });
 
-  it("uses cached CLI rows to block SDK sends before SDK discovery warms", async () => {
+  it("reads SDK availability as unknown until SDK discovery warms, then blocks CLI-only models", async () => {
     spawnAsyncMock.mockResolvedValueOnce({
       status: 0,
-      stdout: "auto - Auto\n",
+      stdout: "composer-cli - Composer CLI\n",
       stderr: "",
     });
 
     await listCursorModelsFromCli("/usr/local/bin/cursor-agent");
 
-    expect(resolveCachedCursorModelAvailability("cursor/auto", "crsr_test")).toEqual({
+    // Unknown, not "CLI-only": a fresh launch must not refuse every model.
+    expect(resolveCachedCursorModelAvailability("cursor/composer-cli", "crsr_test")).toBeNull();
+
+    cursorModelsListMock.mockResolvedValue([{ id: "auto", displayName: "Auto" }]);
+    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
+
+    expect(resolveCachedCursorModelAvailability("cursor/composer-cli", "crsr_test")).toEqual({
       cli: true,
       sdk: false,
     });
+    expect(resolveCachedCursorModelAvailability("cursor/auto", "crsr_test")).toEqual({ cli: false, sdk: true });
     expect(resolveCachedCursorModelAvailability("cursor/chat-only", "crsr_test")).toBeNull();
   });
 
@@ -290,6 +297,8 @@ describe("parseCursorCliModelsStdout", () => {
         { modelId: "composer-2.5-fast", fastMode: true },
       ],
     });
+    cursorModelsListMock.mockResolvedValue([{ id: "auto", displayName: "Auto" }]);
+    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
     expect(resolveCachedCursorModelAvailability("cursor/composer-2.5-fast", "crsr_test")).toEqual({
       cli: true,
       sdk: false,

@@ -1,6 +1,7 @@
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import fs from "node:fs";
 import { captureError } from "../../../shared/sentry/capture";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import type {
   AdeActionRegistryEntry,
   CloneProjectInput,
@@ -1739,7 +1740,9 @@ export class RemoteConnectionService {
 
   private requireTarget(targetId: string): RemoteRuntimeTarget {
     const target = this.registry.get(targetId);
-    if (!target) throw new Error("Remote target was not found.");
+    // Removed (or never saved here) while a view still held its id: the
+    // caller's to fix, as `requireRemoteTarget` in runtimeBridge says.
+    if (!target) throw new AdeExpectedError("Remote target was not found.", "user");
     return target;
   }
 

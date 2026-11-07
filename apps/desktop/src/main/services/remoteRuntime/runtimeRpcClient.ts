@@ -1,7 +1,7 @@
 import { StringDecoder } from "node:string_decoder";
 import { PairedRuntimeSupersededError } from "./pairedRuntimeErrors";
 import { syntheticCallerId } from "../../../shared/syntheticCallerId";
-import { markExpectedFromWire } from "../../../shared/expectedError";
+import { carryExpected, markExpectedFromWire } from "../../../shared/expectedError";
 import { armDeadline, type DeadlineTimer } from "../../../shared/deadlineTimer";
 import type { JsonRpcId, JsonRpcRequest, JsonRpcTransport } from "../../../../../ade-cli/src/jsonrpc";
 
@@ -113,7 +113,7 @@ export class RuntimeRpcClient {
     this.transport.onError?.((error) => {
       // `cause` keeps the transport's typed error, so a caller can tell an
       // over-budget channel close from a lost machine.
-      this.failConnection(new Error(`Remote ADE service connection failed: ${error.message}`, { cause: error }));
+      this.failConnection(carryExpected(error, new Error(`Remote ADE service connection failed: ${error.message}`, { cause: error })));
     });
     this.transport.onClose?.((info) => {
       const details = [

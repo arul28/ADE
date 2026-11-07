@@ -510,6 +510,19 @@ export function AndroidDevicePane({
       .finally(() => void readStatus());
   }, [api, applyLane, forgetStream, laneId, readStatus]);
 
+  /**
+   * "Keep running": pin the emulator against ADE's idle stop, on the
+   * emulator's machine. Shown while the brain says ADE would stop it
+   * (`keepRunning` not null); an older brain never sends it.
+   */
+  const keepRunning = lane?.keepRunning ?? null;
+  const toggleKeepRunning = useCallback(() => {
+    if (!api?.setKeepRunning || keepRunning === null) return;
+    void api.setKeepRunning({ laneId, keepRunning: !keepRunning }, runtimePinRef.current)
+      .then(applyLane)
+      .catch((caught: unknown) => setError(describeAndroidError(caught)));
+  }, [api, applyLane, keepRunning, laneId]);
+
   const release = useCallback(() => {
     if (!api) return;
     forgetStream();
@@ -910,6 +923,9 @@ export function AndroidDevicePane({
                 toolsOpen={toolsOpen}
                 onToggleTools={() => setToolsOpen((open) => !open)}
                 onFloat={floatOverChat}
+                keepRunning={keepRunning}
+                idleStopMinutes={lane?.idleStopMinutes ?? null}
+                onToggleKeepRunning={keepRunning === null ? undefined : toggleKeepRunning}
                 // The per-chat "Show preview when minimized" toggle and
                 // Maximize, shared with every screen tool.
                 extraControls={<WorkToolPreviewControls tool="android" chatSessionId={sessionId} />}

@@ -3210,7 +3210,7 @@
 			repositoryURL = "https://github.com/clerk/clerk-ios";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 1.3.2;
+				minimumVersion = 1.7.1;
 			};
 		};
 		C5C000000000000000000001 /* XCRemoteSwiftPackageReference "Citadel" */ = {

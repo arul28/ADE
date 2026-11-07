@@ -3374,6 +3374,26 @@ describe("createPushRegistrationStore", () => {
     expect(reopened.getStatusSnapshot().identityRecoveryError).toBeNull();
   });
 
+  // A file that exists but cannot be read is not a missing file: minting over
+  // it would orphan every paired phone. chmod has no effect on Windows, and
+  // root reads anything.
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "keeps the identity when its file cannot be read, instead of minting over it",
+    () => {
+      const original = createPushRegistrationStore({ filePath }).getOrCreateIdentity();
+      fs.chmodSync(filePath, 0o000);
+      try {
+        const store = createPushRegistrationStore({ filePath, logger: { warn: vi.fn(), error: vi.fn() } });
+        expect(() => store.getOrCreateIdentity()).toThrow();
+        expect(fs.readdirSync(path.dirname(filePath)).filter((name) => name.includes(".corrupt-"))).toEqual([]);
+      } finally {
+        fs.chmodSync(filePath, 0o600);
+      }
+      // Once readable again, the same identity the phones are paired to.
+      expect(createPushRegistrationStore({ filePath }).getOrCreateIdentity()).toEqual(original);
+    },
+  );
+
   it("mints cleanly when no registration file exists at all", () => {
     const logger = { warn: vi.fn(), error: vi.fn() };
     const store = createPushRegistrationStore({ filePath, logger });

@@ -476,17 +476,29 @@ async function loadActivityTokens(
     .all<ActivityTokenRow>()).results ?? [];
 }
 
-async function shouldSuppress(
+/**
+ * The last delivered content hash of each dedupe key in one publish, read in
+ * one query (one per item was an N+1 on every publish). The caller updates the
+ * map as it delivers, so a key repeated later in the same publish sees the
+ * earlier delivery, as it did when each item read the table itself.
+ */
+async function loadSuppressions(
   env: PushRelayEnv,
   machineKey: string,
-  dedupeKey: string,
-  contentHash: string,
-): Promise<boolean> {
-  const row = await env.DB
-    .prepare("select content_hash from publish_suppression where machine_key = ? and suppression_key = ? limit 1")
-    .bind(machineKey, dedupeKey)
-    .first<SuppressionRow>();
-  return row != null && row.content_hash === contentHash;
+  dedupeKeys: readonly string[],
+): Promise<Map<string, string>> {
+  const keys = [...new Set(dedupeKeys)];
+  const suppressions = new Map<string, string>();
+  if (keys.length === 0) return suppressions;
+  const rows = (await env.DB
+    .prepare(`
+      select suppression_key, content_hash from publish_suppression
+       where machine_key = ? and suppression_key in (${keys.map(() => "?").join(", ")})
+    `)
+    .bind(machineKey, ...keys)
+    .all<SuppressionRow & { suppression_key: string }>()).results ?? [];
+  for (const row of rows) suppressions.set(row.suppression_key, row.content_hash);
+  return suppressions;
 }
 
 async function recordSuppression(
@@ -674,6 +686,7 @@ async function deliverAlertItem(
   devices: DeviceRow[],
   item: AlertPublishItem,
   defaultTopic: string,
+  suppressions: Map<string, string>,
 ): Promise<DeliveryOutcome[]> {
   const outcomes: DeliveryOutcome[] = [];
   const targets = selectTargets(devices, item.deviceIds).filter((device) => device.apns_token);
@@ -682,7 +695,7 @@ async function deliverAlertItem(
   let suppressionHash: string | null = null;
   if (item.dedupeKey) {
     suppressionHash = await sha256Hex(JSON.stringify(alertApnsPayload(item)));
-    if (await shouldSuppress(env, machineKey, item.dedupeKey, suppressionHash)) {
+    if (suppressions.get(item.dedupeKey) === suppressionHash) {
       return targets.map((device) => ({
         deviceId: device.device_id,
         kind: "alert" as const,
@@ -729,6 +742,7 @@ async function deliverAlertItem(
   // retry of the same content.
   if (item.dedupeKey && suppressionHash && outcomes.some((outcome) => outcome.delivered)) {
     await recordSuppression(env, machineKey, item.dedupeKey, suppressionHash);
+    suppressions.set(item.dedupeKey, suppressionHash);
   }
   return outcomes;
 }
@@ -1092,8 +1106,13 @@ async function handlePublish(request: Request, env: PushRelayEnv, machineKey: st
   const devices = await listMachineDevices(env, machineKey);
   const defaultTopic = env.APNS_DEFAULT_TOPIC?.trim() || "";
   const outcomes: DeliveryOutcome[] = [];
+  const suppressions = await loadSuppressions(
+    env,
+    machineKey,
+    alerts.flatMap((item) => (item.dedupeKey ? [item.dedupeKey] : [])),
+  );
   for (const item of alerts) {
-    outcomes.push(...await deliverAlertItem(env, config, machineKey, devices, item, defaultTopic));
+    outcomes.push(...await deliverAlertItem(env, config, machineKey, devices, item, defaultTopic, suppressions));
   }
   for (const item of liveActivities) {
     // The Live Activity is account-wide and owned by the account route. A

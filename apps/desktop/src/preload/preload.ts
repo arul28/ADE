@@ -3735,6 +3735,36 @@ function subscribeRemoteSessionChangedEvents(
   return remoteSessionChangedFanout.subscribe(cb);
 }
 
+/**
+ * The binding each lane delete this window started ran against, by lane id, so
+ * its progress events carry their project after a tab switch
+ * (`LaneDeleteEvent.origin`). Lane ids are unique, so a bounded map is enough.
+ */
+const laneDeleteOrigins = new Map<string, OpenProjectBinding | null>();
+const MAX_LANE_DELETE_ORIGINS = 64;
+
+function rememberLaneDeleteOrigin(laneId: string, binding: OpenProjectBinding | null): void {
+  laneDeleteOrigins.delete(laneId);
+  laneDeleteOrigins.set(laneId, binding);
+  while (laneDeleteOrigins.size > MAX_LANE_DELETE_ORIGINS) {
+    const oldest = laneDeleteOrigins.keys().next().value;
+    if (oldest === undefined) break;
+    laneDeleteOrigins.delete(oldest);
+  }
+}
+
+function withLaneDeleteOrigin(event: LaneDeleteEvent): LaneDeleteEvent {
+  const laneId = event?.progress?.laneId;
+  if (!laneId || !laneDeleteOrigins.has(laneId)) {
+    // Only an origin this preload recorded is trusted: a paired runtime that
+    // sent its own could point Delete folder at a project on this machine.
+    return event && typeof event === "object" && "origin" in event
+      ? { ...event, origin: undefined }
+      : event;
+  }
+  return { ...event, origin: laneDeleteOrigins.get(laneId) ?? null };
+}
+
 function subscribeRemoteLaneDeleteEvents(
   cb: (payload: LaneDeleteEvent) => void,
 ): () => void {
@@ -7052,6 +7082,7 @@ const adeBridge = {
     },
     delete: async (args: DeleteLaneArgs, pin?: OpenProjectBinding | null): Promise<void> => {
       clearGitReadCaches();
+      rememberLaneDeleteOrigin(args.laneId, pin ?? currentProjectBinding);
       if (pin) {
         await callPinnedRuntimeAction<void>(pin, "lane", "delete", { args });
       } else {
@@ -7110,9 +7141,10 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.lanesGetReclaimRisk, args),
       ),
     onDeleteEvent: (
-      cb: (ev: LaneDeleteEvent) => void,
+      callback: (ev: LaneDeleteEvent) => void,
       pin?: OpenProjectBinding | null,
     ) => {
+      const cb = (ev: LaneDeleteEvent) => callback(withLaneDeleteOrigin(ev));
       const removePinned = subscribePinnedProjectRuntimeEvents(
         pin,
         (payload) => toWrappedEvent<LaneDeleteEvent>(
@@ -7293,19 +7325,38 @@ const adeBridge = {
       }
       await ipcRenderer.invoke(IPC.lanesRevealWorktree, args);
     },
-    revealLeftoverWorktree: async (args: { laneId: string }): Promise<void> => {
-      const binding = await getRemoteProjectBinding();
-      if (binding) {
+    revealLeftoverWorktree: async (
+      args: { laneId: string; rootPath?: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
+      // `rootPath` names the project on this machine whose delete left the
+      // folder, which can be another tab than the one this window shows now.
+      const remote = pin
+        ? (pin.kind === "remote" ? pin : null)
+        : (args.rootPath ? null : await getRemoteProjectBinding());
+      if (remote) {
         throw new Error(
           "Remote lane folders cannot be revealed on this machine. Copy the remote path instead.",
         );
       }
       await ipcRenderer.invoke(IPC.lanesRevealLeftoverWorktree, args);
     },
-    deleteLeftoverWorktree: async (args: { laneId: string }): Promise<{ removed: boolean }> =>
-      callProjectRuntimeActionOr("lane", "deleteLeftoverWorktree", { args }, () =>
+    deleteLeftoverWorktree: async (
+      args: { laneId: string; rootPath?: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ removed: boolean }> => {
+      if (pin) {
+        return callPinnedRuntimeAction<{ removed: boolean }>(pin, "lane", "deleteLeftoverWorktree", {
+          args: { laneId: args.laneId },
+        });
+      }
+      // A project on this machine: main asks that project's runtime, then its
+      // in-process service, whichever tab the window shows now.
+      if (args.rootPath) return ipcRenderer.invoke(IPC.lanesDeleteLeftoverWorktree, args);
+      return callProjectRuntimeActionOr("lane", "deleteLeftoverWorktree", { args }, () =>
         ipcRenderer.invoke(IPC.lanesDeleteLeftoverWorktree, args),
-      ),
+      );
+    },
     initEnv: async (
       args: InitLaneEnvArgs,
       pin?: OpenProjectBinding | null,

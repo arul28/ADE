@@ -9336,7 +9336,7 @@ export function createLaneService({
       isReadOnlyByDefault: boolean;
     } {
       const row = getLaneRow(workspaceId);
-      if (!row) throw new Error(`Workspace not found: ${workspaceId}`);
+      if (!row) throw new AdeExpectedError(`Workspace not found: ${workspaceId}`, "user");
       return {
         id: row.id,
         kind: row.lane_type,
