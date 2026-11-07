@@ -213,15 +213,16 @@ export function openIntegrationFromUrl(searchParams: URLSearchParams, hash: stri
  * tab, `?integration=<github|linear|jira|mcp>`; a `#hash` naming one of its
  * settings opens it too. With none open, the tab is the Integrations home.
  */
-function IntegrationsTabContent({ machine }: { machine: SettingsMachinePage | null }) {
+function IntegrationsTabContent({ machine, standalone }: { machine: SettingsMachinePage | null; standalone: boolean }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { pin } = useSettingsMachineScope();
   const requested = openIntegrationFromUrl(searchParams, location.hash);
-  const sections = (TAB_SECTIONS.integrations ?? []).filter(
-    (section) => !machine || !section.machine || machineSectionAvailable(section.machine, machine),
-  );
+  const sections = (TAB_SECTIONS.integrations ?? []).filter((section) => standalone
+    // No project: only the account's pages (Agent 37, MCP servers) can load.
+    ? standaloneSection(section)
+    : !machine || !section.machine || machineSectionAvailable(section.machine, machine));
   const section = requested ? sections.find((entry) => entry.group === requested) : undefined;
 
   const open = useCallback((next: IntegrationsPageId | null, server?: string) => {
@@ -236,7 +237,12 @@ function IntegrationsTabContent({ machine }: { machine: SettingsMachinePage | nu
   if (!section) {
     return (
       <SettingsColumn wide>
-        <IntegrationsHome pin={pin} machineOnline={!machine || machine.online} onOpen={open} />
+        <IntegrationsHome
+          pin={pin}
+          machineOnline={!machine || machine.online}
+          integrations={standalone ? sections.flatMap((entry) => (isIntegrationId(entry.group) ? [entry.group] : [])) : undefined}
+          onOpen={open}
+        />
       </SettingsColumn>
     );
   }
@@ -554,6 +560,11 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
  */
 const AGENTS_TAB_KIND: MachineSectionKind = "routed";
 
+/** A section that loads with no project: this desktop's own, or the account's. */
+function standaloneSection(section: TabSection): boolean {
+  return section.machine === undefined || section.machine === "local";
+}
+
 /**
  * The tabs that still have something to show with no project open.
  *
@@ -568,8 +579,7 @@ export const STANDALONE_TAB_IDS: ReadonlySet<SettingsTabId> = new Set(
     const sections = TAB_SECTIONS[tab];
     // Providers is a sub-view router, not a section list; it is routed.
     if (!sections) return tab !== "agents";
-    if (sections.every((section) => section.machine === undefined)) return true;
-    return sections.some((section) => section.machine === "local");
+    return sections.some(standaloneSection);
   }),
 );
 
@@ -598,7 +608,7 @@ export function TabContent({
   // `?integration=`; its sections are the pages. It stays open with the
   // machine offline: the MCP servers are the account's, and the machine's
   // own integrations say they wait for it.
-  if (tab === "integrations") return <IntegrationsTabContent machine={machine} />;
+  if (tab === "integrations") return <IntegrationsTabContent machine={machine} standalone={standalone} />;
   if (machine && !machine.online) {
     return <MachineUnavailableNotice machine={machine} />;
   }
