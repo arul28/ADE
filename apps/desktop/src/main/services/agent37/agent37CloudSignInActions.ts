@@ -14,7 +14,7 @@ import {
   agent37CloudSignInSpec,
   type Agent37CloudSignInId,
   type Agent37CloudSignInStatus,
-} from "../../../shared/agent37";
+} from "../../../shared/agent37CloudSignIns";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { pinnedLoginCliState } from "../pty/pinnedProviderCli";
 import { spawnLoginPty, stopLoginPty } from "../shared/cliLoginPty";

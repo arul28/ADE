@@ -292,3 +292,30 @@ export async function reconcileAgent37PendingCreate(
   result.resolved = true;
   return result;
 }
+
+/**
+ * Creates a quit (or a lost answer) left unresolved: a box that never signed
+ * in is only a bill, so it is deleted; one that signed in is a real machine
+ * and is kept. Records stay until Agent37 confirms, so a failure here is
+ * retried at the next start.
+ */
+export async function sweepAgent37PendingCreates(
+  client: Agent37Client,
+  leftover: Agent37PendingCreate[],
+  pending: Agent37PendingCreateStore,
+  logger: Logger,
+): Promise<void> {
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  const isSignedIn = (instanceId: string) => readAgent37BoxSignedIn(client, instanceId, logger);
+  for (const record of leftover) {
+    const result = await reconcileAgent37PendingCreate(client, record, { store: pending, logger, sleep, isSignedIn });
+    logger.info?.("agent37.pending_create_reconciled", {
+      requestId: record.requestId,
+      resolved: result.resolved,
+      deleted: result.deleted,
+      kept: result.kept,
+      gone: result.gone,
+      unresolved: result.unresolved,
+    });
+  }
+}

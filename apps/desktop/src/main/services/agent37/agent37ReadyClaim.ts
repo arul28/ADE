@@ -15,14 +15,13 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { agent37CapReachedMessage, type Agent37Spending } from "../../../shared/agent37";
 import {
   AGENT37_READY_METADATA,
-  agent37CapReachedMessage,
   readAgent37ReadyMachineState,
   type Agent37ReadyClaim,
   type Agent37ReadyMachineState,
-  type Agent37Spending,
-} from "../../../shared/agent37";
+} from "../../../shared/agent37Ready";
 import { Agent37Error, type Agent37Client, type Agent37Instance, type Agent37Logger } from "./agent37Client";
 import { getErrorMessage } from "../shared/utils";
 import { AGENT37_MACHINE_KEY_METADATA } from "./agent37Machines";

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AGENT37_JOIN_WATCH_MS, AGENT37_READY_WAKE_WAIT_MS, type Agent37CreateMachineResult, type Agent37ReadyProjectStatus, type Agent37Status } from "../../../shared/agent37";
+import { AGENT37_JOIN_WATCH_MS, type Agent37CreateMachineResult, type Agent37Status } from "../../../shared/agent37";
+import { AGENT37_READY_WAKE_WAIT_MS, type Agent37ReadyProjectStatus } from "../../../shared/agent37Ready";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { captureError } from "../../../shared/sentry/capture";
 import { ipcErrorMessage } from "../../lib/format";

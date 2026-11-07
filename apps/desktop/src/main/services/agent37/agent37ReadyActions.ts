@@ -10,15 +10,14 @@
  * every computer.
  */
 
+import { isAgent37InstanceId, type Agent37Spending } from "../../../shared/agent37";
 import {
   AGENT37_READY_METADATA,
-  isAgent37InstanceId,
   type Agent37ReadyClaim,
   type Agent37ReadyMachineState,
   type Agent37ReadyPool,
   type Agent37ReadyProjectSettings,
-  type Agent37Spending,
-} from "../../../shared/agent37";
+} from "../../../shared/agent37Ready";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import type { Agent37Logger } from "./agent37Client";
 import { requireAgent37Client, type Agent37CredentialDeps } from "./agent37Credential";

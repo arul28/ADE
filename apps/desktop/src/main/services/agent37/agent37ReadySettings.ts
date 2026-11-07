@@ -5,12 +5,8 @@
  * this.
  */
 
-import {
-  AGENT37_READY_DEFAULT_SHAPE,
-  agent37Shape,
-  isAgent37MachineKind,
-  type Agent37ReadyProjectSettings,
-} from "../../../shared/agent37";
+import { agent37Shape, isAgent37MachineKind } from "../../../shared/agent37";
+import { AGENT37_READY_DEFAULT_SHAPE, type Agent37ReadyProjectSettings } from "../../../shared/agent37Ready";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { getErrorMessage } from "../shared/utils";
 import type { Agent37Logger } from "./agent37Client";

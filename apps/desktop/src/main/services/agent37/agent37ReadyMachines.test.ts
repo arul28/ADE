@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { AGENT37_API_BASE_URL, AGENT37_READY_METADATA, type Agent37ReadyProjectSettings } from "../../../shared/agent37";
+import { AGENT37_API_BASE_URL } from "../../../shared/agent37";
+import { AGENT37_READY_METADATA, type Agent37ReadyProjectSettings } from "../../../shared/agent37Ready";
 import { createAgent37Client } from "./agent37Client";
 import { AGENT37_MACHINE_KEY_METADATA } from "./agent37Machines";
 import { claimAgent37ReadyMachine, releaseAgent37ReadyMachine } from "./agent37ReadyClaim";

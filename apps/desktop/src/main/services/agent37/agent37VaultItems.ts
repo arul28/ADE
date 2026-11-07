@@ -7,7 +7,7 @@
  * Every item is scope `all`, kind `integration`.
  */
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
-import { AGENT37_CLOUD_SIGN_INS } from "../../../shared/agent37";
+import { AGENT37_CLOUD_SIGN_INS } from "../../../shared/agent37CloudSignIns";
 import { agent37CloudSignInVaultKey } from "./agent37CloudSignInStore";
 import { AGENT37_VAULT_KEY, AGENT37_VAULT_KIND } from "./agent37Credential";
 import { AGENT37_READY_VAULT_KEY } from "./agent37ReadySettings";
