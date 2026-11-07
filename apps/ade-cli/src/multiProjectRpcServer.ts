@@ -798,9 +798,15 @@ async function createMachineProjectScaffoldService() {
   );
   const userId = account.accountUserId();
   if (userId) {
+    // Recorded before the awaits, so a sign-in as another account meanwhile purges it.
+    machineGithubTokenUserId = userId;
     await account.vault.sync({ maxAgeMs: MACHINE_GITHUB_VAULT_MAX_AGE_MS }).catch(() => {});
     await githubService.hydratePatFromVault();
-    machineGithubTokenUserId = userId;
+    // The account changed while the token was read: it is not this account's to keep.
+    if (account.accountUserId() !== userId) {
+      githubService.purgeAccountPat();
+      if (machineGithubTokenUserId === userId) machineGithubTokenUserId = null;
+    }
   }
   return createProjectScaffoldService({
     logger: machineProjectLogger,
