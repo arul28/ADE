@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { IPty, IWindowsPtyForkOptions } from "node-pty";
 import type * as ptyNs from "node-pty";
 import type { Logger } from "../logging/logger";
-import { killWindowsProcessTreeAsync } from "../shared/processExecution";
+import { isEmbeddedAdeRuntime, killWindowsProcessTreeAsync } from "../shared/processExecution";
 
 type SpawnRequest = {
   type: "spawn";
@@ -126,9 +126,19 @@ function resolvePtyHostWorkerNodePath(): string | undefined {
   return configured || undefined;
 }
 
-function resolvePtyHostWorkerCommand(): string | undefined {
+/**
+ * The executable that runs the worker through its hidden command, when the
+ * worker is not a script to fork. The standalone `ade` runtime is one Node SEA
+ * executable: `fork()` of a script from it re-enters the CLI, which rejects the
+ * path as an unknown command and exits 2. So a brain on that runtime runs its
+ * own hidden command, whatever install started it (install script, systemd,
+ * launchd, a Windows service, an Agent 37 image).
+ */
+function resolvePtyHostWorkerCommand(workerNodePath: string | undefined): string | undefined {
   const configured = process.env.ADE_PTY_HOST_WORKER_COMMAND?.trim();
-  return configured || undefined;
+  if (configured) return configured;
+  if (!workerNodePath && isEmbeddedAdeRuntime()) return process.execPath;
+  return undefined;
 }
 
 function trimWorkerLogLine(text: string): string {
@@ -458,7 +468,7 @@ class SupervisedPtyHost {
 
   private startChildForPty(ptyId: string): HostChildState {
     const workerNodePath = resolvePtyHostWorkerNodePath();
-    const workerCommand = resolvePtyHostWorkerCommand();
+    const workerCommand = resolvePtyHostWorkerCommand(workerNodePath);
     const workerEnv = {
       ...process.env,
       ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}),

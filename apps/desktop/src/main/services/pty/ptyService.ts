@@ -1142,12 +1142,26 @@ function resolveShellCandidates(mode: WindowsShellLaunchMode = "interactive"): S
   const fromEnv = process.env.SHELL?.trim();
   if (fromEnv) candidates.push(fromEnv);
   candidates.push("/bin/zsh", "/bin/bash", "/bin/sh");
-  const uniq = Array.from(new Set(candidates.filter(Boolean)));
+  // Only shells that are there. A PTY spawn of a missing file still "starts"
+  // (the child fails in execvp and exits 1), so a missing first choice never
+  // falls through to the next one. A brain started by a service or a
+  // container has no SHELL, and a Linux machine often has no zsh.
+  const installed = Array.from(new Set(candidates.filter(Boolean))).filter(isExecutableFile);
+  const uniq = installed.length ? installed : ["/bin/sh"];
   return uniq.map((file) => {
     if (mode === "clean") return cleanShellSpec(file);
     if (mode === "login") return loginShellSpec(file);
     return { file, args: [] };
   });
+}
+
+function isExecutableFile(file: string): boolean {
+  try {
+    fs.accessSync(file, fs.constants.X_OK);
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /** The launch for a shell the machine detected, in the same modes Automatic uses. */
@@ -2266,6 +2280,19 @@ function getPtyHostReadyPromise(pty: IPty): Promise<void> | null {
     return ready;
   }
   return null;
+}
+
+/**
+ * A PTY once its host has started it. A hosted PTY whose host failed (it
+ * exited, or timed out) already reported its exit before anyone listened, so
+ * it is never returned: a caller that kept it would record a session as
+ * running with no process behind it, a blank terminal that never ends.
+ */
+async function spawnPtyWhenReady(spawnPty: () => IPty): Promise<IPty> {
+  const pty = spawnPty();
+  const hostReady = getPtyHostReadyPromise(pty);
+  if (hostReady) await hostReady;
+  return pty;
 }
 
 function resumeTargetIdForProvider(
@@ -7269,9 +7296,7 @@ export function createPtyService({
             if (tooLong) throw new AdeExpectedError(tooLong, "user");
           }
           try {
-            created = ptyLib.spawn(invocation.command, ptyArgs, opts);
-            const hostReady = getPtyHostReadyPromise(created);
-            if (hostReady) await hostReady;
+            created = await spawnPtyWhenReady(() => ptyLib.spawn(invocation.command, ptyArgs, opts));
             launchedDirectCommand = true;
           } catch (err) {
             lastErr = err;
@@ -7282,12 +7307,10 @@ export function createPtyService({
         if (!created && (!directCommand || startupCommand)) {
           for (const shell of shellCandidates) {
             try {
-              created = ptyLib.spawn(shell.file, shell.args, {
+              created = await spawnPtyWhenReady(() => ptyLib.spawn(shell.file, shell.args, {
                 ...opts,
                 env: shell.env ? { ...launchEnv, ...shell.env } : launchEnv,
-              });
-              const hostReady = getPtyHostReadyPromise(created);
-              if (hostReady) await hostReady;
+              }));
               selectedShell = shell;
               launchedDirectCommand = false;
               break;
