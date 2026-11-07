@@ -85,6 +85,11 @@ import { createHeadlessGitHubService } from "./headlessLinearServices";
 import { createHeadlessAccountVaultBridge } from "./services/account/accountRuntimeLifecycle";
 import { getMachineAccountStores } from "./services/account/machineAccountStores";
 import {
+  isMachineAccountMethod,
+  runMachineAccountAction,
+  type MachineAccountDomains,
+} from "./services/account/machineAccountActions";
+import {
   callerHasRoleAtLeast,
   isCtoOnlyAdeAction,
   scopeAccountStatusForRole,
@@ -369,6 +374,12 @@ export type MultiProjectRpcHandlerOptions = {
     BrainKeepAwakeService,
     "getSnapshot" | "setLevel" | "migrateLegacyPreference" | "fixSystemSleep"
   > | null;
+  /**
+   * The account-level action domains, over the machine's account stores
+   * (`buildMachineAccountDomainServices`), for `agent37.call` and
+   * `accountVault.call`. Without it, those methods answer unavailable.
+   */
+  machineAccountDomains?: MachineAccountDomains;
   accountAuthService?: AccountAuthService;
   productAnalyticsService?: AccountAnalyticsIdentity & {
     /** Present on the real service; records the account sign-in funnel. */
@@ -563,6 +574,8 @@ const RUNTIME_METHODS = new Set([
   "account.call",
   "remoteMcp.call",
   "keepAwake.call",
+  "agent37.call",
+  "accountVault.call",
   "attention.call",
   "notify.send",
   "providers.status",
@@ -1499,11 +1512,17 @@ export function createMultiProjectRpcRequestHandler(
   let initializedParams: Record<string, unknown> | null = null;
   let notifier: JsonRpcNotifier | null = null;
   let nextSubscriptionId = 1;
-  /** The name this connection's client gave itself in `ade/initialize`. */
-  const callerClientName = (): string | null =>
-    isRecord(initializedParams) && typeof initializedParams.clientName === "string"
-      ? initializedParams.clientName
-      : null;
+  /**
+   * The name this connection's client gave itself in `ade/initialize`:
+   * `clientName`, else `clientInfo.name`, as the project RPC reads it. The
+   * desktop and the `ade` CLI send only `clientInfo.name`.
+   */
+  const callerClientName = (): string | null => {
+    if (!isRecord(initializedParams)) return null;
+    if (typeof initializedParams.clientName === "string") return initializedParams.clientName;
+    const clientInfo = initializedParams.clientInfo;
+    return isRecord(clientInfo) && typeof clientInfo.name === "string" ? clientInfo.name : null;
+  };
   /**
    * The account sign-in funnel for `ade login` and any other non-desktop
    * caller (`accountSignInAnalytics.ts`). One connection is one attempt: the
@@ -2916,6 +2935,17 @@ export function createMultiProjectRpcRequestHandler(
       // Settings on this computer's desktop arrives here too (it needs no project).
       const surface = isDesktopClientName(callerClientName()) ? "desktop" : "api";
       return remoteMcpActionHandlers(getSharedRemoteMcpService(), surface)[action](isRecord(params.args) ? params.args : {});
+    }
+
+    // The Agent 37 account and the account vault with no project open, for
+    // this computer's own connections (machineAccountActions.ts).
+    if (isMachineAccountMethod(method)) {
+      return await runMachineAccountAction(method, params, {
+        role: callerRole(),
+        identity: callerIdentity(),
+        clientName: callerClientName(),
+        peerDeviceId: options.peerDeviceId ?? null,
+      }, options.machineAccountDomains);
     }
 
     if (method === "keepAwake.call") {

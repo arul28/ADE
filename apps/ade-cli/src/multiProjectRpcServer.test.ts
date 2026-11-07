@@ -35,6 +35,7 @@ import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtoco
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
 import type { ProviderStatusReport } from "../../desktop/src/main/services/ai/providerStatusProbe";
 import { JsonRpcErrorCode } from "./jsonrpc";
+import { buildMachineAccountDomainServices } from "../../desktop/src/main/services/adeActions/registry";
 
 const originalAdeHome = process.env.ADE_HOME;
 let isolatedAdeHome = "";
@@ -618,6 +619,117 @@ describe("multi-project RPC server", () => {
     } finally {
       restoreEnvVar("ADE_DEFAULT_ROLE", previousRole);
     }
+  });
+
+  describe("Agent 37 and the account vault with no project", () => {
+    const desktop = { clientInfo: { name: "ade-desktop-local", version: "t" }, identity: { role: "cto" } };
+    const terminal = { clientInfo: { name: "ade-cli:42", version: "t" }, identity: { role: "cto" } };
+    const agent = { clientInfo: { name: "ade-cli:42", version: "t" }, identity: { role: "agent", chatSessionId: "chat-1" } };
+    const remoteDesktop = { clientInfo: { name: "ade-desktop-remote", version: "t" }, identity: { role: "cto" } };
+
+    /** One connection to a brain whose machine domains are `domains`; nothing is registered as a project. */
+    const connect = async (
+      init: Record<string, unknown>,
+      domains: Record<string, Record<string, unknown> | null>,
+      peerDeviceId: string | null = null,
+    ) => {
+      const projectRegistry = { list: () => [], findByRootPath: () => null, add: vi.fn() };
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: projectRegistry as never,
+        peerDeviceId,
+        machineAccountDomains: async () => domains,
+      });
+      await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: { protocolVersion: "2025-06-18", ...init } });
+      return { handler, projectRegistry };
+    };
+
+    let previousRole: string | undefined;
+    beforeEach(() => {
+      previousRole = process.env.ADE_DEFAULT_ROLE;
+      process.env.ADE_DEFAULT_ROLE = "cto";
+    });
+    afterEach(() => restoreEnvVar("ADE_DEFAULT_ROLE", previousRole));
+
+    it.each([
+      ["the desktop lists machines", desktop, null, "agent37.call", "list", null],
+      ["the desktop saves a cloud sign-in", desktop, null, "agent37.call", "cloud_sign_in_save_key", null],
+      ["a terminal lists machines", terminal, null, "agent37.call", "list", null],
+      ["an agent lists machines", agent, null, "agent37.call", "list", null],
+      ["a costly verb stays with a project", desktop, null, "agent37.call", "create", /runs in a project/],
+      ["a terminal saves a cloud sign-in", terminal, null, "agent37.call", "cloud_sign_in_save_key", /limited to the ADE desktop app on this computer/],
+      ["an agent saves a cloud sign-in", agent, null, "agent37.call", "cloud_sign_in_save_key", /Only the user can change this setting .*ade:\/\/settings\//],
+      ["a terminal reads the vault", terminal, null, "accountVault.call", "get", /only for the ADE desktop app on this computer/],
+      ["an agent reads the vault", agent, null, "accountVault.call", "get", /requires elevated role/],
+      ["another machine's desktop reads the vault", remoteDesktop, null, "accountVault.call", "get", /only for the ADE desktop app on this computer/],
+      ["a paired device lists machines", desktop, "peer-device-1", "agent37.call", "list", /only this computer's own connections/],
+      ["a paired device reads the vault", desktop, "peer-device-1", "accountVault.call", "get", /only this computer's own connections/],
+    ] as const)("%s", async (_label, init, peerDeviceId, method, action, refused) => {
+      const service = {
+        list: vi.fn(async () => ["box"]),
+        create: vi.fn(async () => ({ id: "made" })),
+        cloud_sign_in_save_key: vi.fn(async () => ({ saved: true })),
+        get: vi.fn(() => "the-key"),
+      };
+      const { handler, projectRegistry } = await connect(init, { agent37: service, account_vault: service }, peerDeviceId);
+      const call = handler({ jsonrpc: "2.0", id: 2, method, params: { action, argsList: ["all", "integration", "agent37"] } });
+      if (refused) {
+        await expect(call).rejects.toThrow(refused);
+        expect(service[action]).not.toHaveBeenCalled();
+      } else {
+        await expect(call).resolves.toMatchObject({ domain: method === "agent37.call" ? "agent37" : "account_vault", action });
+        expect(service[action]).toHaveBeenCalledTimes(1);
+      }
+      // No call through these methods turns the caller's folder into a project.
+      expect(projectRegistry.add).not.toHaveBeenCalled();
+      handler.dispose();
+    });
+
+    it.each([
+      ["the workspace key", "get", ["all", "integration", "agent37"], null],
+      ["the spending cap", "set", ["all", "integration", "agent37-budget", "{\"capUsd\":5}"], null],
+      ["a saved cloud sign-in", "get", ["all", "integration", "agent37-claude-token"], null],
+      ["a write to a cloud sign-in", "set", ["all", "integration", "agent37-claude-token", "stolen"], /reaches only the Agent 37 items/],
+      ["another integration's secret", "get", ["all", "integration", "github"], /reaches only the Agent 37 items/],
+      ["the key in a project's scope", "get", ["project:abc", "integration", "agent37"], /reaches only the Agent 37 items/],
+      ["the key under another kind", "remove", ["all", "secret", "agent37"], /reaches only the Agent 37 items/],
+      ["every row", "list", [], /runs in a project/],
+    ] as const)("the vault with no project opens only Agent 37's items: %s", async (_label, action, argsList, refused) => {
+      const rows = new Map<string, string>([
+        ["all|integration|agent37", "the-key"],
+        ["all|integration|agent37-claude-token", "claude-token"],
+        ["all|integration|github", "github-token"],
+        ["project:abc|integration|agent37", "project-key"],
+        ["all|secret|agent37", "other-kind"],
+      ]);
+      const store = {
+        get: vi.fn((scope: string, kind: string, key: string) => rows.get(`${scope}|${kind}|${key}`) ?? null),
+        set: vi.fn((scope: string, kind: string, key: string, value: string) => {
+          rows.set(`${scope}|${kind}|${key}`, value);
+          return true;
+        }),
+        remove: vi.fn((scope: string, kind: string, key: string) => rows.delete(`${scope}|${kind}|${key}`)),
+        list: vi.fn(() => []),
+        sync: vi.fn(),
+        pendingKeys: vi.fn(() => []),
+      };
+      const before = new Map(rows);
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const domains = buildMachineAccountDomainServices({ logger: logger as never, accountVaultStore: store as never });
+      const { handler } = await connect(desktop, domains);
+      const call = handler({ jsonrpc: "2.0", id: 2, method: "accountVault.call", params: { action, argsList } });
+      if (refused) {
+        await expect(call).rejects.toThrow(refused);
+        expect(store.get).not.toHaveBeenCalled();
+        expect(rows).toEqual(before);
+      } else {
+        const answer = await call as { result: unknown };
+        expect(store[action as "get" | "set"]).toHaveBeenCalledTimes(1);
+        expect(answer.result).toBe(action === "get" ? before.get(argsList.slice(0, 3).join("|")) : true);
+        if (action === "set") expect(rows.get("all|integration|agent37-budget")).toBe("{\"capUsd\":5}");
+      }
+      handler.dispose();
+    });
   });
 
   it("prewarms the production shared personal-chat scope only at creation", () => {

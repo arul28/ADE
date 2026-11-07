@@ -109,6 +109,11 @@ person is using.
 - `registerAgent37Ipc.ts` — the `ade.agent37.*` IPC handlers, the hidden
   approval window, the template-build record store (account vault with a
   per-computer fallback), and the startup check 20 s after boot.
+- `agent37VaultItems.ts` — the account vault items Agent 37 keeps, and the
+  part of the vault a brain opens with no project (`accountVault.call`).
+- `apps/ade-cli/src/services/account/machineAccountActions.ts` — the brain's
+  `agent37.call` and `accountVault.call`: the account-level actions with no
+  project open, and who may call them (see "With no project open").
 - `apps/desktop/src/shared/agent37.ts` — shapes, prices, kinds, status and
   progress types shared with the renderer.
 - `apps/desktop/src/renderer/components/settings/Agent37Section.tsx` — the
@@ -301,8 +306,9 @@ env, so the card says to sign in on the machine. The list is
 `shared/agent37.ts`.
 
 The saves and the Claude sign-in are brain actions (`agent37
-cloud_sign_in_*`), run on this computer's brain, which owns the account vault.
-The desktop only forwards the IPC. So the sign-in terminal never starts in
+cloud_sign_in_*`), run on this computer's brain, which owns the account vault,
+through `agent37.call` with no project, so the card works in a window with no
+project on this computer. The desktop only forwards the IPC. So the sign-in terminal never starts in
 the desktop process: in a packaged app, node-pty there met its helper inside
 `app.asar` and failed. The write actions are user-only and are a user
 setting, so an agent can read the status (never a value) but cannot save,
@@ -545,6 +551,39 @@ window approves the new machine joining the account (no tap); without one
 itself (`agent37BrainMaker.ts`) and the person approves from a link ADE posts
 in the agent's chat, or taps Approve on the phone's Agent 37 page, which starts
 the make in the background and follows it with `make_status`.
+
+### With no project open
+
+The key, the machine list and the sign-ins are the account's, so they work in
+a window with no project on this computer (or one whose only project is on
+another machine), and `ade agent37` works from any folder. The brain serves
+them with no project through two methods (`machineAccountActions.ts`), for the
+actions in `ADE_ACTION_MACHINE_SCOPED` (`actionPolicy.ts`), with the caller
+rules of `run_ade_action` (`adeActionCallerRefusal`). With no project, Settings
+› Integrations shows the Agent 37 page and the MCP servers only
+(`settingsTabContent.tsx`):
+
+| Method and actions | This computer's desktop | A terminal or agent on this computer | A paired machine or the phone |
+| --- | --- | --- | --- |
+| `agent37.call` `list`, `spending`, `limits`, `sleep`, `wake`, `cloud_sign_in_status` | yes | yes | refused: it asks its own brain |
+| `agent37.call` `cloud_sign_in_start\|code\|cancel\|save_key\|remove` | yes | refused (user-only setting) | refused |
+| `accountVault.call` `get`, `set`, `remove` | Agent 37's items only | refused | refused |
+
+The status answer says which sign-ins are saved, never a value. The vault
+route is for the desktop's own Agent 37 code (`registerAgent37Ipc.ts`) when no
+project is booted: it reads and writes the key, the cap and limits, the ready
+choice and the template build, and only reads the saved sign-ins; any other
+item, kind, scope or operation still needs a project. On the first call the
+route pulls the vault once and joins its background sync (a project runtime
+does this too), so a key saved on another computer shows with no project open.
+The first call waits at most 3 seconds for that pull (the desktop gives a vault
+call 8); a slower pull finishes in the background, and the call answers from
+the local copy.
+A brain with sync off (a test brain) has no vault there, as its project
+runtimes have none. What spends
+money or deletes (`create`, `resize`, `copy`, `move`, `delete`, `ready …`,
+`cap`) stays with a project, where the approvals below apply. `ade agent37`
+runs on this machine only: the CLI refuses `--machine` for it.
 
 **What agents may spend.** When nobody is watching (a full-auto chat, an
 automation run), ADE answers an agent's costly request with the person's

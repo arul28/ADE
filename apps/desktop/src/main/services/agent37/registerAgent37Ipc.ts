@@ -66,6 +66,7 @@ import {
   wakeAgent37MachineForUse,
 } from "./agent37Sleep";
 import { AGENT37_READY_VAULT_KEY, createAgent37ReadySettingsStore } from "./agent37ReadySettings";
+import { AGENT37_TEMPLATE_BUILD_VAULT_KEY } from "./agent37VaultItems";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import {
   createAgent37PendingCreateStore,
@@ -871,7 +872,6 @@ async function readAgent37TemplateContext(): Promise<Agent37TemplateContextFiles
   throw new Error("this copy of ADE is missing its machine template files. Reinstall ADE.");
 }
 
-const TEMPLATE_BUILD_VAULT_KEY = "agent37-template-build";
 const TEMPLATE_BUILD_MACHINE_KEY = "agent37.templateBuild.v1";
 
 /** A damaged record reads as none (logged), so it can never stop builds for good. */
@@ -899,7 +899,7 @@ function templateBuildRecords(
   machineStore: () => EncryptedFileCredentialStore,
   logger: Logger,
 ): Agent37TemplateRecordStore {
-  const vault = () => (credentials.signedIn() ? agent37VaultFromBridge(bridge, TEMPLATE_BUILD_VAULT_KEY) : null);
+  const vault = () => (credentials.signedIn() ? agent37VaultFromBridge(bridge, AGENT37_TEMPLATE_BUILD_VAULT_KEY) : null);
   const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
   const local = <T>(what: string, run: () => T, fallback: T): T => {
     try {
