@@ -2690,7 +2690,6 @@ describe("githubService.publishCurrentProject", () => {
     { label: "an org owner, login known", owner: "acme-inc", login: "alice", accountType: null, route: "/orgs/acme-inc/repos" },
     { label: "the signed-in login", owner: "Alice", login: "alice", accountType: null, route: "/user/repos" },
     { label: "an org owner, login lookup failed", owner: "acme-inc", login: null, accountType: "Organization", route: "/orgs/acme-inc/repos" },
-    { label: "a user owner, login lookup failed", owner: "alice", login: null, accountType: "User", route: "/user/repos" },
   ])("publishes $label through $route", async ({ owner, login, accountType, route }) => {
     runGitMock
       .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "fatal: No such remote 'origin'" })
@@ -2740,6 +2739,22 @@ describe("githubService.publishCurrentProject", () => {
       "origin",
       `https://github.com/${repoOwner}/proj.git`,
     ]);
+  });
+
+  it("refuses a user owner it cannot confirm as the signed-in account", async () => {
+    runGitMock.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" }); // get-url origin
+    mockFetch.mockImplementation((rawUrl: string) => {
+      const url = new URL(rawUrl);
+      if (url.pathname === "/user") return Promise.reject(new TypeError("fetch failed"));
+      if (url.pathname === "/users/bob") return Promise.resolve(jsonResponse(200, { login: "bob", type: "User" }));
+      return Promise.resolve(jsonResponse(201, { owner: { login: "alice" }, full_name: "alice/proj" }));
+    });
+
+    await expect(makeService().publishCurrentProject({ owner: "bob", name: "proj", isPrivate: true }))
+      .rejects.toThrow(/couldn't confirm which GitHub account/);
+
+    expect(mockFetch.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === "POST")).toEqual([]);
+    expect(runGitMock.mock.calls.map((c) => c[0])).toEqual([["remote", "get-url", "origin"]]);
   });
 
   it("keeps a personal-account create on the credential whose login chose the route", async () => {

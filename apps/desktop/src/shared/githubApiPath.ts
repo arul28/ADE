@@ -1,3 +1,4 @@
+import { AdeExpectedError } from "./expectedError";
 import type { GitHubRepoRef } from "./types/git";
 
 export type GitHubRepositoryApiPath = GitHubRepoRef & {
@@ -75,8 +76,10 @@ export type GithubCreateRepositoryRoute = { path: string; organization: string |
  * - a known login that is not the owner: the org route (a 404 there means the
  *   account can't create under that owner, which the caller reports);
  * - an unknown login (`GET /user` failed, or no write token): ask GitHub what
- *   the owner is, so an organization publish never lands on the personal
- *   account by guesswork. `readAccountType` throws when it can't tell.
+ *   the owner is. An organization takes the org route. A user can't be
+ *   confirmed as the signed-in account, and `/user/repos` would create under
+ *   whoever that is, so it fails instead of guessing. `readAccountType` throws
+ *   when it can't tell.
  */
 export async function resolveGithubCreateRepositoryRoute(
   owner: string,
@@ -94,13 +97,21 @@ export async function resolveGithubCreateRepositoryRoute(
     organization: account,
   };
   let login: string | null = null;
+  let loginError: unknown = null;
   try {
     login = (await deps.readAuthenticatedLogin())?.trim() || null;
   } catch (error) {
+    loginError = error;
     deps.onLoginLookupFailed(error);
   }
   if (login) return account.toLowerCase() === login.toLowerCase() ? userRoute : orgRoute;
-  return (await deps.readAccountType(account)) === "Organization" ? orgRoute : userRoute;
+  if ((await deps.readAccountType(account)) === "Organization") return orgRoute;
+  const reason = loginError instanceof Error ? loginError.message : null;
+  throw new AdeExpectedError(
+    `ADE couldn't confirm which GitHub account is signed in, so it didn't create ${account}'s repository. Try again.${reason ? ` (${reason})` : ""}`,
+    "network",
+    { cause: loginError },
+  );
 }
 
 /** The owner doesn't exist, or the account can't make repositories under it. */

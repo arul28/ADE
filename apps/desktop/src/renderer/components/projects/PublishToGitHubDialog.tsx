@@ -465,7 +465,8 @@ export function PublishToGitHubDialog({
                 ref={ownerRef}
                 aria-label="Owner"
                 aria-invalid={ownerInvalid}
-                aria-describedby="ade-gh-publish-repo-hint"
+                // The hint shows the name's error when only the name is wrong; not the owner's description then.
+                aria-describedby={ownerInvalid || !nameInvalid ? "ade-gh-publish-repo-hint" : undefined}
                 type="text"
                 value={owner}
                 placeholder="owner"

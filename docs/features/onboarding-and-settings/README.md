@@ -374,8 +374,10 @@ Main process:
   service's twin) picks its route with `resolveGithubCreateRepositoryRoute` in
   `shared/githubApiPath.ts`: `/user/repos` with no owner or the write
   credential's own login, `/orgs/{owner}/repos` otherwise, and, when `GET /user`
-  fails, the owner's account `type` from `GET /users/{owner}`, so an
-  organization publish never lands on the personal account. The personal route
+  fails, the owner's account `type` from `GET /users/{owner}`: an organization
+  takes the org route, and a user owner that can't be confirmed as the
+  signed-in account fails instead of guessing, so a publish never lands on the
+  wrong account. The personal route
   is the one write that does not fall back: it stays on the write credential
   whose login chose it (`credentialSource`), because another credential can be
   another account. An owner GitHub won't create under answers
