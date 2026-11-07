@@ -89,6 +89,17 @@ function readExecutable(procRoot: string, pid: number): string | null {
   }
 }
 
+/** Whether a process runs with the entrypoint's mark in its environment. */
+function hasSupervisorMark(procRoot: string, pid: number): boolean {
+  try {
+    return fs.readFileSync(path.join(procRoot, String(pid), "environ"), "utf8")
+      .split("\0")
+      .includes(`${ENTRYPOINT_SUPERVISOR_ENV}=entrypoint`);
+  } catch {
+    return false;
+  }
+}
+
 /** Every `ade … serve --socket <socketPath>` on the machine, whatever binary runs it. */
 function servePidsOnSocket(procRoot: string, socketPath: string, exclude: ReadonlySet<number>): number[] {
   let entries: string[];
@@ -127,7 +138,10 @@ export async function restartEntrypointSupervisedBrain(deps: EntrypointSuperviso
   const socketPath = path.join(adeHome, "sock", "ade.sock");
   const self = new Set([process.pid]);
   const running = servePidsOnSocket(procRoot, socketPath, self);
-  const marked = env[ENTRYPOINT_SUPERVISOR_ENV]?.trim() === "entrypoint";
+  // The brain's helpers inherit the mark; a command run another way (Agent 37
+  // exec) reads it from the brain the loop started.
+  const marked = env[ENTRYPOINT_SUPERVISOR_ENV]?.trim() === "entrypoint"
+    || running.some((pid) => hasSupervisorMark(procRoot, pid));
   const underTemplateLoop = running.some((pid) => {
     const parent = readParentPid(procRoot, pid);
     return parent != null && (readCommandLine(procRoot, parent) ?? "").includes(TEMPLATE_ENTRYPOINT);
@@ -142,7 +156,8 @@ export async function restartEntrypointSupervisedBrain(deps: EntrypointSuperviso
       false,
       entrypoint,
       "This machine was made from an older ADE machine template, whose start script always runs the ADE it was built with, "
-        + "so an update can't take effect on it. Copy it to a new machine (ade agent37 copy) to get the current version.",
+        + "so an update can't take effect on it. Make a new machine (ade agent37 create) to get the current version; "
+        + "ade chat move carries a lane's work to it. A copy keeps the old template.",
       { failureStep: "entrypoint_too_old" },
     );
   }

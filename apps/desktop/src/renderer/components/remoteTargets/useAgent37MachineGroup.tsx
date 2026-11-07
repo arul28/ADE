@@ -5,9 +5,8 @@ import { accountMachineDisplayName } from "../../../shared/accountDirectory";
 import { accountMachinePresence, machineIsAwake } from "../../../shared/machinePresence";
 import type { AdeAccountMachine, RemoteRuntimeTarget } from "../../../shared/types";
 import { useActivityStore } from "../../state/activityStore";
-import { Agent37BoxOnlyRow, Agent37BoxStrip, Agent37GroupBanners, Agent37GroupHead, agent37ParkedRow } from "./Agent37MachineGroup";
+import { Agent37BoxOnlyRow, Agent37BoxStrip, Agent37GroupBanners, Agent37GroupHead, agent37DeletedRow, agent37ParkedRow } from "./Agent37MachineGroup";
 import { agent37BoxWork, isDeletedAgent37Row, matchAgent37Boxes } from "./agent37MachineModel";
-import { connectButtonStyle } from "./remoteTargetListStyles";
 import type { MachineAction } from "./MachineActionsMenu";
 import type { MachineRow, MachineSection, MachineSections } from "./remoteMachineModel";
 import { useAgent37BoxActions, type Agent37BoxContext } from "./useAgent37BoxActions";
@@ -189,17 +188,7 @@ export function useAgent37MachineGroup(args: {
         danger: true,
         onSelect: removeFromAde,
       }],
-      parked: deletedBox
-        ? {
-          label: "Deleted on Agent 37. It no longer exists.",
-          action: (
-            <button type="button" aria-label={`Remove ${name} from ADE`} onClick={removeFromAde} style={{ ...connectButtonStyle, marginRight: 4 }}>
-              <UserMinus size={13} />
-              Remove
-            </button>
-          ),
-        }
-        : null,
+      parked: deletedBox ? agent37DeletedRow(name, removeFromAde) : null,
     };
   }
 

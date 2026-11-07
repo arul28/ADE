@@ -430,15 +430,25 @@ export function registerAgent37Ipc(args: {
   setAgent37UpdateBlocker(async (target) => {
     const machineKey = target.pairedMachine?.machineKey?.trim();
     if (!machineKey || !machines.isKnownBox(machineKey)) return null;
-    const client = await savedClient().catch(() => null);
-    if (!client) return null;
-    const instance = agent37InstanceForMachine(await client.listInstances(), machineKey, target.hostname);
-    if (!instance || instance.status !== "running") return null;
-    const probe = await client.exec(instance.id, AGENT37_ENTRYPOINT_SUPERVISOR_PROBE, { timeoutMs: 15_000 });
+    let probe: { exitCode: number } | null = null;
+    let instance: ReturnType<typeof agent37InstanceForMachine> = null;
+    try {
+      const client = await savedClient();
+      if (!client) return null;
+      instance = agent37InstanceForMachine(await client.listInstances(), machineKey, target.hostname);
+      if (!instance || instance.status !== "running") return null;
+      probe = await client.exec(instance.id, AGENT37_ENTRYPOINT_SUPERVISOR_PROBE, { timeoutMs: 15_000 });
+    } catch (error) {
+      // Unknown is not "blocked": the update goes out, and the box's own ADE
+      // refuses it there if its template is too old.
+      logger.warn("agent37.update_blocker_check_failed", { error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }
     if (probe.exitCode !== 1) return null;
     logger.info("agent37.update_blocked_old_template", { instanceId: instance.id });
     return "This machine was made from an older ADE machine template, which always starts the ADE it was built with, "
-      + "so an update can't take effect on it. Copy it to a new machine to get the current version.";
+      + "so an update can't take effect on it. Make a new Agent 37 machine to get the current version, and move your lanes to it. "
+      + "A copy keeps the old template.";
   });
 
   ipcMain.handle(IPC.agent37GetStatus, async (event): Promise<Agent37Status | null> => {

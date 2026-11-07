@@ -198,9 +198,12 @@ newer of the image's `ade` and the one `ade brain update` put in
   and the update read as done while the old version ran (D7).
 - A machine made from an older template has a loop that always runs the
   image's `ade`, so an update cannot take effect there. The desktop checks
-  the box's entrypoint over exec before it starts an update and says so
-  (copy the machine to a new one). The brain refuses the same case on its
-  own (`entrypoint_too_old`) and rolls the update back.
+  the box's entrypoint over exec before it starts an update and says so:
+  make a new machine and move the lanes to it (a copy forks the same image,
+  so it keeps the old template). The brain refuses the same case on its own
+  (`entrypoint_too_old`) and rolls the update back. It reads the mark from
+  the running brain's environment too, so an update started over Agent 37
+  exec on a current box is not refused.
 - Failures retry after 1, 5 and 15 minutes, then wait for Retry. A refused key
   or an empty wallet does not retry.
 
