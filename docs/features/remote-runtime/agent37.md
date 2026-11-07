@@ -573,8 +573,11 @@ The status answer says which sign-ins are saved, never a value. The vault
 route is for the desktop's own Agent 37 code (`registerAgent37Ipc.ts`) when no
 project is booted: it reads and writes the key, the cap and limits, the ready
 choice and the template build, and only reads the saved sign-ins; any other
-item, kind, scope or operation still needs a project. A brain with sync off (a
-test brain) has no vault there, as its project runtimes have none. What spends
+item, kind, scope or operation still needs a project. On the first call the
+route pulls the vault once and joins its background sync (a project runtime
+does this too), so a key saved on another computer shows with no project open.
+A brain with sync off (a test brain) has no vault there, as its project
+runtimes have none. What spends
 money or deletes (`create`, `resize`, `copy`, `move`, `delete`, `ready …`,
 `cap`) stays with a project, where the approvals below apply. `ade agent37`
 runs on this machine only: the CLI refuses `--machine` for it.

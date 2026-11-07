@@ -29425,19 +29425,34 @@ async function runServe(
   // machine's vault store only when sync is on, as `createAdeRuntime` does, so
   // a brain with sync off (a test brain) never opens the account's vault. One
   // runtime object, so a background make keeps its maker.
-  let machineAccountRuntime: AccountDomainRuntime | null = null;
+  let machineAccountRuntime: Promise<AccountDomainRuntime> | null = null;
   const machineAccountDomains = async () => {
-    const [{ buildMachineAccountDomainServices }, { getMachineAccountStores }] = await Promise.all([
-      import("../../desktop/src/main/services/adeActions/registry"),
-      import("./services/account/machineAccountStores"),
-    ]);
-    machineAccountRuntime ??= {
-      logger: headlessProjectLogger,
-      accountAuthService: brainAccountAuthService,
-      accountVaultStore: syncEnabled ? getMachineAccountStores(headlessProjectLogger).vault : null,
-      productAnalyticsService: brainProductAnalytics,
-    };
-    return buildMachineAccountDomainServices(machineAccountRuntime);
+    const { buildMachineAccountDomainServices } = await import("../../desktop/src/main/services/adeActions/registry");
+    machineAccountRuntime ??= (async () => {
+      const { getMachineAccountStores } = await import("./services/account/machineAccountStores");
+      const vault = syncEnabled ? getMachineAccountStores(headlessProjectLogger).vault : null;
+      if (vault) {
+        // With no project open, no project runtime keeps the vault in step
+        // with the account. Join (or start) its background sync for the life
+        // of the process, as ADE MCP does for the settings store, and pull
+        // once before the first read.
+        vault.startPeriodicSync();
+        const status = await vault.sync().catch((error: unknown) => {
+          headlessProjectLogger.warn("account.machine_vault_initial_sync_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        });
+        if (status === "failed") headlessProjectLogger.warn("account.machine_vault_initial_sync_failed", { status });
+      }
+      return {
+        logger: headlessProjectLogger,
+        accountAuthService: brainAccountAuthService,
+        accountVaultStore: vault,
+        productAnalyticsService: brainProductAnalytics,
+      };
+    })();
+    return buildMachineAccountDomainServices(await machineAccountRuntime);
   };
 
   const createHandler = (context?: { peerDeviceId: string | null }) =>
