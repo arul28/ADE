@@ -93,7 +93,7 @@ export function createAgent37BrainMaker(deps: {
     if (instance?.metadata?.ade_request_id !== input.requestId) return refuse("request_id_mismatch");
     // A month this brain can't read counts as over the cap: no tap needs a known spend.
     const month = await deps.base.spending?.().catch(readFailed("spending"));
-    if (!month) return refuse("spend_unknown");
+    if (!month || month.monthSpentUsd == null) return refuse("spend_unknown");
     if (month.capReached) return refuse("cap_reached");
     selfApproved.add(input.requestId);
     deps.logger?.info?.("agent37.self_approval_used", input);

@@ -116,6 +116,7 @@ export function CrossMachineHandoffBanner({
   const moveId = record?.handoffId ?? null;
   const moveState = record?.state ?? null;
   const followTo = moveState === "continued" && !record?.resumedHere ? record?.targetSessionId ?? null : null;
+  const followMachineKey = record?.targetMachineKey ?? null;
   const [follow, setFollow] = useState<string | null>(null);
   useEffect(() => {
     if (!moveId) return;
@@ -133,8 +134,8 @@ export function CrossMachineHandoffBanner({
     return openWhenOtherMachineListsSession(follow, () => {
       setFollow(null);
       openChatOnOtherMachine(follow);
-    });
-  }, [follow, followTo]);
+    }, followMachineKey);
+  }, [follow, followTo, followMachineKey]);
   if (!record || (record.state === "cancelled" && !continuation)) return null;
 
   const machine = record.targetMachineName;

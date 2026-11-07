@@ -109,12 +109,30 @@ function unionListsSession(machines: CrossMachineLanes, sessionId: string): bool
 }
 
 /**
+ * Pairs this window with the account machine `machineKey` and connects to it,
+ * so the union starts reading it. Best effort: this computer's own key, or a
+ * failure, does nothing more than log.
+ */
+async function connectAccountMachine(machineKey: string): Promise<void> {
+  try {
+    const local = (await window.ade.account.getLocalMachineIdentity?.())?.machineKey?.trim() || null;
+    if (local && local === machineKey) return;
+    const paired = await window.ade.account.pairMachine(machineKey);
+    await window.ade.remoteRuntime.connect(paired.targetId);
+  } catch (error) {
+    console.warn("[otherMachineNavigation] could not connect the machine the chat moved to", error);
+  }
+}
+
+/**
  * Call `open` once another machine lists the chat. A chat that just moved
  * there is listed after the union's next read of that machine, which can be
- * well past {@link OTHER_MACHINES_LOOKUP_MS}. Gives up after a minute. Returns
- * a cancel.
+ * well past {@link OTHER_MACHINES_LOOKUP_MS}. The union reads only connected
+ * machines, so a `machineKey` that is not listed yet is paired and connected
+ * first (a cloud machine made for the move is new to this window). Gives up
+ * after a minute. Returns a cancel.
  */
-export function openWhenOtherMachineListsSession(sessionId: string, open: () => void): () => void {
+export function openWhenOtherMachineListsSession(sessionId: string, open: () => void, machineKey?: string | null): () => void {
   let done = false;
   let unsubscribe: (() => void) | null = null;
   // The store changes on every chat event; only a new machine list is read.
@@ -136,5 +154,7 @@ export function openWhenOtherMachineListsSession(sessionId: string, open: () => 
   const timer = window.setTimeout(stop, FOLLOW_MOVED_CHAT_MS);
   unsubscribe = rootAppStoreApi.subscribe(check);
   check();
+  const key = machineKey?.trim();
+  if (!done && key) void connectAccountMachine(key);
   return stop;
 }
