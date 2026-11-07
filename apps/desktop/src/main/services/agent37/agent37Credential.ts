@@ -23,8 +23,8 @@ import { describeIntegrationCredentialStorage, type IntegrationCredentialStorage
 import type { IntegrationConnectAdapter } from "../integrations/integrationConnectRequest";
 import { Agent37Error, createAgent37Client, type Agent37Client } from "./agent37Client";
 
-const AGENT37_VAULT_KIND = "integration";
-const AGENT37_VAULT_KEY = "agent37";
+export const AGENT37_VAULT_KIND = "integration";
+export const AGENT37_VAULT_KEY = "agent37";
 /** The machine-local fallback, in the credential file the app, brain and CLI share. */
 const AGENT37_MACHINE_CREDENTIAL_KEY = "agent37.apiKey.v1";
 
