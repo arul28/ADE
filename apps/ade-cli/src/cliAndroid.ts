@@ -24,6 +24,7 @@ import {
   ANDROID_RENDER_ANGLE_IDS,
   ANDROID_RENDER_BACKGROUNDS,
   ANDROID_SDK_PERSON_ONLY_ACTIONS,
+  ANDROID_SETTINGS_FLAGS,
   androidKeyCode,
   splitAndroidKeyCombo,
   type AndroidErrorCode,
@@ -50,7 +51,7 @@ import {
   type JsonObject,
   type ValueCarrierFlags,
 } from "./cli";
-import { record } from "./cliAndroidFormat";
+import { withAsked } from "./cliAndroidFormat";
 import { buildAndroidSuitePlan } from "./cliAndroidSuite";
 import { buildAndroidDevicePlan } from "./cliAndroidDevice";
 
@@ -154,19 +155,25 @@ const ANDROID_DEVICE_VALUE_FLAGS: readonly string[] = [
   "--with", "--size", "--move",
 ];
 
+/** `ade android key`'s modifier switches. They never take a value, though `accessibility --option <name>` does. */
+const ANDROID_KEY_MODIFIER_FLAGS: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ["shift", ["--shift"]],
+  ["ctrl", ["--ctrl", "--control"]],
+  ["alt", ["--alt", "--option"]],
+  ["meta", ["--meta", "--cmd", "--command"]],
+];
+
 const ANDROID_VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([...ANDROID_VALUE_FLAGS, ...ANDROID_DEVICE_VALUE_FLAGS]);
 const ANDROID_SDK_VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([...ANDROID_VALUE_FLAGS, ...ANDROID_DEVICE_VALUE_FLAGS].filter((flag) => flag !== "--wait"));
+const ANDROID_KEY_VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set(
+  [...ANDROID_VALUE_CARRIER_FLAGS].filter((flag) => !ANDROID_KEY_MODIFIER_FLAGS.some(([, names]) => names.includes(flag))),
+);
 
 /** The element query flags, `ade apple`'s (`--text` is the element's text). */
 const ANDROID_QUERY_FLAGS = ["--ref", "--identifier", "--label", "--text", "--role", "--index"] as const;
 const ANDROID_INSTALL_FLAGS = ["--apk", "--gradle", "--module", "--variant"] as const;
 /** Launch arguments and intent extras, on `launch` and `relaunch`; `-- <words>` too. */
 const ANDROID_LAUNCH_EXTRA_FLAGS = ["--extra", "--extra-string", "--launch-arg"] as const;
-/** `ade android settings`: one setting per call; `--battery` and `--charging` together are one. */
-export const ANDROID_SETTINGS_FLAGS = [
-  "--text-size", "--display-size", "--animations", "--show-taps", "--layout-bounds",
-  "--battery", "--charging", "--wifi", "--data", "--airplane",
-] as const;
 
 /**
  * Each verb and the only flags it takes (besides `--lane`). One spelling per
@@ -192,7 +199,7 @@ const ANDROID_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
   rotate: [],
   type: ["--value", "--submit"],
   // Parity: one key with modifiers held (`key a --ctrl`, or `key ctrl+a`).
-  key: ["--shift", "--ctrl", "--control", "--alt", "--option", "--meta", "--cmd", "--command"],
+  key: ANDROID_KEY_MODIFIER_FLAGS.flatMap(([, names]) => names),
   // `ade apple render`'s spellings, so one render verb reads the same on both.
   render: ["--angles", "--angle", "--lighting", "--background", "--no-shadow", "--video", "--turntable", "--sheet", "--contact-sheet"],
   // P1 agent suite.
@@ -228,18 +235,11 @@ const ANDROID_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
   "record-delete": ["--id"],
   lease: ["--wait", "--ttl", "--holder", "--token"],
   location: ["--latitude", "--longitude", "--clear", "--reset"],
-  // Parity (device track, cliAndroidDevice.ts), under each spelling.
+  // Parity (device track, cliAndroidDevice.ts). Other spellings: ANDROID_VERB_ALIASES.
   accessibility: ["--on", "--off", "--option"],
-  a11y: ["--on", "--off", "--option"],
   "status-bar": ["--clear", "--reset", "--time", "--data-network", "--wifi-bars", "--cellular-bars", "--battery-level", "--battery-state"],
   "play-store-shots": ["--no-proof"],
-  "store-shots": ["--no-proof"],
-  "app-store-shots": ["--no-proof"],
   window: [
-    "--package", "--with", "--size", "--move", "--split", "--left", "--right", "--top", "--bottom", "--swap",
-    "--freeform", "--free", "--fill", "--full", "--full-screen", "--close",
-  ],
-  windows: [
     "--package", "--with", "--size", "--move", "--split", "--left", "--right", "--top", "--bottom", "--swap",
     "--freeform", "--free", "--fill", "--full", "--full-screen", "--close",
   ],
@@ -258,6 +258,14 @@ const ANDROID_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
   sdk: ["--folder", "--with-cli", "--accept-license", "--wait", "--id", "--clear", "--image", "--installed"],
 };
 
+/** Other spellings of a verb (Apple's is `app-store-shots`), read before the flag lookup. */
+const ANDROID_VERB_ALIASES: Readonly<Record<string, string>> = {
+  a11y: "accessibility",
+  "store-shots": "play-store-shots",
+  "app-store-shots": "play-store-shots",
+  windows: "window",
+};
+
 /**
  * The input verbs that take `--no-record` (`ade apple`'s): this call does not
  * start an automatic recording. A recording that runs still shows it.
@@ -265,12 +273,6 @@ const ANDROID_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
 const ANDROID_NO_RECORD_VERBS: ReadonlySet<string> = new Set([
   "tap", "swipe", "button", "type", "key", "open-url", "long-press", "drag", "scroll", "tap-element", "fill-element",
   "select",
-]);
-
-/** The service methods those verbs call: `noRecord` goes into their args. */
-const ANDROID_NO_RECORD_METHODS: ReadonlySet<string> = new Set([
-  "tap", "swipe", "sendKey", "pressKey", "sendText", "openUrl", "longPress", "drag", "scroll", "tapElement", "fillElement",
-  "selectPoint",
 ]);
 
 /** `ade apple`'s button names (hyphens), each to the service's key. */
@@ -376,7 +378,7 @@ export function androidEmulatorErrorHint(message: string): string | null {
       return "Only the user changes this machine's Android preferences (tap rings, key badges, auto-record, the storage warning, the remote bitrate), "
         + "in the ADE desktop app: Settings › Android devices. Ask the user. To stop auto-record in this lane: ade android auto-record off.";
     }
-        return personOnly[1] === "setSdkPath"
+    return personOnly[1] === "setSdkPath"
       ? "Only the user picks this machine's Android SDK folder, in the ADE desktop app: Settings › Android devices. Ask the user."
       : "Only the user installs the Android SDK and accepts Google's licences, in the ADE desktop app: "
         + "the setup card in the Android tool, or Settings › Android devices. Ask the user.";
@@ -419,14 +421,18 @@ export function readStroke(rest: readonly string[], verb: string): { fromX: numb
 }
 
 export function buildAndroidPlan(args: string[], options: { remote?: boolean } = {}): CliPlan {
-  const sub = firstStandalonePositional(args, ANDROID_VALUE_CARRIER_FLAGS) ?? "status";
+  const typedSub = firstStandalonePositional(args, ANDROID_VALUE_CARRIER_FLAGS) ?? "status";
+  const sub = ANDROID_VERB_ALIASES[typedSub] ?? typedSub;
   // `launch … -- <am words>`: everything after `--` is the launch's, as `ade apple launch -- <args>`.
   // Taken out first, so no flag reader sees a word meant for `am start`.
   const fence = sub === "launch" || sub === "relaunch" ? args.indexOf("--") : -1;
   // `--text`/`--json` after the words are the output mode, never `am` options (`launch … -- -f 0x10 --text`).
   const launchPassthrough = fence >= 0 ? args.splice(fence).slice(1).filter((word) => word !== "--text" && word !== "--json") : [];
-  // `sdk install --wait` is a switch, `lease --wait <s>` takes seconds.
-  const carriers = sub === "sdk" ? ANDROID_SDK_VALUE_CARRIER_FLAGS : ANDROID_VALUE_CARRIER_FLAGS;
+  // `sdk install --wait` is a switch, `lease --wait <s>` takes seconds. In
+  // `key`, `--option` is the alt switch, so `key --option tab` keeps its key.
+  const carriers = sub === "sdk"
+    ? ANDROID_SDK_VALUE_CARRIER_FLAGS
+    : sub === "key" ? ANDROID_KEY_VALUE_CARRIER_FLAGS : ANDROID_VALUE_CARRIER_FLAGS;
   const positionals = (): string[] => standalonePositionals(args, carriers);
   const verbFlags = ANDROID_VERB_FLAGS[sub];
   if (verbFlags) {
@@ -459,7 +465,7 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
     // reaches the CLI without a second edit.
     const minTimeoutMs = localRuntimeActionTimeoutMs(ANDROID_EMULATOR_DOMAIN, method);
     // `--no-record` on an input verb: this call starts no automatic recording.
-    const recordPayload = noRecord && ANDROID_NO_RECORD_METHODS.has(method) ? { ...payload, noRecord: true } : payload;
+    const recordPayload = noRecord ? { ...payload, noRecord: true } : payload;
     return {
       kind: "execute",
       label,
@@ -624,15 +630,10 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
   if (sub === "key") {
     // One key, modifiers held around it: `key a --ctrl` or `key ctrl+a`.
     // The modifier flags are read first, so none is taken as the key name.
-    const flagModifiers = ([
-      ["shift", ["--shift"]],
-      ["ctrl", ["--ctrl", "--control"]],
-      ["alt", ["--alt", "--option"]],
-      ["meta", ["--meta", "--cmd", "--command"]],
-    ] as const).filter(([, names]) => readFlag(args, [...names])).map(([modifier]) => modifier);
+    const flagModifiers = ANDROID_KEY_MODIFIER_FLAGS.filter(([, names]) => readFlag(args, [...names])).map(([modifier]) => modifier);
     const combo = requireValue(positionals()[0] ?? null, "the key (return, tab, escape, a letter, ctrl+a, …)");
     const { key, modifiers: comboModifiers } = splitAndroidKeyCombo(combo);
-    const modifiers = [...new Set([...comboModifiers.map((name) => (name === "cmd" || name === "command" ? "meta" : name === "control" ? "ctrl" : name === "option" ? "alt" : name)), ...flagModifiers])];
+    const modifiers = [...new Set([...comboModifiers, ...flagModifiers])];
     const badModifier = modifiers.find((name) => ANDROID_KEY_MODIFIERS[name] === undefined);
     if (badModifier !== undefined) {
       throw new CliUsageError(`android key: unknown modifier '${badModifier}'. Modifiers: ${Object.keys(ANDROID_KEY_MODIFIERS).join(", ")}.`);
@@ -667,15 +668,4 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
   });
   if (suite) return suite;
   throw new CliUsageError(`Unknown android subcommand '${sub}'. Run 'ade android --help'.`);
-}
-
-/**
- * The action's answer with what was asked, so `--json` and the text line both
- * have it. A void input action answers with this alone.
- */
-export function withAsked(asked: JsonObject) {
-  return (values: JsonObject): unknown => {
-    const result = record(values.result);
-    return { ok: true, ...result, ...asked };
-  };
 }

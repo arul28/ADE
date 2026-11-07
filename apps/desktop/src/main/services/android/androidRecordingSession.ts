@@ -15,8 +15,9 @@ import type { DemoEngineSet } from "../demoVideo/demoEngines";
 import { watchDemoRecording } from "../demoVideo/demoRecordingGuard";
 import { demoRecordingKey, demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import type { Logger } from "../logging/logger";
+import { NOOP_LOGGER } from "../logging/machineLogger";
 import { getErrorMessage } from "../shared/utils";
-import { produceAndroidRecordingVideo } from "./androidDemoRecording";
+import { androidRawVideoFallback, produceAndroidRecordingVideo } from "./androidDemoRecording";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 import { fileAndroidCaptureAsProof, type AndroidArtifactFiler } from "./androidProof";
 import {
@@ -124,7 +125,7 @@ export function androidDemoKey(laneId: string): string {
 
 export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps) {
   const { logger, now } = deps;
-  const demoLogger: Logger = logger ?? { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
+  const demoLogger: Logger = logger ?? NOOP_LOGGER;
   const recordings = new Map<string, ActiveRecording>();
   /**
    * A start that has not finished yet. The slot is taken before the first
@@ -133,6 +134,14 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
   const starting = new Map<string, Promise<AndroidRecording>>();
   /** A recording that ended on its own (its cap, the device going off) and no stop has collected yet. */
   const uncollected = new Map<string, AndroidRecording>();
+  /**
+   * A stopped recording whose video is still made and filed (up to the demo
+   * budget). It no longer holds the lane's slot, as Apple's: the next turn
+   * may record while it renders. A second stop waits on this one.
+   */
+  const rendering = new Map<string, Promise<AndroidRecording>>();
+  /** `totalBytes`, until a recording starts, ends or is deleted. */
+  let bytesOnDisk: number | null = null;
 
   const preferences = (): AndroidMachinePreferences => {
     try {
@@ -192,8 +201,15 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
 
   const finish = (laneId: string, reason: AndroidRecordingStopReason, options: FinishOptions = {}): Promise<AndroidRecording> => {
     const active = recordings.get(laneId);
-    if (!active) return Promise.reject(new AndroidEmulatorFailure("ANDROID_RECORDING_NOT_FOUND", "No recording is running on this lane."));
-    active.finishing ??= (async () => {
+    if (!active) {
+      return rendering.get(laneId)
+        ?? Promise.reject(new AndroidEmulatorFailure("ANDROID_RECORDING_NOT_FOUND", "No recording is running on this lane."));
+    }
+    if (active.finishing) return active.finishing;
+    const finishing = (async () => {
+      // The capture ends now: the slot is free before the video is made.
+      recordings.delete(laneId);
+      deps.onRecordingChanged?.(laneId, { ...active.recording, active: false });
       active.untap();
       active.stopWatch();
       if (active.capTimer) clearTimeout(active.capTimer);
@@ -241,15 +257,7 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
             // Not reached for a render failure (the raw video is filed then);
             // a disk error here keeps the parts where they are.
             logger?.warn("android.recording_video_failed", { laneId, error: getErrorMessage(error) });
-            return {
-              files: segments,
-              demo: null,
-              durationMs: wallMs,
-              wallDurationMs: wallMs,
-              idleCutMs: 0,
-              bytes: segments.reduce((sum, segment) => sum + segment.bytes, 0),
-              unusable: null,
-            };
+            return androidRawVideoFallback(segments, wallMs, null);
           });
           recording = {
             ...recording,
@@ -278,9 +286,10 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
           }
         }
       }
-      recordings.delete(laneId);
+      bytesOnDisk = null;
       if (reason !== "requested") uncollected.set(laneId, recording);
-      deps.onRecordingChanged?.(laneId, recording);
+      // A newer recording may run by now: the panes then read that one.
+      deps.onRecordingChanged?.(laneId, recordings.get(laneId)?.recording ?? recording);
       logger?.info("android.recording_stopped", {
         laneId,
         id: recording.id,
@@ -296,7 +305,12 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
       await releaseStream;
       return recording;
     })();
-    return active.finishing;
+    active.finishing = finishing;
+    rendering.set(laneId, finishing);
+    void finishing.finally(() => {
+      if (rendering.get(laneId) === finishing) rendering.delete(laneId);
+    }).catch(() => undefined);
+    return finishing;
   };
 
   /**
@@ -324,6 +338,35 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
       void finishQuietly(laneId, "cap", "android.recording_cap_stop_failed");
     }, capMs);
     (active.capTimer as { unref?: () => void }).unref?.();
+  };
+
+  /** Bytes of the `.mp4` files under the recordings folder, every lane. */
+  const countRecordingBytes = (): number => {
+    const root = path.join(deps.dataDir, "recordings");
+    let total = 0;
+    let lanes: string[];
+    try {
+      lanes = fs.readdirSync(root);
+    } catch {
+      return 0;
+    }
+    for (const lane of lanes) {
+      let names: string[];
+      try {
+        names = fs.readdirSync(path.join(root, lane));
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        if (!name.endsWith(".mp4")) continue;
+        try {
+          total += fs.statSync(path.join(root, lane, name)).size;
+        } catch {
+          // A file removed while counting adds nothing.
+        }
+      }
+    }
+    return total;
   };
 
   type BeginArgs = Parameters<AndroidEmulatorAgentServiceApi["recordStart"]>[0] & { mode: "auto" | "manual" };
@@ -397,6 +440,7 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
       throw error;
     }
     recordings.set(laneId, active);
+    bytesOnDisk = null;
     if (active.writeError) {
       // The first packet failed before the slot was set.
       void finish(laneId, "stream-failed").catch(() => undefined);
@@ -485,6 +529,13 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
       // A start still on its way: let it finish (or fail) first, then stop what it started.
       await starting.get(laneId)?.catch(() => null);
       if (!recordings.has(laneId)) {
+        // Stopped by its turn or its cap, and its video is still made: answer that one when it is filed.
+        const inFlight = rendering.get(laneId);
+        if (inFlight) {
+          const ended = await inFlight;
+          if (uncollected.get(laneId) === ended) uncollected.delete(laneId);
+          return ended;
+        }
         const ended = uncollected.get(laneId);
         if (ended) {
           // It already ended (its cap, the device going off): answer that one, once.
@@ -512,6 +563,7 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
         throw new AndroidEmulatorFailure("ANDROID_RECORDING_ACTIVE", "That recording is still running. Stop it first (ade android record-stop --discard drops it).");
       }
       const deleted = deleteAndroidRecording(deps.dataDir, laneId, id);
+      bytesOnDisk = null;
       if (!deleted) throw new AndroidEmulatorFailure("ANDROID_RECORDING_NOT_FOUND", `No recording ${id} on this lane. ade android record-list shows them.`);
       return { laneId, id, deleted };
     },
@@ -600,33 +652,10 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
       for (const laneId of lanes) await finishQuietly(laneId, "turn-end", "android.recording_turn_end_stop_failed");
     },
 
-    /** Bytes of this project's Android recordings on disk, every lane. */
+    /** Bytes of this project's Android recordings on disk, every lane. Counted again after a start, an end or a delete. */
     totalBytes(): number {
-      const root = path.join(deps.dataDir, "recordings");
-      let total = 0;
-      let lanes: string[];
-      try {
-        lanes = fs.readdirSync(root);
-      } catch {
-        return 0;
-      }
-      for (const lane of lanes) {
-        let names: string[];
-        try {
-          names = fs.readdirSync(path.join(root, lane));
-        } catch {
-          continue;
-        }
-        for (const name of names) {
-          if (!name.endsWith(".mp4")) continue;
-          try {
-            total += fs.statSync(path.join(root, lane, name)).size;
-          } catch {
-            // A file removed while counting adds nothing.
-          }
-        }
-      }
-      return total;
+      bytesOnDisk ??= countRecordingBytes();
+      return bytesOnDisk;
     },
 
     async dispose(): Promise<void> {
@@ -634,6 +663,8 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
       for (const laneId of [...recordings.keys()]) {
         await finishQuietly(laneId, "device-off", "android.recording_dispose_stop_failed", { budgetMs: ANDROID_DISPOSE_DEMO_BUDGET_MS });
       }
+      // A video still made from an earlier stop is filed before the service goes.
+      await Promise.all([...rendering.values()].map((render) => render.catch(() => null)));
     },
   };
 }

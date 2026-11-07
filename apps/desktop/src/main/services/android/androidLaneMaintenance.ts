@@ -94,8 +94,13 @@ export type AndroidLaneMaintenanceDeps = {
   isBusy: (laneId: string) => boolean;
   /** How long ago the device saw input, from the device; null when it cannot say. */
   deviceIdleMs: (laneId: string) => Promise<number | null>;
-  /** Stops the lane's emulator on its queue, by the service's own stop. */
-  powerOff: (device: AndroidLaneDevice) => Promise<void>;
+  /**
+   * Stops the lane's emulator on its queue, by the service's own stop.
+   * `stillIdle` is asked again on the queue, just before the stop: a lease,
+   * a test run or a call may have come while the pass waited. Answers false
+   * when it left the emulator running on purpose (another viewer).
+   */
+  powerOff: (device: AndroidLaneDevice, guard: { stillIdle: () => boolean }) => Promise<boolean>;
   onChanged: () => void;
   idleMs?: number;
   now?: () => number;
@@ -159,7 +164,9 @@ export function createAndroidLaneMaintenance(deps: AndroidLaneMaintenanceDeps) {
         continue;
       }
       try {
-        await deps.powerOff(device);
+        const usedAt = lastUse.get(device.laneId) ?? 0;
+        const stillIdle = () => !deps.isBusy(device.laneId) && (lastUse.get(device.laneId) ?? 0) <= usedAt;
+        if (!(await deps.powerOff(device, { stillIdle }))) continue;
         poweredOff.set(device.laneId, { at: new Date(now()).toISOString(), reason: options.force ? "cleanup" : "idle", idleMinutes });
         done.push({ laneId: device.laneId, avdName: device.avdName, idleMinutes });
         deps.logger?.info("android.lane_device_idle_powered_off", { laneId: device.laneId, avdName: device.avdName, idleMinutes, reason: options.force ? "cleanup" : "idle" });

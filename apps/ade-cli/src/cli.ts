@@ -525,8 +525,10 @@ import {
   formatAndroidFrame,
   formatAndroidInspect,
   formatAndroidCleanup,
+  formatAndroidStatusBar,
+  formatAndroidStoreShots,
+  formatAndroidWindow,
 } from "./cliAndroidFormat";
-import { formatAndroidStatusBar, formatAndroidStoreShots, formatAndroidWindow } from "./cliAndroidDevice";
 import {
   appleLeaseAnswer,
   appleLeaseNotAcquired,
@@ -6378,9 +6380,11 @@ function parseCliArgs(argv: string[]): ParsedCli {
       const rest = argv.slice(index + 1);
       // `ade screen open <app> -- <app args> --text`: everything after `--` is
       // the launched app's, except a trailing --text/--json, which is always
-      // the caller's output choice. Only for the screen family, whose `open`
-      // documents this; elsewhere `--` passes everything through untouched.
-      if (SCREEN_COMMAND_NAMES.has(command[0] ?? "")) {
+      // the caller's output choice. Only for the screen family and
+      // `ade android launch|relaunch`, which document this; elsewhere `--`
+      // passes everything through untouched.
+      const androidLaunch = command[0] === "android" && command.slice(1).some((word) => word === "launch" || word === "relaunch");
+      if (SCREEN_COMMAND_NAMES.has(command[0] ?? "") || androidLaunch) {
         let decided = false;
         while (rest.length && (rest[rest.length - 1] === "--text" || rest[rest.length - 1] === "--json")) {
           const flag = rest.pop();

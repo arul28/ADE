@@ -4852,6 +4852,19 @@ const ANDROID_COPY_MAKING_ACTIONS = new Set<string>([
  */
 const ANDROID_CODE_SYNC = new Set<string>(ANDROID_CODE_SYNC_ACTIONS);
 
+/** Why an `android_emulator` action is the user's own, after "is limited to user clients"; empty for any other. */
+function androidUserOnlyReason(domain: string, action: string): string {
+  if (domain !== "android_emulator") return "";
+  if (action === "setMachinePreferences") {
+    return ": only the user changes this machine's Android preferences, in the ADE desktop app (Settings › Android devices)";
+  }
+  if (ANDROID_SDK_PERSON_ONLY.has(action)) {
+    return ": only the user installs the Android SDK and accepts Google's licences, "
+      + "in the ADE desktop app (the setup card in the Android tool, or Settings › Android devices)";
+  }
+  return "";
+}
+
 function androidMissingLaneMessage(action: string): string | null {
   return ANDROID_LANE_FREE.has(action)
     ? null
@@ -4898,7 +4911,9 @@ export function scopeAndroidAdeActionArgs(
     device: "Android emulator",
     missingLaneMessage: androidMissingLaneMessage(action),
   });
-  const { chatSessionId: _callerChat, agentCaller: _agentCaller, ...rest } = androidArgs;
+  // `source` is set by the brain, never by the caller: an agent that sent
+  // `source: "user"` would skip auto-record and draw its input as the person's.
+  const { chatSessionId: _callerChat, agentCaller: _agentCaller, source: _callerSource, ...rest } = androidArgs;
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   return {
     ...rest,
@@ -4930,7 +4945,7 @@ export async function scopeUnboundAndroidAdeActionArgs(
     requestedLaneId: asOptionalTrimmedString(androidArgs.laneId),
     missingLaneMessage: androidMissingLaneMessage(action),
   });
-  const { chatSessionId: _callerChat, agentCaller: _agentCaller, ...rest } = androidArgs;
+  const { chatSessionId: _callerChat, agentCaller: _agentCaller, source: _callerSource, ...rest } = androidArgs;
   return { ...rest, ...(laneId ? { laneId } : {}), ...(action === "deviceCleanup" ? { agentCaller: true } : {}) };
 }
 
@@ -6501,13 +6516,7 @@ async function runTool(args: {
     if (isUserOnlyAdeAction(domain, action) && !mayUseUserOnlyActions(session)) {
       // Deleting a simulator is the user's call, made from the device picker.
       scopeAccessDenied(
-        domain === "android_emulator" && action === "setMachinePreferences"
-          ? `${domain}.${action} is limited to user clients: only the user changes this machine's Android preferences, `
-            + "in the ADE desktop app (Settings › Android devices)"
-          : domain === "android_emulator" && ANDROID_SDK_PERSON_ONLY.has(action)
-          ? `${domain}.${action} is limited to user clients: only the user installs the Android SDK and accepts Google's licences, `
-            + "in the ADE desktop app (the setup card in the Android tool, or Settings › Android devices)"
-          : `${domain}.${action} is limited to user clients`,
+        `${domain}.${action} is limited to user clients${androidUserOnlyReason(domain, action)}`,
         `run_ade_action:${domain}.${action}`,
       );
     }

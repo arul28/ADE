@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { Dialog } from "../ui/dialog";
 import { laneDeviceBooted } from "./appleDeviceState";
-import { isImeComposing } from "../../lib/imeComposition";
+import { createAskOnceStore, type AskOnceRequest } from "../../lib/askOnceStore";
+import { useConfirmKeys } from "../../lib/useConfirmKeys";
 
 /**
  * "Shut down {device}?" — the one question closing the Apple Development TAB
@@ -27,43 +28,23 @@ import { isImeComposing } from "../../lib/imeComposition";
  * mounted once per Work page beside the floating player.
  */
 
-export type AppleShutdownConfirmRequest = {
-  deviceName: string;
-  resolve: (confirmed: boolean) => void;
-};
-
-let pending: AppleShutdownConfirmRequest | null = null;
-let listeners = new Set<() => void>();
-
-function emit(): void {
-  for (const listener of [...listeners]) listener();
-}
-
-function settle(confirmed: boolean): void {
-  const request = pending;
-  pending = null;
-  emit();
-  request?.resolve(confirmed);
-}
-
-/** The question on screen right now, if any. */
-export function getAppleShutdownConfirmRequest(): AppleShutdownConfirmRequest | null {
-  return pending;
-}
+export type AppleShutdownConfirmRequest = AskOnceRequest<{ deviceName: string }, boolean>;
 
 /**
- * Ask, and resolve with the answer.
- *
  * A second ask while one is on screen resolves FALSE rather than replacing the
  * first: two dialogs cannot both be answered, and the safe reading of "I could
  * not ask you" is "do not power the device off".
  */
+const confirmStore = createAskOnceStore<{ deviceName: string }, boolean>(false);
+
+/** The question on screen right now, if any. */
+export function getAppleShutdownConfirmRequest(): AppleShutdownConfirmRequest | null {
+  return confirmStore.get();
+}
+
+/** Ask, and resolve with the answer. */
 export function askAppleShutdownConfirm(deviceName: string): Promise<boolean> {
-  if (pending) return Promise.resolve(false);
-  return new Promise<boolean>((resolve) => {
-    pending = { deviceName, resolve };
-    emit();
-  });
+  return confirmStore.ask({ deviceName });
 }
 
 /**
@@ -93,15 +74,9 @@ export async function confirmAppleToolClose(args: {
   return askAppleShutdownConfirm(lane.name);
 }
 
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => { listeners.delete(listener); };
-}
-
 /** Test seam: an unanswered question from one test must not reach the next. */
 export function resetAppleShutdownConfirmForTests(): void {
-  pending = null;
-  listeners = new Set();
+  confirmStore.reset();
 }
 
 /**
@@ -111,36 +86,16 @@ export function resetAppleShutdownConfirmForTests(): void {
  * is one store subscription.
  */
 export function AppleShutdownConfirmHost() {
-  const request = useSyncExternalStore(subscribe, getAppleShutdownConfirmRequest, getAppleShutdownConfirmRequest);
+  const request = useSyncExternalStore(confirmStore.subscribe, confirmStore.get, confirmStore.get);
   if (!request) return null;
   return <AppleShutdownConfirmDialog request={request} />;
 }
 
 function AppleShutdownConfirmDialog({ request }: { request: AppleShutdownConfirmRequest }) {
-  const cancel = useCallback(() => settle(false), []);
-  const confirm = useCallback(() => settle(true), []);
-
-  // Escape cancels, Enter confirms — bound at the window, because clicking the
-  // dialog's own sentence leaves focus off the buttons and a panel handler
-  // would then never see the key. Capture + stopPropagation so the Work page's
-  // own Escape handlers never see the key that answered this question.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        cancel();
-        return;
-      }
-      if (event.key !== "Enter" || event.shiftKey || isImeComposing(event)) return;
-      // A focused button answers Enter itself; this is for the rest of the box.
-      if ((event.target as HTMLElement | null)?.tagName?.toLowerCase() === "button") return;
-      event.preventDefault();
-      confirm();
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [cancel, confirm]);
+  const cancel = useCallback(() => confirmStore.settle(false), []);
+  const confirm = useCallback(() => confirmStore.settle(true), []);
+  // Escape cancels, Enter confirms (see `useConfirmKeys`).
+  useConfirmKeys(cancel, confirm);
 
   // The destructive verb takes focus (`autoFocus`), because it is the answer
   // the user came here to give: they clicked the tab's ×. The nested layer

@@ -265,6 +265,17 @@ export function createAndroidLaneStreams<S extends AndroidLaneStreamState>(deps:
     return { serial, transport, state };
   };
 
+  /** The relay lets go of the lane's stream; the other holders decide what stays. */
+  const relayLeft = async (laneId: string | null | undefined): Promise<void> => {
+    if (!laneId) return;
+    const hold = holds.get(laneId);
+    if (hold) {
+      hold.relay = false;
+      hold.adaptiveKbps = null;
+    }
+    await releaseHolder(laneId);
+  };
+
   const api: Pick<AndroidEmulatorServiceApi, "startStream" | "stopStream" | "getStreamStatus"> = {
     async startStream(args) {
       deps.assertLive();
@@ -380,23 +391,8 @@ export function createAndroidLaneStreams<S extends AndroidLaneStreamState>(deps:
        * stream; `liftStreamBitrateCap` below when it joined one. Both mean the
        * same here: the relay lets go, and the other holders decide.
        */
-      async stopStream({ laneId }) {
-        if (!laneId) return;
-        const hold = holds.get(laneId);
-        if (hold) {
-          hold.relay = false;
-          hold.adaptiveKbps = null;
-        }
-        await releaseHolder(laneId);
-      },
-      async liftStreamBitrateCap({ laneId }) {
-        const hold = holds.get(laneId);
-        if (hold) {
-          hold.relay = false;
-          hold.adaptiveKbps = null;
-        }
-        await releaseHolder(laneId);
-      },
+      stopStream: ({ laneId }) => relayLeft(laneId),
+      liftStreamBitrateCap: ({ laneId }) => relayLeft(laneId),
       /** Pacing lowered or raised the cap. Applied only while no full-rate holder is there. */
       async capLiveStream({ laneId, bitrateKbps }) {
         const hold = holds.get(laneId);

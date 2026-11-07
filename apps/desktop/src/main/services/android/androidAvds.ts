@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AndroidAvd, AndroidRunningEmulator, AndroidSystemImage } from "../../../shared/types/androidEmulator";
+import { androidAvdDisplayName } from "../../../shared/androidDevicePresentation";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { androidHardwareConfig, type AndroidDeviceDefinition } from "./androidHardwareProfiles";
 import { readAndroidIniFile } from "./androidSdk";
@@ -86,6 +87,16 @@ export async function measureAndroidAvdBytes(dir: string): Promise<number> {
   return total;
 }
 
+/**
+ * The name a person sees: the one set for the AVD, or, when none was set (or
+ * it is the folder name, as ADE writes it when none was asked for), the
+ * folder name in words (`ade_ab12cd34_pixel_9` is "Pixel 9").
+ */
+function shownAvdName(name: string, configured: string | undefined): string {
+  const set = configured?.trim();
+  return set && set !== name ? set : androidAvdDisplayName(name);
+}
+
 /** One AVD by name, or null when it has no `<name>.ini` or no `config.ini`. */
 export function readAndroidAvd(
   avdHome: string,
@@ -99,7 +110,7 @@ export function readAndroidAvd(
   if (!config) return null;
   return {
     name,
-    displayName: config.get("avd.ini.displayname") || null,
+    displayName: shownAvdName(name, config.get("avd.ini.displayname")),
     profileId: config.get("hw.device.name") || null,
     apiLevel: apiLevelOf(ini, config),
     tag: config.get("tag.id") || null,

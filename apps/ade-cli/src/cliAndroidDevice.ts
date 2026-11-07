@@ -1,35 +1,32 @@
 /**
  * `ade android`: the device-state verbs at `ade apple`'s level
  * (`accessibility`, `status-bar`, `location --clear`, `play-store-shots`,
- * `window`), and their text formatters. cliAndroid.ts keeps the flag tables
- * and calls `buildAndroidDevicePlan` before the suite.
+ * `window`). Their text formatters are in cliAndroidFormat.ts. cliAndroid.ts
+ * keeps the flag tables and the verb spellings, and calls
+ * `buildAndroidDevicePlan` before the suite.
  *
- * This module and cliAndroid.ts import each other, as cliAndroidSuite.ts
- * does. The cycle is safe under the same rule:
+ * It imports `./cli` back, under cli.ts's cycle rule:
  *
  *   NEITHER FILE MAY USE THE OTHER'S IMPORTS AS A VALUE AT MODULE SCOPE.
  */
 import {
-  ANDROID_ACCESSIBILITY_LABELS,
   ANDROID_ACCESSIBILITY_OPTIONS,
+  ANDROID_STATUS_BAR_BATTERY_STATES,
   ANDROID_STATUS_BAR_NETWORKS,
   ANDROID_WINDOW_LAYOUT_ACTIONS,
 } from "../../desktop/src/shared/types/androidEmulator";
 import {
   CliUsageError,
-  asString,
   isRecord,
   readFlag,
   readNumberOption,
   readValue,
-  renderKeyValues,
-  renderTable,
   unwrapActionEnvelope,
   type CliPlan,
   type FormatterId,
   type JsonObject,
 } from "./cli";
-import { withAsked } from "./cliAndroid";
+import { withAsked } from "./cliAndroidFormat";
 
 type AndroidActionBuilder = (
   label: string,
@@ -52,21 +49,9 @@ const WINDOW_LAYOUT_FLAGS: ReadonlyArray<readonly [readonly string[], string]> =
   [["--close"], "close"],
 ];
 
-/**
- * Spellings of the verbs (Apple's is `app-store-shots`). cliAndroid.ts lists
- * each verb's flags under every spelling, as literals: a value from this
- * module may not be read at module scope there (the import cycle rule).
- */
-const ANDROID_DEVICE_VERB_ALIASES: Readonly<Record<string, string>> = {
-  a11y: "accessibility",
-  "store-shots": "play-store-shots",
-  "app-store-shots": "play-store-shots",
-  windows: "window",
-};
-
 /** The device verbs; null for any other verb (and for `location` without `--clear`). */
 export function buildAndroidDevicePlan(
-  rawSub: string,
+  sub: string,
   args: string[],
   ctx: {
     positionals: () => string[];
@@ -75,7 +60,6 @@ export function buildAndroidDevicePlan(
     androidAction: AndroidActionBuilder;
   },
 ): CliPlan | null {
-  const sub = ANDROID_DEVICE_VERB_ALIASES[rawSub] ?? rawSub;
   const { positionals, laneClaim, androidAction } = ctx;
   const usage = (message: string) => new CliUsageError(`android ${sub}: ${message}`);
 
@@ -114,8 +98,8 @@ export function buildAndroidDevicePlan(
     const cellularBars = readNumberOption(args, ["--cellular-bars"]);
     const batteryLevel = readNumberOption(args, ["--battery-level"]);
     const batteryState = readValue(args, ["--battery-state"]);
-    if (batteryState && !["charging", "charged", "discharging"].includes(batteryState)) {
-      throw usage("--battery-state takes charging, charged or discharging.");
+    if (batteryState && !(ANDROID_STATUS_BAR_BATTERY_STATES as readonly string[]).includes(batteryState)) {
+      throw usage(`--battery-state takes ${ANDROID_STATUS_BAR_BATTERY_STATES.join(", ")}.`);
     }
     return androidAction("android status-bar", "setStatusBar", {
       ...laneClaim(),
@@ -192,82 +176,4 @@ export function buildAndroidDevicePlan(
     };
   }
   return null;
-}
-
-/* ──────────────────────────────────────────────────────────────────────────
-   Formatters (registered in cli.ts's output switch).
-   ────────────────────────────────────────────────────────────────────────── */
-
-function recordOf(value: unknown): JsonObject {
-  const unwrapped = unwrapActionEnvelope(value);
-  return isRecord(unwrapped) ? unwrapped : {};
-}
-
-/** `status-bar`: whether the override is on now. */
-export function formatAndroidStatusBar(value: unknown): string {
-  const result = recordOf(value);
-  if (result.overridden === true) return `android status-bar: overridden${asString(result.time) ? ` (${asString(result.time)})` : ""}`;
-  return "android status-bar: the device's own";
-}
-
-/** `play-store-shots`: one line per PNG (raw, so an agent can Read the path back). */
-export function formatAndroidStoreShots(value: unknown): string {
-  const result = recordOf(value);
-  const shots = Array.isArray(result.shots) ? result.shots.filter(isRecord) : [];
-  return [
-    renderKeyValues("ADE Google Play screenshots", [
-      ["device", result.foldable === true ? "foldable (cover shut, inner open)" : "one screen"],
-      ["shots", String(shots.length)],
-    ]),
-    ...shots.map((shot) => {
-      const slot = asString(shot.slot) === "large-screen" ? "large screen (7\"/10\" tablet slot)" : "phone";
-      const screen = typeof shot.screenWidth === "number" ? ` from ${shot.screenWidth}x${shot.screenHeight}` : "";
-      const filed = asString(shot.proofArtifactId) ? " (filed as proof)" : "";
-      return `shot: ${asString(shot.display) ?? "screen"} · ${slot} · ${String(shot.width)}x${String(shot.height)}${screen}: ${asString(shot.filePath) ?? ""}${filed}`;
-    }),
-  ].join("\n");
-}
-
-/** `window`: the app windows after the action, and whether it landed. */
-export function formatAndroidWindow(value: unknown): string {
-  const result = recordOf(value);
-  const windows = Array.isArray(result.windows) ? result.windows.filter(isRecord) : [];
-  const screen = isRecord(result.screen) ? result.screen : null;
-  const frame = (entry: JsonObject) => {
-    const f = isRecord(entry.frame) ? entry.frame : {};
-    return `${String(f.width)}x${String(f.height)} at ${String(f.x)},${String(f.y)}`;
-  };
-  return [
-    renderKeyValues(`ADE Android window ${asString(result.action) ?? "status"}`, [
-      ["screen", screen ? `${String(screen.width)}x${String(screen.height)}` : null],
-      ["app", result.packageName],
-      ["applied", result.applied === false ? `no: ${asString(result.reason) ?? "the window did not move"}` : "yes"],
-    ]),
-    renderTable(
-      ["task", "app", "mode", "frame", "visible"],
-      windows.map((entry) => [entry.taskId, entry.packageName, entry.mode, frame(entry), entry.visible === true ? "yes" : "no"]),
-      "No app windows.",
-    ),
-  ].join("\n");
-}
-
-/** The settings lines this track adds to `formatAndroidSettings`. */
-export function androidDeviceSettingsLines(settings: JsonObject): Array<[string, unknown]> {
-  const accessibility = isRecord(settings.accessibility) ? settings.accessibility : null;
-  const location = isRecord(settings.location) ? settings.location : null;
-  const lines: Array<[string, unknown]> = [];
-  if (accessibility) {
-    for (const option of ANDROID_ACCESSIBILITY_OPTIONS) {
-      const state = accessibility[option];
-      lines.push([ANDROID_ACCESSIBILITY_LABELS[option].toLowerCase(), state === true ? "on" : state === false ? "off" : state === null ? "not on this image" : null]);
-    }
-  }
-  if (settings.statusBarOverridden !== undefined) {
-    lines.push(["status bar", settings.statusBarOverridden === true ? "overridden (demo mode)" : settings.statusBarOverridden === false ? "the device's own" : null]);
-  }
-  if (settings.location !== undefined) {
-    lines.push(["location", location ? `${String(location.latitude)}, ${String(location.longitude)} (set by ADE)` : "not set by ADE on this boot"]);
-  }
-  if (settings.orientation !== undefined) lines.push(["orientation", settings.orientation]);
-  return lines;
 }

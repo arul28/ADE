@@ -6,6 +6,7 @@ import type {
 import { demoTypingPlan } from "../demoVideo/demoPacing";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage, sleep } from "../shared/utils";
+import type { createAndroidInput } from "./androidInput";
 import type { AndroidRecordingInput, createAndroidRecordingSessions } from "./androidRecordingSession";
 
 /*
@@ -35,6 +36,9 @@ const AUTO_START_WAIT_MS = 5_000;
 const PACED_TEXT_MAX_CHARS = 200;
 
 type Sessions = ReturnType<typeof createAndroidRecordingSessions>;
+
+/** What `around` draws for an input: the event, without who sent it and when (it fills those in). */
+export type AndroidInputNote = Omit<AndroidRecordingInput, "by" | "laneId" | "chatSessionId" | "atMs"> & { atMs?: number };
 
 export type AndroidAutoRecordDeps = {
   sessions: Sessions;
@@ -103,6 +107,27 @@ export function createAndroidAutoRecord(deps: AndroidAutoRecordDeps) {
   const onTurnEnded = (chatSessionId: string) => sessions.onTurnEnded(chatSessionId);
   turnEndTargets.add(onTurnEnded);
 
+  async function beforeInput(laneId: string, args: AndroidInputRecordArgs | null | undefined): Promise<void> {
+    if (args?.source === "user" || args?.noRecord === true) return;
+    if (sessions.isRecording(laneId)) return;
+    if (!laneSwitch(laneId) || !machineSwitch()) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    await Promise.race([
+      sessions.startAuto(laneId, args?.chatSessionId?.trim() || null),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, AUTO_START_WAIT_MS);
+        (timer as { unref?: () => void }).unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+  }
+
+  function note(input: Omit<AndroidRecordingInput, "by"> & { source?: AndroidInputRecordArgs["source"] }): void {
+    if (!sessions.isRecording(input.laneId)) return;
+    const { source, ...rest } = input;
+    void sessions.noteInput({ ...rest, by: source === "user" ? "user" : "agent" });
+  }
+
   return {
     getAutoRecord(laneId: string): AndroidAutoRecordState {
       return state(laneId);
@@ -119,26 +144,28 @@ export function createAndroidAutoRecord(deps: AndroidAutoRecordDeps) {
      * Before an input: start an automatic recording when this input may.
      * Waits at most a few seconds; never throws.
      */
-    async beforeInput(laneId: string, args: AndroidInputRecordArgs | null | undefined): Promise<void> {
-      if (args?.source === "user" || args?.noRecord === true) return;
-      if (sessions.isRecording(laneId)) return;
-      if (!laneSwitch(laneId) || !machineSwitch()) return;
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      await Promise.race([
-        sessions.startAuto(laneId, args?.chatSessionId?.trim() || null),
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, AUTO_START_WAIT_MS);
-          (timer as { unref?: () => void }).unref?.();
-        }),
-      ]);
-      if (timer) clearTimeout(timer);
-    },
+    beforeInput,
 
     /** After an input: draw it on the running recording. Fire-and-forget. */
-    note(input: Omit<AndroidRecordingInput, "by"> & { source?: AndroidInputRecordArgs["source"] }): void {
-      if (!sessions.isRecording(input.laneId)) return;
-      const { source, ...rest } = input;
-      void sessions.noteInput({ ...rest, by: source === "user" ? "user" : "agent" });
+    note,
+
+    /**
+     * One input: `beforeInput`, then `run`, then the note `event` makes from
+     * the time `run` began and its answer (null draws nothing). The chat and
+     * who sent it come from `args`.
+     */
+    async around<T>(
+      laneId: string,
+      args: AndroidInputRecordArgs | null | undefined,
+      run: () => Promise<T>,
+      event: (atMs: number, result: T) => AndroidInputNote | null,
+    ): Promise<T> {
+      await beforeInput(laneId, args);
+      const atMs = Date.now();
+      const result = await run();
+      const drawn = event(atMs, result);
+      if (drawn) note({ laneId, chatSessionId: args?.chatSessionId ?? null, source: args?.source, atMs, ...drawn });
+      return result;
     },
 
     /**
@@ -167,3 +194,76 @@ export function createAndroidAutoRecord(deps: AndroidAutoRecordDeps) {
 }
 
 export type AndroidAutoRecord = ReturnType<typeof createAndroidAutoRecord>;
+
+type AndroidInput = ReturnType<typeof createAndroidInput>;
+
+/**
+ * P0 input as the service gives it out: each call also ends the lane's
+ * cached UI tree (the screen changes), and goes through auto-record.
+ *
+ * An agent's input may start an automatic recording first, and every input
+ * is drawn on a recording that runs. The live finger (`sendTouch`) is always
+ * the person's: it never starts one. Typed text with no element named shows
+ * no badge: ADE cannot tell what field has focus, and it may be a password.
+ */
+export function wrapAndroidInput(
+  rawInput: AndroidInput,
+  deps: {
+    autoRecord: AndroidAutoRecord;
+    invalidateUi: (laneId: string) => void;
+    /** After a turn: the device's size and orientation changed. */
+    onRotated: (laneId: string) => void;
+  },
+): AndroidInput {
+  const { autoRecord, invalidateUi } = deps;
+  return {
+    sendTouch: async (args) => {
+      invalidateUi(args.laneId);
+      const atMs = Date.now();
+      await rawInput.sendTouch(args);
+      for (const event of args.events ?? []) {
+        if (event.action === "down") autoRecord.note({ laneId: args.laneId, chatSessionId: null, kind: "tap", x: event.x, y: event.y, atMs, source: "user" });
+      }
+    },
+    tap: async (args) => {
+      invalidateUi(args.laneId);
+      await autoRecord.around(args.laneId, args, () => rawInput.tap(args), () => ({ kind: "tap", x: args.x, y: args.y }));
+    },
+    swipe: async (args) => {
+      invalidateUi(args.laneId);
+      await autoRecord.around(args.laneId, args, () => rawInput.swipe(args), (atMs) => ({
+        kind: "drag", x: args.fromX, y: args.fromY, to: { x: args.toX, y: args.toY }, seconds: (Date.now() - atMs) / 1000,
+      }));
+    },
+    sendKey: async (args) => {
+      invalidateUi(args.laneId);
+      await autoRecord.around(args.laneId, args, () => rawInput.sendKey(args), () => ({
+        kind: "key", label: `[${String(args.key).replace(/_/gu, "-")}]`,
+      }));
+    },
+    sendText: async (args) => {
+      invalidateUi(args.laneId);
+      await autoRecord.beforeInput(args.laneId, args);
+      const chatSessionId = args.chatSessionId ?? null;
+      const text = typeof args.text === "string" ? args.text : "";
+      const typed = text
+        ? await autoRecord.typePaced(args.laneId, text, (piece) => rawInput.sendText({ laneId: args.laneId, text: piece }))
+        : { atMs: Date.now(), seconds: 0 };
+      if (args.submit === true) await rawInput.sendText({ laneId: args.laneId, text: "", submit: true });
+      if (text) {
+        autoRecord.note({ laneId: args.laneId, chatSessionId, kind: "type", atMs: typed.atMs, ...(typed.seconds ? { seconds: typed.seconds } : {}), source: args.source });
+      }
+      if (args.submit === true) autoRecord.note({ laneId: args.laneId, chatSessionId, kind: "key", label: "[enter]", source: args.source });
+    },
+    // Parity: `ade android key` (named keys with modifiers).
+    pressKey: async (args) => {
+      invalidateUi(args.laneId);
+      return autoRecord.around(args.laneId, args, () => rawInput.pressKey(args), (_atMs, result) => ({ kind: "key", label: `[${result.key}]` }));
+    },
+    rotate: async (args) => {
+      invalidateUi(args.laneId);
+      await rawInput.rotate(args);
+      deps.onRotated(args.laneId);
+    },
+  };
+}

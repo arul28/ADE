@@ -14,19 +14,6 @@ import type { AndroidDrawerContext } from "./androidDrawerState";
  * switches are the developer options an Android developer turns on most.
  */
 
-/**
- * Apple's screenshot status bar (`APPLE_STATUS_BAR_DEMO`) on Android: 9:41,
- * full Wi-Fi, a full battery that is not charging. The service fills in the
- * same values when a field is left out.
- */
-export const ANDROID_STATUS_BAR_DEMO = {
-  time: "9:41",
-  dataNetwork: "wifi",
-  wifiBars: 4,
-  batteryLevel: 100,
-  batteryState: "charged",
-} as const;
-
 /** Sends one setting through the drawer's serialized `act`. */
 export function deviceSettingSetter(ctx: AndroidDrawerContext) {
   const { laneId, pinRef, actions } = ctx;
@@ -106,10 +93,9 @@ export function AndroidDeviceSection({ ctx }: { ctx: AndroidDrawerContext }) {
           className={DRAWER_BUTTON}
           disabled={disabled}
           onClick={() => {
-            void ctx.actions.act(() => window.ade.androidEmulator.setStatusBar(
-              { laneId: ctx.laneId, ...ANDROID_STATUS_BAR_DEMO },
-              ctx.pinRef.current,
-            ));
+            // No fields: the service fills in Apple's screenshot status bar
+            // (9:41, full Wi-Fi, a full battery that is not charging).
+            void ctx.actions.act(() => window.ade.androidEmulator.setStatusBar({ laneId: ctx.laneId }, ctx.pinRef.current));
           }}
         >
           9:41

@@ -32,6 +32,7 @@ import { createAndroidAgentSuite } from "./androidAgentSuite";
 import { createAndroidDeviceInventory } from "./androidDeviceInventory";
 import { createAndroidDeviceSettings } from "./androidDeviceSettings";
 import { createAndroidInput } from "./androidInput";
+import { wrapAndroidInput } from "./androidAutoRecord";
 import { createAndroidCrashWatch } from "./androidCrashWatch";
 import { createAndroidLaneStreams } from "./androidLaneStreams";
 import { openStartedEmulators, stopAdeStartedEmulators } from "./androidHandedOffEmulators";
@@ -54,12 +55,9 @@ import { createAndroidStoreShots } from "./androidStoreShots";
 import { createAndroidWindows } from "./androidWindows";
 import { createAndroidComposePreviews } from "./androidComposePreviews";
 import { createAndroidStreamHub } from "./androidStream";
-import { createAndroidMachinePreferenceStore } from "./androidMachinePreferences";
+import { createAndroidMachinePreferenceStore, createAndroidSettingsFile } from "./androidMachinePreferences";
 import { createDemoEngineSet } from "../demoVideo/demoEngines";
-import type { Logger } from "../logging/logger";
-
-/** For the demo engines when the service has no logger. */
-const silentLogger: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
+import { NOOP_LOGGER } from "../logging/machineLogger";
 import { isRemoteWorkLaneId } from "../remoteWork/remoteWorkCopyService";
 import { createAndroidLaneScope } from "./androidWorkCopy";
 import { ANDROID_BOOT_TIMEOUT_MS, type AndroidEmulatorServiceDeps, type AndroidLaneState as LaneState } from "./androidEmulatorServiceDeps";
@@ -192,9 +190,10 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   /* ---------- the SDK, read on use ---------- */
 
-  const sdkSettings = createAndroidSdkSettingStore(deps.sdkSettingsFile);
-  /** The machine preferences, for the remote viewer cap (read per use; cached on the file's mtime). */
-  const streamPreferences = createAndroidMachinePreferenceStore(deps.sdkSettingsFile);
+  /** The machine's Android settings file: the SDK folder and the machine preferences (read per use; cached per change). */
+  const settingsFile = createAndroidSettingsFile(deps.sdkSettingsFile);
+  const sdkSettings = createAndroidSdkSettingStore(settingsFile, { canWrite: Boolean(deps.sdkSettingsFile) });
+  const streamPreferences = createAndroidMachinePreferenceStore(settingsFile);
   const readSdkSettingPath = deps.readSdkSettingPath ?? (() => sdkSettings.read());
   const readSdk = async (options: { forceAccelCheck?: boolean } = {}): Promise<AndroidSdkStatus> => {
     const sdk = await readAndroidSdkStatus({ settingPath: readSdkSettingPath(), env, platform, home, forceAccelCheck: options.forceAccelCheck });
@@ -565,7 +564,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     now,
     onRecordingChanged: (laneId, recording) => emit({ type: "android.recording.state", laneId, recording }),
     // Rec: the demo step (Swift on macOS, ffmpeg everywhere, ADE's own ffmpeg when the machine has none).
-    demoEngines: deps.demoEngines ?? createDemoEngineSet({ logger: logger ?? silentLogger }),
+    demoEngines: deps.demoEngines ?? createDemoEngineSet({ logger: logger ?? NOOP_LOGGER }),
     readPreferences: () => streamPreferences.read(),
     readSetting: deps.readSetting ?? null,
     writeSetting: deps.writeSetting ?? null,
@@ -627,86 +626,21 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     captureAnalytics: deps.captureAnalytics,
   });
 
-  /** P0 input, each call also ending the lane's cached UI tree (the screen changes). */
-  /*
-   * Rec: an agent's input may start an automatic recording first, and every
-   * input is drawn on a recording that runs (`androidAutoRecord.ts`). The
-   * live finger (`sendTouch`) is always the person's: it never starts one.
-   * Typed text with no element named shows no badge: ADE cannot tell what
-   * field has focus, and it may be a password.
-   */
-  const { autoRecord } = agent;
-  const chatOf = (args: { chatSessionId?: string | null }) => args.chatSessionId ?? null;
-  const input: typeof rawInput = {
-    sendTouch: async (args) => {
-      agent.invalidateUi(args.laneId);
-      const atMs = Date.now();
-      await rawInput.sendTouch(args);
-      for (const event of args.events ?? []) {
-        if (event.action === "down") autoRecord.note({ laneId: args.laneId, chatSessionId: null, kind: "tap", x: event.x, y: event.y, atMs, source: "user" });
-      }
-    },
-    tap: async (args) => {
-      agent.invalidateUi(args.laneId);
-      await autoRecord.beforeInput(args.laneId, args);
-      const atMs = Date.now();
-      await rawInput.tap(args);
-      autoRecord.note({ laneId: args.laneId, chatSessionId: chatOf(args), kind: "tap", x: args.x, y: args.y, atMs, source: args.source });
-    },
-    swipe: async (args) => {
-      agent.invalidateUi(args.laneId);
-      await autoRecord.beforeInput(args.laneId, args);
-      const atMs = Date.now();
-      await rawInput.swipe(args);
-      autoRecord.note({
-        laneId: args.laneId, chatSessionId: chatOf(args), kind: "drag", x: args.fromX, y: args.fromY, to: { x: args.toX, y: args.toY },
-        atMs, seconds: (Date.now() - atMs) / 1000, source: args.source,
-      });
-    },
-    sendKey: async (args) => {
-      agent.invalidateUi(args.laneId);
-      await autoRecord.beforeInput(args.laneId, args);
-      const atMs = Date.now();
-      await rawInput.sendKey(args);
-      autoRecord.note({ laneId: args.laneId, chatSessionId: chatOf(args), kind: "key", label: `[${String(args.key).replace(/_/gu, "-")}]`, atMs, source: args.source });
-    },
-    sendText: async (args) => {
-      agent.invalidateUi(args.laneId);
-      await autoRecord.beforeInput(args.laneId, args);
-      const text = typeof args.text === "string" ? args.text : "";
-      const typed = text
-        ? await autoRecord.typePaced(args.laneId, text, (piece) => rawInput.sendText({ laneId: args.laneId, text: piece }))
-        : { atMs: Date.now(), seconds: 0 };
-      if (args.submit === true) await rawInput.sendText({ laneId: args.laneId, text: "", submit: true });
-      if (text) {
-        autoRecord.note({ laneId: args.laneId, chatSessionId: chatOf(args), kind: "type", atMs: typed.atMs, ...(typed.seconds ? { seconds: typed.seconds } : {}), source: args.source });
-      }
-      if (args.submit === true) autoRecord.note({ laneId: args.laneId, chatSessionId: chatOf(args), kind: "key", label: "[enter]", source: args.source });
-    },
-    // Parity: `ade android key` (named keys with modifiers).
-    pressKey: async (args) => {
-      agent.invalidateUi(args.laneId);
-      await autoRecord.beforeInput(args.laneId, args);
-      const atMs = Date.now();
-      const result = await rawInput.pressKey(args);
-      autoRecord.note({ laneId: args.laneId, chatSessionId: chatOf(args), kind: "key", label: `[${result.key}]`, atMs, source: args.source });
-      return result;
-    },
-    rotate: async (args) => {
-      agent.invalidateUi(args.laneId);
-      await rawInput.rotate(args);
-      agent.recordings.forgetScreenSize(args.laneId);
+  // P0 input through auto-record (`androidAutoRecord.ts`).
+  const input = wrapAndroidInput(rawInput, {
+    autoRecord: agent.autoRecord,
+    invalidateUi: (laneId) => agent.invalidateUi(laneId),
+    onRotated: (laneId) => {
+      agent.recordings.forgetScreenSize(laneId);
       // Parity: a half turn keeps the video's shape, so viewers learn the turn here.
       // The read is one more adb call; the caller does not wait for it, the event follows.
-      void deviceSettings.getDeviceSettings(args.laneId, "orientation").then((read) => {
-        if (read.orientation) {
-          emit({ type: "android.device.orientation", laneId: args.laneId, orientation: read.orientation });
-        }
+      void deviceSettings.getDeviceSettings(laneId, "orientation").then((read) => {
+        if (read.orientation) emit({ type: "android.device.orientation", laneId, orientation: read.orientation });
       }).catch((error: unknown) => {
-        logger?.warn("android.orientation_read_failed", { laneId: args.laneId, error: getErrorMessage(error) });
+        logger?.warn("android.orientation_read_failed", { laneId, error: getErrorMessage(error) });
       });
     },
-  };
+  });
 
   /* ---------- devices (`androidDeviceInventory.ts`) ---------- */
 
@@ -757,6 +691,29 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     }
   };
 
+  /**
+   * A scrcpy server runs on the device while this brain streams none: another
+   * brain on the same project (the dev app beside the installed one) or
+   * another tool shows the screen, so the idle pass leaves it on. One adb
+   * call, made only just before a power-off. A failed read is no viewer.
+   */
+  const otherViewerOnDevice = async (laneId: string): Promise<boolean> => {
+    if (liveStreamSerial(laneId) !== null) return false;
+    try {
+      const booted = await requireBooted(laneId);
+      const result = await runDeviceScript(
+        booted,
+        // `[S]` keeps the pattern from matching this shell's own command line.
+        "pgrep -f 'com[.]genymobile[.]scrcpy[.][S]erver' >/dev/null 2>&1 && echo scrcpy=1 || echo scrcpy=0",
+        { timeoutMs: 10_000, signal: lifetime.signal },
+      );
+      return /scrcpy=1/u.test(result.stdout);
+    } catch (error) {
+      logger?.warn("android.idle_viewer_check_failed", { laneId, error: getErrorMessage(error) });
+      return false;
+    }
+  };
+
   const maintenance = createAndroidLaneMaintenance({
     listRows: () => deps.laneDevices.list?.() ?? [],
     laneLiveness,
@@ -803,21 +760,27 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       );
       return parseDeviceIdleMs(result.stdout);
     },
-    powerOff: async (device) => {
+    powerOff: async (device, guard) => {
       const laneId = device.laneId;
-      await serialize(laneId, async () => {
+      const stopped = await serialize(laneId, async () => {
         const state = laneState(laneId);
-        // Something started using it while the pass waited for the queue.
-        if (state.transient || laneStreams.held(laneId)) throw new Error("The emulator came into use, so ADE left it running.");
+        // Something started using it (a lease, a test run, a call) while the pass waited.
+        if (!guard.stillIdle()) throw new Error("The emulator came into use, so ADE left it running.");
         const current = deps.laneDevices.get(laneId);
-        if (!current || !sameAvdName(current.avdName, device.avdName)) return;
+        if (!current || !sameAvdName(current.avdName, device.avdName)) return false;
+        if (await otherViewerOnDevice(laneId)) {
+          logger?.info("android.idle_power_off_skipped", { laneId, avdName: device.avdName, reason: "other-viewer" });
+          return false;
+        }
         await stopLocked(state, current, { refuseForeign: false });
         state.error = null;
+        return true;
       });
-      await emitDeviceState(laneId);
+      if (stopped) await emitDeviceState(laneId);
+      return stopped;
     },
     onChanged: () => emit({ type: "android.inventory.changed" }),
-    ...(deps.idlePowerOffMs != null ? { idleMs: deps.idlePowerOffMs } : { idleMs: androidIdlePowerOffMsFromEnv(env) }),
+    idleMs: deps.idlePowerOffMs ?? androidIdlePowerOffMsFromEnv(env),
     logger,
   });
   refreshMaintenance = () => maintenance.refresh();
@@ -1048,36 +1011,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       return { laneId, filePath: shot.path, width: shot.width, height: shot.height, capturedAt: shot.capturedAt, streamRunning };
     },
 
-    inspectPoint: (args) => inspect(args, { crop: args.includeScreenshot === true }),
-
-    async selectPoint(args) {
-      const result = await inspect(args, { crop: true });
-      if (result.item) return result;
-      // Nothing under the point: the point itself, as Apple's coordinate fallback.
-      const x = Math.round(Number(args.x));
-      const y = Math.round(Number(args.y));
-      return {
-        element: null,
-        source: "coordinate-fallback",
-        item: {
-          kind: "ios_element",
-          id: `android-point-${x}-${y}-${now().getTime()}`,
-          componentId: "Android emulator point",
-          sourceFile: null,
-          sourceLine: null,
-          frame: { x, y, width: 1, height: 1 },
-          metadata: {
-            contextSurface: "android-emulator",
-            androidInspectPacketVersion: 1,
-            sourceConfidence: "none",
-            selectedElement: { source: "coordinate", screenshotFrame: { x, y, width: 1, height: 1 } },
-            note: "No element of the UI tree was under the point; this keeps the selected point.",
-          },
-          accessibilityIdentifier: null,
-          selectedAt: now().toISOString(),
-        },
-      };
-    },
+    inspectPoint: inspect.inspectPoint,
+    selectPoint: inspect.selectPoint,
 
     deviceCleanup: (args) => maintenance.runCleanup(args ?? {}),
     ...deviceSettings.verbs,

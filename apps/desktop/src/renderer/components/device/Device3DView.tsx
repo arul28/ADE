@@ -638,7 +638,7 @@ function createViewer(
       if (!hit) return null;
       // Apple's model answers in the live panel's own framebuffer, whatever
       // shape the frame arrives in.
-      return framePoint(hit.u, hit.vFromBottom, !body.physical && (layout.rawLandscape || layout.flipped === true));
+      return framePoint(hit.u, hit.vFromBottom, !body.physical && (layout.rawLandscape || layout.flipped));
     }
     if (!captured) {
       const hit = raycaster.intersectObject(body.display, false)[0];
@@ -654,7 +654,7 @@ function createViewer(
     }
     const u = Math.min(1, Math.max(0, (localHit.x + body.screenWidth / 2) / body.screenWidth));
     const vFromBottom = Math.min(1, Math.max(0, (localHit.y + body.screenHeight / 2) / body.screenHeight));
-    return framePoint(u, vFromBottom, layout.rawLandscape || layout.flipped === true);
+    return framePoint(u, vFromBottom, layout.rawLandscape || layout.flipped);
   };
 
   const sync = (props: Device3DViewProps) => {

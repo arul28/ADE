@@ -160,7 +160,7 @@ import type { Logger } from "../logging/logger";
 import { pngDimensions } from "../shared/imageDimensions";
 import { isPathInside } from "../shared/pathCompare";
 import { getErrorMessage, isPathEscapeError, isRecord, resolvePathWithinRoot, signalChildProcessTree } from "../shared/utils";
-import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
+import { createIosDeviceHub, isSecureField, type IosDeviceHub } from "./iosDeviceHub";
 import { buildElementRef, describeElement } from "./iosSemanticActions";
 import { AppleDeviceExistsError, AppleDeviceNotLaneOwnedError, AppleLaneDeviceReleasedError } from "./appleDeviceErrors";
 import { createLaneDeviceRegistry, type AppleLaneDeviceRelease } from "./laneDeviceRegistry";
@@ -6835,7 +6835,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       noteInput(runtime, {
         udid: deviceUdid,
         kind: "type",
-        text: input.text,
+        // A secure field's text never shows on a recording ("Never for password fields").
+        ...(focused && isSecureField(focused) ? {} : { text: input.text }),
         source: input.source,
         noRecord: input.noRecord,
         ...(pace ? { startedAtMs, seconds: pace.seconds } : {}),

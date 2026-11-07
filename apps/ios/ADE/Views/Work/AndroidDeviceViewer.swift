@@ -234,7 +234,7 @@ struct AndroidDeviceViewer: View {
       // The phone in the hand folds: mirror it into a foldable emulator while
       // controlling, as the simulator viewer does for a Duo.
       .onChange(of: duo.hasFold || duo.hingeAngle != nil, initial: true) { _, folds in
-        if folds { AndroidDeviceViewerModel.phoneFolds = true }
+        if folds { AppleDeviceViewerModel.phoneFolds = true }
       }
       .onChange(of: foldAngle) { _, angle in
         if let angle { model.mirrorFold(angle: angle) }
@@ -259,7 +259,7 @@ struct AndroidDeviceViewer: View {
     androidFoldAngle(
       isInnerDisplay: duo.hasFold,
       hingeAngle: duo.hingeAngle,
-      phoneFolds: AndroidDeviceViewerModel.phoneFolds || duo.hasFold || duo.hingeAngle != nil
+      phoneFolds: AppleDeviceViewerModel.phoneFolds || duo.hasFold || duo.hingeAngle != nil
     )
   }
 
@@ -555,9 +555,9 @@ struct AndroidDeviceViewer: View {
         if model.deviceFolds {
           // The hinge, for a foldable emulator: the desktop rail's fold dock.
           HStack(spacing: 6) {
-            LiveStageMenuTile(title: "Open", systemImage: "rectangle.split.2x1", isOn: hingeIs("open")) { model.setHinge("open") }
-            LiveStageMenuTile(title: "Half", systemImage: "book", isOn: hingeIs("half")) { model.setHinge("half") }
-            LiveStageMenuTile(title: "Closed", systemImage: "rectangle.portrait", isOn: hingeIs("closed")) { model.setHinge("closed") }
+            LiveStageMenuTile(title: "Open", systemImage: "rectangle.split.2x1", isOn: hingeIs(.open)) { model.setHinge(.open) }
+            LiveStageMenuTile(title: "Half", systemImage: "book", isOn: hingeIs(.half)) { model.setHinge(.half) }
+            LiveStageMenuTile(title: "Closed", systemImage: "rectangle.portrait", isOn: hingeIs(.closed)) { model.setHinge(.closed) }
           }
           .padding(.vertical, 2)
           .accessibilityElement(children: .contain)
@@ -631,14 +631,9 @@ struct AndroidDeviceViewer: View {
     }
   }
 
-  /// Whether the hinge reads as `pose` now (open 180°, half about 90°, closed 0°).
-  private func hingeIs(_ pose: String) -> Bool {
-    guard let angle = model.posture?.angle else { return false }
-    switch pose {
-    case "open": return angle >= 170
-    case "half": return angle > 10 && angle < 170
-    default: return angle <= 10
-    }
+  /// Whether the hinge reads as `pose` now.
+  private func hingeIs(_ pose: AndroidHingePose) -> Bool {
+    model.posture?.angle.map(pose.matches) ?? false
   }
 
   /// Inspect freezes the picture and hands it to the markup model. Kept apart

@@ -32,3 +32,25 @@ export function normalizeAndroidDevicePreferences(value: unknown): AndroidDevice
     realisticBody: typeof record.realisticBody === "boolean" ? record.realisticBody : DEFAULT_ANDROID_REALISTIC_BODY,
   };
 }
+
+/* ── AVD names ───────────────────────────────────────────────────────────── */
+
+/** Profile words that read as one token in capitals: `pixel_9_xl` is "Pixel 9 XL". */
+const ANDROID_UPPER_WORDS = new Set(["xl", "tv", "api", "fe", "se"]);
+
+/**
+ * A person's name for an AVD folder name. ADE names the AVDs it makes
+ * `ade_<short lane id>_<profile>`, so `ade_ab12cd34_pixel_9_pro` reads "Pixel 9
+ * Pro". A `_2` that tells two such AVDs apart stays: it cannot be told from a
+ * model number (`pixel_9`). Any other AVD name reads with its underscores as spaces.
+ */
+export function androidAvdDisplayName(avdName: string): string {
+  const bare = avdName.trim().replace(/^ade_[A-Za-z0-9]+_/, "");
+  const words = bare.split(/[_\s]+/).filter(Boolean);
+  if (words.length === 0) return avdName.trim();
+  return words
+    .map((word) => (ANDROID_UPPER_WORDS.has(word.toLowerCase())
+      ? word.toUpperCase()
+      : `${word.charAt(0).toUpperCase()}${word.slice(1)}`))
+    .join(" ");
+}

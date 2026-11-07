@@ -8,7 +8,7 @@
  */
 
 import type { DeviceOrientation } from "./deviceOrientation";
-import type { AndroidLaneArgs } from "./androidEmulator";
+import type { AndroidLaneArgs, AndroidUiBounds } from "./androidEmulator";
 
 /* ---------- actions ---------- */
 
@@ -82,8 +82,12 @@ export type AndroidStatusBarArgs = AndroidLaneArgs & {
   cellularBars?: number | null;
   /** 0 to 100. Default 100. */
   batteryLevel?: number | null;
-  batteryState?: "charging" | "charged" | "discharging" | null;
+  batteryState?: AndroidStatusBarBatteryState | null;
 };
+
+/** The battery states `setStatusBar` takes (`ade apple status-bar`'s). */
+export const ANDROID_STATUS_BAR_BATTERY_STATES = ["charging", "charged", "discharging"] as const;
+export type AndroidStatusBarBatteryState = (typeof ANDROID_STATUS_BAR_BATTERY_STATES)[number];
 
 export const ANDROID_STATUS_BAR_NETWORKS = ["wifi", "5g", "lte", "4g", "3g", "e", "g"] as const;
 
@@ -163,6 +167,12 @@ export type AndroidStoreScreenshotsArgs = AndroidLaneArgs & {
   proof?: boolean | null;
 };
 
+/** A Play shot's proof caption: `Google Play · phone screenshot (cover screen) 1080×1920`. */
+export function androidStoreShotCaption(slot: string | null | undefined, display: string | null | undefined, width: unknown, height: unknown): string {
+  const where = display === "cover" ? " (cover screen)" : display === "inner" ? " (inner screen)" : "";
+  return `Google Play · ${slot === "large-screen" ? "large screen" : "phone"} screenshot${where} ${String(width)}×${String(height)}`;
+}
+
 export type AndroidStoreShot = {
   /** `cover` (shut) and `inner` (open) on a foldable; `screen` on any other device. */
   display: "cover" | "inner" | "screen";
@@ -233,7 +243,8 @@ export type AndroidWindowLayoutArgs = AndroidLaneArgs & {
   y?: number | null;
 };
 
-export type AndroidWindowFrame = { x: number; y: number; width: number; height: number };
+/** A window's place on the screen, in device pixels. */
+export type AndroidWindowFrame = AndroidUiBounds;
 
 export type AndroidWindowMode = "fullscreen" | "split" | "freeform" | "pip" | "other";
 

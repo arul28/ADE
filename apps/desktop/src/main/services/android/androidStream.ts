@@ -26,6 +26,7 @@ import type {
   AndroidTouchEvent,
 } from "../../../shared/types/androidEmulator";
 import { runAdbText } from "./adb";
+import { parseWmSize } from "./androidDeviceShell";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { createAndroidStreamServer, type AndroidStreamServer } from "./androidStreamServer";
 import {
@@ -121,15 +122,6 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
     resolve = done;
   });
   return { promise, resolve };
-}
-
-/** Parses `wm size`; the override size wins because it is what the screen shows. */
-function parseWmSize(text: string): { width: number; height: number } | null {
-  const pick = (label: string) => {
-    const match = new RegExp(`${label} size:\\s*(\\d+)x(\\d+)`).exec(text);
-    return match ? { width: Number(match[1]), height: Number(match[2]) } : null;
-  };
-  return pick("Override") ?? pick("Physical");
 }
 
 function serverLogOf(error: unknown): string[] {

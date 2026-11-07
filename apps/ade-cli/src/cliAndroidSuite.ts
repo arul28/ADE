@@ -15,6 +15,7 @@ import {
   ANDROID_LOG_LEVELS,
   ANDROID_PERMISSIONS,
   ANDROID_SCROLL_DIRECTIONS,
+  ANDROID_SETTINGS_FLAGS,
   ANDROID_TEXT_SIZES,
   parseAndroidIntentExtra,
 } from "../../desktop/src/shared/types/androidEmulator";
@@ -35,15 +36,13 @@ import {
   type ValueCarrierFlags,
 } from "./cli";
 import {
-  ANDROID_SETTINGS_FLAGS,
   androidFlagNames,
   androidOutPath,
   finiteNumber,
   readPoint,
   readStroke,
-  withAsked,
 } from "./cliAndroid";
-import { formatAndroidSdkInstallLine, record, records } from "./cliAndroidFormat";
+import { formatAndroidSdkInstallLine, record, records, withAsked } from "./cliAndroidFormat";
 import { appleLeaseAnswer, appleLeaseNotAcquired } from "./cliAppleFormat";
 
 /** `ade android sdk <verb>`: the only flags each takes. */

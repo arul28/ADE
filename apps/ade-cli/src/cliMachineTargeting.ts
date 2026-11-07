@@ -8,6 +8,7 @@ import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
 import { PROOF_DUPLICATE_CODE } from "../../desktop/src/shared/proofProvenance";
+import { androidStoreShotCaption } from "../../desktop/src/shared/types/androidEmulator";
 import {
   CLI_COMMAND_ALIASES,
   CliExecutionError,
@@ -645,13 +646,11 @@ export async function createMachineRemoteConnection(
       const filed = [];
       for (const shot of shots) {
         const shotPath = asString(shot.filePath);
-        const slot = asString(shot.slot) === "large-screen" ? "large screen" : "phone";
         const display = asString(shot.display);
-        const screenLabel = display === "cover" ? " (cover screen)" : display === "inner" ? " (inner screen)" : "";
         const proofArtifactId = shotPath
           ? await fileOne({
             kind: "screenshot",
-            title: `Google Play · ${slot} screenshot${screenLabel} ${String(shot.width)}×${String(shot.height)} · ${where}`,
+            title: `${androidStoreShotCaption(asString(shot.slot), display, shot.width, shot.height)} · ${where}`,
             description: `Play Store screenshot of the Android emulator on ${where}.`,
             path: shotPath,
             mimeType: "image/png",

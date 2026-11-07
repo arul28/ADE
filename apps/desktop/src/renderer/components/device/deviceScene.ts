@@ -42,9 +42,9 @@ export type DisplayLayout = {
   /**
    * The device is upside down and its frames already come turned the right
    * way up (Android's scrcpy turns them), so the texture turns a half turn
-   * back. Apple's frames come in the panel's own shape, so this stays unset.
+   * back. Apple's frames come in the panel's own shape, so this is false.
    */
-  flipped?: boolean;
+  flipped: boolean;
 };
 
 /**

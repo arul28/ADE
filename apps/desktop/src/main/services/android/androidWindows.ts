@@ -131,10 +131,7 @@ export function createAndroidWindows(deps: AndroidWindowsDeps) {
   /** One layout at a time per lane: two calls would split each other's tasks. */
   const perLane = createAndroidLaneQueue();
 
-  const sh = async (booted: BootedDevice, script: string) => {
-    const result = await runDeviceScript(booted, script, { timeoutMs: 20_000, signal });
-    return result;
-  };
+  const sh = (booted: BootedDevice, script: string) => runDeviceScript(booted, script, { timeoutMs: 20_000, signal });
 
   /** Runs one command; a refusal on stdout or stderr stops the action with its first line. */
   const run = async (booted: BootedDevice, script: string, what: string) => {
@@ -258,7 +255,7 @@ export function createAndroidWindows(deps: AndroidWindowsDeps) {
       const moved = (tasks: ListedTask[]) => {
         const swapped = tasks.find((task) => task.packageName === second.packageName && task.mode === "split");
         const other = tasks.find((task) => task.packageName === first.packageName && task.mode === "split");
-        return Boolean(swapped && other && swapped.mode === "split" && other.mode === "split" && near(swapped.frame.x, 0) && near(swapped.frame.y, 0));
+        return Boolean(swapped && other && near(swapped.frame.x, 0) && near(swapped.frame.y, 0));
       };
       const state = await settle(booted, moved);
       return moved(state.tasks) ? answer(state, null, true) : answer(state, null, false, "The two sides did not change over.");
@@ -406,15 +403,25 @@ export function createAndroidWindows(deps: AndroidWindowsDeps) {
         : "The window is not full screen.");
     }
 
-    // close: a split task shares its root with the other side, so the split ends first.
+    // close: a split task shares its root with the other side, so the split
+    // ends first (with `endSplit`'s Android 14 fallback and its wait), or
+    // removing the root would close both windows.
+    let closing = task;
     if (task.mode === "split") {
       const other = initial.tasks.find((entry) => entry.taskId !== task.taskId && entry.rootId === task.rootId);
-      if (other) await run(booted, `${WMSHELL} splitscreen exitSplitScreen ${other.taskId} >/dev/null`, "end the split screen");
+      if (other) {
+        const ended = await endSplit(booted, other.taskId);
+        // Found again by package when its task is gone: on Android 14 an app can come back in a new task.
+        closing = ended.tasks.find((entry) => entry.taskId === task.taskId)
+          ?? ended.tasks.find((entry) => entry.packageName === task.packageName)
+          ?? task;
+      }
     }
-    const rootNow = (await list(booted)).tasks.find((entry) => entry.taskId === task.taskId)?.rootId ?? task.rootId;
+    const target = closing;
+    const rootNow = (await list(booted)).tasks.find((entry) => entry.taskId === target.taskId)?.rootId ?? target.rootId;
     await run(booted, `am stack remove ${rootNow}`, "close the window");
     deps.onScreenChanged(laneId);
-    const gone = (tasks: ListedTask[]) => !tasks.some((entry) => entry.taskId === task.taskId);
+    const gone = (tasks: ListedTask[]) => !tasks.some((entry) => entry.taskId === target.taskId);
     const state = await settle(booted, gone);
     return gone(state.tasks) ? answer(state, packageName, true) : answer(state, packageName, false, "The window is still open.");
   };

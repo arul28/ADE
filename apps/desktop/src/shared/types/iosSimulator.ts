@@ -866,6 +866,12 @@ export type IosElementContextItem = {
   selectedAt: string;
 };
 
+/** Where an element chip came from: its `metadata.contextSurface`. */
+export type ElementContextSurface = "simulator" | "xcode-preview" | "android-emulator";
+
+/** The `metadata.contextSurface` of a chip from the Android emulator. */
+export const ANDROID_CONTEXT_SURFACE = "android-emulator" satisfies ElementContextSurface;
+
 export type IosInspectableScreen = {
   width: number;
   height: number;

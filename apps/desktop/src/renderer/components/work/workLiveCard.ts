@@ -381,8 +381,6 @@ export type WorkLiveSourceState = {
     deviceName?: string | null;
     /** True while the emulator is booted. */
     booted?: boolean | null;
-    /** The app in front, when the caller knows it. */
-    appName?: string | null;
     /** The chat whose agent drives it now (its active recording), or null. */
     ownerChatSessionId?: string | null;
     recording?: unknown;
@@ -520,7 +518,7 @@ export const WORK_LIVE_SOURCES: Record<
     return {
       live,
       ownerLabel: live && androidDevice?.ownerChatSessionId ? AGENT_OWNER_LABEL : null,
-      caption: androidDevice?.appName?.trim() || androidDevice?.deviceName?.trim() || null,
+      caption: androidDevice?.deviceName?.trim() || null,
       handoff: null,
       recording: androidDevice?.recording ? true : null,
       // One emulator boot of one AVD: a stop ends it, a new device is a new one.

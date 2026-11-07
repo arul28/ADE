@@ -22,6 +22,7 @@ import type {
   AndroidSystemImageInventory,
   AndroidToolsPreloadMethod,
 } from "../shared/types/androidEmulator";
+import { mockParam as param } from "./browserMockAndroidUtil";
 
 const ROOT = "/Users/mock/Library/Android/sdk";
 const LICENSE_TEXT = `Terms and Conditions
@@ -38,14 +39,6 @@ type MockImage = {
   downloadBytes: number;
   licenseId: string;
 };
-
-function param(name: string): string | null {
-  try {
-    return new URLSearchParams(window.location.search).get(name);
-  } catch {
-    return null;
-  }
-}
 
 function imageName(image: MockImage): string {
   return `API ${image.apiLevel} · ${image.tag === "google_apis_playstore" ? "Google Play" : "Google APIs"} · arm64`;

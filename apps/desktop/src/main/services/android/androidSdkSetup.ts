@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import type {
   AndroidEmulatorEvent,
@@ -13,7 +12,7 @@ import { getErrorMessage } from "../shared/utils";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { androidSdkInstaller, buildAndroidSdkSetupPlan, type AndroidSdkInstallDeps } from "./androidSdkInstall";
 import { locateAndroidSdk, readAndroidSdkStatus } from "./androidSdk";
-import { writeAndroidSettingsFileKeys } from "./androidMachinePreferences";
+import type { AndroidSettingsFile } from "./androidMachinePreferences";
 
 /*
  * The service side of the guided SDK install and of "Use mine…".
@@ -23,30 +22,17 @@ import { writeAndroidSettingsFileKeys } from "./androidMachinePreferences";
  * Dock launch on macOS has no `ANDROID_HOME` to fall back on.
  */
 
-type AndroidSettingsFile = { sdkPath?: string | null; updatedAt?: string };
-
-/** Reads and writes the machine's Android settings file; a missing or broken file reads as empty. */
-export function createAndroidSdkSettingStore(file: string | null | undefined) {
-  let cache: { mtimeMs: number; value: string | null } | null = null;
+/** Reads and writes the SDK folder in the machine's Android settings file; a missing or broken file reads as none. */
+export function createAndroidSdkSettingStore(settings: AndroidSettingsFile, options: { canWrite: boolean }) {
   return {
     read(): string | null {
-      if (!file) return null;
-      try {
-        const stat = fs.statSync(file);
-        if (cache && cache.mtimeMs === stat.mtimeMs) return cache.value;
-        const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as AndroidSettingsFile;
-        const value = typeof parsed.sdkPath === "string" && parsed.sdkPath.trim() ? parsed.sdkPath.trim() : null;
-        cache = { mtimeMs: stat.mtimeMs, value };
-        return value;
-      } catch {
-        return null;
-      }
+      const sdkPath = settings.read().sdkPath;
+      return typeof sdkPath === "string" && sdkPath.trim() ? sdkPath.trim() : null;
     },
     write(sdkPath: string | null): void {
-      if (!file) throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", "This ADE cannot save an SDK folder.");
+      if (!options.canWrite) throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", "This ADE cannot save an SDK folder.");
       // Merged into the file: its other keys (the machine `preferences`) stay.
-      writeAndroidSettingsFileKeys(file, { sdkPath });
-      cache = null;
+      settings.writeKeys({ sdkPath });
     },
   };
 }

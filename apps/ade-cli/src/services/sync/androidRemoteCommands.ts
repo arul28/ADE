@@ -288,7 +288,12 @@ export function createAndroidRemoteCommandHandlers(deps: {
       action: "android.input",
       policy: { viewerAllowed: false, controllerAllowed: true },
       handler: async (payload) => {
+        // A phone or a web tab is a person: every input here is stamped
+        // `source: "user"` by this path, never read from the payload, so it
+        // never starts an agent's auto-recording (Apple's `appleRemoteCommands.ts`).
+        // A live finger (`touch`) is always the person's already.
         const laneId = laneOf(payload, "android.input");
+        const source = "user" as const;
         const kind = requireString(payload.kind, "android.input requires a kind.");
         switch (kind) {
           case "touch": {
@@ -303,11 +308,12 @@ export function createAndroidRemoteCommandHandlers(deps: {
             return { ok: true };
           }
           case "tap":
-            await service.tap({ laneId, x: requireFiniteNumber(payload.x, "x"), y: requireFiniteNumber(payload.y, "y") });
+            await service.tap({ laneId, source, x: requireFiniteNumber(payload.x, "x"), y: requireFiniteNumber(payload.y, "y") });
             return { ok: true };
           case "long-press":
             await service.longPress({
               laneId,
+              source,
               x: requireFiniteNumber(payload.x, "x"),
               y: requireFiniteNumber(payload.y, "y"),
               durationMs: asNumber(payload.durationMs),
@@ -317,6 +323,7 @@ export function createAndroidRemoteCommandHandlers(deps: {
           case "drag": {
             const stroke = {
               laneId,
+              source,
               fromX: requireFiniteNumber(payload.fromX, "fromX"),
               fromY: requireFiniteNumber(payload.fromY, "fromY"),
               toX: requireFiniteNumber(payload.toX, "toX"),
@@ -329,6 +336,7 @@ export function createAndroidRemoteCommandHandlers(deps: {
           case "scroll":
             await service.scroll({
               laneId,
+              source,
               direction: direction(payload.direction),
               amount: asNumber(payload.amount),
               anchorX: asNumber(payload.anchorX),
@@ -336,17 +344,18 @@ export function createAndroidRemoteCommandHandlers(deps: {
             });
             return { ok: true };
           case "type":
-            await service.sendText({ laneId, text: requireString(payload.text, "android.input type requires text.") });
+            await service.sendText({ laneId, source, text: requireString(payload.text, "android.input type requires text.") });
             return { ok: true };
           case "key": {
             const key = requireString(payload.key, "android.input key requires a key.");
             if (!ANDROID_BUTTONS.has(key)) throw new Error(`android.input key must be one of ${ANDROID_HARDWARE_KEYS.join(", ")}.`);
-            await service.sendKey({ laneId, key: key as AndroidHardwareKey });
+            await service.sendKey({ laneId, source, key: key as AndroidHardwareKey });
             return { ok: true };
           }
           case "tap-element":
             await service.tapElement({
               laneId,
+              source,
               query: {
                 ...(asString(payload.ref) ? { ref: asString(payload.ref) } : {}),
                 ...(asString(payload.label) ? { label: asString(payload.label) } : {}),
@@ -355,7 +364,7 @@ export function createAndroidRemoteCommandHandlers(deps: {
             });
             return { ok: true };
           case "open-url":
-            await service.openUrl({ laneId, url: requireString(payload.url, "android.input open-url requires url.") });
+            await service.openUrl({ laneId, source, url: requireString(payload.url, "android.input open-url requires url.") });
             return { ok: true };
           default:
             throw new Error(`android.input does not support '${kind}'.`);
@@ -388,6 +397,8 @@ export function createAndroidRemoteCommandHandlers(deps: {
           ...methodArgs,
           ...(laneId ? { laneId } : {}),
           ...(chatSessionId ? { chatSessionId } : {}),
+          // A person's call, as on `android.input`; the payload cannot change it.
+          source: "user",
         });
       },
     },

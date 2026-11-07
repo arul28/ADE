@@ -3,6 +3,7 @@ import type {
   AndroidAppearanceArgs,
   AndroidDeviceSetting,
   AndroidDeviceSettings,
+  AndroidDeviceSettingsFields,
   AndroidDisplaySize,
   AndroidEmulatorAgentServiceApi,
   AndroidEmulatorDeviceServiceApi,
@@ -23,7 +24,7 @@ import {
 } from "../../../shared/types/androidEmulator";
 import type { DeviceOrientation } from "../../../shared/types/deviceOrientation";
 import { assertPackageName } from "./androidApps";
-import { DEFAULT_DISPLAY_DUMP, runDeviceScript, runDeviceShell, runEmulatorConsole, type BootedDevice } from "./androidDeviceShell";
+import { ROTATION_PROBE, runDeviceScript, runDeviceShell, runEmulatorConsole, type BootedDevice } from "./androidDeviceShell";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 
 /*
@@ -99,10 +100,13 @@ const ACCESSIBILITY_KEYS = [
  * natural size and the boot id. The boot id ties ADE's location record to
  * one boot of the emulator.
  */
+/** Prints `boot=<id>`: one boot of the emulator. */
+const BOOT_ID_LINE = "echo \"boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\"";
+
 const ORIENTATION_LINES = [
-  `echo "rotation=$(${DEFAULT_DISPLAY_DUMP} | grep -m1 -oE 'mRotation=[0-9]' | cut -d= -f2)"`,
+  `echo "rotation=$(${ROTATION_PROBE} | cut -d= -f2)"`,
   "wm size | sed 's/^/size:/'",
-  "echo \"boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\"",
+  BOOT_ID_LINE,
 ].join("; ");
 
 const READ_SCRIPT = [
@@ -156,18 +160,20 @@ function wifiOn(raw: string | undefined): boolean | null {
   return value === 1 || value === 2;
 }
 
-/** `mFocusedApp=ActivityRecord{… u0 com.example/.MainActivity t13}` → `com.example`. */
-function parseForegroundPackage(line: string | undefined): string | null {
-  const match = line?.match(/\su\d+\s+([A-Za-z0-9_.]+)\/[^\s}]+/u);
-  return match?.[1] ?? null;
+/** `mFocusedApp=ActivityRecord{… u0 com.example/.MainActivity t13}` → `com.example` and `com.example/.MainActivity`. */
+function parseForegroundApp(line: string | undefined): { packageName: string; activity: string } | null {
+  const match = line?.match(/\su\d+\s+([A-Za-z0-9_.]+)\/([^\s}]+)/u);
+  return match ? { packageName: match[1]!, activity: `${match[1]}/${match[2]}` } : null;
 }
 
 /** What is in front of the device now. */
 export type AndroidForeground = {
   /** The focused window line (`Window{… u0 com.app/com.app.Main}`); it changes with each window. */
   window: string | null;
-  /** The app in front, or null on the home screen. */
+  /** The app in front, or null on the home screen (the launcher is "no app", as SpringBoard is on Apple). */
   foregroundPackage: string | null;
+  /** Its component (`com.app/.Main`), or null with no app in front. */
+  activity: string | null;
 };
 
 /** Parses the `focus:` and `home=` lines of `FOCUS_LINES`. */
@@ -184,8 +190,9 @@ function parseAndroidForeground(text: string): AndroidForeground {
       home = line.slice("home=".length).trim().split("/")[0] || null;
     }
   }
-  const foreground = parseForegroundPackage(appLine);
-  return { window, foregroundPackage: foreground && foreground !== home ? foreground : null };
+  const app = parseForegroundApp(appLine);
+  const front = app && app.packageName !== home ? app : null;
+  return { window, foregroundPackage: front?.packageName ?? null, activity: front?.activity ?? null };
 }
 
 /** Reads what is in front of the device: one device shell. */
@@ -447,9 +454,9 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
   const locations = new Map<string, { bootId: string | null; latitude: number; longitude: number }>();
 
   const readBootId = async (booted: BootedDevice) =>
-    parseBootId((await shell(booted, "echo \"boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)\"")).stdout);
+    parseBootId((await shell(booted, BOOT_ID_LINE)).stdout);
 
-  const read = async (laneId: string, fields: "all" | "foreground" | "orientation"): Promise<AndroidDeviceSettings> => {
+  const read = async (laneId: string, fields: AndroidDeviceSettingsFields): Promise<AndroidDeviceSettings> => {
     const booted = await deps.requireBooted(laneId);
     const script = fields === "foreground" ? FOCUS_LINES : fields === "orientation" ? ORIENTATION_LINES : READ_SCRIPT;
     const result = await shell(booted, script, 20_000);
@@ -636,7 +643,7 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
   };
 
   return {
-    getDeviceSettings: (laneId: string, fields: "all" | "foreground" | "orientation" = "all") => read(laneId, fields),
+    getDeviceSettings: (laneId: string, fields: AndroidDeviceSettingsFields = "all") => read(laneId, fields),
     setDeviceSetting: write,
     verbs,
   };

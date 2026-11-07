@@ -34,8 +34,11 @@ type AndroidHeldLease = {
   epoch: number;
   pin: OpenProjectBinding | null;
   laneId: string;
-  /** The lane's machine is not this one: the brain counts this viewer as remote. */
-  remoteViewer: boolean;
+  /**
+   * The viewer words for each stream call (start, status, stop). `{ remoteViewer: true }`
+   * when the lane's machine is not this one, so the brain counts this viewer as remote.
+   */
+  viewerArgs: { remoteViewer?: true };
 };
 
 export type UseAndroidDeviceStreamArgs = {
@@ -121,7 +124,7 @@ export function useAndroidDeviceStream({
     heldAgain: (lease) => androidStreamLeases.count(lease.key) > 0,
     stop: (lease) => {
       void window.ade?.androidEmulator?.stopStream(
-        { laneId: lease.laneId, ...(lease.remoteViewer ? { remoteViewer: true } : {}) },
+        { laneId: lease.laneId, ...lease.viewerArgs },
         lease.pin,
       ).catch(() => {});
     },
@@ -180,9 +183,9 @@ export function useAndroidDeviceStream({
     if (leaseRef.current && leaseRef.current.key !== leaseKey) releaseLease();
     if (!leaseRef.current) {
       const { epoch } = androidStreamLeases.acquire(leaseKey, () => null);
-      leaseRef.current = { key: leaseKey, epoch, pin, laneId, remoteViewer };
+      leaseRef.current = { key: leaseKey, epoch, pin, laneId, viewerArgs: remoteViewer ? { remoteViewer: true } : {} };
     }
-    const viewerArgs = leaseRef.current.remoteViewer ? { remoteViewer: true } : {};
+    const viewerArgs = leaseRef.current.viewerArgs;
 
     let cancelled = false;
     sawFrameRef.current = false;
@@ -323,7 +326,7 @@ export function useAndroidDeviceStream({
       }
       statusReadSinceRef.current = Date.now();
       void api.getStreamStatus(
-        { laneId, ...(leaseRef.current?.remoteViewer ? { remoteViewer: true } : {}) },
+        { laneId, ...leaseRef.current?.viewerArgs },
         runtimePinRef.current,
       )
         .then((next) => {

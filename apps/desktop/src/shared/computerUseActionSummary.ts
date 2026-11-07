@@ -30,17 +30,18 @@
  */
 
 import {
+  appNameFromBundleId,
   clip,
+  flagValue,
+  NUMBER,
   parseOutput,
   PROOF_ID,
-  readAndroidDevice,
-  readAndroidElementName,
-  readAndroidFillUnseen,
   readAppleDevice,
   readString,
   readUserBrowser,
   type ParsedOutput,
 } from "./computerUseActionOutput";
+import { androidSummaryParts, resolveAndroidVerb } from "./computerUseAndroid";
 import { readRecord } from "./readRecord";
 
 export type ComputerUseSurfaceKind =
@@ -172,7 +173,7 @@ const SHELLS = new Set(["bash", "sh", "zsh", "dash", "fish", "pwsh", "powershell
 const WRAPPERS = new Set(["env", "time", "command", "exec", "nohup", "sudo", "caffeinate"]);
 const CONTROL_WORDS = new Set(["for", "while", "until", "if", "then", "else", "elif", "do", "done", "fi", "case", "esac", "function"]);
 
-type ParsedInvocation = {
+export type ParsedInvocation = {
   domain: ComputerUseDomain;
   /** The domain word as typed: `mac-desktop`, `windows-desktop`, `screen`, … */
   alias: string;
@@ -448,7 +449,7 @@ function isSubcommandWord(domain: ComputerUseDomain, words: readonly string[], t
 
 /* ── Verbs ───────────────────────────────────────────────────────────────── */
 
-type VerbSpec = {
+export type VerbSpec = {
   past: string;
   progressive: string;
   infinitive: string;
@@ -534,7 +535,7 @@ function resolveVerb(invocation: ParsedInvocation): { key: string; spec: VerbSpe
   if ((first === "observe" || first === "snapshot") && invocation.domain === "browser") {
     return { key: first, spec: { past: "Read", progressive: "Reading", infinitive: "read", target: "page", passive: true } };
   }
-  if (invocation.domain === "android") return resolveAndroidVerb(first, invocation);
+  if (invocation.domain === "android") return resolveAndroidVerb(first, invocation, VERBS);
   // `apple start` names the device, which later rows in the run borrow.
   if (first === "start" && invocation.domain === "apple") {
     return { key: "start", spec: { past: "Started", progressive: "Starting", infinitive: "start", target: "none", passive: true } };
@@ -543,246 +544,7 @@ function resolveVerb(invocation: ParsedInvocation): { key: string; spec: VerbSpe
   return spec ? { key: first, spec } : null;
 }
 
-/* ── Android ─────────────────────────────────────────────────────────────── */
-
-const passiveSpec = (past: string, progressive: string, infinitive: string, target: VerbSpec["target"] = "none"): VerbSpec => (
-  { past, progressive, infinitive, target, passive: true }
-);
-
-/**
- * `ade android` verbs that read as an action row, by the word typed. Each
- * `ade apple` twin keeps its `VERBS` entry; these are the words only Android
- * has, or that read another way on an emulator. A verb missing here and
- * from `VERBS` (`status`, `apps`, `devices`, `lease`, `sdk`, `show`, the
- * recording list) keeps its plain shell row.
- */
-const ANDROID_VERBS: Readonly<Record<string, VerbSpec>> = {
-  // The lifecycle verbs name the emulator, which later rows in the run borrow.
-  start: passiveSpec("Started", "Starting", "start"),
-  stop: passiveSpec("Stopped", "Stopping", "stop"),
-  "device-create": passiveSpec("Created", "Creating", "create"),
-  "device-attach": passiveSpec("Attached", "Attaching", "attach"),
-  "device-detach": passiveSpec("Released", "Releasing", "release"),
-  "find-element": passiveSpec("Found", "Finding", "find", "element"),
-  "fill-element": VERBS.fill!,
-  drag: { past: "Dragged", progressive: "Dragging", infinitive: "drag", target: "none" },
-  rotate: { past: "Rotated to", progressive: "Rotating to", infinitive: "rotate to", target: "none" },
-  install: { past: "Installed", progressive: "Installing", infinitive: "install", target: "app" },
-  uninstall: { past: "Uninstalled", progressive: "Uninstalling", infinitive: "uninstall", target: "app" },
-  "app-state": passiveSpec("Checked", "Checking", "check", "app"),
-  location: { past: "Set the location to", progressive: "Setting the location to", infinitive: "set the location to", target: "none" },
-  appearance: { past: "Switched to", progressive: "Switching to", infinitive: "switch to", target: "none" },
-  fold: { past: "Set the hinge to", progressive: "Setting the hinge to", infinitive: "set the hinge to", target: "none" },
-  posture: passiveSpec("Read the hinge of", "Reading the hinge of", "read the hinge of"),
-  settings: { past: "Set", progressive: "Setting", infinitive: "set", target: "none" },
-  permission: { past: "Granted", progressive: "Granting", infinitive: "grant", target: "none" },
-  "proof-bundle": { past: "Filed a proof bundle", progressive: "Filing a proof bundle", infinitive: "file a proof bundle", target: "caption" },
-  preview: { past: "Rendered Compose previews", progressive: "Rendering Compose previews", infinitive: "render Compose previews", target: "none" },
-  test: { past: "Ran tests", progressive: "Running tests", infinitive: "run tests", target: "none" },
-  render: passiveSpec("Rendered", "Rendering", "render"),
-  log: passiveSpec("Read the log of", "Reading the log of", "read the log of"),
-  inspect: passiveSpec("Inspected", "Inspecting", "inspect", "element"),
-  frame: passiveSpec("Took a frame of", "Taking a frame of", "take a frame of", "page"),
-  foreground: { past: "Switched to", progressive: "Switching to", infinitive: "switch to", target: "app" },
-  select: passiveSpec("Picked", "Picking", "pick", "element"),
-};
-
-/**
- * Verbs shared with the other surfaces, by the word typed, to the `VERBS`
- * entry they read as. Every other word not in `ANDROID_VERBS` keeps its
- * shell row.
- */
-const ANDROID_SHARED_VERBS = new Set([
-  "tap", "tap-element", "long-press", "swipe", "scroll", "type", "key", "button", "launch", "relaunch",
-  "terminate", "open-url", "snapshot", "screenshot", "wait-for-element", "assert-visible",
-  "record-start", "record-stop",
-]);
-
-function resolveAndroidVerb(first: string, invocation: ParsedInvocation): { key: string; spec: VerbSpec } | null {
-  // `preview list` and `settings` with no setting are reads.
-  if (first === "preview" && invocation.positionals[0] === "list") {
-    return { key: "preview list", spec: passiveSpec("Listed Compose previews", "Listing Compose previews", "list Compose previews") };
-  }
-  if (first === "settings" && !androidSettingChange(invocation)) {
-    return { key: "settings", spec: passiveSpec("Read the settings of", "Reading the settings of", "read the settings of") };
-  }
-  if (first === "permission" && invocation.positionals[0]?.toLowerCase() === "revoke") {
-    return { key: "permission", spec: { past: "Revoked", progressive: "Revoking", infinitive: "revoke", target: "none" } };
-  }
-  if (first === "auto-record") {
-    const word = invocation.positionals[0]?.toLowerCase() ?? "status";
-    if (word !== "on" && word !== "off") return { key: first, spec: passiveSpec("Checked auto-record", "Checking auto-record", "check auto-record") };
-    return { key: first, spec: { past: `Turned ${word} auto-record`, progressive: `Turning ${word} auto-record`, infinitive: `turn ${word} auto-record`, target: "none" } };
-  }
-  // `fill-element` is a fill: one canonical verb for the icon and the words.
-  if (first === "fill-element") return { key: "fill", spec: ANDROID_VERBS["fill-element"]! };
-  const own = ANDROID_VERBS[first];
-  if (own) return { key: first, spec: own };
-  if (!ANDROID_SHARED_VERBS.has(first)) return null;
-  const spec = VERBS[first];
-  return spec ? { key: first, spec } : null;
-}
-
-/** The setting `ade android settings` changed, as words: "text size to large". Null for a read. */
-function androidSettingChange(invocation: ParsedInvocation): string | null {
-  // In the CLI's order, not the typed order: the iOS port reads an unordered map.
-  for (const flag of ANDROID_SETTING_FLAGS) {
-    const value = invocation.flags.get(flag);
-    if (typeof value === "string" && value.trim()) return `${flag.slice(2).replace(/-/g, " ")} to ${value.trim()}`;
-  }
-  return null;
-}
-
-/** `ade android key`'s modifier flags, in the CLI's order, and the name each reads as. */
-const ANDROID_KEY_MODIFIERS: ReadonlyArray<readonly [string, string]> = [
-  ["--shift", "Shift"], ["--ctrl", "Ctrl"], ["--control", "Ctrl"], ["--alt", "Alt"],
-  ["--option", "Alt"], ["--meta", "Meta"], ["--cmd", "Meta"], ["--command", "Meta"],
-];
-
-/** `ade android settings`' one-setting flags (`ANDROID_SETTINGS_FLAGS` in the CLI), in its order. */
-const ANDROID_SETTING_FLAGS = ([
-  "--text-size", "--display-size", "--animations", "--show-taps", "--layout-bounds",
-  "--battery", "--charging", "--wifi", "--data", "--airplane",
-] as const);
-
-/** Package names whose last word is not the app's name. */
-const ANDROID_KNOWN_APPS: Readonly<Record<string, string>> = {
-  "com.android.chrome": "Chrome",
-  "com.android.vending": "Play Store",
-  "com.google.android.gm": "Gmail",
-  "com.google.android.youtube": "YouTube",
-  "com.google.android.dialer": "Phone",
-  "com.google.android.apps.messaging": "Messages",
-  "com.google.android.apps.photos": "Photos",
-  "com.google.android.apps.nexuslauncher": "Home",
-};
-
-function appNameFromPackage(packageName: string | null): string | null {
-  if (!packageName) return null;
-  return ANDROID_KNOWN_APPS[packageName.toLowerCase()] ?? appNameFromBundleId(packageName);
-}
-
-/** A stroke's way, as the finger moves: from y 1500 to y 500 is "up". */
-function strokeDirection(positionals: readonly string[]): string | null {
-  const [x1, y1, x2, y2] = positionals.slice(0, 4).map(Number);
-  if ([x1, y1, x2, y2].some((value) => value === undefined || !Number.isFinite(value))) return null;
-  const dx = x2! - x1!;
-  const dy = y2! - y1!;
-  if (dx === 0 && dy === 0) return null;
-  return Math.abs(dy) >= Math.abs(dx) ? (dy < 0 ? "up" : "down") : (dx < 0 ? "left" : "right");
-}
-
-/**
- * The target of an `ade android` verb whose words differ from the shared
- * reading (`--package` for the app, `--name` for a button, a stroke's way).
- * Undefined hands the verb to `describeTarget`.
- */
-function androidTarget(verbKey: string, invocation: ParsedInvocation, parsed: ParsedOutput, output: string): TargetShape | undefined {
-  const shape = (target: string | null, quoted = false, direction: string | null = null): TargetShape => (
-    { target, quoted, direction, point: false }
-  );
-  const [first, second] = invocation.positionals;
-  switch (verbKey) {
-    case "tap-element":
-    case "fill":
-    case "find-element":
-    case "wait-for-element":
-    case "assert-visible": {
-      const named = parsed.hitName ?? readAndroidElementName(output)
-        ?? flagValue(invocation, "--label", "--text", "--identifier");
-      if (named) return shape(named, true);
-      // `fill-element --ref e3 "hello"`: no name, so the text typed.
-      if (verbKey === "fill") return shape(flagValue(invocation, "--value") ?? first ?? null, true);
-      return undefined;
-    }
-    case "long-press": {
-      const x = flagValue(invocation, "--x") ?? first ?? null;
-      const y = flagValue(invocation, "--y") ?? second ?? null;
-      if (x && y && NUMBER.test(x) && NUMBER.test(y)) {
-        return { target: `${Math.round(Number(x))}, ${Math.round(Number(y))}`, quoted: false, direction: null, point: true };
-      }
-      return shape(null);
-    }
-    case "swipe":
-      return shape(null, false, strokeDirection(invocation.positionals));
-    case "button":
-      return shape(first ?? flagValue(invocation, "--name", "--key"), true);
-    case "key": {
-      // `key --shift a`: the parser cannot know a modifier takes no value, so
-      // the key may sit in the last modifier's slot.
-      const modifiers = ANDROID_KEY_MODIFIERS.filter(([flag]) => invocation.flags.has(flag));
-      const stuck = modifiers.map(([flag]) => invocation.flags.get(flag)).find((value): value is string => typeof value === "string");
-      const key = first ?? flagValue(invocation, "--name", "--key") ?? stuck ?? null;
-      const names = [...new Set(modifiers.map(([, name]) => name))];
-      return shape(key ? [...names, key].join("+") : null, true);
-    }
-    case "inspect":
-    case "select": {
-      if (parsed.hitName) return shape(parsed.hitName, true);
-      const x = flagValue(invocation, "--x");
-      const y = flagValue(invocation, "--y");
-      if (x && y && NUMBER.test(x) && NUMBER.test(y)) {
-        return { target: `${Math.round(Number(x))}, ${Math.round(Number(y))}`, quoted: false, direction: null, point: true };
-      }
-      return shape(flagValue(invocation, "--ref"));
-    }
-    case "rotate":
-    case "appearance":
-      return shape(first ? `${first.toLowerCase()}${verbKey === "appearance" ? " mode" : ""}` : null);
-    case "launch":
-    case "relaunch":
-    case "terminate":
-    case "uninstall":
-    case "app-state":
-    case "foreground": {
-      const packageName = flagValue(invocation, "--package") ?? first ?? readString(parsed.json?.packageName);
-      return shape(appNameFromPackage(packageName) ?? (verbKey === "launch" ? "the app" : null));
-    }
-    case "install": {
-      const apk = flagValue(invocation, "--apk");
-      const installed = appNameFromPackage(readString(parsed.json?.packageName));
-      return shape(installed ?? (apk ? apk.split(/[\\/]/).pop() ?? apk : "the app"));
-    }
-    case "location": {
-      const latitude = flagValue(invocation, "--latitude") ?? first ?? null;
-      const longitude = flagValue(invocation, "--longitude") ?? second ?? null;
-      return shape(latitude && longitude ? `${latitude}, ${longitude}` : null);
-    }
-    case "fold": {
-      const word = flagValue(invocation, "--angle") ?? first ?? null;
-      return shape(word ? (NUMBER.test(word) ? `${word}°` : word.toLowerCase() === "half" ? "half open" : word.toLowerCase()) : null);
-    }
-    case "settings":
-      return shape(androidSettingChange(invocation));
-    case "permission": {
-      const permission = second ? `${second} permission` : null;
-      return shape(permission);
-    }
-    case "record-start":
-    case "record-stop":
-    case "proof-bundle":
-      return shape(flagValue(invocation, "--label", "--caption"), true);
-    case "preview":
-      return shape(flagValue(invocation, "--fqn")?.split(".").pop() ?? null, true);
-    case "test": {
-      const className = flagValue(invocation, "--class")?.split(".").pop() ?? null;
-      const method = flagValue(invocation, "--method");
-      return shape(className ? (method ? `${className}.${method}` : className) : null, true);
-    }
-    default:
-      return undefined;
-  }
-}
-
 /* ── Field readers ───────────────────────────────────────────────────────── */
-
-function flagValue(invocation: ParsedInvocation, ...names: string[]): string | null {
-  for (const name of names) {
-    const value = invocation.flags.get(name);
-    if (typeof value === "string" && value.trim().length) return value.trim();
-  }
-  return null;
-}
 
 function urlHost(value: string | null): string | null {
   if (!value) return null;
@@ -794,23 +556,6 @@ function urlHost(value: string | null): string | null {
   } catch {
     return null;
   }
-}
-
-function appNameFromBundleId(bundleId: string | null): string | null {
-  if (!bundleId) return null;
-  const last = bundleId.split(".").pop() ?? "";
-  if (!last) return null;
-  const known: Record<string, string> = {
-    mobilesafari: "Safari",
-    preferences: "Settings",
-    mobileslideshow: "Photos",
-    mobilenotes: "Notes",
-    mobilemail: "Mail",
-    mobilecal: "Calendar",
-    mobiletimer: "Clock",
-    maps: "Maps",
-  };
-  return known[last.toLowerCase()] ?? `${last.charAt(0).toUpperCase()}${last.slice(1)}`;
 }
 
 /* ── Summary ─────────────────────────────────────────────────────────────── */
@@ -950,7 +695,7 @@ export function summarizeComputerUseCommand(input: ComputerUseCommandInput): Com
 }
 
 /** The object of the sentence, and how the verb reads around it. */
-type TargetShape = {
+export type TargetShape = {
   target: string | null;
   quoted: boolean;
   /** "up", "down", …: "Scrolled down in “Notes list”". */
@@ -960,7 +705,6 @@ type TargetShape = {
 };
 
 const DIRECTIONS = new Set(["up", "down", "left", "right"]);
-const NUMBER = /^-?\d+(\.\d+)?$/;
 
 /** Verbs that press on one spot, which can be a point with no element under it. */
 const CLICKS = new Set(["click", "double-click", "dblclick", "right-click", "tap", "tap-element"]);
@@ -1108,6 +852,8 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
   const parsed = parseOutput(output);
   const json = parsed.json;
   const domain = invocation.domain;
+  // `ade android`: its own fill check, app, device and target (`computerUseAndroid.ts`).
+  const android = domain === "android" ? androidSummaryParts(verb.key, invocation, parsed, output) : null;
 
   /* Outcome. */
   const exitFailed = typeof input.exitCode === "number" && input.exitCode !== 0;
@@ -1124,7 +870,7 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
   else if (parsed.effect === "observed") outcome = "observed";
   else if (parsed.effect === "unconfirmed" || parsed.effect === "waiting") outcome = "unconfirmed";
   // `ade android fill-element`: the field does not show the text afterwards.
-  else if (domain === "android" && verb.key === "fill" && readAndroidFillUnseen(parsed, output)) outcome = "unconfirmed";
+  else if (android?.fillUnseen) outcome = "unconfirmed";
   else outcome = "not_checked";
   // A filed proof prints its id. A call that exits 0 without one did not file
   // it: the exit code can be a later command's in the same call. No output at
@@ -1150,7 +896,7 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
   const reason = outcome === "failed"
     ? failureReason
     : outcome === "unconfirmed"
-      ? missingProof ?? parsed.effectReason ?? (domain === "android" && verb.key === "fill" ? "The field does not show the text." : null)
+      ? missingProof ?? parsed.effectReason ?? android?.unconfirmedReason ?? null
       : null;
 
   /* Surface and browser. */
@@ -1187,10 +933,8 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
     appName = parsed.values.get("app name")
       ?? readString(json?.appName)
       ?? appNameFromBundleId(flagValue(invocation, "--bundle-id", "--bundle") ?? parsed.values.get("active app") ?? null);
-  } else if (domain === "android") {
-    appName = parsed.values.get("app name")
-      ?? readString(json?.appName)
-      ?? appNameFromPackage(flagValue(invocation, "--package") ?? readString(json?.packageName));
+  } else if (android) {
+    appName = android.appName;
   } else if (surface === "user_browser" && browserName) {
     appName = browserName;
   }
@@ -1203,14 +947,11 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
       flagValue(invocation, "--runtime"),
       output,
     )
-    : domain === "android" ? readAndroidDevice(parsed) : null;
-  // `apple start` and the Android lifecycle verbs name the device.
-  const namesDevice = (verb.key === "start" && domain === "apple")
-    || (domain === "android" && ANDROID_LIFECYCLE_VERBS.has(verb.key));
-  const shape: TargetShape = namesDevice
-    ? { target: device?.name ?? (domain === "android" ? "the emulator" : null), quoted: false, direction: null, point: false }
-    : (domain === "android" ? androidTarget(verb.key, invocation, parsed, output) : undefined)
-      ?? describeTarget(spec, verb.key, invocation, parsed, appName);
+    : android?.device ?? null;
+  // `apple start` names the device (the Android lifecycle verbs do in `android.shape`).
+  const shape: TargetShape = verb.key === "start" && domain === "apple"
+    ? { target: device?.name ?? null, quoted: false, direction: null, point: false }
+    : android?.shape ?? describeTarget(spec, verb.key, invocation, parsed, appName);
   let target = shape.target ? clip(shape.target) : null;
   let targetQuoted = shape.quoted;
   const at = shape.point ? " at" : "";
@@ -1280,9 +1021,6 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
 export function launchesAppControl(verb: string, domain: string): boolean {
   return domain === "app-control" && (verb === "launch" || verb === "open");
 }
-
-/** `ade android` verbs whose object is the emulator itself. */
-const ANDROID_LIFECYCLE_VERBS = new Set(["start", "stop", "device-create", "device-attach", "device-detach"]);
 
 /** Verbs that file one proof record and print its id. */
 const FILES_PROOF = new Set(["proof", "proof capture", "proof attach"]);

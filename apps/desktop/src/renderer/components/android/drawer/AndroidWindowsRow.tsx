@@ -24,7 +24,7 @@ function describe(result: AndroidWindowLayoutResult): string {
   if (result.windows.length === 0) return "No app windows";
   return result.windows
     .slice(0, 3)
-    .map((window) => `${window.packageName} (${window.mode === "split" ? "split" : window.mode === "freeform" ? "free" : window.mode})`)
+    .map((entry) => `${entry.packageName} (${entry.mode === "freeform" ? "free" : entry.mode})`)
     .join(" · ");
 }
 

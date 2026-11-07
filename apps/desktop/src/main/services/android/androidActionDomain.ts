@@ -18,11 +18,11 @@
 import {
   ANDROID_FOLD_POSES,
   ANDROID_HARDWARE_KEYS,
-  ANDROID_INTENT_EXTRA_TYPES,
   ANDROID_LOG_LEVELS,
   ANDROID_ORIENTATIONS,
   ANDROID_SCROLL_DIRECTIONS,
   ANDROID_SDK_CONSENT_SURFACES,
+  ANDROID_STATUS_BAR_BATTERY_STATES,
   ANDROID_WINDOW_LAYOUT_ACTIONS,
   type AndroidElementQuery,
   type AndroidIntentExtra,
@@ -141,14 +141,17 @@ export function inputRecordArgs(args: unknown): { source?: "user" | "agent"; noR
   };
 }
 
-/** Parity: launch arguments (`arguments: string[]`) and intent extras (`extras: [{key, type, value}]`). */
+/**
+ * Parity: launch arguments (`arguments: string[]`) and intent extras
+ * (`extras: [{key, type, value}]`). Only the shape is read here: the service
+ * (`androidLaunchWords`) is the one validator of keys, types and values. A
+ * JSON caller may send a number or a bool as the value; it becomes a string.
+ */
 function launchExtrasArgs(args: unknown, action: string): { arguments?: string[]; extras?: AndroidIntentExtra[] } {
   const raw = objectArgs(args);
   const out: { arguments?: string[]; extras?: AndroidIntentExtra[] } = {};
   if (raw.arguments != null) {
-    if (!Array.isArray(raw.arguments) || raw.arguments.some((word) => typeof word !== "string")) {
-      throw new Error(`androidEmulator.${action} arguments must be a list of strings.`);
-    }
+    if (!Array.isArray(raw.arguments)) throw new Error(`androidEmulator.${action} arguments must be a list of strings.`);
     out.arguments = raw.arguments as string[];
   }
   if (raw.extras != null) {
@@ -157,10 +160,10 @@ function launchExtrasArgs(args: unknown, action: string): { arguments?: string[]
       const extra = objectArgs(entry);
       const value = extra.value;
       return {
-        key: requiredString(extra, "key", action),
-        type: enumOf(optionalString(extra, "type") ?? "string", "type", ANDROID_INTENT_EXTRA_TYPES, action),
+        key: extra.key as string,
+        type: (optionalString(extra, "type") ?? "string") as AndroidIntentExtra["type"],
         value: typeof value === "string" ? value : typeof value === "number" || typeof value === "boolean" ? String(value) : "",
-      };
+      } as AndroidIntentExtra;
     });
   }
   return out;
@@ -440,7 +443,7 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
       if (typeof text !== "string" || text.length === 0) throw new Error("androidEmulator.fillElement requires text.");
       return service.fillElement({
         ...laneArgs(args, "fillElement"),
-      ...inputRecordArgs(args),
+        ...inputRecordArgs(args),
         query: elementQuery(args, "fillElement"),
         text,
         focusFirst: optionalBoolean(args, "focusFirst"),
@@ -592,7 +595,7 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
         wifiBars: optionalNumber(args, "wifiBars"),
         cellularBars: optionalNumber(args, "cellularBars"),
         batteryLevel: optionalNumber(args, "batteryLevel"),
-        batteryState: batteryState ? enumOf(batteryState, "batteryState", ["charging", "charged", "discharging"] as const, "setStatusBar") : null,
+        batteryState: batteryState ? enumOf(batteryState, "batteryState", ANDROID_STATUS_BAR_BATTERY_STATES, "setStatusBar") : null,
       });
     },
     clearStatusBar: (args?: unknown) => service.clearStatusBar(laneArgs(args, "clearStatusBar")),

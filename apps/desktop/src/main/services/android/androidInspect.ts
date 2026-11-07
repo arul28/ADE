@@ -12,6 +12,7 @@ import type {
   AndroidUiElement,
   AndroidUiSnapshot,
 } from "../../../shared/types/androidEmulator";
+import { ANDROID_CONTEXT_SURFACE } from "../../../shared/types/iosSimulator";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import { requireLaneId } from "./androidEmulatorErrors";
@@ -223,7 +224,7 @@ export function createAndroidInspect(deps: AndroidInspectDeps) {
     }
   };
 
-  return async function inspect(args: AndroidInspectPointArgs, options: { crop: boolean }): Promise<AndroidInspectResult> {
+  const inspect = async (args: AndroidInspectPointArgs, options: { crop: boolean }): Promise<AndroidInspectResult> => {
     const laneId = requireLaneId(args?.laneId);
     const x = Number(args.x);
     const y = Number(args.y);
@@ -247,7 +248,7 @@ export function createAndroidInspect(deps: AndroidInspectDeps) {
       sourceLine: exact?.sourceLine ?? null,
       frame: element.bounds,
       metadata: {
-        contextSurface: "android-emulator",
+        contextSurface: ANDROID_CONTEXT_SURFACE,
         androidInspectPacketVersion: 1,
         screenElementSource: snapshot.source,
         sourceConfidence,
@@ -270,5 +271,40 @@ export function createAndroidInspect(deps: AndroidInspectDeps) {
       selectedAt: deps.now().toISOString(),
     };
     return { item, source: snapshot.source, element };
+  };
+
+  return {
+    /** The element under the point; the crop only when the caller asks for it. */
+    inspectPoint: (args: AndroidInspectPointArgs) =>
+      inspect(args, { crop: args.includeScreenshot === true }),
+
+    /** The element under the point, with its crop; nothing there keeps the point itself, as Apple's coordinate fallback. */
+    async selectPoint(args: AndroidInspectPointArgs): Promise<AndroidInspectResult> {
+      const result = await inspect(args, { crop: true });
+      if (result.item) return result;
+      const x = Math.round(Number(args.x));
+      const y = Math.round(Number(args.y));
+      return {
+        element: null,
+        source: "coordinate-fallback",
+        item: {
+          kind: "ios_element",
+          id: `android-point-${x}-${y}-${deps.now().getTime()}`,
+          componentId: "Android emulator point",
+          sourceFile: null,
+          sourceLine: null,
+          frame: { x, y, width: 1, height: 1 },
+          metadata: {
+            contextSurface: ANDROID_CONTEXT_SURFACE,
+            androidInspectPacketVersion: 1,
+            sourceConfidence: "none",
+            selectedElement: { source: "coordinate", screenshotFrame: { x, y, width: 1, height: 1 } },
+            note: "No element of the UI tree was under the point; this keeps the selected point.",
+          },
+          accessibilityIdentifier: null,
+          selectedAt: deps.now().toISOString(),
+        },
+      };
+    },
   };
 }

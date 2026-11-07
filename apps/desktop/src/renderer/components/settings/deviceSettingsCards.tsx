@@ -1,12 +1,15 @@
 import React from "react";
+import { WarningCircle } from "@phosphor-icons/react";
 import { formatBytes } from "../../lib/format";
-import { SettingsNumber, SettingsToggle } from "./primitives";
+import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { SettingsCard, SettingsNumber, SettingsToggle } from "./primitives";
 import "./AppleDevicesSection.css";
 
 /*
  * The visual blocks Settings › Apple devices and Settings › Android devices
  * share (the `ade-as-*` card language): the feature card with a drawing, the
- * overlay cards, the bitrate quality strip and the storage meter. They only
+ * overlay cards, the bitrate quality strip, the storage meter and the
+ * Diagnostics recordings warning. They only
  * present: each page owns where its values live and how they are written.
  */
 
@@ -288,5 +291,50 @@ export function StorageMeter({
         />
       </div>
     </div>
+  );
+}
+
+/* ── Recordings warning (Diagnostics) ────────────────────────────────── */
+
+/**
+ * The read-only Diagnostics row for recordings over the warning size. It
+ * renders nothing while the total is at or under the size, or the size is 0.
+ * No delete action: ADE never deletes recordings.
+ */
+export function RecordingsWarningCard({
+  anchor,
+  title,
+  totalBytes,
+  warnBytes,
+}: {
+  anchor: string;
+  title: string;
+  totalBytes: number;
+  warnBytes: number;
+}) {
+  if (warnBytes <= 0 || !(totalBytes > warnBytes)) return null;
+  return (
+    <SettingsCard
+      anchor={anchor}
+      title={title}
+      description={`Using ${formatBytes(totalBytes)}, over the ${formatBytes(warnBytes)} warning size. ADE does not delete recordings.`}
+      control={
+        <span
+          role="status"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            fontFamily: SANS_FONT,
+            fontSize: 12,
+            fontWeight: 600,
+            color: COLORS.warning,
+          }}
+        >
+          <WarningCircle size={14} weight="fill" />
+          {formatBytes(totalBytes)}
+        </span>
+      }
+    />
   );
 }

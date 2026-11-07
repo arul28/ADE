@@ -873,8 +873,8 @@ function abortError(label: string): Error {
   return error;
 }
 
-/** Runs ffmpeg or ffprobe once without a shell. */
-function runFfmpeg(args: {
+/** Runs ffmpeg or ffprobe once without a shell; SIGKILL follows SIGTERM after a grace period. */
+export function runFfmpeg(args: {
   binaryPath: string;
   args: string[];
   timeoutMs: number;

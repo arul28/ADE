@@ -15,6 +15,7 @@ import {
   USER_BROWSER_SHORT_NAMES,
   USER_BROWSER_TARGET_PREFIX,
 } from "./userBrowserLabels";
+import { androidAvdDisplayName } from "./androidDevicePresentation";
 import { readRecord } from "./readRecord";
 
 /* ── Output parsing ──────────────────────────────────────────────────────── */
@@ -322,26 +323,6 @@ export function readAppleDevice(
 
 /* ── Android ─────────────────────────────────────────────────────────────── */
 
-/** Profile words that read as one token in capitals: `pixel_9_xl` is "Pixel 9 XL". */
-const ANDROID_UPPER_WORDS = new Set(["xl", "tv", "api", "fe", "se"]);
-
-/**
- * A person's name for an AVD folder name. ADE names the AVDs it makes
- * `ade_<short lane id>_<profile>`, so `ade_ab12cd34_pixel_9_pro` reads "Pixel 9
- * Pro". A `_2` that tells two such AVDs apart stays: it cannot be told from a
- * model number (`pixel_9`). Any other AVD name reads with its underscores as spaces.
- */
-export function androidAvdDisplayName(avdName: string): string {
-  const bare = avdName.trim().replace(/^ade_[A-Za-z0-9]+_/, "");
-  const words = bare.split(/[_\s]+/).filter(Boolean);
-  if (words.length === 0) return avdName.trim();
-  return words
-    .map((word) => (ANDROID_UPPER_WORDS.has(word.toLowerCase())
-      ? word.toUpperCase()
-      : `${word.charAt(0).toUpperCase()}${word.slice(1)}`))
-    .join(" ");
-}
-
 /** The shown name when it was set, else the folder name in words. */
 function androidShownName(displayName: string | null, avdName: string | null): string | null {
   if (displayName && displayName !== avdName) return displayName;
@@ -392,4 +373,34 @@ export function readAndroidElementName(output: string): string | null {
  */
 export function readAndroidFillUnseen(parsed: ParsedOutput, output: string): boolean {
   return readString(parsed.json?.typed) === "not-seen" || /\bthe field does NOT show the text\b/.test(output);
+}
+
+/* ── Command readers (shared by the summary and its Android part) ───────── */
+
+export const NUMBER = /^-?\d+(\.\d+)?$/;
+
+/** The first of `names` the command set to a non-empty value, trimmed. */
+export function flagValue(invocation: { flags: ReadonlyMap<string, string | true> }, ...names: string[]): string | null {
+  for (const name of names) {
+    const value = invocation.flags.get(name);
+    if (typeof value === "string" && value.trim().length) return value.trim();
+  }
+  return null;
+}
+
+export function appNameFromBundleId(bundleId: string | null): string | null {
+  if (!bundleId) return null;
+  const last = bundleId.split(".").pop() ?? "";
+  if (!last) return null;
+  const known: Record<string, string> = {
+    mobilesafari: "Safari",
+    preferences: "Settings",
+    mobileslideshow: "Photos",
+    mobilenotes: "Notes",
+    mobilemail: "Mail",
+    mobilecal: "Calendar",
+    mobiletimer: "Clock",
+    maps: "Maps",
+  };
+  return known[last.toLowerCase()] ?? `${last.charAt(0).toUpperCase()}${last.slice(1)}`;
 }

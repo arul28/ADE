@@ -104,17 +104,21 @@ export function useAndroidMachinePreferences(
     const seq = ++seqRef.current;
     setPreferences((current) => (current ? { ...current, ...partial } : current));
     const writtenPin = pinRef.current;
+    // The page shows another machine now: the reply is not for the shown values.
+    const machineMoved = () => (pinRef.current?.key ?? null) !== (writtenPin?.key ?? null);
     void api.setMachinePreferences(partial, writtenPin).then(
       (result) => {
+        if (machineMoved()) return;
         if (seq !== seqRef.current) {
+          // A newer read or write owns the shown values. This reply is still
+          // this machine's saved state, so a refused newer write goes back to it.
           confirmedRef.current = result.preferences;
           return;
         }
         apply(result);
       },
       (caught: unknown) => {
-        // The pin moved on while the write was out: the page shows another machine now.
-        if ((pinRef.current?.key ?? null) !== (writtenPin?.key ?? null)) return;
+        if (machineMoved()) return;
         const confirmed = confirmedRef.current;
         if (confirmed) {
           setPreferences((current) => {

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
+import { createAskOnceStore, type AskOnceRequest } from "../../lib/askOnceStore";
+import { useConfirmKeys } from "../../lib/useConfirmKeys";
 
 import type { OpenProjectBinding } from "../../../shared/types";
 import { desktopSeatKind, type DesktopSeatKind } from "../../../shared/types/macDesktop";
@@ -26,40 +28,24 @@ import { macDesktopStatusKey, publishMacDesktopStatus, withMacDesktopTimeout } f
 
 export type MacDesktopCloseAnswer = "stop" | "keep" | "cancel";
 
-export type MacDesktopStopConfirmRequest = {
-  resolve: (answer: MacDesktopCloseAnswer) => void;
+type MacDesktopStopConfirmQuestion = {
   /** Which screen the question is about; the Windows seats sign out rather than quit. */
   kind: DesktopSeatKind;
 };
 
-let pending: MacDesktopStopConfirmRequest | null = null;
-let listeners = new Set<() => void>();
+export type MacDesktopStopConfirmRequest = AskOnceRequest<MacDesktopStopConfirmQuestion, MacDesktopCloseAnswer>;
 
-function emit(): void {
-  for (const listener of [...listeners]) listener();
-}
-
-function settle(answer: MacDesktopCloseAnswer): void {
-  const request = pending;
-  pending = null;
-  emit();
-  request?.resolve(answer);
-}
+/** A second ask while one is on screen resolves "cancel": the safe reading of "I could not ask" is "change nothing". */
+const confirmStore = createAskOnceStore<MacDesktopStopConfirmQuestion, MacDesktopCloseAnswer>("cancel");
+const settle = confirmStore.settle;
 
 export function getMacDesktopStopConfirmRequest(): MacDesktopStopConfirmRequest | null {
-  return pending;
+  return confirmStore.get();
 }
 
-/**
- * Ask, and resolve with the answer. A second ask while one is on screen
- * resolves "cancel": the safe reading of "I could not ask" is "change nothing".
- */
+/** Ask, and resolve with the answer. */
 export function askMacDesktopStopConfirm(kind: DesktopSeatKind = "mac"): Promise<MacDesktopCloseAnswer> {
-  if (pending) return Promise.resolve("cancel");
-  return new Promise<MacDesktopCloseAnswer>((resolve) => {
-    pending = { resolve, kind };
-    emit();
-  });
+  return confirmStore.ask({ kind });
 }
 
 /**
@@ -89,20 +75,14 @@ export async function confirmMacDesktopToolClose(args: {
   return askMacDesktopStopConfirm(desktopSeatKind(status));
 }
 
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => { listeners.delete(listener); };
-}
-
 /** Test seam: an unanswered question from one test must not reach the next. */
 export function resetMacDesktopStopConfirmForTests(): void {
-  pending = null;
-  listeners = new Set();
+  confirmStore.reset();
 }
 
 /** Mounts the question. One per Work page, beside the Apple one. */
 export function MacDesktopStopConfirmHost() {
-  const request = useSyncExternalStore(subscribe, getMacDesktopStopConfirmRequest, getMacDesktopStopConfirmRequest);
+  const request = useSyncExternalStore(confirmStore.subscribe, confirmStore.get, confirmStore.get);
   if (!request) return null;
   return <MacDesktopStopConfirmDialog kind={request.kind} />;
 }
@@ -140,17 +120,8 @@ function MacDesktopStopConfirmDialog({ kind }: { kind: DesktopSeatKind }) {
   const stopRef = useRef<HTMLButtonElement | null>(null);
   const cancel = useCallback(() => settle("cancel"), []);
 
-  // Escape cancels, bound at the window so it works wherever focus is.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      cancel();
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [cancel]);
+  // Escape cancels, bound at the window so it works wherever focus is. Enter does nothing here.
+  useConfirmKeys(cancel);
 
   // Stop takes focus: it is what the × asked for.
   useEffect(() => {

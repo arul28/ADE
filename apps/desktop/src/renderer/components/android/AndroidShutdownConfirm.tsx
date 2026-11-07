@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { logRendererDebugEvent } from "../../lib/debugLog";
-import { isImeComposing } from "../../lib/imeComposition";
+import { createAskOnceStore, type AskOnceRequest } from "../../lib/askOnceStore";
+import { useConfirmKeys } from "../../lib/useConfirmKeys";
 import { Dialog } from "../ui/dialog";
 import { androidLaneDeviceName } from "./androidDeviceState";
 
@@ -13,7 +14,8 @@ import { androidLaneDeviceName } from "./androidDeviceState";
  * - **Close and shut down** closes the tab and powers the emulator off.
  * - **Keep running** closes the tab and leaves the emulator up. For an
  *   emulator ADE started on an AVD ADE made, the brain's idle power-off
- *   (`androidLaneMaintenance.ts`, 30 minutes with no use) stops it later.
+ *   (`androidLaneMaintenance.ts`) stops it later. The idle time is a brain
+ *   setting that the renderer does not read, so the copy names no number.
  * - **Cancel** keeps the tab and the emulator.
  *
  * It asks only when the emulator is up: closing the tab on an emulator that
@@ -24,38 +26,25 @@ import { androidLaneDeviceName } from "./androidDeviceState";
 
 export type AndroidCloseAnswer = "stop" | "keep" | "cancel";
 
-export type AndroidShutdownConfirmRequest = {
+export type AndroidShutdownConfirmQuestion = {
   deviceName: string;
   /** ADE made this AVD, so the idle power-off covers it. */
   idlePowerOff: boolean;
-  resolve: (answer: AndroidCloseAnswer) => void;
+  /** The lane records now. Shutting down stops the recording and files it. */
+  recording: boolean;
 };
 
-let pending: AndroidShutdownConfirmRequest | null = null;
-let listeners = new Set<() => void>();
-
-function emit(): void {
-  for (const listener of [...listeners]) listener();
-}
-
-function settle(answer: AndroidCloseAnswer): void {
-  const request = pending;
-  pending = null;
-  emit();
-  request?.resolve(answer);
-}
-
-export function getAndroidShutdownConfirmRequest(): AndroidShutdownConfirmRequest | null {
-  return pending;
-}
+export type AndroidShutdownConfirmRequest = AskOnceRequest<AndroidShutdownConfirmQuestion, AndroidCloseAnswer>;
 
 /** A second ask while one is on screen keeps the emulator running: two dialogs cannot both be answered. */
-export function askAndroidShutdownConfirm(deviceName: string, idlePowerOff: boolean): Promise<AndroidCloseAnswer> {
-  if (pending) return Promise.resolve("keep");
-  return new Promise<AndroidCloseAnswer>((resolve) => {
-    pending = { deviceName, idlePowerOff, resolve };
-    emit();
-  });
+const confirmStore = createAskOnceStore<AndroidShutdownConfirmQuestion, AndroidCloseAnswer>("keep");
+
+export function getAndroidShutdownConfirmRequest(): AndroidShutdownConfirmRequest | null {
+  return confirmStore.get();
+}
+
+export function askAndroidShutdownConfirm(question: AndroidShutdownConfirmQuestion): Promise<AndroidCloseAnswer> {
+  return confirmStore.ask(question);
 }
 
 /**
@@ -77,49 +66,36 @@ export async function confirmAndroidToolClose(args: {
   });
   const lane = status?.lane ?? null;
   if (!lane?.device || (lane.state !== "booted" && lane.state !== "starting")) return "keep";
-  return askAndroidShutdownConfirm(androidLaneDeviceName(lane), lane.device.origin === "created");
-}
-
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => { listeners.delete(listener); };
+  // One read, only when the question shows. A failed read leaves the recording sentence out.
+  const recordings = await api.recordList?.({ laneId }, args.runtimePin ?? undefined).catch((cause: unknown) => {
+    logRendererDebugEvent("android.tab_close_recordings_failed", { error: cause instanceof Error ? cause.message : String(cause) });
+    return null;
+  });
+  return askAndroidShutdownConfirm({
+    deviceName: androidLaneDeviceName(lane),
+    idlePowerOff: lane.device.origin === "created",
+    recording: Boolean(recordings?.recordings.some((recording) => recording.active)),
+  });
 }
 
 /** Test seam: an unanswered question from one test must not reach the next. */
 export function resetAndroidShutdownConfirmForTests(): void {
-  pending = null;
-  listeners = new Set();
+  confirmStore.reset();
 }
 
 /** Mounts the question. One per Work page, beside the Apple one. */
 export function AndroidShutdownConfirmHost() {
-  const request = useSyncExternalStore(subscribe, getAndroidShutdownConfirmRequest, getAndroidShutdownConfirmRequest);
+  const request = useSyncExternalStore(confirmStore.subscribe, confirmStore.get, confirmStore.get);
   if (!request) return null;
   return <AndroidShutdownConfirmDialog request={request} />;
 }
 
 function AndroidShutdownConfirmDialog({ request }: { request: AndroidShutdownConfirmRequest }) {
-  const cancel = useCallback(() => settle("cancel"), []);
-  const keep = useCallback(() => settle("keep"), []);
-  const stop = useCallback(() => settle("stop"), []);
-
+  const cancel = useCallback(() => confirmStore.settle("cancel"), []);
+  const keep = useCallback(() => confirmStore.settle("keep"), []);
+  const stop = useCallback(() => confirmStore.settle("stop"), []);
   // Escape cancels, Enter shuts down (the focused answer), as Apple's does.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        cancel();
-        return;
-      }
-      if (event.key !== "Enter" || event.shiftKey || isImeComposing(event)) return;
-      if ((event.target as HTMLElement | null)?.tagName?.toLowerCase() === "button") return;
-      event.preventDefault();
-      stop();
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [cancel, stop]);
+  useConfirmKeys(cancel, stop);
 
   return (
     <Dialog
@@ -131,9 +107,7 @@ function AndroidShutdownConfirmDialog({ request }: { request: AndroidShutdownCon
       layer="nestedDialog"
       testId="android-shutdown-confirm"
       title={`Shut down ${request.deviceName}?`}
-      description={request.idlePowerOff
-        ? "Closing this tab can power off the emulator. If you keep it running, ADE powers it off after 30 minutes with no use."
-        : "Closing this tab can power off the emulator. If you keep it running, it stays on until you stop it."}
+      description={androidShutdownDescription(request)}
       tone="error"
       hideClose
       width={440}
@@ -144,4 +118,13 @@ function AndroidShutdownConfirmDialog({ request }: { request: AndroidShutdownCon
       ]}
     />
   );
+}
+
+/** The dialog's sentences. A recording that runs gets one more sentence. */
+function androidShutdownDescription(question: AndroidShutdownConfirmQuestion): string {
+  const keep = question.idlePowerOff
+    ? "If you keep it running, ADE powers it off after it sits idle."
+    : "If you keep it running, it stays on until you stop it.";
+  const recording = question.recording ? " Shutting it down also stops the recording and saves it to proof." : "";
+  return `Closing this tab can power off the emulator. ${keep}${recording}`;
 }

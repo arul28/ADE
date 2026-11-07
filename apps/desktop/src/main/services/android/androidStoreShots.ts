@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
-import zlib from "node:zlib";
+import { PNG } from "pngjs";
 import type {
   AndroidEmulatorPostureServiceApi,
   AndroidScreenshot,
@@ -10,6 +9,8 @@ import type {
   AndroidStoreShot,
   AndroidStoreShotSlot,
 } from "../../../shared/types/androidEmulator";
+import { androidStoreShotCaption } from "../../../shared/types/androidEmulator";
+import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import { runAdb } from "./adb";
 import { runDeviceScript, type BootedDevice } from "./androidDeviceShell";
@@ -35,11 +36,10 @@ import { androidLaneFolderName, writeAndroidFileNoFollow } from "./androidScreen
  * scaled down only when the canvas would pass 3840 px.
  *
  * The capture is raw RGBA (`screencap` with no `-p`), so no PNG decoder is
- * needed: the PNG is written here, RGB, with Node's zlib off the event loop.
- * Node built-ins and relative imports only, so it runs under `tsx`.
+ * needed: the PNG is packed as RGB by pngjs, its deflate off the event loop.
+ * The canvas and the pack yield to the event loop between them, so a set of
+ * shots does not hold up the brain's other calls.
  */
-
-const deflate = promisify(zlib.deflate);
 
 const CAPTURE_TIMEOUT_MS = 30_000;
 /** A screen at least this wide in dp is a large screen for Play. */
@@ -65,7 +65,7 @@ export type AndroidStoreShotsDeps = {
   fileShot: (laneId: string, shot: AndroidScreenshot, chatSessionId: string | null, caption: string) => string | null;
   dataDir: string;
   signal: AbortSignal;
-  logger?: { warn: (event: string, data?: Record<string, unknown>) => void } | null;
+  logger?: Logger | null;
   now: () => Date;
   sleep: (ms: number) => Promise<void>;
 };
@@ -155,50 +155,26 @@ export function composeOnCanvas(frame: RawFrame, canvas: { width: number; height
   return rgb;
 }
 
-const CRC_TABLE = (() => {
-  const table = new Uint32Array(256);
-  for (let n = 0; n < 256; n += 1) {
-    let c = n;
-    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    table[n] = c >>> 0;
-  }
-  return table;
-})();
-
-function crc32(buffers: Buffer[]): number {
-  let crc = 0xffffffff;
-  for (const buffer of buffers) {
-    for (let i = 0; i < buffer.length; i += 1) crc = CRC_TABLE[(crc ^ buffer[i]!) & 0xff]! ^ (crc >>> 8);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
+/**
+ * An 8-bit RGB PNG (no alpha, as Play asks), every row with filter 0. pngjs
+ * packs it; the deflate runs on the zlib thread pool, off the event loop.
+ */
+export function encodeRgbPng(width: number, height: number, rgb: Buffer): Promise<Buffer> {
+  const png = new PNG({ colorType: 2, inputColorType: 2, inputHasAlpha: false, filterType: 0, deflateLevel: 6, deflateStrategy: 0 });
+  png.width = width;
+  png.height = height;
+  png.data = rgb;
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    png.pack()
+      .on("data", (chunk: Buffer) => chunks.push(chunk))
+      .on("end", () => resolve(Buffer.concat(chunks)))
+      .on("error", reject);
+  });
 }
 
-function pngChunk(type: string, data: Buffer): Buffer {
-  const length = Buffer.alloc(4);
-  length.writeUInt32BE(data.length);
-  const name = Buffer.from(type, "ascii");
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32([name, data]));
-  return Buffer.concat([length, name, data, crc]);
-}
-
-/** An 8-bit RGB PNG (no alpha, as Play asks), every row with filter 0. */
-export async function encodeRgbPng(width: number, height: number, rgb: Buffer): Promise<Buffer> {
-  const stride = width * 3;
-  const rows = Buffer.alloc((stride + 1) * height);
-  for (let y = 0; y < height; y += 1) rgb.copy(rows, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
-  const header = Buffer.alloc(13);
-  header.writeUInt32BE(width, 0);
-  header.writeUInt32BE(height, 4);
-  header[8] = 8; // bit depth
-  header[9] = 2; // colour type: RGB
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    pngChunk("IHDR", header),
-    pngChunk("IDAT", await deflate(rows, { level: 6 })),
-    pngChunk("IEND", Buffer.alloc(0)),
-  ]);
-}
+/** Lets other brain work (RPC for every client) run between two CPU-heavy steps. */
+const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 export function createAndroidStoreShots(deps: AndroidStoreShotsDeps) {
   const { signal } = deps;
@@ -280,14 +256,16 @@ export function createAndroidStoreShots(deps: AndroidStoreShotsDeps) {
     slot: AndroidStoreShotSlot,
   ): Promise<AndroidStoreShot> => {
     const canvas = playCanvasFor(frame.width, frame.height);
-    const png = await encodeRgbPng(canvas.width, canvas.height, composeOnCanvas(frame, canvas));
+    await yieldToEventLoop();
+    const rgb = composeOnCanvas(frame, canvas);
+    await yieldToEventLoop();
+    const png = await encodeRgbPng(canvas.width, canvas.height, rgb);
     const capturedAt = deps.now();
     const stamp = capturedAt.toISOString().replace(/[:.]/gu, "-");
     const filePath = path.join(deps.dataDir, "screenshots", `${androidLaneFolderName(laneId)}-play-${display}-${stamp}.png`);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     writeAndroidFileNoFollow(filePath, png);
-    const where = display === "cover" ? " (cover screen)" : display === "inner" ? " (inner screen)" : "";
-    const caption = `Google Play · ${slot === "phone" ? "phone" : "large screen"} screenshot${where} ${canvas.width}×${canvas.height}`;
+    const caption = androidStoreShotCaption(slot, display, canvas.width, canvas.height);
     const proofArtifactId = args.proof === false
       ? null
       : deps.fileShot(laneId, {

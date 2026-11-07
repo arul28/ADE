@@ -5,9 +5,10 @@ import type {
   AndroidLaunchExtrasArgs,
   AndroidPackageArgs,
 } from "../../../shared/types/androidEmulator";
-import { ANDROID_INTENT_EXTRA_TYPES, androidIntentExtraWords } from "../../../shared/types/androidEmulator";
+import { ANDROID_INTENT_EXTRA_KEY, ANDROID_INTENT_EXTRA_TYPES, androidIntentExtraWords } from "../../../shared/types/androidEmulator";
 import { sleep } from "../shared/utils";
 import { runDeviceScript, runDeviceShell, type BootedDevice } from "./androidDeviceShell";
+import { readAndroidForeground } from "./androidDeviceSettings";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 
 /*
@@ -33,13 +34,17 @@ export function androidLaunchWords(args: AndroidLaunchExtrasArgs | null | undefi
   if (words.length !== raw.length) throw new Error("arguments must be a list of strings.");
   const extras = Array.isArray(args?.extras) ? args.extras : [];
   for (const extra of extras) {
-    if (!extra || typeof extra.key !== "string" || !/^[A-Za-z_][\w.$-]*$/u.test(extra.key)) {
+    if (!extra || typeof extra.key !== "string" || !ANDROID_INTENT_EXTRA_KEY.test(extra.key)) {
       throw new Error("Each extra needs a key name (letters, digits, `.`, `_`, `$`, `-`).");
     }
     if (!(ANDROID_INTENT_EXTRA_TYPES as readonly string[]).includes(extra.type)) {
       throw new Error(`An extra's type must be ${ANDROID_INTENT_EXTRA_TYPES.join(", ")}.`);
     }
     if (typeof extra.value !== "string") throw new Error(`The extra ${extra.key} needs a value.`);
+    // `am start --ei k ""` fails with an unclear message; only a string may be empty.
+    if (extra.type !== "string" && extra.value.trim() === "") {
+      throw new Error(`The extra ${extra.key} is a${extra.type === "int" ? "n" : ""} ${extra.type}, so it needs a value.`);
+    }
   }
   const all = [...words, ...androidIntentExtraWords(extras)];
   if (all.length > LAUNCH_WORDS_MAX) throw new Error(`A launch takes at most ${LAUNCH_WORDS_MAX} extra words.`);
@@ -48,34 +53,6 @@ export function androidLaunchWords(args: AndroidLaunchExtrasArgs | null | undefi
     throw new Error("arguments cannot name another component (-n) or user (--user); pass --package and --activity instead.");
   }
   return all;
-}
-
-/** The app in front and the home launcher, in one device shell. */
-const FRONT_SCRIPT = [
-  // Not `-m1`: with a second display the first line is `mFocusedApp=null`.
-  "dumpsys window 2>/dev/null | grep -E 'mFocusedApp=ActivityRecord' | head -n 1",
-  "echo \"home=$(cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null | tail -n 1)\"",
-].join("; ");
-
-/** `mFocusedApp=ActivityRecord{… u0 com.example/.MainActivity t13}` → package and component. */
-export function parseAndroidFront(text: string): { packageName: string | null; activity: string | null } {
-  let packageName: string | null = null;
-  let activity: string | null = null;
-  let home: string | null = null;
-  for (const line of text.split(/\r?\n/u)) {
-    if (line.startsWith("home=")) {
-      home = line.slice("home=".length).trim().split("/")[0] || null;
-      continue;
-    }
-    const match = /\su\d+\s+([A-Za-z0-9_.]+)\/([^\s}]+)/u.exec(line);
-    if (match && !packageName) {
-      packageName = match[1]!;
-      activity = `${match[1]}/${match[2]}`;
-    }
-  }
-  // The home screen is "no app", as SpringBoard is on Apple.
-  if (packageName && packageName === home) return { packageName: null, activity: null };
-  return { packageName, activity };
 }
 
 /** `pidof` prints the pids space-separated; the first is the main process. */
@@ -92,7 +69,10 @@ export function createAndroidAppState(deps: {
 }) {
   const { signal } = deps;
 
-  const readFront = async (booted: BootedDevice) => parseAndroidFront((await runDeviceScript(booted, FRONT_SCRIPT, { timeoutMs: 15_000, signal })).stdout);
+  const readFront = async (booted: BootedDevice) => {
+    const front = await readAndroidForeground(booted, signal);
+    return { packageName: front.foregroundPackage, activity: front.activity };
+  };
 
   return {
     async getAppState(args: AndroidPackageArgs): Promise<AndroidAppState> {

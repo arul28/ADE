@@ -3,6 +3,7 @@ import type { IosElementContextItem, OpenProjectBinding } from "../../../shared/
 import type { AndroidUiElement } from "../../../shared/types/androidEmulator";
 import { DeviceInspectOverlay, type DeviceInspectAdapter } from "../device/DeviceInspectOverlay";
 import { useDeviceInspect } from "../device/useDeviceInspect";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 
 type DeviceToView = ((point: { x: number; y: number }) => { x: number; y: number }) | null;
 
@@ -108,8 +109,8 @@ export function useAndroidInspect({
     if (!onAddContext && !onInsertDraft) return undefined;
     return (element: AndroidUiElement) => {
       void (async () => {
-        try {
-          if (onAddContext) {
+        if (onAddContext) {
+          try {
             // On the lane's machine (the pin): the brain reads the element, finds
             // its source in the lane's code and crops it.
             const result = await window.ade.androidEmulator.inspectPoint(
@@ -117,13 +118,23 @@ export function useAndroidInspect({
               runtimePinRef.current,
             );
             if (result.item) {
-              onAddContext(result.item as IosElementContextItem);
+              onAddContext(result.item);
               return;
             }
+          } catch (cause: unknown) {
+            // An older ADE on the machine, or a failed read. The draft line is the
+            // fallback; with no draft to insert into, say why.
+            if (!onInsertDraft) {
+              onErrorRef.current(cause);
+              return;
+            }
+            logRendererDebugEvent("android.inspect_point_failed", { error: cause instanceof Error ? cause.message : String(cause) });
           }
+        }
+        try {
           onInsertDraft?.(androidElementContext(element));
         } catch (cause: unknown) {
-          // No chat, draft or CLI to insert into, or the read failed: say why.
+          // No chat, draft or CLI to insert into: say why.
           onErrorRef.current(cause);
         }
       })();

@@ -34,6 +34,24 @@ function deviceShellLine(words: readonly string[]): string {
 export const DEFAULT_DISPLAY_DUMP =
   "dumpsys window displays | sed -e 's/mDisplayId=0$/mDisplayId=0 /' | sed -n '/Display: mDisplayId=0 /,/Display: mDisplayId=[1-9]/p'";
 
+/** Prints the default display's rotation as `mRotation=<0..3>`. */
+export const ROTATION_PROBE = `${DEFAULT_DISPLAY_DUMP} | grep -m1 -oE 'mRotation=[0-9]'`;
+
+/** The rotation (0 to 3) in `ROTATION_PROBE`'s output, or null. */
+export function parseRotation(text: string): number | null {
+  const digit = /mRotation=(\d)/u.exec(text)?.[1];
+  return digit === undefined ? null : Number(digit);
+}
+
+/** Parses `wm size`; the override size wins because it is what the screen shows. */
+export function parseWmSize(text: string): { width: number; height: number } | null {
+  const pick = (label: string) => {
+    const match = new RegExp(`${label} size:\\s*(\\d+)x(\\d+)`, "u").exec(text);
+    return match ? { width: Number(match[1]), height: Number(match[2]) } : null;
+  };
+  return pick("Override") ?? pick("Physical");
+}
+
 /** The lane's booted emulator: what every device command needs. */
 export type BootedDevice = { serial: string; adbPath: string };
 

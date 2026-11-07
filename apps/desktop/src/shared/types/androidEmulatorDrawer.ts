@@ -78,13 +78,26 @@ export type AndroidDeviceSetting =
   // Parity: one accessibility switch (`ade android accessibility <option> on|off`).
   | { kind: "accessibility"; option: AndroidAccessibilityOption; on: boolean };
 
+/**
+ * `ade android settings`' one-setting flags, in the CLI's order (`--battery`
+ * and `--charging` together are one). The transcript summary reads them in
+ * this order too.
+ */
+export const ANDROID_SETTINGS_FLAGS = [
+  "--text-size", "--display-size", "--animations", "--show-taps", "--layout-bounds",
+  "--battery", "--charging", "--wifi", "--data", "--airplane",
+] as const;
+
+/** What `getDeviceSettings` reads: everything, the app in front, or the turn. */
+export type AndroidDeviceSettingsFields = "all" | "foreground" | "orientation";
+
 export type AndroidDeviceSettingsArgs = AndroidLaneArgs & {
   /**
    * `foreground` reads only the app in front (the App group's poll);
    * `orientation` only how the display is turned (the stage, after the video
    * changes shape). Default `all`.
    */
-  fields?: "all" | "foreground" | "orientation" | null;
+  fields?: AndroidDeviceSettingsFields | null;
 };
 
 export type AndroidSetDeviceSettingArgs = AndroidLaneArgs & { setting: AndroidDeviceSetting };

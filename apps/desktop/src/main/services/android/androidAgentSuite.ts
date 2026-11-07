@@ -28,7 +28,7 @@ import { assertPackageName, createAndroidApps } from "./androidApps";
 import { androidLaunchWords, createAndroidAppState } from "./androidAppState";
 import { createAndroidInstrumentationTests } from "./androidInstrumentationTests";
 import { locateAndroidJdk } from "./androidJdk";
-import { DEFAULT_DISPLAY_DUMP, runAdbOutput, runDeviceScript, runDeviceShell, type BootedDevice } from "./androidDeviceShell";
+import { ROTATION_PROBE, parseRotation, parseWmSize, runAdbOutput, runDeviceScript, runDeviceShell, type BootedDevice } from "./androidDeviceShell";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 import { isLogcatCursor, logcatArgs, parseLogcatDump, parsePackageUid, parsePidof } from "./androidLogcat";
 import { fileAndroidCaptureAsProof, type AndroidArtifactFiler } from "./androidProof";
@@ -236,14 +236,12 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
     if (cached) return cached;
     const booted = await deps.requireBooted(laneId);
     const text = (await runDeviceScript(booted, "wm size", { timeoutMs: 15_000, signal })).text;
-    const size = /Override size:\s*(\d+)x(\d+)/u.exec(text) ?? /Physical size:\s*(\d+)x(\d+)/u.exec(text);
+    const size = parseWmSize(text);
     if (!size) throw new Error(`The emulator did not say its screen size: ${text.slice(0, 200)}`);
-    let width = Number(size[1]);
-    let height = Number(size[2]);
+    let { width, height } = size;
     // `wm size` is the natural orientation; the screen may be turned.
-    const rotationText = (await runDeviceScript(booted, `${DEFAULT_DISPLAY_DUMP} | grep -m1 -oE 'mRotation=[0-9]'`, { timeoutMs: 15_000, signal })).text;
-    const rotation = /mRotation=(\d)/u.exec(rotationText)?.[1];
-    if (rotation === "1" || rotation === "3") [width, height] = [height, width];
+    const rotation = parseRotation((await runDeviceScript(booted, ROTATION_PROBE, { timeoutMs: 15_000, signal })).text);
+    if (rotation === 1 || rotation === 3) [width, height] = [height, width];
     return { width, height };
   };
 
@@ -324,10 +322,7 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       const laneId = laneOf(args);
       const url = typeof args.url === "string" ? args.url.trim() : "";
       if (!/^[A-Za-z][A-Za-z0-9+.-]*:\S+$/u.test(url)) throw new Error("url must be a full URL with a scheme (https://…, myapp://…).");
-      await autoRecord.beforeInput(laneId, args);
-      const atMs = Date.now();
-      await apps.openUrl(laneId, url);
-      autoRecord.note({ laneId, chatSessionId: args.chatSessionId ?? null, kind: "navigate", label: demoUrlHost(url) ?? url.split(":")[0], atMs, source: args.source });
+      await autoRecord.around(laneId, args, () => apps.openUrl(laneId, url), () => ({ kind: "navigate", label: demoUrlHost(url) ?? url.split(":")[0] }));
       ui.invalidate(laneId);
       return { laneId, url };
     },
@@ -337,10 +332,7 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       const x = finiteNumber(args.x, "x");
       const y = finiteNumber(args.y, "y");
       const durationMs = clampNumber(args.durationMs, ANDROID_LONG_PRESS_DEFAULT_MS, ANDROID_LONG_PRESS_MIN_MS, ANDROID_LONG_PRESS_MAX_MS);
-      await autoRecord.beforeInput(laneId, args);
-      const atMs = Date.now();
-      await longPressAt(laneId, x, y, durationMs);
-      autoRecord.note({ laneId, chatSessionId: args.chatSessionId ?? null, kind: "tap", x, y, atMs, seconds: durationMs / 1000, source: args.source });
+      await autoRecord.around(laneId, args, () => longPressAt(laneId, x, y, durationMs), () => ({ kind: "tap", x, y, seconds: durationMs / 1000 }));
     },
 
     async drag(args) {
@@ -438,11 +430,13 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       const laneId = laneOf(args);
       const { picked, element } = await ui.find(laneId, readElementQuery(args), false);
       const holdMs = args.holdMs == null ? null : clampNumber(args.holdMs, ANDROID_LONG_PRESS_DEFAULT_MS, ANDROID_LONG_PRESS_MIN_MS, ANDROID_LONG_PRESS_MAX_MS);
-      await autoRecord.beforeInput(laneId, args);
-      const atMs = Date.now();
-      if (holdMs) await longPressAt(laneId, element.center.x, element.center.y, holdMs);
-      else await deps.input.tap({ laneId, x: element.center.x, y: element.center.y });
-      autoRecord.note({ laneId, chatSessionId: args.chatSessionId ?? null, kind: "tap", x: element.center.x, y: element.center.y, atMs, source: args.source });
+      const { x, y } = element.center;
+      await autoRecord.around(
+        laneId,
+        args,
+        () => (holdMs ? longPressAt(laneId, x, y, holdMs) : deps.input.tap({ laneId, x, y })),
+        () => ({ kind: "tap", x, y }),
+      );
       ui.invalidate(laneId);
       return elementActionResult("tap", picked);
     },

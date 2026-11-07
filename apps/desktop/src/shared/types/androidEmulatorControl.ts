@@ -6,9 +6,10 @@
  * Re-exported from `androidEmulator.ts`; import from there.
  */
 
-import type { AndroidLaneArgs, AndroidPackageArgs, AndroidUiBounds, AndroidUiElement, AndroidUiTreeSource } from "./androidEmulator";
+import type { AndroidLaneArgs, AndroidPackageArgs, AndroidUiElement, AndroidUiTreeSource } from "./androidEmulator";
 import type { AndroidLaunchResult } from "./androidEmulatorAgent";
 import type { AndroidInputRecordArgs } from "./androidEmulatorRecording";
+import type { IosElementContextItem } from "./iosSimulator";
 
 /* ---------- keys ---------- */
 
@@ -74,14 +75,29 @@ export function androidKeyCode(name: string): number | null {
   return null;
 }
 
+/** Other spellings of the modifiers, each to its name in `ANDROID_KEY_MODIFIERS`. */
+const ANDROID_KEY_MODIFIER_ALIASES: Readonly<Record<string, string>> = {
+  control: "ctrl",
+  option: "alt",
+  cmd: "meta",
+  command: "meta",
+};
+
+/** A modifier's name in `ANDROID_KEY_MODIFIERS` (`command` is `meta`); an unknown name stays as given. */
+export function androidKeyModifierName(name: string): string {
+  const lower = name.trim().toLowerCase();
+  return ANDROID_KEY_MODIFIER_ALIASES[lower] ?? lower;
+}
+
 /**
- * Splits `ctrl+shift+a` into its modifiers and its key. A lone `+` key is not
- * supported (Android has no key code for it on its own).
+ * Splits `ctrl+shift+a` into its modifiers and its key. The modifiers come
+ * back with their `ANDROID_KEY_MODIFIERS` names (`option+a` is alt). A lone
+ * `+` key is not supported (Android has no key code for it on its own).
  */
 export function splitAndroidKeyCombo(combo: string): { key: string; modifiers: string[] } {
   const parts = combo.trim().toLowerCase().split("+").map((part) => part.trim()).filter(Boolean);
   const key = parts.pop() ?? "";
-  return { key, modifiers: parts };
+  return { key, modifiers: parts.map(androidKeyModifierName) };
 }
 
 export type AndroidPressKeyArgs = AndroidLaneArgs & AndroidInputRecordArgs & {
@@ -104,6 +120,9 @@ export type AndroidPressKeyResult = {
 export const ANDROID_INTENT_EXTRA_TYPES = ["string", "int", "long", "float", "bool"] as const;
 export type AndroidIntentExtraType = (typeof ANDROID_INTENT_EXTRA_TYPES)[number];
 
+/** An intent extra's key name: letters, digits, `.`, `_`, `$`, `-`. */
+export const ANDROID_INTENT_EXTRA_KEY = /^[A-Za-z_][\w.$-]*$/u;
+
 /** One intent extra, as `am start --es/--ei/--el/--ef/--ez` takes it. */
 export type AndroidIntentExtra = { key: string; type: AndroidIntentExtraType; value: string };
 
@@ -117,7 +136,7 @@ export function parseAndroidIntentExtra(raw: string, forceString = false): Andro
   if (at <= 0) throw new Error(`An extra is key=value; got ${JSON.stringify(raw)}.`);
   const key = raw.slice(0, at).trim();
   const value = raw.slice(at + 1);
-  if (!/^[A-Za-z_][\w.$-]*$/u.test(key)) throw new Error(`The extra key ${JSON.stringify(key)} is not a key name.`);
+  if (!ANDROID_INTENT_EXTRA_KEY.test(key)) throw new Error(`The extra key ${JSON.stringify(key)} is not a key name.`);
   if (forceString) return { key, type: "string", value };
   if (value === "true" || value === "false") return { key, type: "bool", value };
   if (/^-?\d+$/u.test(value)) {
@@ -237,21 +256,10 @@ export type AndroidInspectResult = {
 };
 
 /**
- * The chip packet. It has Apple's `IosElementContextItem` shape, so the chat
- * composer takes it on the same path; `metadata.contextSurface` says Android.
+ * The chip packet: Apple's `IosElementContextItem`, so the chat composer takes
+ * it on the same path. `metadata.contextSurface` is `ANDROID_CONTEXT_SURFACE`.
  */
-export type AndroidElementContextItem = {
-  kind: "ios_element";
-  id: string;
-  componentId: string;
-  sourceFile: string | null;
-  sourceLine: number | null;
-  frame: AndroidUiBounds | null;
-  metadata: Record<string, unknown>;
-  accessibilityIdentifier?: string | null;
-  screenshotDataUrl?: string | null;
-  selectedAt: string;
-};
+export type AndroidElementContextItem = IosElementContextItem;
 
 /* ---------- lifecycle ---------- */
 

@@ -15,9 +15,6 @@ import { cn } from "../ui/cn";
 import { Banner, type NoticeAction } from "../ui/notice";
 import { showToast } from "../app/toast/toastStore";
 import { Button } from "../ui/Button";
-import { RecordingPill, RecordingSavedRow } from "../shared/RecordingReceipt";
-import { revealProofArtifactRow } from "../shared/recordingFormat";
-import { useTicker } from "../../lib/ticker";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import {
   androidAvdSpecLine,
@@ -48,6 +45,8 @@ import {
 } from "./AndroidDeviceStatus";
 import { useAndroidDeviceInput } from "./useAndroidDeviceInput";
 import { useAndroidDeviceStream } from "./useAndroidDeviceStream";
+import { useAndroidOrientation } from "./useAndroidOrientation";
+import { useAndroidScreenCaptures } from "./useAndroidScreenCaptures";
 import { androidCatalogColor, androidCatalogEntry, androidCatalogEntryForAvd, type AndroidCatalogEntry } from "../../../shared/androidDeviceCatalog";
 import type { Device3DFailure } from "../device/Device3DView";
 import { ANDROID_DEFAULT_BODY_COLOR, androidBodyColor, type AndroidBodySpec } from "./androidDeviceBody";
@@ -62,6 +61,7 @@ import { useAndroidBootScreen } from "./useAndroidBootScreen";
 import { useAndroidRenderRequests } from "./useAndroidRenderRequests";
 import { useAndroidInspect } from "./useAndroidInspect";
 import { useAndroidRecording } from "./useAndroidRecording";
+import { AndroidRecordingPill, AndroidRecordingSavedReceipt } from "./AndroidRecordingReceipts";
 import { useAndroidPosture } from "./useAndroidPosture";
 import { AndroidFoldDock } from "./AndroidFoldDock";
 import { useAndroidPaneFloat } from "./useAndroidPaneFloat";
@@ -174,10 +174,6 @@ export function AndroidDevicePane({
   const [pending, setPending] = useState<PendingStart | null>(null);
   const [error, setError] = useState<AndroidErrorDescription | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
-  const [screenshotPending, setScreenshotPending] = useState(false);
-  const [storeShotsPending, setStoreShotsPending] = useState(false);
-  /** Which way up the device is (the brain's read, then every rotate's event); null until read. */
-  const [orientation, setOrientation] = useState<DeviceOrientation | null>(null);
   const [noAccelDismissed, setNoAccelDismissed] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   /** The setup card, asked for from the picker when the host has no setup flow of its own. */
@@ -297,6 +293,8 @@ export function AndroidDevicePane({
   const pickerShownRef = useRef(false);
   /** `ade android render` events go to the render hook (set below, read through this ref). */
   const renderRequestRef = useRef<(event: AndroidRenderRequestEvent) => void>(() => undefined);
+  /** `android.device.orientation` goes to the orientation hook (set below, read through this ref). */
+  const orientationEventRef = useRef<(orientation: DeviceOrientation) => void>(() => undefined);
   useEffect(() => {
     if (!api?.onEvent) return undefined;
     let timer: number | null = null;
@@ -308,7 +306,7 @@ export function AndroidDevicePane({
         return;
       }
       if (event.type === "android.device.orientation") {
-        if (event.laneId === laneIdRef.current) setOrientation(event.orientation);
+        if (event.laneId === laneIdRef.current) orientationEventRef.current(event.orientation);
         return;
       }
       if (event.type === "android.device.state" && event.laneId !== laneIdRef.current) {
@@ -395,18 +393,6 @@ export function AndroidDevicePane({
   const deviceLive = paneState === "live";
   const inspect = useAndroidInspect({ laneId, live: deviceLive, runtimePinRef, onInsertDraft, onAddContext, onError: onToolError });
   const recording = useAndroidRecording({ laneId, live: deviceLive, chatSessionId: sessionId, runtimePinRef, onError: onToolError });
-  const recordingTick = useTicker(1000, Boolean(recording.active));
-  const [savedDismissedId, setSavedDismissedId] = useState<string | null>(null);
-  const savedRecording = recording.saved && recording.saved.id !== savedDismissedId ? recording.saved : null;
-  const openSavedRecording = useCallback(() => {
-    const saved = recording.saved;
-    if (!saved) return;
-    setSavedDismissedId(saved.id);
-    const artifactId = saved.proofArtifactIds[0] ?? null;
-    if (artifactId && revealProofArtifactRow(artifactId)) return;
-    // No proof row in this window: the file itself, when it is on this computer.
-    if (!remoteMachine) void window.ade.app.openPath(saved.path).catch(onToolError);
-  }, [onToolError, recording.saved, remoteMachine]);
   // Inspect boxes and the drawer go with the device: a new lane or a lost device starts them closed.
   const { inspectOn, toggleInspect } = inspect;
   useEffect(() => {
@@ -538,70 +524,27 @@ export function AndroidDevicePane({
     if (laneState === "off" || laneState === "crashed") start();
   }, [laneState, start]);
 
-  /*
-   * Which way up the device is. The brain reads it from the display (the
-   * home screen of a phone stays portrait, so the video's shape cannot say),
-   * after the device changes and whenever the video changes shape; a rotate
-   * from any caller pushes `android.device.orientation`.
-   */
+  /* Which way up the device is: `useAndroidOrientation`. */
   const streamShape = stream.width && stream.height ? `${stream.width}x${stream.height}` : null;
-  useEffect(() => {
-    setOrientation(null);
-  }, [laneId, pinKey, avdName]);
-  useEffect(() => {
-    if (!api?.getDeviceSettings || !streamShape) return undefined;
-    let cancelled = false;
-    void api.getDeviceSettings({ laneId, fields: "orientation" }, runtimePinRef.current)
-      .then((settings) => {
-        if (!cancelled && settings.orientation) setOrientation(settings.orientation);
-      })
-      .catch((caught: unknown) => {
-        // The rail keeps the last orientation it knew; the next shape change reads again.
-        console.warn("[android] orientation read failed", describeAndroidError(caught));
-      });
-    return () => {
-      cancelled = true;
-    };
-    // Keyed on the machine, not the pin object (CLAUDE.md "key effects on pin?.key").
-  }, [api, laneId, pinKey, streamShape]);
-  const rotate = useCallback((next: DeviceOrientation) => {
-    if (!api) return;
-    const before = orientation;
-    setOrientation(next);
-    // The new size reaches the view with the stream's next config record (~1 s).
-    void api.rotate({ laneId, orientation: next }, runtimePinRef.current).catch((caught: unknown) => {
-      setOrientation(before);
-      setError(describeAndroidError(caught));
-    });
-  }, [api, laneId, orientation]);
+  const onActionError = useCallback((caught: unknown) => setError(describeAndroidError(caught)), []);
+  const { orientation, setOrientation, rotate } = useAndroidOrientation({
+    api,
+    laneId,
+    avdName,
+    pinKey,
+    runtimePinRef,
+    streamShape,
+    onRotateError: onActionError,
+  });
+  orientationEventRef.current = setOrientation;
 
-  const storeScreenshots = useCallback(() => {
-    if (!api) return;
-    setStoreShotsPending(true);
-    void api.storeScreenshots({ laneId, chatSessionId: sessionId }, runtimePinRef.current)
-      .then((result) => showToast({
-        id: "android-store-shots",
-        tone: "success",
-        title: result.shots.length === 1 ? "Play Store screenshot saved" : `${result.shots.length} Play Store screenshots saved`,
-        message: result.shots.map((shot) => `${shot.display === "screen" ? shot.slot : `${shot.display} screen`} ${shot.width}×${shot.height}`).join(" · "),
-      }))
-      .catch((caught: unknown) => setError(describeAndroidError(caught)))
-      .finally(() => setStoreShotsPending(false));
-  }, [api, laneId, sessionId]);
-
-  const screenshot = useCallback(() => {
-    if (!api) return;
-    setScreenshotPending(true);
-    void api.screenshot({ laneId }, runtimePinRef.current)
-      .then((shot) => showToast({
-        id: "android-screenshot",
-        tone: "success",
-        title: "Screenshot saved",
-        message: `${shot.width}×${shot.height} · ${shot.path}`,
-      }))
-      .catch((caught: unknown) => setError(describeAndroidError(caught)))
-      .finally(() => setScreenshotPending(false));
-  }, [api, laneId]);
+  const { screenshot, screenshotPending, storeScreenshots, storeShotsPending } = useAndroidScreenCaptures({
+    api,
+    laneId,
+    chatSessionId: sessionId,
+    runtimePinRef,
+    onError: onActionError,
+  });
 
   const openLog = useCallback((path: string) => {
     // The log is a file on the emulator's machine. On another machine it
@@ -990,25 +933,10 @@ export function AndroidDevicePane({
                   machineName={machineName}
                 />
               )}
-              {recording.active ? (
-                <RecordingPill
-                  marker={{ "data-android-recording-pill": "" }}
-                  elapsedMs={Math.max(0, recordingTick - Date.parse(recording.active.startedAt)) || 0}
-                  stopDisabled={recording.busy}
-                  onStop={recording.toggleRecording}
-                />
-              ) : null}
+              <AndroidRecordingPill recording={recording} />
             </>
           ) : null}
-          {savedRecording && !recording.active ? (
-            <RecordingSavedRow
-              marker={{ "data-android-recording-saved": savedRecording.id }}
-              durationMs={savedRecording.durationMs ?? 0}
-              bytes={savedRecording.bytes}
-              onOpen={openSavedRecording}
-              onDismiss={() => setSavedDismissedId(savedRecording.id)}
-            />
-          ) : null}
+          <AndroidRecordingSavedReceipt recording={recording} remoteMachine={remoteMachine} onError={onToolError} />
           </div>
           {posture.posture ? (
             <AndroidFoldDock

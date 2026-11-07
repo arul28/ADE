@@ -8,10 +8,10 @@
  */
 import { asString, isRecord, renderKeyValues, renderTable, unwrapActionEnvelope, type JsonObject } from "./cli";
 import { formatAndroidBytes } from "../../desktop/src/shared/androidFormat";
+import { ANDROID_ACCESSIBILITY_LABELS, ANDROID_ACCESSIBILITY_OPTIONS } from "../../desktop/src/shared/types/androidEmulator";
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import { formatProofDuration, proofIdleCutLabel } from "../../desktop/src/shared/proofProvenance";
 import { appleLeaseAnswer, leaseAcquiredLines, leaseHeldLine, leaseReleasedLine } from "./cliAppleFormat";
-import { androidDeviceSettingsLines } from "./cliAndroidDevice";
 
 /* ── Text output ──────────────────────────────────────────────────────────── */
 
@@ -19,6 +19,17 @@ import { androidDeviceSettingsLines } from "./cliAndroidDevice";
 export function record(value: unknown): JsonObject {
   const unwrapped = unwrapActionEnvelope(value);
   return isRecord(unwrapped) ? unwrapped : {};
+}
+
+/**
+ * The action's answer with what was asked, so `--json` and the text line both
+ * have it. A void input action answers with this alone.
+ */
+export function withAsked(asked: JsonObject) {
+  return (values: JsonObject): unknown => {
+    const result = record(values.result);
+    return { ok: true, ...result, ...asked };
+  };
 }
 
 export function records(value: unknown): JsonObject[] {
@@ -813,4 +824,75 @@ export function formatAndroidCleanup(value: unknown): string {
   const minutes = Number(result.idlePowerOffMinutes);
   lines.push("", minutes > 0 ? `Idle power-off: after ${minutes} min (ADE_ANDROID_IDLE_POWER_OFF_MINUTES).` : "Idle power-off: off (ADE_ANDROID_IDLE_POWER_OFF_MINUTES=0).");
   return lines.join("\n");
+}
+
+/* ── Device state (`accessibility`, `status-bar`, `play-store-shots`, `window`) ── */
+
+/** `status-bar`: whether the override is on now. */
+export function formatAndroidStatusBar(value: unknown): string {
+  const result = record(value);
+  if (result.overridden === true) return `android status-bar: overridden${asString(result.time) ? ` (${asString(result.time)})` : ""}`;
+  return "android status-bar: the device's own";
+}
+
+/** `play-store-shots`: one line per PNG (raw, so an agent can Read the path back). */
+export function formatAndroidStoreShots(value: unknown): string {
+  const result = record(value);
+  const shots = Array.isArray(result.shots) ? result.shots.filter(isRecord) : [];
+  return [
+    renderKeyValues("ADE Google Play screenshots", [
+      ["device", result.foldable === true ? "foldable (cover shut, inner open)" : "one screen"],
+      ["shots", String(shots.length)],
+    ]),
+    ...shots.map((shot) => {
+      const slot = asString(shot.slot) === "large-screen" ? "large screen (7\"/10\" tablet slot)" : "phone";
+      const screen = typeof shot.screenWidth === "number" ? ` from ${shot.screenWidth}x${shot.screenHeight}` : "";
+      const filed = asString(shot.proofArtifactId) ? " (filed as proof)" : "";
+      return `shot: ${asString(shot.display) ?? "screen"} · ${slot} · ${String(shot.width)}x${String(shot.height)}${screen}: ${asString(shot.filePath) ?? ""}${filed}`;
+    }),
+  ].join("\n");
+}
+
+/** `window`: the app windows after the action, and whether it landed. */
+export function formatAndroidWindow(value: unknown): string {
+  const result = record(value);
+  const windows = Array.isArray(result.windows) ? result.windows.filter(isRecord) : [];
+  const screen = isRecord(result.screen) ? result.screen : null;
+  const frame = (entry: JsonObject) => {
+    const f = isRecord(entry.frame) ? entry.frame : {};
+    return `${String(f.width)}x${String(f.height)} at ${String(f.x)},${String(f.y)}`;
+  };
+  return [
+    renderKeyValues(`ADE Android window ${asString(result.action) ?? "status"}`, [
+      ["screen", screen ? `${String(screen.width)}x${String(screen.height)}` : null],
+      ["app", result.packageName],
+      ["applied", result.applied === false ? `no: ${asString(result.reason) ?? "the window did not move"}` : "yes"],
+    ]),
+    renderTable(
+      ["task", "app", "mode", "frame", "visible"],
+      windows.map((entry) => [entry.taskId, entry.packageName, entry.mode, frame(entry), entry.visible === true ? "yes" : "no"]),
+      "No app windows.",
+    ),
+  ].join("\n");
+}
+
+/** The settings lines this track adds to `formatAndroidSettings`. */
+export function androidDeviceSettingsLines(settings: JsonObject): Array<[string, unknown]> {
+  const accessibility = isRecord(settings.accessibility) ? settings.accessibility : null;
+  const location = isRecord(settings.location) ? settings.location : null;
+  const lines: Array<[string, unknown]> = [];
+  if (accessibility) {
+    for (const option of ANDROID_ACCESSIBILITY_OPTIONS) {
+      const state = accessibility[option];
+      lines.push([ANDROID_ACCESSIBILITY_LABELS[option].toLowerCase(), state === true ? "on" : state === false ? "off" : state === null ? "not on this image" : null]);
+    }
+  }
+  if (settings.statusBarOverridden !== undefined) {
+    lines.push(["status bar", settings.statusBarOverridden === true ? "overridden (demo mode)" : settings.statusBarOverridden === false ? "the device's own" : null]);
+  }
+  if (settings.location !== undefined) {
+    lines.push(["location", location ? `${String(location.latitude)}, ${String(location.longitude)} (set by ADE)` : "not set by ADE on this boot"]);
+  }
+  if (settings.orientation !== undefined) lines.push(["orientation", settings.orientation]);
+  return lines;
 }

@@ -1,10 +1,10 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import type { DemoArtifactMetadata, DemoEngine, DemoRect, DemoTrack, DemoTrackEvent } from "../../../shared/demoVideo/demoContract";
 import type { AndroidRecordingSegment } from "../../../shared/types/androidEmulator";
 import { readDemoMp4 } from "../demoVideo/demoMp4Source";
 import { DemoRecordingUnusableError, demoLengths, produceDemoVideo } from "../demoVideo/demoRenderService";
-import { ensureFfmpegTools, ffmpegDownloadable, resolveFfmpegTools } from "../demoVideo/ffmpegDemoEngine";
+import { ensureFfmpegTools, ffmpegDownloadable, resolveFfmpegTools, runFfmpeg } from "../demoVideo/ffmpegDemoEngine";
 import { planPlainDemo } from "../../../shared/demoVideo/demoPlanner";
 import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import type { Logger } from "../logging/logger";
@@ -96,34 +96,6 @@ export function remapAndroidTrackToCanvas(track: DemoTrack | null, segments: rea
   return { ...track, events };
 }
 
-/** Runs one ffmpeg without a shell; stopped by `signal`. */
-function runFfmpegOnce(ffmpegPath: string, args: string[], signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new Error("the time for the join ran out"));
-      return;
-    }
-    const child = spawn(ffmpegPath, args, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
-    let tail = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      tail = `${tail}${chunk.toString("utf8")}`.slice(-2_000);
-    });
-    const onAbort = () => child.kill();
-    signal.addEventListener("abort", onAbort, { once: true });
-    child.once("error", (error) => {
-      signal.removeEventListener("abort", onAbort);
-      reject(error);
-    });
-    child.once("close", (code) => {
-      signal.removeEventListener("abort", onAbort);
-      if (signal.aborted) reject(new Error("the time for the join ran out"));
-      else if (code === 0) resolve();
-      else reject(new Error(`ffmpeg exited ${code}: ${tail.trim().split(/\r?\n/u).at(-1) ?? ""}`));
-    });
-  });
-}
-
-/** One ffmpeg run: each part scaled into the canvas with black bars, then all joined. */
 /**
  * An ffmpeg on this machine that can join the parts: the demo engine's, else
  * any one with libx264 (a join needs no drawtext). Null when there is none.
@@ -151,12 +123,14 @@ function localJoinFfmpeg(logger: Logger | null): Promise<string | null> {
   return joinFfmpegCache;
 }
 
+/** One ffmpeg run: each part scaled into the canvas with black bars, then all joined. */
 async function joinWithFfmpeg(
   segments: readonly AndroidRecordingSegment[],
   outputPath: string,
   canvas: Size,
   signal: AbortSignal,
   localFfmpeg: string | null,
+  logger: Logger | null,
 ): Promise<void> {
   const tools = localFfmpeg ? { ffmpegPath: localFfmpeg } : await Promise.race([
     ensureFfmpegTools(),
@@ -166,15 +140,23 @@ async function joinWithFfmpeg(
   const chains = segments.map((_, index) =>
     `[${index}:v]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${JOIN_FPS},format=yuv420p[v${index}]`);
   const filter = `${chains.join(";")};${segments.map((_, index) => `[v${index}]`).join("")}concat=n=${segments.length}:v=1:a=0[out]`;
-  await runFfmpegOnce(tools.ffmpegPath, [
-    "-hide_banner", "-loglevel", "error", "-y",
-    ...segments.flatMap((segment) => ["-i", segment.path]),
-    "-filter_complex", filter,
-    "-map", "[out]",
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
-    "-movflags", "+faststart",
-    outputPath,
-  ], signal);
+  // The stop's budget (`signal`) ends it; the timeout is only a backstop.
+  await runFfmpeg({
+    binaryPath: tools.ffmpegPath,
+    args: [
+      "-hide_banner", "-loglevel", "error", "-y",
+      ...segments.flatMap((segment) => ["-i", segment.path]),
+      "-filter_complex", filter,
+      "-map", "[out]",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+      "-movflags", "+faststart",
+      outputPath,
+    ],
+    timeoutMs: ANDROID_DEMO_BUDGET_MS,
+    signal,
+    logger,
+    label: "join",
+  });
 }
 
 /** An MP4 sample's NALs with 4-byte length fields, as the avcC here says. */
@@ -304,11 +286,11 @@ async function joinSegments(args: {
   // macOS; then ADE's own ffmpeg, which may need a download.
   const localFfmpeg = await localJoinFfmpeg(args.logger);
   if (localFfmpeg) {
-    await joinWithFfmpeg(args.segments, args.rawPath, canvas, args.signal, localFfmpeg);
+    await joinWithFfmpeg(args.segments, args.rawPath, canvas, args.signal, localFfmpeg, args.logger);
   } else if (swift) {
     await joinWithEngine(swift, args.segments, args.rawPath, canvas, args.signal);
   } else if (ffmpegDownloadable()) {
-    await joinWithFfmpeg(args.segments, args.rawPath, canvas, args.signal, null);
+    await joinWithFfmpeg(args.segments, args.rawPath, canvas, args.signal, null, args.logger);
   } else {
     throw new Error("this machine has no video engine to join the parts of a turned screen");
   }
@@ -339,6 +321,28 @@ function fileSegment(filePath: string, size: Size, durationMs: number, frames: n
 }
 
 /**
+ * The video as it was recorded, at any size: `files` are filed unchanged.
+ * `reason` says why there is no demo; null leaves the demo record out.
+ */
+export function androidRawVideoFallback(
+  files: AndroidRecordingSegment[],
+  wallMs: number,
+  reason: string | null,
+): AndroidRecordingVideo {
+  return {
+    files,
+    demo: reason === null
+      ? null
+      : { plain: true, engine: null, sourceSeconds: wallMs / 1000, outputSeconds: wallMs / 1000, cutSeconds: 0, spedUpSourceSeconds: 0, steps: [], fallbackReason: reason },
+    durationMs: wallMs,
+    wallDurationMs: wallMs,
+    idleCutMs: 0,
+    bytes: files.reduce((sum, file) => sum + file.bytes, 0),
+    unusable: null,
+  };
+}
+
+/**
  * Turns the recorder's parts into the one video ADE keeps at `outputPath`
  * (`<id>.mp4`). Only that file stays (or, when nothing could join them, the
  * parts). Never throws for a render failure: the raw video is filed instead.
@@ -360,15 +364,7 @@ export async function produceAndroidRecordingVideo(args: {
   const rawPath = outputPath.replace(/\.mp4$/u, ".raw.mp4");
   const keepParts = (reason: string): AndroidRecordingVideo => {
     logger.warn("android.recording_join_failed", { parts: segments.length, reason });
-    return {
-      files: segments,
-      demo: { plain: true, engine: null, sourceSeconds: wallMs / 1000, outputSeconds: wallMs / 1000, cutSeconds: 0, spedUpSourceSeconds: 0, steps: [], fallbackReason: reason },
-      durationMs: wallMs,
-      wallDurationMs: wallMs,
-      idleCutMs: 0,
-      bytes: segments.reduce((sum, segment) => sum + segment.bytes, 0),
-      unusable: null,
-    };
+    return androidRawVideoFallback(segments, wallMs, reason);
   };
 
   let rawSize: Size = segments[0]!;
@@ -421,15 +417,6 @@ export async function produceAndroidRecordingVideo(args: {
       fs.rmSync(outputPath, { force: true });
       fs.renameSync(rawPath, outputPath);
     }
-    const file = fileSegment(outputPath, rawSize, wallMs, frames);
-    return {
-      files: [file],
-      demo: { plain: true, engine: null, sourceSeconds: wallMs / 1000, outputSeconds: wallMs / 1000, cutSeconds: 0, spedUpSourceSeconds: 0, steps: [], fallbackReason: reason },
-      durationMs: wallMs,
-      wallDurationMs: wallMs,
-      idleCutMs: 0,
-      bytes: file.bytes,
-      unusable: null,
-    };
+    return androidRawVideoFallback([fileSegment(outputPath, rawSize, wallMs, frames)], wallMs, reason);
   }
 }

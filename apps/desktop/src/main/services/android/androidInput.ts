@@ -5,13 +5,14 @@ import {
   ANDROID_NAMED_KEYCODES,
   androidKeyCode,
   isAndroidHardwareKey,
+  androidKeyModifierName,
   splitAndroidKeyCombo,
   type AndroidEmulatorServiceApi,
   type AndroidTouchEvent,
 } from "../../../shared/types/androidEmulator";
 import { sleep } from "../shared/utils";
 import { runAdb } from "./adb";
-import { DEFAULT_DISPLAY_DUMP, runAdbOutput } from "./androidDeviceShell";
+import { ROTATION_PROBE, parseRotation, parseWmSize, runAdbOutput } from "./androidDeviceShell";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 import { asStreamFailure, type AndroidStreamHub } from "./androidStream";
 import { ANDROID_HARDWARE_KEYCODES } from "./scrcpyControl";
@@ -55,7 +56,7 @@ const KEYCODE_ENTER = 66;
 export function readAndroidKeyPress(key: unknown, modifiers: unknown): { keycode: number; label: string; modifiers: Array<{ keycode: number; meta: number }> } {
   const combo = splitAndroidKeyCombo(typeof key === "string" ? key : "");
   const extra = Array.isArray(modifiers) ? modifiers.filter((name): name is string => typeof name === "string") : [];
-  const names = [...new Set([...extra.map((name) => name.trim().toLowerCase()).filter(Boolean), ...combo.modifiers])];
+  const names = [...new Set([...extra.filter((name) => name.trim()).map(androidKeyModifierName), ...combo.modifiers])];
   const keycode = androidKeyCode(combo.key);
   if (keycode === null) {
     throw new Error(`Unknown key ${JSON.stringify(combo.key || key)}. Keys: ${Object.keys(ANDROID_NAMED_KEYCODES).join(", ")}, or one letter or digit.`);
@@ -210,8 +211,8 @@ export function createAndroidInput(deps: AndroidInputDeps): AndroidInputApi {
       // landscape on most tablets. Each step turns the device a quarter to the
       // left (`androidOrientationFor`); `landscape` is `landscape-right`.
       const sizeText = (await shell(["wm", "size"])).text;
-      const size = /Override size:\s*(\d+)x(\d+)/u.exec(sizeText) ?? /Physical size:\s*(\d+)x(\d+)/u.exec(sizeText);
-      const naturalLandscape = size ? Number(size[1]) > Number(size[2]) : false;
+      const size = parseWmSize(sizeText);
+      const naturalLandscape = size ? size.width > size.height : false;
       const target = androidRotationFor(orientation, naturalLandscape);
       if (target === null) throw new Error(`orientation must be one of ${ANDROID_ORIENTATIONS.join(", ")}.`);
       const rotation = String(target);
@@ -234,7 +235,8 @@ export function createAndroidInput(deps: AndroidInputDeps): AndroidInputApi {
       // turns: stop once the window manager has kept another rotation a moment.
       const lockedAt = Date.now();
       while (Date.now() - lockedAt < ROTATE_SETTLE_MS && !signal.aborted) {
-        const current = /mRotation=(\d)/u.exec((await shell([`${DEFAULT_DISPLAY_DUMP} | grep -m1 -oE 'mRotation=[0-9]'`])).text)?.[1] ?? null;
+        const turned = parseRotation((await shell([ROTATION_PROBE])).text);
+        const current = turned === null ? null : String(turned);
         if (current === rotation) {
           const header = /(\d+)\s+(\d+)/u.exec((await shell(["screencap 2>/dev/null | head -c 8 | od -An -tu4"])).text);
           if (!header || (Number(header[1]) > Number(header[2])) === wantLandscape) return;

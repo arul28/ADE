@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import type { AndroidDeviceInventory, AndroidEmulatorEvent } from "../../../shared/types/androidEmulator";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
-import { androidAvdDisplayName } from "../../../shared/computerUseActionOutput";
+import { androidAvdDisplayName } from "../../../shared/androidDevicePresentation";
+import { useLaneDeviceMarks } from "../device/useLaneDeviceMarks";
 
 /**
  * Which lanes on the tab's machine hold an Android emulator, for the Work
@@ -66,75 +66,31 @@ export function useLaneAndroidDevices(args: {
 }): LaneAndroidDevices {
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const bindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
-  const available = typeof window !== "undefined" && Boolean(window.ade?.androidEmulator?.listDevices);
-  const scope = available ? `${bindingKey ?? ""}\u0000${projectRoot ?? ""}` : null;
-  const laneSignature = [...args.laneIds].sort().join("|");
-
-  const [devices, setDevices] = useState<LaneAndroidDevices>(EMPTY);
-  const devicesRef = useRef<LaneAndroidDevices>(EMPTY);
-  const scopeRef = useRef<string | null>(scope);
-  scopeRef.current = scope;
-
-  const apply = useCallback((next: LaneAndroidDevices) => {
-    if (sameDevices(devicesRef.current, next)) return;
-    devicesRef.current = next;
-    setDevices(next);
-  }, []);
-
-  const read = useCallback(async () => {
-    const api = window.ade?.androidEmulator;
-    const readScope = scopeRef.current;
-    if (!api?.listDevices || !readScope) return;
-    let inventory: AndroidDeviceInventory;
-    try {
-      inventory = await api.listDevices({});
-    } catch (cause: unknown) {
-      // A failed read keeps the marks on screen; a blip should not blink them.
-      logRendererDebugEvent("android.lane_marks_read_failed", { error: cause instanceof Error ? cause.message : String(cause) });
-      return;
-    }
-    if (scopeRef.current !== readScope) return;
-    apply(buildLaneAndroidDevices(inventory));
-  }, [apply]);
-
-  // A new project or machine starts empty rather than showing the last one's marks.
-  useEffect(() => {
-    devicesRef.current = EMPTY;
-    setDevices(EMPTY);
-  }, [scope]);
-
-  useEffect(() => {
-    if (!scope) return;
-    void read();
-  }, [laneSignature, read, scope]);
-
-  useEffect(() => {
-    if (!scope) return undefined;
-    const api = window.ade?.androidEmulator;
-    if (!api?.onEvent) return undefined;
-    let timer: number | null = null;
-    const unsubscribe = api.onEvent((event: AndroidEmulatorEvent) => {
-      if (event.type !== "android.device.state" && event.type !== "android.inventory.changed") return;
-      if (event.type === "android.device.state") {
-        const current = devicesRef.current.get(event.laneId);
-        const running = event.state === "booted";
-        if (current && current.running !== running) {
-          const next = new Map(devicesRef.current);
-          next.set(event.laneId, { ...current, running });
-          apply(next);
-        }
+  const api = typeof window !== "undefined" ? window.ade?.androidEmulator : undefined;
+  const scope = api?.listDevices ? `${bindingKey ?? ""}\u0000${projectRoot ?? ""}` : null;
+  return useLaneDeviceMarks<LaneAndroidDevice, AndroidEmulatorEvent>({
+    scope,
+    refreshKey: [...args.laneIds].sort().join("|"),
+    read: async () => {
+      if (!api?.listDevices) return null;
+      try {
+        return buildLaneAndroidDevices(await api.listDevices({}));
+      } catch (cause: unknown) {
+        // A failed read keeps the marks on screen; a blip should not blink them.
+        logRendererDebugEvent("android.lane_marks_read_failed", { error: cause instanceof Error ? cause.message : String(cause) });
+        return null;
       }
-      if (timer != null) window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        timer = null;
-        void read();
-      }, EVENT_REFRESH_DELAY_MS);
-    });
-    return () => {
-      if (timer != null) window.clearTimeout(timer);
-      unsubscribe?.();
-    };
-  }, [apply, read, scope]);
-
-  return devices;
+    },
+    subscribe: api?.onEvent ? (listener) => api.onEvent(listener) : null,
+    onEvent: (event, current) => {
+      if (event.type === "android.inventory.changed") return null;
+      if (event.type !== "android.device.state") return false;
+      const device = current.get(event.laneId);
+      const running = event.state === "booted";
+      if (!device || device.running === running) return null;
+      return new Map(current).set(event.laneId, { ...device, running });
+    },
+    same: sameDevices,
+    eventDelayMs: EVENT_REFRESH_DELAY_MS,
+  }, EMPTY);
 }

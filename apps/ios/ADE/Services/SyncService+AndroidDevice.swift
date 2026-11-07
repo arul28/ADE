@@ -73,6 +73,29 @@ func androidDeviceOwnerLabel(_ owner: AndroidDeviceStatusOwner?) -> String? {
   return "an agent"
 }
 
+/// The three hinge tiles of a foldable emulator, as `setPosture` names them.
+enum AndroidHingePose: String, CaseIterable {
+  case open, half, closed
+
+  /// The hinge angle the pose sets: 0 is shut, 180 is flat.
+  var angle: Double {
+    switch self {
+    case .open: return 180
+    case .half: return 90
+    case .closed: return 0
+    }
+  }
+
+  /// Whether a hinge at `angle` reads as this pose.
+  func matches(_ angle: Double) -> Bool {
+    switch self {
+    case .open: return angle >= 170
+    case .half: return angle > 10 && angle < 170
+    case .closed: return angle <= 10
+    }
+  }
+}
+
 /// The hinge angle that mirrors the phone in the hand onto a foldable
 /// emulator. The inner display keeps it open no less than 70°, as the
 /// simulator's rule; the front screen shuts it (0°), which shows the

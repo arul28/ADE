@@ -6,6 +6,13 @@
  */
 
 import type { AndroidLaneArgs } from "./androidEmulator";
+import {
+  APPLE_RECORDINGS_WARN_GIB_MAX,
+  APPLE_RECORDINGS_WARN_GIB_MIN,
+  APPLE_REMOTE_BITRATE_KBPS_MAX,
+  APPLE_REMOTE_BITRATE_KBPS_MIN,
+  GIB,
+} from "../appleDeviceSettings";
 
 /* ---------- who drove the device ---------- */
 
@@ -27,7 +34,6 @@ export type AndroidInputRecordArgs = {
 
 /* ---------- machine preferences ---------- */
 
-const GIB = 1024 ** 3;
 
 /**
  * The machine's Android recording and viewer preferences, kept in the
@@ -47,10 +53,11 @@ export type AndroidMachinePreferences = {
   remoteBitrateKbpsCap: number;
 };
 
-export const ANDROID_REMOTE_BITRATE_KBPS_MIN = 100;
-export const ANDROID_REMOTE_BITRATE_KBPS_MAX = 20_000;
-export const ANDROID_RECORDINGS_WARN_GIB_MIN = 1;
-export const ANDROID_RECORDINGS_WARN_GIB_MAX = 100;
+/** The same bounds as Apple's machine preferences. */
+export const ANDROID_REMOTE_BITRATE_KBPS_MIN = APPLE_REMOTE_BITRATE_KBPS_MIN;
+export const ANDROID_REMOTE_BITRATE_KBPS_MAX = APPLE_REMOTE_BITRATE_KBPS_MAX;
+export const ANDROID_RECORDINGS_WARN_GIB_MIN = APPLE_RECORDINGS_WARN_GIB_MIN;
+export const ANDROID_RECORDINGS_WARN_GIB_MAX = APPLE_RECORDINGS_WARN_GIB_MAX;
 
 export const DEFAULT_ANDROID_MACHINE_PREFERENCES: Readonly<AndroidMachinePreferences> = Object.freeze({
   tapRings: true,

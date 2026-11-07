@@ -108,7 +108,8 @@ function normaliseTyped(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function isSecureField(element: IosScreenElement): boolean {
+/** A password field: its text is never shown or read back. */
+export function isSecureField(element: IosScreenElement): boolean {
   return [element.role, element.elementType, element.metadata?.role_description]
     .some((value) => typeof value === "string" && /secure/i.test(value));
 }

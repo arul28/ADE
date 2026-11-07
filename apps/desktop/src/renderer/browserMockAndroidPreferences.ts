@@ -8,6 +8,8 @@ import {
   normalizeAndroidMachinePreferences,
 } from "../shared/types/androidEmulator";
 import type { OpenProjectBinding } from "../shared/types";
+import { GIB } from "../shared/appleDeviceSettings";
+import { mockDelay as later, mockParam as param } from "./browserMockAndroidUtil";
 
 /*
  * The browser preview's machine preferences (Settings › Android devices):
@@ -21,16 +23,6 @@ import type { OpenProjectBinding } from "../shared/types";
  *   its toast. `?mockAndroidPrefs=old` refuses reads too, as an older ADE
  *   on that machine (with no such action) would.
  */
-
-const GIB = 1024 ** 3;
-
-function param(name: string): string | null {
-  try {
-    return new URLSearchParams(window.location.search).get(name);
-  } catch {
-    return null;
-  }
-}
 
 function recordingsBytes(): number | null {
   const raw = param("mockAndroidRecordingsBytes");
@@ -57,7 +49,6 @@ export function createMockAndroidPreferences(input: {
     preferences,
     recordingsBytes: bytes,
   });
-  const later = <T,>(value: T, ms: number) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
   return {
     getMachinePreferences: async (_args, pin) => {
       if (mode === "old") throw new Error("Unknown action android_emulator.getMachinePreferences (mock).");

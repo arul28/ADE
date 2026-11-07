@@ -25,7 +25,7 @@ import type { AndroidCatalogColor } from "../../../shared/androidDeviceCatalog";
 import type { AndroidHardwareKey } from "../../../shared/types/androidEmulator";
 import type { DeviceOrientation } from "../../../shared/types/deviceOrientation";
 import { cn } from "../ui/cn";
-import { APPLE_ORIENTATION_CHOICES, appleOrientationIconDegrees, appleOrientationLabel } from "../apple/appleDeviceState";
+import { deviceOrientationIconDegrees, deviceOrientationLabel, OrientationMenuItems } from "../device/OrientationMenuItems";
 import { DEVICE_RAIL_COMPACT_WIDTH, DeviceRail, RailButton, RailDivider, RailMenu } from "../device/DeviceRail";
 import {
   MENU_CONTENT_CLASS,
@@ -165,12 +165,12 @@ export function AndroidDeviceRail({
       {compact ? null : (
         <>
           <RailMenu
-            label={`Orientation: ${appleOrientationLabel(orientation)}`}
+            label={`Orientation: ${deviceOrientationLabel(orientation)}`}
             disabled={keysDisabled || !onOrientation}
-            icon={<DeviceMobile size={16} style={{ transform: `rotate(${appleOrientationIconDegrees(orientation)}deg)` }} />}
+            icon={<DeviceMobile size={16} style={{ transform: `rotate(${deviceOrientationIconDegrees(orientation)}deg)` }} />}
           >
             <div className={MENU_LABEL_CLASS}>Orientation</div>
-            {orientationItems(orientation, onOrientation)}
+            <OrientationMenuItems orientation={orientation} onOrientation={onOrientation} />
           </RailMenu>
           {onToggleInspect ? (
             <RailButton
@@ -291,8 +291,8 @@ export function AndroidDeviceRail({
         {compact ? (
           <>
             {/* A short pane drops these two from the rail; they live here instead. */}
-            <div className={MENU_LABEL_CLASS}>Orientation: {appleOrientationLabel(orientation)}</div>
-            {keysDisabled ? null : orientationItems(orientation, onOrientation)}
+            <div className={MENU_LABEL_CLASS}>Orientation: {deviceOrientationLabel(orientation)}</div>
+            {keysDisabled ? null : <OrientationMenuItems orientation={orientation} onOrientation={onOrientation} />}
             <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
             <DropdownMenu.Item className={MENU_ITEM_CLASS} disabled={keysDisabled || screenshotPending} onSelect={onScreenshot}>
               <Camera size={14} />
@@ -333,23 +333,4 @@ export function AndroidDeviceRail({
       </RailMenu>
     </DeviceRail>
   );
-}
-
-/** The four orientations, the current one checked (Apple's menu). */
-function orientationItems(
-  orientation: DeviceOrientation,
-  onOrientation: ((orientation: DeviceOrientation) => void) | undefined,
-) {
-  return APPLE_ORIENTATION_CHOICES.map((choice) => (
-    <DropdownMenu.Item
-      key={choice}
-      className={MENU_ITEM_CLASS}
-      disabled={!onOrientation}
-      aria-checked={choice === orientation}
-      onSelect={() => onOrientation?.(choice)}
-    >
-      {choice === orientation ? <Check size={14} weight="bold" /> : <span className="w-[14px]" aria-hidden="true" />}
-      {appleOrientationLabel(choice)}
-    </DropdownMenu.Item>
-  ));
 }
