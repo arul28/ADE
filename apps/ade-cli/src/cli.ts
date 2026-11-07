@@ -29213,6 +29213,9 @@ async function runServe(
       // A project socket served here moves to the project host once one attaches.
       projectHostAttached: () => sharedSyncListener?.hasConnectionHandler() ?? false,
       onProjectHostAttached: (listener) => sharedSyncListener?.onConnectionHandlerAttached(listener) ?? (() => {}),
+      activateProjectHost: async () => {
+        await scopeRegistry.resolveActiveSyncHost();
+      },
       projectCommandRouter: {
         resolveProjectId: ({ projectId, projectRootPath }) => {
           const byId = projectId?.trim() ? projectRegistry.get(projectId.trim()) : null;
@@ -29643,13 +29646,22 @@ async function runServe(
     return buildMachineAccountDomainServices(await machineAccountRuntime);
   };
 
-  // An action another machine runs here is use: on a cloud machine it keeps
-  // the machine awake (agent37KeepAwake). Connection housekeeping is not.
+  // Work another machine does here (a command, a chat or CLI send, a file
+  // copied in) keeps a cloud machine awake (agent37KeepAwake). Reads, lists
+  // and status polls do not: an idle window polling one must not bill it all month.
+  const isRemoteWork = (params: unknown): boolean => {
+    if (!isRecord(params) || !isRecord(params.arguments)) return false;
+    if (params.name === "work_copy_file") return true;
+    if (params.name !== "run_ade_action") return false;
+    const domain = asString(params.arguments.domain);
+    const action = asString(params.arguments.action);
+    return Boolean(domain && action && adeActionAccess(domain, action) === "write");
+  };
   const withRemoteUseNoted = <H extends JsonRpcHandler>(peerDeviceId: string | null, handler: H): H => {
     if (!peerDeviceId || !agent37KeepAwake) return handler;
     const keepAwake = agent37KeepAwake;
     return Object.assign(async (request: Parameters<JsonRpcHandler>[0]) => {
-      if (request.method === "ade/actions/call") keepAwake.noteUse();
+      if (request.method === "ade/actions/call" && isRemoteWork(request.params)) keepAwake.noteUse();
       return await handler(request);
     }, handler);
   };

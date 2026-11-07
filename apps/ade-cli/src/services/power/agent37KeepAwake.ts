@@ -63,9 +63,9 @@ export type Agent37KeepAwake = {
   start(): void;
   dispose(): void;
   /**
-   * Another machine just used this one (an agent's call, a `--machine`
-   * command). Short commands finish between pings, so without this a machine
-   * someone is working on through the relay looked idle and slept under them.
+   * Another machine just did work here (a command, a chat send, a file copied
+   * in; never a read). Short commands finish between pings, so without this a
+   * machine someone works on through the relay looked idle and slept under them.
    */
   noteUse(): void;
   /** One check now (tests, and a host that knows work just started). */

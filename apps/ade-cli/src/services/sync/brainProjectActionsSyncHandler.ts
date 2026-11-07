@@ -83,6 +83,7 @@ import {
   mobileAppTooOldHelloError,
   sendSyncProtocolVersionMismatchAndClose,
   SYNC_CHUNKED_ENVELOPES_CAPABILITY,
+  SYNC_RUNTIME_ONLY_CAPABILITY,
   SyncProtocolVersionMismatchError,
 } from "./syncProtocol";
 import { isMobileAppBuildTooOld } from "../../../../desktop/src/shared/syncMobileCompatibility";
@@ -207,6 +208,12 @@ type BrainProjectActionsSyncHandlerArgs = {
   projectHostAttached?: () => boolean;
   /** Subscribe to a project sync host attaching to the shared listener. */
   onProjectHostAttached?: (listener: () => void) => () => void;
+  /**
+   * Start the sync host for the project this machine's catalog names as open.
+   * A browser's first connection takes that project from the catalog without
+   * switching to it, so nothing else would start its host.
+   */
+  activateProjectHost?: () => Promise<void>;
   /**
    * One bounded product-analytics capture per completed host repair. The brain
    * is the durable owner boundary here: the tap happens on a phone or a
@@ -749,12 +756,18 @@ export function createBrainProjectActionsSyncHandler(
     send,
     isPeerBackpressured,
   });
-  // A project (non-roster) socket is served here only until a project host
-  // attaches; closing it then makes the client reconnect onto that host. A web
-  // or phone that switches to a project on a machine with no host yet
-  // reconnects right after the switch answer, before completion starts the
-  // host, and otherwise kept this ingress's reduced hello (no lanes, no files)
-  // until a reload. Roster sockets stay: this ingress serves them for good.
+  // A project socket is served here only until a project host attaches;
+  // closing it then makes the client reconnect onto that host. A browser or
+  // phone on a machine with no host yet (a new cloud machine) otherwise kept
+  // this ingress's reduced hello (no lanes, no files) until a reload.
+  // Only a project socket (a browser's or the phone's) waits for a project
+  // host. A desktop window's or another brain's runtime-only connection and a
+  // roster socket are this ingress's for good, and closing one would drop
+  // their calls in flight.
+  const waitsForProjectHost = (metadata: SyncPeerMetadata | null | undefined): boolean =>
+    metadata != null
+    && !isRosterSyncPeer(metadata)
+    && !(metadata.capabilities ?? []).includes(SYNC_RUNTIME_ONLY_CAPABILITY);
   const handOverToProjectHost = (peer: BrainPeerState): void => {
     try {
       peer.ws.close(1012, "This machine's project host is ready");
@@ -764,7 +777,7 @@ export function createBrainProjectActionsSyncHandler(
   };
   args.onProjectHostAttached?.(() => {
     for (const peer of [...peers]) {
-      if (!peer.authenticated || isRosterSyncPeer(peer.metadata) || peer.ws.readyState !== WS_OPEN) continue;
+      if (!peer.authenticated || !waitsForProjectHost(peer.metadata) || peer.ws.readyState !== WS_OPEN) continue;
       args.logger.info("sync_brain.project_socket_handed_to_host", {
         peerDeviceId: peer.metadata?.deviceId ?? null,
       });
@@ -1820,10 +1833,19 @@ export function createBrainProjectActionsSyncHandler(
                 }
               : null,
           );
-          if (!isRosterSyncPeer(hello.peer) && args.projectHostAttached?.()) {
-            // A host attached while this hello was being checked.
-            handOverToProjectHost(peer);
-            return;
+          if (waitsForProjectHost(hello.peer)) {
+            if (args.projectHostAttached?.()) {
+              // A host attached while this hello was being checked.
+              handOverToProjectHost(peer);
+              return;
+            }
+            // Served the reduced hello below until the host attaches, then
+            // handed over to it (onProjectHostAttached).
+            void args.activateProjectHost?.().catch((error) => {
+              args.logger.warn("sync_brain.project_host_activation_failed", {
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
           }
           const catalog = await projectCatalog(args.projectCatalogProvider, args.logger);
           if (!isPeerCurrent(lifecycleGeneration)) return;
