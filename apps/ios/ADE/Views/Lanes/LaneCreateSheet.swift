@@ -57,6 +57,40 @@ func plainLaneStartBranch(_ value: String?) -> String {
   return name
 }
 
+/// The branches a new lane can start from, once each by plain name: local
+/// branches first, then remote ones with no local copy.
+func laneStartBranchChoices(_ branches: [GitBranchSummary]) -> [(name: String, branch: GitBranchSummary)] {
+  var seen = Set<String>()
+  var choices: [(name: String, branch: GitBranchSummary)] = []
+  for branch in branches.filter({ !$0.isRemote }) + branches.filter(\.isRemote) {
+    let plain = plainLaneStartBranch(branch.name)
+    guard !plain.isEmpty, !(branch.isRemote && plain == "HEAD"), seen.insert(plain).inserted else { continue }
+    choices.append((plain, branch))
+  }
+  return choices
+}
+
+/// Why a branch name pattern can't be saved, or nil (`laneBranchPatternProblem`
+/// on the desktop). The machine also refuses a prefix that clashes with a branch.
+func laneBranchPatternProblem(_ pattern: String) -> String? {
+  let trimmed = pattern.trimmingCharacters(in: .whitespaces)
+  guard trimmed.hasSuffix("{slug}") else { return "End the pattern with {slug}, the lane name." }
+  guard trimmed.count <= 60 else { return "Keep the pattern under 60 characters." }
+  let literal = String(trimmed.dropLast("{slug}".count)).replacingOccurrences(of: "{user}", with: "user")
+  if literal.contains("{") || literal.contains("}") { return "Use only {user} and {slug} in the pattern." }
+  return nil
+}
+
+/// "ade/fix-login-bug": a pattern's prefix with `{user}` filled in, then a
+/// sample lane name.
+func laneBranchPatternExample(_ pattern: String, user: String?) -> String {
+  let prefix = String(pattern.dropLast("{slug}".count))
+  let userSlug = laneBranchSlug(user ?? "")
+  var rendered = prefix.replacingOccurrences(of: "{user}", with: userSlug.isEmpty ? "user" : userSlug)
+  while rendered.hasPrefix("/") { rendered.removeFirst() }
+  return rendered + laneBranchSlug("Fix login bug")
+}
+
 /// The lane that has `branch` checked out: the folder "Local + uncommitted"
 /// copies from, and the lane an existing branch is already open in.
 func laneHoldingBranch(_ branch: String, lanes: [LaneSummary]) -> LaneSummary? {
@@ -70,11 +104,11 @@ func laneHolderLabel(_ lane: LaneSummary) -> String {
 }
 
 /// Match the lane start sentence shown on desktop.
-func laneStartSentence(_ on: LaneStart.On, sourceBranch: String) -> String {
+func laneStartSentence(_ on: LaneStart.On, sourceBranch: String, subject: String = "Lane") -> String {
   switch on {
-  case .remote: return "Lane will be created from the latest \(sourceBranch) on the remote."
-  case .local: return "Lane will be created from local \(sourceBranch), including commits you haven't pushed."
-  case .uncommitted: return "Lane will be created from local \(sourceBranch), and uncommitted work will be copied over."
+  case .remote: return "\(subject) will be created from the latest \(sourceBranch) on the remote."
+  case .local: return "\(subject) will be created from local \(sourceBranch), including commits you haven't pushed."
+  case .uncommitted: return "\(subject) will be created from local \(sourceBranch), and uncommitted work will be copied over."
   }
 }
 
@@ -458,19 +492,11 @@ struct LaneCreateSheet: View {
   /// Every branch a lane can start from, once each: local branches, plus
   /// remote branches with no local copy, by plain name.
   private var startBranchItems: [BranchItem] {
-    var seen = Set<String>()
-    var items: [BranchItem] = []
-    for branch in branches where !branch.isRemote {
-      let plain = plainLaneStartBranch(branch.name)
-      guard !plain.isEmpty, seen.insert(plain).inserted else { continue }
-      items.append(BranchItem(id: plain, title: plain, subtitle: branchSubtitle(plain: plain, isCurrent: branch.isCurrent), isRemote: false))
-    }
-    for branch in branches where branch.isRemote {
-      let plain = plainLaneStartBranch(branch.name)
-      guard !plain.isEmpty, plain != "HEAD", seen.insert(plain).inserted else { continue }
-      items.append(BranchItem(id: plain, title: plain, subtitle: "remote only", isRemote: true))
-    }
-    return filteredBranchItems(items)
+    filteredBranchItems(laneStartBranchChoices(branches).map { plain, branch in
+      branch.isRemote
+        ? BranchItem(id: plain, title: plain, subtitle: "remote only", isRemote: true)
+        : BranchItem(id: plain, title: plain, subtitle: branchSubtitle(plain: plain, isCurrent: branch.isCurrent), isRemote: false)
+    })
   }
 
   /// Every branch as git lists it, local first.

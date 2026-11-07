@@ -75,6 +75,7 @@ struct LinearConnectionScreen: View {
     .background(ADEColor.pageBackground)
     .navigationTitle("Linear")
     .navigationBarTitleDisplayMode(.inline)
+    .settingsPageClose()
     .confirmationDialog(
       "Disconnect Linear?",
       isPresented: $showDisconnectConfirm,

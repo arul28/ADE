@@ -184,6 +184,7 @@ struct SettingsWebhooksPage: View {
     .adeSettingsList()
     .navigationTitle("Webhooks")
     .navigationBarTitleDisplayMode(.inline)
+    .settingsPageClose()
     .refreshable { await load() }
     .task { await load() }
   }
@@ -316,6 +317,7 @@ struct WebhookAutomationDetailPage: View {
     .adeSettingsList()
     .navigationTitle(automation.ruleName)
     .navigationBarTitleDisplayMode(.inline)
+    .settingsPageClose()
     .refreshable { await load() }
     .task { await load() }
     .sheet(item: $openDelivery) { delivery in
@@ -515,6 +517,7 @@ private enum WebhookPreviewData {
     .adeSettingsList()
     .navigationTitle("Webhooks")
     .navigationBarTitleDisplayMode(.inline)
+    .settingsPageClose()
   }
 }
 

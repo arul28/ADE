@@ -494,6 +494,8 @@ struct SettingsMachineSections: View {
       ADESettingsSection(
         "Connected",
         hint: "\(controller.liveCount(machines)) of \(MachineFleet.liveMachineLimit) live",
+        symbol: "desktopcomputer",
+        tint: .green,
         trailing: { addMenu }
       ) {
         ADESettingsRows {
@@ -506,7 +508,7 @@ struct SettingsMachineSections: View {
         }
       }
       if !sections.available.isEmpty {
-        ADESettingsSection("Available") {
+        ADESettingsSection("Available", symbol: "desktopcomputer", tint: .slate) {
           ADESettingsRows {
             ForEach(sections.available) { machine in
               row(machine)
@@ -563,10 +565,7 @@ struct SettingsMachineRow: View {
 
   var body: some View {
     HStack(spacing: 12) {
-      Image(systemName: machine.symbol)
-        .font(.system(size: 16))
-        .foregroundStyle(machine.isConnectedSet ? ADEColor.textPrimary : ADEColor.textMuted)
-        .frame(width: 24)
+      ADESettingsIconTile(symbol: machine.symbol, tint: machine.isLive ? .accent : .slate, size: 36)
       VStack(alignment: .leading, spacing: 2) {
         HStack(spacing: 6) {
           Text(machine.name)
@@ -592,6 +591,8 @@ struct SettingsMachineRow: View {
             .fixedSize(horizontal: false, vertical: true)
         }
       }
+      // The name gets the row's width before the status word does.
+      .layoutPriority(1)
       Spacer(minLength: 8)
       trailing
       ADESettingsChevron()
@@ -610,12 +611,12 @@ struct SettingsMachineRow: View {
     } else {
       switch machine.link {
       case .primary(let live, let connecting):
-        if live { ADEKitDot(tone: .ok, size: 7) }
+        if live { ADESettingsStatus(text: "Live", tone: .ok) }
         else if connecting { ProgressView().controlSize(.small) }
         else { retryButton }
       case .connected(let state, let gaveUp):
         switch state {
-        case .live: ADEKitDot(tone: .ok, size: 7)
+        case .live: ADESettingsStatus(text: "Live", tone: .ok)
         case .connecting: ProgressView().controlSize(.small)
         case .offline where gaveUp: retryButton
         case .needsUpdate, .needsAttention: retryButton
@@ -705,6 +706,7 @@ struct SettingsMachinePage: View {
     }
     .navigationTitle("")
     .navigationBarTitleDisplayMode(.inline)
+    .settingsPageClose()
     .adeToast($controller.toast)
     .sheet(item: $controller.renaming) { machine in
       SettingsMachineRenameSheet(machine: machine)
@@ -765,7 +767,7 @@ struct SettingsMachinePageContent: View {
         }
         .adeKitCard()
 
-        ADESettingsSection("Status") {
+        ADESettingsSection("Status", symbol: "waveform.path.ecg", tint: .green) {
           ADESettingsRows {
             ForEach(statusFacts, id: \.label) { fact in
               ADESettingsValueRow(title: fact.label, value: fact.value)
@@ -773,7 +775,7 @@ struct SettingsMachinePageContent: View {
           }
         }
 
-        ADESettingsSection("Projects", hint: machine.projects.isEmpty ? nil : "\(machine.projects.count) open") {
+        ADESettingsSection("Projects", hint: machine.projects.isEmpty ? nil : "\(machine.projects.count) open", symbol: "folder", tint: .blue) {
           ADESettingsRows {
             if machine.projects.isEmpty {
               ADESettingsRow(machine.isLive ? "No projects open on this machine." : "Projects show once the machine is connected.")
@@ -794,7 +796,7 @@ struct SettingsMachinePageContent: View {
         }
 
         if let inventory = machine.account?.inventory {
-          ADESettingsSection("AI accounts") {
+          ADESettingsSection("AI accounts", symbol: "person.2", tint: .violet) {
             ADESettingsRows {
               ForEach(inventory.providers, id: \.provider) { provider in
                 if let page = actions.accountsPage, let kind = ProviderAccountProvider(rawValue: provider.provider) {
@@ -809,7 +811,7 @@ struct SettingsMachinePageContent: View {
           }
         }
 
-        ADESettingsSection("Connection", hint: offlineHelp) {
+        ADESettingsSection("Connection", hint: offlineHelp, symbol: "network", tint: .teal) {
           ADESettingsRows {
             ForEach(connectionFacts, id: \.label) { fact in
               ADESettingsValueRow(title: fact.label, value: fact.value)
@@ -837,10 +839,7 @@ struct SettingsMachinePageContent: View {
 
   private var header: some View {
     HStack(alignment: .center, spacing: 14) {
-      Image(systemName: machine.symbol)
-        .font(.system(size: 26, weight: .light))
-        .foregroundStyle(ADEColor.textPrimary)
-        .frame(width: 40, height: 40)
+      ADESettingsIconTile(symbol: machine.symbol, tint: machine.isLive ? .accent : .slate, size: 48)
       VStack(alignment: .leading, spacing: 4) {
         HStack(spacing: 8) {
           Text(machine.name)
@@ -956,10 +955,7 @@ struct SettingsMachinePageContent: View {
 
   private func accountCountRow(_ provider: AccountMachineInventoryProvider, link: Bool) -> some View {
     HStack(spacing: 12) {
-      if let asset = providerAssetName(provider.provider) {
-        ADEProviderMark(assetName: asset, size: 18)
-          .frame(width: 22)
-      }
+      ADEBrandTile(brand: .provider(provider.provider), size: 30)
       Text(ADESharedTheme.providerDisplayName(for: provider.provider) ?? provider.provider.capitalized)
         .font(.system(size: 15))
         .foregroundStyle(ADEColor.textPrimary)

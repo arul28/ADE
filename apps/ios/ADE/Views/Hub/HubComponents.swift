@@ -99,90 +99,6 @@ extension View {
   }
 }
 
-/// The Hub's header as a row of its own: the title (the ADE mark with the
-/// machines) on the left, then Activity, Chats and Settings in one glass group
-/// and Add on its own — the same items, glyphs and grouping as `HubToolbar`.
-/// Used wherever the Hub's header is not an edge-bar toolbar, so it can sit
-/// under the status bar and span the screen instead of sharing the status
-/// bar's row: the phone, the Duo's outer display, the inner display held
-/// upright, an iPad.
-struct HubHeaderRow<Title: View>: View {
-  let actions: HubToolbarActions
-  @ViewBuilder var title: () -> Title
-  @EnvironmentObject private var drawer: ActivityDrawerModel
-  @Environment(\.hubHeaderInline) private var inline
-
-  /// Beside the clock (`hubHeaderInline`) the row is a size smaller so all of
-  /// it fits left of the status bar.
-  private var height: CGFloat { inline ? 40 : 48 }
-  private var spacing: CGFloat { inline ? 6 : 12 }
-
-  var body: some View {
-    GlassEffectContainer(spacing: spacing) {
-      HStack(spacing: spacing) {
-        // On a narrow phone the machine's name truncates; the icons have
-        // fixed frames and keep theirs.
-        title()
-          .frame(height: height)
-          .padding(.horizontal, inline ? 6 : 10)
-          .glassEffect(.regular.interactive(), in: .capsule)
-        Spacer(minLength: 0)
-        HStack(spacing: 0) {
-          icon("bell", badge: drawer.unreadCount, action: actions.onOpenActivity)
-            .accessibilityLabel(
-              drawer.unreadCount > 0
-                ? "Activity, \(drawer.unreadCount) \(drawer.unreadCount == 1 ? "item needs" : "items need") you"
-                : "Activity"
-            )
-            .accessibilityHint("Opens the Activity drawer.")
-          icon(
-            "bubble.left.and.bubble.right",
-            badge: actions.chatsAvailable ? actions.chatsAttentionCount : 0,
-            action: actions.onOpenChats
-          )
-          .disabled(!actions.chatsAvailable)
-          .accessibilityLabel(actions.chatsAttentionCount > 0
-            ? "Chats, \(actions.chatsAttentionCount) awaiting input"
-            : "Chats")
-          .accessibilityHint("Opens conversations that are not linked to a project.")
-          icon("gearshape", action: actions.onOpenSettings)
-            .accessibilityLabel("Settings")
-        }
-        .padding(.horizontal, inline ? 0 : 4)
-        .glassEffect(.regular.interactive(), in: .capsule)
-        icon("plus", action: actions.onAdd)
-          .glassEffect(.regular.interactive(), in: .circle)
-          .accessibilityLabel("Add project")
-          .accessibilityHint("Adds a project from one of your machines.")
-      }
-    }
-    .frame(height: height)
-  }
-
-  private func icon(_ symbol: String, badge: Int = 0, action: @escaping () -> Void) -> some View {
-    Button(action: action) {
-      Image(systemName: symbol)
-        .font(.system(size: inline ? 17 : 19, weight: .regular))
-        .frame(width: height, height: height)
-        .contentShape(Rectangle())
-        .overlay(alignment: .topTrailing) {
-          if badge > 0 {
-            Text(badge > 99 ? "99+" : "\(badge)")
-              .font(.caption2.weight(.semibold).monospacedDigit())
-              .foregroundStyle(.white)
-              .padding(.horizontal, 5)
-              .frame(minWidth: 18, minHeight: 18)
-              .background(Color.red, in: Capsule())
-              .offset(x: -2, y: 4)
-              .accessibilityHidden(true)
-          }
-        }
-    }
-    .buttonStyle(.plain)
-    .foregroundStyle(ADEColor.textPrimary)
-  }
-}
-
 extension View {
   /// For the Hub's column whose last view is the composer: on a display with
   /// a home indicator the composer's box sits as far above the bottom edge as
@@ -213,6 +129,11 @@ extension EnvironmentValues {
     get { self[HubHeaderInlineKey.self] }
     set { self[HubHeaderInlineKey.self] = newValue }
   }
+  /// The header row's tier, for the title it hosts (`HubConnectionMenu`).
+  @Entry var hubHeaderTier: HubHeaderTier = .full
+  /// Add project, when the header row has no room for its own button: the
+  /// machines menu lists it instead. Nil while Add has a button.
+  @Entry var hubHeaderMenuAdd: (() -> Void)? = nil
 }
 
 /// The width of the empty band the status bar leaves on the leading side of
@@ -221,23 +142,54 @@ extension EnvironmentValues {
 /// (reported as an occlusion) under a top inset deep enough for a header row,
 /// and leaves the rest of that band empty. Every other iPhone's top occlusion
 /// is the Dynamic Island, centred, with no row's height beside it.
+///
+/// A call, a timer, a recording or navigation adds a pill to the block's
+/// leading side, so the band can be much narrower than usual. The header has
+/// tiers down to `hubStatusBandMinimumWidth` (`HubHeaderRow`); only a band
+/// narrower than that puts the header on a row of its own.
 func hubStatusBandLeadingWidth(_ proxy: GeometryProxy) -> CGFloat? {
   guard !proxy.isLandscapeIgnoringKeyboard, proxy.safeAreaInsets.top >= 64 else { return nil }
   #if compiler(>=6.4)
   guard #available(iOS 27.1, *) else { return nil }
+  let width = proxy.size.width
   // Its bottom is not checked: with the ringer silenced the phone stacks a
   // bell over the clock, and the block can reach below the inset. The header
   // only needs the band to its leading side.
-  let status = proxy.reservedRegions(kind: .occlusion).filter { region in
-    let frame = region.frame
-    return region.isActive && frame.minY < 0 && frame.minX > proxy.size.width * 0.4
+  let top = proxy.reservedRegions(kind: .occlusion).filter { region in
+    region.isActive && region.frame.minY < 0
   }
-  guard let leading = status.map(\.frame.minX).min(), leading >= 220 else { return nil }
+  // A block that reaches the trailing corner, not an island in the middle.
+  guard top.contains(where: { $0.frame.maxX > width * 0.75 }) else { return nil }
+  // Every pill of the block, the leading one included, ends the band.
+  guard var leading = top.map(\.frame.minX).filter({ $0 > width * 0.25 }).min() else { return nil }
+  #if DEBUG
+  // `-adeHubStatusBand <points>` stands in for a call or timer pill, which a
+  // simulator cannot show: it narrows the band to that width.
+  if let forced = hubDebugStatusBandWidth { leading = min(leading, forced) }
+  #endif
+  guard leading >= hubStatusBandMinimumWidth else { return nil }
   return leading
   #else
   return nil
   #endif
 }
+
+#if DEBUG
+private let hubDebugStatusBandWidth: CGFloat? = {
+  let arguments = ProcessInfo.processInfo.arguments
+  guard let index = arguments.firstIndex(of: "-adeHubStatusBand"),
+        arguments.index(after: index) < arguments.endIndex,
+        let value = Double(arguments[arguments.index(after: index)])
+  else { return nil }
+  return CGFloat(value)
+}()
+#endif
+
+/// The narrowest band beside the clock that the header's tightest tier fits
+/// in. That tier is about 153 points wide: three 34-point icons, the machines
+/// glyph with its spinner, and the capsule's padding. The band's header gives
+/// 24 points to its margins (`HubPhoneLayout.header`).
+let hubStatusBandMinimumWidth: CGFloat = 180
 
 @MainActor
 private func hubKeyWindowScene() -> UIWindowScene? {
@@ -444,18 +396,23 @@ struct HubConnectionMenu: View {
   let machines: [DuoHomeMachine]
   let onOpenSettings: () -> Void
   @Environment(\.hubHeaderInline) private var inline
+  @Environment(\.hubHeaderTier) private var tier
+  @Environment(\.hubHeaderMenuAdd) private var menuAdd
 
   var body: some View {
     Menu {
+      if let menuAdd {
+        Button(action: menuAdd) {
+          Label("Add project", systemImage: "plus")
+        }
+      }
       HubMachinesMenuContent(machines: machines, onOpenSettings: onOpenSettings)
     } label: {
       if inline {
         // Beside the clock there is room for the machine's glyph, not its
-        // name; the wordmark stays only while it fits.
-        ViewThatFits(in: .horizontal) {
-          compactLabel(showsBrand: true)
-          compactLabel(showsBrand: false)
-        }
+        // name. The header row's tier says what else fits (the wordmark, the
+        // count); it picks the tier, so the label does not measure itself.
+        compactLabel(showsBrand: tier.showsBrand, showsCount: tier.showsMachineCount)
       } else {
         // A narrow phone gives the machine's name the room: the wordmark goes
         // before the name truncates ("ADE • Arul…").
@@ -481,8 +438,8 @@ struct HubConnectionMenu: View {
 
   /// The machines as the glyph the lane and Work chips use: the status dot,
   /// a computer, and how many when there is more than one.
-  private func compactLabel(showsBrand: Bool) -> some View {
-    HStack(spacing: 6) {
+  private func compactLabel(showsBrand: Bool, showsCount: Bool) -> some View {
+    HStack(spacing: showsCount ? 6 : 4) {
       if showsBrand { brandMark }
       if status.switchingProjectName != nil {
         ProgressView().controlSize(.mini)
@@ -491,7 +448,7 @@ struct HubConnectionMenu: View {
       }
       Image(systemName: "desktopcomputer")
         .font(.system(size: 16, weight: .medium))
-      if status.machineCount > 1 {
+      if showsCount, status.machineCount > 1 {
         Text("\(status.machineCount)")
           .font(.subheadline.weight(.semibold).monospacedDigit())
       }
@@ -499,7 +456,7 @@ struct HubConnectionMenu: View {
     .foregroundStyle(ADEColor.textPrimary)
     .lineLimit(1)
     .fixedSize()
-    .padding(.horizontal, 4)
+    .padding(.horizontal, showsCount ? 4 : 2)
   }
 
   private func labelRow(showsBrand: Bool) -> some View {
