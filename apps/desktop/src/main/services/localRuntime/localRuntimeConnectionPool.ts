@@ -1,4 +1,5 @@
 import { appControlFrameDemandParams, type AppControlFrameDemand } from "../../../shared/appControlFrameDemand";
+import { readWindowsProcessImages } from "../android/androidEmulatorImage";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -3420,8 +3421,7 @@ export class LocalRuntimeConnectionPool {
     if (await probeSocketHasOwner(socketPath)) return null;
     if (process.platform === "win32") {
       const record = readWindowsServicePidRecord();
-      const live = record && (isPidAlive(record.supervisorPid) || (record.runtimePid != null && isPidAlive(record.runtimePid)));
-      if (live) {
+      if (record && await windowsServiceRecordIsLive(record)) {
         this.logger.info("local_runtime.app_fallback_skipped_service_alive", {
           supervisorPid: record.supervisorPid,
           runtimePid: record.runtimePid,
@@ -4423,4 +4423,19 @@ function normalizeRuntimeEventNotification(value: unknown): RuntimeEventNotifica
     : null;
   if (subscriptionId == null || !projectId || !event) return null;
   return { subscriptionId, projectId, event, eventEpoch };
+}
+
+/**
+ * Whether the Windows supervisor record names a running supervisor or brain.
+ * Windows has no process start times and a crashed supervisor leaves its
+ * record behind, so a live pid counts only while its image is still the
+ * supervisor's powershell or the brain's runtime; an image that cannot be
+ * read counts as live, so ADE never starts a second brain on a guess.
+ */
+async function windowsServiceRecordIsLive(record: { supervisorPid: number; runtimePid?: number | null }): Promise<boolean> {
+  const pids = [record.supervisorPid, record.runtimePid].filter((pid): pid is number => typeof pid === "number" && pid > 0 && isPidAlive(pid));
+  if (pids.length === 0) return false;
+  const images = await readWindowsProcessImages(pids);
+  if (!images) return true;
+  return pids.some((pid) => /^(powershell|pwsh|node|ade)(\.exe)?$/iu.test(images.get(pid) ?? ""));
 }

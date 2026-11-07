@@ -33,22 +33,23 @@ export function isAndroidEmulatorImage(name: string | null | undefined): boolean
 }
 
 /**
- * Windows: the image name of each of `pids` that runs now, from one
- * System32 `tasklist` (filtered to the pid when there is one), spawned off
- * the main thread. A pid that is gone is absent. Null when `tasklist` could
- * not answer, so a caller can tell "not an emulator" from "not known".
- * Never throws.
+ * Windows: the image name of each of `pids` that runs now, from one full
+ * System32 `tasklist`, spawned off the main thread. A pid that is gone is
+ * absent. Null when `tasklist` could not answer, so a caller can tell "not an
+ * emulator" from "not known": a failed `tasklist` can exit non-zero with empty
+ * output rather than throw, and a real listing is never empty (System and
+ * Idle are always there). Never throws.
  */
 export async function readWindowsProcessImages(pids: readonly number[], timeoutMs = 5_000): Promise<Map<number, string> | null> {
   const wanted = [...new Set(pids.filter((pid) => Number.isInteger(pid) && pid > 0))];
   if (wanted.length === 0) return new Map();
-  const filter = wanted.length === 1 ? ["/FI", `PID eq ${wanted[0]}`] : [];
   let listing: Map<number, { name: string }>;
   try {
-    listing = parseTasklist(await runText(windowsSystemTool("tasklist.exe"), [...filter, "/FO", "CSV", "/NH"], timeoutMs));
+    listing = parseTasklist(await runText(windowsSystemTool("tasklist.exe"), ["/FO", "CSV", "/NH"], timeoutMs));
   } catch {
     return null;
   }
+  if (listing.size === 0) return null;
   return new Map(wanted.flatMap((pid) => {
     const name = listing.get(pid)?.name;
     return name ? [[pid, name] as const] : [];

@@ -5446,7 +5446,11 @@ export function registerIpc({
         const read = buildGlobalAiStatus({ force, onPhase: (next) => { phase = next; } });
         // A forced refresh has its own, longer IPC deadline for the probes.
         if (force) return await read;
-        const status = await withTimeout(read, GLOBAL_AI_STATUS_BUDGET_MS);
+        // A failed read is logged as a failure here; null below means only slow.
+        const status = await withTimeout(read.catch((error: unknown) => {
+          ctx.logger.warn("ai.get_status.global_fallback_failed", { error: getErrorMessage(error) });
+          return getUnavailableAiStatus();
+        }), GLOBAL_AI_STATUS_BUDGET_MS);
         if (status) return status;
         // Which step was still running, for the next report of a slow machine.
         ctx.logger.warn("ai.get_status.global_slow", { phase, budgetMs: GLOBAL_AI_STATUS_BUDGET_MS, elapsedMs: Date.now() - startedAt });
