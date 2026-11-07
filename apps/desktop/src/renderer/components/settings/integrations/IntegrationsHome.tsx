@@ -106,7 +106,11 @@ async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): P
   return { tone: "neutral", label: "Not connected" };
 }
 
-function useIntegrationSummaries(pin: OpenProjectBinding | null, online: boolean): Record<IntegrationId, Summary> {
+function useIntegrationSummaries(
+  pin: OpenProjectBinding | null,
+  online: boolean,
+  ids: readonly IntegrationId[],
+): Record<IntegrationId, Summary> {
   const [summaries, setSummaries] = useState<Record<IntegrationId, Summary>>({
     github: CHECKING,
     linear: CHECKING,
@@ -120,7 +124,7 @@ function useIntegrationSummaries(pin: OpenProjectBinding | null, online: boolean
       return undefined;
     }
     setSummaries({ github: CHECKING, linear: CHECKING, jira: CHECKING, agent37: CHECKING });
-    for (const id of INTEGRATION_IDS) {
+    for (const id of ids) {
       readSummary(id, pin)
         .then((summary) => { if (!cancelled) setSummaries((prev) => ({ ...prev, [id]: summary })); })
         .catch((error: unknown) => {
@@ -135,7 +139,7 @@ function useIntegrationSummaries(pin: OpenProjectBinding | null, online: boolean
     return () => { cancelled = true; };
     // A rebuilt pin with the same key is the same machine.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pin?.key, online]);
+  }, [pin?.key, online, ids.join(",")]);
   return summaries;
 }
 
@@ -176,23 +180,26 @@ function IntegrationMark({ server, entry, integration }: {
 export function IntegrationsHome({
   pin,
   machineOnline = true,
+  integrations = INTEGRATION_IDS,
   onOpen,
 }: {
   /** The page's machine: each integration status is read where its credential lives. */
   pin: OpenProjectBinding | null;
   /** False while that machine is offline: its integrations wait, the account's MCP servers do not. */
   machineOnline?: boolean;
+  /** The built-in integrations to show; with no project, only the account-wide ones. */
+  integrations?: readonly IntegrationId[];
   /** Opens a page; `server` focuses one MCP server on it. */
   onOpen: (page: IntegrationsPageId, server?: string) => void;
 }) {
-  const summaries = useIntegrationSummaries(pin, machineOnline);
+  const summaries = useIntegrationSummaries(pin, machineOnline, integrations);
   const registry = useMcpRegistry();
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState<McpCatalogueEntry | null>(null);
   const [addingOwn, setAddingOwn] = useState(false);
   const needle = query.trim().toLowerCase();
 
-  const connectedIntegrations = INTEGRATION_IDS.filter((id) => summaries[id].tone === "ok");
+  const connectedIntegrations = integrations.filter((id) => summaries[id].tone === "ok");
   const servers = registry.servers;
   // A catalogue entry is "added" when a server has its name or is the same server.
   const addedEntryIds = useMemo(() => {
@@ -208,7 +215,7 @@ export function IntegrationsHome({
     !entry.native
     && !addedEntryIds.has(entry.id)
     && matches(needle, entry.name, entry.description, entry.publisher, entry.category));
-  const builtIn = INTEGRATION_IDS.filter((id) => matches(needle, integrationBrand(id).label, DESCRIPTIONS[id]));
+  const builtIn = integrations.filter((id) => matches(needle, integrationBrand(id).label, DESCRIPTIONS[id]));
   const canAdd = registry.phase === "ready";
 
   // `#add-mcp-<id>` (a settings search result, a chat card's gear) opens that

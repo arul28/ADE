@@ -13,8 +13,8 @@ import { execFile } from "node:child_process";
 import type { MachineResetOptions, MachineResetPlan } from "../../../shared/types/machineReset";
 import { planMachineResetFromDesktop, startMachineResetFromDesktop } from "../runtime/machineResetLauncher";
 import type { IpcMainInvokeEvent } from "electron";
-import { isUnsupportedAdeActionError } from "../../../shared/codedError";
-import { AdeExpectedError, expectedErrorKind } from "../../../shared/expectedError";
+import { isUnsupportedAdeActionError, stripElectronErrorWrapper } from "../../../shared/codedError";
+import { AdeExpectedError, carryExpected, expectedErrorKind } from "../../../shared/expectedError";
 import { withoutCrossMachineCallerFields } from "../../../shared/crossMachineHandoff";
 import {
   createEmptyAutoUpdateSnapshot,
@@ -1056,6 +1056,7 @@ import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeCon
 import {
   LOCAL_RUNTIME_SYNC_STATUS_READ_TIMEOUT_MS,
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
+  localRuntimeActionTimeoutMs,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { createProjectRecoveryService, ProjectRecoveryService, restartBrainForRepair } from "../runtime/projectRecoveryService";
 import type { ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
@@ -12415,27 +12416,39 @@ export function registerIpc({
     async (): Promise<AccountSettingsResult<null>> => await accountSettingsSyncService.sync(),
   );
 
-  const accountVaultBridge = createAccountVaultBridge({
+  const vaultBridgeOptions = {
     getPool: () => localRuntimeConnectionPool,
     getRootPath: () => bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []) ?? getCtx().project?.rootPath ?? null,
-    logger: { debug: (message, meta) => getCtx().logger.debug(message, meta) },
-  });
+    logger: { debug: (message: string, meta?: Record<string, unknown>) => getCtx().logger.debug(message, meta) },
+  };
+  const accountVaultBridge = createAccountVaultBridge(vaultBridgeOptions);
 
   // Agent37: the account-wide key and new machines made on it (no pin; see the module).
   registerAgent37Ipc({
-    vaultBridge: accountVaultBridge,
+    // Its items in this computer's brain, also with no project here: then the
+    // brain opens only those (`accountVault.call`).
+    vaultBridge: createAccountVaultBridge({ ...vaultBridgeOptions, machineFallback: true }),
+    // This computer's brain, with no project: the actions are the account's
+    // (`agent37.call`, ADE_ACTION_MACHINE_SCOPED), so a window with no project
+    // here, or only one on another machine, reaches them too.
     brainAction: async (action, actionArgs) => {
       const pool = localRuntimeConnectionPool;
-      const rootPath = bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []) ?? getCtx().project?.rootPath ?? null;
-      if (!pool || !rootPath) {
-        throw new AdeExpectedError("ADE's background service isn't running on this computer yet. Open a project, then try again.", "environment");
+      if (!pool) {
+        throw new AdeExpectedError("ADE's background service isn't running on this computer yet. Try again in a moment.", "environment");
       }
-      const response = await pool.callActionForRoot(rootPath, {
-        domain: "agent37",
-        action,
-        ...(actionArgs ? { args: actionArgs } : {}),
-      });
-      return response.result;
+      try {
+        const response = await pool.callSync<{ result?: unknown }>("agent37.call", {
+          action,
+          ...(actionArgs ? { args: actionArgs } : {}),
+        }, { timeoutMs: localRuntimeActionTimeoutMs("agent37", action) });
+        return response?.result;
+      } catch (error) {
+        // The card shows the brain's own sentence ("Sign in to ADE on this
+        // computer first…"), not the RPC client's "Remote ADE service method …
+        // failed" around it, and an expected failure stays expected.
+        if (!(error instanceof Error)) throw error;
+        throw carryExpected(error, new Error(stripElectronErrorWrapper(error.message)));
+      }
     },
     listAccountMachines: () => accountBridge.listMachines(),
     renameMachine: (machineKey, name) => accountBridge.renameMachine(machineKey, name),

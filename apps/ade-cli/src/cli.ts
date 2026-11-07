@@ -10,6 +10,7 @@ import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
 import type { Agent37ReadyPool } from "../../desktop/src/shared/agent37";
+import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
   setSharedAccountLiveQuotaFetcher,
   setSharedAccountRollupFetcher,
@@ -122,6 +123,7 @@ import { settingAgentAccess } from "../../desktop/src/shared/settingsAgentAccess
 import { OPEN_PLACES } from "../../desktop/src/shared/openPlaces";
 import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
 import { canonicalGitOriginUrl } from "../../desktop/src/main/services/github/githubSshAlias";
+import { isMachineScopedAdeAction } from "../../desktop/src/main/services/adeActions/actionPolicy";
 import { parseGithubRemoteUrl } from "../../desktop/src/shared/githubRemote";
 import {
   PROVIDER_ACCOUNT_NOT_SIGNED_IN,
@@ -4625,6 +4627,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     on takes --kind, --shape, --setup "npm ci"
     $ ade chat create --machine agent37:ready --prompt "…"
                                                     Start the chat on this project's ready machine
+
+  list, spending, limits (reading them), sleep and wake are the account's and
+  work from any folder; the rest run in this folder's project.
 
   Asks first: create, resize, copy, move, delete, sleep-after never, raising
   the cap or the limits, ready on. The card shows in your chat and gives up
@@ -20354,13 +20359,22 @@ function buildIntegrationsPlan(args: string[]): CliPlan {
   throw new CliUsageError(`Unknown integrations command "${sub}". Use status or connect.`);
 }
 
-/** One `agent37` action, run once; costly ones wait for the person's answer in the chat (5 minutes at most). */
+/**
+ * One `agent37` action, run once; costly ones wait for the person's answer in
+ * the chat (5 minutes at most). An account-level one (the list, spending,
+ * sleep, wake) goes to the machine's brain with no project, so it works from
+ * any folder; the rest run in this folder's project.
+ */
 function agent37Step(label: string, action: string, input: JsonObject, formatter: FormatterId = "agent37-result", waitsForPerson = false): CliPlan {
+  const machineScoped = isMachineScopedAdeAction("agent37", action);
   return {
     kind: "execute",
     label: `agent37 ${label}`,
     formatter,
-    steps: [actionStep("result", "agent37", action, input)],
+    steps: [machineScoped
+      ? { key: "result", method: "agent37.call", params: { action, args: input } }
+      : actionStep("result", "agent37", action, input)],
+    ...(machineScoped ? { machineOnly: true, machineAutoStart: true } : {}),
     ...(waitsForPerson ? { minTimeoutMs: 75 * 60_000 } : {}),
   };
 }
@@ -25003,6 +25017,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method.startsWith("account.") ||
     method === "remoteMcp.call" ||
     method === "keepAwake.call" ||
+    method === "agent37.call" ||
     method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
@@ -29484,6 +29499,41 @@ async function runServe(
     setInterval(runWorkCopySweep, 60 * 60_000).unref?.();
   }
 
+  // Agent 37 and the account vault with no project open (`agent37.call`,
+  // `accountVault.call`), as a project runtime of this brain has them: the
+  // machine's vault store only when sync is on, as `createAdeRuntime` does, so
+  // a brain with sync off (a test brain) never opens the account's vault. One
+  // runtime object, so a background make keeps its maker.
+  let machineAccountRuntime: Promise<AccountDomainRuntime> | null = null;
+  const machineAccountDomains = async () => {
+    const { buildMachineAccountDomainServices } = await import("../../desktop/src/main/services/adeActions/registry");
+    machineAccountRuntime ??= (async () => {
+      const { getMachineAccountStores } = await import("./services/account/machineAccountStores");
+      const vault = syncEnabled ? getMachineAccountStores(headlessProjectLogger).vault : null;
+      if (vault) {
+        // With no project open, no project runtime keeps the vault in step
+        // with the account. Join (or start) its background sync for the life
+        // of the process, as ADE MCP does for the settings store, and pull
+        // once before the first read.
+        vault.startPeriodicSync();
+        const status = await vault.sync().catch((error: unknown) => {
+          headlessProjectLogger.warn("account.machine_vault_initial_sync_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        });
+        if (status === "failed") headlessProjectLogger.warn("account.machine_vault_initial_sync_failed", { status });
+      }
+      return {
+        logger: headlessProjectLogger,
+        accountAuthService: brainAccountAuthService,
+        accountVaultStore: vault,
+        productAnalyticsService: brainProductAnalytics,
+      };
+    })();
+    return buildMachineAccountDomainServices(await machineAccountRuntime);
+  };
+
   const createHandler = (context?: { peerDeviceId: string | null }) =>
     createMultiProjectRpcRequestHandler({
       serverVersion: VERSION,
@@ -29497,6 +29547,7 @@ async function runServe(
       embeddedHostToken,
       providerStatus,
       keepAwakeService,
+      machineAccountDomains,
       productAnalyticsService: brainProductAnalytics,
       accountAuthService: brainAccountAuthService,
       getAccountDirectoryHealth,

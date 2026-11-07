@@ -38,7 +38,9 @@ ade chat create --machine agent37:ready --prompt "…"
 ```
 
 `<machine>` is its name or Agent 37 id from `ade agent37 list`. Add `--json`
-for the full shape.
+for the full shape. `list`, `spending`, reading `limits`, `sleep` and `wake`
+are the account's, so they work from any folder; the rest run in the current
+folder's project.
 
 ## Sleep and wake are automatic
 
