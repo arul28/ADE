@@ -31,6 +31,7 @@ import {
   installDetachedRuntimeService,
   uninstallDetachedRuntimeService,
 } from "./detachedSupervisor";
+import { restartEntrypointSupervisedBrain } from "./entrypointSupervisor";
 
 type SystemdServiceManagerDeps = {
   command?: AdeServiceCommand;
@@ -216,6 +217,19 @@ export async function installSystemdService(
 
   let state = getSystemdUnitState(run, unitName);
   if (state === null && !isSystemdUserManagerUsable(run)) {
+    // A container whose entrypoint loop runs the brain (ADE's Agent 37
+    // template): the loop is the supervisor, so a restart goes through it.
+    const underEntrypoint = await restartEntrypointSupervisedBrain({
+      command,
+      env,
+      homeDir,
+      spawnSync: run,
+      responsivenessProbe: deps.responsivenessProbe,
+      handoverTimeoutMs: deps.handoverTimeoutMs,
+      handoverPollMs: deps.handoverPollMs,
+      sleep: deps.sleep,
+    });
+    if (underEntrypoint) return underEntrypoint;
     // No systemd to own the brain: ADE supervises it itself, with the same
     // command and environment (role included) the unit would carry.
     return installDetachedRuntimeService({

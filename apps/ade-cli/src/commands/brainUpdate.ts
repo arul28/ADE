@@ -401,6 +401,22 @@ export function requestBrainServiceRestart(
   );
 }
 
+/**
+ * What a `serve --install-service` that failed says. It prints its result as
+ * JSON, so the status shows the message, not the raw object.
+ */
+function serviceCommandFailure(result: BrainServiceRestartResult, fallback: string): string {
+  if (result.stderr) return result.stderr;
+  try {
+    const parsed: unknown = JSON.parse(result.stdout);
+    const message = parsed && typeof parsed === "object" ? (parsed as { message?: unknown }).message : null;
+    if (typeof message === "string" && message.trim()) return message.trim();
+  } catch {
+    // Not JSON: the output is the message.
+  }
+  return result.stdout || fallback;
+}
+
 export function requestBrainServiceStop(
   args: {
     command: string;
@@ -690,7 +706,7 @@ async function applyStagedBrainUpdate(
       deps.runCommand ?? runCommand,
     );
     if (rollbackRestart.status === 0) return null;
-    return rollbackRestart.stderr || rollbackRestart.stdout || "ADE brain service rollback restart failed.";
+    return serviceCommandFailure(rollbackRestart, "ADE brain service rollback restart failed.");
   };
 
   // The staged binary is this release's code, already checked against the
@@ -893,7 +909,7 @@ async function applyStagedBrainUpdate(
       deps.runCommand ?? runCommand,
     );
     if (restart.status !== 0) {
-      const message = restart.stderr || restart.stdout || "ADE brain service restart failed.";
+      const message = serviceCommandFailure(restart, "ADE brain service restart failed.");
       let rollbackMessage = "Update was rolled back.";
       try {
         await rollbackPromotedAssets();

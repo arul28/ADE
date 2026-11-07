@@ -157,14 +157,50 @@ Docker.
   the version is compared first, and a template from a newer ADE is kept
   whatever its files, so two computers on different releases never put their
   own template back on each start. Same release with different files (two
-  development builds) rebuilds. Every new release rebuilds once, because a
-  machine runs the ADE its template installed; while it builds, new machines
-  come from the older template and the page shows only a quiet line.
-- While a build runs, ADE reads its Docker log (`GET
+  development builds) rebuilds. Every new release rebuilds once; while it
+  builds, new machines come from the older template and the page shows only a
+  quiet line.
+- **A new machine starts on the person's release anyway.** The create flow
+  passes `ADE_MIN_VERSION` (the release of the computer that made it,
+  `agent37MachineCreator.ts`). When the template's ADE is older, the
+  entrypoint installs that release with `ade brain update --no-restart`
+  before the first brain starts (measured: about 9 s on a box). A failed
+  install logs the reason and starts the template's ADE.
+- While a build runs, ADE reads its build log (`GET
   /template-builds/{id}/logs`, every 5 s, the same call that answers the
   build) and shows one of four plain steps (`agent37TemplateProgress`):
   desktop and browser, ADE, Docker and Android tools, saving the image (also
-  Agent 37's `ingesting`). Steps only move forward. There is no time estimate.
+  Agent 37's `ingesting`). Agent 37 builds with Buildah (`STEP 4/14: …`,
+  then `COMMIT`); BuildKit lines are read too. A line split between two log
+  reads is joined before it is parsed. Steps only move forward.
+- Measured (2026-11-06, two builds of beta.17): the Dockerfile steps take
+  about 2.5 minutes, and saving the image takes about 11 more (push, Agent
+  37's staging, then `ingesting`), about 13.5 minutes in all. The last step's
+  label says it takes about 10 minutes.
+- A prebuilt image (`POST /templates` with an `image_ref`) is ready in about
+  a second, against 13.5 minutes for a cloud build. ADE does not use one: it
+  needs a public image pushed for each release, and the min-version install
+  above already gives a new machine the current release in seconds.
+
+## Updates on an Agent 37 machine
+
+The template's entrypoint is the brain's supervisor: the box has no systemd,
+and only the entrypoint's processes survive a sleep. The entrypoint exports
+`ADE_BRAIN_SUPERVISOR=entrypoint` and, on each start of its loop, runs the
+newer of the image's `ade` and the one `ade brain update` put in
+`~/.ade/bin` (with its own runtime beside it).
+
+- A restart (`ade brain update`, Update on the machine's row) stops the
+  brain on the socket and waits for the loop to start the next one
+  (`serviceManager/entrypointSupervisor.ts`). It checks that the new brain
+  runs the updated binary. It never starts ADE's own supervisor beside the
+  loop: that brain could not take the socket, the old brain kept answering,
+  and the update read as done while the old version ran (D7).
+- A machine made from an older template has a loop that always runs the
+  image's `ade`, so an update cannot take effect there. The desktop checks
+  the box's entrypoint over exec before it starts an update and says so
+  (copy the machine to a new one). The brain refuses the same case on its
+  own (`entrypoint_too_old`) and rolls the update back.
 - Failures retry after 1, 5 and 15 minutes, then wait for Retry. A refused key
   or an empty wallet does not retry.
 
@@ -250,6 +286,15 @@ joining, removed from ADE, never signed in) gets a row of its own, because it
 still bills. It reads "Setting up…" only while it is new and has no machine
 key yet; a box with a key has joined, so it reads "Not in ADE". Boxes ADE did not make stay out of the list unless a row matches
 them.
+
+**A box deleted on the Agent 37 site.** Its account row stays, offline, and
+nothing used to say why. Agent 37's list drops a deleted instance, but its
+90-day usage still names it, so the list reports `deletedInstanceIds`: ids
+that spent and are gone. An offline Linux row whose hostname is one of them
+reads "Deleted on Agent 37. It no longer exists." with Remove
+(`isDeletedAgent37Row`). Only a list that worked marks a row, so an Agent 37
+outage marks nothing, and a Linux computer that was never a box never
+matches.
 
 **A sleeping box's row.** A box that is asleep, stopped or suspended can't
 take a connection, so its row says so ("Asleep on Agent 37") with a dim dot,
@@ -343,6 +388,21 @@ metadata (`ade_sleep`), so ADE leaves that box alone.
   never wake a box, or an open window would keep it awake forever;
 - any `--machine` call from an agent, the CLI or the CTO (the brain's
   `agentMachineBridge`, with the account's key).
+
+**The first call after a sleep** (measured 2026-11-07 on a box asleep 5 to 9
+minutes, `ade lanes list --machine`): the wake takes about 2 s, and the box
+shows online about 2 s later. A sleeping box can't close its relay link, so
+the relay keeps it and sends clients to it. The box opens a new link a second
+or two after it wakes, and the relay closes the clients of the old one
+(`4505`, control replaced). Both connect paths (`pairedRemoteConnector.ts`,
+`pairedRuntimeBootstrap.ts`) now try the relay once more at once after that
+close (`isRelayHostReplacedError`). Before, they moved on to the box's private
+address, which can't answer from outside, waited 10 s, then paired again: the
+connect took about 24 s after the wake, and once the CLI gave up at 58 s. With
+the retry it connects about 4 s after the box shows online. For a few
+minutes after a wake the box itself reads files slowly (a cold `git status`
+of a large repo took 11.6 s, against 0.3 s later), so the first command can
+still take a few seconds there.
 
 Agent 37's own **Wake** on the card still works. The phone wakes a box
 through the machine it is connected to (`agent37.write` `wake`) before it
@@ -484,7 +544,10 @@ failure.
 - **Preparing runs in the desktop** (`agent37ReadyMachines.ts`), because
   signing a new machine in uses the approval window. It makes the machine
   with the New Agent 37 machine flow, then writes a setup job to
-  `$ADE_HOME/ready/job.sh`: clone over HTTPS, `ade projects add`, wait for
+  `$ADE_HOME/ready/job.sh`: clone with `ade projects clone`, which uses the
+  GitHub sign-in the account syncs to the machine, so a private repo works
+  (plain `git clone` for a public one when that fails; with neither, the
+  job says to sign in to GitHub in ADE), `ade projects add`, wait for
   Docker on a VM, the person's commands. The template's entrypoint runs the
   job, so what it starts is part of the entrypoint's process tree and
   survives sleep. Then ADE tags the machine `ready` and sleeps it.
@@ -521,6 +584,10 @@ failure.
   machine is read again right before a delete or a sleep, so a claim that
   landed meanwhile is never touched. A quit stops a prepare in flight and
   deletes its machine on the way out.
+- **Used machines.** A claimed machine stays the person's. When three
+  machines from earlier ready chats on a project are asleep, ADE prepares no
+  new one for it and says why ("Delete one you no longer need"). It deletes
+  nothing on its own.
 - **Versions.** Ready machines record the ADE release their template
   installed (`ade_ready_ade`); once the template moves to a newer release,
   an unclaimed older one is replaced. Packaged builds pin the template to

@@ -79,7 +79,54 @@ jobs="$ADE_HOME/ready"
   done
 ) &
 
+# This loop is the brain's supervisor. `ade brain update` (and any brain
+# restart) reads this to stop the brain and let the loop start it again,
+# rather than start a second supervisor beside it (serviceManager/
+# entrypointSupervisor.ts).
+export ADE_BRAIN_SUPERVISOR=entrypoint
+
+# The ADE to run: the image's, or the newer one `ade brain update` put on the
+# persistent disk (with its own runtime beside it). A copy of an older machine
+# can bring an older one along, so the newer of the two wins. `sort -V` orders
+# 1.2.3~beta.1 before 1.2.3, so a prerelease's "-" becomes "~" to compare.
+image_ade=/opt/ade/bin/ade
+image_runtime=/opt/ade/runtime/linux-x64
+home_ade="$ADE_HOME/bin/ade"
+home_runtime="$ADE_HOME/runtime/linux-x64"
+ade_version() {
+  ADE_RUNTIME_ROOT="$2" "$1" --version 2>/dev/null | sed -n 's/^ade //p' | head -n 1
+}
+# The newer of two versions.
+newest_version() {
+  printf '%s\n%s\n' "$1" "$2" | sed 's/-/~/' | sort -V | tail -n 1 | sed 's/~/-/'
+}
+pick_ade() {
+  bin=$image_ade runtime=$image_runtime
+  version=$(ade_version "$image_ade" "$image_runtime")
+  [ -x "$home_ade" ] && [ -d "$home_runtime/node_modules" ] || return 0
+  home_version=$(ade_version "$home_ade" "$home_runtime")
+  [ -n "$home_version" ] || return 0
+  if [ "$(newest_version "$version" "$home_version")" = "$home_version" ]; then
+    bin=$home_ade runtime=$home_runtime version=$home_version
+  fi
+  return 0
+}
+
 log="$ADE_HOME/logs/brain-entrypoint.log"
+
+# ADE_MIN_VERSION is the ADE release the computer that made this machine runs
+# (agent37MachineCreator.ts). A template still being rebuilt for that release
+# carries an older one, so the machine installs it before its first brain
+# starts: no restart, and the machine joins on the person's version.
+pick_ade
+if [ -n "${ADE_MIN_VERSION:-}" ] && [ "$(newest_version "$version" "$ADE_MIN_VERSION")" != "$version" ]; then
+  echo "$(date -u +%FT%TZ) installing ADE $ADE_MIN_VERSION (this machine has ${version:-none})" >> "$log"
+  ADE_RUNTIME_ROOT="$runtime" ADE_RUNTIME_NODE_MODULES="$runtime/node_modules" NODE_PATH="$runtime/node_modules" \
+    "$bin" brain update --version "$ADE_MIN_VERSION" --no-restart --foreground >> "$log" 2>&1 \
+    || echo "$(date -u +%FT%TZ) installing ADE $ADE_MIN_VERSION failed; starting ${version:-the image ADE}" >> "$log"
+fi
+
+base_path=$PATH
 delay=2
 while true; do
   # A move to another machine holds the brain while its files are copied, so
@@ -91,7 +138,14 @@ while true; do
     sleep 5
   done
   start=$(date +%s)
-  ade --role cto serve --socket "$ADE_HOME/sock/ade.sock" >> "$log" 2>&1
+  # Without the folder, the redirect below fails and no brain ever starts.
+  mkdir -p "$ADE_HOME/logs"
+  pick_ade
+  echo "$(date -u +%FT%TZ) starting the brain: $bin" >> "$log"
+  # The brain's terminals and agents get the same `ade` first on their PATH.
+  PATH="${bin%/ade}:$base_path" ADE_RUNTIME_ROOT="$runtime" \
+    ADE_RUNTIME_NODE_MODULES="$runtime/node_modules" NODE_PATH="$runtime/node_modules" \
+    "$bin" --role cto serve --socket "$ADE_HOME/sock/ade.sock" >> "$log" 2>&1
   # A brain that ran for a minute crashed for a new reason; start over at 2 s.
   if [ $(( $(date +%s) - start )) -gt 60 ]; then
     delay=2

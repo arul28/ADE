@@ -6,7 +6,8 @@ import { accountMachinePresence, machineIsAwake } from "../../../shared/machineP
 import type { AdeAccountMachine, RemoteRuntimeTarget } from "../../../shared/types";
 import { useActivityStore } from "../../state/activityStore";
 import { Agent37BoxOnlyRow, Agent37BoxStrip, Agent37GroupBanners, Agent37GroupHead, agent37ParkedRow } from "./Agent37MachineGroup";
-import { agent37BoxWork, matchAgent37Boxes } from "./agent37MachineModel";
+import { agent37BoxWork, isDeletedAgent37Row, matchAgent37Boxes } from "./agent37MachineModel";
+import { connectButtonStyle } from "./remoteTargetListStyles";
 import type { MachineAction } from "./MachineActionsMenu";
 import type { MachineRow, MachineSection, MachineSections } from "./remoteMachineModel";
 import { useAgent37BoxActions, type Agent37BoxContext } from "./useAgent37BoxActions";
@@ -170,6 +171,15 @@ export function useAgent37MachineGroup(args: {
     }
     if (!accountMachine) return {};
     const name = row.kind === "saved" ? row.target.name : accountMachineDisplayName(accountMachine) ?? "this computer";
+    const removeFromAde = () => void agent37Actions.removeFromAde({
+      machine: accountMachine,
+      name,
+      targetId: row.kind === "saved" ? row.target.id : row.kind === "account" ? row.matchedTargetId : null,
+      box: null,
+      onError: onAccountError,
+    });
+    // A box deleted on the Agent 37 site leaves its row on the account, offline for good.
+    const deletedBox = agent37Result?.state === "ok" && isDeletedAgent37Row(accountMachine, agent37Result.deletedInstanceIds ?? []);
     return {
       extraActions: [{
         key: "remove-ade",
@@ -177,14 +187,19 @@ export function useAgent37MachineGroup(args: {
         ariaLabel: `Remove ${name} from ADE`,
         icon: <UserMinus size={14} />,
         danger: true,
-        onSelect: () => void agent37Actions.removeFromAde({
-          machine: accountMachine,
-          name,
-          targetId: row.kind === "saved" ? row.target.id : row.kind === "account" ? row.matchedTargetId : null,
-          box: null,
-          onError: onAccountError,
-        }),
+        onSelect: removeFromAde,
       }],
+      parked: deletedBox
+        ? {
+          label: "Deleted on Agent 37. It no longer exists.",
+          action: (
+            <button type="button" aria-label={`Remove ${name} from ADE`} onClick={removeFromAde} style={{ ...connectButtonStyle, marginRight: 4 }}>
+              <UserMinus size={13} />
+              Remove
+            </button>
+          ),
+        }
+        : null,
     };
   }
 

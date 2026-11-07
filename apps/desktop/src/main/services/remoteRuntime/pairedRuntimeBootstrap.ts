@@ -29,6 +29,7 @@ import {
   classifyPairedRuntimeFailure,
   createRouteAttemptRecorder,
   dominantPairedRuntimeFailure,
+  isRelayHostReplacedError,
   orderPairedCandidates,
   pairedRuntimeFailureMessage,
   pairedRouteConnectTimeoutMs,
@@ -128,6 +129,7 @@ export async function bootstrapPairedRuntime(args: {
   const { attempts, record: recordAttempt } = attemptRecorder;
   let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
   let accountHelloCode: PairedRuntimeAccountHelloCode | null = null;
+  let relayRetried = false;
   // Keep the phases explicit even if a future candidate-builder change
   // accidentally reorders endpoints.
   const orderedCandidates = orderPairedCandidates(candidates);
@@ -202,7 +204,14 @@ export async function bootstrapPairedRuntime(args: {
         accountHelloCode = error.helloCode;
       }
       const failure = classifyPairedRuntimeFailure(error);
-      markEndpointFailed(candidate, failure);
+      // The host just opened a new relay link (a machine back from sleep): try
+      // the relay once more now, and don't count it against the route.
+      if (candidate.kind === "relay" && !relayRetried && isRelayHostReplacedError(error)) {
+        relayRetried = true;
+        orderedCandidates.splice(candidateIndex + 1, 0, candidate);
+      } else {
+        markEndpointFailed(candidate, failure);
+      }
       recordAttempt({
         kind: candidate.kind,
         host: safeHost,

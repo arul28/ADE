@@ -511,6 +511,11 @@ export type Agent37MachinesResult = {
   spending: Agent37Spending;
   /** This UTC month per machine, and what deleted machines spent (see `Agent37MonthSpend`). */
   month?: Agent37MonthSpend | null;
+  /**
+   * Instances that spent in the last 90 days and are gone from the workspace:
+   * boxes deleted on the Agent 37 site, whose ADE rows stay on the account.
+   */
+  deletedInstanceIds?: string[];
   /** A plain sentence for `key_refused` and `unreachable`. */
   message: string | null;
 };

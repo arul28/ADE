@@ -269,6 +269,7 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
       usageAvailable: usage != null,
       spending: agent37SpendingFor(budget, agent37MonthSpentUsd(usage, at)),
       month: agent37MonthSpend(live, monthUsage, at),
+      deletedInstanceIds: usage ? Object.keys(usage.byInstance).filter((id) => !live.some((instance) => instance.id === id)) : [],
       message: null,
     };
   }
