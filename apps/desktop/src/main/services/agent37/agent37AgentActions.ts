@@ -21,10 +21,13 @@
 import {
   AGENT37_MADE_BY_CHAT_METADATA,
   AGENT37_SHAPES,
+  AGENT37_SPEND_UNKNOWN_MESSAGE,
   agent37CapReachedMessage,
   agent37HourlyUsd,
   agent37Shape,
+  agent37ShapeById,
   agent37ShapeWithin,
+  agent37UnattendedSpendBlock,
   agent37LimitsPresetOf,
   AGENT37_DEFAULT_AGENT_LIMITS,
   AGENT37_LIMITS_PRESETS,
@@ -171,8 +174,14 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
     return { box: matches[0]!, all };
   };
 
+  /** This month against the cap; null when it can't be read. */
+  const readSpending = (): Promise<Agent37Spending | null> => deps.machines.spending().catch((error: unknown) => {
+    logger.warn?.("agent37.spending_read_failed", { error: getErrorMessage(error) });
+    return null;
+  });
+
   const capCheck = async (): Promise<Agent37Spending | null> => {
-    const month = await deps.machines.spending().catch(() => null);
+    const month = await readSpending();
     if (month?.capReached) throw new Error(agent37CapReachedMessage(month));
     return month;
   };
@@ -236,8 +245,16 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       };
       if (limits && !limits.unattendedSpend) refuse("your settings say unattended agents ask before anything that costs money.");
       if (limits && card.shape && !agent37ShapeWithin(card.shape, limits.maxShape)) {
-        const max = agent37Shape(limits.maxShape)!;
+        const max = agent37ShapeById(limits.maxShape);
         refuse(`agents may pick up to ${max.cpu} vCPU · ${max.memoryGb} GB on their own.`);
+      }
+      // capCheck lets a month it couldn't read through, for a person to decide; nobody decides here.
+      const month = costs ? await readSpending() : null;
+      const blocked = costs ? agent37UnattendedSpendBlock(month) : null;
+      if (blocked) {
+        const why = blocked === "cap_reached" && month ? agent37CapReachedMessage(month) : AGENT37_SPEND_UNKNOWN_MESSAGE;
+        approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: ${why}`);
+        throw new Agent37Declined(`${card.title}: declined. ${why}`);
       }
       if (limits && card.newMachine) {
         const listed = await deps.machines.agentMadeToday().catch(() => 0);
@@ -357,7 +374,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       const kind = (text(args, "kind") ?? "box") as Agent37MachineKind;
       if (!isAgent37MachineKind(kind)) throw new Error("Make a box or a VM (--kind box|vm).");
       const shapeId = shapeArg(args) ?? (kind === "vm" ? "4x8" : "2x4");
-      const shape = agent37Shape(shapeId)!;
+      const shape = agent37ShapeById(shapeId);
       const name = text(args, "name") ?? (kind === "vm" ? "Agent 37 VM" : "Agent 37 box");
       await capCheck();
       if (cannotMake()) throw new Error(NO_DESKTOP);
@@ -391,7 +408,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       const { box } = await resolveMachine(text(args, "machine"));
       const shapeId = shapeArg(args);
       if (!shapeId) throw new Error("Pass the new size (--shape 4x8).");
-      const shape = agent37Shape(shapeId)!;
+      const shape = agent37ShapeById(shapeId);
       await capCheck();
       await approve(readApproval(args), {
         action: "spend",
@@ -554,7 +571,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         || next.machinesPerDay > was.machinesPerDay
         || !agent37ShapeWithin(next.maxShape, was.maxShape);
       if (looser) {
-        const max = agent37Shape(next.maxShape)!;
+        const max = agent37ShapeById(next.maxShape);
         await approve(readApproval(args), {
           action: "uncapped",
           title: "Let agents spend more on Agent 37",
@@ -586,7 +603,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       // Turning it on, or a bigger or other kind of machine, asks (and is held to the agent limits).
       if (!existing || existing.shape !== next.shape || existing.kind !== next.kind) {
         await capCheck();
-        const shape = agent37Shape(next.shape)!;
+        const shape = agent37ShapeById(next.shape);
         await approve(readApproval(args), {
           action: "spend",
           newMachine: true,

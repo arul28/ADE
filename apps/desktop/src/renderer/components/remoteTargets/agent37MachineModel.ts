@@ -81,7 +81,7 @@ export function agent37BoxWork(machine: AdeAccountMachine | null, activityItems:
 }
 
 /** What the box costs per hour in the state it is in now. */
-export function agent37CurrentHourlyUsd(box: Agent37Machine): number | null {
+function agent37CurrentHourlyUsd(box: Agent37Machine): number | null {
   if (box.state === "deleting" || box.state === "error") return null;
   // Suspended time is never billed.
   if (box.pastDue) return 0;
@@ -146,14 +146,18 @@ export function agent37GroupTotals(boxes: readonly Agent37Machine[]): Agent37Gro
 }
 
 /**
- * How long the wallet lasts at the current rate, as a warning, or null when it
- * is comfortable (more than three days) or unknown.
+ * How long the wallet lasts at the current rate, as a warning (`empty` once
+ * nothing is left), or null when it is comfortable (more than three days) or
+ * unknown.
  */
-export function agent37WalletWarning(balanceUsd: number | null, hourlyUsd: number): string | null {
+export function agent37WalletWarning(balanceUsd: number | null, hourlyUsd: number): { empty: boolean; detail: string } | null {
   if (balanceUsd == null || hourlyUsd <= 0) return null;
-  if (balanceUsd <= 0) return "Agent 37 suspends these machines at the next hourly settle unless you top it up.";
+  if (balanceUsd <= 0) return { empty: true, detail: "Agent 37 suspends your machines at the next hourly settle unless you top it up." };
   const hours = balanceUsd / hourlyUsd;
   if (hours > 72) return null;
   const left = hours < 2 ? "about an hour" : hours < 48 ? `about ${Math.floor(hours)} hours` : `about ${Math.floor(hours / 24)} days`;
-  return `Your Agent 37 wallet (${formatAgent37Usd(balanceUsd)}) lasts ${left} at this rate. When it runs out, Agent 37 suspends these machines.`;
+  return {
+    empty: false,
+    detail: `Your Agent 37 wallet (${formatAgent37Usd(balanceUsd)}) lasts ${left} at this rate. When it runs out, Agent 37 suspends your machines.`,
+  };
 }

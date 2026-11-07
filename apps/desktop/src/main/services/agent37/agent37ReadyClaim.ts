@@ -28,7 +28,7 @@ import { getErrorMessage } from "../shared/utils";
 import { AGENT37_MACHINE_KEY_METADATA } from "./agent37Machines";
 
 /** There is no ready machine to take. `code` reaches a CLI caller's JSON. */
-export class Agent37NoReadyMachine extends Error {
+class Agent37NoReadyMachine extends Error {
   readonly code = "agent37_no_ready_machine";
   constructor(message: string) {
     super(message);
@@ -118,9 +118,12 @@ export async function claimAgent37ReadyMachine(
   // ready?), tagged, and read back: a caller whose token didn't stick lost a
   // race to another caller and moves on to the next machine.
   let pick: Agent37Instance | null = null;
+  let pickMachineKey = "";
   let claimToken = "";
   let claimedAt = 0;
-  for (const candidate of ready.filter((instance) => instance.metadata[AGENT37_MACHINE_KEY_METADATA])) {
+  for (const candidate of ready) {
+    const machineKey = candidate.metadata[AGENT37_MACHINE_KEY_METADATA];
+    if (!machineKey) continue;
     const fresh = await client.getInstance(candidate.id).catch((error: unknown) => {
       logger.warn?.("agent37.ready_claim_read_failed", { instanceId: candidate.id, error: getErrorMessage(error) });
       return null;
@@ -143,6 +146,7 @@ export async function claimAgent37ReadyMachine(
     });
     if (!check || check.metadata[AGENT37_READY_METADATA.claimToken] === claimToken) {
       pick = check ?? { ...fresh, metadata: written };
+      pickMachineKey = machineKey;
       break;
     }
     logger.info?.("agent37.ready_claim_lost", { instanceId: fresh.id });
@@ -176,7 +180,7 @@ export async function claimAgent37ReadyMachine(
   logger.info?.("agent37.ready_claimed", { instanceId: pick.id, wakeMs, waitedMs: wakeStarted - claimedAt });
   return {
     instanceId: pick.id,
-    machineKey: metadata[AGENT37_MACHINE_KEY_METADATA]!,
+    machineKey: pickMachineKey,
     name: pick.name ?? pick.id,
     projectPath: metadata[AGENT37_READY_METADATA.path] ?? null,
     laneId: metadata[AGENT37_READY_METADATA.lane] ?? null,

@@ -44,7 +44,7 @@ const PENDING_CREATES_KEY = "agent37.pendingCreates.v2";
 /** The first format: a bare list of instance ids, written after the create answered. */
 const LEGACY_PENDING_CREATES_KEY = "agent37.pendingCreates.v1";
 /** A record that matched no box for this long is dropped. */
-export const AGENT37_PENDING_CREATE_TTL_MS = 24 * 60 * 60_000;
+const AGENT37_PENDING_CREATE_TTL_MS = 24 * 60 * 60_000;
 const DELETE_CONFIRM_ATTEMPTS = 15;
 const DELETE_CONFIRM_POLL_MS = 2_000;
 

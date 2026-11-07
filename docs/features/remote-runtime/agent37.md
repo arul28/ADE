@@ -486,6 +486,11 @@ running work carries on and boxes still sleep when idle. From 80% the group
 and the card warn, and the desktop notifies once per month at 80% and 100%.
 The spend is Agent 37's `GET /usage` for this UTC month, which Agent 37
 settles hourly, so the newest hour shows later.
+When ADE can't read the month, what nobody approves counts it as over the cap
+(`agent37UnattendedSpendBlock` in `shared/agent37.ts`): a full-auto chat or an
+automation makes and changes nothing, the ready-machine keeper prepares nothing
+and shows why until a later pass reads the month, and a brain does not approve
+a new machine's sign-in itself. A person answering the card may still go ahead.
 
 **Saved by sleeping** is, per box, its spend window at the running rate less
 what it actually spent: the compute its asleep hours didn't cost. The group
@@ -610,8 +615,9 @@ A new chat on it wakes it (Agent 37 answers in about a second) and is working
 in seconds, which is what a prepared seed is in other products. Asleep it
 bills only its disk. Turn it on per project on the Agent 37 page (Ready
 machine: box or VM, size, setup commands); the card shows what it costs
-asleep and awake, the step it is on while preparing, and Retry after a
-failure.
+asleep and awake, the step it is on while this computer prepares it (the
+keeper sends a typed step: make, sign in, clone, setup, sleep; another
+computer's prepare shows no step), and Retry after a failure.
 
 - **The pool lives on Agent 37.** Each machine's metadata says which project
   it is for (`ade_ready_for`, the git identity `github.com/owner/repo`) and

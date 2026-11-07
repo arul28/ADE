@@ -9,7 +9,7 @@ import {
   type Agent37AgentLimits,
   type Agent37Budget,
 } from "../../../shared/agent37";
-import { IntegrationCard } from "./integrations/IntegrationChrome";
+import { IntegrationCard, IntegrationChoice } from "./integrations/IntegrationChrome";
 import { Banner } from "../ui/notice";
 import { ipcErrorMessage } from "../../lib/format";
 
@@ -88,52 +88,52 @@ export function Agent37AgentLimitsCard() {
       <div className="ade-ig-limit-rows">
         <div className="ade-ig-limit-row">
           <div><b>When nobody is watching, may agents make or change machines?</b><small>Nobody is watching a full-auto chat or an automation run.</small></div>
-          <div className="kit-seg" data-case="sentence" role="radiogroup" aria-label="When nobody is watching, may agents make or change machines?">
-            {[false, true].map((value) => (
-              <button key={String(value)} type="button" role="radio" aria-checked={unattended === value} disabled={disabled}
-                onClick={() => allow(value)}>
-                {value ? "Yes, within these limits" : "No, they ask you first"}
-              </button>
-            ))}
-          </div>
+          <IntegrationChoice
+            label="When nobody is watching, may agents make or change machines?"
+            value={unattended == null ? null : unattended ? "yes" : "no"}
+            disabled={disabled}
+            onChange={(choice) => allow(choice === "yes")}
+            options={[
+              { value: "no", label: "No, they ask you first" },
+              { value: "yes", label: "Yes, within these limits" },
+            ]}
+          />
         </div>
         {unattended ? (
           <>
             <div className="ade-ig-limit-row">
               <div><b>New machines a day</b><small>Made, copied or moved by agents</small></div>
-              <div className="kit-seg" role="radiogroup" aria-label="New machines a day">
-                {AGENT37_MACHINES_PER_DAY_CHOICES.map((count) => (
-                  <button key={count} type="button" role="radio" aria-checked={limits?.machinesPerDay === count} disabled={disabled}
-                    onClick={() => { if (limits?.machinesPerDay !== count) setLimit({ machinesPerDay: count }); }}>
-                    {count}
-                  </button>
-                ))}
-              </div>
+              <IntegrationChoice
+                label="New machines a day"
+                value={limits?.machinesPerDay ?? null}
+                disabled={disabled}
+                sentenceCase={false}
+                onChange={(count) => setLimit({ machinesPerDay: count })}
+                options={AGENT37_MACHINES_PER_DAY_CHOICES.map((count) => ({ value: count, label: String(count) }))}
+              />
             </div>
             <div className="ade-ig-limit-row">
               <div><b>Largest size</b><small>Bigger machines cost more an hour</small></div>
-              <div className="kit-seg" role="radiogroup" aria-label="Largest size">
-                {AGENT37_SHAPES.map((shape) => (
-                  <button key={shape.id} type="button" role="radio" aria-checked={limits?.maxShape === shape.id} disabled={disabled}
-                    title={shapeLabel(shape.id)}
-                    onClick={() => { if (limits?.maxShape !== shape.id) setLimit({ maxShape: shape.id }); }}>
-                    {shape.cpu}·{shape.memoryGb}
-                  </button>
-                ))}
-              </div>
+              <IntegrationChoice
+                label="Largest size"
+                value={limits?.maxShape ?? null}
+                disabled={disabled}
+                sentenceCase={false}
+                onChange={(maxShape) => setLimit({ maxShape })}
+                options={AGENT37_SHAPES.map((shape) => ({ value: shape.id, label: `${shape.cpu}·${shape.memoryGb}`, title: shapeLabel(shape.id) }))}
+              />
             </div>
           </>
         ) : null}
         <div className="ade-ig-limit-row">
           <div><b>Monthly cap</b><small>Optional, for every machine. Your Agent 37 wallet is prepaid, so it already caps what you can spend.</small></div>
-          <div className="kit-seg" data-case="sentence" role="radiogroup" aria-label="Monthly cap">
-            {[null, ...AGENT37_CAP_CHOICES_USD].map((usd) => (
-              <button key={usd ?? "off"} type="button" role="radio" aria-checked={cap === usd} disabled={disabled}
-                onClick={() => { if (cap !== usd) void save({ monthlyCapUsd: usd }); }}>
-                {usd == null ? "Off" : `$${usd}`}
-              </button>
-            ))}
-          </div>
+          <IntegrationChoice
+            label="Monthly cap"
+            value={cap ?? "off"}
+            disabled={disabled}
+            onChange={(choice) => void save({ monthlyCapUsd: choice === "off" ? null : choice })}
+            options={[{ value: "off" as const, label: "Off" }, ...AGENT37_CAP_CHOICES_USD.map((usd) => ({ value: usd, label: `$${usd}` }))]}
+          />
         </div>
       </div>
 

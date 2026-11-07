@@ -19,7 +19,7 @@ import type { Agent37Vault } from "./agent37Credential";
 /** The account vault item that holds every project's choice. */
 export const AGENT37_READY_VAULT_KEY = "agent37-ready";
 /** This computer's copy, in the credential file the app, brain and CLI share. */
-export const AGENT37_READY_MACHINE_CREDENTIAL_KEY = "agent37.ready.v1";
+const AGENT37_READY_MACHINE_CREDENTIAL_KEY = "agent37.ready.v1";
 
 export type Agent37ReadySettingsStore = {
   /**
@@ -70,7 +70,7 @@ export function normalizeAgent37ReadySettings(raw: Partial<Agent37ReadyProjectSe
 }
 
 /** The stored item; null (logged) for a damaged one, so a caller never takes it for "no projects". */
-export function parseAgent37ReadySettings(raw: string, logger?: Agent37Logger): Agent37ReadyProjectSettings[] | null {
+function parseAgent37ReadySettings(raw: string, logger?: Agent37Logger): Agent37ReadyProjectSettings[] | null {
   try {
     const parsed = JSON.parse(raw) as { v?: unknown; projects?: unknown };
     if (parsed?.v !== 1 || !Array.isArray(parsed.projects)) {
