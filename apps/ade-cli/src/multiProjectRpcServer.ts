@@ -82,6 +82,8 @@ import { querySearchIndexReadOnly } from "../../desktop/src/main/services/search
 import type { ProviderStatusReport } from "../../desktop/src/main/services/ai/providerStatusProbe";
 import { PROVIDER_STATUS_CACHE_TTL_MS } from "../../desktop/src/main/services/ai/providerStatusDetails";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
+import { createHeadlessAccountVaultBridge } from "./services/account/accountRuntimeLifecycle";
+import { getMachineAccountStores } from "./services/account/machineAccountStores";
 import {
   callerHasRoleAtLeast,
   isCtoOnlyAdeAction,
@@ -639,6 +641,11 @@ const SIGN_IN_SOURCE_BY_ACTION: Readonly<Record<string, "browser" | "device_code
   pollDeviceLogin: "device_code",
 };
 
+/** How old the machine's copy of the account vault may be when a clone reads the GitHub token from it. */
+const MACHINE_GITHUB_VAULT_MAX_AGE_MS = 60_000;
+/** The account whose GitHub token a clone with no project open last read; see createMultiProjectRpcRequestHandler. */
+let machineGithubTokenUserId: string | null = null;
+
 const machineProjectLogger: Logger = {
   debug: () => {},
   info: () => {},
@@ -773,11 +780,37 @@ function readListMyReposInput(
   return search ? { search } : {};
 }
 
-function createMachineProjectScaffoldService() {
+/**
+ * The scaffold service for a clone or a repo list, which run with no project
+ * open. A machine that has never opened a project (a new cloud machine) has
+ * never copied the account's GitHub token, so it is read from the account
+ * vault here first; without it a private repository does not clone.
+ */
+async function createMachineProjectScaffoldService() {
+  const account = getMachineAccountStores(machineProjectLogger);
   const githubService = createHeadlessGitHubService(
     process.cwd(),
     machineProjectLogger,
+    {
+      getAccountVault: () => createHeadlessAccountVaultBridge(() => account.vault),
+      getAccountUserId: account.accountUserId,
+    },
   );
+  const userId = account.accountUserId();
+  if (userId) {
+    // Recorded before the awaits, so a sign-in as another account meanwhile purges it.
+    machineGithubTokenUserId = userId;
+    await account.vault.sync({ maxAgeMs: MACHINE_GITHUB_VAULT_MAX_AGE_MS }).catch(() => {});
+    await githubService.hydratePatFromVault();
+    // The account changed while the token was read: it is not this account's
+    // to keep. A newer request that read the new account's token recorded that
+    // account, and its copy stays.
+    const newerAccountRead = machineGithubTokenUserId != null && machineGithubTokenUserId !== userId;
+    if (account.accountUserId() !== userId && !newerAccountRead) {
+      githubService.purgeAccountPat();
+      machineGithubTokenUserId = null;
+    }
+  }
   return createProjectScaffoldService({
     logger: machineProjectLogger,
     githubService: githubService as never,
@@ -1327,7 +1360,7 @@ async function cloneRepositoryForRemoteAgent(
   if (preflight.blockingErrors.length) {
     throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, `Can't set up ${identity} here: ${preflight.blockingErrors.join(" ")}`);
   }
-  const result = await createMachineProjectScaffoldService().cloneRepository({
+  const result = await (await createMachineProjectScaffoldService()).cloneRepository({
     url: `https://github.com/${match[1]}/${repoName}.git`,
     parentDir,
     name: repoName,
@@ -1379,6 +1412,27 @@ export function createMultiProjectRpcRequestHandler(
     if (!isRecord(value) || value.signedIn !== true) return null;
     return typeof value.userId === "string" ? value.userId.trim() || null : null;
   };
+  // A GitHub token that a clone with no project open copied from the account
+  // (createMachineProjectScaffoldService) goes with that account: on sign-out,
+  // and when another account signs in. A token pasted on this machine stays.
+  const purgeAccountGithubToken = (): void => {
+    try {
+      createHeadlessGitHubService(process.cwd(), machineProjectLogger).purgeAccountPat();
+    } catch (error) {
+      process.stderr.write(`Warning: could not remove the account's GitHub token from this machine: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  };
+  const stopGithubTokenSignOut = accountAuthService.onSignedOut?.(() => {
+    machineGithubTokenUserId = null;
+    purgeAccountGithubToken();
+  });
+  const stopGithubTokenSignIn = accountAuthService.onSignedIn(() => {
+    const next = currentAccountOwnerUserId();
+    if (machineGithubTokenUserId && next !== machineGithubTokenUserId) {
+      machineGithubTokenUserId = null;
+      purgeAccountGithubToken();
+    }
+  });
   const ownsPersonalChatScope = options.personalChatScope == null;
   const personalChatScope = options.personalChatScope ?? createPersonalChatScope();
   const providerStatus = options.providerStatus ?? createProviderStatusService();
@@ -3556,7 +3610,7 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.create") {
       const result =
-        await createMachineProjectScaffoldService().createLocalProject(
+        await (await createMachineProjectScaffoldService()).createLocalProject(
           readCreateProjectInput(params),
         );
       return await decorateProjectWithIcon(
@@ -3569,7 +3623,7 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.clone") {
       const result =
-        await createMachineProjectScaffoldService().cloneRepository(
+        await (await createMachineProjectScaffoldService()).cloneRepository(
           await readCloneProjectInput(params, () => defaultParentDir(projectRegistry)),
         );
       return await decorateProjectWithIcon(
@@ -3581,7 +3635,7 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "projects.listMyGitHubRepos") {
-      return await createMachineProjectScaffoldService().listMyGitHubRepos(
+      return await (await createMachineProjectScaffoldService()).listMyGitHubRepos(
         readListMyReposInput(params),
       );
     }
@@ -3952,6 +4006,8 @@ export function createMultiProjectRpcRequestHandler(
       void scopeRegistry.disposeAll();
     }
     if (ownsPersonalChatScope) void personalChatScope.dispose();
+    stopGithubTokenSignOut?.();
+    stopGithubTokenSignIn();
   };
 
   handler.setNotifier = (notify: JsonRpcNotifier | null) => {

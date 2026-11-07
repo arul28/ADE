@@ -125,8 +125,14 @@ import {
 import {
   classifyGitHubRepositoryApiPath,
   createGithubRepositoryRequestFallback,
+  GITHUB_OWNER_NOT_FOUND_CODE,
+  githubApiErrorMessage,
+  githubOwnerNotFoundMessage,
   isGithubRepositorySpecificAccessDenial,
+  resolveGithubCreateRepositoryRoute,
 } from "../../desktop/src/shared/githubApiPath";
+import { codedError } from "../../desktop/src/shared/codedError";
+import { markExpected } from "../../desktop/src/shared/expectedError";
 import { createGithubConditionalRequestCache } from "../../desktop/src/shared/githubConditionalRequestCache";
 import {
   clearGithubCredentialHealth,
@@ -1420,6 +1426,8 @@ export function createHeadlessGitHubService(
     token?: string;
     accept?: string;
     capability?: GithubOperationCredentialCapability;
+    /** Use only this credential, with no fallback to another (another account). */
+    credentialSource?: HeadlessGitHubTokenLookup["source"];
     repo?: GitHubRepoRef;
   }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
     const capability = args.capability ?? (args.method === "GET" ? "read" : "write");
@@ -1436,7 +1444,7 @@ export function createHeadlessGitHubService(
       : githubOperationCredentialCandidates(
           (await readCredentialInventoryAsync()).candidates,
           capability,
-        );
+        ).filter((candidate) => !args.credentialSource || candidate.source === args.credentialSource);
     // An issue write uses the App only when its installation grants
     // `Issues: write`; otherwise it would 403 on every edit (see
     // `githubIssueWriteAccess.ts`).
@@ -1578,7 +1586,7 @@ export function createHeadlessGitHubService(
         // Keep non-JSON response bodies for callers and error messages.
       }
       if (!response.ok) {
-        const message = readApiMessage(
+        const { message, detailed } = githubApiErrorMessage(
           data,
           `GitHub API request failed (HTTP ${response.status})`,
         );
@@ -1593,7 +1601,7 @@ export function createHeadlessGitHubService(
           recordGithubOperationFailure(candidate, failure.authFailure, failure.rateLimit);
         }
         const attemptError = new HeadlessGithubCredentialAttemptError(
-          message,
+          detailed,
           failure.authFailure,
           failure.rateLimit,
           response.status,
@@ -1881,6 +1889,7 @@ export function createHeadlessGitHubService(
     sshUrl: string;
     htmlUrl: string;
     defaultBranch: string;
+    isPrivate: boolean;
   }> => {
     const body: Record<string, unknown> = {
       name: args.name,
@@ -1891,10 +1900,44 @@ export function createHeadlessGitHubService(
       body.description = args.description.trim();
     }
     const owner = asString(args.owner).trim();
+    // A 404 on the org route, or on the owner lookup, means GitHub has no owner
+    // by that name that this account can create repositories under.
+    const rethrowAsOwnerNotFound = (error: unknown, account: string): never => {
+      if (error instanceof HeadlessGithubCredentialAttemptError && error.status === 404) {
+        throw markExpected(codedError(githubOwnerNotFoundMessage(account), GITHUB_OWNER_NOT_FOUND_CODE), "user");
+      }
+      throw error;
+    };
+    // `/user/repos` creates under whichever account the credential belongs
+    // to, so the personal route stays on the write credential whose login
+    // decided it: a fallback credential can be another account.
+    const writeAuth = await readTokenAsync("write");
+    const route = await resolveGithubCreateRepositoryRoute(owner, {
+      readAuthenticatedLogin: async () => (writeAuth.token
+        ? (await validateToken(writeAuth.token, accountingTokenSource(writeAuth.source))).userLogin
+        : null),
+      readAccountType: async (account) => {
+        const { data } = await apiRequest<Record<string, unknown>>({
+          method: "GET",
+          path: `/users/${encodeURIComponent(account)}`,
+        }).catch((error: unknown) => rethrowAsOwnerNotFound(error, account));
+        return asString(data?.type) || null;
+      },
+      onLoginLookupFailed: (error) => {
+        logger.warn("github.publish.login_lookup_failed", {
+          owner,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
     const { data } = await apiRequest<Record<string, unknown>>({
       method: "POST",
-      path: owner ? `/orgs/${encodeURIComponent(owner)}/repos` : "/user/repos",
+      path: route.path,
       body,
+      ...(route.organization || !writeAuth.token ? {} : { credentialSource: writeAuth.source }),
+    }).catch((error: unknown) => {
+      if (route.organization) rethrowAsOwnerNotFound(error, route.organization);
+      throw error;
     });
     const identity = repoIdentityFromGitHubResponse(data, owner, args.name);
     return {
@@ -1905,6 +1948,7 @@ export function createHeadlessGitHubService(
       sshUrl: asString(data.ssh_url),
       htmlUrl: asString(data.html_url),
       defaultBranch: asString(data.default_branch) || "main",
+      isPrivate: typeof data.private === "boolean" ? data.private : args.isPrivate,
     };
   };
 
@@ -1920,6 +1964,7 @@ export function createHeadlessGitHubService(
     htmlUrl: string;
     defaultBranch: string;
     size: number;
+    isPrivate: boolean;
   }> => {
     const { data } = await apiRequest<Record<string, unknown>>({
       method: "GET",
@@ -1935,6 +1980,7 @@ export function createHeadlessGitHubService(
       htmlUrl: asString(data.html_url),
       defaultBranch: asString(data.default_branch) || "main",
       size: typeof data.size === "number" ? data.size : 0,
+      isPrivate: data.private === true,
     };
   };
 
@@ -2601,6 +2647,7 @@ export function createHeadlessGitHubService(
         sshUrl: string;
         htmlUrl: string;
         defaultBranch: string;
+        isPrivate: boolean;
       };
       const requestedOwner = asString(args.owner).trim() || null;
       try {
@@ -2626,9 +2673,16 @@ export function createHeadlessGitHubService(
         if (!owner) throw createErr;
 
         const existing = await getRepository(owner, args.name);
-        if (existing.size > 0) {
+        // Reuse only an empty repository with the visibility asked for: pushing
+        // a project meant to be private into a public leftover publishes it.
+        const takenReason = existing.size > 0
+          ? "already exists and contains commits"
+          : existing.isPrivate !== args.isPrivate
+            ? `already exists and is ${existing.isPrivate ? "private" : "public"}`
+            : null;
+        if (takenReason) {
           const taken = new Error(
-            `A GitHub repo named '${owner}/${args.name}' already exists and contains commits. Pick a different name.`,
+            `A GitHub repo named '${owner}/${args.name}' ${takenReason}. Pick a different name.`,
           ) as Error & { code?: string };
           taken.code = "repo_name_taken";
           throw taken;
@@ -2641,6 +2695,7 @@ export function createHeadlessGitHubService(
           sshUrl: existing.sshUrl,
           htmlUrl: existing.htmlUrl,
           defaultBranch: existing.defaultBranch,
+          isPrivate: existing.isPrivate,
         };
       }
 
@@ -2692,6 +2747,7 @@ export function createHeadlessGitHubService(
         name: created.name,
         fullName: created.fullName,
         htmlUrl: created.htmlUrl,
+        isPrivate: created.isPrivate,
       };
     },
     async addIssueComment(owner, name, number, body) {

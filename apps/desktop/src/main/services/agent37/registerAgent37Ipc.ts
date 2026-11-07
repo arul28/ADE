@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
 import {
   AGENT37_DEFAULT_TEMPLATE,
   agent37StillStartingMessage,
@@ -10,7 +10,7 @@ import {
   AGENT37_MADE_BY_CHAT_METADATA,
   agent37CapReachedMessage,
   type Agent37Budget,
-  type Agent37ClaudeTokenStatus,
+  type Agent37CloudSignInStatus,
   type Agent37ShapeId,
   isAgent37InstanceId,
   type Agent37CreateMachineArgs,
@@ -26,7 +26,7 @@ import {
   type Agent37TemplateStatus,
 } from "../../../shared/agent37";
 import { IPC } from "../../../shared/ipc";
-import { AGENT37_CLAUDE_TOKEN_VAULT_KEY, agent37MachineEnv, createAgent37ClaudeToken } from "./agent37ClaudeToken";
+import { agent37MachineEnv, type Agent37CloudSignInVaults } from "./agent37CloudSignInStore";
 import type { AdeAccountMachinesResult } from "../../../shared/types/account";
 import { getSignedInAccountAccessToken } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import {
@@ -54,13 +54,15 @@ import { createAgent37Client } from "./agent37Client";
 import { createAgent37Machines } from "./agent37Machines";
 import { claimAgent37ReadyMachine, releaseAgent37ReadyMachine } from "./agent37ReadyClaim";
 import { createAgent37ReadyKeeper } from "./agent37ReadyMachines";
-import { setAgent37WakeForUse } from "./agent37WakeHook";
+import { setAgent37UpdateBlocker, setAgent37WakeForUse } from "./agent37WakeHook";
 import { startAgent37MoneyWatch } from "./agent37MoneyWatch";
 import { setAgent37DesktopActions } from "./agent37DesktopActions";
 import { copyAgent37Machine, moveAgent37Machine, type Agent37CopyDeps } from "./agent37MachineCopy";
+import { reconnectAgent37Machine } from "./agent37Reconnect";
 import {
   AGENT37_BUDGET_VAULT_KEY,
   createAgent37BudgetStore,
+  agent37InstanceForMachine,
   wakeAgent37MachineForUse,
 } from "./agent37Sleep";
 import { AGENT37_READY_VAULT_KEY, createAgent37ReadySettingsStore } from "./agent37ReadySettings";
@@ -239,7 +241,12 @@ export function registerAgent37Ipc(args: {
   /** One coarse product fact per finished create (analytics; never the box or the error). */
   recordMachineCreate?: (outcome: "completed" | "partial" | "cancelled" | "failed") => void;
   /** One coarse product fact per box action that worked (analytics; never the box). */
-  recordMachineAction?: (action: Agent37MachineActionKind | "copy" | "move") => void;
+  recordMachineAction?: (action: Agent37MachineActionKind | "copy" | "move" | "reconnect") => void;
+  /**
+   * An `agent37` action on this computer's brain. Sign-ins for cloud machines
+   * run there: a PTY can't start from this process in a packaged app.
+   */
+  brainAction: (action: string, actionArgs?: Record<string, unknown>) => Promise<unknown>;
   logger: Logger;
 }): void {
   const { logger } = args;
@@ -300,38 +307,31 @@ export function registerAgent37Ipc(args: {
   }, STARTUP_CHECK_DELAY_MS);
   startupTimer.unref?.();
 
-  // Claude on cloud machines: the person's long-lived token, kept in the
-  // account and given to every new machine (agent37ClaudeToken.ts).
-  const claudeTokenVault = () => (credentials.signedIn() ? agent37VaultFromBridge(args.vaultBridge, AGENT37_CLAUDE_TOKEN_VAULT_KEY) : null);
-  const claudeToken = createAgent37ClaudeToken({
-    vault: claudeTokenVault,
-    openExternal: (url) => {
-      if (/^https:\/\//i.test(url)) void shell.openExternal(url).catch(() => undefined);
-    },
-    onChanged: () => sendToAllWindows(IPC.agent37ClaudeTokenChanged),
-    logger,
-  });
-  app.once("before-quit", () => claudeToken.dispose());
-  ipcMain.handle(IPC.agent37ClaudeTokenStatus, async (event): Promise<Agent37ClaudeTokenStatus | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ClaudeTokenStatus)) return null;
-    return await claudeToken.status();
-  });
-  ipcMain.handle(IPC.agent37ClaudeTokenStart, async (event): Promise<Agent37ClaudeTokenStatus | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ClaudeTokenStart)) return null;
-    return await claudeToken.start();
-  });
-  ipcMain.handle(IPC.agent37ClaudeTokenSubmitCode, async (event, arg: { code?: unknown }): Promise<Agent37ClaudeTokenStatus | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ClaudeTokenSubmitCode)) return null;
-    return await claudeToken.submitCode(typeof arg?.code === "string" ? arg.code : "");
-  });
-  ipcMain.handle(IPC.agent37ClaudeTokenCancel, async (event): Promise<Agent37ClaudeTokenStatus | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ClaudeTokenCancel)) return null;
-    return await claudeToken.cancel();
-  });
-  ipcMain.handle(IPC.agent37ClaudeTokenRemove, async (event): Promise<Agent37ClaudeTokenStatus | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ClaudeTokenRemove)) return null;
-    return await claudeToken.remove();
-  });
+  // Sign-ins for cloud machines (agent37CloudSignInActions.ts): kept in the
+  // account, given to every new machine, and run on this computer's brain.
+  // Account-wide, so no pin: the brain here is the one with this browser.
+  const cloudSignInVaults: Agent37CloudSignInVaults = (vaultKey) =>
+    (credentials.signedIn() ? agent37VaultFromBridge(args.vaultBridge, vaultKey) : null);
+  const cloudSignIn = async (action: string, actionArgs?: Record<string, unknown>): Promise<Agent37CloudSignInStatus> => {
+    const status = await args.brainAction(action, actionArgs) as Agent37CloudSignInStatus;
+    // Every window shows the card; the one that acted already has the answer.
+    if (action !== "cloud_sign_in_status") sendToAllWindows(IPC.agent37CloudSignInChanged);
+    return status;
+  };
+  const cloudSignInHandlers: Array<[string, string, (arg: Record<string, unknown> | undefined) => Record<string, unknown> | undefined]> = [
+    [IPC.agent37CloudSignInStatus, "cloud_sign_in_status", () => undefined],
+    [IPC.agent37CloudSignInClaudeStart, "cloud_sign_in_start", () => undefined],
+    [IPC.agent37CloudSignInClaudeCode, "cloud_sign_in_code", (arg) => ({ code: typeof arg?.code === "string" ? arg.code : "" })],
+    [IPC.agent37CloudSignInClaudeCancel, "cloud_sign_in_cancel", () => undefined],
+    [IPC.agent37CloudSignInSaveKey, "cloud_sign_in_save_key", (arg) => ({ id: arg?.id, key: arg?.key })],
+    [IPC.agent37CloudSignInRemove, "cloud_sign_in_remove", (arg) => ({ id: arg?.id })],
+  ];
+  for (const [channel, action, toArgs] of cloudSignInHandlers) {
+    ipcMain.handle(channel, async (event, arg?: Record<string, unknown>): Promise<Agent37CloudSignInStatus | null> => {
+      if (!isTrustedAdeRendererSenderOrWarn(event, logger, channel)) return null;
+      return await cloudSignIn(action, toArgs(arg));
+    });
+  }
 
   const machineCreatorDeps: Parameters<typeof createAgent37Machine>[0] = {
     client: () => requireAgent37Client(credentials),
@@ -348,7 +348,8 @@ export function registerAgent37Ipc(args: {
       return null;
     },
     onTemplateMissing: () => void builder.ensure(),
-    machineEnv: () => agent37MachineEnv(claudeTokenVault()),
+    machineEnv: () => agent37MachineEnv(cloudSignInVaults, logger),
+    minAdeVersion: releasedAdeVersion,
     pendingCreates,
     logger,
   };
@@ -420,6 +421,33 @@ export function registerAgent37Ipc(args: {
     if (result.state === "refused") throw new Error(result.message);
     if (result.state === "woken") sendToAllWindows(IPC.agent37StatusChanged);
     return result.state === "woken";
+  });
+
+  // A box from a template older than the entrypoint-supervised one always
+  // starts the ADE its image has, so an update installs and then never runs.
+  // Asked before the update goes out, so the card says so at once.
+  setAgent37UpdateBlocker(async (target) => {
+    const machineKey = target.pairedMachine?.machineKey?.trim();
+    if (!machineKey || !machines.isKnownBox(machineKey)) return null;
+    let probe: { exitCode: number } | null = null;
+    let instance: ReturnType<typeof agent37InstanceForMachine> = null;
+    try {
+      const client = await savedClient();
+      if (!client) return null;
+      instance = agent37InstanceForMachine(await client.listInstances(), machineKey, target.hostname);
+      if (!instance || instance.status !== "running") return null;
+      probe = await client.exec(instance.id, AGENT37_ENTRYPOINT_SUPERVISOR_PROBE, { timeoutMs: 15_000 });
+    } catch (error) {
+      // Unknown is not "blocked": the update goes out, and the box's own ADE
+      // refuses it there if its template is too old.
+      logger.warn("agent37.update_blocker_check_failed", { error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }
+    if (probe.exitCode !== 1) return null;
+    logger.info("agent37.update_blocked_old_template", { instanceId: instance.id });
+    return "This machine was made from an older ADE machine template, which always starts the ADE it was built with, "
+      + "so an update can't take effect on it. Make a new Agent 37 machine to get the current version, and move your lanes to it. "
+      + "A copy keeps the old template.";
   });
 
   ipcMain.handle(IPC.agent37GetStatus, async (event): Promise<Agent37Status | null> => {
@@ -686,6 +714,21 @@ export function registerAgent37Ipc(args: {
     });
   });
 
+  ipcMain.handle(IPC.agent37ReconnectMachine, async (event, arg: { requestId?: unknown; instanceId?: unknown }) => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReconnectMachine)) return { started: false };
+    const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
+    if (!isAgent37InstanceId(instanceId)) throw new Error("ADE doesn't know that box.");
+    const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
+    return startLongAction(event, requestId, async (signal, send) => {
+      const result = await reconnectAgent37Machine({ ...machineCreatorDeps, spending: () => machines.spending() }, { instanceId, requestId }, send, { signal });
+      args.recordMachineAction?.("reconnect");
+      return {
+        message: result.joined ? `${result.name} is back in ADE.` : `${result.name} is signed in again. It shows up in a minute.`,
+        result,
+      };
+    });
+  });
+
   ipcMain.handle(IPC.agent37CancelCreate, async (event, arg: { requestId?: unknown }): Promise<{ cancelled: boolean }> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37CancelCreate)) return { cancelled: false };
     const controller = typeof arg?.requestId === "string" ? creates.get(arg.requestId) : undefined;
@@ -782,6 +825,13 @@ function readyPreparerId(logger: Logger): string {
 
 /** Long enough that the boot path, the brain and the vault are settled first. */
 const STARTUP_CHECK_DELAY_MS = 20_000;
+
+/**
+ * Exits 0 when the box's entrypoint supervises the brain so that an update can
+ * restart it on the new ADE (infra/agent37/template/ade-entrypoint.sh), 1 when
+ * it is an older ADE entrypoint, 2 when the box has no ADE entrypoint at all.
+ */
+const AGENT37_ENTRYPOINT_SUPERVISOR_PROBE = "grep -q 'ADE_BRAIN_SUPERVISOR=entrypoint' /usr/local/bin/ade-entrypoint.sh";
 
 /**
  * The ADE release this app is, for the template to install; null for a build

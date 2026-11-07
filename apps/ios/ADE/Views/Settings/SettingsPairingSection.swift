@@ -14,7 +14,7 @@ struct SettingsPairingSection: View {
   }
 
   var body: some View {
-    ADESettingsSection("Add a computer", hint: awayFromComputerHelp) {
+    ADESettingsSection("Add a computer", hint: awayFromComputerHelp, symbol: "plus.circle", tint: .green) {
       ADESettingsRows {
         SettingsPairActionRow(
           icon: "qrcode.viewfinder",

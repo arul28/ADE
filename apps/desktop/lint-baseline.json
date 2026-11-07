@@ -43,10 +43,6 @@
       "ade-ui/no-fixed-overlay": 2,
       "ade-ui/no-raw-z-index": 2
     },
-    "apps/desktop/src/renderer/components/projects/PublishToGitHubDialog.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 2
-    },
     "apps/desktop/src/renderer/components/projects/WorktreeOpenDialog.tsx": {
       "ade-ui/no-fixed-overlay": 2,
       "ade-ui/no-raw-z-index": 2

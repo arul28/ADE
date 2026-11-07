@@ -38,6 +38,11 @@ export type CtoOnlyRule =
   | { only: readonly string[] }
   | { allExcept: readonly string[] };
 
+/** Saving a key, Claude's sign-in, and forgetting one: Settings › Integrations › Agent 37 only. */
+const AGENT37_CLOUD_SIGN_IN_WRITES = [
+  "cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_save_key", "cloud_sign_in_remove",
+] as const;
+
 /**
  * The CTO-only actions that change one of the person's settings, each with
  * the Settings card it is changed from (null when there is none). A refused
@@ -62,6 +67,9 @@ const USER_SETTING_WRITES = {
   // person's, from that provider's Settings page; no agent starts one.
   ai: { actions: ["cliLoginStart", "cliLoginSubmitCode", "cliLoginCancel"], entryId: "agents.providers" },
   analytics: { actions: ["setEnabled"], entryId: null },
+  // A provider sign-in kept for new cloud machines is the person's; no agent
+  // saves a key or signs a provider in for them.
+  agent37: { actions: AGENT37_CLOUD_SIGN_IN_WRITES, entryId: "integrations.agent37-sign-ins" },
   remote_mcp: {
     actions: ["setEnabled", "setMachineIncluded", "createToken", "updateConnection", "removeConnection"],
     entryId: "ade-mcp.server",
@@ -120,6 +128,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // The machine's default shell for the user's own terminals is the user's
   // choice. Agents can read it; only user clients change it.
   pty: { only: [...USER_SETTING_WRITES.pty.actions] },
+  // A provider sign-in kept for new cloud machines is the person's; agents
+  // read which are kept (never a value) and change none.
+  agent37: { only: [...USER_SETTING_WRITES.agent37.actions] },
   // ADE MCP grants an outside app this machine. Every action is also user-only
   // (below), so only the desktop reaches it through the action bus.
   remote_mcp: { allExcept: [] },
@@ -362,6 +373,8 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // ADE never deletes from the archive on its own, and no agent or automation
   // deletes for the person: a delete can take a lane's uncommitted work.
   archive: ["delete"],
+  // Only the person's desktop saves a key or runs Claude's sign-in for new machines.
+  agent37: AGENT37_CLOUD_SIGN_IN_WRITES,
   // An agent asking to move a chat or batch must not approve its own request.
   // Only a person's client hosts an MCP App, so only it may pass an app's call on.
   chat: [
@@ -1049,6 +1062,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   agent37: [
     "ready_status", "claim_ready", "release_ready", "list", "spending", "create", "sleep", "wake", "resize",
     "copy", "move", "delete", "set_sleep", "set_cap", "ready_set", "ready_off", "ready_retry", "make_status", "limits", "set_limits",
+    // Sign-ins for new machines: which are kept (never a value), and the
+    // person's own saves and Claude sign-in (user-only, below).
+    "cloud_sign_in_status", ...AGENT37_CLOUD_SIGN_IN_WRITES,
   ],
   // `list` reads the MCP setup (names and set/not-set, never a value).
   // `request` raises the MCP server card in the caller's own chat; the person

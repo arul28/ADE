@@ -1,40 +1,22 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type CSSProperties,
-} from "react";
-import * as Dialog from "@radix-ui/react-dialog";
-import { AnimatePresence, motion } from "motion/react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowSquareOut,
   CheckCircle,
-  CircleNotch,
   GithubLogo,
+  GlobeHemisphereWest,
   Key,
-  LinkBreak,
-  Warning,
-  X,
+  LockSimple,
 } from "@phosphor-icons/react";
 import type { PublishProjectResult } from "../../../shared/types";
-import { extractCodeFromMessage } from "../../lib/codedError";
+import { extractCodeFromMessage, parseCodedErrorMessage } from "../../lib/codedError";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { extractError } from "../../lib/format";
 import { describeGithubPatVerification } from "../../lib/githubIntegrationStatus";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
-import { fadeScale } from "../../lib/motion";
-import {
-  COLORS,
-  LABEL_STYLE,
-  MONO_FONT,
-  SANS_FONT,
-  outlineButton,
-  primaryButton,
-  fgTint,
-} from "../lanes/laneDesignTokens";
-import { isImeComposing } from "../../lib/imeComposition";
+import { GITHUB_OWNER_NOT_FOUND_CODE } from "../../../shared/githubApiPath";
+import { Dialog, type DialogAction } from "../ui/dialog";
 import { Banner, noticeKindModel, type NoticeKind } from "../ui/notice";
+import "./PublishToGitHubDialog.css";
 
 const GITHUB_CLASSIC_TOKEN_NEW_URL =
   "https://github.com/settings/tokens/new?description=ADE%20desktop%20PR%20workflows&scopes=repo,workflow";
@@ -52,6 +34,8 @@ type TokenError = { message: string; kind: NoticeKind };
 type NameValidation = { ok: true } | { ok: false; reason: string };
 type OwnerValidation = { ok: true } | { ok: false; reason: string };
 
+const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
+
 function validateRepoName(rawName: string): NameValidation {
   const name = rawName.trim();
   if (name.length === 0) return { ok: false, reason: "Enter a repository name" };
@@ -68,8 +52,8 @@ function validateOwner(rawOwner: string): OwnerValidation {
   const owner = rawOwner.trim();
   if (owner.length === 0) return { ok: true };
   if (owner.length > 39) return { ok: false, reason: "Owner must be 39 characters or fewer" };
-  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(owner)) {
-    return { ok: false, reason: "Use a GitHub user or org slug" };
+  if (!OWNER_PATTERN.test(owner)) {
+    return { ok: false, reason: "Use a GitHub user or organization name" };
   }
   return { ok: true };
 }
@@ -80,28 +64,59 @@ function detectTokenType(token: string): "classic" | "fine-grained" | "unknown" 
   return "unknown";
 }
 
-const inputStyle: CSSProperties = {
-  height: 36,
-  padding: "0 12px",
-  fontSize: 13,
-  fontFamily: SANS_FONT,
-  color: COLORS.textPrimary,
-  background: fgTint(4),
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 8,
-  outline: "none",
-  width: "100%",
-  boxSizing: "border-box",
+const TOKEN_TYPE_LABEL: Record<ReturnType<typeof detectTokenType>, string> = {
+  classic: "Classic token",
+  "fine-grained": "Fine-grained token",
+  unknown: "Unknown format",
 };
 
-const textareaStyle: CSSProperties = {
-  ...inputStyle,
-  height: "auto",
-  minHeight: 64,
-  paddingTop: 8,
-  paddingBottom: 8,
-  resize: "vertical",
-};
+/**
+ * Answers about the project or the chosen name, not failures: the project
+ * already has a remote, or the name is taken. A warning with nothing to report.
+ */
+const PUBLISH_STATE_CODES = new Set([
+  "remote_already_exists",
+  "repo_name_taken",
+  GITHUB_OWNER_NOT_FOUND_CODE,
+]);
+
+/**
+ * The login a publish runs as: the write credential's, which the service
+ * compares the owner against, falling back to the read login for runtimes that
+ * predate `writeUserLogin`.
+ */
+function publishLogin(status: { connected: boolean; userLogin: string | null; writeUserLogin?: string | null }): string | null {
+  if (!status.connected) return null;
+  return status.writeUserLogin || status.userLogin || null;
+}
+
+const VISIBILITY = [
+  { value: true, label: "Private", detail: "Only you and people you invite", icon: LockSimple },
+  { value: false, label: "Public", detail: "Anyone on the internet can see it", icon: GlobeHemisphereWest },
+] as const;
+
+/** GitHub's avatar for a login, or the GitHub mark while the owner is blank or not a login yet. */
+function OwnerAvatar({ login, size = 20 }: { login: string; size?: number }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [login]);
+  if (!login || failed || !OWNER_PATTERN.test(login)) {
+    return (
+      <span className="ade-gh-publish-avatar" data-fallback="true" style={{ width: size, height: size }}>
+        <GithubLogo size={Math.round(size * 0.7)} weight="fill" />
+      </span>
+    );
+  }
+  return (
+    <img
+      className="ade-gh-publish-avatar"
+      src={`https://avatars.githubusercontent.com/${encodeURIComponent(login)}?size=${size * 2}`}
+      alt=""
+      width={size}
+      height={size}
+      onError={() => setFailed(true)}
+    />
+  );
+}
 
 export function PublishToGitHubDialog({
   open,
@@ -116,12 +131,18 @@ export function PublishToGitHubDialog({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<PublishError | null>(null);
   const [success, setSuccess] = useState<PublishProjectResult | null>(null);
+  // What the form asked for, shown when an older runtime doesn't report the repo's own visibility.
+  const [publishedPrivate, setPublishedPrivate] = useState(true);
 
   const [connectMode, setConnectMode] = useState(false);
   const [tokenDraft, setTokenDraft] = useState("");
   const [tokenSaving, setTokenSaving] = useState(false);
   const [tokenError, setTokenError] = useState<TokenError | null>(null);
   const [storeUnreadable, setStoreUnreadable] = useState(false);
+
+  const nameRef = useRef<HTMLInputElement | null>(null);
+  const ownerRef = useRef<HTMLInputElement | null>(null);
+  const tokenRef = useRef<HTMLInputElement | null>(null);
 
   // Reset all local state whenever the dialog opens.
   useEffect(() => {
@@ -141,9 +162,9 @@ export function PublishToGitHubDialog({
     setStoreUnreadable(false);
     void window.ade.github.getStatus({ forceRefresh: false }).then((status) => {
       if (cancelled) return;
-      if (status.connected && status.userLogin) {
-        setOwner(status.userLogin);
-      }
+      const login = publishLogin(status);
+      // The status read can land after the user has typed an owner; keep theirs.
+      if (login) setOwner((current) => (current.trim() ? current : login));
       // "Not connected" would be a guess here: an unreadable store reports no
       // credential whether or not one is saved.
       setStoreUnreadable(status.credentialStoreUnreadable === true);
@@ -170,6 +191,7 @@ export function PublishToGitHubDialog({
         description: description.trim() || undefined,
         isPrivate,
       });
+      setPublishedPrivate(isPrivate);
       setSuccess(result);
     } catch (err) {
       const code = extractCodeFromMessage(err);
@@ -190,7 +212,8 @@ export function PublishToGitHubDialog({
       } else {
         setError({
           code: code ?? "unknown",
-          message: extractError(err),
+          // Without the transport wrapper and the `code:` prefix the action adds.
+          message: parseCodedErrorMessage(err).message || extractError(err),
         });
       }
     } finally {
@@ -216,7 +239,8 @@ export function PublishToGitHubDialog({
       setTokenDraft("");
       setConnectMode(false);
       void window.ade.github.getStatus({ forceRefresh: true }).then((status) => {
-        if (status.connected && status.userLogin) setOwner(status.userLogin);
+        const login = publishLogin(status);
+        if (login) setOwner((current) => (current.trim() ? current : login));
       }).catch(() => {});
     } catch (err) {
       setTokenError({ message: extractError(err), kind: "failure" });
@@ -225,19 +249,17 @@ export function PublishToGitHubDialog({
     }
   }, [tokenDraft]);
 
-  const handleOpenOnGitHub = useCallback(() => {
-    if (!success) return;
-    void window.ade.app.openExternal(success.htmlUrl);
-  }, [success]);
+  // After a failed publish, put the cursor where the fix goes. The fields are
+  // disabled while publishing, so this waits for `pending` to clear.
+  useEffect(() => {
+    if (!error || pending) return;
+    (error.code === GITHUB_OWNER_NOT_FOUND_CODE ? ownerRef : nameRef).current?.focus();
+  }, [error, pending]);
 
   const handleDone = useCallback(() => {
     onPublished();
     onOpenChange(false);
   }, [onOpenChange, onPublished]);
-
-  const handleOpenTokenLink = useCallback(() => {
-    void window.ade.app.openExternal(GITHUB_CLASSIC_TOKEN_NEW_URL);
-  }, []);
 
   // The repair lives in the Connections panel, which is a header popover — this
   // modal has to get out of its way first.
@@ -246,682 +268,310 @@ export function PublishToGitHubDialog({
     openConnectionsPanel("machines");
   }, [onOpenChange]);
 
-  const headerTitle = success
-    ? "Publish to GitHub"
-    : connectMode
-      ? "Connect GitHub"
-      : "Publish to GitHub";
-
-  return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <AnimatePresence>
-        {open && (
-          <Dialog.Portal forceMount>
-            <Dialog.Overlay asChild>
-              <motion.div
-                className="fixed inset-0 z-[120] bg-black/70 backdrop-blur-2xl"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.15 }}
-              />
-            </Dialog.Overlay>
-            <Dialog.Content asChild onOpenAutoFocus={(event) => event.preventDefault()}>
-              <motion.div
-                className="fixed left-1/2 top-[14%] z-[130] -translate-x-1/2 w-[520px] max-w-[96vw] overflow-hidden rounded-2xl flex flex-col focus:outline-none"
-                style={{
-                  background:
-                    "radial-gradient(120% 120% at 0% 0%, rgba(167,139,250,0.10), transparent 55%), " +
-                    "radial-gradient(100% 100% at 100% 100%, rgba(82,56,175,0.10), transparent 60%), " +
-                    "var(--color-popup-bg)",
-                  border: "1px solid transparent",
-                  backgroundClip: "padding-box",
-                  boxShadow:
-                    "0 36px 100px -28px rgba(0,0,0,0.88), 0 0 0 1px rgba(167,139,250,0.22), 0 18px 48px -24px rgba(167,139,250,0.28)",
-                }}
-                variants={fadeScale}
-                initial="initial"
-                animate="animate"
-                exit="exit"
-              >
-                <div
-                  className="flex items-center justify-between gap-3 border-b px-4 py-3"
-                  style={{
-                    background:
-                      "color-mix(in srgb, var(--color-surface-recessed) 92%, rgba(167,139,250,0.08))",
-                    borderColor: "color-mix(in srgb, var(--color-accent) 14%, var(--color-border))",
-                  }}
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <GithubLogo
-                      size={16}
-                      weight="regular"
-                      className="shrink-0 text-[var(--color-muted-fg)]"
-                    />
-                    <Dialog.Title
-                      style={{
-                        fontFamily: SANS_FONT,
-                        fontSize: 13,
-                        fontWeight: 600,
-                        color: COLORS.textPrimary,
-                      }}
-                    >
-                      {headerTitle}
-                    </Dialog.Title>
-                  </div>
-                  <Dialog.Close asChild>
-                    <button
-                      type="button"
-                      aria-label="Close"
-                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-muted-fg)] transition-colors hover:bg-fg/10 hover:text-fg"
-                    >
-                      <X size={14} weight="regular" />
-                    </button>
-                  </Dialog.Close>
-                </div>
-                <Dialog.Description className="sr-only">
-                  Publish the current project to GitHub.
-                </Dialog.Description>
-
-                <div style={{ padding: 20 }}>
-                  {success ? (
-                    <SuccessBody
-                      result={success}
-                      onOpenOnGitHub={handleOpenOnGitHub}
-                      onDone={handleDone}
-                    />
-                  ) : connectMode ? (
-                    <ConnectBody
-                      tokenDraft={tokenDraft}
-                      onTokenChange={setTokenDraft}
-                      onSaveToken={handleSaveToken}
-                      saving={tokenSaving}
-                      error={tokenError}
-                      onOpenTokenLink={handleOpenTokenLink}
-                      onCancel={() => setConnectMode(false)}
-                      storeUnreadable={storeUnreadable}
-                      onOpenConnections={handleOpenConnections}
-                    />
-                  ) : (
-                    <FormBody
-                      owner={owner}
-                      onOwnerChange={setOwner}
-                      name={name}
-                      onNameChange={setName}
-                      description={description}
-                      onDescriptionChange={setDescription}
-                      isPrivate={isPrivate}
-                      onPrivateChange={setIsPrivate}
-                      ownerValidation={ownerValidation}
-                      validation={validation}
-                      pending={pending}
-                      canSubmit={canSubmit}
-                      error={error}
-                      onCancel={() => onOpenChange(false)}
-                      onSubmit={handleSubmit}
-                    />
-                  )}
-                </div>
-              </motion.div>
-            </Dialog.Content>
-          </Dialog.Portal>
-        )}
-      </AnimatePresence>
-    </Dialog.Root>
-  );
-}
-
-function FormBody({
-  owner,
-  onOwnerChange,
-  name,
-  onNameChange,
-  description,
-  onDescriptionChange,
-  isPrivate,
-  onPrivateChange,
-  ownerValidation,
-  validation,
-  pending,
-  canSubmit,
-  error,
-  onCancel,
-  onSubmit,
-}: {
-  owner: string;
-  onOwnerChange: (value: string) => void;
-  name: string;
-  onNameChange: (value: string) => void;
-  description: string;
-  onDescriptionChange: (value: string) => void;
-  isPrivate: boolean;
-  onPrivateChange: (value: boolean) => void;
-  ownerValidation: OwnerValidation;
-  validation: NameValidation;
-  pending: boolean;
-  canSubmit: boolean;
-  error: PublishError | null;
-  onCancel: () => void;
-  onSubmit: () => void;
-}) {
-  const trimmedOwner = owner.trim();
-  const trimmedName = name.trim();
-  const pathPreview = trimmedName
-    ? `${trimmedOwner || "your-account"}/${trimmedName}`
-    : trimmedOwner || "your-account";
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <Field label="OWNER">
-        <input
-          autoFocus
-          type="text"
-          value={owner}
-          placeholder="your-login or org"
-          onChange={(event) => onOwnerChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (isImeComposing(event)) return;
-            if (event.key === "Enter" && canSubmit) {
-              event.preventDefault();
-              onSubmit();
-            }
-          }}
-          style={inputStyle}
-          disabled={pending}
-        />
-        {!ownerValidation.ok ? (
-          <InlineHint tone="danger">{ownerValidation.reason}</InlineHint>
-        ) : null}
-      </Field>
-
-      <Field label="REPOSITORY NAME">
-        <input
-          type="text"
-          value={name}
-          placeholder="my-project"
-          onChange={(event) => onNameChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (isImeComposing(event)) return;
-            if (event.key === "Enter" && canSubmit) {
-              event.preventDefault();
-              onSubmit();
-            }
-          }}
-          style={inputStyle}
-          disabled={pending}
-        />
-        {!validation.ok && name.length > 0 ? (
-          <InlineHint tone="danger">{validation.reason}</InlineHint>
-        ) : null}
-      </Field>
-
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          gap: 12,
-          padding: "8px 10px",
-          borderRadius: 8,
-          background: COLORS.cardBg,
-          border: `1px solid ${COLORS.border}`,
-        }}
-      >
-        <span style={{ ...LABEL_STYLE, flexShrink: 0 }}>Repository path</span>
-        <span
-          style={{
-            minWidth: 0,
-            overflowWrap: "anywhere",
-            fontFamily: MONO_FONT,
-            fontSize: 11,
-            color: COLORS.textSecondary,
-            textAlign: "right",
-          }}
-        >
-          {pathPreview}
-        </span>
-      </div>
-
-      <Field label="DESCRIPTION (OPTIONAL)">
-        <textarea
-          value={description}
-          placeholder="What is this project?"
-          onChange={(event) => onDescriptionChange(event.target.value)}
-          style={textareaStyle}
-          disabled={pending}
-          rows={2}
-        />
-      </Field>
-
-      <Field label="VISIBILITY">
-        <div style={{ display: "flex", gap: 8 }}>
-          <VisibilityRadio
-            label="Private"
-            description="Only you can see it"
-            selected={isPrivate}
-            onSelect={() => onPrivateChange(true)}
-            disabled={pending}
-          />
-          <VisibilityRadio
-            label="Public"
-            description="Anyone can see it"
-            selected={!isPrivate}
-            onSelect={() => onPrivateChange(false)}
-            disabled={pending}
-          />
-        </div>
-      </Field>
-
-      {error ? (
-        <Banner
-          layout="inline"
-          model={{
-            id: "publish-github-error",
-            // A remote that already exists is the project's state, not a failure.
-            tone: error.code === "remote_already_exists" ? "warning" : "error",
-            title: error.message,
-            report: error.code === "remote_already_exists" ? false : { surface: "publish_to_github", code: error.code },
-          }}
-        />
-      ) : null}
-
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
-        <button
-          type="button"
-          style={outlineButton()}
-          onClick={onCancel}
-          disabled={pending}
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          style={primaryButton({
-            opacity: canSubmit ? 1 : 0.55,
-            cursor: canSubmit ? "pointer" : "not-allowed",
-          })}
-          onClick={onSubmit}
-          disabled={!canSubmit}
-        >
-          {pending ? (
-            <>
-              <CircleNotch size={12} weight="bold" className="animate-spin" />
-              Publishing…
-            </>
-          ) : (
-            "Publish"
-          )}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ConnectBody({
-  tokenDraft,
-  onTokenChange,
-  onSaveToken,
-  saving,
-  error,
-  onOpenTokenLink,
-  onCancel,
-  storeUnreadable,
-  onOpenConnections,
-}: {
-  tokenDraft: string;
-  onTokenChange: (value: string) => void;
-  onSaveToken: () => void;
-  saving: boolean;
-  error: TokenError | null;
-  onOpenTokenLink: () => void;
-  onCancel: () => void;
-  storeUnreadable: boolean;
-  onOpenConnections: () => void;
-}) {
-  const detected = tokenDraft.trim() ? detectTokenType(tokenDraft.trim()) : null;
-  const notice = (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 10,
-        padding: "10px 12px",
-        fontSize: 12,
-        fontFamily: SANS_FONT,
-        color: COLORS.textSecondary,
-        background: "color-mix(in srgb, var(--color-warning) 8%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--color-warning) 28%, var(--color-border))",
-        borderRadius: 8,
-        lineHeight: "18px",
-      }}
-    >
-      <LinkBreak size={14} weight="regular" style={{ color: COLORS.warning, flexShrink: 0, marginTop: 2 }} />
-      <span>
-        {storeUnreadable
-          ? `${GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title}. ${GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail}`
-          : "GitHub is not connected. Run gh auth login with repo and workflow scopes, or paste a personal access token."}
-      </span>
-    </div>
-  );
-
-  // Unreadable is NOT "not connected": the saved sign-in may still be on disk,
-  // just unopenable here. Saving a token over it would destroy a credential
-  // that repair can recover, so this state offers only the repair route.
-  if (storeUnreadable) {
+  if (success) {
+    const pushed = success.state === "pushed";
+    const repoPrivate = success.isPrivate ?? publishedPrivate;
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        {notice}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
-          <button type="button" style={outlineButton()} onClick={onCancel}>
-            Cancel
-          </button>
-          <button type="button" style={primaryButton()} onClick={onOpenConnections}>
-            {GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.action}
-          </button>
+      <Dialog
+        open={open}
+        onOpenChange={(next) => (next ? onOpenChange(true) : handleDone())}
+        title="Published to GitHub"
+        description={pushed ? "The repository is live and this project pushes to it." : "The repository is ready. Nothing was pushed yet."}
+        icon={<CheckCircle size={16} weight="fill" />}
+        tone="success"
+        size="md"
+        focusKey="success"
+        actions={[
+          { label: "Done", variant: "solid", onClick: handleDone, autoFocus: true },
+          {
+            label: "Open on GitHub",
+            variant: "secondary",
+            icon: <ArrowSquareOut size={12} />,
+            onClick: () => void window.ade.app.openExternal(success.htmlUrl),
+          },
+        ]}
+      >
+        <div className="ade-gh-publish-body">
+          <div className="kit-panel ade-gh-publish-repo">
+            <OwnerAvatar login={success.owner} size={32} />
+            <div className="ade-gh-publish-repo-text">
+              <span className="ade-gh-publish-repo-name">{success.fullName || success.htmlUrl}</span>
+              <span className="ade-gh-publish-repo-url">{success.htmlUrl}</span>
+            </div>
+            <span className="kit-tag">
+              {repoPrivate ? <LockSimple size={10} weight="bold" /> : <GlobeHemisphereWest size={10} weight="bold" />}
+              {repoPrivate ? "Private" : "Public"}
+            </span>
+          </div>
+          {!pushed ? (
+            <Banner
+              layout="inline"
+              model={{
+                id: "publish-github-nothing-pushed",
+                tone: "info",
+                title: "No commits to push yet",
+                detail: "The remote is set. Commit, then push to fill the repository.",
+              }}
+            />
+          ) : null}
         </div>
-      </div>
+      </Dialog>
     );
   }
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {notice}
-
-      <Field label="PERSONAL ACCESS TOKEN">
-        <input
-          autoFocus
-          type="password"
-          value={tokenDraft}
-          placeholder="ghp_… or github_pat_…"
-          onChange={(event) => onTokenChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (isImeComposing(event)) return;
-            if (event.key === "Enter" && tokenDraft.trim() && !saving) {
-              event.preventDefault();
-              onSaveToken();
-            }
-          }}
-          style={inputStyle}
-          disabled={saving}
-        />
-        {detected ? (
-          <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-            Detected:{" "}
-            {detected === "classic"
-              ? "Classic token"
-              : detected === "fine-grained"
-                ? "Fine-grained token"
-                : "Unknown format"}
-          </span>
-        ) : null}
-      </Field>
-
-      <button
-        type="button"
-        onClick={onOpenTokenLink}
-        style={{
-          alignSelf: "flex-start",
-          background: "transparent",
-          border: "none",
-          padding: 0,
-          fontSize: 11,
-          fontFamily: SANS_FONT,
-          color: COLORS.accent,
-          cursor: "pointer",
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 4,
-          textDecoration: "underline",
-          textUnderlineOffset: 2,
+  if (connectMode) {
+    const notConnectedBanner = (
+      <Banner
+        layout="inline"
+        model={{
+          id: "publish-github-not-connected",
+          tone: "warning",
+          icon: <GithubLogo size={16} weight="fill" />,
+          title: storeUnreadable ? GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title : "GitHub isn't connected",
+          detail: storeUnreadable
+            ? GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail
+            : "Run gh auth login with the repo and workflow scopes, or paste a personal access token.",
         }}
+      />
+    );
+    const back = () => setConnectMode(false);
+
+    // Unreadable is NOT "not connected": the saved sign-in may still be on disk,
+    // just unopenable here. Saving a token over it would destroy a credential
+    // that repair can recover, so this state offers only the repair route.
+    const actions: DialogAction[] = storeUnreadable
+      ? [
+          { label: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.action, variant: "solid", onClick: handleOpenConnections, autoFocus: true },
+          { label: "Back", variant: "secondary", onClick: back },
+        ]
+      : [
+          {
+            label: "Save token",
+            variant: "solid",
+            icon: <Key size={12} weight="bold" />,
+            onClick: () => void handleSaveToken(),
+            disabled: tokenDraft.trim().length === 0,
+            busy: tokenSaving,
+          },
+          { label: "Back", variant: "secondary", onClick: back, disabled: tokenSaving },
+        ];
+
+    const detected = tokenDraft.trim() ? detectTokenType(tokenDraft.trim()) : null;
+    return (
+      <Dialog
+        open={open}
+        onOpenChange={onOpenChange}
+        title="Connect GitHub"
+        description="Publishing needs a GitHub sign-in that can make repositories."
+        icon={<GithubLogo size={16} weight="fill" />}
+        size="md"
+        focusKey="connect"
+        initialFocusRef={storeUnreadable ? undefined : tokenRef}
+        dismissible={!tokenSaving}
+        actions={actions}
       >
-        Generate a PAT on GitHub
-        <ArrowSquareOut size={11} weight="regular" />
-      </button>
-
-      {error ? (
-        <Banner
-          layout="inline"
-          model={{
-            id: "publish-github-token-error",
-            ...noticeKindModel(error.kind, error.kind === "failure" ? { surface: "publish_github_token" } : undefined),
-            title: error.message,
-          }}
-        />
-      ) : null}
-
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
-        <button
-          type="button"
-          style={outlineButton()}
-          onClick={onCancel}
-          disabled={saving}
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          style={primaryButton()}
-          onClick={onSaveToken}
-          disabled={saving || tokenDraft.trim().length === 0}
-        >
-          {saving ? (
-            <>
-              <CircleNotch size={12} weight="bold" className="animate-spin" />
-              Saving…
-            </>
-          ) : (
-            <>
-              <Key size={12} weight="bold" />
-              Save token
-            </>
+        <div className="ade-gh-publish-body">
+          {notConnectedBanner}
+          {storeUnreadable ? null : (
+            <form
+              className="ade-gh-publish-body"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (tokenDraft.trim() && !tokenSaving) void handleSaveToken();
+              }}
+            >
+              <label className="ade-gh-publish-field">
+                <span className="ade-gh-publish-label">
+                  Personal access token
+                  {detected ? <span className="kit-tag">{TOKEN_TYPE_LABEL[detected]}</span> : null}
+                </span>
+                <input
+                  ref={tokenRef}
+                  className="kit-input ade-gh-publish-input"
+                  type="password"
+                  value={tokenDraft}
+                  placeholder="ghp_… or github_pat_…"
+                  onChange={(event) => setTokenDraft(event.target.value)}
+                  disabled={tokenSaving}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </label>
+              <button
+                type="button"
+                className="kit-btn kit-btn-ghost ade-gh-publish-link"
+                data-size="sm"
+                onClick={() => void window.ade.app.openExternal(GITHUB_CLASSIC_TOKEN_NEW_URL)}
+              >
+                Make a token on GitHub
+                <ArrowSquareOut size={11} />
+              </button>
+              {tokenError ? (
+                <Banner
+                  layout="inline"
+                  model={{
+                    id: "publish-github-token-error",
+                    ...noticeKindModel(tokenError.kind, tokenError.kind === "failure" ? { surface: "publish_github_token" } : undefined),
+                    title: tokenError.message,
+                  }}
+                />
+              ) : null}
+              <button type="submit" hidden aria-hidden tabIndex={-1} />
+            </form>
           )}
-        </button>
-      </div>
-    </div>
-  );
-}
+        </div>
+      </Dialog>
+    );
+  }
 
-function SuccessBody({
-  result,
-  onOpenOnGitHub,
-  onDone,
-}: {
-  result: PublishProjectResult;
-  onOpenOnGitHub: () => void;
-  onDone: () => void;
-}) {
-  const publishedName = result.fullName || result.htmlUrl;
-  const subtitle =
-    result.state === "remote_added"
-      ? "Remote added — push when you're ready"
-      : result.htmlUrl;
-
+  const ownerInvalid = !ownerValidation.ok;
+  const nameInvalid = !validation.ok && name.length > 0;
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        gap: 16,
-        padding: "8px 4px",
-        textAlign: "center",
-      }}
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Publish to GitHub"
+      description="Make a new repository and push this project to it."
+      icon={<GithubLogo size={16} weight="fill" />}
+      size="md"
+      focusKey="form"
+      initialFocusRef={nameRef}
+      dismissible={!pending}
+      actions={[
+        {
+          // A stable label keeps the button (keyed on it) in place; `busy` shows progress.
+          label: "Publish",
+          variant: "solid",
+          onClick: () => void handleSubmit(),
+          disabled: !canSubmit && !pending,
+          busy: pending,
+        },
+        { label: "Cancel", variant: "secondary", onClick: () => onOpenChange(false), disabled: pending },
+      ]}
     >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 60,
-          height: 60,
-          borderRadius: 999,
-          background: "color-mix(in srgb, var(--color-success) 14%, transparent)",
-          color: COLORS.success,
-          boxShadow: "0 0 0 1px color-mix(in srgb, var(--color-success) 32%, transparent)",
+      <form
+        className="ade-gh-publish-body"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void handleSubmit();
         }}
       >
-        <CheckCircle size={32} weight="fill" />
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
-        <div
-          style={{
-            fontFamily: SANS_FONT,
-            fontSize: 14,
-            fontWeight: 600,
-            color: COLORS.textPrimary,
-            maxWidth: 460,
-            overflowWrap: "anywhere",
-          }}
-        >
-          Published {publishedName} to GitHub
-        </div>
-        <div
-          style={{
-            fontFamily: result.state === "remote_added" ? SANS_FONT : MONO_FONT,
-            fontSize: 11,
-            color: COLORS.textDim,
-            wordBreak: "break-all",
-            maxWidth: 460,
-          }}
-        >
-          {subtitle}
-        </div>
-        {result.state === "remote_added" ? (
-          <div
-            style={{
-              fontFamily: MONO_FONT,
-              fontSize: 11,
-              color: COLORS.textDim,
-              wordBreak: "break-all",
-              maxWidth: 460,
-            }}
-          >
-            {result.htmlUrl}
+        <div className="ade-gh-publish-field">
+          <span className="ade-gh-publish-label" id="ade-gh-publish-repo-label">Repository</span>
+          <div className="ade-gh-publish-path" role="group" aria-labelledby="ade-gh-publish-repo-label">
+            <div className="kit-input ade-gh-publish-owner" aria-invalid={ownerInvalid}>
+              <OwnerAvatar login={trimmedOwner} />
+              <input
+                ref={ownerRef}
+                aria-label="Owner"
+                aria-invalid={ownerInvalid}
+                // The hint shows the name's error when only the name is wrong; not the owner's description then.
+                aria-describedby={ownerInvalid || !nameInvalid ? "ade-gh-publish-repo-hint" : undefined}
+                type="text"
+                value={owner}
+                placeholder="owner"
+                onChange={(event) => setOwner(event.target.value)}
+                disabled={pending}
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </div>
+            <span className="ade-gh-publish-slash" aria-hidden>/</span>
+            <input
+              ref={nameRef}
+              aria-label="Repository name"
+              aria-invalid={nameInvalid}
+              aria-describedby={nameInvalid && !ownerInvalid ? "ade-gh-publish-repo-hint" : undefined}
+              className="kit-input ade-gh-publish-input"
+              type="text"
+              value={name}
+              placeholder="my-project"
+              onChange={(event) => setName(event.target.value)}
+              disabled={pending}
+              spellCheck={false}
+              autoComplete="off"
+            />
           </div>
+          {ownerInvalid || nameInvalid ? (
+            <span className="ade-gh-publish-hint" id="ade-gh-publish-repo-hint" data-tone="crit" role="alert">
+              {!ownerValidation.ok ? ownerValidation.reason : !validation.ok ? validation.reason : null}
+            </span>
+          ) : (
+            <span className="ade-gh-publish-hint" id="ade-gh-publish-repo-hint">Your account or an organization you belong to.</span>
+          )}
+        </div>
+
+        <label className="ade-gh-publish-field">
+          <span className="ade-gh-publish-label">
+            Description
+            <span className="ade-gh-publish-optional">Optional</span>
+          </span>
+          <textarea
+            className="kit-input ade-gh-publish-textarea"
+            value={description}
+            placeholder="What is this project?"
+            onChange={(event) => setDescription(event.target.value)}
+            disabled={pending}
+            rows={2}
+          />
+        </label>
+
+        <div className="ade-gh-publish-field">
+          <span className="ade-gh-publish-label" id="ade-gh-publish-visibility">Visibility</span>
+          <div className="ade-gh-publish-choices" role="radiogroup" aria-labelledby="ade-gh-publish-visibility">
+            {VISIBILITY.map((option, index) => {
+              const Icon = option.icon;
+              const selected = isPrivate === option.value;
+              return (
+                <button
+                  key={option.label}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  // One Tab stop for the group; arrows move the choice, as a radio group does.
+                  tabIndex={selected ? 0 : -1}
+                  className="ade-gh-publish-choice"
+                  onClick={() => setIsPrivate(option.value)}
+                  onKeyDown={(event) => {
+                    const step = event.key === "ArrowRight" || event.key === "ArrowDown"
+                      ? 1
+                      : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
+                    const nextIndex = (index + step + VISIBILITY.length) % VISIBILITY.length;
+                    const next = VISIBILITY[nextIndex];
+                    if (!step || !next) return;
+                    event.preventDefault();
+                    setIsPrivate(next.value);
+                    event.currentTarget.parentElement
+                      ?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[nextIndex]
+                      ?.focus();
+                  }}
+                  disabled={pending}
+                >
+                  <Icon size={16} weight={selected ? "fill" : "regular"} />
+                  <span>
+                    <b>{option.label}</b>
+                    <small>{option.detail}</small>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {error ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "publish-github-error",
+              tone: PUBLISH_STATE_CODES.has(error.code) ? "warning" : "error",
+              title: error.message,
+              report: PUBLISH_STATE_CODES.has(error.code) ? false : { surface: "publish_to_github", code: error.code },
+            }}
+          />
         ) : null}
-      </div>
-
-      <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
-        <button type="button" style={outlineButton()} onClick={onOpenOnGitHub}>
-          <ArrowSquareOut size={12} weight="regular" />
-          Open on GitHub
-        </button>
-        <button type="button" style={primaryButton()} onClick={onDone} autoFocus>
-          Done
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function VisibilityRadio({
-  label,
-  description,
-  selected,
-  onSelect,
-  disabled,
-}: {
-  label: string;
-  description: string;
-  selected: boolean;
-  onSelect: () => void;
-  disabled: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      disabled={disabled}
-      style={{
-        flex: 1,
-        textAlign: "left",
-        padding: "10px 12px",
-        background: selected
-          ? "color-mix(in srgb, var(--color-accent) 12%, transparent)"
-          : fgTint(3),
-        border: `1px solid ${
-          selected
-            ? "color-mix(in srgb, var(--color-accent) 50%, var(--color-border))"
-            : COLORS.border
-        }`,
-        borderRadius: 8,
-        cursor: disabled ? "not-allowed" : "pointer",
-        opacity: disabled ? 0.55 : 1,
-        display: "flex",
-        flexDirection: "column",
-        gap: 2,
-      }}
-    >
-      <span
-        style={{
-          fontFamily: SANS_FONT,
-          fontSize: 12,
-          fontWeight: 600,
-          color: selected ? COLORS.accent : COLORS.textPrimary,
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 6,
-        }}
-      >
-        <span
-          aria-hidden
-          style={{
-            width: 10,
-            height: 10,
-            borderRadius: 999,
-            border: `1px solid ${selected ? COLORS.accent : COLORS.border}`,
-            background: selected ? COLORS.accent : "transparent",
-            boxShadow: selected
-              ? "inset 0 0 0 2px var(--color-popup-bg)"
-              : "none",
-          }}
-        />
-        {label}
-      </span>
-      <span
-        style={{
-          fontFamily: SANS_FONT,
-          fontSize: 11,
-          color: COLORS.textMuted,
-        }}
-      >
-        {description}
-      </span>
-    </button>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <span style={{ ...LABEL_STYLE, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-        {label}
-      </span>
-      {children}
-    </label>
-  );
-}
-
-function InlineHint({
-  children,
-  tone,
-}: {
-  children: React.ReactNode;
-  tone: "danger" | "muted";
-}) {
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        fontSize: 11,
-        fontFamily: SANS_FONT,
-        color: tone === "danger" ? COLORS.danger : COLORS.textMuted,
-      }}
-    >
-      {tone === "danger" ? <Warning size={12} weight="fill" /> : null}
-      {children}
-    </span>
+        {/* Return in a field submits. */}
+        <button type="submit" hidden aria-hidden tabIndex={-1} />
+      </form>
+    </Dialog>
   );
 }

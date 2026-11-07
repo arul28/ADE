@@ -48,6 +48,34 @@ func providerAccountRemoveMessage(hostName: String?) -> String {
   "ADE signs this account out on \(hostName ?? "the machine") and stops using it. Adding it back starts with a fresh sign-in."
 }
 
+/// What signing an account out does. The machine's own login is the one the
+/// terminal's CLI uses, so that is said (desktop `onAction` "signOut").
+func providerAccountSignOutMessage(_ account: ProviderAccount, hostName: String?) -> String {
+  let provider = providerAccountProviderTitle(account)
+  if account.isMachineLogin {
+    return "This is \(hostName ?? "the machine")'s own \(provider) login, so \(provider) in its terminal is signed out too."
+  }
+  return "The account stays. Sign in puts a login back."
+}
+
+/// An account's tags: where new chats go, a broken login, a copy of another
+/// login, and Claude's long subagent cache (desktop `AccountCard` header).
+struct ProviderAccountBadges: View {
+  let account: ProviderAccount
+  var routingBadge: String?
+
+  var body: some View {
+    HStack(spacing: 6) {
+      if let routingBadge { ADEKitTag(text: routingBadge, tone: .accent) }
+      if account.loginBroken == true { ADEKitTag(text: "Signed out", tone: .warn) }
+      if account.sameLoginAs != nil, account.loginBroken != true { ADEKitTag(text: "Copy") }
+      if account.subagentPromptCacheTtl == "1h" { ADEKitTag(text: "1h cache") }
+      // The detail page says what happened and offers to sign it back in.
+      if account.replacedAccount != nil { ADEKitTag(text: "Login replaced", tone: .warn) }
+    }
+  }
+}
+
 // MARK: - Page
 
 /// A machine the AI accounts page can show.
@@ -123,6 +151,7 @@ struct SettingsProviderAccountsPage: View {
     }
     .navigationTitle("AI accounts")
     .navigationBarTitleDisplayMode(.inline)
+    .settingsPageClose()
   }
 }
 
@@ -155,11 +184,8 @@ struct ProviderAccountsMachinePicker: View {
   }
 
   private func label(showsChevron: Bool) -> some View {
-    HStack(spacing: 10) {
-      Image(systemName: "desktopcomputer")
-        .font(.system(size: 15))
-        .foregroundStyle(ADEColor.textSecondary)
-        .frame(width: 22)
+    HStack(spacing: 12) {
+      ADESettingsIconTile(symbol: "desktopcomputer", tint: .accent, size: 32)
       VStack(alignment: .leading, spacing: 1) {
         Text(selected?.name ?? "This machine")
           .font(.system(size: 15, weight: .medium))
@@ -192,15 +218,13 @@ struct ProviderAccountsScreen: View {
   @State private var adding = false
   @State private var signIn: ProviderAccountSignInRoute?
   @State private var removing: ProviderAccount?
+  @State private var signingOut: ProviderAccount?
   @State private var toast: ADEToastMessage?
 
   var body: some View {
     List {
       Section {
-        ADEKitSegmented(
-          selection: $provider,
-          options: ProviderAccountProvider.allCases.map { (value: $0, title: $0.title) }
-        )
+        ProviderAccountsProviderPicker(selection: $provider)
         .listRowBackground(Color.clear)
         .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
       }
@@ -210,8 +234,26 @@ struct ProviderAccountsScreen: View {
           ProviderAccountsMachinePicker(machines: machines, selectedId: selectedMachineId)
             .adeSettingsListRow()
         }
-        balanceRow
+        if showsSmartBalance {
+          routingRow(
+            "Smart balance",
+            symbol: "arrow.triangle.branch",
+            tint: .teal,
+            detail: balanceDetail(enabled: store.settings?.smartBalance ?? false),
+            isOn: store.settings?.smartBalance ?? false
+          ) { value in Task { await store.setSmartBalance(value) } }
           .adeSettingsListRow()
+        }
+        if providerAccountOffersAutoStart(provider, snapshot: machine.quota) {
+          routingRow(
+            "Auto-start 5-hour windows",
+            symbol: "timer",
+            tint: .amber,
+            detail: ProviderAccountRoutingCopy.autoStart,
+            isOn: store.settings?.autoStartWindows ?? false
+          ) { value in Task { await store.setAutoStartWindows(value) } }
+          .adeSettingsListRow()
+        }
       }
 
       if let error = store.errorMessage {
@@ -234,7 +276,9 @@ struct ProviderAccountsScreen: View {
               store: store,
               accountId: account.id,
               canChange: canChange,
-              onSignIn: { signIn = ProviderAccountSignInRoute(account: $0) }
+              routingBadge: routingBadge(account),
+              onSignIn: { signIn = ProviderAccountSignInRoute(account: $0) },
+              onRestoreReplaced: { restoreReplaced(account) }
             )
           } label: {
             ProviderAccountRow(
@@ -242,20 +286,24 @@ struct ProviderAccountsScreen: View {
               ownerLabel: ownerLabel(account),
               windows: providerAccountWindows(account, snapshot: machine.quota),
               readingFrom: providerAccountReadingFrom(account, snapshot: machine.quota),
-              isNext: isBalanceNext(account),
+              routingBadge: routingBadge(account),
               busy: store.busyAccountId == account.id
             )
           }
           .adeSettingsListRow(insets: EdgeInsets(top: 12, leading: ADEKit.inset, bottom: 12, trailing: ADEKit.inset))
           .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            if canChange, !account.isDefault, account.hasLogin {
-              Button { makeDefault(account) } label: { Label("Default", systemImage: "star.fill") }
+            if canChange, canUse(account) {
+              Button { useForNewChats(account) } label: { Label("Use", systemImage: "checkmark.circle.fill") }
                 .tint(ADEColor.accent)
             }
           }
           .swipeActions(edge: .trailing) {
-            if canChange, !account.isDefault {
+            if canChange, !account.isDefault, !account.isMachineLogin {
               Button(role: .destructive) { removing = account } label: { Label("Remove", systemImage: "trash") }
+            }
+            if canChange, !account.isDefault, account.hasLogin {
+              Button { signingOut = account } label: { Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right") }
+                .tint(ADEColor.warning)
             }
           }
           .contextMenu { contextMenu(account) }
@@ -318,65 +366,99 @@ struct ProviderAccountsScreen: View {
     } message: {
       Text(providerAccountRemoveMessage(hostName: machine.name))
     }
+    .confirmationDialog(
+      "Sign out \(signingOut?.displayName ?? "account")?",
+      isPresented: Binding(get: { signingOut != nil }, set: { if !$0 { signingOut = nil } }),
+      titleVisibility: .visible
+    ) {
+      Button("Sign out", role: .destructive) {
+        guard let account = signingOut else { return }
+        signingOut = nil
+        Task {
+          if await store.signOut(id: account.id) {
+            toast = ADEToastMessage(text: "\(account.displayName) signed out")
+          }
+        }
+      }
+      Button("Cancel", role: .cancel) { signingOut = nil }
+    } message: {
+      Text(signingOut.map { providerAccountSignOutMessage($0, hostName: machine.name) } ?? "")
+    }
   }
 
-  private var balanceRow: some View {
-    let enabled = store.settings?.smartBalance ?? false
-    return HStack(alignment: .center, spacing: 10) {
-      Image(systemName: "arrow.triangle.branch")
-        .font(.system(size: 15))
-        .foregroundStyle(ADEColor.textSecondary)
-        .frame(width: 22)
+  /// Smart balance means something with two logins to spread chats over. It
+  /// stays while on, so it can be turned off (desktop `showSmartBalance`).
+  private var showsSmartBalance: Bool {
+    providerAccountLoginCount(store.accounts) >= 2 || store.settings?.smartBalance == true
+  }
+
+  /// One machine-wide switch for this provider's accounts: what it does, then
+  /// the switch.
+  private func routingRow(
+    _ title: String,
+    symbol: String,
+    tint: ADESettingsTint,
+    detail: String,
+    isOn: Bool,
+    set: @escaping (Bool) -> Void
+  ) -> some View {
+    HStack(alignment: .center, spacing: 12) {
+      ADESettingsIconTile(symbol: symbol, tint: tint, size: 32)
       VStack(alignment: .leading, spacing: 2) {
-        Text("Smart balance")
+        Text(title)
           .font(.system(size: 15))
           .foregroundStyle(ADEColor.textPrimary)
-        Text(balanceDetail(enabled: enabled))
+        Text(detail)
           .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
       }
+      .layoutPriority(1)
       Spacer(minLength: 8)
-      Toggle("Smart balance", isOn: Binding(
-        get: { enabled },
-        set: { value in Task { await store.setSmartBalance(value) } }
-      ))
-      .labelsHidden()
-      .tint(ADEColor.accent)
-      .disabled(!canChange || store.settings == nil)
+      Toggle(title, isOn: Binding(get: { isOn }, set: set))
+        .labelsHidden()
+        .tint(ADEColor.accent)
+        .disabled(!canChange || store.settings == nil)
     }
     .accessibilityElement(children: .combine)
   }
 
   private func balanceDetail(enabled: Bool) -> String {
-    let signedIn = store.accounts.filter { $0.signedIn && $0.sameLoginAs == nil }
     if enabled {
-      if signedIn.count < 2 { return "Add a second signed-in account to spread chats across them." }
-      if let next = store.accounts.first(where: isBalanceNext) {
-        return "New chats go to the account furthest behind the pace needed to use its weekly limit before it resets. Next: \(next.displayName)."
+      if store.accounts.filter(\.canTakeChats).count < 2 {
+        return "Add a second signed-in account to spread chats across them."
       }
-      return "New chats go to the account furthest behind the pace needed to use its weekly limit before it resets."
+      let next = store.accounts.first(where: isBalanceNext).map { " Next: \($0.displayName)." } ?? ""
+      return ProviderAccountRoutingCopy.smartBalanceOn + next
     }
-    let fallback = store.accounts.first(where: \.isDefault)?.displayName ?? "the default"
-    return "New chats use \(fallback). Running chats always keep their account."
+    let fallback = store.accounts.first(where: \.isDefault)?.displayName ?? "the account marked New chats"
+    return "New chats use \(fallback). Swipe right on an account to use it instead."
   }
 
   private var footerText: String {
-    "The default only changes new chats."
+    "Running chats keep their account. Tap an account for its limits and settings."
   }
 
   @ViewBuilder
   private func contextMenu(_ account: ProviderAccount) -> some View {
     if canChange {
-      if !account.isDefault, account.hasLogin {
-        Button { makeDefault(account) } label: { Label("Make default", systemImage: "star") }
+      if canUse(account) {
+        Button { useForNewChats(account) } label: { Label("Use for new chats", systemImage: "checkmark.circle") }
       }
       Button { signIn = ProviderAccountSignInRoute(account: account) } label: {
         Label(account.hasLogin ? "Sign in again" : "Sign in", systemImage: "person.badge.key")
       }
+      // The host refuses both on the default, and Remove on the machine's own login.
       if !account.isDefault {
         Divider()
-        Button(role: .destructive) { removing = account } label: { Label("Remove", systemImage: "trash") }
+        if account.hasLogin {
+          Button(role: .destructive) { signingOut = account } label: {
+            Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
+          }
+        }
+        if !account.isMachineLogin {
+          Button(role: .destructive) { removing = account } label: { Label("Remove", systemImage: "trash") }
+        }
       }
     }
   }
@@ -391,12 +473,32 @@ struct ProviderAccountsScreen: View {
     }
   }
 
-  private func makeDefault(_ account: ProviderAccount) {
+  /// The account can become where new chats go, and is not already.
+  private func canUse(_ account: ProviderAccount) -> Bool {
+    account.canTakeChats && (store.settings?.smartBalance == true || !account.isDefault)
+  }
+
+  private func useForNewChats(_ account: ProviderAccount) {
     Task {
-      if await store.makeDefault(id: account.id) {
+      if await store.useForNewChats(id: account.id) {
         ADEHaptics.success()
-        toast = ADEToastMessage(text: "\(account.displayName) is now the default")
+        toast = ADEToastMessage(text: "New chats use \(account.displayName)")
       }
+    }
+  }
+
+  private func routingBadge(_ account: ProviderAccount) -> String? {
+    providerAccountRoutingBadge(account, smartBalance: store.settings?.smartBalance == true, isNext: isBalanceNext(account))
+  }
+
+  /// Brings a replaced login back (desktop `restoreReplaced`). A copy of this
+  /// account is the natural slot: signing it in to the replaced email makes
+  /// two accounts again. Without one, a new account is added for it.
+  private func restoreReplaced(_ account: ProviderAccount) {
+    if let slot = store.accounts.first(where: { $0.sameLoginAs == account.id && !$0.isMachineLogin }) {
+      signIn = ProviderAccountSignInRoute(account: slot)
+    } else {
+      addAccount()
     }
   }
 
@@ -424,15 +526,21 @@ struct ProviderAccountRow: View {
   var windows: [MobileUsageQuotaWindow] = []
   /// The machine whose fresher reading `windows` are; nil for the host's own.
   var readingFrom: String? = nil
-  var isNext = false
+  /// "New chats" or "Next chat"; see `providerAccountRoutingBadge`.
+  var routingBadge: String? = nil
   var busy = false
 
   var body: some View {
+    HStack(alignment: .top, spacing: 12) {
+      ADEBrandTile(brand: .provider(account.provider), size: 32, dimmed: !account.signedIn)
+      rowBody
+    }
+    .accessibilityElement(children: .combine)
+  }
+
+  private var rowBody: some View {
     VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 6) {
-        if let asset = providerAssetName(account.provider) {
-          ADEProviderMark(assetName: asset, size: 14)
-        }
         Text(account.displayName)
           .font(.system(size: 15, weight: .semibold))
           // No email is a state, not a name: it reads quieter than one.
@@ -463,7 +571,6 @@ struct ProviderAccountRow: View {
         .padding(.top, 4)
       }
     }
-    .accessibilityElement(children: .combine)
   }
 
   private var detailLine: String? {
@@ -474,9 +581,7 @@ struct ProviderAccountRow: View {
 
   @ViewBuilder
   private var badges: some View {
-    if account.isDefault { ADEKitTag(text: "Default", tone: .accent) }
-    if isNext { ADEKitTag(text: "Next") }
-    if account.loginBroken == true { ADEKitTag(text: "Signed out", tone: .warn) }
+    ProviderAccountBadges(account: account, routingBadge: routingBadge)
   }
 }
 
@@ -523,9 +628,12 @@ struct ProviderAccountDetailPage: View {
   @ObservedObject var store: ProviderAccountsStore
   let accountId: String
   var canChange = true
+  var routingBadge: String? = nil
   var onSignIn: (ProviderAccount) -> Void = { _ in }
+  var onRestoreReplaced: () -> Void = {}
   @Environment(\.dismiss) private var dismiss
   @State private var confirmRemove = false
+  @State private var confirmSignOut = false
 
   var body: some View {
     Group {
@@ -539,6 +647,7 @@ struct ProviderAccountDetailPage: View {
     }
     .navigationTitle("")
     .navigationBarTitleDisplayMode(.inline)
+    .settingsPageClose()
   }
 
   private func content(_ account: ProviderAccount) -> some View {
@@ -547,16 +656,16 @@ struct ProviderAccountDetailPage: View {
       VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
         VStack(alignment: .leading, spacing: 14) {
           HStack(spacing: 12) {
-            if let asset = providerAssetName(account.provider) {
-              ADEProviderMark(assetName: asset, size: 28)
-            }
+            ADEBrandTile(brand: .provider(account.provider), size: 44)
             VStack(alignment: .leading, spacing: 3) {
               HStack(spacing: 6) {
                 Text(account.displayName)
                   .font(.system(size: 18, weight: .semibold))
                   .foregroundStyle(ADEColor.textPrimary)
-                if account.isDefault { ADEKitTag(text: "Default", tone: .accent) }
+                  .lineLimit(1)
+                  .truncationMode(.middle)
               }
+              ProviderAccountBadges(account: account, routingBadge: routingBadge)
               if let detail = providerAccountDetailLine(account) {
                 Text(detail)
                   .font(.system(size: 12.5))
@@ -569,12 +678,27 @@ struct ProviderAccountDetailPage: View {
         }
         .adeKitCard()
 
+        if let error = store.errorMessage {
+          ADESettingsNotice(message: error, tone: .crit)
+        }
+
+        if let owner = account.sameLoginAs, account.loginBroken != true {
+          let ownerName = store.account(id: owner)?.displayName ?? "another account"
+          ADESettingsNotice(
+            message: "Same login as \(ownerName), so this adds no quota. Smart balance skips it.",
+            tone: .neutral,
+            actionTitle: canChange ? "Sign in to another account" : nil,
+            action: canChange ? { onSignIn(account) } : nil
+          )
+        }
+
         if let replaced = account.replacedAccount {
           ADESettingsNotice(
-            message: "\(replaced.email) was replaced by another login outside ADE. Add it back as its own account to keep both.",
+            message: "\(replaced.email) was replaced. A sign-in outside ADE put another login in this account.",
             tone: .warn,
-            actionTitle: canChange ? "Dismiss" : nil,
-            action: canChange ? { Task { await store.dismissReplaced(id: account.id) } } : nil
+            actionTitle: canChange ? "Sign it back in" : nil,
+            action: canChange ? onRestoreReplaced : nil,
+            dismiss: canChange ? { Task { await store.dismissReplaced(id: account.id) } } : nil
           )
         }
 
@@ -589,19 +713,30 @@ struct ProviderAccountDetailPage: View {
           }
         }
 
+        if canChange {
+          ProviderAccountSettingsSection(account: account, store: store, showsCompaction: store.accounts.count > 1)
+        }
+
         ADESettingsSection("Details") {
           ADESettingsRows {
             if let plan = account.plan { ADESettingsValueRow(title: "Plan", value: plan.capitalized) }
             ADESettingsValueRow(title: "Provider", value: providerAccountProviderTitle(account))
             ADESettingsValueRow(title: "Machine", value: machine.name)
-            ADESettingsValueRow(title: "Folder", value: account.configHome, mono: true)
+            // A path is too long to share the row with its title.
+            ADESettingsRow("Folder", hint: account.configHome)
               .textSelection(.enabled)
           }
         }
 
-        if canChange, !account.isDefault {
+        // The host refuses both on the default, and Remove on the machine's own login.
+        if canChange, !account.isDefault, account.hasLogin || !account.isMachineLogin {
           ADESettingsRows {
-            ADESettingsActionRow(title: "Remove account", destructive: true) { confirmRemove = true }
+            if account.hasLogin {
+              ADESettingsActionRow(title: "Sign out", destructive: true) { confirmSignOut = true }
+            }
+            if !account.isMachineLogin {
+              ADESettingsActionRow(title: "Remove account", destructive: true) { confirmRemove = true }
+            }
           }
         }
       }
@@ -620,16 +755,25 @@ struct ProviderAccountDetailPage: View {
     } message: {
       Text(providerAccountRemoveMessage(hostName: machine.name))
     }
+    .confirmationDialog("Sign out \(account.displayName)?", isPresented: $confirmSignOut, titleVisibility: .visible) {
+      Button("Sign out", role: .destructive) {
+        Task { await store.signOut(id: account.id) }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(providerAccountSignOutMessage(account, hostName: machine.name))
+    }
   }
 
   @ViewBuilder
   private func actionBar(_ account: ProviderAccount) -> some View {
     if canChange {
       HStack(spacing: 8) {
-        if account.signedIn, !account.isDefault {
-          Button("Make default") {
+        // Already where new chats go: the default with smart balance off.
+        if account.canTakeChats, store.settings?.smartBalance == true || !account.isDefault {
+          Button("Use for new chats") {
             Task {
-              if await store.makeDefault(id: account.id) { ADEHaptics.success() }
+              if await store.useForNewChats(id: account.id) { ADEHaptics.success() }
             }
           }
           .buttonStyle(ADEKitButtonStyle(prominent: true))
@@ -677,5 +821,38 @@ struct ProviderAccountsUnavailableView: View {
     ) {
       EmptyView()
     }
+  }
+}
+
+/// Claude or Codex, each as its maker's tile and name; the picked one is
+/// raised on the track, as a segmented control.
+struct ProviderAccountsProviderPicker: View {
+  @Binding var selection: ProviderAccountProvider
+
+  var body: some View {
+    HStack(spacing: 4) {
+      ForEach(ProviderAccountProvider.allCases) { provider in
+        let selected = provider == selection
+        Button {
+          withAnimation(.snappy(duration: 0.18)) { selection = provider }
+        } label: {
+          HStack(spacing: 8) {
+            ADEBrandTile(brand: .provider(provider.rawValue), size: 24, dimmed: !selected)
+            Text(provider.title)
+              .font(.system(size: 14.5, weight: selected ? .semibold : .medium))
+              .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
+          }
+          .frame(maxWidth: .infinity, minHeight: 42)
+          .background {
+            if selected { ADEKitSegmentThumb(radius: 9) }
+          }
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(provider.title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+      }
+    }
+    .adeKitSegmentTrack()
   }
 }

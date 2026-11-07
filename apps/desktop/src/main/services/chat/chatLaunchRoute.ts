@@ -4,8 +4,9 @@
 // rules; the chat service applies them.
 // ---------------------------------------------------------------------------
 
+import { normalizeHarnessPreset, presetLabel, presetSourceLabel } from "../../../shared/harnessPresets";
 import { decodeRoutePresetId, isRoutePresetId, launchModelIdFor } from "../../../shared/harnessRoutes";
-import type { AgentChatProvider } from "../../../shared/types";
+import type { AgentChatCrossMachineRoute, AgentChatProvider } from "../../../shared/types";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
 
 /**
@@ -67,4 +68,103 @@ export function launchRouteTransition(args: {
       credential: leavesCredential || Boolean(args.previouslyLeft?.credential),
     },
   };
+}
+
+/**
+ * What a chat moved to another machine keeps of its route, by the rule above:
+ * a preset only for the same model (it names the model it launches), a stored
+ * key or an account only for the same provider (an account as its email:
+ * its id means nothing on another machine). Null when the chat has no
+ * route of its own; `dropped` when it has one the move can't keep.
+ */
+export function crossMachineRouteFor(args: {
+  source: {
+    provider: string;
+    modelId?: string | null;
+    presetId?: string | null;
+    credentialId?: string | null;
+    instanceId?: string | null;
+    /** The signed-in email of `instanceId` on the source machine, when known. */
+    accountEmail?: string | null;
+  };
+  targetProvider: string;
+  targetModelId: string;
+  adeHome: string;
+}): AgentChatCrossMachineRoute | null {
+  const { source } = args;
+  const presetId = source.presetId?.trim();
+  const credentialId = source.credentialId?.trim();
+  const instanceId = source.instanceId?.trim();
+  const sameProvider = args.targetProvider === source.provider;
+  if (presetId) {
+    const route = decodeRoutePresetId(presetId);
+    const saved = route ? null : readHarnessPresetsFromMachine(args.adeHome)?.find((preset) => preset.id === presetId) ?? null;
+    const label = route
+      ? presetSourceLabel(route.source)
+      : saved ? `${presetLabel(saved)} (${presetSourceLabel(saved.source)})` : "a saved preset";
+    if (source.modelId !== args.targetModelId) return { label, dropped: true };
+    return { label, presetId, ...(saved ? { presetSnapshot: saved } : {}) };
+  }
+  if (credentialId) {
+    const label = `API key · ${credentialId}`;
+    return sameProvider ? { label, credentialId } : { label, dropped: true };
+  }
+  if (instanceId && (source.provider === "claude" || source.provider === "codex")) {
+    const email = source.accountEmail?.trim() || null;
+    const label = `${source.provider === "claude" ? "Claude" : "Codex"} account · ${email ?? instanceId}`;
+    return sameProvider ? { label, account: { email } } : { label, dropped: true };
+  }
+  return null;
+}
+
+/** A carried route as the destination trusts it: bounded ids, a valid preset snapshot, or null. */
+export function readCrossMachineRoute(value: unknown): AgentChatCrossMachineRoute | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const text = (field: unknown, max: number): string | undefined =>
+    typeof field === "string" && field.trim() && field.trim().length <= max ? field.trim() : undefined;
+  const label = text(raw.label, 200);
+  if (!label) return null;
+  const presetId = text(raw.presetId, 2_000);
+  const snapshot = presetId ? normalizeHarnessPreset(raw.presetSnapshot) : null;
+  const credentialId = text(raw.credentialId, 200);
+  const account = raw.account && typeof raw.account === "object"
+    ? { email: text((raw.account as Record<string, unknown>).email, 320) ?? null }
+    : null;
+  return {
+    label,
+    ...(raw.dropped === true ? { dropped: true } : {}),
+    ...(presetId ? { presetId } : {}),
+    ...(snapshot && snapshot.id === presetId ? { presetSnapshot: snapshot } : {}),
+    ...(credentialId ? { credentialId } : {}),
+    ...(account ? { account } : {}),
+  };
+}
+
+/**
+ * The line a moved chat shows before its first turn: which sign-in it uses on
+ * this machine, and why when that is not the one it used before.
+ */
+export function crossMachineRouteNotice(args: {
+  route: AgentChatCrossMachineRoute;
+  fromMachine: string;
+  /** The route's account (by its email) is signed in here; only read when the route has one. */
+  accountKept: boolean;
+  /** The account the chat uses here instead, when it has one. */
+  accountHere: string | null;
+  /** Why the kept route can't run here (the send gate's reason), or null. */
+  blockedReason: string | null;
+}): { message: string; warning: boolean } {
+  const { route, fromMachine: from } = args;
+  if (route.dropped) {
+    return { message: `This chat used ${route.label} on ${from}. The move changed its model, so it uses this machine's own sign-in here.`, warning: true };
+  }
+  if (route.account && !args.accountKept) {
+    const here = args.accountHere ? `the account ${args.accountHere}` : "this machine's own sign-in";
+    return { message: `This chat used ${route.label} on ${from}. That account isn't signed in on this machine, so it uses ${here} here.`, warning: true };
+  }
+  if (args.blockedReason) {
+    return { message: `This chat uses ${route.label}, as on ${from}, but it can't run on this machine yet: ${args.blockedReason}`, warning: true };
+  }
+  return { message: `Uses ${route.label} here, as on ${from}.`, warning: false };
 }

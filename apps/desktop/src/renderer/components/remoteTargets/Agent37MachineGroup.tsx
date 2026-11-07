@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { ArrowClockwise, CircleNotch, GitBranch, Sun } from "@phosphor-icons/react";
+import { ArrowClockwise, CircleNotch, GitBranch, Sun, UserMinus } from "@phosphor-icons/react";
 import {
   AGENT37_API_KEYS_URL,
   AGENT37_BILLING_URL,
@@ -331,7 +331,9 @@ export function Agent37BoxOnlyRow({
     ? `On ${AGENT37_NAME}`
     : joining
       ? "Setting up and signing in to your account…"
-      : `Not in ADE. It bills on ${AGENT37_NAME} until you delete it.`;
+      : box.machineKey
+        ? `Not in ADE. Reconnect it from ⋯. It bills on ${AGENT37_NAME} until you delete it.`
+        : `Not in ADE. It bills on ${AGENT37_NAME} until you delete it.`;
   return (
     <div style={machineRowStyle} data-agent37-box-only={box.instanceId}>
       <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 12, alignItems: "center" }}>
@@ -384,6 +386,19 @@ export function agent37ParkedRow(
       >
         {pending ? <CircleNotch size={13} className="animate-spin" /> : <Sun size={13} weight="bold" />}
         {verb}
+      </button>
+    ),
+  };
+}
+
+/** The row of a box deleted on the Agent 37 site: what happened, and Remove in place of Connect. */
+export function agent37DeletedRow(name: string, onRemove: () => void): { label: string; action: ReactNode } {
+  return {
+    label: `Deleted on ${AGENT37_NAME}. It no longer exists.`,
+    action: (
+      <button type="button" aria-label={`Remove ${name} from ADE`} onClick={onRemove} style={{ ...connectButtonStyle, marginRight: 4 }}>
+        <UserMinus size={13} />
+        Remove
       </button>
     ),
   };

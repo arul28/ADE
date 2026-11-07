@@ -9,6 +9,7 @@ import {
   classifyPairedRuntimeFailure,
   createRouteAttemptRecorder,
   dominantPairedRuntimeFailure,
+  isRelayHostReplacedError,
   MAX_ROUTE_ATTEMPTS,
   orderPairedCandidates,
   pairedRouteConnectTimeoutMs,
@@ -197,6 +198,7 @@ export async function openPairedCandidate<T>(args: {
   const attemptRecorder = createRouteAttemptRecorder();
   const { attempts, record: recordAttempt } = attemptRecorder;
   let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
+  let relayRetried = false;
   const orderedCandidates = orderPairedCandidates(candidates);
   for (const [candidateIndex, candidate] of orderedCandidates.entries()) {
     const attemptStartedAt = Date.now();
@@ -274,8 +276,15 @@ export async function openPairedCandidate<T>(args: {
       }
       if (error instanceof PairedRuntimeCompatibilityError) throw error;
       const failure = classifyPairedRuntimeFailure(error);
+      // The host just opened a new relay link: try the relay once more now,
+      // and don't count it against a route that is about to answer.
+      const hostReplaced = candidate.kind === "relay" && !relayRetried && isRelayHostReplacedError(error);
+      if (hostReplaced) {
+        relayRetried = true;
+        orderedCandidates.splice(candidateIndex + 1, 0, candidate);
+      }
       try {
-        recordPairedRouteFailure(pairedStore, credentials.hostIdentity.deviceId, candidate.endpoint, failure);
+        if (!hostReplaced) recordPairedRouteFailure(pairedStore, credentials.hostIdentity.deviceId, candidate.endpoint, failure);
       } catch (storeError) {
         process.stderr.write(
           `Warning: could not save paired endpoint metadata: ${errorMessage(storeError)}\n`,

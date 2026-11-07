@@ -612,7 +612,11 @@ apps/ios/
 │   │   │                            # HubComposerFleetDestination (composer
 │   │   │                            #   destinations on other live machines),
 │   │   │                            # HubScreen+ChatNavigation (chat open +
-│   │   │                            #   cross-project quick look). HubComponents
+│   │   │                            #   cross-project quick look),
+│   │   │                            # HubHeaderRow (the header row and its
+│   │   │                            #   tiers: on the Duo's outer display it
+│   │   │                            #   sits in the band beside the clock, with
+│   │   │                            #   the machines as one glyph). HubComponents
 │   │   │                            #   gives the projectless Chats button a
 │   │   │                            #   small count badge for personal chats
 │   │   │                            #   awaiting input and an equivalent
@@ -751,6 +755,12 @@ apps/ios/
 │   │   │                            #   UIKit focus transitions; replaced the
 │   │   │                            #   WorkMentionsPickerSheet /
 │   │   │                            #   WorkSlashCommandsSheet modals),
+│   │   │                            # WorkComposerSuggestionStrip (the
+│   │   │                            #   sectioned @ / / / # list above the
+│   │   │                            #   field, with Show more per section),
+│   │   │                            # WorkComposerModelChips (the model
+│   │   │                            #   chip's look, pill image and part
+│   │   │                            #   picker),
 │   │   │                            # WorkChatAttachmentTray,
 │   │   │                            # WorkComposerAttachmentStaging (kind
 │   │   │                            #   detection, image vs chunked file/video
@@ -877,9 +887,17 @@ apps/ios/
 │   │   │                            # CreatePrWizardView,
 │   │   │                            # PrTargetBranchPickerDropdown,
 │   │   │                            # PrDetailOverviewPreviews (preview fixtures)
-│   │   ├── Settings/                # ConnectionSettingsView (connection header
-│   │   │                            #   plus Account, Preferences, repository,
-│   │   │                            #   and this-device groups),
+│   │   ├── Settings/                # ConnectionSettingsView (the settings
+│   │   │                            #   list, grouped like the desktop: General,
+│   │   │                            #   You, App, Project, System; each page has
+│   │   │                            #   back and close), SettingsRoute (the
+│   │   │                            #   pages, their titles and subtitles, and
+│   │   │                            #   SettingsPageCopy with the shared save
+│   │   │                            #   helper), SettingsGeneralPage,
+│   │   │                            #   SettingsChatPage, SettingsProvidersPage,
+│   │   │                            #   SettingsIntegrationsPage,
+│   │   │                            #   SettingsLanesPage (read and write the
+│   │   │                            #   desktop's settings through the machine),
 │   │   │                            # SettingsMachinesSection
 │   │   │                            #   (reachable-machine list: top 3 + See all),
 │   │   │                            # SettingsMachineRenameSheet (account-wide
@@ -1228,6 +1246,17 @@ iPhone are `compact` and use the same views stacked, never an older design.
   the live stage over the pane or the whole display, never inside the chat,
   so it survives folding and placement changes; placement is per posture and
   remembered. See [Apple device: the phone](../apple-device/README.md#the-phone-watch-and-control).
+- **Settings.** Held landscape on the inner display, Settings shows the
+  list and the picked page side by side (`DuoSettingsSplit`): two stacks,
+  not a `NavigationSplitView`, because the split keeps a pushed page on top
+  when another row is picked. A pick rebuilds the page column, and the page
+  is built from the row's title, so it shows current values. The settings
+  rows and page shell are in `ADEKitSettings.swift`. Each page shows its
+  one-line description in the page, under the large title
+  (`ADESettingsPageIntro`). The bar does not show it, because the bar cut it
+  off when the title collapsed. General shows "You" and "This machine" as
+  panels of rows. Each row opens the page that owns it: Account, Providers,
+  Usage, Machines.
 - **Lists and details.** Lanes, PRs and Files use `DuoSplitScaffold`: list
   column and detail side by side when wide, the list behind the detail
   (with a Back chevron) on a phone.
@@ -3107,6 +3136,20 @@ agent-reply entity chips, and copy behave the same on both devices:
   (`ade://pr/owner/repo/1237` → `#1237`). An unrecognised `ade://` shape keeps
   its descriptive path form rather than collapsing to a bare "ADE link". The
   `permission` and `skill` kinds mirror the desktop's two new chips.
+- **The `@` menu is sectioned like the desktop's.** Models lead, then chats,
+  lanes, files, terminals, PRs, machines and MCP servers. Each section shows
+  three rows and holds the rest behind a "Show N more" row; a kind word (`@pr`,
+  `@model`, …) shows one section in full. A model row wears the maker's mark,
+  the harness with its mark, and the thinking level a new chip starts on.
+- **A model chip is edited one part at a time.** `WorkComposerModelChips.swift`
+  draws `@model:` tokens as the desktop chip does (maker mark and name, the
+  thinking level in its tone, the permission mode's icon). Picking a model
+  opens only its thinking picker (a segmented low → high track); a pick moves
+  on to permissions (a track of the provider's modes, with the chosen mode's
+  one-line detail), and a permission pick closes it. A tap on one part of a
+  chip opens only that part, and VoiceOver offers the parts as actions on the
+  field. Permission words, short words, icons, tones and details come from one
+  table, `WorkModelMentionDetector.permissionOptions(provider:)`.
 - **Sent messages draw their chips.** The transcript
   (`WorkChatHeaderAndMessageViews.swift`) renders the same pills the composer
   did, over the unchanged stored text.
@@ -3801,13 +3844,26 @@ Claude/Codex picker swaps between the machine's two `ProviderAccountsStore`
 instances. Each `ProviderAccountRow` carries the account's quota meters
 (`providerAccountWindows` / `ProviderAccountQuotaMeter`), ordered by the shared
 `adeUsageWindowRank`, and
-marks the account smart balance would give the next chat (**Next**, from
+carries the desktop card's badges (`ProviderAccountBadges`): **Next chat** on
+the account smart balance would give the next chat (from
 `MobileUsageQuotaSnapshot.balanceNext`; the same room-to-spend pick desktop
-makes). Swipe or context menu
-makes an account the default, removes one, or opens `ProviderAccountDetailPage` (make default,
-sign in again, rename, remove); a running-chats note makes clear that switching
-the default only changes new chats. **Add account** opens
-`ProviderAccountAddSheet` (name only — there is no accent step). Sign-in runs
+makes), **New chats** on the default while smart balance is off, plus
+Signed out, Copy, 1h cache and Login replaced. Above the list, the routing
+switches follow the desktop strip: **Smart balance** shows with two or more
+logins (or while it is on), and **Auto-start 5-hour windows** shows when the
+machine reports a `five_hour` window for the provider. Swipe or context menu
+uses an account for new chats (`ProviderAccountsStore.useForNewChats`: smart
+balance off, then the default), signs it out (`providerAccounts.signOut`; the
+account stays), removes it (never the default or the machine's own login), or
+opens `ProviderAccountDetailPage`. The detail page holds the same actions, the
+copy and replaced-login notices (Sign in to another account, Sign it back in,
+dismiss), and `ProviderAccountSettingsSection`
+(`SettingsProviderAccountSettings.swift`): Claude's Main chat cache, Subagent
+cache and Extra usage, and a per-account **Auto-compact** page when the machine
+holds more than one account. Each change goes through
+`providerAccounts.setSettings` with the `instanceId` and is read back, so an
+older ADE that drops the setting shows an error. **Add account** creates a
+nameless account and opens its sign-in. Sign-in runs
 through `ProviderAccountSignInSheet`: it starts the host's login, polls
 `loginStatus`, and relays the pasted Claude code or shows the Codex device code
 (the phone's browser cannot reach the host's localhost sign-in ports); closing

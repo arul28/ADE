@@ -132,10 +132,21 @@ export function readRemoteMcpLastUsed(settings: RemoteMcpSettings, connectionId:
 }
 
 declare const __ADE_VERSION__: string | undefined;
+declare const __ADE_UNRELEASED_VERSION__: boolean | undefined;
 
 /** ADE's version, published in this computer's entry and sent as the forwarding user agent. */
 export function remoteMcpAdeVersion(): string {
+  return stampedAdeVersion() ?? (process.env.ADE_CLI_VERSION?.trim() || "0.0.0");
+}
+
+/**
+ * The version a release build stamped into this ADE, or null in a development
+ * build. A development build's version (stamped, or `ADE_CLI_VERSION`) is the
+ * source `package.json` version, which may not be a published release.
+ */
+export function stampedAdeVersion(): string | null {
+  // A dev bundle stamps its source version too, and marks it unreleased (tsup.config.ts).
+  if (typeof __ADE_UNRELEASED_VERSION__ === "boolean" && __ADE_UNRELEASED_VERSION__) return null;
   const bundled = typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__.trim() : "";
-  if (bundled && bundled !== "0.0.0") return bundled;
-  return process.env.ADE_CLI_VERSION?.trim() || bundled || "0.0.0";
+  return bundled && bundled !== "0.0.0" ? bundled : null;
 }

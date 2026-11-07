@@ -11,6 +11,7 @@ import {
   agent37SetupSuggestion,
   agent37Shape,
   formatAgent37Usd,
+  type Agent37CloudSignInStatus,
   type Agent37MachineKind,
   type Agent37ReadyProjectStatus,
   type Agent37ReadyStatus,
@@ -85,7 +86,7 @@ function Choice<T extends string>({ label, value, options, disabled, onChange }:
  * seconds. Account-wide (the choice is in the account vault, the machines on
  * Agent 37), so it asks this desktop's main process with no pin.
  */
-export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | null }) {
+export function Agent37ReadyMachinesCard({ status, cloudSignIns }: { status: Agent37Status | null; cloudSignIns: Agent37CloudSignInStatus | null }) {
   const bridge = window.ade.agent37;
   const binding = useAppStore((state) => state.projectBinding);
   const identity = normalizeGitRemoteIdentity(originUrlForBinding(binding));
@@ -93,7 +94,6 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
   const projectName = agent37RepoLabel(identity) ?? binding?.displayName ?? "this project";
   const [expanded, setExpanded] = useState(false);
   const [suggestion, setSuggestion] = useState<string | null>(null);
-  const [claudeSaved, setClaudeSaved] = useState<boolean | null>(null);
 
   const [ready, setReady] = useState<Agent37ReadyStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -137,22 +137,8 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
     setSetup(saved?.setup ?? "");
   }, [identity, saved?.identity, saved?.kind, saved?.shape, saved?.setup]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Whether new ready machines start signed in to Claude (the Claude card above).
-  useEffect(() => {
-    if (!bridge?.claudeTokenStatus) return;
-    let cancelled = false;
-    const read = () => {
-      void bridge.claudeTokenStatus!().then((next) => {
-        if (!cancelled) setClaudeSaved(next && !next.unknown ? next.saved : null);
-      }, () => undefined);
-    };
-    read();
-    const off = bridge.onClaudeTokenChanged?.(read);
-    return () => {
-      cancelled = true;
-      off?.();
-    };
-  }, [bridge]);
+  // Whether new ready machines start with any provider signed in (the card above).
+  const noSignIns = cloudSignIns != null && !cloudSignIns.unknown && !cloudSignIns.saved.some((entry) => entry.saved);
 
   // A setup to offer from the repo's lockfile, read from the project's top
   // folder once the settings are open. Unpinned on purpose: the files are
@@ -263,9 +249,8 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
               return <li key={label} data-state={state} aria-current={state === "now" ? "step" : undefined}>{index + 1}. {label}</li>;
             })}
           </ol>
-          {/* Slot: Claude and GitHub sign-in for cloud machines (backend to come). */}
-          {claudeSaved === false ? (
-            <p className="ade-ig-note">New ready machines start signed in to Claude only after you sign in on the Claude card above.</p>
+          {noSignIns ? (
+            <p className="ade-ig-note">New ready machines start signed in to a provider only after you add one under Sign-ins for your cloud machines.</p>
           ) : null}
 
           <div className="ade-ig-field">

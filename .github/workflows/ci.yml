@@ -859,13 +859,31 @@ jobs:
         id: gate
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          # A PR: checkout@v4 checks out the PR merge commit, so its first
+          # parent is the base and the diff is exactly what the PR changes.
+          # A push to main: a merge or squash commit, whose first parent is
+          # the main it was pushed onto, so the diff is what that PR changed.
+          # When two PRs that touch iOS merge one after the other, the second
+          # push still runs the suite, so a conflict between them is caught.
+          # Anything else (a dispatch, a push of several commits, a missing
+          # parent, a failed diff) runs the suite.
+          case "${{ github.event_name }}" in
+            pull_request) ;;
+            push)
+              if [[ "$(git rev-parse HEAD^1 2>/dev/null || true)" != "${{ github.event.before }}" ]]; then
+                echo "run=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              ;;
+            *)
+              echo "run=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          if ! changed=$(git diff --name-only HEAD^1 HEAD); then
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # checkout@v4 checks out the PR merge commit; diffing it against its
-          # base parent yields exactly the changes this PR introduces.
-          changed=$(git diff --name-only HEAD^1 HEAD || true)
           # The shared chip fixture lives under apps/desktop but the iOS suite
           # asserts against it (WorkComposerTriggerDetectorTests.
           # testMatchesSharedChipFixture). Without it in this gate, a
@@ -876,7 +894,7 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "No apps/ios or shared-fixture changes in this PR; skipping the iOS build."
+            echo "No apps/ios or shared-fixture changes; skipping the iOS build."
           fi
 
 
@@ -889,7 +907,7 @@ jobs:
     steps:
       - name: No iOS changes
         if: needs.ios-gate.outputs.run != 'true'
-        run: echo "No apps/ios or shared-fixture changes in this PR; skipping the iOS build."
+        run: echo "No apps/ios or shared-fixture changes; skipping the iOS build."
 
       - uses: actions/checkout@v4
         if: needs.ios-gate.outputs.run == 'true'
@@ -915,6 +933,21 @@ jobs:
           path: ~/spm-packages
           key: spm-v1-${{ hashFiles('apps/ios/ADE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
           restore-keys: spm-v1-
+
+      # Xcode's content-addressed compilation cache, kept between runs. It
+      # does not depend on file times, so a fresh checkout still hits it.
+      # Measured on #2100: "Build for testing" 15.4 min cold, 9.4 min warm;
+      # about 360 MB compressed. A branch reads its own last cache, then
+      # main's.
+      - name: Restore the compilation cache
+        if: needs.ios-gate.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ios-cas
+          key: ios-cas-v1-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ios-cas-v1-${{ github.ref_name }}-
+            ios-cas-v1-main-
 
       # The simulator cold boot took 4-8 minutes when it started after the
       # build; booting it now overlaps the build.
@@ -948,7 +981,26 @@ jobs:
             -skipMacroValidation \
             -skipPackagePluginValidation \
             -quiet \
+            COMPILATION_CACHE_ENABLE_CACHING=YES \
+            COMPILATION_CACHE_CAS_PATH="$RUNNER_TEMP/ios-cas" \
             build-for-testing
+
+      # The cache only grows: each build adds what changed. Past 2.5 GB, start
+      # it again rather than fill the repository's cache space.
+      - name: Cap the compilation cache
+        if: needs.ios-gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          size_kb=$(du -sk "$RUNNER_TEMP/ios-cas" 2>/dev/null | cut -f1 || echo 0)
+          echo "Compilation cache: $((size_kb / 1024)) MB"
+          if (( size_kb > 2621440 )); then
+            # An empty folder is saved in its place, so the next run builds
+            # cold once and saves a fresh cache, instead of restoring the
+            # big one again.
+            rm -rf "$RUNNER_TEMP/ios-cas"
+            mkdir -p "$RUNNER_TEMP/ios-cas"
+            echo "Over 2.5 GB; the next run starts a new cache."
+          fi
 
       - name: Run ADETests
         if: needs.ios-gate.outputs.run == 'true'

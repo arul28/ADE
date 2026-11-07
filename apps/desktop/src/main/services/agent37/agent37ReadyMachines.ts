@@ -101,6 +101,18 @@ const SETUP_POLL_MS = 3_000;
 /** A template without the job runner never marks the job started; this long means it has none. */
 const RUNNER_START_GRACE_MS = 20_000;
 const LOG_TAIL_LINES = 6;
+/**
+ * Used ready machines (claimed, now asleep) a project may hold before ADE
+ * stops preparing new ones. Each ready chat claims a machine and the next pass
+ * prepares another, so without a limit they pile up, each billing its disk.
+ * They are the person's, so ADE never deletes them; it waits until one goes.
+ */
+const AGENT37_READY_USED_ASLEEP_LIMIT = 3;
+
+/** A project's claimed machines that sleep now: chats on them are over, for the moment. */
+function usedAsleep(pool: readonly Agent37Instance[]): number {
+  return pool.filter((instance) => agent37ReadyStateOf(instance) === "claimed" && instance.status === "sleeping").length;
+}
 
 /** `'…'` for sh, whatever the text holds. */
 function shellQuote(value: string): string {
@@ -115,13 +127,20 @@ function shellQuote(value: string): string {
  */
 export function buildAgent37ReadySetupScript(settings: Pick<Agent37ReadyProjectSettings, "identity" | "setup">): string {
   const folder = agent37ReadyFolderName(settings.identity);
+  const url = shellQuote(agent37ReadyCloneUrl(settings.identity));
   const lines = [
     "set -e",
     `dir="$HOME/${folder}"`,
     `echo "${READY_PATH_MARKER}$dir"`,
     'if [ ! -d "$dir/.git" ]; then',
-    `  GIT_TERMINAL_PROMPT=0 git clone ${shellQuote(agent37ReadyCloneUrl(settings.identity))} "$dir"`
-      + ' || { echo "ADE couldn\'t clone the repository. A private repository needs a Git sign-in on the machine." >&2; exit 1; }',
+    // The box's ADE clones with the account's GitHub sign-in (the token the
+    // account vault gives every signed-in machine), so a private repository
+    // clones too. A non-GitHub origin, or no GitHub sign-in, falls back to git.
+    // A clone that worked but failed to register is kept; `ade projects add` below registers it.
+    `  ade projects clone ${url} --path "$HOME" --name ${shellQuote(folder)} >/dev/null 2>&1`
+      + ' || [ -d "$dir/.git" ]'
+      + ` || GIT_TERMINAL_PROMPT=0 git clone ${url} "$dir"`
+      + ' || { echo "ADE couldn\'t clone the repository. A private repository needs a GitHub sign-in in ADE (Settings › Integrations › GitHub)." >&2; exit 1; }',
     "fi",
     'cd "$dir"',
     'ade projects add "$dir" >/dev/null',
@@ -282,6 +301,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
         startedAt: elsewhere.created != null ? elsewhere.created * 1000 : null,
       };
     }
+    // A failure blocks the next prepare even after a deletion, so it shows first.
     const failure = failureOf(settings);
     if (failure) {
       const minutes = failure.retryAt != null ? Math.max(1, Math.ceil((failure.retryAt - now()) / 60_000)) : null;
@@ -292,6 +312,15 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
           ? `ADE couldn't prepare it, and tries again in about ${minutes} min: ${failure.error}`
           : `ADE couldn't prepare it: ${failure.error}`,
         error: failure.error,
+      };
+    }
+    const used = pool ? usedAsleep(pool) : 0;
+    if (used >= AGENT37_READY_USED_ASLEEP_LIMIT) {
+      return {
+        ...base,
+        state: "waiting",
+        message: `${used} machines from earlier ready chats on "${settings.projectName}" are asleep. `
+          + "Delete one you no longer need, and ADE prepares the next ready machine.",
       };
     }
     return { ...base, state: "waiting", message: "ADE will prepare one shortly." };
@@ -557,9 +586,12 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
     }
     await reconcilePool(client, instances, wanted, authoritative);
     const missing = projects.filter((settings) => {
-      const pool = agent37ReadyMachinesFor(instances, settings.identity)
-        .filter((instance) => agent37ReadyStateOf(instance) !== "claimed" && instance.status !== "failed");
-      return !pool.length && !local.has(settings.identity) && !blockedByFailure(settings);
+      const machines = agent37ReadyMachinesFor(instances, settings.identity);
+      const pool = machines.filter((instance) => agent37ReadyStateOf(instance) !== "claimed" && instance.status !== "failed");
+      return !pool.length
+        && !local.has(settings.identity)
+        && !blockedByFailure(settings)
+        && usedAsleep(machines) < AGENT37_READY_USED_ASLEEP_LIMIT;
     });
     // At the monthly cap ADE makes nothing new; the next pass after it is raised prepares.
     const month = missing.length ? await deps.spending?.().catch(() => null) ?? null : null;

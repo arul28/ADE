@@ -4,7 +4,9 @@ import {
   writeSavedContinueAfterRestart,
 } from "../../../../../ade-cli/src/services/runtime/continueAfterRestartStore";
 import { readSavedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { encodeCodedErrorMessage, isErrnoLikeCode } from "../../../shared/codedError";
+import { stampedAdeVersion } from "../../../../../ade-cli/src/services/remoteMcp/remoteMcpAccount";
+import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -300,10 +302,12 @@ import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { agent37VaultFromStore, buildAgent37ConnectAdapter, type Agent37CredentialDeps } from "../agent37/agent37Credential";
-import { AGENT37_CLAUDE_TOKEN_VAULT_KEY, agent37MachineEnv } from "../agent37/agent37ClaudeTokenStore";
+import { agent37MachineEnv, type Agent37CloudSignInVaults } from "../agent37/agent37CloudSignInStore";
+import { buildAgent37CloudSignInActions } from "../agent37/agent37CloudSignInActions";
 import { buildAgent37ReadyActions } from "../agent37/agent37ReadyActions";
 import { buildAgent37AgentActions } from "../agent37/agent37AgentActions";
 import { createAgent37BrainMaker, type Agent37BrainMaker } from "../agent37/agent37BrainMaker";
+import { approveInHeadlessChromium, findHeadlessChromium } from "../agent37/agent37HeadlessApproval";
 import { AGENT37_DEFAULT_TEMPLATE } from "../../../shared/agent37";
 import { createAgent37Machines } from "../agent37/agent37Machines";
 import { AGENT37_BUDGET_VAULT_KEY, createAgent37BudgetStore } from "../agent37/agent37Sleep";
@@ -3362,12 +3366,27 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
       const owner = typeof actionArgs.owner === "string"
         ? actionArgs.owner.trim()
         : undefined;
-      return githubService.publishCurrentProject({
-        ...(owner ? { owner } : {}),
-        name: requireNonEmptyString(actionArgs.name, "name"),
-        description,
-        isPrivate,
-      });
+      try {
+        return await githubService.publishCurrentProject({
+          ...(owner ? { owner } : {}),
+          name: requireNonEmptyString(actionArgs.name, "name"),
+          description,
+          isPrivate,
+        });
+      } catch (error) {
+        // The publish dialog answers `github_not_connected`, `remote_already_exists`
+        // and `repo_name_taken` with their own screens. A runtime action failure
+        // reaches the renderer as its message alone, so the code rides in it,
+        // in the `code: message` shape the direct IPC route already uses.
+        const code = (error as { code?: unknown } | null)?.code;
+        if (typeof code !== "string" || !code.trim() || isErrnoLikeCode(code)) throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.startsWith(`${code}:`)) throw error;
+        throw carryExpected(
+          error,
+          Object.assign(new Error(encodeCodedErrorMessage(code, message), { cause: error }), { code }),
+        );
+      }
     },
     async setToken(args?: unknown) {
       githubService.setToken(readStringActionArg(args, "token"));
@@ -4033,6 +4052,13 @@ function agent37MachineStore(): EncryptedFileCredentialStore {
   return agent37MachineCredentialStore;
 }
 
+/** The account vault's cloud sign-in items, or null when signed out of ADE (agent37CloudSignInStore.ts). */
+function agent37CloudSignInVaults(runtime: AdeRuntime): Agent37CloudSignInVaults | null {
+  const store = runtime.accountVaultStore;
+  if (!store || runtime.accountAuthService?.getStatus().signedIn !== true) return null;
+  return (vaultKey) => agent37VaultFromStore(store, vaultKey);
+}
+
 function agent37CredentialDeps(runtime: AdeRuntime): Agent37CredentialDeps {
   return {
     vault: () => (runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore) : null),
@@ -4083,6 +4109,9 @@ function agent37BrainMakerFor(runtime: AdeRuntime, machines: ReturnType<typeof c
     appVersion: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
     directoryBaseUrl: () => directoryBaseUrl() ?? "",
   });
+  // Only a brain on an Agent 37 machine approves the machines it makes; anywhere
+  // else a person has a browser, and the sign-in link goes to them.
+  const chromium = process.env.AGENT37_INSTANCE_ID?.trim() ? findHeadlessChromium() : null;
   const maker = createAgent37BrainMaker({
     base: {
       client: async () => {
@@ -4095,14 +4124,17 @@ function agent37BrainMakerFor(runtime: AdeRuntime, machines: ReturnType<typeof c
       listAccountMachines: () => directory().listMachines(),
       renameMachine: (machineKey, name) => directory().renameMachine(machineKey, name),
       templateName: () => process.env.ADE_AGENT37_TEMPLATE?.trim() || AGENT37_DEFAULT_TEMPLATE,
-      // The person's Claude token, so Claude is signed in on the new machine (agent37ClaudeToken.ts).
-      machineEnv: () => agent37MachineEnv(
-        account.getStatus().signedIn && runtime.accountVaultStore
-          ? agent37VaultFromStore(runtime.accountVaultStore, AGENT37_CLAUDE_TOKEN_VAULT_KEY)
-          : null,
-      ),
+      // The person's provider sign-ins, so they are signed in on the new machine (agent37CloudSignInStore.ts).
+      machineEnv: () => agent37MachineEnv(agent37CloudSignInVaults(runtime), runtime.logger),
+      // This brain's release: a machine made from an older template installs it on boot.
+      // Only a released build: a development build's version may not be published.
+      minAdeVersion: () => stampedAdeVersion(),
       spending: () => machines.spending(),
       removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
+      // No window here: the sign-in of a machine this brain made with an
+      // unattended yes opens in a headless Chromium (the template ships one).
+      ...(chromium ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
+        approveInHeadlessChromium({ url, signal, binary: chromium, logger: runtime.logger }) } : {}),
       logger: runtime.logger,
     },
     logger: runtime.logger,
@@ -4188,7 +4220,22 @@ function buildAgent37DomainService(runtime: AdeRuntime): OpaqueService {
       : null,
     logger: runtime.logger,
   });
-  return { ...ready, ...verbs };
+  const cloudSignIns = buildAgent37CloudSignInActions({
+    vaults: () => agent37CloudSignInVaults(runtime),
+    accountId: () => runtime.accountAuthService?.getStatus().userId ?? null,
+    // Which providers people sign in for cloud machines. A six-hour dedupe per
+    // provider: at most 36 accepted events a day.
+    onSaved: (id) => runtime.productAnalyticsService?.capture({
+      event: "ade_feature_used",
+      surface: "api",
+      properties: { feature: "connections", action: "agent37_cloud_sign_in", outcome: `signin_${id}` },
+      projectId: null,
+      dedupeKey: `agent37_cloud_sign_in:${id}`,
+      minimumIntervalMs: 6 * 60 * 60 * 1_000,
+    }),
+    logger: runtime.logger,
+  });
+  return { ...ready, ...verbs, ...cloudSignIns };
 }
 
 /**

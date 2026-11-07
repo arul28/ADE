@@ -19,13 +19,6 @@ struct ConnectionSettingsView: View {
   @State private var presentedSheet: SettingsPairSheetRoute?
   @State private var pinPreset: PinPreset?
   @State private var pinSetupRoute: PinSetupRoute?
-  /// The account's Fast permission, read over the sync host and written back
-  /// from the Chat section. Off by default, like the desktop.
-  @State private var fastModeEnabled = false
-  /// Orders the switch's writes and reads: an older read or a failed write must
-  /// not overwrite what the person chose last.
-  @State private var fastModeWriteGeneration = 0
-  @State private var fastModeSaving = false
 
   init(syncService: SyncService, pairingOnly: Bool = false) {
     self.syncService = syncService
@@ -36,24 +29,17 @@ struct ConnectionSettingsView: View {
     ADEColorSchemeChoice(rawValue: colorSchemeRaw) ?? .system
   }
 
-  /// "This iPhone" / "This iPad", from the device rather than a literal.
-  ///
-  /// The desktop group is sourced from `THIS_MACHINE_NAME` for exactly this
-  /// reason: a hardcoded model name is wrong on every other device, and the
-  /// user notices immediately.
-  private var thisDeviceGroupLabel: String {
-    "This \(UIDevice.current.model)"
-  }
-
   var body: some View {
     // The Duo's inner display gets Apple Settings' two columns: this list on
-    // the left, the page a row opens on the right. Everywhere else it is the
-    // one pushed stack it has always been.
+    // the left, the page a row opens on the right (General first, as the
+    // desktop opens on it). Everywhere else it is one pushed stack.
     if duo.isWide && !pairingOnly {
-      DuoSettingsSplit(onClose: { dismiss() }) {
-        settingsChrome(settingsList, includesClose: false)
+      DuoSettingsSplit(onClose: { dismiss() }, landingTitle: SettingsRoute.general.title) {
+        settingsChrome(settingsList)
       } landing: {
-        connectionLandingPage
+        generalPage
+      } page: { title in
+        page(SettingsRoute.allCases.first { $0.title == title } ?? .general)
       }
     } else {
       NavigationStack {
@@ -73,35 +59,21 @@ struct ConnectionSettingsView: View {
           }
         )
       }
+      .environment(\.settingsClose, { dismiss() })
+      // On the Duo's outer display the bar stays across the top, as the
+      // Hub's does, instead of a rail that costs the list its width.
+      .hubHeaderStaysOnTop()
     }
   }
 
   /// The title, close button, sheets and observers the settings root carries,
-  /// whichever column layout hosts it.
-  /// `includesClose: false` for the Duo's two columns, which put the close
-  /// button on the page column instead (see `DuoSettingsSplit`).
-  private func settingsChrome<Content: View>(_ content: Content, includesClose: Bool = true) -> some View {
+  /// whichever column layout hosts it. Close shows where the stack sets
+  /// `settingsClose`: not on the Duo's list column, whose page column has it.
+  private func settingsChrome<Content: View>(_ content: Content) -> some View {
     content
       .adeNavigationGlass()
-      .task {
-        guard !pairingOnly else { return }
-        let generation = fastModeWriteGeneration
-        let enabled = await syncService.getFastModeEnabled()
-        if generation == fastModeWriteGeneration {
-          fastModeEnabled = enabled
-        }
-      }
       .navigationTitle(pairingOnly ? "Connect a computer" : "Settings")
-      .toolbar {
-        if includesClose {
-          ToolbarItem(placement: .topBarTrailing) {
-            Button(role: .close) {
-              dismiss()
-            }
-            .accessibilityLabel("Close settings")
-          }
-        }
-      }
+      .settingsPageClose()
       .sheet(item: $presentedSheet) { route in
         presentedPairingSheet(route)
       }
@@ -179,7 +151,7 @@ struct ConnectionSettingsView: View {
   private var pairingOnlyGroup: some View {
     VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
       ADESettingsSection("Connection") {
-        connectionHeader
+        connectionStatus().adeKitCard()
       }
 
       SettingsPairingSection(
@@ -189,19 +161,7 @@ struct ConnectionSettingsView: View {
     }
   }
 
-  /// The two-column window's first page: the page title already says
-  /// "Connection", so the card stands without a section heading.
-  private var connectionLandingPage: some View {
-    ADESettingsPage(title: "Connection") {
-      connectionHeader
-      SettingsPairingSection(
-        snapshot: presentationModel.pairingSnapshot,
-        presentedSheet: $presentedSheet
-      )
-    }
-  }
-
-  private var connectionHeader: some View {
+  private func connectionStatus(machineShownAbove: Bool = false) -> some View {
     SettingsConnectionHeader(
       snapshot: presentationModel.connectionSnapshot,
       onDisconnect: { syncService.disconnectForUserConnectionChange() },
@@ -213,158 +173,191 @@ struct ConnectionSettingsView: View {
           pinPreset = .discover(host)
         }
       },
-      onWake: wakeAsleepMachine
+      onWake: wakeAsleepMachine,
+      machineShownAbove: machineShownAbove
     )
   }
 
+  /// The root list, as the desktop's settings sidebar lays it out: who you
+  /// are, then General, then You, App, Project and System. On the Duo's
+  /// inner display held landscape this is the left column and each row's page
+  /// fills the right one (`DuoSettingsSplit`).
   private var settingsList: some View {
     ScrollView {
-      VStack(alignment: .leading, spacing: ADEKit.sectionGap) {
-        accountSection
-        SettingsMachineSections(
-          syncService: syncService,
-          controller: machineController,
-          presentedSheet: $presentedSheet
-        )
-        ADESettingsSection("App") {
-          ADESettingsRows {
-            ADESettingsLink(title: "Appearance", symbol: "circle.lefthalf.filled", value: colorSchemeChoice.label) {
-              ADESettingsPage(title: "Appearance") { SettingsAppearanceSection() }
+      VStack(alignment: .leading, spacing: 2) {
+        accountHeader
+          .padding(.bottom, 8)
+        ForEach(SettingsRouteGroup.allCases, id: \.self) { group in
+          let routes = visibleRoutes.filter { $0.group == group }
+          if !routes.isEmpty {
+            if let title = groupTitle(group) {
+              ADESettingsSidebarGroupLabel(text: title)
             }
-            ADESettingsLink(title: "Notifications", symbol: "bell") {
-              ADESettingsPage(title: "Notifications") {
-                SettingsPushDeliverySection(
-                  snapshot: presentationModel.pushDeliverySnapshot,
-                  pushService: PushNotificationService.shared
-                )
-              }
-            }
-            ADESettingsLink(title: "Usage", symbol: "chart.bar") {
-              SettingsUsagePage(syncService: syncService)
-            }
-            ADESettingsLink(title: "Webhooks", symbol: "link") {
-              SettingsWebhooksPage(syncService: syncService)
-            }
-            ADESettingsLink(title: "AI accounts", symbol: "person.2") {
-              SettingsProviderAccountsPage(syncService: syncService)
-            }
-          }
-        }
-        if syncService.supportsRemoteAction("chat.setFastModeEnabled") {
-          ADESettingsSection("Chat") {
-            ADESettingsRows {
-              Toggle(isOn: Binding(
-                get: { fastModeEnabled },
-                set: { next in
-                  guard !fastModeSaving else { return }
-                  fastModeWriteGeneration += 1
-                  let generation = fastModeWriteGeneration
-                  fastModeEnabled = next
-                  fastModeSaving = true
-                  Task {
-                    do {
-                      try await syncService.setFastModeEnabled(next)
-                    } catch {
-                      if generation == fastModeWriteGeneration {
-                        fastModeEnabled = !next
-                      }
-                    }
-                    if generation == fastModeWriteGeneration {
-                      fastModeSaving = false
-                    }
-                  }
-                }
-              )) {
-                VStack(alignment: .leading, spacing: 3) {
-                  Text("Allow Fast mode")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(ADEColor.textPrimary)
-                  Text("Roughly 2× standard, up to 8× for Ultrafast. Off until you turn it on here; every new chat still starts at Standard.")
-                    .font(.caption)
-                    .foregroundStyle(ADEColor.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-              }
-              .toggleStyle(.switch)
-              .tint(ADEColor.warning)
-              .disabled(fastModeSaving)
-              .padding(ADEKit.inset)
-            }
-          }
-        }
-        ADESettingsSection("About") {
-          ADESettingsRows {
-            ADESettingsLink(title: "Connection details", symbol: "point.3.connected.trianglepath.dotted") {
-              ADESettingsPage(title: "Connection details") {
-                SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot, content: .connection)
-              }
-            }
-            ADESettingsLink(title: "Delivery diagnostics", symbol: "stethoscope") {
-              ADESettingsPage(title: "Delivery diagnostics") {
-                SettingsPushDeliverySection(
-                  snapshot: presentationModel.pushDeliverySnapshot,
-                  pushService: PushNotificationService.shared,
-                  content: .diagnostics
-                )
-              }
-            }
-            ADESettingsLink(title: "About \(thisDeviceGroupLabel.replacingOccurrences(of: "This ", with: "this "))", symbol: "info.circle") {
-              ADESettingsPage(title: "About") {
-                SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot, content: .about)
+            ForEach(routes) { route in
+              ADESettingsSidebarLink(title: route.title, symbol: route.symbol, tint: route.tint, value: rowValue(route)) {
+                page(route)
               }
             }
           }
         }
       }
-      .padding(.horizontal, 16)
-      .padding(.top, 8)
+      .padding(.horizontal, 10)
+      .padding(.top, 4)
       .padding(.bottom, 36)
     }
     .background(ADEColor.pageBackground.ignoresSafeArea())
   }
 
-  /// The signed-in account as the page's header row, or Sign in.
+  /// The project pages act on the open project, so they show only while the
+  /// phone has one, as the desktop shows them only with a project open.
+  private var visibleRoutes: [SettingsRoute] {
+    SettingsRoute.allCases.filter { route in
+      route.group != .project || syncService.activeProject != nil
+    }
+  }
+
+  /// The desktop names the project group after the open project
+  /// ("Project: ADE").
+  private func groupTitle(_ group: SettingsRouteGroup) -> String? {
+    guard group == .project else { return group.title }
+    guard let project = syncService.activeProject else { return group.title }
+    return "\(group.title ?? "Project"): \(project.displayName)"
+  }
+
+  private func rowValue(_ route: SettingsRoute) -> String? {
+    switch route {
+    case .appearance: return colorSchemeChoice.label
+    case .machines:
+      let live = machineController.liveCount(machines)
+      return live > 0 ? "\(live) live" : nil
+    default: return nil
+    }
+  }
+
   @ViewBuilder
-  private var accountSection: some View {
-    if account.isConfigured {
-      ADESettingsRows {
-        switch account.phase {
-        case .signedIn:
-          if let identity = account.identity {
-            NavigationLink {
-              SettingsAccountPage()
-            } label: {
-              HStack(spacing: 12) {
-                AccountAvatar(identity: identity)
-                VStack(alignment: .leading, spacing: 2) {
-                  Text(identity.displayName)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(ADEColor.textPrimary)
-                    .lineLimit(1)
-                  if let email = identity.email {
-                    Text(email)
-                      .font(.system(size: 12.5))
-                      .foregroundStyle(ADEColor.textSecondary)
-                      .lineLimit(1)
-                      .truncationMode(.middle)
-                  }
-                }
-                Spacer(minLength: 8)
-                ADESettingsChevron()
-              }
-              .padding(.horizontal, ADEKit.inset)
-              .padding(.vertical, 12)
+  private func page(_ route: SettingsRoute) -> some View {
+    switch route {
+    case .general: generalPage
+    case .account: SettingsAccountPage(onSignIn: { signInPresented = true })
+    case .usage: SettingsUsagePage(syncService: syncService)
+    case .chat: SettingsChatPage(syncService: syncService)
+    case .providers: SettingsProvidersPage(syncService: syncService)
+    case .integrations: SettingsIntegrationsPage(syncService: syncService)
+    case .notifications:
+      ADESettingsPage(route: .notifications) {
+        SettingsPushDeliverySection(
+          snapshot: presentationModel.pushDeliverySnapshot,
+          pushService: PushNotificationService.shared
+        )
+      }
+    case .appearance:
+      ADESettingsPage(route: .appearance) { SettingsAppearanceSection() }
+    case .lanes: SettingsLanesPage(syncService: syncService)
+    case .machines: machinesPage
+    case .advanced: advancedPage
+    }
+  }
+
+  /// General, where Settings opens: what needs attention, you, the machine
+  /// this phone works on, and ADE on every machine.
+  private var generalPage: some View {
+    SettingsGeneralPage(
+      syncService: syncService,
+      machines: machines,
+      onSignIn: { signInPresented = true },
+      accountPage: { AnyView(page(.account)) },
+      usagePage: { AnyView(page(.usage)) },
+      providersPage: { AnyView(page(.providers)) },
+      machinesPage: { AnyView(machinesPage) },
+      advancedPage: { AnyView(advancedPage) },
+      connection: { machineShownAbove in AnyView(connectionStatus(machineShownAbove: machineShownAbove)) }
+    )
+  }
+
+  /// Every machine Settings lists: connected, signed in, or saved.
+  private var machines: [SettingsMachine] {
+    settingsMachines(
+      syncService: syncService,
+      account: account,
+      fleet: machineFleet,
+      hidden: HiddenMachineStore.shared
+    )
+  }
+
+  /// Machines: the connected set and the rest of the account's machines, then
+  /// the ways to add one.
+  private var machinesPage: some View {
+    ADESettingsPage(route: .machines) {
+      SettingsMachineSections(
+        syncService: syncService,
+        controller: machineController,
+        presentedSheet: $presentedSheet
+      )
+      SettingsPairingSection(
+        snapshot: presentationModel.pairingSnapshot,
+        presentedSheet: $presentedSheet
+      )
+    }
+  }
+
+  /// Advanced: how the phone reaches its machine, why a notification did or
+  /// did not arrive, and this phone's build and ids.
+  private var advancedPage: some View {
+    ADESettingsPage(route: .advanced) {
+      SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot, content: .connection)
+      ADESettingsSection("Notifications", symbol: "bell.badge", tint: .red) {
+        ADESettingsRows {
+          ADESettingsLink(title: "Delivery diagnostics", symbol: "stethoscope") {
+            ADESettingsPage(title: "Delivery diagnostics") {
+              SettingsPushDeliverySection(
+                snapshot: presentationModel.pushDeliverySnapshot,
+                pushService: PushNotificationService.shared,
+                content: .diagnostics
+              )
             }
-            .buttonStyle(ADEKitRowButtonStyle())
-          }
-        case .loading:
-          ProgressView()
-            .frame(maxWidth: .infinity, minHeight: 64)
-        default:
-          ADESettingsActionRow(title: "Sign in to ADE", symbol: "person.crop.circle.badge.plus") {
-            signInPresented = true
           }
         }
+      }
+      SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot, content: .about)
+    }
+  }
+
+  /// The signed-in account as the list's header row, as the desktop sidebar
+  /// opens on who you are. Opens Account.
+  @ViewBuilder
+  private var accountHeader: some View {
+    if account.isConfigured {
+      switch account.phase {
+      case .signedIn:
+        if let identity = account.identity {
+          SettingsAccountHeaderLink(identity: identity) {
+            SettingsAccountPage(onSignIn: { signInPresented = true })
+          }
+        }
+      case .loading:
+        ProgressView()
+          .frame(maxWidth: .infinity, minHeight: 64)
+      default:
+        Button {
+          signInPresented = true
+        } label: {
+          HStack(spacing: 12) {
+            ADESettingsIconTile(symbol: "person.crop.circle.badge.plus", tint: .accent, size: 40)
+            VStack(alignment: .leading, spacing: 2) {
+              Text("Sign in to ADE")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(ADEColor.accent)
+              Text("Your machines and settings, on every device.")
+                .font(.system(size: 12.5))
+                .foregroundStyle(ADEColor.textSecondary)
+                .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+          }
+          .padding(.horizontal, 12)
+          .padding(.vertical, 10)
+        }
+        .buttonStyle(ADEKitRowButtonStyle(shape: .sidebar))
       }
     }
   }
@@ -773,14 +766,15 @@ func settingsMachineRowErrorsRetiring(
   return remaining
 }
 
-/// Settings > Account: who is signed in, and Sign out.
+/// Settings > Account: who is signed in, and Sign out; or Sign in.
 struct SettingsAccountPage: View {
+  let onSignIn: () -> Void
   @ObservedObject private var account = AccountService.shared
   @State private var confirmSignOut = false
 
   var body: some View {
-    ADESettingsPage(title: "Account") {
-      if let identity = account.identity {
+    ADESettingsPage(route: .account) {
+      if let identity = account.identity, account.phase == .signedIn {
         ADESettingsRows {
           HStack(spacing: 14) {
             AccountAvatar(identity: identity)
@@ -800,11 +794,13 @@ struct SettingsAccountPage: View {
           }
           .padding(ADEKit.inset)
         }
-      }
-      ADESettingsRows {
-        ADESettingsActionRow(title: "Sign out", destructive: true) {
-          confirmSignOut = true
+        ADESettingsRows {
+          ADESettingsActionRow(title: "Sign out", destructive: true) {
+            confirmSignOut = true
+          }
         }
+      } else {
+        signedOutPanel
       }
     }
     .confirmationDialog("Sign out of ADE?", isPresented: $confirmSignOut, titleVisibility: .visible) {
@@ -815,5 +811,83 @@ struct SettingsAccountPage: View {
     } message: {
       Text("Signing out removes this iPhone's access to your account and its account-connected machines. Devices paired directly with a code stay connected.")
     }
+  }
+}
+
+extension SettingsAccountPage {
+  /// Signed out: the empty avatar, what an account gives you, and one wide
+  /// Sign in, centred in one panel rather than a lone button on an empty page.
+  fileprivate var signedOutPanel: some View {
+    VStack(spacing: 14) {
+      Image(systemName: "person.fill")
+        .font(.system(size: 30, weight: .medium))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(width: 72, height: 72)
+        .background(ADEKit.track, in: Circle())
+        .overlay(Circle().strokeBorder(ADEKit.rule, lineWidth: 1))
+        .accessibilityHidden(true)
+      VStack(spacing: 6) {
+        Text("Not signed in")
+          .font(.system(size: 19, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(account.isConfigured
+          ? "Sign in to reach your machines from any network and keep your settings on every device."
+          : "This build has no ADE account. Pair a computer with a code instead.")
+          .font(.system(size: 14))
+          .foregroundStyle(ADEColor.textSecondary)
+          .multilineTextAlignment(.center)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      if account.isConfigured {
+        Button("Sign in to ADE", action: onSignIn)
+          .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
+          .padding(.top, 4)
+      }
+    }
+    .padding(.horizontal, 22)
+    .padding(.vertical, 26)
+    .frame(maxWidth: .infinity)
+    .adeKitCard(padding: nil)
+  }
+}
+
+/// The root list's account row: avatar, name and email, opening Account. A
+/// sidebar row, so on the Duo's two columns it fills the right column
+/// instead of pushing.
+private struct SettingsAccountHeaderLink<Destination: View>: View {
+  let identity: AccountIdentity
+  @ViewBuilder var destination: () -> Destination
+
+  var body: some View {
+    ADESettingsPageLink(title: SettingsRoute.account.title, shape: .sidebar, destination: destination) { _, pushes in
+      label(pushes: pushes)
+    }
+  }
+
+  private func label(pushes: Bool) -> some View {
+    HStack(spacing: 12) {
+      AccountAvatar(identity: identity)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(identity.displayName)
+          .font(.system(size: 16, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        if let email = identity.email {
+          Text(email)
+            .font(.system(size: 12.5))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+        }
+      }
+      Spacer(minLength: 8)
+      if pushes {
+        ADESettingsChevron()
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .accessibilityElement(children: .combine)
+    .accessibilityHint("Opens Account.")
   }
 }

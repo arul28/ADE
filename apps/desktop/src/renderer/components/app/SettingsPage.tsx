@@ -416,9 +416,15 @@ export function SettingsPage({
     const entry = resolveSettingsHash(decodeSettingsHash(location.hash));
     if (!entry || entry.tab !== section) return;
     let flashTimer: ReturnType<typeof setTimeout> | null = null;
-    const frame = window.requestAnimationFrame(() => {
-      const card = document.getElementById(entry.anchor);
-      if (!card) return;
+    let observer: MutationObserver | null = null;
+    let giveUpTimer: ReturnType<typeof setTimeout> | null = null;
+    const stopWaiting = () => {
+      observer?.disconnect();
+      observer = null;
+      if (giveUpTimer) clearTimeout(giveUpTimer);
+      giveUpTimer = null;
+    };
+    const land = (card: HTMLElement) => {
       card.scrollIntoView({ block: "start", behavior: "smooth" });
       // Scrolling to a card is not the same as pointing at it. On a page of
       // near-identical rows the user still has to find which one the search
@@ -426,9 +432,29 @@ export function SettingsPage({
       // like it did nothing. One flash answers both.
       card.classList.add("ade-settings-flash");
       flashTimer = setTimeout(() => card.classList.remove("ade-settings-flash"), 1_200);
+    };
+    const frame = window.requestAnimationFrame(() => {
+      const card = document.getElementById(entry.anchor);
+      if (card) {
+        land(card);
+        return;
+      }
+      // A card shown only after its data loads (the Agent 37 sign-ins) is not
+      // there yet: wait a few seconds for it to appear.
+      const root = contentRef.current;
+      if (!root) return;
+      observer = new MutationObserver(() => {
+        const late = document.getElementById(entry.anchor);
+        if (!late) return;
+        stopWaiting();
+        land(late);
+      });
+      observer.observe(root, { childList: true, subtree: true });
+      giveUpTimer = setTimeout(stopWaiting, 5_000);
     });
     return () => {
       window.cancelAnimationFrame(frame);
+      stopWaiting();
       if (flashTimer) clearTimeout(flashTimer);
     };
   }, [active, section, location.hash]);

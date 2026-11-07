@@ -80,7 +80,7 @@ import { machineNameForBinding } from "../shared/machineIdentity";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
-import type { Agent37ClaudeTokenStatus, Agent37Budget, Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus, Agent37Status, Agent37TemplateStatus, Agent37WakeForUseResult } from "../shared/agent37";
+import type { Agent37CloudSignInId, Agent37CloudSignInStatus, Agent37Budget, Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus, Agent37Status, Agent37TemplateStatus, Agent37WakeForUseResult } from "../shared/agent37";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -12986,6 +12986,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.agent37CopyMachine, args),
     moveMachine: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }): Promise<{ started: boolean }> =>
       ipcRenderer.invoke(IPC.agent37MoveMachine, args),
+    reconnectMachine: (args: { requestId: string; instanceId: string }): Promise<{ started: boolean }> =>
+      ipcRenderer.invoke(IPC.agent37ReconnectMachine, args),
     setBudget: (budget: Partial<Agent37Budget>): Promise<Agent37Budget | null> => ipcRenderer.invoke(IPC.agent37SetBudget, { budget }),
     wakeMachine: (machine: { machineKey: string; hostname?: string | null }): Promise<Agent37WakeForUseResult | null> =>
       ipcRenderer.invoke(IPC.agent37WakeMachine, machine),
@@ -13000,16 +13002,19 @@ const adeBridge = {
       ipcRenderer.on(IPC.agent37TemplateStatus, listener);
       return () => ipcRenderer.removeListener(IPC.agent37TemplateStatus, listener);
     },
-    claudeTokenStatus: (): Promise<Agent37ClaudeTokenStatus | null> => ipcRenderer.invoke(IPC.agent37ClaudeTokenStatus),
-    claudeTokenStart: (): Promise<Agent37ClaudeTokenStatus | null> => ipcRenderer.invoke(IPC.agent37ClaudeTokenStart),
-    claudeTokenSubmitCode: (code: string): Promise<Agent37ClaudeTokenStatus | null> =>
-      ipcRenderer.invoke(IPC.agent37ClaudeTokenSubmitCode, { code }),
-    claudeTokenCancel: (): Promise<Agent37ClaudeTokenStatus | null> => ipcRenderer.invoke(IPC.agent37ClaudeTokenCancel),
-    claudeTokenRemove: (): Promise<Agent37ClaudeTokenStatus | null> => ipcRenderer.invoke(IPC.agent37ClaudeTokenRemove),
-    onClaudeTokenChanged: (cb: () => void): (() => void) => {
+    cloudSignInStatus: (): Promise<Agent37CloudSignInStatus | null> => ipcRenderer.invoke(IPC.agent37CloudSignInStatus),
+    cloudSignInClaudeStart: (): Promise<Agent37CloudSignInStatus | null> => ipcRenderer.invoke(IPC.agent37CloudSignInClaudeStart),
+    cloudSignInClaudeCode: (code: string): Promise<Agent37CloudSignInStatus | null> =>
+      ipcRenderer.invoke(IPC.agent37CloudSignInClaudeCode, { code }),
+    cloudSignInClaudeCancel: (): Promise<Agent37CloudSignInStatus | null> => ipcRenderer.invoke(IPC.agent37CloudSignInClaudeCancel),
+    cloudSignInSaveKey: (id: Agent37CloudSignInId, key: string): Promise<Agent37CloudSignInStatus | null> =>
+      ipcRenderer.invoke(IPC.agent37CloudSignInSaveKey, { id, key }),
+    cloudSignInRemove: (id: Agent37CloudSignInId): Promise<Agent37CloudSignInStatus | null> =>
+      ipcRenderer.invoke(IPC.agent37CloudSignInRemove, { id }),
+    onCloudSignInChanged: (cb: () => void): (() => void) => {
       const listener = () => cb();
-      ipcRenderer.on(IPC.agent37ClaudeTokenChanged, listener);
-      return () => ipcRenderer.removeListener(IPC.agent37ClaudeTokenChanged, listener);
+      ipcRenderer.on(IPC.agent37CloudSignInChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.agent37CloudSignInChanged, listener);
     },
     readyStatus: (): Promise<Agent37ReadyStatus | null> => ipcRenderer.invoke(IPC.agent37ReadyStatus),
     readySetProject: (settings: Partial<Agent37ReadyProjectSettings>): Promise<Agent37ReadyStatus | null> =>

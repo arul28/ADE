@@ -158,6 +158,8 @@ export type CrossMachineHandoffSource = {
   /** The unified level (permissionLadder.ts); `full-auto` lets an agent move the chat without asking. */
   permissionLevel: string | null;
   provider?: string | null;
+  /** The chat's own model: a move that names none continues with it. */
+  modelId?: string | null;
   title: string | null;
 };
 
@@ -749,7 +751,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         "The person just declined moving this chat. Don't ask again for a couple of minutes; ask them in the chat if it matters.",
       );
     }
-    const targetModelId = args.targetModelId?.trim();
+    const targetModelId = args.targetModelId?.trim() || source.modelId?.trim();
     if (!targetModelId) throw new Error("Pick the model the other machine should continue with.");
     // An agent's move never chooses its own permissions (whatever the caller
     // passed is dropped): it runs at the source chat's level, in the target

@@ -39,6 +39,8 @@ const NO_LANES: readonly RoutedDraftLane[] = [];
  * and continuing to promise one is a lie the user cannot act on.
  */
 const LANE_CATALOG_HOLD_MS = 12_000;
+/** The shortest gap between two reads of one machine's projects (`refreshMachineProjects`). */
+const PROJECTS_REREAD_MS = 5_000;
 
 export type RoutedDraftLane = LaneComboboxLane & {
   laneType?: string | null;
@@ -204,7 +206,8 @@ export function useDraftMachineRouting({
     };
   }, [enabled]);
 
-  const machineOptions = useMemo<LaneMachineOption[]>(() => {
+  /** Every connected machine, with or without this repository. */
+  const derivedMachineOptions = useMemo<LaneMachineOption[]>(() => {
     if (!enabled) return [];
     const boundProject: LaneMachineProjectRef | null = projectBinding
       ? {
@@ -237,7 +240,7 @@ export function useDraftMachineRouting({
       repoDisplayName: boundProject?.displayName ?? null,
       localProjectRoots: openProjectTabRoots,
       localProjects: knownLocalProjects,
-    }).filter(canCreateLaneOnMachine);
+    });
     return [
       ...options.filter((option) => option.isBound),
       ...options.filter((option) => !option.isBound),
@@ -249,6 +252,44 @@ export function useDraftMachineRouting({
     openProjectTabRoots,
     projectBinding,
   ]);
+  const machineOptions = useMemo(
+    () => derivedMachineOptions.filter(canCreateLaneOnMachine),
+    [derivedMachineOptions],
+  );
+  /** Connected machines without this repository: the picker offers to clone it there. */
+  const cloneMachineOptions = useMemo(
+    () => derivedMachineOptions.filter((option) => option.targetId != null && !canCreateLaneOnMachine(option)),
+    [derivedMachineOptions],
+  );
+  /** Saved paired machines that are not connected now (an asleep cloud machine among them). */
+  const offlineMachines = useMemo(
+    () => (enabled ? connectionSnapshot?.connections ?? [] : [])
+      .filter((connection) => connection.state !== "connected" && connection.target.transport === "paired")
+      .map((connection) => ({
+        targetId: connection.target.id,
+        name: connection.target.name,
+        machineKey: connection.target.pairedMachine?.machineKey?.trim() || null,
+      })),
+    [connectionSnapshot, enabled],
+  );
+  /**
+   * Reads each connected machine's projects again (the connection reads them
+   * once, at connect), so a repository cloned or opened there since shows up.
+   * At most once in a few seconds per machine: it runs when the picker opens.
+   */
+  const projectsReadAtRef = useRef(new Map<string, number>());
+  const refreshMachineProjects = useCallback(() => {
+    const listProjects = window.ade?.remoteRuntime?.listProjects;
+    if (!enabled || !listProjects) return;
+    const now = Date.now();
+    for (const option of derivedMachineOptions) {
+      if (!option.targetId || option.isBound) continue;
+      if (now - (projectsReadAtRef.current.get(option.targetId) ?? 0) < PROJECTS_REREAD_MS) continue;
+      projectsReadAtRef.current.set(option.targetId, now);
+      // A failed read leaves the last list; the connection reports its own errors.
+      void listProjects(option.targetId).catch(() => {});
+    }
+  }, [derivedMachineOptions, enabled]);
 
   const selectorMachines = useMemo<LaneComboboxMachine[]>(
     () => machineOptions.length < 2
@@ -631,6 +672,9 @@ export function useDraftMachineRouting({
 
   return {
     machineOptions,
+    cloneMachineOptions,
+    offlineMachines,
+    refreshMachineProjects,
     selectorMachines,
     selectorLanes,
     boundMachineId,

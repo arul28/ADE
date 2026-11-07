@@ -198,6 +198,7 @@ enum WorkSettingsCatalog {
     "integrations.linear": Setting(path: "App › Integrations › Linear", locked: true),
     "integrations.jira": Setting(path: "App › Integrations › Jira", locked: true),
     "integrations.agent37": Setting(path: "App › Integrations › Agent 37", locked: true),
+    "integrations.agent37-sign-ins": Setting(path: "App › Integrations › Sign-ins for your cloud machines", locked: true),
     "integrations.agent37-ready": Setting(path: "App › Integrations › Agent 37 ready machine", locked: true),
     "integrations.agent37-spending": Setting(path: "App › Integrations › Agent 37 spending", locked: true),
     "integrations.agent37-agent-limits": Setting(path: "App › Integrations › What agents may spend on Agent 37", locked: true),

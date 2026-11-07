@@ -57,7 +57,13 @@ export function ensureNodePtySpawnHelperExecutable({
     return { status: "skipped", reason: "package_root_unresolved" };
   }
 
-  const helperPath = path.join(root, "prebuilds", prebuildDir, "spawn-helper");
+  // Inside a packaged app the package resolves into app.asar, which holds no
+  // runnable file and can't be chmodded (ENOTDIR). node-pty itself spawns the
+  // unpacked copy, so that is the one to check: the same rewrite it makes.
+  const helperPath = path
+    .join(root, "prebuilds", prebuildDir, "spawn-helper")
+    .replace(/app\.asar(?!\.unpacked)/, "app.asar.unpacked")
+    .replace(/node_modules\.asar(?!\.unpacked)/, "node_modules.asar.unpacked");
   try {
     const stat = fs.statSync(helperPath);
     const mode = typeof stat.mode === "number" ? stat.mode : 0;

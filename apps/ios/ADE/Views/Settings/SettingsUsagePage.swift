@@ -213,6 +213,9 @@ struct SettingsUsagePage: View {
   var body: some View {
     ScrollView {
       LazyVStack(alignment: .leading, spacing: 14) {
+        if let subtitle = SettingsRoute.usage.subtitle {
+          ADESettingsPageIntro(text: subtitle)
+        }
         rangeControl
         costBand
         chartBand
@@ -224,13 +227,10 @@ struct SettingsUsagePage: View {
         }
       }
       .padding(.horizontal, 16)
-      .padding(.top, 8)
       .padding(.bottom, 36)
     }
     .background(ADEColor.pageBackground.ignoresSafeArea())
-    .adeNavigationGlass()
-    .navigationTitle("Usage")
-    .navigationBarTitleDisplayMode(.inline)
+    .adeSettingsPageTitle(SettingsRoute.usage.title)
     .toolbar {
       ToolbarItem(placement: .topBarTrailing) {
         Button {
@@ -404,7 +404,9 @@ struct SettingsUsagePage: View {
           }
         }
       } else {
-        Text("Connect an up-to-date ADE computer to see live limits.")
+        Text(syncService.connectionState == .connected
+          ? "Waiting for \(syncService.machineDisplayName) to check its limits."
+          : "Connect an up-to-date ADE computer to see live limits.")
           .font(.system(size: 13))
           .foregroundStyle(ADEColor.textMuted)
       }
@@ -827,6 +829,7 @@ struct SettingsUsageModelDetailScreen: View {
     .background(ADEColor.pageBackground.ignoresSafeArea())
     .navigationTitle(model)
     .navigationBarTitleDisplayMode(.inline)
+    .settingsPageClose()
     .task { await load() }
   }
 

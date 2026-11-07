@@ -17,6 +17,8 @@ export type RuntimeRpcTransportCloseInfo = {
   detail?: string | null;
   /** The host replaced this connection with a newer one from the same device. */
   superseded?: boolean;
+  /** The WebSocket close code, kept on the error so a caller can classify it (the relay's 4505). */
+  closeCode?: number | null;
 };
 
 export type RuntimeRpcTransport = JsonRpcTransport & {
@@ -123,11 +125,10 @@ export class RuntimeRpcClient {
       const message = details.length > 0
         ? `Remote ADE service connection closed (${details.join(", ")}).`
         : "Remote ADE service connection closed.";
-      this.failConnection(
-        info?.superseded
-          ? new Error(message, { cause: new PairedRuntimeSupersededError() })
-          : new Error(message),
-      );
+      const error = info?.superseded
+        ? new Error(message, { cause: new PairedRuntimeSupersededError() })
+        : new Error(message);
+      this.failConnection(info?.closeCode != null ? Object.assign(error, { closeCode: info.closeCode }) : error);
     });
   }
 

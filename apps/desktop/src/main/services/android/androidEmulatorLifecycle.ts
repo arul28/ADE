@@ -152,11 +152,12 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
 
   const startLocked = async (state: LaneState, options: { force?: boolean } = {}): Promise<AndroidLaneDeviceStatus> => {
     const laneId = state.laneId;
+    // The machine first: a lane without a device on a machine that can't run one needs the machine's answer.
+    const ready = await requireSdk({ emulator: true });
     const device = deps.laneDevices.get(laneId);
     if (!device) {
       throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", "This lane has no Android device. Create or attach one first.");
     }
-    const ready = await requireSdk({ emulator: true });
     if (!ready.sdk.acceleration.usable) {
       throw new AndroidEmulatorFailure(
         "ANDROID_NO_ACCELERATION",

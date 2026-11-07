@@ -98,3 +98,71 @@ export async function findOnOtherMachines<T>(
     onWaitChange(false);
   }
 }
+
+/** How long a chat that just moved to another machine is waited on before the window gives up following it. */
+const FOLLOW_MOVED_CHAT_MS = 60_000;
+
+type CrossMachineLanes = ReturnType<typeof rootAppStoreApi.getState>["crossMachineLanesByMachineId"];
+
+function unionListsSession(machines: CrossMachineLanes, sessionId: string): boolean {
+  return Object.values(machines ?? {}).some((machine) => machine.sessions.some((session) => session.id === sessionId));
+}
+
+/**
+ * Connects this window to the account machine `machineKey`, so the union
+ * starts reading it. A machine already connected is left alone, and a saved
+ * one connects with its saved pairing: pairing again replaces the live
+ * connection on that machine. Only a machine this window never saved is
+ * paired. Best effort: this computer's own key, or a failure, only logs.
+ */
+async function connectAccountMachine(machineKey: string): Promise<void> {
+  const sameKey = (key: string | null | undefined) => key?.trim().toLowerCase() === machineKey.toLowerCase();
+  try {
+    const local = (await window.ade.account.getLocalMachineIdentity?.())?.machineKey ?? null;
+    if (sameKey(local)) return;
+    const runtime = window.ade.remoteRuntime;
+    const live = (await runtime.getConnectionSnapshot()).connections
+      .find((connection) => sameKey(connection.target.pairedMachine?.machineKey));
+    if (live && (live.state === "connected" || live.state === "connecting")) return;
+    const saved = live?.target ?? (await runtime.listTargets()).find((target) => sameKey(target.pairedMachine?.machineKey));
+    const targetId = saved?.id ?? (await window.ade.account.pairMachine(machineKey)).targetId;
+    await runtime.connect(targetId);
+  } catch (error) {
+    console.warn("[otherMachineNavigation] could not connect the machine the chat moved to", error);
+  }
+}
+
+/**
+ * Call `open` once another machine lists the chat. A chat that just moved
+ * there is listed after the union's next read of that machine, which can be
+ * well past {@link OTHER_MACHINES_LOOKUP_MS}. The union reads only connected
+ * machines, so a `machineKey` that is not listed yet is paired and connected
+ * first (a cloud machine made for the move is new to this window). Gives up
+ * after a minute. Returns a cancel.
+ */
+export function openWhenOtherMachineListsSession(sessionId: string, open: () => void, machineKey?: string | null): () => void {
+  let done = false;
+  let unsubscribe: (() => void) | null = null;
+  // The store changes on every chat event; only a new machine list is read.
+  let seen: CrossMachineLanes | undefined;
+  const stop = () => {
+    done = true;
+    window.clearTimeout(timer);
+    unsubscribe?.();
+  };
+  const check = () => {
+    if (done) return;
+    const machines = rootAppStoreApi.getState().crossMachineLanesByMachineId;
+    if (machines === seen) return;
+    seen = machines;
+    if (!unionListsSession(machines, sessionId)) return;
+    stop();
+    open();
+  };
+  const timer = window.setTimeout(stop, FOLLOW_MOVED_CHAT_MS);
+  unsubscribe = rootAppStoreApi.subscribe(check);
+  check();
+  const key = machineKey?.trim();
+  if (!done && key) void connectAccountMachine(key);
+  return stop;
+}

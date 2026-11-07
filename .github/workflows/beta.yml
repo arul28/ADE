@@ -6,8 +6,9 @@ run-name: ${{ inputs.preview_ref && format('Beta preview {0}', inputs.preview_re
 # Builds ADE's Beta track from main. See docs/plans/beta-track.md for the
 # decisions and contracts this implements.
 #
-# Every half hour it looks for the newest main commit with a green ci-pass
-# that is newer than the last beta, and, at most once every 3 hours, builds it
+# When main's CI finishes, and every half hour, it looks for the newest main
+# commit with a green ci-pass that is newer than the last beta (waiting while
+# a newer commit's CI still runs), and, at most once every 3 hours, builds it
 # as vX.Y.Z-beta.N (X.Y.Z = latest stable + one patch). The build is the
 # stable release build (release-core.yml), stamped as a beta: same app id and
 # name, orange icon, updater manifests still named latest-mac.yml/latest.yml.
@@ -30,6 +31,13 @@ run-name: ${{ inputs.preview_ref && format('Beta preview {0}', inputs.preview_re
 # dispatched them and leave the issue alone.
 
 on:
+  # Main's CI finishing starts a run at once, so a green commit does not wait
+  # for the next half-hour tick. The resolve job ignores CI runs that are not
+  # a successful push to this repository's main.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   # The real timer is the ade-github-webhook-relay Worker's cron, which
   # dispatches this workflow at :17 and :47 (apps/webhook-relay/src/betaTimer.ts).
   # GitHub's schedule ran hours late for this repo and dropped the ticks it
@@ -67,6 +75,18 @@ concurrency:
 
 jobs:
   resolve:
+    # A CI run that failed, or that is not a push to this repository's main (a
+    # fork's branch can be named main), has no new green commit to offer.
+    if: >-
+      ${{
+        github.event_name != 'workflow_run'
+        || (
+          github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.event == 'push'
+          && github.event.workflow_run.head_branch == 'main'
+          && github.event.workflow_run.head_repository.full_name == github.repository
+        )
+      }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

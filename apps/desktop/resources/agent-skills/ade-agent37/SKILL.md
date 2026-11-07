@@ -74,7 +74,28 @@ These ask the person in your chat first: `create`, `resize`, `copy`, `move`,
 - **Too small** (builds swap, tests time out): offer `resize` to the next size.
   It restarts the machine, so wait for running chats to finish.
 - **Needs Docker or Android**: a box can't; offer `move --to vm` (keeps every
-  repo, lane and chat; Docker data and running processes don't move).
+  repo, lane and chat; Docker data and running processes don't move). From a
+  chat that runs on that box, `move` refuses (it would stop your own chat):
+  see the next section.
+
+## Your chat runs on a box and needs a VM
+
+`ade android start` on a box says why in plain words, with the price. Tell the
+person that, then, within their limits:
+
+1. `ade agent37 create --kind vm --shape <the size the message names> --name
+   "<name>"`: 4x8, or the box's own size when the box is bigger. ADE asks the
+   person, or answers for them in full-auto with their limits. The VM joins
+   on its own.
+2. `ade chat handoff "$ADE_CHAT_SESSION_ID" --machine "<name>" --fork
+   --include-changes --clone --when-turn-ends --note "<the task to carry on
+   with>. Then offer to delete the box <box name>; it bills while awake and
+   sleeps when idle."` The move starts when your turn ends.
+3. End your turn. The new chat on the VM has the whole history and carries on
+   with the note; the person's window follows it there. This chat shows
+   **Continues on <name>**.
+
+The box stays as it is. Delete it only when the person says yes in the new chat.
 - **A fresh machine for a lane**: `copy` a warm machine of the project (its
   dependencies are already installed), or `ade chat create --machine
   agent37:ready` when the project keeps one ready.
@@ -94,7 +115,8 @@ approve it joining, and the command waits up to 10 minutes for that.
 - Never ask for the Agent 37 key or print it. If Agent 37 isn't connected,
   `ade integrations connect agent37 --reason "…"` shows the person a card.
 - Never sign Claude or another provider in on a cloud machine for the person;
-  they do that themselves. One sign-in covers every new machine: **Claude on
-  your cloud machines** on the Agent 37 page (ade://settings/integrations.agent37).
-  Machines made before it keep what they had.
+  they do that themselves. One sign-in covers every new machine: **Sign-ins
+  for your cloud machines** on the Agent 37 page
+  (ade://settings/integrations.agent37-sign-ins). Machines made before it keep
+  what they had. You cannot save these sign-ins: ADE refuses an agent.
 - Don't delete a machine you didn't make unless the person asked for that one.

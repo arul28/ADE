@@ -360,6 +360,13 @@ const ANDROID_ERROR_HINTS: Record<AndroidErrorCode, string> = {
   ANDROID_TESTS_RUNNING: "hint: this lane's instrumentation tests already run. Wait for that run to finish, then try again.",
 };
 
+/** An Agent 37 box has no KVM: the agent moves the chat to a VM, within the owner's agent limits. */
+const AGENT37_BOX_ANDROID_HINT =
+  "hint: tell the user the message above in plain words. To move: `ade agent37 create --kind vm --shape <the size the message names> --name <name>` "
+  + "(ADE asks the user or refuses when the agent limits say so), then "
+  + "`ade chat handoff \"$ADE_CHAT_SESSION_ID\" --machine <name> --fork --include-changes --clone --when-turn-ends --note \"<the task, then offer to delete the box>\"`. "
+  + "The `ade-agent37` skill has the steps.";
+
 const ANDROID_ERROR_HINT_ENTRIES = Object.entries(ANDROID_ERROR_HINTS) as Array<[AndroidErrorCode, string]>;
 
 /**
@@ -388,6 +395,7 @@ export function androidEmulatorErrorHint(message: string): string | null {
       : "Only the user installs the Android SDK and accepts Google's licences, in the ADE desktop app: "
         + "the setup card in the Android tool, or Settings › Android devices. Ask the user.";
   }
+  if (message.includes("ANDROID_NO_ACCELERATION:") && message.includes("Agent 37 box")) return AGENT37_BOX_ANDROID_HINT;
   return ANDROID_ERROR_HINT_ENTRIES.find(([code]) => message.includes(`${code}:`))?.[1] ?? null;
 }
 

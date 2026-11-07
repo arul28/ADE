@@ -11,6 +11,7 @@ import type {
   AndroidSdkStatus,
 } from "../../../shared/types/androidEmulator";
 import { getErrorMessage, sleep } from "../shared/utils";
+import { agent37AndroidNeedsVmMessage, agent37ShapeForResources } from "../../../shared/agent37";
 import { listAndroidAvds, readAdeAvdLaneId, readAndroidAvd, sameAvdName } from "./androidAvds";
 import { createAndroidInspect } from "./androidInspect";
 import {
@@ -203,7 +204,16 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   /** The SDK with adb and the emulator, or the refusal that says what is missing. */
   const requireSdk = async (needs: { emulator: boolean }): Promise<ReadyAndroidSdk> => {
     if (unsupportedReason !== null) throw new AndroidEmulatorFailure("ANDROID_SDK_NOT_FOUND", unsupportedReason);
-    return requireAndroidSdkTools(await readSdk(), platform, needs);
+    const ready = requireAndroidSdkTools(await readSdk(), platform, needs);
+    // An Agent 37 box never has KVM. Refuse its first emulator step (making a
+    // device, or a start) with what a VM costs, not "turn on KVM".
+    if (needs.emulator && !ready.sdk.acceleration.usable && process.env.AGENT37_INSTANCE_ID?.trim()) {
+      throw new AndroidEmulatorFailure(
+        "ANDROID_NO_ACCELERATION",
+        agent37AndroidNeedsVmMessage(agent37ShapeForResources(os.cpus().length, os.totalmem())),
+      );
+    }
+    return ready;
   };
 
   /* ---------- running emulators ---------- */

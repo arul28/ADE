@@ -12424,6 +12424,19 @@ export function registerIpc({
   // Agent37: the account-wide key and new machines made on it (no pin; see the module).
   registerAgent37Ipc({
     vaultBridge: accountVaultBridge,
+    brainAction: async (action, actionArgs) => {
+      const pool = localRuntimeConnectionPool;
+      const rootPath = bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []) ?? getCtx().project?.rootPath ?? null;
+      if (!pool || !rootPath) {
+        throw new AdeExpectedError("ADE's background service isn't running on this computer yet. Open a project, then try again.", "environment");
+      }
+      const response = await pool.callActionForRoot(rootPath, {
+        domain: "agent37",
+        action,
+        ...(actionArgs ? { args: actionArgs } : {}),
+      });
+      return response.result;
+    },
     listAccountMachines: () => accountBridge.listMachines(),
     renameMachine: (machineKey, name) => accountBridge.renameMachine(machineKey, name),
     removeAccountMachine: (machineKey) => accountBridge.removeMachine(machineKey),

@@ -1476,6 +1476,9 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// link pills in the composer, and a sent bubble naming `[Image #1]`. See
   /// `WorkComposerPillsPreviewHost`.
   case composerPills = "composer-pills"
+  /// The real chat with a model tag in the draft and a seeded model catalog,
+  /// so the `@` menu's Models section and the tag's part editor can be driven.
+  case composerModelChips = "composer-model-chips"
   /// An answer that cites proof inline and as a before/after pair.
   case proofAnswer = "proof-answer"
   /// The real Work tab list seeded with lanes, subagents, CLI rows and PR
@@ -1751,6 +1754,8 @@ struct ADEPreviewScreenHost: View {
       WorkConnectivityBannerPreviewHost()
     case .composerPills:
       WorkComposerPillsPreviewHost()
+    case .composerModelChips:
+      WorkComposerModelChipsPreviewHost()
     case .workList:
       WorkListPreviewHost()
     case .newChat:
@@ -1924,6 +1929,115 @@ private struct WorkModelPickerPreviewHost: View {
       )
       .environmentObject(WorkPreviewData.syncService)
     }
+  }
+}
+
+/// Seeds the model catalog the `@` menu and model tags read, plus a draft
+/// holding one model tag, then mounts the real chat.
+private struct WorkComposerModelChipsPreviewHost: View {
+  @State private var seeded = false
+
+  var body: some View {
+    Group {
+      if seeded {
+        NavigationStack {
+          workPreviewChatSessionView(transcript: WorkPreviewData.transcript)
+        }
+        .environmentObject(WorkPreviewData.syncService)
+        .environmentObject(WorkPreviewData.dictationController)
+      } else {
+        ADEColor.surfaceBackground.ignoresSafeArea()
+      }
+    }
+    .task {
+      WorkComposerModelChipsPreviewData.seed()
+      seeded = true
+    }
+  }
+}
+
+@MainActor
+private enum WorkComposerModelChipsPreviewData {
+  private static func model(
+    _ id: String,
+    _ name: String,
+    group: String,
+    provider: String,
+    family: String,
+    efforts: [String],
+    defaultEffort: String?
+  ) -> AgentChatModelCatalogModel {
+    AgentChatModelCatalogModel(
+      id: id,
+      runtimeModelId: id,
+      provider: group,
+      providerKey: provider,
+      groupKey: group,
+      displayName: name,
+      description: nil,
+      isDefault: false,
+      reasoningEfforts: efforts.map { AgentChatModelReasoningEffort(effort: $0, description: $0) },
+      defaultReasoningEffort: defaultEffort,
+      serviceTiers: nil,
+      maxThinkingTokens: nil,
+      modelId: id,
+      family: family,
+      supportsReasoning: !efforts.isEmpty,
+      supportsTools: true,
+      color: nil,
+      isAvailable: true,
+      connected: true,
+      requiresConfiguration: false,
+      sourceRuntime: nil,
+      providerId: provider,
+      providerName: nil,
+      stale: false
+    )
+  }
+
+  private static func group(_ key: String, _ name: String, provider: String, _ models: [AgentChatModelCatalogModel]) -> AgentChatModelCatalogGroup {
+    AgentChatModelCatalogGroup(
+      key: key,
+      displayName: name,
+      providers: [
+        AgentChatModelCatalogProvider(
+          key: provider,
+          displayName: name,
+          badgeColor: "#888888",
+          modelCount: models.count,
+          subsections: [AgentChatModelCatalogSubsection(key: provider, label: name, models: models)]
+        )
+      ]
+    )
+  }
+
+  static func seed() {
+    let claudeTiers = ["low", "medium", "high", "xhigh", "max", "ultracode"]
+    let catalog = AgentChatModelCatalog(
+      groups: [
+        group("claude", "Claude", provider: "anthropic", [
+          model("claude-opus-5-5", "Claude Opus 5.5", group: "claude", provider: "anthropic", family: "anthropic", efforts: claudeTiers, defaultEffort: "medium"),
+          model("claude-sonnet-5-5", "Claude Sonnet 5.5", group: "claude", provider: "anthropic", family: "anthropic", efforts: claudeTiers, defaultEffort: "medium"),
+          model("claude-fable-5-1", "Claude Fable 5.1", group: "claude", provider: "anthropic", family: "anthropic", efforts: claudeTiers, defaultEffort: "high"),
+          model("claude-haiku-5-5", "Claude Haiku 5.5", group: "claude", provider: "anthropic", family: "anthropic", efforts: ["low", "medium", "high"], defaultEffort: "low"),
+          model("claude-opus-5", "Claude Opus 5", group: "claude", provider: "anthropic", family: "anthropic", efforts: claudeTiers, defaultEffort: "medium"),
+        ]),
+        group("codex", "Codex", provider: "openai", [
+          model("gpt-5.5-codex", "GPT-5.5 Codex", group: "codex", provider: "openai", family: "openai", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "medium"),
+        ]),
+        group("opencode", "OpenCode", provider: "opencode-go", [
+          model("opencode/opencode-go/deepseek-v4.1-flash", "DeepSeek V4.1 Flash", group: "opencode", provider: "opencode-go", family: "deepseek", efforts: [], defaultEffort: nil),
+        ]),
+      ],
+      fetchedAt: "2026-11-06T00:00:00.000Z",
+      stale: false
+    )
+    WorkModelMentionDirectory.shared.record(catalog: catalog)
+    let key = WorkComposerDraftStore.chatKey(sessionId: WorkPreviewData.terminalSession.id)
+    WorkComposerDraftStore.save(
+      "Let's do just 1 for now, including group c. U can use @model:claude-opus-5-5?effort=medium&perm=default ",
+      for: key
+    )
   }
 }
 

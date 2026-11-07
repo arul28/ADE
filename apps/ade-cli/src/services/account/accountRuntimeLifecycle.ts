@@ -63,7 +63,7 @@ export type AccountRuntimeLifecycleOptions = {
 };
 
 /** Adapt the headless machine-local vault to the bridge shared with desktop. */
-function createHeadlessAccountVaultBridge(
+export function createHeadlessAccountVaultBridge(
   getStore: () => AccountVaultStore | null,
 ): AccountVaultBridge {
   const { unavailable, rejected } = createAccountStoreResultHelpers({

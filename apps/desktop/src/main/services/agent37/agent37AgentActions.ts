@@ -180,7 +180,9 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
   /**
    * Asks before spending or deleting. Resolves when it may go ahead, with what
    * to call once a new machine really exists (it counts toward an unattended
-   * agent's daily limit then, so a make that failed costs no slot); throws
+   * agent's daily limit then, so a make that failed costs no slot) and whether
+   * the yes came from what the person lets unattended agents do (a full-auto
+   * chat or an automation, within the cap and the agent limits); throws
    * `Agent37Declined` (with why) when not.
    */
   const approve = async (
@@ -201,8 +203,8 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       /** The size it picks (make, copy, move, resize): within the largest allowed. */
       shape?: Agent37ShapeId | null;
     },
-  ): Promise<() => void> => {
-    const nothing = () => undefined;
+  ): Promise<{ counted: () => void; unattended: boolean }> => {
+    const nothing = { counted: () => undefined, unattended: false };
     if (approval.by === "person") return nothing;
     const chatSessionId = approval.chatSessionId;
     if (!chatSessionId || !deps.approvals) {
@@ -245,7 +247,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         }
       }
       approvals.notice(chatSessionId, `ADE approved "${card.title}" for ${where}, within what you let agents spend.`);
-      return card.newMachine ? countMadeHere : nothing;
+      return { counted: card.newMachine ? countMadeHere : () => undefined, unattended: true };
     }
     let response: Awaited<ReturnType<Agent37ChatApprovals["requestChatInput"]>>;
     try {
@@ -360,7 +362,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       await capCheck();
       if (cannotMake()) throw new Error(NO_DESKTOP);
       const approval = readApproval(args);
-      const madeIt = await approve(approval, {
+      const yes = await approve(approval, {
         action: "spend",
         title: `Make "${name}" on Agent 37`,
         body: `A ${kind === "vm" ? "VM" : "box"} with ${shape.cpu} vCPU and ${shape.memoryGb} GB, about ${formatAgent37HourlyPrice(agent37HourlyUsd(kind, shape))} while awake. It sleeps when idle and then bills only its disk.`,
@@ -368,8 +370,8 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         newMachine: true,
         shape: shapeId,
       });
-      const made = await make(approval, { kind: "create", machine: { kind, shape: shapeId, name }, madeByChat: madeByChat(approval) }, args.background === true);
-      madeIt();
+      const made = await make(approval, { kind: "create", machine: { kind, shape: shapeId, name }, madeByChat: madeByChat(approval), selfApprove: yes.unattended }, args.background === true);
+      yes.counted();
       return made;
     },
 
@@ -410,7 +412,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       if (cannotMake()) throw new Error(NO_DESKTOP);
       const rate = box.runningHourlyUsd != null ? formatAgent37HourlyPrice(box.runningHourlyUsd) : null;
       const approval = readApproval(args);
-      const madeIt = await approve(approval, {
+      const yes = await approve(approval, {
         action: "spend",
         title: `Copy "${box.name ?? box.instanceId}" into a new machine`,
         body: `"${name}" gets the same files (repos, lanes, installed dependencies) and signs in as a new machine${rate ? `, about ${rate} while awake` : ""}. A big disk takes a few minutes to copy.`,
@@ -418,8 +420,8 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         newMachine: true,
         shape: shapeId ?? box.shapeId,
       });
-      const made = await make(approval, { kind: "copy", instanceId: box.instanceId, name, shape: shapeId, madeByChat: madeByChat(approval) }, args.background === true);
-      madeIt();
+      const made = await make(approval, { kind: "copy", instanceId: box.instanceId, name, shape: shapeId, madeByChat: madeByChat(approval), selfApprove: yes.unattended }, args.background === true);
+      yes.counted();
       return made;
     },
 
@@ -428,12 +430,17 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       const { box } = await resolveMachine(text(args, "machine"));
       const to = text(args, "to") as Agent37MachineKind | null;
       if (!to || !isAgent37MachineKind(to)) throw new Error("Move it to a box or a VM (--to box|vm).");
+      // A move deletes the machine it runs from: the chat asking for it, and
+      // this brain, would stop halfway, with the new machine billing.
+      if (box.instanceId === process.env.AGENT37_INSTANCE_ID?.trim()) {
+        throw new Error(`"${box.name ?? box.instanceId}" is the machine this runs on, so it can't move itself. Make the new machine (ade agent37 create --kind ${to}), then hand this chat to it: ade chat handoff "$ADE_CHAT_SESSION_ID" --machine <new machine> --fork --include-changes --clone --when-turn-ends --note "<the task>". This machine stays and sleeps when idle; offer to delete it from the new chat.`);
+      }
       const shapeId = shapeArg(args);
       await capCheck();
       if (cannotMake()) throw new Error(NO_DESKTOP);
       const name = box.name ?? box.instanceId;
       const approval = readApproval(args);
-      const madeIt = await approve(approval, {
+      const yes = await approve(approval, {
         action: "delete",
         title: `Move "${name}" to a ${to === "vm" ? "VM" : "box"}`,
         body: `ADE makes a new ${to === "vm" ? "VM" : "box"}, copies every repo, lane and chat on "${name}" into it, then deletes "${name}". Running processes stop${box.type === "vm" ? ", and Docker images and volumes stay behind" : ""}.`,
@@ -443,8 +450,8 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         madeByThisChat: approval.by === "agent" && approval.chatSessionId != null
           && (await deps.machines.instanceMetadata(box.instanceId).catch(() => null))?.[AGENT37_MADE_BY_CHAT_METADATA] === approval.chatSessionId,
       });
-      const made = await make(approval, { kind: "move", instanceId: box.instanceId, machineKey: box.machineKey, to, shape: shapeId, madeByChat: madeByChat(approval) }, args.background === true);
-      madeIt();
+      const made = await make(approval, { kind: "move", instanceId: box.instanceId, machineKey: box.machineKey, to, shape: shapeId, madeByChat: madeByChat(approval), selfApprove: yes.unattended }, args.background === true);
+      yes.counted();
       return made;
     },
 
