@@ -159,7 +159,11 @@ export function AndroidDevicePane({
   const pinKey = runtimePin?.key ?? null;
   const bound = useAppStore((state) => state.projectBinding);
   // Where the lane's files live: a remote machine's log path cannot be opened here.
-  const remoteMachine = effectiveRuntimeBinding(runtimePin, bound)?.kind === "remote";
+  const binding = effectiveRuntimeBinding(runtimePin, bound);
+  const remoteMachine = binding?.kind === "remote";
+  // A lane on a project tab bound to another machine has no pin, so the
+  // caller passes no name: the tab's binding names the machine.
+  const remoteMachineName = machineName ?? (binding?.kind === "remote" ? binding.runtimeName : null);
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [bodyWidth, setBodyWidth] = useState(720);
@@ -555,13 +559,13 @@ export function AndroidDevicePane({
       showToast({
         id: "android-log",
         tone: "info",
-        title: machineName ? `The log is on ${machineName}` : "The log is on another machine",
+        title: remoteMachineName ? `The log is on ${remoteMachineName}` : "The log is on another machine",
         message: `Its path is copied: ${path}`,
       });
       return;
     }
     void window.ade?.app?.openPath?.(path).catch((caught: unknown) => setError(describeAndroidError(caught)));
-  }, [machineName, remoteMachine]);
+  }, [remoteMachineName, remoteMachine]);
 
   const pressKey = useCallback((key: AndroidHardwareKey) => input.pressKey(key), [input]);
 
@@ -569,7 +573,7 @@ export function AndroidDevicePane({
 
   const deviceName = androidLaneDeviceName(lane);
   const deviceSpec = lane?.avd ? androidAvdSpecLine(lane.avd, inventory?.profiles ?? []) : null;
-  const floatOverChat = useAndroidPaneFloat({ lane, laneId, sessionId, machineName, runtimePinRef });
+  const floatOverChat = useAndroidPaneFloat({ lane, laneId, sessionId, machineName: remoteMachineName, runtimePinRef });
   const accel = status?.sdk.acceleration ?? null;
 
   /* ── P1 look: the body, the colour, boot on the model, renders ─────────── */
@@ -726,7 +730,7 @@ export function AndroidDevicePane({
             <AndroidSetupCard
               sdk={status.sdk}
               pin={runtimePin}
-              machineName={machineName}
+              machineName={remoteMachineName}
               remoteMachine={remoteMachine}
               refreshing={refreshing}
               onRefresh={refreshAll}
@@ -775,7 +779,7 @@ export function AndroidDevicePane({
           <AndroidSetupCard
             sdk={status.sdk}
             pin={runtimePin}
-            machineName={machineName}
+            machineName={remoteMachineName}
             remoteMachine={remoteMachine}
             refreshing={refreshing}
             onRefresh={refreshAll}
@@ -802,7 +806,7 @@ export function AndroidDevicePane({
             onDelete={deleteAvd}
             onRefresh={refreshAll}
             playing={!hidden}
-            systemImages={<AndroidSystemImagesSection pin={runtimePin} machineName={machineName} />}
+            systemImages={<AndroidSystemImagesSection pin={runtimePin} machineName={remoteMachineName} />}
           />
         );
       case "stopped":
@@ -931,7 +935,7 @@ export function AndroidDevicePane({
                   fps={stream.fps}
                   bitrateKbps={stream.bitrateKbps}
                   laneName={laneName}
-                  machineName={machineName}
+                  machineName={remoteMachineName}
                 />
               )}
               <AndroidRecordingPill recording={recording} />
@@ -963,7 +967,7 @@ export function AndroidDevicePane({
                 chatSessionId={sessionId}
                 visible={toolsOpen && !hidden}
                 onClose={() => setToolsOpen(false)}
-                remoteMachineName={remoteMachine ? machineName : null}
+                remoteMachineName={remoteMachine ? remoteMachineName : null}
                 lanePackages={lane?.device?.adeInstalledPackages}
                 onInsertDraft={onInsertDraft}
               />

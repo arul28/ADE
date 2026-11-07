@@ -26,6 +26,7 @@ import type { DeviceOrientation } from "../../../shared/types/deviceOrientation"
 import { assertPackageName } from "./androidApps";
 import { ROTATION_PROBE, runDeviceScript, runDeviceShell, runEmulatorConsole, type BootedDevice } from "./androidDeviceShell";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
+import { createAndroidLaneQueue } from "./androidLaneQueue";
 
 /*
  * The settings the Tools drawer shows and changes: text and display size,
@@ -397,6 +398,8 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
 
   /** The status bar each lane asked for, to apply again after the screen re-lays out. */
   const statusBars = new Map<string, ReturnType<typeof readStatusBar>>();
+  /** Set, clear and refresh of one lane's bar run in order, so the newest request is the last one sent. */
+  const statusBarQueue = createAndroidLaneQueue();
 
   /*
    * One accessibility switch. Grayscale and color correction share the
@@ -502,13 +505,13 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
    * entering it again does. Only while the override is still on: a person may
    * have turned demo mode off on the device.
    */
-  const refreshStatusBar = async (laneId: string): Promise<void> => {
+  const refreshStatusBar = (laneId: string): Promise<void> => statusBarQueue(laneId, async () => {
     const bar = statusBars.get(laneId);
     if (!bar) return;
     const booted = await deps.requireBooted(laneId);
     const commands = [demo("exit"), ...statusBarCommands(bar)].join(" && ");
     await apply(booted, [`if [ "$(settings get global sysui_tuner_demo_on)" = 1 ]; then ${commands}; fi`], "the status bar");
-  };
+  });
 
   const statusBarState = async (booted: BootedDevice, laneId: string, time: string | null): Promise<AndroidStatusBarResult> => {
     const text = (await shell(booted, "settings get global sysui_tuner_demo_on")).stdout.trim();
@@ -619,25 +622,29 @@ export function createAndroidDeviceSettings(deps: AndroidDeviceSettingsDeps) {
     async setStatusBar(args: AndroidStatusBarArgs) {
       const laneId = requireLaneId(args?.laneId);
       const bar = readStatusBar(args);
-      const booted = await deps.requireBooted(laneId);
-      await apply(booted, [
-        "settings put global sysui_demo_allowed 1",
-        // The tuner switch is what SystemUI reads for "in demo mode", and what the read reports.
-        "settings put global sysui_tuner_demo_on 1",
-        ...statusBarCommands(bar),
-      ], "the status bar");
-      statusBars.set(laneId, bar);
-      deps.onScreenChanged(laneId);
-      return statusBarState(booted, laneId, bar.time);
+      return statusBarQueue(laneId, async () => {
+        const booted = await deps.requireBooted(laneId);
+        await apply(booted, [
+          "settings put global sysui_demo_allowed 1",
+          // The tuner switch is what SystemUI reads for "in demo mode", and what the read reports.
+          "settings put global sysui_tuner_demo_on 1",
+          ...statusBarCommands(bar),
+        ], "the status bar");
+        statusBars.set(laneId, bar);
+        deps.onScreenChanged(laneId);
+        return statusBarState(booted, laneId, bar.time);
+      });
     },
 
     async clearStatusBar(args) {
       const laneId = requireLaneId(args?.laneId);
-      const booted = await deps.requireBooted(laneId);
-      await apply(booted, [demo("exit"), "settings put global sysui_tuner_demo_on 0"], "the status bar");
-      statusBars.delete(laneId);
-      deps.onScreenChanged(laneId);
-      return statusBarState(booted, laneId, null);
+      return statusBarQueue(laneId, async () => {
+        const booted = await deps.requireBooted(laneId);
+        await apply(booted, [demo("exit"), "settings put global sysui_tuner_demo_on 0"], "the status bar");
+        statusBars.delete(laneId);
+        deps.onScreenChanged(laneId);
+        return statusBarState(booted, laneId, null);
+      });
     },
 
     async setAppearance(args: AndroidAppearanceArgs) {
