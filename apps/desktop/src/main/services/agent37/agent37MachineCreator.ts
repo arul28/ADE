@@ -173,26 +173,26 @@ function startSignInCommand(kind: "login" | "reconnect", fresh = false): string 
   const command = kind === "login" ? "ade login --headless --max-wait 900" : "ade machines reconnect";
   const files = `$ADE_HOME/logs/agent37-${kind === "login" ? "sign-in" : "reconnect"}`;
   return [
-  `log="${files}.log"; pidf="${files}.pid"`,
-  'mkdir -p "$ADE_HOME/logs"',
-  // A fresh code: the running sign-in's code was already used.
-  ...(fresh ? [`if [ -f "$pidf" ] && grep -q ${kind} "/proc/$(cat "$pidf")/cmdline" 2>/dev/null; then kill "$(cat "$pidf")" 2>/dev/null; sleep 1; fi`] : []),
-  // A pid only counts while it is still that command: a copied disk (a fork)
-  // carries its source's pid file, and the number can belong to anything here.
-  `if ! { [ -f "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null && grep -q ${kind} "/proc/$(cat "$pidf")/cmdline" 2>/dev/null; }; then`,
-  '  : > "$log"',
-  `  nohup setsid ${command} > "$log" 2>&1 < /dev/null &`,
-  '  echo $! > "$pidf"',
-  "fi",
-  "i=0",
-  "while [ $i -lt 90 ]; do",
-  '  code=$(sed -n "s/.*enter code: *\\([A-Za-z0-9-]*\\).*/\\1/p" "$log" | head -n 1)',
-  '  if [ -n "$code" ]; then echo "ADE_USER_CODE=$code"; exit 0; fi',
-  '  if ! kill -0 "$(cat "$pidf")" 2>/dev/null; then break; fi',
-  "  sleep 1; i=$((i+1))",
-  "done",
-  'tail -n 5 "$log" >&2',
-  "exit 3",
+    `log="${files}.log"; pidf="${files}.pid"`,
+    'mkdir -p "$ADE_HOME/logs"',
+    // A fresh code: the running sign-in's code was already used.
+    ...(fresh ? [`if [ -f "$pidf" ] && grep -q ${kind} "/proc/$(cat "$pidf")/cmdline" 2>/dev/null; then kill "$(cat "$pidf")" 2>/dev/null; sleep 1; fi`] : []),
+    // A pid only counts while it is still that command: a copied disk (a fork)
+    // carries its source's pid file, and the number can belong to anything here.
+    `if ! { [ -f "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null && grep -q ${kind} "/proc/$(cat "$pidf")/cmdline" 2>/dev/null; }; then`,
+    '  : > "$log"',
+    `  nohup setsid ${command} > "$log" 2>&1 < /dev/null &`,
+    '  echo $! > "$pidf"',
+    "fi",
+    "i=0",
+    "while [ $i -lt 90 ]; do",
+    '  code=$(sed -n "s/.*enter code: *\\([A-Za-z0-9-]*\\).*/\\1/p" "$log" | head -n 1)',
+    '  if [ -n "$code" ]; then echo "ADE_USER_CODE=$code"; exit 0; fi',
+    '  if ! kill -0 "$(cat "$pidf")" 2>/dev/null; then break; fi',
+    "  sleep 1; i=$((i+1))",
+    "done",
+    'tail -n 5 "$log" >&2',
+    "exit 3",
   ].join("\n");
 }
 
@@ -219,6 +219,32 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
 export async function readAgent37BoxAuth(client: Agent37Client, instanceId: string, signal?: AbortSignal): Promise<Record<string, unknown> | null> {
   const result = await client.exec(instanceId, AUTH_STATUS_COMMAND, { timeoutMs: 40_000, signal }).catch(() => null);
   return result && result.exitCode === 0 ? parseJsonObject(result.stdout) : null;
+}
+
+/**
+ * The box's `ade auth status` once its brain answers, which takes a moment
+ * after a start or a wake. Throws past the deadline, or when Agent 37 itself
+ * gave up on the box (it will never answer).
+ */
+export async function waitForAgent37BoxAuth(
+  client: Agent37Client,
+  instanceId: string,
+  options: { signal?: AbortSignal; sleep: (ms: number) => Promise<void>; machine: string },
+): Promise<Record<string, unknown>> {
+  const { signal, machine } = options;
+  const deadline = Date.now() + BRAIN_READY_TIMEOUT_MS;
+  let auth = await readAgent37BoxAuth(client, instanceId, signal);
+  while (!auth) {
+    if (signal?.aborted) throw new Agent37CreateCancelled();
+    if (Date.now() > deadline) throw new Error(`ADE did not start on ${machine} in time.`);
+    const state = (await client.getInstance(instanceId).catch(() => null))?.status ?? null;
+    if (state === "failed" || state === "deleted") {
+      throw new Error(state === "failed" ? `Agent 37 couldn't start ${machine}.` : `Agent 37 deleted ${machine}.`);
+    }
+    await options.sleep(POLL_MS);
+    auth = await readAgent37BoxAuth(client, instanceId, signal);
+  }
+  return auth;
 }
 
 /** Starts a device sign-in on the box (see `startSignInCommand`) and returns its code, or null when none showed. */
@@ -442,7 +468,10 @@ export async function approveAgent37MachineSignIn(
   if (!deps.approveInWindow) {
     const headless = deps.approveHeadless;
     const selfApproved = Boolean(headless && args.requestId && deps.selfApproval)
-      && await deps.selfApproval!({ instanceId, requestId: args.requestId! }).catch(() => false);
+      && await deps.selfApproval!({ instanceId, requestId: args.requestId! }).catch((error: unknown) => {
+        logger.warn?.("agent37.self_approval_check_failed", { instanceId, requestId: args.requestId, error: errorText(error) });
+        return false;
+      });
     if (!headless || !selfApproved) return await handOff(userCode);
     progress("signing_in", `Approving ${name} with this machine's ADE sign-in…`, instanceId);
     try {
@@ -456,7 +485,10 @@ export async function approveAgent37MachineSignIn(
       logger.warn?.("agent37.self_approval_failed", { instanceId, requestId: args.requestId, error: errorText(error) });
       if (await readSignedIn()) return;
       // /device/approve claimed the first code, so the link needs a new one.
-      const fresh = await args.restartSignIn?.().catch(() => null);
+      const fresh = await args.restartSignIn?.().catch((restartError: unknown) => {
+        logger.warn?.("agent37.sign_in_restart_failed", { instanceId, error: errorText(restartError) });
+        return null;
+      });
       if (!fresh) throw error;
       return await handOff(fresh);
     }
@@ -668,19 +700,7 @@ export async function bringAgent37BoxIntoAde(
     checkCancelled();
     progress("waiting_for_brain", "Starting ADE on the new machine…", instance.id);
     const readAuth = () => readAgent37BoxAuth(client, instance.id, signal);
-    const brainDeadline = Date.now() + BRAIN_READY_TIMEOUT_MS;
-    let auth = await readAuth();
-    while (!auth) {
-      checkCancelled();
-      if (Date.now() > brainDeadline) throw new Error("ADE did not start on the new machine in time.");
-      // A box that Agent 37 itself gave up on will never answer.
-      const state = (await client.getInstance(instance.id).catch(() => null))?.status ?? null;
-      if (state === "failed" || state === "deleted") {
-        throw new Error(state === "failed" ? "Agent 37 couldn't start the new machine." : "The new machine was deleted on Agent 37.");
-      }
-      await sleep(POLL_MS);
-      auth = await readAuth();
-    }
+    const auth = await waitForAgent37BoxAuth(client, instance.id, { signal, sleep, machine: "the new machine" });
     checkCancelled();
 
     if (auth.signedIn !== true) {

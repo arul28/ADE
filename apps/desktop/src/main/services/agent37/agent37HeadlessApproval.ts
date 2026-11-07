@@ -76,13 +76,20 @@ function visibleChromeUserAgent(platform: NodeJS.Platform, version: string): str
   return `Mozilla/5.0 (${system}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version} Safari/537.36`;
 }
 
+const FALLBACK_CHROME_VERSION = "140.0.0.0";
+
 async function readChromiumVersion(binary: string): Promise<string> {
   return await new Promise((resolve) => {
     const child = spawn(binary, ["--version"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     let out = "";
+    // A binary that never answers must not hold the approval.
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      resolve(FALLBACK_CHROME_VERSION);
+    }, DEVTOOLS_WAIT_MS);
     child.stdout.on("data", (chunk: Buffer) => { out += chunk.toString("utf8"); });
-    child.on("error", () => resolve("140.0.0.0"));
-    child.on("close", () => resolve(/(\d+\.\d+\.\d+\.\d+)/.exec(out)?.[1] ?? "140.0.0.0"));
+    child.on("error", () => { clearTimeout(timer); resolve(FALLBACK_CHROME_VERSION); });
+    child.on("close", () => { clearTimeout(timer); resolve(/(\d+\.\d+\.\d+\.\d+)/.exec(out)?.[1] ?? FALLBACK_CHROME_VERSION); });
   });
 }
 

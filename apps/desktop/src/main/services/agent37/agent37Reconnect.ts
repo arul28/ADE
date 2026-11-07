@@ -12,15 +12,17 @@
  * main process with the account's Agent 37 key and takes no pin.
  */
 
-import type { Agent37CreateMachineResult, Agent37CreateProgress } from "../../../shared/agent37";
+import { agent37CapReachedMessage, type Agent37CreateMachineResult, type Agent37CreateProgress } from "../../../shared/agent37";
 import { getErrorMessage } from "../shared/utils";
 import {
   approveAgent37MachineSignIn,
   readAgent37BoxAuth,
   startAgent37BoxSignIn,
   waitForAgent37AccountRow,
-  type Agent37MachineCreatorDeps,
+  waitForAgent37BoxAuth,
 } from "./agent37MachineCreator";
+import type { Agent37MachineCreatorDeps } from "./agent37MachineCreator";
+import type { Agent37CopyDeps } from "./agent37MachineCopy";
 import { enableAgent37Sleep } from "./agent37Sleep";
 import { wakeThroughTransition } from "./agent37ReadyClaim";
 
@@ -30,7 +32,7 @@ function inAccount(auth: Record<string, unknown> | null): boolean {
 }
 
 export async function reconnectAgent37Machine(
-  deps: Agent37MachineCreatorDeps,
+  deps: Agent37MachineCreatorDeps & Pick<Agent37CopyDeps, "spending">,
   args: { instanceId: string; requestId: string },
   onProgress: (progress: Agent37CreateProgress) => void,
   options: { signal?: AbortSignal } = {},
@@ -45,13 +47,19 @@ export async function reconnectAgent37Machine(
   const client = await deps.client();
   const instance = await client.getInstance(args.instanceId);
   const name = instance.name ?? instance.id;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   if (instance.status !== "running") {
+    // A wake bills like any other: refused past the month's cap.
+    const month = await deps.spending?.().catch((error: unknown) => {
+      logger.warn?.("agent37.reconnect_spending_failed", { instanceId: instance.id, error: getErrorMessage(error) });
+      return null;
+    });
+    if (month?.capReached) throw new Error(agent37CapReachedMessage(month));
     progress("creating", `Waking ${name}…`, instance.id);
     await wakeThroughTransition(client, instance.id);
   }
   progress("waiting_for_brain", `Asking ADE on ${name}…`, instance.id);
-  const auth = await readAgent37BoxAuth(client, instance.id, signal);
-  if (!auth) throw new Error(`ADE on ${name} didn't answer. Try again in a minute.`);
+  const auth = await waitForAgent37BoxAuth(client, instance.id, { signal, sleep, machine: name });
   if (!inAccount(auth)) {
     progress("signing_in", `Signing ${name} back in to your account…`, instance.id);
     const started = await startAgent37BoxSignIn(client, instance.id, "reconnect", signal);

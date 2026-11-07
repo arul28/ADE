@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AGENT37_READY_WAKE_WAIT_MS, type Agent37Machine } from "../../../shared/agent37";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { ipcErrorMessage } from "../../lib/format";
+import { connectWithRetry } from "./connectWithRetry";
 import type { LaneMachineOption } from "../lanes/laneMachines";
 import type { DraftMachineOption } from "./DraftMachinePicker";
 
@@ -74,7 +75,7 @@ export function useDraftMachineSetup({
     let cancelled = false;
     void listMachines().then(
       (result) => { if (!cancelled) setAgent37Machines(result?.state === "ok" ? result.machines : []); },
-      () => undefined,
+      (error: unknown) => console.warn("[agent37] machine list for the picker failed", ipcErrorMessage(error)),
     );
     return () => {
       cancelled = true;
@@ -116,17 +117,12 @@ export function useDraftMachineSetup({
         // Not connected: connecting wakes an asleep Agent 37 machine first.
         setBusy({ targetId, name, phase: "waking" });
         onNotice({ message: `Waking ${name}…`, kind: "status" });
-        const startedAt = Date.now();
-        let connected = false;
-        let lastError: unknown = null;
-        while (stillWanted() && !connected && Date.now() - startedAt < AGENT37_READY_WAKE_WAIT_MS) {
-          try {
-            connected = Boolean(await window.ade.remoteRuntime.connect(targetId));
-          } catch (error) {
-            lastError = error;
-            await new Promise((resolve) => setTimeout(resolve, CONNECT_RETRY_MS));
-          }
-        }
+        const { value: connected, lastError } = await connectWithRetry({
+          connect: () => window.ade.remoteRuntime.connect(targetId),
+          stillWanted,
+          waitMs: AGENT37_READY_WAKE_WAIT_MS,
+          retryMs: CONNECT_RETRY_MS,
+        });
         if (!stillWanted()) return;
         if (!connected) {
           const reason = lastError ? ipcErrorMessage(lastError) : "";

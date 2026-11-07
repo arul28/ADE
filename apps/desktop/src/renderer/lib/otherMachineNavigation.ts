@@ -102,9 +102,10 @@ export async function findOnOtherMachines<T>(
 /** How long a chat that just moved to another machine is waited on before the window gives up following it. */
 const FOLLOW_MOVED_CHAT_MS = 60_000;
 
-function unionListsSession(sessionId: string): boolean {
-  const machines = rootAppStoreApi.getState().crossMachineLanesByMachineId ?? {};
-  return Object.values(machines).some((machine) => machine.sessions.some((session) => session.id === sessionId));
+type CrossMachineLanes = ReturnType<typeof rootAppStoreApi.getState>["crossMachineLanesByMachineId"];
+
+function unionListsSession(machines: CrossMachineLanes, sessionId: string): boolean {
+  return Object.values(machines ?? {}).some((machine) => machine.sessions.some((session) => session.id === sessionId));
 }
 
 /**
@@ -116,13 +117,19 @@ function unionListsSession(sessionId: string): boolean {
 export function openWhenOtherMachineListsSession(sessionId: string, open: () => void): () => void {
   let done = false;
   let unsubscribe: (() => void) | null = null;
+  // The store changes on every chat event; only a new machine list is read.
+  let seen: CrossMachineLanes | undefined;
   const stop = () => {
     done = true;
     window.clearTimeout(timer);
     unsubscribe?.();
   };
   const check = () => {
-    if (done || !unionListsSession(sessionId)) return;
+    if (done) return;
+    const machines = rootAppStoreApi.getState().crossMachineLanesByMachineId;
+    if (machines === seen) return;
+    seen = machines;
+    if (!unionListsSession(machines, sessionId)) return;
     stop();
     open();
   };

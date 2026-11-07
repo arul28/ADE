@@ -16602,6 +16602,9 @@ export function AgentChatPane({
         : selectedDraftMachineId;
   const handleDraftShelfMachineChange = useCallback((nextMachineId: string) => {
     cancelWorkDraftLaneRequest(workDraftProjectStateKey);
+    // A setup row starts its own attempt; any other pick ends the last one,
+    // so a clone or wake that finishes later can't replace this choice.
+    if (!draftSetupOwnsRow(nextMachineId)) abandonDraftMachineSetup();
     if (nextMachineId === AGENT37_READY_MACHINE_ID) {
       setCursorCloudMode(false);
       setDevinCloudMode(false);
@@ -16625,7 +16628,6 @@ export function AgentChatPane({
       chooseDraftSetupRow(nextMachineId);
       return;
     }
-    abandonDraftMachineSetup();
     if (nextMachineId === CURSOR_CLOUD_MACHINE_ID) {
       setError(null);
       setDevinCloudMode(false);

@@ -722,7 +722,7 @@ export function registerAgent37Ipc(args: {
     if (!isAgent37InstanceId(instanceId)) throw new Error("ADE doesn't know that box.");
     const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
     return startLongAction(event, requestId, async (signal, send) => {
-      const result = await reconnectAgent37Machine(machineCreatorDeps, { instanceId, requestId }, send, { signal });
+      const result = await reconnectAgent37Machine({ ...machineCreatorDeps, spending: () => machines.spending() }, { instanceId, requestId }, send, { signal });
       args.recordMachineAction?.("reconnect");
       return {
         message: result.machineKey ? `${result.name} is back in ADE.` : `${result.name} is signed in again. It shows up in a minute.`,

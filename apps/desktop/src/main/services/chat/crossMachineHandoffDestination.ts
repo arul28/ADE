@@ -44,7 +44,7 @@ import { nowIso, stableFingerprint } from "../shared/utils";
 import type { AdeDb } from "../state/kvDb";
 import type { ChatScheduledWorkScheduler } from "./chatScheduledWorkScheduler";
 import type { CrossMachineHandoffPersisted } from "./crossMachineHandoffOrchestrator";
-import { localMachineName, requireGitBranch, requireGitOutput, requireHandoffId } from "./crossMachineHandoffSource";
+import { requireGitBranch, requireGitOutput, requireHandoffId } from "./crossMachineHandoffSource";
 import { landHandoffGitBundle, validateHandoffGitBundle } from "./handoffGitBundle";
 
 /** The destination's own transaction for one accepted handoff, keyed by handoffId. */
@@ -691,6 +691,8 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
     capsule: AgentChatCrossMachineHandoffCapsule,
     lanePath: string,
     setupStatus: CrossMachineLaneImportRecord["setupStatus"],
+    /** This machine's name as the account lists it. */
+    machineName: string,
   ): string => {
     const setup = (() => {
       switch (setupStatus) {
@@ -710,7 +712,7 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
       ? "The original parent chat remains on the source machine. This chat arrived without a local parent link."
       : null;
     return [
-      `ADE moved this chat from ${capsule.source.machineName} to ${localMachineName("this machine")}.`,
+      `ADE moved this chat from ${capsule.source.machineName} to ${machineName}.`,
       `Its new worktree is ${lanePath}.`,
       "Processes from the source machine did not travel: dev apps, typechecks, terminals, background shells, and monitors must be started again here.",
       setup,

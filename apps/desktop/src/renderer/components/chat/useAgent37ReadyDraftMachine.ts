@@ -4,6 +4,7 @@ import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff"
 import { captureError } from "../../../shared/sentry/capture";
 import { ipcErrorMessage } from "../../lib/format";
 import type { DraftMachineOption } from "./DraftMachinePicker";
+import { connectWithRetry } from "./connectWithRetry";
 
 /** The picker row for this project's ready Agent 37 machine. */
 export const AGENT37_READY_MACHINE_ID = "__ade_agent37_ready__";
@@ -13,6 +14,12 @@ export const AGENT37_NEW_MACHINE_ID = "__ade_agent37_new__";
 export const AGENT37_CONNECT_ID = "__ade_agent37_connect__";
 
 const CONNECT_RETRY_MS = 1_500;
+
+/** Pairs this window with the account machine and connects; its target id once connected. */
+async function pairAndConnect(machineKey: string): Promise<string | null> {
+  const paired = await window.ade.account.pairMachine(machineKey);
+  return (await window.ade.remoteRuntime.connect(paired.targetId)) ? paired.targetId : null;
+}
 /** A connected machine shows up among the picker's machines within a moment; past this it isn't coming. */
 const SELECT_WAIT_MS = 20_000;
 
@@ -175,30 +182,26 @@ export function useAgent37ReadyDraftMachine({
    */
   const onNewMachineCreated = useCallback(async (result: Agent37CreateMachineResult) => {
     setCreating(false);
-    if (!result.machineKey) {
+    const machineKey = result.machineKey;
+    if (!machineKey) {
       onNotice({ message: `${result.name} is still starting. It shows under Your computers once it's ready.`, kind: "status" });
       return;
     }
     const attempt = ++attemptRef.current;
     const stillWanted = () => attemptRef.current === attempt;
-    const startedAt = Date.now();
     setWakingName(result.name);
     onNotice({ message: `${result.name} is signed in. Connecting…`, kind: "status" });
-    let lastError: unknown = null;
-    while (stillWanted() && Date.now() - startedAt < AGENT37_JOIN_WATCH_MS) {
-      try {
-        const paired = await window.ade.account.pairMachine(result.machineKey);
-        const connected = await window.ade.remoteRuntime.connect(paired.targetId);
-        if (connected && stillWanted()) {
-          setPendingTargetId(paired.targetId);
-          return;
-        }
-      } catch (error) {
-        lastError = error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, CONNECT_RETRY_MS * 2));
-    }
+    const { value: targetId, lastError } = await connectWithRetry({
+      connect: () => pairAndConnect(machineKey),
+      stillWanted,
+      waitMs: AGENT37_JOIN_WATCH_MS,
+      retryMs: CONNECT_RETRY_MS * 2,
+    });
     if (!stillWanted()) return;
+    if (targetId) {
+      setPendingTargetId(targetId);
+      return;
+    }
     setWakingName(null);
     const reason = lastError ? ipcErrorMessage(lastError) : "";
     onNotice({ message: `ADE made ${result.name} but couldn't connect to it yet${reason ? `: ${reason}` : "."} Connect it under Your computers.`, kind: "status" });
@@ -236,19 +239,15 @@ export function useAgent37ReadyDraftMachine({
       setWakingName(claim.name);
       onNotice({ message: `${claim.name} is awake. Connecting to its ADE…`, kind: "status" });
       // Its ADE reconnects a few seconds after the wake; until then a pair or connect fails.
-      let lastError: unknown = null;
-      while (stillWanted() && Date.now() - startedAt < AGENT37_READY_WAKE_WAIT_MS) {
-        try {
-          const paired = await window.ade.account.pairMachine(claim.machineKey);
-          const connected = await window.ade.remoteRuntime.connect(paired.targetId);
-          if (connected && stillWanted()) {
-            setPendingTargetId(paired.targetId);
-            return;
-          }
-        } catch (error) {
-          lastError = error;
-        }
-        await new Promise((resolve) => setTimeout(resolve, CONNECT_RETRY_MS));
+      const { value: targetId, lastError } = await connectWithRetry({
+        connect: () => pairAndConnect(claim.machineKey),
+        stillWanted,
+        waitMs: AGENT37_READY_WAKE_WAIT_MS - (Date.now() - startedAt),
+        retryMs: CONNECT_RETRY_MS,
+      });
+      if (targetId && stillWanted()) {
+        setPendingTargetId(targetId);
+        return;
       }
       if (stillWanted()) {
         const reason = lastError ? ipcErrorMessage(lastError) : "";
