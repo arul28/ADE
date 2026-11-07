@@ -20,6 +20,7 @@ const MAX_REQUEST_TIMEOUT_MS = 120_000;
 const DASHBOARD_TAG_PREFIX = "ade-dashboard:";
 const INSIGHT_TAG_PREFIX = "ade-insight:";
 const MANAGED_DESCRIPTION = "Managed by ADE's scripts/posthog/provision.mjs.";
+const INSIGHT_DESCRIPTION_MAX = 400;
 
 function usage() {
   process.stdout.write(
@@ -136,6 +137,10 @@ export function validateDashboardSpec(spec = dashboardSpec) {
       insightKeys.push(item.key);
       if (typeof item.description !== "string" || item.description.trim() === "") {
         fail(`Insight ${item.key} has no description.`);
+      }
+      // PostHog refuses a longer one with a 400, part way through a run.
+      if (item.description.length > INSIGHT_DESCRIPTION_MAX) {
+        fail(`Insight ${item.key} description is ${item.description.length} characters; PostHog allows ${INSIGHT_DESCRIPTION_MAX}.`);
       }
       if (!item.query || typeof item.query !== "object") fail(`Insight ${item.key} has no query.`);
 
