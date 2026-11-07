@@ -11,9 +11,7 @@
 import {
   AGENT37_DEFAULT_AGENT_LIMITS,
   AGENT37_MADE_BY_CHAT_METADATA,
-  AGENT37_READY_METADATA,
   isAgent37InstanceId,
-  readAgent37ReadyMachineState,
   agent37IdleHourlyUsd,
   agent37MachineLimitMessage,
   agent37MachineState,
@@ -34,6 +32,7 @@ import {
   type Agent37MonthSpend,
   type Agent37Resources,
 } from "../../../shared/agent37";
+import { AGENT37_READY_METADATA, readAgent37ReadyMachineState } from "../../../shared/agent37Ready";
 import { agent37UsageDay, Agent37Error, type Agent37Client, type Agent37Instance, type Agent37Usage } from "./agent37Client";
 import { deleteAgent37InstanceConfirmed } from "./agent37PendingCreates";
 import { agent37MonthSpentUsd, agent37SleepPolicyOf, setAgent37SleepAfter } from "./agent37Sleep";

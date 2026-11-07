@@ -44,10 +44,10 @@ import {
   type Agent37MachineActionResult,
   type Agent37MachineKind,
   type Agent37MachinesResult,
-  type Agent37ReadyProjectSettings,
   type Agent37ShapeId,
   type Agent37Spending,
 } from "../../../shared/agent37";
+import { type Agent37ReadyProjectSettings } from "../../../shared/agent37Ready";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import type { PermissionLevel } from "../../../shared/permissionLadder";
 import { getErrorMessage } from "../shared/utils";

@@ -36,7 +36,8 @@ import {
   type Agent37ShapeId,
   type Agent37Spending,
 } from "../../../shared/agent37";
-import { AGENT37_MADE_BY_CHAT_METADATA, AGENT37_READY_METADATA } from "../../../shared/agent37";
+import { AGENT37_MADE_BY_CHAT_METADATA } from "../../../shared/agent37";
+import { AGENT37_READY_METADATA } from "../../../shared/agent37Ready";
 import { getErrorMessage } from "../shared/utils";
 import { Agent37Error, type Agent37Client, type Agent37Instance, type Agent37Logger } from "./agent37Client";
 import {

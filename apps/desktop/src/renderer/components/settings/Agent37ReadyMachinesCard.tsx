@@ -2,22 +2,24 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowClockwise, CircleNotch, Info, Lightning, Moon } from "@phosphor-icons/react";
 import {
   AGENT37_KINDS,
-  AGENT37_READY_DEFAULT_SHAPE,
   AGENT37_SHAPES,
   agent37ChoiceBlocker,
   agent37HourlyUsd,
-  AGENT37_READY_STEPS,
   agent37ReadyIdleMonthlyUsd,
   agent37ShapeById,
   formatAgent37Usd,
-  type Agent37CloudSignInStatus,
   type Agent37MachineKind,
-  type Agent37ReadyProjectStatus,
-  type Agent37ReadyStatus,
-  type Agent37ReadyStep,
   type Agent37ShapeId,
   type Agent37Status,
 } from "../../../shared/agent37";
+import {
+  AGENT37_READY_DEFAULT_SHAPE,
+  AGENT37_READY_STEPS,
+  type Agent37ReadyProjectStatus,
+  type Agent37ReadyStatus,
+  type Agent37ReadyStep,
+} from "../../../shared/agent37Ready";
+import { type Agent37CloudSignInStatus } from "../../../shared/agent37CloudSignIns";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { useAppStore } from "../../state/appStore";
 import { originUrlForBinding } from "../lanes/laneMachines";

@@ -106,16 +106,20 @@ person is using.
 - `agent37ReadyActions.ts` — the `agent37` action domain on a brain
   (`ready_status`, `claim_ready`, `release_ready`) behind `ade agent37 ready`
   and `ade chat create --machine agent37:ready`.
-- `registerAgent37Ipc.ts` — the `ade.agent37.*` IPC handlers, the hidden
-  approval window, the template-build record store (account vault with a
-  per-computer fallback), and the startup check 20 s after boot.
+- `registerAgent37Ipc.ts` — the `ade.agent37.*` IPC handlers and the
+  startup check 20 s after boot. `agent37ApprovalWindow.ts` is the hidden
+  approval window. `agent37TemplateRecords.ts` is the template-build record
+  store (account vault with a per-computer fallback) and the template files
+  this copy of ADE installs.
 - `agent37VaultItems.ts` — the account vault items Agent 37 keeps, and the
   part of the vault a brain opens with no project (`accountVault.call`).
 - `apps/ade-cli/src/services/account/machineAccountActions.ts` — the brain's
   `agent37.call` and `accountVault.call`: the account-level actions with no
   project open, and who may call them (see "With no project open").
 - `apps/desktop/src/shared/agent37.ts` — shapes, prices, kinds, status and
-  progress types shared with the renderer.
+  progress types shared with the renderer. `agent37Ready.ts` beside it holds
+  the ready-machine contract, and `agent37CloudSignIns.ts` the sign-ins new
+  machines start with.
 - `apps/desktop/src/renderer/components/settings/Agent37Section.tsx` — the
   Agent 37 page under Settings › Integrations (key, wallet, template state,
   Retry, Disconnect).
@@ -303,7 +307,7 @@ keep it until they are deleted.
 Qwen Code, Kimi Code and Antigravity have no key a machine can read from its
 env, so the card says to sign in on the machine. The list is
 `AGENT37_CLOUD_SIGN_INS` and `AGENT37_CLOUD_SIGN_IN_GAPS` in
-`shared/agent37.ts`.
+`shared/agent37CloudSignIns.ts`.
 
 The saves and the Claude sign-in are brain actions (`agent37
 cloud_sign_in_*`), run on this computer's brain, which owns the account vault,

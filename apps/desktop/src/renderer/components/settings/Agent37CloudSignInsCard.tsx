@@ -6,7 +6,7 @@ import {
   type Agent37CloudSignInId,
   type Agent37CloudSignInSpec,
   type Agent37CloudSignInStatus,
-} from "../../../shared/agent37";
+} from "../../../shared/agent37CloudSignIns";
 import { SettingsTextField } from "./primitives";
 import { IntegrationCard } from "./integrations/IntegrationChrome";
 import { Banner } from "../ui/notice";

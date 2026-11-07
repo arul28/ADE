@@ -10,7 +10,6 @@ import {
   AGENT37_MADE_BY_CHAT_METADATA,
   agent37CapReachedMessage,
   type Agent37Budget,
-  type Agent37CloudSignInStatus,
   type Agent37ShapeId,
   isAgent37InstanceId,
   type Agent37CreateMachineArgs,
@@ -19,12 +18,15 @@ import {
   type Agent37MachineActionKind,
   type Agent37MachineActionResult,
   type Agent37MachinesResult,
-  type Agent37ReadyClaim,
-  type Agent37ReadyProjectSettings,
-  type Agent37ReadyStatus,
   type Agent37Status,
   type Agent37TemplateStatus,
 } from "../../../shared/agent37";
+import {
+  type Agent37ReadyClaim,
+  type Agent37ReadyProjectSettings,
+  type Agent37ReadyStatus,
+} from "../../../shared/agent37Ready";
+import { type Agent37CloudSignInStatus } from "../../../shared/agent37CloudSignIns";
 import { IPC } from "../../../shared/ipc";
 import { agent37MachineEnv, type Agent37CloudSignInVaults } from "./agent37CloudSignInStore";
 import type { AdeAccountMachinesResult } from "../../../shared/types/account";
@@ -45,11 +47,8 @@ import {
   saveAgent37Key,
   type Agent37CredentialDeps,
 } from "./agent37Credential";
-import {
-  createAgent37Machine,
-  type Agent37ApprovalMode,
-  type Agent37ApprovalWindowResult,
-} from "./agent37MachineCreator";
+import { createAgent37Machine } from "./agent37MachineCreator";
+import { openAgent37ApprovalWindow } from "./agent37ApprovalWindow";
 import { createAgent37Client } from "./agent37Client";
 import { createAgent37Machines } from "./agent37Machines";
 import { claimAgent37ReadyMachine, releaseAgent37ReadyMachine } from "./agent37ReadyClaim";
@@ -66,150 +65,15 @@ import {
   wakeAgent37MachineForUse,
 } from "./agent37Sleep";
 import { AGENT37_READY_VAULT_KEY, createAgent37ReadySettingsStore } from "./agent37ReadySettings";
-import { AGENT37_TEMPLATE_BUILD_VAULT_KEY } from "./agent37VaultItems";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
-import {
-  createAgent37PendingCreateStore,
-  readAgent37BoxSignedIn,
-  reconcileAgent37PendingCreate,
-  type Agent37PendingCreate,
-  type Agent37PendingCreateStore,
-} from "./agent37PendingCreates";
-import {
-  createAgent37TemplateBuilder,
-  type Agent37TemplateBuildRecord,
-  type Agent37TemplateContextFiles,
-  type Agent37TemplateRecordStore,
-} from "./agent37TemplateBuilder";
-import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowser/builtInBrowserConstants";
-import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
+import { createAgent37PendingCreateStore, sweepAgent37PendingCreates } from "./agent37PendingCreates";
+import { createAgent37TemplateBuilder } from "./agent37TemplateBuilder";
+import { readAgent37TemplateContext, releasedAdeVersion, templateBuildRecords } from "./agent37TemplateRecords";
 
 type Logger = {
   info(event: string, meta?: Record<string, unknown>): void;
   warn(event: string, meta?: Record<string, unknown>): void;
 };
-
-/** How long the private sign-in window waits before it shows itself to the person. */
-const APPROVAL_SHOW_AFTER_MS = 6_000;
-const APPROVAL_TIMEOUT_MS = 5 * 60_000;
-
-/**
- * Opens the one-time sign-in link in a private, in-memory session (nothing it
- * signs in to outlives the window) and waits for `/device/callback`.
- *
- * The window starts hidden. If the sign-in has not reached the callback a few
- * seconds after its last page change, the page is waiting on the person (a
- * consent screen), so the window is shown, named after the box, and is the one
- * confirmation they give. ADE never clicks anything on it.
- */
-function openAgent37ApprovalWindow(
-  args: { url: string; mode: Agent37ApprovalMode; title: string; signal: AbortSignal; onNeedsPerson: () => void },
-  logger: Logger,
-): Promise<Agent37ApprovalWindowResult> {
-  const win = new BrowserWindow({
-    show: false,
-    width: 540,
-    height: 720,
-    title: args.title,
-    autoHideMenuBar: true,
-    webPreferences: {
-      // A ticket signs in on its own, so it gets a throwaway session. The
-      // approval page needs the person's existing ADE sign-in, which lives in
-      // ADE's own browser.
-      partition: args.mode === "ticket" ? `agent37-sign-in-${randomUUID()}` : BUILT_IN_BROWSER_PARTITION,
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
-  // Keep the box's name in the title bar, whatever the page calls itself.
-  win.on("page-title-updated", (event) => event.preventDefault());
-  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-
-  return new Promise((resolve) => {
-    let settled = false;
-    let shown = false;
-    let showTimer: NodeJS.Timeout | null = null;
-    const finish = (result: Agent37ApprovalWindowResult) => {
-      if (settled) return;
-      settled = true;
-      if (showTimer) clearTimeout(showTimer);
-      clearTimeout(timeout);
-      if (!win.isDestroyed()) win.destroy();
-      logger.info("agent37.approval_window_finished", { result, shown });
-      resolve(result);
-    };
-    const timeout = setTimeout(() => finish("timed_out"), APPROVAL_TIMEOUT_MS);
-    const armShow = () => {
-      if (shown || settled) return;
-      if (showTimer) clearTimeout(showTimer);
-      showTimer = setTimeout(() => {
-        if (settled || win.isDestroyed()) return;
-        shown = true;
-        win.show();
-        win.focus();
-        args.onNeedsPerson();
-      }, APPROVAL_SHOW_AFTER_MS);
-    };
-    const pageAt = (url: string): { host: string; path: string } | null => {
-      try {
-        const parsed = new URL(url);
-        return { host: parsed.host, path: parsed.pathname };
-      } catch {
-        return null;
-      }
-    };
-    win.webContents.on("did-navigate", (_event, url) => {
-      const page = pageAt(url);
-      // Host and path only: query strings here carry one-time tickets and codes.
-      logger.info("agent37.approval_window_page", { host: page?.host ?? null, path: page?.path ?? null });
-      armShow();
-    });
-    win.webContents.on("did-finish-load", () => {
-      const page = pageAt(win.webContents.getURL());
-      if (page?.path !== "/device/callback") return;
-      void win.webContents
-        .executeJavaScript("document.title + ' ' + (document.body ? document.body.innerText : '')", true)
-        .then((text: unknown) => {
-          if (typeof text === "string" && /signed in/i.test(text)) {
-            finish("signed_in");
-          } else {
-            // The callback answered with a failure page; let the person read it.
-            if (!shown && !win.isDestroyed()) {
-              shown = true;
-              win.show();
-              args.onNeedsPerson();
-            }
-          }
-        })
-        .catch((error: unknown) => {
-          // The window closed under the read, or the page would not answer.
-          // The window's close or timeout still settles the flow.
-          logger.warn("agent37.approval_window_read_failed", { error: error instanceof Error ? error.name : "unknown" });
-        });
-    });
-    win.on("closed", () => finish("closed"));
-    if (args.signal.aborted) {
-      finish("cancelled");
-      return;
-    }
-    args.signal.addEventListener("abort", () => finish("cancelled"), { once: true });
-    // Never the message: Electron puts the URL, a one-time sign-in ticket, in it.
-    void win.loadURL(args.url).catch((error: unknown) => {
-      const code = (error as { code?: unknown } | null)?.code;
-      logger.warn("agent37.approval_window_load_failed", { code: typeof code === "string" ? code : null });
-    });
-    if (args.mode === "browser") {
-      // The approval page always needs the person: show it at once.
-      shown = true;
-      win.show();
-      win.focus();
-      args.onNeedsPerson();
-    } else {
-      armShow();
-    }
-  });
-}
 
 /**
  * Agent37 in Settings and the machine picker.
@@ -302,7 +166,7 @@ export function registerAgent37Ipc(args: {
       if (!saved) return;
       void builder.ensure();
       if (leftoverCreates.length) {
-        await sweepPendingCreates(createAgent37Client({ apiKey: saved.key }), leftoverCreates, pendingCreates, logger);
+        await sweepAgent37PendingCreates(createAgent37Client({ apiKey: saved.key }), leftoverCreates, pendingCreates, logger);
       }
     })().catch((error: unknown) => logger.warn("agent37.startup_check_failed", { error: error instanceof Error ? error.message : String(error) }));
   }, STARTUP_CHECK_DELAY_MS);
@@ -833,146 +697,3 @@ const STARTUP_CHECK_DELAY_MS = 20_000;
  * it is an older ADE entrypoint, 2 when the box has no ADE entrypoint at all.
  */
 const AGENT37_ENTRYPOINT_SUPERVISOR_PROBE = "grep -q 'ADE_BRAIN_SUPERVISOR=entrypoint' /usr/local/bin/ade-entrypoint.sh";
-
-/**
- * The ADE release this app is, for the template to install; null for a build
- * that is not a published release on the default channel (development, alpha),
- * which bakes the newest release and never replaces an existing template.
- */
-function releasedAdeVersion(): string | null {
-  if (!app.isPackaged) return null;
-  // The channel main.ts settles at startup (applyPackagedChannelDefaults), read
-  // the same way every other main-process surface reads it.
-  if (normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL) === "alpha") return null;
-  const version = app.getVersion().trim();
-  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) ? version : null;
-}
-
-/**
- * `infra/agent37/template`: shipped as the `agent37-template` resource in a
- * packaged app (package.json `extraResources`), read from the checkout in
- * development.
- */
-async function readAgent37TemplateContext(): Promise<Agent37TemplateContextFiles> {
-  const candidates = [
-    ...(typeof process.resourcesPath === "string" ? [path.join(process.resourcesPath, "agent37-template")] : []),
-    path.resolve(app.getAppPath(), "..", "..", "infra", "agent37", "template"),
-  ];
-  for (const dir of candidates) {
-    try {
-      const [dockerfile, entrypoint] = await Promise.all([
-        fs.promises.readFile(path.join(dir, "Dockerfile"), "utf8"),
-        fs.promises.readFile(path.join(dir, "ade-entrypoint.sh"), "utf8"),
-      ]);
-      return { dockerfile, entrypoint };
-    } catch {
-      // Try the next place.
-    }
-  }
-  throw new Error("this copy of ADE is missing its machine template files. Reinstall ADE.");
-}
-
-const TEMPLATE_BUILD_MACHINE_KEY = "agent37.templateBuild.v1";
-
-/** A damaged record reads as none (logged), so it can never stop builds for good. */
-function parseBuildRecord(raw: string | null | undefined, logger: Logger): Agent37TemplateBuildRecord | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<Agent37TemplateBuildRecord>;
-    if (parsed?.v !== 1 || typeof parsed.template !== "string" || typeof parsed.buildId !== "string") return null;
-    if (typeof parsed.startedAt !== "number" || typeof parsed.adeVersion !== "string" || typeof parsed.contextHash !== "string") return null;
-    return { v: 1, template: parsed.template, buildId: parsed.buildId, startedAt: parsed.startedAt, adeVersion: parsed.adeVersion, contextHash: parsed.contextHash, by: typeof parsed.by === "string" ? parsed.by : null };
-  } catch (error) {
-    logger.warn("agent37.template_record_unreadable", { error: error instanceof Error ? error.message : String(error) });
-    return null;
-  }
-}
-
-/**
- * The build-in-flight record: in the account vault, so every computer on the
- * account sees it. Reads use this computer's copy only when there is no
- * account vault (signed out); an unreachable vault is an error, not "none".
- */
-function templateBuildRecords(
-  bridge: Parameters<typeof agent37VaultFromBridge>[0],
-  credentials: Agent37CredentialDeps,
-  machineStore: () => EncryptedFileCredentialStore,
-  logger: Logger,
-): Agent37TemplateRecordStore {
-  const vault = () => (credentials.signedIn() ? agent37VaultFromBridge(bridge, AGENT37_TEMPLATE_BUILD_VAULT_KEY) : null);
-  const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
-  const local = <T>(what: string, run: () => T, fallback: T): T => {
-    try {
-      return run();
-    } catch (error) {
-      logger.warn("agent37.template_record_local_failed", { what, error: errorText(error) });
-      return fallback;
-    }
-  };
-  /** Runs a vault write; logs and answers false on a refusal or a throw. */
-  const shared = async (what: string, run: () => Promise<boolean>): Promise<void> => {
-    const ok = await run().catch((error: unknown) => {
-      logger.warn("agent37.template_record_vault_failed", { what, error: errorText(error) });
-      return null;
-    });
-    if (ok === false) logger.warn("agent37.template_record_vault_failed", { what, error: "refused" });
-  };
-  return {
-    async read() {
-      const store = vault();
-      if (store) {
-        // Signed in, the account is the authority. Unreachable is unknown:
-        // the caller must not take this computer's copy as the whole answer.
-        const got = await store.get().catch((error: unknown) => {
-          logger.warn("agent37.template_record_vault_failed", { what: "read", error: errorText(error) });
-          return { ok: false as const };
-        });
-        if (!got.ok) throw new Error("the account vault couldn't be read");
-        // The account answered: its record, or its lack of one, is the whole
-        // answer. This computer's copy holds our own last write even when the
-        // vault refused it, and the builder reads "none" as "our claim did not
-        // land"; the copy would hide exactly that.
-        return parseBuildRecord(got.value, logger);
-      }
-      return parseBuildRecord(local("read", () => machineStore().getSync(TEMPLATE_BUILD_MACHINE_KEY), null), logger);
-    },
-    async write(record) {
-      const raw = JSON.stringify(record);
-      local("write", () => machineStore().setSync(TEMPLATE_BUILD_MACHINE_KEY, raw), undefined);
-      const store = vault();
-      if (store) await shared("write", () => store.set(raw));
-    },
-    async clear() {
-      local("clear", () => machineStore().deleteSync(TEMPLATE_BUILD_MACHINE_KEY), undefined);
-      const store = vault();
-      if (store) await shared("clear", () => store.remove());
-    },
-  };
-}
-
-/**
- * Creates a quit (or a lost answer) left unresolved: a box that never signed
- * in is only a bill, so it is deleted; one that signed in is a real machine
- * and is kept. Records stay until Agent37 confirms, so a failure here is
- * retried at the next start.
- */
-async function sweepPendingCreates(
-  client: ReturnType<typeof createAgent37Client>,
-  leftover: Agent37PendingCreate[],
-  pending: Agent37PendingCreateStore,
-  logger: Logger,
-): Promise<void> {
-  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-  const isSignedIn = (instanceId: string) => readAgent37BoxSignedIn(client, instanceId, logger);
-  for (const record of leftover) {
-    const result = await reconcileAgent37PendingCreate(client, record, { store: pending, logger, sleep, isSignedIn });
-    logger.info("agent37.pending_create_reconciled", {
-      requestId: record.requestId,
-      resolved: result.resolved,
-      deleted: result.deleted,
-      kept: result.kept,
-      gone: result.gone,
-      unresolved: result.unresolved,
-    });
-  }
-}

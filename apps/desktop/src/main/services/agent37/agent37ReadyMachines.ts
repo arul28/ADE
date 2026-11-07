@@ -31,23 +31,25 @@
 
 import { randomUUID } from "node:crypto";
 import {
-  AGENT37_READY_METADATA,
   AGENT37_SPEND_UNKNOWN_MESSAGE,
   agent37CapReachedMessage,
-  agent37ReadyRetryAt,
-  agent37ReadyStepOf,
   agent37Shape,
   agent37UnattendedSpendBlock,
-  type Agent37ReadyFailure,
   type Agent37CreateMachineArgs,
   type Agent37CreateMachineResult,
   type Agent37CreateProgress,
+  type Agent37Spending,
+} from "../../../shared/agent37";
+import {
+  AGENT37_READY_METADATA,
+  agent37ReadyRetryAt,
+  agent37ReadyStepOf,
+  type Agent37ReadyFailure,
   type Agent37ReadyProjectSettings,
   type Agent37ReadyProjectStatus,
   type Agent37ReadyStatus,
   type Agent37ReadyStep,
-  type Agent37Spending,
-} from "../../../shared/agent37";
+} from "../../../shared/agent37Ready";
 import type { Agent37Client, Agent37Instance, Agent37Logger } from "./agent37Client";
 import { getErrorMessage } from "../shared/utils";
 import { agent37ReadyMachinesFor, agent37ReadyStateOf, patchAgent37Metadata } from "./agent37ReadyClaim";

@@ -17,7 +17,7 @@
  * One sign-in per machine; a start replaces a running one.
  */
 
-import type { Agent37CloudSignInStatus } from "../../../shared/agent37";
+import type { Agent37CloudSignInStatus } from "../../../shared/agent37CloudSignIns";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import {
   LOGIN_TIMEOUT_MS,

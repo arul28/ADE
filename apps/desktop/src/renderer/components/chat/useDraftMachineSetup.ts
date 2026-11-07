@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AGENT37_READY_WAKE_WAIT_MS, type Agent37Machine } from "../../../shared/agent37";
+import { type Agent37Machine } from "../../../shared/agent37";
+import { AGENT37_READY_WAKE_WAIT_MS } from "../../../shared/agent37Ready";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { ipcErrorMessage } from "../../lib/format";
 import { connectWithRetry } from "./connectWithRetry";

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { APPLE_DEVICE_ANALYTICS_OUTCOMES } from "../../../shared/types/iosSimulator";
 import { ANDROID_DEVICE_ANALYTICS_OUTCOMES } from "../../../shared/types/androidEmulator";
-import { AGENT37_CLOUD_SIGN_INS } from "../../../shared/agent37";
+import { AGENT37_CLOUD_SIGN_INS } from "../../../shared/agent37CloudSignIns";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

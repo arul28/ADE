@@ -12,7 +12,7 @@ import {
   AGENT37_CLOUD_SIGN_INS,
   type Agent37CloudSignInId,
   type Agent37CloudSignInStatus,
-} from "../../../shared/agent37";
+} from "../../../shared/agent37CloudSignIns";
 import type { Agent37Vault } from "./agent37Credential";
 
 type Logger = { warn?(event: string, meta?: Record<string, unknown>): void } | null | undefined;

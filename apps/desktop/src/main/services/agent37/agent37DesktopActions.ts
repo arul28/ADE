@@ -6,7 +6,8 @@
  * it in; unset, the bridge answers that this desktop can't.
  */
 
-import type { Agent37CreateMachineArgs, Agent37CreateMachineResult, Agent37MachineKind, Agent37ShapeId, Agent37ReadyStatus } from "../../../shared/agent37";
+import type { Agent37CreateMachineArgs, Agent37CreateMachineResult, Agent37MachineKind, Agent37ShapeId } from "../../../shared/agent37";
+import type { Agent37ReadyStatus } from "../../../shared/agent37Ready";
 import type { Agent37MoveResult } from "./agent37MachineCopy";
 
 export type Agent37DesktopActions = {

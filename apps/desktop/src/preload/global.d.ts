@@ -1,5 +1,7 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
-import type { Agent37Budget, Agent37CloudSignInId, Agent37CloudSignInStatus, Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus, Agent37Status, Agent37TemplateStatus, Agent37WakeForUseResult } from "../shared/agent37";
+import type { Agent37Budget, Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37Status, Agent37TemplateStatus, Agent37WakeForUseResult } from "../shared/agent37";
+import type { Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus } from "../shared/agent37Ready";
+import type { Agent37CloudSignInId, Agent37CloudSignInStatus } from "../shared/agent37CloudSignIns";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";

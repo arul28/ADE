@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { pullFileFromWorkCopy, pushFileToWorkCopy, withRemoteAndroidArgs, withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
-import { AGENT37_READY_WAKE_WAIT_MS, isAgent37ReadyMachineSelector } from "../../desktop/src/shared/agent37";
+import { AGENT37_READY_WAKE_WAIT_MS, isAgent37ReadyMachineSelector } from "../../desktop/src/shared/agent37Ready";
 import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
