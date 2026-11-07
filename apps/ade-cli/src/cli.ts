@@ -2850,7 +2850,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
                                                     Move the chat to another machine on your account (brief by
                                                     default; --fork carries full history). --machine names the
-                                                    DESTINATION; the chat moves from here. Add --effort,
+                                                    DESTINATION; the chat moves from here. Without --model it
+                                                    keeps the chat's own model. Add --effort,
                                                     --permissions, --include-changes (bring uncommitted and unpushed
                                                     work), --clone (set the repo up there), --when-turn-ends (queue
                                                     it; a newer user message cancels it). Moving your own chat or a
@@ -11039,9 +11040,9 @@ function mergeRemoteMcpTurnMetadata(args: JsonObject): JsonObject {
  * `--target` or a bare positional) and its settings. `sub` "fork" implies
  * fork mode.
  */
-function readHandoffTarget(args: string[], sub: string): {
+function readHandoffTarget(args: string[], sub: string, options: { modelOptional?: boolean } = {}): {
   mode: "brief" | "fork";
-  targetModelId: string;
+  targetModelId: string | null;
   settings: {
     reasoningEffort?: string;
     fastMode?: boolean;
@@ -11061,11 +11062,11 @@ function readHandoffTarget(args: string[], sub: string): {
   if (mode !== "brief" && mode !== "fork") {
     throw new CliUsageError("chat handoff --mode must be brief or fork.");
   }
-  const targetModelId = requireValue(
-    readValue(args, ["--target-model", "--target-model-id", "--model", "--target"]) ??
-      firstStandalonePositional(args),
-    "targetModelId",
-  );
+  const namedModel = readValue(args, ["--target-model", "--target-model-id", "--model", "--target"]) ??
+    firstStandalonePositional(args);
+  // A move to another machine without a model continues with the chat's own;
+  // a model flag given empty is still refused.
+  const targetModelId = options.modelOptional && namedModel === null ? null : requireValue(namedModel, "targetModelId");
   const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
   const fastMode = readFastModeFlag(args);
   const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
@@ -12400,7 +12401,7 @@ function buildChatPlan(args: string[]): CliPlan {
       if (readValue(args, ["--target-lane", "--target-lane-id"]) !== null) {
         throw new CliUsageError("--target-lane is for a handoff on this machine. The other machine picks or creates the lane.");
       }
-      const target = readHandoffTarget(args, sub);
+      const target = readHandoffTarget(args, sub, { modelOptional: true });
       return {
         kind: "execute",
         label: "chat handoff to another machine",
@@ -12409,7 +12410,7 @@ function buildChatPlan(args: string[]): CliPlan {
             sourceSessionId: requireSession(),
             machine: handoffMachine,
             mode: target.mode,
-            targetModelId: target.targetModelId,
+            ...(target.targetModelId ? { targetModelId: target.targetModelId } : {}),
             ...target.settings,
             ...(continuationPrompt !== null ? { continuationPrompt } : {}),
             ...(readFlag(args, ["--include-changes"]) ? { includeChanges: true } : {}),

@@ -205,5 +205,6 @@ Each error prints its next step. The common ones:
 | `ANDROID_PACKAGE_NOT_ADE_INSTALLED` | the user's AVD and an app ADE did not install: leave it |
 | `ANDROID_AVD_HELD_BY_OTHER_LANE` | pick another AVD, or `device-create` |
 | `ANDROID_SDK_NOT_FOUND` | `android sdk status`, then ask the user to set it up |
+| `ANDROID_NO_ACCELERATION` | on an Agent 37 box: tell the user the message, then move to a VM (`ade-agent37` skill, "Your chat runs on a box and needs a VM"). Elsewhere: turn on KVM or the Windows Hypervisor Platform |
 
 `"$A" android --help` lists every verb and flag.

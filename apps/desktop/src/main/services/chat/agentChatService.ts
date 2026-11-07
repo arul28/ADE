@@ -186,6 +186,7 @@ import { buildDroidSkillListing } from "./droidSkillListing";
 import { discoverCodexSlashCommandsAsync } from "./codexSlashCommandDiscovery";
 import { codexImageGenerationRefFields, looksLikeInlineBase64Image } from "../../../shared/codexImageGeneration";
 import { codexDaybreakProgram, readCodexCyberAccessPrograms, type CodexAccessProgram, type CodexDaybreakProgram } from "../../../shared/codexDaybreak";
+import { accountMachineDisplayName } from "../../../shared/accountDirectory";
 import { mergeSlashCommands } from "./markdownSlashCommandDiscovery";
 import {
   SIDE_CHAT_READ_ONLY_MESSAGE,
@@ -469,7 +470,7 @@ import {
   type HarnessPresetLaunchPlan,
 } from "./harnessPresetLaunch";
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
-import { launchRouteTransition, readPresetLaunchTarget } from "./chatLaunchRoute";
+import { crossMachineRouteFor, crossMachineRouteNotice, launchRouteTransition, readCrossMachineRoute, readPresetLaunchTarget } from "./chatLaunchRoute";
 import { mcpRegistryLaunchNotices, resolveMcpRegistryForLaunch } from "./mcpRegistryLaunch";
 import { assembleAdeChatContextParts, type AdeChatContextPart, type AdeChatContextPreview, type AdeChatMainText } from "./adeChatContextPreview";
 import { providerOwnMcpServerNames } from "../mcp/mcpProviderConfigScan";
@@ -12470,6 +12471,33 @@ export function createAgentChatService(args: {
       );
     }
     return trimmed;
+  };
+
+  /**
+   * Account ids are per machine, so a moved chat names its account by email:
+   * the email of `instanceId` here (source side), and the signed-in account
+   * here with that email (destination side). Null when there is none.
+   */
+  const providerAccountEmail = (provider: string, instanceId: string | null | undefined): string | null => {
+    if (!instanceId?.trim() || !isProviderInstanceProvider(provider)) return null;
+    try {
+      const found = getMachineProviderInstanceStore().resolve(provider, instanceId.trim());
+      return found.fellBack ? null : found.instance.account?.email?.trim() || null;
+    } catch (error) {
+      logger.warn("agent_chat.cross_machine_account_resolve_failed", { provider, error: getErrorMessage(error) });
+      return null;
+    }
+  };
+  const localProviderAccountByEmail = (provider: string, email: string): string | null => {
+    if (!isProviderInstanceProvider(provider)) return null;
+    try {
+      const wanted = email.trim().toLowerCase();
+      return getMachineProviderInstanceStore().list(provider)
+        .find((instance) => instance.signedIn && instance.account?.email?.trim().toLowerCase() === wanted)?.id ?? null;
+    } catch (error) {
+      logger.warn("agent_chat.cross_machine_account_resolve_failed", { provider, error: getErrorMessage(error) });
+      return null;
+    }
   };
 
   /** The account a new Claude or Codex chat starts on when nothing picked one. */
@@ -52273,6 +52301,25 @@ export function createAgentChatService(args: {
   });
   /** This machine's account key, or "" when it can't be identified. */
   const localCrossMachineKey = (): string => args.getLocalMachineKey?.()?.trim() || "";
+  /**
+   * This machine's name as the account lists it ("p1 test vm"), so a moved
+   * chat says where it came from in the person's words. The host name is the
+   * fallback; on a cloud machine it is only the instance id.
+   */
+  const localCrossMachineName = async (): Promise<string> => {
+    const machineKey = localCrossMachineKey();
+    const listMachines = accountMachineMentions?.listAccountMachines;
+    if (machineKey && listMachines) {
+      try {
+        const self = (await listMachines()).machines.find((machine) => machine.machineKey === machineKey);
+        const name = self ? accountMachineDisplayName(self) : null;
+        if (name) return name;
+      } catch (error) {
+        logger.warn("agent_chat.cross_machine_local_name_failed", { error: getErrorMessage(error) });
+      }
+    }
+    return localMachineName();
+  };
 
   // The destination side: batch lane imports and returns to an original chat
   // (crossMachineHandoffDestination.ts). Several of its hooks are defined
@@ -52334,6 +52381,7 @@ export function createAgentChatService(args: {
       }),
     readLaneOrigin: (laneId) => crossMachineDestination.readLaneOrigin(laneId),
     localMachineKey: localCrossMachineKey,
+    localMachineName: localCrossMachineName,
   });
 
   /**
@@ -52625,7 +52673,6 @@ export function createAgentChatService(args: {
     // transcript replay onto a fresh destination thread -- the same primitive
     // local model rotations already use when a provider has no native fork. So
     // no provider (or provider change) is refused here.
-    void targetProvider;
     const portableText = (value: string): string => {
       let next = redactSecrets(value);
       for (const [needle, replacement] of [
@@ -52753,7 +52800,8 @@ export function createAgentChatService(args: {
       title: portableText(issue.title).slice(0, 300),
       url: sanitizePortableReferenceUrl(issue.url),
     }));
-    const sourceMachineName = portableText(localMachineName()).slice(0, 200);
+    const rawSourceMachineName = await localCrossMachineName();
+    const sourceMachineName = portableText(rawSourceMachineName).slice(0, 200);
     const sourceModel = portableText(managed.session.model).slice(0, 300);
     const sourceTitle = sourceSession.title?.trim()
       ? portableText(sourceSession.title.trim()).slice(0, 300)
@@ -52841,6 +52889,13 @@ export function createAgentChatService(args: {
     const targetCursorModeId = args.cursorModeId !== undefined
       ? args.cursorModeId
       : managed.session.cursorModeId;
+    // The chat's own sign-in route travels when the moved chat can keep it.
+    const route = crossMachineRouteFor({
+      source: { ...managed.session, accountEmail: providerAccountEmail(managed.session.provider, managed.session.instanceId) },
+      targetProvider,
+      targetModelId: targetDescriptor.id,
+      adeHome: resolveMachineAdeDir(),
+    });
     const capsule: AgentChatCrossMachineHandoffCapsule = {
       version: 1,
       handoffId,
@@ -52904,6 +52959,7 @@ export function createAgentChatService(args: {
         // Cursor config values are machine-local and may contain private
         // runtime configuration. The destination resolves its own settings.
       },
+      ...(route ? { route } : {}),
       brief: portableText(generatedBrief.brief.trim()).slice(0, 16_000),
       artifacts: {
         fileChanges: artifacts.fileChanges.map((entry) => portableText(entry).slice(0, 1_000)),
@@ -52925,7 +52981,7 @@ export function createAgentChatService(args: {
       && capsule.brief !== generatedBrief.brief.trim().slice(0, 16_000))
       || continuationPrompt !== rawContinuationPrompt
       || originUrl !== rawOriginUrl
-      || sourceMachineName !== localMachineName()
+      || sourceMachineName !== rawSourceMachineName
       || sourceModel !== managed.session.model
       || sourceTitle !== (sourceSession.title?.trim() || null)
       || sourceLaneName !== rawSourceLaneName
@@ -53900,6 +53956,11 @@ export function createAgentChatService(args: {
       }
       const deterministicSessionId = crossMachineDestinationSessionId(handoffId);
       const reusedSession = Boolean(sessionService.get(deterministicSessionId));
+      // The source chat's route, kept where this machine can honour it. An
+      // account is kept only when the same login (its email) is signed in here.
+      const carriedRoute = readCrossMachineRoute(capsule.route);
+      const route = carriedRoute && !carriedRoute.dropped ? carriedRoute : null;
+      const keptInstanceId = route?.account?.email ? localProviderAccountByEmail(targetProvider, route.account.email) : null;
       const session = await createSessionInternal({
         laneId: destinationLane.id,
         provider: targetProvider,
@@ -53924,6 +53985,11 @@ export function createAgentChatService(args: {
         acpPermissionMode: capsule.target.acpPermissionMode,
         cursorModeId: capsule.target.cursorModeId,
         cursorConfigValues: capsule.target.cursorConfigValues,
+        ...(route?.presetId
+          ? { presetId: route.presetId, ...(route.presetSnapshot ? { presetSnapshot: route.presetSnapshot } : {}) }
+          : {}),
+        ...(route?.credentialId ? { credentialId: route.credentialId } : {}),
+        ...(keptInstanceId ? { instanceId: keptInstanceId } : {}),
         ...(capsule.parentLink
           ? {
               orchestrationParentSessionId: capsule.parentLink.destinationParentSessionId,
@@ -53937,6 +54003,34 @@ export function createAgentChatService(args: {
       crossMachineDestination.persistHandoffRecord(record);
 
       const destinationManaged = ensureManagedSession(session.id);
+      // One line before the first turn: which sign-in this chat uses here.
+      const noteCarriedRoute = (): void => {
+        if (!carriedRoute) return;
+        const noted = readTranscriptEnvelopes(destinationManaged).some(({ event }) =>
+          event.type === "system_notice"
+          && event.status === "cross_machine_handoff_route"
+          && typeof event.detail === "object"
+          && event.detail?.crossMachineHandoffRoute?.handoffId === handoffId);
+        if (noted) return;
+        // The same resolve the first turn runs (and caches): a key or preset
+        // this machine doesn't have is named now, not as a failed turn.
+        if (route) resolveSessionLaunchPlan(destinationManaged);
+        const notice = crossMachineRouteNotice({
+          route: carriedRoute,
+          fromMachine: capsule.source.machineName,
+          // A reused session (a retry) keeps the account it was made with.
+          accountKept: Boolean(keptInstanceId) && destinationManaged.session.instanceId === keptInstanceId,
+          accountHere: destinationManaged.session.instanceId?.trim() || null,
+          blockedReason: route ? launchPlanBlockBySession.get(session.id) ?? null : null,
+        });
+        emitChatEvent(destinationManaged, {
+          type: "system_notice",
+          noticeKind: notice.warning ? "warning" : "info",
+          status: "cross_machine_handoff_route",
+          message: notice.message,
+          detail: { crossMachineHandoffRoute: { handoffId } },
+        });
+      };
       if (capsule.origin) {
         destinationManaged.session.crossMachineOrigin = capsule.origin;
         const arrival = destinationManaged.session.crossMachineArrival;
@@ -53954,7 +54048,7 @@ export function createAgentChatService(args: {
         ? crossMachineDestination.readLaneImport(capsule.batchMove.laneImportId)
         : null;
       const batchArrivalPrompt = capsule.batchMove
-        ? crossMachineDestination.buildBatchArrivalPrompt(capsule, destinationLane.worktreePath, laneImportOutcome?.setupStatus)
+        ? crossMachineDestination.buildBatchArrivalPrompt(capsule, destinationLane.worktreePath, laneImportOutcome?.setupStatus, await localCrossMachineName())
         : null;
       const markDispatched = (): void => {
         const dispatchedRecord: CrossMachineHandoffRecord = {
@@ -54007,6 +54101,7 @@ export function createAgentChatService(args: {
             crossMachineDestination.persistHandoffRecord(record);
           }
 
+          noteCarriedRoute();
           const continuationPrompt = batchArrivalPrompt ?? capsule.continuationPrompt.trim();
           if (
             continuationPrompt
@@ -54034,6 +54129,7 @@ export function createAgentChatService(args: {
           markDispatched();
         }
       } else {
+        noteCarriedRoute();
         await sendMessage({
           sessionId: session.id,
           text: batchArrivalPrompt ?? buildCrossMachineHandoffPrompt(capsule),
@@ -54338,6 +54434,8 @@ export function createAgentChatService(args: {
         awaitingInput: blocked?.kind === "awaiting_input",
         permissionLevel,
         provider: managed.session.provider,
+        // A chat whose model resolved to no registry id still names it.
+        modelId: managed.session.modelId ?? (managed.session.model?.trim() || null),
         title: sessionService.get(sessionId)?.title ?? null,
       };
     },
@@ -55709,9 +55807,6 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "claude" && slashCommand === "/login") {
       throw new Error(CLAUDE_LOGIN_NOT_SDK_COMMAND);
     }
-    const claudeRuntimeHealth = managed.session.provider === "claude"
-      ? getProviderRuntimeHealth("claude")
-      : null;
     if (
       (managed.session.provider === "claude" || managed.session.provider === "codex")
       && accountUnknownFromOtherHome(readPersistedState(sessionId))
@@ -55720,12 +55815,14 @@ export function createAgentChatService(args: {
         `This chat ran on a ${managed.session.provider} account that this ADE (home ${brainAdeHome}) does not have, so it cannot resume its conversation here. Open it from the ADE where it was created, or start a new chat.`,
       );
     }
-    if (
-      managed.session.provider === "claude"
-      && claudeRuntimeHealth?.state === "auth-failed"
-    ) {
-      throw new Error(claudeRuntimeHealth.message ?? CLAUDE_RUNTIME_AUTH_ERROR);
-    }
+    // A Claude sign-out is not refused here. The turn runs, stops on the
+    // sign-in in a second or two, and records it as an `unauthenticated`
+    // error with the user's message, which is what puts the sign-in card in
+    // the composer and resends after it. A refusal here kept no message and no
+    // event, so the chat showed only the raw error (the first message on a
+    // new cloud machine, after its pre-warm failed). The health mark is also
+    // process-wide: it would refuse a chat on another Claude account, or one
+    // sent after a sign-in from a terminal.
     const cursorRuntimeHealth = managed.session.provider === "cursor"
       ? getProviderRuntimeHealth("cursor")
       : null;

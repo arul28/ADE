@@ -131,6 +131,7 @@ export function useAgent37MachineGroup(args: {
       accountMachine,
       targetId: row?.kind === "saved" ? row.target.id : row?.kind === "account" ? row.matchedTargetId : null,
       work: agent37BoxWork(accountMachine, activityItems),
+      accountKnown,
     };
   }, [activityItems, rowAccountMachine]);
 

@@ -12986,6 +12986,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.agent37CopyMachine, args),
     moveMachine: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }): Promise<{ started: boolean }> =>
       ipcRenderer.invoke(IPC.agent37MoveMachine, args),
+    reconnectMachine: (args: { requestId: string; instanceId: string }): Promise<{ started: boolean }> =>
+      ipcRenderer.invoke(IPC.agent37ReconnectMachine, args),
     setBudget: (budget: Partial<Agent37Budget>): Promise<Agent37Budget | null> => ipcRenderer.invoke(IPC.agent37SetBudget, { budget }),
     wakeMachine: (machine: { machineKey: string; hostname?: string | null }): Promise<Agent37WakeForUseResult | null> =>
       ipcRenderer.invoke(IPC.agent37WakeMachine, machine),

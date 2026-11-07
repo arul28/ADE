@@ -397,7 +397,8 @@ import {
 import { peekNewLaneDefaultsCached, useNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { describeAutoCreateStart } from "../lanes/laneStartOptions";
 import { autoLaneMachine, originUrlForBinding } from "../lanes/laneMachines";
-import { AGENT37_NEW_MACHINE_ID, AGENT37_READY_MACHINE_ID, useAgent37ReadyDraftMachine } from "./useAgent37ReadyDraftMachine";
+import { AGENT37_CONNECT_ID, AGENT37_NEW_MACHINE_ID, AGENT37_READY_MACHINE_ID, useAgent37ReadyDraftMachine } from "./useAgent37ReadyDraftMachine";
+import { useDraftMachineSetup } from "./useDraftMachineSetup";
 import { NewAgent37MachineDialog } from "../remoteTargets/NewAgent37MachineDialog";
 import { autoPickSummary } from "../lanes/machineLoadText";
 import { useMachinePlacement } from "../lanes/useMachinePlacement";
@@ -7941,8 +7942,13 @@ export function AgentChatPane({
   }, [devinCloudAuthConfigured, refetchDevinCloudAuth]);
   // "Least loaded" reads machine stats only once the machine menu has opened.
   const [draftMachinePickerOpened, setDraftMachinePickerOpened] = useState(false);
+  const [draftMachinePickerOpens, setDraftMachinePickerOpens] = useState(0);
+  /** Set below, once the draft's machine routing exists: reads the machines' projects again. */
+  const refreshDraftMachineProjectsRef = useRef<(() => void) | null>(null);
   const handleDraftMachinePickerOpen = useCallback(() => {
     setDraftMachinePickerOpened(true);
+    setDraftMachinePickerOpens((count) => count + 1);
+    refreshDraftMachineProjectsRef.current?.();
     refetchCursorCloudRepos();
     if (laneGitRemoteStatus === "error") refetchLaneGitRemote();
     refetchDevinCloudAuth();
@@ -16269,6 +16275,9 @@ export function AgentChatPane({
     && (workDraftKind === "chat" || isWorkCliLaunchDraft);
   const {
     machineOptions: laneMachineOptions,
+    cloneMachineOptions: draftCloneMachineOptions,
+    offlineMachines: draftOfflineMachines,
+    refreshMachineProjects: refreshDraftMachineProjects,
     selectorLanes: draftRoutedSelectorLanes,
     boundMachineId: boundLaneMachineId,
     selectedMachineId: selectedDraftMachineId,
@@ -16297,6 +16306,7 @@ export function AgentChatPane({
     setDraftLaunchTargetId,
     setError,
   });
+  refreshDraftMachineProjectsRef.current = refreshDraftMachineProjects;
   // The auto-create row says where a new lane would start ("from origin/main"),
   // read from the saved new-lane defaults of the machine the draft launches on.
   // The launch's predicted stages peek the same cache entry.
@@ -16448,6 +16458,40 @@ export function AgentChatPane({
     keepLaneOnMachine(null);
     handleDraftMachineChange(machineId);
   }, [handleDraftMachineChange, keepLaneOnMachine]);
+  // Machines one step away: one without this repository (clone it there), or
+  // an Agent 37 machine that is asleep or not connected (wake and connect it).
+  const draftMachineSetup = useDraftMachineSetup({
+    enabled: showDraftLaunchControls,
+    originUrl: originUrlForBinding(projectBinding),
+    pickerOpens: draftMachinePickerOpens,
+    cloneCandidates: draftCloneMachineOptions,
+    offlineMachines: draftOfflineMachines,
+    selectableMachineIds: laneMachineOptionIds,
+    onMachineReady: selectReadyMachine,
+    onNotice: setError,
+  });
+  const {
+    rows: draftSetupMachineRows,
+    owns: draftSetupOwnsRow,
+    choose: chooseDraftSetupRow,
+    abandon: abandonDraftMachineSetup,
+    busyRowId: draftSetupBusyRowId,
+    prepare: prepareDraftMachine,
+  } = draftMachineSetup;
+  // A new Agent 37 machine never has the repository: it counts as ready once
+  // connected, and is cloned there before it is selected.
+  const agent37ReachableMachineIds = useMemo(
+    () => [...laneMachineOptionIds, ...draftCloneMachineOptions.flatMap((option) => (option.targetId ? [option.targetId] : []))],
+    [draftCloneMachineOptions, laneMachineOptionIds],
+  );
+  const selectOrPrepareMachine = useCallback((machineId: string) => {
+    if (laneMachineOptionIds.includes(machineId)) {
+      selectReadyMachine(machineId);
+      return;
+    }
+    const candidate = draftCloneMachineOptions.find((option) => option.targetId === machineId);
+    void prepareDraftMachine(machineId, candidate?.name ?? machineId);
+  }, [draftCloneMachineOptions, laneMachineOptionIds, prepareDraftMachine, selectReadyMachine]);
   // This project's ready Agent 37 machine (prepared and asleep): picking it
   // wakes it while the person types, then selects it like any machine.
   const {
@@ -16461,8 +16505,8 @@ export function AgentChatPane({
     enabled: showDraftLaunchControls,
     originUrl: originUrlForBinding(projectBinding),
     pickerOpened: draftMachinePickerOpened,
-    connectedMachineIds: laneMachineOptionIds,
-    onMachineReady: selectReadyMachine,
+    connectedMachineIds: agent37ReachableMachineIds,
+    onMachineReady: selectOrPrepareMachine,
     onNotice: setError,
   });
   /**
@@ -16491,6 +16535,9 @@ export function AgentChatPane({
         id: option.id,
         name: option.name,
       })),
+      ...draftSetupMachineRows.map((row) => (
+        parallelChatMode ? { ...row, unavailableReason: "Parallel models runs locally." } : row
+      )),
       ...(readyOption ? [readyOption] : []),
     ];
     if (!cursorCloudCanLaunch && !devinCloudCanLaunch) return machines;
@@ -16536,6 +16583,7 @@ export function AgentChatPane({
     devinCloudCanLaunch,
     devinCloudUnavailableReason,
     draftMachineRecoveryAvailable,
+    draftSetupMachineRows,
     laneMachineOptions,
     parallelChatMode,
     selectedDraftMachineId,
@@ -16547,6 +16595,8 @@ export function AgentChatPane({
   }, [placedDraftMachines]);
   const draftShelfMachineValue = agent37ReadyWaking
     ? (agent37ReadyOption?.id ?? AGENT37_READY_MACHINE_ID)
+    : draftSetupBusyRowId
+      ? draftSetupBusyRowId
     : cursorCloudMode
       ? CURSOR_CLOUD_MACHINE_ID
       : devinCloudMode
@@ -16554,6 +16604,9 @@ export function AgentChatPane({
         : selectedDraftMachineId;
   const handleDraftShelfMachineChange = useCallback((nextMachineId: string) => {
     cancelWorkDraftLaneRequest(workDraftProjectStateKey);
+    // A setup row starts its own attempt; any other pick ends the last one,
+    // so a clone or wake that finishes later can't replace this choice.
+    if (!draftSetupOwnsRow(nextMachineId)) abandonDraftMachineSetup();
     if (nextMachineId === AGENT37_READY_MACHINE_ID) {
       setCursorCloudMode(false);
       setDevinCloudMode(false);
@@ -16565,7 +16618,18 @@ export function AgentChatPane({
       chooseNewAgent37Machine();
       return;
     }
+    if (nextMachineId === AGENT37_CONNECT_ID) {
+      navigate(settingsRouteFor("integrations.agent37"));
+      return;
+    }
     abandonAgent37ReadyMachine();
+    if (draftSetupOwnsRow(nextMachineId)) {
+      // Waking, cloning, then selecting; the chat keeps its machine until then.
+      setCursorCloudMode(false);
+      setDevinCloudMode(false);
+      chooseDraftSetupRow(nextMachineId);
+      return;
+    }
     if (nextMachineId === CURSOR_CLOUD_MACHINE_ID) {
       setError(null);
       setDevinCloudMode(false);
@@ -16584,7 +16648,7 @@ export function AgentChatPane({
     setDevinCloudMode(false);
     keepLaneOnMachine(null);
     handleDraftMachineChange(nextMachineId);
-  }, [abandonAgent37ReadyMachine, chooseAgent37ReadyMachine, chooseNewAgent37Machine, handleDraftMachineChange, keepLaneOnMachine, setCursorCloudMode, workDraftProjectStateKey]);
+  }, [abandonAgent37ReadyMachine, abandonDraftMachineSetup, chooseAgent37ReadyMachine, chooseDraftSetupRow, chooseNewAgent37Machine, draftSetupOwnsRow, handleDraftMachineChange, keepLaneOnMachine, navigate, setCursorCloudMode, workDraftProjectStateKey]);
   // A draft opened in a cloud lane (from the sidebar, a deeplink) is on that
   // cloud: the lane has no other machine.
   useEffect(() => {

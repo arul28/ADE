@@ -58,6 +58,7 @@ import { setAgent37UpdateBlocker, setAgent37WakeForUse } from "./agent37WakeHook
 import { startAgent37MoneyWatch } from "./agent37MoneyWatch";
 import { setAgent37DesktopActions } from "./agent37DesktopActions";
 import { copyAgent37Machine, moveAgent37Machine, type Agent37CopyDeps } from "./agent37MachineCopy";
+import { reconnectAgent37Machine } from "./agent37Reconnect";
 import {
   AGENT37_BUDGET_VAULT_KEY,
   createAgent37BudgetStore,
@@ -240,7 +241,7 @@ export function registerAgent37Ipc(args: {
   /** One coarse product fact per finished create (analytics; never the box or the error). */
   recordMachineCreate?: (outcome: "completed" | "partial" | "cancelled" | "failed") => void;
   /** One coarse product fact per box action that worked (analytics; never the box). */
-  recordMachineAction?: (action: Agent37MachineActionKind | "copy" | "move") => void;
+  recordMachineAction?: (action: Agent37MachineActionKind | "copy" | "move" | "reconnect") => void;
   logger: Logger;
 }): void {
   const { logger } = args;
@@ -710,6 +711,21 @@ export function registerAgent37Ipc(args: {
         message: result.sourceDeleted
           ? `${result.name} is now a ${to === "vm" ? "VM" : "box"}, with all its files.`
           : `${result.name} has all its files on the new ${to === "vm" ? "VM" : "box"}. ADE couldn't delete the old one; delete it from its card.`,
+        result,
+      };
+    });
+  });
+
+  ipcMain.handle(IPC.agent37ReconnectMachine, async (event, arg: { requestId?: unknown; instanceId?: unknown }) => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReconnectMachine)) return { started: false };
+    const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
+    if (!isAgent37InstanceId(instanceId)) throw new Error("ADE doesn't know that box.");
+    const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
+    return startLongAction(event, requestId, async (signal, send) => {
+      const result = await reconnectAgent37Machine({ ...machineCreatorDeps, spending: () => machines.spending() }, { instanceId, requestId }, send, { signal });
+      args.recordMachineAction?.("reconnect");
+      return {
+        message: result.joined ? `${result.name} is back in ADE.` : `${result.name} is signed in again. It shows up in a minute.`,
         result,
       };
     });

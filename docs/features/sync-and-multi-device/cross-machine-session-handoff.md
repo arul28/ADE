@@ -209,6 +209,11 @@ there. Skipped scheduled work, drafts and watches remain pending; a subagent
 completion is recorded in the parent transcript without waking it. Agent, CLI
 and remote turn requests receive a typed refusal naming the destination chat.
 
+A window that watched the move under way (pending, awaiting approval or
+sending) follows the chat when it lands: it opens the destination chat as
+soon as this window lists it (the other machine's next read, up to a minute),
+so the move reads as one chat. A chat opened after it moved stays where it is.
+
 On desktop, new messages from the source composer still go to the destination
 chat; the banner reads **Continues on <machine>** with **Open on <machine>**
 and **Work here instead**. That choice calls `acknowledgeCrossMachineHandoff`
@@ -290,7 +295,9 @@ The action lives on any chat row's right-click **Hand off…** submenu (Local ha
 9. The destination recreates or reuses the lane, starts the chat, and either dispatches the first continuation turn or completes a fork whose default continuation needs no new turn.
 10. Only after the destination runtime acknowledges a requested turn, or the no-turn fork reaches its durable dispatched checkpoint, does ADE mark the source chat as handed off.
 
-The modal closes as soon as the brain accepts the request. From then on the source chat's banner (above the composer, on desktop and iOS) reports the real durable checkpoints the move has passed rather than an indeterminate spinner, whoever started it. The destination chat gets a durable `cross_machine_handoff_arrived` notice and an **Arrived from <machine>** banner.
+The modal closes as soon as the brain accepts the request. From then on the source chat's banner (above the composer, on desktop and iOS) reports the real durable checkpoints the move has passed rather than an indeterminate spinner, whoever started it. The destination chat gets a durable `cross_machine_handoff_arrived` notice and an **Arrived from <machine>** banner. The machine is named as the account lists it ("p1 test vm"), not by its host name, which on a cloud machine is only the instance id; the host name is the fallback when the account list can't be read.
+
+The chat's sign-in route travels in the capsule's `route` (`crossMachineRouteFor` in `chatLaunchRoute.ts`), by the same rule a model switch on one machine follows: a preset or `--via` route stays only for the same model, a stored API key or a Claude/Codex account only for the same provider. The destination keeps a key or preset as it is. An account id means nothing on another machine ("claude-2" can be another login there), so an account travels as its signed-in email, and the destination keeps it only when a signed-in account there has the same email. Before the first turn it shows one `cross_machine_handoff_route` line that says which sign-in the chat uses there: "Uses API key · openai here, as on p1 route a", or, as a warning, that the move changed the model, that the account isn't signed in on this machine, or why the kept route can't run here yet. A return to the original chat keeps that chat's own route and shows no line. Older destinations ignore `route`.
 
 The setup modal can be opened while a turn is active. It offers **Move when this turn ends**, which queues the move as `pending`, or stopping the current response. Pending approvals or questions must be resolved in the source chat.
 

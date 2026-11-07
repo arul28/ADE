@@ -34,6 +34,13 @@ person is using.
   (`adeActions/registry.ts`).
 - `agent37TemplateBuilder.ts` — builds ADE's template in the person's
   workspace (see below).
+- `agent37Reconnect.ts` — Reconnect to ADE for a box removed from the
+  account: the cap check before a wake, the wait for its ADE, `ade machines
+  reconnect` over exec, and the same approval seam as a new machine.
+- `agent37HeadlessApproval.ts` — the one-time sign-in link opened in a
+  headless Chromium, for a brain with no window that approves a machine it
+  made itself. It never types or clicks; a page that waits on a person ends
+  it, and the link goes to the person.
 - `agent37MachineCreator.ts` — `createAgent37Machine`, the New Agent 37
   machine flow.
 - `agent37PendingCreates.ts` — the on-disk record of creates not yet
@@ -230,6 +237,19 @@ Cancel (Cancel, closing the dialog, or the window going away) reaches every
 step, including the approval request. A box that never signed in is only a
 bill, so any failure deletes it, and the record goes only once Agent 37
 confirms the deletion.
+
+### Reconnect
+
+A machine removed from the account shows "Not in ADE" on its card, and its
+brain refuses the account until someone re-pairs it. **Reconnect to ADE** in
+the card's ⋯ menu does that re-pair for the person
+(`agent37Reconnect.ts`): ADE wakes the machine if it sleeps (refused past
+the month's cap, like any other wake), waits for its ADE to answer with the
+same bounded loop a new machine uses (`waitForAgent37BoxAuth`), runs `ade
+machines reconnect` on it over exec, and approves the code the same way as a
+new machine (`approveAgent37MachineSignIn`, the one approval seam). The box
+keeps its files and identity, so it comes back as the same machine, with its
+sleep turned on again.
 
 ### Half-made boxes
 
@@ -499,6 +519,21 @@ agent made today (`ade_made_by_chat`, Agent 37's `created`) and what this
 brain approved today, so a make-and-delete loop can't step around it.
 Loosening a limit is the person's call only, like raising the cap.
 
+**A machine approves its own new machine.** A brain with no desktop
+attached (a cloud machine) normally posts an approval link for the person.
+When the request was answered unattended (a full-auto chat or an automation
+run, within the agent limits and the cap), the brain approves the new
+machine's sign-in itself instead: it opens the same one-time link in a
+headless Chromium on its own machine (`agent37HeadlessApproval.ts`; the
+template ships Chromium). `agent37BrainMaker.ts` allows this only once per
+create, only within 20 minutes of the create this brain started, and only for
+a machine whose Agent 37 metadata carries that create's `ade_request_id`.
+Every use and every refusal is logged (`agent37.self_approval_used`,
+`agent37.self_approval_refused` with the reason). The headless page never
+types or clicks: a page that stops on something a person must do, a stall or
+a failure falls back to a fresh code and the link in the chat. Ask and plan
+modes keep the card or the refusal.
+
 **Approvals.** What spends money or deletes asks first: create, resize, copy,
 move, delete, "never sleep", raising or removing the cap, and turning a ready
 machine on. The RPC server stamps who asks (never the arguments):
@@ -635,6 +670,16 @@ like on any Linux machine with KVM. The template carries what it needs:
 - **`/dev/kvm` for the brain's user.** The VM's kernel has hardware
   virtualization; the root step gives the device to group `node` (the brain
   runs as `node`). A sandboxed box has no `/dev/kvm`, so Android needs a VM.
+  On a box, the first emulator step (`device-create` or `start`) refuses with
+  `ANDROID_NO_ACCELERATION` and a plain message: a VM can, what it costs more
+  an hour than this box (`agent37AndroidNeedsVmMessage`), and that the box
+  stays and sleeps. The CLI hint and the `ade-agent37` skill give the agent
+  the steps: `ade agent37 create --kind vm`, then `ade chat handoff
+  "$ADE_CHAT_SESSION_ID" --machine <vm> --fork --include-changes --clone
+  --when-turn-ends --note "<the task>"`. The chat continues on the VM with its
+  whole history, the person's window follows it there, and the new chat
+  offers to delete the box. `agent37 move` refuses to move the machine its
+  own chat runs on.
 - **The live view** uses the scrcpy server jar the standalone brain ships
   (from 1.2.129-beta.8).
 - **Size:** 4 vCPU / 8 GB runs one emulator; 4/16 if Gradle builds run there

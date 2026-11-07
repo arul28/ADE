@@ -4726,6 +4726,8 @@ declare global {
          */
         copyMachine?: (args: { requestId: string; instanceId: string; name?: string | null; shape?: string | null }) => Promise<{ started: boolean }>;
         moveMachine?: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }) => Promise<{ started: boolean }>;
+        /** Signs a box that was removed from the account ("Not in ADE") back in, as the same machine. Reports like a copy. */
+        reconnectMachine?: (args: { requestId: string; instanceId: string }) => Promise<{ started: boolean }>;
         setBudget?: (budget: Partial<Agent37Budget>) => Promise<Agent37Budget | null>;
         /**
          * Wakes the Agent 37 box behind an account machine because the person

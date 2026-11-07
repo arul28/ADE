@@ -1705,12 +1705,13 @@ The box actions on an Agent 37 card record `feature: "connections"`, `action:
 "agent37_machine_action"` when Agent 37 confirms the action, in the same IPC
 handler (`registerAgent37Ipc.ts`). The outcome is the action, prefixed:
 `box_sleep`, `box_wake`, `box_resize`, `box_backup`, `box_delete`,
-`box_set_sleep` (Sleep when idle…), or `box_copy` / `box_move` when a copy or
-move finishes. The product question is which parts of the box lifecycle
+`box_set_sleep` (Sleep when idle…), `box_copy` / `box_move` when a copy or
+move finishes, or `box_reconnect` when Reconnect to ADE brings a removed box
+back. The product question is which parts of the box lifecycle
 people run from ADE. A
 refusal (limit, wallet, key) is not an event; it stays in the local
 `agent37.machine_action_failed` log line. Remove from ADE is already
-`machine_removed`. A six-hour key per outcome bounds this to 32 accepted events
+`machine_removed`. A six-hour key per outcome bounds this to 36 accepted events
 per installation per UTC day, inside the existing `ade_feature_used` ceilings.
 The machine list's reads (open, focus, the short settling poll) are not
 analytics, and neither is sleeping on its own, waking for use, the monthly

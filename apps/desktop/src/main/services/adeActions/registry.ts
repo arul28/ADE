@@ -306,6 +306,7 @@ import { AGENT37_CLAUDE_TOKEN_VAULT_KEY, agent37MachineEnv } from "../agent37/ag
 import { buildAgent37ReadyActions } from "../agent37/agent37ReadyActions";
 import { buildAgent37AgentActions } from "../agent37/agent37AgentActions";
 import { createAgent37BrainMaker, type Agent37BrainMaker } from "../agent37/agent37BrainMaker";
+import { approveInHeadlessChromium, findHeadlessChromium } from "../agent37/agent37HeadlessApproval";
 import { AGENT37_DEFAULT_TEMPLATE } from "../../../shared/agent37";
 import { createAgent37Machines } from "../agent37/agent37Machines";
 import { AGENT37_BUDGET_VAULT_KEY, createAgent37BudgetStore } from "../agent37/agent37Sleep";
@@ -4100,6 +4101,9 @@ function agent37BrainMakerFor(runtime: AdeRuntime, machines: ReturnType<typeof c
     appVersion: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
     directoryBaseUrl: () => directoryBaseUrl() ?? "",
   });
+  // Only a brain on an Agent 37 machine approves the machines it makes; anywhere
+  // else a person has a browser, and the sign-in link goes to them.
+  const chromium = process.env.AGENT37_INSTANCE_ID?.trim() ? findHeadlessChromium() : null;
   const maker = createAgent37BrainMaker({
     base: {
       client: async () => {
@@ -4123,6 +4127,10 @@ function agent37BrainMakerFor(runtime: AdeRuntime, machines: ReturnType<typeof c
       minAdeVersion: () => stampedAdeVersion(),
       spending: () => machines.spending(),
       removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
+      // No window here: the sign-in of a machine this brain made with an
+      // unattended yes opens in a headless Chromium (the template ships one).
+      ...(chromium ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
+        approveInHeadlessChromium({ url, signal, binary: chromium, logger: runtime.logger }) } : {}),
       logger: runtime.logger,
     },
     logger: runtime.logger,

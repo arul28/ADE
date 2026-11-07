@@ -842,7 +842,8 @@ Work chats
     $ ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
                                                     Move the chat to another machine on your account (brief by
                                                     default; --fork carries full history). --machine names the
-                                                    DESTINATION; the chat moves from here. Add --effort,
+                                                    DESTINATION; the chat moves from here. Without --model it
+                                                    keeps the chat's own model. Add --effort,
                                                     --permissions, --include-changes (bring uncommitted and unpushed
                                                     work), --clone (set the repo up there), --when-turn-ends (queue
                                                     it; a newer user message cancels it). Moving your own chat or a

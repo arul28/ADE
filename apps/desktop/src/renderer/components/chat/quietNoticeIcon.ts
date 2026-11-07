@@ -45,6 +45,7 @@ const ICON_BY_STATUS: ReadonlyMap<string, Icon> = new Map([
   ["goal_blocked", Target],
   ["cross_machine_handoff_state", ArrowsLeftRight],
   ["cross_machine_handoff_arrived", ArrowsLeftRight],
+  ["cross_machine_handoff_route", ArrowsLeftRight],
   ["cross_machine_handoff_complete", ArrowsLeftRight],
   ["cross_machine_handoff_ended", ArrowsLeftRight],
   ["cross_machine_handoff_returned", ArrowsLeftRight],
