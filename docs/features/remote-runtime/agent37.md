@@ -615,8 +615,9 @@ A new chat on it wakes it (Agent 37 answers in about a second) and is working
 in seconds, which is what a prepared seed is in other products. Asleep it
 bills only its disk. Turn it on per project on the Agent 37 page (Ready
 machine: box or VM, size, setup commands); the card shows what it costs
-asleep and awake, the step it is on while preparing, and Retry after a
-failure.
+asleep and awake, the step it is on while this computer prepares it (the
+keeper sends a typed step: make, sign in, clone, setup, sleep; another
+computer's prepare shows no step), and Retry after a failure.
 
 - **The pool lives on Agent 37.** Each machine's metadata says which project
   it is for (`ade_ready_for`, the git identity `github.com/owner/repo`) and
