@@ -148,14 +148,8 @@ enum ProviderAccountSettingChange: Equatable {
     case .mainPromptCache(let value): return account.mainPromptCacheTtl == value
     case .subagentPromptCache(let value): return account.subagentPromptCacheTtl == value
     case .onExtraUsage(let value): return account.onExtraUsage == value
-    case .compaction(let value):
-      guard let value, let saved = account.compaction else { return (account.compaction == nil) == (value == nil) }
-      // The host normalizes the numbers, so a number's presence is compared, not its value.
-      return saved.atTokensAuto == value.atTokensAuto
-        && saved.subagentAtTokensAuto == value.subagentAtTokensAuto
-        && (saved.atTokens == nil) == (value.atTokens == nil)
-        && (saved.subagentAtTokens == nil) == (value.subagentAtTokens == nil)
-        && saved.idleMode == value.idleMode
+    // The host keeps accepted numbers as sent (`normalizeCompactionSettings`).
+    case .compaction(let value): return account.compaction == value
     }
   }
 }
