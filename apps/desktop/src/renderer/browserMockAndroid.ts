@@ -10,6 +10,8 @@
  * - `setup`: no SDK.  `noaccel`: the SDK, no acceleration.
  * - `starting`, `off`, `crashed`, `unsupported`.
  * - `refused`: the start failed because the adb server refused the device (`ANDROID_ADB_UNAUTHORIZED`).
+ * - `?mockAndroidExtras=1`: the lane also holds two extra devices (a running
+ *   Pixel 10 Pro and a Galaxy Z Fold7 that is off); start, stop and promote work.
  *
  * P1 look (3D stage, brand grid):
  * - `?mockAndroidCatalog=<catalog id>` makes the lane's device that catalog
@@ -247,9 +249,36 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
   };
   /** "Keep running" on the mock lane's emulator; a stop ends it, as in the brain. */
   let keepRunning = false;
+  /** `?mockAndroidExtras=1`: the lane's extra devices, each with its catalog look and power state. */
+  type MockExtra = { name: string; look: Partial<AndroidAvdListing>; state: "off" | "booted" };
+  let extras: MockExtra[] = mockParam("mockAndroidExtras") ? [
+    { name: "ade_lane_pixel_10_pro", look: lookFor("pixel-10-pro", null), state: "booted" },
+    { name: "ade_lane_galaxy_z_fold7", look: lookFor("galaxy-z-fold7", null), state: "off" },
+  ] : [];
+  const extraStatus = (extra: MockExtra, index: number) => {
+    const record = avd({ name: extra.name, ...extra.look, adeCreated: true, heldByLaneId: laneId, running: extra.state === "booted" ? runningOn(extra.name, 5558 + index * 2, true) : null });
+    return {
+      device: {
+        laneId: laneId ?? "lane",
+        avdName: extra.name,
+        origin: "created" as const,
+        profileId: record.profileId,
+        systemImage: IMAGE.packageId,
+        createdAt: "2026-11-07T09:00:00.000Z",
+        adeInstalledPackages: [],
+        extra: true,
+      },
+      avd: record,
+      state: extra.state,
+      error: null,
+      poweredOff: null,
+    };
+  };
+  const findExtra = (device: string | null | undefined) => (device ? extras.find((extra) => extra.name === device || extra.look.displayName === device) ?? null : null);
   const laneStatus = (): AndroidLaneDeviceStatus => {
     const record = laneAvdRecord();
     return {
+      ...(extras.length ? { extras: extras.map(extraStatus) } : {}),
       laneId: laneId ?? "lane",
       device: record ? {
         laneId: laneId ?? "lane",
@@ -352,6 +381,11 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
     },
     start: async (args) => {
       laneId = args.laneId;
+      const extra = findExtra(args.device);
+      if (extra) {
+        extra.state = "booted";
+        return delay(laneStatus(), 1_200);
+      }
       if (laneAvd) boot(laneAvd);
       return delay(laneStatus(), 2_000);
     },
@@ -363,6 +397,11 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
     },
     stop: async (args) => {
       laneId = args.laneId;
+      const extra = findExtra(args.device);
+      if (extra) {
+        extra.state = "off";
+        return delay(laneStatus());
+      }
       keepRunning = false;
       laneState = "off";
       streamRunning = false;
@@ -378,9 +417,22 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
       emit({ type: "android.inventory.changed" });
       return delay({ released: Boolean(released), deletedAvd: null });
     },
-    // The mock lane holds no extra devices: a promote of its own device answers with it.
+    // `?mockAndroidExtras=1`: the extra and the lane's device swap places; else a promote of its own device answers with it.
     devicePromote: async (args) => {
       laneId = args.laneId;
+      const extra = findExtra(args.device);
+      if (extra && laneAvd) {
+        const before = laneStatus();
+        const demoted: MockExtra = { name: laneAvd, look: laneLook, state: laneState === "booted" ? "booted" : "off" };
+        extras = extras.map((entry) => (entry === extra ? demoted : entry));
+        laneAvd = extra.name;
+        laneLook = extra.look;
+        laneState = extra.state === "booted" ? "booted" : "off";
+        emit({ type: "android.device.state", laneId: args.laneId, state: laneState });
+        emit({ type: "android.inventory.changed" });
+        const lane = laneStatus();
+        return delay({ device: lane.device!, previous: before.device, previousKeptAs: "extra" as const, lane }, 600);
+      }
       const lane = laneStatus();
       if (!lane.device || lane.device.avdName !== args.device) {
         throw new Error(`ANDROID_DEVICE_NOT_LANE_OWNED: ${args.device} is not one of this lane's extra devices.`);

@@ -35,6 +35,8 @@ describe("checkRemoteAdeCommand", () => {
     ["write", "the Android SDK folder behind a flag and its value", ["android", "sdk", "--folder", "/x", "use"]],
     ["write", "restarting the computer's adb server", ["android", "start", "--restart-adb"]],
     ["write", "restarting adb through actions", ["actions", "run", "android_emulator.start", "--input-json", '{"laneId":"l","restartAdb":true}']],
+    ["write", "restarting adb through an actions --arg", ["actions", "run", "android_emulator.start", "--arg", "laneId=l", "--arg", "restartAdb=true"]],
+    ["write", "restarting adb through an escaped JSON key", ["actions", "run", "android_emulator", "start", "--input-json", '{"\\u0072estartAdb":true}']],
     ["read", "creating a lane", ["lanes", "create", "--name", "x"]],
     ["read", "a flag before the subcommand", ["lanes", "--text", "create"]],
     ["read", "a write action through actions", ["actions", "run", "lane", "create"]],

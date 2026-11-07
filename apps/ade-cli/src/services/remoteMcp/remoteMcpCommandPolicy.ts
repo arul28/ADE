@@ -256,6 +256,22 @@ const GITHUB_AUTH_CHANGES: ReadonlySet<string> = new Set(["login", "authorize", 
 /** `ade android sdk` verbs that install the SDK or a system image, remove an image, stop an install, or pick the SDK folder. */
 const ANDROID_SDK_WRITE_VERBS: ReadonlySet<string> = new Set(["install", "use", "cancel", "remove"]);
 const ANDROID_SDK_PERSON_ONLY: ReadonlySet<string> = new Set(ANDROID_SDK_PERSON_ONLY_ACTIONS);
+/**
+ * An argument that names `restartAdb`: a `--arg restartAdb=…` value, or a JSON
+ * object with that key. A JSON value is parsed and printed again, so an
+ * escaped key (`\u0072estartAdb`) cannot hide it. False positives only refuse.
+ */
+function namesRestartAdb(word: string): boolean {
+  if (/restartadb/iu.test(word)) return true;
+  if (!word.trimStart().startsWith("{")) return false;
+  try {
+    return /"restartadb"/iu.test(JSON.stringify(JSON.parse(word)));
+  } catch {
+    // Not JSON: the CLI refuses it before anything runs.
+    return false;
+  }
+}
+
 /** A restart of the machine's adb server cuts every other device and tool on it, so only the person decides it. */
 const ANDROID_RESTART_ADB_REASON =
   "Only the person restarts adb: Restart adb and start in the Android pane, or `ade android start --restart-adb` in a terminal on that computer.";
@@ -348,8 +364,9 @@ function checkActionsCommand(words: readonly string[], scope: RemoteMcpScope, ar
   if (target.domain === "android_emulator" && ANDROID_SDK_PERSON_ONLY.has(target.action)) {
     return { ok: false, reason: `\`${name}\` is not available remotely. ${ANDROID_SDK_REASON}` };
   }
-  // The raw action door to the same switch as `start --restart-adb`.
-  if (target.domain === "android_emulator" && args.some((word) => /"restartAdb"\s*:\s*true/u.test(word))) {
+  // The raw action door to the same switch as `start --restart-adb`, in any
+  // spelling the CLI reads (`--input-json`, `--arg`, `--arg-json`, `--set`).
+  if (target.domain === "android_emulator" && args.some(namesRestartAdb)) {
     return { ok: false, reason: `\`${name}\` with restartAdb is not available remotely. ${ANDROID_RESTART_ADB_REASON}` };
   }
   const signIn = SERVICE_SIGN_IN_ACTIONS.get(target.domain);
