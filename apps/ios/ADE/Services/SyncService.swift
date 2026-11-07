@@ -4669,6 +4669,14 @@ final class SyncService: ObservableObject {
   private let outboundSyncCursorsKey = "ade.sync.outboundSyncCursors"
   private let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
   private let outboundSyncStateMaxEntries = 128
+  private let syncChangeLogPruneLastRunKey = "ade.sync.changeLogPrune.lastRunAt"
+  private let syncChangeLogPruneNextRowIdKey = "ade.sync.changeLogPrune.nextRowId"
+  /// One prune run an hour (every five minutes while an old log is still being
+  /// swept), each scanning at most 100 windows of 2,000 change-log rows, one
+  /// short transaction per window (about 10 ms on a Mac for a full window).
+  private let syncChangeLogPruneInterval: TimeInterval = 60 * 60
+  private let syncChangeLogPruneWindowRows = 2_000
+  private let syncChangeLogPruneMaxWindowsPerRun = 100
   private let maxChangesetAckRetries = 6
   private let defaultOutboundChangesetRowLimit = 64
   private let defaultOutboundChangesetByteLimit = 64 * 1_024
@@ -4811,6 +4819,7 @@ final class SyncService: ObservableObject {
   private var outboundLocalDbVersion = 0
   private var outboundCursorPersistTask: Task<Void, Never>?
   private var pendingOutboundCursorPersistVersion: Int?
+  private var syncChangeLogPruneTask: Task<Void, Never>?
   private var remoteCursorProfilePersistTask: Task<Void, Never>?
   private var pendingRemoteProfileDbVersion: Int?
   private var pendingRemoteProfileDbVersionBySite: [String: Int] = [:]
@@ -22255,6 +22264,7 @@ final class SyncService: ObservableObject {
         )
         resolve(requestId: requestId, result: .success(payload))
         wakeChangesetApplyWaiters()
+        scheduleSyncChangeLogPruneIfDue()
       } catch {
         guard isCurrentConnectionGeneration(generation) else { return }
         changesetApplyBlockedAfterFailure = (connectionGeneration, latestRemoteDbVersion)
@@ -22668,6 +22678,86 @@ final class SyncService: ObservableObject {
     pendingOutboundChangeset = pending
     persistPendingOutboundChangesetForActiveProject(pending)
     lastError = ack.error?.message ?? "The machine could not apply the latest phone changes."
+  }
+
+  /// The highest phone db_version that no host can still need from the change
+  /// log: the lowest acknowledged cursor over every saved project and host,
+  /// the live cursor, and the start of every batch still waiting for its ack.
+  /// 0 (keep every phone row) when no cursor was ever saved.
+  private func syncChangeLogLocalAckFloor() -> Int {
+    let siteId = database.localSiteId().trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let ownSite = { (candidate: String) in
+      candidate.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == siteId
+    }
+    let ackedCursors = loadOutboundSyncCursors().values
+      .filter { ownSite($0.siteId) }
+      .map(\.lastAckedDbVersion)
+    guard var floor = ackedCursors.min() else { return 0 }
+    floor = min(floor, outboundLocalDbVersion)
+    if let pending = pendingOutboundChangeset {
+      floor = min(floor, pending.payload.fromDbVersion)
+    }
+    for pending in loadPendingOutboundChangesets().values where ownSite(pending.siteId) {
+      floor = min(floor, pending.payload.fromDbVersion)
+    }
+    return max(0, floor)
+  }
+
+  /// After a changeset batch applies, delete change-log rows no reader needs
+  /// (see `DatabaseService.pruneSupersededSyncChanges`), at most once an hour,
+  /// off the main actor, one short transaction per window so main-actor reads
+  /// wait at most one window. A run that stops early resumes from its rowid on
+  /// the next run.
+  private func scheduleSyncChangeLogPruneIfDue(now: Date = Date()) {
+    guard syncChangeLogPruneTask == nil else { return }
+    let defaults = UserDefaults.standard
+    if let lastRun = defaults.object(forKey: syncChangeLogPruneLastRunKey) as? Date,
+       now.timeIntervalSince(lastRun) < syncChangeLogPruneInterval,
+       now >= lastRun {
+      return
+    }
+    defaults.set(now, forKey: syncChangeLogPruneLastRunKey)
+    let floor = syncChangeLogLocalAckFloor()
+    let startRowId = Int64(max(0, defaults.integer(forKey: syncChangeLogPruneNextRowIdKey)))
+    let database = self.database
+    let windowRows = syncChangeLogPruneWindowRows
+    let maxWindows = syncChangeLogPruneMaxWindowsPerRun
+    syncChangeLogPruneTask = Task.detached(priority: .utility) { [weak self] in
+      var rowId = startRowId
+      var deleted = 0
+      for window in 0..<maxWindows {
+        if Task.isCancelled { break }
+        if window > 0 {
+          try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let result = database.pruneSupersededSyncChanges(
+          localAckedThroughDbVersion: floor,
+          afterRowId: rowId,
+          scanLimit: windowRows
+        )
+        deleted += result.deletedCount
+        rowId = result.nextRowId
+        if rowId == 0 { break }
+      }
+      if deleted > 0 {
+        database.checkpointWalTruncate()
+      }
+      await self?.finishSyncChangeLogPrune(nextRowId: rowId, deletedCount: deleted, floor: floor)
+    }
+  }
+
+  private func finishSyncChangeLogPrune(nextRowId: Int64, deletedCount: Int, floor: Int) {
+    UserDefaults.standard.set(Int(nextRowId), forKey: syncChangeLogPruneNextRowIdKey)
+    if nextRowId != 0 {
+      // A large old log is not through yet: come back in five minutes instead
+      // of an hour.
+      UserDefaults.standard.set(
+        Date().addingTimeInterval(5 * 60 - syncChangeLogPruneInterval),
+        forKey: syncChangeLogPruneLastRunKey
+      )
+    }
+    syncChangeLogPruneTask = nil
+    syncConnectLog.info("sync change log pruned rows=\(deletedCount, privacy: .public) floor=\(floor, privacy: .public) nextRowId=\(nextRowId, privacy: .public)")
   }
 
   private func sendOutboundChangeset(_ pending: PendingOutboundChangeset) {

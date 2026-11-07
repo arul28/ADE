@@ -9483,6 +9483,84 @@ final class ADETests: XCTestCase {
     target.close()
   }
 
+  func testDatabaseChangeLogPruneKeepsUnsentPhoneChangesAndStillConverges() throws {
+    // ADE-IOS-1C: the change log only grew. Pruning must never drop a phone
+    // change a host has not acknowledged, and a host resending a pruned row
+    // must not roll the row back. `control` never prunes.
+    let prunedURL = makeTemporaryDirectory()
+    let controlURL = makeTemporaryDirectory()
+    let pruned = DatabaseService(baseURL: prunedURL)
+    let control = DatabaseService(baseURL: controlURL)
+    XCTAssertNil(pruned.initializationError)
+    XCTAssertNil(control.initializationError)
+
+    let hostSite = "b00e9b92c864a27958669c1595fcb2c3"
+    let hostPk = packedDesktopTextPrimaryKey("stash-host")
+    func hostText(_ text: String, colVersion: Int, dbVersion: Int) -> CrsqlChangeRow {
+      CrsqlChangeRow(
+        table: "prompt_stashes", pk: hostPk, cid: "text", val: .string(text),
+        colVersion: colVersion, dbVersion: dbVersion, siteId: hostSite, cl: 1, seq: 0
+      )
+    }
+    let hostCreatedAt = CrsqlChangeRow(
+      table: "prompt_stashes", pk: hostPk, cid: "created_at", val: .string("2026-11-06T10:00:00.000Z"),
+      colVersion: 1, dbVersion: 10, siteId: hostSite, cl: 1, seq: 1
+    )
+    let hostV1 = hostText("host v1", colVersion: 1, dbVersion: 10)
+    for database in [pruned, control] {
+      _ = try database.applyChanges([hostV1, hostCreatedAt])
+      _ = try database.applyChanges([hostText("host v2", colVersion: 2, dbVersion: 20)])
+      try database.executeSqlForTesting("""
+        insert into prompt_stashes (id, text, created_at)
+        values ('stash-phone', 'phone v1', '2026-11-06T10:01:00.000Z')
+      """)
+      try database.executeSqlForTesting("update prompt_stashes set text = 'phone v2' where id = 'stash-phone'")
+    }
+    // The host acknowledged everything up to here; v3 and v4 are unsent.
+    let ackedVersion = pruned.currentDbVersion()
+    for database in [pruned, control] {
+      try database.executeSqlForTesting("update prompt_stashes set text = 'phone v3' where id = 'stash-phone'")
+      try database.executeSqlForTesting("update prompt_stashes set text = 'phone v4' where id = 'stash-phone'")
+    }
+    let unsentBefore = pruned.exportLocalChangesSince(version: ackedVersion, rowLimit: 1_000)
+    XCTAssertEqual(unsentBefore.map(\.val), [.string("phone v3"), .string("phone v4")])
+
+    let result = pruned.pruneSupersededSyncChanges(
+      localAckedThroughDbVersion: ackedVersion,
+      afterRowId: 0,
+      scanLimit: 10_000
+    )
+
+    XCTAssertEqual(result.nextRowId, 0)
+    // Unsent phone changes survive, including 'phone v3', which 'phone v4'
+    // already superseded.
+    XCTAssertEqual(pruned.exportLocalChangesSince(version: ackedVersion, rowLimit: 1_000), unsentBefore)
+    // Superseded rows are gone: the host's v1 and the acknowledged phone v1, v2.
+    let textLog = pruned.exportChangesSince(version: 0).filter { $0.cid == "text" }.map(\.val)
+    XCTAssertEqual(Set(textLog.compactMap { value -> String? in
+      if case .string(let text) = value { return text }
+      return nil
+    }), ["host v2", "phone v3", "phone v4"])
+    XCTAssertEqual(result.deletedCount, 3)
+    XCTAssertEqual(pruned.currentDbVersion(), control.currentDbVersion())
+
+    // A later sync converges the same way: a retried batch with the pruned
+    // host row is a no-op, and a newer host row lands.
+    for database in [pruned, control] {
+      _ = try database.applyChanges([hostV1, hostCreatedAt])
+    }
+    XCTAssertEqual(try textValue(in: prunedURL, table: "prompt_stashes", column: "text", id: "stash-host"), "host v2")
+    XCTAssertEqual(try textValue(in: controlURL, table: "prompt_stashes", column: "text", id: "stash-host"), "host v2")
+    for database in [pruned, control] {
+      _ = try database.applyChanges([hostText("host v3", colVersion: 3, dbVersion: 30)])
+    }
+    for (database, url) in [(pruned, prunedURL), (control, controlURL)] {
+      XCTAssertEqual(try textValue(in: url, table: "prompt_stashes", column: "text", id: "stash-host"), "host v3")
+      XCTAssertEqual(try textValue(in: url, table: "prompt_stashes", column: "text", id: "stash-phone"), "phone v4")
+      database.close()
+    }
+  }
+
   func testLocalWritesMintDbVersionsInsideTheHostVersionSpace() throws {
     // Regression for proof artifacts (and any other host row) never reaching the
     // phone: the phone's CRR clock is seeded from the highest db_version it has
