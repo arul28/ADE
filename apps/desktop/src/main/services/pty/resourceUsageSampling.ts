@@ -326,8 +326,12 @@ export function classifyProcessRoles(input: ProcessRoleClassificationInput): Pro
   }
 
   // An Android emulator that the brain started is a device, not ADE: like a
-  // simulator, its memory (gigabytes) must not count as the app's.
-  const isDeviceProcess = (pid: number) => {
+  // simulator, its memory (gigabytes) must not count as the app's. The brain
+  // spawns the emulator itself, so only a direct child of a runtime root
+  // counts as one; a QEMU that a terminal starts is the terminal's work.
+  const runtimeRoots = new Set<number>();
+  const isBrainStartedEmulator = (parentPid: number, pid: number) => {
+    if (!runtimeRoots.has(parentPid)) return false;
     const command = rowsByPid.get(pid)?.command;
     return command != null && ANDROID_EMULATOR_COMMAND.test(command);
   };
@@ -338,7 +342,7 @@ export function classifyProcessRoles(input: ProcessRoleClassificationInput): Pro
       const next: number[] = [];
       for (const parent of frontier) {
         for (const childPid of childrenByPpid.get(parent) ?? []) {
-          if (claimedRoleByPid.has(childPid) || electronPids.has(childPid) || isDeviceProcess(childPid)) continue;
+          if (claimedRoleByPid.has(childPid) || electronPids.has(childPid) || isBrainStartedEmulator(parent, childPid)) continue;
           claimedRoleByPid.set(childPid, role);
           next.push(childPid);
         }
@@ -356,6 +360,7 @@ export function classifyProcessRoles(input: ProcessRoleClassificationInput): Pro
     .filter((root) => Number.isFinite(root.pid) && root.pid > 0 && !electronPids.has(root.pid));
 
   const claimedRuntime = runtimePids.filter((pid) => claim(pid, "ade-runtime"));
+  for (const pid of claimedRuntime) runtimeRoots.add(pid);
   const claimedPtyHosts = ptyHostPids.filter((pid) => claim(pid, "ade-pty-host"));
   const claimedDesktopRoots = desktopRoots.filter((root) => claim(root.pid, root.kind));
 
