@@ -32,7 +32,7 @@ import { createAndroidInput } from "./androidInput";
 import { createAndroidCrashWatch } from "./androidCrashWatch";
 import { createAndroidLaneStreams } from "./androidLaneStreams";
 import { openStartedEmulators, reconcileStartedEmulators, stopAdeStartedEmulators } from "./androidHandedOffEmulators";
-import { reserveAndroidMemoryForStart } from "./androidMemoryGuard";
+import { reserveAndroidMemoryForStart, type AndroidBootReservation } from "./androidMemoryGuard";
 import type { AndroidEmulatorStopReason } from "./androidEmulatorOwners";
 import { createAndroidEmulatorUse } from "./androidEmulatorUse";
 import type { AppleStreamOwningService } from "../ios/appleStreamRelayForService";
@@ -436,7 +436,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       platform,
       logger,
       // Every running emulator counts, the user's and other brains' too.
-      discoveryPids: discovered().map((emulator) => emulator.pid),
+      discovered: discovered(),
       ledger: lifecycle?.ledger ?? null,
     });
     try {
@@ -444,7 +444,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         guestRamMb: reservation.cost.guestRamMb,
         costMb: reservation.cost.costMb,
         chatSessionId: options.chatSessionId?.trim() || null,
-      });
+      }, reservation);
       // Started past the RAM guard: how often the guard's answer is overruled.
       if (force && status.state === "booted") deps.captureAnalytics?.("start_forced");
       return status;
@@ -459,6 +459,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     device: AndroidLaneDevice,
     ready: ReadyAndroidSdk,
     owner: { guestRamMb: number; costMb: number; chatSessionId: string | null },
+    reservation: Pick<AndroidBootReservation, "launched">,
   ): Promise<AndroidLaneDeviceStatus> => {
     const laneId = state.laneId;
     const logPath = path.join(deps.dataDir, "logs", `${device.avdName}.log`);
@@ -489,6 +490,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       // The machine-wide owner record: this brain owns it from now on.
       const { avdName, consolePort, launcherPid } = launch;
       lifecycle?.recordLaunch({ ...owner, avdName, consolePort, launcherPid, adbPath: ready.adbPath, laneId, projectRoot: deps.projectRoot ?? null });
+      // From here a later start finds this boot's qemu and counts only what it has not taken yet.
+      reservation.launched({ avdName, consolePort, launcherPid });
       // A stop that came while the launch was still picking ports.
       if (state.stopRequested) throw new AndroidEmulatorFailure("ANDROID_NOT_RUNNING", "The emulator was stopped while it was starting.");
       const startedAt = Date.now();

@@ -331,11 +331,18 @@ export function createAndroidEmulatorLifecycle(config: AndroidEmulatorLifecycleC
         data.reservations.push({ id, pid: process.pid, mb, at });
       });
       return {
-        earlierMb: () => {
+        earlierBoots: () =>
           // This process's own boots are counted in memory (`bootsInFlight`); only other brains' come from here.
-          const others = liveReservations(config.store.read().reservations, now(), isPidAlive)
-            .filter((entry) => entry.pid !== process.pid && (entry.at < at || (entry.at === at && entry.id < id)));
-          return { mb: others.reduce((sum, entry) => sum + entry.mb, 0), count: others.length };
+          liveReservations(config.store.read().reservations, now(), isPidAlive)
+            .filter((entry) => entry.pid !== process.pid && (entry.at < at || (entry.at === at && entry.id < id)))
+            .map((entry) => ({ mb: entry.mb, emulator: entry.emulator ?? null })),
+        launched: (emulator) => {
+          config.store.update((data) => {
+            const entry = data.reservations.find((candidate) => candidate.id === id);
+            if (!entry) return false;
+            entry.emulator = { avdName: emulator.avdName, consolePort: emulator.consolePort, launcherPid: emulator.launcherPid };
+            return true;
+          });
         },
         release: () => {
           config.store.update((data) => {

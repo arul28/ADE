@@ -116,8 +116,25 @@ export type AndroidEmulatorOwnerRecord = {
   stopping: { brainPid: number; at: string } | null;
 };
 
-/** A boot that passed the memory guard and has not taken its memory yet. */
-export type AndroidBootReservationRecord = { id: string; pid: number; mb: number; at: string };
+/**
+ * A boot that passed the memory guard and has not taken its memory yet. `pid`
+ * is the brain's; `emulator` names the emulator once spawned, so another
+ * brain's start counts only what its qemu has not taken yet.
+ */
+export type AndroidBootReservationRecord = {
+  id: string;
+  pid: number;
+  mb: number;
+  at: string;
+  emulator?: { avdName: string; consolePort: number; launcherPid: number } | null;
+};
+
+function isBootEmulator(value: unknown): value is NonNullable<AndroidBootReservationRecord["emulator"]> {
+  return isRecord(value)
+    && typeof value.avdName === "string"
+    && typeof value.consolePort === "number"
+    && typeof value.launcherPid === "number";
+}
 
 /** What an AVD's emulator measured beyond its guest RAM, once warm. */
 export type AndroidAvdOverheadRecord = { overheadMb: number; guestRamMb: number; measuredAt: string };
@@ -179,8 +196,10 @@ export function parseAndroidEmulatorOwners(text: string): AndroidEmulatorOwnersD
       }))
       : [],
     reservations: Array.isArray(parsed.reservations)
-      ? parsed.reservations.filter((entry): entry is AndroidBootReservationRecord =>
-        isRecord(entry) && typeof entry.id === "string" && typeof entry.pid === "number" && typeof entry.mb === "number")
+      ? parsed.reservations
+        .filter((entry): entry is AndroidBootReservationRecord =>
+          isRecord(entry) && typeof entry.id === "string" && typeof entry.pid === "number" && typeof entry.mb === "number")
+        .map((entry) => ({ ...entry, emulator: isBootEmulator(entry.emulator) ? entry.emulator : null }))
       : [],
     overheadByAvd,
   };

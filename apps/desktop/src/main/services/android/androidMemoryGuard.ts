@@ -24,7 +24,8 @@ import { ANDROID_QEMU_IMAGE_PREFIX } from "./androidEmulatorImage";
  * 2. the machine is writing to swap now (`ANDROID_PAGING_REFUSE_MB_PER_S`
  *    over a 2 s sample, taken only here, at start);
  * 3. every running emulator's real memory (the user's and other brains'
- *    included), the boots in flight, and this one would pass
+ *    included), the boots in flight (less what their own qemu already
+ *    measures, so a booting emulator counts once), and this one would pass
  *    `ANDROID_EMULATOR_BUDGET_SHARE` of physical memory. The first emulator
  *    is never refused by this rule alone: the other three judge it, so a
  *    small machine can still run one;
@@ -89,18 +90,29 @@ export function androidEmulatorStartCost(args: {
 
 /* ---------- boots in flight ---------- */
 
+/** The emulator a boot launched: how a later start finds its qemu among the measured processes. */
+export type AndroidBootEmulator = { avdName: string; consolePort: number; launcherPid: number };
+
+/** One boot in flight: what it holds, and its emulator once launched (null before the spawn). */
+export type AndroidBootInFlight = { mb: number; emulator: AndroidBootEmulator | null };
+
 /**
  * Boots in flight in this process, every project's. Their emulators have not
- * taken their memory yet, so a start counts the ones that began before it;
- * two lanes that start together cannot both fit into the same free memory.
- * Other brains' boots are counted through the owner file's reservations.
+ * taken all their memory yet, so a start counts the ones that began before
+ * it; two lanes that start together cannot both fit into the same free
+ * memory. Other brains' boots are counted through the owner file's
+ * reservations.
  */
-const bootsInFlight = new Map<number, number>();
+const bootsInFlight = new Map<number, AndroidBootInFlight>();
 let nextBootId = 1;
 
 export type AndroidBootReservation = {
   /** The memory of the boots that began before this one, in MB. */
   earlierMb: () => number;
+  /** The boots that began before this one. */
+  earlierBoots: () => AndroidBootInFlight[];
+  /** The boot spawned its emulator: a later start counts only what that emulator has not taken yet. */
+  launched: (emulator: AndroidBootEmulator) => void;
   /** The boot ended (booted, failed or refused). Safe to call twice. */
   release: () => void;
 };
@@ -108,17 +120,45 @@ export type AndroidBootReservation = {
 /** Holds `needMb` for one boot until `release`. */
 export function reserveAndroidBootMemory(needMb: number): AndroidBootReservation {
   const id = nextBootId++;
-  bootsInFlight.set(id, needMb);
+  bootsInFlight.set(id, { mb: needMb, emulator: null });
+  const earlierBoots = () => [...bootsInFlight].filter(([other]) => other < id).map(([, boot]) => ({ ...boot }));
   return {
-    earlierMb: () => {
-      let total = 0;
-      for (const [other, mb] of bootsInFlight) if (other < id) total += mb;
-      return total;
+    earlierMb: () => earlierBoots().reduce((sum, boot) => sum + boot.mb, 0),
+    earlierBoots,
+    launched: (emulator) => {
+      const boot = bootsInFlight.get(id);
+      if (boot) boot.emulator = { ...emulator };
     },
     release: () => {
       bootsInFlight.delete(id);
     },
   };
+}
+
+/**
+ * The part of the earlier boots' reservations their own emulators already
+ * use: per boot, the measured memory of its qemu (the discovery file's pid
+ * for its AVD and console port, else the launcher's, which is qemu on macOS
+ * and Linux), capped at what the boot reserved. A boot not yet launched, or
+ * whose qemu is not listed yet, adds nothing, so it counts in full.
+ */
+export function androidBootsMeasuredMb(
+  boots: readonly AndroidBootInFlight[],
+  emulators: readonly ProcessMemory[],
+  discovered: readonly { avdName: string; consolePort: number; pid: number }[],
+): number {
+  let total = 0;
+  for (const boot of boots) {
+    const emulator = boot.emulator;
+    if (!emulator) continue;
+    const qemuPid = discovered.find((entry) =>
+      entry.consolePort === emulator.consolePort && entry.avdName.toLowerCase() === emulator.avdName.toLowerCase())?.pid ?? null;
+    const measuredMb = emulators
+      .filter((measured) => measured.pid === emulator.launcherPid || measured.pid === qemuPid)
+      .reduce((sum, measured) => sum + measured.mb, 0);
+    total += Math.min(boot.mb, Math.max(0, measuredMb));
+  }
+  return total;
 }
 
 /* ---------- the decision, pure ---------- */
@@ -131,9 +171,11 @@ export type AndroidMemoryFacts = {
   /** Every running emulator's real memory, ADE's or not. */
   emulatorsMb: number;
   emulatorCount: number;
-  /** Boots that passed the guard before this one and have not finished. */
+  /** Boots that passed the guard before this one and have not finished: what they reserved. */
   earlierBootsMb: number;
   earlierBootCount: number;
+  /** The part of `earlierBootsMb` already in `emulatorsMb` (`androidBootsMeasuredMb`): a booting emulator counts once. */
+  earlierBootsMeasuredMb: number;
   costMb: number;
 };
 
@@ -145,18 +187,21 @@ export type AndroidMemoryVerdict = {
   budgetMb: number;
   /** The emulators and earlier boots, before this one. */
   usedMb: number;
+  /** What the earlier boots still have to take, beyond what their emulators already use. */
+  pendingBootsMb: number;
 };
 
 /** Whether one start fits, from the facts read for it. */
 export function decideAndroidMemoryStart(facts: AndroidMemoryFacts): AndroidMemoryVerdict {
   const budgetMb = Math.round(facts.totalMb * ANDROID_EMULATOR_BUDGET_SHARE);
-  const usedMb = facts.emulatorsMb + facts.earlierBootsMb;
-  const verdict = (refusal: AndroidMemoryRefusal | null): AndroidMemoryVerdict => ({ refusal, budgetMb, usedMb });
+  const pendingBootsMb = Math.max(0, facts.earlierBootsMb - facts.earlierBootsMeasuredMb);
+  const usedMb = facts.emulatorsMb + pendingBootsMb;
+  const verdict = (refusal: AndroidMemoryRefusal | null): AndroidMemoryVerdict => ({ refusal, budgetMb, usedMb, pendingBootsMb });
   if (facts.pressure === "warn" || facts.pressure === "critical") return verdict("pressure");
   if (facts.pagingOutMbPerSec !== null && facts.pagingOutMbPerSec >= ANDROID_PAGING_REFUSE_MB_PER_S) return verdict("paging");
   const othersRunning = facts.emulatorCount + facts.earlierBootCount > 0;
   if (othersRunning && usedMb + facts.costMb > budgetMb) return verdict("budget");
-  if (facts.availableMb !== null && facts.availableMb - facts.earlierBootsMb - facts.costMb < ANDROID_MEMORY_RESERVE_MB) {
+  if (facts.availableMb !== null && facts.availableMb - pendingBootsMb - facts.costMb < ANDROID_MEMORY_RESERVE_MB) {
     return verdict("available");
   }
   return verdict(null);
@@ -189,7 +234,7 @@ export function describeAndroidMemoryRefusal(
         + `of the ${formatAndroidMemoryGb(verdict.budgetMb)} ADE allows. Stop an emulator first.`;
     case "available":
       return `${deviceName} needs about ${formatAndroidMemoryGb(facts.costMb)}, and this machine has `
-        + `${formatAndroidMemoryGb((facts.availableMb ?? 0) - facts.earlierBootsMb)} free. ${next}`;
+        + `${formatAndroidMemoryGb((facts.availableMb ?? 0) - verdict.pendingBootsMb)} free. ${next}`;
   }
 }
 
@@ -199,8 +244,8 @@ export function describeAndroidMemoryRefusal(
 export type AndroidMemoryLedger = {
   /** This AVD's measured overhead, and the largest one measured on the machine. */
   overheadFor: (avdName: string) => { avdMb: number | null; machineMb: number | null };
-  /** Records `mb` for one boot; the answer counts other brains' earlier boots and releases it. */
-  reserve: (mb: number) => { earlierMb: () => { mb: number; count: number }; release: () => void };
+  /** Records `mb` for one boot; the answer lists other brains' earlier boots, names its emulator, and releases it. */
+  reserve: (mb: number) => Pick<AndroidBootReservation, "earlierBoots" | "launched" | "release">;
   /** Running emulators' real memory was read: the ledger keeps what it learns about ADE's (warm overheads). */
   observe?: (emulators: readonly ProcessMemory[]) => void;
 };
@@ -222,8 +267,12 @@ export async function reserveAndroidMemoryForStart(args: {
   force: boolean;
   platform: NodeJS.Platform;
   logger: Logger | null;
-  /** qemu pids from the discovery files, so an emulator with a renamed binary still counts. */
-  discoveryPids?: readonly number[];
+  /**
+   * The discovery files' emulators: their qemu pids are measured, so one with
+   * a renamed binary still counts, and they match a booting emulator to its
+   * boot's reservation.
+   */
+  discovered?: readonly { avdName: string; consolePort: number; pid: number }[];
   ledger?: AndroidMemoryLedger | null;
   readers?: AndroidMemoryReaders;
 }): Promise<AndroidBootReservation & { cost: AndroidStartCost }> {
@@ -234,23 +283,35 @@ export async function reserveAndroidMemoryForStart(args: {
   const shared = args.ledger?.reserve(cost.costMb) ?? null;
   const reservation: AndroidBootReservation & { cost: AndroidStartCost } = {
     cost,
-    earlierMb: () => local.earlierMb() + (shared?.earlierMb().mb ?? 0),
+    earlierMb: () => local.earlierMb() + (shared?.earlierBoots().reduce((sum, boot) => sum + boot.mb, 0) ?? 0),
+    earlierBoots: () => [...local.earlierBoots(), ...(shared?.earlierBoots() ?? [])],
+    launched: (emulator) => {
+      local.launched(emulator);
+      // Best effort: a busy owner file only costs the other brains' accuracy
+      // (they count this boot in full), never the boot itself.
+      try {
+        shared?.launched(emulator);
+      } catch (error) {
+        logger?.warn("android.boot_ledger_update_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+      }
+    },
     release: () => {
       local.release();
       shared?.release();
     },
   };
   if (args.force) return reservation;
+  const discovered = args.discovered ?? [];
   const [signals, emulators] = await Promise.all([
     (args.readers?.signals ?? (() => readHostMemorySignals({ platform, pagingSampleMs: ANDROID_PAGING_SAMPLE_MS })))(),
     (args.readers?.emulators ?? ((pids) => readProcessMemory({ pids, namePrefixes: ANDROID_EMULATOR_PROCESS_PREFIXES, platform })))(
-      args.discoveryPids ?? [],
+      discovered.map((emulator) => emulator.pid),
     ),
   ]);
   args.ledger?.observe?.(emulators);
   if (signals.availableMb === null) logger?.warn("android.start_memory_unread", { laneId });
-  const others = shared?.earlierMb() ?? { mb: 0, count: 0 };
-  const localEarlierMb = local.earlierMb();
+  // This process's boots and other brains' (the owner file's list leaves this process's out).
+  const earlierBoots = reservation.earlierBoots();
   const facts: AndroidMemoryFacts = {
     totalMb: signals.totalMb,
     availableMb: signals.availableMb,
@@ -258,8 +319,9 @@ export async function reserveAndroidMemoryForStart(args: {
     pagingOutMbPerSec: signals.pagingOutMbPerSec,
     emulatorsMb: emulators.reduce((sum, emulator) => sum + emulator.mb, 0),
     emulatorCount: emulators.length,
-    earlierBootsMb: localEarlierMb + others.mb,
-    earlierBootCount: (localEarlierMb > 0 ? 1 : 0) + others.count,
+    earlierBootsMb: earlierBoots.reduce((sum, boot) => sum + boot.mb, 0),
+    earlierBootCount: earlierBoots.length,
+    earlierBootsMeasuredMb: androidBootsMeasuredMb(earlierBoots, emulators, discovered),
     costMb: cost.costMb,
   };
   const verdict = decideAndroidMemoryStart(facts);
@@ -273,6 +335,7 @@ export async function reserveAndroidMemoryForStart(args: {
     emulatorsMb: facts.emulatorsMb,
     emulatorCount: facts.emulatorCount,
     earlierBootsMb: facts.earlierBootsMb,
+    earlierBootsMeasuredMb: facts.earlierBootsMeasuredMb,
     budgetMb: verdict.budgetMb,
     availableMb: facts.availableMb,
     pressure: facts.pressure,

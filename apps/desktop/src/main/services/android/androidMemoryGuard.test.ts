@@ -22,6 +22,7 @@ const calm: AndroidMemoryFacts = {
   emulatorCount: 0,
   earlierBootsMb: 0,
   earlierBootCount: 0,
+  earlierBootsMeasuredMb: 0,
   costMb: 5_632,
 };
 
@@ -60,6 +61,9 @@ describe("androidMemoryGuard", () => {
     ["a trickle of paging below the limit", { pagingOutMbPerSec: 1.2 }, null],
     ["running emulators plus this one past half of RAM", { emulatorsMb: 14_300, emulatorCount: 2 }, "budget"],
     ["another brain's boot in flight counted toward the budget", { emulatorsMb: 8_400, emulatorCount: 1, earlierBootsMb: 5_632, earlierBootCount: 1 }, "budget"],
+    // A boot still in flight (5.5 GB reserved) whose qemu already measures 3 GB, beside a 6 GB emulator: 3 GB counted once.
+    ["a booting emulator counted once, so the next start fits", { emulatorsMb: 6_000 + 3_072, emulatorCount: 2, earlierBootsMb: 5_632, earlierBootCount: 1, earlierBootsMeasuredMb: 3_072 }, null],
+    ["a booting emulator counted once, and the next start still does not fit", { emulatorsMb: 8_400 + 3_072, emulatorCount: 2, earlierBootsMb: 5_632, earlierBootCount: 1, earlierBootsMeasuredMb: 3_072 }, "budget"],
     ["the first emulator on a small machine is judged by the other rules only", { totalMb: 8_192, availableMb: 7_000 }, null],
     ["too little left after the start", { availableMb: 6_000 }, "available"],
     ["no signal readable at all", { availableMb: null, pressure: null, pagingOutMbPerSec: null }, null],
