@@ -203,6 +203,10 @@ type BrainProjectActionsSyncHandlerArgs = {
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
   /** Runs `command` envelopes that name a registered project in that project. */
   projectCommandRouter?: BrainProjectCommandRouter;
+  /** True while a project sync host owns new sockets on the shared listener. */
+  projectHostAttached?: () => boolean;
+  /** Subscribe to a project sync host attaching to the shared listener. */
+  onProjectHostAttached?: (listener: () => void) => () => void;
   /**
    * One bounded product-analytics capture per completed host repair. The brain
    * is the durable owner boundary here: the tap happens on a phone or a
@@ -744,6 +748,28 @@ export function createBrainProjectActionsSyncHandler(
     foreignChatProvider: args.foreignChatProvider,
     send,
     isPeerBackpressured,
+  });
+  // A project (non-roster) socket is served here only until a project host
+  // attaches; closing it then makes the client reconnect onto that host. A web
+  // or phone that switches to a project on a machine with no host yet
+  // reconnects right after the switch answer, before completion starts the
+  // host, and otherwise kept this ingress's reduced hello (no lanes, no files)
+  // until a reload. Roster sockets stay: this ingress serves them for good.
+  const handOverToProjectHost = (peer: BrainPeerState): void => {
+    try {
+      peer.ws.close(1012, "This machine's project host is ready");
+    } catch {
+      // The socket is already going away.
+    }
+  };
+  args.onProjectHostAttached?.(() => {
+    for (const peer of [...peers]) {
+      if (!peer.authenticated || isRosterSyncPeer(peer.metadata) || peer.ws.readyState !== WS_OPEN) continue;
+      args.logger.info("sync_brain.project_socket_handed_to_host", {
+        peerDeviceId: peer.metadata?.deviceId ?? null,
+      });
+      handOverToProjectHost(peer);
+    }
   });
   const routedCommands = createBrainRoutedCommandHandler<BrainPeerState>({
     router: args.projectCommandRouter,
@@ -1794,6 +1820,11 @@ export function createBrainProjectActionsSyncHandler(
                 }
               : null,
           );
+          if (!isRosterSyncPeer(hello.peer) && args.projectHostAttached?.()) {
+            // A host attached while this hello was being checked.
+            handOverToProjectHost(peer);
+            return;
+          }
           const catalog = await projectCatalog(args.projectCatalogProvider, args.logger);
           if (!isPeerCurrent(lifecycleGeneration)) return;
           const brain = brainMetadata();

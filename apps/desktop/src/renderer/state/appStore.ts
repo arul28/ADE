@@ -1542,6 +1542,8 @@ export type AppState = {
   laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
   lanesLoading: boolean;
+  /** Why the last lane read failed while no lanes were shown; null once one succeeds. */
+  lanesLoadError: string | null;
   /**
    * True when the git status in `lanes` (ahead/behind, dirty) was not
    * measured on this machine within the freshness window: a read for it is
@@ -2118,6 +2120,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         lanes: cachedLanes?.lanes ?? [],
         laneStatusStale: true,
         lanesLoading: !cachedLanes,
+        lanesLoadError: null,
         laneDeleteProgressByLaneId: {},
         selectedLaneId: restoredSelection.laneId,
         focusedSessionId: restoredSelection.sessionId,
@@ -2181,6 +2184,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   laneSnapshots: [],
   lanes: [],
   lanesLoading: false,
+  lanesLoadError: null,
   // Nothing has been measured yet: whatever lanes arrive first (a cache, an
   // identity read) carry a status of unknown age.
   laneStatusStale: true,
@@ -3145,6 +3149,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           laneSnapshots: nextSnapshots,
           lanes,
           lanesLoading: false,
+          lanesLoadError: null,
           // A measured read replaces the numbers and their flag together. A
           // status-less one only carries numbers forward: they stay as fresh
           // as they were, unless they have aged out or a lane arrived with
@@ -3199,7 +3204,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       while (nextRequest) {
         activeLaneRefreshRequest = nextRequest;
         pendingLaneRefreshRequest = null;
-        await runRefresh(nextRequest);
+        try {
+          await runRefresh(nextRequest);
+        } catch (error) {
+          // Shown where the empty list would read "No lanes yet".
+          if (get().lanes.length === 0) {
+            set({ lanesLoadError: error instanceof Error && error.message.trim() ? error.message.trim() : "Couldn't read this project's lanes." });
+          }
+          throw error;
+        }
         nextRequest = pendingLaneRefreshRequest;
       }
     })().finally(() => {

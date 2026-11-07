@@ -228,6 +228,13 @@ export type SharedSyncListener = {
    * sockets. Project hosts still take precedence once they attach.
    */
   setFallbackConnectionHandler(handler: SharedSyncListenerConnectionHandler | null): () => void;
+  /** True while a project sync host owns new sockets. */
+  hasConnectionHandler(): boolean;
+  /**
+   * Called each time a project sync host attaches, so the machine-wide
+   * fallback can send the project sockets it holds on to that host.
+   */
+  onConnectionHandlerAttached(listener: () => void): () => void;
   /** Park live peer sockets for adoption by the next host service. */
   depositPeers(snapshots: SyncPeerHandoffSnapshot[]): void;
   /** Claim every parked socket (deposited peers + connections that arrived handler-less). */
@@ -430,6 +437,7 @@ export function createSharedSyncListener(options: {
   let migratePromise: Promise<number | null> | null = null;
   let handler: SharedSyncListenerConnectionHandler | null = null;
   let fallbackHandler: SharedSyncListenerConnectionHandler | null = null;
+  const handlerAttachedListeners = new Set<() => void>();
   let fallbackSuppressedUntilMs = 0;
   let closed = false;
   const loopbackValidatedHandlers = new Set<() => void>();
@@ -939,6 +947,15 @@ export function createSharedSyncListener(options: {
     setConnectionHandler(nextHandler: SharedSyncListenerConnectionHandler): () => void {
       handler = nextHandler;
       fallbackSuppressedUntilMs = 0;
+      for (const listener of [...handlerAttachedListeners]) {
+        try {
+          listener();
+        } catch (error) {
+          logger.warn?.("sync_listener.handler_attached_listener_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
       return () => {
         if (handler === nextHandler) {
           handler = null;
@@ -953,6 +970,17 @@ export function createSharedSyncListener(options: {
         if (fallbackHandler === nextHandler) {
           fallbackHandler = null;
         }
+      };
+    },
+
+    hasConnectionHandler(): boolean {
+      return handler !== null;
+    },
+
+    onConnectionHandlerAttached(listener: () => void): () => void {
+      handlerAttachedListeners.add(listener);
+      return () => {
+        handlerAttachedListeners.delete(listener);
       };
     },
 
@@ -988,6 +1016,7 @@ export function createSharedSyncListener(options: {
       fallbackHandler = null;
       attachmentUploads.dispose();
       loopbackValidatedHandlers.clear();
+      handlerAttachedListeners.clear();
       if (listeningPromise) {
         await listeningPromise.catch(() => {});
       }

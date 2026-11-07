@@ -63,6 +63,7 @@ export function WorkStartSurface({
   const globallySelectedLaneId = useAppStore((s) => s.selectedLaneId);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const lanesLoading = useAppStore((s) => s.lanesLoading);
+  const lanesLoadError = useAppStore((s) => s.lanesLoadError);
   const selectLaneGlobal = useAppStore((s) => s.selectLane);
   const crossMachineLanesByMachineId = useRootAppStore(
     (state) => state.crossMachineLanesByMachineId,
@@ -182,12 +183,12 @@ export function WorkStartSurface({
             <CircleNotch size={18} className="mx-auto mb-2 animate-spin text-muted-fg" />
           ) : null}
           <div className="text-[12px] font-medium text-fg">
-            {lanesLoading ? "Loading lanes" : "No lanes available"}
+            {lanesLoading ? "Loading lanes" : lanesLoadError ? "Couldn't load lanes" : "No lanes available"}
           </div>
           <div className="mt-1.5 text-[11px] text-muted-fg">
             {lanesLoading
               ? "Reading lane state for this project."
-              : "Create or reopen a lane before starting work."}
+              : lanesLoadError ?? "Create or reopen a lane before starting work."}
           </div>
         </div>
       </div>

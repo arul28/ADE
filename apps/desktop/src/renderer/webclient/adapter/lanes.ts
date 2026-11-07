@@ -55,17 +55,28 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     })
   );
 
+  // A project always has its primary lane, so an empty list is never the
+  // host's answer: a host that cannot serve the read (not advertised, project
+  // not open there) is said as an error, not shown as "No lanes yet". A
+  // dropped connection still answers the last list read.
+  const lanesUnavailable = (): never => {
+    throw new Error("This machine didn't send this project's lanes. Reconnect, or open the project again.");
+  };
+
   const lanes: Record<string, unknown> = {
     list: async (args?: unknown, pin?: RuntimePinArg) => {
       guardPin("list", pin);
       return await commands.call("lanes.list", asRecord(args), {
-        fallback: [],
+        fallback: lanesUnavailable,
         idempotent: true,
         cacheTtlMs: 3_000,
       });
     },
     listSnapshots: async (args?: unknown) => {
-      const result = await call<unknown>("lanes.refreshSnapshots", args, []);
+      const result = await commands.call<unknown>("lanes.refreshSnapshots", asRecord(args), {
+        fallback: lanesUnavailable,
+        idempotent: true,
+      });
       return arrayField<LaneListSnapshot>(result, "snapshots");
     },
     create: async (args: unknown, pin?: RuntimePinArg) => {

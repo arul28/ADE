@@ -29210,6 +29210,9 @@ async function runServe(
         buildSnapshot: () => activityRosterProvider.buildSnapshot(),
       },
       foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      // A project socket served here moves to the project host once one attaches.
+      projectHostAttached: () => sharedSyncListener?.hasConnectionHandler() ?? false,
+      onProjectHostAttached: (listener) => sharedSyncListener?.onConnectionHandlerAttached(listener) ?? (() => {}),
       projectCommandRouter: {
         resolveProjectId: ({ projectId, projectRootPath }) => {
           const byId = projectId?.trim() ? projectRegistry.get(projectId.trim()) : null;
