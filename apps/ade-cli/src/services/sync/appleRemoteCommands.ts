@@ -103,7 +103,7 @@ export type AppleDeviceRemoteService = {
     chatSessionId?: string | null;
     ref?: string;
     label?: string;
-    noRecord?: boolean;
+    noRecord?: boolean | null;
   }): Promise<unknown>;
   openUrl(args: {
     deviceUdid?: string | null;
