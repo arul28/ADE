@@ -934,16 +934,20 @@ jobs:
           key: spm-v1-${{ hashFiles('apps/ios/ADE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
           restore-keys: spm-v1-
 
-      # EXPERIMENT (ade/ci-speed): Xcode's content-addressed compilation cache,
-      # kept between runs. Measures whether "Build for testing" (about 21 min
-      # cold) gets faster, and how big the cache is.
+      # Xcode's content-addressed compilation cache, kept between runs. It
+      # does not depend on file times, so a fresh checkout still hits it.
+      # Measured on #2100: "Build for testing" 15.4 min cold, 9.4 min warm;
+      # about 360 MB compressed. A branch reads its own last cache, then
+      # main's.
       - name: Restore the compilation cache
         if: needs.ios-gate.outputs.run == 'true'
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/ios-cas
-          key: ios-cas-v1-${{ github.run_id }}
-          restore-keys: ios-cas-v1-
+          key: ios-cas-v1-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ios-cas-v1-${{ github.ref_name }}-
+            ios-cas-v1-main-
 
       # The simulator cold boot took 4-8 minutes when it started after the
       # build; booting it now overlaps the build.
@@ -981,11 +985,22 @@ jobs:
             COMPILATION_CACHE_CAS_PATH="$RUNNER_TEMP/ios-cas" \
             build-for-testing
 
-      - name: Report build cache sizes
-        if: always() && needs.ios-gate.outputs.run == 'true'
+      # The cache only grows: each build adds what changed. Past 2.5 GB, start
+      # it again rather than fill the repository's cache space.
+      - name: Cap the compilation cache
+        if: needs.ios-gate.outputs.run == 'true'
         run: |
-          du -sh "$RUNNER_TEMP/ios-cas" "$RUNNER_TEMP/ios-dd" ~/spm-packages 2>/dev/null || true
-          du -sh "$RUNNER_TEMP"/ios-dd/* 2>/dev/null | sort -h | tail -8 || true
+          set -euo pipefail
+          size_kb=$(du -sk "$RUNNER_TEMP/ios-cas" 2>/dev/null | cut -f1 || echo 0)
+          echo "Compilation cache: $((size_kb / 1024)) MB"
+          if (( size_kb > 2621440 )); then
+            # An empty folder is saved in its place, so the next run builds
+            # cold once and saves a fresh cache, instead of restoring the
+            # big one again.
+            rm -rf "$RUNNER_TEMP/ios-cas"
+            mkdir -p "$RUNNER_TEMP/ios-cas"
+            echo "Over 2.5 GB; the next run starts a new cache."
+          fi
 
       - name: Run ADETests
         if: needs.ios-gate.outputs.run == 'true'
