@@ -83,22 +83,18 @@ function laneDeviceLines(lane: JsonObject): string[] {
   // The lane's extra devices (`device-create --extra`), each reached with --device.
   const extras = records(lane.extras);
   if (extras.length) {
-    lines.push("", `Extra devices  ${extras.length}`, renderTable(
-      ["avd", "name", "state", "serial", "profile"],
-      extras.map((extra) => {
-        const row = isRecord(extra.device) ? extra.device : {};
-        const extraAvd = isRecord(extra.avd) ? extra.avd : null;
-        const extraRunning = extraAvd && isRecord(extraAvd.running) ? extraAvd.running : null;
-        return [row.avdName, extraAvd?.displayName ?? null, extra.state, extraRunning?.serial ?? null, row.profileId];
-      }),
-      "No extra devices.",
-      { fullColumns: ["avd"] },
-    ));
+    const rows: unknown[][] = [];
+    const errors: string[] = [];
     for (const extra of extras) {
-      const extraError = isRecord(extra.error) ? extra.error : null;
       const row = isRecord(extra.device) ? extra.device : {};
-      if (extraError) lines.push(`error (${asString(row.avdName) ?? "?"}): ${asString(extraError.code) ?? "?"}: ${asString(extraError.message) ?? ""}`.trimEnd());
+      const extraAvd = isRecord(extra.avd) ? extra.avd : null;
+      const extraRunning = extraAvd && isRecord(extraAvd.running) ? extraAvd.running : null;
+      rows.push([row.avdName, extraAvd?.displayName ?? null, extra.state, extraRunning?.serial ?? null, row.profileId]);
+      const extraError = isRecord(extra.error) ? extra.error : null;
+      if (extraError) errors.push(`error (${asString(row.avdName) ?? "?"}): ${asString(extraError.code) ?? "?"}: ${asString(extraError.message) ?? ""}`.trimEnd());
     }
+    lines.push("", `Extra devices  ${extras.length}`, renderTable(["avd", "name", "state", "serial", "profile"], rows, "No extra devices.", { fullColumns: ["avd"] }));
+    lines.push(...errors);
     lines.push("reach one with --device <avd> (start, stop, install, launch, device-detach); device-promote --device <avd> makes it the lane's device");
   }
   if (!device) {
@@ -237,11 +233,11 @@ export function formatAndroidDevicePromote(value: unknown): string {
   const previous = isRecord(result.previous) ? result.previous : null;
   const name = asString(device.avdName) ?? "the device";
   const previousName = asString(previous?.avdName) ?? "The old device";
-  const kept = result.previousKeptAs === "extra"
-    ? `${previousName} is now one of the lane's extra devices (reach it with --device ${previousName}).`
-    : result.previousKeptAs === "detached"
-      ? `${previousName} was released; it stays on this machine.`
-      : null;
+  const keptLines: Record<string, string> = {
+    extra: `${previousName} is now one of the lane's extra devices (reach it with --device ${previousName}).`,
+    detached: `${previousName} was released; it stays on this machine.`,
+  };
+  const kept = typeof result.previousKeptAs === "string" ? keptLines[result.previousKeptAs] ?? null : null;
   const lane = isRecord(result.lane) ? result.lane : null;
   return [
     previous ? `${name} is now this lane's device.` : `${name} is this lane's device.`,
@@ -410,11 +406,15 @@ export function formatAndroidApps(value: unknown): string {
   );
 }
 
-/** ` on <avd> (an extra device)` when the call named a device with --device. */
-function onDevice(result: JsonObject): string {
+/**
+ * The device a call named with --device: ` on <avd> (an extra device)` for a
+ * sentence, or ` --device <avd>` (an extra only) for the next command.
+ */
+function onDevice(result: JsonObject, as: "sentence" | "flag" = "sentence"): string {
   const device = isRecord(result.device) ? result.device : null;
   const avdName = asString(device?.avdName);
   if (!avdName) return "";
+  if (as === "flag") return device?.extra === true ? ` --device ${avdName}` : "";
   return device?.extra === true ? ` on ${avdName} (an extra device)` : ` on ${avdName}`;
 }
 
@@ -425,10 +425,9 @@ function installLine(install: JsonObject, target: JsonObject = install): string 
 
 export function formatAndroidInstall(value: unknown): string {
   const install = record(value);
-  const device = isRecord(install.device) && install.device.extra === true ? asString(install.device.avdName) : null;
   return [
     installLine(install),
-    `Open it: ade android launch --package ${asString(install.packageName) ?? "<name>"}${device ? ` --device ${device}` : ""} --text`,
+    `Open it: ade android launch --package ${asString(install.packageName) ?? "<name>"}${onDevice(install, "flag")} --text`,
   ].join("\n");
 }
 

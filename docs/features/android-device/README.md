@@ -545,8 +545,9 @@ The rules:
 - ADE never deletes an AVD it did not make. An AVD whose `config.ini` lost
   ADE's marker counts as the user's.
 - ADE never stops an emulator it did not start. It keeps the list of the
-  emulators it started in `<project>/.ade/android/started-emulators.json`, so
-  the list survives a restart, and an owner record of each in the machine's
+  emulators it started in `<project>/.ade/android/started-emulators.json`
+  (the lanes' own devices) and `started-extra-emulators.json` (their extra
+  devices), so the lists survive a restart, and an owner record of each in the machine's
   owner file (see [Emulator lifecycle](#emulator-lifecycle)). `ade android
   stop` on an emulator that another app started fails with
   `ANDROID_AVD_RUNNING`. Emulators that ADE did not start are listed and count
@@ -578,12 +579,19 @@ beside its own device, for example a tablet beside a phone
 - **Reach an extra with `--device <avd>`** on `start`, `stop`, `install`,
   `launch` and `device-detach`. The AVD name or the shown name works. A
   `--device` the lane does not hold is refused with
-  `ANDROID_DEVICE_NOT_LANE_OWNED`. An install or a launch on an extra that is
+  `ANDROID_DEVICE_NOT_LANE_OWNED`, and so is a shown name that two extras
+  share (use the AVD name). An install or a launch on an extra that is
   off boots it first. Each extra starts and stops on its own queue, so its
   boot never holds up the lane device.
+- **An older ADE.** `--device` and `--extra` check first that the brain
+  knows extra devices (its action list has `devicePromote`). An older brain
+  (another machine's, with `--machine`) ignores those fields and would act
+  on the lane's own device, so the command is refused before the call.
 - **Memory.** Each running emulator holds 2 to 5 GB. Every start of an extra
-  goes through the [RAM guard](#the-ram-guard-p2), the same as the lane
-  device; `start --device <avd> --force` boots past it, after the user agrees.
+  goes through the memory guard, the same as the lane device;
+  `start --device <avd> --force` boots past it, after the user agrees. A
+  start of an extra that adb refuses offers **Restart adb and start** in the
+  pane's strip, as the lane device's does, and restarts adb for that extra.
 - **Promote.** `ade android device-promote --device <avd>` (or a click on the
   extra in the picker) makes the extra the lane's device. The old device is
   kept: one ADE made becomes an extra in its place, and its emulator keeps
@@ -593,8 +601,13 @@ beside its own device, for example a tablet beside a phone
   `ANDROID_LANE_DEVICE_BUSY` while the old device starts or stops, records,
   streams to a viewer (an open pane counts; the picker does not), runs tests,
   installs or launches an app, or another holder has the lane's lease; and
-  while the extra itself starts, stops, or takes an install. Nothing changes
-  before the refusal.
+  while the extra itself starts, stops, or takes an install. The extra is
+  checked before the promote waits on its queue, and the lane's device again
+  just before the swap. Nothing changes before the refusal. While a promote
+  runs, a new install or launch for the lane waits until it ends, then goes
+  to the device the lane holds after it. On a promote, each running emulator
+  moves to the started-emulators file of what it is now, and the old device's
+  idle clock starts again as an extra's.
 - **Attach.** `device-attach --avd <name>` naming one of the lane's extras is
   refused with `ANDROID_DEVICE_IS_EXTRA`: promote it instead. No other lane
   can take, stop or delete a lane's extra.
@@ -1239,10 +1252,15 @@ outcomes: a start that booted (`device_booted`), one that did not
 device could boot (`adb_restarted`). Extra devices have two: a lane made an
 extra device (`extra_device_created`, Apple's name), and an extra became the
 lane's device (`device_promoted`). Each outcome counts at most once a day.
-A boot that fails is also one Sentry issue for each error code
-(`["android", "boot_failed", <code>]`), with the time it took and the
-profile id; the `android.emulator_start_failed` and
-`android.adb_server_restarted` log lines carry the rest. No path, AVD, package, lane, image, angle or preview name
+A boot that fails with an unexpected code is also one Sentry issue for each
+code (`["android", "boot_failed", <code>]`), with the time it took and the
+profile id (`extra: "true"` for an extra device). The brain reports it only
+for an agent's call (one that names its chat, over RPC): the desktop's IPC
+capture reports its own calls once, and no "already reported" mark crosses
+the runtime boundary. An expected code (`ANDROID_ADB_UNAUTHORIZED`,
+`ANDROID_LOW_MEMORY`, …) is never an issue. The
+`android.emulator_start_failed` and `android.adb_server_restarted` log lines
+carry the rest. No path, AVD, package, lane, image, angle or preview name
 goes with it. `docs/logging.md` holds the contract.
 
 ## Source file map
@@ -1251,10 +1269,10 @@ goes with it. `docs/logging.md` holds the contract.
 |---|---|
 | `apps/desktop/src/shared/types/androidEmulator.ts` | The contract: SDK, AVD and lane types, error codes, the service API, the action lists (`ANDROID_AGENT_ACTIONS`, `ANDROID_USER_ONLY_ACTIONS`, `ANDROID_PERSON_ONLY_ACTIONS`, `ANDROID_LANE_FREE_ACTIONS`, `ANDROID_CODE_SYNC_ACTIONS`), and the preload API. It re-exports its siblings: `androidEmulatorAgent.ts` (the agent suite, `ANDROID_PERMISSIONS`), `androidEmulatorSetup.ts` (the SDK install), `androidEmulatorLook.ts` (colour and render) and `androidEmulatorDrawer.ts` (the Tools drawer, `ANDROID_TEXT_SIZES`, `ANDROID_DISPLAY_SIZES`). |
 | `apps/desktop/src/main/services/android/androidEmulatorService.ts`, `androidEmulatorServiceDeps.ts` | The service: lane queue, start, stop, input, screenshot, the work-copy lanes, the start-up cleanup, and the hand-off. Its inputs and its state for one lane are in `androidEmulatorServiceDeps.ts`. |
-| `apps/desktop/src/main/services/android/androidEmulatorLifecycle.ts` | The boot and the stop that run on the lane's queue (`startLocked`, `stopLocked`): the memory guard's reservation, the owner record's launch, boot and forget, the stop reason, the mid-boot abort, and the boot timeout. |
+| `apps/desktop/src/main/services/android/androidEmulatorLifecycle.ts` | The boot and the stop that run on the lane's queue (`startLocked`, `stopLocked`): the memory guard's reservation, the owner record's launch, boot and forget, the stop reason, the mid-boot abort, and the boot timeout. One implementation (`slots`) serves the lane's device and its extras. |
 | `apps/desktop/src/main/services/android/androidMachinePreferences.ts`, `apps/desktop/src/shared/types/androidEmulatorRecording.ts` | The machine's Android settings file (`sdkPath` and `preferences`, atomic writes, a broken file refused), the machine preferences, and the recording types. |
 | `apps/desktop/src/main/services/android/androidAutoRecord.ts` | Auto-record: an agent's input starts a recording, the end of its turn stops it, and the opt-outs (`--no-record`, the lane switch, the person's own input). |
-| `apps/desktop/src/main/services/android/androidHandedOffEmulators.ts` | The state file of the emulators ADE started, and the stops that use it: on dispose, and when a project is removed after a hand-off. |
+| `apps/desktop/src/main/services/android/androidHandedOffEmulators.ts` | The state files of the emulators ADE started (the lanes' own and their extras'), and the stops that use them: on dispose, and when a project is removed after a hand-off. |
 | `apps/desktop/src/main/services/android/androidDeviceInventory.ts` | The lane's AVD: the device list, create, attach, release, delete and colour, and the work copy's borrow rule. |
 | `apps/desktop/src/main/services/android/androidSdk.ts` | SDK detection, tools and acceleration. |
 | `apps/desktop/src/main/services/android/androidSdkSetup.ts`, `androidSdkInstall.ts`, `androidSdkRepository.ts`, `androidZipExtract.ts`, `androidCli.ts` | The guided install: the plan, licence checks, the SDK setting, the installer job, Google's repository manifests, the zip reader, and the Android CLI. |
@@ -1263,7 +1281,9 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/main/services/android/androidRender.ts` | The render broker for `ade android render`: the request event, the first window's ack, the filed paths, and the time limit. |
 | `apps/desktop/src/main/services/android/androidEmulatorProcess.ts` | Boot, discovery files, boot completed, and stop. |
 | `apps/desktop/src/main/services/android/androidLaneDeviceStore.ts`, `androidLaneRelease.ts` | The `lane_android_devices` and `lane_android_extra_devices` rows (a lane's AVD is held when either names it), and the release of a lane's AVD and its extras on disk (used by `laneService` with no service). |
-| `apps/desktop/src/main/services/android/androidLaneExtras.ts`, `apps/desktop/src/shared/types/androidEmulatorExtras.ts` | Extra devices: their status, start and stop (on each extra's own queue, through the RAM guard), release, the install and launch target, and their types. The promote is in `androidEmulatorService.ts`, where the lane device's state is. |
+| `apps/desktop/src/main/services/android/androidLaneExtras.ts`, `apps/desktop/src/shared/types/androidEmulatorExtras.ts` | Extra devices: their status, start and stop (on each extra's own queue, through the lifecycle's shared boot), release, which device a `--device` names, and their types. |
+| `apps/desktop/src/main/services/android/androidDevicePromote.ts` | `devicePromote`, and what it must not cut through: the installs and launches in flight (which wait for a promote) and the test runs. |
+| `apps/desktop/src/main/services/android/androidLaneRows.ts` | How the cleanup pass reaches one row: the lane's own device or an extra. |
 | `apps/desktop/src/main/services/android/androidStream.ts`, `androidStreamServer.ts`, `androidLaneStreams.ts` | Streams by adb serial, the defaults, restarts, and the loopback stream server; the lane's side of its stream (a viewer, a recording). |
 | `apps/desktop/src/main/services/android/scrcpyServer.ts`, `scrcpyVideo.ts`, `scrcpyControl.ts` | The scrcpy session, video records and control messages. |
 | `apps/desktop/src/main/services/android/androidActionDomain.ts` | The `android_emulator` action domain. |
@@ -1347,7 +1367,7 @@ The full list is in §6 of the [plan](../../plans/android-emulator.md).
 | `ANDROID_NO_ACCELERATION` | Turn on acceleration: Windows Hypervisor Platform on Windows, KVM access on Linux. WSL2 has none, and a VM has it only with nested virtualization. The banner's **How to fix** opens Google's guide. |
 | `ANDROID_EMULATOR_EXITED` | The emulator exited. Read its log, `<project>/.ade/android/logs/<avd>.log` on the emulator's machine (**Open log**, or the path in `ade android status --text`). Then **Restart**. |
 | `ANDROID_BOOT_TIMEOUT` | The boot took more than 180 s. Read the log, then run `ade android start` again. |
-| `ANDROID_ADB_UNAUTHORIZED` | The emulator runs, but the adb server refuses it as `unauthorized` for 20 s. The server started before `~/.android/adbkey` changed (a new SDK or Android CLI setup can write a new key), and it never reads the key again. When no other device uses the server, ADE restarts it and the boot goes on (`# ADE` lines in the log say so). Otherwise the pane offers **Restart adb and start**, after a confirm, and `ade android start --restart-adb` does the same. |
+| `ANDROID_ADB_UNAUTHORIZED` | The emulator runs, but the adb server refuses it as `unauthorized` for 20 s. The server started before `~/.android/adbkey` changed (a new SDK or Android CLI setup can write a new key), and it never reads the key again. When no other connected device uses the server (an `unauthorized` or `offline` row does not count), ADE restarts it and the boot goes on (`# ADE` lines in the log say so). Otherwise the pane offers **Restart adb and start**, after a confirm, for the device whose start failed, and `ade android start --restart-adb` in the person's own terminal does the same. An agent cannot restart adb: the RPC server drops its `restartAdb`, and it asks the person. When adb still refuses the device after ADE restarted the server, the emulator does not trust the current key: cold boot the AVD, or wipe its data, then start it again. |
 | `ANDROID_PATH_OUTSIDE_LANE` | `screenshot --out` must be inside the lane worktree. Give a path there, or leave out `--out`. |
 | Work copy gone (`ANDROID_NOT_RUNNING`) | "This chat's work copy on this machine is gone, so it has no Android device here." Run the command again to make a new copy. |
 | `ANDROID_NOT_RUNNING` | Boot the lane's emulator first (`ade android start`), or make one (`ade android device-create --profile <id>`). |
@@ -1357,7 +1377,7 @@ The full list is in §6 of the [plan](../../plans/android-emulator.md).
 | `ANDROID_DEVICE_IS_EXTRA` | That AVD is one of the lane's extras. Make it the lane's device with `device-promote --device <avd>`. |
 | `ANDROID_DEVICE_NOT_LANE_OWNED` | `--device` names an AVD the lane does not hold. `ade android status --text` lists the lane's device and its extras. |
 | `ANDROID_LANE_DEVICE_BUSY` | The lane's device (or the extra) is in use: a recording, an open live view, tests, an install or launch, a start or stop, or another holder's lease. Finish that, then promote again. In the pane, open the picker first: it closes the live view. |
-| An extra reads Stopped soon after a promote, with a dev app open beside the installed ADE | An older brain on the same project does not know extra rows, so its cleanup pass stops a running extra as an orphan. Start it again (`start --device <avd>`); run one brain per project for long runs. |
+| An extra and an older brain on the same project (a dev app beside the installed ADE) | An older brain counts only the lanes' own rows as held. Extras are in their own started-emulators file (`started-extra-emulators.json`), which an older brain never reads, so it never stops a running extra as an orphan; it also cannot see or stop one. |
 | `ANDROID_AVD_RUNNING` | Another app started that AVD. Close it there, or attach another AVD. |
 | `ANDROID_SYSTEM_IMAGE_IN_USE` | An AVD uses that system image. Stop its emulator first. To remove an image that AVDs use, confirm it in the picker's System images. |
 | `ANDROID_TESTS_RUNNING` | The lane's instrumentation tests already run. Wait for that run to end. |

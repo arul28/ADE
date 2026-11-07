@@ -24,10 +24,25 @@ import type { AndroidLaneDeviceRepo } from "./androidLaneRelease";
  * Node built-ins and relative imports only, so it runs under `tsx`.
  */
 
-/** The started-emulators state file in a service's data folder, warning once per kind of file failure. */
-export function openStartedEmulators(dataDir: string, logger: Logger | null): AdeStartedEmulators {
+/** The project's started-emulators file: the lanes' own devices. */
+export const STARTED_EMULATORS_FILE = "started-emulators.json";
+
+/**
+ * The started-emulators file of the lanes' extra devices. It is not the
+ * project's file because an older ADE on the same project counts only its own
+ * lane rows as held: an extra it found in that file would read as an orphan
+ * and be stopped. An older ADE never reads this file.
+ */
+export const STARTED_EXTRA_EMULATORS_FILE = "started-extra-emulators.json";
+
+/** A started-emulators state file in a service's data folder, warning once per kind of file failure. */
+export function openStartedEmulators(
+  dataDir: string,
+  logger: Logger | null,
+  fileName: typeof STARTED_EMULATORS_FILE | typeof STARTED_EXTRA_EMULATORS_FILE = STARTED_EMULATORS_FILE,
+): AdeStartedEmulators {
   const warned = new Set<string>();
-  const file = path.join(dataDir, "started-emulators.json");
+  const file = path.join(dataDir, fileName);
   return new AdeStartedEmulators(file, (op, error) => {
     const code = (error as NodeJS.ErrnoException)?.code ?? "parse";
     if (warned.has(`${op}:${code}`)) return;
@@ -149,9 +164,10 @@ export async function stopAdeStartedEmulators(args: {
  * removed from this machine and no next service will re-adopt them.
  *
  * The brain calls it when a removal joined a teardown that had already handed
- * the devices off (a repair's `"close"` drain). It reads the same state file
- * the project's service uses (`<project>/.ade/android`), stops only the
- * emulators listed there, and does nothing without an SDK or a state file.
+ * the devices off (a repair's `"close"` drain). It reads the same state files
+ * the project's service uses (`<project>/.ade/android`: the lanes' devices and
+ * their extras), stops only the emulators listed there, and does nothing
+ * without an SDK or a state file.
  * It never throws.
  */
 export async function stopHandedOffAndroidEmulators(args: {
@@ -166,7 +182,10 @@ export async function stopHandedOffAndroidEmulators(args: {
     const platform = args.platform ?? process.platform;
     if (platform !== "darwin" && platform !== "win32" && platform !== "linux") return;
     const dataDir = path.join(resolveAdeLayout(args.projectRoot).adeDir, "android");
-    if (!fs.existsSync(path.join(dataDir, "started-emulators.json"))) return;
+    // The lanes' own devices and their extras each have a file.
+    const files = [STARTED_EMULATORS_FILE, STARTED_EXTRA_EMULATORS_FILE] as const;
+    const present = files.filter((file) => fs.existsSync(path.join(dataDir, file)));
+    if (present.length === 0) return;
     const env = args.env ?? process.env;
     const home = args.home ?? os.homedir();
     const sdk = await readAndroidSdkStatus({ settingPath: null, env, platform, home });
@@ -177,12 +196,14 @@ export async function stopHandedOffAndroidEmulators(args: {
       // No SDK or no adb: nothing ADE could have started is reachable here.
       return;
     }
-    await stopAdeStartedEmulators({
-      registry: openStartedEmulators(dataDir, logger),
-      adbPath,
-      discoveryDirs: androidDiscoveryDirs(platform, env, home),
-      logger,
-    });
+    for (const file of present) {
+      await stopAdeStartedEmulators({
+        registry: openStartedEmulators(dataDir, logger, file),
+        adbPath,
+        discoveryDirs: androidDiscoveryDirs(platform, env, home),
+        logger,
+      });
+    }
   } catch (error) {
     logger?.warn("android.unregister_stop_failed", { projectRoot: args.projectRoot, error: getErrorMessage(error) });
   }

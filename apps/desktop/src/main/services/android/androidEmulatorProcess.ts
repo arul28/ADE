@@ -218,6 +218,21 @@ export class AdeStartedEmulators {
     this.save(records);
   }
 
+  /**
+   * Moves this AVD's records to `target`, as they are (pid, start time). A
+   * promote moves a running emulator between the lanes' file and the extras' file.
+   */
+  moveTo(target: AdeStartedEmulators, avdName: string): void {
+    const before = this.read();
+    const moving = before.filter((record) => sameAvdName(record.avdName, avdName));
+    if (moving.length === 0) return;
+    target.save([
+      ...target.read().filter((record) => !moving.some((entry) => sameAvdName(entry.avdName, record.avdName) && entry.consolePort === record.consolePort)),
+      ...moving,
+    ]);
+    this.save(before.filter((record) => !moving.includes(record)));
+  }
+
   forget(match: { avdName: string; consolePort: number }): void {
     const before = this.read();
     const records = before.filter((record) => !(sameAvdName(record.avdName, match.avdName) && record.consolePort === match.consolePort));
@@ -595,6 +610,8 @@ export async function waitForAndroidBoot(
     restartAdb?: AndroidAdbRestartPolicy;
     /** Called once the restart ADE made has finished. */
     onAdbRestarted?: (otherDevices: number) => void;
+    /** `adb devices` did not answer; called once per boot, with why. */
+    onAdbDevicesFailed?: (error: string) => void;
   },
 ): Promise<AndroidBootResult> {
   if (!fs.existsSync(options.adbPath)) {
@@ -625,6 +642,12 @@ export async function waitForAndroidBoot(
   const restartPolicy = options.restartAdb ?? "auto";
   let adbRestarted = false;
   let unauthorizedSince: number | null = null;
+  let devicesFailed = false;
+  const onDevicesError = (error: unknown) => {
+    if (devicesFailed) return;
+    devicesFailed = true;
+    options.onAdbDevicesFailed?.(error instanceof Error ? error.message : String(error));
+  };
   for (;;) {
     checkAlive();
     const slice = Math.max(250, Math.min(5_000, remaining()));
@@ -633,17 +656,36 @@ export async function waitForAndroidBoot(
     if (await Promise.race([attempt, exitRace])) break;
     // `wait-for-device` waits on an `unauthorized` device until it times out,
     // so the server's own list says why it has not come up.
-    const devices = await Promise.race([readAdbDevices(options.adbPath), exitRace]);
-    const refused = devices.some((row) => row.serial === launch.serial && row.state === "unauthorized");
-    unauthorizedSince = refused ? (unauthorizedSince ?? Date.now()) : null;
-    if (unauthorizedSince !== null && Date.now() - unauthorizedSince >= ANDROID_UNAUTHORIZED_GRACE_MS) {
-      const otherDevices = devices.filter((row) => row.serial !== launch.serial).length;
+    const devices = await Promise.race([readAdbDevices(options.adbPath, { onError: onDevicesError }), exitRace]);
+    // A list that could not be read says nothing: the refusal clock stays as it is.
+    if (devices !== null) {
+      const refused = devices.some((row) => row.serial === launch.serial && row.state === "unauthorized");
+      unauthorizedSince = refused ? (unauthorizedSince ?? Date.now()) : null;
+    }
+    if (devices !== null && unauthorizedSince !== null && Date.now() - unauthorizedSince >= ANDROID_UNAUTHORIZED_GRACE_MS) {
+      // Only a device with a working connection loses something when the
+      // server restarts; an `unauthorized` or `offline` row has none.
+      const otherDevices = devices.filter((row) => row.serial !== launch.serial && row.state === "device").length;
       const mayRestart = !adbRestarted && (restartPolicy === "always" || (restartPolicy === "auto" && otherDevices === 0));
       if (!mayRestart) {
+        const name = androidAvdDisplayName(launch.avdName);
+        if (adbRestarted) {
+          // A new server reads the current key, so the emulator does not trust that key.
+          noteInLaunchLog(launch, `adb still refuses ${launch.serial} as unauthorized after ADE restarted the adb server. Stopping the boot.`);
+          throw new AndroidEmulatorFailure(
+            "ANDROID_ADB_UNAUTHORIZED",
+            `adb still refused ${name} after ADE restarted the adb server: the emulator does not trust the current adb key. `
+              + "Cold boot the AVD, or wipe its data (Android Studio's Device Manager), then start it again; the log says more.",
+            launch.logPath,
+          );
+        }
         noteInLaunchLog(launch, `adb refuses ${launch.serial} as unauthorized: the adb server uses an older adb key. Stopping the boot.`);
+        const why = otherDevices > 0
+          ? ` ${otherDevices} other device(s) use that server, so ADE did not restart it.`
+          : "";
         throw new AndroidEmulatorFailure(
           "ANDROID_ADB_UNAUTHORIZED",
-          `adb refused ${androidAvdDisplayName(launch.avdName)}: the adb server uses an older key.`,
+          `adb refused ${name}: the adb server uses an older key.${why}`,
           launch.logPath,
         );
       }

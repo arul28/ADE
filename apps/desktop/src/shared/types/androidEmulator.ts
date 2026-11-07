@@ -27,7 +27,7 @@ import type { AndroidEmulatorControlServiceApi, AndroidPowerOffRecord } from "./
 import { ANDROID_CONTROL_ACTIONS } from "./androidEmulatorControl";
 import type { AndroidEmulatorDeviceServiceApi, AndroidOrientationEvent } from "./androidEmulatorDevice";
 import { ANDROID_DEVICE_ACTIONS, ANDROID_ROTATE_ORIENTATIONS } from "./androidEmulatorDevice";
-import type { AndroidEmulatorExtrasServiceApi, AndroidLaneExtraStatus } from "./androidEmulatorExtras";
+import type { AndroidDeviceTargetArgs, AndroidEmulatorExtrasServiceApi, AndroidLaneExtraStatus } from "./androidEmulatorExtras";
 import { ANDROID_EXTRA_DEVICE_ACTIONS } from "./androidEmulatorExtras";
 
 /**
@@ -385,16 +385,13 @@ export type AndroidLaneArgs = { laneId: string };
  * person's answer to `ANDROID_ADB_UNAUTHORIZED`). `chatSessionId` (stamped by
  * the RPC server for an agent) goes into the emulator's owner record.
  */
-export type AndroidStartArgs = AndroidLaneArgs & {
+export type AndroidStartArgs = AndroidDeviceTargetArgs & {
   force?: boolean;
   restartAdb?: boolean;
-  /** One of the lane's extra devices (AVD name or shown name). Default: the lane's device. */
-  device?: string | null;
-  chatSessionId?: string | null;
 };
 
 /** `stop`. `device` names one of the lane's extra devices; default: the lane's device. */
-export type AndroidStopArgs = AndroidLaneArgs & { device?: string | null };
+export type AndroidStopArgs = AndroidDeviceTargetArgs;
 
 /** `setKeepRunning`: pin the lane's running emulator so ADE's idle stop leaves it alone, or unpin it. */
 export type AndroidKeepRunningArgs = AndroidLaneArgs & { keepRunning: boolean };
@@ -432,17 +429,13 @@ export type AndroidAttachDeviceArgs = AndroidLaneArgs & {
   start?: boolean;
 };
 
-export type AndroidReleaseDeviceArgs = AndroidLaneArgs & {
+/** `device`: one of the lane's extra devices; release that one and keep the lane's device. Default: the lane's device (its extras stay). */
+export type AndroidReleaseDeviceArgs = AndroidDeviceTargetArgs & {
   /**
    * For an AVD ADE created: delete it (default true). An attached user AVD is
    * never deleted; ADE only uninstalls the packages it installed.
    */
   deleteCreated?: boolean;
-  /**
-   * One of the lane's extra devices (AVD name or shown name): release that one
-   * and keep the lane's device. Default: the lane's device (its extras stay).
-   */
-  device?: string | null;
 };
 
 export type AndroidReleaseDeviceResult = {

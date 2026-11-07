@@ -134,10 +134,16 @@ export function spawnAdb(adbPath: string, args: readonly string[], options: { se
 /** One row of `adb devices`: a serial and its state (`device`, `offline`, `unauthorized`, …). */
 export type AdbDeviceRow = { serial: string; state: string };
 
-/** The adb server's device list. Never throws; a server that does not answer lists nothing. */
-export async function readAdbDevices(adbPath: string, timeoutMs = 3_000): Promise<AdbDeviceRow[]> {
+/**
+ * The adb server's device list, or null when the server did not answer
+ * (`onError` says why). Never throws.
+ */
+export async function readAdbDevices(
+  adbPath: string,
+  options: { timeoutMs?: number; onError?: (error: unknown) => void } = {},
+): Promise<AdbDeviceRow[] | null> {
   try {
-    const text = await runAdbText(adbPath, ["devices"], { timeoutMs });
+    const text = await runAdbText(adbPath, ["devices"], { timeoutMs: options.timeoutMs ?? 3_000 });
     const rows: AdbDeviceRow[] = [];
     for (const line of text.split(/\r?\n/u)) {
       const match = /^(\S+)\s+(\S+)/u.exec(line.trim());
@@ -145,8 +151,9 @@ export async function readAdbDevices(adbPath: string, timeoutMs = 3_000): Promis
       rows.push({ serial: match[1]!, state: match[2]! });
     }
     return rows;
-  } catch {
-    return [];
+  } catch (error) {
+    options.onError?.(error);
+    return null;
   }
 }
 

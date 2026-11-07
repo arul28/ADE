@@ -177,7 +177,10 @@ function deviceArg(args: unknown): { device?: string } {
 }
 
 function installArgs(args: unknown) {
-  return { apkPath: optionalString(args, "apkPath"), gradle: gradleTarget(args), ...deviceArg(args) };
+  const device = deviceArg(args);
+  // Set by the RPC server for an agent: an extra this call boots names the chat in its owner record.
+  const chatSessionId = device.device ? optionalString(args, "chatSessionId") : null;
+  return { apkPath: optionalString(args, "apkPath"), gradle: gradleTarget(args), ...device, ...(chatSessionId ? { chatSessionId } : {}) };
 }
 
 export function buildAndroidDomainService(runtime: AndroidActionRuntime): OpaqueService | null {

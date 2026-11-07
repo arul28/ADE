@@ -14,7 +14,7 @@ import type {
 import type { DemoArtifactMetadata } from "../demoVideo/demoContract";
 import type { AndroidLaunchExtrasArgs } from "./androidEmulatorControl";
 import type { AndroidInputRecordArgs } from "./androidEmulatorRecording";
-import type { AndroidTargetDevice } from "./androidEmulatorExtras";
+import type { AndroidDeviceTargetArgs, AndroidTargetDevice } from "./androidEmulatorExtras";
 
 /* ──────────────────────────────────────────────────────────────────────────
    P1 AGENT SUITE (android-agent): `ade android` at the level of `ade apple`.
@@ -104,16 +104,15 @@ export type AndroidGradleTarget = {
   variant?: string | null;
 };
 
-export type AndroidInstallArgs = AndroidLaneArgs & {
+/**
+ * `device` is the lane's device or one of its extra devices (AVD name or
+ * shown name). Default: the lane's device. An extra that is off is booted
+ * first, through the memory guard.
+ */
+export type AndroidInstallArgs = AndroidDeviceTargetArgs & {
   /** An APK inside the lane's worktree. One of `apkPath` and `gradle`. */
   apkPath?: string | null;
   gradle?: AndroidGradleTarget | null;
-  /**
-   * The lane's device or one of its extra devices (AVD name or shown name).
-   * Default: the lane's device. An extra that is off is booted first, through
-   * the RAM guard.
-   */
-  device?: string | null;
 };
 
 export type AndroidInstallResult = {
@@ -127,7 +126,8 @@ export type AndroidInstallResult = {
   gradleTask: string | null;
   durationMs: number;
   /** The last lines of the build or install output. */
-  outputTail: string[];  /** The device it went to, when the caller named one with `device`. */
+  outputTail: string[];
+  /** The device it went to, when the caller named one with `device`. */
   device?: AndroidTargetDevice;
 };
 
@@ -147,7 +147,8 @@ export type AndroidLaunchResult = {
   /** Set when the launch installed first. */
   install: AndroidInstallResult | null;
   /** From `am start -W`, when the device reports it. */
-  totalTimeMs: number | null;  /** The device it started on, when the caller named one with `device`. */
+  totalTimeMs: number | null;
+  /** The device it started on, when the caller named one with `device`. */
   device?: AndroidTargetDevice;
 };
 

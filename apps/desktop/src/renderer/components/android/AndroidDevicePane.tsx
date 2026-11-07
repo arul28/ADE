@@ -12,16 +12,14 @@ import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { isInParkedSurface } from "../../lib/parkedSurface";
 import type { DeviceOrientation } from "../../../shared/types/deviceOrientation";
 import { cn } from "../ui/cn";
-import { Banner, type NoticeAction } from "../ui/notice";
+import { Banner } from "../ui/notice";
 import { showToast } from "../app/toast/toastStore";
-import { confirmDialog } from "../ui/dialog/confirm";
 import { Button } from "../ui/Button";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import {
   androidAvdSpecLine,
   androidDevicePixelSize,
   androidInputAllowed,
-  ANDROID_LOW_MEMORY_RISK,
   androidLaneDeviceName,
   androidRailVisible,
   describeAndroidError,
@@ -34,13 +32,11 @@ import { AndroidSystemImagesSection } from "./AndroidSystemImagesSection";
 import type { AndroidCatalogCreateOptions } from "./AndroidCatalogGrid";
 import { AndroidDeviceRail } from "./AndroidDeviceRail";
 import { DEVICE_RAIL_WIDTH } from "../device/DeviceRail";
-import { DeviceErrorStrip } from "../device/DeviceStatusStrip";
 import { AndroidDeviceStage } from "./AndroidDeviceStage";
 import { AndroidSetupCard } from "./AndroidSetupCard";
 import { DEVICE_DRAWER_DOCK_CLASS } from "../device/DeviceToolsDrawerShell";
 import {
   AndroidDeviceLoadingCard,
-  AndroidDeviceNoticeStrip,
   AndroidLiveLine,
   AndroidPaneMessage,
 } from "./AndroidDeviceStatus";
@@ -67,7 +63,9 @@ import { useAndroidPosture } from "./useAndroidPosture";
 import { AndroidFoldDock } from "./AndroidFoldDock";
 import { useAndroidPaneFloat } from "./useAndroidPaneFloat";
 import { useAndroidStorageActions } from "./useAndroidStorageActions";
+import { useAndroidExtraDevices } from "./useAndroidExtraDevices";
 import { AndroidQuickChips } from "./AndroidQuickChips";
+import { AndroidPaneStrip } from "./AndroidPaneStrip";
 import { AndroidCrashPin } from "./AndroidCrashPin";
 import { subscribeAndroidPickerRequests, takeAndroidPickerRequest } from "./androidPickerRequests";
 import type { AndroidDrawerGroupId } from "./drawer/androidDrawerState";
@@ -177,10 +175,6 @@ export function AndroidDevicePane({
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const [pickerRequested, setPickerRequested] = useState(false);
   const [pending, setPending] = useState<PendingStart | null>(null);
-  /** The lane's extra device a start, stop or remove is in flight for. */
-  const [pendingExtra, setPendingExtra] = useState<string | null>(null);
-  /** The extra whose start the RAM guard refused, so "Start anyway" starts that one, not the lane's device. */
-  const lowMemoryExtraRef = useRef<string | null>(null);
   const [error, setError] = useState<AndroidErrorDescription | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [noAccelDismissed, setNoAccelDismissed] = useState(false);
@@ -438,6 +432,18 @@ export function AndroidDevicePane({
     }));
   }, [laneId]);
 
+  const extraDevices = useAndroidExtraDevices({
+    api,
+    laneId,
+    pinRef: runtimePinRef,
+    pinKey,
+    readStatus,
+    readInventory,
+    pickerShownRef,
+    onError: setError,
+  });
+  const { startExtra, stopExtra, removeExtra, startRefusedAgain, forgetRefused } = extraDevices;
+
   /** Runs one lane-changing call: pending while it runs, a strip when it fails, a re-read after. */
   const runStart = useCallback(async (
     kind: PendingStart,
@@ -446,7 +452,7 @@ export function AndroidDevicePane({
     setPending(kind);
     setError(null);
     setStreamError(null);
-    lowMemoryExtraRef.current = null;
+    forgetRefused();
     try {
       const next = await call();
       if (laneIdRef.current !== laneId) return;
@@ -458,7 +464,7 @@ export function AndroidDevicePane({
       if (laneIdRef.current === laneId) setPending(null);
       void readStatus();
     }
-  }, [applyLane, laneId, readStatus]);
+  }, [applyLane, forgetRefused, laneId, readStatus]);
 
   /** A lane that already holds a device gives it back first; the AVD stays installed. */
   const releaseCurrent = useCallback(async (): Promise<void> => {
@@ -502,71 +508,20 @@ export function AndroidDevicePane({
   }, [api, laneId, runStart]);
 
   /**
-   * adb refused the device, and other devices use the adb server, so the brain
-   * did not restart it alone. The person agrees, then the start restarts it.
+   * The person agreed to restart adb (the strip asks): the same start runs
+   * again and restarts it, for the lane's device (`lane`) or for the device
+   * whose start was refused (`refused`: the lane's device or one of its extras).
    */
-  const restartAdbAndStart = useCallback(async () => {
-    if (!api) return;
-    const where = remoteMachineName ?? "this machine";
-    const confirmed = await confirmDialog({
-      title: "Restart adb?",
-      message: `ADE stops the adb server on ${where} and starts a new one with the current adb key. `
-        + "Other Android devices, and Android Studio, lose their connection for a few seconds.",
-      confirmLabel: "Restart adb",
-    });
-    if (!confirmed) return;
+  const restartAdbAndStart = useCallback((target: "lane" | "refused") => {
+    if (!api || (target === "refused" && startRefusedAgain({ restartAdb: true }))) return;
     void runStart({ kind: "start" }, () => api.start({ laneId, restartAdb: true }, runtimePinRef.current));
-  }, [api, laneId, remoteMachineName, runStart]);
+  }, [api, laneId, runStart, startRefusedAgain]);
 
-  /**
-   * One call on one of the lane's extra devices: a spinner on its card while
-   * it runs, the pane's error line when it fails, a re-read after. The lane's
-   * device and its stream are left as they are.
-   */
-  const runExtra = useCallback(async (avdName: string, call: () => Promise<unknown>): Promise<void> => {
-    setPendingExtra(avdName);
-    setError(null);
-    lowMemoryExtraRef.current = null;
-    try {
-      await call();
-    } catch (caught: unknown) {
-      if (laneIdRef.current !== laneId) return;
-      const described = describeAndroidError(caught);
-      if (described.code === "ANDROID_LOW_MEMORY") lowMemoryExtraRef.current = avdName;
-      setError(described);
-    } finally {
-      if (laneIdRef.current === laneId) setPendingExtra(null);
-      void readStatus();
-      if (pickerShownRef.current) void readInventory();
-    }
-  }, [laneId, readInventory, readStatus]);
-
-  /** Past the RAM guard, after its warning: the person accepts the swap. */
+  /** Past the memory guard, after its warning: the person accepts the swap, for the device that was refused. */
   const startAnyway = useCallback(() => {
-    if (!api) return;
-    const extra = lowMemoryExtraRef.current;
-    if (extra) {
-      void runExtra(extra, () => api.start({ laneId, device: extra, force: true }, runtimePinRef.current));
-      return;
-    }
+    if (!api || startRefusedAgain({ force: true })) return;
     void runStart({ kind: "start" }, () => api.start({ laneId, force: true }, runtimePinRef.current));
-  }, [api, laneId, runExtra, runStart]);
-
-  const startExtra = useCallback((avdName: string) => {
-    if (!api) return;
-    void runExtra(avdName, () => api.start({ laneId, device: avdName }, runtimePinRef.current));
-  }, [api, laneId, runExtra]);
-
-  const stopExtra = useCallback((avdName: string) => {
-    if (!api) return;
-    void runExtra(avdName, () => api.stop({ laneId, device: avdName }, runtimePinRef.current));
-  }, [api, laneId, runExtra]);
-
-  /** ADE made every extra for this lane, so removing one deletes it. */
-  const removeExtra = useCallback((avdName: string) => {
-    if (!api) return;
-    void runExtra(avdName, () => api.releaseDevice({ laneId, device: avdName, deleteCreated: true }, runtimePinRef.current));
-  }, [api, laneId, runExtra]);
+  }, [api, laneId, runStart, startRefusedAgain]);
 
   /**
    * One of the lane's extras becomes its device and opens: one that is off
@@ -646,22 +601,6 @@ export function AndroidDevicePane({
     onError: onActionError,
   });
 
-  const openLog = useCallback((path: string) => {
-    // The log is a file on the emulator's machine. On another machine it
-    // cannot be opened from here, so its path goes to the clipboard instead.
-    if (remoteMachine) {
-      void window.ade?.app?.writeClipboardText?.(path);
-      showToast({
-        id: "android-log",
-        tone: "info",
-        title: remoteMachineName ? `The log is on ${remoteMachineName}` : "The log is on another machine",
-        message: `Its path is copied: ${path}`,
-      });
-      return;
-    }
-    void window.ade?.app?.openPath?.(path).catch((caught: unknown) => setError(describeAndroidError(caught)));
-  }, [remoteMachineName, remoteMachine]);
-
   const pressKey = useCallback((key: AndroidHardwareKey) => input.pressKey(key), [input]);
 
   /* ── render ────────────────────────────────────────────────────────────── */
@@ -735,90 +674,30 @@ export function AndroidDevicePane({
     setToolsOpen(true);
   };
 
-  const strip = (() => {
-    if (error?.code === "ANDROID_LOW_MEMORY") {
-      // The RAM guard: a warning with the numbers, and the person's way past it.
-      return (
-        <AndroidDeviceNoticeStrip
-          tone="warning"
-          sentence={`${error.sentence} ${ANDROID_LOW_MEMORY_RISK}`}
-          actions={[{ label: "Start anyway", onClick: startAnyway }]}
-          onDismiss={() => setError(null)}
-        />
-      );
-    }
-    if (error) {
-      return <DeviceErrorStrip tool="android" sentence={error.sentence} detail={error.detail} onDismiss={() => setError(null)} />;
-    }
-    if (paneState === "crashed") {
-      // One line, one action (the shared strip's rule); the log is a quiet
-      // link, and "Choose another device" sits on the card below.
-      const crash = lane?.error ?? null;
-      const refused = crash?.code === "ANDROID_ADB_UNAUTHORIZED";
-      const actions: NoticeAction[] = [
-        refused ? { label: "Restart adb and start", onClick: () => void restartAdbAndStart() } : { label: "Restart", onClick: start },
-      ];
-      if (crash?.logPath) {
-        const logPath = crash.logPath;
-        actions.push({ label: "Open log", variant: "link", onClick: () => openLog(logPath) });
-      }
-      return (
-        <DeviceErrorStrip
-          tool="android"
-          sentence={crash ? describeAndroidError(crash).sentence : `${deviceName} stopped.`}
-          actions={actions}
-          report={{
-            surface: "android_device_boot",
-            code: crash?.code ?? "android_device_stopped",
-            // The title is already the brain's sentence; the code is what is new.
-            technicalDetail: crash?.code ?? null,
-          }}
-        />
-      );
-    }
-    if (paneState === "stopped") {
-      return (
-        <AndroidDeviceNoticeStrip
-          sentence={`${deviceName} is off.`}
-          actions={[
-            { label: "Start", onClick: start },
-            ...(noPicker ? [] : [{ label: "Choose another device", variant: "secondary" as const, onClick: () => setPickerRequested(true) }]),
-          ]}
-        />
-      );
-    }
-    if (paneState === "video-lost") {
-      return (
-        <AndroidDeviceNoticeStrip
-          sentence={streamError ? `Video stopped. ${describeAndroidError(streamError).sentence}` : "Video stopped."}
-          actions={[{ label: "Reconnect", onClick: () => stream.reconnect() }]}
-        />
-      );
-    }
-    if (threeFailure && androidRailVisible(paneState)) {
-      // The one sentence a fallback to flat says (Apple §A1).
-      return (
-        <AndroidDeviceNoticeStrip
-          sentence={`${threeFailure} Showing the flat view.`}
-          actions={[{ label: "Try 3D again", onClick: () => { setThreeFailure(null); setViewMode("3d"); setViewNonce((nonce) => nonce + 1); } }]}
-          onDismiss={() => setThreeFailure(null)}
-        />
-      );
-    }
-    if (accel && !accel.usable && !noAccelDismissed && paneState !== "setup" && paneState !== "unsupported") {
-      return (
-        <AndroidDeviceNoticeStrip
-          tone="warning"
-          sentence={accel.detail
-            ? `No emulator acceleration: ${accel.detail}`
-            : "This machine has no emulator acceleration, so devices run very slowly or not at all."}
-          actions={[{ label: "How to fix", variant: "link", href: "https://developer.android.com/studio/run/emulator-acceleration" }]}
-          onDismiss={() => setNoAccelDismissed(true)}
-        />
-      );
-    }
-    return null;
-  })();
+  const strip = (
+    <AndroidPaneStrip
+      error={error}
+      paneState={paneState}
+      lane={lane ?? null}
+      deviceName={deviceName}
+      streamError={streamError}
+      threeFailure={threeFailure}
+      acceleration={accel}
+      accelerationDismissed={noAccelDismissed}
+      canChoose={!noPicker}
+      onDismissError={() => setError(null)}
+      onStart={start}
+      onStartAnyway={startAnyway}
+      machine={{ remote: remoteMachine, name: remoteMachineName }}
+      onRestartAdb={restartAdbAndStart}
+      onError={setError}
+      onChoose={() => setPickerRequested(true)}
+      onReconnect={() => stream.reconnect()}
+      onRetry3D={() => { setThreeFailure(null); setViewMode("3d"); setViewNonce((nonce) => nonce + 1); }}
+      onDismiss3D={() => setThreeFailure(null)}
+      onDismissAcceleration={() => setNoAccelDismissed(true)}
+    />
+  );
 
   const requestSetup = onRequestSetup ?? (() => setSetupRequested(true));
 
@@ -912,11 +791,8 @@ export function AndroidDevicePane({
             onRefresh={refreshAll}
             playing={!hidden}
             systemImages={<AndroidSystemImagesSection pin={runtimePin} machineName={remoteMachineName} />}
-            pendingExtra={pendingExtra ?? (pending?.kind === "attach" && lane?.extras?.some((extra) => extra.device.avdName === pending.avdName) ? pending.avdName : null)}
-            onPromoteExtra={promoteExtra}
-            onStartExtra={startExtra}
-            onStopExtra={stopExtra}
-            onRemoveExtra={removeExtra}
+            pendingExtra={extraDevices.pendingName(pending?.kind === "attach" ? pending.avdName : null, lane)}
+            extraActions={{ promote: promoteExtra, start: startExtra, stop: stopExtra, remove: removeExtra }}
           />
         );
       case "stopped":

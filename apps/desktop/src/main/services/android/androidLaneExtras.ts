@@ -1,5 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
 import {
   ANDROID_LANE_EXTRA_DEVICE_LIMIT,
   ANDROID_LANE_EXTRA_DEVICE_MAX,
@@ -12,25 +10,17 @@ import {
   type AndroidSdkStatus,
 } from "../../../shared/types/androidEmulator";
 import { androidAvdDisplayName } from "../../../shared/androidDevicePresentation";
-import { captureProblem } from "../../../shared/sentry/capture";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import { readAndroidAvd, sameAvdName } from "./androidAvds";
 import type { BootedDevice } from "./androidDeviceShell";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
+import type { AndroidEmulatorSlotHooks, AndroidEmulatorSlots, AndroidStartOptions } from "./androidEmulatorLifecycle";
 import type { AndroidEmulatorStopReason } from "./androidEmulatorOwners";
-import {
-  launchAndroidEmulator,
-  stopAndroidLaunch,
-  waitForAndroidBoot,
-  type AndroidDiscoveredEmulator,
-  type AndroidEmulatorLaunch,
-} from "./androidEmulatorProcess";
-import { ANDROID_BOOT_TIMEOUT_MS, type AndroidEmulatorServiceDeps } from "./androidEmulatorServiceDeps";
-import type { AndroidEmulatorLifecycle as AndroidMachineEmulatorLifecycle, AndroidIdleStopAnswer } from "./androidEmulatorSweep";
-import type { openStartedEmulators } from "./androidHandedOffEmulators";
+import type { AdeStartedEmulators, AndroidDiscoveredEmulator, AndroidEmulatorLaunch } from "./androidEmulatorProcess";
+import type { AndroidEmulatorServiceDeps } from "./androidEmulatorServiceDeps";
+import type { AndroidIdleStopAnswer } from "./androidEmulatorSweep";
 import { releaseAndroidLaneExtras } from "./androidLaneRelease";
-import { reserveAndroidMemoryForStart, type AndroidBootReservation } from "./androidMemoryGuard";
 import { androidSdkPaths, type AndroidEnv, type ReadyAndroidSdk } from "./androidSdk";
 
 /*
@@ -40,16 +30,19 @@ import { androidSdkPaths, type AndroidEnv, type ReadyAndroidSdk } from "./androi
  * Rules it keeps:
  * - An extra is an AVD ADE made. ADE deletes it with the lane, and only when
  *   its `config.ini` still carries ADE's marker.
- * - Every start of an extra goes through the RAM guard
- *   (`reserveAndroidMemoryForStart`), the same as the lane's device.
+ * - Every start of an extra goes through the memory guard, the same as the
+ *   lane's device: one boot, stop and exit watch serves both
+ *   (`androidEmulatorLifecycle.ts`, `slots`).
  * - An extra has no stream, recording, lease, crash pin or tests: those are
  *   the lane device's. It boots, stops, takes an install or a launch, and can
- *   become the lane device (`devicePromote`, in the service).
+ *   become the lane device (`androidDevicePromote.ts`).
  * - Start and stop of one extra run one at a time on that extra's own queue,
  *   so a boot of an extra never holds up the lane device. A stop during a
  *   start ends the boot at once, as for the lane device.
- * - ADE stops only an extra emulator it started. Its launch is in the same
- *   started-emulators file as the lane device's, so a brain restart re-adopts it.
+ * - ADE stops only an extra emulator it started. Its launch is in the
+ *   extras' own started-emulators file (`started-extra-emulators.json`), so a
+ *   brain restart re-adopts it, and an older ADE on the same project, which
+ *   reads only the project's file, never takes it for an orphan.
  *
  * Node built-ins and relative imports only, so it runs under `tsx`.
  */
@@ -64,6 +57,21 @@ export function androidLaneExtraLimit(env: AndroidEnv): number {
   const raw = Number(env.ADE_ANDROID_LANE_EXTRA_DEVICES?.trim());
   if (!Number.isFinite(raw) || raw < 1) return ANDROID_LANE_EXTRA_DEVICE_LIMIT;
   return Math.min(ANDROID_LANE_EXTRA_DEVICE_MAX, Math.floor(raw));
+}
+
+/**
+ * The names that call one of a lane's devices: its AVD name, the name made
+ * from it (`Medium_Phone_2` is `Medium Phone 2`), and the name in its
+ * `config.ini` when the AVD folder can be read. Compare with `sameAvdName`.
+ */
+export function androidDeviceNames(device: Pick<AndroidLaneDevice, "avdName">, avdHome: string | null): string[] {
+  const shown = avdHome ? readAndroidAvd(avdHome, device.avdName)?.displayName ?? null : null;
+  return [device.avdName, androidAvdDisplayName(device.avdName), ...(shown ? [shown] : [])];
+}
+
+/** True when `wanted` is one of this device's names (`androidDeviceNames`). */
+export function namesAndroidDevice(device: Pick<AndroidLaneDevice, "avdName">, wanted: string, avdHome: string | null): boolean {
+  return androidDeviceNames(device, avdHome).some((name) => sameAvdName(name, wanted));
 }
 
 /** One extra's state in this process. */
@@ -81,44 +89,37 @@ type ExtraState = {
 };
 
 export type AndroidLaneExtrasDeps = {
-  deps: Pick<AndroidEmulatorServiceDeps, "laneDevices" | "dataDir" | "captureAnalytics" | "handOffOnDispose" | "bootTimeoutMs" | "projectRoot">;
+  deps: Pick<AndroidEmulatorServiceDeps, "laneDevices">;
   env: AndroidEnv;
   platform: NodeJS.Platform;
   logger: Logger | null;
-  registry: ReturnType<typeof openStartedEmulators>;
+  /** The extras' own started-emulators file. */
+  extraRegistry: AdeStartedEmulators;
   discoveryDirs: readonly string[];
-  bootedSeen: Set<string>;
   home: string;
-  /** The brain's emulator lifecycle (`androidEmulatorSweep.ts`): an extra's owner record, and the memory guard's cross-brain ledger. */
-  machineLifecycle: AndroidMachineEmulatorLifecycle | null;
-  /** Every running emulator (the discovery files): the memory guard counts them all. */
-  discovered: () => AndroidDiscoveredEmulator[];
+  /** The one boot, stop, abort and exit watch (`androidEmulatorLifecycle.ts`). */
+  slots: AndroidEmulatorSlots;
   emit: (event: AndroidEmulatorEvent) => void;
   runningFor: (avdName: string) => AndroidDiscoveredEmulator | null;
-  ownsEmulator: (emulator: AndroidDiscoveredEmulator) => boolean;
   asRunning: (adbPath: string | null, emulator: AndroidDiscoveredEmulator) => Promise<AndroidRunningEmulator>;
   bootedNow: (adbPath: string | null, emulator: AndroidDiscoveredEmulator) => Promise<boolean>;
   requireSdk: (needs: { emulator: boolean }) => Promise<ReadyAndroidSdk>;
-  stopEmulator: (
-    emulator: AndroidDiscoveredEmulator,
-    adbPath: string,
-    reason: AndroidEmulatorStopReason,
-    laneId: string | null,
-    launcherPid?: number | null,
-  ) => Promise<unknown>;
   serialize: <T>(key: string, step: () => Promise<T>) => Promise<T>;
-  isDisposed: () => boolean;
+  /** Drops a queue entry of `serialize` once nothing waits on it: an extra that went. */
+  forgetQueue: (key: string) => void;
+  /** The AVD folder when it can be read now, else null. */
+  avdHome: () => string | null;
   /** Something used the extra's emulator: the machine lifecycle's idle clock, by AVD name. */
   touch: (avdName: string) => void;
   /** The power-off record (`androidLaneMaintenance.ts`), keyed by `androidExtraKey`. */
   started: (key: string) => void;
   poweredOffRecord: (key: string) => AndroidPowerOffRecord | null;
+  notePoweredOff: (key: string, record: Omit<AndroidPowerOffRecord, "at">) => void;
 };
 
 export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
-  const { deps, env, platform, logger, registry, discoveryDirs, bootedSeen, emit } = ctx;
+  const { deps, env, platform, logger, discoveryDirs, emit, slots } = ctx;
   const repo = deps.laneDevices;
-  const bootTimeoutMs = Math.max(deps.bootTimeoutMs ?? ANDROID_BOOT_TIMEOUT_MS, 120_000);
   const states = new Map<string, ExtraState>();
 
   const stateOf = (laneId: string, avdName: string): ExtraState => {
@@ -135,22 +136,65 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
   const emitState = (laneId: string, avdName: string, state: AndroidLaneExtraStatus["state"] | "none") =>
     emit({ type: "android.extra.state", laneId, avdName, state });
 
+  /** The lane holds this AVD as one of its extras now. */
+  const holdsExtra = (laneId: string, avdName: string): boolean => repo.extras(laneId).some((row) => sameAvdName(row.avdName, avdName));
+
+  /** Where an extra's boot, stop and exit are not the lane device's. */
+  const hooksFor = (state: ExtraState): AndroidEmulatorSlotHooks => ({
+    avdName: state.avdName,
+    // Every extra is an AVD ADE made, as the lane device it may become.
+    snapshot: "cold",
+    registry: ctx.extraRegistry,
+    emitState: (next) => emitState(state.laneId, state.avdName, next),
+    logPrefix: "android.extra_",
+    logFields: { extra: true },
+    sentryTags: { extra: "true" },
+    sentryExtra: {},
+    beforeStop: async () => {},
+    onExited: async () => {},
+    onStoppedWhileStarting: () => emitState(state.laneId, state.avdName, "off"),
+  });
+
   /**
-   * The lane's extra that `wanted` names: its AVD name, or the name a person
-   * reads (`Galaxy S25`), both compared without case. Null when none matches.
+   * The lane's extra that `wanted` names: its AVD name first, else the one
+   * extra whose shown name (`Galaxy S25`) it is, compared without case. Null
+   * when none matches. Two extras with the same shown name are refused: the
+   * caller uses the AVD name.
    */
-  const find = (laneId: string, wanted: string | null | undefined, avdHome: string | null = null): AndroidLaneDevice | null => {
+  const find = (laneId: string, wanted: string | null | undefined, avdHome: string | null): AndroidLaneDevice | null => {
     const asked = wanted?.trim();
     if (!asked) return null;
     const extras = repo.extras(laneId);
     const byName = extras.find((extra) => sameAvdName(extra.avdName, asked));
     if (byName) return byName;
-    const shown = (extra: AndroidLaneDevice): string[] => {
-      const avd = avdHome ? readAndroidAvd(avdHome, extra.avdName) : null;
-      return [avd?.displayName ?? null, androidAvdDisplayName(extra.avdName)].filter((name): name is string => Boolean(name));
-    };
-    const matches = extras.filter((extra) => shown(extra).some((name) => sameAvdName(name, asked)));
-    return matches.length === 1 ? matches[0]! : null;
+    const matches = extras.filter((extra) => namesAndroidDevice(extra, asked, avdHome));
+    if (matches.length > 1) {
+      throw new AndroidEmulatorFailure(
+        "ANDROID_DEVICE_NOT_LANE_OWNED",
+        `${asked} is the name of ${matches.length} of this lane's extra devices (${matches.map((extra) => extra.avdName).join(", ")}). `
+          + "Name one by its AVD name: ade android devices --text lists them.",
+      );
+    }
+    return matches[0] ?? null;
+  };
+
+  /**
+   * The extra a call's `device` names, or null for the lane's own device (no
+   * `device`, or one that names it). Anything else is refused: an install or
+   * a start never lands on a device the lane does not hold.
+   */
+  const resolveTarget = (laneId: string, wanted: string | null | undefined): AndroidLaneDevice | null => {
+    const asked = typeof wanted === "string" ? wanted.trim() : "";
+    if (!asked) return null;
+    const avdHome = ctx.avdHome();
+    const own = repo.get(laneId);
+    if (own && namesAndroidDevice(own, asked, avdHome)) return null;
+    const extra = find(laneId, asked, avdHome);
+    if (extra) return extra;
+    throw new AndroidEmulatorFailure(
+      "ANDROID_DEVICE_NOT_LANE_OWNED",
+      `${asked} is neither this lane's device nor one of its extra devices. ade android status --text lists them; ade android device-create --extra adds one.`,
+    );
   };
 
   /** The extras of a lane as `status` reads them. One discovery read per call; adb only for an unseen boot. */
@@ -180,155 +224,11 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
     }));
   };
 
-  /** Stops an extra emulator this process launched. A boot that never finished leaves no owner record. */
-  const stopLaunch = async (launch: AndroidEmulatorLaunch, adbPath: string): Promise<void> => {
-    await stopAndroidLaunch(launch, { adbPath, registry, discoveryDirs, logger });
-    ctx.machineLifecycle?.forget({ avdName: launch.avdName, consolePort: launch.consolePort });
-  };
-
-  /** Watches an extra emulator this process launched, so one that dies after its boot reads as crashed. */
-  const watchExit = (state: ExtraState, launch: AndroidEmulatorLaunch) => {
-    void launch.exit.then((info) => {
-      if (state.launch !== launch || state.transient !== null || state.stopRequested || ctx.isDisposed()) return;
-      state.launch = null;
-      const how = info.error ?? (info.signal ? `signal ${info.signal}` : `code ${info.code}`);
-      state.error = {
-        code: "ANDROID_EMULATOR_EXITED",
-        message: `The emulator for ${androidAvdDisplayName(launch.avdName)} exited (${how}).`,
-        logPath: launch.logPath,
-      };
-      logger?.warn("android.extra_emulator_exited", { laneId: state.laneId, avdName: launch.avdName, how });
-      ctx.machineLifecycle?.forget({ avdName: launch.avdName, consolePort: launch.consolePort });
-      emitState(state.laneId, state.avdName, "crashed");
-    });
-  };
-
-  /** The launch and the boot wait of one extra. The caller holds the extra's queue and reserved its memory. */
-  const bootLocked = async (
-    state: ExtraState,
-    ready: ReadyAndroidSdk,
-    owner: { guestRamMb: number; costMb: number },
-    reservation: Pick<AndroidBootReservation, "launched">,
-    restartAdb: boolean,
-  ): Promise<void> => {
-    const { laneId, avdName } = state;
-    const logPath = path.join(deps.dataDir, "logs", `${avdName}.log`);
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    fs.writeFileSync(logPath, "");
-    state.error = null;
-    state.stopRequested = false;
-    state.launchStop = null;
-    state.transient = "starting";
-    emitState(laneId, avdName, "starting");
-    let launch: AndroidEmulatorLaunch | null = null;
-    try {
-      launch = await launchAndroidEmulator({
-        emulatorPath: ready.emulatorPath,
-        sdkRoot: ready.root,
-        avdHome: ready.avdHome,
-        avdName,
-        logPath,
-        // Every extra is an AVD ADE made, as the lane device it may become.
-        snapshot: "cold",
-        registry,
-        discoveryDirs,
-        env,
-        detached: deps.handOffOnDispose === true,
-      });
-      state.launch = launch;
-      // The machine-wide owner record, under the lane that holds the extra.
-      const { consolePort, launcherPid } = launch;
-      ctx.machineLifecycle?.recordLaunch({
-        ...owner,
-        chatSessionId: null,
-        avdName,
-        consolePort,
-        launcherPid,
-        adbPath: ready.adbPath,
-        laneId,
-        projectRoot: deps.projectRoot ?? null,
-      });
-      reservation.launched({ avdName, consolePort, launcherPid });
-      if (state.stopRequested) throw new AndroidEmulatorFailure("ANDROID_NOT_RUNNING", "The emulator was stopped while it was starting.");
-      const startedAt = Date.now();
-      const boot = await waitForAndroidBoot(launch, {
-        adbPath: ready.adbPath,
-        timeoutMs: bootTimeoutMs,
-        registry,
-        discoveryDirs,
-        restartAdb: restartAdb ? "always" : "auto",
-        onAdbRestarted: (otherDevices) => {
-          logger?.warn("android.adb_server_restarted", { laneId, avdName, extra: true, reason: "unauthorized", otherDevices, asked: restartAdb });
-          deps.captureAnalytics?.("adb_restarted");
-        },
-      });
-      if (state.stopRequested) throw new AndroidEmulatorFailure("ANDROID_NOT_RUNNING", "The emulator was stopped while it was starting.");
-      bootedSeen.add(`${launch.serial}:${boot.pid}`);
-      void ctx.machineLifecycle?.recordBooted({ avdName, consolePort, pid: boot.pid }).catch((error: unknown) => {
-        logger?.warn("android.owner_record_failed", { avdName, error: getErrorMessage(error) });
-      });
-      logger?.info("android.extra_emulator_booted", {
-        laneId,
-        avdName,
-        serial: launch.serial,
-        waitForDeviceMs: boot.waitForDeviceMs,
-        bootCompletedMs: boot.bootCompletedMs,
-        totalMs: Date.now() - startedAt,
-        adbRestarted: boot.adbRestarted,
-      });
-      deps.captureAnalytics?.("device_booted");
-      state.transient = null;
-      ctx.started(androidExtraKey(laneId, avdName));
-      watchExit(state, launch);
-      emitState(laneId, avdName, "booted");
-    } catch (error) {
-      const stoppedByUser = state.stopRequested;
-      if (launch) {
-        state.transient = "stopping";
-        const ending = state.launchStop ?? (launch.exited() ? Promise.resolve() : stopLaunch(launch, ready.adbPath));
-        await ending.catch((stopError: unknown) => {
-          logger?.warn("android.extra_failed_boot_stop_failed", { laneId, avdName, error: getErrorMessage(stopError) });
-        });
-        ctx.machineLifecycle?.forget({ avdName: launch.avdName, consolePort: launch.consolePort });
-      }
-      state.transient = null;
-      state.launchStop = null;
-      if (state.launch === launch) state.launch = null;
-      if (stoppedByUser) {
-        state.error = null;
-        emitState(laneId, avdName, "off");
-        throw new AndroidEmulatorFailure("ANDROID_NOT_RUNNING", "The emulator was stopped while it was starting.");
-      }
-      const failure = error instanceof AndroidEmulatorFailure
-        ? error
-        : new AndroidEmulatorFailure(
-          "ANDROID_EMULATOR_EXITED",
-          `The emulator for ${androidAvdDisplayName(avdName)} did not start: ${getErrorMessage(error)}`,
-          logPath,
-        );
-      state.error = failure.toAndroidEmulatorError();
-      const elapsedMs = launch ? Date.now() - launch.startedAt : null;
-      logger?.warn("android.extra_emulator_start_failed", { laneId, avdName, code: failure.code, error: failure.message, elapsedMs });
-      captureProblem("Android emulator did not boot", {
-        tags: { area: "android", code: failure.code, extra: "true" },
-        extra: { elapsedMs },
-        fingerprint: ["android", "boot_failed", failure.code],
-        handled: true,
-      });
-      deps.captureAnalytics?.("boot_failed");
-      emitState(laneId, avdName, "crashed");
-      throw failure;
-    }
-  };
-
-  /**
-   * Boots one extra (no-op when it runs). Through the RAM guard: `force`
-   * starts it past a refusal, as `start --force` does for the lane device.
-   */
-  const start = (laneId: string, extra: AndroidLaneDevice, options: { force?: boolean; restartAdb?: boolean } = {}): Promise<void> =>
+  /** Boots one extra (no-op when it runs), through the memory guard: `force` starts it past a refusal. */
+  const start = (laneId: string, extra: AndroidLaneDevice, options: AndroidStartOptions = {}): Promise<void> =>
     ctx.serialize(androidExtraKey(laneId, extra.avdName), async () => {
       // Again in the queue: a promote or a release may have taken it meanwhile.
-      if (!repo.extras(laneId).some((row) => sameAvdName(row.avdName, extra.avdName))) {
+      if (!holdsExtra(laneId, extra.avdName)) {
         throw new AndroidEmulatorFailure("ANDROID_DEVICE_NOT_LANE_OWNED", `${extra.avdName} is not one of this lane's extra devices any more.`);
       }
       const ready = await ctx.requireSdk({ emulator: true });
@@ -342,74 +242,15 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
       if (!avd) throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", `The extra device ${extra.avdName} is no longer on this machine.`);
       ctx.touch(extra.avdName);
       if (ctx.runningFor(extra.avdName)) return;
-      const force = options.force === true;
-      const reservation = await reserveAndroidMemoryForStart({
-        laneId,
-        avd,
-        force,
-        platform,
-        logger,
-        discovered: ctx.discovered(),
-        ledger: ctx.machineLifecycle?.ledger ?? null,
-      });
-      try {
-        await bootLocked(
-          stateOf(laneId, extra.avdName),
-          ready,
-          { guestRamMb: reservation.cost.guestRamMb, costMb: reservation.cost.costMb },
-          reservation,
-          options.restartAdb === true,
-        );
-        if (force) deps.captureAnalytics?.("start_forced");
-      } finally {
-        reservation.release();
-      }
+      const state = stateOf(laneId, extra.avdName);
+      await slots.reserveAndBoot(state, hooksFor(state), ready, avd, options);
+      ctx.started(androidExtraKey(laneId, extra.avdName));
+      emitState(laneId, extra.avdName, "booted");
     });
-
-  /** Ends a boot in progress of one extra: the failing start then reads `stopRequested`. */
-  const abortBoot = async (state: ExtraState, adbPath: () => Promise<string | null>): Promise<void> => {
-    state.stopRequested = true;
-    if (state.launch && !state.launchStop) {
-      const resolved = await adbPath();
-      if (resolved && state.launch && !state.launchStop) state.launchStop = stopLaunch(state.launch, resolved);
-    }
-    await state.launchStop?.catch((error: unknown) => {
-      logger?.warn("android.extra_launch_stop_failed", { laneId: state.laneId, avdName: state.avdName, error: getErrorMessage(error) });
-    });
-  };
 
   /** Stops one extra if ADE started it. The caller holds the extra's queue. */
-  const stopLocked = async (state: ExtraState, options: { refuseForeign: boolean; reason: AndroidEmulatorStopReason }): Promise<void> => {
-    const emulator = ctx.runningFor(state.avdName);
-    if (!emulator) {
-      state.launch = null;
-      return;
-    }
-    if (!ctx.ownsEmulator(emulator)) {
-      if (!options.refuseForeign) return;
-      throw new AndroidEmulatorFailure(
-        "ANDROID_AVD_RUNNING",
-        `${state.avdName} was started outside ADE, so ADE leaves it running. Close it where it was started.`,
-      );
-    }
-    const { adbPath } = await ctx.requireSdk({ emulator: false });
-    state.transient = "stopping";
-    emitState(state.laneId, state.avdName, "stopping");
-    try {
-      await ctx.stopEmulator(
-        emulator,
-        adbPath,
-        options.reason,
-        state.laneId,
-        state.launch?.consolePort === emulator.consolePort ? state.launch.launcherPid : null,
-      );
-      bootedSeen.delete(`${emulator.serial}:${emulator.pid}`);
-      state.launch = null;
-      state.error = null;
-    } finally {
-      state.transient = null;
-    }
-  };
+  const stopLocked = (state: ExtraState, options: { refuseForeign: boolean; reason: AndroidEmulatorStopReason }): Promise<void> =>
+    slots.stop(state, hooksFor(state), options);
 
   /** Stops one extra. A stop during its start does not wait behind the boot: it ends it now. */
   const stop = async (
@@ -421,7 +262,7 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
     if (state.transient === "starting") {
       state.transient = "stopping";
       emitState(laneId, extra.avdName, "stopping");
-      await abortBoot(state, async () => (await ctx.requireSdk({ emulator: false }).catch(() => null))?.adbPath ?? null);
+      await slots.abort(state, hooksFor(state), async () => (await ctx.requireSdk({ emulator: false }).catch(() => null))?.adbPath ?? null);
     }
     await ctx.serialize(androidExtraKey(laneId, extra.avdName), async () => {
       state.stopRequested = false;
@@ -441,7 +282,7 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
     options: { deleteCreated?: boolean } = {},
   ): Promise<{ released: boolean; deletedAvd: string | null }> => {
     // Gone already (a promote, another release): nothing to do.
-    if (!repo.extras(laneId).some((row) => sameAvdName(row.avdName, extra.avdName))) return { released: false, deletedAvd: null };
+    if (!holdsExtra(laneId, extra.avdName)) return { released: false, deletedAvd: null };
     await stop(laneId, extra, { refuseForeign: false, reason: "released" });
     const result = await releaseAndroidLaneExtras(laneId, repo, {
       env,
@@ -456,7 +297,9 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
       const reason = result.kept.find((entry) => sameAvdName(entry.avdName, extra.avdName))?.reason;
       throw new AndroidEmulatorFailure("ANDROID_AVD_RUNNING", reason ?? `${extra.avdName} could not be released.`);
     }
-    states.delete(androidExtraKey(laneId, extra.avdName));
+    const key = androidExtraKey(laneId, extra.avdName);
+    states.delete(key);
+    ctx.forgetQueue(key);
     logger?.info("android.extra_device_released", { laneId, avdName: extra.avdName, deleted: result.deleted.length > 0 });
     emit({ type: "android.inventory.changed" });
     emitState(laneId, extra.avdName, "none");
@@ -497,15 +340,21 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
 
   /**
    * Runs an install or a launch on one extra: boots it first when it is off
-   * (through the RAM guard, no `force`), and counts it as in use meanwhile,
-   * so a promote, a release or the idle timer does not take it away.
+   * (through the memory guard, no `force`), and counts it as in use
+   * meanwhile, so a promote, a release or the idle stop does not take it
+   * away. The count starts before the first await.
    */
-  const runJob = async <T>(laneId: string, extra: AndroidLaneDevice, job: (booted: () => Promise<BootedDevice>) => Promise<T>): Promise<T> => {
+  const runJob = async <T>(
+    laneId: string,
+    extra: AndroidLaneDevice,
+    job: (booted: () => Promise<BootedDevice>) => Promise<T>,
+    options: Pick<AndroidStartOptions, "chatSessionId"> = {},
+  ): Promise<T> => {
     const state = stateOf(laneId, extra.avdName);
     state.jobs += 1;
     ctx.touch(extra.avdName);
     try {
-      if (!ctx.runningFor(extra.avdName) || state.transient === "starting") await start(laneId, extra);
+      if (!ctx.runningFor(extra.avdName) || state.transient === "starting") await start(laneId, extra, options);
       return await job(() => requireBooted(laneId, extra));
     } finally {
       state.jobs -= 1;
@@ -527,7 +376,7 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
     check: () => Promise<AndroidIdleStopAnswer | null>,
   ): Promise<AndroidIdleStopAnswer> => {
     const answer = await ctx.serialize(androidExtraKey(laneId, extra.avdName), async (): Promise<AndroidIdleStopAnswer> => {
-      if (!repo.extras(laneId).some((row) => sameAvdName(row.avdName, extra.avdName))) return "not_found";
+      if (!holdsExtra(laneId, extra.avdName)) return "not_found";
       const early = await check();
       if (early) return early;
       const state = stateOf(laneId, extra.avdName);
@@ -536,6 +385,21 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
       return "stopped";
     });
     if (answer === "stopped") emitState(laneId, extra.avdName, "off");
+    return answer;
+  };
+
+  /** The machine sweep's idle stop of one extra (`androidEmulatorUse.ts`): its status says so until its next start. */
+  const stopIdle = async (
+    laneId: string,
+    extra: AndroidLaneDevice,
+    idleMinutes: number,
+    check: () => Promise<AndroidIdleStopAnswer | null>,
+  ): Promise<AndroidIdleStopAnswer> => {
+    const answer = await powerOff(laneId, extra, "idle", check);
+    if (answer === "stopped") {
+      ctx.notePoweredOff(androidExtraKey(laneId, extra.avdName), { reason: "idle", idleMinutes });
+      emit({ type: "android.inventory.changed" });
+    }
     return answer;
   };
 
@@ -564,6 +428,7 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
     // The old state's exit watch must not read the lane device's exit as an extra's crash.
     if (state) state.launch = null;
     states.delete(key);
+    ctx.forgetQueue(key);
     return launch;
   };
 
@@ -572,11 +437,13 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
     const state = stateOf(laneId, avdName);
     state.error = null;
     state.launch = launch;
-    if (launch) watchExit(state, launch);
+    if (launch) slots.watchExit(state, hooksFor(state), launch);
   };
 
   return {
     find,
+    resolveTarget,
+    holdsExtra,
     statuses,
     start,
     stop,
@@ -585,7 +452,7 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
     stopAll,
     requireBooted,
     runJob,
-    powerOff,
+    stopIdle,
     powerOffIdle,
     busyReason,
     takeLaunch,
@@ -595,7 +462,7 @@ export function createAndroidLaneExtras(ctx: AndroidLaneExtrasDeps) {
     /** Ends every extra boot in progress (the service's dispose). */
     async abortAll(adbPath: string): Promise<void> {
       await Promise.all([...states.values()].filter((state) => state.transient === "starting" && state.launch)
-        .map((state) => abortBoot(state, async () => adbPath)));
+        .map((state) => slots.abort(state, hooksFor(state), async () => adbPath)));
     },
     clear: (): void => states.clear(),
   };

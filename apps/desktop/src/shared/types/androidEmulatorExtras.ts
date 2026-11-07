@@ -36,8 +36,8 @@ export type AndroidLaneExtraStatus = {
   state: "off" | "starting" | "booted" | "stopping" | "crashed";
   /** Set when `state` is `crashed` or its last start failed. */
   error: AndroidEmulatorError | null;
-  /** Why ADE powered it off (the idle timer), until its next start. */
-  poweredOff?: AndroidPowerOffRecord | null;
+  /** Why ADE powered it off (the idle stop, or the cleanup pass), until its next start; null when it did not. */
+  poweredOff: AndroidPowerOffRecord | null;
 };
 
 /**
@@ -72,6 +72,16 @@ export type AndroidDevicePromoteResult = {
 
 /** Which device an install, launch, start or stop went to, when the caller named one. */
 export type AndroidTargetDevice = { avdName: string; extra: boolean };
+
+/**
+ * The args of a verb that may act on one of the lane's extra devices:
+ * `device` is its AVD name or shown name. Default: the lane's device.
+ */
+export type AndroidDeviceTargetArgs = AndroidLaneArgs & {
+  device?: string | null;
+  /** The caller's chat, set by the RPC server for an agent: an extra the call boots names it in its owner record. */
+  chatSessionId?: string | null;
+};
 
 /** The service methods this section adds. */
 export type AndroidEmulatorExtrasServiceApi = {

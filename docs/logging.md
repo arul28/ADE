@@ -1451,6 +1451,16 @@ under `device_booted` and `boot_failed` as the lane device's does. Apart from
 `boot_failed`, a failed, refused or no-op call emits nothing; the guard's own
 refusal is not an event (it is the `android.start_low_memory` log line, with
 the reason and the numbers), and a promote refused as busy is not one either.
+A boot that fails with an unexpected code is one Sentry issue per code
+(`["android", "boot_failed", <code>]`; tags `area`, `code`, and `extra` for
+an extra device). The brain reports it only for an agent's call over RPC (one
+that names its chat); the desktop's IPC capture (`main/sentry/ipcCapture.ts`)
+reports the desktop's own calls once, since no "already reported" mark
+crosses the runtime boundary. `ANDROID_ADB_UNAUTHORIZED` is an expected
+(`environment`) answer and never an issue. `android.adb_devices_failed`
+(warn, once per boot, with the AVD name and the error) says that `adb devices`
+did not answer during a boot wait; the refusal clock does not move on such a
+read.
 Android has one idle policy: the brain's machine-wide sweep
 (`androidEmulatorSweep.ts`) stops an unpinned emulator ADE started that
 nothing used for `ADE_ANDROID_IDLE_POWER_OFF_MINUTES` (or its other name

@@ -89,12 +89,18 @@ export type AndroidDevicePickerProps = {
   systemImages?: ReactNode;
   /** The extra device a start, stop, promote or remove is in flight for. */
   pendingExtra?: string | null;
-  /** Make one of the lane's extras its device (and open it). */
-  onPromoteExtra?: (avdName: string) => void;
-  onStartExtra?: (avdName: string) => void;
-  onStopExtra?: (avdName: string) => void;
+  /** What the lane's extra devices' cards do, by AVD name. */
+  extraActions: AndroidExtraDeviceActions;
+};
+
+/** The calls one extra device's card makes, by AVD name. */
+export type AndroidExtraDeviceActions = {
+  /** Make the extra the lane's device (and open it). */
+  promote: (avdName: string) => void;
+  start: (avdName: string) => void;
+  stop: (avdName: string) => void;
   /** Stop the extra and delete it: ADE made it for this lane. */
-  onRemoveExtra?: (avdName: string) => void;
+  remove: (avdName: string) => void;
 };
 
 /** The small picture on a lane or machine card: the AVD's catalog body in its colour, else a body from its profile. */
@@ -133,10 +139,7 @@ export function AndroidDevicePicker({
   playing = true,
   systemImages,
   pendingExtra = null,
-  onPromoteExtra,
-  onStartExtra,
-  onStopExtra,
-  onRemoveExtra,
+  extraActions,
 }: AndroidDevicePickerProps) {
   const theme = useAppStore((s) => s.theme);
   const lanes = useAppStore((s) => s.lanes);
@@ -203,10 +206,7 @@ export function AndroidDevicePicker({
                   profiles={profiles}
                   pending={pendingExtra === extra.device.avdName}
                   disabled={busy}
-                  onPromote={onPromoteExtra ? () => onPromoteExtra(extra.device.avdName) : undefined}
-                  onStart={onStartExtra ? () => onStartExtra(extra.device.avdName) : undefined}
-                  onStop={onStopExtra ? () => onStopExtra(extra.device.avdName) : undefined}
-                  onRemove={onRemoveExtra ? () => onRemoveExtra(extra.device.avdName) : undefined}
+                  actions={extraActions}
                 />
               ))}
             </div>
@@ -470,26 +470,20 @@ function ExtraDeviceCard({
   profiles,
   pending,
   disabled,
-  onPromote,
-  onStart,
-  onStop,
-  onRemove,
+  actions,
 }: {
   extra: AndroidLaneExtraStatus;
   profile: AndroidHardwareProfile | null;
   profiles: readonly AndroidHardwareProfile[];
   pending: boolean;
   disabled: boolean;
-  onPromote?: (() => void) | undefined;
-  onStart?: (() => void) | undefined;
-  onStop?: (() => void) | undefined;
-  onRemove?: (() => void) | undefined;
+  actions: AndroidExtraDeviceActions;
 }) {
   const avdName = extra.device.avdName;
   const name = extra.avd ? androidAvdLabel(extra.avd) : avdName;
   const spec = extra.avd ? androidAvdSpecLine(extra.avd, profiles) : "This AVD is not on this machine any more.";
   const running = extra.state === "booted" || extra.state === "starting";
-  const [confirming, setConfirming] = useState(false);
+  const promote = extra.avd ? () => actions.promote(avdName) : undefined;
   return (
     <div
       data-android-extra-card={avdName}
@@ -497,10 +491,10 @@ function ExtraDeviceCard({
     >
       <button
         type="button"
-        disabled={disabled || !onPromote || !extra.avd}
+        disabled={disabled || !promote}
         aria-label={`Make ${name} this lane's device`}
         data-android-extra-promote={avdName}
-        onClick={onPromote}
+        onClick={promote}
         className={cn("flex min-w-0 flex-1 items-start gap-2 rounded-[inherit] text-left", ANDROID_TILE_FOCUS_RING, disabled ? "cursor-not-allowed" : "cursor-pointer")}
       >
         <AvdPicture avd={extra.avd} profile={profile} />
@@ -512,65 +506,17 @@ function ExtraDeviceCard({
           <span className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">{`${spec} · Extra`}</span>
         </span>
       </button>
-      <DropdownMenu.Root onOpenChange={(open) => { if (!open) setConfirming(false); }}>
-        <DropdownMenu.Trigger asChild>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={disabled}
-            aria-label={`Manage ${name}`}
-            data-android-extra-menu={avdName}
-            className="-mr-1 -mt-1 h-6 w-6 shrink-0 p-0 text-muted-fg"
-          >
-            <DotsThree size={16} weight="bold" />
-          </Button>
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Portal>
-          <DropdownMenu.Content className={MENU_CONTENT_CLASS} side="bottom" align="end" sideOffset={6}>
-            <div className={MENU_LABEL_CLASS}>{`${name} · extra device`}</div>
-            {running ? (
-              onStop ? (
-                <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onStop} data-android-extra-stop={avdName}>
-                  <Stop size={14} />
-                  Stop
-                </DropdownMenu.Item>
-              ) : null
-            ) : onStart ? (
-              <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onStart} data-android-extra-start={avdName}>
-                <Play size={14} />
-                Start beside the lane's device
-              </DropdownMenu.Item>
-            ) : null}
-            {onPromote && extra.avd ? (
-              <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onPromote} data-android-extra-promote-item={avdName}>
-                <Swap size={14} />
-                Make this the lane's device
-              </DropdownMenu.Item>
-            ) : null}
-            <DropdownMenu.Item
-              className={MENU_ITEM_CLASS}
-              onSelect={() => { void window.ade?.app?.writeClipboardText?.(avdName); }}
-            >
-              <Copy size={14} />
-              Copy AVD name
-            </DropdownMenu.Item>
-            {onRemove ? (
-              <>
-                <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
-                <DangerConfirmMenuItem
-                  confirming={confirming}
-                  idleLabel="Remove from this lane…"
-                  confirmLabel="Remove and delete the device"
-                  idleDataAttribute={{ name: "data-android-extra-remove", value: avdName }}
-                  confirmDataAttribute={{ name: "data-android-extra-remove-confirm", value: avdName }}
-                  onBeginConfirm={() => setConfirming(true)}
-                  onConfirm={onRemove}
-                />
-              </>
-            ) : null}
-          </DropdownMenu.Content>
-        </DropdownMenu.Portal>
-      </DropdownMenu.Root>
+      <AvdMenu
+        name={name}
+        avdName={avdName}
+        sizeBytes={null}
+        disabled={disabled}
+        kind="extra"
+        labelSuffix="extra device"
+        {...(running ? { onStop: () => actions.stop(avdName) } : { onStart: () => actions.start(avdName) })}
+        {...(promote ? { onPromote: promote } : {})}
+        onDelete={() => actions.remove(avdName)}
+      />
     </div>
   );
 }
@@ -580,11 +526,28 @@ function sizeLabel(bytes: number | null): string | null {
   return formatAndroidBytes(bytes);
 }
 
+/** The words and the test hooks of the menu's delete: an AVD on the machine is deleted, an extra is removed (and deleted). */
+const AVD_MENU_DELETE = {
+  avd: { attribute: "delete", idle: "Delete device…", confirm: (size: string | null) => (size ? `Delete for good — frees ${size}` : "Delete for good") },
+  extra: { attribute: "remove", idle: "Remove from this lane…", confirm: () => "Remove and delete the device" },
+} as const;
+
+/**
+ * The ⋯ menu of one AVD card: an AVD on this machine or the lane's own
+ * (`kind: "avd"`), or one of the lane's extra devices (`kind: "extra"`). Each
+ * item shows only when its handler is given. Its `data-android-<kind>-*`
+ * attributes name the AVD.
+ */
 function AvdMenu({
   name,
   avdName,
   sizeBytes,
   disabled,
+  kind = "avd",
+  labelSuffix,
+  onStart,
+  onStop,
+  onPromote,
   onRelease,
   onDelete,
 }: {
@@ -592,13 +555,24 @@ function AvdMenu({
   avdName: string;
   sizeBytes: number | null;
   disabled: boolean;
+  kind?: "avd" | "extra";
+  /** After the name in the menu's label; default the AVD's size on disk. */
+  labelSuffix?: string;
+  /** Boot it beside the lane's device (an extra). */
+  onStart?: () => void;
+  onStop?: () => void;
+  /** Make it the lane's device (an extra). */
+  onPromote?: () => void;
   /** Give the AVD back from this lane; it stays installed. */
   onRelease?: () => void;
-  /** Delete an ADE-made AVD no lane holds. */
+  /** Delete an ADE-made AVD no lane holds, or remove (and delete) an extra. */
   onDelete?: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
   const size = sizeLabel(sizeBytes);
+  const suffix = labelSuffix ?? size;
+  const removal = AVD_MENU_DELETE[kind];
+  const hook = (item: string) => ({ [`data-android-${kind}-${item}`]: avdName });
   return (
     <DropdownMenu.Root onOpenChange={(open) => { if (!open) setConfirming(false); }}>
       <DropdownMenu.Trigger asChild>
@@ -607,7 +581,7 @@ function AvdMenu({
           size="sm"
           disabled={disabled}
           aria-label={`Manage ${name}`}
-          data-android-avd-menu={avdName}
+          {...hook("menu")}
           className="-mr-1 -mt-1 h-6 w-6 shrink-0 p-0 text-muted-fg"
         >
           <DotsThree size={16} weight="bold" />
@@ -615,7 +589,25 @@ function AvdMenu({
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content className={MENU_CONTENT_CLASS} side="bottom" align="end" sideOffset={6}>
-          <div className={MENU_LABEL_CLASS}>{size ? `${name} · ${size}` : name}</div>
+          <div className={MENU_LABEL_CLASS}>{suffix ? `${name} · ${suffix}` : name}</div>
+          {onStop ? (
+            <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onStop} {...hook("stop")}>
+              <Stop size={14} />
+              Stop
+            </DropdownMenu.Item>
+          ) : null}
+          {onStart ? (
+            <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onStart} {...hook("start")}>
+              <Play size={14} />
+              Start beside the lane's device
+            </DropdownMenu.Item>
+          ) : null}
+          {onPromote ? (
+            <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onPromote} {...hook("promote-item")}>
+              <Swap size={14} />
+              Make this the lane's device
+            </DropdownMenu.Item>
+          ) : null}
           <DropdownMenu.Item
             className={MENU_ITEM_CLASS}
             onSelect={() => { void window.ade?.app?.writeClipboardText?.(avdName); }}
@@ -624,7 +616,7 @@ function AvdMenu({
             Copy AVD name
           </DropdownMenu.Item>
           {onRelease ? (
-            <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onRelease} data-android-avd-release={avdName}>
+            <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onRelease} {...hook("release")}>
               <SignOut size={14} />
               Release from this lane
             </DropdownMenu.Item>
@@ -634,10 +626,10 @@ function AvdMenu({
               <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
               <DangerConfirmMenuItem
                 confirming={confirming}
-                idleLabel="Delete device…"
-                confirmLabel={size ? `Delete for good — frees ${size}` : "Delete for good"}
-                idleDataAttribute={{ name: "data-android-avd-delete", value: avdName }}
-                confirmDataAttribute={{ name: "data-android-avd-delete-confirm", value: avdName }}
+                idleLabel={removal.idle}
+                confirmLabel={removal.confirm(size)}
+                idleDataAttribute={{ name: `data-android-${kind}-${removal.attribute}`, value: avdName }}
+                confirmDataAttribute={{ name: `data-android-${kind}-${removal.attribute}-confirm`, value: avdName }}
                 onBeginConfirm={() => setConfirming(true)}
                 onConfirm={onDelete}
               />

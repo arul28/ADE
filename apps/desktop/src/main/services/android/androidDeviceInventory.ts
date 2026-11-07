@@ -167,12 +167,20 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
   const createLocked = async (
     laneId: string,
     profileId: string,
-    wanted: string | null,
-    displayName: string | null,
-    // P1 look: a brand catalog entry picks the profile and records its colour.
-    look: { entry: AndroidCatalogEntry; colorId: string } | null = null,
-    asExtra = false,
+    options: {
+      /** The system image's package id; null picks one for the host. */
+      systemImage?: string | null;
+      displayName?: string | null;
+      /** P1 look: a brand catalog entry picks the profile and records its colour. */
+      look?: { entry: AndroidCatalogEntry; colorId: string } | null;
+      /** The row is one of the lane's extra devices. */
+      asExtra?: boolean;
+    } = {},
   ): Promise<AndroidLaneDevice> => {
+    const wanted = options.systemImage ?? null;
+    const displayName = options.displayName ?? null;
+    const look = options.look ?? null;
+    const asExtra = options.asExtra === true;
     const ready = await requireSdk({ emulator: true });
     const images = listAndroidSystemImages(ready.root);
     const definitions = definitionsFor(ready.root, images);
@@ -222,8 +230,9 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
       catalogId: look?.entry.id ?? null,
       colorId: look?.colorId ?? null,
     });
-    const row = newLaneDevice(laneId, avd.name, "created", definition.profile.id, image.packageId);
-    if (asExtra) laneDevices.setExtra({ ...row, extra: true });
+    const made = newLaneDevice(laneId, avd.name, "created", definition.profile.id, image.packageId);
+    const row: AndroidLaneDevice = asExtra ? { ...made, extra: true } : made;
+    if (asExtra) laneDevices.setExtra(row);
     else laneDevices.set(row);
     logger?.info("android.device_created", {
       laneId,
@@ -234,7 +243,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
       ...(look ? { catalogId: look.entry.id, colorId: look.colorId, profileFallback: catalogChoice?.fallback ?? false } : {}),
     });
     emit({ type: "android.inventory.changed" });
-    return asExtra ? { ...row, extra: true } : row;
+    return row;
   };
 
   /**
@@ -261,7 +270,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
             + "or raise ADE_ANDROID_LANE_EXTRA_DEVICES in ADE's environment.",
         );
       }
-      return createLocked(laneId, profileId, args.systemImage?.trim() || null, args.displayName ?? null, look, true);
+      return createLocked(laneId, profileId, { systemImage: args.systemImage?.trim() || null, displayName: args.displayName ?? null, look, asExtra: true });
     });
     deps.onExtraCreated?.();
     if (args.start !== false) {
@@ -271,7 +280,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
         if (error instanceof AndroidEmulatorFailure) {
           throw new AndroidEmulatorFailure(
             error.code,
-            `Made the extra device ${extra.avdName}, but it did not boot: ${error.message.replace(`${error.code}: `, "")} `
+            `Made the extra device ${extra.avdName}, but it did not boot: ${error.toAndroidEmulatorError().message} `
               + `It still counts toward the lane's extras. Start it with ade android start --device ${extra.avdName}, or remove it with ade android device-detach --device ${extra.avdName}.`,
             error.logPath,
           );
@@ -328,7 +337,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
       return serialize(laneId, async () => {
         deps.assertWorkCopyLive(laneId);
         assertLaneFree(laneId, null);
-        await createLocked(laneId, profileId, args.systemImage?.trim() || null, args.displayName ?? null, look);
+        await createLocked(laneId, profileId, { systemImage: args.systemImage?.trim() || null, displayName: args.displayName ?? null, look });
         if (args.start === false) return deps.emitDeviceState(laneId);
         return deps.startLocked(deps.laneState(laneId));
       });
@@ -443,7 +452,7 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
         emit({ type: "android.inventory.changed" });
         return;
       }
-      await createLocked(laneId, WORK_COPY_PROFILE_ID, null, null);
+      await createLocked(laneId, WORK_COPY_PROFILE_ID);
     },
 
     /**

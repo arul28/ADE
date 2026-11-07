@@ -39,8 +39,10 @@ import {
   androidFlagNames,
   androidOutPath,
   finiteNumber,
+  readAndroidDeviceClaim,
   readPoint,
   readStroke,
+  requireAndroidExtrasSupport,
 } from "./cliAndroid";
 import { formatAndroidSdkInstallLine, record, records, withAsked } from "./cliAndroidFormat";
 import { appleLeaseAnswer, appleLeaseNotAcquired } from "./cliAppleFormat";
@@ -136,18 +138,16 @@ export function buildAndroidSuitePlan(
     return { ...(words.length ? { arguments: words } : {}), ...(extras.length ? { extras } : {}) };
   };
   const elementResult = { exitCodeFromResult: (result: unknown) => (record(result).ok === false ? 1 : 0) };
-  /** `install`/`launch --device <avd>`: one of the lane's extra devices instead of its own. */
-  const readDevice = (): JsonObject => {
-    const device = readValue(args, ["--device"]);
-    if (device != null && !device.trim()) throw usage("--device needs an AVD name (`ade android status --text` lists the lane's devices).");
-    return device ? { device: device.trim() } : {};
-  };
+  /** `install`/`launch --device <avd>`: one of the lane's extra devices instead of its own, on a brain that knows extras. */
+  const onDevice = (plan: CliPlan & { kind: "execute" }, device: { device?: string }) =>
+    (device.device ? requireAndroidExtrasSupport(plan, sub, "--device") : plan);
 
   if (sub === "apps") return androidAction("android apps", "listApps", laneClaim(), "android-apps");
   if (sub === "install") {
     const source = readInstallSource(true);
-    return androidAction("android install", "installApp", { ...laneClaim(), ...source, ...readDevice() }, "android-install",
-      source.gradle ? { progressNotice: "Building the lane's app with Gradle and installing it; a first build can take a few minutes…" } : {});
+    const device = readAndroidDeviceClaim(args, sub);
+    return onDevice(androidAction("android install", "installApp", { ...laneClaim(), ...source, ...device }, "android-install",
+      source.gradle ? { progressNotice: "Building the lane's app with Gradle and installing it; a first build can take a few minutes…" } : {}), device);
   }
   if (sub === "launch") {
     const packageName = readPackage(false);
@@ -157,14 +157,15 @@ export function buildAndroidSuitePlan(
     if (!packageName && !source.apkPath && !source.gradle) {
       throw usage("pass --package <name>, or --gradle / --apk <path> to install the app and open it.");
     }
-    return androidAction("android launch", "launchApp", {
+    const device = readAndroidDeviceClaim(args, sub);
+    return onDevice(androidAction("android launch", "launchApp", {
       ...laneClaim(),
       ...source,
       ...(packageName ? { packageName } : {}),
       ...(activity ? { activity } : {}),
       ...launchExtras,
-      ...readDevice(),
-    }, "android-launch", source.gradle ? { progressNotice: "Building the lane's app with Gradle, then opening it…" } : {});
+      ...device,
+    }, "android-launch", source.gradle ? { progressNotice: "Building the lane's app with Gradle, then opening it…" } : {}), device);
   }
   // Parity with `ade apple`: relaunch, app-state, foreground, frame, inspect, select, device-cleanup.
   if (sub === "relaunch") {

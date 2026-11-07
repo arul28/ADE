@@ -84,6 +84,27 @@ export async function readOtherScrcpyViewer(booted: BootedDevice, signal: AbortS
   return /scrcpy=1/u.test(result.stdout);
 }
 
+/**
+ * Use of a booted device that ADE's calls do not see, asked just before an
+ * idle stop: input from outside ADE (adb, Android Studio) in the idle limit,
+ * or a scrcpy server while this brain streams none (another brain on the
+ * same project, the dev app beside the installed one, or another tool shows
+ * the screen). Null when it shows none or cannot say; a failed read is no use.
+ */
+export async function readUseOnDevice(
+  booted: BootedDevice,
+  options: { idleMs: number; ownStream: boolean; signal: AbortSignal; logger: Logger | null; laneId: string },
+): Promise<"device_input" | "other_viewer" | null> {
+  const deviceIdle = await readDeviceIdleMs(booted, options.signal).catch(() => null);
+  if (deviceIdle !== null && deviceIdle < options.idleMs) return "device_input";
+  if (options.ownStream) return null;
+  const viewer = await readOtherScrcpyViewer(booted, options.signal).catch((error: unknown) => {
+    options.logger?.warn("android.idle_viewer_check_failed", { laneId: options.laneId, error: getErrorMessage(error) });
+    return false;
+  });
+  return viewer ? "other_viewer" : null;
+}
+
 export type AndroidLaneMaintenanceDeps = {
   /** Every lane device row and every extra row (`extra: true`). */
   listRows: () => AndroidLaneDevice[];
