@@ -7,6 +7,7 @@
  */
 
 import type { AndroidLaneArgs, AndroidPackageArgs, AndroidUiBounds, AndroidUiElement, AndroidUiTreeSource } from "./androidEmulator";
+import type { AndroidLaunchResult } from "./androidEmulatorAgent";
 import type { AndroidInputRecordArgs } from "./androidEmulatorRecording";
 
 /* ---------- keys ---------- */
@@ -300,7 +301,7 @@ export type AndroidEmulatorControlServiceApi = {
   /** One real key press with modifiers (`ctrl+a`, arrows, Enter, Tab). */
   pressKey(args: AndroidPressKeyArgs): Promise<AndroidPressKeyResult>;
   /** Force-stop, then start again, with new extras when given. */
-  relaunchApp(args: AndroidRelaunchArgs): Promise<import("./androidEmulatorAgent").AndroidLaunchResult>;
+  relaunchApp(args: AndroidRelaunchArgs): Promise<AndroidLaunchResult>;
   getAppState(args: AndroidPackageArgs): Promise<AndroidAppState>;
   getForegroundApp(args: AndroidForegroundArgs): Promise<AndroidForegroundApp>;
   /** One PNG of the screen now, not filed as proof (Apple's `frame`). */

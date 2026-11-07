@@ -42,6 +42,9 @@ enum LiveInspectSurface: String, Equatable {
   /// A phone's screen: element frames are the device's pixels, tapped by overlap.
   var isPhoneScreen: Bool { self == .simulator || self == .android }
 
+  /// The phone screen's device, in a sentence: "the emulator".
+  var deviceNoun: String { self == .android ? "emulator" : "simulator" }
+
   var title: String {
     switch self {
     case .simulator: return "Simulator"
@@ -233,9 +236,9 @@ final class LiveInspectMarkupModel: ObservableObject {
   private func load(plan: LiveInspectLoadPlan, using syncService: SyncService, generation: Int) async {
     switch plan {
     case .simulator:
-      await loadSimulator(using: syncService, generation: generation)
+      await loadPhoneScreen(using: syncService, generation: generation, surface: .simulator)
     case .android:
-      await loadSimulator(using: syncService, generation: generation, android: true)
+      await loadPhoneScreen(using: syncService, generation: generation, surface: .android)
     case .appControl(let image, let scaleX, let viewportWidth, let viewportHeight):
       installAppControl(
         image: image,
@@ -248,18 +251,16 @@ final class LiveInspectMarkupModel: ObservableObject {
     }
   }
 
-  /// The simulator's still and elements, or the emulator's (`android`): the
-  /// host answers both in one shape, with frames in screenshot pixels.
-  private func loadSimulator(using syncService: SyncService, generation: Int, android: Bool = false) async {
+  /// The simulator's or the emulator's still and elements: the host answers
+  /// both in one shape, with frames in screenshot pixels.
+  private func loadPhoneScreen(using syncService: SyncService, generation: Int, surface: LiveInspectSurface) async {
     do {
-      let snapshot = android
+      let snapshot = surface == .android
         ? try await syncService.fetchLiveInspectAndroidSnapshot(laneId: laneId)
         : try await syncService.fetchLiveInspectSimulatorSnapshot(laneId: laneId)
       guard !Task.isCancelled, generation == loadGeneration else { return }
       guard let image = LiveInspectImage.image(fromDataURL: snapshot.screenshot.dataUrl) else {
-        throw LiveInspectFailure(android
-          ? "The emulator sent a picture this phone couldn't read."
-          : "The simulator sent a picture this phone couldn't read.")
+        throw LiveInspectFailure("The \(surface.deviceNoun) sent a picture this phone couldn't read.")
       }
       let pixel = LiveInspectImage.pixelSize(of: image)
       let shotWidth = snapshot.screenshot.width.flatMap { $0 > 0 ? $0 : nil } ?? Double(pixel.width)
@@ -302,7 +303,7 @@ final class LiveInspectMarkupModel: ObservableObject {
       guard generation == loadGeneration else { return }
       apply(image: image, pixel: pixel, screen: screen, elements: elements)
       note = elements.isEmpty
-        ? "This screen exposed no elements. Is an app in the foreground on the \(android ? "emulator" : "simulator")?"
+        ? "This screen exposed no elements. Is an app in the foreground on the \(surface.deviceNoun)?"
         : nil
     } catch {
       guard generation == loadGeneration else { return }

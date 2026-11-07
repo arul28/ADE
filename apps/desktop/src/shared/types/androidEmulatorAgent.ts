@@ -12,6 +12,7 @@ import type {
   AndroidSwipeArgs,
 } from "./androidEmulator";
 import type { DemoArtifactMetadata } from "../demoVideo/demoContract";
+import type { AndroidLaunchExtrasArgs } from "./androidEmulatorControl";
 import type { AndroidInputRecordArgs } from "./androidEmulatorRecording";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -123,7 +124,7 @@ export type AndroidInstallResult = {
 };
 
 /** Parity: launch arguments and intent extras ride on `launchApp` too (`androidEmulatorControl.ts`). */
-export type AndroidLaunchArgs = AndroidInstallArgs & import("./androidEmulatorControl").AndroidLaunchExtrasArgs & {
+export type AndroidLaunchArgs = AndroidInstallArgs & AndroidLaunchExtrasArgs & {
   /** An installed package to start; with `apkPath` or `gradle` the installed one is used. */
   packageName?: string | null;
   /** `.MainActivity` or `com.example/.MainActivity`; default = the launcher activity. */

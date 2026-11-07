@@ -263,10 +263,17 @@ export function createAndroidRecordingSessions(deps: AndroidRecordingSessionDeps
             lastError: video.unusable ? video.unusable : recording.lastError,
           };
           if (video.files.length > 0) {
-            writeAndroidRecordingSidecar(deps.dataDir, recording);
-            if (options.proof !== false) {
-              recording = { ...recording, proofArtifactIds: fileRecording(recording) };
+            // A disk or proof error must not keep the lane marked as recording.
+            try {
               writeAndroidRecordingSidecar(deps.dataDir, recording);
+              if (options.proof !== false) {
+                recording = { ...recording, proofArtifactIds: fileRecording(recording) };
+                writeAndroidRecordingSidecar(deps.dataDir, recording);
+              }
+            } catch (error) {
+              const message = getErrorMessage(error);
+              logger?.warn("android.recording_file_failed", { laneId, error: message });
+              recording = { ...recording, lastError: recording.lastError ?? `The video could not be filed: ${message}` };
             }
           }
         }

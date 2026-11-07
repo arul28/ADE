@@ -158,7 +158,7 @@ struct LiveInspectStage: View {
       return "\(model.surface.title) · couldn't freeze"
     case .ready:
       guard let screen = model.screen else { return "\(model.surface.title) · Frozen" }
-      let unit = model.surface == .appControl ? "px" : "pt"
+      let unit = model.surface == .appControl || model.surface == .android ? "px" : "pt"
       return "\(model.surface.title) · \(screen.label) \(unit) · Frozen"
     }
   }

@@ -166,9 +166,7 @@ extension LiveInspectMarkupModel {
   private func nearbyElements(for element: LiveInspectElement) -> [[String: Any]] {
     let nearby: [LiveInspectElement]
     switch surface {
-    case .simulator:
-      nearby = LiveInspectGeometry.nearbyByOverlap(element, in: elements)
-    case .android:
+    case .simulator, .android:
       nearby = LiveInspectGeometry.nearbyByOverlap(element, in: elements)
     case .appControl, .macDesktop:
       nearby = LiveInspectGeometry.nearbyByDistance(element, in: elements)

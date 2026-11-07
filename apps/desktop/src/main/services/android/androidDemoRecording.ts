@@ -1,6 +1,5 @@
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
-import path from "node:path";
 import type { DemoArtifactMetadata, DemoEngine, DemoRect, DemoTrack, DemoTrackEvent } from "../../../shared/demoVideo/demoContract";
 import type { AndroidRecordingSegment } from "../../../shared/types/androidEmulator";
 import { readDemoMp4 } from "../demoVideo/demoMp4Source";

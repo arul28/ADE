@@ -110,7 +110,7 @@ func workComputerUseSurfaceLabel(_ action: WorkComputerUseAction) -> (label: Str
   case .appleDevice:
     return (action.deviceName.flatMap { $0.isEmpty ? nil : $0 } ?? "the simulator", "iphone", false)
   case .androidDevice:
-    return (action.deviceName.flatMap { $0.isEmpty ? nil : $0 } ?? "the emulator", "candybarphone", false)
+    return (action.deviceName.flatMap { $0.isEmpty ? nil : $0 } ?? "the emulator", "smartphone", false)
   case .proof: return ("ADE proof", "checkmark.seal", false)
   }
 }
