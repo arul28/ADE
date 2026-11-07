@@ -90,9 +90,9 @@ function portraitToOriented(
 
 
 describe("portraitUvToTextureUv (shared by the flat display and the Duo halves)", () => {
-  const portrait = { rotation: 0, rawLandscape: false, aspect: 0.46 };
-  const landscapeRight = { rotation: Math.PI / 2, rawLandscape: true, aspect: 0.46 };
-  const landscapeLeft = { rotation: -Math.PI / 2, rawLandscape: true, aspect: 0.46 };
+  const portrait = { rotation: 0, rawLandscape: false, aspect: 0.46, flipped: false };
+  const landscapeRight = { rotation: Math.PI / 2, rawLandscape: true, aspect: 0.46, flipped: false };
+  const landscapeLeft = { rotation: -Math.PI / 2, rawLandscape: true, aspect: 0.46, flipped: false };
 
   it("is the identity on a portrait screen, where texture v is vFromBottom", () => {
     expect(portraitUvToTextureUv(0.25, 0.75, portrait)).toEqual({ u: 0.25, v: 0.75 });

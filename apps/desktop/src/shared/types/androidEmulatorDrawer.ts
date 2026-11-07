@@ -6,6 +6,8 @@
 
 import type { OpenProjectBinding } from "./core";
 import type { AndroidEmulatorServiceApi, AndroidLaneArgs } from "./androidEmulator";
+import type { AndroidAccessibilityOption } from "./androidEmulatorDevice";
+import type { DeviceOrientation } from "./deviceOrientation";
 
 type Pin = OpenProjectBinding | null | undefined;
 
@@ -45,6 +47,22 @@ export type AndroidDeviceSettings = {
   network: { wifi: boolean | null; mobileData: boolean | null; airplane: boolean | null };
   /** The app in front; null on the home screen. */
   foregroundPackage: string | null;
+  /**
+   * Parity: each accessibility switch as the device reports it; null when
+   * the image does not have it (TalkBack on most Google APIs images). Absent
+   * from an older brain.
+   */
+  accessibility?: Record<AndroidAccessibilityOption, boolean | null>;
+  /** Parity: SystemUI demo mode is on (the 9:41 status bar). Null when the read failed. */
+  statusBarOverridden?: boolean | null;
+  /**
+   * Parity: the last location ADE set on this boot of the emulator, or null.
+   * The emulator cannot report its location, so this is ADE's own record; a
+   * restart of the emulator clears it.
+   */
+  location?: { latitude: number; longitude: number } | null;
+  /** Parity: how the display is turned now, as the device views name it. */
+  orientation?: DeviceOrientation | null;
 };
 
 export type AndroidDeviceSetting =
@@ -56,17 +74,39 @@ export type AndroidDeviceSetting =
   | { kind: "battery"; level?: number | null; charging?: boolean | null }
   | { kind: "wifi"; on: boolean }
   | { kind: "mobile-data"; on: boolean }
-  | { kind: "airplane"; on: boolean };
+  | { kind: "airplane"; on: boolean }
+  // Parity: one accessibility switch (`ade android accessibility <option> on|off`).
+  | { kind: "accessibility"; option: AndroidAccessibilityOption; on: boolean };
+
+/**
+ * `ade android settings`' one-setting flags, in the CLI's order (`--battery`
+ * and `--charging` together are one). The transcript summary reads them in
+ * this order too.
+ */
+export const ANDROID_SETTINGS_FLAGS = [
+  "--text-size", "--display-size", "--animations", "--show-taps", "--layout-bounds",
+  "--battery", "--charging", "--wifi", "--data", "--airplane",
+] as const;
+
+/** What `getDeviceSettings` reads: everything, the app in front, or the turn. */
+export type AndroidDeviceSettingsFields = "all" | "foreground" | "orientation";
 
 export type AndroidDeviceSettingsArgs = AndroidLaneArgs & {
-  /** `foreground` reads only the app in front (the App group's poll). Default `all`. */
-  fields?: "all" | "foreground" | null;
+  /**
+   * `foreground` reads only the app in front (the App group's poll);
+   * `orientation` only how the display is turned (the stage, after the video
+   * changes shape). Default `all`.
+   */
+  fields?: AndroidDeviceSettingsFields | null;
 };
 
 export type AndroidSetDeviceSettingArgs = AndroidLaneArgs & { setting: AndroidDeviceSetting };
 
 /** The agent verbs a desktop window calls: the Tools drawer, Inspect and Record. */
 export type AndroidToolsPreloadAction =
+  // Rec: the lane's auto-record switch.
+  | "getAutoRecord"
+  | "setAutoRecord"
   | "listApps"
   | "installApp"
   | "launchApp"
@@ -95,7 +135,22 @@ export type AndroidToolsPreloadAction =
   | "runInstrumentationTests"
   // P3: the Previews group.
   | "listComposePreviews"
-  | "renderComposePreviews";
+  | "renderComposePreviews"
+  // Parity: keys, relaunch, app state, the app in front, frame, Inspect, the cleanup pass.
+  | "pressKey"
+  | "relaunchApp"
+  | "getAppState"
+  | "getForegroundApp"
+  | "frame"
+  | "inspectPoint"
+  | "selectPoint"
+  | "deviceCleanup"
+  // Parity (device track): status bar, Clear location, Play Store screenshots, windows.
+  | "setStatusBar"
+  | "clearStatusBar"
+  | "clearLocation"
+  | "storeScreenshots"
+  | "windowLayout";
 
 /** What one service method answers, without the promise. */
 export type AndroidServiceResult<K extends keyof AndroidEmulatorServiceApi> = Awaited<ReturnType<AndroidEmulatorServiceApi[K]>>;

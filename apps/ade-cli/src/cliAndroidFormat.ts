@@ -8,6 +8,9 @@
  */
 import { asString, isRecord, renderKeyValues, renderTable, unwrapActionEnvelope, type JsonObject } from "./cli";
 import { formatAndroidBytes } from "../../desktop/src/shared/androidFormat";
+import { ANDROID_ACCESSIBILITY_LABELS, ANDROID_ACCESSIBILITY_OPTIONS } from "../../desktop/src/shared/types/androidEmulator";
+import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
+import { formatProofDuration, proofIdleCutLabel } from "../../desktop/src/shared/proofProvenance";
 import { appleLeaseAnswer, leaseAcquiredLines, leaseHeldLine, leaseReleasedLine } from "./cliAppleFormat";
 
 /* ── Text output ──────────────────────────────────────────────────────────── */
@@ -16,6 +19,17 @@ import { appleLeaseAnswer, leaseAcquiredLines, leaseHeldLine, leaseReleasedLine 
 export function record(value: unknown): JsonObject {
   const unwrapped = unwrapActionEnvelope(value);
   return isRecord(unwrapped) ? unwrapped : {};
+}
+
+/**
+ * The action's answer with what was asked, so `--json` and the text line both
+ * have it. A void input action answers with this alone.
+ */
+export function withAsked(asked: JsonObject) {
+  return (values: JsonObject): unknown => {
+    const result = record(values.result);
+    return { ok: true, ...result, ...asked };
+  };
 }
 
 export function records(value: unknown): JsonObject[] {
@@ -37,6 +51,8 @@ function laneDeviceLines(lane: JsonObject): string[] {
       ["lane", lane.laneId],
       ["state", lane.state],
       ["avd", device?.avdName ?? avd?.name ?? null],
+      // The shown name, when it is not the folder name: the transcript names the device by it.
+      ["name", asString(avd?.displayName) && avd?.displayName !== (device?.avdName ?? avd?.name) ? avd?.displayName : null],
       ["origin", device?.origin],
       ["profile", device?.profileId ?? avd?.profileId ?? null],
       ["image", device?.systemImage],
@@ -61,6 +77,9 @@ function laneDeviceLines(lane: JsonObject): string[] {
   if (!device) {
     lines.push("", "next: ade android device-create --profile <id> (ade android devices --profiles lists them), or ade android device-attach --avd <name>");
   } else if (lane.state === "off" || lane.state === "crashed") {
+    // Parity: the idle timer powered it off (`ADE_ANDROID_IDLE_POWER_OFF_MINUTES`); the device stays the lane's.
+    const poweredOff = isRecord(lane.poweredOff) ? lane.poweredOff : null;
+    if (poweredOff) lines.push("", `powered off: idle ${String(poweredOff.idleMinutes)} min, at ${asString(poweredOff.at) ?? "?"}`);
     lines.push("", "next: ade android start");
   }
   return lines;
@@ -195,6 +214,8 @@ export function formatAndroidScreenshot(value: unknown): string {
     // Printed raw rather than as a table cell: agents Read this path back,
     // and the key/value renderer truncates long values.
     filePath ? `file: ${filePath}` : "",
+    // A shot filed as proof is cited from here, as `ade apple screenshot` does.
+    asString(shot.proofArtifactId) ? `cite: ${proofCitationMarkdown(String(shot.proofArtifactId), asString(shot.caption) ?? "Emulator screenshot")}` : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -206,12 +227,15 @@ const ANDROID_ACTION_DETAIL: Readonly<Record<string, (result: JsonObject) => str
   drag: (result) => `(${result.fromX}, ${result.fromY}) -> (${result.toX}, ${result.toY})`,
   button: (result) => String(result.button),
   rotate: (result) => String(result.orientation),
-  type: (result) => `${result.characters} characters`,
+  type: (result) => `${result.characters} characters${result.submit === true ? " and Enter" : ""}`,
+  key: (result) => String(result.key),
   scroll: (result) => String(result.direction),
   terminate: (result) => String(result.packageName),
   uninstall: (result) => String(result.packageName),
   "open-url": (result) => String(result.url),
   location: (result) => `${result.latitude}, ${result.longitude}`,
+  // Parity: the emulator has no "no location"; the GPS goes back to its default point.
+  "location-clear": (result) => `(GPS back to the default point ${result.latitude}, ${result.longitude})`,
   appearance: (result) => String(result.appearance),
   permission: (result) => `${String(result.grant)} ${String(result.permission ?? "")} for ${String(result.packageName)}`,
   "record-delete": (result) => String(result.id),
@@ -246,6 +270,8 @@ export function formatAndroidSettings(value: unknown): string {
     ["wifi", onOff(network.wifi)],
     ["mobile data", onOff(network.mobileData)],
     ["airplane", onOff(network.airplane)],
+    // Parity (device track): accessibility, status bar, location, orientation.
+    ...androidDeviceSettingsLines(settings),
     ["in front", settings.foregroundPackage ?? "home screen"],
   ]);
 }
@@ -455,20 +481,48 @@ export function formatAndroidRecording(value: unknown): string {
     ].join("\n");
   }
   const segments = records(recording.segments);
-  const ids = Array.isArray(recording.proofArtifactIds) ? recording.proofArtifactIds.filter((id) => typeof id === "string") : [];
+  if (recording.active === false && segments.length === 0 && !asString(recording.lastError) && recording.stopReason === "requested" && !recording.bytes) {
+    return `Recording ${String(recording.id)} discarded: no file is kept and nothing is filed.`;
+  }
+  const ids = Array.isArray(recording.proofArtifactIds) ? recording.proofArtifactIds.filter((id): id is string => typeof id === "string") : [];
+  const demo = record(recording.demo);
+  const wallDurationMs = typeof recording.wallDurationMs === "number" ? recording.wallDurationMs : null;
+  const idleCut = proofIdleCutLabel(typeof recording.idleCutMs === "number" ? recording.idleCutMs : null);
+  const caption = asString(recording.label) ?? "Emulator recording";
   return [
     renderKeyValues("ADE Android recording", [
       ["id", recording.id],
       ["label", recording.label],
+      ["mode", recording.mode === "auto" ? "automatic (an agent's input started it)" : null],
       ["length", seconds(recording.durationMs)],
+      ["real time", idleCut && wallDurationMs != null ? `${formatProofDuration(wallDurationMs)} · ${idleCut}` : null],
       ["size", formatBytes(recording.bytes)],
-      ["parts", segments.length > 1 ? `${segments.length} (the screen turned)` : null],
+      ["demo", asString(demo.fallbackReason) ? `filed as recorded: ${asString(demo.fallbackReason)}` : null],
+      // More than one file only when joining the parts after a rotation failed.
+      ["parts", segments.length > 1 ? String(segments.length) : null],
       ["stopped by", recording.stopReason === "requested" ? null : recording.stopReason],
       ["proof", ids.length ? `${ids.length} row${ids.length === 1 ? "" : "s"}` : null],
       ["error", recording.lastError],
     ]),
     // Printed raw: agents read these paths back, and the table shortens long values.
     ...segments.map((segment) => `file: ${String(segment.path)}`),
+    ...ids.map((id) => `cite: ${proofCitationMarkdown(id, caption)}`),
+  ].join("\n");
+}
+
+/** `auto-record`: whether an agent's input starts a recording in this lane. */
+export function formatAndroidAutoRecord(value: unknown): string {
+  const state = record(value);
+  return [
+    renderKeyValues("ADE Android auto-record", [
+      ["lane", state.laneId],
+      ["lane switch", state.lane === false ? "off" : "on"],
+      ["machine switch", state.machine === false ? "off (Settings › Android devices)" : "on"],
+      ["auto-record", state.enabled === true ? "on" : "off"],
+    ]),
+    state.enabled === true
+      ? "An agent's input starts a recording when none runs. It stops when the turn ends."
+      : "An agent's input does not start a recording. Start one: ade android record-start --text",
   ].join("\n");
 }
 
@@ -692,4 +746,153 @@ export function formatAndroidTest(value: unknown): string {
   }
   if (asString(result.reportPath)) lines.push("", `report: ${asString(result.reportPath)}`);
   return lines.join("\n");
+}
+
+/* ── Parity with `ade apple`: app-state, foreground, frame, inspect, device-cleanup ── */
+
+export function formatAndroidAppState(value: unknown): string {
+  const state = record(value);
+  return renderKeyValues(`ADE Android app ${asString(state.packageName) ?? ""}`.trimEnd(), [
+    ["installed", yesNo(state.installed)],
+    ["running", yesNo(state.running)],
+    ["foreground", yesNo(state.foreground)],
+    ["pid", state.pid],
+    ["version", state.versionName != null ? `${String(state.versionName)}${state.versionCode != null ? ` (${String(state.versionCode)})` : ""}` : null],
+  ]);
+}
+
+export function formatAndroidForeground(value: unknown): string {
+  const front = record(value);
+  const packageName = asString(front.packageName);
+  const waited = typeof front.waitedMs === "number" ? ` (after ${Math.round(front.waitedMs / 100) / 10} s)` : "";
+  if (!packageName) return `No app in front: the home screen shows${waited}.`;
+  return `${asString(front.activity) ?? packageName} is in front${front.pid != null ? `, pid ${String(front.pid)}` : ""}${waited}.`;
+}
+
+export function formatAndroidFrame(value: unknown): string {
+  const frame = record(value);
+  const filePath = asString(frame.filePath);
+  return [
+    `ADE Android frame ${frame.width && frame.height ? `${String(frame.width)}x${String(frame.height)}` : ""}`.trimEnd()
+      + `${frame.streamRunning === true ? " (the live view runs)" : ""}, not filed as proof.`,
+    // Raw, not a table cell: agents Read this path back.
+    filePath ? `file: ${filePath}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+export function formatAndroidInspect(value: unknown): string {
+  const result = record(value);
+  const element = isRecord(result.element) ? result.element : null;
+  const item = isRecord(result.item) ? result.item : null;
+  if (!item) return "Nothing under that point.";
+  const metadata = isRecord(item.metadata) ? item.metadata : {};
+  const bounds = element && isRecord(element.bounds) ? element.bounds : null;
+  // No exact match: the best ranked candidate, marked as one.
+  const candidate = records(metadata.sourceCandidates)[0] ?? null;
+  const file = asString(item.sourceFile) ?? asString(candidate?.sourceFile);
+  const line = item.sourceFile ? item.sourceLine : candidate?.sourceLine;
+  return [
+    renderKeyValues("ADE Android element", [
+      ["element", element ? `${asString(element.role) ?? asString(element.className) ?? "element"} ${elementName(element)}`.trimEnd() : "none (a point only)"],
+      ["ref", element?.ref ?? null],
+      ["id", element?.identifier ?? null],
+      ["bounds", bounds ? `${String(bounds.x)},${String(bounds.y)} ${String(bounds.width)}x${String(bounds.height)}` : null],
+      ["source", file ? `${file}${line != null ? `:${String(line)}` : ""} (${asString(metadata.sourceConfidence) ?? "?"})` : "not found"],
+      ["crop", asString(item.screenshotDataUrl) ? "yes" : null],
+      ["tree", result.source],
+    ]),
+    asString(metadata.tapCommand) ? `next: ${asString(metadata.tapCommand)}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+export function formatAndroidCleanup(value: unknown): string {
+  const result = record(value);
+  const verb = result.dryRun === true ? "would " : "";
+  const list = (key: string, label: string, describe: (row: JsonObject) => string, changes = true): string[] => {
+    const rows = records(result[key]);
+    return rows.length ? [`${changes ? verb : ""}${label}:`, ...rows.map((row) => `  ${describe(row)}`)] : [];
+  };
+  const lines = [
+    ...list("released", "release (lane ended)", (row) => `${asString(row.avdName) ?? "?"} (lane ${asString(row.laneId) ?? "?"})`),
+    ...list("stoppedOrphans", "stop (ADE started it, no lane holds it)", (row) => `${asString(row.avdName) ?? "?"} on ${asString(row.serial) ?? "?"}`),
+    ...list("forgottenRows", "forget (the AVD is gone from disk)", (row) => `${asString(row.avdName) ?? "?"} (lane ${asString(row.laneId) ?? "?"})`),
+    ...list("poweredOff", "power off (idle)", (row) => `${asString(row.avdName) ?? "?"} (lane ${asString(row.laneId) ?? "?"}, idle ${String(row.idleMinutes)} min)`),
+    ...list("unheld", "kept (an ADE AVD no lane holds; delete it in Android Studio or `avdmanager` when you do not need it)", (row) => `${asString(row.avdName) ?? "?"}`, false),
+    ...list("errors", "failed", (row) => `${asString(row.avdName) ?? "(pass)"}: ${asString(row.message) ?? ""}`, false),
+  ];
+  if (!lines.length) lines.push(result.dryRun === true ? "Nothing to clean up." : "Nothing to clean up; nothing changed.");
+  const minutes = Number(result.idlePowerOffMinutes);
+  lines.push("", minutes > 0 ? `Idle power-off: after ${minutes} min (ADE_ANDROID_IDLE_POWER_OFF_MINUTES).` : "Idle power-off: off (ADE_ANDROID_IDLE_POWER_OFF_MINUTES=0).");
+  return lines.join("\n");
+}
+
+/* ── Device state (`accessibility`, `status-bar`, `play-store-shots`, `window`) ── */
+
+/** `status-bar`: whether the override is on now. */
+export function formatAndroidStatusBar(value: unknown): string {
+  const result = record(value);
+  if (result.overridden === true) return `android status-bar: overridden${asString(result.time) ? ` (${asString(result.time)})` : ""}`;
+  return "android status-bar: the device's own";
+}
+
+/** `play-store-shots`: one line per PNG (raw, so an agent can Read the path back). */
+export function formatAndroidStoreShots(value: unknown): string {
+  const result = record(value);
+  const shots = Array.isArray(result.shots) ? result.shots.filter(isRecord) : [];
+  return [
+    renderKeyValues("ADE Google Play screenshots", [
+      ["device", result.foldable === true ? "foldable (cover shut, inner open)" : "one screen"],
+      ["shots", String(shots.length)],
+    ]),
+    ...shots.map((shot) => {
+      const slot = asString(shot.slot) === "large-screen" ? "large screen (7\"/10\" tablet slot)" : "phone";
+      const screen = typeof shot.screenWidth === "number" ? ` from ${shot.screenWidth}x${shot.screenHeight}` : "";
+      const filed = asString(shot.proofArtifactId) ? " (filed as proof)" : "";
+      return `shot: ${asString(shot.display) ?? "screen"} · ${slot} · ${String(shot.width)}x${String(shot.height)}${screen}: ${asString(shot.filePath) ?? ""}${filed}`;
+    }),
+  ].join("\n");
+}
+
+/** `window`: the app windows after the action, and whether it landed. */
+export function formatAndroidWindow(value: unknown): string {
+  const result = record(value);
+  const windows = Array.isArray(result.windows) ? result.windows.filter(isRecord) : [];
+  const screen = isRecord(result.screen) ? result.screen : null;
+  const frame = (entry: JsonObject) => {
+    const f = isRecord(entry.frame) ? entry.frame : {};
+    return `${String(f.width)}x${String(f.height)} at ${String(f.x)},${String(f.y)}`;
+  };
+  return [
+    renderKeyValues(`ADE Android window ${asString(result.action) ?? "status"}`, [
+      ["screen", screen ? `${String(screen.width)}x${String(screen.height)}` : null],
+      ["app", result.packageName],
+      ["applied", result.applied === false ? `no: ${asString(result.reason) ?? "the window did not move"}` : "yes"],
+    ]),
+    renderTable(
+      ["task", "app", "mode", "frame", "visible"],
+      windows.map((entry) => [entry.taskId, entry.packageName, entry.mode, frame(entry), entry.visible === true ? "yes" : "no"]),
+      "No app windows.",
+    ),
+  ].join("\n");
+}
+
+/** The settings lines this track adds to `formatAndroidSettings`. */
+export function androidDeviceSettingsLines(settings: JsonObject): Array<[string, unknown]> {
+  const accessibility = isRecord(settings.accessibility) ? settings.accessibility : null;
+  const location = isRecord(settings.location) ? settings.location : null;
+  const lines: Array<[string, unknown]> = [];
+  if (accessibility) {
+    for (const option of ANDROID_ACCESSIBILITY_OPTIONS) {
+      const state = accessibility[option];
+      lines.push([ANDROID_ACCESSIBILITY_LABELS[option].toLowerCase(), state === true ? "on" : state === false ? "off" : state === null ? "not on this image" : null]);
+    }
+  }
+  if (settings.statusBarOverridden !== undefined) {
+    lines.push(["status bar", settings.statusBarOverridden === true ? "overridden (demo mode)" : settings.statusBarOverridden === false ? "the device's own" : null]);
+  }
+  if (settings.location !== undefined) {
+    lines.push(["location", location ? `${String(location.latitude)}, ${String(location.longitude)} (set by ADE)` : "not set by ADE on this boot"]);
+  }
+  if (settings.orientation !== undefined) lines.push(["orientation", settings.orientation]);
+  return lines;
 }

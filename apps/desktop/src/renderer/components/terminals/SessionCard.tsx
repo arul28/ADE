@@ -68,6 +68,8 @@ import { MONO_FONT, toneText } from "../lanes/laneDesignTokens";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { LanePrBadge } from "./LanePrBadge";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
+import { LaneAndroidDeviceMarker } from "../android/LaneAndroidDeviceMarker";
+import type { LaneAndroidDevice } from "../android/useLaneAndroidDevices";
 import { LaneMacDesktopMarker } from "./LaneMacDesktopMarker";
 import type { DesktopSeatKind } from "../../../shared/types/macDesktop";
 import { LaneWorkToolMarker } from "./LaneWorkToolMarker";
@@ -516,6 +518,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   lanePrForeign = false,
   machineMarker = null,
   laneAppleDevice = null,
+  laneAndroidDevice = null,
   laneDesktop = null,
   laneCloud = null,
   laneAppControl = false,
@@ -606,6 +609,8 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
    * with `showLaneIdentity`; elsewhere the lane header shows it.
    */
   laneAppleDevice?: LaneAppleDevice | null;
+  /** The Android emulator this card's lane holds. Shown like `laneAppleDevice`. */
+  laneAndroidDevice?: LaneAndroidDevice | null;
   /**
    * The screen the card's lane holds — the Mac Desktop, or a private or shared
    * Windows seat — or null when it holds none. Shown like `laneAppleDevice`.
@@ -983,6 +988,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
           <LaneNamingLabel laneName={lane.name} naming={namingLane} />
         </span>
         {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
+        {laneAndroidDevice ? <LaneAndroidDeviceMarker device={laneAndroidDevice} /> : null}
         {laneDesktop ? <LaneMacDesktopMarker laneId={lane.id} kind={laneDesktop} /> : null}
         {laneAppControl ? (
           <LaneWorkToolMarker tool="app-control" laneId={lane.id} label={LANE_APP_CONTROL_LABEL} />

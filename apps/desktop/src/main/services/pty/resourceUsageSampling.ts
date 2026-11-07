@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import type {
   AppResourceProcessRole,
   AppResourceProcessSampleInfo,
@@ -16,11 +17,15 @@ export type ProcessMetricRow = {
   ppid: number;
   cpuPercent: number;
   rssKB: number;
+  /** The executable's file name (`ps` comm), when the sample has it. */
+  command?: string;
 };
 
 const PROCESS_SAMPLE_TIMEOUT_MS = 1_000;
 const PROCESS_SAMPLE_MAX_STDOUT_BYTES = 2 * 1024 * 1024;
 const PROCESS_TREE_MAX_DEPTH = 12;
+/** The Android emulator launcher and its QEMU process (Linux truncates comm to 15 characters). */
+const ANDROID_EMULATOR_COMMAND = /^(?:emulator|qemu-system-[\w-]*)$/u;
 
 export function parseProcessMetricRows(stdout: string): ProcessMetricRow[] {
   return stdout
@@ -28,7 +33,7 @@ export function parseProcessMetricRows(stdout: string): ProcessMetricRow[] {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const [pidRaw, ppidRaw, cpuRaw, rssRaw] = line.split(/\s+/u);
+      const [pidRaw, ppidRaw, cpuRaw, rssRaw, ...commandParts] = line.split(/\s+/u);
       const pid = Number.parseInt(pidRaw ?? "", 10);
       const ppid = Number.parseInt(ppidRaw ?? "", 10);
       const cpuPercent = Number.parseFloat(cpuRaw ?? "");
@@ -44,7 +49,8 @@ export function parseProcessMetricRows(stdout: string): ProcessMetricRow[] {
       ) {
         return null;
       }
-      return { pid, ppid, cpuPercent, rssKB };
+      const command = path.basename(commandParts.join(" "));
+      return command ? { pid, ppid, cpuPercent, rssKB, command } : { pid, ppid, cpuPercent, rssKB };
     })
     .filter((row): row is ProcessMetricRow => row != null);
 }
@@ -150,7 +156,7 @@ export function createProcessMetricRowsCollector(
     };
 
     try {
-      child = spawnImpl("ps", ["-axo", "pid=,ppid=,pcpu=,rss="], {
+      child = spawnImpl("ps", ["-axo", "pid=,ppid=,pcpu=,rss=,comm="], {
         stdio: ["ignore", "pipe", "ignore"],
         windowsHide: true,
       });
@@ -319,13 +325,24 @@ export function classifyProcessRoles(input: ProcessRoleClassificationInput): Pro
     if (rowsByPid.has(pid)) claimedRoleByPid.set(pid, "electron-main");
   }
 
+  // An Android emulator that the brain started is a device, not ADE: like a
+  // simulator, its memory (gigabytes) must not count as the app's. The brain
+  // spawns the emulator itself, so only a direct child of a runtime root
+  // counts as one; a QEMU that a terminal starts is the terminal's work.
+  const runtimeRoots = new Set<number>();
+  const isBrainStartedEmulator = (parentPid: number, pid: number) => {
+    if (!runtimeRoots.has(parentPid)) return false;
+    const command = rowsByPid.get(pid)?.command;
+    return command != null && ANDROID_EMULATOR_COMMAND.test(command);
+  };
+
   const walkDescendants = (rootPid: number, role: AppResourceProcessRole) => {
     let frontier = [rootPid];
     for (let depth = 0; depth < PROCESS_TREE_MAX_DEPTH && frontier.length > 0; depth += 1) {
       const next: number[] = [];
       for (const parent of frontier) {
         for (const childPid of childrenByPpid.get(parent) ?? []) {
-          if (claimedRoleByPid.has(childPid) || electronPids.has(childPid)) continue;
+          if (claimedRoleByPid.has(childPid) || electronPids.has(childPid) || isBrainStartedEmulator(parent, childPid)) continue;
           claimedRoleByPid.set(childPid, role);
           next.push(childPid);
         }
@@ -343,6 +360,7 @@ export function classifyProcessRoles(input: ProcessRoleClassificationInput): Pro
     .filter((root) => Number.isFinite(root.pid) && root.pid > 0 && !electronPids.has(root.pid));
 
   const claimedRuntime = runtimePids.filter((pid) => claim(pid, "ade-runtime"));
+  for (const pid of claimedRuntime) runtimeRoots.add(pid);
   const claimedPtyHosts = ptyHostPids.filter((pid) => claim(pid, "ade-pty-host"));
   const claimedDesktopRoots = desktopRoots.filter((root) => claim(root.pid, root.kind));
 

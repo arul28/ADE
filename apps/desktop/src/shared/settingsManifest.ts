@@ -201,7 +201,7 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // on this computer can read the remote streaming cap (see accountSettingsSync).
   { id: "apple", label: "Apple devices", description: "Simulator display, recording overlays, and remote streaming on this computer.", group: "app" },
   // Android devices follows the picked machine: each machine has its own SDK.
-  { id: "android", label: "Android devices", description: "The Android SDK, its licences and the Android CLI, on each machine.", group: "app" },
+  { id: "android", label: "Android devices", description: "The Android SDK, emulator display, recording overlays, and remote streaming, on each machine.", group: "app" },
   // Keys are read by the window you type into, and each computer has its own
   // keyboard and OS shortcuts, so the page is per computer.
   { id: "keyboard", label: "Keyboard", description: "Shortcuts and Quick slots on this computer.", group: "app" },
@@ -1032,6 +1032,72 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // The web client gets Android in P2 (plan §6).
     web: "hidden",
     group: "Android devices",
+  },
+  {
+    id: "android.realistic-body",
+    label: "Realistic body",
+    keywords: ["android", "emulator", "3d", "body", "bare screen", "android.realisticBody"],
+    tab: "android",
+    anchor: "android-realistic-body",
+    scope: "machine",
+    // How the Android pane draws the device in this window, like Apple's.
+    web: "browser",
+    group: "Android Development",
+  },
+  {
+    id: "android.tap-rings",
+    label: "Tap rings in recordings",
+    keywords: ["android", "emulator", "recording", "overlay", "tap", "tapRings"],
+    tab: "android",
+    anchor: "android-tap-rings",
+    scope: "machine",
+    // Kept by the machine that runs the emulator, written through the runtime.
+    web: "machine",
+    group: "Recording overlays",
+  },
+  {
+    id: "android.typed-badges",
+    label: "Typed text in recordings",
+    keywords: ["android", "emulator", "recording", "overlay", "badge", "keyboard", "keyBadges"],
+    tab: "android",
+    anchor: "android-typed-badges",
+    scope: "machine",
+    // Kept by the machine that runs the emulator, written through the runtime.
+    web: "machine",
+    group: "Recording overlays",
+  },
+  {
+    id: "android.auto-record",
+    label: "Record agent input",
+    keywords: ["android", "emulator", "recording", "auto", "auto-record", "no-record", "proof", "agent", "autoRecordAgentInput"],
+    tab: "android",
+    anchor: "android-auto-record",
+    scope: "machine",
+    // Kept by the machine that runs the emulator, written through the runtime.
+    web: "machine",
+    group: "Automatic recording",
+  },
+  {
+    id: "android.remote-bitrate",
+    label: "Remote viewer bitrate cap",
+    keywords: ["android", "emulator", "stream", "bitrate", "kbit", "remote", "remoteBitrateKbpsCap"],
+    tab: "android",
+    anchor: "android-remote-bitrate",
+    scope: "machine",
+    // Kept by the machine that runs the emulator, written through the runtime.
+    web: "machine",
+    group: "Remote streaming",
+  },
+  {
+    id: "android.recordings-warn",
+    label: "Recordings storage warning",
+    keywords: ["android", "emulator", "recording", "storage", "disk", "warn", "recordingsWarnBytes"],
+    tab: "android",
+    anchor: "android-recordings-warn",
+    scope: "machine",
+    // Kept by the machine that runs the emulator, written through the runtime.
+    web: "machine",
+    group: "Recordings storage",
   },
 
   // ── Agents & Models ──────────────────────────────────────────────────────

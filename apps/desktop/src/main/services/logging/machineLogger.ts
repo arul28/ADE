@@ -41,7 +41,7 @@ export function machineMainLogPath(env: NodeJS.ProcessEnv = process.env): string
  * that runs before the app does. A machine whose `~/.ade` cannot even be
  * resolved still starts ADE.
  */
-const NOOP_LOGGER: Logger = {
+export const NOOP_LOGGER: Logger = {
   debug: () => {},
   info: () => {},
   warn: () => {},

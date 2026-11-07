@@ -31,10 +31,10 @@ import {
   type AppleDuoStanceId,
 } from "./appleDuo";
 import {
-  APPLE_ORIENTATION_CHOICES,
-  appleOrientationIconDegrees,
-  appleOrientationLabel,
-} from "./appleDeviceState";
+  deviceOrientationIconDegrees,
+  deviceOrientationLabel,
+  OrientationMenuItems,
+} from "../device/OrientationMenuItems";
 import { cn } from "../ui/cn";
 import { DEVICE_RAIL_COMPACT_WIDTH, DeviceRail, RailButton, RailDivider, RailMenu } from "../device/DeviceRail";
 import {
@@ -293,29 +293,17 @@ export function AppleDeviceRail({
         <RailMenu
           label={orientationPending
             ? "Rotating device"
-            : `Orientation: ${appleOrientationLabel(orientation)}`}
+            : `Orientation: ${deviceOrientationLabel(orientation)}`}
           disabled={hardwareDisabled || orientationPending}
           icon={(
             <DeviceMobile
               size={16}
-              style={{ transform: `rotate(${appleOrientationIconDegrees(orientation)}deg)` }}
+              style={{ transform: `rotate(${deviceOrientationIconDegrees(orientation)}deg)` }}
             />
           )}
         >
           <div className={MENU_LABEL_CLASS}>Orientation</div>
-          {APPLE_ORIENTATION_CHOICES.map((choice) => (
-            <DropdownMenu.Item
-              key={choice}
-              className={MENU_ITEM_CLASS}
-              aria-checked={choice === orientation}
-              onSelect={() => onOrientation(choice)}
-            >
-              {choice === orientation
-                ? <Check size={14} weight="bold" />
-                : <span className="w-[14px]" aria-hidden="true" />}
-              {appleOrientationLabel(choice)}
-            </DropdownMenu.Item>
-          ))}
+          <OrientationMenuItems orientation={orientation} onOrientation={onOrientation} />
         </RailMenu>
       )}
 

@@ -822,6 +822,7 @@ function ProjectTabHost() {
     voiceInputEnabled: s.voiceInputEnabled,
     codexVoice: s.codexVoice,
     appleDevice: s.appleDevice,
+    androidDevice: s.androidDevice,
   })));
   const storesRef = React.useRef(new Map<string, AppStoreApi>());
   const bindingsRef = React.useRef(new Map<string, OpenProjectBinding>());

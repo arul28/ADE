@@ -8,6 +8,7 @@ import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
 import { PROOF_DUPLICATE_CODE } from "../../desktop/src/shared/proofProvenance";
+import { androidStoreShotCaption } from "../../desktop/src/shared/androidDevicePresentation";
 import {
   CLI_COMMAND_ALIASES,
   CliExecutionError,
@@ -639,6 +640,27 @@ export async function createMachineRemoteConnection(
       }
       return withAppleActionResult(answer, { ...record, filed: ids.length, proofArtifactIds: ids });
     }
+    if (action === "storeScreenshots") {
+      // Parity: each Play Store screenshot made there is one still here.
+      const shots = Array.isArray(record.shots) ? record.shots.filter(isRecord) : [];
+      const filed = [];
+      for (const shot of shots) {
+        const shotPath = asString(shot.filePath);
+        const display = asString(shot.display);
+        const proofArtifactId = shotPath
+          ? await fileOne({
+            kind: "screenshot",
+            title: `${androidStoreShotCaption(asString(shot.slot), display, shot.width, shot.height)} · ${where}`,
+            description: `Play Store screenshot of the Android emulator on ${where}.`,
+            path: shotPath,
+            mimeType: "image/png",
+            metadata: { width: shot.width ?? null, height: shot.height ?? null, slot: asString(shot.slot), display },
+          }, "android play-store-shots")
+          : null;
+        filed.push({ ...shot, proofArtifactId });
+      }
+      return withAppleActionResult(answer, { ...record, shots: filed });
+    }
     if (action === "renderComposePreviews") {
       // P3: each Compose preview the CLI drew there is one still here.
       const module = asString(record.module);
@@ -675,7 +697,15 @@ export async function createMachineRemoteConnection(
         description: `Screen recording of the Android emulator on ${where}.`,
         path: videoPath,
         mimeType: "video/mp4",
-        metadata: { recordingId: asString(record.id), durationMs: typeof segment.durationMs === "number" ? segment.durationMs : null, part: index + 1 },
+        metadata: {
+          recordingId: asString(record.id),
+          durationMs: typeof record.durationMs === "number" ? record.durationMs : typeof segment.durationMs === "number" ? segment.durationMs : null,
+          ...(typeof record.wallDurationMs === "number" ? { wallDurationMs: record.wallDurationMs } : {}),
+          ...(typeof record.idleCutMs === "number" ? { idleCutMs: record.idleCutMs } : {}),
+          // The demo's chapters and how it was made, as a local stop files them.
+          ...(isRecord(record.demo) ? { demo: record.demo } : {}),
+          ...(segments.length > 1 ? { part: index + 1 } : {}),
+        },
       }, "android record-stop");
       if (id) ids.push(id);
     }
@@ -783,7 +813,7 @@ function appleActionFiledAsProof(params: JsonObject): AppleProofAction | null {
   return (APPLE_PROOF_ACTIONS as readonly string[]).includes(action ?? "") ? action as AppleProofAction : null;
 }
 
-const ANDROID_PROOF_ACTIONS = ["screenshot", "captureProofBundle", "recordStop", "requestRender", "renderComposePreviews"] as const;
+const ANDROID_PROOF_ACTIONS = ["screenshot", "captureProofBundle", "recordStop", "requestRender", "renderComposePreviews", "storeScreenshots"] as const;
 type AndroidProofAction = (typeof ANDROID_PROOF_ACTIONS)[number];
 
 /** An Android action the emulator's machine would file as proof; `proof: false` files nothing at all. */

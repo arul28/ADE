@@ -74,6 +74,9 @@ import { fgTint } from "../lanes/laneDesignTokens";
 import { cssZoomOf } from "../../lib/webZoom";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useTicker } from "../../lib/ticker";
+import { useAndroidLaneDeviceCard } from "../android/useAndroidLaneDeviceCard";
+import { useAndroidRecording } from "../android/useAndroidRecording";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 
 /**
  * The floating live-preview card.
@@ -485,13 +488,37 @@ export function WorkLiveCornerCard({
   // Every per-tool question the card asks — live, owner, caption, handoff,
   // recording, session key — answered once, by the adapter map beside the tool
   // list.
+  // The lane's Android emulator on the chat's machine: one status read plus
+  // its events, and the recording list only while it is booted.
+  const androidCard = useAndroidLaneDeviceCard({ laneId, runtimePin, enabled: active && Boolean(laneId) });
+  const androidBooted = androidCard?.state === "booted";
+  const androidRecording = useAndroidRecording({
+    laneId: laneId ?? "",
+    live: active && androidBooted && Boolean(laneId),
+    chatSessionId,
+    runtimePinRef,
+    onError: (cause) => logRendererDebugEvent("work_live.android_recording_read_failed", {
+      error: cause instanceof Error ? cause.message : String(cause),
+    }),
+  });
+  const androidActiveRecording = androidRecording.active;
+  const androidDevice = useMemo(() => (androidCard
+    ? {
+      avdName: androidCard.avdName,
+      deviceName: androidCard.name,
+      booted: androidBooted,
+      ownerChatSessionId: androidActiveRecording?.chatSessionId ?? null,
+      recording: androidActiveRecording ? true : null,
+    }
+    : null), [androidActiveRecording, androidBooted, androidCard]);
   const sourceState = useMemo(() => ({
     browserTab: activeBrowserTab,
     appControlSession,
     iosSession,
+    androidDevice,
     // The Mac Desktop floats in its own player; this card never pictures it.
     macDesktopFrame: null,
-  }), [activeBrowserTab, appControlSession, iosSession]);
+  }), [activeBrowserTab, androidDevice, appControlSession, iosSession]);
 
   const sources = useMemo(() => ({
     browser: workLiveSource("browser", sourceState),

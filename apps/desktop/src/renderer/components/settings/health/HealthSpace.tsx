@@ -30,6 +30,7 @@ import { relativeWhen } from "../../../lib/format";
 import { SmartTooltip } from "../../ui/SmartTooltip";
 import { UsageSparkline } from "../../usage/UsageSparks";
 import { AppleRecordingsWarning } from "../AppleRecordingsWarning";
+import { AndroidRecordingsWarning } from "../AndroidRecordingsWarning";
 import { StorageCleanupDialog, type SafeCleanupPlanConfig } from "../storage/StorageCleanupDialog";
 import { useLaneReclaim } from "../lanes/useLaneReclaim";
 import {
@@ -418,6 +419,8 @@ export function HealthSpace({ data }: { data: HealthData }) {
               <DatabaseDetails category={database} snapshot={snapshot} />
               {/* Reads through unpinned simulator/file calls, so only for the tab's machine. */}
               {pin ? null : <AppleRecordingsWarning projectRoot={snapshot.projectRoot} />}
+              {/* One pinned runtime read, so it is right for whichever machine this page shows. */}
+              <AndroidRecordingsWarning pin={pin} />
             </div>
           ) : null}
         </section>

@@ -10597,6 +10597,8 @@ export function registerIpc({
   ipcMain.handle(IPC.androidEmulatorCancelSdkInstall, async () => ensureAndroidEmulator().cancelSdkInstall());
   ipcMain.handle(IPC.androidEmulatorGetSdkInstallState, async () => ensureAndroidEmulator().getSdkInstallState());
   ipcMain.handle(IPC.androidEmulatorSetSdkPath, async (_event, arg) => ensureAndroidEmulator().setSdkPath(arg));
+  ipcMain.handle(IPC.androidEmulatorGetMachinePreferences, async () => ensureAndroidEmulator().getMachinePreferences({}));
+  ipcMain.handle(IPC.androidEmulatorSetMachinePreferences, async (_event, arg) => ensureAndroidEmulator().setMachinePreferences(arg ?? {}));
 
   ipcMain.handle(IPC.appControlGetStatus, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlGetStatus, { windowMs: 10_000, max: 80 });

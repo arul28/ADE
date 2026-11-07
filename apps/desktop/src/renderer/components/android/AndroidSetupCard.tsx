@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Check, Minus, PencilSimple, X } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { AndroidSdkSetupPart, AndroidSdkSetupPlan, AndroidSdkStatus } from "../../../shared/types/androidEmulator";
@@ -126,6 +126,28 @@ function Row({ row, trailing }: { row: ChecklistRow; trailing?: React.ReactNode 
   );
 }
 
+/**
+ * The card's buttons: the pane's `Button`, or the `.kit-btn` family on the
+ * Settings page so the card sits in its card language (Settings › Apple
+ * devices draws with the same kit).
+ */
+function SetupButton({
+  settings,
+  variant,
+  children,
+  ...rest
+}: {
+  settings: boolean;
+  variant: "primary" | "outline" | "ghost";
+  children: ReactNode;
+  disabled?: boolean;
+  onClick?: () => void;
+} & Record<`data-${string}`, string>) {
+  if (!settings) return <Button variant={variant} size="sm" {...rest}>{children}</Button>;
+  const kind = variant === "primary" ? "kit-btn kit-btn-primary" : variant === "ghost" ? "kit-btn kit-btn-ghost" : "kit-btn";
+  return <button type="button" className={kind} data-size="sm" {...rest}>{children}</button>;
+}
+
 export function AndroidSetupCard({
   sdk,
   pin,
@@ -148,6 +170,7 @@ export function AndroidSetupCard({
   variant?: "pane" | "settings";
 }) {
   const setup = useAndroidSdkSetup(pin, variant === "settings" ? "settings" : "setup-card");
+  const inSettings = variant === "settings";
   const { plan, install } = setup;
   const [reviewing, setReviewing] = useState(false);
   const running = install.state === "running";
@@ -212,7 +235,10 @@ export function AndroidSetupCard({
   };
 
   const body = (
-    <div className={cn("ade-tool-card ade-tool-card-solid flex w-full min-w-0 flex-col gap-3 p-5", variant === "settings" ? "max-w-2xl" : "max-w-md")} data-android-setup-card="">
+    <div
+      className={inSettings ? "ade-as-panel" : "ade-tool-card ade-tool-card-solid flex w-full min-w-0 max-w-md flex-col gap-3 p-5"}
+      data-android-setup-card=""
+    >
       <div className="flex min-w-0 items-baseline gap-2">
         <p className="min-w-0 flex-1 font-sans text-sm font-medium leading-5 text-fg">
           {!sdk.found ? "Set up Android on this machine" : plan && !somethingMissing ? "Android is ready" : "Finish setting up Android"}
@@ -391,9 +417,9 @@ export function AndroidSetupCard({
                 </div>
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="kit-num min-w-0 flex-1 truncate font-sans text-[11px] text-fg/85">{line.text}</span>
-                  <Button variant="ghost" size="sm" disabled={install.cancelling} onClick={setup.cancelInstall} data-android-setup-cancel="">
+                  <SetupButton settings={inSettings} variant="ghost" disabled={install.cancelling} onClick={setup.cancelInstall} data-android-setup-cancel="">
                     {install.cancelling ? "Stopping…" : "Cancel"}
-                  </Button>
+                  </SetupButton>
                 </div>
                 <span className="kit-num font-sans text-[11px] text-muted-fg">
                   {formatAndroidBytes(install.overallDone)} of {formatAndroidBytes(install.overallTotal)}
@@ -405,22 +431,22 @@ export function AndroidSetupCard({
       ) : (
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           {plan?.hostSupported !== false && somethingMissing ? (
-            <Button
+            <SetupButton
+              settings={inSettings}
               variant="primary"
-              size="sm"
               disabled={!canInstall || setup.starting}
               onClick={() => setReviewing(true)}
               data-android-setup-install=""
             >
               Review licences & install
-            </Button>
+            </SetupButton>
           ) : null}
-          <Button variant="outline" size="sm" onClick={() => void pickOwnSdk()} data-android-setup-use-mine="">
+          <SetupButton settings={inSettings} variant="outline" onClick={() => void pickOwnSdk()} data-android-setup-use-mine="">
             {sdk.found && plan && !somethingMissing ? "Use another SDK…" : "Use mine…"}
-          </Button>
-          <Button
+          </SetupButton>
+          <SetupButton
+            settings={inSettings}
             variant="ghost"
-            size="sm"
             disabled={refreshing || setup.loading}
             onClick={() => {
               onRefresh();
@@ -429,7 +455,7 @@ export function AndroidSetupCard({
             data-android-setup-refresh=""
           >
             Check again
-          </Button>
+          </SetupButton>
         </div>
       )}
 

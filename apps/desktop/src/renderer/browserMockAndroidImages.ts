@@ -22,6 +22,7 @@ import type {
   AndroidSystemImageInventory,
   AndroidToolsPreloadMethod,
 } from "../shared/types/androidEmulator";
+import { mockDelay, mockParam } from "./browserMockAndroidUtil";
 
 const ROOT = "/Users/mock/Library/Android/sdk";
 const LICENSE_TEXT = `Terms and Conditions
@@ -38,14 +39,6 @@ type MockImage = {
   downloadBytes: number;
   licenseId: string;
 };
-
-function param(name: string): string | null {
-  try {
-    return new URLSearchParams(window.location.search).get(name);
-  } catch {
-    return null;
-  }
-}
 
 function imageName(image: MockImage): string {
   return `API ${image.apiLevel} · ${image.tag === "google_apis_playstore" ? "Google Play" : "Google APIs"} · arm64`;
@@ -68,10 +61,10 @@ export function createMockAndroidImages(deps: {
   /** The installed images (the base one, then each mock install), for `listDevices`. */
   installed: () => AndroidSystemImage[];
 } {
-  const delay = <T,>(value: T, ms = 160) => new Promise<T>((resolve) => window.setTimeout(() => resolve(value), ms));
+  const delay = <T,>(value: T, ms = 160) => mockDelay(value, ms);
   // Read once: the app's router drops the query string after the first load.
-  const failInstall = param("mockAndroidImages") === "fail";
-  const failingTests = param("mockAndroidTests") === "fail";
+  const failInstall = mockParam("mockAndroidImages") === "fail";
+  const failingTests = mockParam("mockAndroidTests") === "fail";
   // API 36 Play is the base mock's IMAGE (always installed); the rest start as offers.
   const images: MockImage[] = [
     { id: "system-images;android-36;google_apis_playstore;arm64-v8a", apiLevel: 36, tag: "google_apis_playstore", installed: true, sizeBytes: 6.1e9, downloadBytes: 1.9e9, licenseId: "android-sdk-arm-dbt-license" },

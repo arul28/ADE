@@ -35,12 +35,20 @@ struct LiveInspectToast: Equatable, Identifiable {
 /// The live viewer an inspect session froze.
 enum LiveInspectSurface: String, Equatable {
   case simulator
+  case android
   case appControl
   case macDesktop
+
+  /// A phone's screen: element frames are the device's pixels, tapped by overlap.
+  var isPhoneScreen: Bool { self == .simulator || self == .android }
+
+  /// The phone screen's device, in a sentence: "the emulator".
+  var deviceNoun: String { self == .android ? "emulator" : "simulator" }
 
   var title: String {
     switch self {
     case .simulator: return "Simulator"
+    case .android: return "Android emulator"
     case .appControl: return "App Control"
     case .macDesktop: return "Mac Desktop"
     }
@@ -49,6 +57,7 @@ enum LiveInspectSurface: String, Equatable {
   var symbolName: String {
     switch self {
     case .simulator: return "iphone"
+    case .android: return "smartphone"
     case .appControl: return "macwindow"
     case .macDesktop: return "desktopcomputer"
     }
@@ -58,6 +67,7 @@ enum LiveInspectSurface: String, Equatable {
   var packetName: String {
     switch self {
     case .simulator: return "iOS visual inspect context attached by the user."
+    case .android: return "Android visual inspect context attached by the user."
     case .appControl: return "App Control visual inspect context attached by the user."
     case .macDesktop: return "Mac Desktop visual inspect context attached by the user."
     }
@@ -132,6 +142,8 @@ enum LiveInspectInk {
 /// Where the frozen picture and its elements come from.
 enum LiveInspectLoadPlan {
   case simulator
+  /// The lane's Android emulator (`android.inspectSnapshot`, the simulator's shape).
+  case android
   case appControl(image: UIImage, scaleX: CGFloat?, viewportWidth: CGFloat?, viewportHeight: CGFloat?)
   case macDesktop
 }
@@ -224,7 +236,9 @@ final class LiveInspectMarkupModel: ObservableObject {
   private func load(plan: LiveInspectLoadPlan, using syncService: SyncService, generation: Int) async {
     switch plan {
     case .simulator:
-      await loadSimulator(using: syncService, generation: generation)
+      await loadPhoneScreen(using: syncService, generation: generation, surface: .simulator)
+    case .android:
+      await loadPhoneScreen(using: syncService, generation: generation, surface: .android)
     case .appControl(let image, let scaleX, let viewportWidth, let viewportHeight):
       installAppControl(
         image: image,
@@ -237,12 +251,16 @@ final class LiveInspectMarkupModel: ObservableObject {
     }
   }
 
-  private func loadSimulator(using syncService: SyncService, generation: Int) async {
+  /// The simulator's or the emulator's still and elements: the host answers
+  /// both in one shape, with frames in screenshot pixels.
+  private func loadPhoneScreen(using syncService: SyncService, generation: Int, surface: LiveInspectSurface) async {
     do {
-      let snapshot = try await syncService.fetchLiveInspectSimulatorSnapshot(laneId: laneId)
+      let snapshot = surface == .android
+        ? try await syncService.fetchLiveInspectAndroidSnapshot(laneId: laneId)
+        : try await syncService.fetchLiveInspectSimulatorSnapshot(laneId: laneId)
       guard !Task.isCancelled, generation == loadGeneration else { return }
       guard let image = LiveInspectImage.image(fromDataURL: snapshot.screenshot.dataUrl) else {
-        throw LiveInspectFailure("The simulator sent a picture this phone couldn't read.")
+        throw LiveInspectFailure("The \(surface.deviceNoun) sent a picture this phone couldn't read.")
       }
       let pixel = LiveInspectImage.pixelSize(of: image)
       let shotWidth = snapshot.screenshot.width.flatMap { $0 > 0 ? $0 : nil } ?? Double(pixel.width)
@@ -284,7 +302,9 @@ final class LiveInspectMarkupModel: ObservableObject {
       )
       guard generation == loadGeneration else { return }
       apply(image: image, pixel: pixel, screen: screen, elements: elements)
-      note = elements.isEmpty ? "This screen exposed no elements. Is an app in the foreground on the simulator?" : nil
+      note = elements.isEmpty
+        ? "This screen exposed no elements. Is an app in the foreground on the \(surface.deviceNoun)?"
+        : nil
     } catch {
       guard generation == loadGeneration else { return }
       fail(error)

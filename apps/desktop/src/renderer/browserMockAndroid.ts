@@ -54,7 +54,9 @@ import {
 import { createMockAndroidSetup } from "./browserMockAndroidSetup";
 import { createMockAndroidTools } from "./browserMockAndroidTools";
 import { createMockAndroidImages } from "./browserMockAndroidImages";
+import { createMockAndroidPreferences } from "./browserMockAndroidPreferences";
 import { androidCatalogColor, androidCatalogEntry, resolveAndroidCatalogProfile } from "../shared/androidDeviceCatalog";
+import { mockDelay, mockParam } from "./browserMockAndroidUtil";
 
 type Scenario = "live" | "picker" | "setup" | "noaccel" | "starting" | "off" | "crashed" | "unsupported";
 
@@ -68,20 +70,8 @@ const VIDEO_HEIGHT = 1280;
 let mockOrientation: "portrait" | "landscape" = mockParam("mockAndroidLandscape") !== null ? "landscape" : "portrait";
 const LCD = { width: 1080, height: 2400 };
 
-function mockParam(name: string): string | null {
-  try {
-    return new URLSearchParams(window.location.search).get(name);
-  } catch {
-    return null;
-  }
-}
-
 function remoteWorkCopyEmpty(): boolean {
-  try {
-    return new URLSearchParams(window.location.search).get("mockAndroidRemote") === "none";
-  } catch {
-    return false;
-  }
+  return mockParam("mockAndroidRemote") === "none";
 }
 
 function scenario(): Scenario {
@@ -303,7 +293,7 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
       if (laneId) emit({ type: "android.device.state", laneId, state: "booted" });
     }, mockParam("mockAndroidCatalog") !== null && which === "starting" ? 25_000 : 1_800);
   };
-  const delay = <T,>(value: T, ms = 120) => new Promise<T>((resolve) => window.setTimeout(() => resolve(value), ms));
+  const delay = <T,>(value: T, ms = 120) => mockDelay(value, ms);
 
   installMockStreamFetch(touches);
 
@@ -331,6 +321,8 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
     ...setup,
     ...tools,
     ...systemImages.api,
+    // Settings › Android devices: each machine's preferences, in memory.
+    ...createMockAndroidPreferences({ emit }),
     getStatus: async (args, pin) => delay(status(args?.laneId ?? null, pin?.kind === "remote"), 60),
     listDevices: async (args) => {
       if (args?.laneId) laneId = args.laneId;
@@ -411,7 +403,9 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
     },
     rotate: async (args) => {
       rotations.push(args.orientation);
-      window.setTimeout(() => { mockOrientation = args.orientation; }, 900);
+      // The mock streams a shape: an upside-down turn is still portrait.
+      const shape = args.orientation === "portrait" || args.orientation === "portrait-upside-down" ? "portrait" : "landscape";
+      window.setTimeout(() => { mockOrientation = shape; }, 900);
     },
     screenshot: async () => delay({
       path: "/Users/mock/.ade/android/screenshots/ade_lane_medium_phone-1.png",

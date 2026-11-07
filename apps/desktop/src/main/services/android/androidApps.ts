@@ -460,7 +460,13 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
     },
 
     /** Starts the app's launcher activity (or the named one) and waits for it to draw (`am start -W`). */
-    async start(laneId: string, packageName: string, activity: string | null): Promise<{ activity: string; totalTimeMs: number | null }> {
+    async start(
+      laneId: string,
+      packageName: string,
+      activity: string | null,
+      /** Parity: extra `am start` words (launch arguments and `--es`/`--ei` extras), each one device word. */
+      extraWords: readonly string[] = [],
+    ): Promise<{ activity: string; totalTimeMs: number | null }> {
       let component: string | null;
       if (activity) {
         const trimmed = activity.trim();
@@ -479,7 +485,7 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
         );
       }
       await chrome.beforeLaunch(laneId, await deps.requireBooted(laneId), packageName);
-      const result = await shell(laneId, ["am", "start", "-W", "-n", component], 60_000);
+      const result = await shell(laneId, ["am", "start", "-W", "-n", component, ...extraWords], 60_000);
       if (/Error:|Exception|does not exist/u.test(result.text)) {
         throw new AndroidEmulatorFailure("ANDROID_APP_NOT_FOUND", `The emulator could not start ${component}: ${tail(result.text, 3).join(" ")}`);
       }

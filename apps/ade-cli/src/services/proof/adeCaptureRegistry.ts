@@ -144,6 +144,12 @@ export const ADE_CAPTURE_ACTIONS: ReadonlyMap<string, AdeCaptureAction> =
         .map((segment) => (segment && typeof segment === "object" ? (segment as Record<string, unknown>).path : null)),
     }],
     ["android_emulator.captureProofBundle", resultField("screenshotPath", "ade-capture")],
+    // Parity: `ade android play-store-shots`, one PNG per screen (a foldable's cover and inner).
+    ["android_emulator.storeScreenshots", {
+      source: "ade-capture",
+      paths: (result) => (Array.isArray(result.shots) ? result.shots : [])
+        .map((shot) => (shot && typeof shot === "object" ? (shot as Record<string, unknown>).filePath : null)),
+    }],
     // P1 look: `ade android render` (a desktop window draws it).
     ["android_emulator.requestRender", {
       source: "ade-capture",

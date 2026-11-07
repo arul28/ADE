@@ -36,6 +36,8 @@ import { WorkToolPicker } from "./WorkToolPicker";
 import { useWorkToolStatuses } from "./useWorkToolStatuses";
 import { AppleToolCardMenu } from "../apple/AppleToolCardMenu";
 import { appleLaneDeviceForLane } from "../apple/useAppleLaneDeviceCard";
+import { AndroidToolCardMenu } from "../android/AndroidToolCardMenu";
+import { androidLaneDeviceForLane } from "../android/useAndroidLaneDeviceCard";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
 import {
   hostDesktopTool,
@@ -311,10 +313,13 @@ export function WorkSidebar({
   // A bump re-reads the lane's Apple device after the card menu boots, releases,
   // or deletes it — the web client gets no `apple.device.state` events.
   const [appleDeviceRefreshKey, setAppleDeviceRefreshKey] = useState(0);
+  // The same for the Android card menu's start, stop, release and delete.
+  const [androidDeviceRefreshKey, setAndroidDeviceRefreshKey] = useState(0);
   const {
     statuses,
     loading: statusesLoading,
     appleDevice,
+    androidDevice,
   } = useWorkToolStatuses({
     enabled: active,
     laneId,
@@ -324,6 +329,7 @@ export function WorkSidebar({
     prSessionId: panelSessionId,
     activeTool: tool,
     appleDeviceRefreshKey,
+    androidDeviceRefreshKey,
     remoteShellCount: activeRemoteWorkOnRow(activeSession).reduce((total, use) => total + use.terminalIds.length, 0),
   });
 
@@ -521,20 +527,35 @@ export function WorkSidebar({
     // lane's device off the old lane's name. Only the reading FOR this lane
     // may carry the menu.
     const menuDevice = appleLaneDeviceForLane(appleDevice, laneId);
-    if (!laneId || !menuDevice) return {};
+    const androidMenuDevice = androidLaneDeviceForLane(androidDevice, laneId);
+    if (!laneId || (!menuDevice && !androidMenuDevice)) return {};
     return {
-      ios: (
-        <AppleToolCardMenu
-          device={menuDevice}
-          laneId={laneId}
-          chatSessionId={panelSessionId}
-          runtimePin={runtimePin}
-          onOpenTool={() => selectTool("ios")}
-          onMutated={() => setAppleDeviceRefreshKey((nonce) => nonce + 1)}
-        />
-      ),
+      ...(menuDevice ? {
+        ios: (
+          <AppleToolCardMenu
+            device={menuDevice}
+            laneId={laneId}
+            chatSessionId={panelSessionId}
+            runtimePin={runtimePin}
+            onOpenTool={() => selectTool("ios")}
+            onMutated={() => setAppleDeviceRefreshKey((nonce) => nonce + 1)}
+          />
+        ),
+      } : {}),
+      ...(androidMenuDevice ? {
+        android: (
+          <AndroidToolCardMenu
+            device={androidMenuDevice}
+            laneId={laneId}
+            chatSessionId={panelSessionId}
+            runtimePin={runtimePin}
+            onOpenTool={() => selectTool("android")}
+            onMutated={() => setAndroidDeviceRefreshKey((nonce) => nonce + 1)}
+          />
+        ),
+      } : {}),
     };
-  }, [appleDevice, laneId, panelSessionId, runtimePin, selectTool]);
+  }, [androidDevice, appleDevice, laneId, panelSessionId, runtimePin, selectTool]);
 
   // Escape is scoped to the pane, not the window: a global binding would steal
   // Escape from the composer, from dialogs, and from the browser panel's own

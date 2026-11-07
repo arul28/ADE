@@ -39,6 +39,11 @@ final class AndroidDeviceViewerModel: ObservableObject {
   /// The host's sentence when the last Start was refused for want of memory
   /// (`ANDROID_LOW_MEMORY`): the card then offers Start anyway.
   @Published private(set) var lowMemorySentence: String?
+  /// The emulator has a hinge (`getPosture`): fold mirroring and the hinge
+  /// tiles are offered. Read when control begins.
+  @Published private(set) var deviceFolds = false
+  /// The hinge as last read or set.
+  @Published private(set) var posture: AndroidDevicePosture?
 
   /// The socket, decoder, health clock, speed and redials, shared with the
   /// simulator's model. Only the first-frame timeout runs: a still screen
@@ -54,6 +59,12 @@ final class AndroidDeviceViewerModel: ObservableObject {
   private var chatSessionId: String?
   /// When the person last touched the picture while controlling.
   private var lastControlActivity = Date()
+  /// Fold mirroring: one fold in flight, the newest angle waiting behind it.
+  private lazy var folds = LatestOnlySender<Double> { [weak self] angle in
+    await self?.sendFold(angle: angle) ?? false
+  }
+  /// The last angle sent.
+  private var lastFoldAngle: Double?
   private lazy var liveTouch = AppleLiveTouchSender { [weak self] phase, point in
     await self?.sendTouchNow(phase, at: point)
   }
@@ -185,6 +196,16 @@ final class AndroidDeviceViewerModel: ObservableObject {
       endControl(notice: "The emulator changed. You're watching.")
     } else if mode == .controlling, !booted {
       endControl(notice: "The emulator stopped. You're watching.")
+    } else if mode == .controlling,
+              let owner = foreignOwnerName(next.owner) {
+      // An agent took the emulator's lease: it is driving now, so hand control
+      // back before a touch lands under its feet, as the simulator viewer does.
+      endControl(notice: "\(owner) is driving the emulator now. You're watching.")
+    }
+    if previousAvd != nil, next.device?.avdName != previousAvd {
+      // A hinge belongs to the device it came from.
+      deviceFolds = false
+      posture = nil
     }
     // Down with no picture: the card with Start. A brain with no live view
     // keeps its own message.
@@ -268,6 +289,9 @@ final class AndroidDeviceViewerModel: ObservableObject {
     if let ticket = stream.ticket, ticket.liveTouch != true {
       return "Update ADE on the computer to control its emulator from here."
     }
+    if let owner = foreignOwnerName(status?.owner) {
+      return "\(owner) is driving this emulator. Control comes back when it lets go."
+    }
     guard health.phase == .streaming, devicePixelSize != nil else {
       return "Control turns on once the picture is live."
     }
@@ -281,11 +305,80 @@ final class AndroidDeviceViewerModel: ObservableObject {
     }
     lastControlActivity = Date()
     mode = .controlling
+    // The first fold after taking control is always sent.
+    lastFoldAngle = nil
+    Task { [weak self] in await self?.loadPosture() }
     androidViewerLog.notice("control on lane=\(self.laneId, privacy: .public)")
+  }
+
+  /// The lease holder when it is not this viewer's own chat, as the first
+  /// words of a sentence: "An agent", or the chat's title.
+  private func foreignOwnerName(_ owner: AndroidDeviceStatusOwner?) -> String? {
+    guard let label = androidDeviceOwnerLabel(androidDeviceForeignOwner(owner, viewerChatSessionId: chatSessionId)) else { return nil }
+    return label.prefix(1).uppercased() + label.dropFirst()
+  }
+
+  // MARK: Fold
+
+  /// Reads the hinge once per control session: whether it folds at all.
+  private func loadPosture() async {
+    guard let syncService else { return }
+    do {
+      let next = try await syncService.fetchAndroidPosture(laneId: laneId)
+      posture = next
+      deviceFolds = next.supported == true
+    } catch {
+      // A host without the fold verb, or a rigid AVD: no fold controls.
+      androidViewerLog.notice("posture read failed: \((error as NSError).localizedDescription, privacy: .public)")
+      deviceFolds = false
+    }
+  }
+
+  /// Folds the emulator to match the phone, while controlling a foldable.
+  /// One fold at a time; only the newest waiting angle is kept, so a hinge
+  /// swung quickly sends where it is, not every step it passed.
+  func mirrorFold(angle: Double) {
+    guard mode == .controlling, deviceFolds, syncService != nil else { return }
+    folds.push(angle)
+  }
+
+  /// Sends one fold angle; false stops the sender.
+  private func sendFold(angle next: Double) async -> Bool {
+    guard mode == .controlling, let syncService else { return false }
+    lastControlActivity = Date()
+    // Small moves of the hand are not worth a device-state change.
+    if let last = lastFoldAngle, abs(last - next) < 10 { return true }
+    do {
+      try await syncService.setAndroidPosture(laneId: laneId, angle: next, pose: nil)
+      lastFoldAngle = next
+      posture = AndroidDevicePosture(supported: true, angle: next, state: posture?.state)
+      return true
+    } catch {
+      androidViewerLog.error("fold mirror failed: \((error as NSError).localizedDescription, privacy: .public)")
+      inputFailed(error)
+      return false
+    }
+  }
+
+  /// One of the hinge tiles.
+  func setHinge(_ pose: AndroidHingePose) {
+    guard mode == .controlling, deviceFolds, let syncService else { return }
+    lastControlActivity = Date()
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        try await syncService.setAndroidPosture(laneId: self.laneId, angle: nil, pose: pose.rawValue)
+        self.lastFoldAngle = nil
+        self.posture = AndroidDevicePosture(supported: true, angle: pose.angle, state: self.posture?.state)
+      } catch {
+        self.inputFailed(error)
+      }
+    }
   }
 
   func endControl(notice: String? = nil) {
     guard mode == .controlling else { return }
+    folds.cancel()
     mode = .watching
     if let notice { self.notice = notice }
     androidViewerLog.notice("control off lane=\(self.laneId, privacy: .public)")

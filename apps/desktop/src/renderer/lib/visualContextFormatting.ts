@@ -1,7 +1,9 @@
-import type {
-  AppControlContextItem,
-  BuiltInBrowserContextItem,
-  IosElementContextItem,
+import {
+  ANDROID_CONTEXT_SURFACE,
+  type AppControlContextItem,
+  type BuiltInBrowserContextItem,
+  type ElementContextSurface,
+  type IosElementContextItem,
 } from "../../shared/types";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -45,15 +47,31 @@ function iosContextLabel(item: IosElementContextItem): string {
   const role = typeof metadata.role === "string" && metadata.role.trim()
     ? metadata.role.trim()
     : null;
-  return label ?? item.componentId ?? role ?? "iOS simulator element";
+  return label ?? item.componentId ?? role ?? (iosContextSurface(item) === ANDROID_CONTEXT_SURFACE ? "Android emulator element" : "iOS simulator element");
 }
 
-export function iosContextSurface(item: IosElementContextItem): "simulator" | "xcode-preview" {
+/** Where the packet came from. `android-emulator`: the Android pane's Inspect, which sends the same packet shape. */
+export function iosContextSurface(item: IosElementContextItem): ElementContextSurface {
+  if (item.metadata?.contextSurface === ANDROID_CONTEXT_SURFACE) return ANDROID_CONTEXT_SURFACE;
   const source = typeof item.metadata?.screenElementSource === "string" ? item.metadata.screenElementSource : "";
   return item.metadata?.contextSurface === "xcode-preview" || source.startsWith("xcode-preview")
     ? "xcode-preview"
     : "simulator";
 }
+
+/** The prompt's lead lines when an Android packet is attached. */
+const ANDROID_INSPECT_PROMPT_HEADER = [
+  "Android visual inspect context attached by the user.",
+  "Each packet came from the user clicking a UI element on the lane's real Android emulator. Its crop is visual evidence for the same packet, in screenshot pixels. `ade android tap-element --ref <ref>` acts on the element; sourceFile:line is in the lane's Kotlin, Java or XML when the element's id, test tag or text names it.",
+];
+
+/** The prompt's lead lines for iOS packets. Left out when every packet is from Android. */
+const IOS_INSPECT_PROMPT_HEADER = [
+  "iOS visual inspect context attached by the user.",
+  "Each packet came from the user clicking a UI element in the real iOS Simulator, dragging a simulator screenshot region, or dragging a capture area in an Xcode SwiftUI preview. Image attachments/crops are visual evidence for the same packet and use the same screenshot coordinate space.",
+  "Use exactSource when sourceConfidence is exact. Treat sourceCandidates as ranked best guesses, not proof; prefer nearbyElements and the screenshot when the source is missing or only candidate quality.",
+  "When the packet surface is xcode-preview, treat it as fast fixture/mock-data feedback rather than live app state. Keep SwiftUI changes previewable with nearby #Preview definitions and deterministic mock fixtures.",
+];
 
 export function formatIosElementContextChipsForDisplay(items: IosElementContextItem[]): string {
   if (!items.length) return "";
@@ -138,11 +156,11 @@ export function formatIosElementContextForPrompt(items: IosElementContextItem[])
       : "";
     return `${index + 1}. ${iosContextLabel(item)} (${source}, frame=${frame})\nPacket:\n${JSON.stringify(packet, null, 2)}${snippet}`;
   });
+  const android = items.some((item) => iosContextSurface(item) === ANDROID_CONTEXT_SURFACE);
+  const allAndroid = items.every((item) => iosContextSurface(item) === ANDROID_CONTEXT_SURFACE);
   return [
-    "iOS visual inspect context attached by the user.",
-    "Each packet came from the user clicking a UI element in the real iOS Simulator, dragging a simulator screenshot region, or dragging a capture area in an Xcode SwiftUI preview. Image attachments/crops are visual evidence for the same packet and use the same screenshot coordinate space.",
-    "Use exactSource when sourceConfidence is exact. Treat sourceCandidates as ranked best guesses, not proof; prefer nearbyElements and the screenshot when the source is missing or only candidate quality.",
-    "When the packet surface is xcode-preview, treat it as fast fixture/mock-data feedback rather than live app state. Keep SwiftUI changes previewable with nearby #Preview definitions and deterministic mock fixtures.",
+    ...(android ? ANDROID_INSPECT_PROMPT_HEADER : []),
+    ...(allAndroid ? [] : IOS_INSPECT_PROMPT_HEADER),
     ...rows,
     "",
   ].join("\n");

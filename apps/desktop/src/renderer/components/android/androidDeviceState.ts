@@ -1,5 +1,6 @@
 import { createDeviceViewModeStore, type DeviceViewMode } from "../device/deviceViewMode";
 import { androidCatalogColor, androidCatalogEntry } from "../../../shared/androidDeviceCatalog";
+import { androidAvdDisplayName } from "../../../shared/androidDevicePresentation";
 import {
   ANDROID_EMULATOR_ERROR_CODES,
   type AndroidEmulatorErrorCode,
@@ -156,10 +157,17 @@ function androidProfileIdWords(id: string): string {
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : id;
 }
 
-/** The lane device's name for the strip, the rail and the loading card. */
+/**
+ * The lane device's name for the strip, the rail, the loading card, the card
+ * menu and the running pill. The brain fills `displayName`. A brain that
+ * leaves it out gets the folder name in words (`Pixel 9 API 36`), not the
+ * raw folder name.
+ */
 export function androidLaneDeviceName(lane: AndroidLaneDeviceStatus | null | undefined): string {
-  if (lane?.avd) return androidAvdLabel(lane.avd);
-  return lane?.device?.avdName ?? "Android device";
+  const shown = lane?.avd?.displayName?.trim();
+  if (shown) return shown;
+  const folder = lane?.avd?.name ?? lane?.device?.avdName;
+  return folder ? androidAvdDisplayName(folder) || folder : "Android device";
 }
 
 export type AndroidStockProfileChoice = {

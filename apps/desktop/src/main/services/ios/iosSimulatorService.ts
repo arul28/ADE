@@ -160,7 +160,7 @@ import type { Logger } from "../logging/logger";
 import { pngDimensions } from "../shared/imageDimensions";
 import { isPathInside } from "../shared/pathCompare";
 import { getErrorMessage, isPathEscapeError, isRecord, resolvePathWithinRoot, signalChildProcessTree } from "../shared/utils";
-import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
+import { createIosDeviceHub, isSecureField, type IosDeviceHub } from "./iosDeviceHub";
 import { buildElementRef, describeElement } from "./iosSemanticActions";
 import { AppleDeviceExistsError, AppleDeviceNotLaneOwnedError, AppleLaneDeviceReleasedError } from "./appleDeviceErrors";
 import { createLaneDeviceRegistry, type AppleLaneDeviceRelease } from "./laneDeviceRegistry";
@@ -2772,7 +2772,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         tap: (tapArgs) => tap({ ...tapArgs, laneId: runtime.laneId }),
         longPress: (pressArgs) => longPress({ ...pressArgs, laneId: runtime.laneId }),
         // `fill-element` reads its field back itself, a better check than focus.
-        typeText: (textArgs) => typeText({ ...textArgs, laneId: runtime.laneId }, { checkFocus: false }),
+        typeText: ({ secure, ...textArgs }) => typeText({ ...textArgs, laneId: runtime.laneId }, { checkFocus: false, secure }),
         readElementAt: (deviceUdid, x, y) => readAccessibilityElementAt(deviceUdid, x, y),
         bootDevice: (device) => power.bootDevice(device),
         powerOffDevice: (deviceUdid) => power.powerOffDevice(deviceUdid, "hub-power"),
@@ -6820,7 +6820,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    */
   const typeText = async (
     input: { deviceUdid?: string | null; text: string; laneId?: string | null; chatSessionId?: string | null; source?: AppleInputSource; noRecord?: boolean | null },
-    options: { checkFocus?: boolean } = {},
+    /** `secure`: the caller already knows the field (fill-element); it decides whether the text shows. */
+    options: { checkFocus?: boolean; secure?: boolean } = {},
   ): Promise<{ ok: true; focus?: "field" | "none"; focused?: string | null; message?: string | null }> => {
     assertDarwin();
     const runtime = resolveRuntime(input);
@@ -6832,10 +6833,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       const startedAtMs = Date.now();
       await helperType(deviceUdid, input.text, pace?.paceMs);
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
+      // A secure field's text never shows on a recording ("Never for password fields").
+      // Fail closed: the text goes on only when the field is known and is not a secure field.
+      const showText = options.secure !== undefined
+        ? !options.secure
+        : focused !== undefined && !(focused && isSecureField(focused));
       noteInput(runtime, {
         udid: deviceUdid,
         kind: "type",
-        text: input.text,
+        ...(showText ? { text: input.text } : {}),
         source: input.source,
         noRecord: input.noRecord,
         ...(pace ? { startedAtMs, seconds: pace.seconds } : {}),

@@ -15,6 +15,8 @@ import {
   orientedPointSize,
   orientedToPortrait,
   portraitToOriented,
+  releaseBareScreen,
+  setBodyBareScreen,
   type DeviceBody,
   type DisplayLayout,
   type GltfLoaderCtor,
@@ -71,7 +73,18 @@ export type Device3DViewProps = {
   bodySource: DeviceBodySource;
   /** The canvas's accessible name ("iOS Simulator screen"). */
   ariaLabel: string;
+  /**
+   * Draw only the screen, with a thin edge, instead of the whole body
+   * ("Realistic body" off in Settings). Applied in place: the body is not
+   * rebuilt and the camera does not move.
+   */
+  bareScreen?: boolean | undefined;
   orientation: DeviceOrientation;
+  /**
+   * The frames already come turned the way the device is (Android). Upside
+   * down, the texture then turns back a half turn, and taps read the picture.
+   */
+  framesUpright?: boolean | undefined;
   /** Decoded frame size in PIXELS — the texture's own aspect. */
   screenPixelSize: { width: number; height: number };
   /**
@@ -263,7 +276,7 @@ function createViewer(
   let source: HTMLCanvasElement | null = null;
   let mirror: HTMLCanvasElement | null = null;
   let mirrorContext: CanvasRenderingContext2D | null = null;
-  let layout = displayLayout(initial.orientation, initial.screenPixelSize, initial.screenCanvas);
+  let layout = displayLayout(initial.orientation, initial.screenPixelSize, initial.screenCanvas, initial.framesUpright === true);
   /** Null until the source's body is on screen (§A1). */
   let body: DeviceBody | null = null;
   /**
@@ -404,6 +417,12 @@ function createViewer(
       const blit = mirrorFrame();
       if (blit.resized) rebuildTexture();
       else if (texture && blit.drawn) texture.needsUpdate = true;
+      // The decoder resizes the canvas a frame after the stream says its new
+      // size, so a turn's layout can be measured from the old shape. When the
+      // frame's shape stops matching the layout, lay it out again.
+      if (blit.resized && source && source.width > 0 && source.height > 0 && (source.width > source.height) !== layout.rawLandscape) {
+        sync(getProps());
+      }
       const now = performance.now();
       if (motion.advance(now, reducedMotionPreferred())) {
         applyPose();
@@ -537,9 +556,11 @@ function createViewer(
   const installBody = (next: DeviceBody) => {
     if (body) {
       scene.remove(body.root);
+      releaseBareScreen(body);
       body.dispose();
     }
     body = next;
+    setBodyBareScreen(THREE, body, getProps().bareScreen === true);
     scene.add(body.root);
     applyPose();
     fitCamera();
@@ -617,7 +638,7 @@ function createViewer(
       if (!hit) return null;
       // Apple's model answers in the live panel's own framebuffer, whatever
       // shape the frame arrives in.
-      return framePoint(hit.u, hit.vFromBottom, !body.physical && layout.rawLandscape);
+      return framePoint(hit.u, hit.vFromBottom, !body.physical && (layout.rawLandscape || layout.flipped));
     }
     if (!captured) {
       const hit = raycaster.intersectObject(body.display, false)[0];
@@ -633,12 +654,12 @@ function createViewer(
     }
     const u = Math.min(1, Math.max(0, (localHit.x + body.screenWidth / 2) / body.screenWidth));
     const vFromBottom = Math.min(1, Math.max(0, (localHit.y + body.screenHeight / 2) / body.screenHeight));
-    return framePoint(u, vFromBottom, layout.rawLandscape);
+    return framePoint(u, vFromBottom, layout.rawLandscape || layout.flipped);
   };
 
   const sync = (props: Device3DViewProps) => {
     if (disposed) return;
-    layout = displayLayout(props.orientation, props.screenPixelSize, props.screenCanvas);
+    layout = displayLayout(props.orientation, props.screenPixelSize, props.screenCanvas, props.framesUpright === true);
     const canvasChanged = props.screenCanvas !== lastCanvas;
     // The mirror is resized by the blit, so a source that changes resolution
     // mid-stream needs nothing here; only a different ELEMENT does.
@@ -669,6 +690,7 @@ function createViewer(
       invalidate();
     }
 
+    if (body) setBodyBareScreen(THREE, body, props.bareScreen === true);
     const bodySource = props.bodySource;
     if (bodySource.key !== currentModelKey) {
       currentModelKey = bodySource.key;
@@ -918,6 +940,7 @@ function createViewer(
       canvas.removeEventListener("webglcontextrestored", onContextRestored);
       if (body) {
         scene.remove(body.root);
+        releaseBareScreen(body);
         body.dispose();
         body = null;
       }
@@ -1103,12 +1126,14 @@ export function Device3DView(props: Device3DViewProps) {
     props.screenCanvas,
     props.bodySource,
     props.orientation,
+    props.framesUpright,
     props.screenPixelSize.width,
     props.screenPixelSize.height,
     props.devicePointSize?.width,
     props.devicePointSize?.height,
     props.interactive,
     props.railInset,
+    props.bareScreen,
   ]);
 
   const localPoint = (event: React.PointerEvent<HTMLCanvasElement>) => {

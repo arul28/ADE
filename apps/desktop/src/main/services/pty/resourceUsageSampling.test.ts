@@ -97,7 +97,7 @@ describe("createProcessMetricRowsCollector", () => {
     expect(spawnImpl).toHaveBeenCalledTimes(1);
     expect(spawnImpl).toHaveBeenCalledWith(
       "ps",
-      ["-axo", "pid=,ppid=,pcpu=,rss="],
+      ["-axo", "pid=,ppid=,pcpu=,rss=,comm="],
       {
         stdio: ["ignore", "pipe", "ignore"],
         windowsHide: true,
@@ -378,13 +378,20 @@ describe("classifyProcessRoles", () => {
     expect(result.ptyUsage.ptyProcessCount).toBe(3);
   });
 
-  it("keeps ADE runtime and PTY host roots explicit while descendants remain unknown", () => {
+  it("keeps ADE runtime and PTY host roots explicit while descendants remain unknown, and leaves out an emulator the brain started", () => {
     const result = classifyProcessRoles({
       rows: [
         row(300, 1, 1, 1024),
         row(301, 300, 2, 2048),
         row(400, 1, 3, 3072),
         row(401, 400, 4, 4096),
+        // An Android emulator the brain started is a device (gigabytes), not
+        // ADE; a QEMU that a terminal under the PTY host started is its work.
+        ...parseProcessMetricRows([
+          "302 300 80.0 5242880 /Volumes/Dev/Android/Sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64-headless",
+          "303 302 0.5 2048 /Volumes/Dev/Android/Sdk/emulator/crashpad_handler",
+          "304 401 10.0 1024 /opt/homebrew/bin/qemu-system-x86_64",
+        ].join("\n")),
       ],
       electronPids: [],
       adeRuntimePids: [300],
@@ -397,11 +404,11 @@ describe("classifyProcessRoles", () => {
     expect(usageFor(result, "ade-pty-host").processCount).toBe(1);
     expect(usageFor(result, "unknown")).toEqual({
       role: "unknown",
-      processCount: 2,
-      cpuPercent: 6,
-      memoryMB: 6,
+      processCount: 3,
+      cpuPercent: 16,
+      memoryMB: 7,
     });
-    expect(result.ptyUsage.ptyProcessCount).toBe(4);
+    expect(result.ptyUsage.ptyProcessCount).toBe(5);
   });
 
   it("does not let a provider tree claim an Electron child", () => {

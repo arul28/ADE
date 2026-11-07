@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { H264StreamView } from "../device/H264StreamView";
 import { h264SourceForUrl } from "../device/h264StreamPlayer";
 import { cn } from "../ui/cn";
+import { useAppStore } from "../../state/appStore";
 import {
   DeviceFlatView,
   flatDeviceToView,
@@ -55,8 +56,15 @@ const PARKED_CANVAS_STYLE = { ...HIDDEN_CANVAS_STYLE, opacity: 0.002 };
 const ANDROID_STREAM_GONE_CODE = "ANDROID_NOT_RUNNING";
 
 /** An Android picture that is wider than tall: the device turned a quarter to the left. */
-export function androidStageOrientation(size: { width: number; height: number } | null): DeviceOrientation {
-  return size && size.width > size.height ? "landscape-right" : "portrait";
+export function androidStageOrientation(
+  size: { width: number; height: number } | null,
+  known: DeviceOrientation | null = null,
+): DeviceOrientation {
+  const landscape = Boolean(size && size.width > size.height);
+  // The brain's read wins while it fits the picture's shape; for the second
+  // between a rotate and the stream's new size, the shape decides.
+  if (known && (known === "landscape-left" || known === "landscape-right") === landscape) return known;
+  return landscape ? "landscape-right" : "portrait";
 }
 
 /** Degrees of hinge per unit of pinch scale, as on the Duo. */
@@ -94,6 +102,7 @@ export function AndroidDeviceStage({
   boot = null,
   viewNonce = 0,
   fold = null,
+  orientation: knownOrientation = null,
   rendererRef,
   onThreeUnavailable,
   onThreeReady,
@@ -125,6 +134,8 @@ export function AndroidDeviceStage({
   viewNonce?: number;
   /** Set for a foldable whose emulator is booted. */
   fold?: AndroidStageFold | null;
+  /** Which way up the device is, from the brain; null falls back to the picture's shape. */
+  orientation?: DeviceOrientation | null;
   rendererRef?: { current: DeviceRenderer | null } | undefined;
   onThreeUnavailable?: (reason: Device3DFailure) => void;
   onThreeReady?: () => void;
@@ -146,6 +157,8 @@ export function AndroidDeviceStage({
   children?: ReactNode;
   className?: string;
 }) {
+  // Settings › Android devices › Realistic body (this computer). Off: the 3D view draws the bare screen.
+  const realisticBody = useAppStore((s) => s.androidDevice.realisticBody);
   const [screenPixelSize, setScreenPixelSize] = useState<{ width: number; height: number } | null>(null);
   const [geometry, setGeometry] = useState<DeviceGeometry | null>(null);
   const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
@@ -233,7 +246,7 @@ export function AndroidDeviceStage({
   }, [cover]);
 
   const showingBoot = Boolean(boot?.canvas);
-  const orientation = showingBoot ? "portrait" : androidStageOrientation(screenPixelSize);
+  const orientation = showingBoot ? "portrait" : androidStageOrientation(screenPixelSize, knownOrientation);
 
   return (
     <div
@@ -264,8 +277,10 @@ export function AndroidDeviceStage({
           screenCanvas={showingBoot ? boot!.canvas : canvas}
           frames={showingBoot ? boot!.frames : frames}
           bodySource={bodySource}
+          bareScreen={!realisticBody}
           ariaLabel="Android emulator screen"
           orientation={orientation}
+          framesUpright
           screenPixelSize={showingBoot ? boot!.size : screenPixelSize ?? { width: 0, height: 0 }}
           devicePointSize={showingBoot ? null : devicePixelSize}
           interactive={interactive && !showingBoot}

@@ -151,6 +151,15 @@ export function AndroidQuickChips({
             {placed === preset.label ? <Check size={12} /> : null}
           </DropdownMenu.Item>
         ))}
+        <DropdownMenu.Item
+          className={MENU_ITEM_CLASS}
+          onSelect={() => {
+            void actions.act(() => window.ade.androidEmulator.clearLocation({ laneId }, pinRef.current))
+              .then((accepted) => { if (accepted) setPlaced(null); });
+          }}
+        >
+          <span className="min-w-0 flex-1">Clear location</span>
+        </DropdownMenu.Item>
         {moreInTools}
       </Chip>
 

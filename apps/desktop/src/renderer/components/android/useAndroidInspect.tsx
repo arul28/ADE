@@ -1,8 +1,9 @@
 import React, { useCallback, useMemo, type MutableRefObject } from "react";
-import type { OpenProjectBinding } from "../../../shared/types";
+import type { IosElementContextItem, OpenProjectBinding } from "../../../shared/types";
 import type { AndroidUiElement } from "../../../shared/types/androidEmulator";
 import { DeviceInspectOverlay, type DeviceInspectAdapter } from "../device/DeviceInspectOverlay";
 import { useDeviceInspect } from "../device/useDeviceInspect";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 
 type DeviceToView = ((point: { x: number; y: number }) => { x: number; y: number }) | null;
 
@@ -82,12 +83,15 @@ export function useAndroidInspect({
   live,
   runtimePinRef,
   onInsertDraft,
+  onAddContext,
   onError,
 }: {
   laneId: string;
   live: boolean;
   runtimePinRef: MutableRefObject<OpenProjectBinding | null>;
   onInsertDraft?: ((text: string) => void) | undefined;
+  /** The context chip (Apple's Inspect packet: crop, source file:line). Used first; the draft line is the fallback. */
+  onAddContext?: ((item: IosElementContextItem) => void) | undefined;
   onError: (cause: unknown) => void;
 }): {
   inspectOn: boolean;
@@ -102,16 +106,40 @@ export function useAndroidInspect({
     useDeviceInspect<AndroidUiElement>({ live, takeSnapshot, offOnError: true, onError });
 
   const insert = useMemo(() => {
-    if (!onInsertDraft) return undefined;
+    if (!onAddContext && !onInsertDraft) return undefined;
     return (element: AndroidUiElement) => {
-      try {
-        onInsertDraft(androidElementContext(element));
-      } catch (cause: unknown) {
-        // No chat, draft or CLI to insert into: say why.
-        onErrorRef.current(cause);
-      }
+      void (async () => {
+        if (onAddContext) {
+          try {
+            // On the lane's machine (the pin): the brain reads the element, finds
+            // its source in the lane's code and crops it.
+            const result = await window.ade.androidEmulator.inspectPoint(
+              { laneId, x: element.center.x, y: element.center.y, ref: element.ref, includeScreenshot: true },
+              runtimePinRef.current,
+            );
+            if (result.item) {
+              onAddContext(result.item);
+              return;
+            }
+          } catch (cause: unknown) {
+            // An older ADE on the machine, or a failed read. The draft line is the
+            // fallback; with no draft to insert into, say why.
+            if (!onInsertDraft) {
+              onErrorRef.current(cause);
+              return;
+            }
+            logRendererDebugEvent("android.inspect_point_failed", { error: cause instanceof Error ? cause.message : String(cause) });
+          }
+        }
+        try {
+          onInsertDraft?.(androidElementContext(element));
+        } catch (cause: unknown) {
+          // No chat, draft or CLI to insert into: say why.
+          onErrorRef.current(cause);
+        }
+      })();
     };
-  }, [onErrorRef, onInsertDraft]);
+  }, [laneId, onAddContext, onErrorRef, onInsertDraft, runtimePinRef]);
 
   const copy = useCallback((element: AndroidUiElement) => {
     void window.ade.app.writeClipboardText(androidCommandForElement(element)).catch(() => {});

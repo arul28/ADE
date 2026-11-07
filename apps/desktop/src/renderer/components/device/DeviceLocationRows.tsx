@@ -23,7 +23,7 @@ export function DeviceLocationRows({
   /** The point the device holds, as far as ADE knows. */
   current: Point | null;
   onSet: (point: Point) => void;
-  /** Absent hides **Clear** (the emulator has no "no location"). */
+  /** Absent hides **Clear**. Android's Clear moves the GPS back to the emulator's default point. */
   onClear?: (() => void) | undefined;
 }) {
   const [latitude, setLatitude] = useState("");

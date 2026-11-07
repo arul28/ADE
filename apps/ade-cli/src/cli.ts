@@ -513,12 +513,21 @@ import {
   formatAndroidProofBundle,
   formatAndroidRecording,
   formatAndroidRecordings,
+  formatAndroidAutoRecord,
   formatAndroidSdkInstall,
   formatAndroidSdkLicenses,
   formatAndroidSdkStatus,
   formatAndroidSnapshot,
   formatAndroidSdkImages,
   formatAndroidTest,
+  formatAndroidAppState,
+  formatAndroidForeground,
+  formatAndroidFrame,
+  formatAndroidInspect,
+  formatAndroidCleanup,
+  formatAndroidStatusBar,
+  formatAndroidStoreShots,
+  formatAndroidWindow,
 } from "./cliAndroidFormat";
 import {
   appleLeaseAnswer,
@@ -886,6 +895,7 @@ export type FormatterId =
   | "android-log"
   | "android-recording"
   | "android-recordings"
+  | "android-auto-record"
   | "android-lease"
   | "android-proof-bundle"
   | "android-sdk-status"
@@ -893,6 +903,14 @@ export type FormatterId =
   | "android-sdk-install"
   | "android-sdk-images"
   | "android-test"
+  | "android-app-state"
+  | "android-foreground"
+  | "android-frame"
+  | "android-inspect"
+  | "android-cleanup"
+  | "android-status-bar"
+  | "android-store-shots"
+  | "android-window"
   | "app-control-status"
   | "app-control-snapshot"
   | "app-control-selection"
@@ -3580,20 +3598,48 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade android device-detach --text             Stop it and let the AVD go. An AVD ADE made
                                                    for the lane is deleted; --keep keeps it.
                                                    The user's own AVD is never deleted.
+    $ ade android device-cleanup --dry-run --text  What cleanup does: release ended lanes' devices, stop
+                                                   emulators ADE started that no lane holds, forget rows
+                                                   whose AVD is gone (--power-off-idle: also idle ones;
+                                                   an agent reaches only its own lane). It runs by itself
+                                                   too. An ADE-made emulator with no input, view,
+                                                   recording, lease or test for 30 min powers off
+                                                   (ADE_ANDROID_IDLE_POWER_OFF_MINUTES, 0 = never).
 
   Input and capture:
-    $ ade android screenshot --out shot.png --text Write a PNG (on the emulator's machine)
+    $ ade android screenshot --out shot.png --text Write a PNG (on the emulator's machine), filed as
+                                                   proof; prints cite: (--no-proof: the file only)
     $ ade android tap 540 1200 --text              Tap a point
     $ ade android swipe 540 1800 540 600 --duration-ms 300 --text
                                                    Swipe from one point to another
     $ ade android button back --text               back | home | recents | power | volume-up | volume-down
-    $ ade android rotate landscape --text          Lock the screen to portrait or landscape. Apps that
-                                                   fix their orientation, such as the home screen, keep it.
+    $ ade android rotate landscape-left --text     Lock the screen: portrait, portrait-upside-down,
+                                                   landscape-left, landscape-right (landscape is
+                                                   landscape-right). Apps that fix their orientation,
+                                                   such as the home screen, keep it.
     $ ade android type "hello world" --text        Type into the focused field (--value "<text>" for text
-                                                   that starts with a dash)
+                                                   that starts with a dash; --submit presses Enter after)
+    $ ade android key tab --text                   One key: return, tab, escape, delete, space, up, down,
+                                                   left, right, home, end, page-up, page-down, f1-f12,
+                                                   a letter or a digit. Modifiers: key ctrl+a, or
+                                                   key a --ctrl (--shift, --alt, --meta/--cmd)
+    $ ade android frame --text                     One PNG of the screen now, not filed as proof (--out)
+    $ ade android inspect 540 1200 --text          The element under a point, with its source file:line
+                                                   when the lane's code names it (--ref, --screenshot)
+    $ ade android select 540 1200 --text           Inspect with the crop, as the person's pick
     $ ade android fold half --text                 Fold a foldable AVD: open, half, closed, or an angle
                                                    (--angle 0-180). Waits for the screen to swap.
     $ ade android posture --text                   Read the hinge: angle, fold state, screen in front
+    $ ade android play-store-shots --text          Google Play screenshots, filed as proof: a foldable's
+                                                   cover (phone slot) and inner screen (large-screen
+                                                   slot); any other device, its screen. 9:16 or 16:9,
+                                                   no alpha, 1080-3840 px. --no-proof: the files only
+    $ ade android window --text                    The app windows of a large screen (tablet, open fold)
+    $ ade android window split --package <a> --with <b> --text
+                                                   Two apps side by side. Also: left | right | top |
+                                                   bottom | swap | freeform | fill | close (--package),
+                                                   --size WxH, --move X,Y (a free window). Exits 1
+                                                   when the window did not land.
     $ ade android preview list --module app --text List the module's Compose @Preview functions (no emulator)
     $ ade android preview --module app --fqn com.example.ui.GreetingKt.GreetingPreview --text
                                                    Render Compose previews to PNG with no emulator, filed as
@@ -3621,6 +3667,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                    Install an APK inside the lane worktree
     $ ade android launch --gradle --text           Build, install and open it
     $ ade android launch --package <name> --text   Open an installed app (--activity <name>)
+    $ ade android launch --package <name> --extra user=ada --extra count=3 --text
+                                                   Intent extras: true/false, a number or text is typed
+                                                   (--extra-string keeps it text). am start options:
+                                                   --launch-arg <word>, or -- <words>
+    $ ade android relaunch --package <name> --text Stop it, then open it again (the launch's flags)
+    $ ade android app-state <name> --text          Installed, running, in front, pid, version
+    $ ade android foreground --wait 10 --text      The app in front; --wait asks again until one is
+                                                   (--package <name> waits for that one, exits 1 when not)
     $ ade android terminate --package <name> --text
     $ ade android uninstall --package <name> --text
                                                    On an AVD the lane did not make, only apps
@@ -3651,9 +3705,21 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade android log --package <name> --level warn --lines 200 --text
                                                    Logcat (--since <cursor> reads only newer lines)
     $ ade android record-start --label "sign in" --text
-                                                   Record the screen (--max-seconds, up to 300)
+                                                   Record the screen (--max-seconds, up to 300).
+                                                   The stop makes a demo: idle time cut, tap rings,
+                                                   typed-text badges, ade proof step chapters, under
+                                                   10 MB. --plain: the video as recorded; --zoom:
+                                                   follow the taps. A rotation stays one video.
+                                                   Starting one while an automatic one runs keeps it.
     $ ade android record-stop --text               Stop; the MP4 files to this chat's proof drawer
-                                                   (--discard keeps nothing)
+                                                   and prints cite: (--discard keeps nothing;
+                                                   --keep, the default, files it)
+    $ ade android auto-record off --text           An agent's input on this lane starts no recording
+                                                   (on | off | status). --no-record on tap, swipe,
+                                                   type, key, button, open-url, long-press, drag,
+                                                   scroll, tap-element, fill-element: one command.
+                                                   An automatic recording stops when the turn ends,
+                                                   or after 2 minutes with no change.
     $ ade android record-list --text
     $ ade android record-delete --id <id> --text
     $ ade android proof-bundle --caption "after sign in" --text
@@ -3666,9 +3732,20 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                    when not granted. --ttl <s>
     $ ade android lease renew --token <t> --text   (lease release --token <t>, lease status)
     $ ade android location 37.7749 -122.4194 --text
+    $ ade android location --clear --text          Clear it: the GPS goes back to the emulator's default
     $ ade android appearance dark --text           light | dark
-    $ ade android settings --text                  Text and display size, developer switches,
-                                                   battery, radios and the app in front
+    $ ade android accessibility bold-text on --text
+                                                   One switch: increase-contrast, bold-text,
+                                                   invert-colors, grayscale, color-correction,
+                                                   talkback (on | off, or --on/--off)
+    $ ade android status-bar --time 9:41 --text    Screenshot status bar (SystemUI demo mode); also
+                                                   --data-network wifi|5g|lte|4g|3g|e|g, --wifi-bars,
+                                                   --cellular-bars (0-4), --battery-level,
+                                                   --battery-state charging|charged|discharging
+    $ ade android status-bar --clear --text        Back to the device's own status bar
+    $ ade android settings --text                  Text and display size, developer and accessibility
+                                                   switches, status bar, battery, radios, location,
+                                                   orientation and the app in front
     $ ade android settings --airplane on --text    One change per call: --text-size, --display-size,
                                                    --animations, --show-taps, --layout-bounds,
                                                    --battery <0-100> [--charging on|off], --wifi,
@@ -5824,7 +5901,7 @@ export function readNumberOption(
  * A number flag whose value is optional: `--wait 10` and `--wait=10` read 10,
  * a bare `--wait` reads `bareValue`, no flag reads undefined.
  */
-function readOptionalNumberOption(args: string[], names: string[], bareValue: number): number | undefined {
+export function readOptionalNumberOption(args: string[], names: string[], bareValue: number): number | undefined {
   const index = args.findIndex((token) => names.includes(token));
   // Bare: last, or followed by another flag. `readNumberOption` would take
   // that next token as the value.
@@ -6304,9 +6381,11 @@ function parseCliArgs(argv: string[]): ParsedCli {
       const rest = argv.slice(index + 1);
       // `ade screen open <app> -- <app args> --text`: everything after `--` is
       // the launched app's, except a trailing --text/--json, which is always
-      // the caller's output choice. Only for the screen family, whose `open`
-      // documents this; elsewhere `--` passes everything through untouched.
-      if (SCREEN_COMMAND_NAMES.has(command[0] ?? "")) {
+      // the caller's output choice. Only for the screen family and
+      // `ade android launch|relaunch`, which document this; elsewhere `--`
+      // passes everything through untouched.
+      const androidLaunch = command[0] === "android" && command.slice(1).some((word) => word === "launch" || word === "relaunch");
+      if (SCREEN_COMMAND_NAMES.has(command[0] ?? "") || androidLaunch) {
         let decided = false;
         while (rest.length && (rest[rest.length - 1] === "--text" || rest[rest.length - 1] === "--json")) {
           const flag = rest.pop();
@@ -36863,6 +36942,8 @@ function formatTextOutput(
       return formatAndroidRecording(value);
     case "android-recordings":
       return formatAndroidRecordings(value);
+    case "android-auto-record":
+      return formatAndroidAutoRecord(value);
     case "android-lease":
       return formatAndroidLease(value);
     case "android-proof-bundle":
@@ -36877,6 +36958,22 @@ function formatTextOutput(
       return formatAndroidSdkImages(value);
     case "android-test":
       return formatAndroidTest(value);
+    case "android-app-state":
+      return formatAndroidAppState(value);
+    case "android-foreground":
+      return formatAndroidForeground(value);
+    case "android-frame":
+      return formatAndroidFrame(value);
+    case "android-inspect":
+      return formatAndroidInspect(value);
+    case "android-cleanup":
+      return formatAndroidCleanup(value);
+    case "android-status-bar":
+      return formatAndroidStatusBar(value);
+    case "android-store-shots":
+      return formatAndroidStoreShots(value);
+    case "android-window":
+      return formatAndroidWindow(value);
     case "app-control-status":
       return formatAppControlStatus(value);
     case "app-control-snapshot":

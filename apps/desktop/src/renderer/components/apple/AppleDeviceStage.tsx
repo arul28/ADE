@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { H264StreamView } from "../device/H264StreamView";
 import { h264SourceForUrl, isWebCodecsAvailable } from "../device/h264StreamPlayer";
 import { cn } from "../ui/cn";
+import { useAppStore } from "../../state/appStore";
 import type { AppleFrameFeed } from "./useAppleDeviceStream";
 import type { AppleDeviceOrientation } from "../../../shared/types";
 import { APPLE_STREAM_NOT_RUNNING_CODE } from "../../../shared/types/iosSimulator";
@@ -155,6 +156,8 @@ export function AppleDeviceStage({
   children,
   className,
 }: AppleDeviceStageProps) {
+  // Settings › Apple devices › Realistic body. Off: the 3D view draws the bare screen.
+  const realisticBody = useAppStore((s) => s.appleDevice.realisticBody);
   const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
   const [screenPixelSize, setScreenPixelSize] = useState<{ width: number; height: number } | null>(null);
   const [geometry, setGeometry] = useState<DeviceGeometry | null>(null);
@@ -245,6 +248,7 @@ export function AppleDeviceStage({
           devicePointSize={devicePointSize}
           interactive={interactive}
           duo={duo}
+          bareScreen={!realisticBody}
           rendererRef={rendererRef}
           onDeviceInput={onDeviceInput}
           onDeviceScroll={onDeviceScroll}

@@ -13,7 +13,7 @@ import {
   type ComputerUseActionSummary,
 } from "./computerUseActionSummary";
 
-export type ComputerUseSurfaceGlyph = "screen" | "app" | "globe" | "user" | "apple" | "proof";
+export type ComputerUseSurfaceGlyph = "screen" | "app" | "globe" | "user" | "apple" | "android" | "proof";
 
 /**
  * One action as one line, naming what it acted on: "Clicked “Save” in
@@ -43,7 +43,7 @@ export function computerUseActionParts(summary: ComputerUseActionSummary): Compu
   const lookedAt = summary.verb === "observe" || summary.verb === "snapshot";
   // A look at a whole screen or simulator names it: "Looked at Mac Desktop".
   const looksAtSurface = lookedAt && !summary.target
-    && (summary.surface === "lane_screen" || summary.surface === "apple_device");
+    && (summary.surface === "lane_screen" || summary.surface === "apple_device" || summary.surface === "android_device");
   const lead = summary.target
     ? verbPhrase
     : lookedAt
@@ -105,6 +105,11 @@ function computerUseWhere(summary: ComputerUseActionSummary): ComputerUseActionP
       return null;
     case "lane_screen":
     case "apple_device":
+    case "android_device":
+      // "Started Pixel 9": the device is already the object.
+      if (summary.target != null && summary.target === surface.label) return null;
+      // A Compose preview renders on this machine, with no emulator.
+      if (summary.domain === "android" && summary.verb.startsWith("preview")) return null;
       return namesApp ? null : { preposition: "on", ...surface };
     case "ade_browser":
       return summary.place ? null : { preposition: "using", ...surface };
@@ -143,6 +148,8 @@ export function computerUseSurfaceLabel(summary: ComputerUseActionSummary): {
     }
     case "apple_device":
       return { label: summary.device?.name || "the simulator", glyph: "apple", warning: false };
+    case "android_device":
+      return { label: summary.device?.name || "the emulator", glyph: "android", warning: false };
     case "proof":
       return { label: "ADE proof", glyph: "proof", warning: false };
   }
@@ -207,8 +214,9 @@ function publishedProof(summary: ComputerUseActionSummary): { prNumber: number; 
 /**
  * Lay out one run of actions as plain lines, the latest drawn in full.
  *
- * - Apple actions that named no device borrow the last device named earlier in
- *   the run (the device is usually printed once, by `apple start`).
+ * - Apple and Android actions that named no device borrow the last device of
+ *   their kind named earlier in the run (the device is usually printed once,
+ *   by `apple start` or `android start`).
  * - App Control actions that named no app borrow the last app named earlier:
  *   one App Control session drives one app, but only some commands print its
  *   window title.
@@ -222,14 +230,15 @@ export function layoutComputerUseRun<T>(
   actions: ReadonlyArray<{ action: T; summary: ComputerUseActionSummary }>,
 ): { earlier: Array<ComputerUseRunLine<T>>; latest: ComputerUseRunLine<T> | null } {
   if (actions.length === 0) return { earlier: [], latest: null };
-  let lastDevice: ComputerUseActionSummary["device"] = null;
+  const lastDevice: Partial<Record<"apple_device" | "android_device", NonNullable<ComputerUseActionSummary["device"]>>> = {};
   let lastApp: string | null = null;
   const lines: Array<ComputerUseRunLine<T> & { key: string }> = [];
   for (const entry of actions) {
     let { summary } = entry;
-    if (summary.surface === "apple_device") {
-      if (summary.device?.name) lastDevice = summary.device;
-      else if (lastDevice) summary = { ...summary, device: { name: lastDevice.name, os: summary.device?.os ?? lastDevice.os } };
+    if (summary.surface === "apple_device" || summary.surface === "android_device") {
+      const last = lastDevice[summary.surface];
+      if (summary.device?.name) lastDevice[summary.surface] = summary.device;
+      else if (last) summary = { ...summary, device: { name: last.name, os: summary.device?.os ?? last.os } };
     }
     if (summary.surface === "app_control") {
       if (summary.appName) lastApp = summary.appName;

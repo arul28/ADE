@@ -34,7 +34,7 @@ func workComputerUseParts(_ action: WorkComputerUseAction) -> WorkComputerUsePar
   let lookedAt = action.verb == "observe" || action.verb == "snapshot"
   // A look at a whole screen or simulator names it: "Looked at Mac Desktop".
   let looksAtSurface = lookedAt && action.target == nil
-    && (action.surface == .laneScreen || action.surface == .appleDevice)
+    && (action.surface == .laneScreen || action.surface == .appleDevice || action.surface == .androidDevice)
   let lead: String
   if action.target != nil {
     lead = verbPhrase
@@ -82,7 +82,11 @@ private func workComputerUseWhere(_ action: WorkComputerUseAction) -> (prepositi
   let namesApp = action.appName != nil && (action.place?.kind == .app || action.target == action.appName)
   switch action.surface {
   case .appControl, .proof: return nil
-  case .laneScreen, .appleDevice:
+  case .laneScreen, .appleDevice, .androidDevice:
+    // "Started Pixel 9": the device is already the object.
+    if let target = action.target, target == surface.label { return nil }
+    // A Compose preview renders on this machine, with no emulator.
+    if action.domain == "android", action.verb.hasPrefix("preview") { return nil }
     return namesApp ? nil : ("on", surface.label, surface.symbol, surface.warning)
   case .adeBrowser:
     return action.place != nil ? nil : ("using", surface.label, surface.symbol, surface.warning)
@@ -105,6 +109,8 @@ func workComputerUseSurfaceLabel(_ action: WorkComputerUseAction) -> (label: Str
     return (action.hostLabel.map { "\(browser) on \($0)" } ?? browser, "person", true)
   case .appleDevice:
     return (action.deviceName.flatMap { $0.isEmpty ? nil : $0 } ?? "the simulator", "iphone", false)
+  case .androidDevice:
+    return (action.deviceName.flatMap { $0.isEmpty ? nil : $0 } ?? "the emulator", "smartphone", false)
   case .proof: return ("ADE proof", "checkmark.seal", false)
   }
 }
@@ -161,21 +167,21 @@ private func workComputerUseWithApp(_ action: WorkComputerUseAction, _ appName: 
 }
 
 /// Desktop `layoutComputerUseRun`: plain lines, the latest drawn in full.
-/// Apple actions borrow the last device named in the run, App Control actions
+/// Apple and Android actions borrow the last device of their kind named in the run, App Control actions
 /// the last app, and identical actions in a row merge into one line with a
 /// count ("Looked at ADE ×3"). Posting proof to a PR adds to the line that
 /// filed it ("Filed proof “Login” · posted to PR #12") when every record it
 /// posted was filed earlier in the run.
 func workComputerUseRunLayout(_ actions: [WorkComputerUseAction]) -> (earlier: [WorkComputerUseRunLine], latest: WorkComputerUseRunLine?) {
-  var lastDevice: (String?, String?)? = nil
+  var lastDevice: [WorkComputerUseSurface: (String?, String?)] = [:]
   var lastApp: String? = nil
   var lines: [(line: WorkComputerUseRunLine, key: String)] = []
   for original in actions {
     var action = original
-    if action.surface == .appleDevice {
+    if action.surface == .appleDevice || action.surface == .androidDevice {
       if action.deviceName != nil {
-        lastDevice = (action.deviceName, action.deviceOS)
-      } else if let device = lastDevice {
+        lastDevice[action.surface] = (action.deviceName, action.deviceOS)
+      } else if let device = lastDevice[action.surface] {
         action.deviceName = device.0
         action.deviceOS = action.deviceOS ?? device.1
       }

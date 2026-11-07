@@ -2552,3 +2552,207 @@ Not measured as rows: the preview render (about 10 s in the brain's Android
 CLI process, with no renderer work until the images arrive), a system image
 download (`sdkmanager`-style unpack in the brain; 298 MB took about 40 s), and
 an instrumentation test run (a Gradle process; 15–37 s on the sample app).
+
+### Android parity with Apple: background work, Settings, recap restarts (2026-11-06)
+
+Branch `ade/android-apple-parity`, head `161b5cdb3` plus the uncommitted
+performance fixes below, against its merge base `4554bbaba` (main). Mac Studio
+M4 Max, 36 GB, macOS 27.0, Node 26.3: not the baseline machine. The load
+average was 4–8 from other agents unless a row says otherwise. Each A/B pair
+ran back to back on the same machine.
+
+The fixes in this pass:
+
+- **Lane maintenance timers.** Every project's brain builds the Android
+  service, and the service armed three timers (the cleanup pass at 60 s and
+  every 15 min, the idle pass every 5 min) for every project, also with no
+  Android use. Now the timers arm only while a lane holds an Android device
+  or an emulator that ADE started runs, and the idle pass only while such an
+  emulator runs. The service checks again after each lifecycle event, and
+  each pass checks again when it ends.
+- **Remote cap restarts.** A cap change restarts the scrcpy session (a gap in
+  the picture), and the relay's pacing can ask for a new cap every 2 s while
+  a link stalls. A cap change now restarts the session at most once in 10 s,
+  a raise at most once in 30 s, and a waiting change applies the rate wanted
+  when the interval ends. The return to full rate for a viewer on this
+  machine or a recording does not wait.
+- **The join ffmpeg probe** (`ffmpeg -encoders`, before the demo video join)
+  was a `spawnSync` on the brain's event loop. It is now asynchronous and
+  asked once per process.
+- **Rotate** answers when the turn is done. It does not wait for the
+  orientation read (one adb call) that only feeds the event.
+- **"Close for real" on the Android tool** used a 300 ms timer to keep the
+  mini player from floating. A lane mark now does the same, and the pane
+  clears the mark when it mounts again.
+
+Brain service, no app (`createAndroidEmulatorService` with a lane row in
+memory, the SDK present, 20 calls after a warm-up):
+
+| Metric | Before (`4554bbaba`) | Branch before the fixes | Baseline (branch, fixed) | Ceiling |
+|---|---:|---:|---:|---:|
+| Android timers armed, a project with no Android device | 0 | 3 (60 s, 15 min, 5 min) | 0 | 0 |
+| Android timers armed, a lane device with its emulator running | — | 3 | 3; the idle pass stops when the emulator stops | 3; 0 once the emulator stops and no lane holds a device |
+| Service construction, first in the process / later | 1.6–2.0 / 0.04–0.07 ms | 4.5–5.4 / 0.09 ms | 2.7–3.2 / 0.08–0.09 ms (more parts to build; no synchronous file call) | 4 / 0.12 ms |
+| `listDevices` (1 AVD, 2 images, 96 profiles; 15 KB of JSON) | 0.5 ms, 0 spawns | 0.5 ms | 0.5–0.7 ms, 0 spawns, also with the emulator booted | 1 ms, 0 spawns |
+| `getStatus` for the lane | 0.2–0.3 ms | 0.2–0.3 ms | 0.2–0.3 ms | 0.4 ms |
+| Agent tap with no stream (adb input) | 20.5–28.1 ms, 1 spawn | — | 20.5–28.1 ms, 1 spawn | 35 ms, 1 spawn |
+| Join ffmpeg probe on the brain's event loop, first join in a process | — | 50–200 ms blocked (`spawnSync`) | 0 ms blocked (asynchronous) | 0 ms blocked (no synchronous spawn) |
+
+Brain cold start (`brain-start.bench.mts`, 5 runs a variant): compile cache
+306.4 → 310.5 ms, no cache 493.4 → 509.3 ms. The CLI bundle grew 115 KB
+(27.05 → 27.17 MB). Both are inside the run-to-run spread of the earlier
+row; read them as no change.
+
+Remote cap restarts: a relay and a fake remote viewer on a booted emulator
+(Pixel 10, 1080×2424). The link flaps 7 times (2.2 s stalled, 0.8 s good),
+is quiet for 45 s, then a viewer on this machine joins and leaves. A restart
+counts when the picture stops for more than 50 ms. The merge base has no
+remote cap, so it has no column.
+
+| Metric | Branch before the fixes | Baseline (branch, fixed) | Ceiling |
+|---|---:|---:|---:|
+| Session restarts in the run | 10 | 4 | 5 |
+| Picture gap from restarts, sum (about 0.4 s each) | 4,174 ms | 1,661 ms | 2,100 ms |
+| A viewer on this machine joins: to full rate (4,000 kbit/s) | 415 ms | 368 ms | 500 ms |
+
+The cost of the fix: after a stall the cap climbs back more slowly (500
+instead of 976 kbit/s 70 s into the run). The link was quiet then, so the
+picture was sharp enough; a viewer on this machine still gets full rate at
+once.
+
+Dev app, idle 5 min (method of the Idle table: 150 s settle, `spawn-trace.cjs`
+in the app and the brain, `process-cpu.sh`, sync off, its own socket). A
+scratch project with 9 lanes and 24 ended shell sessions, the Work tab on
+screen, the Android SDK present:
+
+| Metric | Before (`4554bbaba`) | Baseline (branch, fixed) | Ceiling |
+|---|---:|---:|---:|
+| Child processes, no Android device in the project | 109 per 5 min | 107 per 5 min (0 Android) | 400 per 5 min (Idle table) |
+| Child processes, one lane emulator booted | 107 per 5 min (0 adb) | 105 per 5 min (0 adb) | 400 per 5 min |
+| Main / GPU / renderer / brain CPU, no Android | 0.3 / 1.8 / 4.2 / 0.6% | 0.3 / 1.9 / 4.2 / 0.6% | 15% / — / — / 10% |
+| Main / GPU / renderer / brain CPU, emulator booted | 0.3 / 2.1 / 4.2 / 0.6% | 0.2 / 1.7 / 3.9 / 0.5% | 15% / — / — / 10% |
+| Renderer JS heap after a forced GC, Work | 111 MB | 112 MB | 220 MB |
+
+The booted emulator's own CPU (qemu, about 10% of a core) is not in these rows.
+A Health page left on screen samples the processes every few seconds (97 `ps`
+runs in 5 min), so compare this row only with the Work tab on screen.
+
+Dev app switches (`interaction.mjs`, 4 rounds, warm medians, DevTools
+closed; this project):
+
+| Metric | Before (`4554bbaba`) | Baseline (branch, fixed) | Ceiling |
+|---|---:|---:|---:|
+| Tabs: first frame / settled / worst settled | 16.6 / 31.4 / 176.4 ms | 17.2 / 31.3 / 180.6 ms | 22 / 40 / 225 ms |
+| Tabs: long frames | 0 | 0 | 0 |
+| Chats (the session list, 6 cards on screen): first frame / settled | 5.9 / 6.0 ms | 6.9 / 6.9 ms | 10 / 10 ms |
+
+With the DevTools window open, both trees showed 70–145 ms frames on
+Settings and the Health page. Each frame was one DevTools session message,
+not app work, and they went away with DevTools closed. Close DevTools for
+these rows.
+
+Settings › Android devices and Settings › Apple devices in the dev app (the
+second visit from Work: last DOM change, then a 20 s idle window; 4 runs,
+median and range; DevTools closed):
+
+| Metric | Before (`4554bbaba`) | Baseline (branch, fixed) | Ceiling |
+|---|---:|---:|---:|
+| Android devices: settled / long tasks | 367 (360–372) ms / 0 | 368 (362–371) ms / 0 | 460 ms / 0 |
+| Android devices: idle main-thread work | 2.6 (0.5–4.5) ms/s | 2.7 (2.3–4.0) ms/s | 30 ms/s (Idle table) |
+| Android devices: page elements | 1,257 | 1,413 (the preferences and the recordings meter) | 3k (Other tabs, Moving between tabs table) |
+| Apple devices: settled / idle | 367 (365–373) ms / 2.6 (2.4–3.1) ms/s | 366 (364–368) ms / 3.0 (2.4–4.5) ms/s | settled 460 ms; 30 ms/s idle (Idle table) |
+
+Neither page polls. The Android page reads the preferences once when it opens
+and again on `android.preferences.changed`; the recordings size comes with
+that read.
+
+Browser mock (the method of the P1–P3 rows: Vite on each tree, headless
+Chrome 155 at 1600×1000, the Galaxy S25 body, the Tools pane open on Android;
+one warm-up, then 3 alternating runs of 20 s after a 6 s settle). These mock
+pages had a higher floor than the P3 day (Settings idle read 21–31 ms/s in both
+trees), so compare only within this table:
+
+| Metric | Before (`4554bbaba`) | Baseline (branch, fixed) | Ceiling |
+|---|---:|---:|---:|
+| Android live, 3D, Realistic body on | 41.2 (39.1–42.4) ms/s | 45.9 (44.4–48.6) ms/s, a second pass 40.2 (38.6–45.4) | +25% over before (the rule in CLAUDE.md) |
+| Android live, 3D, Realistic body off (screen and edge only) | — | 41.8 (34.5–44.7) ms/s | 52 ms/s |
+| Android live, flat | 27.6 (26.9–29.4) ms/s | 26.0 (25.2–30.5) ms/s | +25% over before (the rule in CLAUDE.md) |
+| Renderer JS heap after a forced GC, Android live | 193 MB | 191 MB | 220 MB |
+| React commits on the 3D stage | 0.9/s | 0.8/s | 2/s |
+
+Chat streaming (`perf-chat-stream.mjs`, 400 events at 30/s into a 1,067-line
+transcript, browser mock): 6.53 (5.95–7.00) → 6.39 (6.19–6.49) ms of task time
+an event. The chat's "emulator running" pill mounts only in the Automations
+run thread (Work and the side chat hide it). It makes one status read when it
+mounts and reads again on Android events; it has no poll.
+
+Not measured as rows:
+
+- **Lane marks** (the Android mark on a lane's session cards): one
+  `listDevices` read for each session list (0.5 ms in the brain, 0 spawns),
+  again on Android inventory events. No poll. The chat switch row above
+  includes them.
+- **Auto record before an agent input**: no device round trip when a
+  recording already runs. Otherwise one setting read and one preferences
+  read, then the recording starts (the feature). The screen size is read
+  once per recording.
+- **Demo render**: the brain joins the recording parts with ffmpeg (the user
+  asked for the video). Only the probe moved off the event loop.
+- **A real-device stream in the dev app**: the encoder and relay are the
+  same code as the merge base for a viewer on this machine; the mock rows
+  cover the renderer.
+
+**Re-measured at `b88155926`,** after the review fixes (the device status
+pill store, the lane marks that read again on a new brain, the orientation
+read on each live stream, the Android preferences, the idle power-off race).
+A is the last perf pass, `a762a2269`; B is `b88155926`. The same machine,
+scripts and method as above: a new scratch project with 9 lanes and 24 ended
+shell sessions, DevTools closed, no perf run, one dev window, the Work tab on
+screen for the idle rows. A and B ran back to back. Each pass waited for a
+1-minute load average under 8 (other lanes ran `tsc` and a dev brain at
+about 100% CPU); the load is in the table. Each cell is the median, then the
+range. The idle GPU and renderer CPU read lower in both trees than on
+2026-11-06 (0.0–0.1% against 1.9 and 4.2%), and the mock floor read higher
+(flat 34–37 against 25–31 ms/s). Compare A and B only within this table.
+
+| Metric | A (`a762a2269`) | B (`b88155926`) | Ceiling |
+|---|---:|---:|---:|
+| Tabs: first frame / settled / worst settled (4 rounds, warm median) | 20.0 / 38.5 / 182.4 ms (load 3.4) | 18.4 / 32.7 / 176.8 ms (load 6.2) | 22 / 40 / 225 ms |
+| Tabs: long frames | 0 | 0 | 0 |
+| Chats (6 cards): first frame / settled | 7.1 / 7.1 ms (worst 11.1) | 5.7 / 5.7 ms (worst 5.8) | 10 / 10 ms |
+| Settings › Android devices: settled / long tasks (4 runs) | 371 (363–377) ms / 0 | 363 (361–367) ms / 0 | 460 ms / 0 |
+| Settings › Android devices: idle main-thread work | 3.0 (2.2–3.4) ms/s | 2.5 (2.4–2.6) ms/s | 30 ms/s |
+| Settings › Android devices: page elements | 1,392 | 1,409 | 3k |
+| Settings › Apple devices: settled / idle (4 runs) | 368 (363–371) ms / 3.2 (2.9–3.3) ms/s | 369 (364–370) ms / 2.4 (2.1–2.5) ms/s | 460 ms; 30 ms/s |
+| Settings › Apple devices: page elements | 1,337 | 1,354 | 3k |
+| Idle 5 min, no Android: child processes | 107 (0 Android; load 4.0→3.4) | 102 (0 Android; load 23→6.2) | 400 per 5 min |
+| Idle 5 min, no Android: main / GPU / renderer / brain CPU | 0.3 / 0.0 / 0.1 / 0.6% | 0.2 / 0.0 / 0.1 / 0.4% | 15% / — / — / 10% |
+| Idle 5 min, one lane emulator booted (adopted from the last brain): child processes | 107 (0 adb; load 4.1→4.0) | 107 (0 adb; load 5.7→4.4) | 400 per 5 min |
+| Idle 5 min, emulator booted: main / GPU / renderer / brain CPU | 0.4 / 0.0 / 0.1 / 0.6% | 0.3 / 0.0 / 0.1 / 0.6% | 15% / — / — / 10% |
+| Renderer JS heap after a forced GC, Work | 116 MB; 102 MB with the emulator | 117 MB; 100–102 MB with the emulator | 220 MB |
+| Mock: Android live, 3D, Realistic body on (3 runs) | 42.2 (37.7–45.2) ms/s | 43.9 (38.9–47.1) ms/s | +25% over A |
+| Mock: Android live, 3D, Realistic body off | 43.9 (43.2–45.7) ms/s | 44.7 (44.3–47.7) ms/s | 52 ms/s |
+| Mock: Android live, flat | 35.0 (34.0–36.7) ms/s | 36.2 (34.3–37.3) ms/s | +25% over A |
+| Mock: renderer JS heap after a forced GC, Android live 3D, a new tab | 115 MB (2 runs) | 115 MB (2 runs) | 220 MB |
+| Mock: React commits on the 3D stage (20 s, 2 runs) | 0.7/s | 0.7/s | 2/s |
+
+No row is more than 25% worse than A, and no row crossed its ceiling. The
+mock rows overlap within their spread (±5 ms/s). B adds 17 page elements on
+each devices page; both pages now use the shared device settings cards.
+
+Two method notes:
+
+- **Mock heap: measure on a new tab.** In the 3-run matrix the heap after GC
+  grew about 25 MB with each reload of the same tab, in both trees (A 191,
+  219, 246 MB; B 211, 230, 240 MB). On a new tab both trees read 115 MB.
+- **An emulator that this brain started counted as ADE memory.** With the
+  emulator a child of B's brain (qemu at 4.6–5.4 GB), the app's own memory
+  read 6.3 GB, 17% of RAM. That is over the top bar's 8% pressure step, so
+  its resource chip sampled every 2 s instead of every 10 s: 227 child
+  processes in 5 min (148 `ps`). The same emulator adopted by a new brain is
+  not in the app's tree and gave 107 in both trees. The behavior came from
+  main, not from this branch. It is now fixed: the process sampler reads each
+  process's file name (`ps … comm=`) and leaves the emulator launcher and its
+  `qemu-system-*` subtree out of ADE's count, the same as a simulator. The
+  `ps` output grows to about 160 KB for 1,100 processes, far under its 2 MB
+  limit.

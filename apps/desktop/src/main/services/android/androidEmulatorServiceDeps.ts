@@ -3,6 +3,7 @@ import type {
   AndroidEmulatorError,
   AndroidEmulatorEvent,
 } from "../../../shared/types/androidEmulator";
+import type { DemoEngineSet } from "../demoVideo/demoEngines";
 import type { Logger } from "../logging/logger";
 import type { AndroidEmulatorLaunch } from "./androidEmulatorProcess";
 import type { AndroidLaneDeviceRepo } from "./androidLaneRelease";
@@ -66,6 +67,11 @@ export type AndroidEmulatorServiceDeps = {
    */
   handOffOnDispose?: boolean;
   now?: () => Date;
+  /**
+   * Parity: how long an ADE emulator may sit unused before ADE stops it.
+   * Default `ADE_ANDROID_IDLE_POWER_OFF_MINUTES` (30 min); 0 turns it off.
+   */
+  idlePowerOffMs?: number;
   onEvent?: (event: AndroidEmulatorEvent) => void;
   /**
    * P1 agent suite: the proof drawer (`computerUseArtifactBrokerService`). A
@@ -81,6 +87,15 @@ export type AndroidEmulatorServiceDeps = {
    * run; `captureAndroidDeviceAnalytics`). A failed or refused call sends nothing.
    */
   captureAnalytics?: (outcome: AndroidDeviceAnalyticsOutcome) => void;
+  /**
+   * Rec: the engines that turn a stopped recording into its demo. Absent =
+   * this process's own set (Swift on macOS, then ffmpeg, which ADE downloads
+   * on Windows and Linux when the machine has none).
+   */
+  demoEngines?: DemoEngineSet | null;
+  /** Rec: the project's KV (`db.getJson`/`db.setJson`), for each lane's auto-record switch. */
+  readSetting?: (<T>(key: string) => T | null) | null;
+  writeSetting?: ((key: string, value: unknown) => void) | null;
 };
 
 /** The service's state for one lane. */

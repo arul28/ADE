@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppleDeviceListResult, IosSimulatorEventPayload } from "../../../shared/types/iosSimulator";
 import { supportsIosSimulatorPlatform } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { applePowerFromPhase } from "./appleDeviceState";
+import { useLaneDeviceMarks } from "../device/useLaneDeviceMarks";
 
 /**
  * Which lanes on the tab's machine hold an Apple device, for the Work sidebar.
@@ -113,81 +113,40 @@ export function useLaneAppleDevices(args: {
   const bindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
   const enabled = laneAppleDevicesSupported(bindingKind);
   const scope = enabled ? `${bindingKey ?? ""}\u0000${projectRoot ?? ""}` : null;
+  const api = typeof window !== "undefined" ? window.ade?.iosSimulator : undefined;
 
-  const [devices, setDevices] = useState<LaneAppleDevices>(EMPTY);
-  const devicesRef = useRef<LaneAppleDevices>(EMPTY);
-  const scopeRef = useRef<string | null>(scope);
-  const readRef = useRef<(withInstalled: boolean) => Promise<void>>(async () => {});
-
-  const apply = useCallback((next: LaneAppleDevices) => {
-    if (sameDevices(devicesRef.current, next)) return;
-    devicesRef.current = next;
-    setDevices(next);
-  }, []);
-
-  // A new project or machine starts empty rather than showing the last one's marks.
-  useEffect(() => {
-    scopeRef.current = scope;
-    devicesRef.current = EMPTY;
-    setDevices(EMPTY);
-    if (!scope) return undefined;
-    const read = async (withInstalled: boolean): Promise<void> => {
-      const api = window.ade?.iosSimulator;
-      if (!api?.deviceList) return;
-      const listed = await api.deviceList({ installed: withInstalled }).catch(() => null);
-      // A failed read keeps what is on screen; a blip should not blink the marks.
-      if (!listed || scopeRef.current !== scope) return;
-      const owners = listed.owners ?? [];
-      // A new or moved claim needs its device's name, which only the installed
-      // list has. A failed follow-up leaves the claims unchanged here, so the
-      // next refresh tries again.
-      if (!withInstalled && owners.length > 0
-        && laneAppleClaimSignature(owners) !== mapSignature(devicesRef.current)) {
-        return read(true);
-      }
-      apply(buildLaneAppleDevices(listed, devicesRef.current, withInstalled));
-    };
-    readRef.current = read;
-    return () => {
-      readRef.current = async () => {};
-    };
-  }, [apply, scope]);
+  const read = async (current: LaneAppleDevices, withInstalled: boolean): Promise<LaneAppleDevices | null> => {
+    if (!api?.deviceList) return null;
+    const listed = await api.deviceList({ installed: withInstalled }).catch(() => null);
+    // A failed read keeps what is on screen; a blip should not blink the marks.
+    if (!listed) return null;
+    const owners = listed.owners ?? [];
+    // A new or moved claim needs its device's name, which only the installed
+    // list has. A failed follow-up leaves the claims unchanged here, so the
+    // next refresh tries again.
+    if (!withInstalled && owners.length > 0 && laneAppleClaimSignature(owners) !== mapSignature(current)) {
+      return read(current, true);
+    }
+    return buildLaneAppleDevices(listed, current, withInstalled);
+  };
 
   // The lane list's own refresh is the cadence for claims made where no event reaches us.
-  useEffect(() => {
-    if (!scope) return;
-    void readRef.current(false);
-  }, [scope, args.refreshKey]);
-
-  useEffect(() => {
-    if (!scope) return undefined;
-    const api = window.ade?.iosSimulator;
-    if (!api?.onEvent) return undefined;
-    let timer: number | null = null;
-    const unsubscribe = api.onEvent((event: IosSimulatorEventPayload) => {
-      if (event.type !== "apple.device.state" && event.type !== "session-released") return;
-      if (event.type === "apple.device.state") {
-        const current = devicesRef.current.get(event.laneId);
-        const power = applePowerFromPhase(event.phase);
-        const running = power === null ? null : power === "on";
-        if (current && current.udid === event.udid && running != null && current.running !== running) {
-          const next = new Map(devicesRef.current);
-          next.set(event.laneId, { ...current, running });
-          apply(next);
-        }
-      }
+  return useLaneDeviceMarks<LaneAppleDevice, IosSimulatorEventPayload>({
+    scope,
+    refreshKey: args.refreshKey,
+    read: (current) => read(current, false),
+    subscribe: api?.onEvent ? (listener) => api.onEvent(listener) : null,
+    onEvent: (event, current) => {
+      if (event.type === "session-released") return null;
+      if (event.type !== "apple.device.state") return false;
       // A start can attach a device first, and a release moves one; re-read the claims.
-      if (timer != null) window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        timer = null;
-        void readRef.current(false);
-      }, EVENT_REFRESH_DELAY_MS);
-    });
-    return () => {
-      if (timer != null) window.clearTimeout(timer);
-      unsubscribe?.();
-    };
-  }, [apply, scope]);
-
-  return devices;
+      const device = current.get(event.laneId);
+      const power = applePowerFromPhase(event.phase);
+      const running = power === null ? null : power === "on";
+      if (!device || device.udid !== event.udid || running == null || device.running === running) return null;
+      return new Map(current).set(event.laneId, { ...device, running });
+    },
+    same: sameDevices,
+    eventDelayMs: EVENT_REFRESH_DELAY_MS,
+  }, EMPTY);
 }

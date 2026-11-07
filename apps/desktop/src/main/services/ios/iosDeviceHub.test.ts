@@ -115,7 +115,7 @@ type Harness = {
   runs: RecordedRun[];
   runArgs: () => string[][];
   /** Every tap and type, in the order the hub made them. */
-  interactions: Array<{ kind: "tap" | "long-press" | "type"; detail: string }>;
+  interactions: Array<{ kind: "tap" | "long-press" | "type"; detail: string; secure?: boolean }>;
   openSimulatorApp: ReturnType<typeof vi.fn>;
   events: IosSimulatorEventPayload[];
   writes: Array<{ filePath: string; contents: string }>;
@@ -144,7 +144,7 @@ function createHarness(options: {
   /** One entry per spawned log stream, so a test can see what it filters on. */
   const logPredicates: Array<string | null> = [];
   let logLineHandler: ((line: string) => void) | null = null;
-  const interactions: Array<{ kind: "tap" | "long-press" | "type"; detail: string }> = [];
+  const interactions: Array<{ kind: "tap" | "long-press" | "type"; detail: string; secure?: boolean }> = [];
   const events: IosSimulatorEventPayload[] = [];
   const writes: Array<{ filePath: string; contents: string }> = [];
   const mkdirs: string[] = [];
@@ -231,8 +231,8 @@ function createHarness(options: {
     longPress: async ({ x, y, durationMs }) => {
       interactions.push({ kind: "long-press", detail: `${x},${y},${durationMs}` });
     },
-    typeText: async ({ text }) => {
-      interactions.push({ kind: "type", detail: text });
+    typeText: async ({ text, secure }) => {
+      interactions.push({ kind: "type", detail: text, ...(secure !== undefined ? { secure } : {}) });
     },
     readElementAt: async () => null,
     resolveBuildRoot: async () => BUILD_ROOT,
@@ -954,9 +954,13 @@ describe("iosDeviceHub semantic actions", () => {
     expect(result.effect).toEqual({ status: "not_checked", reason: "nothing was sent" });
   });
 
-  it("focuses the field before it types", async () => {
+  // `secure` tells the recording whether the text may show: never for a password field.
+  it.each([
+    ["a text field", "textField", false],
+    ["a password field", "secureTextField", true],
+  ])("focuses %s before it types, and says whether it is secure", async (_label, role, secure) => {
     const harness = createHarness({
-      elements: [makeElement({ role: "textField", label: "Email" })],
+      elements: [makeElement({ role, label: "Email" })],
     });
     const result = await harness.hub.fillElement({
       query: { label: "Email" },
@@ -966,7 +970,7 @@ describe("iosDeviceHub semantic actions", () => {
     expect(result.ok).toBe(true);
     expect(harness.interactions).toEqual([
       { kind: "tap", detail: "60,40" },
-      { kind: "type", detail: "ada@ade.dev" },
+      { kind: "type", detail: "ada@ade.dev", secure },
     ]);
   });
 
@@ -980,7 +984,7 @@ describe("iosDeviceHub semantic actions", () => {
       focusFirst: false,
     });
 
-    expect(harness.interactions).toEqual([{ kind: "type", detail: "ada@ade.dev" }]);
+    expect(harness.interactions).toEqual([{ kind: "type", detail: "ada@ade.dev", secure: false }]);
   });
 
   it("returns as soon as the element appears", async () => {

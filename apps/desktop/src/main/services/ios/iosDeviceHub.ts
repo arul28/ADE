@@ -108,7 +108,8 @@ function normaliseTyped(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function isSecureField(element: IosScreenElement): boolean {
+/** A password field: its text is never shown or read back. */
+export function isSecureField(element: IosScreenElement): boolean {
   return [element.role, element.elementType, element.metadata?.role_description]
     .some((value) => typeof value === "string" && /secure/i.test(value));
 }
@@ -162,7 +163,8 @@ export type IosDeviceHubDeps = {
   tap: (args: { deviceUdid?: string | null; x: number; y: number; noRecord?: boolean | null }) => Promise<unknown>;
   /** A press held at one point (`tap-element --hold-ms`). */
   longPress: (args: { deviceUdid?: string | null; x: number; y: number; durationMs: number; noRecord?: boolean | null }) => Promise<unknown>;
-  typeText: (args: { deviceUdid?: string | null; text: string; noRecord?: boolean | null }) => Promise<unknown>;
+  /** `secure`: the field is known (a password field or not), so the recording knows whether to show the text. */
+  typeText: (args: { deviceUdid?: string | null; text: string; noRecord?: boolean | null; secure?: boolean }) => Promise<unknown>;
   /**
    * The element at one point and its children (device points), with no tree
    * walk: `fill-element` reads its field back with it. Null when nothing
@@ -1047,7 +1049,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         }
         await deps.tap({ deviceUdid: args.deviceUdid ?? null, x: point.x, y: point.y, noRecord: args.noRecord });
       }
-      await deps.typeText({ deviceUdid: args.deviceUdid ?? null, text: args.text, noRecord: args.noRecord });
+      await deps.typeText({ deviceUdid: args.deviceUdid ?? null, text: args.text, noRecord: args.noRecord, secure: isSecureField(match.element) });
       const check = await checkTyped(match.element, args.text, snapshot.deviceUdid);
       recordAction(
         `Typed into ${describeElement(match.element)} (${check.typed}).`,

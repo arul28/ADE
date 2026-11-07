@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { DeviceMobile } from "@phosphor-icons/react";
 import { APPLE_DEVICE_POSE_TARGETS, type AppleDeviceOrientation } from "../../../shared/types/iosSimulator";
-import { appleOrientationIconDegrees, appleOrientationLabel } from "./appleDeviceState";
+import { deviceOrientationIconDegrees, deviceOrientationLabel } from "../device/OrientationMenuItems";
 import { appleDuoPanelOrientation, appleOrientationFamily, type AppleDuoScreen } from "../../../shared/appleOrientation";
 import { cn } from "../ui/cn";
 import { HingeSlider } from "../device/HingeSlider";
@@ -115,7 +115,7 @@ export function AppleDuoDock({
             {turns.map(({ orientation, panel }) => {
               const shape = appleOrientationFamily(panel) === "landscape" ? "Wide" : "Tall";
               const turnedOver = panel === "portrait-upside-down" || panel === "landscape-right";
-              const label = `${shape} ${where}${turnedOver ? ", turned over" : ""} · phone held ${appleOrientationLabel(orientation).toLowerCase()}`;
+              const label = `${shape} ${where}${turnedOver ? ", turned over" : ""} · phone held ${deviceOrientationLabel(orientation).toLowerCase()}`;
               return (
                 <button
                   key={orientation}
@@ -129,7 +129,7 @@ export function AppleDuoDock({
                 >
                   <DeviceMobile
                     size={14}
-                    style={{ transform: `rotate(${appleOrientationIconDegrees(panel)}deg)` }}
+                    style={{ transform: `rotate(${deviceOrientationIconDegrees(panel)}deg)` }}
                   />
                 </button>
               );
