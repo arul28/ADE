@@ -35,6 +35,9 @@ struct ADEAnalyticsExceptionReport {
   var fingerprint: String?
   /// The replay session running when it happened, so PostHog links the two.
   var replaySessionId: String?
+  /// The ADE screen shown last (Sentry's `screen` tag). A hang's stack rarely
+  /// holds an ADE frame, so it is what tells which view hung.
+  var screen: String? = nil
 }
 
 extension ProductAnalytics {
@@ -142,6 +145,10 @@ extension ProductAnalytics {
     if let fingerprint = report.fingerprint?.trimmingCharacters(in: .whitespacesAndNewlines),
        !fingerprint.isEmpty {
       properties["$exception_fingerprint"] = scrubExceptionText(fingerprint, maxLength: 200)
+    }
+    // Only one of ADE's own screen names, never free text.
+    if let screen = report.screen, ADEAnalyticsScreen(rawValue: screen) != nil {
+      properties["screen"] = screen
     }
     return properties
   }

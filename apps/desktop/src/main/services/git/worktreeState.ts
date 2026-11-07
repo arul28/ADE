@@ -17,7 +17,12 @@ export const UNCOMMITTED_CHANGES_REASON = "Lane has uncommitted changes.";
 export async function describeUnsavedWorktreeWork(worktreePath: string, timeoutMs = 8_000): Promise<string | null> {
   const result = await runGit(["status", "--porcelain=v1", "--ignore-submodules=none"], { cwd: worktreePath, timeoutMs });
   if (result.exitCode !== 0) {
-    throw new Error("ADE could not verify whether the lane has uncommitted files.");
+    // Git's own reason (a timeout, a missing folder, an index lock), so the
+    // user and a report can tell why; the first line is enough.
+    const reason = result.timedOut
+      ? `git status did not finish within ${Math.round(timeoutMs / 1000)} seconds`
+      : result.stderr.trim().split(/\r?\n/, 1)[0]?.slice(0, 300) || `git status exited with ${result.exitCode}`;
+    throw new Error(`ADE could not verify whether the lane has uncommitted files (${reason}).`);
   }
   if (result.stdout.trim().length > 0) return UNCOMMITTED_CHANGES_REASON;
   return await describeUnsavedSubmoduleWork(worktreePath, timeoutMs);

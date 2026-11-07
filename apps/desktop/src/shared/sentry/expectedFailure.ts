@@ -168,6 +168,11 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // A second viewer asking for a lane's live stream while the first start is
   // still running; the answer says to try again once it answers.
   /^capture_starting: Lane \S+'s (?:live stream|recording) is already starting\. Try again once that start answers\.$/,
+  // Added from Sentry traffic, 2026-11-07. Marked where thrown now; the text
+  // stays for older brains. A Claude Code that is signed out (the chat shows
+  // the re-login card), and a move refused until the user publishes or commits.
+  /^Claude Code is detected, but ADE chat could not authenticate it\. /,
+  /^(?:Lane '.+'|Chat '.+'|This chat) can't move yet:\n/,
 ];
 
 /**

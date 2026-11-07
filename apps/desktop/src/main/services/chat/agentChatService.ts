@@ -33333,7 +33333,8 @@ export function createAgentChatService(args: {
       // checks whether the keychain just did not answer (then it is not a sign-out).
       const failClaudeTurnUnauthenticated = (): never => {
         claudeAuthStopRequested = true;
-        throw new Error(CLAUDE_RUNTIME_AUTH_ERROR);
+        // A signed-out Claude Code is the user's to fix (the re-login card), not a fault.
+        throw markExpected(new Error(CLAUDE_RUNTIME_AUTH_ERROR), "user");
       };
 
       let modUiDrainStartedAt: number | null = null;

@@ -334,7 +334,8 @@ enum CrashReporting {
       exceptions: exceptions,
       level: level,
       fingerprint: fingerprint,
-      replaySessionId: SessionReplay.currentSessionId()
+      replaySessionId: SessionReplay.currentSessionId(),
+      screen: event.tags?["screen"]
     )
   }
 
