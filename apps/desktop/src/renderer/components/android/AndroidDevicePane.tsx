@@ -573,7 +573,7 @@ export function AndroidDevicePane({
 
   const deviceName = androidLaneDeviceName(lane);
   const deviceSpec = lane?.avd ? androidAvdSpecLine(lane.avd, inventory?.profiles ?? []) : null;
-  const floatOverChat = useAndroidPaneFloat({ lane, laneId, sessionId, machineName: remoteMachineName, runtimePinRef });
+  const floatOverChat = useAndroidPaneFloat({ lane, laneId, sessionId, machineName, runtimePinRef });
   const accel = status?.sdk.acceleration ?? null;
 
   /* ── P1 look: the body, the colour, boot on the model, renders ─────────── */
