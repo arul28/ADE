@@ -292,12 +292,16 @@ Open:
 
 How the pipeline is built, and what is still open.
 
-- `beta.yml` runs at :17 and :47. The timer is the `ade-github-webhook-relay`
+- `beta.yml` runs when main's CI finishes (`workflow_run`; only a successful
+  push to this repository's main gets past the resolve job), and at :17 and
+  :47. The timer is the `ade-github-webhook-relay`
   Worker's cron (`apps/webhook-relay/src/betaTimer.ts`), which starts the
   workflow through the GitHub API; the workflow's own `schedule` is only a
   backup. GitHub's scheduler ran hours late for this repo and dropped the ticks
   it missed (2026-11-02: one run every 3.5–7.5 hours). `scripts/beta/resolve.mjs` picks the newest
-  main commit with a green `ci-pass` newer than the last **published** beta,
+  main commit with a green `ci-pass` newer than the last **published** beta
+  (a newer commit whose CI started under an hour ago holds the pick, so an
+  older green commit does not take the 3 h gap; `force` does not wait),
   skips inside the 3 h gap or when nothing under the desktop product paths
   changed (`force` overrides both), and names `vX.Y.Z-beta.N`. Then
   `release-core.yml` → `release-publish.yml` (draft prerelease, assets,

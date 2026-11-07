@@ -37,12 +37,16 @@ import "../remoteTargets/connections.css";
  */
 export function Agent37MachinesCard({ status, machines }: { status: Agent37Status | null; machines: Agent37MachinesState }) {
   const [accountMachines, setAccountMachines] = useState<AdeAccountMachine[]>([]);
+  const [accountKnown, setAccountKnown] = useState(false);
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
   const [creating, setCreating] = useState(false);
 
   const loadAccount = useCallback((force: boolean) => {
     void fetchAccountMachines({ force }).then((result) => {
-      if (result.state === "ok") setAccountMachines(result.machines);
+      if (result.state === "ok") {
+        setAccountMachines(result.machines);
+        setAccountKnown(true);
+      }
     }, () => undefined);
     void window.ade.remoteRuntime?.listTargets?.().then(setTargets, () => undefined);
   }, []);
@@ -82,6 +86,7 @@ export function Agent37MachinesCard({ status, machines }: { status: Agent37Statu
       accountMachine,
       targetId: target?.id ?? null,
       work: agent37BoxWork(accountMachine, activityItems),
+      accountKnown,
     };
   };
 

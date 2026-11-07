@@ -602,11 +602,15 @@ export async function openSyncRuntimeTransport(
   let removeError = () => {};
   let removeClose = () => {};
 
-  const notifyClose = (detail?: string | null, superseded = false): void => {
+  const notifyClose = (detail?: string | null, superseded = false, closeCode: number | null = null): void => {
     if (closeNotified) return;
     closeNotified = true;
-    closeInfo = detail || superseded
-      ? { ...(detail ? { detail } : {}), ...(superseded ? { superseded: true } : {}) }
+    closeInfo = detail || superseded || closeCode != null
+      ? {
+          ...(detail ? { detail } : {}),
+          ...(superseded ? { superseded: true } : {}),
+          ...(closeCode != null ? { closeCode } : {}),
+        }
       : undefined;
     for (const callback of [...closeCallbacks]) {
       try {
@@ -671,7 +675,7 @@ export async function openSyncRuntimeTransport(
     if (closed) return;
     closed = true;
     cleanup();
-    notifyClose(describeSyncConnectionClose(info), isSupersededClose(info));
+    notifyClose(describeSyncConnectionClose(info), isSupersededClose(info), info?.local ? null : info?.code ?? null);
   });
 
   const transport: SyncRuntimeTransport = {

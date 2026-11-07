@@ -137,26 +137,36 @@ const TEMPLATE_PROGRESS_LABELS = [
   "Installing the desktop and browser",
   "Installing ADE",
   "Adding Docker and Android tools",
-  "Saving the machine image",
+  // Measured: Agent 37 spends about 11 of a build's 13 minutes on this step
+  // (2026-11-06), so the label says so rather than look stuck.
+  "Saving the machine image, which takes about 10 minutes",
 ] as const;
 
-/** One Dockerfile step as BuildKit's plain log names it: `#7 [4/8] RUN …`. */
+/**
+ * One Dockerfile step as the build log names it. Agent 37 builds with Buildah,
+ * which prints `STEP 4/14: RUN …`; BuildKit's plain log (`#7 [4/8] RUN …`) is
+ * read too, in case the builder changes.
+ */
 export type Agent37BuildLogStep = { index: number; total: number; text: string };
 
-const BUILD_LOG_STEP = /^#\d+ \[(?:[^\]\s]+ )?(\d+)\/(\d+)\] (.+)$/;
-const BUILD_LOG_EXPORT = /^#\d+ (?:exporting|writing image|naming to|pushing|exporting layers)/i;
+const BUILD_LOG_STEP = [
+  /^STEP (\d+)\/(\d+): (.+)$/,
+  /^#\d+ \[(?:[^\]\s]+ )?(\d+)\/(\d+)\] (.+)$/,
+];
+/** Buildah's `COMMIT <image>` after the last step; BuildKit's export lines. */
+const BUILD_LOG_EXPORT = /^(?:COMMIT\b|#\d+ (?:exporting|writing image|naming to|pushing|exporting layers))/i;
 
 /**
  * Reads one chunk of the build log: the last Dockerfile step it names, and
- * whether the build reached exporting the image. Lines BuildKit prints for a
- * running step (`#7 12.3 …`) carry no step and are skipped.
+ * whether the build reached saving the image. Output lines of a running step
+ * carry no step and are skipped.
  */
 export function readAgent37BuildLog(chunk: string): { step: Agent37BuildLogStep | null; exporting: boolean } {
   let step: Agent37BuildLogStep | null = null;
   let exporting = false;
   for (const raw of chunk.split(/\r?\n/)) {
     const line = raw.trim();
-    const match = BUILD_LOG_STEP.exec(line);
+    const match = BUILD_LOG_STEP.map((pattern) => pattern.exec(line)).find(Boolean);
     if (match) {
       step = { index: Number(match[1]), total: Number(match[2]), text: match[3]! };
       continue;
@@ -323,6 +333,8 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
   async function follow(client: Agent37Client, buildId: string, startedAt: number, usable: boolean, signal: AbortSignal) {
     set(signal, { state: "building", usable, startedAt, minutesLeft: null, progress: null, error: null, nextRetryAt: null });
     let offset = 0;
+    // A chunk can end mid-line; the rest of that line comes with the next one.
+    let partial = "";
     let lastStep: Agent37BuildLogStep | null = null;
     let exporting = false;
     let shown: Agent37TemplateProgress | null = null;
@@ -341,7 +353,10 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
       } else {
         build = read.build;
         offset = read.offset;
-        const chunk = readAgent37BuildLog(read.data);
+        const text = partial + read.data;
+        const end = text.lastIndexOf("\n") + 1;
+        partial = text.slice(end);
+        const chunk = readAgent37BuildLog(text.slice(0, end));
         if (chunk.step) lastStep = chunk.step;
         if (chunk.exporting) exporting = true;
       }

@@ -577,6 +577,8 @@ export function createCrossMachineBatchSource(deps: {
   /** Where a lane that arrived here came from (the destination's lane origin record). */
   readLaneOrigin: (laneId: string) => { sourceMachineKey: string; sourceLaneId: string } | null;
   localMachineKey: () => string;
+  /** This machine's name as the account lists it, else its host name. */
+  localMachineName: () => Promise<string>;
 }): Omit<CrossMachineBatchMoveDeps, "interruptBatchChat" | "showBatchApprovalCard"> {
   const { store, laneService } = deps;
 
@@ -652,7 +654,7 @@ export function createCrossMachineBatchSource(deps: {
     }
     return {
       importId,
-      sourceMachineName: localMachineName(),
+      sourceMachineName: await deps.localMachineName(),
       ...(sourceMachineKey ? { sourceMachineKey } : {}),
       // Older destinations read the key.
       sourceLane: { laneId: lane.laneId, parentLaneId: null, name: lane.name },

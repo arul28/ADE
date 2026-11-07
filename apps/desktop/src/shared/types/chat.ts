@@ -783,6 +783,10 @@ export type AgentChatNoticeDetail = {
     unpushedCommits: number;
     changedFiles: number;
   };
+  /** The line a moved chat gets before its first turn: which sign-in it uses here. */
+  crossMachineHandoffRoute?: {
+    handoffId: string;
+  };
   /** Durable notice posted when a moved chat returns to this original chat. */
   crossMachineHandoffReturn?: {
     handoffId: string;
@@ -4857,6 +4861,8 @@ export type AgentChatCrossMachineHandoffCapsule = {
   /** Batch-only lane and continuation metadata. */
   batchMove?: AgentChatCrossMachineCapsuleBatchMove;
   target: AgentChatCrossMachineTargetConfig;
+  /** The source chat's own sign-in route. Older destinations ignore it. */
+  route?: AgentChatCrossMachineRoute;
   brief: string;
   artifacts: {
     fileChanges: string[];
@@ -4893,6 +4899,29 @@ export type AgentChatCrossMachineHandoffCapsule = {
    * See `handoffGitBundle.ts`.
    */
   gitBundle?: AgentChatCrossMachineGitBundle;
+};
+
+/**
+ * What a moved chat keeps of its sign-in route (a `--via` route or saved
+ * preset, a stored API key, a Claude or Codex account), by the rule a model
+ * change follows on one machine: a preset for the same model, a key or an
+ * account for the same provider. Ids into stores, never a secret.
+ */
+export type AgentChatCrossMachineRoute = {
+  /** The source route in plain words ("API key · openai"). */
+  label: string;
+  /** The source had a route this move can't keep (another model or provider). */
+  dropped?: boolean;
+  presetId?: string;
+  /** The source machine's copy of a saved preset, for a list not synced there yet. */
+  presetSnapshot?: HarnessPreset;
+  credentialId?: string;
+  /**
+   * A Claude or Codex account. Account ids are per machine ("claude-2" can be
+   * another login elsewhere), so it travels as its signed-in email; null when
+   * the source never read it.
+   */
+  account?: { email: string | null };
 };
 
 /** What a batch item's capsule says about its batch (`capsule.batchMove`). */

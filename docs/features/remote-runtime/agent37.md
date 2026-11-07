@@ -34,6 +34,13 @@ person is using.
   (`adeActions/registry.ts`).
 - `agent37TemplateBuilder.ts` — builds ADE's template in the person's
   workspace (see below).
+- `agent37Reconnect.ts` — Reconnect to ADE for a box removed from the
+  account: the cap check before a wake, the wait for its ADE, `ade machines
+  reconnect` over exec, and the same approval seam as a new machine.
+- `agent37HeadlessApproval.ts` — the one-time sign-in link opened in a
+  headless Chromium, for a brain with no window that approves a machine it
+  made itself. It never types or clicks; a page that waits on a person ends
+  it, and the link goes to the person.
 - `agent37MachineCreator.ts` — `createAgent37Machine`, the New Agent 37
   machine flow.
 - `agent37PendingCreates.ts` — the on-disk record of creates not yet
@@ -66,10 +73,13 @@ person is using.
   and what deleted machines spent this month.
   `remoteTargets/NewAgent37MachineDialog.tsx` is the create form, also opened
   from the new-chat picker's **New Agent 37 machine** row.
-- `agent37ClaudeToken.ts`, `agent37ClaudeTokenStore.ts`,
-  `renderer/components/settings/Agent37ClaudeSignInCard.tsx` — Claude on
-  cloud machines (see below): the `claude setup-token` sign-in, the token in
-  the account vault, and the env every new machine starts with.
+- `agent37CloudSignInStore.ts`, `agent37CloudSignInActions.ts`,
+  `agent37ClaudeSignIn.ts`, `agent37CloudSignInBoot.ts`,
+  `renderer/components/settings/Agent37CloudSignInsCard.tsx` — sign-ins for
+  cloud machines (see below): the keys and the Claude token in the account
+  vault, the brain actions that save them, the `claude setup-token` sign-in,
+  the env every new machine starts with, and the Codex file a box writes at
+  boot.
 - `agent37MachineCopy.ts` — Copy (Agent 37's fork, then the new-machine
   sign-in) and Move (box ↔ VM: a new machine, the home folder streamed over,
   the old box deleted).
@@ -157,14 +167,53 @@ Docker.
   the version is compared first, and a template from a newer ADE is kept
   whatever its files, so two computers on different releases never put their
   own template back on each start. Same release with different files (two
-  development builds) rebuilds. Every new release rebuilds once, because a
-  machine runs the ADE its template installed; while it builds, new machines
-  come from the older template and the page shows only a quiet line.
-- While a build runs, ADE reads its Docker log (`GET
+  development builds) rebuilds. Every new release rebuilds once; while it
+  builds, new machines come from the older template and the page shows only a
+  quiet line.
+- **A new machine starts on the person's release anyway.** The create flow
+  passes `ADE_MIN_VERSION` (the release of the computer that made it,
+  `agent37MachineCreator.ts`). When the template's ADE is older, the
+  entrypoint installs that release with `ade brain update --no-restart`
+  before the first brain starts (measured: about 9 s on a box). A failed
+  install logs the reason and starts the template's ADE.
+- While a build runs, ADE reads its build log (`GET
   /template-builds/{id}/logs`, every 5 s, the same call that answers the
   build) and shows one of four plain steps (`agent37TemplateProgress`):
   desktop and browser, ADE, Docker and Android tools, saving the image (also
-  Agent 37's `ingesting`). Steps only move forward. There is no time estimate.
+  Agent 37's `ingesting`). Agent 37 builds with Buildah (`STEP 4/14: …`,
+  then `COMMIT`); BuildKit lines are read too. A line split between two log
+  reads is joined before it is parsed. Steps only move forward.
+- Measured (2026-11-06, two builds of beta.17): the Dockerfile steps take
+  about 2.5 minutes, and saving the image takes about 11 more (push, Agent
+  37's staging, then `ingesting`), about 13.5 minutes in all. The last step's
+  label says it takes about 10 minutes.
+- A prebuilt image (`POST /templates` with an `image_ref`) is ready in about
+  a second, against 13.5 minutes for a cloud build. ADE does not use one: it
+  needs a public image pushed for each release, and the min-version install
+  above already gives a new machine the current release in seconds.
+
+## Updates on an Agent 37 machine
+
+The template's entrypoint is the brain's supervisor: the box has no systemd,
+and only the entrypoint's processes survive a sleep. The entrypoint exports
+`ADE_BRAIN_SUPERVISOR=entrypoint` and, on each start of its loop, runs the
+newer of the image's `ade` and the one `ade brain update` put in
+`~/.ade/bin` (with its own runtime beside it).
+
+- A restart (`ade brain update`, Update on the machine's row) stops the
+  brain on the socket and waits for the loop to start the next one
+  (`serviceManager/entrypointSupervisor.ts`). It checks that the new brain
+  runs the updated binary. It never starts ADE's own supervisor beside the
+  loop: that brain could not take the socket, the old brain kept answering,
+  and the update read as done while the old version ran (D7).
+- A machine made from an older template has a loop that always runs the
+  image's `ade`, so an update cannot take effect there. The desktop checks
+  the box's entrypoint over exec before it starts an update and says so:
+  make a new machine and move the lanes to it (a copy forks the same image,
+  so it keeps the old template). The brain refuses the same case on its own
+  (`entrypoint_too_old`) and rolls the update back. It reads the mark from
+  the running brain's environment too, so an update started over Agent 37
+  exec on a current box is not refused.
 - Failures retry after 1, 5 and 15 minutes, then wait for Retry. A refused key
   or an empty wallet does not retry.
 
@@ -192,6 +241,19 @@ step, including the approval request. A box that never signed in is only a
 bill, so any failure deletes it, and the record goes only once Agent 37
 confirms the deletion.
 
+### Reconnect
+
+A machine removed from the account shows "Not in ADE" on its card, and its
+brain refuses the account until someone re-pairs it. **Reconnect to ADE** in
+the card's ⋯ menu does that re-pair for the person
+(`agent37Reconnect.ts`): ADE wakes the machine if it sleeps (refused past
+the month's cap, like any other wake), waits for its ADE to answer with the
+same bounded loop a new machine uses (`waitForAgent37BoxAuth`), runs `ade
+machines reconnect` on it over exec, and approves the code the same way as a
+new machine (`approveAgent37MachineSignIn`, the one approval seam). The box
+keeps its files and identity, so it comes back as the same machine, with its
+sleep turned on again.
+
 ### Half-made boxes
 
 A create can end without ADE knowing the box's id: a lost answer, an app quit
@@ -210,24 +272,59 @@ A record that matches no box is kept for a day, in case Agent 37 still had
 the create in flight, then dropped. Boxes made by another request id (another
 computer's create, or not ADE's) are never touched.
 
-## Claude on cloud machines
+## Sign-ins for cloud machines
 
-A new machine has no Claude sign-in, so a ready machine's chat would stop on
-the sign-in card. **Claude on your cloud machines** on the Agent 37 page signs
-in once: ADE runs Claude Code's own `claude setup-token` (a long-lived
-subscription token made for headless machines) in a private terminal, opens
-its link in the browser, takes a pasted code when Claude asks for one, reads
-the token from the output and keeps it in the account vault
-(`agent37-claude-token`). The token is cut from every output the screen
-reads and never logged. Every machine made after that, by the desktop, a
-ready machine or a brain on its own (`adeActions/registry.ts`), gets it as
-the instance env `CLAUDE_CODE_OAUTH_TOKEN`, which Agent 37 stores with the
-machine and gives back on every boot; ADE's Claude status counts that
-variable as signed in (`providerAuthResolvers.ts`). This is how Agent 37's own
-docs sign Claude Code in on a machine. Machines made before keep what they
-had. Remove forgets the token; machines made with it keep it until they are
-deleted. A sign-in that runs emits `agent37:claudeTokenChanged` only when the
-link or the code prompt changes, never per output line.
+A new machine has no provider sign-ins, so a ready machine's chat would stop
+on the sign-in card. **Sign-ins for your cloud machines** on the Agent 37 page
+saves them once, in the account vault. Every machine made after that, by the
+desktop, a ready machine or a brain on its own (`adeActions/registry.ts`),
+gets each one as an instance env variable. Agent 37 stores the env with the
+machine and gives it back to the box's brain on every boot. Machines made
+before keep what they had. Remove forgets a sign-in; machines made with it
+keep it until they are deleted.
+
+| Row | Method | Env on the machine |
+| --- | --- | --- |
+| Claude | `claude setup-token` (a long-lived subscription token made for headless machines) | `CLAUDE_CODE_OAUTH_TOKEN` |
+| Codex | An OpenAI API key. A ChatGPT sign-in can't be shared: each machine that refreshes it breaks the others. | `OPENAI_API_KEY` |
+| Cursor | A Cursor API key | `CURSOR_API_KEY` |
+| Droid | A Factory API key | `FACTORY_API_KEY` |
+| Grok | An xAI API key | `XAI_API_KEY` |
+| Copilot | A fine-grained GitHub token with Copilot Requests | `COPILOT_GITHUB_TOKEN` |
+| Devin | A Windsurf service key | `WINDSURF_API_KEY` |
+| Muse | A Meta AI key | `META_API_KEY` |
+| OpenCode and Pi | An OpenRouter key | `OPENROUTER_API_KEY` |
+
+Qwen Code, Kimi Code and Antigravity have no key a machine can read from its
+env, so the card says to sign in on the machine. The list is
+`AGENT37_CLOUD_SIGN_INS` and `AGENT37_CLOUD_SIGN_IN_GAPS` in
+`shared/agent37.ts`.
+
+The saves and the Claude sign-in are brain actions (`agent37
+cloud_sign_in_*`), run on this computer's brain, which owns the account vault.
+The desktop only forwards the IPC. So the sign-in terminal never starts in
+the desktop process: in a packaged app, node-pty there met its helper inside
+`app.asar` and failed. The write actions are user-only and are a user
+setting, so an agent can read the status (never a value) but cannot save,
+start or remove a sign-in.
+
+The Claude sign-in runs `claude setup-token` in a private terminal, opens its
+link in the browser, takes a pasted code when Claude asks for one, reads the
+token from the output and saves it (`agent37-claude-token`). The token is cut
+from every output the screen reads and never logged. ADE's Claude status
+counts `CLAUDE_CODE_OAUTH_TOKEN` as signed in (`providerAuthResolvers.ts`).
+Remove also stops a sign-in that runs.
+
+Codex's app-server reads only `auth.json`, never `OPENAI_API_KEY`. So at
+`ade serve` start, a brain on an Agent 37 box (`ADE_HOST_INSTANCE_ID` starts
+with `agent37:`) with `OPENAI_API_KEY` writes an API-key `auth.json` (mode
+0600) in the Codex home, unless one already exists
+(`agent37CloudSignInBoot.ts`). A laptop's own `OPENAI_API_KEY` never writes
+one.
+
+After each change the desktop sends `agent37:cloudSignInChanged` to every
+window. The page reads the status once for both cards that need it, and polls
+it only while the Claude sign-in runs.
 
 ## The machine cards
 
@@ -250,6 +347,15 @@ joining, removed from ADE, never signed in) gets a row of its own, because it
 still bills. It reads "Setting up…" only while it is new and has no machine
 key yet; a box with a key has joined, so it reads "Not in ADE". Boxes ADE did not make stay out of the list unless a row matches
 them.
+
+**A box deleted on the Agent 37 site.** Its account row stays, offline, and
+nothing used to say why. Agent 37's list drops a deleted instance, but its
+90-day usage still names it, so the list reports `deletedInstanceIds`: ids
+that spent and are gone. An offline Linux row whose hostname is one of them
+reads "Deleted on Agent 37. It no longer exists." with Remove
+(`isDeletedAgent37Row`). Only a list that worked marks a row, so an Agent 37
+outage marks nothing, and a Linux computer that was never a box never
+matches.
 
 **A sleeping box's row.** A box that is asleep, stopped or suspended can't
 take a connection, so its row says so ("Asleep on Agent 37") with a dim dot,
@@ -344,6 +450,21 @@ metadata (`ade_sleep`), so ADE leaves that box alone.
 - any `--machine` call from an agent, the CLI or the CTO (the brain's
   `agentMachineBridge`, with the account's key).
 
+**The first call after a sleep** (measured 2026-11-07 on a box asleep 5 to 9
+minutes, `ade lanes list --machine`): the wake takes about 2 s, and the box
+shows online about 2 s later. A sleeping box can't close its relay link, so
+the relay keeps it and sends clients to it. The box opens a new link a second
+or two after it wakes, and the relay closes the clients of the old one
+(`4505`, control replaced). Both connect paths (`pairedRemoteConnector.ts`,
+`pairedRuntimeBootstrap.ts`) now try the relay once more at once after that
+close (`isRelayHostReplacedError`). Before, they moved on to the box's private
+address, which can't answer from outside, waited 10 s, then paired again: the
+connect took about 24 s after the wake, and once the CLI gave up at 58 s. With
+the retry it connects about 4 s after the box shows online. For a few
+minutes after a wake the box itself reads files slowly (a cold `git status`
+of a large repo took 11.6 s, against 0.3 s later), so the first command can
+still take a few seconds there.
+
 Agent 37's own **Wake** on the card still works. The phone wakes a box
 through the machine it is connected to (`agent37.write` `wake`) before it
 opens that box's work, and from its Agent 37 page.
@@ -436,6 +557,21 @@ agent made today (`ade_made_by_chat`, Agent 37's `created`) and what this
 brain approved today, so a make-and-delete loop can't step around it.
 Loosening a limit is the person's call only, like raising the cap.
 
+**A machine approves its own new machine.** A brain with no desktop
+attached (a cloud machine) normally posts an approval link for the person.
+When the request was answered unattended (a full-auto chat or an automation
+run, within the agent limits and the cap), the brain approves the new
+machine's sign-in itself instead: it opens the same one-time link in a
+headless Chromium on its own machine (`agent37HeadlessApproval.ts`; the
+template ships Chromium). `agent37BrainMaker.ts` allows this only once per
+create, only within 20 minutes of the create this brain started, and only for
+a machine whose Agent 37 metadata carries that create's `ade_request_id`.
+Every use and every refusal is logged (`agent37.self_approval_used`,
+`agent37.self_approval_refused` with the reason). The headless page never
+types or clicks: a page that stops on something a person must do, a stall or
+a failure falls back to a fresh code and the link in the chat. Ask and plan
+modes keep the card or the refusal.
+
 **Approvals.** What spends money or deletes asks first: create, resize, copy,
 move, delete, "never sleep", raising or removing the cap, and turning a ready
 machine on. The RPC server stamps who asks (never the arguments):
@@ -484,7 +620,13 @@ failure.
 - **Preparing runs in the desktop** (`agent37ReadyMachines.ts`), because
   signing a new machine in uses the approval window. It makes the machine
   with the New Agent 37 machine flow, then writes a setup job to
-  `$ADE_HOME/ready/job.sh`: clone over HTTPS, `ade projects add`, wait for
+  `$ADE_HOME/ready/job.sh`: clone with `ade projects clone`. A new machine
+  has no project open yet, so the clone first reads the account's GitHub
+  token from the machine's account vault (`multiProjectRpcServer.ts`,
+  `machineAccountStores.ts`), and a private repo works. Only a pasted token
+  travels this way; a GitHub App sign-in stays on the computer it was made
+  on. Plain `git clone` runs for a public repo when that fails; with
+  neither, the job says to sign in to GitHub in ADE. Then `ade projects add`, wait for
   Docker on a VM, the person's commands. The template's entrypoint runs the
   job, so what it starts is part of the entrypoint's process tree and
   survives sleep. Then ADE tags the machine `ready` and sleeps it.
@@ -521,6 +663,10 @@ failure.
   machine is read again right before a delete or a sleep, so a claim that
   landed meanwhile is never touched. A quit stops a prepare in flight and
   deletes its machine on the way out.
+- **Used machines.** A claimed machine stays the person's. When three
+  machines from earlier ready chats on a project are asleep, ADE prepares no
+  new one for it and says why ("Delete one you no longer need"). It deletes
+  nothing on its own.
 - **Versions.** Ready machines record the ADE release their template
   installed (`ade_ready_ade`); once the template moves to a newer release,
   an unclaimed older one is replaced. Packaged builds pin the template to
@@ -562,6 +708,16 @@ like on any Linux machine with KVM. The template carries what it needs:
 - **`/dev/kvm` for the brain's user.** The VM's kernel has hardware
   virtualization; the root step gives the device to group `node` (the brain
   runs as `node`). A sandboxed box has no `/dev/kvm`, so Android needs a VM.
+  On a box, the first emulator step (`device-create` or `start`) refuses with
+  `ANDROID_NO_ACCELERATION` and a plain message: a VM can, what it costs more
+  an hour than this box (`agent37AndroidNeedsVmMessage`), and that the box
+  stays and sleeps. The CLI hint and the `ade-agent37` skill give the agent
+  the steps: `ade agent37 create --kind vm`, then `ade chat handoff
+  "$ADE_CHAT_SESSION_ID" --machine <vm> --fork --include-changes --clone
+  --when-turn-ends --note "<the task>"`. The chat continues on the VM with its
+  whole history, the person's window follows it there, and the new chat
+  offers to delete the box. `agent37 move` refuses to move the machine its
+  own chat runs on.
 - **The live view** uses the scrcpy server jar the standalone brain ships
   (from 1.2.129-beta.8).
 - **Size:** 4 vCPU / 8 GB runs one emulator; 4/16 if Gradle builds run there

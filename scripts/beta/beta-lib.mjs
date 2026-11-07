@@ -132,27 +132,49 @@ export function lastPublishedBeta(releases, tagCommits) {
 }
 
 /**
- * The newest main commit with a green ci-pass that is newer than `stopAt`.
- * `commits` is newest first. `ciPassOf(sha)` answers the ci-pass conclusion
- * ("success", "failure", null when it has not finished). Stops at the first
- * green commit, so a normal run costs one or two check-run lookups.
+ * How long a newer main commit's unfinished CI holds the pick. Main CI takes
+ * about 10-25 minutes; a commit whose CI never reports (cancelled before it
+ * started, an outage) stops holding the beta after this.
  */
-export async function pickCandidate({ commits, stopAt, ciPassOf }) {
+export const BETA_PENDING_WAIT_MS = 60 * 60 * 1000;
+
+/**
+ * The newest main commit with a green ci-pass that is newer than `stopAt`.
+ * `commits` is newest first, each `{ sha, time? }` (commit time in ms).
+ * `ciPassOf(sha)` answers the ci-pass conclusion ("success", "failure", null
+ * when it has not finished). Stops at the first green commit, so a normal run
+ * costs one or two check-run lookups.
+ *
+ * A newer commit whose CI is still running holds the pick: building the older
+ * green commit now would start the 3 h gap on it, and the newer commit would
+ * wait hours for its beta. beta.yml runs again when that CI finishes. Such a
+ * commit comes back as `waitingFor` with `sha: null`; past
+ * BETA_PENDING_WAIT_MS (or with no known time) it no longer holds anything.
+ * With `force`, nothing holds and the older green commit comes back as `sha`:
+ * the run after that CI finishes would not carry the force, so waiting would
+ * drop the person's request.
+ */
+export async function pickCandidate({ commits, stopAt, ciPassOf, now = Date.now(), force = false }) {
   const checked = [];
-  for (const { sha } of commits) {
+  let waitingFor = null;
+  for (const { sha, time } of commits) {
     if (stopAt && sha === stopAt) break;
     const conclusion = await ciPassOf(sha);
     checked.push({ sha, conclusion: conclusion ?? "pending" });
-    if (conclusion === "success") return { sha, checked };
+    if (conclusion === "success") return waitingFor && !force ? { sha: null, waitingFor, checked } : { sha, waitingFor: null, checked };
+    if (!conclusion && !waitingFor && Number.isFinite(time) && now - time < BETA_PENDING_WAIT_MS) waitingFor = sha;
   }
-  return { sha: null, checked };
+  return { sha: null, waitingFor: null, checked };
 }
 
 /**
  * The scheduling decision, in the order the plan states it. Returns
  * { skip: true, reason } or { skip: false }.
  */
-export function decide({ now, lastBeta, candidate, productChanged, force }) {
+export function decide({ now, lastBeta, candidate, productChanged, force, waitingFor = null }) {
+  if (!candidate && waitingFor) {
+    return { skip: true, reason: `waiting for CI on ${waitingFor.slice(0, 9)}, the newest main commit; the beta starts again when it finishes` };
+  }
   if (!candidate) {
     return { skip: true, reason: lastBeta
       ? `no main commit newer than ${lastBeta.tag} has a green ci-pass yet`

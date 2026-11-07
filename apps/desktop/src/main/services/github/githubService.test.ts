@@ -64,6 +64,7 @@ import {
   createGithubService,
   fetchAdeLatestRelease,
 } from "./githubService";
+import { expectedErrorKind } from "../../../shared/expectedError";
 import { GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES } from "./githubRestPagination";
 import {
   clearGithubCredentialHealth,
@@ -2524,6 +2525,7 @@ describe("githubService.createRepository", () => {
         ssh_url: "git@github.com:alice/test.git",
         html_url: "https://github.com/alice/test",
         default_branch: "main",
+        private: true,
       }),
     );
 
@@ -2550,6 +2552,7 @@ describe("githubService.createRepository", () => {
       sshUrl: "git@github.com:alice/test.git",
       htmlUrl: "https://github.com/alice/test",
       defaultBranch: "main",
+      isPrivate: true,
     });
   });
 
@@ -2672,6 +2675,7 @@ describe("githubService.publishCurrentProject", () => {
 	      name: "proj",
 	      fullName: "alice/proj",
 	      htmlUrl: "https://github.com/alice/proj",
+	      isPrivate: true,
 	    });
 	    const gitCalls = runGitMock.mock.calls.map((c) => c[0]);
 	    expect(gitCalls[0]).toEqual(["remote", "get-url", "origin"]);
@@ -2680,118 +2684,126 @@ describe("githubService.publishCurrentProject", () => {
 	    expect(gitCalls[3]).toEqual(["push", "-u", "origin", "HEAD"]);
 	  });
 
-	  it("creates a repository in the requested GitHub org", async () => {
-	    runGitMock
-	      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "fatal: No such remote 'origin'" })
-	      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
-	      .mockResolvedValueOnce({ exitCode: 0, stdout: "abc123\n", stderr: "" })
-	      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
+  // `/user/repos` creates under the token's own account, so a wrong route
+  // either 404s (personal login on the org route) or puts an organization's
+  // project in the user's account.
+  it.each([
+    { label: "an org owner, login known", owner: "acme-inc", login: "alice", accountType: null, route: "/orgs/acme-inc/repos" },
+    { label: "the signed-in login", owner: "Alice", login: "alice", accountType: null, route: "/user/repos" },
+    { label: "an org owner, login lookup failed", owner: "acme-inc", login: null, accountType: "Organization", route: "/orgs/acme-inc/repos" },
+  ])("publishes $label through $route", async ({ owner, login, accountType, route }) => {
+    runGitMock
+      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "fatal: No such remote 'origin'" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "abc123\n", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
+    const repoOwner = owner.toLowerCase();
+    mockFetch.mockImplementation((rawUrl: string) => {
+      const url = new URL(rawUrl);
+      if (url.pathname === "/user") {
+        return login
+          ? Promise.resolve(jsonResponse(200, { login }))
+          : Promise.reject(new TypeError("fetch failed"));
+      }
+      if (url.pathname === `/users/${owner}`) {
+        return Promise.resolve(jsonResponse(200, { login: owner, type: accountType }));
+      }
+      return Promise.resolve(
+        jsonResponse(201, {
+          owner: { login: repoOwner },
+          name: "proj",
+          full_name: `${repoOwner}/proj`,
+          clone_url: `https://github.com/${repoOwner}/proj.git`,
+          ssh_url: `git@github.com:${repoOwner}/proj.git`,
+          html_url: `https://github.com/${repoOwner}/proj`,
+          default_branch: "main",
+          private: true,
+        }),
+      );
+    });
 
-	    // The publish path resolves the authenticated login (GET /user) so it can
-	    // tell a personal account from an org owner. Here the login (`alice`)
-	    // differs from the requested owner (`acme-inc`), so the org route is used.
-	    mockFetch.mockImplementation((rawUrl: string) => {
-	      const url = new URL(rawUrl);
-	      if (url.pathname === "/user") {
-	        return Promise.resolve(jsonResponse(200, { login: "alice" }));
-	      }
-	      return Promise.resolve(
-	        jsonResponse(201, {
-	          owner: { login: "acme-inc" },
-	          name: "proj",
-	          full_name: "acme-inc/proj",
-	          clone_url: "https://github.com/acme-inc/proj.git",
-	          ssh_url: "git@github.com:acme-inc/proj.git",
-	          html_url: "https://github.com/acme-inc/proj",
-	          default_branch: "main",
-	        }),
-	      );
-	    });
+    const result = await makeService().publishCurrentProject({ owner, name: "proj", isPrivate: true });
 
-	    const result = await makeService().publishCurrentProject({
-	      owner: "acme-inc",
-	      name: "proj",
-	      isPrivate: true,
-	    });
+    const createCalls = mockFetch.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === "POST");
+    expect(createCalls.map(([rawUrl]) => new URL(String(rawUrl)).pathname)).toEqual([route]);
+    expect(result).toEqual({
+      state: "pushed",
+      owner: repoOwner,
+      name: "proj",
+      fullName: `${repoOwner}/proj`,
+      htmlUrl: `https://github.com/${repoOwner}/proj`,
+      isPrivate: true,
+    });
+    expect(runGitMock.mock.calls.map((c) => c[0])).toContainEqual([
+      "remote",
+      "add",
+      "origin",
+      `https://github.com/${repoOwner}/proj.git`,
+    ]);
+  });
 
-	    const createRepoCall = mockFetch.mock.calls.find(([rawUrl]) =>
-	      String(rawUrl).includes("/repos"),
-	    );
-	    expect(String(createRepoCall?.[0])).toContain("/orgs/acme-inc/repos");
-	    expect(result).toEqual({
-	      state: "pushed",
-	      owner: "acme-inc",
-	      name: "proj",
-	      fullName: "acme-inc/proj",
-	      htmlUrl: "https://github.com/acme-inc/proj",
-	    });
-	    expect(runGitMock.mock.calls.map((c) => c[0])).toContainEqual([
-	      "remote",
-	      "add",
-	      "origin",
-	      "https://github.com/acme-inc/proj.git",
-	    ]);
-	  });
+  // GET /user failed, so ADE can't tell whether the owner is this account.
+  // `/user/repos` would create under whoever the credential is, so unless
+  // GitHub says the owner is an organization the publish stops, retryable.
+  it.each([
+    { label: "the owner is a user", users: () => Promise.resolve(jsonResponse(200, { login: "bob", type: "User" })) },
+    { label: "the owner lookup fails too", users: () => Promise.reject(new TypeError("fetch failed")) },
+  ])("creates nothing and asks for a retry when the login can't be read and $label", async ({ users }) => {
+    runGitMock.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" }); // get-url origin
+    mockFetch.mockImplementation((rawUrl: string) => {
+      const url = new URL(rawUrl);
+      if (url.pathname === "/user") return Promise.reject(new TypeError("fetch failed"));
+      if (url.pathname === "/users/bob") return users();
+      return Promise.resolve(jsonResponse(201, {
+        owner: { login: "alice" },
+        name: "proj",
+        full_name: "alice/proj",
+        clone_url: "https://github.com/alice/proj.git",
+      }));
+    });
 
-	  it("uses /user/repos when the requested owner is the authenticated user", async () => {
-	    runGitMock
-	      .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "fatal: No such remote 'origin'" })
-	      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
-	      .mockResolvedValueOnce({ exitCode: 0, stdout: "abc123\n", stderr: "" })
-	      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
+    const failure = await makeService()
+      .publishCurrentProject({ owner: "bob", name: "proj", isPrivate: true })
+      .then(() => null, (error: unknown) => error);
 
-	    mockFetch.mockImplementation((rawUrl: string) => {
-	      const url = new URL(rawUrl);
-	      if (url.pathname === "/user") {
-	        return Promise.resolve(jsonResponse(200, { login: "alice" }));
-	      }
-	      return Promise.resolve(
-	        jsonResponse(201, {
-	          owner: { login: "alice" },
-	          name: "proj",
-	          full_name: "alice/proj",
-	          clone_url: "https://github.com/alice/proj.git",
-	          ssh_url: "git@github.com:alice/proj.git",
-	          html_url: "https://github.com/alice/proj",
-	          default_branch: "main",
-	        }),
-	      );
-	    });
+    expect(failure).toMatchObject({ code: "github_owner_unverified", message: expect.stringMatching(/try again/i) });
+    expect(expectedErrorKind(failure)).not.toBeNull();
+    expect(mockFetch.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === "POST")).toEqual([]);
+    expect(runGitMock.mock.calls.map((c) => c[0])).toEqual([["remote", "get-url", "origin"]]);
+  });
 
-	    await makeService().publishCurrentProject({
-	      owner: "alice",
-	      name: "proj",
-	      isPrivate: true,
-	    });
+  it("keeps a personal-account create on the credential whose login chose the route", async () => {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const loginByToken: Record<string, string> = { "Bearer ghp_env_token": "alice", "Bearer gho_cli_token": "bob" };
+    mockFetch.mockImplementation((rawUrl: string, init?: RequestInit) => {
+      const auth = (init?.headers as Record<string, string> | undefined)?.authorization ?? "";
+      const login = loginByToken[auth] ?? "unknown";
+      if (new URL(rawUrl).pathname === "/user") return Promise.resolve(jsonResponse(200, { login }));
+      // The first credential is refused; a second one, another account, would succeed.
+      if (login === "alice") return Promise.resolve(jsonResponse(401, { message: "Bad credentials" }));
+      return Promise.resolve(jsonResponse(201, {
+        owner: { login },
+        name: "proj",
+        full_name: `${login}/proj`,
+        clone_url: `https://github.com/${login}/proj.git`,
+        html_url: `https://github.com/${login}/proj`,
+        private: true,
+      }));
+    });
+    runGitMock.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" }); // get-url origin
+    const service = makeService({
+      ghAuthTokenProvider: () => ({ token: "gho_cli_token", ghCliPath: "/opt/homebrew/bin/gh", ghAuthError: null }),
+    });
 
-	    const createRepoCall = mockFetch.mock.calls.find(([rawUrl]) =>
-	      String(rawUrl).includes("/repos"),
-	    );
-	    expect(String(createRepoCall?.[0])).toContain("/user/repos");
-	    expect(String(createRepoCall?.[0])).not.toContain("/orgs/");
-	  });
+    await expect(service.publishCurrentProject({ owner: "alice", name: "proj", isPrivate: true }))
+      .rejects.toThrow("Bad credentials");
 
-	  it("creates nothing and asks for a retry when the signed-in account cannot be checked for a requested owner", async () => {
-	    runGitMock.mockResolvedValue({ exitCode: 1, stdout: "", stderr: "fatal: No such remote 'origin'" });
-	    // GET /user never answers, so whether `acme-inc` is this account or an
-	    // org is unknown. `/user/repos` would put the org's repo in the personal
-	    // account, so the publish must stop instead.
-	    mockFetch.mockImplementation((rawUrl: string) => {
-	      if (new URL(rawUrl).pathname === "/user") return Promise.reject(new TypeError("fetch failed"));
-	      return Promise.resolve(jsonResponse(201, {
-	        owner: { login: "alice" },
-	        name: "proj",
-	        full_name: "alice/proj",
-	        clone_url: "https://github.com/alice/proj.git",
-	      }));
-	    });
-
-	    await expect(
-	      makeService().publishCurrentProject({ owner: "acme-inc", name: "proj", isPrivate: true }),
-	    ).rejects.toMatchObject({ code: "github_owner_unverified", message: expect.stringMatching(/try again/i) });
-	    expect(mockFetch.mock.calls.some(([rawUrl]) => String(rawUrl).includes("/repos"))).toBe(false);
-	    expect(runGitMock.mock.calls.map((c) => c[0])).toEqual([["remote", "get-url", "origin"]]);
-	  });
+    const createAuths = mockFetch.mock.calls
+      .filter(([, init]) => (init as RequestInit | undefined)?.method === "POST")
+      .map(([, init]) => ((init as RequestInit).headers as Record<string, string>).authorization);
+    expect(createAuths).toEqual(["Bearer ghp_env_token"]);
+    expect(runGitMock.mock.calls.map((c) => c[0])).not.toContainEqual(expect.arrayContaining(["remote", "add"]));
+  });
 
   it("returns state=remote_added when the project has no commits yet", async () => {
     runGitMock
@@ -2808,12 +2820,13 @@ describe("githubService.publishCurrentProject", () => {
 	        ssh_url: "git@github.com:alice/empty.git",
         html_url: "https://github.com/alice/empty",
         default_branch: "main",
+        private: false,
       }),
     );
 
     const result = await makeService().publishCurrentProject({
       name: "empty",
-      isPrivate: true,
+      isPrivate: false,
     });
 
 	    expect(result).toEqual({
@@ -2822,6 +2835,7 @@ describe("githubService.publishCurrentProject", () => {
 	      name: "empty",
 	      fullName: "alice/empty",
 	      htmlUrl: "https://github.com/alice/empty",
+	      isPrivate: false,
 	    });
     // Should NOT have called push
     expect(runGitMock.mock.calls.map((c) => (c[0] as string[])[0])).not.toContain("push");
@@ -2961,6 +2975,7 @@ describe("githubService.publishCurrentProject", () => {
         html_url: "https://github.com/alice/proj",
         default_branch: "main",
         size: 0,
+        private: true,
       }),
     );
 
@@ -2975,10 +2990,17 @@ describe("githubService.publishCurrentProject", () => {
 	      name: "proj",
 	      fullName: "alice/proj",
 	      htmlUrl: "https://github.com/alice/proj",
+	      isPrivate: true,
 	    });
   });
 
-  it("throws repo_name_taken when the existing repo has commits", async () => {
+  // Reusing a leftover is safe only when nothing is lost or exposed: a repo
+  // with commits isn't a leftover, and pushing a private project into a public
+  // one publishes it.
+  it.each([
+    { label: "the existing repo has commits", size: 1234, existingPrivate: true },
+    { label: "the empty existing repo is public and the request is private", size: 0, existingPrivate: false },
+  ])("throws repo_name_taken without touching origin when $label", async ({ size, existingPrivate }) => {
     runGitMock.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "" }); // get-url origin
 
     mockFetch.mockResolvedValueOnce(
@@ -2993,7 +3015,8 @@ describe("githubService.publishCurrentProject", () => {
         clone_url: "https://github.com/alice/proj.git",
         html_url: "https://github.com/alice/proj",
         default_branch: "main",
-        size: 1234,
+        size,
+        private: existingPrivate,
       }),
     );
 
@@ -3005,6 +3028,7 @@ describe("githubService.publishCurrentProject", () => {
     }
     expect(caught).toBeInstanceOf(Error);
     expect(caught.code).toBe("repo_name_taken");
+    expect(runGitMock.mock.calls.map((c) => c[0])).toEqual([["remote", "get-url", "origin"]]);
   });
 });
 

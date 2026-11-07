@@ -7,8 +7,8 @@ import path from "node:path";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { getMachineMainLogger } from "../logging/machineLogger";
+import { markExpected } from "../../../shared/expectedError";
 import { markExpectedGithubFailure } from "./githubExpectedFailure";
-import { assertGithubRepositoryOwner, resolveGithubCreateRepositoryRoute } from "./githubCreateRepositoryRoute";
 import { runGit } from "../git/git";
 import { gitPushError } from "../git/gitPushFailure";
 import type {
@@ -24,6 +24,7 @@ import type {
   GitHubRepoStarState,
   GitHubRequestBudget,
   GitHubStatus,
+  PublishProjectResult,
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
@@ -45,10 +46,16 @@ import {
   type GithubOperationCredentialCapability,
 } from "../../../shared/githubOperationCredential";
 import {
+  assertGithubRepositoryOwner,
   classifyGitHubRepositoryApiPath,
   createGithubRepositoryRequestFallback,
+  GITHUB_OWNER_NOT_FOUND_CODE,
+  githubApiErrorMessage,
+  githubOwnerNotFoundMessage,
   isGithubRepositorySpecificAccessDenial,
+  resolveGithubCreateRepositoryRoute,
 } from "../../../shared/githubApiPath";
+import { codedError } from "../../../shared/codedError";
 import { createGithubConditionalRequestCache } from "../../../shared/githubConditionalRequestCache";
 import { mergePathEntries, resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import { fetchAppInstallationStatusForRepo, type GitHubRelaySecretReader } from "./githubRelayConfig";
@@ -1505,13 +1512,9 @@ export function createGithubService({
     query?: Record<string, string | number | boolean | undefined | null>;
     body?: unknown;
     token?: string;
-    /**
-     * Send only on the stored credential with this token (keeping its source,
-     * cooldowns and accounting), never falling back to another one. For a
-     * request whose meaning depends on which account sends it.
-     */
-    credentialToken?: string;
     capability?: GithubOperationCredentialCapability;
+    /** Use only this credential, with no fallback to another (another account). */
+    credentialSource?: GitHubTokenLookup["source"];
     repo?: GitHubRepoRef;
     /**
      * Override the default `Accept` header. Used to request GitHub schema
@@ -1534,7 +1537,7 @@ export function createGithubService({
       : githubOperationCredentialCandidates(
           (await readCredentialInventory()).candidates,
           capability,
-        ).filter((candidate) => !args.credentialToken || candidate.token === args.credentialToken);
+        ).filter((candidate) => !args.credentialSource || candidate.source === args.credentialSource);
     // An issue write uses the App only when its installation grants
     // `Issues: write`; otherwise it would 403 on every edit (see
     // `githubIssueWriteAccess.ts`).
@@ -1683,24 +1686,10 @@ export function createGithubService({
       }
 
       if (!response.ok) {
-        const body = data && typeof data === "object" && !Array.isArray(data)
-          ? data as Record<string, unknown>
-          : null;
-        // The async merge API puts its reason in `details.message`.
-        const details = body && body.details && typeof body.details === "object" && !Array.isArray(body.details)
-          ? body.details as Record<string, unknown>
-          : null;
-        const message = (body ? asString(body.message) : "")
-          || (details ? asString(details.message) : "")
-          || `GitHub API request failed (HTTP ${response.status})`;
-        const errorMessages = body && Array.isArray(body.errors)
-          ? body.errors
-              .map((error) => typeof error === "object" && error && "message" in error
-                ? asString((error as { message?: unknown }).message)
-                : "")
-              .filter(Boolean)
-          : [];
-        const detail = errorMessages.length > 0 ? `: ${errorMessages.join("; ")}` : "";
+        const { message, detailed } = githubApiErrorMessage(
+          data,
+          `GitHub API request failed (HTTP ${response.status})`,
+        );
         const failure = classifyGitHubAuthFailure({
           status: response.status,
           message,
@@ -1713,7 +1702,7 @@ export function createGithubService({
         }
         const attemptError = markExpectedGithubFailure(
           new GithubCredentialAttemptError(
-            message + detail,
+            detailed,
             failure.authFailure,
             failure.rateLimit,
             response.status,
@@ -2520,7 +2509,7 @@ export function createGithubService({
     name: string;
     description?: string;
     isPrivate: boolean;
-  }): Promise<{ owner: string; name: string; fullName: string; cloneUrl: string; sshUrl: string; htmlUrl: string; defaultBranch: string }> => {
+  }): Promise<{ owner: string; name: string; fullName: string; cloneUrl: string; sshUrl: string; htmlUrl: string; defaultBranch: string; isPrivate: boolean }> => {
     const body: Record<string, unknown> = {
       name: args.name,
       private: args.isPrivate,
@@ -2530,23 +2519,44 @@ export function createGithubService({
       body.description = args.description.trim();
     }
     const owner = asString(args.owner).trim();
-    // The route depends on whether `owner` is the credential's own login (the
-    // publish dialog fills it with the connected login), and the request goes
-    // out on the credential that was checked. An unverifiable login stops here
-    // rather than falling back to `/user/repos` under the wrong account.
-    const writeAuth = owner ? await readAuthToken("write") : null;
-    const route = await resolveGithubCreateRepositoryRoute({
-      owner,
-      name: args.name,
-      token: writeAuth?.token ?? null,
-      readLogin: async (token) =>
-        (await validateToken(token, accountingTokenSource(writeAuth?.source ?? "none"))).userLogin,
+    // A 404 on the org route, or on the owner lookup, means GitHub has no owner
+    // by that name that this account can create repositories under.
+    const rethrowAsOwnerNotFound = (error: unknown, account: string): never => {
+      if (error instanceof GithubCredentialAttemptError && error.status === 404) {
+        throw markExpected(codedError(githubOwnerNotFoundMessage(account), GITHUB_OWNER_NOT_FOUND_CODE), "user");
+      }
+      throw error;
+    };
+    // `/user/repos` creates under whichever account the credential belongs
+    // to, so the personal route stays on the write credential whose login
+    // decided it: a fallback credential can be another account.
+    const writeAuth = await readAuthToken("write");
+    const route = await resolveGithubCreateRepositoryRoute(owner, {
+      readAuthenticatedLogin: async () => (writeAuth.token
+        ? (await validateToken(writeAuth.token, accountingTokenSource(writeAuth.source))).userLogin
+        : null),
+      readAccountType: async (account) => {
+        const { data } = await apiRequest<Record<string, unknown>>({
+          method: "GET",
+          path: `/users/${encodeURIComponent(account)}`,
+        }).catch((error: unknown) => rethrowAsOwnerNotFound(error, account));
+        return asString(data?.type) || null;
+      },
+      onLoginLookupFailed: (error) => {
+        logger.warn("github.publish.login_lookup_failed", {
+          owner,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
     });
     const { data } = await apiRequest<Record<string, unknown>>({
       method: "POST",
       path: route.path,
       body,
-      ...(route.credentialToken ? { credentialToken: route.credentialToken } : {}),
+      ...(route.organization || !writeAuth.token ? {} : { credentialSource: writeAuth.source }),
+    }).catch((error: unknown) => {
+      if (route.organization) rethrowAsOwnerNotFound(error, route.organization);
+      throw error;
     });
     const identity = repoIdentityFromGitHubResponse(data, owner, args.name);
     return {
@@ -2557,6 +2567,7 @@ export function createGithubService({
       sshUrl: asString(data.ssh_url),
       htmlUrl: asString(data.html_url),
       defaultBranch: asString(data.default_branch) || "main",
+      isPrivate: typeof data.private === "boolean" ? data.private : args.isPrivate,
     };
   };
 
@@ -2572,6 +2583,7 @@ export function createGithubService({
     htmlUrl: string;
     defaultBranch: string;
     size: number;
+    isPrivate: boolean;
   }> => {
     const { data } = await apiRequest<Record<string, unknown>>({
       method: "GET",
@@ -2587,12 +2599,13 @@ export function createGithubService({
       htmlUrl: asString(data.html_url),
       defaultBranch: asString(data.default_branch) || "main",
       size: typeof data.size === "number" ? data.size : 0,
+      isPrivate: data.private === true,
     };
   };
 
   const publishCurrentProject = async (
     args: { owner?: string; name: string; description?: string; isPrivate: boolean },
-  ): Promise<{ state: "pushed" | "remote_added"; owner: string; name: string; fullName: string; htmlUrl: string }> => {
+  ): Promise<PublishProjectResult> => {
     const writeAuth = await readAuthToken("write");
     const token = writeAuth.token;
     if (!token) {
@@ -2614,7 +2627,7 @@ export function createGithubService({
     // cloneUrl — but only when it's empty (size=0), so we never overwrite
     // an unrelated user repo with the same name.
     const requestedOwner = asString(args.owner).trim() || null;
-    let created: { owner: string; name: string; fullName: string; cloneUrl: string; sshUrl: string; htmlUrl: string; defaultBranch: string };
+    let created: { owner: string; name: string; fullName: string; cloneUrl: string; sshUrl: string; htmlUrl: string; defaultBranch: string; isPrivate: boolean };
     try {
       created = await createRepository({
         owner: requestedOwner,
@@ -2635,9 +2648,16 @@ export function createGithubService({
       if (!owner) throw createErr;
 
       const existing = await getRepository(owner, args.name);
-      if (existing.size > 0) {
+      // Reuse only an empty repository with the visibility asked for: pushing
+      // a project meant to be private into a public leftover publishes it.
+      const takenReason = existing.size > 0
+        ? "already exists and contains commits"
+        : existing.isPrivate !== args.isPrivate
+          ? `already exists and is ${existing.isPrivate ? "private" : "public"}`
+          : null;
+      if (takenReason) {
         const taken = new Error(
-          `A GitHub repo named '${owner}/${args.name}' already exists and contains commits. Pick a different name.`,
+          `A GitHub repo named '${owner}/${args.name}' ${takenReason}. Pick a different name.`,
         ) as Error & { code?: string };
         taken.code = "repo_name_taken";
         throw taken;
@@ -2650,6 +2670,7 @@ export function createGithubService({
         sshUrl: existing.sshUrl,
         htmlUrl: existing.htmlUrl,
         defaultBranch: existing.defaultBranch,
+        isPrivate: existing.isPrivate,
       };
     }
     // Never push anywhere but the owner the user picked.
@@ -2704,6 +2725,7 @@ export function createGithubService({
       name: created.name,
       fullName: created.fullName,
       htmlUrl: created.htmlUrl,
+      isPrivate: created.isPrivate,
     };
   };
 

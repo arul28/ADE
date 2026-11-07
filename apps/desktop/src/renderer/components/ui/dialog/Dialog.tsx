@@ -1,5 +1,5 @@
 import * as RadixDialog from "@radix-ui/react-dialog";
-import { useCallback, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { NoticeButton, NoticeCloseButton, NoticeIcon, type NoticeAction } from "../notice/NoticeParts";
 import type { NoticeTone } from "../notice/noticeTones";
 import { PortalContainerContext } from "../portalContainer";
@@ -121,6 +121,12 @@ export type DialogProps = {
   onEscapeKeyDown?: (event: KeyboardEvent) => void;
   /** Element to focus on open. Default: the autoFocus action, else the first focusable. */
   initialFocusRef?: RefObject<HTMLElement | null>;
+  /**
+   * For a dialog that swaps its content in place (a form, then its result).
+   * When this changes while open, focus moves as it does on open: to
+   * `initialFocusRef`, else the autoFocus action, else the panel.
+   */
+  focusKey?: string;
   /** Skip focusing anything on open. */
   preventAutoFocus?: boolean;
   /** Return focus to what was focused before opening. Default true. */
@@ -198,6 +204,7 @@ export function Dialog({
   closeOnScrimClick = true,
   onEscapeKeyDown,
   initialFocusRef,
+  focusKey,
   preventAutoFocus = false,
   returnFocus = true,
   onCloseAutoFocus,
@@ -225,6 +232,21 @@ export function Dialog({
     openerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
   }
 
+  /** Focuses `initialFocusRef` or the autoFocus action; false when neither can take it. */
+  const focusInitial = useCallback((): boolean => {
+    const explicit = initialFocusRef?.current;
+    if (explicit) {
+      explicit.focus();
+      return true;
+    }
+    const index = actions?.findIndex((action) => action.autoFocus) ?? -1;
+    if (index < 0) return false;
+    const button = footerRef.current?.querySelectorAll<HTMLButtonElement>("button")[index];
+    if (!button || button.disabled) return false;
+    button.focus();
+    return true;
+  }, [actions, initialFocusRef]);
+
   const handleOpenAutoFocus = useCallback(
     (event: Event) => {
       if (preventAutoFocus) {
@@ -232,23 +254,19 @@ export function Dialog({
         panelRef.current?.focus();
         return;
       }
-      const explicit = initialFocusRef?.current;
-      if (explicit) {
-        event.preventDefault();
-        explicit.focus();
-        return;
-      }
-      const index = actions?.findIndex((action) => action.autoFocus) ?? -1;
-      if (index >= 0) {
-        const button = footerRef.current?.querySelectorAll<HTMLButtonElement>("button")[index];
-        if (button && !button.disabled) {
-          event.preventDefault();
-          button.focus();
-        }
-      }
+      if (focusInitial()) event.preventDefault();
     },
-    [actions, initialFocusRef, preventAutoFocus],
+    [focusInitial, preventAutoFocus],
   );
+
+  // Opening is handled by Radix above; this covers a content swap while open.
+  const shownFocusKey = useRef(focusKey);
+  useEffect(() => {
+    if (shownFocusKey.current === focusKey) return;
+    shownFocusKey.current = focusKey;
+    if (!open || preventAutoFocus) return;
+    if (!focusInitial()) panelRef.current?.focus();
+  }, [focusInitial, focusKey, open, preventAutoFocus]);
 
   const handleCloseAutoFocus = useCallback(
     (event: Event) => {

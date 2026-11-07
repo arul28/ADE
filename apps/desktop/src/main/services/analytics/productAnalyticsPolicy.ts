@@ -253,7 +253,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // The box actions on an Agent 37 card (feature "connections"): which ones
   // people take from ADE. Outcome is the action, prefixed (box_sleep |
   // box_wake | box_resize | box_backup | box_delete | box_set_sleep |
-  // box_copy | box_move), only when it worked.
+  // box_copy | box_move | box_reconnect), only when it worked.
   // Never the box, its size, price, workspace, or a refusal.
   "agent37_machine_action",
   // Ready machines (feature "connections"): whether people keep a cloud
@@ -262,6 +262,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // completed | failed (a prepare), ready_picker | ready_cli (a claim). Never
   // the project, repository, machine, size, setup commands, or an error.
   "agent37_ready",
+  // Sign-ins for cloud machines (feature "connections"): which providers
+  // people sign in once for every new Agent 37 machine. Outcome is the
+  // provider, prefixed (signin_claude | signin_codex | …), only once it is
+  // saved. Never the key, the token, the account, or an error.
+  "agent37_cloud_sign_in",
   // One coarse fact per automatic diagnostic send: whether it went, was refused
   // by the client budget, or failed. Never the failure code that triggered it,
   // never the surface, never the report or its upload reference — those are the
@@ -641,9 +646,12 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // confused with another action's outcome.
     "mode_focus", "mode_focus_grid",
     // The Agent 37 box actions, prefixed like the tool ids.
-    "box_sleep", "box_wake", "box_resize", "box_backup", "box_delete", "box_set_sleep", "box_copy", "box_move",
+    "box_sleep", "box_wake", "box_resize", "box_backup", "box_delete", "box_set_sleep", "box_copy", "box_move", "box_reconnect",
     // Where a chat that took a ready machine started, prefixed the same way.
     "ready_picker", "ready_cli",
+    // The provider of a sign-in saved for cloud machines (`AGENT37_CLOUD_SIGN_INS`).
+    "signin_claude", "signin_codex", "signin_cursor", "signin_droid", "signin_grok",
+    "signin_copilot", "signin_devin", "signin_muse", "signin_openrouter",
     // The two iOS live-view backends, prefixed for the same reason the tool ids
     // are. `backend_window` captures the Simulator window on this Mac;
     // `backend_host_encoded` encodes on the machine that owns the simulator and

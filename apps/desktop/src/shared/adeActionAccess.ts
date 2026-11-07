@@ -342,11 +342,14 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     write: ["request"],
   },
   agent37: {
-    read: ["ready_status", "list", "spending", "make_status", "limits"],
+    read: ["ready_status", "list", "spending", "make_status", "limits", "cloud_sign_in_status"],
     write: [
       "claim_ready", "release_ready", "create", "sleep", "wake", "resize", "copy", "move", "delete",
       "set_sleep", "set_cap", "ready_set", "ready_off", "ready_retry", "set_limits",
+      "cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_save_key", "cloud_sign_in_remove",
     ],
+    // Claude's sign-in for new machines is a terminal the brain keeps open.
+    live: ["cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel"],
   },
   mcp_registry: {
     read: ["list", "chatStatus"],

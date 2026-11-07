@@ -37,6 +37,13 @@ const mocks = vi.hoisted(() => {
     fileStats,
     openFiles,
     mkdirSync: vi.fn(),
+    accessSync: vi.fn((p: string) => {
+      if ((existsSyncResults.get(p) ?? true) === false) {
+        const error = new Error(`ENOENT: no such file or directory, access '${p}'`) as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+    }),
     existsSync: vi.fn((p: string) => existsSyncResults.get(p) ?? true),
     lstatSync: vi.fn((p: string) => {
       if ((existsSyncResults.get(p) ?? true) === false) {
@@ -57,7 +64,8 @@ const mocks = vi.hoisted(() => {
         throw error;
       }
       const stat = fileStats.get(p);
-      if (p.startsWith("/ade-test/tools/")) {
+      // The tool fixtures and the shells this fake machine has installed.
+      if (p.startsWith("/ade-test/tools/") || /^\/bin\/(zsh|bash|sh)$/.test(p)) {
         return { size: 0, mtimeMs: 0, mode: 0o100755, isDirectory: () => false, isFile: () => true };
       }
       return {
@@ -266,6 +274,8 @@ vi.mock("node:os", async () => {
 
 vi.mock("node:fs", () => ({
   default: {
+    accessSync: mocks.accessSync,
+    constants: { X_OK: 1 },
     existsSync: mocks.existsSync,
     lstatSync: mocks.lstatSync,
     realpathSync: mocks.realpathSync,
@@ -284,6 +294,8 @@ vi.mock("node:fs", () => ({
     renameSync: mocks.renameSync,
     promises: mocks.promises,
   },
+  accessSync: mocks.accessSync,
+  constants: { X_OK: 1 },
   existsSync: mocks.existsSync,
   lstatSync: mocks.lstatSync,
   realpathSync: mocks.realpathSync,
@@ -1464,6 +1476,32 @@ describe("ptyService", () => {
             }),
           }),
         );
+      } finally {
+        if (previousShell == null) delete process.env.SHELL;
+        else process.env.SHELL = previousShell;
+      }
+    });
+
+    // A PTY spawn of a missing file still "starts" (the child fails in execvp),
+    // so a missing first choice must be skipped before the spawn, not after.
+    it.each([
+      ["SHELL unset and no zsh (a service-started Linux brain)", undefined, ["/bin/zsh"], "/bin/bash"],
+      ["SHELL names a shell that isn't installed", "/usr/bin/fish", ["/usr/bin/fish"], "/bin/zsh"],
+      ["only /bin/sh is installed", "/bin/zsh", ["/bin/zsh", "/bin/bash"], "/bin/sh"],
+    ])("starts the first installed shell: %s", async (_name, shellEnv, missing, expected) => {
+      const previousShell = process.env.SHELL;
+      if (shellEnv === undefined) delete process.env.SHELL;
+      else process.env.SHELL = shellEnv;
+      for (const file of missing) mocks.existsSyncResults.set(file, false);
+      try {
+        const { service, loadPty } = createHarness();
+        const created = await service.create({ laneId: "lane-1", title: "Shell", cols: 80, rows: 24, toolType: "shell" });
+
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        const spawned = ptyLib.spawn.mock.calls.map((call) => call[0]);
+        expect(spawned).toEqual([expected]);
+        for (const file of missing) expect(spawned).not.toContain(file);
+        expect(created.ptyId).toBeTruthy();
       } finally {
         if (previousShell == null) delete process.env.SHELL;
         else process.env.SHELL = previousShell;

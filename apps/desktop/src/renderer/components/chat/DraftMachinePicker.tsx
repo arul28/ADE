@@ -22,6 +22,8 @@ export type DraftMachineOption = {
   cloudProvider?: "cursor" | "devin" | "agent37";
   /** Set to render the row disabled with this sentence as its tooltip. */
   unavailableReason?: string | null;
+  /** A second line under the name: what picking it does first ("Clone the project here"). */
+  detail?: string | null;
 };
 
 const CLOUD_VIOLET = "#A78BFA";
@@ -264,7 +266,14 @@ export function DraftMachinePicker({
                     }}
                   >
                     {machineIcon(machine)}
-                    <span className="min-w-0 flex-1 truncate">{machine.name}</span>
+                    {machine.detail ? (
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate">{machine.name}</span>
+                        <span className="block truncate text-[10px] text-muted-fg/60">{machine.detail}</span>
+                      </span>
+                    ) : (
+                      <span className="min-w-0 flex-1 truncate">{machine.name}</span>
+                    )}
                     <DropdownMenu.ItemIndicator>
                       <Check size={11} weight="bold" className="shrink-0" aria-hidden />
                     </DropdownMenu.ItemIndicator>

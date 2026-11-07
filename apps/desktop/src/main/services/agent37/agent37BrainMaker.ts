@@ -37,20 +37,68 @@ export type Agent37MakeJob = {
   updatedAt: number;
 };
 
-export type Agent37MakeInput =
+export type Agent37MakeInput = (
   | { kind: "create"; machine: Agent37CreateMachineArgs; madeByChat?: string | null }
   | { kind: "copy"; instanceId: string; name?: string | null; shape?: Agent37ShapeId | null; madeByChat?: string | null }
-  | { kind: "move"; instanceId: string; machineKey?: string | null; to: Agent37MachineKind; shape?: Agent37ShapeId | null; madeByChat?: string | null };
+  | { kind: "move"; instanceId: string; machineKey?: string | null; to: Agent37MachineKind; shape?: Agent37ShapeId | null; madeByChat?: string | null }
+) & {
+  /**
+   * The yes came from what the person lets unattended agents do (a full-auto
+   * chat or an automation, within the cap and the agent limits): this brain
+   * may approve the new machine's sign-in itself, with no tap.
+   */
+  selfApprove?: boolean;
+};
 
 /** A finished job is kept this long for a caller to read its outcome. */
 const FINISHED_JOB_TTL_MS = 30 * 60_000;
+/** A self-approval comes this soon after its create started, or not at all. */
+const SELF_APPROVAL_WINDOW_MS = 20 * 60_000;
 
 export function createAgent37BrainMaker(deps: {
   /** The creator's deps without a window: the approval is handed off. */
-  base: Omit<Agent37CopyDeps, "approveInWindow" | "handOffApproval">;
-  logger?: { warn?(event: string, meta?: Record<string, unknown>): void };
+  base: Omit<Agent37CopyDeps, "approveInWindow" | "handOffApproval" | "selfApproval">;
+  logger?: {
+    info?(event: string, meta?: Record<string, unknown>): void;
+    warn?(event: string, meta?: Record<string, unknown>): void;
+  };
 }) {
   const jobs = new Map<string, Agent37MakeJob>();
+  /** Requests whose sign-in this brain already approved itself: once each. */
+  const selfApproved = new Set<string>();
+
+  /**
+   * Whether this brain may approve `instanceId`'s sign-in itself, with no
+   * tap: the machine carries the request id of a make this brain started
+   * with an unattended yes, the make is recent, it is the first ask for that
+   * request, and the month is still under the cap. Every answer is logged.
+   */
+  const allowSelfApproval = async (
+    input: { requestId: string; instanceId: string },
+    make: { selfApprove: boolean; startedAt: number },
+  ): Promise<boolean> => {
+    const refuse = (reason: string) => {
+      deps.logger?.info?.("agent37.self_approval_refused", { ...input, reason });
+      return false;
+    };
+    if (!make.selfApprove) return refuse("not_unattended");
+    if (Date.now() - make.startedAt > SELF_APPROVAL_WINDOW_MS) return refuse("too_late");
+    if (selfApproved.has(input.requestId)) return refuse("already_used");
+    const readFailed = (read: string) => (error: unknown) => {
+      deps.logger?.warn?.("agent37.self_approval_read_failed", { ...input, read, error: error instanceof Error ? error.message : String(error) });
+      return null;
+    };
+    const client = await deps.base.client().catch(readFailed("client"));
+    const instance = client ? await client.getInstance(input.instanceId).catch(readFailed("instance")) : null;
+    if (instance?.metadata?.ade_request_id !== input.requestId) return refuse("request_id_mismatch");
+    // A month this brain can't read counts as over the cap: no tap needs a known spend.
+    const month = await deps.base.spending?.().catch(readFailed("spending"));
+    if (!month || month.monthSpentUsd == null) return refuse("spend_unknown");
+    if (month.capReached) return refuse("cap_reached");
+    selfApproved.add(input.requestId);
+    deps.logger?.info?.("agent37.self_approval_used", input);
+    return true;
+  };
 
   const prune = () => {
     const now = Date.now();
@@ -84,9 +132,11 @@ export function createAgent37BrainMaker(deps: {
       job.approvalUrl = progress.stage === "approve_elsewhere" ? progress.approvalUrl ?? null : null;
       job.updatedAt = Date.now();
     };
+    const startedAt = Date.now();
     const creatorDeps: Agent37CopyDeps = {
       ...deps.base,
       handOffApproval: ({ url, name }) => onApproval?.(url, name),
+      selfApproval: (args) => allowSelfApproval(args, { selfApprove: input.selfApprove === true, startedAt }),
     };
     const madeBy = input.madeByChat ? { [AGENT37_MADE_BY_CHAT_METADATA]: input.madeByChat } : null;
     const work = (async (): Promise<unknown> => {

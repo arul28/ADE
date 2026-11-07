@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, powerMonitor, type WebContents } from "electron";
-import { agent37WakeForUse } from "../agent37/agent37WakeHook";
+import { agent37UpdateBlocker, agent37WakeForUse } from "../agent37/agent37WakeHook";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import { localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
@@ -1671,6 +1671,21 @@ export function registerRuntimeBridge({
       // then abort, so it gets its updater run in a terminal instead.
       const status = remoteConnectionService.snapshot().connections
         .find((connection) => connection.target.id === target.id);
+      // An Agent 37 box from an older template would install the update and
+      // keep running the old ADE, so it says why before anything is sent.
+      const blocked = await agent37UpdateBlocker(target);
+      if (blocked) {
+        return {
+          ok: false,
+          updateApplied: false,
+          currentVersion: status?.version ?? null,
+          targetVersion,
+          steps: [{ id: "check", status: "failed", detail: blocked }],
+          message: blocked,
+          route: "standalone",
+          pendingVersion: null,
+        };
+      }
       if (status?.state === "connected" && isWindowsSelfInstallBlocked(status.version, status.arch)) {
         return await updateViaRemoteTerminal({
           status,

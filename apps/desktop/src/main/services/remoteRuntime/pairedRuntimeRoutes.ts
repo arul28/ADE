@@ -119,6 +119,26 @@ export function createRouteAttemptRecorder(
   return recorder;
 }
 
+/** The relay's close when a newer link from the host took over (tunnel-relay `CLOSE_CONTROL_REPLACED`). */
+const RELAY_CLOSE_CONTROL_REPLACED = 4505;
+
+/**
+ * Whether a relay attempt failed because the host opened a new relay link
+ * while it ran. A machine back from sleep does that a second or two after it
+ * wakes, and the relay then closes every client that went to its old link.
+ * The host is on the relay by then, so one more relay attempt at once
+ * connects, where the next route (often a cloud box's private address) would
+ * hold the connect for 10 s (2026-11-07, Agent 37 box after a sleep).
+ */
+export function isRelayHostReplacedError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
+    if ((current as { closeCode?: unknown }).closeCode === RELAY_CLOSE_CONTROL_REPLACED) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 export function orderPairedCandidates(
   candidates: readonly PairedRuntimeEndpointCandidate[],
 ): PairedRuntimeEndpointCandidate[] {

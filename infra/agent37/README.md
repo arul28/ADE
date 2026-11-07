@@ -29,6 +29,12 @@ the ADE brain.
   `node`. A box has no `/dev/kvm` and never uses it.
 - A move to another machine pauses the brain while its home is copied: the
   entrypoint's loop waits while `$ADE_HOME/brain.paused` exists.
+- The entrypoint's loop is the brain's supervisor (the box has no systemd).
+  It exports `ADE_BRAIN_SUPERVISOR=entrypoint` and starts the newer of
+  `/opt/ade/bin/ade` and the `~/.ade/bin/ade` that `ade brain update`
+  installs, so an update takes effect when the brain restarts. With
+  `ADE_MIN_VERSION` set (the create flow sets it), the first boot installs
+  that release first when the image's ADE is older.
 - `/etc/machine-id` and `/var/lib/dbus/machine-id` are deleted in the image.
   ADE's hardware anchor hashes them; one baked value would make the account
   directory merge every box into one row.
@@ -50,8 +56,10 @@ AGENT37_API_KEY=sk_live_... infra/agent37/build-template.sh ade-a1-test # a tria
 AGENT37_API_KEY=sk_live_... infra/agent37/build-template.sh ade 1.2.128 # pin an ADE release
 ```
 
-The build takes about five minutes. Building an existing name publishes a new
-revision; boxes already made keep their image until they are updated.
+The build takes about 13.5 minutes (2026-11-06: 2.5 for the steps, 11 for
+Agent37 to save and ingest the image). Building an existing name publishes a
+new revision; boxes already made keep their image, and `ade brain update`
+updates their ADE.
 
 ADE creates from the template named `ade`. A development desktop can point at a
 trial template with `ADE_AGENT37_TEMPLATE=ade-a1-test`.

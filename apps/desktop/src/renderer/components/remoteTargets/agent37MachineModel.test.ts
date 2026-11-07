@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Agent37Machine } from "../../../shared/agent37";
 import type { AdeAccountMachine } from "../../../shared/types/account";
-import { matchAgent37Boxes } from "./agent37MachineModel";
+import { isDeletedAgent37Row, matchAgent37Boxes } from "./agent37MachineModel";
 
 function box(instanceId: string, machineKey: string | null): Agent37Machine {
   return {
@@ -56,5 +56,23 @@ describe("matchAgent37Boxes", () => {
     expect(matches.has("key-x")).toBe(false);
     expect(matches.has("key-y")).toBe(false);
     expect(matches.size).toBe(3);
+  });
+});
+
+describe("isDeletedAgent37Row", () => {
+  // The row offers Remove from ADE, so a match on a computer that still
+  // exists invites removing it from the account.
+  const deleted = ["m7hz9v8tk6", "f9nldrmkoz"];
+  it.each([
+    { label: "an offline row named by a deleted instance", machine: row("k1", "m7hz9v8tk6"), want: true },
+    { label: "the same hostname in another case", machine: row("k2", "F9NLDRMKOZ"), want: true },
+    { label: "an online row (the box came back)", machine: { ...row("k3", "m7hz9v8tk6"), online: true }, want: false },
+    { label: "a Mac with that name", machine: { ...row("k4", "m7hz9v8tk6"), platform: "macOS" }, want: false },
+    { label: "a Linux computer named like an instance id that never was one", machine: row("k5", "ubuntu2204"), want: false },
+    { label: "a row with no name", machine: { ...row("k6", ""), name: null }, want: false },
+  ])("$label → $want", ({ machine, want }) => {
+    expect(isDeletedAgent37Row(machine, deleted)).toBe(want);
+    // Without a list that was read, nothing is marked.
+    expect(isDeletedAgent37Row(machine, [])).toBe(false);
   });
 });

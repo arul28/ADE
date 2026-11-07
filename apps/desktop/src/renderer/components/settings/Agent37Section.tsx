@@ -20,7 +20,7 @@ import { Banner } from "../ui/notice";
 import { ipcErrorMessage } from "../../lib/format";
 import { Agent37ReadyMachinesCard } from "./Agent37ReadyMachinesCard";
 import { Agent37MachinesCard } from "./Agent37MachinesCard";
-import { Agent37ClaudeSignInCard } from "./Agent37ClaudeSignInCard";
+import { Agent37CloudSignInsCard, useAgent37CloudSignIns } from "./Agent37CloudSignInsCard";
 import { useAgent37Machines } from "../remoteTargets/useAgent37Machines";
 import { agent37GroupTotals } from "../remoteTargets/agent37MachineModel";
 import agent37ApiKeyShot from "./integrations/steps/agent37-api-key.webp";
@@ -201,6 +201,9 @@ export function Agent37Section() {
     }
   };
 
+  // Before the early return below: a hook runs on every render.
+  const cloudSignIns = useAgent37CloudSignIns(connected && !status?.error);
+
   if (!bridge) {
     return (
       <IntegrationPage id="agent37">
@@ -335,8 +338,8 @@ export function Agent37Section() {
       <IntegrationColumns>
         {connected ? (
           <>
-            {live ? <Agent37ClaudeSignInCard /> : null}
-            {live ? <Agent37ReadyMachinesCard status={status} /> : null}
+            {live ? <Agent37CloudSignInsCard signIns={cloudSignIns} /> : null}
+            {live ? <Agent37ReadyMachinesCard status={status} cloudSignIns={cloudSignIns.status} /> : null}
             {live ? <Agent37MachinesCard status={status} machines={machines} /> : null}
             {live ? <Agent37AgentLimitsCard /> : null}
           </>

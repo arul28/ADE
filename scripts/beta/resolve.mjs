@@ -17,7 +17,7 @@
 // offline:
 //   { "now": "<iso>", "tags": { "v1.2.3": "<sha>" },
 //     "releases": [{ "tag", "draft", "prerelease", "publishedAt", "createdAt" }],
-//     "commits": [{ "sha", "subject", "ciPass", "product": true }],   // newest first
+//     "commits": [{ "sha", "subject", "ciPass", "product": true, "time": "<iso>" }],   // newest first
 //     "refs": { "my-branch": "<sha>" } }
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -65,8 +65,11 @@ function liveSource() {
     tagCommits: () => readTagCommits((args) => run("git", args)),
     releases: () => readReleases((args) => run("gh", args), repo),
     mainCommits() {
-      return run("git", ["log", "--first-parent", "--format=%H", "-n", "100", "origin/main"])
-        .split("\n").filter(Boolean).map((sha) => ({ sha }));
+      return run("git", ["log", "--first-parent", "--format=%H %ct", "-n", "100", "origin/main"])
+        .split("\n").filter(Boolean).map((line) => {
+          const [sha, seconds] = line.split(" ");
+          return { sha, time: Number(seconds) * 1000 };
+        });
     },
     ciPassOf(sha) {
       // Same pick as scripts/require-release-ci-pass.sh: the latest-finished
@@ -127,7 +130,7 @@ function fixtureSource(file) {
     now: Date.parse(data.now ?? new Date().toISOString()),
     tagCommits: () => data.tags ?? {},
     releases: () => data.releases ?? [],
-    mainCommits: () => commits.map(({ sha }) => ({ sha })),
+    mainCommits: () => commits.map(({ sha, time }) => ({ sha, time: time ? Date.parse(time) : undefined })),
     ciPassOf: (sha) => commits.find((commit) => commit.sha === sha)?.ciPass ?? null,
     productChanged: (from, to) => !from || between(from, to).some((commit) => commit.product !== false),
     subjectsBetween: (from, to) => between(from, to).map((commit) => commit.subject ?? ""),
@@ -163,13 +166,15 @@ export async function resolveBeta(source, { force, previewRef, runNumber }) {
   // Notes and the "anything changed" test start from the last beta, or from
   // the last stable when there has never been a beta.
   const base = lastBeta ?? (stable ? { tag: stable, commit: tagCommits[stable] } : null);
-  const { sha, checked } = await pickCandidate({
+  const { sha, waitingFor, checked } = await pickCandidate({
     commits: source.mainCommits(),
     stopAt: lastBeta?.commit ?? null,
     ciPassOf: (commit) => source.ciPassOf(commit),
+    now: source.now,
+    force,
   });
   const productChanged = sha ? source.productChanged(base?.commit ?? null, sha) : false;
-  const decision = decide({ now: source.now, lastBeta, candidate: sha, productChanged, force });
+  const decision = decide({ now: source.now, lastBeta, candidate: sha, productChanged, force, waitingFor });
   if (decision.skip) {
     return { skip: true, preview: false, reason: decision.reason, tag: "", sha: sha ?? "", previousTag: lastBeta?.tag ?? "", notes: "", checked };
   }

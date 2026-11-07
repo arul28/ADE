@@ -25,6 +25,8 @@ import {
 const GITHUB_PAT_MACHINE_KEY = "github.token.v1";
 /** "account" when the machine's token was copied from the vault. */
 const GITHUB_PAT_SOURCE_KEY = "github.token.source.v1";
+/** The account user id an account copy came from. A copy from before this key has none. */
+const GITHUB_PAT_OWNER_KEY = "github.token.owner.v1";
 const GITHUB_PAT_VAULT_KIND = "integration";
 const GITHUB_PAT_VAULT_KEY = "github";
 
@@ -67,12 +69,16 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
     if (!store) return;
     if (token) {
       // Mark before the value, so a failed write never leaves an account copy unmarked.
+      const owner = fromAccount ? accountUserId() : null;
       if (fromAccount) store.setSync(GITHUB_PAT_SOURCE_KEY, "account");
+      if (owner) store.setSync(GITHUB_PAT_OWNER_KEY, owner);
+      else store.deleteSync(GITHUB_PAT_OWNER_KEY);
       store.setSync(GITHUB_PAT_MACHINE_KEY, token);
       if (!fromAccount) store.deleteSync(GITHUB_PAT_SOURCE_KEY);
     } else {
       store.deleteSync(GITHUB_PAT_MACHINE_KEY);
       store.deleteSync(GITHUB_PAT_SOURCE_KEY);
+      store.deleteSync(GITHUB_PAT_OWNER_KEY);
     }
     try {
       args.onTokenChanged?.();
@@ -119,6 +125,7 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
     markLocal(): void {
       try {
         store?.deleteSync(GITHUB_PAT_SOURCE_KEY);
+        store?.deleteSync(GITHUB_PAT_OWNER_KEY);
       } catch {
         // A stale marker only makes a later sign-out drop this copy.
       }
@@ -135,8 +142,22 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
      */
     async hydrate(): Promise<void> {
       const userId = accountUserId();
+      if (!userId || !store) return;
+      // A copy from another account (signed in while no ADE ran, so no switch
+      // was seen) is not this account's, whatever the vault says. A copy with
+      // no recorded owner predates the owner key and stays: dropping it when
+      // the vault cannot be read would lose a token nothing can restore.
+      try {
+        const owner = store.getSync(GITHUB_PAT_OWNER_KEY);
+        if (owner && owner !== userId && readLocal() && localIsFromAccount()) {
+          writeLocal(null, false);
+          args.logger?.info?.("github.account_vault_foreign_copy_dropped", {});
+        }
+      } catch (error) {
+        logFailure("owner_check", error);
+      }
       const vault = resolveVault();
-      if (!userId || !vault || !store) return;
+      if (!vault) return;
       const read = await readAccountVaultItem(vault, vaultRef, decodeToken, logFailure);
       if (!read) return;
       if (accountUserId() !== userId) return;
@@ -161,7 +182,11 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
           args.logger?.info?.("github.account_vault_adopted", {});
           return;
         }
-        if (local === remote) return;
+        if (local === remote) {
+          // An older copy that matches this account's token gets its owner now.
+          if (fromAccount && !store.getSync(GITHUB_PAT_OWNER_KEY)) store.setSync(GITHUB_PAT_OWNER_KEY, userId);
+          return;
+        }
         if (fromAccount) {
           writeLocal(remote, true);
           args.logger?.info?.("github.account_vault_adopted", {});

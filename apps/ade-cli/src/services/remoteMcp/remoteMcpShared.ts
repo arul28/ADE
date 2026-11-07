@@ -8,18 +8,12 @@ import {
   getSharedAccountDirectoryBaseUrl,
   resolveAccountOAuthConfig,
 } from "../account/sharedAccountAuthService";
-import { getSignedInAccountAccessToken } from "../account/accountAuthService";
-import { createAccountSettingsStore, getSharedAccountSettingsStore } from "../account/accountSettingsStore";
-import { createAccountVaultStore, getSharedAccountVaultStore } from "../account/accountVaultStore";
 import { AccountMachineDirectoryService } from "../account/accountMachineDirectoryService";
-import { createPushRegistrationStore } from "../push/pushRegistrationStore";
-import { createPushRelayClient } from "../push/pushRelayClient";
-import { resolvePushRelayStateFile } from "../push/pushPublisherService";
+import { getMachineAccountStores } from "../account/machineAccountStores";
 import { accountMachineDisplayName } from "../../../../desktop/src/shared/accountDirectory";
 import { readChatLaunchDefaults } from "../../../../desktop/src/main/services/chat/chatLaunchDefaults";
 import { createRemoteMcpService, type RemoteMcpService } from "./remoteMcpService";
 import { remoteMcpAdeVersion } from "./remoteMcpAccount";
-import { readMachineIdFile } from "../sync/machineIdFile";
 
 /**
  * The machine's one ADE MCP service. Machine-level like the relay
@@ -55,34 +49,7 @@ export function getSharedRemoteMcpService(logger?: RemoteMcpLogger): RemoteMcpSe
   if (shared && shared.home === layout.adeDir) return shared.service;
   const registry = new ProjectRegistry(layout);
   const accountAuth = () => getSharedAccountAuthService({ secretsDir: layout.secretsDir });
-  const accountUserId = (): string | null => {
-    const status = accountAuth().getStatus();
-    return status.signedIn ? status.userId?.trim() || null : null;
-  };
-  const deviceIdPath = path.join(layout.secretsDir, "sync-device-id");
-  const deviceId = (): string | null => readMachineIdFile(deviceIdPath);
-  // Built like the runtime's (accountRuntimeLifecycle); whichever comes first
-  // creates the machine's store and the other joins it.
-  const relayClient = createPushRelayClient({
-    store: createPushRegistrationStore({ filePath: resolvePushRelayStateFile(layout.secretsDir), logger: storeLogger }),
-    logger: storeLogger,
-    getAccountAccessToken: (options) => getSignedInAccountAccessToken(accountAuth(), options),
-    getAccountUserId: accountUserId,
-  });
-  const settings = getSharedAccountSettingsStore(layout.adeDir, () => createAccountSettingsStore({
-    adeDir: layout.adeDir,
-    relay: relayClient,
-    getAccountUserId: accountUserId,
-    getDeviceId: deviceId,
-    logger: storeLogger,
-  }));
-  const vault = getSharedAccountVaultStore(layout.adeDir, () => createAccountVaultStore({
-    adeDir: layout.adeDir,
-    relay: relayClient,
-    getAccountUserId: accountUserId,
-    getDeviceId: deviceId,
-    logger: storeLogger,
-  }));
+  const { settings, vault } = getMachineAccountStores(storeLogger);
   const directory = new AccountMachineDirectoryService(accountAuth(), {
     appVersion: remoteMcpAdeVersion(),
     directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: layout.secretsDir }),
