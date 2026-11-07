@@ -756,14 +756,12 @@ export function createBrainProjectActionsSyncHandler(
     send,
     isPeerBackpressured,
   });
-  // A project socket is served here only until a project host attaches;
-  // closing it then makes the client reconnect onto that host. A browser or
-  // phone on a machine with no host yet (a new cloud machine) otherwise kept
-  // this ingress's reduced hello (no lanes, no files) until a reload.
-  // Only a project socket (a browser's or the phone's) waits for a project
-  // host. A desktop window's or another brain's runtime-only connection and a
-  // roster socket are this ingress's for good, and closing one would drop
-  // their calls in flight.
+  // A project socket (a browser's or the phone's) is served here only until a
+  // project host attaches; closing it then makes the client reconnect onto
+  // that host. On a machine with no host yet (a new cloud machine) it otherwise
+  // kept this ingress's reduced hello (no lanes, no files) until a reload. A
+  // roster socket, and a desktop window's or another brain's runtime-only
+  // connection, are this ingress's for good: closing one would drop its calls.
   const waitsForProjectHost = (metadata: SyncPeerMetadata | null | undefined): boolean =>
     metadata != null
     && !isRosterSyncPeer(metadata)

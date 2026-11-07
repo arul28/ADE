@@ -278,9 +278,10 @@ export function WebConnectionsChip() {
     const machineKey = machine.accountMachine?.machineKey;
     return machineKey ? cloud?.byMachineKey.get(machineKey) ?? null : null;
   };
+  /** Gone from the cloud list, and the account has not heard from it either. */
   const cloudDeleted = (machine: WebMachineEntry): boolean => {
     const machineKey = machine.accountMachine?.machineKey;
-    return Boolean(machineKey && cloud?.deletedMachineKeys.has(machineKey));
+    return Boolean(machineKey && machine.accountMachine?.online !== true && cloud?.deletedMachineKeys.has(machineKey));
   };
   /** Wakes an asleep cloud machine through a machine this tab is connected to. */
   const wake = (machine: WebMachineEntry) => {

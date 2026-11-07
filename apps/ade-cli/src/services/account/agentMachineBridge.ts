@@ -171,8 +171,11 @@ export type AgentMachineBridgeOptions = {
 /** How long a woken machine gets to show online in the account before the call fails as offline. */
 const WOKEN_MACHINE_ONLINE_WAIT_MS = 60_000;
 const WOKEN_MACHINE_POLL_MS = 1_000;
-/** How long connects to a just-woken machine are retried. */
-const WOKEN_MACHINE_CONNECT_RETRY_MS = 45_000;
+/**
+ * How long connects to a just-woken machine are retried. Measured on a box
+ * (2026-11-07): 20 s after a short sleep, more than 45 s after its own idle sleep.
+ */
+const WOKEN_MACHINE_CONNECT_RETRY_MS = 90_000;
 
 export type AgentMachineBridge = ReturnType<typeof createAgentMachineBridge>;
 
