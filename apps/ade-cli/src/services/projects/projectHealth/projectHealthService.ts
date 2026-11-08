@@ -29,6 +29,7 @@ import { listMoveRecords } from "../projectMove/moveJournal";
 import { previousProjectRoots } from "../projectMove/movePreviousRoots";
 import { rewriteAdeJsonFiles, rewriteSimulatorMarkers } from "../projectMove/projectMoveEngine";
 import { filesMentioningPath, installCommandFor, lockfileKind, timeMachineBacksUp } from "../projectMove/projectMovePreflight";
+import { pathKey } from "../../../../../desktop/src/main/services/shared/pathCompare";
 import { readMoveVolume } from "../projectMove/moveVolumes";
 
 /**
@@ -341,11 +342,14 @@ type DependencyPlan = {
  */
 function dependencyPlan(ctx: Context, logger: Pick<Logger, "warn">): DependencyPlan {
   const primary = ctx.checkouts.find((checkout) => checkout.primary) ?? null;
-  const needs = new Map<Checkout, Set<string>>();
+  // Folder key → folder, so one folder spelled two ways (a link's target on
+  // Windows can differ in drive-letter case) is one install, not two at once.
+  const needs = new Map<Checkout, Map<string, string>>();
   const brokenLinks: string[] = [];
   const mark = (checkout: Checkout, unit: string) => {
-    if (!needs.has(checkout)) needs.set(checkout, new Set());
-    needs.get(checkout)!.add(unit);
+    if (!needs.has(checkout)) needs.set(checkout, new Map());
+    const marked = needs.get(checkout)!;
+    if (!marked.has(pathKey(unit))) marked.set(pathKey(unit), unit);
   };
   for (const checkout of ctx.checkouts) {
     for (const unit of installUnits(checkout.root, logger)) {
@@ -383,14 +387,14 @@ function dependencyPlan(ctx: Context, logger: Pick<Logger, "warn">): DependencyP
   const missingFolders: string[] = [];
   // Only the main checkout is ever marked (lanes are never installed).
   for (const [checkout, marked] of needs) {
-    const units = [...marked].sort();
+    const units = [...marked.values()].sort();
     missingFolders.push(...units.map((unit) => path.relative(checkout.root, unit)));
     // A checkout root with nothing installed is installed alone: its install
     // (or setup script) often installs the folders under it too, and a second
     // install running in one of those at the same time can break both. The
     // report re-checks after the fix, so a folder the root install skipped
     // shows again and installs on its own next time.
-    const toInstall = marked.has(checkout.root) ? [checkout.root] : units;
+    const toInstall = marked.has(pathKey(checkout.root)) ? [checkout.root] : units;
     for (const unit of toInstall) {
       installs.push({
         checkout,
@@ -419,10 +423,11 @@ function dependencyIssueText(plan: DependencyPlan): { title: string; detail: str
   const installDetail = rootMissing
     ? "Builds, tests and dev servers fail until packages are installed."
     : `Building or running ${one ? "it" : "them"} fails until ${one ? "it is" : "they are"} installed.`;
+  // "The rest has its packages" only when nothing else is broken.
+  const restDetail = links ? linkDetail : rootMissing ? "" : "The rest of the project has its packages.";
   return {
     title: `${named} ${one ? "has" : "have"} no packages installed${links ? `, and ${linkText}` : ""}`,
-    // "The rest has its packages" only when nothing else is broken.
-    detail: links ? `${installDetail} ${linkDetail}` : rootMissing ? installDetail : `${installDetail} The rest of the project has its packages.`,
+    detail: restDetail ? `${installDetail} ${restDetail}` : installDetail,
   };
 }
 

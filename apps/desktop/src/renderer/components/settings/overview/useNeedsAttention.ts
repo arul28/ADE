@@ -222,10 +222,12 @@ function pressureItems(pressure: DiskPressureSnapshot | null): AttentionItem[] {
 
 /**
  * A provider is a problem only when you use it and it can't start chats.
- * "You use it" means you are signed in to it here, or ADE knows an account of
- * yours for it on this machine: usage tracking still lists it, or its saved
- * login broke (`loginBroken`, Claude and Codex accounts). A login that left no
- * trace reads the same as one never made. A blocker alone
+ * "You use it" means you are signed in to it here, or ADE has a Claude or
+ * Codex account of yours on this machine (usage tracking lists it, or its
+ * saved login broke). Only those accounts (the ones with an `instanceId`)
+ * track ADE's own login: usage lists a Cursor account from the Cursor
+ * editor's session, which says nothing about ADE's Cursor key. A login that
+ * left no trace reads the same as one never made. A blocker alone
  * is not a problem: a provider you never set up has one ("not signed in"), so
  * does one whose runtime is still on its way ("downloads the first time it is
  * used"), and so does one that runs fine with a side note (a Codex token too
@@ -241,7 +243,7 @@ function providerItems(
   // A provider whose signed-out account usage already lists (`usageItems`) is not listed twice.
   const listedByUsage = new Set<string>((usage?.balanceIssues ?? []).filter((issue) => issue.kind === "signed_out").map((issue) => issue.provider));
   const usedHere = new Set<string>([
-    ...(usage?.accounts ?? []).filter((account) => !account.notSignedInHere).map((account) => account.provider),
+    ...(usage?.accounts ?? []).filter((account) => account.instanceId && !account.notSignedInHere).map((account) => account.provider),
     ...accounts.filter((account) => account.loginBroken).map((account) => account.provider),
   ].filter((provider) => !listedByUsage.has(provider)));
   return providers.flatMap((provider): AttentionItem[] => {
@@ -314,8 +316,9 @@ function unreachableConnections(snapshot: ConnectionSnapshot | null) {
 }
 
 /**
- * The "Can't reach" rows that are an Agent 37 box resting: asleep, stopped
- * or waking can't answer by design, and the box wakes when it is used. The
+ * The "Can't reach" rows that are an Agent 37 box resting
+ * (`agent37MachineResting`): it can't answer by design, and wakes when it is
+ * used. The
  * box list is a network read, so it runs after first paint and only when
  * something is unreachable; the rows show meanwhile and drop when it answers.
  */
