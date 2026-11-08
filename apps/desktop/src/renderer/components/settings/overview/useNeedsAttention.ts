@@ -223,11 +223,13 @@ function pressureItems(pressure: DiskPressureSnapshot | null): AttentionItem[] {
 /**
  * A provider is a problem only when you use it and it can't start chats.
  * "You use it" means you are signed in to it here, or ADE has a Claude or
- * Codex account of yours on this machine (usage tracking lists it, or its
- * saved login broke). Only those accounts (the ones with an `instanceId`)
- * track ADE's own login: usage lists a Cursor account from the Cursor
- * editor's session, which says nothing about ADE's Cursor key. A login that
- * left no trace reads the same as one never made. A blocker alone
+ * Codex account of yours on this machine that names someone (an email or a
+ * plan), that usage found signed out, or whose saved login broke. Only those
+ * accounts (the ones with an `instanceId`) track ADE's own login: usage lists
+ * a Cursor account from the Cursor editor's session, which says nothing about
+ * ADE's Cursor key. Usage always lists each default account, named or not, so
+ * an unnamed one is not "used". A login that left no trace reads the same as
+ * one never made. A blocker alone
  * is not a problem: a provider you never set up has one ("not signed in"), so
  * does one whose runtime is still on its way ("downloads the first time it is
  * used"), and so does one that runs fine with a side note (a Codex token too
@@ -243,7 +245,10 @@ function providerItems(
   // A provider whose signed-out account usage already lists (`usageItems`) is not listed twice.
   const listedByUsage = new Set<string>((usage?.balanceIssues ?? []).filter((issue) => issue.kind === "signed_out").map((issue) => issue.provider));
   const usedHere = new Set<string>([
-    ...(usage?.accounts ?? []).filter((account) => account.instanceId && !account.notSignedInHere).map((account) => account.provider),
+    ...(usage?.accounts ?? [])
+      .filter((account) => account.instanceId && !account.notSignedInHere
+        && (account.email || account.plan || account.login === "signed_out"))
+      .map((account) => account.provider),
     ...accounts.filter((account) => account.loginBroken).map((account) => account.provider),
   ].filter((provider) => !listedByUsage.has(provider)));
   return providers.flatMap((provider): AttentionItem[] => {

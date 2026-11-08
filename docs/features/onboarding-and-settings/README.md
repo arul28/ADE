@@ -2491,8 +2491,9 @@ needs attention. The header counts problems and warnings, with notes beside it
 ("3 things need attention · 2 notes"); notes sit under "Good to know".
 
 The list only names real problems. A provider shows only when you use it
-(signed in here, a Claude or Codex account usage tracking lists on this
-machine, or an account whose saved login broke) and it can't start chats;
+(signed in here, or a Claude or Codex account on this machine that names an
+email or plan, that usage found signed out, or whose saved login broke; usage
+lists every default account, so an unnamed one does not count) and it can't start chats;
 never for a provider you never set up, one you switched off, one whose
 runtime is still downloading (`runtimeDownloadPending` on its connection), or
 one that runs with a side note such as a Codex token too old for usage
