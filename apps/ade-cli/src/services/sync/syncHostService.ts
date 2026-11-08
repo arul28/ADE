@@ -170,6 +170,7 @@ import {
 } from "./syncChatWire";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
+import { reportHelloRejected, reportPeerAccepted } from "./syncHelloTelemetry";
 import type { AccountAuthService } from "../account/accountAuthService";
 import type { AccountSettingsStore } from "../account/accountSettingsStore";
 import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
@@ -8358,6 +8359,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // rejecting machine's identity matches the client's saved pairing may
         // the client safely drop its credentials.
         const rejectingHost = readBrainMetadata();
+        reportHelloRejected(
+          { logger: args.logger, hello, transportOrigin: peer.transportOrigin, hostDeviceId: () => rejectingHost.deviceId },
+          authFailureCode,
+        );
         send(peer.ws, "hello_error", {
           code: authFailureCode,
           message: authFailureMessage,
@@ -8416,6 +8421,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
       peer.authenticated = true;
       peer.helloAcceptedAtMs = Date.now();
+      reportPeerAccepted({
+        logger: args.logger,
+        hello,
+        transportOrigin: peer.transportOrigin,
+        hostDeviceId: () => readBrainMetadata().deviceId,
+      });
       if (sealedAdoption) {
         clearAdoptChallengeIssuancesAfterSuccessfulAuth(peer.remoteAddress);
       }

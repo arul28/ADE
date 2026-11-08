@@ -4694,6 +4694,7 @@ export function registerIpc({
   );
 
   const runtimeBridge = registerRuntimeBridge({
+    productAnalyticsService,
     appVersion: app.getVersion(),
     authorizeLocalRuntimeRoot: (session, requestedRootPath) => {
       const binding = session?.binding;

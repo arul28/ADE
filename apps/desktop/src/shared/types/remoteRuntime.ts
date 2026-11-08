@@ -234,6 +234,8 @@ export type RemoteRuntimeConnectionAttempt = {
   durationMs: number;
   outcome: "connected" | "failed" | "skipped";
   failure?: RemoteRuntimeConnectionAttemptFailure;
+  /** Why it failed, as a fixed token (`ECONNREFUSED`, `http_502`, `ws_close_4505`). Never message text. */
+  errorCode?: string;
 };
 
 export type RemoteRuntimeConnectionRoute = {

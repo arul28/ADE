@@ -1,4 +1,5 @@
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
+import { syncDeviceTelemetryRef } from "../analytics/machineTelemetryId";
 import fs from "node:fs";
 import { captureError } from "../../../shared/sentry/capture";
 import { AdeExpectedError } from "../../../shared/expectedError";
@@ -63,6 +64,8 @@ import {
   isRemoteRuntimeConnectionError,
   type RemoteConnectionPool,
 } from "./remoteConnectionPool";
+import type { Logger } from "../logging/logger";
+import { RemoteDialTelemetry, type RemoteDialOutcome } from "./remoteDialTelemetry";
 import { HostReturnWatches } from "./remoteHostReturnWatch";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { DesktopPairedMachineStore } from "./syncPairedMachineStore";
@@ -101,6 +104,9 @@ import { adeActionAccess, isReplaySafeAdeAction } from "../../../shared/adeActio
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
 type RemoteConnectionServiceOptions = {
+  /** Receives one line per outage saying which routes were tried and how each ended. */
+  logger?: Pick<Logger, "info">;
+  onDialOutcome?: (outcome: RemoteDialOutcome) => void;
   autoconnectIntervalMs?: number;
   pingTimeoutMs?: number;
   appVersion?: string;
@@ -351,6 +357,7 @@ export class RemoteConnectionService {
     },
     { firstAttemptMs: HOST_RETURN_FIRST_ATTEMPT_MS, watchMs: HOST_RETURN_WATCH_MS },
   );
+  private readonly dialTelemetry: RemoteDialTelemetry;
   private readonly pairedFallbackSshTrustByTargetId = new Map<
     string,
     Extract<RemoteRuntimeSshHostKeyTrustStatus, { state: "needs_trust" | "changed" }>
@@ -372,12 +379,19 @@ export class RemoteConnectionService {
     private readonly options: RemoteConnectionServiceOptions = {},
     private readonly pairedStore: DesktopPairedMachineStore = new DesktopPairedMachineStore(),
   ) {
+    this.dialTelemetry = new RemoteDialTelemetry({
+      describeTarget: (targetId) => this.describeDialTarget(targetId),
+      logger: this.options.logger,
+      onOutcome: this.options.onDialOutcome,
+    });
+    this.pool.onDialFailed((targetId, error) => this.dialTelemetry.noteFailed(targetId, error));
     // A call that finds the machine gone reconnects on its own, without
     // `connect()`. The machine may have restarted on a new version (an update
     // it was just sent), so what it reports now replaces what it reported at
     // the last explicit Connect. Without this the list kept the old version
     // and called a finished update "didn't apply".
     this.pool.onEntryConnected((targetId, result) => {
+      this.dialTelemetry.noteConnected(targetId, result.route);
       // The machine is back, whoever dialed it.
       this.hostReturnWatches.stop(targetId);
       // A connect that finishes after the machine was removed or disconnected
@@ -2005,6 +2019,18 @@ export class RemoteConnectionService {
       });
     }
     return errorMessage(error);
+  }
+
+  private describeDialTarget(targetId: string) {
+    const target = this.registry.get(targetId);
+    if (!target) return null;
+    const credentials = target.pairedMachine ? this.pairedStore.getForReference(target.pairedMachine) : null;
+    return {
+      deviceRef: syncDeviceTelemetryRef(credentials?.deviceId),
+      peerDeviceRef: syncDeviceTelemetryRef(credentials?.hostIdentity.deviceId),
+      peerVersion: target.runtimeBinaryVersion ?? null,
+      lastConnectedAt: target.lastConnectedAt ?? null,
+    };
   }
 
   private upsertProject(

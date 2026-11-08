@@ -27,6 +27,7 @@ import {
   type WorkViewMode,
 } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
+import { runFirstLoadWithRetry } from "../../lib/firstLoadRetry";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import {
   canonicalInputFromSummary,
@@ -751,6 +752,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
+  const remoteTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
   const activeBindingKey = useAppStore((s) => s.projectBinding?.key ?? null);
   const lanes = useAppStore((s) => s.lanes);
   const focusSession = useAppStore((s) => s.focusSession);
@@ -852,6 +854,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     retireChatLaunchBridges(listed);
   }, [chatLaunchRowSources, listedChatSessionIds]);
   const [loading, setLoading] = useState(false);
+  const [firstLoadRetrying, setFirstLoadRetrying] = useState(false);
   /** Bumped when the soonest snooze deadline lapses so the partition re-derives. */
   const [snoozeEpoch, setSnoozeEpoch] = useState(0);
   const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
@@ -2010,8 +2013,17 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   useEffect(() => {
     if (!projectRoot || !projectStateKey || !isWorkRoute) return;
     const isInitialLoad = !hasLoadedOnceRef.current;
-    refresh({ showLoading: isInitialLoad, force: isInitialLoad }).catch(() => {});
-  }, [isWorkRoute, projectRoot, projectStateKey, refresh]);
+    if (hasAuthoritativeSessionsRef.current) {
+      refresh({ showLoading: isInitialLoad, force: isInitialLoad }).catch(() => {});
+      return;
+    }
+    return runFirstLoadWithRetry({
+      surface: "sessions",
+      targetId: remoteTargetId,
+      load: (attempt) => refresh({ showLoading: attempt === 1 && isInitialLoad, force: isInitialLoad || attempt > 1 }),
+      onRetryingChange: setFirstLoadRetrying,
+    });
+  }, [isWorkRoute, projectRoot, projectStateKey, refresh, remoteTargetId]);
 
   // Held under CTO or History, the list is on screen in the sidebar even though
   // Work is not: load it once, or it reads "No sessions" when the app opens
@@ -2020,8 +2032,13 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   useEffect(() => {
     if (!projectRoot || !projectStateKey || isWorkRoute || !sidebarHeld) return;
     if (hasLoadedOnceRef.current) return;
-    refresh({ showLoading: true, force: true }).catch(() => {});
-  }, [isWorkRoute, projectRoot, projectStateKey, refresh, sidebarHeld]);
+    return runFirstLoadWithRetry({
+      surface: "sessions",
+      targetId: remoteTargetId,
+      load: (attempt) => refresh({ showLoading: attempt === 1, force: true }),
+      onRetryingChange: setFirstLoadRetrying,
+    });
+  }, [isWorkRoute, projectRoot, projectStateKey, refresh, remoteTargetId, sidebarHeld]);
 
   useEffect(() => {
     if (isWorkRoute) return;
@@ -2939,6 +2956,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     setGridSets,
     selectedSession,
     loading,
+    firstLoadRetrying,
 
     filterLaneId,
     setFilterLaneId,

@@ -24,6 +24,10 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   (client, key, template builder, New Agent 37 machine, half-made box
   cleanup); see [Agent 37 machines](agent37.md).
 
+- `apps/desktop/src/main/services/remoteRuntime/remoteDialTelemetry.ts` — one
+  record per outage of why a dial failed: each route's kind, result, fixed
+  error token and duration, matched to the other machine's report by hashed
+  device ids. See [Logging](../../logging.md#error-tracking-sentry).
 - `apps/desktop/src/main/services/remoteRuntime/remoteTerminalUpdate.ts` —
   `updateViaRemoteTerminal`, the terminal-driven `ade brain update` for a
   connected Windows machine on a build that cannot self-install.

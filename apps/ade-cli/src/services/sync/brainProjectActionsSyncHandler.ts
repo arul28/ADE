@@ -39,6 +39,7 @@ import {
 } from "../../../../desktop/src/shared/types";
 import { isPersonalChatActionQueueable } from "../../../../desktop/src/shared/types/personalChats";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import { reportHelloRejected, reportPeerAccepted } from "./syncHelloTelemetry";
 import { nowIso } from "../../../../desktop/src/main/services/shared/utils";
 import type { SharedSyncListenerConnectionHandler } from "./sharedSyncListener";
 import { SYNC_HOST_BIND_LOOPBACK_ONLY, syncUpgradeHelloEnvelope } from "./sharedSyncListener";
@@ -1792,6 +1793,10 @@ export function createBrainProjectActionsSyncHandler(
             // rejecting machine so clients never drop a saved pairing over a
             // rejection they cannot attribute to the paired machine.
             const rejectingHost = brainMetadata();
+            reportHelloRejected(
+              { logger: args.logger, hello, transportOrigin, hostDeviceId: () => rejectingHost.deviceId },
+              authFailure.code,
+            );
             send(ws, "hello_error", {
               code: authFailure.code,
               // A named cause when a branch supplied one; the generic wording
@@ -1813,6 +1818,7 @@ export function createBrainProjectActionsSyncHandler(
             return;
           }
           peer.authenticated = true;
+          reportPeerAccepted({ logger: args.logger, hello, transportOrigin, hostDeviceId: () => brainMetadata().deviceId });
           if (sealedAdoption) adoptChallengeFailures.clearAfterSuccess({ ip: remoteAddress ?? null });
           peer.adoptChallenge = null;
           // `account` is record-backed exactly like `paired` once it commits:

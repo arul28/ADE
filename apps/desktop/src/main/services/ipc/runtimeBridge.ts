@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, powerMonitor, type WebContents } from "electron";
+import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import { agent37UpdateBlocker, agent37WakeForUse } from "../agent37/agent37WakeHook";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
@@ -99,6 +100,7 @@ import {
 } from "./runtimeEventSubscriptionRegistry";
 
 type RuntimeBridgeArgs = {
+  productAnalyticsService?: Pick<ProductAnalyticsService, "capture">;
   appVersion: string;
   /**
    * Retained for callers; the bridge itself no longer reads global state — the
@@ -552,6 +554,7 @@ export type RuntimeBridgeRegistration = {
 export { getOrCreateLocalAccountMachineIdentity };
 
 export function registerRuntimeBridge({
+  productAnalyticsService,
   appVersion,
   authorizeLocalRuntimeRoot,
   bindRemoteProject,
@@ -596,6 +599,21 @@ export function registerRuntimeBridge({
     remoteConnectionPool,
     {
       appVersion,
+      logger: getMachineMainLogger(),
+      onDialOutcome: (outcome) => {
+        productAnalyticsService?.capture({
+          event: "ade_feature_used",
+          surface: "desktop",
+          properties: {
+            feature: "connections",
+            action: "remote_connect",
+            outcome: outcome === "failed" ? "failed" : "completed",
+          },
+          projectId: null,
+          dedupeKey: `remote_connect:${outcome}`,
+          minimumIntervalMs: 60 * 60 * 1_000,
+        });
+      },
       getAccountRelayProof,
       getAuthorizedAccountOwnerId,
       // A dev desktop shares this computer's machine pairing with the installed

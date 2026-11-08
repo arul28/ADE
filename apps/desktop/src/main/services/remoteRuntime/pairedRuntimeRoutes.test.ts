@@ -6,6 +6,7 @@ import {
   createRouteAttemptRecorder,
   dominantPairedRuntimeFailure,
   orderPairedCandidates,
+  pairedRuntimeFailureCode,
   pairedRuntimeFailureMessage,
 } from "./pairedRuntimeRoutes";
 import {
@@ -150,6 +151,19 @@ describe("paired runtime endpoint routes", () => {
     expect(isTailnetHostname("  STUDIO.EXAMPLE.TS.NET. ")).toBe(true);
     expect(isTailnetHostname(" [100.64.0.1]. ")).toBe(true);
     expect(isTailnetHostname("100.128.0.1")).toBe(false);
+  });
+
+  it.each([
+    ["refused", new Error("Failed to connect to sync endpoint: connect ECONNREFUSED 100.117.1.2:8787"), "ECONNREFUSED"],
+    ["DNS", new Error("Failed to connect to sync endpoint: getaddrinfo ENOTFOUND mac.tailnet.ts.net"), "ENOTFOUND"],
+    ["relay status", new Error("Failed to connect to sync endpoint: Unexpected server response: 502"), "http_502"],
+    ["close frame", Object.assign(new Error("closed"), { closeCode: 4505 }), "ws_close_4505"],
+    ["nested cause", new Error("wrapped", { cause: Object.assign(new Error("x"), { code: "EHOSTUNREACH" }) }), "EHOSTUNREACH"],
+    ["deadline", new Error("Timed out connecting to sync endpoint after 3000ms."), "timeout"],
+    ["an all-caps machine name", new Error("Can't reach EVAN-PC — it may be asleep."), undefined],
+    ["a bare address", new Error("nothing answered at 192.168.1.5"), undefined],
+  ])("reports only a fixed token for a failed route: %s", (_name, error, expected) => {
+    expect(pairedRuntimeFailureCode(error)).toBe(expected);
   });
 
   it("classifies a host rejection from its code, never from the message it wrote", () => {
