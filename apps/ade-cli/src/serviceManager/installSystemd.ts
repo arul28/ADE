@@ -55,8 +55,11 @@ type SystemdServiceManagerDeps = {
 export function servicePath(
   homeDir = os.homedir(),
   serviceName: string = ADE_RUNTIME_SERVICE_NAME,
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return path.join(homeDir, ".config", "systemd", "user", `${serviceName}.service`);
+  const configured = env.XDG_CONFIG_HOME?.trim();
+  const configHome = configured && path.isAbsolute(configured) ? configured : path.join(homeDir, ".config");
+  return path.join(configHome, "systemd", "user", `${serviceName}.service`);
 }
 
 function serviceUnitName(): string {
@@ -197,7 +200,7 @@ export async function installSystemdService(
   const run = deps.spawnSync ?? spawnSync;
   const env = deps.env ?? process.env;
   const homeDir = deps.homeDir ?? os.homedir();
-  const targetPath = servicePath(homeDir);
+  const targetPath = servicePath(homeDir, ADE_RUNTIME_SERVICE_NAME, env);
   const command = deps.command ?? resolveAdeServeCommand();
   const adeHome = command.env?.ADE_HOME?.trim() || env.ADE_HOME?.trim() || path.join(homeDir, ".ade");
   const socketPath = path.join(adeHome, "sock", "ade.sock");

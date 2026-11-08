@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { safeStorage } from "electron";
+import { isSecureStorageAvailable } from "../shared/secureStorage";
 import type { Logger } from "../logging/logger";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import { createLinearAccountSync, type LinearAccountCredential } from "./linearAccountSync";
@@ -153,7 +154,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
   const readEncryptedToken = (): StoredLinearToken | null => {
     try {
-      if (!safeStorage.isEncryptionAvailable()) {
+      if (!isSecureStorageAvailable(safeStorage)) {
         args.logger?.warn("linear_sync.token_store_unavailable", {
           message: "OS secure storage unavailable; cannot decrypt Linear token."
         });
@@ -187,7 +188,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
   const readStoredOAuthClientCredentials = (): LinearOAuthClientCredentials | null => {
     try {
-      if (!safeStorage.isEncryptionAvailable()) {
+      if (!isSecureStorageAvailable(safeStorage)) {
         args.logger?.warn("linear_sync.oauth_client_store_unavailable", {
           message: "OS secure storage unavailable; cannot decrypt Linear OAuth client config."
         });
@@ -239,7 +240,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     read: () => {
       if (credentialStore) return readMachineCredential(MACHINE_PROVENANCE_KEY);
       const provenancePath = path.join(secretsDir, PROVENANCE_FILE);
-      if (!fs.existsSync(provenancePath) || !safeStorage.isEncryptionAvailable()) return null;
+      if (!fs.existsSync(provenancePath) || !isSecureStorageAvailable(safeStorage)) return null;
       return safeStorage.decryptString(fs.readFileSync(provenancePath));
     },
     write: (value) => {
@@ -247,7 +248,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
         writeMachineCredential(MACHINE_PROVENANCE_KEY, value);
         return;
       }
-      if (!safeStorage.isEncryptionAvailable()) return;
+      if (!isSecureStorageAvailable(safeStorage)) return;
       fs.mkdirSync(secretsDir, { recursive: true });
       writeFileAtomic(
         path.join(secretsDir, PROVENANCE_FILE),
@@ -421,7 +422,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       }
     }
 
-    if (!hadEncryptedLegacyStore || safeStorage.isEncryptionAvailable()) {
+    if (!hadEncryptedLegacyStore || isSecureStorageAvailable(safeStorage)) {
       markProjectMigrated();
     }
   };
@@ -451,7 +452,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       return;
     }
 
-    if (!safeStorage.isEncryptionAvailable()) {
+    if (!isSecureStorageAvailable(safeStorage)) {
       throw new Error("OS secure storage is unavailable. Cannot store Linear token.");
     }
 
@@ -517,7 +518,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       return;
     }
 
-    if (!safeStorage.isEncryptionAvailable()) {
+    if (!isSecureStorageAvailable(safeStorage)) {
       throw new Error("OS secure storage is unavailable. Cannot store Linear OAuth client settings.");
     }
 

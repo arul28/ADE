@@ -483,6 +483,11 @@ function buildChannel(repoRoot, channel, options) {
     return;
   }
 
+  if (process.platform === "linux") {
+    run("npm", ["--prefix", "apps/desktop", "run", "dist:linux"], { cwd: repoRoot, env, dryRun: options.dryRun });
+    return;
+  }
+
   ensureHostRuntimeResources(repoRoot, options, env);
   // The native helpers (Mac Desktop driver, capture helper,
   // sim helper) are gitignored build outputs. `dist:mac` builds them; a channel

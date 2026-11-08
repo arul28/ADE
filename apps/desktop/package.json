@@ -86,7 +86,11 @@
     "build:desktop-driver:win": "node ./scripts/build-windows-desktop-driver.mjs",
     "build:now-playing:win": "node ./scripts/build-now-playing-win.mjs",
     "build:cli-launcher:win": "node ./scripts/build-cli-launcher-win.mjs",
-    "build:port-scan:win": "node ./scripts/build-port-scan-win.mjs"
+    "build:port-scan:win": "node ./scripts/build-port-scan-win.mjs",
+    "build:desktop-driver:linux": "node ./scripts/build-linux-desktop-driver.mjs",
+    "dist:linux": "npm run build:desktop-driver:linux && ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY=1 npm run materialize:runtime-resources && ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY=1 npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run rebuild:native && npm run build && npm run package:linux && node ./scripts/assert-artifact-size-budget.mjs --release-dir=release${ADE_PACKAGE_CHANNEL:+-$ADE_PACKAGE_CHANNEL} && npm run validate:linux:release",
+    "package:linux": "node ./scripts/run-linux-electron-builder.mjs",
+    "validate:linux:release": "node ./scripts/validate-linux-artifacts.mjs"
   },
   "//dependencies": "Only packages the PACKAGED runtime resolves from node_modules belong here: electron-builder ships every production dependency into app.asar. main/preload are bundled by tsup (dependencies stay external, so a bare require() in dist/main or dist/preload means the package must ship), the packaged ade-cli resolves its own externals through NODE_PATH into app.asar[.unpacked]/node_modules (see src/main/services/runtime/packagedNodePath.ts), and a few binaries are located by path. Everything the renderer uses is inlined into dist/renderer by Vite and belongs in devDependencies.",
   "dependencies": {
@@ -401,7 +405,8 @@
     "afterPack": "./scripts/after-pack-runtime-fixes.cjs",
     "afterSign": "./scripts/after-sign-notarize.cjs",
     "toolsets": {
-      "nsis": "1.2.1"
+      "nsis": "1.2.1",
+      "appimage": "1.0.3"
     },
     "publish": {
       "provider": "github",
@@ -606,6 +611,93 @@
         "role": "Viewer",
         "rank": "Alternate"
       }
-    ]
-  }
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "build/icons",
+      "category": "Development",
+      "artifactName": "ADE-${version}-linux-${arch}.${ext}",
+      "extraResources": [
+        {
+          "from": "resources/runtime",
+          "to": "runtime",
+          "filter": [
+            "ade-linux-${arch}",
+            "ade-linux-${arch}.native.tar.gz"
+          ]
+        },
+        {
+          "from": "resources/native/linux-${arch}/ade-desktop-driver",
+          "to": "native/ade-desktop-driver"
+        }
+      ],
+      "maintainer": "ADE",
+      "mimeTypes": [
+        "text/plain",
+        "text/markdown",
+        "application/json",
+        "application/yaml",
+        "application/xml",
+        "text/html",
+        "text/css",
+        "text/javascript",
+        "text/x-python",
+        "text/x-rust",
+        "text/x-go",
+        "text/x-java",
+        "text/x-shellscript",
+        "text/csv",
+        "text/tab-separated-values",
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/svg+xml",
+        "audio/mpeg",
+        "audio/mp4",
+        "audio/wav",
+        "audio/flac",
+        "audio/ogg",
+        "video/mp4",
+        "video/quicktime",
+        "video/webm",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "inode/directory",
+        "application/x-yaml",
+        "text/x-typescript",
+        "application/toml"
+      ]
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "libasound2t64 | libasound2",
+        "libgbm1",
+        "ca-certificates"
+      ],
+      "afterInstall": "build/linux-after-install.tpl",
+      "afterRemove": "build/linux-after-remove.tpl"
+    },
+    "appImage": {
+      "executableArgs": []
+    }
+  },
+  "homepage": "https://ade-app.dev"
 }

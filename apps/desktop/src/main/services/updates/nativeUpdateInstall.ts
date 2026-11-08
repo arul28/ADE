@@ -1,4 +1,4 @@
-import { dialog, type BrowserWindow, type MenuItemConstructorOptions } from "electron";
+import { dialog, shell, type BrowserWindow, type MenuItemConstructorOptions } from "electron";
 import type { AutoUpdateSnapshot } from "../../../shared/types";
 
 /**
@@ -32,6 +32,7 @@ function versionLabel(version: string | null): string {
 export function nativeUpdateMenuLabel(snapshot: AutoUpdateSnapshot): string {
   switch (snapshot.status) {
     case "ready":
+      if (snapshot.installMode === "manual") return `Download Update ${versionLabel(snapshot.version)}…`;
       return `Install Update ${versionLabel(snapshot.version)} and Restart…`;
     case "checking":
       return "Checking for Updates…";
@@ -90,6 +91,18 @@ export async function runNativeUpdateInstall(service: NativeUpdateService, win: 
   }
   if (snapshot.status !== "ready" || !snapshot.version) {
     await message(win, notReadyMessage(snapshot));
+    return;
+  }
+  if (snapshot.installMode === "manual") {
+    const { response } = await message(win, {
+      type: "info",
+      message: `ADE ${versionLabel(snapshot.version)} is available.`,
+      detail: "Download and install the package to update this computer.",
+      buttons: ["Open download page", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 0 && snapshot.downloadUrl) await shell.openExternal(snapshot.downloadUrl);
     return;
   }
   const { response } = await message(win, {

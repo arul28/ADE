@@ -133,7 +133,7 @@ export function UpdateTrackControls({ snapshot }: { snapshot: AutoUpdateSnapshot
     }
   }, [checking, track]);
 
-  if (!track) return null;
+  if (!track || snapshot.installMode === "manual") return null;
 
   const status = trackStatusModel({
     track,

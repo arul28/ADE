@@ -172,7 +172,7 @@ function serviceItems(info: AppInfo | null, health: RuntimeHealthSnapshot | null
 function updateItems(update: AutoUpdateSnapshot | null): AttentionItem[] {
   if (!update) return [];
   const route = settingsRouteFor("general.auto-updates");
-  if (update.lastInstallFailed && update.status === "ready" && update.lastInstallFailed.targetVersion === update.version) {
+  if (update.installMode !== "manual" && update.lastInstallFailed && update.status === "ready" && update.lastInstallFailed.targetVersion === update.version) {
     return [{
       id: "update-install-failed",
       severity: "warning",
@@ -182,7 +182,7 @@ function updateItems(update: AutoUpdateSnapshot | null): AttentionItem[] {
       route,
     }];
   }
-  if (update.parked) {
+  if (update.installMode !== "manual" && update.parked) {
     return [{
       id: "update-parked",
       severity: "warning",

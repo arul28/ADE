@@ -16,6 +16,7 @@ func mountMacDesktopLiveSession(
     viewerLabel: MacDesktopLiveSession.defaultViewerLabel()
   )
   syncService.registerMacDesktopStream(
+    laneId: laneId,
     subscriptionId: session.subscriptionId,
     onRecord: { [weak session] record in session?.consume(record) },
     onEnded: { [weak session] ended in session?.noteEnded(ended) }

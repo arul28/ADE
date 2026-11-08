@@ -162,7 +162,7 @@ import {
 } from "./services/account/agentRemoteRpc";
 import { gitRemoteIdentity, peerGitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { readPermissionLevel } from "../../desktop/src/shared/permissionLadder";
-import { readInstalledDesktopAppVersion } from "../../desktop/src/main/services/native/nativeHelperPaths";
+import { readInstalledDesktopAppVersion, readDesktopUpdateInstallMode } from "../../desktop/src/main/services/native/nativeHelperPaths";
 
 type HandlerEntry = {
   handler: JsonRpcHandler & { dispose?: () => void };
@@ -2396,6 +2396,7 @@ export function createMultiProjectRpcRequestHandler(
       // `ade brain update` they differ, and another device must not read the
       // brain's version as the app's. Null on a machine with no app.
       desktopAppVersion: readInstalledDesktopAppVersion(),
+      ...readDesktopUpdateInstallMode(),
     };
   };
 

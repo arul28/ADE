@@ -211,6 +211,7 @@ export function requestDownloadedUpdateInstall(
   snapshot: AutoUpdateSnapshot,
   onAccepted?: () => void,
 ): Promise<boolean> {
+  if (snapshot.installMode === "manual") return Promise.resolve(false);
   installInFlight ??= runInstallFlow(snapshot, onAccepted)
     .catch(() => false)
     .finally(() => {

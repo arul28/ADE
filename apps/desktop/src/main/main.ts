@@ -528,6 +528,7 @@ import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrai
 import { runUpdateTransaction } from "./services/updates/updateTransaction";
 import { createInstallOnQuitController, type InstallOnQuitDecision } from "./services/updates/installOnQuit";
 import { recordInstalledDesktopApp } from "./services/native/nativeHelperPaths";
+import { isSecureStorageAvailable } from "./services/shared/secureStorage";
 import {
   checkRuntimeIdentity,
   runVerifiedRuntimeRestart,
@@ -945,7 +946,9 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
   const safeCredentialsPath = path.join(secretsDir, "credentials.safe.enc");
   const legacyCredentialsPath = path.join(secretsDir, "credentials.json.enc");
   try {
-    if (safeStorage.isEncryptionAvailable()) {
+    // Electron reports encryption available for Linux's basic_text backend,
+    // even though its fixed key offers no OS credential-store protection.
+    if (isSecureStorageAvailable(safeStorage)) {
       const primary = new ElectronSafeStorageCredentialStore({
         secretsDir,
         safeStorage,
@@ -1755,6 +1758,7 @@ app.whenReady().then(async () => {
     executablePath: process.execPath,
     userDataPath: app.getPath("userData"),
     version: app.getVersion(),
+    downloadUrl: `https://github.com/${packagedReleaseRepository}/releases/latest`,
     logger: getMachineMainLogger(),
   });
 
@@ -3499,7 +3503,9 @@ app.whenReady().then(async () => {
   // Channel builds do not check for updates. There is no per-channel publish
   // feed: an Alpha would poll Stable's feed and offer to "update" itself into
   // a Stable installer with a different appId and ADE home.
-  const hasUpdateFeed = app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
+  const linuxManualUpdate = app.isPackaged && process.platform === "linux" && !process.env.APPIMAGE?.trim();
+  const hasReleaseChannel = app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
+  const hasUpdateFeed = hasReleaseChannel && !linuxManualUpdate;
   // The "ADE could not start" window. Built right after the update service,
   // which its "Go back" drives; the install hook below reads it then.
   let startupRecovery: StartupRecovery | null = null;
@@ -3507,9 +3513,20 @@ app.whenReady().then(async () => {
     logger: updateLogger,
     currentVersion: app.getVersion(),
     globalStatePath,
+    manualInstallOnly: linuxManualUpdate,
+    checkManualRelease: linuxManualUpdate && hasReleaseChannel ? async () => {
+      const [owner, name] = packagedReleaseRepository.split("/");
+      if (!owner || !name) return null;
+      const release = await fetchAdeLatestRelease({
+        repo: { owner, name },
+        fetchImpl: (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(15_000) }),
+      });
+      return release ? { version: release.version, url: `https://github.com/${packagedReleaseRepository}/releases/tag/${encodeURIComponent(release.tagName)}` } : null;
+    } : undefined,
     updaterCacheDir: app.isPackaged ? resolveAutoUpdaterCacheDir() : undefined,
-    installTargetPath: process.execPath,
-    autoCheckEnabled: hasUpdateFeed,
+    installTargetPath: process.platform === "linux" ? process.env.APPIMAGE?.trim() || process.execPath : process.execPath,
+    autoCheckEnabled: hasReleaseChannel,
+    autoApplyEnabled: hasUpdateFeed && process.env.ADE_DISABLE_AUTO_UPDATE_APPLY !== "1",
     // Stable and Beta are tracks of this same install, not channels: the
     // machine's choice lives in ~/.ade/update-track.json so the brain and the
     // CLI read the same one (docs/plans/beta-track.md). A channel build (Alpha)

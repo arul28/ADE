@@ -7,6 +7,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
+import { materializeAppImageRuntime } from "./appImageRuntime";
 import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
 import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
 import { signalChildProcessTree } from "../shared/utils";
@@ -1882,6 +1883,7 @@ export class LocalRuntimeConnectionPool {
    */
   private async runServiceManagerCommand(options: {
     cliPath: string;
+    executable?: string;
     flag: "--install-service" | "--uninstall-service";
     timeoutMs: number;
     env?: NodeJS.ProcessEnv;
@@ -1890,7 +1892,7 @@ export class LocalRuntimeConnectionPool {
       // The service starts changing as the child starts: a probe that began
       // before this may describe it as it was.
       this.bumpServiceStateGeneration();
-      const child = spawn(process.execPath, [options.cliPath, "serve", options.flag], {
+      const child = spawn(options.executable ?? process.execPath, options.executable ? ["serve", options.flag] : [options.cliPath, "serve", options.flag], {
         env: options.env ?? buildLocalRuntimeNodeEnv(this.appVersion),
         stdio: ["ignore", "pipe", "pipe"],
         detached: false,
@@ -1964,21 +1966,24 @@ export class LocalRuntimeConnectionPool {
     if (
       !runningCompatibilityError
       && runningProbe
-      && runningProbe.compatibleNewer
+      && (runningProbe.compatibleNewer
+        || (process.platform === "linux" && !options.forceRestart && !this.appFallback))
     ) {
       this.clearVersionSkewStatus(runningProbe.runtimeInfo.version);
       this.serviceInstallStatus = {
         state: "skipped",
         attempted: false,
         path: cliPath,
-        message: "Skipped ADE service install because the newer running brain is protocol-compatible.",
+        message: runningProbe.compatibleNewer
+          ? "Skipped ADE service install because the newer running brain is protocol-compatible."
+          : "Skipped ADE service install because a compatible brain is already running.",
         exitCode: null,
         updatedAt: new Date().toISOString(),
       };
       this.logger.info("local_runtime.service_install_skipped", {
         cliPath,
         socketPath,
-        reason: "compatible_newer_runtime",
+        reason: runningProbe.compatibleNewer ? "compatible_newer_runtime" : "compatible_running_linux_runtime",
         runtimeVersion: runningProbe.runtimeInfo.version,
         appVersion: this.appVersion,
         runtimePid: runningProbe.runtimeInfo.pid,
@@ -2005,6 +2010,29 @@ export class LocalRuntimeConnectionPool {
         runtimePid: runningCompatibilityError.pid,
       });
       return;
+    }
+    let standalone: Awaited<ReturnType<typeof materializeAppImageRuntime>> | null = null;
+    if (process.platform === "linux" && process.env.APPIMAGE?.trim()) {
+      // Never replace files under a live brain. The normal update handoff stops
+      // it before the new app launch; preserve any other answering brain.
+      if (runningProbe || getRuntimeServiceStatus().running === true) {
+        this.serviceInstallStatus = {
+          state: "skipped", attempted: false, path: cliPath,
+          message: "A brain is already running; its runtime was left unchanged.",
+          exitCode: null, updatedAt: new Date().toISOString(),
+        };
+        return;
+      }
+      try {
+        standalone = await materializeAppImageRuntime(this.appVersion);
+      } catch (error) {
+        this.serviceInstallStatus = {
+          state: "failed", attempted: true, path: cliPath,
+          message: `Could not prepare the AppImage brain: ${error instanceof Error ? error.message : String(error)}`,
+          exitCode: null, updatedAt: new Date().toISOString(),
+        };
+        return;
+      }
     }
     if (this.appFallback) this.appFallbackHandoverPending = this.appFallback;
     // No installer reaps the fallback: systemd only reaps its supervised child,
@@ -2042,6 +2070,7 @@ export class LocalRuntimeConnectionPool {
     try {
       result = await this.runServiceManagerCommand({
         cliPath,
+        executable: standalone?.binary,
         flag: "--install-service",
         // Mirrors the uninstall guard: a wedged `serve --install-service` must
         // not leave the install pending forever — that pins
@@ -2049,7 +2078,7 @@ export class LocalRuntimeConnectionPool {
         // Repair spinning.
         timeoutMs: this.options.serviceInstallTimeoutMs ?? LOCAL_RUNTIME_SERVICE_INSTALL_TIMEOUT_MS,
         env: {
-          ...buildLocalRuntimeNodeEnv(this.appVersion),
+          ...(standalone?.env ?? buildLocalRuntimeNodeEnv(this.appVersion)),
           ...(options.forceRestart ? { ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" } : {}),
         },
       });

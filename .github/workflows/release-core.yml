@@ -44,6 +44,9 @@ on:
       mac_result:
         description: Aggregate result of the build-mac-release matrix.
         value: ${{ jobs.build-results.outputs.mac_result }}
+      linux_result:
+        description: Aggregate result of the Linux packaging matrix.
+        value: ${{ jobs.build-results.outputs.linux_result }}
       windows_result:
         description: >-
           Result of build-win-release. 'skipped' when the Windows publication
@@ -493,6 +496,63 @@ jobs:
           POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/posthog/upload-sourcemaps.mjs --version "$RELEASE_TAG"
+
+  build-linux-release:
+    needs: [verify, build-runtime-binaries]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            os: ubuntu-latest
+            rust: x86_64-unknown-linux-musl
+          - arch: arm64
+            os: ubuntu-24.04-arm
+            rust: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
+    env:
+      ADE_RUNTIME_TARGET: linux-${{ matrix.arch }}
+      ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}/apps/desktop/resources/runtime
+      ADE_RELEASE_REPOSITORY: ${{ github.repository }}
+      ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Linux build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake git build-essential
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.rust }}
+      - name: Install desktop dependencies
+        run: cd apps/desktop && npm ci
+      - name: Install CLI dependencies
+        run: cd apps/ade-cli && npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: ade-runtime-linux-${{ matrix.arch }}
+          path: apps/desktop/resources/runtime
+      - name: Stamp release version
+        env:
+          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: cd apps/desktop && npm run version:release
+      - name: Apply release track
+        env:
+          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/beta/apply-build-track.mjs
+      - name: Build and validate Linux packages
+        run: cd apps/desktop && npm run dist:linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ade-linux-release-${{ inputs.release_tag }}-${{ matrix.arch }}
+          path: |
+            apps/desktop/release/ADE-*-linux-${{ matrix.arch }}.AppImage
+            apps/desktop/release/ADE-*-linux-${{ matrix.arch }}.deb
+            apps/desktop/release/latest-linux*.yml
+          if-no-files-found: error
 
   build-win-release:
     # Same shape as build-mac-release: the tagged commit is built, signed and
@@ -1266,11 +1326,13 @@ jobs:
       - build-mac-release
       - smoke-mac-x64
       - build-win-release
+      - build-linux-release
     runs-on: ubuntu-latest
     outputs:
       runtime_result: ${{ needs.build-runtime-binaries.result }}
       # The macOS build counts only when the x64 smoke on x64 hardware passed.
       mac_result: ${{ needs.build-mac-release.result != 'success' && needs.build-mac-release.result || needs.smoke-mac-x64.result }}
+      linux_result: ${{ needs.build-linux-release.result }}
       windows_result: ${{ needs.build-win-release.result }}
     steps:
       - name: Report build results

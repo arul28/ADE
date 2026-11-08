@@ -66,6 +66,10 @@ export const MARKETING_CTA_LABELS = {
   DOWNLOAD_MAC_ARM64: "download_mac_arm64",
   DOWNLOAD_MAC_X64: "download_mac_x64",
   DOWNLOAD_WINDOWS_X64: "download_windows_x64",
+  DOWNLOAD_LINUX_X64_APPIMAGE: "download_linux_x64_appimage",
+  DOWNLOAD_LINUX_ARM64_APPIMAGE: "download_linux_arm64_appimage",
+  DOWNLOAD_LINUX_X64_DEB: "download_linux_x64_deb",
+  DOWNLOAD_LINUX_ARM64_DEB: "download_linux_arm64_deb",
   GET_STARTED_FREE: "get_started_free",
   OPEN_WEB_CLIENT: "open_web_client",
 } as const;

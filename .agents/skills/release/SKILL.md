@@ -5,7 +5,16 @@ description: 'ADE release conductor: detect whether desktop, iOS, and/or the Clo
 
 # ADE Release
 
-ADE ships three independent tiers: **desktop** (GitHub Actions, macOS + Windows),
+## Linux desktop release evidence
+
+For a desktop release, verify the Linux AppImage and deb for both architectures,
+checksums and architecture-specific updater metadata. Follow the installed-host
+evidence matrix in `docs/development/linux-support.md`; report missing real-host
+proof, and do not treat an extracted AppImage container smoke as FUSE, sandbox,
+Wayland or installed-package proof. The deb update path offers a download.
+
+
+ADE ships three independent tiers: **desktop** (GitHub Actions, macOS, Windows and Linux),
 **iOS** (TestFlight, built on this Mac), and **Cloudflare** (the web client and
 four Workers, deployed by `deploy-web.yml` on every push to `main`).
 

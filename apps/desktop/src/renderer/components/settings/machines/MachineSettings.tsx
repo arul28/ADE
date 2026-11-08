@@ -272,7 +272,7 @@ function TrackRow({ scope, fact, reach, onOpen }: { scope: SettingsMachinePage; 
     <MachineRow
       icon={<GitBranch size={14} />}
       title="Update track"
-      value={track ? updateTrackLabel(track) : "Unknown"}
+      value={scope.isThisMachine && snapshot.installMode === "manual" ? "Manual package" : track ? updateTrackLabel(track) : "Unknown"}
       // A switch checks this machine's databases and installs here, so it is
       // made on the machine itself.
       control={scope.isThisMachine ? <RowLink label="Change" onClick={onOpen} /> : <RowHint />}
@@ -281,6 +281,7 @@ function TrackRow({ scope, fact, reach, onOpen }: { scope: SettingsMachinePage; 
 }
 
 function AutoInstallRow({ isThis, onOpen }: { isThis: boolean; onOpen: () => void }) {
+  const snapshot = useAutoUpdateSnapshot();
   const [preferences, setPreferences] = useState<AutoUpdatePreferences | null>(null);
   useEffect(() => {
     if (!isThis) return undefined;
@@ -299,7 +300,7 @@ function AutoInstallRow({ isThis, onOpen }: { isThis: boolean; onOpen: () => voi
     <MachineRow
       icon={<ArrowClockwise size={14} />}
       title="Install updates automatically"
-      value={isThis ? (preferences ? (preferences.automaticInstall ? "On" : "Off") : "…") : null}
+      value={isThis ? (snapshot.installMode === "manual" ? "Unavailable for this package" : preferences ? (preferences.automaticInstall ? "On" : "Off") : "…") : null}
       control={isThis ? <RowLink label="Change" onClick={onOpen} /> : <RowHint />}
     />
   );

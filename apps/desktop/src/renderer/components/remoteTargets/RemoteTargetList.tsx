@@ -1333,13 +1333,14 @@ export function RemoteTargetList({
                 ? machineUpdateTargetVersion({ version: row.version }, knownVersions)
                 : null
           }
+          manualDownloadUrl={(row.status?.updateInstallMode ?? updateAttempt?.updateInstallMode) === "manual_download" ? row.status?.downloadUrl ?? updateAttempt?.downloadUrl ?? null : undefined}
           updatePhase={updatePhase}
           power={pairAgainMachine?.power ?? null}
           updating={machineUpdates.updatingIds.has(row.target.id) || updateStatus?.inFlight === true}
           checkingUpdate={machineUpdates.checkingIds.has(row.target.id)}
           updateStatus={updateStatus ? { ok: updateStatus.ok, message: updateStatus.message } : null}
           onUpdateAndRestart={(targetVersion) =>
-            void requestMachineUpdates(
+            (row.status?.updateInstallMode ?? updateAttempt?.updateInstallMode) === "manual_download" ? openExternalUrl(row.status?.downloadUrl ?? updateAttempt?.downloadUrl) : void requestMachineUpdates(
               [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel, targetVersion }],
             )
           }
@@ -1456,10 +1457,10 @@ export function RemoteTargetList({
       ? machinesBehindOnTheirTrack(
           rows.flatMap((row) =>
             row.kind === "saved" && row.connected
-              ? [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel }]
+              ? [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel, updateInstallMode: row.status?.updateInstallMode }]
               : []),
           knownVersions,
-        )
+        ).filter((machine) => (machine.updateInstallMode ?? machineUpdates.attempts[machine.id]?.updateInstallMode) !== "manual_download")
       : [];
     const updateAllBusy = behindMachines.some((machine) =>
       isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));

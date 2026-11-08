@@ -18,6 +18,7 @@ import type {
 import { laneCloudProvider } from "../../../../shared/cloudLanes";
 import { DEVIN_CLOUD_PLATFORMS, normalizeDevinCloudSessionId } from "../../../../shared/devinCloud";
 import { useAppStore } from "../../../state/appStore";
+import { modifierChordLabel } from "../../../lib/platform";
 import { invalidateAgentChatSessionListCache } from "../../../lib/agentChatSessionListCache";
 import { invalidateSessionListCache } from "../../../lib/sessionListCache";
 import { navigateUrlInAdeBrowser, openExternalUrl } from "../../../lib/openExternal";
@@ -409,7 +410,7 @@ export function CloudAgentsPanel({
               onChange={setTargetLaneId}
             />
             <span className="flex-1" />
-            <span className="hidden text-[10.5px] text-muted-fg/40 sm:inline">⌘↵</span>
+            <span className="hidden text-[10.5px] text-muted-fg/40 sm:inline">{modifierChordLabel("↵")}</span>
             <button
               type="button"
               disabled={!prompt.trim() || launching}

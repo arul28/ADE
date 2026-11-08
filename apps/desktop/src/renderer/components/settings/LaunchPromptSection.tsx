@@ -1,5 +1,6 @@
 import React from "react";
 import { Bell, BookmarkSimple, Copy, PencilSimple } from "@phosphor-icons/react";
+import { modifierChordLabel } from "../../lib/platform";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 
@@ -56,7 +57,7 @@ export function LaunchPromptSection() {
           icon={<BookmarkSimple size={15} weight="bold" />}
           tone="blue"
           title="Drafts button"
-          hint="The bookmark beside the context meter. ⌘S works either way."
+          hint={`The bookmark beside the context meter. ${modifierChordLabel("S")} works either way.`}
           control={(
             <SettingsToggle
               label="Drafts button"

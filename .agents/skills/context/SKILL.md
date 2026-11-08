@@ -10,6 +10,14 @@ description: >-
 
 # Context Skill
 
+## Linux desktop parity
+
+For Linux-sensitive paths in `references/doc-map.md`, load
+`docs/development/linux-support.md` and `../quality/references/linux-quirks.md`.
+Distinguish desktop from headless and simulated checks from real-host proof.
+Reuse existing checks and CI; do not double the full suite.
+
+
 Session primer. Run once at the start of a session to learn what ADE is, how we
 work, the tooling you can reach, and what (if anything) is in flight on this
 lane. Feature-aware — load only the docs relevant to the work, never a broad

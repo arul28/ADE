@@ -169,6 +169,7 @@ function removeIfPresent(rootPath, relativePath) {
 // macOS update zip to 1054 MB, past the 1 GB Squirrel.Mac CFData cliff.
 function packagedRuntimeTargetsForContext(context, platform) {
   if (platform === "win32") return ["win32-x64"];
+  if (platform === "linux") return [linuxCrsqliteTargetForContext(context)];
   if (platform !== "darwin") return [];
   const appOutDir = String(context?.appOutDir || "");
   if (/mac-universal/.test(appOutDir) || context?.arch === 4) return ["darwin-arm64", "darwin-x64"];
@@ -290,6 +291,10 @@ function pruneUnneededRuntimePayload(runtimeRoot, platform, runtimeFetchedToolPa
       path.join("vendor", "crsqlite", "linux-x64"),
     ],
     linux: [
+      path.join("node_modules", "node-pty", "prebuilds", "darwin-arm64"),
+      path.join("node_modules", "node-pty", "prebuilds", "darwin-x64"),
+      path.join("node_modules", "node-pty", "prebuilds", "win32-arm64"),
+      path.join("node_modules", "node-pty", "prebuilds", "win32-x64"),
       path.join("vendor", "crsqlite", "darwin-arm64"),
       path.join("vendor", "crsqlite", "darwin-x64"),
       path.join("vendor", "crsqlite", "win32-x64"),
@@ -439,6 +444,15 @@ module.exports = async function afterPack(context) {
     throw new Error(`[afterPack] Missing unpacked runtime payload: ${runtimeRoot}`);
   }
 
+  if (platform === "linux" && process.env.ADE_LINUX_APPIMAGE_BUILD === "1") {
+    const executable = context.packager.executableName;
+    const launcherPath = path.join(context.appOutDir, executable);
+    requireFile(launcherPath, "Linux Electron executable");
+    fs.renameSync(launcherPath, `${launcherPath}.bin`);
+    fs.copyFileSync(path.join(appDir, "scripts", "linux-appimage-launcher.sh"), launcherPath);
+    fs.chmodSync(launcherPath, 0o755);
+  }
+
   const resourcesRoot = resolveExtraResourcesRoot(context, appBundlePath);
   const bundledAdeCliFiles = packagedAdeCliPayloadFiles({ desktopRoot: appDir });
   const missingRequiredPayload = missingRequiredPackagedAdeCliPayloadPaths(bundledAdeCliFiles);
@@ -454,7 +468,7 @@ module.exports = async function afterPack(context) {
     );
   }
 
-  if (platform === "darwin") {
+  if (platform === "darwin" || platform === "linux") {
     const bundledCliBinPath = path.join(resourcesRoot, "ade-cli", "bin", "ade");
     const bundledCliInstallerPath = path.join(resourcesRoot, "ade-cli", "install-path.sh");
     requireFile(bundledCliBinPath, "bundled ADE CLI wrapper");

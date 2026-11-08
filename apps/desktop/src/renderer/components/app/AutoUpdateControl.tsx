@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowSquareOut, ArrowsClockwise, CheckCircle, GithubLogo, WarningCircle } from "@phosphor-icons/react";
 import { updateVersionLabel } from "../../../shared/updateVersions";
 import type { AppInfo, AutoUpdateSnapshot } from "../../../shared/types";
+import { openExternalUrl } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
 import {
   AutoUpdateErrorDialog,
@@ -256,6 +257,7 @@ export function AutoUpdateControl() {
   const restartAction = updateRestartAction(snapshot);
 
   function indicatorTitle(): string {
+    if (snapshot.installMode === "manual" && effectiveStatus === "ready") return `${versionLabel(snapshot.version)} is available to download`;
     switch (effectiveStatus) {
       case "checking":
         return "Checking for updates";
@@ -328,10 +330,11 @@ export function AutoUpdateControl() {
             effectiveStatus !== "ready" && "cursor-default",
           )}
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          disabled={effectiveStatus !== "ready"}
+          disabled={effectiveStatus !== "ready" || (snapshot.installMode === "manual" && !snapshot.downloadUrl)}
           onClick={() => {
             if (effectiveStatus === "ready") {
-              void handleRestartToInstall();
+              if (snapshot.installMode === "manual") openExternalUrl(snapshot.downloadUrl);
+              else void handleRestartToInstall();
             }
           }}
           title={indicatorTitle()}
@@ -350,7 +353,7 @@ export function AutoUpdateControl() {
           ) : null}
           {effectiveStatus === "ready" ? (
             <span>
-              {retryAfterFailedInstall
+              {snapshot.installMode === "manual" ? "Download update" : retryAfterFailedInstall
                 ? `Retry install${snapshot.version ? ` v${snapshot.version}` : ""}`
                 : restartAction.label}
             </span>

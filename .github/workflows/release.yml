@@ -51,6 +51,7 @@ jobs:
         always()
         && needs.run-release.outputs.runtime_result == 'success'
         && needs.run-release.outputs.mac_result == 'success'
+        && needs.run-release.outputs.linux_result == 'success'
         && (
           vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'
           || needs.run-release.outputs.windows_result == 'success'

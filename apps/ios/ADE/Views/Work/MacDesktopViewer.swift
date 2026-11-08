@@ -153,13 +153,13 @@ struct MacDesktopViewer: View {
     // Asks first, like every Stop on the desktop: the private screen signs out
     // and closes the lane's apps; the main desktop is handed back.
     .confirmationDialog(
-      stopSeat.map { "\(windowsDesktopStopCopy(seat: $0).action)?" } ?? "",
+      stopSeat.map { "\(desktopStopCopy(seat: $0).action)?" } ?? "",
       isPresented: $confirmingStop,
       titleVisibility: .visible
     ) {
       if let seat = stopSeat { stopDialogActions(seat: seat) }
     } message: {
-      if let seat = stopSeat { Text(windowsDesktopStopCopy(seat: seat).consequence) }
+      if let seat = stopSeat { Text(desktopStopCopy(seat: seat).consequence) }
     }
   }
 
@@ -232,10 +232,10 @@ struct MacDesktopViewer: View {
 
   @ViewBuilder
   private var liveStage: some View {
-    if !syncService.supportsMacDesktopStream {
+    if !syncService.supportsMacDesktopStream(laneId: laneId) {
       stageMessage("Live video isn't available from this machine.")
     } else if desktop?.supported == false {
-      stageMessage("This Mac can't host a desktop.")
+      stageMessage("This machine can't host a lane screen.")
     } else if let display = desktop?.display {
       if let session {
         ZStack {
@@ -257,7 +257,7 @@ struct MacDesktopViewer: View {
             onReconnect: { reconnect() }
           )
         }
-      } else if syncService.connectionState != .connected {
+      } else if !syncService.isLaneMachineConnected(laneId: laneId) {
         stageMessage("Waiting for the connection to your Mac…")
       } else {
         ProgressView().tint(.white)
@@ -303,11 +303,12 @@ struct MacDesktopViewer: View {
       stageMessage(macDesktopOffCardMessage(
         starting: starting,
         error: startError,
-        canStart: syncService.supportsMacDesktopStart,
+        canStart: syncService.laneCommandDescriptor("macDesktop.start", laneId: laneId)?.policy.allowsPhone == true,
         hostIsWindows: desktop?.windowsDesktop != nil,
+        hostIsLinux: desktop?.linuxDesktop != nil,
         pcOperation: desktop?.windowsDesktop?.operation?.kind
       ))
-      if !starting && syncService.supportsMacDesktopStart && desktop?.windowsDesktop?.operation == nil {
+      if !starting && syncService.laneCommandDescriptor("macDesktop.start", laneId: laneId)?.policy.allowsPhone == true && desktop?.windowsDesktop?.operation == nil {
         Button {
           ADEHaptics.light()
           startDesktop()
@@ -320,8 +321,8 @@ struct MacDesktopViewer: View {
             .background(Color.white.opacity(0.16), in: Capsule())
         }
         .buttonStyle(.plain)
-        .disabled(syncService.connectionState != .connected)
-        .accessibilityHint("Starts this lane's macOS desktop on your Mac")
+        .disabled(!syncService.isLaneMachineConnected(laneId: laneId))
+        .accessibilityHint("Starts this lane's screen on its machine")
       }
     }
   }
@@ -368,7 +369,7 @@ struct MacDesktopViewer: View {
 
       if let seat = stopSeat {
         LiveStageMenuRow(
-          title: stopping ? "Stopping…" : windowsDesktopStopCopy(seat: seat).action,
+          title: stopping ? "Stopping…" : desktopStopCopy(seat: seat).action,
           systemImage: "stop.fill",
           tint: ADEColor.danger,
           disabled: stopping
@@ -427,7 +428,7 @@ struct MacDesktopViewer: View {
 
   /// The host lets a phone drive the screen at all.
   private var showsControl: Bool {
-    isPreview || syncService.supportsMacDesktopControl
+    isPreview || syncService.supportsMacDesktopControl(laneId: laneId)
   }
 
   /// Why Take control is off right now, or nil when it is on.
@@ -468,25 +469,37 @@ struct MacDesktopViewer: View {
   }
 
   private var screenTitle: String {
-    windowsDesktopSeatLabel(windowsDesktopSeat(desktop?.windowsDesktop, display: desktop?.display))
+    if desktop?.linuxDesktop != nil { return "Linux" }
+    return windowsDesktopSeatLabel(windowsDesktopSeat(desktop?.windowsDesktop, display: desktop?.display))
       ?? (desktop?.windowsDesktop == nil ? "macOS" : "Windows")
   }
 
   /// The Windows seat Stop acts on, when this host can stop it.
   private var stopSeat: String? {
+    if desktop?.linuxDesktop != nil, desktop?.display != nil,
+       syncService.canManageLinuxDesktop("macDesktop.stopSeat", laneId: laneId) { return "linux" }
     guard let seat = windowsDesktopSeat(desktop?.windowsDesktop, display: desktop?.display),
           syncService.canStopWindowsDesktop(seat: seat) else { return nil }
     return seat
   }
 
+  private func desktopStopCopy(seat: String) -> (action: String, consequence: String) {
+    if seat == "linux" { return ("Stop screen", "This closes the lane's screen and its apps.") }
+    return windowsDesktopStopCopy(seat: seat)
+  }
+
   @ViewBuilder
   private func stopDialogActions(seat: String) -> some View {
-    Button(windowsDesktopStopCopy(seat: seat).action, role: .destructive) {
+    Button(desktopStopCopy(seat: seat).action, role: .destructive) {
       Task {
         stopping = true
         defer { stopping = false }
         do {
-          try await syncService.windowsDesktopStop(laneId: laneId, seat: seat)
+          if seat == "linux" {
+            try await syncService.linuxDesktopStop(laneId: laneId)
+          } else {
+            try await syncService.windowsDesktopStop(laneId: laneId, seat: seat)
+          }
           await refresh()
         } catch {
           flashHint(macDesktopVisibleMessage(for: error, hostIsWindows: true), warning: true)
@@ -541,7 +554,7 @@ struct MacDesktopViewer: View {
   // MARK: - Data
 
   private var isLiveCapable: Bool {
-    syncService.supportsMacDesktopStream
+    syncService.supportsMacDesktopStream(laneId: laneId)
       && desktop?.supported == true
       && desktop?.display != nil
   }
@@ -549,7 +562,7 @@ struct MacDesktopViewer: View {
   /// Keeps the last good snapshot on a failed read, like the Apple viewer: a
   /// timeout must not blank the ribbon or tear down the picture.
   private func refresh() async {
-    guard syncService.supportsWorkToolsState else { return }
+    guard syncService.supportsWorkToolsState(laneId: laneId) else { return }
     guard let next = try? await syncService.fetchWorkToolsLaneState(laneId: laneId) else { return }
     guard !Task.isCancelled else { return }
     desktop = next.macDesktop
@@ -620,7 +633,7 @@ struct MacDesktopViewer: View {
     let shouldRun = isLiveCapable
       && inspect == nil
       && scenePhase == .active
-      && syncService.connectionState == .connected
+      && syncService.isLaneMachineConnected(laneId: laneId)
     if shouldRun {
       startSessionIfNeeded()
     } else {
@@ -672,7 +685,7 @@ struct MacDesktopViewer: View {
   /// sends an unsubscribe that could land after the new subscribe under the
   /// same id and cancel it.
   private func reconnect() {
-    guard isLiveCapable, syncService.connectionState == .connected else { return }
+    guard isLiveCapable, syncService.isLaneMachineConnected(laneId: laneId) else { return }
     guard let current = session else {
       startSessionIfNeeded()
       return
@@ -688,7 +701,7 @@ struct MacDesktopViewer: View {
     guard case .ended(let reason, _) = current.phase, reason == "stopped" else { return }
     guard isLiveCapable,
           scenePhase == .active,
-          syncService.connectionState == .connected
+          syncService.isLaneMachineConnected(laneId: laneId)
     else { return }
     Task { await current.start(using: syncService) }
   }

@@ -118,6 +118,7 @@ import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { quoteShellArg } from "../../desktop/src/shared/shell";
 import type { MachineWorkCopy } from "./cliRemoteWork";
 import { machineVersionsDrift } from "../../desktop/src/shared/machineVersions";
+import { readDesktopUpdateInstallMode } from "../../desktop/src/main/services/native/nativeHelperPaths";
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { findSettingsEntries, settingsEntryLabel } from "../../desktop/src/shared/settingsManifest";
 import { settingAgentAccess } from "../../desktop/src/shared/settingsAgentAccess";
@@ -29756,6 +29757,7 @@ async function runServe(
             logger: headlessProjectLogger,
             requestRestart: requestBrainServiceRestartFromServe,
             requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
+            updateInstallMode: () => readDesktopUpdateInstallMode(),
             // The app this brain reports as `desktopAppVersion`, on every platform.
             installedApp: async () => {
               const { readInstalledDesktopApp } = await import(

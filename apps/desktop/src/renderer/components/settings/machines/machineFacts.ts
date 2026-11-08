@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { THIS_MACHINE_ID } from "../../../../shared/machineIdentity";
-import type { RemoteRuntimeConnectionStatus } from "../../../../shared/types";
+import type { AdeAccountMachine, RemoteRuntimeConnectionStatus } from "../../../../shared/types";
 import { updateTrackOfVersion, type UpdateTrack } from "../../../../shared/updateTrack";
+import { fetchAccountMachines } from "../../../lib/account";
 import { rendererRuntimeTarget } from "../../../lib/platform";
 import { useRemoteConnectionSnapshot, type ProjectMachine } from "../../../state/projectMachines";
 import { connectedMachinesFromSnapshot, machineColorKey, type ConnectedMachine } from "../../remoteTargets/remoteMachineModel";
@@ -88,6 +89,16 @@ export function useMachineFacts(
 ): ReadonlyMap<string, MachineFacts> {
   const { snapshot } = useRemoteConnectionSnapshot(active);
   const thisKey = useThisComputerColorKey();
+  const hasRemoteMachine = machines.some((machine) => !machine.isThisMachine);
+  const [directory, setDirectory] = useState<readonly AdeAccountMachine[]>([]);
+  useEffect(() => {
+    if (!active || !hasRemoteMachine) return;
+    let cancelled = false;
+    void fetchAccountMachines().then((result) => {
+      if (!cancelled && result.state === "ok") setDirectory(result.machines);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [active, hasRemoteMachine]);
   return useMemo(() => {
     const connected = new Map(connectedMachinesFromSnapshot(snapshot).map((machine) => [machine.id, machine]));
     const connections = new Map((snapshot?.connections ?? []).map((connection) => [connection.target.id, connection]));
@@ -107,6 +118,10 @@ export function useMachineFacts(
       }
       const connection = connected.get(machine.machineId) ?? null;
       const version = connection?.version ?? machine.version;
+      const rawConnection = connections.get(machine.machineId);
+      const machineKey = rawConnection?.target.pairedMachine?.machineKey ?? machine.machineId;
+      const accountMachine = directory.find((entry) => entry.machineKey === machineKey
+        || (machine.deviceId != null && entry.deviceId === machine.deviceId));
       facts.set(machine.machineId, {
         // The paired key even while the machine is offline: the pickers read
         // its preference under that key, not under the local target id.
@@ -114,7 +129,7 @@ export function useMachineFacts(
           const target = connections.get(machine.machineId)?.target;
           return target ? machineColorKey(target) : machine.machineId;
         })(),
-        platform: machinePlatform(connection?.arch ?? null, machine.hostname),
+        platform: machinePlatform(accountMachine?.platform, connection?.arch, machine.hostname),
         version,
         versionLabel: connection?.versionLabel ?? version,
         track: connection?.track ?? updateTrackOfVersion(version),
@@ -123,5 +138,5 @@ export function useMachineFacts(
       });
     }
     return facts;
-  }, [machines, snapshot, thisKey, thisVersion]);
+  }, [directory, machines, snapshot, thisKey, thisVersion]);
 }
