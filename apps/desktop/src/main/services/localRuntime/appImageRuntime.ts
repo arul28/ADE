@@ -59,7 +59,9 @@ export async function materializeAppImageRuntime(version: string): Promise<{ bin
     });
     // Its status would read as a brain update still running, and hold off the
     // connection this install is about to make.
-    await fs.rm(path.join(layout.runtimeDir, "update-status.json"), { force: true });
+    const statusPath = path.join(layout.runtimeDir, "update-status.json");
+    const status = await fs.readFile(statusPath, "utf8").then((raw) => JSON.parse(raw) as { version?: unknown; state?: unknown }, () => null);
+    if (status?.version === version && status.state === "succeeded") await fs.rm(statusPath, { force: true });
     return { binary, env };
   } catch (error) {
     // The update transaction may have retained recovery files here.

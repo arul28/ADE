@@ -882,10 +882,9 @@ export function createGithubService({
 
     if (!isSecureStorageAvailable(safeStorage)) {
       // The machine credential store holds it instead (Linux with no keyring).
-      if (credentialStore) {
-        removeTokenFile(candidatePath);
-        return;
-      }
+      // The old file stays: this save can still fail, and it may become
+      // readable when the keyring is back.
+      if (credentialStore) return;
       throw new Error("OS secure storage is unavailable. Cannot persist GitHub token.");
     }
 

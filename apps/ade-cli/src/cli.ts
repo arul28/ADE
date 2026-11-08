@@ -27875,8 +27875,11 @@ async function launchDetachedDesktopApp(
   // the child would launch another CLI process instead of the desktop UI.
   // The other host-only keys (the brain's compile cache included) stay behind too.
   const env = stripHostRuntimeEnv({ ...process.env });
-  // The AppImage CLI shim's marker: it would start another CLI, not the window.
+  // An AppImage CLI's own markers: the first would start another CLI, not the
+  // window, and the others would make a .deb app believe it is that AppImage.
   delete env.ADE_APPIMAGE_CLI;
+  delete env.APPIMAGE;
+  delete env.APPDIR;
   // Electron reads this to decide whether to attach to the caller's console;
   // the launched app keeps the caller's choice, as it did before the strip.
   if (process.env.ELECTRON_NO_ATTACH_CONSOLE !== undefined) {
@@ -27929,9 +27932,9 @@ async function launchDetachedDesktopApp(
 
 async function runDesktopCommand(rest: string[]): Promise<unknown> {
   const args = [...rest];
+  const defaultAppName = resolveDefaultDesktopAppName();
+  const appName = readValue(args, ["--app-name"]) ?? defaultAppName;
   const sub = firstPositional(args) ?? "open";
-  const appName =
-    readValue(args, ["--app-name"]) ?? resolveDefaultDesktopAppName();
   if (sub !== "open" && sub !== "launch" && sub !== "start") {
     throw new CliUsageError("desktop supports open.");
   }
@@ -27967,6 +27970,14 @@ async function runDesktopCommand(rest: string[]): Promise<unknown> {
   }
 
   if (process.platform === "linux") {
+    if (appName !== defaultAppName) {
+      return {
+        ok: false,
+        platform: process.platform,
+        appName,
+        message: `On Linux, ade desktop opens this install's own app (${defaultAppName}) and can't pick another by name.`,
+      };
+    }
     const installed = readInstalledDesktopApp();
     if (!installed) {
       return {
