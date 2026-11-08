@@ -103,8 +103,8 @@ export function createAdeWebAdapter(
   // taking over from the machine-wide one), whose answers no view has read:
   // a cloud machine's lanes stayed "No lanes yet" until a reload. Everything
   // is read again each time a restored connection is ready, never on the first.
-  let readyBefore = false;
-  let lastReadiness: string | null = null;
+  let lastReadiness: string = client.getStatus().readiness;
+  let readyBefore = lastReadiness === "ready";
   addDispose(client.subscribe((status) => {
     if (status.readiness === lastReadiness) return;
     lastReadiness = status.readiness;

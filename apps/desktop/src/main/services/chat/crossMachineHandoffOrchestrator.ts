@@ -111,7 +111,7 @@ export type CrossMachineHandoffTransport = {
     action: string;
     args: Record<string, unknown>;
     timeoutMs?: number;
-  }): Promise<{ machine: { machineKey: string; name: string }; result: unknown }>;
+  }): Promise<{ machine: { machineKey: string; name: string }; project?: { projectId: string } | null; result: unknown }>;
   /**
    * The request may have reached the destination but its answer was lost
    * (timeout, dropped connection). Errors raised before sending (offline,
@@ -824,6 +824,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         reason: null,
         targetLaneId: null,
         targetSessionId: null,
+        targetProjectId: null,
         // Keep the previous return address until this move lands. A new move
         // revokes the earlier Work here instead choice only once it continues
         // (landing clears it); a move that is cancelled, fails or is denied
@@ -1213,9 +1214,11 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
         // have made the lane and chat. Keep the capsule; a retry reconciles.
         throw new UnreadableAcceptError(persisted.record.targetMachineName);
       }
+      const targetProjectId = response.project?.projectId ?? null;
       persisted = checkpoint(sessionId, persisted, "accepted", {
         targetLaneId: accepted.laneId,
         targetSessionId: accepted.session.id,
+        targetProjectId,
       });
       try {
         await deps.markSource({
@@ -1247,6 +1250,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
           targetMachineName: persisted.record.targetMachineName,
           targetLaneId: accepted.laneId,
           targetSessionId: accepted.session.id,
+          targetProjectId,
           continuedAt: now(),
         },
       });

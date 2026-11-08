@@ -232,6 +232,8 @@ type BrainPeerState = SyncRosterPeerState & {
   ws: WebSocket;
   lifecycleGeneration: number;
   authenticated: boolean;
+  /** Its `hello_ok` went out, so a close now is a reconnect and not a failed connect. */
+  helloAnswered: boolean;
   authKind: "bootstrap" | "paired" | null;
   authTimeout: ReturnType<typeof setTimeout> | null;
   metadata: SyncPeerMetadata | null;
@@ -775,7 +777,9 @@ export function createBrainProjectActionsSyncHandler(
   };
   args.onProjectHostAttached?.(() => {
     for (const peer of [...peers]) {
-      if (!peer.authenticated || !waitsForProjectHost(peer.metadata) || peer.ws.readyState !== WS_OPEN) continue;
+      // Before its hello is answered a close would fail the connection (and
+      // an account pairing) outright; the answer checks for the host instead.
+      if (!peer.helloAnswered || !waitsForProjectHost(peer.metadata) || peer.ws.readyState !== WS_OPEN) continue;
       args.logger.info("sync_brain.project_socket_handed_to_host", {
         peerDeviceId: peer.metadata?.deviceId ?? null,
       });
@@ -1272,6 +1276,7 @@ export function createBrainProjectActionsSyncHandler(
       ws,
       lifecycleGeneration: 0,
       authenticated: false,
+      helloAnswered: false,
       authKind: null,
       authTimeout: null,
       metadata: null,
@@ -1831,20 +1836,6 @@ export function createBrainProjectActionsSyncHandler(
                 }
               : null,
           );
-          if (waitsForProjectHost(hello.peer)) {
-            if (args.projectHostAttached?.()) {
-              // A host attached while this hello was being checked.
-              handOverToProjectHost(peer);
-              return;
-            }
-            // Served the reduced hello below until the host attaches, then
-            // handed over to it (onProjectHostAttached).
-            void args.activateProjectHost?.().catch((error) => {
-              args.logger.warn("sync_brain.project_host_activation_failed", {
-                error: error instanceof Error ? error.message : String(error),
-              });
-            });
-          }
           const catalog = await projectCatalog(args.projectCatalogProvider, args.logger);
           if (!isPeerCurrent(lifecycleGeneration)) return;
           const brain = brainMetadata();
@@ -1916,6 +1907,20 @@ export function createBrainProjectActionsSyncHandler(
               brainPeerCompressionBySocket.set(ws, negotiatedCompression);
             } else {
               brainPeerCompressionBySocket.delete(ws);
+            }
+            peer.helloAnswered = true;
+            if (waitsForProjectHost(hello.peer)) {
+              if (args.projectHostAttached?.()) {
+                // A host attached while this hello was being checked.
+                handOverToProjectHost(peer);
+              } else {
+                // Handed over when the host attaches (onProjectHostAttached).
+                void args.activateProjectHost?.().catch((error) => {
+                  args.logger.warn("sync_brain.project_host_activation_failed", {
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                });
+              }
             }
           }
           return;

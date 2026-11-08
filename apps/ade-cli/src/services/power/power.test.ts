@@ -845,16 +845,22 @@ describe("agent37 keep awake", () => {
 
       // A command another machine ran here keeps it awake until the next
       // ping, and only that long: an idle box still sleeps.
-      keepAwake.noteUse();
+      await keepAwake.noteUse();
       await keepAwake.tick();
       expect(pinged).toHaveLength(2);
       clock += 61_000;
       await keepAwake.tick();
       expect(pinged).toHaveLength(2);
 
-      busy = "throws";
+      // No ping for a while: work near the sleep timer pings at once, not at the next tick.
+      await keepAwake.noteUse();
+      expect(pinged).toHaveLength(3);
       await keepAwake.tick();
       expect(pinged).toHaveLength(3);
+
+      busy = "throws";
+      await keepAwake.tick();
+      expect(pinged).toHaveLength(4);
     } finally {
       keepAwake.dispose();
       fs.rmSync(home, { recursive: true, force: true });

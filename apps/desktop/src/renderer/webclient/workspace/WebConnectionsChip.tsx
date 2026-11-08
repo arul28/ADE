@@ -110,17 +110,24 @@ export function WebConnectionsChip() {
    */
   const [cloud, setCloud] = useState<WebCloudMachines | null>(null);
   const manager = workspace?.manager ?? null;
+  /** Only the newest read may answer: an older one would show a just-woken machine asleep. */
+  const cloudReadRef = useRef(0);
   const refreshCloud = useCallback(async () => {
     if (!manager) return;
+    const read = ++cloudReadRef.current;
     const next = await readWebCloudMachines({
       snapshot: manager.getSnapshot(),
       getClient: (targetId) => manager.getClient(targetId),
       storage: typeof window === "undefined" ? null : window.localStorage,
     }).catch(() => null);
-    setCloud(next);
+    if (read === cloudReadRef.current) setCloud(next);
   }, [manager]);
   useEffect(() => {
-    if (open) void refreshCloud();
+    if (!open) return;
+    void refreshCloud();
+    return () => {
+      cloudReadRef.current += 1;
+    };
   }, [open, refreshCloud]);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);

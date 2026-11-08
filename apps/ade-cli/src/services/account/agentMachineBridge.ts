@@ -339,8 +339,26 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
         throw new Error(`${method} runs in a project; pass --project, or use --personal commands.`);
       }
       let records = await pool.listProjects(entry);
+      const setUpThere = () => pool.request(
+        machine,
+        entry,
+        "machines.cloneForAgent",
+        "machines.cloneForAgent",
+        { originUrl: input.scope.kind === "repo" ? input.scope.originUrl : undefined },
+        MACHINE_CLONE_TIMEOUT_MS,
+      );
       try {
         project = resolveProject(machine, records, input.scope);
+        // An explicit --clone of a checkout an earlier agent clone left hidden
+        // from the machine's project list: the same call lists it.
+        if (input.clone && input.scope.kind === "repo" && project.catalogVisibility === "system") {
+          await setUpThere().catch((error) => {
+            options.logger?.warn("agent_cross_machine.clone_promote_failed", {
+              machineKey: machine.machineKey,
+              error: errorMessage(error),
+            });
+          });
+        }
       } catch (error) {
         // A project opened there in the last minute is not in the cache yet.
         records = await pool.listProjects(entry, true);
@@ -348,14 +366,7 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
           project = resolveProject(machine, records, input.scope);
         } catch {
           if (!input.clone || input.scope.kind !== "repo") throw error;
-          await pool.request(
-            machine,
-            entry,
-            "machines.cloneForAgent",
-            "machines.cloneForAgent",
-            { originUrl: input.scope.originUrl },
-            MACHINE_CLONE_TIMEOUT_MS,
-          );
+          await setUpThere();
           records = await pool.listProjects(entry, true);
           project = resolveProject(machine, records, input.scope);
         }

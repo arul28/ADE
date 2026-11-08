@@ -19,7 +19,9 @@ import type {
 import { getModelById } from "../../../shared/modelRegistry";
 import { CROSS_MACHINE_HANDOFF_STEPS, crossMachineContinuation } from "../../../shared/crossMachineHandoff";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
-import { navigateToAppTarget } from "../../lib/openExternal";
+import { buildDeeplink } from "../../../shared/deeplinks";
+import { navigateToAppTarget, openAdeDeeplink } from "../../lib/openExternal";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { openWhenOtherMachineListsSession } from "../../lib/otherMachineNavigation";
 import { useBannerDismissals } from "../../lib/bannerDismiss";
 import { showToast } from "../app/toast/toastStore";
@@ -52,10 +54,22 @@ export function describeTravellingChanges(unpushedCommits: number, changedFiles:
   return parts.length ? parts.join(", ") : null;
 }
 
+type ChatOwner = { targetMachineKey?: string | null; targetProjectId?: string | null };
+
+/** The web works on one machine at a time, so it must go to the machine and project that hold the chat. */
+function webOwnedChatLink(sessionId: string, owner: ChatOwner | null | undefined): string | null {
+  const accountMachineKey = owner?.targetMachineKey?.trim();
+  const projectId = owner?.targetProjectId?.trim();
+  if (!accountMachineKey || !projectId || !isWebClientMode()) return null;
+  return buildDeeplink({ kind: "session", sessionId, ownership: { accountMachineKey, projectId } });
+}
+
 /** Open a chat that lives on another machine (the Work tab unions them). */
-export function openChatOnOtherMachine(sessionId: string | null | undefined): void {
+export function openChatOnOtherMachine(sessionId: string | null | undefined, owner?: ChatOwner | null): void {
   if (!sessionId) return;
-  navigateToAppTarget({ kind: "work", sessionId });
+  const ownedLink = webOwnedChatLink(sessionId, owner);
+  if (ownedLink) openAdeDeeplink(ownedLink);
+  else navigateToAppTarget({ kind: "work", sessionId });
 }
 
 function SendSteps({ checkpoint }: { checkpoint: AgentChatCrossMachineHandoffCheckpoint | null }) {
@@ -117,6 +131,7 @@ export function CrossMachineHandoffBanner({
   const moveState = record?.state ?? null;
   const followTo = moveState === "continued" && !record?.resumedHere ? record?.targetSessionId ?? null : null;
   const followMachineKey = record?.targetMachineKey ?? null;
+  const followProjectId = record?.targetProjectId ?? null;
   const [follow, setFollow] = useState<string | null>(null);
   useEffect(() => {
     if (!moveId) return;
@@ -131,11 +146,17 @@ export function CrossMachineHandoffBanner({
   // next read); leaving the chat first, or Work here instead, cancels it.
   useEffect(() => {
     if (!follow || follow !== followTo) return;
+    const owner = { targetMachineKey: followMachineKey, targetProjectId: followProjectId };
+    if (webOwnedChatLink(follow, owner)) {
+      setFollow(null);
+      openChatOnOtherMachine(follow, owner);
+      return;
+    }
     return openWhenOtherMachineListsSession(follow, () => {
       setFollow(null);
       openChatOnOtherMachine(follow);
     }, followMachineKey);
-  }, [follow, followTo, followMachineKey]);
+  }, [follow, followTo, followMachineKey, followProjectId]);
   if (!record || (record.state === "cancelled" && !continuation)) return null;
 
   const machine = record.targetMachineName;
@@ -179,17 +200,17 @@ export function CrossMachineHandoffBanner({
       setBusy(null);
     }
   };
-  const openTarget = (name: string, targetSessionId: string | null | undefined) => targetSessionId
+  const openTarget = (name: string, targetSessionId: string | null | undefined, owner: ChatOwner | null) => targetSessionId
     ? {
       label: `Open on ${name}`,
       icon: <ArrowSquareOut size={12} />,
       variant: "secondary" as const,
-      onClick: () => openChatOnOtherMachine(targetSessionId),
+      onClick: () => openChatOnOtherMachine(targetSessionId, owner),
     }
     : null;
-  const openAction = openTarget(machine, record.targetSessionId);
+  const openAction = openTarget(machine, record.targetSessionId, record);
   const openContinuation = continuation
-    ? openTarget(continuation.targetMachineName, continuation.targetSessionId)
+    ? openTarget(continuation.targetMachineName, continuation.targetSessionId, continuation)
     : null;
   // A move under way, or one that failed, on a chat that already continues
   // somewhere: say so in one line so the earlier move isn't forgotten.

@@ -901,6 +901,12 @@ export function projectStateKeyForBinding(
   return normalizeProjectKey(binding?.rootPath ?? fallbackRoot);
 }
 
+/** Why this project's lanes could not be read, or null. Another project's failure never shows here. */
+export function selectLanesLoadError(state: AppState): string | null {
+  const failure = state.lanesLoadError;
+  return failure && failure.projectKey === normalizeProjectKey(selectActiveProjectStateKey(state)) ? failure.message : null;
+}
+
 export function selectActiveProjectStateKey(
   state: Pick<AppState, "project" | "projectBinding">,
 ): string | null {
@@ -1542,8 +1548,8 @@ export type AppState = {
   laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
   lanesLoading: boolean;
-  /** Why the last lane read failed while no lanes were shown; null once one succeeds. */
-  lanesLoadError: string | null;
+  /** Why the last lane read of a project failed while it showed no lanes; read through `selectLanesLoadError`. */
+  lanesLoadError: { projectKey: string | null; message: string } | null;
   /**
    * True when the git status in `lanes` (ahead/behind, dirty) was not
    * measured on this machine within the freshness window: a read for it is
@@ -2019,6 +2025,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   let remoteProjectSwitchGeneration = 0;
   let laneRefreshInFlight: Promise<void> | null = null;
   let activeLaneRefreshProjectKey: string | null = null;
+  let activeLaneRefreshToken = 0;
   let activeLaneRefreshRequest: LaneRefreshRequest | null = null;
   let pendingLaneRefreshRequest: LaneRefreshRequest | null = null;
   /**
@@ -3053,6 +3060,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const requestedProjectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
       activeLaneRefreshProjectKey = requestedProjectKey;
       const token = ++laneRefreshVersion;
+      activeLaneRefreshToken = token;
       const previousLanesById = new Map(get().lanes.map((lane) => [lane.id, lane] as const));
       const previousSnapshotsById = new Map(get().laneSnapshots.map((snapshot) => [snapshot.lane.id, snapshot] as const));
       const snapshotArgs = {
@@ -3207,9 +3215,16 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         try {
           await runRefresh(nextRequest);
         } catch (error) {
-          // Shown where the empty list would read "No lanes yet".
-          if (get().lanes.length === 0) {
-            set({ lanesLoadError: error instanceof Error && error.message.trim() ? error.message.trim() : "Couldn't read this project's lanes." });
+          // Shown where the empty list would read "No lanes yet". Only this
+          // project's newest read may say so: the same rule as a success.
+          const projectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
+          if (activeLaneRefreshToken === laneRefreshVersion && projectKey === activeLaneRefreshProjectKey && get().lanes.length === 0) {
+            set({
+              lanesLoadError: {
+                projectKey,
+                message: error instanceof Error && error.message.trim() ? error.message.trim() : "Couldn't read this project's lanes.",
+              },
+            });
           }
           throw error;
         }

@@ -14481,7 +14481,7 @@ export function AgentChatPane({
           copied = false;
         }
       }
-      openChatOnOtherMachine(continuation.targetSessionId);
+      openChatOnOtherMachine(continuation.targetSessionId, continuation);
       const stays = attachments.length && contextCount
         ? "Attachments and attached context stay on this machine."
         : attachments.length
@@ -14523,7 +14523,7 @@ export function AgentChatPane({
         setDraft("");
         if (sentFromSessionId) draftsPerSessionRef.current.delete(sentFromSessionId);
       }
-      openChatOnOtherMachine(continuation.targetSessionId);
+      openChatOnOtherMachine(continuation.targetSessionId, continuation);
       showToast({ tone: "success", title: `Sent to the chat on ${where}` });
       return true;
     } catch (routeError) {

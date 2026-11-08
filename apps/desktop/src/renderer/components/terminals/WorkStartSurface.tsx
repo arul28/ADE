@@ -6,7 +6,7 @@ import type {
   LaneSummary,
 } from "../../../shared/types";
 import type { WorkDraftKind } from "../../state/appStore";
-import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { selectLanesLoadError, useAppStore, useRootAppStore } from "../../state/appStore";
 import { defaultLaneId } from "../../lib/laneSelection";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import type { WorkPtyLaunchArgs, WorkPtyLaunchResult } from "./cliLaunch";
@@ -63,7 +63,7 @@ export function WorkStartSurface({
   const globallySelectedLaneId = useAppStore((s) => s.selectedLaneId);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const lanesLoading = useAppStore((s) => s.lanesLoading);
-  const lanesLoadError = useAppStore((s) => s.lanesLoadError);
+  const lanesLoadError = useAppStore(selectLanesLoadError);
   const selectLaneGlobal = useAppStore((s) => s.selectLane);
   const crossMachineLanesByMachineId = useRootAppStore(
     (state) => state.crossMachineLanesByMachineId,
