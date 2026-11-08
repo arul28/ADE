@@ -27875,6 +27875,8 @@ async function launchDetachedDesktopApp(
   // the child would launch another CLI process instead of the desktop UI.
   // The other host-only keys (the brain's compile cache included) stay behind too.
   const env = stripHostRuntimeEnv({ ...process.env });
+  // The AppImage CLI shim's marker: it would start another CLI, not the window.
+  delete env.ADE_APPIMAGE_CLI;
   // Electron reads this to decide whether to attach to the caller's console;
   // the launched app keeps the caller's choice, as it did before the strip.
   if (process.env.ELECTRON_NO_ATTACH_CONSOLE !== undefined) {
