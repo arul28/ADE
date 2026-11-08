@@ -207,6 +207,7 @@
       "pages": [
         "tools/ios-companion",
         "tools/ios-simulator",
+        "tools/android-development",
         "tools/remote-machines"
       ]
     },

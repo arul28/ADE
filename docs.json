@@ -90,7 +90,8 @@
             "pages": [
               "tools/remote-machines",
               "tools/ios-companion",
-              "tools/ios-simulator"
+              "tools/ios-simulator",
+              "tools/android-development"
             ]
           },
           {

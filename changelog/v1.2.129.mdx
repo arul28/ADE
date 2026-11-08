@@ -1,0 +1,60 @@
+---
+title: "v1.2.129"
+description: "Release notes for ADE v1.2.129 - November 8, 2026"
+---
+
+ADE 1.2.129 adds Android Development on every desktop platform, cloud machines from Agent 37, and one Integrations page with cards that connect a service from the chat. You can rebind any shortcut, reopen a deleted chat, comment on images and videos, and sign a signed-out agent back in from the chat or your phone.
+
+## New
+
+- Android Development lives in the Work tools pane on macOS, Windows and Linux, with emulators per lane, a live view, setup that installs the SDK, recording, Inspect, fold and Compose previews, and an `ade android` command for agents (#2045, #2069, #2072, #2073, #2098).
+- Phones, web clients and floating players can watch and drive an Android emulator from another machine (#2072, #2098).
+- Agent 37 cloud machines are one click from the picker, with sign-ins for every provider, a ready machine for each project's next chat, automatic sleep, a monthly spending cap, and copy and move between machine types (#2050, #2054, #2056, #2071, #2078, #2093, #2102, #2103).
+- One Integrations page holds GitHub, Linear, Jira and MCP servers, and an agent can raise a card in the chat to connect a service or add an MCP server, so nobody pastes a key into chat (#2048).
+- Settings › Keyboard rebinds any shortcut, saved per computer, and Quick slots run nine actions from one chord (#2041).
+- Recently deleted, in Settings › Storage & cleanup, reopens a deleted chat with its history while the agent still has its copy (#2064).
+- A signed-out agent can be signed in from the chat, on the chat's own machine and from the phone (#2080, #2084).
+- You can comment on images and videos in a thread and add them to the chat (#2036).
+- Any agent can read, interrupt or stop any chat, agents use subagents by default, and each scenario has one default model (#2043).
+- ADE links open on the right machine everywhere, and proof can be reviewed over MCP (#2037).
+- You can choose a lane's branch name without the `ade/` prefix and set how lanes get cleaned up (#2085).
+- Agents use apps on the main Windows screen without taking focus, and say when an app ignores them (#2061).
+
+## Improved
+
+- Onboarding has an agent rail, and six more agents sign in without a terminal (#2044).
+- What's new and ADE Tips are refreshed (#2060).
+- Storage numbers match the OS, and lane sizes are measured in full instead of stopping after a few thousand files (#2085).
+- The publish dialog for GitHub is redesigned (#2097).
+- A woken cloud machine answers in about 5 seconds instead of 13 to 30 (#2055).
+- Needs attention in Settings lists only real problems and reads better (#2112).
+- Provider failures are grouped by kind, and a relay pause ends when you sign in (#2087).
+
+## Fixed
+
+- Open Sentry and PostHog issues are fixed, including crashes, a Mac freeze and features that were blocked (#2090).
+- Six bugs that T3 Code fixed and ADE also had are fixed, along with branch checks that matched another person's branch and a delete dialog that promised too much (#2111).
+- A dead link to another machine is redialed instead of staying dead until a restart, and remote work copies are more reliable (#2063).
+- A chat's screenshot attachments come back on another machine (#2042).
+- A failed launch no longer swallows a chat's messages, and queued messages work on ACP agents (#2062, #2076).
+- Publishing to your own GitHub account no longer fails with Not Found (#2097).
+- A PR's cards stay on its own lane and stop after it merges (#2088).
+- Calls that span a sleep no longer fail with their answer in hand (#2068).
+- A sync takeover no longer spins, the Phone tab lists devices, and a hand-run brain is not treated as a restart loop (#2075).
+- A stale browser build reloads itself, Report issue works on web, and crash cards say ADE got the report (#2082).
+- Refused `adb` connections no longer hang an Android boot for 3 minutes (#2107).
+- Security fixes harden the Workers, and the CLI reopens correctly after an update (#2053).
+- Machine names, Mac dialogs, extra devices and iPhone Duo folds are corrected (#2058).
+
+## iOS
+
+- Live streams take the whole screen or pane, with Turn, posture-aware Inspect and Duo fold mirroring (#2039).
+- Settings is rebuilt to match the desktop, and the Hub's top row sits beside the clock (#2096).
+- Model tags can be edited one part at a time, and the `@` menu is cleaner (#2092).
+- A phone page shows your Agent 37 machines, with Duo layouts (#2078).
+- iPhone Duo recordings follow the live panel and no longer stretch when the device folds (#2079, #2081).
+
+## Windows
+
+- The brain no longer freezes on secrets reads or `taskkill` (#2074).
+- Slow reads are faster, and hang reports carry more evidence (#2077).
