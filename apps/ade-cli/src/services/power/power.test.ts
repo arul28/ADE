@@ -806,7 +806,7 @@ describe("agent37 keep awake", () => {
   // Agent 37 sleeps a machine after its idle timer; the brain keeps it awake
   // only by reaching the machine's own wake URL. A missed ping while work runs
   // freezes that work; a ping for the wrong machine keeps another one billing.
-  it("pings this machine's wake URL while work runs, never a copied disk's, and counts an unreadable state as busy", async () => {
+  it("pings this machine's wake URL while work runs or another machine just did work here, never a copied disk's, and counts an unreadable state as busy", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-a37-keepawake-"));
     const paths = agent37KeepAwakePaths(home);
     fs.mkdirSync(paths.dir, { recursive: true });
@@ -814,9 +814,12 @@ describe("agent37 keep awake", () => {
       fs.writeFileSync(paths.wakeUrl, JSON.stringify({ instanceId, url: "https://wake-abc.agent37.app" }));
     const pinged: string[] = [];
     let busy: boolean | "throws" = true;
+    let clock = 1_000_000;
     const keepAwake = createAgent37KeepAwake({
       env: { AGENT37_INSTANCE_ID: "thisbox001" },
       adeHome: home,
+      intervalMs: 60_000,
+      now: () => clock,
       readBusy: async () => {
         if (busy === "throws") throw new Error("activity read failed");
         return { busy, reasons: busy ? ["chat"] : [] };
@@ -840,9 +843,24 @@ describe("agent37 keep awake", () => {
       await keepAwake.tick();
       expect(pinged).toHaveLength(1);
 
-      busy = "throws";
+      // A command another machine ran here keeps it awake until the next
+      // ping, and only that long: an idle box still sleeps.
+      await keepAwake.noteUse();
       await keepAwake.tick();
       expect(pinged).toHaveLength(2);
+      clock += 61_000;
+      await keepAwake.tick();
+      expect(pinged).toHaveLength(2);
+
+      // No ping for a while: work near the sleep timer pings at once, not at the next tick.
+      await keepAwake.noteUse();
+      expect(pinged).toHaveLength(3);
+      await keepAwake.tick();
+      expect(pinged).toHaveLength(3);
+
+      busy = "throws";
+      await keepAwake.tick();
+      expect(pinged).toHaveLength(4);
     } finally {
       keepAwake.dispose();
       fs.rmSync(home, { recursive: true, force: true });

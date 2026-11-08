@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import {
   selectActiveProjectRoot,
   selectActiveProjectStateKey,
+  selectLanesLoadError,
   useAppStore,
   useAppStoreApi,
   type LaneInspectorTab,
@@ -212,6 +213,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const focusSession = useAppStore((s) => s.focusSession);
   const lanes = useAppStore((s) => s.lanes);
   const lanesLoading = useAppStore((s) => s.lanesLoading);
+  const lanesLoadError = useAppStore(selectLanesLoadError);
 
   const urlLaneDeeplinks = useMemo(() => {
     const p = new URLSearchParams(location.search);
@@ -2083,6 +2085,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       canCreateLane={canCreateLane}
       onCreateLane={() => openCreateDialog()}
       loading={lanesLoading}
+      loadError={lanesLoadError}
       totalLaneCount={visibleLanes.length}
       laneRuntimeById={laneRuntimeById}
       rebaseLineByLaneId={rebaseLineByLaneId}
@@ -2247,7 +2250,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
               {lanesLoading && visibleLanes.length === 0
                 ? "Loading lanes…"
                 : visibleLanes.length === 0
-                  ? "No lanes yet."
+                  ? (lanesLoadError ? `Couldn't load lanes. ${lanesLoadError}` : "No lanes yet.")
                   : "No lane matches the filter."}
             </div>
             {!lanesLoading || visibleLanes.length > 0 ? (

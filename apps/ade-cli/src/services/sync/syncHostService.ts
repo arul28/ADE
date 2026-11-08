@@ -205,6 +205,7 @@ import {
   assertFileRequestWorkspaceVisibleToPeer,
   createSyncArtifactReads,
   fileContentToBlob,
+  isSyncFileWriteRequest,
   runSyncFileServiceRequest,
   syncFileRequestWorkspaceId,
   visibleFileWorkspacesForPeer,
@@ -1324,6 +1325,8 @@ type SyncHostServiceArgs = {
   remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
   /** Booted project scopes only; routed file requests must never start a runtime. */
   projectScopes?: { getIfBooted(projectId: string): Promise<unknown> | null };
+  /** A connected client just changed a file here (a save from the web or the phone). */
+  onRemoteFileWrite?: () => void;
   productAnalyticsService?: ProductAnalyticsService | null;
   /**
    * When true, paired hellos from devices WITHOUT a registered DPoP key are
@@ -6979,6 +6982,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             artifacts: artifactReads,
           }) as typeof result;
       }
+      if (isSyncFileWriteRequest(payload)) args.onRemoteFileWrite?.();
 
       respond({
         ok: true,
@@ -7015,6 +7019,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     };
     try {
       const result = await executeFileRequest(projectId, payload, { isMobile: isMobilePeer(peer) });
+      if (isSyncFileWriteRequest(payload)) args.onRemoteFileWrite?.();
       respond({ ok: true, action: payload.action, result: result as SyncFileResponsePayload["result"] });
     } catch (error) {
       respond({
@@ -7281,6 +7286,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               ...(macDesktopStreamSink ? { macDesktopStream: macDesktopStreamSink } : {}),
               ...(appControlStreamSink ? { appControlStream: appControlStreamSink } : {}),
             });
+        if (payload.action === "files.writeTextAtomic") args.onRemoteFileWrite?.();
       } finally {
         stopTrackingCommand();
         const durationMs = Math.max(0, Date.now() - executionStartedAtMs);

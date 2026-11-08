@@ -35,7 +35,7 @@ const PING_TIMEOUT_MS = 10_000;
 
 export type Agent37KeepAwakeBusy = {
   busy: boolean;
-  /** What is running, for the state file and logs: "chat", "terminal", "agent_cli", "setup", "schedule". */
+  /** What is running, for the state file and logs: "chat", "terminal", "agent_cli", "setup", "schedule", "in_use". */
   reasons: string[];
   /** When the machine's next timer is due (a scheduled wake-up, an automation), or null. */
   nextWakeAt?: number | null;
@@ -62,6 +62,13 @@ export type Agent37KeepAwakeOptions = {
 export type Agent37KeepAwake = {
   start(): void;
   dispose(): void;
+  /**
+   * Another machine just did work here (a command, a chat send, a file copied
+   * in; never a read). Short commands finish between pings, so without this a
+   * machine someone works on through the relay looked idle and slept under
+   * them. Pings at once unless one went out within the interval.
+   */
+  noteUse(): Promise<void>;
   /** One check now (tests, and a host that knows work just started). */
   tick(): Promise<void>;
 };
@@ -102,6 +109,8 @@ export function createAgent37KeepAwake(options: Agent37KeepAwakeOptions): Agent3
   /** busy, reasons and wake-URL presence as last written, so the file changes only when they do. */
   let lastState: string | null = null;
   let lastPingAt: number | null = null;
+  /** Work noted since the last check took it. Kept until one does, however late it runs. */
+  let usedSinceTick = false;
   let lastPingOk: boolean | null = null;
   let warnedNoUrl = false;
   /** What the account server holds for this machine, as last sent: `none`, `<url>|<at>`, or null before the first send. */
@@ -161,6 +170,9 @@ export function createAgent37KeepAwake(options: Agent37KeepAwakeOptions): Agent3
     }
   };
 
+  /** A ping within the interval already holds the idle timer back. */
+  const pingIsDue = (): boolean => lastPingAt == null || now() - lastPingAt >= intervalMs;
+
   const tick = async (): Promise<void> => {
     if (!enabled || ticking || disposed) return;
     ticking = true;
@@ -174,6 +186,11 @@ export function createAgent37KeepAwake(options: Agent37KeepAwakeOptions): Agent3
         options.logger?.warn("agent37.keep_awake_read_failed", { error: error instanceof Error ? error.message : String(error) });
         state = { busy: true, reasons: ["unknown"] };
       }
+      // Used since the last check: the machine sleeps its sleep-after time after the last use.
+      if (usedSinceTick && !state.reasons.includes("in_use")) {
+        state = { ...state, busy: true, reasons: [...state.reasons, "in_use"] };
+      }
+      usedSinceTick = false;
       const nextWakeAt = state.nextWakeAt ?? null;
       // An overdue timer fires on this awake machine on its own; only a future one is sent.
       const serverHolds = await syncTimedWake(url, nextWakeAt != null && nextWakeAt > now() ? nextWakeAt : null);
@@ -200,6 +217,8 @@ export function createAgent37KeepAwake(options: Agent37KeepAwakeOptions): Agent3
     } finally {
       ticking = false;
     }
+    // Work noted while this check ran, and no ping for it yet.
+    if (usedSinceTick && pingIsDue()) await tick();
   };
 
   return {
@@ -216,6 +235,11 @@ export function createAgent37KeepAwake(options: Agent37KeepAwakeOptions): Agent3
       disposed = true;
       if (timer) clearInterval(timer);
       timer = null;
+    },
+    async noteUse() {
+      if (!enabled) return;
+      usedSinceTick = true;
+      if (pingIsDue()) await tick();
     },
     tick,
   };

@@ -208,6 +208,7 @@ export function crossMachineContinuation(
     targetMachineName: record.targetMachineName,
     targetLaneId: record.targetLaneId,
     targetSessionId: record.targetSessionId,
+    targetProjectId: record.targetProjectId ?? null,
     continuedAt: record.updatedAt,
   };
 }

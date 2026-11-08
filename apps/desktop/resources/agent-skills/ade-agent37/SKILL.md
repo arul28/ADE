@@ -46,7 +46,8 @@ folder's project.
 
 - A machine sleeps on its own after a few idle minutes (10 by default). It
   stays awake while a chat turn, a terminal command, an agent CLI or a setup
-  runs on it, so never keep one awake by hand.
+  runs on it, and for its sleep time after another machine last did work there
+  (a command, a file change; never a read), so never keep one awake by hand.
 - A `--machine` call, opening one of its lanes, or sending to one of its chats
   wakes it in about a second; ADE on it answers a few seconds later.
 - So you rarely need `wake` or `sleep`. Sleep one only when the person asks,

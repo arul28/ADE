@@ -242,6 +242,7 @@ type SyncServiceArgs = {
     & Partial<Pick<SyncTunnelClientService, "runSelfProbe">>
     | null;
   projectCatalogProvider?: SyncProjectCatalogProvider;
+  onRemoteFileWrite?: () => void;
   rosterProvider?: SyncRosterProvider;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
   remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
@@ -1249,6 +1250,7 @@ export function createSyncService(args: SyncServiceArgs) {
       deviceRegistryService,
       projectCatalogProvider: args.projectCatalogProvider,
       projectScopes: args.projectScopes,
+      onRemoteFileWrite: args.onRemoteFileWrite,
       rosterProvider: args.rosterProvider,
       foreignChatProvider: args.foreignChatProvider,
       personalChatScope: args.personalChatScope,

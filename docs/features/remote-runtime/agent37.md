@@ -449,6 +449,11 @@ card). Every ten minutes the desktop turns sleep on for awake ADE boxes still
 waiting for it; nothing there wakes a box. **Never** is kept in the box's
 metadata (`ade_sleep`), so ADE leaves that box alone.
 
+Work that another machine, the web or the phone does on the box counts too
+(`noteUse`, reason `in_use`): a write action, a file copied in, a file saved.
+Reads, lists and status polls do not, so an idle window never keeps a box
+billing.
+
 **Waking it for use.** These wake an asleep box and wait for it to come back
 (about 5 s on an ADE with the reconnect fixes):
 

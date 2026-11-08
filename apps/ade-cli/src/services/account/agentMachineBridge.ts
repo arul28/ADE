@@ -171,8 +171,11 @@ export type AgentMachineBridgeOptions = {
 /** How long a woken machine gets to show online in the account before the call fails as offline. */
 const WOKEN_MACHINE_ONLINE_WAIT_MS = 60_000;
 const WOKEN_MACHINE_POLL_MS = 1_000;
-/** How long connects to a just-woken machine are retried. */
-const WOKEN_MACHINE_CONNECT_RETRY_MS = 45_000;
+/**
+ * How long connects to a just-woken machine are retried. Measured on a box
+ * (2026-11-07): 20 s after a short sleep, more than 45 s after its own idle sleep.
+ */
+const WOKEN_MACHINE_CONNECT_RETRY_MS = 90_000;
 
 export type AgentMachineBridge = ReturnType<typeof createAgentMachineBridge>;
 
@@ -319,15 +322,43 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     if (woke) machine = woke;
     if (!machine.online) throw new MachineOfflineError(machineName(machine), lastSeen(machine));
 
-    const entry = woke ? await acquireWokenMachine(machine) : await pool.acquire(machine);
+    let entry: Awaited<ReturnType<typeof pool.acquire>>;
+    try {
+      entry = woke ? await acquireWokenMachine(machine) : await pool.acquire(machine);
+    } catch (error) {
+      // The account still lists a cloud machine online for a few minutes after
+      // it falls asleep, so the first dial times out. Wake it then, once.
+      const late = woke ? null : await wakeIfSleepingCloudMachine(machine);
+      if (!late) throw error;
+      machine = late;
+      entry = await acquireWokenMachine(machine);
+    }
     let project: RemoteProjectRecord | null = null;
     if (PROJECT_SCOPED_METHODS.has(method)) {
       if (input.scope.kind === "personal" || input.scope.kind === "machine") {
         throw new Error(`${method} runs in a project; pass --project, or use --personal commands.`);
       }
       let records = await pool.listProjects(entry);
+      const setUpThere = () => pool.request(
+        machine,
+        entry,
+        "machines.cloneForAgent",
+        "machines.cloneForAgent",
+        { originUrl: input.scope.kind === "repo" ? input.scope.originUrl : undefined },
+        MACHINE_CLONE_TIMEOUT_MS,
+      );
       try {
         project = resolveProject(machine, records, input.scope);
+        // An explicit --clone of a checkout an earlier agent clone left hidden
+        // from the machine's project list: the same call lists it.
+        if (input.clone && input.scope.kind === "repo" && project.catalogVisibility === "system") {
+          await setUpThere().catch((error) => {
+            options.logger?.warn("agent_cross_machine.clone_promote_failed", {
+              machineKey: machine.machineKey,
+              error: errorMessage(error),
+            });
+          });
+        }
       } catch (error) {
         // A project opened there in the last minute is not in the cache yet.
         records = await pool.listProjects(entry, true);
@@ -335,14 +366,7 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
           project = resolveProject(machine, records, input.scope);
         } catch {
           if (!input.clone || input.scope.kind !== "repo") throw error;
-          await pool.request(
-            machine,
-            entry,
-            "machines.cloneForAgent",
-            "machines.cloneForAgent",
-            { originUrl: input.scope.originUrl },
-            MACHINE_CLONE_TIMEOUT_MS,
-          );
+          await setUpThere();
           records = await pool.listProjects(entry, true);
           project = resolveProject(machine, records, input.scope);
         }

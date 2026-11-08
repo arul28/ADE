@@ -28910,9 +28910,10 @@ async function runServe(
       // `switchSyncHost` refuses a project that follows another machine before
       // it touches the current host, so this handoff cannot drop every client
       // for a target that never takes over.
-      await scopeRegistry.switchSyncHost(projectId, {
+      const hosted = await scopeRegistry.switchSyncHost(projectId, {
         deactivatePreviousHost: true,
       });
+      if (hosted) releaseProjectlessHostLease();
       await scopeRegistry.deactivateInactiveSyncHosts();
     },
     browseDirectories: async (input: ProjectBrowseInput) =>
@@ -28977,6 +28978,10 @@ async function runServe(
   // scope's sync service owns its own lease). Machine-exclusive subsystems
   // gate on holding one or the other.
   let brainSyncHostLease: SyncHostSingletonLease | null = null;
+  /** Set below; a project scope took sync hosting over from the projectless brain. */
+  let releaseProjectlessHostLease: () => void = () => {};
+  /** Set below; starts hosting the newest project, with no repair override. */
+  let startSyncHostOnDemand: () => Promise<unknown> = async () => null;
   // Relay tunnel for that same projectless case. `createAdeRuntime` builds one
   // per project scope; with no scope there is nobody to build it, which left a
   // projectless machine reachable only on the LAN.
@@ -29210,6 +29215,13 @@ async function runServe(
         buildSnapshot: () => activityRosterProvider.buildSnapshot(),
       },
       foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      // A project socket served here moves to the project host once one attaches.
+      projectHostAttached: () => sharedSyncListener?.hasConnectionHandler() ?? false,
+      onProjectHostAttached: (listener) => sharedSyncListener?.onConnectionHandlerAttached(listener) ?? (() => {}),
+      // The start-up path: it also hands the projectless lease and relay gate over.
+      activateProjectHost: async () => {
+        await startSyncHostOnDemand();
+      },
       projectCommandRouter: {
         resolveProjectId: ({ projectId, projectRootPath }) => {
           const byId = projectId?.trim() ? projectRegistry.get(projectId.trim()) : null;
@@ -29304,6 +29316,8 @@ async function runServe(
       // no runtime boot) — the counterpart to the roster feed above.
       foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
       personalChatScope,
+      // A save from the web or the phone is work, and keeps a cloud machine awake.
+      onRemoteFileWrite: () => { void agent37KeepAwake?.noteUse(); },
     },
   });
   keepAwakeService?.start();
@@ -29640,8 +29654,27 @@ async function runServe(
     return buildMachineAccountDomainServices(await machineAccountRuntime);
   };
 
+  // Work another machine does here (a command, a chat or CLI send, a file
+  // copied in) keeps a cloud machine awake (agent37KeepAwake). Reads, lists
+  // and status polls do not: an idle window polling one must not bill it all month.
+  const isRemoteWork = (params: unknown): boolean => {
+    if (!isRecord(params) || !isRecord(params.arguments)) return false;
+    if (params.name === "work_copy_file") return true;
+    if (params.name !== "run_ade_action") return false;
+    const domain = asString(params.arguments.domain);
+    const action = asString(params.arguments.action);
+    return Boolean(domain && action && adeActionAccess(domain, action) === "write");
+  };
+  const withRemoteUseNoted = <H extends JsonRpcHandler>(peerDeviceId: string | null, handler: H): H => {
+    if (!peerDeviceId || !agent37KeepAwake) return handler;
+    const keepAwake = agent37KeepAwake;
+    return Object.assign(async (request: Parameters<JsonRpcHandler>[0]) => {
+      if (request.method === "ade/actions/call" && isRemoteWork(request.params)) void keepAwake.noteUse();
+      return await handler(request);
+    }, handler);
+  };
   const createHandler = (context?: { peerDeviceId: string | null }) =>
-    createMultiProjectRpcRequestHandler({
+    withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
       serverVersion: VERSION,
       peerDeviceId: context?.peerDeviceId ?? null,
       agentMachineBridge: agentMachineBridgeProxy,
@@ -29713,7 +29746,7 @@ async function runServe(
       },
       disposeScopesOnDispose: false,
       onShutdown: finish,
-    });
+    }));
   clearSyncRuntimeRpcHandlerFactory = setSyncRuntimeRpcHandlerFactory(createHandler);
   // An embedded runtime belongs to the process that spawned it. On POSIX an
   // orphaned child is reparented to init and keeps running, so a host that dies
@@ -29814,6 +29847,19 @@ async function runServe(
     });
     return startSyncHostInFlight;
   };
+  releaseProjectlessHostLease = () => {
+    if (!brainSyncHostLease) return;
+    // A scope took over hosting and holds its own lease; drop the
+    // projectless one so the lock file describes the real owner.
+    brainSyncHostLease.dispose();
+    brainSyncHostLease = null;
+    // The scope's own runtime builds a gate over the SAME shared tunnel
+    // client, so hand ownership over instead of leaving two gates reacting to
+    // the same lease transitions. Disposing a gate never stops the tunnel.
+    brainRelayTunnelGate?.dispose();
+    brainRelayTunnelGate = null;
+    brainSyncTunnelClient = null;
+  };
   const startSyncHostOnce = async () => {
     let activeScope: Awaited<
       ReturnType<InstanceType<typeof ProjectScopeRegistry>["resolveActiveSyncHost"]>
@@ -29863,17 +29909,8 @@ async function runServe(
       );
       brainSyncHostLease.updatePort(listenerPort);
       await ensureProjectlessRelayTunnel();
-    } else if (activeScope && brainSyncHostLease) {
-      // A scope took over hosting and holds its own lease; drop the
-      // projectless one so the lock file describes the real owner.
-      brainSyncHostLease.dispose();
-      brainSyncHostLease = null;
-      // The scope's own runtime builds a gate over the SAME shared tunnel
-      // client, so hand ownership over instead of leaving two gates reacting to
-      // the same lease transitions. Disposing a gate never stops the tunnel.
-      brainRelayTunnelGate?.dispose();
-      brainRelayTunnelGate = null;
-      brainSyncTunnelClient = null;
+    } else if (activeScope) {
+      releaseProjectlessHostLease();
     }
     if (activeScope) {
       // Activating a scope is not the same as hosting. Its sync service makes
@@ -29908,6 +29945,7 @@ async function runServe(
     return activeScope ?? null;
   };
   startSyncHostForRepair = () => startSyncHost(true);
+  startSyncHostOnDemand = () => startSyncHost();
   const disposeServeResources = async () => {
     // A stopped brain must not describe itself in later reports from this process.
     for (const unregister of unregisterBrainDiagnostics) unregister();
