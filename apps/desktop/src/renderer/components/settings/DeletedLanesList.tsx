@@ -3,6 +3,7 @@ import { ArrowCounterClockwise, CircleNotch, GitBranch, X } from "@phosphor-icon
 import type { DeletedLaneSnapshot, OpenProjectBinding } from "../../../shared/types";
 import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import { ipcErrorMessage, relativeWhen } from "../../lib/format";
+import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 import { restoredLaneToast } from "../app/toast/restoredLaneToast";
 import { showToast } from "../app/toast/toastStore";
 import { confirmDialog } from "../ui/dialog";
@@ -65,11 +66,13 @@ export function DeletedLanesList({ pin }: { pin: OpenProjectBinding | null }) {
       if (result.restoredUncommitted) {
         setLanes((prev) => prev?.filter((entry) => entry.id !== lane.id) ?? prev);
       }
+      captureLaneSetupAnalytics({ action: "deleted_lane_restored", outcome: result.restoredUncommitted ? "completed" : "failed" });
       showToast({
         id: TOAST_ID,
         ...restoredLaneToast(lane, result, lane.kind === "freed" ? undefined : "Its chats are below; Reopen puts them in the lane."),
       });
     } catch (error) {
+      captureLaneSetupAnalytics({ action: "deleted_lane_restored", outcome: "failed" });
       showToast({
         id: TOAST_ID,
         tone: "error",

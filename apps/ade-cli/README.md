@@ -570,6 +570,8 @@ ade lanes archive-and-reclaim lane-id --confirm RECLAIM    # preserve lane histo
 ade lanes unarchive lane-id                                # restore the lane; recreate its managed worktree when needed. A recreated worktree re-runs the whole env init before returning; a plain unarchive returns immediately and restarts Docker in the background, so don't assume services are up when the command exits
 ade lanes action initEnv --arg laneId=lane-id              # re-run the full env init (env files, copies, deps, mounts, setup script, docker)
 ade lanes delete lane-id --force --delete-branch
+ade lanes deleted list --text                              # lanes whose unsaved work a delete kept, for 30 days
+ade lanes deleted restore <id>                             # bring one back with its uncommitted files; never pushes
 ade chat update [<session>] --title "Fix login" --tag review-ready   # also --model, --effort, --permissions, --fast/--ultrafast; defaults to $ADE_CHAT_SESSION_ID
 ade chat attach-linear-issue <session> --issue-id ENG-431
 ade chat create --from-linear-issue ENG-431

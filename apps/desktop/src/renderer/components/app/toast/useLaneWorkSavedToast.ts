@@ -4,6 +4,7 @@ import { stripElectronErrorWrapper } from "../../../../shared/codedError";
 import { machineIdForBinding } from "../../../../shared/machineIdentity";
 import type { LaneDeleteEvent, OpenProjectBinding } from "../../../../shared/types";
 import { extractError } from "../../../lib/format";
+import { captureLaneSetupAnalytics } from "../../../lib/laneSetupAnalytics";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { navigateToAppTarget } from "../../../lib/openExternal";
 import { useAppStore } from "../../../state/appStore";
@@ -46,8 +47,12 @@ export function useLaneWorkSavedToast(): void {
         showToast({ id: toastId, tone: "info", title: `Restoring ${saved.laneName}…`, durationMs: 0, replayMask });
         // ADE Web has no route to a local pin; its own machine is the default.
         void window.ade.lanes.restoreDeleted({ id: saved.id }, isWebClientMode() && binding?.kind === "local" ? null : binding)
-          .then((result) => showToast({ id: toastId, ...restoredLaneToast(saved, result) }))
+          .then((result) => {
+            captureLaneSetupAnalytics({ action: "deleted_lane_restored", outcome: result.restoredUncommitted ? "completed" : "failed" });
+            showToast({ id: toastId, ...restoredLaneToast(saved, result) });
+          })
           .catch((reason: unknown) => {
+            captureLaneSetupAnalytics({ action: "deleted_lane_restored", outcome: "failed" });
             showToast({
               id: toastId,
               tone: "error",

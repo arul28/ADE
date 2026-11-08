@@ -4071,8 +4071,11 @@ bar, so `.searchable` never rendered), quick-filter chips with counts
 (`LaneQuickFilter`: Active, Running, Needs you, Changes, Archived), then the
 focused machine's lanes in stack order and each other machine's lanes under its
 name. Rows swipe to pin and to archive or restore; a machine without a live
-link shows its last roster dimmed, with no swipe actions. Opening a lane pushes
-`LaneRoute` on the tab's navigation path. Lane detail reads the cache and the
+link shows its last roster dimmed, with no swipe actions. The Archived filter
+also lists Recently deleted lanes for each live machine (`LaneRecentlyDeleted.swift`),
+each with Restore or Put back and a swipe to Drop; a delete that kept work shows
+a notice with Restore. Opening a lane pushes `LaneRoute` on the tab's navigation
+path. Lane detail reads the cache and the
 host once on open, and reads the cache again if a local revision landed during
 that host read.
 

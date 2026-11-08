@@ -14686,9 +14686,15 @@ final class SyncService: ObservableObject {
       "force": force,
     ], targetProjectId: targetProjectId, targetProjectRootPath: targetProjectRootPath)
     // A queued delete or an older host answers without it.
-    guard let payload = response as? [String: Any], let savedWork = payload["savedWork"], !(savedWork is NSNull),
-          let snapshot = try? decode(savedWork, as: DeletedLaneSnapshot.self)
-    else { return }
+    guard let payload = response as? [String: Any], let savedWork = payload["savedWork"], !(savedWork is NSNull) else { return }
+    let snapshot: DeletedLaneSnapshot
+    do {
+      snapshot = try decode(savedWork, as: DeletedLaneSnapshot.self)
+    } catch {
+      // The work is still in Recently deleted; only the notice is lost.
+      CrashReporting.capture(error, context: ["area": "sync.lane_delete_saved_work"])
+      return
+    }
     laneDeletionsKept.removeAll { $0.id == snapshot.id }
     laneDeletionsKept.append(LaneDeletionKept(
       shownInProjectId: shownInProjectId,

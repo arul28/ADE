@@ -8572,7 +8572,7 @@ export function createLaneService({
 
         // Without a folder the branch steps are the first to save, and their
         // failures are only warnings: a failed save must stop the delete.
-        if (!hasWorktree) await ensureWorkSaved();
+        if (!hasWorktree && (deleteBranch || deleteRemoteBranch)) await ensureWorkSaved();
 
         if (hasWorktree) {
           // The one slow step with no progress to watch, so the user can stop
