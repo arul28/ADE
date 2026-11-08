@@ -1,12 +1,21 @@
 // Minimal ANSI/control sequence stripping for terminal transcript display + pack generation.
 // Avoids new deps; covers CSI/OSC + common single-byte escapes.
 
-const OSC_REGEX = /\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g; // ESC ] ... BEL or ST (ESC \)
+// ESC ] ... BEL or ST (ESC \). The body stops at the first ESC: a greedy body ran
+// to the last ST in the text and ate the link text between OSC 8 hyperlinks.
+// Like xterm, an ESC that does not start ST ends the string and begins the
+// next sequence.
+const OSC_REGEX = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\|(?=\u001b))/g;
 const APC_REGEX = /\u001b_[\s\S]*?(?:\u0007|\u001b\\)/g; // ESC _ ... BEL or ST (Kitty graphics protocol)
 const DCS_REGEX = /\u001bP[\s\S]*?(?:\u0007|\u001b\\)/g; // ESC P ... BEL or ST
 const PM_REGEX = /\u001b\^[\s\S]*?(?:\u0007|\u001b\\)/g; // ESC ^ ... BEL or ST
 const CSI_REGEX = /\u001b\[[0-?]*[ -/]*[@-~]/g; // ESC [ ... cmd
-const CHARSET_REGEX = /\u001b[\(\)][0-9A-Za-z]/g; // ESC ( B / ESC ) 0 etc
+// ECMA-35: intermediate bytes (0x20-0x2F) and one final byte, as in ESC ( B,
+// ESC # 8 or ESC % G. A control or ESC after the intermediates is not a final
+// byte, so the sequence ends before it and that byte is still processed.
+const INTERMEDIATE_ESC_REGEX = /\u001b[ -/]+[0-~]?/g;
+// A second ESC restarts the sequence, so the first one is dropped.
+const RESTARTED_ESC_REGEX = /\u001b+(?=\u001b)/g;
 const TWO_CHAR_ESC_REGEX = /\u001b(?:[@-Z\\-_]|[0-9=>])/g; // ESC followed by a single byte
 
 function applyBackspaces(text: string): string {
@@ -42,8 +51,9 @@ export function stripAnsiWithOptions(
     .replace(APC_REGEX, "")
     .replace(DCS_REGEX, "")
     .replace(PM_REGEX, "")
+    .replace(RESTARTED_ESC_REGEX, "")
+    .replace(INTERMEDIATE_ESC_REGEX, "")
     .replace(CSI_REGEX, "")
-    .replace(CHARSET_REGEX, "")
     .replace(TWO_CHAR_ESC_REGEX, "");
 
   const stripped = options?.preserveCarriageReturns ? strippedEscapes : strippedEscapes.replace(/\r/g, "");

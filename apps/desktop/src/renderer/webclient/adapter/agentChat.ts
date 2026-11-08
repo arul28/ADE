@@ -524,7 +524,9 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     delete: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("delete", pin);
-      await call("chat.delete", args, undefined, false);
+      const result = await call<{ recoverable?: unknown } | null | undefined>("chat.delete", args, undefined, false);
+      // An older machine sends no `recoverable`: the caller keeps its Undo.
+      return typeof result?.recoverable === "boolean" ? { recoverable: result.recoverable } : null;
     },
     updateSession: async (args, pin) => {
       guardPin("updateSession", pin);

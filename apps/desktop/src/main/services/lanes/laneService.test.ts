@@ -4506,7 +4506,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     });
 
     expect(runGit).toHaveBeenCalledWith(
-      ["ls-remote", "--heads", "origin", "feature/child"],
+      ["ls-remote", "--heads", "origin", "refs/heads/feature/child"],
       expect.objectContaining({ timeoutMs: 30_000 }),
     );
     expect(gitOrThrowCalls).toContainEqual(["branch", "-D", "feature/child"]);

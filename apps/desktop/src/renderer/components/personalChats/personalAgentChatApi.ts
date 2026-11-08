@@ -171,7 +171,10 @@ export function createPersonalAgentChatApi(bridge: PersonalChatsBridge): AgentCh
       sessionFromSummary(await call<AgentChatSessionSummary>("updateSession", args)),
     archive: (args: { sessionId: string }) => call<void>("archive", { sessionId: args.sessionId }),
     unarchive: (args: { sessionId: string }) => call<void>("unarchive", { sessionId: args.sessionId }),
-    delete: (args: { sessionId: string }) => call<void>("delete", { sessionId: args.sessionId }),
+    delete: async (args: { sessionId: string }) => {
+      await call<void>("delete", { sessionId: args.sessionId });
+      return null;
+    },
     createScheduledWork: (args: unknown) => call("createScheduledWork", args),
     cancelScheduledWork: (args: unknown) => call("cancelScheduledWork", args),
     setScheduledWorkPaused: (args: unknown) => call("setScheduledWorkPaused", args),

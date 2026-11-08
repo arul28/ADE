@@ -68,7 +68,7 @@ input, all checked in:
 | Input | Tools |
 |---|---|
 | `apps/ade-cli/package-lock.json` | `codex`, `claude-code`, `opencode` |
-| `apps/desktop/package-lock.json` | `copilot`. `@github/copilot-sdk` is a desktop dependency (the Copilot worker is bundled from desktop source), so its runtime is pinned from the lockfile that installs the SDK. A Dependabot bump of the SDK fails `tools:manifest:check` until the runtime pin moves with it, so the worker and the runtime it spawns cannot drift apart. |
+| `apps/desktop/package-lock.json` | `copilot`. `@github/copilot-sdk` is a desktop dependency (the Copilot worker is bundled from desktop source), so its runtime is pinned from the lockfile that installs the SDK. A bump of the SDK alone fails `tools:manifest:check` until the runtime pin moves with it, so the worker and the runtime it spawns cannot drift apart. |
 | `apps/ade-cli/scripts/muse-release.json` | `muse` |
 | `apps/ade-cli/scripts/pins/<tool>.json` | `droid`, `grok`, `qwen`, `kimi`, `devin`, `antigravity`, `pi`, `copilot-cli`, `cursor-cli`, `node`. These are in no ADE lockfile; `npm run tools:pin` writes them (see [Bumping a pinned version](#bumping-a-pinned-version)). |
 
@@ -254,7 +254,7 @@ Where the pins come from, and why the generator stays offline:
 |---|---|
 | `npm run tools:muse-pin` (`scripts/pin-muse-release.mjs`) | The only network step. Reads the locked `@muse-code/sdk` version, picks the paired binary build (`--version X.Y.Z-R…`, else Meta's `muse-stable` channel, else the existing pin), refuses anything that does not start with `<sdk version>-R`, fetches `…/download/?channel=muse&version=<v>&file=manifest.json`, and writes `scripts/muse-release.json` (per target: Meta artifact key, url, sha256, size; plus the MSP schema fingerprint). It warns when that fingerprint differs from the SDK's. Then it runs the generator. |
 | `scripts/muse-release.json` | Checked in. |
-| `npm run tools:manifest` | Offline. Reads `muse-release.json` and **fails when its `sdkVersion` is not the locked `@muse-code/sdk`**, so a Dependabot SDK bump without a re-pin fails `tools:manifest:check` (the `pretest` gate) instead of shipping a mismatched binary. |
+| `npm run tools:manifest` | Offline. Reads `muse-release.json` and **fails when its `sdkVersion` is not the locked `@muse-code/sdk`**, so an SDK bump without a re-pin fails `tools:manifest:check` (the `pretest` gate) instead of shipping a mismatched binary. |
 
 Target mapping: `darwin-arm64` → `aarch64_macos`, `darwin-x64` → `x86_macos`,
 `linux-arm64` → `aarch64_linux`, `linux-x64` → `x86_linux`, `win32-x64` →
@@ -1013,14 +1013,14 @@ and `missing` (OpenCode).
 The pin is what every ADE user runs, so a bump is a product change: run the new
 version in ADE before it merges.
 
-### Lockfile tools (Dependabot)
+### Lockfile tools (provider SDKs)
 
-`.github/dependabot.yml` watches the provider SDKs ADE installs from npm, one PR
-per SDK (`group-by: dependency-name`, both `apps/desktop` and `apps/ade-cli` in
-the same PR): `@anthropic-ai/claude-agent-sdk`, `@openai/codex`, `@opencode/cli`,
-`@opencode/client`, `@cursor/sdk`, `@factory/droid-sdk`, `@github/copilot-sdk`,
-`@muse-code/sdk`. Dependabot cannot regenerate the manifest, so its PRs fail
-`tools:manifest:check` until someone runs the step below on the branch.
+The provider SDKs ADE installs from npm are `@anthropic-ai/claude-agent-sdk`,
+`@openai/codex`, `@opencode/cli`, `@opencode/client`, `@cursor/sdk`,
+`@factory/droid-sdk`, `@github/copilot-sdk` and `@muse-code/sdk`. The same
+daily workflow as the vendor pins watches them (see below); there is no
+Dependabot config. Its PR already holds the bump and the regenerated manifest;
+by hand, the steps are:
 
 For `@github/copilot-sdk`, bump it in `apps/desktop`, reinstall there, then run
 `npm run tools:manifest` in `apps/ade-cli`. The SDK and the `copilot` runtime
@@ -1072,19 +1072,33 @@ IP); set `GITHUB_TOKEN`. A Pi bump needs more than a re-pin: re-check its CLI
 path (see [Entry paths](#entry-paths)) and the SDK surface the worker uses
 (`piSdkWorker.ts`). ADE is built against Pi 1.4.
 
-The scheduled workflow `.github/workflows/agent-tool-pins.yml` runs daily at
-01:37 UTC (after Dependabot) and on `workflow_dispatch` (optional `tool` input).
-For each vendor pin it compares `--latest-version` with
-`scripts/pins/<tool>.json`; when the vendor is newer and the branch does not
-already propose that version, it runs `tools:pin`, force-pushes
-`pins/<tool>`, opens or updates that tool's one PR (label `dependencies`), and
-starts `ci.yml` on the branch with `workflow_dispatch` (pushes made with
-`GITHUB_TOKEN` do not start CI). A newer release updates the same PR. Two tools
-run at a time.
+The scheduled workflow `.github/workflows/agent-tool-pins.yml` is the one
+upgrade flow for both the vendor pins and the provider SDKs. It runs daily at
+01:37 UTC and on `workflow_dispatch` (optional `tool` input: a tool name, or an
+SDK item such as `claude-agent-sdk`). For each item it compares main with the
+newest stable version (`tools:pin --latest-version` for a tool, `npm view` for
+an SDK):
+
+- **Newer:** unless the open PR already proposes that version, it writes the
+  bump (`tools:pin`; or the SDK's exact version in each app's `package.json`,
+  `npm install --package-lock-only`, then `tools:manifest`, or `tools:muse-pin`
+  for Muse), force-pushes `pins/<item>`, opens or updates that item's one PR
+  (label `dependencies`), and starts `ci.yml` on the branch with
+  `workflow_dispatch` (pushes made with `GITHUB_TOKEN` do not start CI). A
+  newer release updates the same PR.
+- **Main has the newest:** it closes the item's open PR and deletes
+  `pins/<item>`, or deletes a leftover branch with no PR.
+
+A second job closes open Dependabot PRs that bump one of these SDKs and were
+opened before 2026-11-10, when the old config still opened version PRs; a
+workflow cannot tell a security update from a version update, so any later
+Dependabot PR (a security update) stays open. Two items run at a time.
+Opening a PR needs the repository setting "Allow GitHub Actions to create and
+approve pull requests".
 
 ### Bumping safely
 
-1. Re-pin (Dependabot + `tools:manifest`, `tools:muse-pin`, or `tools:pin`).
+1. Re-pin (the `pins/<item>` PR, or by hand: `tools:manifest`, `tools:muse-pin`, or `tools:pin`).
    `npm run tools:manifest:check` must pass.
 2. Run the new version in ADE on a real machine: a chat (or a terminal for a
    CLI-only tool), sign-in status, model list, resume, and anything the

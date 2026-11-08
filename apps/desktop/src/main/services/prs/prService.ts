@@ -4138,23 +4138,26 @@ export function createPrService({
     localAhead: number;
   }> => {
     const upstreamCheck = await runGit(
-      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+      ["rev-parse", "--symbolic-full-name", "@{upstream}"],
       { cwd: lane.worktreePath, timeoutMs: 10_000 }
     );
 
-    const upstreamRef = upstreamCheck.exitCode === 0 ? upstreamCheck.stdout.trim() : "";
+    // The full name tells a remote upstream (`refs/remotes/origin/x`) from a
+    // local one (`--track develop` or `--track team/fix`, `refs/heads/…`). A
+    // local upstream means the head is not on a remote yet, so the remote
+    // check below decides.
+    const upstreamFull = upstreamCheck.exitCode === 0 ? upstreamCheck.stdout.trim() : "";
+    const upstreamRef = upstreamFull.startsWith("refs/remotes/") ? upstreamFull.slice("refs/remotes/".length) : "";
     const parsedUpstream = upstreamRef ? parseUpstreamRef(upstreamRef) : null;
     // A branch made with `git checkout -b <new> origin/main` tracks main. The
     // PR head is <new>, so compare with and push to origin/<new> instead.
-    if (upstreamRef && (!parsedUpstream || parsedUpstream.branch === headBranch)) {
-      if (parsedUpstream) {
-        await fetchRemoteBranchForPrCheck({
-          cwd: lane.worktreePath,
-          remote: parsedUpstream.remote,
-          branch: parsedUpstream.branch,
-          headBranch,
-        });
-      }
+    if (parsedUpstream && parsedUpstream.branch === headBranch) {
+      await fetchRemoteBranchForPrCheck({
+        cwd: lane.worktreePath,
+        remote: parsedUpstream.remote,
+        branch: parsedUpstream.branch,
+        headBranch,
+      });
 
       const comparison = await readBranchComparison({
         cwd: lane.worktreePath,
@@ -4170,7 +4173,7 @@ export function createPrService({
       };
     }
 
-    const remoteBranchCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", headBranch], {
+    const remoteBranchCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", `refs/heads/${headBranch}`], {
       cwd: lane.worktreePath,
       timeoutMs: 30_000,
       maxOutputBytes: 256 * 1024,
@@ -7665,7 +7668,7 @@ export function createPrService({
       if (remoteCheck.exitCode !== 0) {
         result.remoteError = `Remote '${remote}' is not configured for this repository`;
       } else {
-        const remoteRefCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", remote, branchName], {
+        const remoteRefCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", remote, `refs/heads/${branchName}`], {
           cwd: projectRoot,
           timeoutMs: 12_000,
         });

@@ -508,19 +508,20 @@ export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
   };
 
   /**
-   * Saves one deleted chat. Never throws: a failure to remember it must not
-   * fail the delete the person asked for.
+   * Saves one deleted chat; true when Recently deleted now holds it. Never
+   * throws: a failure to remember it must not fail the delete the person asked for.
    */
-  const remember = (input: RecordDeletedChatInput): void => {
+  const remember = (input: RecordDeletedChatInput): boolean => {
     const db = deps.db();
-    if (!db) return;
+    if (!db) return false;
     try {
-      recordDeletedChat(db, input);
+      return recordDeletedChat(db, input);
     } catch (error) {
       deps.logger.warn("deleted_chats.record_failed", {
         sessionId: input.id,
         error: error instanceof Error ? error.message : String(error),
       });
+      return false;
     }
   };
 

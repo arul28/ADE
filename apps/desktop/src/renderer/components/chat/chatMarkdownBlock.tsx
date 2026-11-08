@@ -19,6 +19,7 @@ import { cn } from "../ui/cn";
 import { useChatChromeTint } from "./chatAppearance";
 import { RTL_FOLLOWS_FIRST_BLOCK_CLASS, RTL_TABLE_FOLLOWS_FIRST_CELL_CLASS, chatMarkdownUrlTransform } from "./chatMarkdown";
 import {
+  isExternalHref,
   looksLikeWorkspacePath,
   parseWorkspacePathLocation,
   resolveWorkspacePathFromHref,
@@ -143,6 +144,12 @@ function workspaceFilePathOf(code: string): string | null {
  * this memo bails out and only the short tail is re-parsed at 60 Hz — the
  * whole-message re-parse per paint is what made pacing unaffordable.
  */
+/** A link target written as a path: absolute, home or dot relative, or shortened with `...`. */
+function isPathShapedHref(href: string): boolean {
+  const trimmed = href.trim();
+  return /^(?:\/|\.{1,2}\/|~(?:\/|$))/.test(trimmed) || /\/(?:\.\.\.|…)(?:\/|$)/.test(trimmed);
+}
+
 const OPEN_CODE_FENCE = /^(`{3,}|~{3,})([^\n]*)\n/;
 /** A Markdown link reference or footnote definition line: `[label]: destination`. */
 const REFERENCE_DEFINITION = /^ {0,3}\[[^\]\n]+\]:[ \t]*\S/;
@@ -568,6 +575,12 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
             {children}
           </WorkspacePathLink>
         );
+      }
+      // A path that is not one of the workspace's (`~/x`, `../x`, a shortened
+      // `/tmp/.../out.txt`) is not a site: the browser would make one of it.
+      // A bare host (`example.com`, `localhost:3000`) still opens.
+      if (typeof href === "string" && !isExternalHref(href) && isPathShapedHref(href)) {
+        return <span>{children}</span>;
       }
       return (
         <a

@@ -698,10 +698,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   // After a delete: Undo reopens the chat on the machine it was deleted from
-  // (the same pin), and the link opens Settings › Recently deleted there.
+  // (the same pin), and the link opens Settings › Recently deleted there. A
+  // chat that never reached its agent is not kept, so it gets neither.
   const showDeletedChatToast = useLatestCallback(
-    (session: TerminalSessionSummary, label: string, pin: OpenProjectBinding | null) => {
+    (session: TerminalSessionSummary, label: string, pin: OpenProjectBinding | null, recoverable: boolean) => {
       const toastId = `chat-deleted:${session.id}`;
+      if (!recoverable) {
+        showToast({ id: toastId, tone: "info", title: "Chat deleted", message: label });
+        return;
+      }
       const undo = () => {
         void window.ade.agentChat.reopenDeleted({ id: session.id }, pin)
           .then(async (result) => {
@@ -754,7 +759,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         message: (
           <>
             <span className="line-clamp-2 break-words font-medium text-fg/80" title={label}>{label}</span>
-            <span className="block whitespace-nowrap">You can bring it back from Recently deleted.</span>
+            <span className="block whitespace-nowrap">A chat with messages can come back from Recently deleted.</span>
           </>
         ),
         icon: <Trash size={16} weight="duotone" />,
@@ -778,7 +783,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         ? window.ade.agentChat.delete({ sessionId: session.id }, pin)
         : window.ade.agentChat.delete({ sessionId: session.id });
       void deletion
-        .then(async () => {
+        .then(async (result) => {
           invalidateSessionListCache();
           if (pin) {
             cancelCrossMachineOptimisticChatSession(pin, session.id);
@@ -787,7 +792,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           work.closeTab(session.id);
           setContextMenu((current) => (current?.session.id === session.id ? null : current));
           setInfoPopover((current) => (current?.session.id === session.id ? null : current));
-          showDeletedChatToast(session, label, pin ?? null);
+          // An older machine returns nothing: keep its Undo.
+          showDeletedChatToast(session, label, pin ?? null, result?.recoverable !== false);
           // Refresh is post-delete housekeeping; a failure here must not be
           // reported as "Delete failed" because the delete itself succeeded.
           await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {

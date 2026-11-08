@@ -5632,8 +5632,9 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     return { ok: true };
   });
   register("chat.delete", { viewerAllowed: true, queueable: true }, async (payload) => {
-    await requireService(args.agentChatService, "Agent chat service not available.").deleteSession(parseAgentChatArchiveArgs(payload, "chat.delete"));
-    return { ok: true };
+    const result = await requireService(args.agentChatService, "Agent chat service not available.").deleteSession(parseAgentChatArchiveArgs(payload, "chat.delete"));
+    // `recoverable`: whether Recently deleted holds it, so the client offers Undo.
+    return { ok: true, recoverable: result?.recoverable !== false };
   });
   register("chat.getLaunchDefaults", { viewerAllowed: true }, async () =>
     requireService(args.agentChatService, "Agent chat service not available.").getLaunchDefaults());

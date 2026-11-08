@@ -146,6 +146,8 @@ export function looksLikeWorkspacePath(value: string): boolean {
   if (candidate.path === ".." || candidate.path.startsWith("../") || candidate.path.startsWith("~/")) {
     return false;
   }
+  // A shortened path (`/tmp/claude-501/.../out.txt`) names no real file.
+  if (candidate.path.split("/").some((segment) => segment === "..." || segment === "…")) return false;
   const withoutLeadingSlash = candidate.path.startsWith("/") ? candidate.path.slice(1) : candidate.path;
   if (withoutLeadingSlash.includes("/")) return true;
   // Bare token: it still has to end in something file-shaped, and it must not

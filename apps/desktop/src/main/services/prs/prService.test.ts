@@ -7380,7 +7380,7 @@ describe("prService.createFromLane", () => {
     });
     mockGit.runGit
       .mockResolvedValueOnce({ exitCode: 0, stdout: "my-feature\n", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/my-feature\n", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "refs/remotes/origin/my-feature\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "1\t0\n", stderr: "" });
 
@@ -7412,7 +7412,7 @@ describe("prService.createFromLane", () => {
     });
     mockGit.runGit
       .mockResolvedValueOnce({ exitCode: 0, stdout: "my-feature\n", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/my-feature\n", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "refs/remotes/origin/my-feature\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "not-a-count\n", stderr: "" });
 
@@ -7438,7 +7438,7 @@ describe("prService.createFromLane", () => {
     });
     mockGit.runGit
       .mockResolvedValueOnce({ exitCode: 0, stdout: "my-feature\n", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/my-feature\n", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "refs/remotes/origin/my-feature\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 0, stdout: "0\t1\n", stderr: "" })
       .mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: "! [rejected] my-feature -> my-feature (non-fast-forward)" });

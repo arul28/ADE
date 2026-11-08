@@ -662,6 +662,7 @@ import type {
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   AgentChatDeleteArgs,
+  AgentChatDeleteResult,
   AgentChatSuggestLaneNameArgs,
   AutoLaneIdentitySuggestion,
   AgentChatEventEnvelope,
@@ -8712,9 +8713,10 @@ const adeBridge = {
         await ipcRenderer.invoke(IPC.agentChatUnarchive, args);
       agentChatSummaryCache.clear();
     },
-    delete: async (args: AgentChatDeleteArgs, pin?: OpenProjectBinding | null): Promise<void> => {
+    // An older machine answers nothing; the caller reads that as recoverable.
+    delete: async (args: AgentChatDeleteArgs, pin?: OpenProjectBinding | null): Promise<AgentChatDeleteResult | null> => {
       agentChatSummaryCache.clear();
-      await callPinnedOrBoundRuntimeActionOr<void>(
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatDeleteResult | null | undefined>(
         pin,
         "chat",
         "deleteSession",
@@ -8722,6 +8724,7 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.agentChatDelete, args),
       );
       agentChatSummaryCache.clear();
+      return result ?? null;
     },
     // Settings › Recently deleted. Every call goes to the machine that holds
     // the chat's conversation: the list, its preview, reopen and remove.

@@ -6602,12 +6602,28 @@ function readGlobalValueFlag(
     : null;
 }
 
+/**
+ * `path.resolve` for a folder the user typed. A quoted `"~/My App"`, or
+ * `--project-root=~/app` in zsh, reaches ADE with the `~` unexpanded, and
+ * `path.resolve` alone turns it into `<cwd>/~/app`: a folder that does not
+ * exist, or a project under the current directory picked by mistake.
+ */
+function resolveCliFolderArg(value: string): string {
+  // The home the shell means by `~`: Git Bash on Windows sets HOME, which can
+  // differ from the profile folder Node reads.
+  const home = process.platform === "win32" ? process.env.HOME?.trim() || os.homedir() : os.homedir();
+  if (value === "~") return home;
+  const homeRelative = process.platform === "win32" ? /^~[\\/]/ : /^~\//;
+  if (homeRelative.test(value)) return path.join(home, value.slice(2));
+  return path.resolve(value);
+}
+
 const GLOBAL_VALUE_FLAG_HANDLERS: Record<CliGlobalValueFlag, (options: GlobalOptions, value: string) => void> = {
   "--project-root": (options, value) => {
-    options.projectRoot = path.resolve(value);
+    options.projectRoot = resolveCliFolderArg(value);
   },
   "--workspace-root": (options, value) => {
-    options.workspaceRoot = path.resolve(value);
+    options.workspaceRoot = resolveCliFolderArg(value);
   },
   "--role": (options, value) => {
     options.role = parseRole(value);
@@ -15064,7 +15080,7 @@ function iosSimulatorRootArgs(
   const explicitRoot =
     readValue(args, ["--project-root", "--root"]) ?? globalProjectRoot;
   if (explicitRoot) {
-    return { projectRoot: path.resolve(explicitRoot), ...(laneId ? { laneId } : {}) };
+    return { projectRoot: resolveCliFolderArg(explicitRoot), ...(laneId ? { laneId } : {}) };
   }
   if (laneId) return { laneId };
   return { projectRoot: callerWorkspaceRoot() };
@@ -16061,7 +16077,7 @@ function buildIosSimulatorPlan(
     const project = readValue(args, ["--project"]);
     return {
       deviceUdid: device,
-      ...(project ? { projectRoot: path.resolve(project) } : rootArgs()),
+      ...(project ? { projectRoot: resolveCliFolderArg(project) } : rootArgs()),
       query: readIosSimulatorElementQuery(args),
     };
   };
@@ -16422,7 +16438,7 @@ function buildIosSimulatorPlan(
     const logRowLimit = readNumberOption(args, ["--log-rows", "--log-row-limit"]);
     return iosAction("iOS simulator proof bundle", "captureProofBundle", {
       deviceUdid: device,
-      ...(project ? { projectRoot: path.resolve(project) } : rootArgs()),
+      ...(project ? { projectRoot: resolveCliFolderArg(project) } : rootArgs()),
       ...(outDir ? { outDir } : {}),
       ...(caption ? { caption } : {}),
       ...(noElements ? { includeElements: false } : {}),

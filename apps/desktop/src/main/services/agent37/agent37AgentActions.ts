@@ -149,6 +149,12 @@ const madeHereToday = () => (madeHere.day === today() ? madeHere.count : 0);
 const countMadeHere = () => {
   madeHere = { day: today(), count: madeHereToday() + 1 };
 };
+/**
+ * Unattended makes approved and still running: they hold a slot until they
+ * count or fail, so parallel makes can't all pass the day's limit before the
+ * first one counts.
+ */
+let reservedHere = 0;
 
 export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
   const logger = deps.logger ?? {};
@@ -212,8 +218,8 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       /** The size it picks (make, copy, move, resize): within the largest allowed. */
       shape?: Agent37ShapeId | null;
     },
-  ): Promise<{ counted: () => void; unattended: boolean }> => {
-    const nothing = { counted: () => undefined, unattended: false };
+  ): Promise<{ counted: () => void; release: () => void; unattended: boolean }> => {
+    const nothing = { counted: () => undefined, release: () => undefined, unattended: false };
     if (approval.by === "person") return nothing;
     const chatSessionId = approval.chatSessionId;
     if (!chatSessionId || !deps.approvals) {
@@ -258,13 +264,22 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       }
       if (limits && card.newMachine) {
         const listed = await deps.machines.agentMadeToday().catch(() => 0);
-        const made = Math.max(listed, madeHereToday());
+        // Makes still running are in neither count: they go on top of the larger one.
+        const made = Math.max(listed, madeHereToday()) + reservedHere;
         if (made >= limits.machinesPerDay) {
           refuse(`agents already started ${made} new machine${made === 1 ? "" : "s"} today, your daily limit.`);
         }
       }
       approvals.notice(chatSessionId, `ADE approved "${card.title}" for ${where}, within what you let agents spend.`);
-      return { counted: card.newMachine ? countMadeHere : () => undefined, unattended: true };
+      if (!card.newMachine) return { counted: () => undefined, release: () => undefined, unattended: true };
+      reservedHere += 1;
+      let held = true;
+      const release = () => {
+        if (!held) return;
+        held = false;
+        reservedHere -= 1;
+      };
+      return { counted: () => { release(); countMadeHere(); }, release, unattended: true };
     }
     let response: Awaited<ReturnType<Agent37ChatApprovals["requestChatInput"]>>;
     try {
@@ -387,9 +402,13 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         newMachine: true,
         shape: shapeId,
       });
-      const made = await make(approval, { kind: "create", machine: { kind, shape: shapeId, name }, madeByChat: madeByChat(approval), selfApprove: yes.unattended }, args.background === true);
-      yes.counted();
-      return made;
+      try {
+        const made = await make(approval, { kind: "create", machine: { kind, shape: shapeId, name }, madeByChat: madeByChat(approval), selfApprove: yes.unattended }, args.background === true);
+        yes.counted();
+        return made;
+      } finally {
+        yes.release();
+      }
     },
 
     async sleep(rawArgs?: unknown) {
@@ -437,9 +456,13 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         newMachine: true,
         shape: shapeId ?? box.shapeId,
       });
-      const made = await make(approval, { kind: "copy", instanceId: box.instanceId, name, shape: shapeId, madeByChat: madeByChat(approval), selfApprove: yes.unattended }, args.background === true);
-      yes.counted();
-      return made;
+      try {
+        const made = await make(approval, { kind: "copy", instanceId: box.instanceId, name, shape: shapeId, madeByChat: madeByChat(approval), selfApprove: yes.unattended }, args.background === true);
+        yes.counted();
+        return made;
+      } finally {
+        yes.release();
+      }
     },
 
     async move(rawArgs?: unknown) {
@@ -467,9 +490,13 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         madeByThisChat: approval.by === "agent" && approval.chatSessionId != null
           && (await deps.machines.instanceMetadata(box.instanceId).catch(() => null))?.[AGENT37_MADE_BY_CHAT_METADATA] === approval.chatSessionId,
       });
-      const made = await make(approval, { kind: "move", instanceId: box.instanceId, machineKey: box.machineKey, to, shape: shapeId, madeByChat: madeByChat(approval), selfApprove: yes.unattended }, args.background === true);
-      yes.counted();
-      return made;
+      try {
+        const made = await make(approval, { kind: "move", instanceId: box.instanceId, machineKey: box.machineKey, to, shape: shapeId, madeByChat: madeByChat(approval), selfApprove: yes.unattended }, args.background === true);
+        yes.counted();
+        return made;
+      } finally {
+        yes.release();
+      }
     },
 
     /** A make started with `background`: its stage, the approval link while it waits, then its result. */
@@ -604,14 +631,15 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       if (!existing || existing.shape !== next.shape || existing.kind !== next.kind) {
         await capCheck();
         const shape = agent37ShapeById(next.shape);
-        await approve(readApproval(args), {
+        // The keeper makes the machine later; this only asks, so it holds no slot.
+        (await approve(readApproval(args), {
           action: "spend",
           newMachine: true,
           shape: next.shape,
           title: `Keep a cloud machine ready for ${next.projectName}`,
           body: `ADE prepares a ${next.kind === "vm" ? "VM" : "box"} (${shape.cpu} vCPU · ${shape.memoryGb} GB) with the repository cloned and setup run, then keeps it asleep (about ${formatAgent37Usd(shape.diskGb * 0.09)} a month for its disk). A chat on it bills ${formatAgent37HourlyPrice(agent37HourlyUsd(next.kind, shape))} while awake.`,
           confirm: "Keep one ready",
-        });
+        })).release();
       }
       await deps.readySettings.write([...projects.filter((entry) => entry.identity !== identity), next]);
       await deps.desktop()?.readyRefresh().catch((error: unknown) => logger.warn?.("agent37.ready_refresh_failed", { error: getErrorMessage(error) }));

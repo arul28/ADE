@@ -1,29 +1,33 @@
-# Proposes a new pin for each agent tool that is not in an ADE lockfile.
+# The one flow that tells you an agent tool or provider SDK has a new version.
 #
-# Dependabot watches the provider SDKs that ADE installs from npm
-# (.github/dependabot.yml). The tools below come from vendor hosts instead
-# (apps/ade-cli/scripts/pins/<tool>.json), so Dependabot cannot see them.
-# Every day this workflow asks each vendor for its newest stable version. When
-# that version is newer than the pin, it re-pins the tool with
-# `npm run tools:pin`, which also regenerates the tools manifest, and pushes
-# the result to the branch `pins/<tool>`.
+# Every day it asks for the newest stable version of:
+# - each pinned tool (apps/ade-cli/scripts/pins/<tool>.json), from its vendor;
+# - each provider SDK ADE ships (apps/desktop and apps/ade-cli package.json),
+#   from npm.
+# When one is newer than main, it opens one PR for it on the branch
+# `pins/<item>`, with the version bump already written. Make a lane from that
+# PR to test and finish the upgrade.
 #
-# One branch for each tool means one open PR for each tool: a newer release
-# force-pushes the same branch and updates the same PR. Merge a pin PR only
-# after a check of the new version in ADE; the pin is what every user runs.
+# It also cleans up:
+# - A newer release force-pushes the same branch and updates the same PR.
+# - When main already has the newest version (the PR merged, or the upgrade
+#   was done by hand), the PR is closed and its branch deleted.
+# - Old Dependabot PRs for these SDKs are closed: this flow replaced them.
 #
-# Pushes made with GITHUB_TOKEN do not start CI on their own, so the workflow
-# starts ci.yml on the branch with workflow_dispatch.
+# Opening a PR needs "Allow GitHub Actions to create and approve pull
+# requests" (Settings > Actions > General > Workflow permissions). Pushes made
+# with GITHUB_TOKEN do not start CI on their own, so the workflow starts
+# ci.yml on the branch with workflow_dispatch.
 name: Agent tool pins
 
 on:
   schedule:
-    # 01:37 UTC is 21:37 America/New_York (EDT), after Dependabot's 21:00 run.
+    # 01:37 UTC is 21:37 America/New_York (EDT).
     - cron: "37 1 * * *"
   workflow_dispatch:
     inputs:
       tool:
-        description: "Only this tool (droid, grok, qwen, kimi, devin, antigravity, pi, copilot-cli, cursor-cli, node). Empty for all."
+        description: "Only this item (a tool such as droid or copilot-cli, or an SDK such as claude-agent-sdk). Empty for all."
         required: false
         default: ""
 
@@ -38,24 +42,43 @@ concurrency:
 
 jobs:
   pin:
-    name: pin ${{ matrix.tool }}
+    name: pin ${{ matrix.item }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      # Each pin pushes a commit to its own branch, but all of them regenerate
-      # the same manifest file; two at a time keeps vendor load low.
+      # Each item pushes its own branch; two at a time keeps vendor load low.
       max-parallel: 2
       matrix:
-        tool: [droid, grok, qwen, kimi, devin, antigravity, pi, copilot-cli, cursor-cli, node]
+        include:
+          - { item: droid, kind: tool }
+          - { item: grok, kind: tool }
+          - { item: qwen, kind: tool }
+          - { item: kimi, kind: tool }
+          - { item: devin, kind: tool }
+          - { item: antigravity, kind: tool }
+          - { item: pi, kind: tool }
+          - { item: copilot-cli, kind: tool }
+          - { item: cursor-cli, kind: tool }
+          - { item: node, kind: tool }
+          - { item: claude-agent-sdk, kind: sdk, package: "@anthropic-ai/claude-agent-sdk" }
+          - { item: codex, kind: sdk, package: "@openai/codex" }
+          - { item: opencode-cli, kind: sdk, package: "@opencode/cli" }
+          - { item: opencode-client, kind: sdk, package: "@opencode/client" }
+          - { item: cursor-sdk, kind: sdk, package: "@cursor/sdk" }
+          - { item: droid-sdk, kind: sdk, package: "@factory/droid-sdk" }
+          - { item: copilot-sdk, kind: sdk, package: "@github/copilot-sdk" }
+          - { item: muse-sdk, kind: sdk, package: "@muse-code/sdk" }
     env:
-      TOOL: ${{ matrix.tool }}
-      BRANCH: pins/${{ matrix.tool }}
+      ITEM: ${{ matrix.item }}
+      KIND: ${{ matrix.kind }}
+      PACKAGE: ${{ matrix.package || '' }}
+      BRANCH: pins/${{ matrix.item }}
       # qwen and kimi read GitHub's releases API; unauthenticated calls are
       # limited to 60 an hour for each IP.
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      ONLY_TOOL: ${{ inputs.tool || '' }}
+      ONLY_ITEM: ${{ inputs.tool || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,40 +89,99 @@ jobs:
         with:
           node-version: 24
 
-      - name: Compare the pin with the vendor's newest version
+      - name: Compare main with the newest version
         id: check
         run: |
           set -euo pipefail
-          if [ -n "${ONLY_TOOL}" ] && [ "${ONLY_TOOL}" != "${TOOL}" ]; then
+          if [ -n "${ONLY_ITEM}" ] && [ "${ONLY_ITEM}" != "${ITEM}" ]; then
             echo "needed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          pin_file="apps/ade-cli/scripts/pins/${TOOL}.json"
-          current="$(node -p "JSON.parse(require('fs').readFileSync('${pin_file}', 'utf8')).version")"
-          latest="$(cd apps/ade-cli && node scripts/pin-tool.mjs "${TOOL}" --latest-version)"
+          if [ "${KIND}" = "tool" ]; then
+            current="$(node -p "JSON.parse(require('fs').readFileSync('apps/ade-cli/scripts/pins/${ITEM}.json', 'utf8')).version")"
+            latest="$(cd apps/ade-cli && node scripts/pin-tool.mjs "${ITEM}" --latest-version)"
+          else
+            # The desktop app ships every SDK; the CLI ships the same version.
+            current="$(node -e '
+              const pkg = require("./apps/desktop/package.json");
+              const name = process.argv[1];
+              process.stdout.write(pkg.dependencies?.[name] ?? pkg.devDependencies?.[name] ?? pkg.optionalDependencies?.[name] ?? "");
+            ' "${PACKAGE}")"
+            latest="$(npm view "${PACKAGE}" version)"
+          fi
+          # A version is plain text; anything else is a broken or hostile reply.
+          case "${latest}" in
+            *[!A-Za-z0-9._+-]*)
+              echo "${ITEM}: refusing the version \"${latest}\"." >&2
+              exit 1
+              ;;
+          esac
           echo "current=${current}" >> "$GITHUB_OUTPUT"
           echo "latest=${latest}" >> "$GITHUB_OUTPUT"
-          if [ -z "${latest}" ] || [ "${latest}" = "${current}" ]; then
-            echo "${TOOL}: pinned ${current} is the newest version."
+          pr="$(gh pr list --head "${BRANCH}" --base main --state open --json number,title --jq '.[0] // empty')"
+          pr_number="$(jq -r '.number // empty' <<<"${pr:-null}")"
+          # No version is a failed lookup, not "up to date": keep any open PR.
+          if [ -z "${latest}" ]; then
+            echo "${ITEM}: the newest-version lookup returned nothing." >&2
+            exit 1
+          fi
+          if [ "${latest}" = "${current}" ]; then
+            echo "${ITEM}: main has ${current}, the newest version."
+            # Nothing left to upgrade: an open PR or a leftover branch is stale.
+            if [ -n "${pr_number}" ]; then
+              gh pr close "${pr_number}" --delete-branch --comment "main already has ${ITEM} ${current}, the newest version, so this upgrade is done."
+            elif git ls-remote --exit-code --heads origin "${BRANCH}" >/dev/null 2>&1; then
+              git push --quiet origin --delete "${BRANCH}"
+            fi
             echo "needed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # A branch that already proposes this version needs no new download.
-          if git ls-remote --exit-code --heads origin "${BRANCH}" >/dev/null 2>&1; then
-            git fetch --quiet origin "${BRANCH}"
-            proposed="$(git show "origin/${BRANCH}:${pin_file}" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")"
-            if [ "${proposed}" = "${latest}" ]; then
-              echo "${TOOL}: ${BRANCH} already proposes ${latest}."
-              echo "needed=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
+          # An open PR that already proposes this version needs nothing.
+          if [ "$(jq -r '.title // empty' <<<"${pr:-null}")" = "deps: upgrade ${ITEM} to ${latest}" ]; then
+            echo "${ITEM}: PR #${pr_number} already proposes ${latest}."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          echo "${TOOL}: ${current} -> ${latest}"
+          echo "${ITEM}: ${current} -> ${latest}"
           echo "needed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Pin the new version
-        if: steps.check.outputs.needed == 'true'
-        run: cd apps/ade-cli && node scripts/pin-tool.mjs "${TOOL}" "${{ steps.check.outputs.latest }}"
+      - name: Pin the new tool version
+        if: steps.check.outputs.needed == 'true' && matrix.kind == 'tool'
+        # The version is vendor text: an env value, never pasted into the script.
+        env:
+          LATEST: ${{ steps.check.outputs.latest }}
+        run: cd apps/ade-cli && node scripts/pin-tool.mjs "${ITEM}" "${LATEST}"
+
+      - name: Bump the SDK
+        if: steps.check.outputs.needed == 'true' && matrix.kind == 'sdk'
+        env:
+          LATEST: ${{ steps.check.outputs.latest }}
+        run: |
+          set -euo pipefail
+          for app in apps/desktop apps/ade-cli; do
+            # Set the exact version in whichever field names the SDK; skip an
+            # app that does not depend on it.
+            changed="$(node -e '
+              const fs = require("fs");
+              const [file, name, version] = process.argv.slice(1);
+              const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
+              const field = ["dependencies", "devDependencies", "optionalDependencies"].find((key) => pkg[key]?.[name]);
+              if (!field) { process.stdout.write("no"); process.exit(0); }
+              pkg[field][name] = version;
+              fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
+              process.stdout.write("yes");
+            ' "${app}/package.json" "${PACKAGE}" "${LATEST}")"
+            if [ "${changed}" = "yes" ]; then
+              (cd "${app}" && npm install --package-lock-only --ignore-scripts --no-audit --no-fund)
+            fi
+          done
+          # The muse binary must pair with its SDK; every other SDK only needs
+          # the tools manifest rebuilt from the new lockfiles.
+          if [ "${PACKAGE}" = "@muse-code/sdk" ]; then
+            (cd apps/ade-cli && npm run tools:muse-pin)
+          else
+            (cd apps/ade-cli && npm run tools:manifest)
+          fi
 
       - name: Push the branch and open or update its PR
         if: steps.check.outputs.needed == 'true'
@@ -109,27 +191,25 @@ jobs:
         run: |
           set -euo pipefail
           if git diff --quiet; then
-            echo "${TOOL}: pinning ${LATEST} changed no file."
+            echo "${ITEM}: ${LATEST} changed no file."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "${BRANCH}"
-          git add apps/ade-cli/scripts/pins apps/ade-cli/src/services/tools/toolsManifest.generated.json
-          git commit --quiet -m "deps(tools): pin ${TOOL} ${LATEST}"
+          git add -A apps/desktop apps/ade-cli
+          title="deps: upgrade ${ITEM} to ${LATEST}"
+          git commit --quiet -m "${title}"
           git push --force origin "${BRANCH}"
 
-          title="deps(tools): pin ${TOOL} ${LATEST}"
           body="$(printf '%s\n' \
-            "Moves ADE's pinned \`${TOOL}\` from ${CURRENT} to ${LATEST}." \
+            "${ITEM} has a new version: ${CURRENT} → ${LATEST}." \
             "" \
-            "Written by \`npm run tools:pin -- ${TOOL} ${LATEST}\` (pin file and tools manifest)." \
-            "" \
-            "Every ADE user runs this version after the PR merges. Before you merge:" \
-            "1. Run ${TOOL} ${LATEST} in ADE: start a chat (or a terminal for a CLI-only tool) and check that the features ADE uses still work." \
+            "This branch already has the version bump. Make a lane from this PR to test and finish the upgrade:" \
+            "1. Run ${ITEM} ${LATEST} in ADE: start a chat (or a terminal for a CLI-only tool) and check that the features ADE uses still work." \
             "2. Update the dialect, tested-version notes and docs if the new version changed anything." \
             "" \
-            "A newer ${TOOL} release updates this same PR.")"
+            "A newer release updates this same PR. When main has the newest version, this PR closes by itself.")"
           pr="$(gh pr list --head "${BRANCH}" --base main --state open --json number --jq '.[0].number // empty')"
           if [ -n "${pr}" ]; then
             gh pr edit "${pr}" --title "${title}" --body "${body}"
@@ -137,3 +217,33 @@ jobs:
             gh pr create --head "${BRANCH}" --base main --title "${title}" --body "${body}" --label dependencies
           fi
           gh workflow run ci.yml --ref "${BRANCH}"
+
+  retire-dependabot:
+    # Dependabot watched these SDKs until .github/dependabot.yml was removed;
+    # its version PRs from then are stale. A workflow cannot tell a security
+    # update from a version update, so only PRs opened before the cutoff (when
+    # it still opened version PRs) are closed; any later one is a security
+    # update and stays open.
+    name: close old Dependabot SDK PRs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CUTOFF: "2026-11-10T00:00:00Z"
+    steps:
+      - name: Close them
+        run: |
+          set -euo pipefail
+          sdks='@anthropic-ai/claude-agent-sdk @openai/codex @opencode/cli @opencode/client @cursor/sdk @factory/droid-sdk @github/copilot-sdk @muse-code/sdk'
+          gh pr list --repo "${GITHUB_REPOSITORY}" --app dependabot --state open --limit 100 --json number,title,createdAt \
+            --jq '.[] | select(.createdAt < env.CUTOFF) | "\(.number)\t\(.title)"' | while IFS=$'\t' read -r number title; do
+            for sdk in ${sdks}; do
+              case "${title}" in
+                *"bump ${sdk} "*)
+                  gh pr close "${number}" --repo "${GITHUB_REPOSITORY}" --delete-branch \
+                    --comment "The Agent tool pins workflow now opens SDK upgrade PRs (branch pins/<sdk>), so this Dependabot PR is closed."
+                  break
+                  ;;
+              esac
+            done
+          done

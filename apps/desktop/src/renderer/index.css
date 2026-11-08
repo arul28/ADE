@@ -5624,9 +5624,15 @@ button, [role="button"] {
  * Undo the zoom on the positioned wrapper and restore it on the content: the
  * transform is then in screen pixels and the menu keeps the app's size.
  * With no web zoom the factor is 1 and both rules are identities (Electron).
+ *
+ * `no-drag` cuts the open popover out of the top bar's window drag region.
+ * Without it, a dropdown that flips up or runs over the top bar loses hover
+ * and clicks there, because Electron hands those pointer events to the window
+ * drag. ContextMenu sets the same on its own layers.
  */
 [data-radix-popper-content-wrapper] {
   zoom: calc(1 / var(--ade-web-zoom-factor, 1));
+  -webkit-app-region: no-drag;
 }
 [data-radix-popper-content-wrapper] > * {
   zoom: var(--ade-web-zoom-factor, 1);

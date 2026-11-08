@@ -109,4 +109,18 @@ describe("Agent 37 agent actions: approvals", () => {
     }
     expect(cards).toHaveLength(expectedCards);
   });
+
+  it("parallel makes by full-auto agents stay within the day's limit, counted on top of the account's", async () => {
+    // Two made today on another machine, a limit of three: one more, not three.
+    const { actions, ran } = setup({ level: "full-auto", madeToday: 2 });
+    const results = await Promise.allSettled(
+      [0, 1, 2].map(() => actions.create({ kind: "box", shape: "2x4", approval: agent })),
+    );
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(2);
+    for (const result of results) {
+      if (result.status === "rejected") expect(result.reason).toMatchObject({ code: "agent37_declined" });
+    }
+    expect(ran).toEqual(["create"]);
+  });
 });

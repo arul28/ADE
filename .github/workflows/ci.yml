@@ -836,10 +836,10 @@ jobs:
   # them.
   #
   # It always RUNS (ci-pass treats "skipped" as failure, deliberately), but on
-  # pull requests that do not touch apps/ios/**, the shared chip fixture, or
-  # this workflow it exits
-  # success immediately, so non-iOS PRs pay only runner spin-up. Pushes to main
-  # and workflow_dispatch always execute the full build + test.
+  # pull requests and single-commit pushes to main that do not touch
+  # apps/ios/**, the shared fixtures the iOS suite reads, or this workflow it
+  # exits success immediately, so non-iOS changes pay only runner spin-up.
+  # workflow_dispatch and multi-commit pushes always execute the full build + test.
   # The path gate runs on Ubuntu: a gated skip on the macOS job still waited
   # minutes for a macOS runner just to exit, and it held one of the few
   # concurrent macOS slots the other jobs need.
@@ -889,8 +889,10 @@ jobs:
           # testMatchesSharedChipFixture). Without it in this gate, a
           # desktop-only PR that adds a row skips the Swift suite and merges
           # green, then breaks main — which is exactly the silent divergence
-          # the fixture exists to prevent.
-          if printf '%s\n' "$changed" | grep -qE '^(apps/ios/|apps/desktop/src/shared/__fixtures__/|\.github/workflows/ci\.yml)'; then
+          # the fixture exists to prevent. The same holds for the activity
+          # case tables under shared/attention (ActivityRowPresentationTests
+          # reads activityStateGroup/activityBoardColumn.cases.json from disk).
+          if printf '%s\n' "$changed" | grep -qE '^(apps/ios/|apps/desktop/src/shared/__fixtures__/|apps/desktop/src/shared/attention/[^/]+\.cases\.json$|\.github/workflows/ci\.yml)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"

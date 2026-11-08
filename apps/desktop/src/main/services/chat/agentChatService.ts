@@ -606,6 +606,7 @@ import type {
   AgentChatContextUsage,
   AgentChatContextUsageArgs,
   AgentChatDeleteArgs,
+  AgentChatDeleteResult,
   AgentChatRecoverContinuityArgs,
   AgentChatDispatchSteerArgs,
   AgentChatDispatchSteerMode,
@@ -72001,18 +72002,22 @@ export function createAgentChatService(args: {
     loadDetail: (detailArgs, options) => loadExternalSessionDetail(detailArgs, options),
   });
 
-  /** Records a deleted chat; `remember` false keeps it hidden (ADE's own cleanups). */
+  /**
+   * Records a deleted chat; `remember` false keeps it hidden (ADE's own
+   * cleanups). True when Recently deleted lists it, so Undo can reopen it.
+   */
   const rememberDeletedChat = (
     row: TerminalSessionSummary,
     managed: ManagedChatSession | null,
     metadataPath: string,
     remember: boolean,
-  ): void => {
+  ): boolean => {
     try {
-      recordDeletedChatFor(row, managed, metadataPath, remember);
+      return recordDeletedChatFor(row, managed, metadataPath, remember);
     } catch (error) {
       // Remembering a chat never fails the delete the person asked for.
       logger.warn("agent_chat.deleted_chat_record_failed", { sessionId: row.id, error: getErrorMessage(error) });
+      return false;
     }
   };
 
@@ -72021,9 +72026,9 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession | null,
     metadataPath: string,
     remember: boolean,
-  ): void => {
+  ): boolean => {
     const fromFile = readPersistedChatRecord(metadataPath);
-    if (!fromFile && !managed) return;
+    if (!fromFile && !managed) return false;
     // The file can trail the live session by a write; the live pointers fill any gap.
     const record: Record<string, unknown> = {
       ...(managed?.session as unknown as Record<string, unknown> | undefined),
@@ -72033,7 +72038,9 @@ export function createAgentChatService(args: {
       "select name, worktree_path as worktreePath from lanes where id = ? limit 1",
       [row.laneId],
     ) ?? null;
-    deletedChats.remember({
+    // A hidden row (ADE's own cleanup, a subagent, a side chat) is not listed, so Undo cannot reopen it.
+    const hidden = !remember || record.spawnKind === "subagent" || Boolean(record.sideChatParentSessionId);
+    const recorded = deletedChats.remember({
       id: row.id,
       laneId: row.laneId,
       laneName: lane?.name ?? row.laneName ?? null,
@@ -72048,8 +72055,9 @@ export function createAgentChatService(args: {
       lastActiveAt: row.lastActivityAt ?? row.endedAt ?? null,
       origin: "delete",
       record,
-      hidden: !remember || record.spawnKind === "subagent" || Boolean(record.sideChatParentSessionId),
+      hidden,
     });
+    return recorded && !hidden;
   };
 
   /**
@@ -72059,7 +72067,7 @@ export function createAgentChatService(args: {
   const deleteSession = async (
     { sessionId }: AgentChatDeleteArgs,
     deleteOptions: { remember?: boolean } = {},
-  ): Promise<void> => {
+  ): Promise<AgentChatDeleteResult> => {
     const trimmedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
     if (!trimmedSessionId.length) {
       throw new Error("Chat session id is required.");
@@ -72073,7 +72081,7 @@ export function createAgentChatService(args: {
       // Idempotent, for the same reason the mid-flight `if (!current) return`
       // below already is: a chat this runtime does not have is a delete that
       // has nothing left to do, not a failure the user has to act on.
-      return;
+      return { recoverable: false };
     }
     if (!isChatToolType(existing.toolType)) {
       throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
@@ -72166,7 +72174,7 @@ export function createAgentChatService(args: {
     }
 
     const current = sessionService.get(trimmedSessionId);
-    if (!current) return;
+    if (!current) return { recoverable: false };
 
     rejectActiveSessionTurnCollector(trimmedSessionId, `Chat session '${trimmedSessionId}' was deleted.`);
 
@@ -72203,7 +72211,7 @@ export function createAgentChatService(args: {
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
-    rememberDeletedChat(current, deletedManaged ?? null, persistedMetadataPath, deleteOptions.remember === true);
+    const recoverable = rememberDeletedChat(current, deletedManaged ?? null, persistedMetadataPath, deleteOptions.remember === true);
     const dedicatedTranscriptPath = path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`);
     const transcriptPaths = new Set<string>([
       persistedMetadataPath,
@@ -72252,6 +72260,7 @@ export function createAgentChatService(args: {
 
     sessionService.deleteSession(trimmedSessionId);
     notifyChatSessionEnded(trimmedSessionId);
+    return { recoverable };
   };
 
   const archiveSession = async ({ sessionId }: AgentChatArchiveArgs): Promise<void> => {

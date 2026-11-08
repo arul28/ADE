@@ -118,7 +118,7 @@ export type SideChatServiceDeps<
   /** The provider account the chat runs as, which its side chat keeps. */
   instanceIdOf: (managed: TManaged) => string | undefined;
   createSession: (args: AgentChatCreateArgs) => Promise<AgentChatSession>;
-  deleteSession: (args: { sessionId: string }) => Promise<void>;
+  deleteSession: (args: { sessionId: string }) => Promise<unknown>;
   sendMessage: (args: AgentChatSendArgs, options: { routeActiveToSteer: true }) => Promise<unknown>;
   steer: (args: AgentChatSteerArgs, options: { allowPendingInput: true }) => Promise<AgentChatSteerResult>;
   assertChatRuntimeOwnedHere: (sessionId: string, action: string) => void;
