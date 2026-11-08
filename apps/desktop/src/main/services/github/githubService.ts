@@ -935,9 +935,11 @@ export function createGithubService({
       tokenDecryptionFailed = false;
       return machineToken;
     }
+    // Reset, so only this read's legacy file can report itself unreadable.
+    tokenDecryptionFailed = false;
     const token = migrateLegacyTokenIfNeeded();
     if (token) return token;
-    tokenDecryptionFailed = machineTokenReadFailed;
+    tokenDecryptionFailed = tokenDecryptionFailed || machineTokenReadFailed;
     return null;
   };
 
