@@ -2410,11 +2410,11 @@ describe("product analytics producers", () => {
     for (const { id } of CLOUD_SIGN_INS) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
         feature: "connections",
-        action: "cloud_cloud_sign_in",
+        action: "cloud_sign_in",
         outcome: `signin_${id}`,
         key: "not-a-real-key",
         env: "OPENAI_API_KEY",
-      })).toEqual({ feature: "connections", action: "cloud_cloud_sign_in", outcome: `signin_${id}` });
+      })).toEqual({ feature: "connections", action: "cloud_sign_in", outcome: `signin_${id}` });
     }
     // An action that is not a box action does not cross as an outcome.
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {

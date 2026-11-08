@@ -26,6 +26,7 @@ import {
 } from "./services/sync/brainMachineSyncStores";
 import { createSyncCloudRelayStore } from "./services/sync/syncCloudRelayStore";
 import { createSyncPinStore } from "./services/sync/syncPinStore";
+import { CLOUD_PROVIDER_VAULT_ITEM } from "../../desktop/src/main/services/adeCloud/cloudAccess";
 import { SyncHostSingletonConflictError } from "./services/sync/syncHostSingleton";
 import {
   createSyncAccountDirectoryHealth,
@@ -672,7 +673,7 @@ describe("multi-project RPC server", () => {
         get: vi.fn(() => "the-key"),
       };
       const { handler, projectRegistry } = await connect(init, { cloud: service, account_vault: service }, peerDeviceId);
-      const call = handler({ jsonrpc: "2.0", id: 2, method, params: { action, argsList: ["all", "integration", "cloud"] } });
+      const call = handler({ jsonrpc: "2.0", id: 2, method, params: { action, argsList: ["all", "integration", CLOUD_PROVIDER_VAULT_ITEM] } });
       if (refused) {
         await expect(call).rejects.toThrow(refused);
         expect(service[action]).not.toHaveBeenCalled();
@@ -686,21 +687,21 @@ describe("multi-project RPC server", () => {
     });
 
     it.each([
-      ["the workspace key", "get", ["all", "integration", "cloud"], null],
+      ["the provider credential", "get", ["all", "integration", CLOUD_PROVIDER_VAULT_ITEM], null],
       ["the spending cap", "set", ["all", "integration", "cloud-budget", "{\"capUsd\":5}"], null],
       ["a saved cloud sign-in", "get", ["all", "integration", "cloud-claude-token"], null],
       ["a write to a cloud sign-in", "set", ["all", "integration", "cloud-claude-token", "stolen"], /reaches only the ADE Cloud items/],
       ["another integration's secret", "get", ["all", "integration", "github"], /reaches only the ADE Cloud items/],
-      ["the key in a project's scope", "get", ["project:abc", "integration", "cloud"], /reaches only the ADE Cloud items/],
-      ["the key under another kind", "remove", ["all", "secret", "cloud"], /reaches only the ADE Cloud items/],
+      ["the credential in a project's scope", "get", ["project:abc", "integration", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the ADE Cloud items/],
+      ["the credential under another kind", "remove", ["all", "secret", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the ADE Cloud items/],
       ["every row", "list", [], /runs in a project/],
     ] as const)("the vault with no project opens only ADE Cloud's items: %s", async (_label, action, argsList, refused) => {
       const rows = new Map<string, string>([
-        ["all|integration|cloud", "the-key"],
+        [`all|integration|${CLOUD_PROVIDER_VAULT_ITEM}`, "the-key"],
         ["all|integration|cloud-claude-token", "claude-token"],
         ["all|integration|github", "github-token"],
-        ["project:abc|integration|cloud", "project-key"],
-        ["all|secret|cloud", "other-kind"],
+        [`project:abc|integration|${CLOUD_PROVIDER_VAULT_ITEM}`, "project-key"],
+        [`all|secret|${CLOUD_PROVIDER_VAULT_ITEM}`, "other-kind"],
       ]);
       const store = {
         get: vi.fn((scope: string, kind: string, key: string) => rows.get(`${scope}|${kind}|${key}`) ?? null),

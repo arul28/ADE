@@ -487,7 +487,7 @@ export function createCloudReadyKeeper(deps: CloudReadyKeeperDeps) {
         const retryAt = cloudReadyRetryAt(attempts, at, retriable);
         const failure: CloudReadyFailure = {
           error: left
-            ? `${reason.replace(/\.$/, "")}. ADE couldn't confirm it deleted the machine (${entry.instanceId}); delete it in your ADE Cloud dashboard if it's still there.`
+            ? `${reason.replace(/\.$/, "")}. ADE couldn't confirm it deleted the machine (${entry.instanceId}); delete it from its row under Your computers if it's still there.`
             : reason,
           at,
           attempts,
@@ -577,7 +577,7 @@ export function createCloudReadyKeeper(deps: CloudReadyKeeperDeps) {
     // Read even with nothing on: a project just turned off still has a machine to delete.
     const client = await deps.client().catch(() => null);
     if (!client) {
-      publish({ projects: projects.map((settings) => statusFor(settings, null)), error: projects.length ? "ADE Cloud isn't available on this account yet." : null });
+      publish({ projects: projects.map((settings) => statusFor(settings, null)), error: projects.length ? "ADE Cloud isn't available right now." : null });
       return;
     }
     let instances: CloudInstance[];

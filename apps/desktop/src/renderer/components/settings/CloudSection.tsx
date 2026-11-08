@@ -40,6 +40,7 @@ export function CloudSection() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const connected = status?.connected === true;
+  const live = connected && !status?.error;
   /**
    * The New machine dialog lives here, not in the machines card: the card goes
    * away while a status read fails, and closing the dialog mid-create cancels
@@ -47,8 +48,8 @@ export function CloudSection() {
    */
   const [creating, setCreating] = useState(false);
   const [accountChangedAt, setAccountChangedAt] = useState(0);
-  // One read of the workspace's machines for the hero's month, the warnings and the machines card.
-  const machines = useCloudMachines(connected && !status?.error);
+  // One read of the account's machines for the hero's month, the warnings and the machines card.
+  const machines = useCloudMachines(live);
 
   const load = useCallback(async () => {
     if (!bridge) return;
@@ -88,12 +89,12 @@ export function CloudSection() {
   }, [machines]);
 
   // Before the early return below: a hook runs on every render.
-  const cloudSignIns = useCloudSignIns(connected && !status?.error);
+  const cloudSignIns = useCloudSignIns(live);
 
   if (!bridge) {
     return (
       <IntegrationPage id="cloud">
-        <p className="ade-ig-note">{ADE_CLOUD_NAME} is set up from the ADE desktop app.</p>
+        <p className="ade-ig-note">{ADE_CLOUD_NAME} is managed from the ADE desktop app.</p>
       </IntegrationPage>
     );
   }
@@ -105,7 +106,6 @@ export function CloudSection() {
       : connected
         ? { tone: "ok" as const, label: "Ready" }
         : { tone: "neutral" as const, label: "Not available yet" };
-  const live = connected && !status?.error;
   const spending = machines.result?.state === "ok" ? machines.result.spending : null;
   const cap = spending?.monthlyCapUsd ?? null;
   const facts: IntegrationFact[] = live
@@ -137,6 +137,7 @@ export function CloudSection() {
     <IntegrationPage id="cloud">
       <IntegrationHero
         id="cloud"
+        anchor="cloud-connection"
         status={heroStatus}
         facts={facts}
         footer={heroFoot}

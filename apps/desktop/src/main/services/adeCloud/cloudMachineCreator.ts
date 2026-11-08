@@ -12,7 +12,7 @@
  *   6. Wait for the box to finish signing in and appear in the account's
  *      machine list, and give it the name the person chose.
  *
- * Account-level by design: it acts on the provider workspace and the ADE
+ * Account-level by design: it acts on the account's cloud machines and the ADE
  * account, never on a lane, chat or another machine, so it takes no pin.
  *
  * Nothing durable is planted on the box: the box receives its own session from
@@ -115,13 +115,6 @@ export type CloudMachineCreatorDeps = {
     warn?(event: string, meta?: Record<string, unknown>): void;
   };
   sleep?: (ms: number) => Promise<void>;
-  /**
-   * Why the template can't be used yet (ADE is still building it), or null.
-   * Asked before anything is made, so a create never waits on a build.
-   */
-  templateNotReady?: () => string | null;
-  /** The workspace has no template: start building it. */
-  onTemplateMissing?: () => void;
   /**
    * Creates not yet resolved, kept on disk from before the create request goes
    * out, so a box whose create was cut short (a lost answer, an app quit) is
@@ -308,15 +301,12 @@ export async function createCloudMachine(
   };
 
   // Everything that can fail before money is spent is checked first.
-  const notReady = deps.templateNotReady?.() ?? null;
-  if (notReady) throw new Error(notReady);
   const client = await deps.client();
   const directory = deps.directoryBaseUrl();
   if (!directory) throw new Error("ADE's account service isn't configured on this computer, so it can't sign the new machine in.");
   if (!(await deps.getAccountToken())) throw new Error("Sign in to ADE on this computer first. The new machine joins your account.");
   if (!(await client.hasTemplate(template))) {
-    deps.onTemplateMissing?.();
-    throw new Error(`ADE's machine template ("${template}") isn't in your ADE Cloud workspace yet. ADE is setting it up now (about five minutes); try again then.`);
+    throw new Error(`ADE Cloud's machine template ("${template}") is missing, so ADE can't make a machine right now.`);
   }
   checkCancelled();
   const logger = deps.logger ?? {};
@@ -762,7 +752,7 @@ export async function bringCloudBoxIntoAde(
       if (signedIn === "unknown") {
         // Left on the pending list: the next start asks the box again and
         // deletes it only on a clear "signed out".
-        throw new Error(`${reasonFor()} ADE couldn't tell whether "${name}" (${instance.id}) finished signing in, so it didn't delete it. If it isn't under Your computers, delete it in your ADE Cloud dashboard; ADE also checks again when it next starts.`);
+        throw new Error(`${reasonFor()} ADE couldn't tell whether "${name}" (${instance.id}) finished signing in, so it didn't delete it. If it shows as Not in ADE under Your computers, delete it from its row; ADE also checks again when it next starts.`);
       }
     }
     // A box that never signed in is only a bill: take it back off the provider.
@@ -776,7 +766,7 @@ export async function bringCloudBoxIntoAde(
     const reason = reasonFor();
     throw new Error(deleted
       ? `${reason} ADE deleted the box it made, so it isn't billing.`
-      : `${reason} ADE couldn't confirm it deleted the box it made ("${name}", ${instance.id}). Delete it in your ADE Cloud dashboard so it stops billing; ADE also tries again when it next starts.`);
+      : `${reason} ADE couldn't confirm it deleted the box it made ("${name}", ${instance.id}). Delete it from its row under Your computers so it stops billing; ADE also tries again when it next starts.`);
   }
 
   progress("joining", `${name} is signed in. Adding it to your computers…`, instance.id);

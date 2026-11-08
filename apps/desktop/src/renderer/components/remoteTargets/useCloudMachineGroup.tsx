@@ -17,7 +17,7 @@ const CLOUD_ROW_CATCH_UP_REFRESH_MS = 15_000;
 /** How long a running box's row may lag (still asleep) before the list stops re-reading. */
 const CLOUD_ROW_CATCH_UP_MS = 3 * 60_000;
 
-/** What a row in the provider group carries beyond the ordinary row. */
+/** What a row in the ADE Cloud group carries beyond the ordinary row. */
 export type RowExtras = {
   footer?: ReactNode;
   extraActions?: MachineAction[];
@@ -26,9 +26,9 @@ export type RowExtras = {
 };
 
 /**
- * The provider group of the machine list: the workspace's boxes matched to
+ * The ADE Cloud group of the machine list: the account's boxes matched to
  * their rows, the extras each row gets, the rows that leave their section for
- * the group, and the group itself. Account-level (the key is the account's),
+ * the group, and the group itself. Account-level (cloud access is the account's),
  * so the reads and every box action go out with no pin.
  */
 export function useCloudMachineGroup(args: {
@@ -185,7 +185,7 @@ export function useCloudMachineGroup(args: {
     };
   }
 
-  // Rows that are cloud boxes leave their section for the provider group,
+  // Rows that are cloud boxes leave their section for the ADE Cloud group,
   // which keeps the order Connected, Ready to connect, Not reachable.
   const cloudRows: Array<{ row: MachineRow; section: MachineSection; box: CloudMachine }> = [];
   const listedSections: Record<MachineSection, MachineRow[]> = { connected: [], available: [], unavailable: [] };

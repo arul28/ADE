@@ -839,7 +839,7 @@ apps/ios/
 │   │   │                            #   (github.* remote commands, menu shown only
 │   │   │                            #   when the repo has open issues; see
 │   │   │                            #   docs/features/issues).
-│   │   ├── ADE Cloud/                  # ADE Cloud page (Work ⋯ menu, shown once the
+│   │   ├── Cloud/                    # ADE Cloud page (Work ⋯ menu, shown once the
 │   │   │                            #   account has ADE Cloud): machines and their
 │   │   │                            #   actions, spending, ready machines, a new
 │   │   │                            #   machine approved here, what agents may

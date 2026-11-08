@@ -6,7 +6,7 @@ import type { CloudProvider } from "./cloudProvider";
 import type { createCloudMachines } from "./cloudMachines";
 import { enableCloudSleepWherePending } from "./cloudSleep";
 
-/** How often the money watch reads the workspace: the provider settles compute hourly, so more often shows nothing new. */
+/** How often the money watch reads the account's spend: the provider settles compute hourly, so more often shows nothing new. */
 const MONEY_WATCH_MS = 10 * 60_000;
 
 /**

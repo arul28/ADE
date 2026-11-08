@@ -370,7 +370,7 @@ const TAB_GROUPS = {
   cloud: {
     title: ADE_CLOUD_NAME,
     description: "Cloud Linux machines, made and signed in from ADE.",
-    icon: <CloudMark size={15} strokeWidth={26} />,
+    icon: <CloudMark size={15} bold />,
     tone: "slate",
   },
   mcp: {

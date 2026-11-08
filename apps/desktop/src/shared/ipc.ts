@@ -1153,7 +1153,6 @@ export const IPC = {
   cloudReadyStatusChanged: "cloud:readyStatusChanged",
   cloudGetBudget: "ade.cloud.getBudget",
   cloudSetBudget: "ade.cloud.setBudget",
-  cloudWakeMachine: "ade.cloud.wakeMachine",
   cloudCopyMachine: "ade.cloud.copyMachine",
   cloudMoveMachine: "ade.cloud.moveMachine",
   cloudReconnectMachine: "ade.cloud.reconnectMachine",

@@ -1521,11 +1521,11 @@ export function RemoteTargetList({
     label: string;
     detail: string;
   }> = [
-    // Once a provider key is saved: a new cloud machine, signed in for you.
+    // With ADE Cloud access: a new cloud machine, signed in for you.
     ...(cloud.kind === "ready" || cloud.kind === "unreachable"
       ? [{
           key: "cloud" as const,
-          icon: <CloudMark size={18} strokeWidth={24} />,
+          icon: <CloudMark size={18} bold />,
           label: `New ${ADE_CLOUD_NAME} machine`,
           detail: "A cloud Linux box or VM, signed in to your account for you",
         }]
@@ -1687,7 +1687,7 @@ export function RemoteTargetList({
                   id: "cloud-status-unreachable",
                   tone: cloud.refused ? "warning" : "error",
                   icon: <CloudMark size={16} />,
-                  title: cloud.refused ? `${ADE_CLOUD_NAME} refused the saved key` : `ADE couldn't reach ${ADE_CLOUD_NAME}`,
+                  title: cloud.refused ? `${ADE_CLOUD_NAME} refused this account` : `ADE couldn't reach ${ADE_CLOUD_NAME}`,
                   detail: cloud.message,
                   actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: retryCloudStatus }],
                   ...(cloud.refused ? { report: false as const } : {}),
@@ -1700,7 +1700,7 @@ export function RemoteTargetList({
               </div>
             ) : null}
             {addMode === "cloud" && cloud.kind === "none" ? (
-              <div style={helperTextStyle}>Connect {ADE_CLOUD_NAME} in Settings › Connections first.</div>
+              <div style={helperTextStyle}>{ADE_CLOUD_NAME} isn't available on this account yet.</div>
             ) : null}
             {addMode === "code" ? (
               <div style={{ display: "grid", gap: 10 }}>

@@ -1,6 +1,5 @@
 /**
- * the provider as a brain reaches it: the account's key (its vault, else this
- * computer's credential file), the monthly cap, and waking a box for use. No
+ * ADE Cloud as a brain reaches it: the account's access, the monthly cap, and waking a box for use. No
  * Electron, so `ade serve` and the brain's `cloud` actions share it with
  * the desktop's own copy of the same rules.
  */
@@ -9,7 +8,7 @@ import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/service
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import { cloudUsageDay, type CloudProvider, type CloudLogger } from "./cloudProvider";
-import { cloudVaultFromStore, getCloudProvider, type CloudAccessDeps } from "./cloudAccess";
+import { CLOUD_PROVIDER_VAULT_ITEM, cloudVaultFromStore, getCloudProvider, type CloudAccessDeps } from "./cloudAccess";
 import { CLOUD_BUDGET_VAULT_KEY, createCloudBudgetStore, readCloudSpending, wakeCloudMachineForUse } from "./cloudSleep";
 
 type VaultStore = Parameters<typeof cloudVaultFromStore>[0];
@@ -32,7 +31,7 @@ export function createCloudBrainAccess(deps: {
     vaultStore = deps.signedIn() ? await deps.vaultStore() : null;
   };
   const credentials: CloudAccessDeps = {
-    vault: () => (vaultStore ? cloudVaultFromStore(vaultStore) : null),
+    vault: () => (vaultStore ? cloudVaultFromStore(vaultStore, CLOUD_PROVIDER_VAULT_ITEM) : null),
     signedIn: deps.signedIn,
     ...(deps.logger ? { logger: deps.logger } : {}),
   };

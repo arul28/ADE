@@ -28,8 +28,8 @@ renderer (window.ade.cloud)   CLI (ade cloud)   phone (cloud.read/write)
                  provider/agent37/agent37Client.ts   <- the only code that knows the provider's API
 ```
 
-A lint rule (`apps/desktop/eslint.config.mjs`) stops anything but
-`cloudAccess.ts` from importing a provider. Above the seam, nothing knows who
+A lint rule (`apps/desktop/eslint.config.mjs`) stops main-process code other
+than `cloudAccess.ts` and tests from importing a provider. Above the seam, nothing knows who
 runs the computers.
 
 ## The provider seam
@@ -45,8 +45,9 @@ To add or replace a provider: implement `CloudProvider` in
 
 ## Access
 
-`getCloudProvider(deps)` returns ADE Cloud for this account, or null when the
-account has no access. It needs a signed-in ADE account.
+`getCloudProvider(deps)` returns ADE Cloud for this account, or null. It needs a
+signed-in ADE account. `requireCloudProvider` and `readCloudStatus` tell a
+signed-out computer or an unreadable vault apart from an account with no access.
 
 Until ADE's server holds the provider credential, it reads the workspace key
 already in the account vault (scope `all`, kind `integration`, item `agent37`).
@@ -91,7 +92,7 @@ Account vault items, scope `all`, kind `integration`: `cloud-budget` (cap and
 agent limits), `cloud-ready` (which projects keep a machine ready),
 `cloud-claude-token` and `cloud-key-<provider>` (sign-ins for new machines).
 Machine metadata keys are `ade_*` (`ade_machine_key`, `ade_request_id`,
-`ade_sleep`, `ade_made_by_chat`, and the ready-machine keys in `cloudReady.ts`).
+`ade_sleep`, `ade_made_by_chat`, and the ready-machine keys in `cloudReady.ts`), plus `created_by: ade`.
 
 ## The machine template
 
@@ -100,7 +101,8 @@ Machine metadata keys are `ade_*` (`ade_machine_key`, `ade_request_id`,
 variables the rest of ADE reads to know it runs on a cloud machine. ADE does
 not build the template from the app: `infra/ade-cloud/build-template.sh` does,
 and a development desktop can use a trial template with `ADE_CLOUD_TEMPLATE`.
-A new machine installs the ADE version of the app that made it on first boot.
+On first boot a new machine installs the ADE version of the app that made it,
+when the image's ADE is older.
 
 ## Timed wakes
 

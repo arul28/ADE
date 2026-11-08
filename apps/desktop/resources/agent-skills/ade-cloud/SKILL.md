@@ -15,7 +15,7 @@ calls work on it.
 | VM | Everything a box does, plus Docker and the Android emulator | about 2.5x a box |
 
 Sizes, either type: `2x4`, `4x8`, `4x16`, `4x32` (vCPU x GB). Asleep, a machine
-bills only its disk (about 1¢ a day).
+bills only its disk (about 4¢ a day at `2x4`, more with a bigger disk).
 
 ## Commands
 
@@ -56,7 +56,8 @@ folder's project.
 ## Money and approvals
 
 These ask the person in your chat first: `create`, `resize`, `copy`, `move`,
-`delete`, `sleep-after … never`, raising or removing the cap, `ready on`.
+`delete`, `sleep-after … never`, raising or removing the cap, loosening
+`ade cloud limits`, `ready on`.
 
 - The command waits for the answer; the card gives up after 5 minutes and the
   command then fails with "nobody answered". Don't retry it in a loop: say what

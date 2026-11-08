@@ -26,10 +26,10 @@ import type { CloudMachinesState } from "../remoteTargets/useCloudMachines";
 import "../remoteTargets/connections.css";
 
 /**
- * Settings › Integrations › the provider › Machines: every machine in the provider
- * workspace with what it costs now and spent this month, its lanes and chats,
- * and the same actions and confirmations as Your computers. Account-level (the
- * key is the account's), so every call goes out with no pin.
+ * Settings › Integrations › ADE Cloud › Machines: every machine on the
+ * account with what it costs now and spent this month, its lanes and chats,
+ * and the same actions and confirmations as Your computers. Account-level (cloud
+ * access is the account's), so every call goes out with no pin.
  */
 export function CloudMachinesCard({ status, machines, onNewMachine, accountChangedAt }: {
   status: CloudStatus | null;

@@ -19,7 +19,7 @@ function shapeLabel(id: string): string {
 }
 
 /**
- * Settings › Integrations › the provider › What agents may spend: what an agent
+ * Settings › Integrations › ADE Cloud › What agents may spend: what an agent
  * may do when nobody is watching (a full-auto chat, an automation), as one
  * yes/no with its limits under Yes (the preset is derived), and the optional
  * monthly cap. Account-wide (the

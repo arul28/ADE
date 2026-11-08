@@ -41,8 +41,6 @@ type Logger = {
 };
 
 const PENDING_CREATES_KEY = "cloud.pendingCreates.v2";
-/** The first format: a bare list of instance ids, written after the create answered. */
-const LEGACY_PENDING_CREATES_KEY = "cloud.pendingCreates.v1";
 /** A record that matched no box for this long is dropped. */
 const CLOUD_PENDING_CREATE_TTL_MS = 24 * 60 * 60_000;
 const DELETE_CONFIRM_ATTEMPTS = 15;
@@ -86,27 +84,12 @@ export function createCloudPendingCreateStore(
       logger.warn?.("cloud.pending_creates_read_failed", { error: errorText(error) });
       if (strict) throw error;
     }
-    // Ids an older build recorded: reconciled by id, with no request to list by.
-    try {
-      const legacy = machineStore().getSync(LEGACY_PENDING_CREATES_KEY);
-      if (legacy) {
-        const ids = JSON.parse(legacy) as unknown;
-        if (Array.isArray(ids)) {
-          for (const id of ids) {
-            if (typeof id === "string" && id) records.push({ requestId: `legacy:${id}`, startedAt: now(), instanceIds: [id] });
-          }
-        }
-      }
-    } catch (error) {
-      logger.warn?.("cloud.pending_creates_read_failed", { error: errorText(error), legacy: true });
-    }
     return records;
   };
   const write = (records: CloudPendingCreate[], strict = false): void => {
     try {
       if (records.length) machineStore().setSync(PENDING_CREATES_KEY, JSON.stringify(records));
       else machineStore().deleteSync(PENDING_CREATES_KEY);
-      machineStore().deleteSync(LEGACY_PENDING_CREATES_KEY);
     } catch (error) {
       // The create still cleans up after itself in this session; only a quit
       // in the middle of it would go unrecovered.
@@ -239,19 +222,16 @@ export async function reconcileCloudPendingCreate(
 ): Promise<CloudReconcileResult> {
   const now = deps.now ?? (() => Date.now());
   const result: CloudReconcileResult = { resolved: false, deleted: [], kept: [], gone: [], unresolved: [] };
-  const legacy = record.requestId.startsWith("legacy:");
-  let listed: CloudInstance[] | null = null;
-  if (!legacy) {
-    try {
-      listed = await client.listInstances();
-    } catch (error) {
-      // Can't tell whether a box exists: keep the record and ask again later.
-      deps.logger.warn?.("cloud.pending_create_list_failed", { requestId: record.requestId, error: errorText(error) });
-      return result;
-    }
+  let listed: CloudInstance[];
+  try {
+    listed = await client.listInstances();
+  } catch (error) {
+    // Can't tell whether a box exists: keep the record and ask again later.
+    deps.logger.warn?.("cloud.pending_create_list_failed", { requestId: record.requestId, error: errorText(error) });
+    return result;
   }
   const candidates = new Map<string, CloudInstance | null | undefined>();
-  for (const instance of listed ?? []) {
+  for (const instance of listed) {
     if (instance.metadata.ade_request_id === record.requestId) candidates.set(instance.id, instance);
   }
   for (const id of record.instanceIds) {

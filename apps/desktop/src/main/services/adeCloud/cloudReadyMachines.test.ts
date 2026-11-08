@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CLOUD_READY_METADATA, type CloudReadyProjectSettings } from "../../../shared/cloudReady";
-import { createAgent37Provider as createAgent37Client } from "./provider/agent37/agent37Client";
+import { createAgent37Provider as createProvider } from "./provider/agent37/agent37Client";
 import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
 import { claimCloudReadyMachine, releaseCloudReadyMachine } from "./cloudReadyClaim";
 import { createCloudReadyKeeper } from "./cloudReadyMachines";
@@ -52,7 +52,7 @@ function fakeCloud(initial: FakeBox[]) {
     }
     return json(500, { error: { code: "internal_error", message: `no route ${method} ${route}` } });
   };
-  return { client: createAgent37Client({ apiKey: "sk_test", fetch }), boxes, slept };
+  return { client: createProvider({ apiKey: "sk_test", fetch }), boxes, slept };
 }
 
 function readyBox(id: string, extra: Record<string, string> = {}, status = "sleeping"): FakeBox {

@@ -1,5 +1,5 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
-import type { CloudBudget, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus, CloudWakeForUseResult } from "../shared/adeCloud";
+import type { CloudBudget, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
 import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
@@ -4691,7 +4691,7 @@ declare global {
         repairSession?: () => Promise<AdeAccountSessionRepairResult>;
       };
       /**
-       * the provider, account-wide: the workspace key (in the account vault) and
+       * ADE Cloud, account-wide: the machines and
        * new machines made on it. No pin: nothing here acts on a lane, chat or
        * another machine. Optional because the web client does not expose it.
        */
@@ -4702,10 +4702,9 @@ declare global {
         onCreateProgress: (cb: (progress: CloudCreateProgress) => void) => () => void;
         /** Stops a create and deletes the box it made, unless it already signed in. */
         cancelCreate: (requestId: string) => Promise<{ cancelled: boolean }>;
-        /** ADE's template in the provider workspace; asking also starts a check when none ran yet. */
         /**
-         * The workspace's boxes with state, size, price and spend. Account-level
-         * (the provider key is the account's), so no pin: it answers the same on
+         * The account's boxes with state, size, price and spend. Account-level
+         * (cloud access is the account's), so no pin: it answers the same on
          * every computer.
          */
         listMachines?: () => Promise<CloudMachinesResult | null>;
@@ -4713,8 +4712,8 @@ declare global {
         machineAction?: (args: CloudMachineActionArgs) => Promise<CloudMachineActionResult | null>;
         onStatusChanged?: (cb: () => void) => () => void;
         /**
-         * Sign-ins for cloud machines: the provider sign-ins every new Agent
-         * 37 machine starts with. Kept in the account vault and run on this
+         * Sign-ins for cloud machines: the provider sign-ins every new cloud
+         * machine starts with. Kept in the account vault and run on this
          * computer's brain, so no pin: every computer answers the same.
          */
         cloudSignInStatus?: () => Promise<CloudSignInStatus | null>;
@@ -4744,18 +4743,12 @@ declare global {
         /**
          * Copy (fork) or move (box ↔ VM) one box. Both answer at once and
          * report through `onCreateProgress` with this request id. Account
-         * level (they act on the provider workspace), so no pin.
+         * level (they act on the account's cloud machines), so no pin.
          */
         copyMachine?: (args: { requestId: string; instanceId: string; name?: string | null; shape?: string | null }) => Promise<{ started: boolean }>;
         moveMachine?: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }) => Promise<{ started: boolean }>;
         /** Signs a box that was removed from the account ("Not in ADE") back in, as the same machine. Reports like a copy. */
         reconnectMachine?: (args: { requestId: string; instanceId: string }) => Promise<{ started: boolean }>;
-        /**
-         * Wakes the cloud box behind an account machine because the person
-         * is about to use it (opening one of its lanes). It acts on the Agent
-         * 37 workspace with the account's key, not on the machine, so no pin.
-         */
-        wakeMachine?: (machine: { machineKey: string; hostname?: string | null }) => Promise<CloudWakeForUseResult | null>;
       };
       /**
        * The account settings store (the `account_settings` action domain),

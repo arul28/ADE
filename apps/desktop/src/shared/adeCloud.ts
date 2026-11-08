@@ -15,7 +15,7 @@ import type { CloudReadyMachineState } from "./cloudReady";
 /** The own-provider card in Settings: layout only until a provider is wired to it. */
 export const BRING_YOUR_OWN_CLOUD_ENABLED = false;
 
-/** The workspace template ADE creates boxes from (infra/ade-cloud). */
+/** The template ADE creates boxes from (infra/ade-cloud). */
 export const CLOUD_DEFAULT_TEMPLATE = "ade";
 
 /** What the person picks: a sandboxed box, or a full VM. */
@@ -161,7 +161,7 @@ export function cloudAndroidNeedsVmMessage(boxShape: CloudShape | null): string 
     + "This box stays, and you can delete it from the new chat.";
 }
 
-/** The integration's state, as Settings and the machine picker read it. Never the key. */
+/** ADE Cloud's state, as Settings and the machine picker read it. */
 export type CloudStatus = {
   connected: boolean;
   /** Every machine on the account, asleep and stopped ones included. */
@@ -307,10 +307,8 @@ export type CloudMachine = {
   /** What an hour costs awake, and asleep or stopped (disk only). Null without resources. */
   runningHourlyUsd: number | null;
   idleHourlyUsd: number | null;
-  /** What it spent in `spentSinceMs`..now (the provider settles compute hourly), or null when unknown. */
+  /** What it has spent so far (the provider settles compute hourly), or null when unknown. */
   spentUsd: number | null;
-  /** Where `spentUsd` starts: the box's creation, or 90 days back for an older box. */
-  spentSinceMs: number | null;
   /** True when that window starts at the box's creation: the figure is everything it cost. */
   spentIsLifetime: boolean;
   /** Suspended for non-payment (the provider's `past_due`). */
@@ -430,8 +428,7 @@ export function cloudShapeWithin(shape: CloudShapeId, max: CloudShapeId): boolea
  * The account's ADE Cloud spending choices: an optional monthly cap for every
  * machine (at the cap ADE makes, wakes, resizes and copies nothing; running
  * work carries on, and boxes still sleep when idle; 80% shows a warning) and
- * what unattended agents may do. No cap by default: the account's spend is
- * prepaid, so it already bounds what can be spent.
+ * what unattended agents may do. No cap by default.
  */
 export type CloudBudget = { monthlyCapUsd: number | null; agents: CloudAgentLimits };
 export const CLOUD_DEFAULT_MONTHLY_CAP_USD: number | null = null;
@@ -440,7 +437,7 @@ export const CLOUD_CAP_CHOICES_USD = [10, 25, 50, 100] as const;
 /** What this month cost against the cap, for Settings, the group head and the refusals. */
 export type CloudSpending = {
   monthlyCapUsd: number | null;
-  /** This UTC month so far, the whole workspace (the provider settles compute hourly). */
+  /** This UTC month so far, the whole account (the provider settles compute hourly). */
   monthSpentUsd: number | null;
   /** True at or past the cap: costly actions are refused. */
   capReached: boolean;
@@ -499,10 +496,10 @@ export function cloudSavedUsd(args: {
 
 export type CloudMachinesResult = {
   /**
-   * `ok`: read. `not_connected`: this account has no ADE Cloud. `key_refused`: the
+   * `ok`: read. `not_connected`: this account has no ADE Cloud. `access_refused`: the
    * provider refused this account. `unreachable`: the provider did not answer.
    */
-  state: "ok" | "not_connected" | "key_refused" | "unreachable";
+  state: "ok" | "not_connected" | "access_refused" | "unreachable";
   machines: CloudMachine[];
   instanceCount: number | null;
   runningCount: number | null;
@@ -513,11 +510,11 @@ export type CloudMachinesResult = {
   /** This UTC month per machine, and what deleted machines spent (see `CloudMonthSpend`). */
   month?: CloudMonthSpend | null;
   /**
-   * Instances that spent in the last 90 days and are gone from the workspace:
+   * Instances that spent in the last 90 days and are gone from the account:
    * boxes deleted on the provider site, whose ADE rows stay on the account.
    */
   deletedInstanceIds?: string[];
-  /** A plain sentence for `key_refused` and `unreachable`. */
+  /** A plain sentence for `access_refused` and `unreachable`. */
   message: string | null;
 };
 
@@ -586,13 +583,13 @@ export function cloudReadyIdleMonthlyUsd(shape: CloudShape): number {
 
 /*
  * Settings › Integrations › ADE Cloud: the page's own links and the month's
- * spend per machine. Kept apart from the template and create contracts above.
+ * spend per machine.
  */
 
 /**
  * This UTC month on the provider (settled hourly), for the machines card: what each
  * listed machine spent and what sleeping saved it, and what machines that are
- * gone (listed in the usage, absent from the workspace) spent before they went.
+ * gone (listed in the usage, absent from the account) spent before they went.
  */
 export type CloudMonthSpend = {
   /** Epoch ms of the month's first instant (UTC). */

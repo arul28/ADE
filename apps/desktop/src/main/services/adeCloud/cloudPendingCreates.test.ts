@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
-import { createAgent37Provider as createAgent37Client } from "./provider/agent37/agent37Client";
+import { createAgent37Provider as createProvider } from "./provider/agent37/agent37Client";
 import { createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { createCloudMachines } from "./cloudMachines";
 import {
@@ -91,7 +91,7 @@ const noWait = async () => undefined;
 
 function creatorDeps(fake: ReturnType<typeof fakeCloud>, pendingCreates: CloudMachineCreatorDeps["pendingCreates"]): CloudMachineCreatorDeps {
   return {
-    client: async () => createAgent37Client({ apiKey: "sk_test_fixture", fetch: fake.fetch }),
+    client: async () => createProvider({ apiKey: "sk_test_fixture", fetch: fake.fetch }),
     getAccountToken: async () => "account-token",
     directoryBaseUrl: () => "https://directory.invalid",
     listAccountMachines: async () => { throw new Error("not reached in this fixture"); },
@@ -123,7 +123,7 @@ describe("ADE Cloud half-made boxes", () => {
     const store = createCloudPendingCreateStore(() => file.store, quiet);
     // Recorded before the create went out; the quit lost the box's id.
     store.begin("req-1", Date.now());
-    const client = createAgent37Client({ apiKey: "sk_test_fixture", fetch: fake.fetch });
+    const client = createProvider({ apiKey: "sk_test_fixture", fetch: fake.fetch });
 
     const result = await reconcileCloudPendingCreate(client, store.list()[0]!, {
       store,
@@ -190,7 +190,7 @@ describe("ADE Cloud half-made boxes", () => {
       : []);
     const removed: string[] = [];
     const machines = createCloudMachines({
-      client: async () => createAgent37Client({ apiKey: "sk_test_fixture", fetch: fake.fetch }),
+      client: async () => createProvider({ apiKey: "sk_test_fixture", fetch: fake.fetch }),
       removeAccountMachine: async (machineKey) => {
         if (rowRemoval === "throws") throw new Error("The account directory refused the removal.");
         removed.push(machineKey);

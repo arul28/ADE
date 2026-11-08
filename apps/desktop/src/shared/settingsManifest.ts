@@ -1558,13 +1558,13 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.ade-cloud",
     label: "ADE Cloud",
     keywords: [
-      "cloud", "machine", "box", "vm", "linux", "sandbox", "ade cloud", "template",
+      "cloud", "machine", "box", "vm", "linux", "sandbox", "ade cloud",
       // The machines themselves live in Your computers; the page header opens it.
-      "sleep", "wake", "resize", "back up", "backup", "delete box", "spending", "cost", "price", "wallet", "box limit", "suspended",
+      "sleep", "wake", "resize", "back up", "backup", "delete box", "spending", "cost", "price", "suspended",
     ],
     tab: "integrations",
     anchor: "cloud-connection",
-    // One workspace key for the account, kept in the account vault.
+    // The account's cloud machines.
     scope: "account",
     web: "hidden",
     group: "ADE Cloud",
@@ -1592,10 +1592,9 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "ADE Cloud",
   },
   {
-    // The id keeps its old name: deeplinks and agent access hold it.
     id: "integrations.ade-cloud-spending",
     label: "ADE Cloud machines and spending",
-    keywords: ["machines", "new machine", "spending cap", "monthly cap", "budget", "limit spend", "saved", "sleep", "auto-sleep", "idle", "wallet", "low balance", "cost"],
+    keywords: ["machines", "new machine", "spending cap", "monthly cap", "budget", "limit spend", "saved", "sleep", "auto-sleep", "idle", "cost"],
     tab: "integrations",
     anchor: "cloud-machines",
     // Every machine with this month's spend and what sleeping saved; read from the provider.

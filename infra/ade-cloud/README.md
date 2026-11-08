@@ -67,6 +67,6 @@ trial template with `ADE_CLOUD_TEMPLATE=ade-a1-test`.
 ## Keeping it current
 
 ADE does not build the template from the app. Run this script after a release
-that changes `template/`. New machines install the ADE version of the app that
-made them on first boot, so a template only has to be rebuilt when the image or
+that changes `template/`. On first boot a new machine installs the ADE version
+of the app that made it when the image's ADE is older, so a template only has to be rebuilt when the image or
 the entrypoint changes.

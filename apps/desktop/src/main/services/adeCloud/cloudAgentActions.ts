@@ -3,8 +3,8 @@
  * create, sleep, wake, resize, copy, move, delete, the sleep setting, the
  * monthly cap, and "keep a cloud machine ready" on, off or retry.
  *
- * Account-level like the rest of the integration: each acts on the provider
- * workspace with the account's key, from whichever brain is asked, and takes
+ * Account-level like the rest of the integration: each acts on the account's
+ * cloud machines, from whichever brain is asked, and takes
  * no pin. Making a machine (create, copy, move) signs the new machine in
  * through a desktop's approval window, so those go to the desktop attached to
  * this brain over the desktop bridge; a brain with none says so.
@@ -161,7 +161,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
 
   const readMachines = async (): Promise<CloudMachinesResult> => {
     const result = await deps.machines.list();
-    if (result.state === "not_connected") throw new Error("ADE Cloud isn't available on this account yet.");
+    if (result.state === "not_connected") throw new Error("ADE Cloud isn't available right now.");
     if (result.state !== "ok") throw new Error(result.message ?? "ADE couldn't read your ADE Cloud machines.");
     return result;
   };

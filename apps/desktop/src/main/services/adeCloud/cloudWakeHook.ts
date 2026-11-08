@@ -1,5 +1,5 @@
 /**
- * The desktop's the provider answers for remote connections: "wake it for use",
+ * The desktop's ADE Cloud answers for remote connections: "wake it for use",
  * and whether an update can take effect on a box. The remote connection
  * service is built before the provider integration, so it asks through these
  * hooks, which `registerCloudIpc` fills in. Unset (no integration in this

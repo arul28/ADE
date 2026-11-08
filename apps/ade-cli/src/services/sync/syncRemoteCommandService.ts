@@ -618,7 +618,7 @@ type SyncRemoteCommandServiceArgs = {
   agentChatService?: ReturnType<typeof createAgentChatService>;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
-  /** The `cloud` action domain (the phone's the provider page); null with no project runtime yet. */
+  /** The `cloud` action domain (the phone's ADE Cloud page); null with no project runtime yet. */
   cloudActions?: () => Record<string, unknown> | null;
   cloudAgentsService?: CloudAgentsService | null;
   personalChatScope?: Pick<PersonalChatScopeContract, "call" | "streamEvents">;
@@ -6603,7 +6603,7 @@ function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegis
     ));
 }
 
-/** What the phone's the provider page may run (`cloud.read` / `cloud.write`). */
+/** What the phone's ADE Cloud page may run (`cloud.read` / `cloud.write`). */
 const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set(["list", "spending", "limits", "ready_status", "make_status"]);
 const CLOUD_REMOTE_WRITES: ReadonlySet<string> = new Set([
   "create", "copy", "move", "sleep", "wake", "resize", "delete", "set_sleep", "set_cap", "set_limits",
@@ -8276,7 +8276,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     return args.usageTrackingService.getUsageRollup();
   }, "runtime");
 
-  // The phone's the provider page: the same actions as `ade cloud`, run here.
+  // The phone's ADE Cloud page: the same actions as `ade cloud`, run here.
   // The phone is the person's own client, so nothing it asks raises a card.
   // Reads are viewer-allowed; anything that spends, deletes or changes a
   // setting needs a controlling device. Account-wide, so any brain answers.

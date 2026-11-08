@@ -75,7 +75,7 @@ export async function runMachineAccountAction(
   if (isUserOnlyAdeAction(domain, action) && !localDesktop) {
     throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `${domain}.${action} is limited to the ADE desktop app on this computer.`);
   }
-  // The vault with no project is the desktop's the provider code, and only that.
+  // The vault with no project is the desktop's ADE Cloud code, and only that.
   if (domain === "account_vault" && !localDesktop) {
     throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `${method} is only for the ADE desktop app on this computer.`);
   }

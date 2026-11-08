@@ -1770,13 +1770,12 @@ in the desktop IPC handler that runs it (`registerCloudIpc.ts`, where the
 outcome is known): `completed` (the box joined the account), `partial` (signed
 in, still starting), `cancelled`, or `failed`. The product question is whether
 installations make ADE Cloud machines from ADE at all and how often a create
-fails. No box id, name, size, price, workspace, or error travels; those stay in
+fails. No box id, name, size, price, or error travels; those stay in
 the local `cloud.*` log lines. A box takes minutes and costs money, so a
 six-hour deduplication key per outcome bounds it to 16 accepted events per
 installation per UTC day, inside the existing `ade_feature_used` ceilings.
-Connecting the key, the template build and the startup cleanup of half-made
-boxes are not analytics: the first is a one-time setting, the other two run
-without a person deciding anything.
+The startup cleanup of half-made boxes is not analytics: it runs without a
+person deciding anything.
 
 The box actions on an ADE Cloud card record `feature: "connections"`, `action:
 "cloud_machine_action"` when ADE Cloud confirms the action, in the same IPC
@@ -1810,7 +1809,7 @@ inside the existing `ade_feature_used` ceilings. The keeper's pool reads are
 not analytics.
 
 Sign-ins for cloud machines record `feature: "connections"`, `action:
-"cloud_cloud_sign_in"` in the brain, when a sign-in is saved
+"cloud_sign_in"` in the brain, when a sign-in is saved
 (`cloudSignInActions.ts`, called from `adeActions/registry.ts`). The
 outcome is the provider, prefixed: `signin_claude` once Claude Code's token is
 kept, or `signin_codex`, `signin_cursor`, `signin_droid`, `signin_grok`,

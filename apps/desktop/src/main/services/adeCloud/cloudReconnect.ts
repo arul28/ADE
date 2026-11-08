@@ -9,7 +9,7 @@
  * the same machine.
  *
  * Account-level like the rest of the machine list: it runs in this desktop's
- * main process with the account's the provider key and takes no pin.
+ * main process with the account's ADE Cloud access and takes no pin.
  */
 
 import { cloudCapReachedMessage, type CloudCreateMachineResult, type CloudCreateProgress } from "../../../shared/adeCloud";

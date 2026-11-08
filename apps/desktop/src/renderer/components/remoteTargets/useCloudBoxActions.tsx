@@ -90,9 +90,9 @@ function chatsLine(count: number, name: string): string {
 
 /**
  * Sleep, wake, resize, back up, Remove from ADE and Delete box for the
- * the provider group, with the confirmations each one needs.
+ * the ADE Cloud group, with the confirmations each one needs.
  *
- * The box actions go to the provider workspace through this desktop's main
+ * The box actions go to ADE Cloud through this desktop's main
  * process, and Remove from ADE to the account directory; both are account
  * level, so nothing here takes a pin.
  */
@@ -350,11 +350,11 @@ export function useCloudBoxActions(args: {
     const suspended = box.pastDue;
     const items: MachineAction[] = [];
     if (box.state === "running") {
-      items.push({ key: "a37-sleep", label: "Sleep", icon: <Moon size={14} />, disabled: busy, onSelect: () => void sleep(ctx) });
+      items.push({ key: "cloud-sleep", label: "Sleep", icon: <Moon size={14} />, disabled: busy, onSelect: () => void sleep(ctx) });
     }
     if ((box.state === "asleep" || box.state === "stopped") && !suspended) {
       items.push({
-        key: "a37-wake",
+        key: "cloud-wake",
         label: box.state === "stopped" ? "Start" : "Wake",
         icon: <Sun size={14} />,
         disabled: busy,
@@ -362,12 +362,12 @@ export function useCloudBoxActions(args: {
       });
     }
     if (box.state === "running" && box.resources) {
-      items.push({ key: "a37-resize", label: "Resize…", icon: <ArrowsOutSimple size={14} />, disabled: busy, onSelect: () => setResizing(ctx) });
+      items.push({ key: "cloud-resize", label: "Resize…", icon: <ArrowsOutSimple size={14} />, disabled: busy, onSelect: () => setResizing(ctx) });
     }
     if (box.madeByAde && box.machineKey && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
-      items.push({ key: "a37-copy", label: "Copy…", icon: <Copy size={14} />, disabled: busy, onSelect: () => void copyBox(ctx) });
+      items.push({ key: "cloud-copy", label: "Copy…", icon: <Copy size={14} />, disabled: busy, onSelect: () => void copyBox(ctx) });
       items.push({
-        key: "a37-move",
+        key: "cloud-move",
         label: box.type === "vm" ? "Move to a box…" : "Move to a VM…",
         icon: <ArrowsLeftRight size={14} />,
         disabled: busy,
@@ -375,20 +375,20 @@ export function useCloudBoxActions(args: {
       });
     }
     if (box.madeByAde && (box.state === "running" || box.state === "asleep")) {
-      items.push({ key: "a37-sleep-after", label: "Sleep when idle…", icon: <MoonStars size={14} />, disabled: busy, onSelect: () => setSleepSetting(ctx) });
+      items.push({ key: "cloud-sleep-after", label: "Sleep when idle…", icon: <MoonStars size={14} />, disabled: busy, onSelect: () => setSleepSetting(ctx) });
     }
     if (box.state === "running" || box.state === "asleep" || box.state === "stopped") {
-      items.push({ key: "a37-backup", label: "Back up now", icon: <CloudArrowUp size={14} />, disabled: busy, onSelect: () => void run(ctx, "backup") });
+      items.push({ key: "cloud-backup", label: "Back up now", icon: <CloudArrowUp size={14} />, disabled: busy, onSelect: () => void run(ctx, "backup") });
     }
     // A box that joined once (it carries its machine key) and left the account.
     if (ctx.accountKnown && !ctx.accountMachine && box.machineKey && !suspended && window.ade?.cloud?.reconnectMachine
       && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
-      items.push({ key: "a37-reconnect", label: "Reconnect to ADE", icon: <PlugsConnected size={14} />, disabled: busy, onSelect: () => void reconnectBox(ctx) });
+      items.push({ key: "cloud-reconnect", label: "Reconnect to ADE", icon: <PlugsConnected size={14} />, disabled: busy, onSelect: () => void reconnectBox(ctx) });
     }
     if (ctx.accountMachine) {
       const accountMachine = ctx.accountMachine;
       items.push({
-        key: "a37-remove",
+        key: "cloud-remove",
         label: "Remove from ADE",
         ariaLabel: `Remove ${ctx.name} from ADE`,
         icon: <UserMinus size={14} />,
@@ -398,7 +398,7 @@ export function useCloudBoxActions(args: {
       });
     }
     items.push({
-      key: "a37-delete",
+      key: "cloud-delete",
       label: "Delete box",
       ariaLabel: `Delete ${ctx.name} on ADE Cloud`,
       icon: <Trash size={14} />,

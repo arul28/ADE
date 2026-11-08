@@ -2,7 +2,7 @@
  * Claiming a project's ready machine: the half of ready machines that starts a
  * chat, used by the desktop (the machine picker) and the brain (`ade chat
  * create --machine cloud:ready`, the `cloud` action domain). It needs only
- * the provider key, never a window, so it runs anywhere the key is readable.
+ * ADE Cloud access, never a window, so it runs on any brain of the account.
  *
  * The pool is the provider's own metadata on each machine (see
  * `CLOUD_READY_METADATA`), so whoever claims and whoever prepares agree
@@ -10,7 +10,7 @@
  * wakes it: from then on it is an ordinary machine of the person's, and the
  * computer that keeps the project's machine ready makes the next one.
  *
- * Account-level: it acts on the provider workspace, not on a lane, chat or
+ * Account-level: it acts on the account's cloud machines, not on a lane, chat or
  * machine through its brain, so it takes no pin.
  */
 
@@ -39,7 +39,7 @@ export function cloudReadyStateOf(instance: Pick<CloudInstance, "metadata">): Cl
   return readCloudReadyMachineState(instance.metadata[CLOUD_READY_METADATA.state]);
 }
 
-/** Every live machine in the workspace that belongs to this project's pool, oldest first. */
+/** Every live machine on the account that belongs to this project's pool, oldest first. */
 export function cloudReadyMachinesFor(instances: readonly CloudInstance[], identity: string): CloudInstance[] {
   return instances
     .filter((instance) =>

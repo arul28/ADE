@@ -46,7 +46,7 @@ export function CloudGroupHead({
   ].filter(Boolean);
   return (
     <div className="ade-cx-section-head ade-cx-cloud-head">
-      <CloudMark size={12} strokeWidth={30} />
+      <CloudMark size={12} bold />
       {ADE_CLOUD_NAME}
       <span className="ade-cx-count">{boxes.length}</span>
       {loading ? <CircleNotch size={11} className="animate-spin" aria-label="Checking ADE Cloud" /> : null}
@@ -80,7 +80,7 @@ export function CloudGroupBanners({
       <Banner key="load" layout="inline" model={{ id: "cloud-machines-load", tone: "warning", icon: <CloudMark size={15} />, title: `ADE couldn't read your ${ADE_CLOUD_NAME} machines`, detail: loadError, actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: onRetry }] }} />,
     );
   }
-  if (result?.state === "key_refused") {
+  if (result?.state === "access_refused") {
     banners.push(
       <Banner key="refused" layout="inline" model={{ id: "cloud-access-refused", tone: "error", icon: <CloudMark size={15} />, title: `${ADE_CLOUD_NAME} refused this account`, detail: result.message ?? "ADE can't show, wake or delete your machines right now. They keep running.", report: false }} />,
     );
@@ -275,7 +275,7 @@ export function CloudBoxOnlyRow({
     <div style={machineRowStyle} data-cloud-box-only={box.instanceId}>
       <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 12, alignItems: "center" }}>
         <span className="ade-cx-cloud-avatar" aria-hidden>
-          <CloudMark size={18} strokeWidth={24} />
+          <CloudMark size={18} bold />
         </span>
         <div style={{ minWidth: 0, display: "grid", gap: 4 }}>
           <span style={nameStyle}>{name}</span>

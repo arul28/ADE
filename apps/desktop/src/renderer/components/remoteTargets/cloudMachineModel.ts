@@ -66,7 +66,7 @@ export function matchCloudBoxes(
 
 /**
  * Whether an account row is a cloud box that no longer exists: an offline
- * Linux row named by the id of an instance that spent in the workspace and is
+ * Linux row named by the id of an instance that spent on the account and is
  * gone from it (a box's hostname is its instance id until someone renames
  * it). That is a box deleted on the provider site, whose row stays on the
  * account until someone removes it. Pass the ids from a list that was read.

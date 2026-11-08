@@ -9,6 +9,7 @@
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { cloudStatusAwake, type CloudStatus } from "../../../shared/adeCloud";
 import type { AccountVaultResult } from "../../../shared/types/accountVault";
+import { getErrorMessage } from "../shared/utils";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider } from "./cloudProvider";
 import { AGENT37_KEY_VAULT_ITEM, createAgent37Provider } from "./provider/agent37/agent37Client";
 
@@ -32,10 +33,6 @@ export type CloudAccessDeps = {
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
 };
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 type CloudVaultBridge = {
   get(scope: string, kind: string, key: string): Promise<AccountVaultResult<string | null>>;
   set(scope: string, kind: string, key: string, value: string): Promise<AccountVaultResult<null>>;
@@ -43,7 +40,7 @@ type CloudVaultBridge = {
 };
 
 /** Desktop main: one account-wide item in the brain's vault over `accountVaultBridge`. */
-export function cloudVaultFromBridge(bridge: CloudVaultBridge, key: string = CLOUD_PROVIDER_VAULT_ITEM): CloudVault {
+export function cloudVaultFromBridge(bridge: CloudVaultBridge, key: string): CloudVault {
   return {
     async get() {
       const result = await bridge.get(ACCOUNT_SCOPE_ALL, CLOUD_VAULT_KIND, key);
@@ -63,7 +60,7 @@ export function cloudVaultFromStore(store: {
   get(scope: string, kind: "integration", key: string): string | null;
   set(scope: string, kind: "integration", key: string, value: string): boolean;
   remove(scope: string, kind: "integration", key: string): boolean;
-}, key: string = CLOUD_PROVIDER_VAULT_ITEM): CloudVault {
+}, key: string): CloudVault {
   return {
     async get() {
       return { ok: true, value: store.get(ACCOUNT_SCOPE_ALL, CLOUD_VAULT_KIND, key) };
@@ -89,42 +86,60 @@ function decodeKey(raw: string | null, deps: CloudAccessDeps): string | null {
   }
 }
 
-/** ADE Cloud for this account, or null when this account has no access to it. */
-export async function getCloudProvider(deps: CloudAccessDeps): Promise<CloudProvider | null> {
+type CloudAccess =
+  | { state: "ready"; provider: CloudProvider }
+  | { state: "no_access" | "signed_out" | "unreadable" };
+
+const NO_PROVIDER_SENTENCE: Record<Exclude<CloudAccess["state"], "ready">, string> = {
+  no_access: "ADE Cloud isn't available on this account yet.",
+  signed_out: "Sign in to ADE to use ADE Cloud.",
+  unreadable: "ADE couldn't check this account's ADE Cloud access. Try again in a moment.",
+};
+
+async function readCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
   // A development brain runs with sync off and never opens the account vault.
   const developmentKey = process.env.ADE_CLOUD_DEV_KEY?.trim();
-  if (developmentKey) return createAgent37Provider({ apiKey: developmentKey, fetch: deps.fetch });
-  if (!deps.signedIn()) return null;
+  if (developmentKey) return { state: "ready", provider: createAgent37Provider({ apiKey: developmentKey, fetch: deps.fetch }) };
+  if (!deps.signedIn()) return { state: "signed_out" };
   let vault: CloudVault | null;
   try {
     vault = deps.vault();
   } catch (error) {
-    deps.logger?.warn("cloud.vault_unavailable", { error: errorText(error) });
-    return null;
+    deps.logger?.warn("cloud.vault_unavailable", { error: getErrorMessage(error) });
+    return { state: "unreadable" };
   }
-  if (!vault) return null;
+  if (!vault) return { state: "unreadable" };
   const got = await vault.get().catch((error: unknown) => {
-    deps.logger?.warn("cloud.vault_read_failed", { error: errorText(error) });
+    deps.logger?.warn("cloud.vault_read_failed", { error: getErrorMessage(error) });
     return { ok: false as const };
   });
-  const apiKey = got.ok ? decodeKey(got.value, deps) : null;
-  return apiKey ? createAgent37Provider({ apiKey, fetch: deps.fetch }) : null;
+  if (!got.ok) return { state: "unreadable" };
+  const apiKey = decodeKey(got.value, deps);
+  return apiKey ? { state: "ready", provider: createAgent37Provider({ apiKey, fetch: deps.fetch }) } : { state: "no_access" };
+}
+
+/** ADE Cloud for this account, or null when it can't be used from here right now. */
+export async function getCloudProvider(deps: CloudAccessDeps): Promise<CloudProvider | null> {
+  const access = await readCloudAccess(deps);
+  return access.state === "ready" ? access.provider : null;
 }
 
 /** ADE Cloud for this account; throws a plain sentence when there is none. */
 export async function requireCloudProvider(deps: CloudAccessDeps): Promise<CloudProvider> {
-  const provider = await getCloudProvider(deps);
-  if (!provider) throw new Error("ADE Cloud isn't available on this account yet.");
-  return provider;
+  const access = await readCloudAccess(deps);
+  if (access.state !== "ready") throw new Error(NO_PROVIDER_SENTENCE[access.state]);
+  return access.provider;
 }
 
 const NO_ACCESS: CloudStatus = { connected: false, instanceCount: null, runningCount: null, error: null };
 
 export async function readCloudStatus(deps: CloudAccessDeps): Promise<CloudStatus> {
-  const provider = await getCloudProvider(deps);
-  if (!provider) return NO_ACCESS;
+  const access = await readCloudAccess(deps);
+  if (access.state === "no_access") return NO_ACCESS;
+  // Not a fact about the account, so the surfaces show it as a failed check.
+  if (access.state !== "ready") return { ...NO_ACCESS, connected: true, error: NO_PROVIDER_SENTENCE[access.state] };
   try {
-    const instances = await provider.listInstances();
+    const instances = await access.provider.listInstances();
     return {
       connected: true,
       instanceCount: instances.filter((instance) => instance.status !== "deleted" && instance.status !== "failed").length,

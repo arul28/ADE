@@ -12,7 +12,6 @@ import {
   ClockCounterClockwise,
   Cards,
   Cloud,
-  CloudCheck,
   Crown,
   DesktopTower,
   DeviceMobile,
@@ -436,11 +435,6 @@ const TIP_LIST = [
     size: "screen", shot: { src: mcpShot, alt: "Settings, MCP servers found on this computer, ready to import" },
     sentence: "Pick an MCP server from the catalogue or add your own, once; every ADE agent gets it, on every computer.",
     action: setting("mcp.servers", "Pick one from the catalogue or add your own; every agent gets it, on every computer."),
-  },
-  {
-    id: "cloud", group: "integrations", icon: CloudCheck, title: "ADE Cloud machines", size: "wide",
-    sentence: "Make a Linux machine in one click. It signs in by itself and joins your computers.",
-    action: setting("integrations.ade-cloud", "Pick New ADE Cloud machine in Add a computer."),
   },
   {
     id: "connect-cards", group: "integrations", icon: Cards, title: "Connect from the chat", size: "wide",

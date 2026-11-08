@@ -1,9 +1,9 @@
 import Foundation
 
-// The phone's the provider page talks to whichever ADE machine it is connected to,
+// The phone's ADE Cloud page talks to whichever ADE machine it is connected to,
 // through `cloud.read` and `cloud.write`: the same actions as
 // `ade cloud` (apps/desktop/src/main/services/adeCloud/cloudAgentActions.ts).
-// The key, the cap and the limits are the account's, so every machine answers
+// ADE Cloud access, the cap and the limits are the account's, so every machine answers
 // the same. The phone is the person's own client, so nothing raises a card.
 
 struct CloudPhoneSleep: Decodable, Equatable {
@@ -137,7 +137,7 @@ struct CloudPhoneAck: Decodable {
 
 @MainActor
 extension SyncService {
-  /// The connected machine can run the provider page.
+  /// The connected machine can run the ADE Cloud page.
   var cloudSupported: Bool { supportsRemoteAction("cloud.read") }
 
   func cloudRead<T: Decodable>(_ action: String, args: [String: Any] = [:], as type: T.Type) async throws -> T {
@@ -155,7 +155,7 @@ extension SyncService {
   }
 
   /// Whether the provider is set up on the account, for the Work menu item. One
-  /// list read; a machine without the command or without a key hides it.
+  /// list read; a machine without the command or without access hides it.
   func refreshCloudAvailability() async {
     guard cloudSupported else {
       cloudAvailable = false

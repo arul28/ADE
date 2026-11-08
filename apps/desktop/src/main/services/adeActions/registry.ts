@@ -301,7 +301,7 @@ import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
-import { cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
+import { CLOUD_PROVIDER_VAULT_ITEM, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
 import { cloudMachineEnv, type CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
 import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
@@ -4079,7 +4079,7 @@ function cloudSignInVaults(runtime: AccountDomainRuntime): CloudSignInVaults | n
 
 function cloudAccessDeps(runtime: AccountDomainRuntime): CloudAccessDeps {
   return {
-    vault: () => (runtime.accountVaultStore ? cloudVaultFromStore(runtime.accountVaultStore) : null),
+    vault: () => (runtime.accountVaultStore ? cloudVaultFromStore(runtime.accountVaultStore, CLOUD_PROVIDER_VAULT_ITEM) : null),
     signedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
     logger: runtime.logger,
   };
@@ -4237,9 +4237,9 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
     onSaved: (id) => runtime.productAnalyticsService?.capture({
       event: "ade_feature_used",
       surface: "api",
-      properties: { feature: "connections", action: "cloud_cloud_sign_in", outcome: `signin_${id}` },
+      properties: { feature: "connections", action: "cloud_sign_in", outcome: `signin_${id}` },
       projectId: null,
-      dedupeKey: `cloud_cloud_sign_in:${id}`,
+      dedupeKey: `cloud_sign_in:${id}`,
       minimumIntervalMs: 6 * 60 * 60 * 1_000,
     }),
     logger: runtime.logger,

@@ -36,6 +36,7 @@ import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/service
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import {
+  CLOUD_PROVIDER_VAULT_ITEM,
   cloudVaultFromBridge,
   getCloudProvider,
   readCloudStatus,
@@ -71,8 +72,8 @@ type Logger = {
 /**
  * the provider in Settings and the machine picker.
  *
- * No pin anywhere: the key is account-wide (the account vault answers the same
- * on every computer), and making a box acts on the provider workspace and the
+ * No pin anywhere: cloud access is account-wide (the account vault answers the same
+ * on every computer), and making a box acts on the account's cloud machines and the
  * ADE account, never on a lane, chat or another machine. The new box's own
  * actions afterwards go through the machine list like any other computer.
  */
@@ -112,7 +113,7 @@ export function registerCloudIpc(args: {
   let machineStore: EncryptedFileCredentialStore | null = null;
   const getMachineStore = () => (machineStore ??= new EncryptedFileCredentialStore({ secretsDir: resolveMachineAdeLayout().secretsDir }));
   const credentials: CloudAccessDeps = {
-    vault: () => cloudVaultFromBridge(args.vaultBridge),
+    vault: () => cloudVaultFromBridge(args.vaultBridge, CLOUD_PROVIDER_VAULT_ITEM),
     signedIn: () => account().getStatus().signedIn === true,
     logger,
   };
@@ -310,20 +311,6 @@ export function registerCloudIpc(args: {
     logger.info("cloud.budget_set", { capped: saved.monthlyCapUsd != null, unattendedSpend: saved.agents.unattendedSpend, machinesPerDay: saved.agents.machinesPerDay });
     sendToAllWindows(IPC.cloudStatusChanged);
     return saved;
-  });
-
-  ipcMain.handle(IPC.cloudWakeMachine, async (event, arg: { machineKey?: unknown; hostname?: unknown }) => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudWakeMachine)) return null;
-    const machineKey = typeof arg?.machineKey === "string" ? arg.machineKey.trim() : "";
-    if (!machineKey) return { state: "not_cloud" as const };
-    const client = await savedClient();
-    if (!client) return { state: "not_cloud" as const };
-    const result = await wakeCloudMachineForUse(client, {
-      machineKey,
-      hostname: typeof arg?.hostname === "string" ? arg.hostname : null,
-    }, { spending: () => machines.spending(), logger });
-    if (result.state === "woken") sendToAllWindows(IPC.cloudStatusChanged);
-    return result;
   });
 
   /** A project's identity from the renderer, normalized like every stored one. */

@@ -87,7 +87,7 @@ function parseCloudReadySettings(raw: string, logger?: CloudLogger): CloudReadyP
 
 /**
  * The account vault's item when it has one (every computer reads the same),
- * else this computer's copy: the fallback the provider key itself has. Every
+ * else this computer's copy. Every
  * write lands in both, so a vault that stops answering, or one that never got
  * the write, still reads the latest choice made here.
  */

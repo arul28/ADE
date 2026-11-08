@@ -28,7 +28,7 @@ export type CloudSignIns = {
 };
 
 /**
- * The one read of the account's cloud sign-ins on the provider page, shared by
+ * The one read of the account's cloud sign-ins on the ADE Cloud page, shared by
  * every card that shows them. While Claude's sign-in runs (on this computer's
  * brain), it is read again every 1.5 s; otherwise only when a window changed it.
  */

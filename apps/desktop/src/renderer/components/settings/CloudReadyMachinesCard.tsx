@@ -75,7 +75,7 @@ function setupSuggestion(fileNames: readonly string[]): string | null {
 }
 
 /**
- * Settings › Integrations › the provider › Ready machine: keep one machine
+ * Settings › Integrations › ADE Cloud › Ready machine: keep one machine
  * prepared and asleep for the open project, so a new chat on it is working in
  * seconds. Account-wide (the choice is in the account vault, the machines on
  * the provider), so it asks this desktop's main process with no pin.
@@ -184,7 +184,7 @@ export function CloudReadyMachinesCard({ status, cloudSignIns }: { status: Cloud
 
   const shape = cloudShapeById(shapeId);
   // Editing a project that already keeps a machine makes none now (the next
-  // one uses the change), so the workspace's machine limit doesn't block it.
+  // one uses the change), so it needs no room for a new machine.
   const changed = saved != null && (saved.kind !== kind || saved.shape !== shapeId || saved.setup !== setup);
   const tag = stateTag(mine);
 

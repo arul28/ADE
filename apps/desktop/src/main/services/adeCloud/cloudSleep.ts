@@ -303,7 +303,7 @@ export function createCloudBudgetStore(deps: {
   };
 }
 
-/** What the workspace spent this UTC month, from a usage read that covers it. */
+/** What the account spent this UTC month, from a usage read that covers it. */
 export function cloudMonthSpentUsd(usage: Pick<CloudUsage, "byDay"> | null, nowMs: number): number | null {
   if (!usage) return null;
   const monthStart = `${cloudUsageDay(nowMs).slice(0, 7)}-01`;

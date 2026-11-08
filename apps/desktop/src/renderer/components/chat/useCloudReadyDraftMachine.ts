@@ -11,8 +11,6 @@ import { connectWithRetry } from "./connectWithRetry";
 export const CLOUD_READY_MACHINE_ID = "__ade_cloud_ready__";
 /** The picker row that makes a new cloud machine for this chat (no ready machine for the project). */
 export const CLOUD_NEW_MACHINE_ID = "__ade_cloud_new__";
-/** The same row while the provider is not connected: picking it opens the provider page to connect a key. */
-export const CLOUD_CONNECT_ID = "__ade_cloud_connect__";
 
 const CONNECT_RETRY_MS = 1_500;
 
@@ -25,7 +23,7 @@ async function pairAndConnect(machineKey: string): Promise<string | null> {
 const SELECT_WAIT_MS = 20_000;
 
 /**
- * "the provider · ready" in the new-chat machine picker: this project's prepared,
+ * "ADE Cloud · ready" in the new-chat machine picker: this project's prepared,
  * sleeping cloud machine. Picking it claims and wakes it at once, so the wake
  * overlaps the typing; ADE then pairs and connects to it and selects it like
  * any other machine, and the chat launches there through the ordinary path.
@@ -170,17 +168,7 @@ export function useCloudReadyDraftMachine({
           cloudProvider: "cloud",
           unavailableReason: null,
         }
-      : cloudStatus && !cloudStatus.connected
-        ? {
-            // Not connected yet: the row says what a cloud machine needs first.
-            id: CLOUD_CONNECT_ID,
-            name: "New ADE Cloud machine",
-            detail: "Not available on this account yet",
-            kind: "cloud",
-            cloudProvider: "cloud",
-            unavailableReason: null,
-          }
-        : null;
+      : null;
 
   /** "New cloud machine": open the create form. */
   const chooseNew = useCallback(() => {

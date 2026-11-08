@@ -17,8 +17,8 @@ export type CloudMachinesState = {
 };
 
 /**
- * The provider workspace's boxes for the machine list. Account-level: it asks
- * this desktop's main process with no pin (the key is the account's).
+ * The account's ADE Cloud boxes for the machine list. Account-level: it asks
+ * this desktop's main process with no pin (cloud access is the account's).
  *
  * Read when the list opens, on window focus and when the integration changes,
  * never on a standing poll; only while a box is moving between states does it

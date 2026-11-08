@@ -22,7 +22,7 @@ import {
 } from "./serviceHandover";
 
 /**
- * A brain whose supervisor is the machine's own entrypoint: ADE's the provider
+ * A brain whose supervisor is the machine's own entrypoint: ADE's cloud
  * template runs `ade serve` in a loop as the container's main process
  * (`infra/ade-cloud/template/ade-entrypoint.sh`), and that loop is what survives
  * a provider sleep.

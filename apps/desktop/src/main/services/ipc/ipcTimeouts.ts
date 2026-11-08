@@ -23,7 +23,6 @@ import {
   AI_STATUS_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
-import { CLOUD_LIST_MACHINES_IPC_TIMEOUT_MS, CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS } from "../adeCloud/cloudProvider";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { builtInBrowserRemoteCallDoneTimeoutMs } from "../../../shared/types/builtInBrowserRemote";
 import { PROJECT_REPAIR_IPC_TIMEOUT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
@@ -54,6 +53,11 @@ export function readRuntimeActionRequest(
   const action = typeof request?.action === "string" ? request.action.trim() : "";
   return { domain, ...(action ? { action } : {}) };
 }
+
+/** The longest provider call (a backup) plus a minute for the reads around it. */
+const CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS = 16 * 60_000;
+/** The machine list reads the machines, then the usage: two request budgets. */
+const CLOUD_LIST_MACHINES_IPC_TIMEOUT_MS = 50_000;
 
 const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   ai: {
@@ -260,7 +264,6 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.cloudReadyRemoveProject:
     case IPC.cloudReadyRetry:
     case IPC.cloudReadyStatus:
-    case IPC.cloudWakeMachine:
       return CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS;
     case IPC.filesDelete:
       return localRuntimeActionIpcTimeoutMs("file", "deletePath");

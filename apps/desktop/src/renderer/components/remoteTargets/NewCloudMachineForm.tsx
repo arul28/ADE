@@ -19,7 +19,7 @@ import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
 function newRequestId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
-    : `a37-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    : `cloud-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 /**
@@ -28,7 +28,7 @@ function newRequestId(): string {
  * box signs in to this account on its own; the caller connects to it when
  * `onCreated` hands back its machine key.
  *
- * Account-level: the box is made on the account's the provider workspace and joins
+ * Account-level: the box is made on the account's ADE Cloud and joins
  * the ADE account, so nothing here takes a pin.
  */
 export function NewCloudMachineForm({
@@ -137,7 +137,7 @@ export function NewCloudMachineForm({
               }}
             >
               <span className="ade-cx-way-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <CloudMark size={14} strokeWidth={selected ? 24 : 12.46} /> {spec.label}
+                <CloudMark size={14} bold={selected} /> {spec.label}
                 <span style={{ marginLeft: "auto", fontWeight: 400, opacity: 0.75 }}>
                   from {prices[`${spec.kind}:2x4`]}
                 </span>

@@ -113,11 +113,6 @@ export type CloudProvider = {
   exec(id: string, command: string, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<CloudExecResult>;
 };
 
-/** The longest provider call (a backup) plus a minute for the reads around it. */
-export const CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS = 16 * 60_000;
-/** The machine list reads the machines, then the usage: two request budgets. */
-export const CLOUD_LIST_MACHINES_IPC_TIMEOUT_MS = 50_000;
-
 /** `YYYY-MM-DD` in UTC, the form the usage window takes. */
 export function cloudUsageDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);

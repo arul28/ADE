@@ -399,7 +399,7 @@ import {
 import { peekNewLaneDefaultsCached, useNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { describeAutoCreateStart } from "../lanes/laneStartOptions";
 import { autoLaneMachine, originUrlForBinding } from "../lanes/laneMachines";
-import { CLOUD_CONNECT_ID, CLOUD_NEW_MACHINE_ID, CLOUD_READY_MACHINE_ID, useCloudReadyDraftMachine } from "./useCloudReadyDraftMachine";
+import { CLOUD_NEW_MACHINE_ID, CLOUD_READY_MACHINE_ID, useCloudReadyDraftMachine } from "./useCloudReadyDraftMachine";
 import { useDraftMachineSetup } from "./useDraftMachineSetup";
 import { NewCloudMachineDialog } from "../remoteTargets/NewCloudMachineDialog";
 import { autoPickSummary } from "../lanes/machineLoadText";
@@ -16621,10 +16621,6 @@ export function AgentChatPane({
       chooseNewCloudMachine();
       return;
     }
-    if (nextMachineId === CLOUD_CONNECT_ID) {
-      navigate(settingsRouteFor("integrations.ade-cloud"));
-      return;
-    }
     abandonCloudReadyMachine();
     if (draftSetupOwnsRow(nextMachineId)) {
       // Waking, cloning, then selecting; the chat keeps its machine until then.
@@ -16651,7 +16647,7 @@ export function AgentChatPane({
     setDevinCloudMode(false);
     keepLaneOnMachine(null);
     handleDraftMachineChange(nextMachineId);
-  }, [abandonCloudReadyMachine, abandonDraftMachineSetup, chooseCloudReadyMachine, chooseDraftSetupRow, chooseNewCloudMachine, draftSetupOwnsRow, handleDraftMachineChange, keepLaneOnMachine, navigate, setCursorCloudMode, workDraftProjectStateKey]);
+  }, [abandonCloudReadyMachine, abandonDraftMachineSetup, chooseCloudReadyMachine, chooseDraftSetupRow, chooseNewCloudMachine, draftSetupOwnsRow, handleDraftMachineChange, keepLaneOnMachine, setCursorCloudMode, workDraftProjectStateKey]);
   // A draft opened in a cloud lane (from the sidebar, a deeplink) is on that
   // cloud: the lane has no other machine.
   useEffect(() => {

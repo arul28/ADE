@@ -14,7 +14,7 @@ import linearArt from "./banners/linear.webp";
 import adeCloudArt from "./banners/ade-cloud.svg";
 import { CloudMark, ADE_CLOUD_NAME } from "../../remoteTargets/cloudBrand";
 
-/** The integrations are the ones an agent can ask to connect. */
+/** The integrations an agent can ask to connect, and ADE Cloud. */
 export type IntegrationId = ConnectProviderId | "cloud";
 
 export const INTEGRATION_IDS: readonly IntegrationId[] = [...CONNECT_PROVIDER_IDS, "cloud"];
@@ -119,7 +119,7 @@ const BRANDS: Record<IntegrationId, IntegrationBrand> = {
     art: adeCloudArt,
     logo: {
       kind: "solid",
-      mark: (size: number) => <CloudMark size={size} strokeWidth={22} />,
+      mark: (size: number) => <CloudMark size={size} bold />,
       face: "#FFFFFF",
       side: "#3A3A3A",
       size: 76,

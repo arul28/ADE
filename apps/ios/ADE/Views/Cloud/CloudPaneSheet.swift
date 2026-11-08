@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The phone's the provider page (Work ⋯ menu): this month's spend, the account's
+/// The phone's ADE Cloud page (Work ⋯ menu): this month's spend, the account's
 /// machines with every action the desktop card has, ready machines, a new
 /// machine (approved here as it joins), and what agents may spend alone.
 ///

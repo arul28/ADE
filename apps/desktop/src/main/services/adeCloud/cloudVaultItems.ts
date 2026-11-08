@@ -1,6 +1,6 @@
 /**
- * The account vault items the provider keeps, and the part of the vault a brain
- * opens with no project (`accountVault.call`): desktop main's the provider code in
+ * The account vault items ADE Cloud keeps, and the part of the vault a brain
+ * opens with no project (`accountVault.call`): desktop main's ADE Cloud code in
  * a window with no project on this computer (registerCloudIpc.ts). Any other
  * item, and any other operation, still needs a project's `account_vault`.
  *

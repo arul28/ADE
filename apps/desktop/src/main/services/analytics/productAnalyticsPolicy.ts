@@ -272,7 +272,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // people sign in once for every new cloud machine. Outcome is the
   // provider, prefixed (signin_claude | signin_codex | …), only once it is
   // saved. Never the key, the token, the account, or an error.
-  "cloud_cloud_sign_in",
+  "cloud_sign_in",
   // One coarse fact per automatic diagnostic send: whether it went, was refused
   // by the client budget, or failed. Never the failure code that triggered it,
   // never the surface, never the report or its upload reference — those are the

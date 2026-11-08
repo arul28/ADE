@@ -1,12 +1,12 @@
 /**
  * The `cloud` action domain on a brain: ready machines for the CLI, agents
  * and the phone (`ade chat create --machine cloud:ready`, `ade cloud
- * ready`). It needs only the account's the provider key, which the brain reads
- * from its own vault (or this computer's credential file), never a window:
+ * ready`). It needs only ADE Cloud access, which the brain reads
+ * from its own vault, never a window:
  * preparing machines stays with the desktop (cloudReadyMachines.ts).
  *
  * Account-level, so the actions run on whichever brain is asked and take no
- * pin; what they read and change is the provider workspace, the same from
+ * pin; what they read and change is the account's cloud machines, the same from
  * every computer.
  */
 

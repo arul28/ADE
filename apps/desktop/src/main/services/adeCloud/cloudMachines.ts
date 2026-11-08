@@ -3,7 +3,7 @@
  * and the lifecycle actions on it (sleep, wake, resize, back up, delete).
  *
  * Account-level, like the rest of the integration: every call goes to the
- * the provider workspace with the account's key, from the desktop the person is
+ * the account's cloud machines, from the desktop the person is
  * using, never to the box's own brain. So none of it takes a pin, and an
  * action works the same whichever machine a project tab is bound to.
  */
@@ -101,7 +101,6 @@ function toCloudMachine(
     idleHourlyUsd: resources ? cloudIdleHourlyUsd(resources) : null,
     // A box absent from a usage read has spent nothing billed yet.
     spentUsd,
-    spentSinceMs: usage ? (spentIsLifetime ? createdAtMs : windowStartMs) : null,
     spentIsLifetime,
     pastDue: instance.pastDue,
     failure: instance.status === "failed" ? instance.statusReason?.message ?? null : null,
@@ -141,7 +140,7 @@ function monthStartMs(nowMs: number): number {
 /**
  * This month per listed machine (spent, and what sleeping saved it since the
  * month or its creation, whichever is later), and what machines no longer in
- * the workspace spent this month: the provider's usage keeps a deleted machine's
+ * the account spent this month: the provider's usage keeps a deleted machine's
  * id, its list does not.
  */
 function cloudMonthSpend(
@@ -195,8 +194,6 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
   let usageCache: { at: number; usage: CloudUsage } | null = null;
   /** The ADE machines the last good list showed as cloud boxes: only those are worth a wake lookup. */
   let knownMachineKeys = new Set<string>();
-  // Bumped by a key change, so a read under the old key can't refill the cache.
-  let usageGeneration = 0;
 
   let monthUsageCache: { at: number; month: number; usage: CloudUsage } | null = null;
   /** This UTC month's usage, for the per-machine month figures. Cached like the 90-day read. */
@@ -204,10 +201,9 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     const at = now();
     const month = monthStartMs(at);
     if (monthUsageCache && monthUsageCache.month === month && at - monthUsageCache.at < USAGE_CACHE_MS) return monthUsageCache.usage;
-    const generation = usageGeneration;
     try {
       const usage = await client.usage({ from: cloudUsageDay(month) });
-      if (generation === usageGeneration) monthUsageCache = { at, month, usage };
+      monthUsageCache = { at, month, usage };
       return usage;
     } catch (error) {
       logger.warn?.("cloud.month_usage_read_failed", { error: errorText(error) });
@@ -218,10 +214,9 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
   async function readUsage(client: CloudProvider): Promise<CloudUsage | null> {
     const at = now();
     if (usageCache && at - usageCache.at < USAGE_CACHE_MS) return usageCache.usage;
-    const generation = usageGeneration;
     try {
       const usage = await client.usage({ from: cloudUsageDay(at - (USAGE_WINDOW_DAYS - 1) * DAY_MS) });
-      if (generation === usageGeneration) usageCache = { at, usage };
+      usageCache = { at, usage };
       return usage;
     } catch (error) {
       // The boxes still show without their spend.
@@ -231,7 +226,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
   }
 
   /**
-   * Every box in the workspace, ADE's own and the rest: the list shows a box
+   * Every box on the account, ADE's own and the rest: the list shows a box
    * ADE made, and any other one whose ADE row it matches (signed in by hand).
    */
   async function list(): Promise<CloudMachinesResult> {
@@ -243,7 +238,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     } catch (error) {
       const refused = error instanceof CloudProviderError && error.code === CLOUD_ACCESS_REFUSED;
       logger.warn?.("cloud.machines_read_failed", { error: errorText(error), refused });
-      return emptyResult(refused ? "key_refused" : "unreachable", errorText(error));
+      return emptyResult(refused ? "access_refused" : "unreachable", errorText(error));
     }
     const [usage, monthUsage, budget] = await Promise.all([readUsage(client), readMonthUsage(client), readBudget()]);
     const at = now();
@@ -431,12 +426,6 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     spending: async () => {
       const client = await deps.client();
       return client ? await spending(client) : null;
-    },
-    /** Forgets the spend read with the last key; a new key may be another workspace. */
-    resetUsage: () => {
-      usageCache = null;
-      monthUsageCache = null;
-      usageGeneration += 1;
     },
   };
 }

@@ -16,7 +16,6 @@ function box(instanceId: string, machineKey: string | null): CloudMachine {
     runningHourlyUsd: 0.008,
     idleHourlyUsd: 0.001,
     spentUsd: null,
-    spentSinceMs: null,
     spentIsLifetime: false,
     pastDue: false,
     failure: null,

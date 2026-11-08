@@ -362,7 +362,7 @@
 .ade-cx-reach { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1; min-width: 0; }
 .ade-cx-reach-label { font-size: 11.5px; color: var(--kit-text-3, rgba(255, 255, 255, 0.55)); }
 
-/* ── the provider group ──────────────────────────────────────────────────────
+/* ── ADE Cloud group ──────────────────────────────────────────────────────
    The boxes on the account's ADE Cloud workspace: a head with the group's
    spend, a fact line on each card, and the resize picker. */
 .ade-cx-cloud-head-facts {

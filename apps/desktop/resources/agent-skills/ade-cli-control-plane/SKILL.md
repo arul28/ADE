@@ -52,8 +52,8 @@ something) are the **ade-webhooks** skill. Full detail:
 
 GitHub, Linear and Jira are ADE integrations: ADE holds the credential, and
 you use them through `ade prs`, `ade github`, `ade linear` and `ade jira`.
-ADE Cloud machines are not an integration: use `ade cloud` (the `ade-cloud`
-skill). Never ask for a key in chat. Check, then ask with the connect card:
+ADE Cloud machines aren't connected with `ade integrations`: use `ade cloud`
+(the `ade-cloud` skill). Never ask for a key in chat. Check, then ask with the connect card:
 
 ```
 ade integrations status --text

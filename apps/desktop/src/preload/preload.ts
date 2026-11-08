@@ -80,7 +80,7 @@ import { machineNameForBinding } from "../shared/machineIdentity";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
-import type { CloudBudget, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus, CloudWakeForUseResult } from "../shared/adeCloud";
+import type { CloudBudget, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
 import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import {
@@ -13056,9 +13056,7 @@ const adeBridge = {
     reconnectMachine: (args: { requestId: string; instanceId: string }): Promise<{ started: boolean }> =>
       ipcRenderer.invoke(IPC.cloudReconnectMachine, args),
     setBudget: (budget: Partial<CloudBudget>): Promise<CloudBudget | null> => ipcRenderer.invoke(IPC.cloudSetBudget, { budget }),
-    wakeMachine: (machine: { machineKey: string; hostname?: string | null }): Promise<CloudWakeForUseResult | null> =>
-      ipcRenderer.invoke(IPC.cloudWakeMachine, machine),
-    /** The key was saved or removed in this app; read the status again. */
+    /** ADE Cloud's status changed; read it again. */
     onStatusChanged: (cb: () => void): (() => void) => {
       const listener = () => cb();
       ipcRenderer.on(IPC.cloudStatusChanged, listener);
