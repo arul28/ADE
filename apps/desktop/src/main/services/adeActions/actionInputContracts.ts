@@ -1151,9 +1151,10 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     createDevice: {
       description:
-        "Make a new AVD for the lane from a hardware profile and hold it. Boots it unless start is false. systemImage defaults to the newest installed image for the host ABI.",
-      input: "object { laneId: string, profileId: string, systemImage?: string, displayName?: string, start?: boolean }",
-      example: "ade android device-create --profile medium_phone --json",
+        "Make a new AVD for the lane from a hardware profile and hold it. Boots it unless start is false. systemImage defaults to the newest installed image for the host ABI. "
+        + "extra true makes it one of the lane's extra devices beside its own (at most 2 by default, ANDROID_EXTRA_DEVICE_LIMIT past that): the lane keeps its device, and the extra is reached with device on start, stop, releaseDevice, installApp and launchApp.",
+      input: "object { laneId: string, profileId: string, catalogId?: string, colorId?: string, systemImage?: string, displayName?: string, start?: boolean, extra?: boolean }",
+      example: "ade android device-create --catalog pixel-10 --extra --json",
     },
     attachDevice: {
       description: "Hold an existing AVD (one no other lane holds) for the lane. Boots it unless start is false.",
@@ -1161,13 +1162,17 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade android device-attach --avd Pixel_9_API_36 --json",
     },
     start: {
-      description: "Boot the lane's AVD and wait until Android reports boot completed. No-op when it is already booted. Refused with ANDROID_LOW_MEMORY when the machine is under memory pressure, swapping, or its emulators would pass half of its memory; force boots anyway.",
-      input: "object { laneId: string, force?: boolean }",
+      description: "Boot the lane's AVD and wait until Android reports boot completed. No-op when it is already booted. "
+        + "Refused with ANDROID_LOW_MEMORY when the machine is under memory pressure, swapping, or its emulators would pass half of its memory; force boots anyway. "
+        + "When adb refuses the device (ANDROID_ADB_UNAUTHORIZED), ADE restarts the adb server itself if no other device uses it; restartAdb restarts it even then, "
+        + "and only the person may ask for that (an agent's restartAdb is refused): an agent asks the person to press \"Restart adb and start\" in the Android pane, or to run ade android start --restart-adb in a terminal on that machine. "
+        + "device names one of the lane's extra devices to boot beside the lane's device instead (the same memory guard).",
+      input: "object { laneId: string, force?: boolean, restartAdb?: boolean, device?: string }",
       example: "ade android start --json",
     },
     stop: {
-      description: "Stop the lane's emulator, if ADE started it. The lane keeps its AVD.",
-      input: "object { laneId: string }",
+      description: "Stop the lane's emulator, if ADE started it. The lane keeps its AVD. device names one of the lane's extra devices to stop instead.",
+      input: "object { laneId: string, device?: string }",
       example: "ade android stop --json",
     },
     setKeepRunning: {
@@ -1177,9 +1182,18 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     releaseDevice: {
       description:
-        "Stop the lane's emulator and let the AVD go. An AVD ADE made for the lane is deleted unless deleteCreated is false; the user's own AVD is never deleted.",
-      input: "object { laneId: string, deleteCreated?: boolean }",
+        "Stop the lane's emulator and let the AVD go. An AVD ADE made for the lane is deleted unless deleteCreated is false; the user's own AVD is never deleted. "
+        + "device names one of the lane's extra devices: that one goes, and the lane keeps its own device. Without device, the extras stay.",
+      input: "object { laneId: string, deleteCreated?: boolean, device?: string }",
       example: "ade android device-detach --json",
+    },
+    devicePromote: {
+      description:
+        "Make one of the lane's extra devices the lane's own device (the one that streams, records, runs tests and takes installs by default). "
+        + "The old device is kept: one ADE made becomes an extra (its emulator keeps running), the user's own AVD is released to them. "
+        + "Refused with ANDROID_LANE_DEVICE_BUSY while the old device starts or stops, streams to a viewer, records, runs tests, installs or launches an app, or another holder has the lane's lease.",
+      input: "object { laneId: string, device: string }",
+      example: "ade android device-promote --device ade_1234abcd_pixel_10 --json",
     },
     getStreamStatus: {
       description: "Read the lane's live-view stream: running, backend and frame rate. The transport (URL and token) is always null here.",
@@ -1264,8 +1278,8 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade android apps --json",
     },
     installApp: {
-      description: "Install an app on the lane's emulator: an APK inside the lane's folder, or the project's Gradle build (gradlew :<module>:install<Variant>, module app and variant debug by default). ADE remembers the package, so a lane release can remove it.",
-      input: "object { laneId: string, apkPath?: string, gradle?: { module?: string, variant?: string } }",
+      description: "Install an app on the lane's emulator: an APK inside the lane's folder, or the project's Gradle build (gradlew :<module>:install<Variant>, module app and variant debug by default). ADE remembers the package, so a lane release can remove it. device names one of the lane's extra devices to install on instead (booted first when off).",
+      input: "object { laneId: string, apkPath?: string, gradle?: { module?: string, variant?: string }, device?: string }",
       example: "ade android install --gradle --module app --variant debug --json",
     },
     runInstrumentationTests: {
@@ -1274,8 +1288,8 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade android test --class com.example.LoginTest --json",
     },
     launchApp: {
-      description: "Start an app's launcher activity (or the named one) and wait for it to draw. With apkPath or gradle it installs first.",
-      input: "object { laneId: string, packageName?: string, activity?: string, apkPath?: string, gradle?: { module?, variant? }, arguments?: string[], extras?: Array<{ key, type: \"string\" | \"int\" | \"long\" | \"float\" | \"bool\", value }> }",
+      description: "Start an app's launcher activity (or the named one) and wait for it to draw. With apkPath or gradle it installs first. device names one of the lane's extra devices to install and start on (booted first when off, through the RAM guard).",
+      input: "object { laneId: string, packageName?: string, activity?: string, apkPath?: string, gradle?: { module?, variant? }, device?: string, arguments?: string[], extras?: Array<{ key, type: \"string\" | \"int\" | \"long\" | \"float\" | \"bool\", value }> }",
       example: "ade android launch --package com.example.app --json",
     },
     terminateApp: {

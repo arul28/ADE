@@ -1436,12 +1436,33 @@ place), `tests_run` (an instrumentation test run ran at least one test,
 passed or failed), `device_folded` (a fold of a foldable AVD that the
 emulator settled), `previews_rendered` (a Compose preview render wrote at
 least one image), `store_screenshots` (a Play Store screenshot set was
-taken: the cover and inner screens of a foldable, else one screen), or
+taken: the cover and inner screens of a foldable, else one screen),
 `emulator_auto_stopped` (ADE stopped an emulator by itself: nobody used it
 for the one Android idle limit, or the brain that started it was gone and no
-brain adopted it). A failed, refused
-or no-op call emits nothing; the guard's own refusal is not an event (it is
-the `android.start_low_memory` log line, with the reason and the numbers).
+brain adopted it), `device_booted` (a start booted the lane's emulator), `boot_failed` (a start
+did not boot it: a timeout, an exit, or an adb refusal), `adb_restarted`
+(the adb server refused the device as `unauthorized`, and ADE restarted the
+server so the boot could go on), `extra_device_created` (a lane made an extra
+device beside its own with `ade android device-create --extra`, Apple's
+spelling), or `device_promoted` (one of a lane's extra devices became its
+device, from `ade android device-promote` or the picker; a promote of the
+device the lane already holds is not one). A boot of an extra device counts
+under `device_booted` and `boot_failed` as the lane device's does. Apart from
+`boot_failed`, a failed, refused or no-op call emits nothing; the guard's own
+refusal is not an event (it is the `android.start_low_memory` log line, with
+the reason and the numbers), and a promote refused as busy is not one either.
+A boot that fails with an unexpected code is one Sentry issue per code
+(`["android", "boot_failed", <code>]`; tags `area`, `code`, and `extra` for
+an extra device). The brain reports it only for an agent's call over RPC (one
+that names its chat: a start, or a create, attach or install that boots); the
+desktop's IPC capture (`main/sentry/ipcCapture.ts`) reports the desktop's own
+calls once, since no "already reported" mark crosses the runtime boundary. A
+boot from a person's own terminal is no Sentry issue; `boot_failed` and the
+`android.emulator_start_failed` line still count it. `ANDROID_ADB_UNAUTHORIZED` is an expected
+(`environment`) answer and never an issue. `android.adb_devices_failed`
+(warn, once per boot, with the AVD name and the error) says that `adb devices`
+did not answer during a boot wait; the refusal clock does not move on such a
+read.
 Android has one idle policy: the brain's machine-wide sweep
 (`androidEmulatorSweep.ts`) stops an unpinned emulator ADE started that
 nothing used for `ADE_ANDROID_IDLE_POWER_OFF_MINUTES` (or its other name
@@ -1449,7 +1470,8 @@ nothing used for `ADE_ANDROID_IDLE_POWER_OFF_MINUTES` (or its other name
 is any lane call but the status reads, a stream someone holds, a recording, a
 lease, and, checked just before the stop, input on the device itself or
 another scrcpy viewer (`android.idle_stop_skipped`, with `device_input` or
-`other_viewer`). The cleanup pass (`androidLaneMaintenance.ts`) runs no idle
+`other_viewer`, and `extra` for one of a lane's extra devices, whose own boot
+or install also counts as use). The cleanup pass (`androidLaneMaintenance.ts`) runs no idle
 timer of its own; it records the stop for the lane's status (`poweredOff`).
 Every emulator stop also writes the operational log line
 `android.emulator_stopped` with its reason (`user`, `released`,
@@ -1462,8 +1484,8 @@ finer crosses: no SDK path, AVD, package, APK, angle, lane, chat, machine,
 memory size, image, test class, test count, module, or preview name. A hinge
 drag sends one fold when it is released, never per frame. A per-outcome
 `work_android_device:<outcome>` key with a 24-hour minimum interval bounds this
-to at most twelve accepted events per installation per UTC day, inside the same
-`ade_feature_used` limits; no ceiling was raised. The dashboard spec is
+to at most seventeen accepted events per installation per UTC day (one per
+outcome), inside the same `ade_feature_used` limits; no ceiling was raised. The dashboard spec is
 untouched.
 
 Whether agents use the user's own browser records the same `ade_feature_used`

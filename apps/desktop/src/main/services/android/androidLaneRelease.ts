@@ -6,10 +6,14 @@ import { deleteAdeAndroidAvd, readAndroidAvd, sameAvdName } from "./androidAvds"
 import {
   forgetLaneAndroidDevice,
   forgetLaneAndroidDevices,
+  forgetLaneAndroidExtra,
   laneHoldingAndroidAvd,
   moveLaneAndroidDevice,
+  moveLaneAndroidExtras,
   readLaneAndroidDevice,
+  readLaneAndroidExtras,
   writeLaneAndroidDevice,
+  writeLaneAndroidExtra,
   type AndroidLaneDeviceStore,
 } from "./androidLaneDeviceStore";
 import { androidDiscoveryDirs, readAndroidDiscoveryFiles } from "./androidEmulatorProcess";
@@ -17,7 +21,9 @@ import { androidAvdHome, type AndroidEnv } from "./androidSdk";
 
 /*
  * A lane giving up its AVD on disk: delete the AVD ADE made for it; the
- * user's own AVD stays as it is. Then the lane's row goes.
+ * user's own AVD stays as it is. Then the lane's row goes. The lane's extra
+ * devices (`releaseAndroidLaneExtras`) are ADE's, so each is deleted the
+ * same way when the lane ends.
  *
  * Needs no emulator service: lane archive and delete call it from
  * `laneService` on a host that never built one (a CLI brain with no project
@@ -35,10 +41,18 @@ export type AndroidLaneDeviceRepo = {
   forget: (laneId: string, avdName: string) => void;
   /** Drops the lane's row, whatever AVD it names. */
   forgetLane: (laneId: string) => void;
-  /** Hands one lane's row to another lane (a lane merge). */
+  /** Hands one lane's row to another lane (a lane merge). Its extras move with `moveExtras`. */
   moveLane: (fromLaneId: string, toLaneId: string) => void;
-  /** The lane holding this AVD, other than `exceptLaneId`. */
+  /** The lane holding this AVD as its own device or as an extra, other than `exceptLaneId`. */
   holder: (avdName: string, exceptLaneId?: string | null) => string | null;
+  /** The lane's extra devices, oldest first; every lane's when `laneId` is null. */
+  extras: (laneId: string | null) => AndroidLaneDevice[];
+  /** Binds an AVD to the lane as one of its extra devices. */
+  setExtra: (device: AndroidLaneDevice) => void;
+  /** Drops one extra row, only while the lane still holds that AVD as an extra. */
+  forgetExtra: (laneId: string, avdName: string) => void;
+  /** Hands every extra of one lane to another lane (a lane merge). */
+  moveExtras: (fromLaneId: string, toLaneId: string) => void;
   /** Every row, for the start-up reconcile. Absent = no reconcile of rows. */
   list?: () => AndroidLaneDevice[];
   /**
@@ -61,6 +75,10 @@ export function sqlAndroidLaneDeviceRepo(store: AndroidLaneDeviceSqlStore): Andr
     forgetLane: (laneId) => forgetLaneAndroidDevices(store, laneId),
     moveLane: (fromLaneId, toLaneId) => moveLaneAndroidDevice(store, fromLaneId, toLaneId),
     holder: (avdName, exceptLaneId = null) => laneHoldingAndroidAvd(store, avdName, exceptLaneId),
+    extras: (laneId) => readLaneAndroidExtras(store, laneId),
+    setExtra: (device) => writeLaneAndroidExtra(store, device),
+    forgetExtra: (laneId, avdName) => forgetLaneAndroidExtra(store, laneId, avdName),
+    moveExtras: (fromLaneId, toLaneId) => moveLaneAndroidExtras(store, fromLaneId, toLaneId),
     list: () => store
       .all<{ lane_id: string }>("select lane_id from lane_android_devices")
       .map((row) => readLaneAndroidDevice(store, row.lane_id))
@@ -162,6 +180,37 @@ export async function releaseAndroidLaneDevice(
   if (!result.ended) return { released: false, deletedAvd: null, reason: result.reason };
   repo.forget(laneId, device.avdName);
   return { released: true, deletedAvd: result.deletedAvd, reason: result.reason };
+}
+
+/**
+ * Releases the lane's extra devices: each one ADE made is deleted on disk,
+ * then its row goes. A running extra keeps its row, so the lane still owns it
+ * and a later pass (the cleanup, the next brain's reconcile) can finish the
+ * job. Never stops an emulator: the service stops the lane's extras first.
+ */
+export async function releaseAndroidLaneExtras(
+  laneId: string,
+  repo: AndroidLaneDeviceRepo,
+  options: AndroidDiskEnv & { deleteCreated?: boolean; avdName?: string | null } = {},
+): Promise<{ released: string[]; deleted: string[]; kept: Array<{ avdName: string; reason: string }> }> {
+  const out = { released: [] as string[], deleted: [] as string[], kept: [] as Array<{ avdName: string; reason: string }> };
+  const wanted = options.avdName?.trim() || null;
+  for (const extra of repo.extras(laneId)) {
+    if (wanted && !sameAvdName(extra.avdName, wanted)) continue;
+    const result = await endAndroidLaneDeviceOnDisk(extra, {
+      ...options,
+      anotherLaneHolds: () => repo.holder(extra.avdName, laneId) !== null,
+    });
+    if (!result.ended) {
+      out.kept.push({ avdName: extra.avdName, reason: result.reason ?? `${extra.avdName} could not be released.` });
+      continue;
+    }
+    repo.forgetExtra(laneId, extra.avdName);
+    out.released.push(extra.avdName);
+    if (result.deletedAvd) out.deleted.push(result.deletedAvd);
+    if (result.reason) out.kept.push({ avdName: extra.avdName, reason: result.reason });
+  }
+  return out;
 }
 
 /**

@@ -6939,23 +6939,26 @@ describe("adeRpcServer", () => {
   describe("android_emulator for agent callers", () => {
     // `source: "user"` skips auto-record and draws the input as the person's,
     // so only the brain sets it; an agent's own lane and chat are the brain's too.
+    // `restartAdb` drops every device's adb connection: an agent's ask is
+    // refused; the person's own terminal (an ade process with no chat) may ask.
     it.each([
-      ["a bound agent, pinned to its chat's lane", { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" }, "lane-2", false, "chat-a"],
-      ["an ade process with no chat, placed by its worktree", { callerId: "ade-rpc-stdio-proxy:77355", role: "agent" }, "lane-1", true, undefined],
-    ])("drops the forged caller fields of %s", async (_label, identity, ownLane, fromWorktree, ownChat) => {
+      ["a bound agent, pinned to its chat's lane", { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" }, "lane-2", false, "chat-a", undefined],
+      ["an ade process with no chat, placed by its worktree", { callerId: "ade-rpc-stdio-proxy:77355", role: "agent" }, "lane-1", true, undefined, true],
+    ])("drops the forged caller fields of %s", async (_label, identity, ownLane, fromWorktree, ownChat, restartAdb) => {
       const fixture = createRuntime();
       fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
         sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-2" } : null
       ));
       const tap = vi.fn(async (args: unknown) => args);
-      fixture.runtime.androidEmulatorService = { tap };
+      const start = vi.fn(async (args: unknown) => args);
+      fixture.runtime.androidEmulatorService = { tap, start };
       const lane1Root = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
       fs.mkdirSync(lane1Root, { recursive: true });
       const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
       await initialize(handler, identity, {});
-      const call = (args: Record<string, unknown>) => callTool(handler, "run_ade_action", {
+      const call = (args: Record<string, unknown>, action = "tap") => callTool(handler, "run_ade_action", {
         domain: "android_emulator",
-        action: "tap",
+        action,
         args,
         ...(fromWorktree ? { callerRoot: lane1Root } : {}),
       });
@@ -6968,6 +6971,16 @@ describe("adeRpcServer", () => {
       expect(forwarded.source).toBeUndefined();
       expect(forwarded.agentCaller).toBeUndefined();
       expect(forwarded.chatSessionId).toBe(ownChat);
+
+      // An agent's adb restart is refused, never dropped in silence.
+      const started = await call({ restartAdb: true }, "start");
+      expect(started?.isError).toBe(restartAdb ? undefined : true);
+      expect(start).toHaveBeenCalledTimes(restartAdb ? 1 : 0);
+      // The string spelling the Android domain also reads as yes.
+      const startedAsText = await call({ restartAdb: "true" }, "start");
+      expect(startedAsText?.isError).toBe(restartAdb ? undefined : true);
+      expect(start).toHaveBeenCalledTimes(restartAdb ? 2 : 0);
+      if (restartAdb) expect((start.mock.calls.at(-1)?.[0] as Record<string, unknown>).restartAdb).toBe(true);
 
       const refused = await call({ x: 1, y: 1, laneId: "lane-3" });
       expect(refused?.isError).toBe(true);

@@ -151,6 +151,8 @@ export type AndroidToolsPreloadAction =
   | "clearLocation"
   | "storeScreenshots"
   | "windowLayout"
+  // Extra devices: the picker makes one of the lane's extras its device.
+  | "devicePromote"
   // The rail's "Keep running".
   | "setKeepRunning";
 

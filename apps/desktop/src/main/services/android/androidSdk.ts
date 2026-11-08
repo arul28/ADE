@@ -207,6 +207,17 @@ export function androidAvdHome(env: AndroidEnv = process.env, home = os.homedir(
   return explicit ? path.resolve(explicit) : path.join(androidUserHome(env, home), "avd");
 }
 
+/** The AVD folder when it can be read now; null keeps a cleanup from forgetting rows on an unmounted drive. */
+export function readableAndroidAvdHome(env: AndroidEnv = process.env, home = os.homedir()): string | null {
+  const avdHome = androidAvdHome(env, home);
+  try {
+    fs.readdirSync(avdHome);
+    return avdHome;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The only system-image ABI this host runs at full speed: Apple Silicon (HVF)
  * runs only `arm64-v8a`, every x86 host runs `x86_64`.

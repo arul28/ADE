@@ -158,7 +158,12 @@ import { createLaneBranchNaming } from "./laneBranchNaming";
 import { appleLaneDerivedDataPath, endLaneDeviceOnDisk, releaseLaneAppleDevice } from "../ios/laneDeviceRelease";
 import { anotherLaneHoldsUdid, readLaneAppleDeviceRecord } from "../ios/laneDeviceRows";
 import { bareSimulatorPowerOff } from "../ios/simulatorPower";
-import { releaseAndroidLaneDevice, settleMergedAndroidDevice, sqlAndroidLaneDeviceRepo } from "../android/androidLaneRelease";
+import {
+  releaseAndroidLaneDevice,
+  releaseAndroidLaneExtras,
+  settleMergedAndroidDevice,
+  sqlAndroidLaneDeviceRepo,
+} from "../android/androidLaneRelease";
 
 /** `simctl` for the Apple-device half of a lane delete. Nothing else shells out here. */
 const execFileAsync = promisify(execFileCallback);
@@ -3468,6 +3473,9 @@ export function createLaneService({
     } else if (duplicateAndroid) {
       androidRepo.moveLane(duplicateId, keeperId);
     }
+    // Android extra devices are keyed by AVD name, as Apple's by udid: the
+    // keeper takes all of them.
+    androidRepo.moveExtras(duplicateId, keeperId);
     // Extra devices (`device-create --extra`) are keyed by udid, so the
     // keeper takes all of them; left behind, the cleanup pass would delete
     // them as belonging to an ended lane.
@@ -5307,12 +5315,25 @@ export function createLaneService({
    * stops an emulator, and a running AVD is kept with its row.
    */
   const releaseAndroidSideOfLane = (laneId: string): void => {
-    void releaseAndroidLaneDevice(laneId, sqlAndroidLaneDeviceRepo(db), { logger })
+    const repo = sqlAndroidLaneDeviceRepo(db);
+    void releaseAndroidLaneDevice(laneId, repo, { logger })
       .then((result) => {
         if (result.reason) logger.info("lane.android_release_note", { laneId, reason: result.reason });
       })
       .catch((error: unknown) => {
         logger.warn("lane.android_release_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    // The lane's extra devices are ADE's: each one is deleted too. A running
+    // one keeps its row, and the cleanup pass ends it later.
+    void releaseAndroidLaneExtras(laneId, repo, { logger })
+      .then((result) => {
+        if (result.kept.length) logger.info("lane.android_extras_kept", { laneId, kept: result.kept });
+      })
+      .catch((error: unknown) => {
+        logger.warn("lane.android_extras_release_failed", {
           laneId,
           error: error instanceof Error ? error.message : String(error),
         });

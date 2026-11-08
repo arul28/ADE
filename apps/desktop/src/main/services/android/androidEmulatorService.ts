@@ -1,11 +1,10 @@
-import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type {
-  AndroidAvd,
   AndroidEmulatorEvent,
   AndroidEmulatorServiceApi,
   AndroidEmulatorStatus,
+  AndroidLaneDevice,
   AndroidLaneDeviceStatus,
   AndroidRunningEmulator,
   AndroidSdkStatus,
@@ -14,7 +13,7 @@ import { getErrorMessage, sleep } from "../shared/utils";
 import { agent37AndroidNeedsVmMessage, agent37ShapeForResources } from "../../../shared/agent37";
 import { listAndroidAvds, readAdeAvdLaneId, readAndroidAvd, sameAvdName } from "./androidAvds";
 import { createAndroidInspect } from "./androidInspect";
-import { createAndroidLaneMaintenance, readDeviceIdleMs, readOtherScrcpyViewer } from "./androidLaneMaintenance";
+import { createAndroidLaneMaintenance, readUseOnDevice } from "./androidLaneMaintenance";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 import {
   androidDiscoveryDirs,
@@ -30,7 +29,17 @@ import { wrapAndroidInput } from "./androidAutoRecord";
 import { createAndroidCrashWatch } from "./androidCrashWatch";
 import { createAndroidLaneStreams } from "./androidLaneStreams";
 import { createAndroidEmulatorLifecycle } from "./androidEmulatorLifecycle";
-import { openStartedEmulators, reconcileStartedEmulators, stopAdeStartedEmulators } from "./androidHandedOffEmulators";
+import { createAndroidDevicePromote } from "./androidDevicePromote";
+import { createAndroidLaneRows } from "./androidLaneRows";
+import { createAndroidDeviceRouter } from "./androidDeviceRouter";
+import { createAndroidLaneStatus } from "./androidLaneStatus";
+import { androidLaneExtraLimit, createAndroidLaneExtras } from "./androidLaneExtras";
+import {
+  openStartedEmulators,
+  reconcileStartedEmulators,
+  stopAdeStartedEmulators,
+  STARTED_EXTRA_EMULATORS_FILE,
+} from "./androidHandedOffEmulators";
 import { createAndroidEmulatorUse } from "./androidEmulatorUse";
 import type { AppleStreamOwningService } from "../ios/appleStreamRelayForService";
 import { takeAndroidScreenshot } from "./androidScreenshot";
@@ -42,6 +51,7 @@ import {
   androidSdkPaths,
   locateAndroidSdk,
   readAndroidSdkStatus,
+  readableAndroidAvdHome,
   requireAndroidSdkTools,
   type ReadyAndroidSdk,
 } from "./androidSdk";
@@ -54,7 +64,7 @@ import { createAndroidMachinePreferenceStore, createAndroidSettingsFile } from "
 import { createDemoEngineSet } from "../demoVideo/demoEngines";
 import { NOOP_LOGGER } from "../logging/machineLogger";
 import { isRemoteWorkLaneId } from "../remoteWork/remoteWorkCopyService";
-import { createAndroidLaneScope } from "./androidWorkCopy";
+import { createAndroidLaneScope, watchAndroidWorkCopyDevices } from "./androidWorkCopy";
 import type { AndroidEmulatorServiceDeps, AndroidLaneState as LaneState } from "./androidEmulatorServiceDeps";
 
 /** The project-removal stop moved with the state file; the CLI keeps importing it from here. */
@@ -65,9 +75,11 @@ export { stopHandedOffAndroidEmulators } from "./androidHandedOffEmulators";
  * (SDK, AVDs, the emulator process, the scrcpy stream).
  *
  * Rules it keeps:
- * - A lane holds at most one AVD, and an AVD belongs to at most one lane.
- * - ADE stops only emulators it started. Who started what is kept in a small
- *   state file under the ADE data folder, so it survives a brain restart.
+ * - A lane holds one AVD as its own device, and may hold extra devices beside
+ *   it (`androidLaneExtras.ts`). An AVD belongs to at most one lane.
+ * - ADE stops only emulators it started. Who started what is kept in small
+ *   state files under the ADE data folder (one for the lanes' own devices,
+ *   one for their extras), so it survives a brain restart.
  * - Lifecycle calls on one lane run one at a time, except a stop during a
  *   start: it ends the boot at once instead of waiting behind it.
  * - The SDK is read on every use (phase A caches the slow part), never only
@@ -98,6 +110,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   const now = deps.now ?? (() => new Date());
   /** One warning per kind of failure: the file is read on every call. */
   const registry = openStartedEmulators(deps.dataDir, logger);
+  /** The extras' own file: an older ADE on the same project reads only the one above. */
+  const extraRegistry = openStartedEmulators(deps.dataDir, logger, STARTED_EXTRA_EMULATORS_FILE);
   const streams = deps.streamHub ?? createAndroidStreamHub();
   const releaseStreams = streams.retain();
   const listeners = new Set<(event: AndroidEmulatorEvent) => void>();
@@ -121,7 +135,9 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   const emit = (event: AndroidEmulatorEvent) => {
     // A device came or went: the idle and cleanup timers run only while there is one.
-    if (event.type === "android.device.state" || event.type === "android.inventory.changed") refreshMaintenance();
+    if (event.type === "android.device.state" || event.type === "android.extra.state" || event.type === "android.inventory.changed") {
+      refreshMaintenance();
+    }
     try {
       deps.onEvent?.(event);
     } catch (error) {
@@ -164,12 +180,22 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     return state;
   };
 
-  /** Runs one lifecycle step after every earlier step on the lane has settled. */
+  /** Runs one lifecycle step after every earlier step on the lane (or on one extra's key) has settled. */
   const serialize = <T>(key: string, step: () => Promise<T>): Promise<T> => {
     const state = laneState(key);
     const run = state.queue.then(step, step);
     state.queue = run.catch(() => undefined);
     return run;
+  };
+
+  /** An extra that went (released or promoted): its queue entry goes once no step waits on it, so `lanes` does not grow. */
+  const forgetQueue = (key: string): void => {
+    const state = lanes.get(key);
+    if (!state) return;
+    const tail = state.queue;
+    void tail.then(() => {
+      if (lanes.get(key) === state && state.queue === tail) lanes.delete(key);
+    });
   };
 
   const assertLive = () => {
@@ -228,10 +254,13 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   };
 
   const ownsEmulator = (emulator: AndroidDiscoveredEmulator): boolean => {
-    if (registry.owns(emulator)) return true;
+    if (registry.owns(emulator) || extraRegistry.owns(emulator)) return true;
     for (const state of lanes.values()) {
       const launch = state.launch;
       if (launch && launch.consolePort === emulator.consolePort && sameAvdName(launch.avdName, emulator.avdName)) return true;
+    }
+    for (const launch of extras.launches()) {
+      if (launch.consolePort === emulator.consolePort && sameAvdName(launch.avdName, emulator.avdName)) return true;
     }
     return false;
   };
@@ -247,39 +276,18 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   /* ---------- lane status ---------- */
 
-  const laneStatus = async (laneId: string, sdk?: AndroidSdkStatus | null): Promise<AndroidLaneDeviceStatus> => {
-    const state = lanes.get(laneId) ?? null;
-    const device = deps.laneDevices.get(laneId);
-    const error = state?.error ?? null;
-    if (!device) return { laneId, device: null, avd: null, state: state?.transient ?? "none", error };
-    const sdkStatus = sdk ?? await readSdk();
-    const adbPath = sdkStatus.root ? androidSdkPaths(sdkStatus.root, platform).adb : null;
-    const emulator = runningFor(device.avdName);
-    // A lane that is still booting is not asked for `sys.boot_completed`: the
-    // boot wait already asks, and the answer is "starting" either way.
-    const running = emulator
-      ? state?.transient === "starting"
-        ? { ...emulator, startedByAde: true, booted: false }
-        : await asRunning(adbPath, emulator)
-      : null;
-    const avd = sdkStatus.avdHome ? readAndroidAvd(sdkStatus.avdHome, device.avdName, { running: running ? [running] : [] }) : null;
-    const avdWithRunning: AndroidAvd | null = avd ? { ...avd, running } : null;
-    const derived: AndroidLaneDeviceStatus["state"] = state?.transient
-      ?? (running ? (running.booted ? "booted" : "starting") : error ? "crashed" : "off");
-    // A booted emulator is watched for crashes of the lane's app, once.
-    if (derived === "booted" && running && adbPath) crashWatch.ensure(laneId, { serial: running.serial, adbPath });
-    return {
-      laneId,
-      device,
-      avd: avdWithRunning,
-      state: derived,
-      error: derived === "crashed" || derived === "off" ? error : null,
-      appCrash: derived === "booted" ? crashWatch.latest(laneId) : null,
-      ...use.laneStatusFields(device.avdName, running?.startedByAde ?? null),
-      // Parity: "ADE powered it off after 21 min idle", until the next start.
-      poweredOff: derived === "off" ? maintenance.poweredOffRecord(laneId) : null,
-    };
-  };
+  const laneStatus = createAndroidLaneStatus({
+    laneDevices: deps.laneDevices,
+    platform,
+    peekLane: (laneId) => lanes.get(laneId),
+    readSdk: () => readSdk(),
+    runningFor,
+    asRunning,
+    crashWatch,
+    laneStatusFields: (avdName, startedByAde) => use.laneStatusFields(avdName, startedByAde),
+    poweredOffRecord: (laneId) => maintenance.poweredOffRecord(laneId),
+    extraStatuses: (laneId, sdk) => extras.statuses(laneId, sdk),
+  });
 
   /** P1 look: `ade android render`, drawn by a desktop window (`androidRender.ts`). */
   const renders = createAndroidRenderBroker({
@@ -317,12 +325,13 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   /* ---------- start and stop (`androidEmulatorLifecycle.ts`) ---------- */
 
-  const { stopEmulator, abortBoot, stopLocked, startLocked } = createAndroidEmulatorLifecycle({
+  const { stopEmulator, abortBoot, interruptBoot, stopLocked, startLocked, adoptLaunch, slots } = createAndroidEmulatorLifecycle({
     deps,
     env,
     platform,
     logger,
     registry,
+    extraRegistry,
     discoveryDirs,
     bootedSeen,
     machineLifecycle: lifecycle,
@@ -345,6 +354,31 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   /** The one orphan stop: an emulator ADE started that no lane holds (the start-up reconcile and the cleanup pass). */
   const stopOrphan = (emulator: AndroidDiscoveredEmulator, adbPath: string) => stopEmulator(emulator, adbPath, "orphan", null);
+
+  /* ---------- extra devices (`androidLaneExtras.ts`) ---------- */
+
+  const extras = createAndroidLaneExtras({
+    deps,
+    env,
+    platform,
+    logger,
+    extraRegistry,
+    discoveryDirs,
+    home,
+    slots,
+    emit,
+    runningFor,
+    asRunning,
+    bootedNow,
+    requireSdk,
+    serialize,
+    forgetQueue,
+    avdHome: () => readableAvdHome(),
+    touch: (avdName) => lifecycle?.touch(avdName),
+    started: (key) => maintenance.started(key),
+    poweredOffRecord: (key) => maintenance.poweredOffRecord(key),
+    notePoweredOff: (key, record) => maintenance.notePoweredOff(key, record),
+  });
 
   /* ---------- input ---------- */
 
@@ -514,24 +548,41 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       crashWatch.stop(laneId);
       return agent.beforeRelease(laneId);
     },
+    extraLimit: androidLaneExtraLimit(env),
+    startExtra: (laneId, extra, options) => extras.start(laneId, extra, options),
+    onExtraCreated: () => deps.captureAnalytics?.("extra_device_created"),
   });
-  const { endLaneLocked } = inventory;
+
+  /** A lane ended: its extras stop and go, then its own device by the normal rules. The caller holds the lane's queue. */
+  const endLaneLocked = async (device: AndroidLaneDevice) => {
+    await extras.endLane(device.laneId);
+    return inventory.endLaneLocked(device);
+  };
 
   /* ---------- parity: the cleanup pass and the power-off record (`androidLaneMaintenance.ts`) ---------- */
 
   /** The AVD folder when it can be read now; null keeps the pass from forgetting rows on an unmounted drive. */
-  const readableAvdHome = (): string | null => {
-    const avdHome = androidAvdHome(env, home);
-    try {
-      fs.readdirSync(avdHome);
-      return avdHome;
-    } catch {
-      return null;
-    }
-  };
+  const readableAvdHome = () => readableAndroidAvdHome(env, home);
+
+  /** How the cleanup pass reaches one row: the lane's own device, or one of its extras (`androidLaneRows.ts`). */
+  const rows = createAndroidLaneRows({
+    laneDevices: deps.laneDevices,
+    extras,
+    logger,
+    serialize,
+    laneState,
+    deviceBusy: (device) => use.deviceBusy(device),
+    endLaneLocked,
+    stopLocked,
+    emitDeviceState,
+    emit,
+    notePoweredOff: (key, record) => maintenance.notePoweredOff(key, record),
+  });
 
   const maintenance = createAndroidLaneMaintenance({
-    listRows: () => deps.laneDevices.list?.() ?? [],
+    // The lane's own devices, then every lane's extras (`extra: true`), each with its own power-off record.
+    listRows: () => [...(deps.laneDevices.list?.() ?? []), ...deps.laneDevices.extras(null)],
+    ...rows.maintenance,
     laneLiveness,
     discovered,
     ownsEmulator,
@@ -544,43 +595,14 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       if (!avdHome) return [];
       return listAndroidAvds(avdHome).filter((avd) => avd.adeCreated).map((avd) => ({ avdName: avd.name, markerLaneId: readAdeAvdLaneId(avd) }));
     },
-    endLane: async (device) => {
-      await serialize(device.laneId, async () => {
-        const current = deps.laneDevices.get(device.laneId);
-        if (!current || !sameAvdName(current.avdName, device.avdName)) return;
-        const result = await endLaneLocked(current);
-        logger?.info("android.cleanup.released", { laneId: device.laneId, avdName: device.avdName, ...result });
-      });
-      emit({ type: "android.device.state", laneId: device.laneId, state: "none" });
-    },
     stopOrphan: async (emulator) => {
       const { adbPath } = await requireSdk({ emulator: false });
       await stopOrphan(emulator, adbPath);
       logger?.info("android.cleanup.stopped_orphan", { serial: emulator.serial, avdName: emulator.avdName });
     },
-    forgetRow: (device) => {
-      deps.laneDevices.forget(device.laneId, device.avdName);
-      logger?.info("android.cleanup.forgot_row", { laneId: device.laneId, avdName: device.avdName });
-    },
-    isBusy: (laneId) => use.laneBusy(laneId),
     isPinned: (avdName) => use.isPinned(avdName),
     idleMinutes: (avdName) => use.idleMinutes(avdName),
     idleStopMinutes: () => use.idleStopMinutes(),
-    powerOff: async (device, guard) => {
-      const laneId = device.laneId;
-      const stopped = await serialize(laneId, async () => {
-        const state = laneState(laneId);
-        // Something started using it (a lease, a test run, a call) or the person pinned it while the pass waited.
-        if (!guard.stillIdle()) throw new Error("The emulator came into use or was pinned, so ADE left it running.");
-        const current = deps.laneDevices.get(laneId);
-        if (!current || !sameAvdName(current.avdName, device.avdName)) return false;
-        await stopLocked(state, current, { refuseForeign: false, reason: "cleanup" });
-        state.error = null;
-        return true;
-      });
-      if (stopped) await emitDeviceState(laneId);
-      return stopped;
-    },
     onChanged: () => emit({ type: "android.inventory.changed" }),
     logger,
   });
@@ -596,38 +618,25 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     now,
   });
 
-  /** A chat's work copy here was deleted: give its device back. */
-  const releaseGoneWorkCopy = (laneId: string) => {
-    if (disposed || !deps.laneDevices.get(laneId)) return;
-    void serialize(laneId, async () => {
-      // A new copy for the same chat may have come back while this waited,
-      // and an unreadable copy list is not proof that the copy is gone.
-      if (laneLiveness(laneId) !== "missing") return;
-      const device = deps.laneDevices.get(laneId);
-      if (!device) return;
-      const result = await endLaneLocked(device);
-      logger?.info("android.work_copy_released", { laneId, avdName: device.avdName, ...result });
-      emit({ type: "android.inventory.changed" });
-      emit({ type: "android.device.state", laneId, state: "none" });
-    }).catch((error: unknown) => {
-      logger?.warn("android.work_copy_release_failed", { laneId, error: getErrorMessage(error) });
-    });
-  };
-  const offCopyReleased = onWorkCopyReleased(releaseGoneWorkCopy);
-  // A work copy's emulator in use (starting, stopping, streaming, or running
-  // for its lane) keeps the copy through the idle and low-disk cleanups.
-  const offDeviceCheck = registerWorkCopyDeviceCheck((laneId) => {
-    if (disposed || !isRemoteWorkLaneId(laneId)) return false;
-    const state = lanes.get(laneId);
-    if (state?.transient || state?.launch || state?.streamSerial) return true;
-    const device = deps.laneDevices.get(laneId);
-    return Boolean(device && runningFor(device.avdName));
+  const offWorkCopies = watchAndroidWorkCopyDevices({
+    laneDevices: deps.laneDevices,
+    isDisposed: () => disposed,
+    laneLiveness,
+    serialize,
+    peekLane: (laneId) => lanes.get(laneId),
+    runningFor,
+    endExtrasLocked: (laneId) => extras.endLane(laneId),
+    endLaneLocked,
+    onWorkCopyReleased,
+    registerWorkCopyDeviceCheck,
+    emit,
+    logger,
   });
 
   /* ---------- the lifecycle: use, busy, the idle stop, the pin (`androidEmulatorUse.ts`) ---------- */
 
-  /** Running emulators the project's state file lists as ADE's. */
-  const startedHere = () => discovered().filter((emulator) => registry.owns(emulator));
+  /** Running emulators the project's state files (the lanes' and the extras') list as ADE's. */
+  const startedHere = () => discovered().filter((emulator) => registry.owns(emulator) || extraRegistry.owns(emulator));
   const locateAdb = () => {
     const located = locateAndroidSdk({ settingPath: readSdkSettingPath(), env, platform, home });
     return located ? androidSdkPaths(located.root, platform).adb : null;
@@ -644,21 +653,13 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       // A stream counts only while someone holds it (a viewer or a recording), not when it is merely up.
       return Boolean(state?.transient) || laneStreams.held(laneId) || agent.isRecording(laneId) || agent.isLeased(laneId);
     },
-    usedOnDevice: async (laneId, idleMs) => {
-      const booted = await requireBooted(laneId).catch(() => null);
-      if (!booted) return null;
-      // Input from outside ADE (adb, Android Studio) shows on the device.
-      const deviceIdle = await readDeviceIdleMs(booted, lifetime.signal).catch(() => null);
-      if (deviceIdle !== null && deviceIdle < idleMs) return "device_input";
-      // A scrcpy server runs on the device while this brain streams none:
-      // another brain on the same project (the dev app beside the installed
-      // one) or another tool shows the screen. A failed read is no viewer.
-      if (liveStreamSerial(laneId) !== null) return null;
-      const viewer = await readOtherScrcpyViewer(booted, lifetime.signal).catch((error: unknown) => {
-        logger?.warn("android.idle_viewer_check_failed", { laneId, error: getErrorMessage(error) });
-        return false;
-      });
-      return viewer ? "other_viewer" : null;
+    extraBusy: (laneId, avdName) => extras.busyReason(laneId, avdName) !== null,
+    usedOnDevice: async (device, idleMs) => {
+      const laneId = device.laneId;
+      const booted = await (device.extra ? extras.requireBooted(laneId, device) : requireBooted(laneId)).catch(() => null);
+      // The lane's own stream is this brain's viewer, not another one.
+      const ownStream = !device.extra && liveStreamSerial(laneId) !== null;
+      return booted ? readUseOnDevice(booted, { idleMs, ownStream, signal: lifetime.signal, logger, laneId }) : null;
     },
     ownedRunning: (avdName) => {
       const emulator = runningFor(avdName);
@@ -667,16 +668,66 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     startedHere,
     describe: (avdName) => ({ adbPath: locateAdb(), guestRamMb: readAndroidAvd(androidAvdHome(env, home), avdName)?.ramMb ?? null }),
     serialize,
-    stopIdleLocked: async (laneId, device, idleMinutes) => {
-      const state = laneState(laneId);
-      await stopLocked(state, device, { refuseForeign: false, reason: "idle" });
-      state.error = null;
-      // The lane keeps its device; its status says ADE powered it off, until the next start.
-      maintenance.notePoweredOff(laneId, { reason: "idle", idleMinutes });
-      await emitDeviceState(laneId);
-      emit({ type: "android.inventory.changed" });
-    },
+    stopIdleLocked: rows.stopIdleLocked,
+    stopIdleExtra: (laneId, extra, idleMinutes, check) => extras.stopIdle(laneId, extra, idleMinutes, check),
     onAutoStopped: () => deps.captureAnalytics?.("emulator_auto_stopped"),
+  });
+
+  /* ---------- extra devices: promote (`androidDevicePromote.ts`) ---------- */
+
+  const promotion = createAndroidDevicePromote({
+    deps,
+    logger,
+    extras,
+    registry,
+    extraRegistry,
+    peekLane: (laneId) => lanes.get(laneId),
+    laneState,
+    serialize,
+    assertLive,
+    assertWorkCopyLive,
+    avdHome: readableAvdHome,
+    runningFor,
+    laneStatus: (laneId) => laneStatus(laneId),
+    emitDeviceState,
+    emit,
+    stopLocked,
+    adoptLaunch,
+    crashWatch,
+    stopLaneStream,
+    laneStreams,
+    agent,
+    maintenance,
+    touch: (avdName) => lifecycle?.touch(avdName),
+  });
+
+  /* ---------- start, stop and release, with their `device` (`androidDeviceRouter.ts`) ---------- */
+
+  const router = createAndroidDeviceRouter({
+    laneDevices: deps.laneDevices,
+    extras,
+    settled: promotion.settled,
+    serialize,
+    laneState,
+    assertLive,
+    assertWorkCopyLive,
+    avdHome: readableAvdHome,
+    ensureDeviceLocked: async (laneId) => {
+      if (isRemoteWorkLaneId(laneId) && !deps.laneDevices.get(laneId)) await inventory.ensureWorkCopyDeviceLocked(laneId);
+    },
+    startLocked,
+    stopLocked,
+    interruptBoot,
+    adbPath: async () => (await requireSdk({ emulator: false })).adbPath,
+    stopLaneStream,
+    laneStatus: (laneId) => laneStatus(laneId),
+    emitDeviceState,
+    releaseLaneDevice: (args) => inventory.api.releaseDevice(args),
+    abortBoot,
+    hasLane: (laneId) => lanes.has(laneId),
+    forgetLane: (laneId) => { lanes.delete(laneId); },
+    emit,
+    logger,
   });
 
   /* ---------- the API ---------- */
@@ -753,36 +804,11 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
     ...inventory.api,
 
-    start(args) {
-      assertLive();
-      const laneId = requireLaneId(args.laneId);
-      return serialize(laneId, async () => {
-        assertWorkCopyLive(laneId);
-        // A chat's work copy has no device until its first start asks for one.
-        if (isRemoteWorkLaneId(laneId) && !deps.laneDevices.get(laneId)) await inventory.ensureWorkCopyDeviceLocked(laneId);
-        return startLocked(laneState(laneId), { force: args.force === true, chatSessionId: args.chatSessionId ?? null });
-      });
-    },
+    start: router.start,
+    stop: router.stop,
+    releaseDevice: router.releaseDevice,
 
-    async stop(args) {
-      const laneId = requireLaneId(args.laneId);
-      const state = laneState(laneId);
-      // A stop during a start does not wait behind the boot: it ends it now,
-      // and the start fails with "stopped while it was starting".
-      if (state.transient === "starting") {
-        state.transient = "stopping";
-        emit({ type: "android.device.state", laneId, state: "stopping" });
-        await abortBoot(state, async () => (await requireSdk({ emulator: false })).adbPath);
-      }
-      return serialize(laneId, async () => {
-        state.stopRequested = false;
-        const device = deps.laneDevices.get(laneId);
-        if (device) await stopLocked(state, device, { refuseForeign: true, reason: "user" });
-        else await stopLaneStream(state);
-        state.error = null;
-        return emitDeviceState(laneId);
-      });
-    },
+    devicePromote: (args) => promotion.promote(args),
 
     setKeepRunning(args) {
       const laneId = requireLaneId(args.laneId);
@@ -814,8 +840,14 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     },
 
     ...agent.api,
-    // A test run is a use call: in flight, its lane's emulator is busy (`androidEmulatorUse.ts`).
-    runInstrumentationTests: (args) => agent.runInstrumentationTests(args),
+    // `install --device` / `launch --device`: on one of the lane's extras, or the lane's device.
+    installApp: (args) => promotion.onLaneOrExtra(args, () => agent.api.installApp(args), (laneId, booted) => agent.installOnExtra(laneId, booted, args)),
+    launchApp: (args) => promotion.onLaneOrExtra(args, () => agent.api.launchApp(args), (laneId, booted) => agent.launchOnExtra(laneId, booted, args)),
+    // A test run is a use call: in flight, its lane's emulator is busy (`androidEmulatorUse.ts`), and a promote is refused.
+    runInstrumentationTests: (args) => promotion.runTests(
+      typeof args?.laneId === "string" ? args.laneId.trim() : "",
+      () => agent.runInstrumentationTests(args),
+    ),
 
     /* ---------- parity: frame, Inspect, the cleanup pass ---------- */
 
@@ -849,27 +881,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
     releaseIfOwnedBy: (chatSessionId) => agent.releaseIfOwnedBy(chatSessionId),
 
-    async stopForLane(laneId) {
-      const id = laneId?.trim();
-      if (!id) return;
-      const hadState = lanes.has(id);
-      const state = laneState(id);
-      if (state.transient === "starting") {
-        await abortBoot(state, async () => (await requireSdk({ emulator: false }).catch(() => null))?.adbPath ?? null);
-      }
-      let hadDevice = false;
-      await serialize(id, async () => {
-        state.stopRequested = false;
-        const device = deps.laneDevices.get(id);
-        hadDevice = device !== null;
-        if (device) await stopLocked(state, device, { refuseForeign: false, reason: "lane_released" });
-        else await stopLaneStream(state);
-      }).catch((error: unknown) => {
-        logger?.warn("android.stop_for_lane_failed", { laneId: id, error: getErrorMessage(error) });
-      });
-      lanes.delete(id);
-      if (hadDevice || hadState) emit({ type: "android.device.state", laneId: id, state: hadDevice ? "off" : "none" });
-    },
+    stopForLane: router.stopForLane,
 
     /* ---------- P1 look: the render ---------- */
 
@@ -909,8 +921,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         logger?.warn("android.agent_dispose_failed", { error: getErrorMessage(error) });
       });
       lifetime.abort();
-      offCopyReleased();
-      offDeviceCheck();
+      offWorkCopies();
       const sdk = await requireSdk({ emulator: false }).catch(() => null);
       // A removed project has no next service to re-adopt its emulators, so
       // even a hand-off service stops them; every other teardown keeps the
@@ -920,27 +931,29 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         await stopLaneStream(state);
         if (!handOff && state.transient === "starting" && state.launch && sdk) await abortBoot(state, async () => sdk.adbPath);
       }));
+      if (!handOff && sdk) await extras.abortAll(sdk.adbPath);
       if (handOff) {
         // A brain exit: the emulators stay up and stay in the state file, and
         // the next service re-adopts them. A boot still in progress finishes
         // on its own and reads as "starting" there until it is done.
-        logger?.info("android.dispose_hand_off", {
-          emulators: discovered().filter((emulator) => registry.owns(emulator)).map((emulator) => emulator.serial),
-        });
+        logger?.info("android.dispose_hand_off", { emulators: startedHere().map((emulator) => emulator.serial) });
       } else if (sdk) {
         // Every emulator ADE started for this project, this run or an earlier
-        // one (the state file), and nothing else.
+        // one (the lanes' file and the extras' file), and nothing else.
         await stopAdeStartedEmulators({
-          registry,
+          registries: [registry, extraRegistry],
           adbPath: sdk.adbPath,
           discoveryDirs,
           logger,
           launcherPidFor: (emulator) =>
-            [...lanes.values()].find((state) => state.launch?.consolePort === emulator.consolePort)?.launch?.launcherPid ?? null,
+            [...lanes.values()].find((state) => state.launch?.consolePort === emulator.consolePort)?.launch?.launcherPid
+              ?? extras.launches().find((launch) => launch.consolePort === emulator.consolePort)?.launcherPid
+              ?? null,
           onStopped: (emulator) => use.noteStopped(emulator, "project_closed", deps.laneDevices.holder(emulator.avdName)),
         });
       }
       lanes.clear();
+      extras.clear();
       listeners.clear();
       // The last service of the process stops every stream and the server.
       await releaseStreams().catch((error: unknown) => {
@@ -969,6 +982,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       isDisposed: () => disposed,
       serialize,
       endLaneLocked,
+      endExtrasLocked: (laneId) => extras.endLane(laneId),
       stopOrphan,
       logger,
     }).then((changed) => {

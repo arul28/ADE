@@ -83,13 +83,15 @@ export type AndroidEmulatorUseDeps = {
   isDisposed: () => boolean;
   /** In use for what the service itself tracks: a boot or stop, a stream someone holds, a recording, a lease. */
   busyHere: (laneId: string) => boolean;
+  /** One of the lane's extra devices is in use here now (its boot, its stop, an install or a launch on it). */
+  extraBusy: (laneId: string, avdName: string) => boolean;
   /**
-   * Asked on the lane's queue just before an idle stop: the device shows use
-   * ADE's calls do not (input from adb or Android Studio, `dumpsys power`; or
-   * another brain's or tool's scrcpy viewer). Null when it shows none or
-   * cannot say.
+   * Asked on the device's queue just before an idle stop: the device (the
+   * lane's own, or an extra) shows use ADE's calls do not (input from adb or
+   * Android Studio, `dumpsys power`; or another brain's or tool's scrcpy
+   * viewer). Null when it shows none or cannot say.
    */
-  usedOnDevice: (laneId: string, idleMs: number) => Promise<"device_input" | "other_viewer" | null>;
+  usedOnDevice: (device: AndroidLaneDevice, idleMs: number) => Promise<"device_input" | "other_viewer" | null>;
   /** The running emulator of this AVD when ADE started it, else null. */
   ownedRunning: (avdName: string) => AndroidDiscoveredEmulator | null;
   /** The running emulators ADE started for this project (its state file). */
@@ -99,6 +101,17 @@ export type AndroidEmulatorUseDeps = {
   serialize: <T>(laneId: string, step: () => Promise<T>) => Promise<T>;
   /** Stops the lane's emulator as idle and says so (`poweredOff`); the caller holds the lane's queue. */
   stopIdleLocked: (laneId: string, device: AndroidLaneDevice, idleMinutes: number) => Promise<void>;
+  /**
+   * Stops one of the lane's extras as idle, on the extra's own queue
+   * (`androidLaneExtras.ts`), and says so. `check` runs there just before the
+   * stop; its answer leaves the extra running.
+   */
+  stopIdleExtra: (
+    laneId: string,
+    extra: AndroidLaneDevice,
+    idleMinutes: number,
+    check: () => Promise<AndroidIdleStopAnswer | null>,
+  ) => Promise<AndroidIdleStopAnswer>;
   onAutoStopped?: () => void;
 };
 
@@ -110,6 +123,9 @@ export function createAndroidEmulatorUse(deps: AndroidEmulatorUseDeps) {
 
   /** The lane's emulator in use here now: a boot or stop, a stream, a recording, a lease, a call in flight. */
   const laneBusy = (laneId: string): boolean => deps.busyHere(laneId) || (useInFlight.get(laneId) ?? 0) > 0;
+  /** One device in use here now: its lane is busy, or (an extra) its own boot, stop or job runs. */
+  const deviceBusy = (device: AndroidLaneDevice): boolean =>
+    laneBusy(device.laneId) || (device.extra === true && deps.extraBusy(device.laneId, device.avdName));
 
   /** Minutes since the AVD's emulator was used: this process's own clock, else the owner file's. */
   const idleMinutesFor = (avdName: string, record: AndroidEmulatorOwnerRecord | null = lifecycle?.recordFor(avdName) ?? null): number => {
@@ -135,24 +151,41 @@ export function createAndroidEmulatorUse(deps: AndroidEmulatorUseDeps) {
    */
   const stopIdleEmulator = async (record: AndroidEmulatorOwnerRecord, idleMs: number): Promise<AndroidIdleStopAnswer> => {
     const laneId = record.laneId;
-    const holds = () => {
-      const device = deps.laneDevices.get(laneId);
-      return device && sameAvdName(device.avdName, record.avdName) && deps.ownedRunning(device.avdName) ? device : null;
+    /** The lane's own device or one of its extras, when it is this record's AVD and ADE runs it. */
+    const holds = (): AndroidLaneDevice | null => {
+      const own = deps.laneDevices.get(laneId);
+      const device = own && sameAvdName(own.avdName, record.avdName)
+        ? own
+        : deps.laneDevices.extras(laneId).find((extra) => sameAvdName(extra.avdName, record.avdName)) ?? null;
+      return device && deps.ownedRunning(device.avdName) ? device : null;
     };
-    if (deps.isDisposed() || !holds()) return "not_found";
-    return deps.serialize(laneId, async (): Promise<AndroidIdleStopAnswer> => {
-      const device = holds();
-      if (!device) return "not_found";
+    /** Null when the stop may go ahead; asked on the device's queue. */
+    const check = async (device: AndroidLaneDevice): Promise<AndroidIdleStopAnswer | null> => {
       const current = lifecycle?.recordFor(record.avdName) ?? null;
       if (current && (current.pinned || current.owner.brainPid !== record.owner.brainPid)) return "kept";
       const lastHere = lifecycle?.lastUsedHereMs(record.avdName) ?? null;
-      if (laneBusy(laneId) || (lastHere !== null && deps.now().getTime() - lastHere < idleMs)) return "busy";
+      if (deviceBusy(device)) return "busy";
+      if (lastHere !== null && deps.now().getTime() - lastHere < idleMs) return "busy";
       // Use ADE's calls cannot see. "busy" moves the idle clock to now.
-      const used = await deps.usedOnDevice(laneId, idleMs);
+      const used = await deps.usedOnDevice(device, idleMs);
       if (used) {
-        logger?.info("android.idle_stop_skipped", { laneId, avdName: record.avdName, reason: used });
+        logger?.info("android.idle_stop_skipped", { laneId, avdName: record.avdName, reason: used, extra: device.extra === true });
         return "busy";
       }
+      return null;
+    };
+    const held = deps.isDisposed() ? null : holds();
+    if (!held) return "not_found";
+    if (held.extra === true) {
+      const current = lifecycle?.recordFor(record.avdName) ?? null;
+      return deps.stopIdleExtra(laneId, held, idleMinutesFor(record.avdName, current ?? record), () => check(held));
+    }
+    return deps.serialize(laneId, async (): Promise<AndroidIdleStopAnswer> => {
+      const device = holds();
+      if (!device || device.extra === true) return "not_found";
+      const early = await check(device);
+      if (early) return early;
+      const current = lifecycle?.recordFor(record.avdName) ?? null;
       await deps.stopIdleLocked(laneId, device, idleMinutesFor(record.avdName, current ?? record));
       return "stopped";
     });
@@ -224,6 +257,8 @@ export function createAndroidEmulatorUse(deps: AndroidEmulatorUseDeps) {
 
     /** In use here now (`busyHere`, or a use call in flight): the cleanup pass's power-off leaves it alone. */
     laneBusy,
+    /** The one busy rule for a row of the cleanup pass and the sweep's idle stop: the lane's device or an extra. */
+    deviceBusy,
     /** The person pinned the AVD's running emulator ("Keep running"). */
     isPinned(avdName: string): boolean {
       return lifecycle?.recordFor(avdName)?.pinned === true;

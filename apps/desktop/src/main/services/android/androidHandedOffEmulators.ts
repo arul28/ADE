@@ -24,10 +24,25 @@ import type { AndroidLaneDeviceRepo } from "./androidLaneRelease";
  * Node built-ins and relative imports only, so it runs under `tsx`.
  */
 
-/** The started-emulators state file in a service's data folder, warning once per kind of file failure. */
-export function openStartedEmulators(dataDir: string, logger: Logger | null): AdeStartedEmulators {
+/** The project's started-emulators file: the lanes' own devices. */
+export const STARTED_EMULATORS_FILE = "started-emulators.json";
+
+/**
+ * The started-emulators file of the lanes' extra devices. It is not the
+ * project's file because an older ADE on the same project counts only its own
+ * lane rows as held: an extra it found in that file would read as an orphan
+ * and be stopped. An older ADE never reads this file.
+ */
+export const STARTED_EXTRA_EMULATORS_FILE = "started-extra-emulators.json";
+
+/** A started-emulators state file in a service's data folder, warning once per kind of file failure. */
+export function openStartedEmulators(
+  dataDir: string,
+  logger: Logger | null,
+  fileName: typeof STARTED_EMULATORS_FILE | typeof STARTED_EXTRA_EMULATORS_FILE = STARTED_EMULATORS_FILE,
+): AdeStartedEmulators {
   const warned = new Set<string>();
-  const file = path.join(dataDir, "started-emulators.json");
+  const file = path.join(dataDir, fileName);
   return new AdeStartedEmulators(file, (op, error) => {
     const code = (error as NodeJS.ErrnoException)?.code ?? "parse";
     if (warned.has(`${op}:${code}`)) return;
@@ -56,6 +71,8 @@ export async function reconcileStartedEmulators(args: {
   isDisposed: () => boolean;
   serialize: <T>(laneId: string, step: () => Promise<T>) => Promise<T>;
   endLaneLocked: (device: AndroidLaneDevice) => Promise<object>;
+  /** Releases the extras of an ended lane that holds no device of its own. The caller holds the lane's queue. */
+  endExtrasLocked: (laneId: string) => Promise<void>;
   stopOrphan: (emulator: AndroidDiscoveredEmulator, adbPath: string) => Promise<unknown>;
   logger: Logger | null;
 }): Promise<boolean> {
@@ -64,13 +81,18 @@ export async function reconcileStartedEmulators(args: {
   // a brain start with nothing to reconcile never reads the SDK, which would
   // run `emulator -accel-check` once per project.
   // A chat's work copy counts as a lane while the copy exists.
-  const endedLanes = (args.laneDevices.list?.() ?? []).filter((device) => {
-    const liveness = args.laneLiveness(device.laneId);
+  const ended = (laneId: string) => {
+    const liveness = args.laneLiveness(laneId);
     return liveness !== null && liveness !== "active";
-  });
+  };
+  const endedLanes = (args.laneDevices.list?.() ?? []).filter((device) => ended(device.laneId));
+  // A lane that ended with extras and no device of its own (`endLaneLocked` releases the others' extras).
+  const endedExtraLanes = [...new Set(args.laneDevices.extras(null).map((extra) => extra.laneId))]
+    .filter((laneId) => ended(laneId) && !endedLanes.some((device) => device.laneId === laneId));
+  // `holder` reads both tables, so a running extra is never an orphan.
   const orphans = () => args.startedHere().filter((emulator) => args.laneDevices.holder(emulator.avdName) === null);
   args.takeIn();
-  if (endedLanes.length === 0 && orphans().length === 0) return false;
+  if (endedLanes.length === 0 && endedExtraLanes.length === 0 && orphans().length === 0) return false;
   const adbPath = args.locateAdb();
   if (!adbPath || args.isDisposed()) return false;
   let changed = false;
@@ -81,6 +103,15 @@ export async function reconcileStartedEmulators(args: {
       logger?.info("android.reconcile.released", { laneId: device.laneId, avdName: device.avdName, ...result });
     }).catch((error: unknown) => {
       logger?.warn("android.reconcile.release_failed", { laneId: device.laneId, error: getErrorMessage(error) });
+    });
+  }
+  for (const laneId of endedExtraLanes) {
+    await args.serialize(laneId, async () => {
+      await args.endExtrasLocked(laneId);
+      changed = true;
+      logger?.info("android.reconcile.released_extras", { laneId });
+    }).catch((error: unknown) => {
+      logger?.warn("android.reconcile.release_failed", { laneId, error: getErrorMessage(error) });
     });
   }
   for (const emulator of orphans()) {
@@ -102,7 +133,8 @@ export async function reconcileStartedEmulators(args: {
  * and the rest still run.
  */
 export async function stopAdeStartedEmulators(args: {
-  registry: AdeStartedEmulators;
+  /** The state files to read: the lanes' own devices and their extras. */
+  registries: readonly AdeStartedEmulators[];
   adbPath: string;
   discoveryDirs: readonly string[];
   logger: Logger | null;
@@ -112,7 +144,8 @@ export async function stopAdeStartedEmulators(args: {
   onStopped?: (emulator: AndroidDiscoveredEmulator) => void;
 }): Promise<void> {
   for (const emulator of readAndroidDiscoveryFiles(args.discoveryDirs)) {
-    if (!args.registry.owns(emulator)) continue;
+    const registry = args.registries.find((entry) => entry.owns(emulator));
+    if (!registry) continue;
     await stopAndroidEmulator({
       adbPath: args.adbPath,
       serial: emulator.serial,
@@ -120,7 +153,7 @@ export async function stopAdeStartedEmulators(args: {
       avdName: emulator.avdName,
       pid: emulator.pid,
       launcherPid: args.launcherPidFor?.(emulator) ?? null,
-      registry: args.registry,
+      registry,
       discoveryDirs: args.discoveryDirs,
     }).then(() => args.onStopped?.(emulator), (error: unknown) => {
       args.logger?.warn("android.dispose_stop_failed", { serial: emulator.serial, error: getErrorMessage(error) });
@@ -133,9 +166,10 @@ export async function stopAdeStartedEmulators(args: {
  * removed from this machine and no next service will re-adopt them.
  *
  * The brain calls it when a removal joined a teardown that had already handed
- * the devices off (a repair's `"close"` drain). It reads the same state file
- * the project's service uses (`<project>/.ade/android`), stops only the
- * emulators listed there, and does nothing without an SDK or a state file.
+ * the devices off (a repair's `"close"` drain). It reads the same state files
+ * the project's service uses (`<project>/.ade/android`: the lanes' devices and
+ * their extras), stops only the emulators listed there, and does nothing
+ * without an SDK or a state file.
  * It never throws.
  */
 export async function stopHandedOffAndroidEmulators(args: {
@@ -150,7 +184,10 @@ export async function stopHandedOffAndroidEmulators(args: {
     const platform = args.platform ?? process.platform;
     if (platform !== "darwin" && platform !== "win32" && platform !== "linux") return;
     const dataDir = path.join(resolveAdeLayout(args.projectRoot).adeDir, "android");
-    if (!fs.existsSync(path.join(dataDir, "started-emulators.json"))) return;
+    // The lanes' own devices and their extras each have a file.
+    const files = [STARTED_EMULATORS_FILE, STARTED_EXTRA_EMULATORS_FILE] as const;
+    const present = files.filter((file) => fs.existsSync(path.join(dataDir, file)));
+    if (present.length === 0) return;
     const env = args.env ?? process.env;
     const home = args.home ?? os.homedir();
     const sdk = await readAndroidSdkStatus({ settingPath: null, env, platform, home });
@@ -162,7 +199,7 @@ export async function stopHandedOffAndroidEmulators(args: {
       return;
     }
     await stopAdeStartedEmulators({
-      registry: openStartedEmulators(dataDir, logger),
+      registries: present.map((file) => openStartedEmulators(dataDir, logger, file)),
       adbPath,
       discoveryDirs: androidDiscoveryDirs(platform, env, home),
       logger,

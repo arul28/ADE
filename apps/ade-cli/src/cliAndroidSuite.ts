@@ -39,8 +39,10 @@ import {
   androidFlagNames,
   androidOutPath,
   finiteNumber,
+  readAndroidDeviceClaim,
   readPoint,
   readStroke,
+  onAndroidDevice,
 } from "./cliAndroid";
 import { formatAndroidSdkInstallLine, record, records, withAsked } from "./cliAndroidFormat";
 import { appleLeaseAnswer, appleLeaseNotAcquired } from "./cliAppleFormat";
@@ -136,12 +138,14 @@ export function buildAndroidSuitePlan(
     return { ...(words.length ? { arguments: words } : {}), ...(extras.length ? { extras } : {}) };
   };
   const elementResult = { exitCodeFromResult: (result: unknown) => (record(result).ok === false ? 1 : 0) };
+  /** `install`/`launch --device <avd>`: one of the lane's extra devices instead of its own, on a brain that knows extras. */
 
   if (sub === "apps") return androidAction("android apps", "listApps", laneClaim(), "android-apps");
   if (sub === "install") {
     const source = readInstallSource(true);
-    return androidAction("android install", "installApp", { ...laneClaim(), ...source }, "android-install",
-      source.gradle ? { progressNotice: "Building the lane's app with Gradle and installing it; a first build can take a few minutes…" } : {});
+    const device = readAndroidDeviceClaim(args, sub);
+    return onAndroidDevice(androidAction("android install", "installApp", { ...laneClaim(), ...source, ...device }, "android-install",
+      source.gradle ? { progressNotice: "Building the lane's app with Gradle and installing it; a first build can take a few minutes…" } : {}), sub, device);
   }
   if (sub === "launch") {
     const packageName = readPackage(false);
@@ -151,13 +155,15 @@ export function buildAndroidSuitePlan(
     if (!packageName && !source.apkPath && !source.gradle) {
       throw usage("pass --package <name>, or --gradle / --apk <path> to install the app and open it.");
     }
-    return androidAction("android launch", "launchApp", {
+    const device = readAndroidDeviceClaim(args, sub);
+    return onAndroidDevice(androidAction("android launch", "launchApp", {
       ...laneClaim(),
       ...source,
       ...(packageName ? { packageName } : {}),
       ...(activity ? { activity } : {}),
       ...launchExtras,
-    }, "android-launch", source.gradle ? { progressNotice: "Building the lane's app with Gradle, then opening it…" } : {});
+      ...device,
+    }, "android-launch", source.gradle ? { progressNotice: "Building the lane's app with Gradle, then opening it…" } : {}), sub, device);
   }
   // Parity with `ade apple`: relaunch, app-state, foreground, frame, inspect, select, device-cleanup.
   if (sub === "relaunch") {

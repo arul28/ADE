@@ -170,8 +170,17 @@ function launchExtrasArgs(args: unknown, action: string): AndroidLaunchExtrasArg
   return out;
 }
 
+/** `device`: one of the lane's extra devices (AVD name or shown name); omitted = the lane's device. */
+function deviceArg(args: unknown): { device?: string } {
+  const device = optionalString(args, "device");
+  return device ? { device } : {};
+}
+
 function installArgs(args: unknown) {
-  return { apkPath: optionalString(args, "apkPath"), gradle: gradleTarget(args) };
+  const device = deviceArg(args);
+  // Set by the RPC server for an agent: an extra this call boots names the chat in its owner record.
+  const chatSessionId = device.device ? optionalString(args, "chatSessionId") : null;
+  return { apkPath: optionalString(args, "apkPath"), gradle: gradleTarget(args), ...device, ...(chatSessionId ? { chatSessionId } : {}) };
 }
 
 export function buildAndroidDomainService(runtime: AndroidActionRuntime): OpaqueService | null {
@@ -194,19 +203,26 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
       start: optionalBoolean(args, "start"),
       catalogId: optionalString(args, "catalogId"),
       colorId: optionalString(args, "colorId"),
+      // An extra device beside the lane's own (`device-create --extra`).
+      ...(readBoolean(args, "extra") === true ? { extra: true } : {}),
+      // Set by the RPC server for an agent: the boot's owner record and failure report name the chat.
+      chatSessionId: optionalString(args, "chatSessionId"),
     }),
     attachDevice: (args?: unknown) => service.attachDevice({
       ...laneArgs(args, "attachDevice"),
       avdName: requiredString(args, "avdName", "attachDevice"),
       start: optionalBoolean(args, "start"),
+      chatSessionId: optionalString(args, "chatSessionId"),
     }),
     start: (args?: unknown) => service.start({
       ...laneArgs(args, "start"),
       ...(readBoolean(args, "force") === true ? { force: true } : {}),
+      ...(readBoolean(args, "restartAdb") === true ? { restartAdb: true } : {}),
+      ...deviceArg(args),
       // Set by the RPC server for an agent: the chat named in the emulator's owner record.
       chatSessionId: optionalString(args, "chatSessionId"),
     }),
-    stop: (args?: unknown) => service.stop(laneArgs(args, "stop")),
+    stop: (args?: unknown) => service.stop({ ...laneArgs(args, "stop"), ...deviceArg(args) }),
     setKeepRunning: (args?: unknown) => {
       const keepRunning = readBoolean(args, "keepRunning");
       if (keepRunning == null) throw new Error("androidEmulator.setKeepRunning requires keepRunning (true or false).");
@@ -215,6 +231,13 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
     releaseDevice: (args?: unknown) => service.releaseDevice({
       ...laneArgs(args, "releaseDevice"),
       deleteCreated: optionalBoolean(args, "deleteCreated"),
+      ...deviceArg(args),
+    }),
+    // One of the lane's extras becomes its device. The RPC server sets the caller's chat (its own lease is no refusal).
+    devicePromote: (args?: unknown) => service.devicePromote({
+      ...laneArgs(args, "devicePromote"),
+      device: requiredString(args, "device", "devicePromote"),
+      chatSessionId: optionalString(args, "chatSessionId"),
     }),
     // User-only (`ANDROID_USER_ONLY_ACTIONS`): an agent releases its lane's
     // device instead, which deletes only the AVD ADE made for that lane.

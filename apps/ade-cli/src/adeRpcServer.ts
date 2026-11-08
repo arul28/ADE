@@ -4908,6 +4908,19 @@ export function scopeAndroidAdeActionArgs(
       method,
     );
   }
+  // `restartAdb` restarts the machine's one adb server, and every other device
+  // and tool on it loses its connection: only the person decides that (the
+  // pane's "Restart adb and start", or `ade android start --restart-adb` in a
+  // terminal on that machine, an `ade` process with no chat or run). An
+  // agent's ask is refused, never dropped in silence; ADE still restarts a
+  // server that no other device uses.
+  // Any value the Android domain could read as yes (`true`, `"true"`) is the ask.
+  const restartAdbAsked = androidArgs.restartAdb != null && androidArgs.restartAdb !== false && androidArgs.restartAdb !== "false";
+  if (restartAdbAsked && !isUnboundAdeCliCaller(session)) {
+    scopeAccessDenied("only a person can restart adb", method, {
+      nextStep: "Ask them to press Restart adb and start in the Android pane, or to run ade android start --restart-adb in a terminal on that machine.",
+    });
+  }
   const laneId = pinAgentDeviceLane(runtime, session, {
     method,
     requestedLaneId: asOptionalTrimmedString(androidArgs.laneId),

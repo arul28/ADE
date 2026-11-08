@@ -11,11 +11,14 @@ import type { AndroidLaneDevice } from "../../../shared/types/androidEmulator";
  */
 
 const LANE_ANDROID_DEVICES_TABLE = "lane_android_devices" as const;
+/** A lane's EXTRA devices (`device-create --extra`): ADE-made only, keyed by AVD name. */
+const LANE_ANDROID_EXTRA_DEVICES_TABLE = "lane_android_extra_devices" as const;
 
 /** The slice of `AdeDb` the store needs. Narrow so tests need no database. */
 export type AndroidLaneDeviceStore = {
   run: (sql: string, params?: Array<string | number | null>) => void;
   get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: Array<string | number | null>) => T | null;
+  all: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: Array<string | number | null>) => T[];
 };
 
 type AndroidLaneDeviceRow = {
@@ -101,15 +104,16 @@ export function laneHoldingAndroidAvd(
   avdName: string,
   exceptLaneId: string | null = null,
 ): string | null {
+  // A lane's extra devices are held as well: no other lane may take, stop or
+  // delete one, and the cleanup pass must not read its emulator as an orphan.
+  const union = `select lane_id from ${LANE_ANDROID_DEVICES_TABLE} where lower(avd_name) = lower(?)
+    union all select lane_id from ${LANE_ANDROID_EXTRA_DEVICES_TABLE} where lower(avd_name) = lower(?)`;
   const row = exceptLaneId
     ? store.get<{ lane_id: string }>(
-      `select lane_id from ${LANE_ANDROID_DEVICES_TABLE} where lower(avd_name) = lower(?) and lane_id != ? limit 1`,
-      [avdName, exceptLaneId],
+      `select lane_id from (${union}) where lane_id != ? limit 1`,
+      [avdName, avdName, exceptLaneId],
     )
-    : store.get<{ lane_id: string }>(
-      `select lane_id from ${LANE_ANDROID_DEVICES_TABLE} where lower(avd_name) = lower(?) limit 1`,
-      [avdName],
-    );
+    : store.get<{ lane_id: string }>(`select lane_id from (${union}) limit 1`, [avdName, avdName]);
   return row?.lane_id ?? null;
 }
 
@@ -121,4 +125,62 @@ export function forgetLaneAndroidDevices(store: Pick<AndroidLaneDeviceStore, "ru
 /** Hands one lane's row to another lane (a lane merge). */
 export function moveLaneAndroidDevice(store: Pick<AndroidLaneDeviceStore, "run">, fromLaneId: string, toLaneId: string): void {
   store.run(`update ${LANE_ANDROID_DEVICES_TABLE} set lane_id = ? where lane_id = ?`, [toLaneId, fromLaneId]);
+}
+
+/* ---------- extra devices (`lane_android_extra_devices`) ---------- */
+
+type AndroidLaneExtraRow = {
+  lane_id: string;
+  avd_name: string;
+  profile_id: string | null;
+  system_image: string | null;
+  created_at: string;
+};
+
+const EXTRA_COLUMNS = "lane_id, avd_name, profile_id, system_image, created_at";
+
+function extraRowToDevice(row: AndroidLaneExtraRow): AndroidLaneDevice {
+  return {
+    laneId: row.lane_id,
+    avdName: row.avd_name,
+    // ADE makes every extra, and deletes it with the lane: it needs no package list.
+    origin: "created",
+    profileId: row.profile_id,
+    systemImage: row.system_image,
+    createdAt: row.created_at,
+    adeInstalledPackages: [],
+    extra: true,
+  };
+}
+
+/** The extra devices of one lane (oldest first), or of every lane when `laneId` is null. */
+export function readLaneAndroidExtras(store: Pick<AndroidLaneDeviceStore, "all">, laneId: string | null): AndroidLaneDevice[] {
+  const trimmed = laneId?.trim() ?? null;
+  const rows = trimmed
+    ? store.all<AndroidLaneExtraRow>(
+      `select ${EXTRA_COLUMNS} from ${LANE_ANDROID_EXTRA_DEVICES_TABLE} where lane_id = ? order by created_at`,
+      [trimmed],
+    )
+    : store.all<AndroidLaneExtraRow>(`select ${EXTRA_COLUMNS} from ${LANE_ANDROID_EXTRA_DEVICES_TABLE} order by created_at`);
+  return rows.map(extraRowToDevice);
+}
+
+/** Binds an AVD to a lane as one of its extra devices. */
+export function writeLaneAndroidExtra(store: Pick<AndroidLaneDeviceStore, "run">, device: AndroidLaneDevice): void {
+  store.run(
+    `insert into ${LANE_ANDROID_EXTRA_DEVICES_TABLE} (${EXTRA_COLUMNS}) values (?, ?, ?, ?, ?)
+     on conflict(avd_name) do update set lane_id = excluded.lane_id, profile_id = excluded.profile_id,
+       system_image = excluded.system_image, created_at = excluded.created_at`,
+    [device.laneId, device.avdName, device.profileId, device.systemImage, device.createdAt],
+  );
+}
+
+/** Drops one extra row, keyed by lane AND AVD. */
+export function forgetLaneAndroidExtra(store: Pick<AndroidLaneDeviceStore, "run">, laneId: string, avdName: string): void {
+  store.run(`delete from ${LANE_ANDROID_EXTRA_DEVICES_TABLE} where lane_id = ? and lower(avd_name) = lower(?)`, [laneId, avdName]);
+}
+
+/** Hands every extra of one lane to another lane (a lane merge). */
+export function moveLaneAndroidExtras(store: Pick<AndroidLaneDeviceStore, "run">, fromLaneId: string, toLaneId: string): void {
+  store.run(`update ${LANE_ANDROID_EXTRA_DEVICES_TABLE} set lane_id = ? where lane_id = ?`, [toLaneId, fromLaneId]);
 }

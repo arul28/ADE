@@ -502,6 +502,7 @@ import {
   formatAndroidRender,
   formatAndroidDevice,
   formatAndroidDevices,
+  formatAndroidDevicePromote,
   formatAndroidRelease,
   formatAndroidScreenshot,
   formatAndroidStatus,
@@ -887,6 +888,7 @@ export type FormatterId =
   | "android-devices"
   | "android-devices-profiles"
   | "android-device"
+  | "android-device-promote"
   | "android-release"
   | "android-screenshot"
   | "android-action"
@@ -3609,6 +3611,26 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade android device-detach --text             Stop it and let the AVD go. An AVD ADE made
                                                    for the lane is deleted; --keep keeps it.
                                                    The user's own AVD is never deleted.
+
+  Extra devices (a second device beside the lane's own, as ade apple's):
+    $ ade android device-create --extra --catalog pixel-tablet --text
+                                                   Make an extra AVD for this lane and boot it beside
+                                                   the lane's device (at most 2; each one holds 2-5 GB
+                                                   of RAM, and every boot goes through the RAM guard)
+    $ ade android start --device <avd> --text      Boot an extra (stop --device <avd> stops it)
+    $ ade android install --apk build/app.apk --device <avd> --text
+                                                   Install on an extra (launch --device too); an extra
+                                                   that is off boots first
+    $ ade android device-promote --device <avd> --text
+                                                   Make an extra the lane's device (the one that streams,
+                                                   records and runs tests). The old one is kept as an
+                                                   extra; the user's own AVD is released. Refused while
+                                                   the device streams, records, tests, installs, or
+                                                   another agent holds the lease
+    $ ade android device-detach --device <avd> --text
+                                                   Remove an extra: it stops and is deleted (--keep
+                                                   keeps the AVD). The lane keeps its device; the
+                                                   lane's extras are deleted when the lane ends
     $ ade android device-cleanup --dry-run --text  What cleanup does: release ended lanes' devices, stop
                                                    emulators ADE started that no lane holds, forget rows
                                                    whose AVD is gone (--power-off-idle: also idle ones;
@@ -3808,7 +3830,13 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     ANDROID_NO_SYSTEM_IMAGE          install a system image, or pass --image
     ANDROID_AVD_HELD_BY_OTHER_LANE   pick a free AVD, or create one
     ANDROID_AVD_RUNNING              that AVD already runs outside this lane
+    ANDROID_EXTRA_DEVICE_LIMIT       the lane holds its extra devices; remove or promote one
+    ANDROID_DEVICE_IS_EXTRA          that AVD is an extra; device-promote --device it
+    ANDROID_LANE_DEVICE_BUSY         the device is in use; wait, then device-promote again
     ANDROID_BOOT_TIMEOUT / ANDROID_EMULATOR_EXITED   read the log the error names
+    ANDROID_ADB_UNAUTHORIZED         adb refused the device; ask the user to press "Restart adb
+                                     and start" in the Android pane (or run start --restart-adb
+                                     in a terminal on that machine); never restart adb yourself
     ANDROID_NOT_RUNNING              ade android start first
     ANDROID_LOW_MEMORY               free memory, or ask the user, then start --force
     ANDROID_ELEMENT_NOT_FOUND        ade android snapshot, then aim again
@@ -37049,6 +37077,8 @@ function formatTextOutput(
       return formatAndroidDevices(value, { profiles: true });
     case "android-device":
       return formatAndroidDevice(value);
+    case "android-device-promote":
+      return formatAndroidDevicePromote(value);
     case "android-release":
       return formatAndroidRelease(value);
     case "android-screenshot":

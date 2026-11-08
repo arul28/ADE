@@ -222,6 +222,30 @@ must share it, take a lease first:
 The lease is advisory: it works only when every agent uses it. Renew with
 `lease renew --token <t>` before `--ttl` ends. It ends when its chat ends.
 
+## A second device beside the lane's
+
+The lane's device is the one `status` shows: it streams, records, runs the
+tests, and takes every verb with no `--device`. To check the app on another
+form factor (a tablet beside the phone), add an extra device instead of
+replacing the lane's one:
+
+```bash
+"$A" android device-create --extra --catalog pixel-tablet --text   # boots beside the lane's device
+"$A" android launch --gradle --device <avd> --text                 # install and open it there
+"$A" android device-promote --device <avd> --text                  # make it the lane's device
+"$A" android device-detach --device <avd> --text                   # remove it (deletes the AVD)
+```
+
+- `--device <avd>` works on `start`, `stop`, `install`, `launch` and
+  `device-detach`. `status` lists the extras with their AVD names.
+- Each running emulator holds 2 to 5 GB of RAM. A lane may hold 2 extras.
+  Stop an extra you are done with: `android stop --device <avd>`.
+- To screenshot, tap or snapshot an extra, promote it first. The old device
+  stays as an extra, still running. A promote is refused
+  (`ANDROID_LANE_DEVICE_BUSY`) while the lane's device records, streams to
+  the user's open view, runs tests or an install, or another agent holds the
+  lease: wait, do not force it.
+
 ## Another machine
 
 `--machine <name>` runs the command on that machine. Without `--lane`, the
@@ -248,12 +272,16 @@ Each error prints its next step. The common ones:
 | Code | What to do |
 |---|---|
 | `ANDROID_NOT_RUNNING` | `android start`, or `device-create` when the lane has none |
+| `ANDROID_ADB_UNAUTHORIZED` | adb refused the device (the error says why). You cannot restart the adb server: every device on it loses its connection, so ADE refuses an agent's `--restart-adb`. Ask the user to press **Restart adb and start** in the Android pane, or to run `ade android start --restart-adb` in a terminal on that machine. If the error says ADE already restarted the server, ask them to cold boot the AVD. Never run `adb kill-server` yourself |
 | `ANDROID_ELEMENT_NOT_FOUND` | `android snapshot --text`, then aim again |
 | `ANDROID_WAIT_TIMEOUT` | look at the screen; pass a longer `--timeout-ms` |
 | `ANDROID_BUILD_FAILED` | read the Gradle output; fix the build. No JDK: ask the user to install Android Studio or a JDK 17+ |
 | `ANDROID_INSTALL_FAILED` | read adb's reason; a signature conflict needs `uninstall` first |
 | `ANDROID_PACKAGE_NOT_ADE_INSTALLED` | the user's AVD and an app ADE did not install: leave it |
 | `ANDROID_AVD_HELD_BY_OTHER_LANE` | pick another AVD, or `device-create` |
+| `ANDROID_EXTRA_DEVICE_LIMIT` | the lane holds 2 extras: remove one with `device-detach --device <avd>`, or promote and use one |
+| `ANDROID_LANE_DEVICE_BUSY` | the device is in use (a recording, the user's live view, tests, an install, another agent's lease): wait for it, then promote again |
+| `ANDROID_DEVICE_IS_EXTRA` | that AVD is one of the lane's extras: `device-promote --device <avd>` |
 | `ANDROID_SDK_NOT_FOUND` | `android sdk status`, then ask the user to set it up |
 | `ANDROID_NO_ACCELERATION` | on an Agent 37 box: tell the user the message, then move to a VM (`ade-agent37` skill, "Your chat runs on a box and needs a VM"). Elsewhere: turn on KVM or the Windows Hypervisor Platform |
 

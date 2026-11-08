@@ -23,9 +23,18 @@ const EXPECTED_KIND: Partial<Record<AndroidErrorCode, "user" | "environment">> =
   // The memory guard's refusal: the machine is short of memory, and the
   // message says which emulator to stop. Not a fault of ADE.
   ANDROID_LOW_MEMORY: "environment",
+  // adb refused the device: the machine's adb server or the AVD's adb keys,
+  // and the message says what to do. Not a fault of ADE.
+  ANDROID_ADB_UNAUTHORIZED: "environment",
   ANDROID_AVD_NOT_FOUND: "user",
   ANDROID_AVD_HELD_BY_OTHER_LANE: "user",
   ANDROID_LANE_HAS_DEVICE: "user",
+  // Extra devices: a full lane, an extra named where the lane's device is
+  // meant, a device the lane does not hold, a device in use: the person's state.
+  ANDROID_EXTRA_DEVICE_LIMIT: "user",
+  ANDROID_DEVICE_IS_EXTRA: "user",
+  ANDROID_DEVICE_NOT_LANE_OWNED: "user",
+  ANDROID_LANE_DEVICE_BUSY: "user",
   ANDROID_AVD_RUNNING: "user",
   ANDROID_NOT_RUNNING: "user",
   ANDROID_PATH_OUTSIDE_LANE: "user",
@@ -51,6 +60,8 @@ export class AndroidEmulatorFailure extends Error {
     readonly code: AndroidErrorCode,
     message: string,
     readonly logPath: string | null = null,
+    /** `ANDROID_ADB_UNAUTHORIZED` only: the refusal came after ADE restarted the adb server. */
+    readonly adbRestarted = false,
   ) {
     super(`${code}: ${message}`);
     this.name = "AndroidEmulatorFailure";
@@ -68,6 +79,7 @@ export class AndroidEmulatorFailure extends Error {
       code: isAndroidEmulatorErrorCode(this.code) ? this.code : "ANDROID_EMULATOR_EXITED",
       message: this.message.startsWith(prefix) ? this.message.slice(prefix.length) : this.message,
       logPath: this.logPath,
+      ...(this.adbRestarted ? { adbRestarted: true } : {}),
     };
   }
 }

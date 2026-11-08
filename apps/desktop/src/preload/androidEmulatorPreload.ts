@@ -34,10 +34,13 @@ import type {
   AndroidLaneArgs,
   AndroidLaneDeviceStatus,
   AndroidReleaseDeviceArgs,
+  AndroidReleaseDeviceResult,
   AndroidRotateArgs,
   AndroidScreenshot,
   AndroidScreenshotArgs,
+  AndroidStartArgs,
   AndroidStartStreamArgs,
+  AndroidStopArgs,
   AndroidStreamStatus,
   AndroidTextArgs,
   AndroidTouchArgs,
@@ -112,9 +115,9 @@ export function createAndroidEmulatorBridge(deps: AndroidEmulatorBridgeDeps): An
     ),
     createDevice: call<AndroidCreateDeviceArgs, AndroidLaneDeviceStatus>("createDevice", IPC.androidEmulatorCreateDevice),
     attachDevice: call<AndroidAttachDeviceArgs, AndroidLaneDeviceStatus>("attachDevice", IPC.androidEmulatorAttachDevice),
-    start: call<AndroidLaneArgs, AndroidLaneDeviceStatus>("start", IPC.androidEmulatorStart),
-    stop: call<AndroidLaneArgs, AndroidLaneDeviceStatus>("stop", IPC.androidEmulatorStop),
-    releaseDevice: call<AndroidReleaseDeviceArgs, { released: boolean; deletedAvd: string | null }>(
+    start: call<AndroidStartArgs, AndroidLaneDeviceStatus>("start", IPC.androidEmulatorStart),
+    stop: call<AndroidStopArgs, AndroidLaneDeviceStatus>("stop", IPC.androidEmulatorStop),
+    releaseDevice: call<AndroidReleaseDeviceArgs, AndroidReleaseDeviceResult>(
       "releaseDevice",
       IPC.androidEmulatorReleaseDevice,
     ),
@@ -193,6 +196,8 @@ export function createAndroidEmulatorBridge(deps: AndroidEmulatorBridgeDeps): An
     clearLocation: runtimeOnly("clearLocation"),
     storeScreenshots: runtimeOnly("storeScreenshots"),
     windowLayout: runtimeOnly("windowLayout"),
+    // Extra devices: on the lane's machine (the pin), as every lane call.
+    devicePromote: runtimeOnly("devicePromote"),
     // The rail's "Keep running", on the emulator's machine.
     setKeepRunning: runtimeOnly("setKeepRunning"),
     /**

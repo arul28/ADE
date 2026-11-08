@@ -4,8 +4,12 @@ import type {
   AndroidCapabilities,
   AndroidEmulatorAgentServiceApi,
   AndroidEmulatorServiceApi,
+  AndroidInstallArgs,
+  AndroidInstallResult,
   AndroidLaneArgs,
   AndroidLaneDevice,
+  AndroidLaunchArgs,
+  AndroidLaunchResult,
   AndroidLogLevel,
   AndroidProofBundle,
   AndroidRecording,
@@ -253,6 +257,49 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
 
   const laneOf = (args: AndroidLaneArgs | null | undefined): string => requireLaneId(args?.laneId);
 
+  type AppsOn = ReturnType<typeof createAndroidApps>;
+
+  const installWith = async (on: AppsOn, laneId: string, args: AndroidInstallArgs): Promise<AndroidInstallResult> => {
+    const result = await on.install(laneId, { apkPath: args.apkPath ?? null, gradle: args.gradle ?? null });
+    deps.captureAnalytics?.("app_installed");
+    return result;
+  };
+
+  const launchWith = async (on: AppsOn, laneId: string, args: AndroidLaunchArgs): Promise<AndroidLaunchResult> => {
+    // Checked before anything builds, installs or starts: a bad extra refuses the whole launch.
+    const launchWords = androidLaunchWords(args);
+    const wantsInstall = Boolean(args.apkPath?.trim() || args.gradle);
+    const install = wantsInstall ? await installWith(on, laneId, args) : null;
+    const named = args.packageName?.trim() || null;
+    const packageName = named ? assertPackageName(named) : install?.packageName ?? null;
+    if (!packageName) {
+      throw new Error(install
+        ? "The build installed, but ADE could not read its package name. Pass --package <name> to launch it."
+        : "launch needs --package <name>, or --apk / --gradle to install and launch.");
+    }
+    const started = await on.start(laneId, packageName, args.activity ?? null, launchWords);
+    return { laneId, packageName, activity: started.activity, install, totalTimeMs: started.totalTimeMs };
+  };
+
+  /**
+   * The apps of one of the lane's extra devices: the lane's folder (the APK
+   * and the Gradle project are checked against it), the extra's emulator.
+   * ADE made every extra and deletes it whole, so no package list is kept.
+   */
+  const extraApps = (laneId: string, booted: () => Promise<BootedDevice>): AppsOn => createAndroidApps({
+    requireBooted: () => booted(),
+    sdkRoot,
+    laneRoot: () => deps.laneRoot(laneId),
+    isWorkCopy: () => deps.isWorkCopy(laneId),
+    laneDevice: () => null,
+    rememberInstalled: () => undefined,
+    forgetInstalled: () => undefined,
+    platform,
+    env: deps.env,
+    signal,
+    logger,
+  });
+
   // The device settings and controls come from androidDeviceSettings.ts; the service adds them.
   const api: Omit<
     AndroidEmulatorAgentServiceApi,
@@ -266,30 +313,17 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
     async installApp(args) {
       const laneId = laneOf(args);
       deps.assertWorkCopyLive(laneId);
-      const result = await apps.install(laneId, { apkPath: args.apkPath ?? null, gradle: args.gradle ?? null });
+      const result = await installWith(apps, laneId, args);
       ui.invalidate(laneId);
-      deps.captureAnalytics?.("app_installed");
       return result;
     },
 
     async launchApp(args) {
       const laneId = laneOf(args);
       deps.assertWorkCopyLive(laneId);
-      // Checked before anything builds, installs or starts: a bad extra refuses the whole launch.
-      const launchWords = androidLaunchWords(args);
-      const wantsInstall = Boolean(args.apkPath?.trim() || args.gradle);
-      const install = wantsInstall ? await apps.install(laneId, { apkPath: args.apkPath ?? null, gradle: args.gradle ?? null }) : null;
-      if (install) deps.captureAnalytics?.("app_installed");
-      const named = args.packageName?.trim() || null;
-      const packageName = named ? assertPackageName(named) : install?.packageName ?? null;
-      if (!packageName) {
-        throw new Error(install
-          ? "The build installed, but ADE could not read its package name. Pass --package <name> to launch it."
-          : "launch needs --package <name>, or --apk / --gradle to install and launch.");
-      }
-      const started = await apps.start(laneId, packageName, args.activity ?? null, launchWords);
+      const result = await launchWith(apps, laneId, args);
       ui.invalidate(laneId);
-      return { laneId, packageName, activity: started.activity, install, totalTimeMs: started.totalTimeMs };
+      return result;
     },
 
     /** Parity (`ade apple relaunch`): force-stop, then the same start as `launch`, with new extras when given. */
@@ -732,6 +766,26 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
 
   return {
     api,
+    /** `install --device <extra>`: the lane's APK or Gradle build on one of its extra devices. */
+    async installOnExtra(laneId: string, booted: () => Promise<BootedDevice>, args: AndroidInstallArgs): Promise<AndroidInstallResult> {
+      deps.assertWorkCopyLive(laneId);
+      return installWith(extraApps(laneId, booted), laneId, args);
+    },
+    /** `launch --device <extra>`: install (with `apkPath` or `gradle`) and start the app on one of the lane's extras. */
+    async launchOnExtra(laneId: string, booted: () => Promise<BootedDevice>, args: AndroidLaunchArgs): Promise<AndroidLaunchResult> {
+      deps.assertWorkCopyLive(laneId);
+      return launchWith(extraApps(laneId, booted), laneId, args);
+    },
+    /**
+     * Who holds the lane's lease, when it is not the caller (`chatSessionId`):
+     * a promote must not swap the device under another holder's turn.
+     */
+    otherLeaseHolder(laneId: string, chatSessionId: string | null): string | null {
+      const status = leases.status(laneId);
+      if (!status.held) return null;
+      if (chatSessionId && leases.heldByChat(laneId, chatSessionId)) return null;
+      return status.current?.holder ?? "another holder";
+    },
     invalidateUi: ui.invalidate,
     /** Rec: the lane's recordings, for the service's own input verbs, the turn end and the storage count. */
     recordings: sessions,

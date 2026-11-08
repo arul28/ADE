@@ -130,3 +130,39 @@ export function spawnAdb(adbPath: string, args: readonly string[], options: { se
     windowsHide: true,
   });
 }
+
+/** One row of `adb devices`: a serial and its state (`device`, `offline`, `unauthorized`, …). */
+export type AdbDeviceRow = { serial: string; state: string };
+
+/**
+ * The adb server's device list, or null when the server did not answer
+ * (`onError` says why). Never throws.
+ */
+export async function readAdbDevices(
+  adbPath: string,
+  options: { timeoutMs?: number; onError?: (error: unknown) => void } = {},
+): Promise<AdbDeviceRow[] | null> {
+  try {
+    const text = await runAdbText(adbPath, ["devices"], { timeoutMs: options.timeoutMs ?? 3_000 });
+    const rows: AdbDeviceRow[] = [];
+    for (const line of text.split(/\r?\n/u)) {
+      const match = /^(\S+)\s+(\S+)/u.exec(line.trim());
+      if (!match || line.startsWith("List of devices") || line.startsWith("*")) continue;
+      rows.push({ serial: match[1]!, state: match[2]! });
+    }
+    return rows;
+  } catch (error) {
+    options.onError?.(error);
+    return null;
+  }
+}
+
+/**
+ * Stops the machine's adb server and starts a new one. A new server reads
+ * `~/.android/adbkey` again, so a key that changed after the old server
+ * started is used. Emulators reconnect to the new server by themselves.
+ */
+export async function restartAdbServer(adbPath: string): Promise<void> {
+  await runAdb(adbPath, ["kill-server"], { timeoutMs: 10_000, allowFailure: true });
+  await runAdb(adbPath, ["start-server"], { timeoutMs: 20_000 });
+}

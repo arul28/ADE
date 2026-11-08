@@ -494,6 +494,10 @@ that grants access, or cut the connection:
   `ai`), in both the
   `<domain.action>` and `<domain> <action>` spellings, and the raw tool doors
   `actions call|direct|tool`;
+- restarting a computer's adb server: `ade android start --restart-adb`, and
+  `android_emulator.start` through `ade actions` with `restartAdb: true`. A
+  restart cuts every other device and tool on that server, so only the person
+  decides it, in the Android pane or in a terminal on that computer;
 - a first word that is not a plain command word, so `--socket`, `--headless`,
   `--role` and a socket path cannot move a call to another brain or role;
 - `--machine`, `--all-machines` and `--machine-project`: a call reaches

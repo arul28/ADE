@@ -32,6 +32,7 @@ import {
 } from "../../desktop/src/shared/types/androidEmulator";
 import { localRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import {
+  CliToolError,
   CliUsageError,
   HELP_BY_COMMAND,
   actionStep,
@@ -51,7 +52,7 @@ import {
   type JsonObject,
   type ValueCarrierFlags,
 } from "./cli";
-import { withAsked } from "./cliAndroidFormat";
+import { record, records, withAsked } from "./cliAndroidFormat";
 import { buildAndroidSuitePlan } from "./cliAndroidSuite";
 import { buildAndroidDevicePlan } from "./cliAndroidDevice";
 
@@ -92,6 +93,8 @@ export const ANDROID_VALUE_FLAGS: readonly string[] = [
   "--class",
   "--color",
   "--data",
+  // `--device <avd>`: one of the lane's extra devices (start, stop, install, launch, device-detach, device-promote).
+  "--device",
   "--direction",
   "--display-size",
   "--duration-ms",
@@ -192,12 +195,14 @@ const ANDROID_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
   status: [],
   show: ["--floating", "--float"],
   devices: ["--profiles"],
-  "device-create": ["--profile", "--catalog", "--color", "--image", "--name", "--no-start"],
+  "device-create": ["--profile", "--catalog", "--color", "--image", "--name", "--no-start", "--extra"],
   "device-attach": ["--avd", "--no-start"],
-  start: ["--force"],
-  stop: [],
+  start: ["--force", "--restart-adb", "--device"],
+  stop: ["--device"],
   "keep-running": [],
-  "device-detach": ["--keep"],
+  "device-detach": ["--keep", "--device"],
+  // One of the lane's extras becomes its device (`ade apple device-promote`).
+  "device-promote": ["--device"],
   screenshot: ["--out", "--caption", "--no-proof"],
   tap: ["--x", "--y"],
   swipe: ["--duration-ms"],
@@ -210,8 +215,8 @@ const ANDROID_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
   render: ["--angles", "--angle", "--lighting", "--background", "--no-shadow", "--video", "--turntable", "--sheet", "--contact-sheet"],
   // P1 agent suite.
   apps: [],
-  install: [...ANDROID_INSTALL_FLAGS],
-  launch: ["--package", "--activity", ...ANDROID_INSTALL_FLAGS, ...ANDROID_LAUNCH_EXTRA_FLAGS],
+  install: [...ANDROID_INSTALL_FLAGS, "--device"],
+  launch: ["--package", "--activity", ...ANDROID_INSTALL_FLAGS, ...ANDROID_LAUNCH_EXTRA_FLAGS, "--device"],
   relaunch: ["--package", "--activity", ...ANDROID_LAUNCH_EXTRA_FLAGS],
   "app-state": ["--package"],
   foreground: ["--package", "--wait"],
@@ -315,12 +320,24 @@ const ANDROID_ERROR_HINTS: Record<AndroidErrorCode, string> = {
     "hint: another lane holds that AVD. Pick a free one (`ade android devices --text`), or make one: `ade android device-create --profile <id>`.",
   ANDROID_LANE_HAS_DEVICE:
     "hint: this lane already holds an AVD. Use it (`ade android start`), or `ade android device-detach` before you create or attach another.",
+  ANDROID_EXTRA_DEVICE_LIMIT:
+    "hint: this lane holds its limit of extra devices. Remove one (`ade android device-detach --device <avd>`), or promote one and use it (`ade android device-promote --device <avd>`).",
+  ANDROID_DEVICE_IS_EXTRA:
+    "hint: that AVD is one of this lane's extra devices. Make it the lane's device: `ade android device-promote --device <avd>`.",
+  ANDROID_DEVICE_NOT_LANE_OWNED:
+    "hint: `ade android status --text` lists the lane's device and its extras. `ade android device-create --extra --catalog <id>` adds an extra.",
+  ANDROID_LANE_DEVICE_BUSY:
+    "hint: the device is in use (a live view, a recording, a test, an install, or another agent's lease). Wait for it to finish, then run `ade android device-promote` again.",
   ANDROID_AVD_RUNNING:
     "hint: that AVD already runs outside this lane. Close that emulator first, or attach another AVD.",
   ANDROID_NO_FREE_PORT:
     "hint: every emulator port (5554-5682) is in use. Stop an emulator you do not need, then try again.",
   ANDROID_BOOT_TIMEOUT:
     "hint: the emulator did not finish booting in time. Read the log it names, then run `ade android start` again.",
+  ANDROID_ADB_UNAUTHORIZED:
+    "hint: adb refused the device; the error says why. An agent does not restart the adb server: every device on it loses its connection. "
+      + "Ask the user to press \"Restart adb and start\" in the Android pane, or to run `ade android start --restart-adb` in a terminal on that machine. "
+      + "If ADE already restarted the server, cold boot the AVD or read the log the error names.",
   ANDROID_EMULATOR_EXITED:
     "hint: the emulator quit. Read the log it names (`ade android status --text` shows the path).",
   ANDROID_STREAM_FAILED:
@@ -439,6 +456,62 @@ function ownEntry<T>(table: Readonly<Record<string, T>>, key: string): T | undef
   return Object.hasOwn(table, key) ? table[key] : undefined;
 }
 
+/**
+ * `--device <avd>`: one of the lane's extra devices (`start`, `stop`,
+ * `install`, `launch`, `device-detach`, `device-promote`). Empty when the
+ * flag is absent; a blank value is refused.
+ */
+export function readAndroidDeviceClaim(args: string[], verb: string): { device?: string } {
+  const device = readValue(args, ["--device"]);
+  if (device != null && !device.trim()) {
+    throw new CliUsageError(`android ${verb}: --device needs an AVD name (ade android status --text lists the lane's devices).`);
+  }
+  return device ? { device: device.trim() } : {};
+}
+
+/** An action only a brain that knows extra devices has. */
+const ANDROID_EXTRAS_ACTION = "devicePromote";
+
+/**
+ * `plan` for a verb that sends `device` or `extra`, refused before its call
+ * when the brain does not know extra devices. An older brain (another
+ * machine's, with `--machine`) ignores those fields and acts on the lane's
+ * own device: `device-detach --device` would delete it. The check is one read
+ * of the domain's action list, in memory on the brain, and only these verbs pay it.
+ */
+export function requireAndroidExtrasSupport(plan: CliPlan & { kind: "execute" }, verb: string, flag: "--device" | "--extra"): CliPlan & { kind: "execute" } {
+  const [call, ...rest] = plan.steps;
+  if (!call) return plan;
+  const params = call.params;
+  return {
+    ...plan,
+    steps: [
+      listActionsStep("extrasSupport", ANDROID_EMULATOR_DOMAIN),
+      {
+        ...call,
+        params: (values: JsonObject) => {
+          const known = records(record(values.extrasSupport).actions).some((entry) => entry.action === ANDROID_EXTRAS_ACTION);
+          if (!known) {
+            // As `requireMacDesktopBrainCapability`: an older brain drops the argument without an error.
+            throw new CliToolError(
+              `The ADE brain this command reached is older than this ade and does not know extra devices; it would ignore ${flag}, `
+                + `so android ${verb} would act on the lane's own device. Update ADE there (or run \`ade brain update\` for a standalone brain), or leave out ${flag}.`,
+              { capability: ANDROID_EXTRAS_ACTION, flag, verb },
+            );
+          }
+          return typeof params === "function" ? params(values) : params ?? {};
+        },
+      },
+      ...rest,
+    ],
+  };
+}
+
+/** `plan`, with the extra-devices check when the verb names one with `--device`. */
+export function onAndroidDevice(plan: CliPlan & { kind: "execute" }, verb: string, device: { device?: string }): CliPlan & { kind: "execute" } {
+  return device.device ? requireAndroidExtrasSupport(plan, verb, "--device") : plan;
+}
+
 export function buildAndroidPlan(args: string[], options: { remote?: boolean } = {}): CliPlan {
   const typedSub = firstStandalonePositional(args, ANDROID_VALUE_CARRIER_FLAGS) ?? "status";
   const sub = ownEntry(ANDROID_VERB_ALIASES, typedSub) ?? typedSub;
@@ -495,6 +568,8 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
     };
   };
   const bootNotice = "Booting the lane's Android emulator; the first boot of a new AVD can take about a minute…";
+  const extraBootNotice = "Booting the extra Android device beside the lane's own; the first boot of a new AVD can take about a minute…";
+  /** A verb with `--device <avd>`: refused before its call when the brain does not know extra devices. */
 
   if (sub === "status")
     return androidAction("android status", "getStatus", laneClaim(), "android-status");
@@ -523,7 +598,9 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
     const systemImage = readValue(args, ["--image"]);
     const displayName = readValue(args, ["--name"]);
     const noStart = readFlag(args, ["--no-start"]);
-    return androidAction("android device-create", "createDevice", {
+    // A device beside the lane's own, booted, reached with --device (`ade apple device-create --extra`).
+    const extra = readFlag(args, ["--extra"]);
+    const plan = androidAction("android device-create", "createDevice", {
       ...laneClaim(),
       profileId,
       ...(catalogId != null ? { catalogId } : {}),
@@ -531,7 +608,9 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
       ...(systemImage ? { systemImage } : {}),
       ...(displayName ? { displayName } : {}),
       ...(noStart ? { start: false } : {}),
-    }, "android-device", noStart ? {} : { progressNotice: bootNotice });
+      ...(extra ? { extra: true } : {}),
+    }, "android-device", noStart ? {} : { progressNotice: extra ? extraBootNotice : bootNotice });
+    return extra ? requireAndroidExtrasSupport(plan, sub, "--extra") : plan;
   }
   if (sub === "device-attach") {
     const avdName = requireValue(readValue(args, ["--avd"]), "--avd <AVD name>");
@@ -543,12 +622,22 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
     }, "android-device", noStart ? {} : { progressNotice: bootNotice });
   }
   if (sub === "start") {
-    // --force boots past the RAM guard (ANDROID_LOW_MEMORY).
+    // --force boots past the RAM guard (ANDROID_LOW_MEMORY); --restart-adb
+    // restarts a refusing adb server even while other devices use it (ANDROID_ADB_UNAUTHORIZED).
     const force = readFlag(args, ["--force"]);
-    return androidAction("android start", "start", { ...laneClaim(), ...(force ? { force: true } : {}) }, "android-device", { progressNotice: bootNotice });
+    const restartAdb = readFlag(args, ["--restart-adb"]);
+    const device = readAndroidDeviceClaim(args, sub);
+    return onAndroidDevice(androidAction("android start", "start", {
+      ...laneClaim(),
+      ...(force ? { force: true } : {}),
+      ...(restartAdb ? { restartAdb: true } : {}),
+      ...device,
+    }, "android-device", { progressNotice: device.device ? extraBootNotice : bootNotice }), sub, device);
   }
-  if (sub === "stop")
-    return androidAction("android stop", "stop", laneClaim(), "android-device");
+  if (sub === "stop") {
+    const device = readAndroidDeviceClaim(args, sub);
+    return onAndroidDevice(androidAction("android stop", "stop", { ...laneClaim(), ...device }, "android-device"), sub, device);
+  }
   if (sub === "keep-running") {
     // The pin against ADE's idle stop. On the lane's machine, like every lane verb.
     const value = requireValue(positionals()[0] ?? null, "on or off").toLowerCase();
@@ -557,12 +646,26 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
   }
   if (sub === "device-detach") {
     // An AVD ADE made for the lane is deleted on release; --keep keeps it on
-    // disk. The user's own AVD is never deleted either way.
+    // disk. The user's own AVD is never deleted either way. --device <avd>
+    // releases one of the lane's extras instead, and the lane keeps its device.
     const keep = readFlag(args, ["--keep"]);
-    return androidAction("android device-detach", "releaseDevice", {
+    const device = readAndroidDeviceClaim(args, sub);
+    return onAndroidDevice(androidAction("android device-detach", "releaseDevice", {
       ...laneClaim(),
       ...(keep ? { deleteCreated: false } : {}),
-    }, "android-release");
+      ...device,
+    }, "android-release"), sub, device);
+  }
+  if (sub === "device-promote") {
+    // One of the lane's extras becomes the lane's device; the old one is kept.
+    // `--device <avd>`, or the AVD as the first word.
+    const device = readAndroidDeviceClaim(args, sub).device ?? positionals()[0]?.trim() ?? "";
+    if (!device) throw new CliUsageError("android device-promote needs --device <avd> of one of this lane's extra devices (ade android status --text lists them).");
+    return requireAndroidExtrasSupport(
+      androidAction("android device-promote", "devicePromote", { ...laneClaim(), device }, "android-device-promote"),
+      sub,
+      "--device",
+    );
   }
   if (sub === "render") {
     // `ade android render --angles front,back --lighting studio --sheet`: a
