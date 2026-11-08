@@ -72013,7 +72013,7 @@ export function createAgentChatService(args: {
     remember: boolean,
   ): boolean => {
     try {
-      return recordDeletedChatFor(row, managed, metadataPath, remember) && remember;
+      return recordDeletedChatFor(row, managed, metadataPath, remember);
     } catch (error) {
       // Remembering a chat never fails the delete the person asked for.
       logger.warn("agent_chat.deleted_chat_record_failed", { sessionId: row.id, error: getErrorMessage(error) });
@@ -72038,7 +72038,9 @@ export function createAgentChatService(args: {
       "select name, worktree_path as worktreePath from lanes where id = ? limit 1",
       [row.laneId],
     ) ?? null;
-    return deletedChats.remember({
+    // A hidden row (ADE's own cleanup, a subagent, a side chat) is not listed, so Undo cannot reopen it.
+    const hidden = !remember || record.spawnKind === "subagent" || Boolean(record.sideChatParentSessionId);
+    const recorded = deletedChats.remember({
       id: row.id,
       laneId: row.laneId,
       laneName: lane?.name ?? row.laneName ?? null,
@@ -72053,8 +72055,9 @@ export function createAgentChatService(args: {
       lastActiveAt: row.lastActivityAt ?? row.endedAt ?? null,
       origin: "delete",
       record,
-      hidden: !remember || record.spawnKind === "subagent" || Boolean(record.sideChatParentSessionId),
+      hidden,
     });
+    return recorded && !hidden;
   };
 
   /**
