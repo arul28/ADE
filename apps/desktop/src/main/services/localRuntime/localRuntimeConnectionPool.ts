@@ -9,7 +9,6 @@ import path from "node:path";
 import { app } from "electron";
 import { materializeAppImageRuntime } from "./appImageRuntime";
 import { runningAppImagePath } from "../native/runningAppImage";
-import { compareUpdateVersions } from "../../../shared/updateVersions";
 import type { ServiceManagerResult } from "../../../../../ade-cli/src/serviceManager/common";
 import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
 import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
@@ -1973,21 +1972,11 @@ export class LocalRuntimeConnectionPool {
     const socketPath = machineRuntimeSocketPathToDial();
     const runningProbe = await this.probeRuntimeCompatibility(socketPath);
     const runningCompatibilityError = runningProbe?.error ?? null;
-    // Linux adopts a compatible running brain, so a headless machine keeps its
-    // identity. One older than this app moves up as it does on the other
-    // desktops, but never under running work: that waits for a later launch.
-    const movesOlderBrain = process.platform === "linux"
-      && !options.forceRestart
-      && !this.appFallback
-      && Boolean(runningProbe && !runningCompatibilityError)
-      && compareUpdateVersions(runningProbe?.runtimeInfo.version ?? "", this.appVersion) < 0
-      && await this.activitySummary().then((summary) => summary.idle, () => false);
-    const forceRestart = options.forceRestart === true || movesOlderBrain;
     if (
       !runningCompatibilityError
       && runningProbe
       && (runningProbe.compatibleNewer
-        || (process.platform === "linux" && !forceRestart && !this.appFallback))
+        || (process.platform === "linux" && !options.forceRestart && !this.appFallback))
     ) {
       this.clearVersionSkewStatus(runningProbe.runtimeInfo.version);
       this.serviceInstallStatus = {
@@ -2037,7 +2026,7 @@ export class LocalRuntimeConnectionPool {
       // that brain: a forced install restarts it right after, and the staged
       // update swaps its files atomically. The normal update handoff stops it
       // before the new app launch; preserve any other answering brain.
-      if (!forceRestart && (runningProbe || getRuntimeServiceStatus().running === true)) {
+      if (!options.forceRestart && (runningProbe || getRuntimeServiceStatus().running === true)) {
         this.serviceInstallStatus = {
           state: "skipped", attempted: false, path: cliPath,
           message: "A brain is already running; its runtime was left unchanged.",
@@ -2104,7 +2093,7 @@ export class LocalRuntimeConnectionPool {
         timeoutMs: this.options.serviceInstallTimeoutMs ?? LOCAL_RUNTIME_SERVICE_INSTALL_TIMEOUT_MS,
         env: {
           ...(standalone?.env ?? buildLocalRuntimeNodeEnv(this.appVersion)),
-          ...(forceRestart ? { ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" } : {}),
+          ...(options.forceRestart ? { ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" } : {}),
         },
       });
     } catch (error) {
@@ -3238,7 +3227,10 @@ export class LocalRuntimeConnectionPool {
         );
       }
     }
-    if (!acceptedNewerRuntime && expectedBuildHash && runtimeInfo.buildHash !== expectedBuildHash) {
+    // A standalone Linux brain (install.sh, or the AppImage's durable copy) has
+    // no bundled CLI file to hash. Its version already matched above.
+    const standaloneLinuxBrain = process.platform === "linux" && runtimeInfo.buildHash == null;
+    if (!acceptedNewerRuntime && !standaloneLinuxBrain && expectedBuildHash && runtimeInfo.buildHash !== expectedBuildHash) {
       this.logger.info("local_runtime.build_mismatch_detected", {
         socketPath,
         runtimeBuildHash: runtimeInfo.buildHash,
