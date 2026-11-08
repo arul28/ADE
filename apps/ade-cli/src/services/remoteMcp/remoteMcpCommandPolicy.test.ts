@@ -38,6 +38,7 @@ describe("checkRemoteAdeCommand", () => {
     ["write", "restarting adb through an actions --arg", ["actions", "run", "android_emulator.start", "--arg", "laneId=l", "--arg", "restartAdb=true"]],
     ["write", "restarting adb through an escaped JSON key", ["actions", "run", "android_emulator", "start", "--input-json", '{"\\u0072estartAdb":true}']],
     ["write", "restarting adb through an escaped key after --input-json=", ["actions", "run", "android_emulator.start", '--input-json={"\\u0072estartAdb":true}']],
+    ["write", "restarting adb through an escaped key in an --args-list-json array", ["actions", "run", "android_emulator.start", "--args-list-json", '[{"\\u0072estartAdb":true}]']],
     ["read", "creating a lane", ["lanes", "create", "--name", "x"]],
     ["read", "a flag before the subcommand", ["lanes", "--text", "create"]],
     ["read", "a write action through actions", ["actions", "run", "lane", "create"]],

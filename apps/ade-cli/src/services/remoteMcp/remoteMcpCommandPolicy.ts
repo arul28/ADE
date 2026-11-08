@@ -269,7 +269,8 @@ function namesRestartAdb(word: string): boolean {
 }
 
 function jsonNamesRestartAdb(text: string): boolean {
-  if (!text.trimStart().startsWith("{")) return false;
+  // An object (`--input-json`) or an array (`--args-list-json`).
+  if (!/^\s*[[{]/u.test(text)) return false;
   try {
     return /"restartadb"/iu.test(JSON.stringify(JSON.parse(text)));
   } catch {
