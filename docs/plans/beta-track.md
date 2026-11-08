@@ -42,7 +42,7 @@ guard that covers it. Keep it current while the work runs.
 - The track of a build comes from its version only: a `-beta.` prerelease is
   Beta, anything else is Stable (`apps/desktop/src/shared/updateTrack.ts`).
 - Beta builds are packaged with `-c.detectUpdateChannel=false`, so their
-  updater manifests keep the names `latest-mac.yml` and `latest.yml`.
+  updater manifests keep the names `latest-mac.yml`, `latest.yml`, `latest-linux.yml` and `latest-linux-arm64.yml`.
 
 ### Release manifest (every release, stable and beta)
 
@@ -328,7 +328,7 @@ How the pipeline is built, and what is still open.
   requires it. `publishedAt` is the time the publish job assembled the draft
   (for stable, the owner undrafts later).
 - `beta-feed` is created on first use as a prerelease. Manifests are uploaded
-  before `beta.json`. A beta without a Windows build removes `latest.yml` from
+  before `beta.json`. A beta without a Windows or Linux build removes that platform's manifests from
   the feed. This relies on immutable releases staying off for the repo
   (checked 2026-10-29: off); with them on, the feed's assets cannot be
   replaced.
