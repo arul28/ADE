@@ -487,6 +487,7 @@ import type {
   AgentChatLaunchCliArgs,
   AgentChatLaunchCliResult,
   AgentChatDeleteArgs,
+  AgentChatDeleteResult,
   AgentChatGetSummaryArgs,
   AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
@@ -9559,9 +9560,9 @@ export function registerIpc({
     await ctx.agentChatService.unarchiveSession(arg);
   });
 
-  ipcMain.handle(IPC.agentChatDelete, async (_event, arg: AgentChatDeleteArgs): Promise<void> => {
+  ipcMain.handle(IPC.agentChatDelete, async (_event, arg: AgentChatDeleteArgs): Promise<AgentChatDeleteResult> => {
     const ctx = ensureAgentChatContext();
-    await ctx.agentChatService.deleteSession(arg);
+    return await ctx.agentChatService.deleteSession(arg);
   });
 
   ipcMain.handle(IPC.agentChatListDeleted, async (_event, arg: DeletedChatListArgs): Promise<DeletedChatListResult> =>

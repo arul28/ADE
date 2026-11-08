@@ -89,7 +89,7 @@ type AgentChatServiceLike = {
   createSession: (args: AgentChatCreateArgs) => Promise<AgentChatSession>;
   sendMessage(args: AgentChatSendArgs, options: { awaitDispatch?: boolean; routeActiveToSteer: true }): Promise<unknown>;
   sendMessage(args: AgentChatSendArgs): Promise<unknown>;
-  deleteSession: (args: { sessionId: string }) => Promise<void>;
+  deleteSession: (args: { sessionId: string }) => Promise<unknown>;
   emitAdeCard: (args: { sessionId: string; card: AdeCardPayload }) => Promise<void>;
   subscribeToEvents: (callback: (event: AgentChatEventEnvelope) => void) => () => void;
   generateAutoLaneIdentity?: (args: AgentChatSuggestLaneNameArgs) => Promise<AutoLaneIdentitySuggestion>;

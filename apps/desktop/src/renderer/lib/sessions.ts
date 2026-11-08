@@ -358,7 +358,8 @@ export function formatToolTypeLabel(toolType: string | null | undefined): string
  * Used by SessionCard and WorkViewArea.
  */
 
-const LABEL_OSC_REGEX = /\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g;
+// The OSC body stops at ESC, so it ends at the first ST (see ansiStrip.ts).
+const LABEL_OSC_REGEX = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
 const LABEL_CSI_REGEX = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const LABEL_CHARSET_REGEX = /\u001b[\(\)][0-9A-Za-z]/g;
 const LABEL_TWO_CHAR_ESC_REGEX = /\u001b(?:[@-Z\\-_]|[0-9=>])/g;

@@ -8749,7 +8749,7 @@ export function createLaneService({
             if (remoteCheck.exitCode !== 0) {
               throw new Error(`Remote '${remote}' is not configured for this repository`);
             }
-            const remoteRefCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", remote, branchName], {
+            const remoteRefCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", remote, `refs/heads/${branchName}`], {
               cwd: projectRoot,
               timeoutMs: 30_000,
             });
@@ -8915,7 +8915,7 @@ export function createLaneService({
           hasUnpushedCommits = unpushedCommitCount > 0;
         }
         const remoteCheck = await runGitWithGithubAuthFallback(
-          ["ls-remote", "--heads", "origin", riskBranchName],
+          ["ls-remote", "--heads", "origin", `refs/heads/${riskBranchName}`],
           { cwd: projectRoot, timeoutMs: 8_000 }
         );
         remoteBranchExists = remoteCheck.exitCode === 0 && remoteCheck.stdout.trim().length > 0;

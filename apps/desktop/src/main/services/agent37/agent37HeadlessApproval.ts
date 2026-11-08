@@ -192,7 +192,8 @@ export async function approveInHeadlessChromium(args: {
       return "closed";
     }
     const devtools = `http://127.0.0.1:${port}`;
-    const tab = await fetch(`${devtools}/json/new?about:blank`, { method: "PUT", signal: args.signal })
+    // Bounded like every other DevTools read: a server that never answers ends as `closed`.
+    const tab = await fetch(`${devtools}/json/new?about:blank`, { method: "PUT", signal: AbortSignal.any([args.signal, AbortSignal.timeout(DEVTOOLS_WAIT_MS)]) })
       .then((response) => (response.ok ? response.json() as Promise<DevtoolsTarget> : null))
       .catch(() => null);
     // Never the URL itself in a log: it carries a one-time sign-in ticket.

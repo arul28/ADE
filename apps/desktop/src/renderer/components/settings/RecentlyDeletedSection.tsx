@@ -355,8 +355,11 @@ export function RecentlyDeletedSection() {
     if (!chat.laneExists && !laneId) return;
     setRunning({ id: chat.id, kind: "reopen" });
     setActionError(null);
+    // The chat reopens on this machine, so it opens there too, even if the
+    // page moved to another machine since (the toast's Open chat runs later).
+    const reopenPin = pinRef.current;
     try {
-      const result = await window.ade.agentChat.reopenDeleted({ id: chat.id, ...(laneId ? { laneId } : {}) }, pinRef.current);
+      const result = await window.ade.agentChat.reopenDeleted({ id: chat.id, ...(laneId ? { laneId } : {}) }, reopenPin);
       setChats((prev) => prev?.filter((entry) => entry.id !== chat.id) ?? prev);
       setOpenId(null);
       showToast({
@@ -364,9 +367,9 @@ export function RecentlyDeletedSection() {
         tone: "success",
         title: "Chat reopened",
         message: result.mode === "copy" ? `${chatTitle(chat)}, as a copy in the lane you picked.` : chatTitle(chat),
-        actions: [{ label: "Open chat", onClick: () => openInWork(result, pinRef.current) }],
+        actions: [{ label: "Open chat", onClick: () => openInWork(result, reopenPin) }],
       });
-      openInWork(result, pinRef.current);
+      openInWork(result, reopenPin);
     } catch (error) {
       setActionError({ id: chat.id, message: errorText(error) });
       // Reopened from the list without the dialog: open it to show why.

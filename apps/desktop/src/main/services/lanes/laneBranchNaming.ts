@@ -138,9 +138,13 @@ export function createLaneBranchNaming(deps: {
       .map((line) => line.trim().replace(/^refs\/heads\//, "").replace(/^refs\/remotes\/origin\//, ""))
       .filter((name) => name && name !== "HEAD");
   };
-  /** The remote has this branch even though it was never fetched here. Unknown (offline) reads as no. */
+  /**
+   * The remote has this branch even though it was never fetched here. Unknown (offline) reads as no.
+   * The full ref: `ls-remote` matches a bare name against the tail of every
+   * ref, so `fix` would find another person's `user/fix`.
+   */
   const remoteHasBranch = (ref: string): Promise<boolean> =>
-    runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", ref], {
+    runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", `refs/heads/${ref}`], {
       cwd: projectRoot,
       timeoutMs: 15_000,
     }).then((res) => res.exitCode === 0 && res.stdout.trim().length > 0, () => false);
@@ -289,7 +293,7 @@ export function createLaneBranchNaming(deps: {
     hasOrigin = origin.exitCode === 0 && origin.stdout.trim().length > 0;
     if (hasOrigin) {
       const remote = await runGitWithGithubAuthFallback(
-        ["ls-remote", "--exit-code", "--heads", "origin", branch],
+        ["ls-remote", "--exit-code", "--heads", "origin", `refs/heads/${branch}`],
         { cwd: lane.worktree_path, timeoutMs: 12_000 },
       );
       if (remote.exitCode === 0 && remote.stdout.trim()) {
@@ -484,7 +488,7 @@ export function createLaneBranchNaming(deps: {
       const candidate = suffix === 1 ? baseRef : `${baseRef}-${suffix}`;
       if (branchNameClash(candidate, existingBranches) || autoIdentityBranchOccupied(candidate)) continue;
       const remote = hasOrigin
-        ? await runGitWithGithubAuthFallback(["ls-remote", "--exit-code", "--heads", "origin", candidate], {
+        ? await runGitWithGithubAuthFallback(["ls-remote", "--exit-code", "--heads", "origin", `refs/heads/${candidate}`], {
           cwd: projectRoot,
           timeoutMs: 12_000,
         })

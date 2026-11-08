@@ -602,7 +602,9 @@ they may pick. The card asks one question: no (they ask first) or yes within
 limits (**Balanced** by default: 3 a day, up to 4 vCPU · 16 GB). The stored
 presets (Ask me, Balanced, Hands-off, Custom) are unchanged. The day's count is the larger of the account's machines an
 agent made today (`ade_made_by_chat`, Agent 37's `created`) and what this
-brain approved today, so a make-and-delete loop can't step around it.
+brain approved today, so a make-and-delete loop can't step around it. A
+make this brain approved and still runs holds its slot until it counts or
+fails, so parallel makes can't all pass before the first one counts.
 Loosening a limit is the person's call only, like raising the cap.
 
 **A machine approves its own new machine.** A brain with no desktop

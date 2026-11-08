@@ -1,6 +1,6 @@
 ---
 name: update-providers
-description: 'Plan a provider version bump on a Dependabot or pin-watcher PR branch. Finds which agent provider the branch bumps, finds that provider''s newest stable version (even if newer than the PR''s), learns how ADE pins it, reads every release between the current pin and the newest, sorts each change into three layers (works as-is / small ADE change / new feature to design), and reports back for discussion. Research only: it changes no code and moves no pin until the owner decides. Use when the user runs /update-providers on a provider bump branch.'
+description: 'Plan a provider version bump on a pin-watcher PR branch (`pins/<item>`). Finds which agent provider the branch bumps, finds that provider''s newest stable version (even if newer than the PR''s), learns how ADE pins it, reads every release between the current pin and the newest, sorts each change into three layers (works as-is / small ADE change / new feature to design), and reports back for discussion. Research only: it changes no code and moves no pin until the owner decides. Use when the user runs /update-providers on a provider bump branch.'
 ---
 
 # /update-providers — plan a provider bump
@@ -18,8 +18,9 @@ Read it first if any step below is unclear.
 ## 1. Find the provider
 
 1. Read the branch name and the PR (`gh pr view --json title,body,headRefName,files`).
-   - Dependabot branches bump an npm SDK in `apps/desktop/package.json` and/or
-     `apps/ade-cli/package.json` (see `.github/dependabot.yml`).
+   - SDK branches (`pins/<sdk>`, from `.github/workflows/agent-tool-pins.yml`)
+     bump an npm SDK in `apps/desktop/package.json` and/or
+     `apps/ade-cli/package.json`.
    - Pin-watcher branches are named `pins/<tool>` and change
      `apps/ade-cli/scripts/pins/<tool>.json` (see `.github/workflows/agent-tool-pins.yml`).
 2. Map the change to one provider with the table in step 3. If the branch
@@ -40,13 +41,13 @@ opened for. Do not use alpha, beta, preview or nightly tags.
 
 | Provider | Tool name(s) in the tools cache | How the pin moves | Where ADE uses it |
 |---|---|---|---|
-| Claude | `claude-code` | Dependabot: `@anthropic-ai/claude-agent-sdk` (SDK 0.3.N bundles Claude Code 2.1.N), then `npm run tools:manifest` in `apps/ade-cli` | `ai/claudeCodeExecutable.ts`, the Claude runtime in `chat/agentChatService.ts`, `claude*.ts` in `chat/`, fall-forward in `ai/claudeFallForward.ts` |
-| Codex | `codex` | Dependabot: `@openai/codex`, then `tools:manifest` | `ai/codexExecutable.ts`, `chat/codex*.ts`, app-server feature gates in `chat/codexAppServerFeatures.ts`, fall-forward in `ai/codexFallForward.ts` |
-| OpenCode | `opencode` | Dependabot: `@opencode/cli` + `@opencode/client`, then `tools:manifest` | `opencode/**` |
-| Copilot | `copilot` (SDK runtime), `copilot-cli` (terminal CLI) | Dependabot: `@github/copilot-sdk` (runtime is pinned from the lockfile; SDK and runtime must stay the same version), then `tools:manifest`. `copilot-cli` moves with `tools:pin` | `chat/copilotSdk*.ts`, `ai/acpExecutables.ts` (runtime resolver), `pty/pinnedProviderCli.ts` |
-| Cursor | none for chat (`@cursor/sdk` ships in the installer); `cursor-cli` for terminals | Dependabot: `@cursor/sdk`. `cursor-cli` moves with `tools:pin` | `ai/cursorSdk*.ts`, `chat/cursorSdk*.ts`, `chat/cursorModelsDiscovery.ts` |
-| Droid | `droid` | Dependabot: `@factory/droid-sdk` (the SDK in the app). The `droid` binary moves with `tools:pin` | `ai/droidExecutable.ts`, `chat/droidSdk*.ts` |
-| Muse | `muse` | Dependabot: `@muse-code/sdk`, then `npm run tools:muse-pin` (the binary must pair with the SDK version) | `ai/museExecutable.ts`, `ai/museAuth.ts`, `chat/museSdkHost.ts`, fall-forward in `ai/museFallForward.ts` |
+| Claude | `claude-code` | SDK pin PR: `@anthropic-ai/claude-agent-sdk` (SDK 0.3.N bundles Claude Code 2.1.N), then `npm run tools:manifest` in `apps/ade-cli` | `ai/claudeCodeExecutable.ts`, the Claude runtime in `chat/agentChatService.ts`, `claude*.ts` in `chat/`, fall-forward in `ai/claudeFallForward.ts` |
+| Codex | `codex` | SDK pin PR: `@openai/codex`, then `tools:manifest` | `ai/codexExecutable.ts`, `chat/codex*.ts`, app-server feature gates in `chat/codexAppServerFeatures.ts`, fall-forward in `ai/codexFallForward.ts` |
+| OpenCode | `opencode` | SDK pin PR: `@opencode/cli` + `@opencode/client`, then `tools:manifest` | `opencode/**` |
+| Copilot | `copilot` (SDK runtime), `copilot-cli` (terminal CLI) | SDK pin PR: `@github/copilot-sdk` (runtime is pinned from the lockfile; SDK and runtime must stay the same version), then `tools:manifest`. `copilot-cli` moves with `tools:pin` | `chat/copilotSdk*.ts`, `ai/acpExecutables.ts` (runtime resolver), `pty/pinnedProviderCli.ts` |
+| Cursor | none for chat (`@cursor/sdk` ships in the installer); `cursor-cli` for terminals | SDK pin PR: `@cursor/sdk`. `cursor-cli` moves with `tools:pin` | `ai/cursorSdk*.ts`, `chat/cursorSdk*.ts`, `chat/cursorModelsDiscovery.ts` |
+| Droid | `droid` | SDK pin PR: `@factory/droid-sdk` (the SDK in the app). The `droid` binary moves with `tools:pin` | `ai/droidExecutable.ts`, `chat/droidSdk*.ts` |
+| Muse | `muse` | SDK pin PR: `@muse-code/sdk`, then `npm run tools:muse-pin` (the binary must pair with the SDK version) | `ai/museExecutable.ts`, `ai/museAuth.ts`, `chat/museSdkHost.ts`, fall-forward in `ai/museFallForward.ts` |
 | Pi | `pi` (npm tree), `node` (runs Pi's CLI) | `tools:pin -- pi <version>` | `ai/piInstallation.ts`, `chat/piSdk*.ts` |
 | Qwen | `qwen` | `tools:pin` (official standalone bundle with its own Node) | `chat/acpHost/acpDialects/qwen.ts`, `qwenSkillDefaults.ts` |
 | Kimi | `kimi` | `tools:pin` | `chat/acpHost/acpDialects/kimi.ts` |
@@ -115,7 +116,7 @@ Write the report in chat, in this order:
 3. Risks.
 4. What the owner must decide.
 5. The exact commands to move the pin when approved (for example
-   `npm run tools:pin -- grok 1.0.62` or the Dependabot bump plus
+   `npm run tools:pin -- grok 1.0.62` or the SDK pin PR plus
    `npm run tools:manifest`).
 
 Then stop. Do not edit code, pins or lockfiles. When the owner decides, the

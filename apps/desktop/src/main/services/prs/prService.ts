@@ -4146,15 +4146,15 @@ export function createPrService({
     const parsedUpstream = upstreamRef ? parseUpstreamRef(upstreamRef) : null;
     // A branch made with `git checkout -b <new> origin/main` tracks main. The
     // PR head is <new>, so compare with and push to origin/<new> instead.
-    if (upstreamRef && (!parsedUpstream || parsedUpstream.branch === headBranch)) {
-      if (parsedUpstream) {
-        await fetchRemoteBranchForPrCheck({
-          cwd: lane.worktreePath,
-          remote: parsedUpstream.remote,
-          branch: parsedUpstream.branch,
-          headBranch,
-        });
-      }
+    // An upstream with no remote part is a local branch (`--track develop`):
+    // the head is not on a remote yet, so the remote check below decides.
+    if (parsedUpstream && parsedUpstream.branch === headBranch) {
+      await fetchRemoteBranchForPrCheck({
+        cwd: lane.worktreePath,
+        remote: parsedUpstream.remote,
+        branch: parsedUpstream.branch,
+        headBranch,
+      });
 
       const comparison = await readBranchComparison({
         cwd: lane.worktreePath,
@@ -4170,7 +4170,7 @@ export function createPrService({
       };
     }
 
-    const remoteBranchCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", headBranch], {
+    const remoteBranchCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", "origin", `refs/heads/${headBranch}`], {
       cwd: lane.worktreePath,
       timeoutMs: 30_000,
       maxOutputBytes: 256 * 1024,
@@ -7665,7 +7665,7 @@ export function createPrService({
       if (remoteCheck.exitCode !== 0) {
         result.remoteError = `Remote '${remote}' is not configured for this repository`;
       } else {
-        const remoteRefCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", remote, branchName], {
+        const remoteRefCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", remote, `refs/heads/${branchName}`], {
           cwd: projectRoot,
           timeoutMs: 12_000,
         });

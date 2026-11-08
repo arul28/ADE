@@ -2916,7 +2916,11 @@ the chat's own delete from the persisted chat record's provider pointer, and it
 stays on this machine: the conversation it names exists only here, so
 `deleted_chats` is excluded from CRR sync. A row whose chat still exists (a
 delete that failed) is never listed, and neither is a hidden row (reopened or
-removed).
+removed). A chat that never reached its agent has no conversation to read back,
+so no row is written. The delete returns `{ recoverable }` (also on the
+`chat.delete` sync command), and the Work toast offers Undo and the Recently
+deleted link only when it is true. An older machine returns no answer, which
+reads as recoverable.
 
 Reopen opens the conversation through the external-session import. In the same
 lane it continues the session in place; in another lane it is a copy, because

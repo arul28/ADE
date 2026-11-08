@@ -338,6 +338,7 @@ import type {
   AgentChatLaunchCliArgs,
   AgentChatLaunchCliResult,
   AgentChatDeleteArgs,
+  AgentChatDeleteResult,
   AgentChatSuggestLaneNameArgs,
   AutoLaneIdentitySuggestion,
   AgentChatEventEnvelope,
@@ -2764,7 +2765,7 @@ declare global {
           args: AgentChatArchiveArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
-        delete: (args: AgentChatDeleteArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        delete: (args: AgentChatDeleteArgs, pin?: OpenProjectBinding | null) => Promise<AgentChatDeleteResult | null>;
         listDeleted: (args?: DeletedChatListArgs, pin?: OpenProjectBinding | null) => Promise<DeletedChatListResult>;
         getDeletedDetail: (args: DeletedChatDetailArgs, pin?: OpenProjectBinding | null) => Promise<ExternalSessionDetail>;
         reopenDeleted: (args: DeletedChatReopenArgs, pin?: OpenProjectBinding | null) => Promise<DeletedChatReopenResult>;

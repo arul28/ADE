@@ -341,7 +341,9 @@ const TRACKED_CLI_PROMPT_TITLE_MAX_LEN = 72;
 
 function stripAnsiForCliTitle(raw: string): string {
   return raw
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    // The OSC body stops at ESC, so it ends at the first ST: a greedy body ran
+    // to the last one and ate the text between OSC 8 hyperlinks.
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\x1b[@-Z\\-_]/g, "");
 }

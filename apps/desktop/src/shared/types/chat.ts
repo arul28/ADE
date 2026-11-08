@@ -6467,6 +6467,15 @@ export type AgentChatDeleteArgs = {
   sessionId: string;
 };
 
+export type AgentChatDeleteResult = {
+  /**
+   * Settings › Recently deleted holds the chat, so Undo can bring it back.
+   * False for a chat that never reached its agent (nothing to reopen).
+   * An older machine returns nothing: treat that as recoverable.
+   */
+  recoverable: boolean;
+};
+
 export type AgentChatArchiveArgs = {
   sessionId: string;
 };

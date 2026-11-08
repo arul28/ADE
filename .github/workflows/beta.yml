@@ -69,8 +69,25 @@ permissions: {}
 # max` would keep them all, but a key GitHub rejects would stop every beta, so
 # it is left out.) Its own group, so a beta never waits on or cancels a stable
 # release. Previews never touch the feed, so each gets a group of its own.
+# So does a CI run the resolve job ignores (failed, cancelled, a PR's or a
+# fork's): in the shared group it would replace a pending real run, a forced
+# one included, and then do nothing.
 concurrency:
-  group: ${{ inputs.preview_ref && format('beta-preview-{0}', github.run_id) || 'beta' }}
+  group: >-
+    ${{
+      inputs.preview_ref && format('beta-preview-{0}', github.run_id)
+      || (
+        github.event_name == 'workflow_run'
+        && (
+          github.event.workflow_run.conclusion != 'success'
+          || github.event.workflow_run.event != 'push'
+          || github.event.workflow_run.head_branch != 'main'
+          || github.event.workflow_run.head_repository.full_name != github.repository
+        )
+        && format('beta-ignored-{0}', github.run_id)
+      )
+      || 'beta'
+    }}
   cancel-in-progress: false
 
 jobs:

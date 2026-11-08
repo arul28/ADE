@@ -723,7 +723,7 @@ describe("createAgentChatService", () => {
         ? service.deleteSession({ sessionId: session.id })
         : service.archiveSession({ sessionId: session.id });
       await vi.advanceTimersByTimeAsync(31_000);
-      await expect(operation).resolves.toBeUndefined();
+      await expect(operation).resolves.toEqual(action === "delete" ? { recoverable: false } : undefined);
 
       expect(logger.warn).toHaveBeenCalledWith(
         warning,
@@ -879,7 +879,7 @@ describe("createAgentChatService", () => {
       try {
         const deleted = service.deleteSession({ sessionId: session.id });
         await vi.advanceTimersByTimeAsync(10_000);
-        await expect(deleted).resolves.toBeUndefined();
+        await expect(deleted).resolves.toEqual({ recoverable: false });
       } finally {
         vi.useRealTimers();
       }
