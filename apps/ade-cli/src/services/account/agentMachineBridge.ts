@@ -162,7 +162,7 @@ export type AgentMachineBridgeOptions = {
   projectRoots: () => string[];
   logger?: MachineBridgeLogger | null;
   /**
-   * Wakes a sleeping cloud machine (an Agent 37 box) a call names. True when
+   * Wakes a sleeping cloud machine (a cloud box) a call names. True when
    * it woke one; throws with the reason when it may not (the monthly cap).
    */
   wakeForUse?: (machine: AdeAccountMachine) => Promise<boolean>;

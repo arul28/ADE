@@ -376,7 +376,7 @@ export type MultiProjectRpcHandlerOptions = {
   > | null;
   /**
    * The account-level action domains, over the machine's account stores
-   * (`buildMachineAccountDomainServices`), for `agent37.call` and
+   * (`buildMachineAccountDomainServices`), for `cloud.call` and
    * `accountVault.call`. Without it, those methods answer unavailable.
    */
   machineAccountDomains?: MachineAccountDomains;
@@ -574,7 +574,7 @@ const RUNTIME_METHODS = new Set([
   "account.call",
   "remoteMcp.call",
   "keepAwake.call",
-  "agent37.call",
+  "cloud.call",
   "accountVault.call",
   "attention.call",
   "notify.send",
@@ -2945,7 +2945,7 @@ export function createMultiProjectRpcRequestHandler(
       return remoteMcpActionHandlers(getSharedRemoteMcpService(), surface)[action](isRecord(params.args) ? params.args : {});
     }
 
-    // The Agent 37 account and the account vault with no project open, for
+    // The provider account and the account vault with no project open, for
     // this computer's own connections (machineAccountActions.ts).
     if (isMachineAccountMethod(method)) {
       return await runMachineAccountAction(method, params, {

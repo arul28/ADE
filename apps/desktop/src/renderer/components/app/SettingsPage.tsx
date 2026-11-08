@@ -439,7 +439,7 @@ export function SettingsPage({
         land(card);
         return;
       }
-      // A card shown only after its data loads (the Agent 37 sign-ins) is not
+      // A card shown only after its data loads (the provider sign-ins) is not
       // there yet: wait a few seconds for it to appear.
       const root = contentRef.current;
       if (!root) return;

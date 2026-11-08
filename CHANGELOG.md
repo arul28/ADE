@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Desktop and web
 
 - Android Development on macOS, Windows and Linux: per-lane emulators, guided SDK setup, recording, Inspect, fold, Compose previews, remote viewers and `ade android` (#2045, #2069, #2072, #2073, #2098, #2107).
-- Agent 37 cloud machines: one click from the picker, provider sign-ins, ready machines, sleep, spending cap, copy and move (#2050, #2054, #2055, #2056, #2065, #2071, #2078, #2093, #2101, #2102, #2103, #2104, #2105, #2108).
+- ADE Cloud machines: one click from the picker, provider sign-ins, ready machines, sleep, spending cap, copy and move (#2050, #2054, #2055, #2056, #2065, #2071, #2078, #2093, #2101, #2102, #2103, #2104, #2105, #2108).
 - One Integrations page with connect cards and an MCP catalogue (#2048, #2059); Settings › Keyboard and Quick slots (#2041); Recently deleted chats (#2064); sign in from the chat (#2080, #2084); comments on images and videos (#2036).
 - Agents form a mesh with subagents by default (#2043); links open on the right machine and proof review over MCP (#2037); branch names and lane cleanup you choose, true Storage numbers (#2085); onboarding agent rail (#2044); What's new refresh (#2060).
 - Fixes: open Sentry and PostHog issues (#2090), review of recent merges and six T3 Code bugs (#2111), Android-lane bug ledger (#2063), ADE bug ledger (#2058), Needs attention (#2112), GitHub publishing (#2097), PR cards (#2088), attachments across machines (#2042), launch failures and queued messages (#2062, #2076), calls across sleep (#2068), sync takeover (#2075), web crash handling (#2082, #2086), Worker hardening (#2053), relay and provider failures (#2087).

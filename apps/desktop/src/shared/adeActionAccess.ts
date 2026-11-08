@@ -342,7 +342,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: ["status"],
     write: ["request"],
   },
-  agent37: {
+  cloud: {
     read: ["ready_status", "list", "spending", "make_status", "limits", "cloud_sign_in_status"],
     write: [
       "claim_ready", "release_ready", "create", "sleep", "wake", "resize", "copy", "move", "delete",

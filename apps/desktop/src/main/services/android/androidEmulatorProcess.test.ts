@@ -89,7 +89,7 @@ describe("Linux emulator discovery", () => {
   });
 
   // Emulator 37 writes its discovery file to XDG_RUNTIME_DIR in a login
-  // session, and to the Android user home in a service (an Agent37 VM brain).
+  // session, and to the Android user home in a service (a cloud VM brain).
   // A file ADE does not read makes a booted lane emulator read as off.
   it.each([
     ["a login session", (root: string) => path.join(root, "xdg"), (root: string) => ({ XDG_RUNTIME_DIR: path.join(root, "xdg") })],

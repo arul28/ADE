@@ -130,7 +130,7 @@ type RemoteConnectionServiceOptions = {
    */
   explicitConnectOnly?: boolean;
   /**
-   * Wakes a sleeping cloud machine (an Agent 37 box) the person is about to
+   * Wakes a sleeping cloud machine (a cloud box) the person is about to
    * use. True when it woke one, so the connect waits for it to come back;
    * throws with the reason when it may not (the monthly cap). Asked only for
    * an explicit Connect and for a call that changes something: background
@@ -994,7 +994,7 @@ export class RemoteConnectionService {
     });
     try {
       // Asked even with a pool entry: a sleeping box's relay tunnel can look
-      // open until a call times out. Only Agent 37 boxes cost a lookup.
+      // open until a call times out. Only cloud boxes cost a lookup.
       const woke = explicit && this.options.wakeForUse ? await this.options.wakeForUse(target) : false;
       const result = woke
         ? await this.connectWokenMachine(target)

@@ -4,7 +4,7 @@ import path from "node:path";
 /**
  * A copied ADE home must not come up as the machine it was copied from.
  *
- * A cloud box can be forked: Agent37's `fork` copies the whole disk, so the
+ * A cloud box can be forked: the provider's `fork` copies the whole disk, so the
  * new box boots with this machine's relay key, device id, signing key, account
  * session and every project's cr-sqlite site id. Measured on 2026-11-03: the
  * fork published itself under the original's machine key, took over its relay
@@ -12,7 +12,7 @@ import path from "node:path";
  * writers with one site id would also corrupt every synced project.
  *
  * The host says which box this is through `ADE_HOST_INSTANCE_ID` (ADE's cloud
- * templates set it; Agent37's hostname is the instance id). The id is recorded
+ * templates set it; the provider's hostname is the instance id). The id is recorded
  * beside the identity the first time a brain starts. When a later start sees a
  * different id, this home was copied: the machine's identity and trust files
  * are moved aside (never deleted, so a wrong call is recoverable by moving them

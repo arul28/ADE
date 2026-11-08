@@ -1,8 +1,8 @@
 /**
- * The Agent 37 account and the account vault with no project open
- * (`agent37.call`, `accountVault.call` in multiProjectRpcServer): the
+ * The provider account and the account vault with no project open
+ * (`cloud.call`, `accountVault.call` in multiProjectRpcServer): the
  * desktop's Settings in a window with no project on this computer, and
- * `ade agent37` from any folder. The services and caller rules of
+ * `ade cloud` from any folder. The services and caller rules of
  * `run_ade_action`, for the actions in `ADE_ACTION_MACHINE_SCOPED`.
  */
 import { JsonRpcError, JsonRpcErrorCode } from "../../jsonrpc";
@@ -18,7 +18,7 @@ import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../../../d
 import { DESKTOP_CLIENT_NAMES, isRemoteBrainCallerClientName } from "../../../../desktop/src/shared/runtimeClientNames";
 
 const MACHINE_ACCOUNT_METHODS = {
-  "agent37.call": "agent37",
+  "cloud.call": "cloud",
   "accountVault.call": "account_vault",
 } as const satisfies Record<string, AdeMachineScopedDomain>;
 
@@ -69,13 +69,13 @@ export async function runMachineAccountAction(
       refusal.message,
     );
   }
-  // The person's own desktop app on this computer: Settings › Agent 37 always
+  // The person's own desktop app on this computer: Settings › the provider always
   // asks this computer's brain, never another one's.
   const localDesktop = userClient && caller.clientName === DESKTOP_CLIENT_NAMES.local;
   if (isUserOnlyAdeAction(domain, action) && !localDesktop) {
     throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `${domain}.${action} is limited to the ADE desktop app on this computer.`);
   }
-  // The vault with no project is the desktop's Agent 37 code, and only that.
+  // The vault with no project is the desktop's ADE Cloud code, and only that.
   if (domain === "account_vault" && !localDesktop) {
     throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `${method} is only for the ADE desktop app on this computer.`);
   }

@@ -671,7 +671,7 @@ struct ADEBrand: Equatable {
   static let github = make([0xEFFCFF, 0xD8F8FF], "ProviderGitHub", ink: 0x24292F)
   static let linear = make([0x303C9A, 0x252D7C], "LinearLogo", ink: 0xFFFFFF, scale: 0.5)
   static let jira = make([0xEAFBFF, 0xDFF9FF], "BrandJira", ink: 0x2684FF, scale: 0.5)
-  static let agent37 = make([0x262626, 0x0A0A0A], "BrandAgent37", ink: 0xFFFFFF, scale: 0.62)
+  static let cloud = make([0x262626, 0x0A0A0A], "BrandCloud", ink: 0xFFFFFF, scale: 0.62)
 }
 
 /// A maker's tile: its banner gradient with its logo on it (desktop

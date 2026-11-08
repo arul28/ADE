@@ -3866,11 +3866,11 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
 };
 
 /**
- * The `agent37` actions that spend money or delete something. The RPC server
+ * The `cloud` actions that spend money or delete something. The RPC server
  * stamps who is asking on them (see runTool), and each asks for approval
  * unless a person's own client is asking.
  */
-const AGENT37_APPROVED_ACTIONS = new Set([
+const CLOUD_APPROVED_ACTIONS = new Set([
   "create", "resize", "copy", "move", "delete", "set_sleep", "set_cap", "ready_set", "ready_retry", "set_limits",
 ]);
 
@@ -6601,9 +6601,9 @@ async function runTool(args: {
       const { config: _ignoredDraftConfig, ...testArgs } = rawObjectArgs;
       scopedObjectArgs = testArgs;
     }
-    if (domain === "agent37" && AGENT37_APPROVED_ACTIONS.has(action)) {
+    if (domain === "cloud" && CLOUD_APPROVED_ACTIONS.has(action)) {
       if (argsList || hasScalarArg) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `agent37.${action} requires object arguments.`);
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `cloud.${action} requires object arguments.`);
       }
       // Who may say yes to spending or deleting: a person's own client (the
       // desktop, the CTO thread) already decided; anyone else is an agent and
@@ -6612,9 +6612,9 @@ async function runTool(args: {
       // (the same rule as answering a card, above).
       const callerIsPerson = mayUseUserOnlyActions(session)
         || (callerIsCto && !isTrustedChatlessAdeCliCaller(session) && await callerIsTrustedCto(runtime, session));
-      const { approval: _ignoredApproval, ...agent37Args } = rawObjectArgs;
+      const { approval: _ignoredApproval, ...cloudArgs } = rawObjectArgs;
       scopedObjectArgs = {
-        ...agent37Args,
+        ...cloudArgs,
         approval: callerIsPerson
           ? { by: "person" }
           : {

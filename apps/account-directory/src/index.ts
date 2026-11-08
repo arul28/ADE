@@ -1,4 +1,4 @@
-import { handleAgent37WakeRequest, isAgent37WakeRequest, runAgent37Wakes } from "./agent37Wake";
+import { handleCloudWakeRequest, isCloudWakeRequest, runCloudWakes } from "./cloudWake";
 import * as Sentry from "@sentry/cloudflare";
 import { handleRequest } from "./directory";
 import { logScheduledCleanupFailure } from "./logging";
@@ -72,9 +72,9 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // The Jev bonus: account bearer, POST only, no CORS — the ADE brain is the
   // only caller. It forwards to TypeSafe with ADE's key under a daily cap.
   if (isJevBonusRequest(url)) return handleJevBonusRequest(request, env);
-  // Agent 37 timed wakes: account bearer, PUT and DELETE only, no CORS (a
+  // the provider timed wakes: account bearer, PUT and DELETE only, no CORS (a
   // machine's ADE is the only caller). The minute cron below delivers them.
-  if (isAgent37WakeRequest(url)) return handleAgent37WakeRequest(request, env);
+  if (isCloudWakeRequest(url)) return handleCloudWakeRequest(request, env);
   // Clerk's sign-up webhook: Svix-signed, POST only, no CORS (Clerk is the
   // only caller). It records one `ade_signed_up` per account.
   if (isSignupAnalyticsRequest(url)) return handleSignupAnalyticsRequest(request, env);
@@ -150,8 +150,8 @@ export default Sentry.withSentry(sentryOptions, {
         settle("model_registry", () => runModelRegistryCron(env)),
         // Jev bonus: per-account day counts past a week.
         settle("jev_bonus_days", () => cleanupJevBonusDays(env)),
-        // Agent 37 timed wakes: requests each due machine's wake URL.
-        settle("agent37_wakes", () => runAgent37Wakes(env)),
+        // the provider timed wakes: requests each due machine's wake URL.
+        settle("cloud_wakes", () => runCloudWakes(env)),
       ]);
     } catch (error) {
       status = "error";

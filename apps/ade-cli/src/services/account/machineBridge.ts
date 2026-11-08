@@ -648,7 +648,7 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
   /**
    * Resolve an id or a display name. A miss on a cached directory read looks
    * once more, fresh, in case the machine was renamed since. So does a hit
-   * that says offline: a machine woken on demand (an Agent 37 box) is back
+   * that says offline: a machine woken on demand (a cloud box) is back
    * seconds after the wake, long before the cache would notice.
    */
   const selectMachine = async (query: string): Promise<AdeAccountMachine> => {

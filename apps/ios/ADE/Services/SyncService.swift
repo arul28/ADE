@@ -4481,9 +4481,9 @@ final class SyncService: ObservableObject {
   @Published var linearPanePresented = false
   @Published var cursorCloudPanePresented = false
   @Published var githubIssuesPanePresented = false
-  /// The Agent 37 page (Work ⋯ menu), and whether the account has Agent 37 set up.
-  @Published var agent37PanePresented = false
-  @Published var agent37Available = false
+  /// The provider page (Work ⋯ menu), and whether the account has the provider set up.
+  @Published var cloudPanePresented = false
+  @Published var cloudAvailable = false
   /// Projects whose Work ⋯ menu offers GitHub Issues (see `GitHubIssuesMenuAvailability`).
   @Published var githubIssuesMenuProjectIds: Set<String> = []
   /// When set, the Linear pane attaches the chosen issue to this chat session
@@ -5220,7 +5220,7 @@ final class SyncService: ObservableObject {
 
   /// A pane is up over the Hub. A Hub notice waits until it closes.
   var hubIsCoveredBySheet: Bool {
-    linearPanePresented || cursorCloudPanePresented || githubIssuesPanePresented || agent37PanePresented
+    linearPanePresented || cursorCloudPanePresented || githubIssuesPanePresented || cloudPanePresented
   }
 
   /// Starts (or stops) the timer for the current session request. Only an
@@ -9204,9 +9204,9 @@ final class SyncService: ObservableObject {
         stage: stage
       )
       guard wake else { return false }
-      // An Agent 37 box asleep is woken through the machine the phone is on;
+      // a cloud box asleep is woken through the machine the phone is on;
       // its ADE answers a few seconds later, which the pairing waits out.
-      _ = await wakeAgent37MachineIfNeeded(machineKey: machine.machineKey)
+      _ = await wakeCloudMachineIfNeeded(machineKey: machine.machineKey)
       if await pairWithAccountMachine(machine, authorization: authorization) {
         pendingMachineWake = nil
         return true

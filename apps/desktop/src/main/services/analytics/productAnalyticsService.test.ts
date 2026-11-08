@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { APPLE_DEVICE_ANALYTICS_OUTCOMES } from "../../../shared/types/iosSimulator";
 import { ANDROID_DEVICE_ANALYTICS_OUTCOMES } from "../../../shared/types/androidEmulator";
-import { AGENT37_CLOUD_SIGN_INS } from "../../../shared/agent37CloudSignIns";
+import { CLOUD_SIGN_INS } from "../../../shared/cloudSignIns";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -2388,40 +2388,40 @@ describe("product analytics producers", () => {
     })).toEqual({ feature: "work", action: "focus_mode" });
   });
 
-  it("keeps the Agent 37 box actions, ready-machine outcomes and cloud sign-in providers through the sanitizer and nothing else", () => {
+  it("keeps the ADE Cloud box actions, ready-machine outcomes and cloud sign-in providers through the sanitizer and nothing else", () => {
     for (const outcome of ["box_sleep", "box_wake", "box_resize", "box_backup", "box_delete", "box_set_sleep", "box_copy", "box_move", "box_reconnect"]) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
         feature: "connections",
-        action: "agent37_machine_action",
+        action: "cloud_machine_action",
         outcome,
         instance_id: "zodqsue74s",
         price: "0.8¢ an hour",
-      })).toEqual({ feature: "connections", action: "agent37_machine_action", outcome });
+      })).toEqual({ feature: "connections", action: "cloud_machine_action", outcome });
     }
     for (const outcome of ["enabled", "disabled", "completed", "failed", "ready_picker", "ready_cli"]) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
         feature: "connections",
-        action: "agent37_ready",
+        action: "cloud_ready",
         outcome,
         repository: "github.com/acme/app",
         setup: "npm ci",
-      })).toEqual({ feature: "connections", action: "agent37_ready", outcome });
+      })).toEqual({ feature: "connections", action: "cloud_ready", outcome });
     }
-    for (const { id } of AGENT37_CLOUD_SIGN_INS) {
+    for (const { id } of CLOUD_SIGN_INS) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
         feature: "connections",
-        action: "agent37_cloud_sign_in",
+        action: "cloud_sign_in",
         outcome: `signin_${id}`,
         key: "not-a-real-key",
         env: "OPENAI_API_KEY",
-      })).toEqual({ feature: "connections", action: "agent37_cloud_sign_in", outcome: `signin_${id}` });
+      })).toEqual({ feature: "connections", action: "cloud_sign_in", outcome: `signin_${id}` });
     }
     // An action that is not a box action does not cross as an outcome.
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
       feature: "connections",
-      action: "agent37_machine_action",
+      action: "cloud_machine_action",
       outcome: "box_rename",
-    })).toEqual({ feature: "connections", action: "agent37_machine_action" });
+    })).toEqual({ feature: "connections", action: "cloud_machine_action" });
   });
 
   it("keeps the issue-created tracker through the sanitizer and nothing about the issue", () => {

@@ -23,7 +23,7 @@
 // kind of gap nobody notices until a user on the other platform reports a
 // missing capability.
 export const BUNDLED_AGENT_SKILLS = Object.freeze([
-  "ade-agent37",
+  "ade-cloud",
   "ade-android",
   "ade-app-control",
   "ade-apple",

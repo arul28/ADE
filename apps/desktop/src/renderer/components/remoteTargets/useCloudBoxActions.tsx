@@ -1,0 +1,597 @@
+import { useCallback, useRef, useState, type ReactNode } from "react";
+import { ArrowsOutSimple, ArrowsLeftRight, CloudArrowUp, Copy, Moon, MoonStars, PlugsConnected, Sun, Trash, UserMinus } from "@phosphor-icons/react";
+import {
+  CLOUD_DEFAULT_SLEEP_AFTER_MINUTES,
+  CLOUD_SHAPES,
+  CLOUD_SLEEP_AFTER_CHOICES,
+  cloudRunningHourlyUsd,
+  formatCloudHourlyPrice,
+  type CloudMachine,
+  type CloudMachineActionKind,
+  type CloudMachineActionResult,
+  type CloudShapeId,
+} from "../../../shared/adeCloud";
+import { accountMachineDisplayName, accountMachineRemovalConfirmBody } from "../../../shared/accountDirectory";
+import { captureError } from "../../../shared/sentry/capture";
+import type { AdeAccountMachine } from "../../../shared/types/account";
+import type { AttentionItem } from "../../../shared/types/attention";
+import { showToast } from "../app/toast/toastStore";
+import { confirmDialog, Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice";
+import { extractError } from "../../lib/format";
+import { cloudBoxWork, describeCloudRate, type CloudBoxWork } from "./cloudMachineModel";
+import type { MachineAction } from "./MachineActionsMenu";
+
+/** What one box is doing in the list right now, shown on its card. */
+export type CloudBoxPending = CloudMachineActionKind | "remove" | "copy" | "move" | "reconnect";
+
+export type CloudBoxActionError = {
+  message: string;
+  blocker: CloudMachineActionResult["blocker"];
+};
+
+/** One box's context in the list: its ADE row (if it has one) and what runs on it. */
+export type CloudBoxContext = {
+  box: CloudMachine;
+  name: string;
+  /** The account row the box is, or null for a box not (or no longer) in ADE. */
+  accountMachine: AdeAccountMachine | null;
+  /** This computer's saved connection to it, removed with it. */
+  targetId: string | null;
+  work: CloudBoxWork;
+  /** The account list was read, so a null `accountMachine` really means "not in ADE". */
+  accountKnown: boolean;
+};
+
+/**
+ * A box's context from its account row (if any): the row's name wins, then
+ * the provider's name, then the instance id. `name` overrides it (a saved
+ * connection's own name).
+ */
+export function cloudBoxContext(args: {
+  box: CloudMachine;
+  accountMachine: AdeAccountMachine | null;
+  targetId: string | null;
+  activityItems: readonly AttentionItem[];
+  accountKnown: boolean;
+  name?: string | null;
+}): CloudBoxContext {
+  const { box, accountMachine } = args;
+  return {
+    box,
+    name: args.name ?? (accountMachine ? accountMachineDisplayName(accountMachine) : null) ?? (box.name?.trim() || box.instanceId),
+    accountMachine,
+    targetId: args.targetId,
+    work: cloudBoxWork(accountMachine, args.activityItems),
+    accountKnown: args.accountKnown,
+  };
+}
+
+const PENDING_LABELS: Record<CloudBoxPending, string> = {
+  sleep: "Putting it to sleep…",
+  wake: "Waking it…",
+  resize: "Resizing. The box restarts…",
+  backup: "Backing up. On a big disk this takes a few minutes…",
+  delete: "Deleting the box…",
+  remove: "Removing it from ADE…",
+  set_sleep: "Changing how it sleeps…",
+  copy: "Copying it into a new machine. A big disk takes a few minutes…",
+  move: "Moving it: a new machine, then every file copied over…",
+  reconnect: "Signing it back in to your account…",
+};
+
+export function cloudPendingLabel(pending: CloudBoxPending): string {
+  return PENDING_LABELS[pending];
+}
+
+function chatsLine(count: number, name: string): string {
+  return `${count === 1 ? "A chat is" : `${count} chats are`} running on ${name}.`;
+}
+
+/**
+ * Sleep, wake, resize, back up, Remove from ADE and Delete box for the
+ * the ADE Cloud group, with the confirmations each one needs.
+ *
+ * The box actions go to ADE Cloud through this desktop's main
+ * process, and Remove from ADE to the account directory; both are account
+ * level, so nothing here takes a pin.
+ */
+export function useCloudBoxActions(args: {
+  /** Read the boxes again (state, spend). */
+  refresh: () => void;
+  /** Read the account's machines again. */
+  onAccountChanged?: () => void;
+  /** Forget this computer's saved connection to a machine that left ADE. */
+  forgetTarget: (targetId: string) => Promise<void>;
+}) {
+  const { refresh, onAccountChanged, forgetTarget } = args;
+  const [pendingById, setPendingById] = useState<Record<string, CloudBoxPending>>({});
+  const [errorById, setErrorById] = useState<Record<string, CloudBoxActionError>>({});
+  const [resizing, setResizing] = useState<CloudBoxContext | null>(null);
+  const [sleepSetting, setSleepSetting] = useState<CloudBoxContext | null>(null);
+
+  const setPending = useCallback((instanceId: string, pending: CloudBoxPending | null) => {
+    setPendingById((current) => {
+      const next = { ...current };
+      if (pending) next[instanceId] = pending;
+      else delete next[instanceId];
+      return next;
+    });
+  }, []);
+  const setError = useCallback((instanceId: string, error: CloudBoxActionError | null) => {
+    setErrorById((current) => {
+      if (!error && !(instanceId in current)) return current;
+      const next = { ...current };
+      if (error) next[instanceId] = error;
+      else delete next[instanceId];
+      return next;
+    });
+  }, []);
+
+  const run = useCallback(async (
+    ctx: CloudBoxContext,
+    action: CloudMachineActionKind,
+    extra: { shape?: CloudShapeId; sleepAfterMinutes?: number | null } = {},
+  ): Promise<CloudMachineActionResult | null> => {
+    const machineAction = window.ade?.cloud?.machineAction;
+    if (!machineAction) return null;
+    const { instanceId } = ctx.box;
+    setPending(instanceId, action);
+    setError(instanceId, null);
+    let result: CloudMachineActionResult | null;
+    try {
+      result = await machineAction({
+        instanceId,
+        action,
+        ...extra,
+        ...(action === "delete" ? { machineKey: ctx.accountMachine?.machineKey ?? null } : {}),
+      });
+    } catch (error) {
+      // the provider's refusals come back as results; a throw is the IPC itself.
+      captureError(error, { fingerprint: ["cloud", "machine_action_ipc"], handled: true });
+      result = { ok: false, blocker: null, message: extractError(error) };
+    } finally {
+      setPending(instanceId, null);
+    }
+    if (!result) return null;
+    if (result.ok) {
+      showToast({ tone: "success", title: toastTitle(action, ctx.name), message: result.message, replayMask: { title: true } });
+    } else {
+      setError(instanceId, { message: result.message, blocker: result.blocker });
+    }
+    refresh();
+    return result;
+  }, [refresh, setError, setPending]);
+
+  const sleep = useCallback(async (ctx: CloudBoxContext) => {
+    if (ctx.work.runningChats > 0) {
+      const ok = await confirmDialog({
+        title: `Sleep ${ctx.name}?`,
+        message: `${chatsLine(ctx.work.runningChats, ctx.name)} Sleep freezes everything on the box, so a turn in progress may fail and need a retry after it wakes. Until then, only its disk bills.`,
+        confirmLabel: "Sleep",
+      });
+      if (!ok) return;
+    }
+    await run(ctx, "sleep");
+  }, [run]);
+
+  const deleteBox = useCallback(async (ctx: CloudBoxContext) => {
+    const ok = await confirmDialog({
+      title: `Delete ${ctx.name}?`,
+      message: `ADE deletes ${ctx.name} on ADE Cloud and removes it from your computers. Everything on its disk is gone for good: repos, lanes, and any work you have not pushed. ADE Cloud stops billing for it.`,
+      children: ctx.work.runningChats > 0
+        ? <Banner layout="inline" model={{ id: "cloud-delete-running", tone: "warning", title: `${chatsLine(ctx.work.runningChats, ctx.name)} They stop for good.` }} />
+        : undefined,
+      confirmLabel: "Delete box",
+      destructive: true,
+      size: "md",
+    });
+    if (!ok) return;
+    const result = await run(ctx, "delete");
+    if (result?.ok) {
+      if (ctx.targetId) {
+        await forgetTarget(ctx.targetId).catch((error: unknown) =>
+          captureError(error, { fingerprint: ["cloud", "forget_deleted_target"], handled: true }));
+      }
+      onAccountChanged?.();
+    }
+  }, [forgetTarget, onAccountChanged, run]);
+
+  // Machine keys with a removal running (its confirmation included), so a second click starts nothing.
+  const removing = useRef(new Set<string>());
+  /**
+   * Remove from ADE: the account row goes (on every computer), and this
+   * computer's saved connection with it. Any machine can be removed; an
+   * cloud box keeps running, and the confirmation says it keeps billing.
+   */
+  const removeFromAde = useCallback(async (input: {
+    machine: AdeAccountMachine;
+    name: string;
+    targetId: string | null;
+    box: CloudMachine | null;
+    /** The row is a box deleted on the provider site: only its ADE entry is left. */
+    deletedOnCloud?: boolean;
+    onError: (message: string) => void;
+  }) => {
+    const key = input.machine.machineKey;
+    if (removing.current.has(key)) return;
+    removing.current.add(key);
+    try {
+      const rate = input.box && !input.box.pastDue ? describeCloudRate(input.box) : null;
+      const message = input.box
+        ? `${input.name} leaves your computers on every device. The box stays on ADE Cloud and keeps billing${rate ? ` (${rate})` : ""}. To stop the bill, use Delete box instead.`
+        : input.deletedOnCloud
+          ? `${input.name} was deleted on ADE Cloud, so it no longer exists and costs nothing. This removes its entry from your computers on every device.`
+          : `${input.name} leaves your computers on every device.\n\n${accountMachineRemovalConfirmBody(input.machine)}`;
+      const ok = await confirmDialog({
+        title: `Remove ${input.name} from ADE?`,
+        message: <span style={{ whiteSpace: "pre-line" }}>{message}</span>,
+        confirmLabel: "Remove from ADE",
+        destructive: true,
+        size: "md",
+      });
+      if (!ok) return;
+      const removeMachine = window.ade?.account?.removeMachine;
+      if (!removeMachine) return;
+      if (input.box) setPending(input.box.instanceId, "remove");
+      try {
+        await removeMachine(input.machine.machineKey);
+        if (input.targetId) {
+          await forgetTarget(input.targetId).catch((error: unknown) =>
+            captureError(error, { fingerprint: ["cloud", "forget_removed_target"], handled: true }));
+        }
+        showToast({
+          tone: "success",
+          title: `Removed ${input.name} from ADE`,
+          message: input.box ? "It still runs on ADE Cloud. Delete box stops the bill." : undefined,
+          replayMask: { title: true },
+        });
+      } catch (error) {
+        captureError(error, { fingerprint: ["cloud", "remove_from_ade"], handled: true });
+        input.onError(extractError(error));
+      } finally {
+        if (input.box) setPending(input.box.instanceId, null);
+        onAccountChanged?.();
+        refresh();
+      }
+    } finally {
+      removing.current.delete(key);
+    }
+  }, [forgetTarget, onAccountChanged, refresh, setPending]);
+
+  /**
+   * Copy, Move and Reconnect run for minutes in the main process and report
+   * like a create; the card shows the step meanwhile and a toast says how it
+   * ended.
+   */
+  const runLong = useCallback(async (ctx: CloudBoxContext, kind: "copy" | "move" | "reconnect", start: (requestId: string) => Promise<{ started: boolean }>) => {
+    const bridge = window.ade?.cloud;
+    if (!bridge?.onCreateProgress) return;
+    const requestId = `${kind}-${ctx.box.instanceId}-${Date.now()}`;
+    const { instanceId } = ctx.box;
+    setPending(instanceId, kind);
+    setError(instanceId, null);
+    const off = bridge.onCreateProgress((progress) => {
+      if (progress.requestId !== requestId) return;
+      if (progress.stage === "done") {
+        off();
+        setPending(instanceId, null);
+        showToast({ tone: "success", title: kind === "copy" ? `Copied ${ctx.name}` : kind === "move" ? `Moved ${ctx.name}` : `Reconnected ${ctx.name}`, message: progress.message, replayMask: { title: true } });
+        refresh();
+        onAccountChanged?.();
+      } else if (progress.stage === "failed") {
+        off();
+        setPending(instanceId, null);
+        setError(instanceId, { message: progress.error ?? progress.message, blocker: null });
+        refresh();
+      }
+    });
+    try {
+      const started = await start(requestId);
+      if (!started.started) throw new Error("ADE couldn't start that.");
+    } catch (error) {
+      off();
+      setPending(instanceId, null);
+      setError(instanceId, { message: extractError(error), blocker: null });
+    }
+  }, [onAccountChanged, refresh, setError, setPending]);
+
+  const copyBox = useCallback(async (ctx: CloudBoxContext) => {
+    const copyMachine = window.ade.cloud?.copyMachine;
+    if (!copyMachine) return;
+    const rate = describeCloudRate({ ...ctx.box, state: "running" });
+    const ok = await confirmDialog({
+      title: `Copy ${ctx.name}?`,
+      message: `ADE makes a new machine with the same files (repos, lanes, installed dependencies) and signs it in as a new computer${rate ? `. It bills ${rate} while awake` : ""}. A big disk takes a few minutes.`,
+      confirmLabel: "Copy",
+    });
+    if (!ok) return;
+    await runLong(ctx, "copy", (requestId) => copyMachine({ requestId, instanceId: ctx.box.instanceId, name: `${ctx.name} copy` }));
+  }, [runLong]);
+
+  const moveBox = useCallback(async (ctx: CloudBoxContext) => {
+    const moveMachine = window.ade.cloud?.moveMachine;
+    if (!moveMachine) return;
+    const to = ctx.box.type === "vm" ? "box" : "vm";
+    const ok = await confirmDialog({
+      title: `Move ${ctx.name} to a ${to === "vm" ? "VM" : "box"}?`,
+      message: to === "vm"
+        ? `ADE makes a VM (Docker and Android, about 2.5 times the price), copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Running processes stop.`
+        : `ADE makes a box, copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Docker images and volumes stay behind, and running processes stop.`,
+      confirmLabel: "Move",
+      destructive: true,
+      size: "md",
+    });
+    if (!ok) return;
+    await runLong(ctx, "move", (requestId) => moveMachine({
+      requestId,
+      instanceId: ctx.box.instanceId,
+      machineKey: ctx.accountMachine?.machineKey ?? null,
+      to,
+    }));
+  }, [runLong]);
+
+  /**
+   * Reconnect: a box removed from ADE keeps its files and identity, and its
+   * ADE refuses the account until it is signed in again. ADE does that on the
+   * box and approves it with this computer's account; it comes back as the
+   * same machine under Your computers.
+   */
+  const reconnectBox = useCallback(async (ctx: CloudBoxContext) => {
+    const reconnectMachine = window.ade.cloud?.reconnectMachine;
+    if (!reconnectMachine) return;
+    await runLong(ctx, "reconnect", (requestId) => reconnectMachine({ requestId, instanceId: ctx.box.instanceId }));
+  }, [runLong]);
+
+  /** The ⋯ menu items for a box, after the row's own (Rename, Test…). */
+  const actionsFor = useCallback((ctx: CloudBoxContext, onAccountError: (message: string) => void): MachineAction[] => {
+    const { box } = ctx;
+    const busy = pendingById[box.instanceId] != null;
+    const suspended = box.pastDue;
+    const items: MachineAction[] = [];
+    if (box.state === "running") {
+      items.push({ key: "cloud-sleep", label: "Sleep", icon: <Moon size={14} />, disabled: busy, onSelect: () => void sleep(ctx) });
+    }
+    if ((box.state === "asleep" || box.state === "stopped") && !suspended) {
+      items.push({
+        key: "cloud-wake",
+        label: box.state === "stopped" ? "Start" : "Wake",
+        icon: <Sun size={14} />,
+        disabled: busy,
+        onSelect: () => void run(ctx, "wake"),
+      });
+    }
+    if (box.state === "running" && box.resources) {
+      items.push({ key: "cloud-resize", label: "Resize…", icon: <ArrowsOutSimple size={14} />, disabled: busy, onSelect: () => setResizing(ctx) });
+    }
+    if (box.madeByAde && box.machineKey && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
+      items.push({ key: "cloud-copy", label: "Copy…", icon: <Copy size={14} />, disabled: busy, onSelect: () => void copyBox(ctx) });
+      items.push({
+        key: "cloud-move",
+        label: box.type === "vm" ? "Move to a box…" : "Move to a VM…",
+        icon: <ArrowsLeftRight size={14} />,
+        disabled: busy,
+        onSelect: () => void moveBox(ctx),
+      });
+    }
+    if (box.madeByAde && (box.state === "running" || box.state === "asleep")) {
+      items.push({ key: "cloud-sleep-after", label: "Sleep when idle…", icon: <MoonStars size={14} />, disabled: busy, onSelect: () => setSleepSetting(ctx) });
+    }
+    if (box.state === "running" || box.state === "asleep" || box.state === "stopped") {
+      items.push({ key: "cloud-backup", label: "Back up now", icon: <CloudArrowUp size={14} />, disabled: busy, onSelect: () => void run(ctx, "backup") });
+    }
+    // A box that joined once (it carries its machine key) and left the account.
+    if (ctx.accountKnown && !ctx.accountMachine && box.machineKey && !suspended && window.ade?.cloud?.reconnectMachine
+      && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
+      items.push({ key: "cloud-reconnect", label: "Reconnect to ADE", icon: <PlugsConnected size={14} />, disabled: busy, onSelect: () => void reconnectBox(ctx) });
+    }
+    if (ctx.accountMachine) {
+      const accountMachine = ctx.accountMachine;
+      items.push({
+        key: "cloud-remove",
+        label: "Remove from ADE",
+        ariaLabel: `Remove ${ctx.name} from ADE`,
+        icon: <UserMinus size={14} />,
+        danger: true,
+        disabled: busy,
+        onSelect: () => void removeFromAde({ machine: accountMachine, name: ctx.name, targetId: ctx.targetId, box, onError: onAccountError }),
+      });
+    }
+    items.push({
+      key: "cloud-delete",
+      label: "Delete box",
+      ariaLabel: `Delete ${ctx.name} on ADE Cloud`,
+      icon: <Trash size={14} />,
+      danger: true,
+      disabled: busy || box.state === "deleting",
+      onSelect: () => void deleteBox(ctx),
+    });
+    return items;
+  }, [copyBox, deleteBox, moveBox, pendingById, reconnectBox, removeFromAde, run, sleep]);
+
+  const dialog: ReactNode = resizing ? (
+    <CloudResizeDialog
+      ctx={resizing}
+      onCancel={() => setResizing(null)}
+      onResize={(shape) => {
+        const ctx = resizing;
+        setResizing(null);
+        void run(ctx, "resize", { shape });
+      }}
+    />
+  ) : sleepSetting ? (
+    <CloudSleepDialog
+      ctx={sleepSetting}
+      onCancel={() => setSleepSetting(null)}
+      onSave={(minutes) => {
+        const ctx = sleepSetting;
+        setSleepSetting(null);
+        void run(ctx, "set_sleep", { sleepAfterMinutes: minutes });
+      }}
+    />
+  ) : null;
+
+  return {
+    pendingById,
+    errorById,
+    dismissError: (instanceId: string) => setError(instanceId, null),
+    actionsFor,
+    wake: (ctx: CloudBoxContext) => run(ctx, "wake"),
+    removeFromAde,
+    dialog,
+  };
+}
+
+function toastTitle(action: CloudMachineActionKind, name: string): string {
+  switch (action) {
+    case "sleep":
+      return `${name} is asleep`;
+    case "wake":
+      return `${name} is waking`;
+    case "resize":
+      return `Resized ${name}`;
+    case "backup":
+      return `Backed up ${name}`;
+    case "delete":
+      return `Deleted ${name}`;
+    case "set_sleep":
+      return `${name}'s sleep changed`;
+  }
+}
+
+/**
+ * How long a box waits with nothing running before the provider puts it to sleep.
+ * ADE on the box keeps it awake while a chat, a command or a setup runs, so a
+ * short wait costs nothing in interruptions; opening a lane or sending to a
+ * chat there wakes it in about a second.
+ */
+function CloudSleepDialog({
+  ctx,
+  onCancel,
+  onSave,
+}: {
+  ctx: CloudBoxContext;
+  onCancel: () => void;
+  onSave: (minutes: number | null) => void;
+}) {
+  const { box, name } = ctx;
+  const current = box.sleep.state === "auto" ? box.sleep.afterMinutes : box.sleep.state === "never" ? null : undefined;
+  const [picked, setPicked] = useState<number | null | undefined>(current ?? CLOUD_DEFAULT_SLEEP_AFTER_MINUTES);
+  const choices: Array<{ value: number | null; label: string }> = [
+    ...CLOUD_SLEEP_AFTER_CHOICES.map((minutes) => ({ value: minutes as number | null, label: minutes < 60 ? `${minutes} min` : "1 hour" })),
+    { value: null, label: "Never" },
+  ];
+  const hourly = box.runningHourlyUsd != null ? formatCloudHourlyPrice(box.runningHourlyUsd) : null;
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => { if (!open) onCancel(); }}
+      title={`Sleep ${name} when idle`}
+      description="It sleeps once nothing has run on it for this long. A running chat, command or setup keeps it awake, and opening one of its lanes wakes it in about a second."
+      size="sm"
+      actions={[
+        { label: "Save", onClick: () => { if (picked !== undefined) onSave(picked); }, disabled: picked === undefined || picked === current, autoFocus: true },
+        { label: "Cancel", onClick: onCancel, variant: "secondary" },
+      ]}
+    >
+      <div style={{ display: "grid", gap: 10 }}>
+        <div role="radiogroup" aria-label="Sleep after" className="ade-cx-cloud-shapes">
+          {choices.map((choice) => (
+            <button
+              key={choice.label}
+              type="button"
+              role="radio"
+              aria-checked={choice.value === picked}
+              className="ade-cx-cloud-shape"
+              data-current={choice.value === current ? "true" : undefined}
+              onClick={() => setPicked(choice.value)}
+            >
+              <span className="ade-cx-cloud-shape-size kit-num">{choice.label}</span>
+              {choice.value === current ? <span className="kit-tag">Now</span> : null}
+            </button>
+          ))}
+        </div>
+        {picked === null && hourly ? (
+          <p className="ade-cx-cloud-note">It bills {hourly} around the clock until you sleep it.</p>
+        ) : null}
+        {box.sleep.state === "pending" ? (
+          <p className="ade-cx-cloud-note">ADE wakes it for a moment to set this up.</p>
+        ) : null}
+      </div>
+    </Dialog>
+  );
+}
+
+/**
+ * Pick a new size. The box restarts to change it: files stay, running work
+ * stops. Said plainly every time, and louder when Activity shows chats running.
+ */
+function CloudResizeDialog({
+  ctx,
+  onCancel,
+  onResize,
+}: {
+  ctx: CloudBoxContext;
+  onCancel: () => void;
+  onResize: (shape: CloudShapeId) => void;
+}) {
+  const { box, name, work } = ctx;
+  const current = box.shapeId;
+  const [picked, setPicked] = useState<CloudShapeId | null>(null);
+    const choice = picked ?? CLOUD_SHAPES.find((shape) => shape.id !== current)?.id ?? null;
+  const target = CLOUD_SHAPES.find((shape) => shape.id === choice) ?? null;
+  const keepsDisk = target && box.resources && target.diskGb < box.resources.diskGb;
+  const running = work.runningChats > 0;
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => { if (!open) onCancel(); }}
+      title={`Resize ${name}`}
+      description={`${name} restarts to change size. Its files stay; running chats, terminals and processes stop, and ADE on it starts again in a few seconds.`}
+      size="sm"
+      actions={[
+        {
+          label: running ? "Resize anyway" : "Resize",
+          onClick: () => { if (choice) onResize(choice); },
+          disabled: !choice || choice === current,
+          autoFocus: true,
+        },
+        { label: "Cancel", onClick: onCancel, variant: "secondary" },
+      ]}
+    >
+      <div style={{ display: "grid", gap: 10 }}>
+        {running ? (
+          <Banner layout="inline" model={{ id: "cloud-resize-running", tone: "warning", title: chatsLine(work.runningChats, name), detail: "Resizing stops them. Wait for them to finish, or resize anyway." }} />
+        ) : null}
+        <div role="radiogroup" aria-label="Size" className="ade-cx-cloud-shapes">
+          {CLOUD_SHAPES.map((shape) => {
+            const price = formatCloudHourlyPrice(cloudRunningHourlyUsd(box.type === "box" ? "default" : box.type, {
+              cpu: shape.cpu,
+              memoryGb: shape.memoryGb,
+              diskGb: Math.max(shape.diskGb, box.resources?.diskGb ?? 0),
+            }));
+            const isCurrent = shape.id === current;
+            return (
+              <button
+                key={shape.id}
+                type="button"
+                role="radio"
+                aria-checked={shape.id === choice}
+                className="ade-cx-cloud-shape"
+                data-current={isCurrent ? "true" : undefined}
+                onClick={() => setPicked(shape.id)}
+              >
+                <span className="ade-cx-cloud-shape-size kit-num">{shape.cpu} vCPU · {shape.memoryGb} GB</span>
+                <span className="ade-cx-cloud-shape-price kit-num">{price}</span>
+                {isCurrent ? <span className="kit-tag">Now</span> : null}
+              </button>
+            );
+          })}
+        </div>
+        {keepsDisk && box.resources ? (
+          <p className="ade-cx-cloud-note">The disk stays at {box.resources.diskGb} GB: ADE Cloud never shrinks a disk.</p>
+        ) : null}
+      </div>
+    </Dialog>
+  );
+}

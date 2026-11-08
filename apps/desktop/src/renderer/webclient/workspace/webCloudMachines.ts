@@ -4,9 +4,9 @@ import type { WebMachineWorkspaceSnapshot } from "./WebMachineSessionManager";
 // ---------------------------------------------------------------------------
 // The account's cloud machines, as the cloud reports them.
 //
-// The browser never holds the cloud key. Every ADE brain of the account can
+// The browser never holds the cloud credential. Every ADE brain of the account can
 // list and wake the account's cloud machines (the phone's cloud page uses the
-// same `agent37.read` / `agent37.write` commands), so the web asks a machine
+// same `cloud.read` / `cloud.write` commands), so the web asks a machine
 // this tab is already connected to. Each call names the session it runs on.
 // ---------------------------------------------------------------------------
 
@@ -28,8 +28,8 @@ export type WebCloudMachines = {
   readThroughTargetId: string;
 };
 
-const READ_ACTION = "agent37.read";
-const WRITE_ACTION = "agent37.write";
+const READ_ACTION = "cloud.read";
+const WRITE_ACTION = "cloud.write";
 const SEEN_STORAGE_KEY = "ade.web.cloudMachineKeys.v1";
 
 function cloudState(value: unknown): WebCloudMachineState {

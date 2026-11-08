@@ -158,8 +158,8 @@ type SyncServiceArgs = {
   agentChatService: ReturnType<typeof createAgentChatService>;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
-  /** The `agent37` action domain (the phone's Agent 37 page); null with no project runtime yet. */
-  agent37Actions?: () => Record<string, unknown> | null;
+  /** The `cloud` action domain (the phone's ADE Cloud page); null with no project runtime yet. */
+  cloudActions?: () => Record<string, unknown> | null;
   cloudAgentsService?: CloudAgentsService | null;
   personalChatScope?: PersonalChatScopeContract;
   /** Brain→push-relay publisher; threaded to the runtime remote-command service. */
@@ -984,7 +984,7 @@ export function createSyncService(args: SyncServiceArgs) {
     agentChatService: args.agentChatService,
     chatLaunchService: args.chatLaunchService,
     cursorCloudFleetService: args.cursorCloudFleetService,
-    agent37Actions: args.agent37Actions,
+    cloudActions: args.cloudActions,
     cloudAgentsService: args.cloudAgentsService,
     personalChatScope: args.personalChatScope,
     pushPublisherService: args.pushPublisherService,
@@ -1204,7 +1204,7 @@ export function createSyncService(args: SyncServiceArgs) {
       agentChatService: args.agentChatService,
       chatLaunchService: args.chatLaunchService,
       cursorCloudFleetService: args.cursorCloudFleetService,
-      agent37Actions: args.agent37Actions,
+      cloudActions: args.cloudActions,
       cloudAgentsService: args.cloudAgentsService,
       aiIntegrationService: args.aiIntegrationService,
       jevService: args.jevService,

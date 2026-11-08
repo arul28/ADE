@@ -6680,9 +6680,9 @@ describe("CTO-gated Linear sync commands", () => {
         "ai.antigravitySignInStatus",
         "ai.antigravitySignInComplete",
         "ai.antigravitySignInCancel",
-        // Making, waking, resizing or deleting an Agent 37 machine spends or
+        // Making, waking, resizing or deleting a cloud machine spends or
         // deletes: the phone's controller only, never a read-only viewer.
-        "agent37.write",
+        "cloud.write",
         // An MCP App request runs a tool or reads a resource on the host, so a
         // read-only viewer never sends one.
         "chat.mcpAppRequest",
@@ -6726,7 +6726,7 @@ describe("CTO-gated Linear sync commands", () => {
         "chat.mcpAppRequest",
         // The phone's Chat Info account row moves a chat to another account.
         "chat.switchAccount",
-        "agent37.write",
+        "cloud.write",
         // The phone's sign-in card.
         "ai.cliLoginStart",
         "ai.cliLoginStatus",
@@ -6761,9 +6761,9 @@ describe("CTO-gated Linear sync commands", () => {
         const RUNTIME_SCOPED_OPTIONAL_ACTIONS = new Set([
           "chat.resolveSourceFavicons",
           "account.getMachineInventory",
-          // Agent 37 is the account's, so any brain answers the phone's page.
-          "agent37.read",
-          "agent37.write",
+          // the provider is the account's, so any brain answers the phone's page.
+          "cloud.read",
+          "cloud.write",
           // An agent's sign-in lands in the machine's home, never a project.
           "ai.cliLoginStart",
           "ai.cliLoginStatus",

@@ -833,7 +833,7 @@
   display: contents;
 }
 
-/* Agent 37 › What agents may spend: one row per limit. */
+/* ADE Cloud › What agents may spend: one row per limit. */
 .ade-ig-limit-rows { display: flex; flex-direction: column; border-top: 1px solid var(--kit-rule, var(--color-border)); }
 .ade-ig-limit-row {
   display: flex;
@@ -848,7 +848,7 @@
 .ade-ig-limit-row b { font-size: 12.5px; font-weight: 500; }
 .ade-ig-limit-row small { font-size: 11.5px; color: var(--kit-text-3, var(--color-muted-fg)); }
 
-/* Agent 37: a line inside the banner under the facts (the template's first build, a failure, what to do next). */
+/* ADE Cloud: a line inside the banner under the facts (a failure, what to do next). */
 .ade-ig-hero-foot {
   position: relative;
   z-index: 1;
@@ -867,17 +867,6 @@
 .ade-ig-hero-foot-row > b { font-weight: 600; }
 .ade-ig-hero-foot-row > span { opacity: 0.75; }
 .ade-ig-hero-foot-row > button { margin-left: auto; }
-.ade-ig-progress { position: relative; height: 4px; border-radius: 999px; overflow: hidden; background: rgba(255, 255, 255, 0.14); }
-.ade-ig-progress > i { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: #fff; transition: width 0.4s ease; }
-.ade-ig-progress[data-indeterminate="true"] > i { width: 30%; animation: ade-ig-progress-slide 1.6s ease-in-out infinite; }
-@keyframes ade-ig-progress-slide { from { left: -30%; } to { left: 100%; } }
-@media (prefers-reduced-motion: reduce) {
-  .ade-ig-progress[data-indeterminate="true"] > i { animation: none; left: 0; width: 100%; opacity: 0.4; }
-}
-.ade-ig-hero-panel-quiet { margin: 0; font-size: 11.5px; opacity: 0.65; }
-.ade-ig-hero-panel-warn { margin: 0; font-size: 11.5px; color: #F59E0B; }
-.ade-ig-hero[data-light="true"] .ade-ig-hero-panel-warn { color: #B45309; }
-.ade-ig-step-shot { display: block; width: 100%; max-width: 380px; margin-top: 8px; border-radius: 10px; border: 1px solid var(--kit-rule, var(--color-border)); }
 .ade-ig-ready-steps { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 11.5px; }
 .ade-ig-ready-steps > li { padding: 3px 9px; border-radius: 999px; border: 1px solid var(--kit-rule, var(--color-border)); color: var(--kit-text-3, var(--color-muted-fg)); }
 .ade-ig-ready-steps > li[data-state="done"] { color: var(--color-fg); }

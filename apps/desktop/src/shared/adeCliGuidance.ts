@@ -32,7 +32,7 @@ export const adeBundledAgentSkills = [
   "ade-deeplinks",
   "ade-search",
   "ade-scene",
-  "ade-agent37",
+  "ade-cloud",
 ] as const;
 
 /**

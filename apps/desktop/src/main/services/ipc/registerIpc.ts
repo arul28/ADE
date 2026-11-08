@@ -942,7 +942,7 @@ import {
   createBrainRefreshBroker,
 } from "../account/accountBridge";
 import { createAccountVaultBridge } from "../account/accountVaultBridge";
-import { registerAgent37Ipc } from "../agent37/registerAgent37Ipc";
+import { registerCloudIpc } from "../adeCloud/registerCloudIpc";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
 import type { McpRegistryServer } from "../../../shared/mcpRegistry";
 import type {
@@ -12523,13 +12523,13 @@ export function registerIpc({
   };
   const accountVaultBridge = createAccountVaultBridge(vaultBridgeOptions);
 
-  // Agent37: the account-wide key and new machines made on it (no pin; see the module).
-  registerAgent37Ipc({
+  // the provider: the account-wide key and new machines made on it (no pin; see the module).
+  registerCloudIpc({
     // Its items in this computer's brain, also with no project here: then the
     // brain opens only those (`accountVault.call`).
     vaultBridge: createAccountVaultBridge({ ...vaultBridgeOptions, machineFallback: true }),
     // This computer's brain, with no project: the actions are the account's
-    // (`agent37.call`, ADE_ACTION_MACHINE_SCOPED), so a window with no project
+    // (`cloud.call`, ADE_ACTION_MACHINE_SCOPED), so a window with no project
     // here, or only one on another machine, reaches them too.
     brainAction: async (action, actionArgs) => {
       const pool = localRuntimeConnectionPool;
@@ -12537,10 +12537,10 @@ export function registerIpc({
         throw new AdeExpectedError("ADE's background service isn't running on this computer yet. Try again in a moment.", "environment");
       }
       try {
-        const response = await pool.callSync<{ result?: unknown }>("agent37.call", {
+        const response = await pool.callSync<{ result?: unknown }>("cloud.call", {
           action,
           ...(actionArgs ? { args: actionArgs } : {}),
-        }, { timeoutMs: localRuntimeActionTimeoutMs("agent37", action) });
+        }, { timeoutMs: localRuntimeActionTimeoutMs("cloud", action) });
         return response?.result;
       } catch (error) {
         // The card shows the brain's own sentence ("Sign in to ADE on this
@@ -12559,9 +12559,9 @@ export function registerIpc({
       productAnalyticsService?.capture({
         event: "ade_feature_used",
         surface: "desktop",
-        properties: { feature: "connections", action: "agent37_machine_create", outcome },
+        properties: { feature: "connections", action: "cloud_machine_create", outcome },
         projectId: null,
-        dedupeKey: `agent37_machine_create:${outcome}`,
+        dedupeKey: `cloud_machine_create:${outcome}`,
         minimumIntervalMs: 6 * 60 * 60 * 1_000,
       });
     },
@@ -12572,9 +12572,9 @@ export function registerIpc({
       productAnalyticsService?.capture({
         event: "ade_feature_used",
         surface: "desktop",
-        properties: { feature: "connections", action: "agent37_machine_action", outcome },
+        properties: { feature: "connections", action: "cloud_machine_action", outcome },
         projectId: null,
-        dedupeKey: `agent37_machine_action:${outcome}`,
+        dedupeKey: `cloud_machine_action:${outcome}`,
         minimumIntervalMs: 6 * 60 * 60 * 1_000,
       });
     },
@@ -12584,9 +12584,9 @@ export function registerIpc({
       productAnalyticsService?.capture({
         event: "ade_feature_used",
         surface: "desktop",
-        properties: { feature: "connections", action: "agent37_ready", outcome },
+        properties: { feature: "connections", action: "cloud_ready", outcome },
         projectId: null,
-        dedupeKey: `agent37_ready:${outcome}`,
+        dedupeKey: `cloud_ready:${outcome}`,
         minimumIntervalMs: 6 * 60 * 60 * 1_000,
       });
     },

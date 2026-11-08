@@ -132,7 +132,7 @@ function resolvePtyHostWorkerNodePath(): string | undefined {
  * executable: `fork()` of a script from it re-enters the CLI, which rejects the
  * path as an unknown command and exits 2. So a brain on that runtime runs its
  * own hidden command, whatever install started it (install script, systemd,
- * launchd, a Windows service, an Agent 37 image).
+ * launchd, a Windows service, a provider image).
  */
 function resolvePtyHostWorkerCommand(workerNodePath: string | undefined): string | undefined {
   const configured = process.env.ADE_PTY_HOST_WORKER_COMMAND?.trim();

@@ -146,7 +146,7 @@ const RELAY_CLOSE_CONTROL_REPLACED = 4505;
  * wakes, and the relay then closes every client that went to its old link.
  * The host is on the relay by then, so one more relay attempt at once
  * connects, where the next route (often a cloud box's private address) would
- * hold the connect for 10 s (2026-11-07, Agent 37 box after a sleep).
+ * hold the connect for 10 s (2026-11-07, cloud box after a sleep).
  */
 export function isRelayHostReplacedError(error: unknown): boolean {
   return findInErrorCauses(error, (candidate) =>
