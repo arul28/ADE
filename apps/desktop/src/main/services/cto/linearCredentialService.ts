@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { safeStorage } from "electron";
-import { canDecryptStoredSecrets, isSecureStorageAvailable } from "../shared/secureStorage";
+import { isSecureStorageAvailable } from "../shared/secureStorage";
 import type { Logger } from "../logging/logger";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import { createLinearAccountSync, type LinearAccountCredential } from "./linearAccountSync";
@@ -154,7 +154,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
   const readEncryptedToken = (): StoredLinearToken | null => {
     try {
-      if (!canDecryptStoredSecrets(safeStorage)) {
+      if (!isSecureStorageAvailable(safeStorage)) {
         args.logger?.warn("linear_sync.token_store_unavailable", {
           message: "OS secure storage unavailable; cannot decrypt Linear token."
         });
@@ -188,7 +188,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
 
   const readStoredOAuthClientCredentials = (): LinearOAuthClientCredentials | null => {
     try {
-      if (!canDecryptStoredSecrets(safeStorage)) {
+      if (!isSecureStorageAvailable(safeStorage)) {
         args.logger?.warn("linear_sync.oauth_client_store_unavailable", {
           message: "OS secure storage unavailable; cannot decrypt Linear OAuth client config."
         });
@@ -240,7 +240,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     read: () => {
       if (credentialStore) return readMachineCredential(MACHINE_PROVENANCE_KEY);
       const provenancePath = path.join(secretsDir, PROVENANCE_FILE);
-      if (!fs.existsSync(provenancePath) || !canDecryptStoredSecrets(safeStorage)) return null;
+      if (!fs.existsSync(provenancePath) || !isSecureStorageAvailable(safeStorage)) return null;
       return safeStorage.decryptString(fs.readFileSync(provenancePath));
     },
     write: (value) => {
@@ -425,7 +425,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
       }
     }
 
-    if (!hadEncryptedLegacyStore || canDecryptStoredSecrets(safeStorage)) {
+    if (!hadEncryptedLegacyStore || isSecureStorageAvailable(safeStorage)) {
       markProjectMigrated();
     }
   };

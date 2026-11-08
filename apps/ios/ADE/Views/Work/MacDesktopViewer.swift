@@ -210,7 +210,14 @@ struct MacDesktopViewer: View {
       // publisher a drop and reconnect under an open menu could coalesce
       // into no change, and the stream would not restart.
       .onReceive(syncService.$connectionState.removeDuplicates().receive(on: DispatchQueue.main)) { _ in updateLifecycle() }
+      // A lane on another machine rides that machine's socket instead.
+      .onReceive(machineListChanges) { _ in updateLifecycle() }
       .onChange(of: isLiveCapable) { _, _ in updateLifecycle() }
+  }
+
+  private var machineListChanges: AnyPublisher<Void, Never> {
+    syncService.machineFleet?.$machines.map { _ in () }.receive(on: DispatchQueue.main).eraseToAnyPublisher()
+      ?? Empty().eraseToAnyPublisher()
   }
 
   // MARK: - Stage
@@ -502,7 +509,7 @@ struct MacDesktopViewer: View {
           }
           await refresh()
         } catch {
-          flashHint(macDesktopVisibleMessage(for: error, hostIsWindows: true), warning: true)
+          flashHint(macDesktopVisibleMessage(for: error, hostIsWindows: seat != "linux"), warning: true)
         }
       }
     }
@@ -512,7 +519,7 @@ struct MacDesktopViewer: View {
   private var canInspect: Bool {
     inspect == nil
       && !isPreview
-      && syncService.supportsViewerRemoteAction("macDesktop.observe")
+      && syncService.laneCommandDescriptor("macDesktop.observe", laneId: laneId)?.policy.allowsPhone == true
       && desktop?.display != nil
   }
 

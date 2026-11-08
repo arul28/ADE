@@ -5,7 +5,7 @@ import { issueWriteCandidates } from "./githubIssueWriteAccess";
 import type { GitHubIssueLike, GitHubIssuePatch } from "../../../shared/laneGitHubIssue";
 import path from "node:path";
 import { safeStorage } from "electron";
-import { canDecryptStoredSecrets, isSecureStorageAvailable } from "../shared/secureStorage";
+import { isSecureStorageAvailable } from "../shared/secureStorage";
 import type { Logger } from "../logging/logger";
 import { getMachineMainLogger } from "../logging/machineLogger";
 import { markExpected } from "../../../shared/expectedError";
@@ -841,7 +841,7 @@ export function createGithubService({
     if (!fs.existsSync(candidatePath)) return null;
     try {
       const bytes = fs.readFileSync(candidatePath);
-      if (!canDecryptStoredSecrets(safeStorage)) {
+      if (!isSecureStorageAvailable(safeStorage)) {
         tokenDecryptionFailed = true;
         logger.warn("github.token_decryption_failed", {
           reason: "os_secure_storage_unavailable",

@@ -520,6 +520,7 @@ jobs:
         with:
           ref: ${{ inputs.target_ref }}
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24

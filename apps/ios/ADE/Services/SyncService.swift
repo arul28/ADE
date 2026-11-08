@@ -17338,7 +17338,9 @@ final class SyncService: ObservableObject {
   /// Drops this viewer's subscription. Best-effort: a dead socket has already
   /// released it on the host, so a failure needs no retry.
   func macDesktopStreamUnsubscribe(laneId: String, subscriptionId: String) async throws {
-    try requireMacDesktopStreamAction("macDesktop.streamUnsubscribe", laneId: laneId)
+    // Best effort: with the lane's machine gone there is no one to tell, and
+    // its socket closing ends the subscription.
+    guard laneCommandDescriptor("macDesktop.streamUnsubscribe", laneId: laneId) != nil else { return }
     let trimmed = subscriptionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
     _ = try await sendCommand(

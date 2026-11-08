@@ -251,7 +251,7 @@ final class MacDesktopStreamContractTests: XCTestCase {
           "macDesktopStream": true,
         ] as [String: Any],
       ])
-      XCTAssertTrue(service.supportsMacDesktopStream)
+      XCTAssertTrue(service.supportsMacDesktopStream(laneId: "lane-1"))
       XCTAssertTrue(service.supportsViewerRemoteAction("macDesktop.streamSubscribe"))
     }
   }
@@ -269,7 +269,7 @@ final class MacDesktopStreamContractTests: XCTestCase {
           "macDesktopStream": false,
         ] as [String: Any],
       ])
-      XCTAssertFalse(service.supportsMacDesktopStream)
+      XCTAssertFalse(service.supportsMacDesktopStream(laneId: "lane-1"))
     }
     // ...and the advertised command is what the phone is about to invoke. A
     // feature bit alone must not mount a live view whose first RPC the host
@@ -282,7 +282,7 @@ final class MacDesktopStreamContractTests: XCTestCase {
           "macDesktopStream": true,
         ] as [String: Any],
       ])
-      XCTAssertFalse(service.supportsMacDesktopStream)
+      XCTAssertFalse(service.supportsMacDesktopStream(laneId: "lane-1"))
     }
   }
 
@@ -295,7 +295,7 @@ final class MacDesktopStreamContractTests: XCTestCase {
           "commandRouting": ["actions": [Self.descriptor("work.listSessions")]] as [String: Any],
         ] as [String: Any],
       ])
-      XCTAssertFalse(service.supportsMacDesktopStream)
+      XCTAssertFalse(service.supportsMacDesktopStream(laneId: "lane-1"))
 
       // No transport is configured here, so a request that reached `sendCommand`
       // would fail for the wrong reason. The explicit `unsupported_action` code
@@ -381,7 +381,7 @@ final class MacDesktopStreamContractTests: XCTestCase {
           "macDesktopControl": true,
         ] as [String: Any],
       ])
-      XCTAssertTrue(service.supportsMacDesktopControl)
+      XCTAssertTrue(service.supportsMacDesktopControl(laneId: "lane-1"))
     }
     try withService { service in
       try service.applyHelloPayloadForTesting([
@@ -391,7 +391,7 @@ final class MacDesktopStreamContractTests: XCTestCase {
           "macDesktopControl": false,
         ] as [String: Any],
       ])
-      XCTAssertFalse(service.supportsMacDesktopControl)
+      XCTAssertFalse(service.supportsMacDesktopControl(laneId: "lane-1"))
     }
     try withService { service in
       // Take without input would show a button that cannot click.
@@ -402,7 +402,7 @@ final class MacDesktopStreamContractTests: XCTestCase {
           "macDesktopControl": true,
         ] as [String: Any],
       ])
-      XCTAssertFalse(service.supportsMacDesktopControl)
+      XCTAssertFalse(service.supportsMacDesktopControl(laneId: "lane-1"))
     }
   }
 

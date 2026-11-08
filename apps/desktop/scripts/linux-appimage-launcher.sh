@@ -28,7 +28,7 @@ for arg in "$@"; do
 done
 if [[ "${ADE_ALLOW_NO_SANDBOX:-}" == 1 ]]; then
   echo 'ADE: Chromium sandbox disabled by ADE_ALLOW_NO_SANDBOX=1.' >&2
-  exec "$binary" --no-sandbox "${args[@]}"
+  exec "$binary" --no-sandbox ${args[@]+"${args[@]}"}
 fi
 if ! unshare -Ur true 2>/dev/null; then
   # No AppArmor profile is offered for the AppImage: it can only match a path
@@ -41,4 +41,4 @@ if ! unshare -Ur true 2>/dev/null; then
   fi
   exit 1
 fi
-exec "$binary" "${args[@]}"
+exec "$binary" ${args[@]+"${args[@]}"}

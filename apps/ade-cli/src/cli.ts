@@ -119,6 +119,7 @@ import { quoteShellArg } from "../../desktop/src/shared/shell";
 import type { MachineWorkCopy } from "./cliRemoteWork";
 import { machineVersionsDrift } from "../../desktop/src/shared/machineVersions";
 import { readDesktopUpdateInstallMode } from "../../desktop/src/main/services/native/desktopUpdateInstallMode";
+import { readInstalledDesktopApp } from "../../desktop/src/main/services/native/nativeHelperPaths";
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { findSettingsEntries, settingsEntryLabel } from "../../desktop/src/shared/settingsManifest";
 import { settingAgentAccess } from "../../desktop/src/shared/settingsAgentAccess";
@@ -27866,7 +27867,7 @@ export function resolveWindowsDesktopExecutable(args: {
   return null;
 }
 
-async function launchWindowsDesktopApp(
+async function launchDetachedDesktopApp(
   executablePath: string,
   appName: string,
 ): Promise<Record<string, unknown>> {
@@ -27960,15 +27961,27 @@ async function runDesktopCommand(rest: string[]): Promise<unknown> {
           `Unable to find the installed ${appName} executable. Reinstall ADE or set ADE_DESKTOP_APP_PATH.`,
       };
     }
-    return await launchWindowsDesktopApp(executablePath, appName);
+    return await launchDetachedDesktopApp(executablePath, appName);
+  }
+
+  if (process.platform === "linux") {
+    const installed = readInstalledDesktopApp();
+    if (!installed) {
+      return {
+        ok: false,
+        platform: process.platform,
+        appName,
+        message: `Unable to find the installed ${appName} app. Open it once, or set ADE_DESKTOP_APP_PATH.`,
+      };
+    }
+    return await launchDetachedDesktopApp(installed.path, appName);
   }
 
   return {
     ok: false,
     platform: process.platform,
     appName,
-    message:
-      "Launching ADE desktop from the CLI is currently supported on macOS and Windows.",
+    message: "Launching ADE desktop from the CLI is supported on macOS, Windows and Linux.",
   };
 }
 

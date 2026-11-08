@@ -667,6 +667,8 @@ export function RemoteTargetList({
             arch: result.arch,
             version: result.version,
             appVersion: result.appVersion ?? null,
+            updateInstallMode: result.updateInstallMode,
+            downloadUrl: result.downloadUrl,
             route: result.route,
             capabilities: result.capabilities,
             compatibilityWarnings: result.compatibilityWarnings,
