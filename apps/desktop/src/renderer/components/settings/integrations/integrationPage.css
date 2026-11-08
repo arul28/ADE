@@ -833,7 +833,7 @@
   display: contents;
 }
 
-/* Agent 37 › What agents may spend: one row per limit. */
+/* the provider › What agents may spend: one row per limit. */
 .ade-ig-limit-rows { display: flex; flex-direction: column; border-top: 1px solid var(--kit-rule, var(--color-border)); }
 .ade-ig-limit-row {
   display: flex;
@@ -848,7 +848,7 @@
 .ade-ig-limit-row b { font-size: 12.5px; font-weight: 500; }
 .ade-ig-limit-row small { font-size: 11.5px; color: var(--kit-text-3, var(--color-muted-fg)); }
 
-/* Agent 37: a line inside the banner under the facts (the template's first build, a failure, what to do next). */
+/* the provider: a line inside the banner under the facts (the template's first build, a failure, what to do next). */
 .ade-ig-hero-foot {
   position: relative;
   z-index: 1;

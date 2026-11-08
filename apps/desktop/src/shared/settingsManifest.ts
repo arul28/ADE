@@ -1555,64 +1555,64 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Jira",
   },
   {
-    id: "integrations.agent37",
-    label: "Agent 37",
+    id: "integrations.ade-cloud",
+    label: "ADE Cloud",
     keywords: [
-      "cloud", "machine", "box", "vm", "linux", "sandbox", "api key", "agent37", "agent 37", "template",
+      "cloud", "machine", "box", "vm", "linux", "sandbox", "ade cloud", "template",
       // The machines themselves live in Your computers; the page header opens it.
       "sleep", "wake", "resize", "back up", "backup", "delete box", "spending", "cost", "price", "wallet", "box limit", "suspended",
     ],
     tab: "integrations",
-    anchor: "agent37-connection",
+    anchor: "cloud-connection",
     // One workspace key for the account, kept in the account vault.
     scope: "account",
     web: "hidden",
-    group: "Agent37",
+    group: "ADE Cloud",
   },
   {
-    id: "integrations.agent37-sign-ins",
+    id: "integrations.ade-cloud-sign-ins",
     label: "Sign-ins for your cloud machines",
     keywords: ["sign in", "sign-in", "login", "api key", "token", "claude", "codex", "cursor", "droid", "grok", "copilot", "devin", "muse", "openrouter", "new machine", "cloud machine"],
     tab: "integrations",
-    anchor: "agent37-sign-ins",
-    // The provider sign-ins every new Agent 37 machine starts with, in the account vault.
+    anchor: "cloud-sign-ins",
+    // The provider sign-ins every new cloud machine starts with, in the account vault.
     scope: "account",
     web: "hidden",
-    group: "Agent37",
+    group: "ADE Cloud",
   },
   {
-    id: "integrations.agent37-ready",
-    label: "Agent 37 ready machine",
+    id: "integrations.ade-cloud-ready",
+    label: "ADE Cloud ready machine",
     keywords: ["ready machine", "keep a machine ready", "warm", "prepared", "seed", "setup", "docker", "fast start", "cloud chat"],
     tab: "integrations",
-    anchor: "agent37-ready",
+    anchor: "cloud-ready",
     // Which projects keep a machine ready, in the account vault.
     scope: "account",
     web: "hidden",
-    group: "Agent37",
+    group: "ADE Cloud",
   },
   {
     // The id keeps its old name: deeplinks and agent access hold it.
-    id: "integrations.agent37-spending",
-    label: "Agent 37 machines and spending",
+    id: "integrations.ade-cloud-spending",
+    label: "ADE Cloud machines and spending",
     keywords: ["machines", "new machine", "spending cap", "monthly cap", "budget", "limit spend", "saved", "sleep", "auto-sleep", "idle", "wallet", "low balance", "cost"],
     tab: "integrations",
-    anchor: "agent37-machines",
-    // Every machine with this month's spend and what sleeping saved; read from Agent 37.
+    anchor: "cloud-machines",
+    // Every machine with this month's spend and what sleeping saved; read from the provider.
     scope: "account",
     web: "hidden",
-    group: "Agent37",
+    group: "ADE Cloud",
   },
   {
-    id: "integrations.agent37-agent-limits",
-    label: "What agents may spend on Agent 37",
+    id: "integrations.ade-cloud-agent-limits",
+    label: "What agents may spend on ADE Cloud",
     keywords: ["agent limits", "unattended", "full-auto", "automation", "machines a day", "largest size", "monthly cap", "spending cap", "budget", "ask me", "balanced", "hands-off"],
     tab: "integrations",
-    anchor: "agent37-agent-limits",
+    anchor: "cloud-agent-limits",
     // What unattended agents may spend alone, and the optional cap, in the account vault.
     scope: "account",
     web: "hidden",
-    group: "Agent37",
+    group: "ADE Cloud",
   },
   {
     id: "integrations.jira-projects",

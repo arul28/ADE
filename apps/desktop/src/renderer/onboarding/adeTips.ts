@@ -70,7 +70,6 @@ import {
   showSpotlight,
   type SpotlightSpot,
 } from "../components/onboarding/spotlight/spotlight";
-import agent37Shot from "../components/onboarding/tips/assets/agent37.webp";
 import automationsShot from "../components/onboarding/tips/assets/automations.webp";
 import awakeShot from "../components/onboarding/tips/assets/awake.webp";
 import betaShot from "../components/onboarding/tips/assets/beta-track.webp";
@@ -439,10 +438,9 @@ const TIP_LIST = [
     action: setting("mcp.servers", "Pick one from the catalogue or add your own; every agent gets it, on every computer."),
   },
   {
-    id: "agent37", group: "integrations", icon: CloudCheck, title: "Agent 37 cloud machines", size: "wide",
-    shot: { src: agent37Shot, alt: "The Agent 37 card in Settings, Integrations" },
-    sentence: "Make a cheap Linux box, billed by the minute, in one click. It signs in by itself and joins your computers.",
-    action: setting("integrations.agent37", "Paste your Agent 37 key here, then pick New Agent 37 machine in Add a computer."),
+    id: "cloud", group: "integrations", icon: CloudCheck, title: "ADE Cloud machines", size: "wide",
+    sentence: "Make a Linux machine in one click. It signs in by itself and joins your computers.",
+    action: setting("integrations.ade-cloud", "Pick New ADE Cloud machine in Add a computer."),
   },
   {
     id: "connect-cards", group: "integrations", icon: Cards, title: "Connect from the chat", size: "wide",

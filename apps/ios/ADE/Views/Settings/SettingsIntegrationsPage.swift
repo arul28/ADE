@@ -5,9 +5,9 @@ private let settingsIntegrationsLog = Logger(subsystem: "com.ade.ios", category:
 
 /// Settings › Integrations: what the connected machine is connected to, in the
 /// desktop's order (`integrations/IntegrationsHome.tsx`): GitHub, Linear,
-/// Jira and Agent 37, then Webhooks. Each status is read on that machine,
+/// Jira and the provider, then Webhooks. Each status is read on that machine,
 /// where its credentials live. Linear connects from the phone through the
-/// same screen the Linear pane uses, and Agent 37 opens its pane; GitHub and
+/// same screen the Linear pane uses, and the provider opens its pane; GitHub and
 /// Jira connect on the computer, so their cards only show where they stand.
 struct SettingsIntegrationsPage: View {
   let syncService: SyncService
@@ -16,11 +16,11 @@ struct SettingsIntegrationsPage: View {
   @State private var github: IntegrationSummary = .checking
   @State private var githubRepo: String?
   @State private var jira: IntegrationSummary = .checking
-  @State private var agent37: IntegrationSummary = .checking
+  @State private var cloud: IntegrationSummary = .checking
   /// Linear's own status lives on `SyncService` (the Work pane reads it too),
   /// so a connect or disconnect on the pushed screen shows here on return.
   @State private var linearChecked = false
-  @State private var agent37Presented = false
+  @State private var cloudPresented = false
 
   private var connected: Bool { syncService.connectionState == .connected }
   private var machine: String { syncService.machineDisplayName }
@@ -39,19 +39,19 @@ struct SettingsIntegrationsPage: View {
         githubSection
         linearSection
         jiraSection
-        agent37Section
+        cloudSection
         webhooksSection
       }
     }
-    .sheet(isPresented: $agent37Presented) {
-      Agent37PaneSheet(syncService: syncService)
+    .sheet(isPresented: $cloudPresented) {
+      CloudPaneSheet(syncService: syncService)
         .environmentObject(syncService)
     }
     // One read per card, side by side: a slow GitHub check never holds up Jira.
     .task(id: connected) { if connected { await loadGitHub() } }
     .task(id: connected) { if connected { await loadLinear() } }
     .task(id: connected) { if connected { await loadJira() } }
-    .task(id: connected) { if connected { await loadAgent37() } }
+    .task(id: connected) { if connected { await loadCloud() } }
   }
 
   // MARK: - GitHub
@@ -136,22 +136,22 @@ struct SettingsIntegrationsPage: View {
     }
   }
 
-  // MARK: - Agent 37
+  // MARK: - the provider
 
-  private var agent37Section: some View {
+  private var cloudSection: some View {
     SettingsIntegrationCard(
-      name: "Agent 37",
+      name: "ADE Cloud",
       tagline: "Make cloud Linux machines for your lanes, signed in to your account with no code to type.",
-      status: syncService.agent37Supported ? agent37 : nil
+      status: syncService.cloudSupported ? cloud : nil
     ) {
-      ADEBrandTile(brand: .agent37, size: 42)
+      ADEBrandTile(brand: .cloud, size: 42)
     } rows: {
-      if !syncService.agent37Supported {
+      if !syncService.cloudSupported {
         ADESettingsNotice(message: SettingsPageCopy.updateADE(on: machine))
           .padding(ADEKit.inset)
       } else {
-        ADESettingsActionRow(title: "Open Agent 37", symbol: "server.rack") {
-          agent37Presented = true
+        ADESettingsActionRow(title: "Open ADE Cloud", symbol: "server.rack") {
+          cloudPresented = true
         }
       }
     }
@@ -222,21 +222,21 @@ struct SettingsIntegrationsPage: View {
     }
   }
 
-  private func loadAgent37() async {
-    guard syncService.agent37Supported else { return }
+  private func loadCloud() async {
+    guard syncService.cloudSupported else { return }
     do {
-      let list = try await syncService.agent37Read("list", as: Agent37PhoneList.self)
-      agent37 = IntegrationSummary(
-        label: list.balanceUsd.map { String(format: "Connected · $%.2f left", $0) } ?? "Connected",
+      let list = try await syncService.cloudRead("list", as: CloudPhoneList.self)
+      cloud = IntegrationSummary(
+        label: list.machines.isEmpty ? "Ready" : "\(list.machines.count) machine\(list.machines.count == 1 ? "" : "s")",
         tone: .ok
       )
     } catch {
-      // The same test the Agent 37 pane uses for "no key on the account".
-      if error.localizedDescription.localizedCaseInsensitiveContains("connect agent 37") {
-        agent37 = .notConnected
+      // The same test the cloud pane uses for an account with no ADE Cloud.
+      if error.localizedDescription.localizedCaseInsensitiveContains("isn't available on this account") {
+        cloud = .notConnected
       } else {
-        settingsIntegrationsLog.warning("Agent 37 status read failed: \(error.localizedDescription, privacy: .public)")
-        agent37 = IntegrationSummary(label: "Couldn't reach Agent 37", tone: .warn)
+        settingsIntegrationsLog.warning("ADE Cloud status read failed: \(error.localizedDescription, privacy: .public)")
+        cloud = IntegrationSummary(label: "Couldn't reach ADE Cloud", tone: .warn)
       }
     }
   }

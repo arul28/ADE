@@ -217,7 +217,7 @@ export async function installSystemdService(
 
   let state = getSystemdUnitState(run, unitName);
   if (state === null && !isSystemdUserManagerUsable(run)) {
-    // A container whose entrypoint loop runs the brain (ADE's Agent 37
+    // A container whose entrypoint loop runs the brain (ADE's the provider
     // template): the loop is the supervisor, so a restart goes through it.
     const underEntrypoint = await restartEntrypointSupervisedBrain({
       command,

@@ -131,7 +131,7 @@ type SavedMachineRowProps = {
   footer?: ReactNode;
   /**
    * A cloud box that is asleep or stopped: the line that replaces the row's
-   * presence ("Asleep on Agent 37") and the button that replaces Connect
+   * presence ("Asleep on the provider") and the button that replaces Connect
    * (Wake). A sleeping box can't take a connection, so the row never offers one.
    */
   parked?: { label: string; action: ReactNode } | null;

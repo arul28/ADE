@@ -2499,7 +2499,7 @@ runtime is still downloading (`runtimeDownloadPending` on its connection), or
 one that runs with a side note such as a Codex token too old for usage
 polling. "Background service calls failed" counts a call once after its last
 retry, skips refusals the brain marks expected, and lists the calls that
-failed most (`RuntimeHealthSnapshot.failedActionsTop`). An unreachable Agent 37
+failed most (`RuntimeHealthSnapshot.failedActionsTop`). An unreachable ADE Cloud
 box that is asleep, stopped, or on its way to or from that is dropped once the
 box list answers. The problems are gathered in the renderer
 (`settings/overview/useNeedsAttention.ts`); the project part is
@@ -2565,7 +2565,7 @@ The new-project screen has a **Settings** button. It sets the app-store flag
 screen and the top bar shows a "Settings" tab. Only settings that need no
 project are shown. The manifest's standalone resolver hides `account-repo` and
 `machine-repo` entries, and a tab whose sections all need a project binding is
-left out. Integrations shows only the account's pages (Agent 37 and the MCP
+left out. Integrations shows only the account's pages (ADE Cloud and the MCP
 servers); GitHub, Linear and Jira live in a project's machine, so their tiles
 and status reads are left out. A page that mixes this computer's settings with ones saved in a
 project (Chat, Notifications) reads `isStandaloneSettings()` and shows one

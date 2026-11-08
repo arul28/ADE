@@ -87,7 +87,8 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 ### Brain, runtime, and clients
 
-- [**Remote Runtime**](./features/remote-runtime/README.md) — Remote access to an ADE runtime. Multi-project registry, machine endpoint, login-service install, SSH bootstrap of the cross-platform `ade-<platform-arch>` runtime binaries shipped under `apps/desktop/resources/runtime/`. A remote machine's brain is authoritative for its projects. [Agent 37 machines](./features/remote-runtime/agent37.md): cloud Linux boxes made from ADE and signed in with no code to type.
+- [**Remote Runtime**](./features/remote-runtime/README.md) — Remote access to an ADE runtime. Multi-project registry, machine endpoint, login-service install, SSH bootstrap of the cross-platform `ade-<platform-arch>` runtime binaries shipped under `apps/desktop/resources/runtime/`. A remote machine's brain is authoritative for its projects. [ADE Cloud machines](./features/remote-runtime/cloud.md): cloud Linux boxes made from ADE and signed in with no code to type.
+- [**ADE Cloud**](./features/ade-cloud/README.md) — Linux machines ADE runs for the person. The provider seam, access, the machine template, ready machines, sleep and the monthly cap.
 - [**ADE MCP**](./features/ade-mcp/README.md) — Each computer as an MCP server for AI apps the person picks (claude.ai, ChatGPT, Cursor, Claude Code, Grok), reached through ADE Relay. One `ade` tool that runs the real CLI; off by default; per-app read-only or full access; sign-in with the ADE account or a bearer token; Settings → App → ADE MCP and `ade mcp`.
 - [**Web Client**](./features/web-client/README.md) — Owner-only hosted browser controller. Static Cloudflare Pages SPA, ADE account sign-in, account-directory machine selection, DPoP-bound sync WebSocket transport, no local DB, and account Activity that remains independent of the selected project.
 

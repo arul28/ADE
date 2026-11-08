@@ -1764,61 +1764,61 @@ case the in-process latch cannot see, an app or brain restarting inside the
 refusal. Both events reuse the existing `ade_feature_used` 140-per-day /
 30-per-minute limits and the shared 200-event ceiling; no ceiling was raised.
 
-Making a cloud box with **New Agent 37 machine** records `feature:
-"connections"`, `action: "agent37_machine_create"` once per finished create,
-in the desktop IPC handler that runs it (`registerAgent37Ipc.ts`, where the
+Making a cloud box with **New ADE Cloud machine** records `feature:
+"connections"`, `action: "cloud_machine_create"` once per finished create,
+in the desktop IPC handler that runs it (`registerCloudIpc.ts`, where the
 outcome is known): `completed` (the box joined the account), `partial` (signed
 in, still starting), `cancelled`, or `failed`. The product question is whether
-installations make Agent 37 machines from ADE at all and how often a create
+installations make ADE Cloud machines from ADE at all and how often a create
 fails. No box id, name, size, price, workspace, or error travels; those stay in
-the local `agent37.*` log lines. A box takes minutes and costs money, so a
+the local `cloud.*` log lines. A box takes minutes and costs money, so a
 six-hour deduplication key per outcome bounds it to 16 accepted events per
 installation per UTC day, inside the existing `ade_feature_used` ceilings.
 Connecting the key, the template build and the startup cleanup of half-made
 boxes are not analytics: the first is a one-time setting, the other two run
 without a person deciding anything.
 
-The box actions on an Agent 37 card record `feature: "connections"`, `action:
-"agent37_machine_action"` when Agent 37 confirms the action, in the same IPC
-handler (`registerAgent37Ipc.ts`). The outcome is the action, prefixed:
+The box actions on an ADE Cloud card record `feature: "connections"`, `action:
+"cloud_machine_action"` when ADE Cloud confirms the action, in the same IPC
+handler (`registerCloudIpc.ts`). The outcome is the action, prefixed:
 `box_sleep`, `box_wake`, `box_resize`, `box_backup`, `box_delete`,
 `box_set_sleep` (Sleep when idle…), `box_copy` / `box_move` when a copy or
 move finishes, or `box_reconnect` when Reconnect to ADE brings a removed box
 back. The product question is which parts of the box lifecycle
 people run from ADE. A
-refusal (limit, wallet, key) is not an event; it stays in the local
-`agent37.machine_action_failed` log line. Remove from ADE is already
+refusal (limit, no access) is not an event; it stays in the local
+`cloud.machine_action_failed` log line. Remove from ADE is already
 `machine_removed`. A six-hour key per outcome bounds this to 36 accepted events
 per installation per UTC day, inside the existing `ade_feature_used` ceilings.
 The machine list's reads (open, focus, the short settling poll) are not
 analytics, and neither is sleeping on its own, waking for use, the monthly
-cap, the spending card, or the `ade agent37` commands an agent runs: those
+cap, the spending card, or the `ade cloud` commands an agent runs: those
 run without a person deciding anything, or are a setting.
 
-Ready machines record `feature: "connections"`, `action: "agent37_ready"`.
+Ready machines record `feature: "connections"`, `action: "cloud_ready"`.
 The desktop records `enabled` and `disabled` when a project is turned on or
-off on the Agent 37 page, `completed` or `failed` when a prepare ends (a
+off on the ADE Cloud page, `completed` or `failed` when a prepare ends (a
 cancel is neither), and `ready_picker` when the new-chat picker claims one;
-the brain records `ready_cli` when `ade chat create --machine agent37:ready`
-or an agent claims one (`agent37.claim_ready`). The product question is
+the brain records `ready_cli` when `ade chat create --machine cloud:ready`
+or an agent claims one (`cloud.claim_ready`). The product question is
 whether people keep machines ready, how often preparing one fails, and where
 the chats that take one start. No project, repository, machine, size, setup
 command or error travels; the setup's output stays out of the local log too
-(`agent37.ready_prepare_failed` carries its exit code only). A six-hour key
+(`cloud.ready_prepare_failed` carries its exit code only). A six-hour key
 per outcome bounds it to 24 accepted events per installation per UTC day,
 inside the existing `ade_feature_used` ceilings. The keeper's pool reads are
 not analytics.
 
 Sign-ins for cloud machines record `feature: "connections"`, `action:
-"agent37_cloud_sign_in"` in the brain, when a sign-in is saved
-(`agent37CloudSignInActions.ts`, called from `adeActions/registry.ts`). The
+"cloud_cloud_sign_in"` in the brain, when a sign-in is saved
+(`cloudSignInActions.ts`, called from `adeActions/registry.ts`). The
 outcome is the provider, prefixed: `signin_claude` once Claude Code's token is
 kept, or `signin_codex`, `signin_cursor`, `signin_droid`, `signin_grok`,
 `signin_copilot`, `signin_devin`, `signin_muse` or `signin_openrouter` when a
 key is saved. The product question is which providers people want signed in on
 their cloud machines. No key, token, account, link, code or error travels; a
 failed or cancelled sign-in is not an event and stays in the local
-`agent37.*` log lines. Removing one is not an event. A six-hour key per
+`cloud.*` log lines. Removing one is not an event. A six-hour key per
 provider bounds it to 36 accepted events per installation per UTC day, inside
 the existing `ade_feature_used` ceilings. The card's status reads, and the
 1.5-second poll while Claude's sign-in runs, are not analytics.

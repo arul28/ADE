@@ -768,20 +768,20 @@ logged or stored. Failures that are ADE's to fix (no key, a refused key, the
 spend cap, the fleet cap, TypeSafe failing or throttling) are also Sentry
 issues, one per reason.
 
-## Agent 37 timed wakes
+## ADE Cloud timed wakes
 
-A sleeping Agent 37 machine is frozen, so the timers ADE keeps on it (a chat's
+A sleeping ADE Cloud machine is frozen, so the timers ADE keeps on it (a chat's
 scheduled wake-up, an automation's cron) can't fire there. Before its ADE lets
 it sleep, it sends its next time here, and the minute cron wakes it two
-minutes early (`src/agent37Wake.ts`, table `agent37_wakes`):
+minutes early (`src/cloudWake.ts`, table `cloud_wakes`):
 
-- `PUT /agent37/wake` `{instanceId, url, at}` with the account bearer records
+- `PUT /cloud/wake` `{instanceId, url, at}` with the account bearer records
   or replaces the account's one row for that machine. `url` must be an
   `https://<slug>.agent37.app` origin, the machine's own public address; `at`
   is a time within the next 32 days. Fifty machines per account at most.
-- `DELETE /agent37/wake` `{instanceId}` forgets it (nothing scheduled any more).
+- `DELETE /cloud/wake` `{instanceId}` forgets it (nothing scheduled any more).
 - The cron requests `url` with a plain GET. Any answer, a 502 included,
-  reaches the machine and wakes it, so this Worker never holds an Agent 37
+  reaches the machine and wakes it, so this Worker never holds an ADE Cloud
   key. A woken row is deleted; one that didn't answer is retried each minute
   and dropped 30 minutes after its time.
 

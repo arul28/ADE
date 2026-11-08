@@ -34,8 +34,8 @@ export type AccountVaultBridgeOptions = {
   getRootPath: () => string | null;
   /**
    * With no booted project, ask the brain's `accountVault.call` instead of
-   * answering unavailable. It opens only Agent 37's items
-   * (agent37VaultItems.ts), so only the Agent 37 bridge sets this.
+   * answering unavailable. It opens only the provider's items
+   * (cloudVaultItems.ts), so only the provider bridge sets this.
    */
   machineFallback?: boolean;
   logger?: { debug?(message: string, meta?: Record<string, unknown>): void };

@@ -85,15 +85,15 @@ const OWNER_ONLY: Record<Exclude<SettingOwnerOnlyReason, "preference">, readonly
     "integrations.github",
     "integrations.linear",
     "integrations.jira",
-    "integrations.agent37",
-    "integrations.agent37-sign-ins",
+    "integrations.ade-cloud",
+    "integrations.ade-cloud-sign-ins",
   ],
   money: [
     // Keeps a billing cloud machine prepared for a project.
-    "integrations.agent37-ready",
-    // What Agent 37 machines spent, what unattended agents may spend, the optional cap.
-    "integrations.agent37-spending",
-    "integrations.agent37-agent-limits",
+    "integrations.ade-cloud-ready",
+    // What cloud machines spent, what unattended agents may spend, the optional cap.
+    "integrations.ade-cloud-spending",
+    "integrations.ade-cloud-agent-limits",
     "agents.budget",
     "stats.usage",
     "chat.fast-mode",

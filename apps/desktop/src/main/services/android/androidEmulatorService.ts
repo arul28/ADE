@@ -10,7 +10,7 @@ import type {
   AndroidSdkStatus,
 } from "../../../shared/types/androidEmulator";
 import { getErrorMessage, sleep } from "../shared/utils";
-import { agent37AndroidNeedsVmMessage, agent37ShapeForResources } from "../../../shared/agent37";
+import { cloudAndroidNeedsVmMessage, cloudShapeForResources } from "../../../shared/adeCloud";
 import { listAndroidAvds, readAdeAvdLaneId, readAndroidAvd, sameAvdName } from "./androidAvds";
 import { createAndroidInspect } from "./androidInspect";
 import { createAndroidLaneMaintenance, readUseOnDevice } from "./androidLaneMaintenance";
@@ -229,12 +229,12 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   const requireSdk = async (needs: { emulator: boolean }): Promise<ReadyAndroidSdk> => {
     if (unsupportedReason !== null) throw new AndroidEmulatorFailure("ANDROID_SDK_NOT_FOUND", unsupportedReason);
     const ready = requireAndroidSdkTools(await readSdk(), platform, needs);
-    // An Agent 37 box never has KVM. Refuse its first emulator step (making a
+    // a cloud box never has KVM. Refuse its first emulator step (making a
     // device, or a start) with what a VM costs, not "turn on KVM".
-    if (needs.emulator && !ready.sdk.acceleration.usable && process.env.AGENT37_INSTANCE_ID?.trim()) {
+    if (needs.emulator && !ready.sdk.acceleration.usable && process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
       throw new AndroidEmulatorFailure(
         "ANDROID_NO_ACCELERATION",
-        agent37AndroidNeedsVmMessage(agent37ShapeForResources(os.cpus().length, os.totalmem())),
+        cloudAndroidNeedsVmMessage(cloudShapeForResources(os.cpus().length, os.totalmem())),
       );
     }
     return ready;

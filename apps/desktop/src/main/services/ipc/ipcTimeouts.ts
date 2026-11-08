@@ -23,7 +23,7 @@ import {
   AI_STATUS_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
-import { AGENT37_LIST_MACHINES_IPC_TIMEOUT_MS, AGENT37_MACHINE_ACTION_IPC_TIMEOUT_MS } from "../agent37/agent37Client";
+import { CLOUD_LIST_MACHINES_IPC_TIMEOUT_MS, CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS } from "../adeCloud/cloudProvider";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { builtInBrowserRemoteCallDoneTimeoutMs } from "../../../shared/types/builtInBrowserRemote";
 import { PROJECT_REPAIR_IPC_TIMEOUT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
@@ -247,21 +247,21 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS;
     case IPC.lanesArchive:
       return 4 * 60_000;
-    // A box's sleep, wake, resize, backup or delete answers once Agent37 is done.
-    case IPC.agent37MachineAction:
-      return AGENT37_MACHINE_ACTION_IPC_TIMEOUT_MS;
-    case IPC.agent37ListMachines:
-      return AGENT37_LIST_MACHINES_IPC_TIMEOUT_MS;
+    // A box's sleep, wake, resize, backup or delete answers once the provider is done.
+    case IPC.cloudMachineAction:
+      return CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS;
+    case IPC.cloudListMachines:
+      return CLOUD_LIST_MACHINES_IPC_TIMEOUT_MS;
     // A claim reads the pool, tags the machine and waits for its wake; a
     // project change runs one pool pass (which may delete a machine).
-    case IPC.agent37ReadyClaim:
-    case IPC.agent37ReadyRelease:
-    case IPC.agent37ReadySetProject:
-    case IPC.agent37ReadyRemoveProject:
-    case IPC.agent37ReadyRetry:
-    case IPC.agent37ReadyStatus:
-    case IPC.agent37WakeMachine:
-      return AGENT37_MACHINE_ACTION_IPC_TIMEOUT_MS;
+    case IPC.cloudReadyClaim:
+    case IPC.cloudReadyRelease:
+    case IPC.cloudReadySetProject:
+    case IPC.cloudReadyRemoveProject:
+    case IPC.cloudReadyRetry:
+    case IPC.cloudReadyStatus:
+    case IPC.cloudWakeMachine:
+      return CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS;
     case IPC.filesDelete:
       return localRuntimeActionIpcTimeoutMs("file", "deletePath");
     // Checkout, `worktree add` and `worktree remove`; see

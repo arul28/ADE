@@ -30,7 +30,7 @@ import {
   type SuspendGapDetector,
 } from "./suspendGapDetector";
 import { createBrainKeepAwakeService } from "./brainKeepAwakeService";
-import { agent37KeepAwakePaths, createAgent37KeepAwake } from "./agent37KeepAwake";
+import { cloudKeepAwakePaths, createCloudKeepAwake } from "./cloudKeepAwake";
 
 // The brain's power surface as one contract: reading what the hardware says
 // (machinePowerReader), noticing a suspend nobody announced (suspendGapDetector),
@@ -802,21 +802,21 @@ describe("createBrainKeepAwakeService", () => {
   });
 });
 
-describe("agent37 keep awake", () => {
-  // Agent 37 sleeps a machine after its idle timer; the brain keeps it awake
+describe("cloud keep awake", () => {
+  // the provider sleeps a machine after its idle timer; the brain keeps it awake
   // only by reaching the machine's own wake URL. A missed ping while work runs
   // freezes that work; a ping for the wrong machine keeps another one billing.
   it("pings this machine's wake URL while work runs or another machine just did work here, never a copied disk's, and counts an unreadable state as busy", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-a37-keepawake-"));
-    const paths = agent37KeepAwakePaths(home);
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-keepawake-"));
+    const paths = cloudKeepAwakePaths(home);
     fs.mkdirSync(paths.dir, { recursive: true });
     const writeWake = (instanceId: string) =>
       fs.writeFileSync(paths.wakeUrl, JSON.stringify({ instanceId, url: "https://wake-abc.agent37.app" }));
     const pinged: string[] = [];
     let busy: boolean | "throws" = true;
     let clock = 1_000_000;
-    const keepAwake = createAgent37KeepAwake({
-      env: { AGENT37_INSTANCE_ID: "thisbox001" },
+    const keepAwake = createCloudKeepAwake({
+      env: { ADE_CLOUD_INSTANCE_ID: "thisbox001" },
       adeHome: home,
       intervalMs: 60_000,
       now: () => clock,

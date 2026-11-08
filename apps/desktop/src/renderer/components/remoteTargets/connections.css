@@ -362,10 +362,10 @@
 .ade-cx-reach { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1; min-width: 0; }
 .ade-cx-reach-label { font-size: 11.5px; color: var(--kit-text-3, rgba(255, 255, 255, 0.55)); }
 
-/* ── Agent 37 group ──────────────────────────────────────────────────────
-   The boxes on the account's Agent 37 workspace: a head with the group's
+/* ── the provider group ──────────────────────────────────────────────────────
+   The boxes on the account's ADE Cloud workspace: a head with the group's
    spend, a fact line on each card, and the resize picker. */
-.ade-cx-a37-head-facts {
+.ade-cx-cloud-head-facts {
   margin-left: auto;
   font-size: 11px;
   font-weight: 500;
@@ -374,12 +374,12 @@
   color: var(--kit-text-2, rgba(255, 255, 255, 0.7));
 }
 /* The card's fact line sits under the name, in line with it (past the avatar). */
-.ade-cx-a37-strip { display: grid; gap: 8px; padding-left: 52px; }
+.ade-cx-cloud-strip { display: grid; gap: 8px; padding-left: 52px; }
 /* The facts sit on one line and wrap; a dot separates them. Each fact's dot
    sits in its left margin, and the outer box clips that margin, so the first
    fact on every line (wrapped or not) starts without one. */
-.ade-cx-a37-facts-clip { overflow: hidden; padding: 2px 0; }
-.ade-cx-a37-facts {
+.ade-cx-cloud-facts-clip { overflow: hidden; padding: 2px 0; }
+.ade-cx-cloud-facts {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -389,8 +389,8 @@
   font-size: 11.5px;
   color: var(--kit-text-2, rgba(255, 255, 255, 0.7));
 }
-.ade-cx-a37-facts > * { position: relative; margin-left: 15px; }
-.ade-cx-a37-facts > *::before {
+.ade-cx-cloud-facts > * { position: relative; margin-left: 15px; }
+.ade-cx-cloud-facts > *::before {
   content: "";
   position: absolute;
   left: -9px;
@@ -401,9 +401,9 @@
   border-radius: 999px;
   background: color-mix(in srgb, var(--color-fg) 22%, transparent);
 }
-.ade-cx-a37-fact { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
-.ade-cx-a37-lanes > span { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
-.ade-cx-a37-wake {
+.ade-cx-cloud-fact { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.ade-cx-cloud-lanes > span { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+.ade-cx-cloud-wake {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -417,17 +417,17 @@
   font-weight: 600;
   cursor: pointer;
 }
-.ade-cx-a37-wake:hover { background: color-mix(in srgb, var(--color-accent) 20%, transparent); }
-.ade-cx-a37-wake:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
-.ade-cx-a37-pending {
+.ade-cx-cloud-wake:hover { background: color-mix(in srgb, var(--color-accent) 20%, transparent); }
+.ade-cx-cloud-wake:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.ade-cx-cloud-pending {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   font-size: 11.5px;
   color: var(--kit-text-2, rgba(255, 255, 255, 0.7));
 }
-.ade-cx-a37-note { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--kit-text-3, rgba(255, 255, 255, 0.5)); }
-.ade-cx-a37-avatar {
+.ade-cx-cloud-note { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--kit-text-3, rgba(255, 255, 255, 0.5)); }
+.ade-cx-cloud-avatar {
   display: inline-grid;
   place-items: center;
   width: 40px;
@@ -438,8 +438,8 @@
 }
 
 /* The resize picker: one row per size, the price on the right. */
-.ade-cx-a37-shapes { display: grid; gap: 6px; }
-.ade-cx-a37-shape {
+.ade-cx-cloud-shapes { display: grid; gap: 6px; }
+.ade-cx-cloud-shape {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
@@ -453,15 +453,15 @@
   text-align: left;
   cursor: pointer;
 }
-.ade-cx-a37-shape:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 4%, transparent); }
-.ade-cx-a37-shape[aria-checked="true"] {
+.ade-cx-cloud-shape:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 4%, transparent); }
+.ade-cx-cloud-shape[aria-checked="true"] {
   border-color: var(--color-accent);
   background: color-mix(in srgb, var(--color-accent) 10%, transparent);
 }
-.ade-cx-a37-shape:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
-.ade-cx-a37-shape:disabled { opacity: 0.45; cursor: not-allowed; }
-.ade-cx-a37-shape-size { font-size: 12.5px; font-weight: 600; }
-.ade-cx-a37-shape-price { font-size: 12px; color: var(--kit-text-2, rgba(255, 255, 255, 0.7)); }
+.ade-cx-cloud-shape:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.ade-cx-cloud-shape:disabled { opacity: 0.45; cursor: not-allowed; }
+.ade-cx-cloud-shape-size { font-size: 12.5px; font-weight: 600; }
+.ade-cx-cloud-shape-price { font-size: 12px; color: var(--kit-text-2, rgba(255, 255, 255, 0.7)); }
 @media (prefers-reduced-motion: reduce) {
-  .ade-cx-a37-wake, .ade-cx-a37-shape { transition: none; }
+  .ade-cx-cloud-wake, .ade-cx-cloud-shape { transition: none; }
 }

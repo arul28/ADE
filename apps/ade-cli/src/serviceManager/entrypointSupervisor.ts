@@ -22,10 +22,10 @@ import {
 } from "./serviceHandover";
 
 /**
- * A brain whose supervisor is the machine's own entrypoint: ADE's Agent 37
+ * A brain whose supervisor is the machine's own entrypoint: ADE's the provider
  * template runs `ade serve` in a loop as the container's main process
- * (`infra/agent37/template/ade-entrypoint.sh`), and that loop is what survives
- * an Agent 37 sleep.
+ * (`infra/ade-cloud/template/ade-entrypoint.sh`), and that loop is what survives
+ * a provider sleep.
  *
  * Such a machine has no systemd, so a restart used to start ADE's own
  * supervisor (detachedSupervisor.ts) beside the loop. The loop's brain kept the
@@ -43,7 +43,7 @@ import {
 /** Set by the template's entrypoint for the brain it runs (and so for every update helper the brain starts). */
 export const ENTRYPOINT_SUPERVISOR_ENV = "ADE_BRAIN_SUPERVISOR";
 
-/** The entrypoint every ADE Agent 37 template runs; an older one runs it without the env above. */
+/** The entrypoint every ADE the provider template runs; an older one runs it without the env above. */
 const TEMPLATE_ENTRYPOINT = "ade-entrypoint.sh";
 
 /** How long a brain gets to exit on SIGTERM before it is killed. */
@@ -144,7 +144,7 @@ export async function restartEntrypointSupervisedBrain(deps: EntrypointSuperviso
   const socketPath = path.join(adeHome, "sock", "ade.sock");
   const self = new Set([process.pid]);
   const running = servePidsOnSocket(procRoot, socketPath, self);
-  // The brain's helpers inherit the mark; a command run another way (Agent 37
+  // The brain's helpers inherit the mark; a command run another way (the provider
   // exec) reads it from the brain the loop started.
   const marked = env[ENTRYPOINT_SUPERVISOR_ENV]?.trim() === "entrypoint"
     || running.some((pid) => hasSupervisorMark(procRoot, pid));
@@ -162,7 +162,7 @@ export async function restartEntrypointSupervisedBrain(deps: EntrypointSuperviso
       false,
       entrypoint,
       "This machine was made from an older ADE machine template, whose start script always runs the ADE it was built with, "
-        + "so an update can't take effect on it. Make a new machine (ade agent37 create) to get the current version; "
+        + "so an update can't take effect on it. Make a new machine (ade cloud create) to get the current version; "
         + "ade chat move carries a lane's work to it. A copy keeps the old template.",
       { failureStep: "entrypoint_too_old" },
     );

@@ -51,28 +51,22 @@ const DESCRIPTIONS: Record<IntegrationId, string> = {
   github: "Open, review and merge pull requests, follow checks, and work on issues.",
   linear: "Start lanes from Linear issues, link them to PRs, and let your team assign work to ADE.",
   jira: "Bring a Jira Cloud site's issues into ADE and tie them to this project.",
-  agent37: "Make cloud Linux machines for your lanes, signed in to your account with no code to type.",
+  cloud: "Make cloud Linux machines for your lanes, signed in to your account with no code to type.",
 };
 
 /** Where the credential lives: what the status says, else where a new one is saved. */
 function savedIn(id: IntegrationId, summary?: Summary): string {
-  return summary?.savedIn ?? (connectProviderSpec(id).savedScope === "account" ? "Your account" : "This project");
+  return summary?.savedIn ?? (id === "cloud" || connectProviderSpec(id).savedScope === "account" ? "Your account" : "This project");
 }
 
 async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): Promise<Summary> {
-  if (id === "agent37") {
+  if (id === "cloud") {
     // Account-wide: the key is in the account vault, so this computer answers for every machine.
-    const status = await window.ade.agent37?.getStatus();
+    const status = await window.ade.cloud?.getStatus();
     if (!status) return UNKNOWN;
-    if (status.error) return { tone: "warn", label: status.connected ? "Couldn't reach Agent 37" : "Needs attention" };
-    if (status.connected) {
-      return {
-        tone: "ok",
-        label: status.balanceUsd != null ? `Connected · $${status.balanceUsd.toFixed(2)} left` : "Connected",
-        savedIn: status.credentialStorage?.storage === "device" ? "This computer" : "Your account",
-      };
-    }
-    return { tone: "neutral", label: "Not connected" };
+    if (status.error) return { tone: "warn", label: status.connected ? "Couldn't reach ADE Cloud" : "Not available" };
+    if (status.connected) return { tone: "ok", label: "Ready", savedIn: "Your account" };
+    return { tone: "neutral", label: "Not available yet" };
   }
   if (id === "github") {
     const status = await window.ade.github.getStatus(undefined, pin);
@@ -115,15 +109,15 @@ function useIntegrationSummaries(
     github: CHECKING,
     linear: CHECKING,
     jira: CHECKING,
-    agent37: CHECKING,
+    cloud: CHECKING,
   });
   useEffect(() => {
     let cancelled = false;
     if (!online) {
-      setSummaries({ github: OFFLINE, linear: OFFLINE, jira: OFFLINE, agent37: OFFLINE });
+      setSummaries({ github: OFFLINE, linear: OFFLINE, jira: OFFLINE, cloud: OFFLINE });
       return undefined;
     }
-    setSummaries({ github: CHECKING, linear: CHECKING, jira: CHECKING, agent37: CHECKING });
+    setSummaries({ github: CHECKING, linear: CHECKING, jira: CHECKING, cloud: CHECKING });
     for (const id of ids) {
       readSummary(id, pin)
         .then((summary) => { if (!cancelled) setSummaries((prev) => ({ ...prev, [id]: summary })); })
@@ -339,7 +333,7 @@ export function IntegrationsHome({
                     className="ade-ig-tile"
                     style={integrationThemeVars(brand.accent)}
                     data-testid={`integration-tile-${id}`}
-                    data-settings-anchor={settingsEntryById(`integrations.${id}`)?.anchor}
+                    data-settings-anchor={settingsEntryById(id === "cloud" ? "integrations.ade-cloud" : `integrations.${id}`)?.anchor}
                     disabled={!machineOnline}
                     onClick={() => onOpen(id)}
                   >

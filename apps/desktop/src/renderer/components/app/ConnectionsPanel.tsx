@@ -304,9 +304,9 @@ export function ConnectionsPanel({
       state: { returnTo: `${location.pathname}${location.search}${location.hash}` },
     });
   }, [location.hash, location.pathname, location.search, navigate, onClose]);
-  const goToAgent37Settings = useCallback(() => {
+  const goToCloudSettings = useCallback(() => {
     onClose();
-    navigate("/settings?tab=integrations&integration=agent37");
+    navigate("/settings?tab=integrations&integration=cloud");
   }, [navigate, onClose]);
 
   // Only where this ADE can read this computer's routes (not hosted web).
@@ -371,7 +371,7 @@ export function ConnectionsPanel({
             accountSignedIn={accountStatus.signedIn}
             onAccountRequested={goToAccount}
             onAccountMachinesChanged={reloadAccountMachines}
-            onOpenAgent37Settings={goToAgent37Settings}
+            onOpenCloudSettings={goToCloudSettings}
             accountEmail={accountStatus.email ?? null}
             thisComputerCode={sync.isRemoteBound || !canShowPairingCode(sync) ? null : <ThisComputerPairingCode sync={sync} />}
           />

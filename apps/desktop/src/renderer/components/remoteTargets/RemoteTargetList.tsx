@@ -42,12 +42,12 @@ import {
   type RemoteTargetFormPrefill,
 } from "./RemoteTargetForm";
 import { PairMachineForm } from "./PairMachineForm";
-import { NewAgent37MachineForm } from "./NewAgent37MachineForm";
+import { NewCloudMachineForm } from "./NewCloudMachineForm";
 import {
-  AGENT37_JOIN_WATCH_MS,
-  type Agent37CreateMachineResult,
-  type Agent37Status,
-} from "../../../shared/agent37";
+  CLOUD_JOIN_WATCH_MS,
+  type CloudCreateMachineResult,
+  type CloudStatus,
+} from "../../../shared/adeCloud";
 import { accountMachineConnectionState } from "../../../shared/accountDirectory";
 import { captureError } from "../../../shared/sentry/capture";
 import { Banner } from "../ui/notice";
@@ -81,8 +81,8 @@ import {
   helperTextStyle,
   panelStyle,
 } from "./remoteTargetListStyles";
-import { Agent37Mark, AGENT37_NAME } from "./agent37Brand";
-import { useAgent37MachineGroup, type RowExtras } from "./useAgent37MachineGroup";
+import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
+import { useCloudMachineGroup, type RowExtras } from "./useCloudMachineGroup";
 import type { MachineRow } from "./remoteMachineModel";
 
 type RemoteTargetListProps = {
@@ -106,8 +106,8 @@ type RemoteTargetListProps = {
    * not on the account. The add sheet shows them under "Use a pairing code".
    */
   thisComputerCode?: ReactNode;
-  /** Opens Settings › Integrations › Agent 37 (a refused key is fixed there). */
-  onOpenAgent37Settings?: (() => void) | null;
+  /** Opens Settings › Integrations › the provider (a refused key is fixed there). */
+  onOpenCloudSettings?: (() => void) | null;
 };
 
 
@@ -122,31 +122,30 @@ type ConnectTargetOptions = {
   onTrustRequired?: (state: "needs_trust" | "changed") => void;
 };
 
-type AddMode = "choose" | "nearby" | "pair" | "ssh" | "code" | "agent37";
+type AddMode = "choose" | "nearby" | "pair" | "ssh" | "code" | "cloud";
 
 /**
- * Agent37 in the add sheet. `loading` shows nothing extra; `unreachable` is a
- * saved key whose status couldn't be read (or that Agent37 refused): the
+ * the provider in the add sheet. `loading` shows nothing extra; `unreachable` is a
+ * saved key whose status couldn't be read (or that the provider refused): the
  * option still shows and opens a Retry.
  */
-type Agent37PickerState =
+type CloudPickerState =
   | { kind: "loading" }
   | { kind: "none" }
-  | { kind: "ready"; status: Agent37Status }
+  | { kind: "ready"; status: CloudStatus }
   | { kind: "unreachable"; refused: boolean; message: string };
 
-function agent37PickerState(status: Agent37Status | null): Agent37PickerState {
-  if (!status) return { kind: "unreachable", refused: false, message: "ADE couldn't read Agent 37's status." };
+function cloudPickerState(status: CloudStatus | null): CloudPickerState {
+  if (!status) return { kind: "unreachable", refused: false, message: "ADE couldn't read ADE Cloud's status." };
   if (status.connected && !status.error) return { kind: "ready", status };
-  // A key is saved (it has a storage place) but it couldn't be used right now.
-  if (status.credentialStorage || status.error) {
-    return { kind: "unreachable", refused: !status.connected, message: status.error ?? "ADE couldn't reach Agent 37." };
+  if (status.error) {
+    return { kind: "unreachable", refused: !status.connected, message: status.error ?? "ADE couldn't reach ADE Cloud." };
   }
   return { kind: "none" };
 }
 
 /** While a new box finishes starting, how often the account list is refreshed. */
-const AGENT37_JOIN_REFRESH_MS = 15_000;
+const CLOUD_JOIN_REFRESH_MS = 15_000;
 
 type AccountConnectionToast = {
   targetId: string;
@@ -225,7 +224,7 @@ export function RemoteTargetList({
   onAccountMachinesChanged,
   accountEmail = null,
   thisComputerCode = null,
-  onOpenAgent37Settings = null,
+  onOpenCloudSettings = null,
 }: RemoteTargetListProps) {
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
   const [connectionSnapshot, setConnectionSnapshot] =
@@ -935,21 +934,21 @@ export function RemoteTargetList({
     ],
   );
 
-  // Agent37 is account-wide (its key is in the account vault), so this asks
+  // the provider is account-wide (its key is in the account vault), so this asks
   // with no pin. Read when the sheet opens, not polled. A saved key whose
   // status couldn't be read still offers the option, which then says so.
-  const [agent37, setAgent37] = useState<Agent37PickerState>({ kind: "loading" });
-  const loadAgent37Status = useCallback((): (() => void) => {
-    const bridge = window.ade.agent37;
+  const [cloud, setCloud] = useState<CloudPickerState>({ kind: "loading" });
+  const loadCloudStatus = useCallback((): (() => void) => {
+    const bridge = window.ade.cloud;
     if (!bridge) {
-      setAgent37({ kind: "none" });
+      setCloud({ kind: "none" });
       return () => undefined;
     }
     let cancelled = false;
     void bridge.getStatus().then((next) => {
-      if (!cancelled) setAgent37(agent37PickerState(next));
+      if (!cancelled) setCloud(cloudPickerState(next));
     }, (error: unknown) => {
-      if (!cancelled) setAgent37({ kind: "unreachable", refused: false, message: extractError(error) });
+      if (!cancelled) setCloud({ kind: "unreachable", refused: false, message: extractError(error) });
     });
     return () => {
       cancelled = true;
@@ -958,63 +957,63 @@ export function RemoteTargetList({
   useEffect(() => {
     if (addMode !== "choose") return;
     // The last answer stays up while this one loads, so the option never flickers.
-    return loadAgent37Status();
-  }, [addMode, loadAgent37Status]);
-  const retryAgent37Status = useCallback(() => {
-    setAgent37({ kind: "loading" });
-    loadAgent37Status();
-  }, [loadAgent37Status]);
+    return loadCloudStatus();
+  }, [addMode, loadCloudStatus]);
+  const retryCloudStatus = useCallback(() => {
+    setCloud({ kind: "loading" });
+    loadCloudStatus();
+  }, [loadCloudStatus]);
 
   // A box that signed in but wasn't ready to connect when the create ended:
   // keep refreshing the account list (the same refresh the list uses) for a
   // few minutes and connect when its row is ready. Otherwise its row stays
   // for a manual Connect.
-  const [agent37Join, setAgent37Join] = useState<{ machineKey: string; name: string; renamed: boolean; until: number } | null>(null);
+  const [cloudJoin, setCloudJoin] = useState<{ machineKey: string; name: string; renamed: boolean; until: number } | null>(null);
   useEffect(() => {
-    if (!agent37Join) return;
-    const remaining = agent37Join.until - Date.now();
+    if (!cloudJoin) return;
+    const remaining = cloudJoin.until - Date.now();
     if (remaining <= 0) {
-      setAgent37Join(null);
+      setCloudJoin(null);
       return;
     }
-    const refresh = setInterval(() => onAccountMachinesChanged?.(), AGENT37_JOIN_REFRESH_MS);
-    const stop = setTimeout(() => setAgent37Join(null), remaining);
+    const refresh = setInterval(() => onAccountMachinesChanged?.(), CLOUD_JOIN_REFRESH_MS);
+    const stop = setTimeout(() => setCloudJoin(null), remaining);
     return () => {
       clearInterval(refresh);
       clearTimeout(stop);
     };
-  }, [agent37Join, onAccountMachinesChanged]);
+  }, [cloudJoin, onAccountMachinesChanged]);
   useEffect(() => {
-    if (!agent37Join) return;
-    const row = accountMachines?.find((machine) => machine.machineKey === agent37Join.machineKey) ?? null;
+    if (!cloudJoin) return;
+    const row = accountMachines?.find((machine) => machine.machineKey === cloudJoin.machineKey) ?? null;
     if (!row || accountMachineConnectionState(row) !== "available") return;
-    setAgent37Join(null);
-    if (!agent37Join.renamed && row.name !== agent37Join.name) {
-      void window.ade.account.renameMachine(row.machineKey, agent37Join.name).then(
+    setCloudJoin(null);
+    if (!cloudJoin.renamed && row.name !== cloudJoin.name) {
+      void window.ade.account.renameMachine(row.machineKey, cloudJoin.name).then(
         () => onAccountMachinesChanged?.(),
-        (error: unknown) => captureError(error, { fingerprint: ["agent37", "join_rename"], handled: true }),
+        (error: unknown) => captureError(error, { fingerprint: ["cloud", "join_rename"], handled: true }),
       );
     }
-    setAddMode((mode) => (mode === "agent37" ? null : mode));
+    setAddMode((mode) => (mode === "cloud" ? null : mode));
     void connectAccountMachine(row);
-  }, [accountMachines, agent37Join, connectAccountMachine, onAccountMachinesChanged]);
+  }, [accountMachines, cloudJoin, connectAccountMachine, onAccountMachinesChanged]);
 
   // A new box signed in to this account on its own: find its row and connect.
-  const onAgent37MachineCreated = useCallback(async (result: Agent37CreateMachineResult) => {
+  const onCloudMachineCreated = useCallback(async (result: CloudCreateMachineResult) => {
     onAccountMachinesChanged?.();
     if (!result.machineKey) return;
     if (!result.joined) {
-      setAgent37Join({ machineKey: result.machineKey, name: result.name, renamed: result.renamed, until: Date.now() + AGENT37_JOIN_WATCH_MS });
+      setCloudJoin({ machineKey: result.machineKey, name: result.name, renamed: result.renamed, until: Date.now() + CLOUD_JOIN_WATCH_MS });
       return;
     }
     const listed = await window.ade.account.listMachines().catch((error: unknown) => {
-      captureError(error, { fingerprint: ["agent37", "created_list"], handled: true });
+      captureError(error, { fingerprint: ["cloud", "created_list"], handled: true });
       return null;
     });
     const machine = listed?.machines.find((candidate) => candidate.machineKey === result.machineKey);
     if (!machine) {
       // Joined a moment ago but not in this read: watch for it like a slow one.
-      setAgent37Join({ machineKey: result.machineKey, name: result.name, renamed: result.renamed, until: Date.now() + AGENT37_JOIN_WATCH_MS });
+      setCloudJoin({ machineKey: result.machineKey, name: result.name, renamed: result.renamed, until: Date.now() + CLOUD_JOIN_WATCH_MS });
       return;
     }
     setAddMode(null);
@@ -1247,7 +1246,7 @@ export function RemoteTargetList({
   // gets none, rather than a build from the other track.
   const knownVersions = useKnownAdeVersions();
 
-  // ── Agent 37 ────────────────────────────────────────────────────────────
+  // ── the provider ────────────────────────────────────────────────────────────
   const forgetTarget = useCallback(async (targetId: string) => {
     abandonConnectAttempts(targetId, null);
     await window.ade.remoteRuntime.removeTarget(targetId);
@@ -1260,7 +1259,7 @@ export function RemoteTargetList({
     setAccountRowErrors((current) => ({ ...current, [machineKey]: message }));
   }, []);
 
-  const agent37Group = useAgent37MachineGroup({
+  const cloudGroup = useCloudMachineGroup({
     enabled: accountMachines !== undefined,
     accountMachines: visibleAccountMachines,
     accountKnown: accountMachinesState === "ok",
@@ -1269,11 +1268,11 @@ export function RemoteTargetList({
     forgetTarget,
     setAccountRowError,
     onAccountMachinesChanged,
-    onOpenSettings: onOpenAgent37Settings,
+    onOpenSettings: onOpenCloudSettings,
   });
-  const { listedSections, showGroup: showAgent37Group } = agent37Group;
+  const { listedSections, showGroup: showCloudGroup } = cloudGroup;
 
-  function renderRow(row: MachineRow, section: MachineSection, extras: RowExtras = agent37Group.rowExtrasFor(row)): ReactNode {
+  function renderRow(row: MachineRow, section: MachineSection, extras: RowExtras = cloudGroup.rowExtrasFor(row)): ReactNode {
     if (row.kind === "saved") {
       const pairAgainMachine = accountMachineForTarget(row.target);
       const pairedMachineKey = row.target.pairedMachine?.machineKey ?? null;
@@ -1522,12 +1521,12 @@ export function RemoteTargetList({
     label: string;
     detail: string;
   }> = [
-    // Once an Agent37 key is saved: a new cloud machine, signed in for you.
-    ...(agent37.kind === "ready" || agent37.kind === "unreachable"
+    // Once a provider key is saved: a new cloud machine, signed in for you.
+    ...(cloud.kind === "ready" || cloud.kind === "unreachable"
       ? [{
-          key: "agent37" as const,
-          icon: <Agent37Mark size={18} strokeWidth={24} />,
-          label: `New ${AGENT37_NAME} machine`,
+          key: "cloud" as const,
+          icon: <CloudMark size={18} strokeWidth={24} />,
+          label: `New ${ADE_CLOUD_NAME} machine`,
           detail: "A cloud Linux box or VM, signed in to your account for you",
         }]
       : []),
@@ -1559,13 +1558,13 @@ export function RemoteTargetList({
     pair: "Pair with a nearby computer",
     ssh: "Add over SSH",
     code: "This computer's pairing code",
-    agent37: `New ${AGENT37_NAME} machine`,
+    cloud: `New ${ADE_CLOUD_NAME} machine`,
   };
 
   const showEmptyState = !loading
     && !loadingDiscovered
     && totalRows === 0
-    && !showAgent37Group
+    && !showCloudGroup
     && !accountMachinesLoadFailed
     && !addMode;
 
@@ -1678,30 +1677,30 @@ export function RemoteTargetList({
               </>
             ) : null}
 
-            {addMode === "agent37" && agent37.kind === "ready" ? (
-              <NewAgent37MachineForm status={agent37.status} onCreated={(result) => void onAgent37MachineCreated(result)} />
+            {addMode === "cloud" && cloud.kind === "ready" ? (
+              <NewCloudMachineForm onCreated={(result) => void onCloudMachineCreated(result)} />
             ) : null}
-            {addMode === "agent37" && agent37.kind === "unreachable" ? (
+            {addMode === "cloud" && cloud.kind === "unreachable" ? (
               <Banner
                 layout="inline"
                 model={{
-                  id: "agent37-status-unreachable",
-                  tone: agent37.refused ? "warning" : "error",
-                  icon: <Agent37Mark size={16} />,
-                  title: agent37.refused ? `${AGENT37_NAME} refused the saved key` : `ADE couldn't reach ${AGENT37_NAME}`,
-                  detail: agent37.message,
-                  actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: retryAgent37Status }],
-                  ...(agent37.refused ? { report: false as const } : {}),
+                  id: "cloud-status-unreachable",
+                  tone: cloud.refused ? "warning" : "error",
+                  icon: <CloudMark size={16} />,
+                  title: cloud.refused ? `${ADE_CLOUD_NAME} refused the saved key` : `ADE couldn't reach ${ADE_CLOUD_NAME}`,
+                  detail: cloud.message,
+                  actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: retryCloudStatus }],
+                  ...(cloud.refused ? { report: false as const } : {}),
                 }}
               />
             ) : null}
-            {addMode === "agent37" && agent37.kind === "loading" ? (
+            {addMode === "cloud" && cloud.kind === "loading" ? (
               <div role="status" style={{ ...helperTextStyle, display: "flex", gap: 8, alignItems: "center" }}>
-                <CircleNotch size={14} className="animate-spin" /> Checking {AGENT37_NAME}…
+                <CircleNotch size={14} className="animate-spin" /> Checking {ADE_CLOUD_NAME}…
               </div>
             ) : null}
-            {addMode === "agent37" && agent37.kind === "none" ? (
-              <div style={helperTextStyle}>Connect {AGENT37_NAME} in Settings › Connections first.</div>
+            {addMode === "cloud" && cloud.kind === "none" ? (
+              <div style={helperTextStyle}>Connect {ADE_CLOUD_NAME} in Settings › Connections first.</div>
             ) : null}
             {addMode === "code" ? (
               <div style={{ display: "grid", gap: 10 }}>
@@ -1790,7 +1789,7 @@ export function RemoteTargetList({
         {renderSection("connected")}
         {renderSection("available")}
         {renderSection("unavailable")}
-        {agent37Group.renderGroup(renderRow)}
+        {cloudGroup.renderGroup(renderRow)}
 
         {accountMachinesLoadFailed ? (
           <div style={helperTextStyle}>

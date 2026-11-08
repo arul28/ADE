@@ -30,7 +30,7 @@ import {
 /**
  * The brain's supervisor on a Linux machine with no usable service manager.
  *
- * Cloud boxes and containers (Agent37's gVisor and VM boxes, Docker, CI) run
+ * Cloud boxes and containers (the provider's gVisor and VM boxes, Docker, CI) run
  * with `tini` or a vendor init as PID 1 and no systemd, so `systemctl --user`
  * has no manager to talk to. `ade brain start` used to fail there with
  * "systemctl daemon-reload failed." and start nothing.

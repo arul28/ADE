@@ -1221,7 +1221,7 @@ still skips frames for a viewer that falls behind.
 
 Why not a second encode for remote viewers: it doubles the encoder's CPU
 while both kinds of viewer watch. That is too much on a 4 vCPU Linux host
-(Agent 37), where the emulator already shares the CPU with its own software
+(ADE Cloud), where the emulator already shares the CPU with its own software
 encoder. A cheaper second encode at a lower size would also need a second
 input path and a second keyframe cache. One encode keeps the cost of one
 viewer, wherever it is. The trade-off: while someone on the machine watches

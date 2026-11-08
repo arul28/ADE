@@ -251,28 +251,28 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // and the one that produced no telemetry at all last time.
   "machine_removed",
   "machine_register_refused",
-  // "New Agent 37 machine" (feature "connections"): whether installations make
+  // "New cloud machine" (feature "connections"): whether installations make
   // cloud boxes from ADE at all, and how often a create fails. completed (it
   // joined) | partial (signed in, still starting) | cancelled | failed. Never
   // the box, its size, name, price, workspace, or the error.
-  "agent37_machine_create",
-  // The box actions on an Agent 37 card (feature "connections"): which ones
+  "cloud_machine_create",
+  // The box actions on a provider card (feature "connections"): which ones
   // people take from ADE. Outcome is the action, prefixed (box_sleep |
   // box_wake | box_resize | box_backup | box_delete | box_set_sleep |
   // box_copy | box_move | box_reconnect), only when it worked.
   // Never the box, its size, price, workspace, or a refusal.
-  "agent37_machine_action",
+  "cloud_machine_action",
   // Ready machines (feature "connections"): whether people keep a cloud
   // machine ready for a project, how often preparing one fails, and where the
   // chats that take one start. enabled | disabled (the per-project switch),
   // completed | failed (a prepare), ready_picker | ready_cli (a claim). Never
   // the project, repository, machine, size, setup commands, or an error.
-  "agent37_ready",
+  "cloud_ready",
   // Sign-ins for cloud machines (feature "connections"): which providers
-  // people sign in once for every new Agent 37 machine. Outcome is the
+  // people sign in once for every new cloud machine. Outcome is the
   // provider, prefixed (signin_claude | signin_codex | …), only once it is
   // saved. Never the key, the token, the account, or an error.
-  "agent37_cloud_sign_in",
+  "cloud_cloud_sign_in",
   // One coarse fact per automatic diagnostic send: whether it went, was refused
   // by the client budget, or failed. Never the failure code that triggered it,
   // never the surface, never the report or its upload reference — those are the
@@ -652,11 +652,11 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // The two Work Focus modes, prefixed like the tool ids so they cannot be
     // confused with another action's outcome.
     "mode_focus", "mode_focus_grid",
-    // The Agent 37 box actions, prefixed like the tool ids.
+    // The cloud box actions, prefixed like the tool ids.
     "box_sleep", "box_wake", "box_resize", "box_backup", "box_delete", "box_set_sleep", "box_copy", "box_move", "box_reconnect",
     // Where a chat that took a ready machine started, prefixed the same way.
     "ready_picker", "ready_cli",
-    // The provider of a sign-in saved for cloud machines (`AGENT37_CLOUD_SIGN_INS`).
+    // The provider of a sign-in saved for cloud machines (`CLOUD_SIGN_INS`).
     "signin_claude", "signin_codex", "signin_cursor", "signin_droid", "signin_grok",
     "signin_copilot", "signin_devin", "signin_muse", "signin_openrouter",
     // The two iOS live-view backends, prefixed for the same reason the tool ids
