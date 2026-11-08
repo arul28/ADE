@@ -881,6 +881,11 @@ export function createGithubService({
     }
 
     if (!isSecureStorageAvailable(safeStorage)) {
+      // The machine credential store holds it instead (Linux with no keyring).
+      if (credentialStore) {
+        removeTokenFile(candidatePath);
+        return;
+      }
       throw new Error("OS secure storage is unavailable. Cannot persist GitHub token.");
     }
 
