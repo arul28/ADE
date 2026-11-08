@@ -117,7 +117,7 @@ approve it joining, and the command waits up to 10 minutes for that.
 
 ## Don'ts
 
-- If `ade cloud` says ADE Cloud isn't available on this account, tell the person. Never ask for a key.
+- If `ade cloud` says ADE Cloud isn't available, tell the person. Never ask for a key.
 - Never sign Claude or another provider in on a cloud machine for the person;
   they do that themselves. One sign-in covers every new machine: **Sign-ins
   for your cloud machines** on the ADE Cloud page
