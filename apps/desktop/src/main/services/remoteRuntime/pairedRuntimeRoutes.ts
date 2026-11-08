@@ -415,7 +415,8 @@ export function classifyPairedRuntimeFailure(
 export function pairedRuntimeFailureCode(error: unknown): string | undefined {
   const structured = findInErrorCauses(error, (candidate) => {
     const { helloCode, closeCode, code } = candidate as { helloCode?: unknown; closeCode?: unknown; code?: unknown };
-    if (typeof helloCode === "string" && /^[a-z_]{1,48}$/.test(helloCode)) return `hello_${helloCode}`;
+    // Sent by the other machine, so only the codes this build knows are repeated.
+    if (typeof helloCode === "string" && Object.hasOwn(HELLO_CODE_FAILURES, helloCode)) return `hello_${helloCode}`;
     if (typeof closeCode === "number") return `ws_close_${closeCode}`;
     if (typeof code === "string" && NETWORK_ERRNOS.includes(code as (typeof NETWORK_ERRNOS)[number])) return code;
     return undefined;

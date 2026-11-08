@@ -1818,7 +1818,6 @@ export function createBrainProjectActionsSyncHandler(
             return;
           }
           peer.authenticated = true;
-          reportPeerAccepted({ logger: args.logger, hello, transportOrigin, hostDeviceId: () => brainMetadata().deviceId });
           if (sealedAdoption) adoptChallengeFailures.clearAfterSuccess({ ip: remoteAddress ?? null });
           peer.adoptChallenge = null;
           // `account` is record-backed exactly like `paired` once it commits:
@@ -1909,6 +1908,7 @@ export function createBrainProjectActionsSyncHandler(
             ? send(ws, "hello_ok", sealAdoptHelloOk(sealedAdoption, helloOkPayload), envelope.requestId)
             : send(ws, "hello_ok", helloOkPayload, envelope.requestId);
           if (helloOkSent) {
+            reportPeerAccepted({ logger: args.logger, hello, transportOrigin, hostDeviceId: () => brainMetadata().deviceId });
             if (negotiatedCompression) {
               brainPeerCompressionBySocket.set(ws, negotiatedCompression);
             } else {

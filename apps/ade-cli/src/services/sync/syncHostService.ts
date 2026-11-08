@@ -8421,12 +8421,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
       peer.authenticated = true;
       peer.helloAcceptedAtMs = Date.now();
-      reportPeerAccepted({
-        logger: args.logger,
-        hello,
-        transportOrigin: peer.transportOrigin,
-        hostDeviceId: () => readBrainMetadata().deviceId,
-      });
       if (sealedAdoption) {
         clearAdoptChallengeIssuancesAfterSuccessfulAuth(peer.remoteAddress);
       }
@@ -8536,8 +8530,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         pipelinedHelloAccepted: sealedAdoption ? 0 : (hello.pipelined?.length ?? 0),
         knownProjectCatalogDigest: hello.projectCatalogDigest ?? null,
       });
+      let helloOkSent: boolean;
       if (sealedAdoption) {
-        send(peer.ws, "hello_ok", sealAdoptHelloOk(sealedAdoption, helloOkPayload), envelope.requestId);
+        helloOkSent = send(peer.ws, "hello_ok", sealAdoptHelloOk(sealedAdoption, helloOkPayload), envelope.requestId);
         if (!sealedAdoption.aeadBoundToSignature) {
           args.logger.warn("sync_host.legacy_adoption_aead_unbound", {
             deviceId: hello.peer.deviceId,
@@ -8547,7 +8542,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           });
         }
       } else {
-        send(peer.ws, "hello_ok", helloOkPayload, envelope.requestId);
+        helloOkSent = send(peer.ws, "hello_ok", helloOkPayload, envelope.requestId);
+      }
+      if (helloOkSent) {
+        reportPeerAccepted({
+          logger: args.logger,
+          hello,
+          transportOrigin: peer.transportOrigin,
+          hostDeviceId: () => readBrainMetadata().deviceId,
+        });
       }
       // hello_ok itself uses the legacy encoder so the selected codec is never
       // required before the client has observed the negotiation result.

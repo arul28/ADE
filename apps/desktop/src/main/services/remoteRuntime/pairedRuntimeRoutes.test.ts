@@ -158,6 +158,8 @@ describe("paired runtime endpoint routes", () => {
     ["DNS", new Error("Failed to connect to sync endpoint: getaddrinfo ENOTFOUND mac.tailnet.ts.net"), "ENOTFOUND"],
     ["relay status", new Error("Failed to connect to sync endpoint: Unexpected server response: 502"), "http_502"],
     ["close frame", Object.assign(new Error("closed"), { closeCode: 4505 }), "ws_close_4505"],
+    ["a known hello code", Object.assign(new Error("rejected"), { helloCode: "repair_required" }), "hello_repair_required"],
+    ["a hello code this build does not know", Object.assign(new Error("rejected"), { helloCode: "my_machine_name" }), undefined],
     ["nested cause", new Error("wrapped", { cause: Object.assign(new Error("x"), { code: "EHOSTUNREACH" }) }), "EHOSTUNREACH"],
     ["deadline", new Error("Timed out connecting to sync endpoint after 3000ms."), "timeout"],
     ["an all-caps machine name", new Error("Can't reach EVAN-PC — it may be asleep."), undefined],

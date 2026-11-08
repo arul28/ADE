@@ -59,7 +59,6 @@ export class RemoteDialTelemetry {
     this.outagesByTargetId.set(targetId, outage);
     if (!existing) this.deps.onOutcome?.("failed");
     if (outage.reportedAt != null && now - outage.reportedAt < REPEAT_REPORT_INTERVAL_MS) return;
-    outage.reportedAt = now;
 
     const diagnostic = (error as { diagnostic?: PairedRuntimeRouteDiagnostic } | null)?.diagnostic;
     const base = this.commonFields(targetId, outage, now);
@@ -74,6 +73,7 @@ export class RemoteDialTelemetry {
     };
     this.deps.logger?.info("remote.connect_failed", { ...fields, attempts: diagnostic?.attempts ?? [] });
     forwardSignalToSentry("remote.connect_failed", fields, base.peer_device_ref ?? targetId);
+    outage.reportedAt = now;
   }
 
   noteConnected(targetId: string, route: RemoteRuntimeConnectionRoute | undefined): void {

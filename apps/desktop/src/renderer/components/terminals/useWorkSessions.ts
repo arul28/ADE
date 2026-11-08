@@ -20,6 +20,7 @@ import {
   selectActiveProjectRoot,
   useAppStore,
   useAppStoreApi,
+  useRootAppStore,
   type WorkDraftKind,
   type WorkGridSet,
   type WorkProjectViewState,
@@ -2029,8 +2030,11 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   // Work is not: load it once, or it reads "No sessions" when the app opens
   // straight onto CTO.
   const sidebarHeld = useProjectSidebarHeld();
+  // These reads go to whichever project the window shows, so a parked tab that
+  // kept loading would fill itself with the visible project's chats.
+  const isVisibleProject = useRootAppStore((s) => selectActiveProjectStateKey(s) === projectStateKey);
   useEffect(() => {
-    if (!projectRoot || !projectStateKey || isWorkRoute || !sidebarHeld) return;
+    if (!projectRoot || !projectStateKey || isWorkRoute || !sidebarHeld || !isVisibleProject) return;
     if (hasLoadedOnceRef.current) return;
     return runFirstLoadWithRetry({
       surface: "sessions",
@@ -2038,7 +2042,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       load: (attempt) => refresh({ showLoading: attempt === 1, force: true }),
       onRetryingChange: setFirstLoadRetrying,
     });
-  }, [isWorkRoute, projectRoot, projectStateKey, refresh, remoteTargetId, sidebarHeld]);
+  }, [isVisibleProject, isWorkRoute, projectRoot, projectStateKey, refresh, remoteTargetId, sidebarHeld]);
 
   useEffect(() => {
     if (isWorkRoute) return;
