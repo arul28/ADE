@@ -5,9 +5,10 @@ import type { ProjectHealthIssue, ProjectHealthReport } from "../../../../shared
 import type { UsageSnapshot } from "../../../../shared/types/usage";
 import type { AiProviderConnectionStatus } from "../../../../shared/types/config";
 import { isBackgroundItemBlocked } from "../../../../shared/types/core";
-import type { Agent37Machine } from "../../../../shared/agent37";
-import type { RemoteRuntimeTarget } from "../../../../shared/types/remoteRuntime";
-import { disabledProviderSet } from "../../../../shared/providerEnablement";
+import { agent37MachineResting } from "../../../../shared/agent37";
+import type { AiConfig } from "../../../../shared/types/config";
+import type { ProviderInstance } from "../../../../shared/types/providerInstances";
+import { isProviderDisabled } from "../../../../shared/providerEnablement";
 import { THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
 import { RELAY_HELD_BY_OTHER_ADE_APP } from "../../../../shared/connectionDiagnosis";
 import { ACCOUNT_SCOPE_ALL } from "../../../../shared/accountSettingsScope";
@@ -18,6 +19,7 @@ import {
   knownAdeVersions,
   machinesBehindOnTheirTrack,
 } from "../../remoteTargets/remoteMachineModel";
+import { agent37BoxForMachine } from "../../remoteTargets/agent37MachineModel";
 import { missingMcpSecrets } from "../mcp/useMcpRegistry";
 import { settingsRouteFor } from "../settingsManifest";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
@@ -50,7 +52,7 @@ export type AttentionItem = {
   detail?: string;
   /** What the row counts, one line each (the failing calls, the folders). */
   items?: string[];
-  /** Where it lives, for the chip: "Project", "This computer", "Providers"… */
+  /** Where it lives, before the detail: "Project", "This computer", "Providers"… */
   where: string;
   /** The settings page that holds it. */
   route: string;
@@ -151,12 +153,13 @@ function serviceItems(info: AppInfo | null, health: RuntimeHealthSnapshot | null
   const failed = health?.failedActions24h ?? 0;
   if (failed > 0) {
     const top = health?.failedActionsTop ?? [];
+    const [first] = top;
     items.push({
       id: "service-failures",
       severity: "warning",
       title: failed === 1 ? "1 background service call failed today" : `${failed} background service calls failed today`,
-      detail: top.length
-        ? `Most often ${top[0]!.action}${top[0]!.count > 1 ? ` (${top[0]!.count} times)` : ""}. Errors and timeouts in the last 24 hours.`
+      detail: first
+        ? `Most often ${first.action}${first.count > 1 ? ` (${first.count} times)` : ""}. Errors and timeouts in the last 24 hours.`
         : "Errors and timeouts in the last 24 hours.",
       items: top.map((entry) => `${entry.action} × ${entry.count}${entry.lastError ? ` — ${entry.lastError}` : ""}`),
       where: THIS_MACHINE_NAME,
@@ -218,17 +221,33 @@ function pressureItems(pressure: DiskPressureSnapshot | null): AttentionItem[] {
 }
 
 /**
- * A provider is a problem only when you signed in to it and it still can't
- * run. A blocker alone is not one: a provider you never set up has one ("not
- * signed in", "downloads the first time it is used"), and so does one that
- * runs fine but carries a side note (a Codex token too old for usage
- * polling, a Muse login the Keychain hides). A provider you switched off is
- * your choice. A provider you use that lost its login shows from the usage
- * read instead (`usageItems`).
+ * A provider is a problem only when you use it and it can't start chats.
+ * "You use it" means you are signed in to it here, or ADE knows an account of
+ * yours for it on this machine: usage tracking still lists it, or its saved
+ * login broke (`loginBroken`, Claude and Codex accounts). A login that left no
+ * trace reads the same as one never made. A blocker alone
+ * is not a problem: a provider you never set up has one ("not signed in"), so
+ * does one whose runtime is still on its way ("downloads the first time it is
+ * used"), and so does one that runs fine with a side note (a Codex token too
+ * old for usage polling, a Muse login the Keychain hides). A provider you
+ * switched off is your choice.
  */
-function providerItems(providers: readonly AiProviderConnectionStatus[], disabled: ReadonlySet<string>): AttentionItem[] {
+function providerItems(
+  providers: readonly AiProviderConnectionStatus[],
+  ai: Pick<AiConfig, "disabledProviders"> | null | undefined,
+  usage: UsageSnapshot | null,
+  accounts: readonly ProviderInstance[],
+): AttentionItem[] {
+  // A provider whose signed-out account usage already lists (`usageItems`) is not listed twice.
+  const listedByUsage = new Set<string>((usage?.balanceIssues ?? []).filter((issue) => issue.kind === "signed_out").map((issue) => issue.provider));
+  const usedHere = new Set<string>([
+    ...(usage?.accounts ?? []).filter((account) => !account.notSignedInHere).map((account) => account.provider),
+    ...accounts.filter((account) => account.loginBroken).map((account) => account.provider),
+  ].filter((provider) => !listedByUsage.has(provider)));
   return providers.flatMap((provider): AttentionItem[] => {
-    if (provider.runtimeAvailable || !provider.authAvailable || disabled.has(provider.provider)) return [];
+    if (provider.runtimeAvailable || provider.runtimeDownloadPending || isProviderDisabled(ai, provider.provider)) return [];
+    const lostLogin = !provider.authAvailable && usedHere.has(provider.provider);
+    if (!provider.authAvailable && !lostLogin) return [];
     const name = humanizeProvider(provider.provider);
     // A provider without its own page (Devin, for one) opens the Providers grid.
     const ownRoute = settingsRouteFor(`agents.provider.${provider.provider}`);
@@ -236,8 +255,8 @@ function providerItems(providers: readonly AiProviderConnectionStatus[], disable
     return [{
       id: `provider-${provider.provider}`,
       severity: "warning",
-      title: `${name} can't start chats`,
-      detail: provider.blocker ?? "You're signed in, but ADE couldn't start it.",
+      title: lostLogin ? `${name} is signed out` : `${name} can't start chats`,
+      detail: provider.blocker ?? (lostLogin ? "Sign in again to use it here." : "You're signed in, but ADE couldn't start it."),
       where: "Providers",
       route,
     }];
@@ -288,45 +307,51 @@ function cliItems(status: Awaited<ReturnType<typeof window.ade.adeCli.getStatus>
 
 type ConnectionSnapshot = Awaited<ReturnType<typeof window.ade.remoteRuntime.getConnectionSnapshot>>;
 
+const machineItemId = (targetId: string) => `machine-${targetId}`;
+
 function unreachableConnections(snapshot: ConnectionSnapshot | null) {
   return snapshot?.connections.filter((connection) => connection.state === "error" || connection.state === "parked") ?? [];
 }
 
-/** The Agent 37 box behind a machine: its account key, else its hostname, which on Agent 37 is the instance id. */
-function agent37BoxFor(target: RemoteRuntimeTarget, boxes: readonly Agent37Machine[]): Agent37Machine | null {
-  const key = target.pairedMachine?.machineKey ?? null;
-  const host = target.hostname.trim().toLowerCase();
-  return boxes.find((box) => (key != null && box.machineKey === key) || box.instanceId.toLowerCase() === host) ?? null;
-}
-
 /**
- * Machines this computer can't reach. An Agent 37 box that is asleep or
- * stopped can't answer by design and wakes when it is used, so it is not one.
- * The box list is a network read, made only when something is unreachable.
+ * The "Can't reach" rows that are an Agent 37 box resting: asleep, stopped
+ * or waking can't answer by design, and the box wakes when it is used. The
+ * box list is a network read, so it runs after first paint and only when
+ * something is unreachable; the rows show meanwhile and drop when it answers.
  */
-async function unreachableMachineItems(snapshot: ConnectionSnapshot | null): Promise<AttentionItem[]> {
+async function restingAgent37ItemIds(snapshot: ConnectionSnapshot | null): Promise<Set<string>> {
   const unreachable = unreachableConnections(snapshot);
-  if (unreachable.length === 0) return [];
   const listMachines = window.ade?.agent37?.listMachines;
-  const listed = isAdeAvailable(listMachines) ? await listMachines().catch(() => null) : null;
-  const boxes = listed?.state === "ok" ? listed.machines : [];
-  return unreachable.flatMap((connection): AttentionItem[] => {
-    const box = agent37BoxFor(connection.target, boxes);
-    if (box && (box.state === "asleep" || box.state === "stopped" || box.state === "starting")) return [];
-    return [{
-      id: `machine-${connection.target.id}`,
-      severity: "warning",
-      title: `Can't reach ${connection.target.name}`,
-      detail: connection.lastError ?? undefined,
-      where: connection.target.name,
-      route: settingsRouteFor("account.computers"),
-    }];
+  if (unreachable.length === 0 || !isAdeAvailable(listMachines)) return new Set();
+  const listed = await listMachines().catch((error: unknown) => {
+    console.warn("[needs-attention] reading Agent 37 boxes failed", error);
+    return null;
   });
+  const boxes = listed?.state === "ok" ? listed.machines : [];
+  return new Set(unreachable
+    .filter((connection) => {
+      const box = agent37BoxForMachine(boxes, {
+        machineKey: connection.target.pairedMachine?.machineKey,
+        hostname: connection.target.hostname,
+      });
+      return box != null && agent37MachineResting(box.state);
+    })
+    .map((connection) => machineItemId(connection.target.id)));
 }
 
 function machineItems(snapshot: ConnectionSnapshot | null, update: AutoUpdateSnapshot | null): AttentionItem[] {
   if (!snapshot) return [];
   const items: AttentionItem[] = [];
+  for (const connection of unreachableConnections(snapshot)) {
+    items.push({
+      id: machineItemId(connection.target.id),
+      severity: "warning",
+      title: `Can't reach ${connection.target.name}`,
+      detail: connection.lastError ?? undefined,
+      where: connection.target.name,
+      route: settingsRouteFor("account.computers"),
+    });
+  }
   // Behind on its own track only: a Stable machine is not "older" than this
   // computer's Beta.
   const behind = machinesBehindOnTheirTrack(connectedMachinesFromSnapshot(snapshot), knownAdeVersions(update));
@@ -536,7 +561,7 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     if (opts.force) setChecking(true);
     const ade = window.ade;
     const failed: string[] = [];
-    const [info, update, pressure, runtimeHealth, report, usage, ai, cli, machines, sync, github, projectConfig] = await Promise.all([
+    const [info, update, pressure, runtimeHealth, report, usage, ai, cli, machines, sync, github, projectConfig, providerAccounts] = await Promise.all([
       quiet(() => ade.app.getInfo(), failed, "ADE's service"),
       quiet(ade.updateGetState ? () => ade.updateGetState() : null, failed, "updates"),
       quiet(isAdeAvailable(ade.storage?.getPressure) ? () => ade.storage.getPressure() : null, failed, "disk space"),
@@ -553,8 +578,10 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
         return snapshot;
       } : null, failed, "sync"),
       hasProject ? quiet(ade.github?.getStatus ? () => ade.github.getStatus({}) : null, failed, "GitHub") : Promise.resolve(null),
-      // Only for the providers you switched off; without it they just show.
-      hasProject ? quiet(ade.projectConfig?.get ? () => ade.projectConfig.get() : null) : Promise.resolve(null),
+      // Only for the providers you switched off; without it they show, and the list says it couldn't check.
+      hasProject ? quiet(ade.projectConfig?.get ? () => ade.projectConfig.get() : null, failed, "provider settings") : Promise.resolve(null),
+      // Same machine as `ai.getStatus` (unpinned), so the two describe one provider set.
+      quiet(ade.providerInstances?.list ? () => ade.providerInstances.list() : null, failed, "provider accounts"),
     ]);
     if (current !== request.current) return;
     const providers = connectedProviders(ai);
@@ -565,7 +592,7 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
       ...updateItems(update),
       ...pressureItems(pressure),
       ...cliItems(cli),
-      ...providerItems(providers, disabledProviderSet(projectConfig?.effective.ai)),
+      ...providerItems(providers, projectConfig?.effective.ai, usage, providerAccounts ?? []),
       ...usageItems(usage),
       ...githubItems(github),
       ...machineItems(machines, update),
@@ -575,10 +602,14 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     setLoading(false);
     setChecking(false);
     // The slow ones, after the list is on screen.
+    // The Agent 37 read can take long; it never holds back the other rows.
+    void restingAgent37ItemIds(machines).then((resting) => {
+      if (current !== request.current || resting.size === 0) return;
+      setItems((currentItems) => currentItems.filter((item) => !resting.has(item.id)));
+    });
     const late = await Promise.all([
       quiet(mcpItems, failed, "MCP servers"),
       quiet(() => integrationItems(hasProject, failed), failed, "integrations"),
-      quiet(() => unreachableMachineItems(machines), failed, "other machines"),
     ]);
     if (current !== request.current) return;
     setLateItems(late.flatMap((entry) => entry ?? []));

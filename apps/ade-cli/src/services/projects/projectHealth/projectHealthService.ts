@@ -315,8 +315,20 @@ function installUnits(checkoutRoot: string, logger: Pick<Logger, "warn">): strin
   return units.filter((unit) => hasPackageInstall(unit, logger));
 }
 
-/** `folders` are relative to the checkout; "" is the checkout itself. */
-type DependencyInstall = { checkout: Checkout; command: string; folders: string[] };
+/**
+ * One install, in one terminal: a folder's own install, or the checkout's
+ * root install (its setup script when it has one). One per folder because a
+ * chain of `cd` and `&&` breaks in Windows PowerShell. `label` names the
+ * folder, relative to the checkout, or the checkout itself.
+ */
+type DependencyInstall = { checkout: Checkout; cwd: string; command: string; label: string };
+
+type DependencyPlan = {
+  installs: DependencyInstall[];
+  /** Folders of the main checkout with no packages, relative to it; "" is the checkout itself. */
+  missingFolders: string[];
+  brokenLinks: string[];
+};
 
 /**
  * What to install where. A unit of the main checkout with no `node_modules`
@@ -327,31 +339,7 @@ type DependencyInstall = { checkout: Checkout; command: string; folders: string[
  * installing the lane (that would replace a shared link with gigabytes of
  * copies). Links to anywhere else that is gone are reported as broken.
  */
-/**
- * The dependencies row in words that say how much is missing: one example
- * package is not "builds fail in the main checkout".
- */
-function dependencyIssueText(plan: { installs: DependencyInstall[]; brokenLinks: string[] }): { title: string; detail: string } {
-  if (!plan.installs.length) {
-    return {
-      title: `${plural(plan.brokenLinks.length, "dependency link")} point${plan.brokenLinks.length === 1 ? "s" : ""} at nothing`,
-      detail: "Code that loads packages through these links fails until they point at installed packages.",
-    };
-  }
-  const folders = plan.installs.flatMap((install) => install.folders.map((folder) => folder
-    ? (install.checkout.primary ? folder : `${install.checkout.label}/${folder}`)
-    : install.checkout.primary ? "The main checkout" : install.checkout.label));
-  const rootMissing = plan.installs.some((install) => install.folders.includes(""));
-  const named = folders.length <= 2 ? folders.join(" and ") : `${folders.length} folders`;
-  return {
-    title: `${named} ${folders.length === 1 ? "has" : "have"} no packages installed`,
-    detail: rootMissing
-      ? "Builds, tests and dev servers fail until packages are installed."
-      : `Building or running ${folders.length === 1 ? "it" : "them"} fails until ${folders.length === 1 ? "it is" : "they are"} installed. The rest of the project has its packages.`,
-  };
-}
-
-function dependencyPlan(ctx: Context, logger: Pick<Logger, "warn">): { installs: DependencyInstall[]; brokenLinks: string[] } {
+function dependencyPlan(ctx: Context, logger: Pick<Logger, "warn">): DependencyPlan {
   const primary = ctx.checkouts.find((checkout) => checkout.primary) ?? null;
   const needs = new Map<Checkout, Set<string>>();
   const brokenLinks: string[] = [];
@@ -392,24 +380,50 @@ function dependencyPlan(ctx: Context, logger: Pick<Logger, "warn">): { installs:
     }
   }
   const installs: DependencyInstall[] = [];
-  for (const [checkout, units] of needs) {
-    const folders = [...units].sort().map((unit) => path.relative(checkout.root, unit));
-    // A setup script bootstraps a checkout with nothing installed. It need not
-    // cover every folder (a repo's setup may skip an example package), so a
-    // checkout whose root is installed installs only the folders missing.
-    const setup = installCommandFor(checkout.root);
-    if (setup && setup.endsWith(" run setup") && units.has(checkout.root)) {
-      installs.push({ checkout, command: setup, folders });
-      continue;
+  const missingFolders: string[] = [];
+  // Only the main checkout is ever marked (lanes are never installed).
+  for (const [checkout, marked] of needs) {
+    const units = [...marked].sort();
+    missingFolders.push(...units.map((unit) => path.relative(checkout.root, unit)));
+    // A checkout root with nothing installed is installed alone: its install
+    // (or setup script) often installs the folders under it too, and a second
+    // install running in one of those at the same time can break both. The
+    // report re-checks after the fix, so a folder the root install skipped
+    // shows again and installs on its own next time.
+    const toInstall = marked.has(checkout.root) ? [checkout.root] : units;
+    for (const unit of toInstall) {
+      installs.push({
+        checkout,
+        cwd: unit,
+        command: installCommandFor(unit) ?? "npm install",
+        label: path.relative(checkout.root, unit) || checkout.label,
+      });
     }
-    const parts = [...units].sort().map((unit) => {
-      const command = installCommandFor(unit) ?? "npm install";
-      const relative = path.relative(checkout.root, unit);
-      return relative ? `(cd ${JSON.stringify(relative)} && ${command})` : command;
-    });
-    installs.push({ checkout, command: parts.join(" && "), folders });
   }
-  return { installs, brokenLinks };
+  return { installs, missingFolders, brokenLinks };
+}
+
+/**
+ * The dependencies row in words that say how much is missing: one example
+ * package is not "builds fail in the main checkout".
+ */
+function dependencyIssueText(plan: DependencyPlan): { title: string; detail: string } {
+  const links = plan.brokenLinks.length;
+  const linkText = `${plural(links, "dependency link")} point${links === 1 ? "s" : ""} at nothing`;
+  const linkDetail = "Code that loads packages through these links fails until they point at installed packages.";
+  if (!plan.missingFolders.length) return { title: linkText, detail: linkDetail };
+  const folders = plan.missingFolders.map((folder) => folder || "The main checkout");
+  const one = folders.length === 1;
+  const named = folders.length <= 2 ? folders.join(" and ") : `${folders.length} folders`;
+  const rootMissing = plan.missingFolders.includes("");
+  const installDetail = rootMissing
+    ? "Builds, tests and dev servers fail until packages are installed."
+    : `Building or running ${one ? "it" : "them"} fails until ${one ? "it is" : "they are"} installed.`;
+  return {
+    title: `${named} ${one ? "has" : "have"} no packages installed${links ? `, and ${linkText}` : ""}`,
+    // "The rest has its packages" only when nothing else is broken.
+    detail: links ? `${installDetail} ${linkDetail}` : rootMissing ? installDetail : `${installDetail} The rest of the project has its packages.`,
+  };
 }
 
 
@@ -853,11 +867,11 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           severity: "warning",
           ...dependencyIssueText(plan),
           items: [
-            ...plan.installs.map((install) => `${install.checkout.label}: ${install.command}`),
+            ...plan.installs.map((install) => `${install.label}: ${install.command}`),
             ...plan.brokenLinks.map((link) => `broken link: ${path.relative(projectRoot, link)}`),
           ],
           ...(plan.installs.length && deps.openTerminal
-            ? { fix: { id: "install-dependencies", label: "Install", description: `Opens a terminal per checkout and runs its install there, where you can watch it: ${plan.installs.map((install) => install.command).join("; ")}.`, kind: "terminal" as const } }
+            ? { fix: { id: "install-dependencies", label: "Install", description: `Opens a terminal in each folder and runs its install there, where you can watch it: ${plan.installs.map((install) => install.command).join("; ")}.`, kind: "terminal" as const } }
             : {}),
         }];
       }),
@@ -1070,8 +1084,8 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
         case "install-dependencies": {
           if (!deps.openTerminal) throw new Error("Terminals aren't available here.");
           for (const install of dependencyPlan(ctx, deps.logger).installs) {
-            await deps.openTerminal({ laneId: install.checkout.laneId, cwd: install.checkout.root, title: "Install dependencies", command: install.command });
-            done.push(`Started \`${install.command}\` in ${install.checkout.label}.`);
+            await deps.openTerminal({ laneId: install.checkout.laneId, cwd: install.cwd, title: `Install ${install.label}`, command: install.command });
+            done.push(`Started \`${install.command}\` in ${install.label}.`);
           }
           break;
         }

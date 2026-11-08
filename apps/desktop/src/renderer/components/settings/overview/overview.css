@@ -1,7 +1,7 @@
 /*
- * Settings → Overview. Built on the surface kit (`.kit-card`, `.kit-dot`,
- * `.kit-tag`) and the modern settings primitives; only the attention rows and
- * the glance grid live here. Every colour is a theme token or a --kit-* mix.
+ * Settings → Overview. Built on the surface kit (`.kit-card`, `.kit-icon-btn`)
+ * and the modern settings primitives; only the attention rows and the glance
+ * grid live here. Every colour is a theme token or a --kit-* mix.
  */
 
 /* ── Needs attention ────────────────────────────────────────────────────── */
@@ -62,7 +62,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--kit-track);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -73,7 +73,6 @@
 .ade-attn-actions { display: flex; align-items: center; gap: 6px; }
 .ade-attn-open { width: 26px; height: 26px; color: var(--kit-text-3); }
 .ade-attn-open:hover { color: var(--color-fg); }
-.ade-attn-row > .ade-st-shimmer { grid-column: 1 / -1; }
 .ade-attn-group-label {
   margin: 14px 2px 6px;
   font-size: 11.5px;

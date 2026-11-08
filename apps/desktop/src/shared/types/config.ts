@@ -1172,6 +1172,12 @@ export type AiProviderConnectionStatus = {
   usageAvailable: boolean;
   path: string | null;
   blocker: string | null;
+  /**
+   * ADE's copy of the runtime is downloading, or downloads the first time
+   * this machine uses it, so `blocker` describes a wait, not a fault. Absent
+   * on older hosts and whenever the runtime is present.
+   */
+  runtimeDownloadPending?: boolean;
   lastCheckedAt: string;
   sources: AiProviderConnectionSource[];
   /**

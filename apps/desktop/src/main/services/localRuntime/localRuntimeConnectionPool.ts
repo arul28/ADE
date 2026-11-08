@@ -109,8 +109,10 @@ type LocalRuntimeConnection = {
   socketPath: string;
 };
 
-/** A slow call, or a failed one with its `domain.action` and error message. */
-type SlowActionSample = { at: number; totalMs: number; failed: boolean; action?: string; error?: string };
+/** A call that was slow, or one that failed with its `domain.action` and error message. */
+type HealthSample =
+  | { at: number; failed: false; totalMs: number }
+  | { at: number; failed: true; action: string; error: string };
 
 /** How many failing actions the health snapshot names, most frequent first. */
 const RUNTIME_HEALTH_TOP_FAILURES = 5;
@@ -1356,7 +1358,7 @@ export class LocalRuntimeConnectionPool {
   private runtimeStatusRefreshPromise: Promise<void> | null = null;
   // Rolling 24 h aggregate of slow (>500 ms) and of failed daemon action calls.
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
-  private slowActionSamples: SlowActionSample[] = [];
+  private healthSamples: HealthSample[] = [];
   /** `domain.action` → when it last logged slow at warn, and how many it logged at info since. */
   private readonly slowActionWarns = new Map<string, { at: number; quieted: number }>();
   /** Lanes whose App Control frames this desktop's windows show. */
@@ -1547,14 +1549,15 @@ export class LocalRuntimeConnectionPool {
     return { warn: true, since: last?.quieted ?? 0 };
   }
 
-  private recordSlowAction(sample: SlowActionSample): void {
-    this.slowActionSamples.push(sample);
+  private recordHealthSample(domain: string, sample: HealthSample): void {
+    if (RUNTIME_HEALTH_EXCLUDED_DOMAINS.has(domain)) return;
+    this.healthSamples.push(sample);
     // Keep the window bounded on both age and count.
     const horizon = sample.at - RUNTIME_HEALTH_WINDOW_MS;
-    if (this.slowActionSamples.length > RUNTIME_HEALTH_MAX_SAMPLES || this.slowActionSamples[0]!.at < horizon) {
-      this.slowActionSamples = this.slowActionSamples.filter((sample) => sample.at >= horizon);
-      if (this.slowActionSamples.length > RUNTIME_HEALTH_MAX_SAMPLES) {
-        this.slowActionSamples = this.slowActionSamples.slice(-RUNTIME_HEALTH_MAX_SAMPLES);
+    if (this.healthSamples.length > RUNTIME_HEALTH_MAX_SAMPLES || this.healthSamples[0]!.at < horizon) {
+      this.healthSamples = this.healthSamples.filter((entry) => entry.at >= horizon);
+      if (this.healthSamples.length > RUNTIME_HEALTH_MAX_SAMPLES) {
+        this.healthSamples = this.healthSamples.slice(-RUNTIME_HEALTH_MAX_SAMPLES);
       }
     }
   }
@@ -1565,12 +1568,10 @@ export class LocalRuntimeConnectionPool {
    * marks expected (not found, signed out, declined) is the action answering,
    * not the service failing, and is not counted.
    */
-  private recordFailedAction(request: RemoteRuntimeActionRequest, startedAtMs: number, error: Error): void {
-    if (RUNTIME_HEALTH_EXCLUDED_DOMAINS.has(request.domain) || expectedErrorKind(error)) return;
-    const at = Date.now();
-    this.recordSlowAction({
-      at,
-      totalMs: at - startedAtMs,
+  private recordFailedAction(request: RemoteRuntimeActionRequest, error: Error): void {
+    if (expectedErrorKind(error)) return;
+    this.recordHealthSample(request.domain, {
+      at: Date.now(),
       failed: true,
       action: `${request.domain}.${request.action}`,
       error: error.message.slice(0, 200),
@@ -1579,9 +1580,9 @@ export class LocalRuntimeConnectionPool {
 
   getRuntimeHealth(nowMs: number = Date.now()): RuntimeHealthSnapshot {
     const horizon = nowMs - RUNTIME_HEALTH_WINDOW_MS;
-    const recent = this.slowActionSamples.filter((sample) => sample.at >= horizon);
+    const recent = this.healthSamples.filter((sample) => sample.at >= horizon);
     // Prune while we are here so idle pools do not retain a stale window.
-    this.slowActionSamples = recent;
+    this.healthSamples = recent;
     // A failed call is counted once, as failed, however long it took: a
     // timeout is a failure first.
     const slow = recent.filter((sample) => !sample.failed);
@@ -1597,11 +1598,10 @@ export class LocalRuntimeConnectionPool {
     const failures = new Map<string, { action: string; count: number; lastError: string | null }>();
     for (const sample of recent) {
       if (!sample.failed) continue;
-      const action = sample.action ?? "unknown";
-      const entry = failures.get(action) ?? { action, count: 0, lastError: null };
+      const entry = failures.get(sample.action) ?? { action: sample.action, count: 0, lastError: null };
       entry.count += 1;
-      entry.lastError = sample.error ?? entry.lastError;
-      failures.set(action, entry);
+      entry.lastError = sample.error;
+      failures.set(sample.action, entry);
     }
     return {
       slowActions24h: slow.length,
@@ -2527,15 +2527,25 @@ export class LocalRuntimeConnectionPool {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const tStart = Date.now();
-      const project = await this.ensureProject(rootPath);
-      const tProject = Date.now();
-      let entry = await this.connect();
-      // The cached connection may already be dead (daemon recycled since the
-      // last call). Reconnecting before sending is safe for any action because
-      // nothing has been written to the socket yet.
-      if (entry.client.isClosed()) {
-        this.resetActiveConnection(entry);
+      let project: RemoteRuntimeProjectRecord;
+      let tProject: number;
+      let entry: LocalRuntimeConnection;
+      try {
+        project = await this.ensureProject(rootPath);
+        tProject = Date.now();
         entry = await this.connect();
+        // The cached connection may already be dead (daemon recycled since the
+        // last call). Reconnecting before sending is safe for any action because
+        // nothing has been written to the socket yet.
+        if (entry.client.isClosed()) {
+          this.resetActiveConnection(entry);
+          entry = await this.connect();
+        }
+      } catch (error) {
+        // A retry that cannot reach the service ends the call: count it. A
+        // first attempt that cannot connect is the connect path's to report.
+        if (lastError) this.recordFailedAction(request, error instanceof Error ? error : new Error(String(error)));
+        throw error;
       }
       const tConnect = Date.now();
       const actionCallOptions = {
@@ -2575,9 +2585,7 @@ export class LocalRuntimeConnectionPool {
         const totalMs = tCall - tStart;
         if (totalMs > SLOW_ACTION_THRESHOLD_MS || callError) {
           // A failure is counted where it is thrown, after its last attempt.
-          if (!callError && !RUNTIME_HEALTH_EXCLUDED_DOMAINS.has(request.domain)) {
-            this.recordSlowAction({ at: tCall, totalMs, failed: false });
-          }
+          if (!callError) this.recordHealthSample(request.domain, { at: tCall, failed: false, totalMs });
           const slowMeta = {
             domain: request.domain,
             action: request.action,
@@ -2632,7 +2640,7 @@ export class LocalRuntimeConnectionPool {
           lastError = callError;
           continue;
         }
-        this.recordFailedAction(request, tStart, callError);
+        this.recordFailedAction(request, callError);
         throw callError;
       }
 
@@ -2659,7 +2667,7 @@ export class LocalRuntimeConnectionPool {
     // Loop only falls through here after exhausting retries on a dropped
     // connection (it returns or throws on every other path).
     const finalError = lastError ?? new Error("Local ADE service action failed.");
-    this.recordFailedAction(request, Date.now(), finalError);
+    this.recordFailedAction(request, finalError);
     throw finalError;
   }
 

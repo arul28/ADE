@@ -14,6 +14,27 @@ import { buildAccountMachineSnapshot } from "../../../shared/accountMachineSnaps
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { AttentionItem } from "../../../shared/types/attention";
 
+/** Whether `box` is the one whose hostname is `host`: on Agent37 a box's hostname is its instance id. */
+function agent37BoxHasHost(box: Agent37Machine, host: string | null | undefined): boolean {
+  const name = host?.trim().toLowerCase() ?? "";
+  return name.length > 0 && box.instanceId.toLowerCase() === name;
+}
+
+/**
+ * The box behind one machine, by the same rule as `matchAgent37Boxes`: its
+ * machine key first, then its hostname. For a caller that has one machine and
+ * no account rows (a paired connection).
+ */
+export function agent37BoxForMachine(
+  boxes: readonly Agent37Machine[],
+  machine: { machineKey?: string | null; hostname?: string | null },
+): Agent37Machine | null {
+  const key = machine.machineKey ?? null;
+  return (key ? boxes.find((box) => box.machineKey === key) : undefined)
+    ?? boxes.find((box) => agent37BoxHasHost(box, machine.hostname))
+    ?? null;
+}
+
 /**
  * Account row key → its box. A box names its row by `ade_machine_key` (ADE
  * writes it when the box joins); a box made before that, or signed in by hand,
@@ -34,9 +55,7 @@ export function matchAgent37Boxes(
   }
   for (const machine of accountMachines) {
     if (byKey.has(machine.machineKey)) continue;
-    const host = machine.name?.trim().toLowerCase() ?? "";
-    if (!host) continue;
-    const box = boxes.find((candidate) => !taken.has(candidate.instanceId) && candidate.instanceId === host);
+    const box = boxes.find((candidate) => !taken.has(candidate.instanceId) && agent37BoxHasHost(candidate, machine.name));
     if (box) {
       byKey.set(machine.machineKey, box);
       taken.add(box.instanceId);

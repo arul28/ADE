@@ -43,6 +43,18 @@ function runtimeMissingBlocker(provider: string, cli: CliAuthStatus | null): str
     ?? `ADE could not find its ${provider} runtime on this machine.`;
 }
 
+/**
+ * Whether ADE's copy of `provider` is on its way: downloading now, or
+ * downloaded the first time this machine uses it. Either way nothing is wrong
+ * yet. A failed or unavailable copy is not pending.
+ */
+function runtimeDownloadPending(provider: string): boolean {
+  const tool = pinnedToolForProvider(provider);
+  if (!tool) return false;
+  const { status } = pinnedToolState(tool.tool, tool.label);
+  return status.state === "downloading" || (status.state === "missing" && status.fetchAllowed);
+}
+
 /** Providers whose current snapshot disagreement Sentry has already heard about. */
 const staleSnapshotProviders = new Set<string>();
 
@@ -576,7 +588,7 @@ export async function buildProviderConnections(
   );
   applyRuntimeHealth(copilot, getProviderRuntimeHealth("copilot"));
 
-  return {
+  const connections: AiProviderConnections = {
     claude,
     codex,
     cursor,
@@ -586,6 +598,12 @@ export async function buildProviderConnections(
     ...acpConnections,
     copilot,
   };
+  for (const status of Object.values(connections)) {
+    if (status && !status.runtimeDetected && !status.runtimeAvailable && runtimeDownloadPending(status.provider)) {
+      status.runtimeDownloadPending = true;
+    }
+  }
+  return connections;
 }
 
 /**

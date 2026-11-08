@@ -324,6 +324,14 @@ export function agent37StatusAwake(status: string): boolean {
   return AGENT37_AWAKE_STATUSES.has(status);
 }
 
+/**
+ * Asleep or stopped, or on its way to or from that: the box can't answer by
+ * design, and wakes when it is used.
+ */
+export function agent37MachineResting(state: Agent37MachineState): boolean {
+  return state === "asleep" || state === "stopped" || state === "starting" || state === "stopping";
+}
+
 /** Whether Agent37 is moving the box between states (worth a quick re-read). */
 export function agent37MachineSettling(state: Agent37MachineState): boolean {
   return state === "starting" || state === "stopping" || state === "deleting";
