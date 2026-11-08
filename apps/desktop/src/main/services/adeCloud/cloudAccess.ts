@@ -6,6 +6,7 @@
  * provider that goes through ADE's server, and nothing above it changes.
  */
 
+import { isSourceCheckoutRuntimeModule } from "../../../../../ade-cli/src/runtimePackaging";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { cloudStatusAwake, type CloudStatus } from "../../../shared/adeCloud";
 import type { AccountVaultResult } from "../../../shared/types/accountVault";
@@ -96,9 +97,14 @@ const NO_PROVIDER_SENTENCE: Record<Exclude<CloudAccess["state"], "ready">, strin
   unreadable: "ADE couldn't check this account's ADE Cloud access. Try again in a moment.",
 };
 
+/** A source checkout's own key: a development brain runs with sync off and never opens the vault. Shipped builds ignore it. */
+function developmentCloudKey(): string | null {
+  const modulePath = typeof __filename === "string" ? __filename : process.argv[1] ?? "";
+  return isSourceCheckoutRuntimeModule(modulePath) ? process.env.ADE_CLOUD_DEV_KEY?.trim() || null : null;
+}
+
 async function readCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
-  // A development brain runs with sync off and never opens the account vault.
-  const developmentKey = process.env.ADE_CLOUD_DEV_KEY?.trim();
+  const developmentKey = developmentCloudKey();
   if (developmentKey) return { state: "ready", provider: createAgent37Provider({ apiKey: developmentKey, fetch: deps.fetch }) };
   if (!deps.signedIn()) return { state: "signed_out" };
   let vault: CloudVault | null;
