@@ -843,6 +843,9 @@ import type {
   LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
+  DeletedLaneSnapshot,
+  RestoreDeletedLaneArgs,
+  RestoreDeletedLaneResult,
   LaneReclaimRisk,
   RestoreLaneResult,
   LaneEnvInitProgress,
@@ -2319,6 +2322,12 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<CancelLaneGitWriteResult>;
         listDeleteProgress: () => Promise<LaneDeleteProgress[]>;
+        /** Deleted lanes whose unsaved work ADE kept (30 days), newest first. */
+        listDeleted: (pin?: OpenProjectBinding | null) => Promise<DeletedLaneSnapshot[]>;
+        /** Brings a deleted lane back as a new lane, with its uncommitted files. */
+        restoreDeleted: (args: RestoreDeletedLaneArgs, pin?: OpenProjectBinding | null) => Promise<RestoreDeletedLaneResult>;
+        /** Drops a deleted lane's saved work for good. */
+        removeDeleted: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<{ removed: boolean }>;
         getDeleteRisk: (
           args: { laneId: string },
           pin?: OpenProjectBinding | null,

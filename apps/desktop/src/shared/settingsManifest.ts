@@ -1403,8 +1403,9 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "storage.recentlyDeleted",
-    label: "Recently deleted chats",
+    label: "Recently deleted",
     keywords: [
+      "recently deleted chats", "deleted lanes", "restore lane", "saved work", "uncommitted",
       "deleted chats", "recently deleted", "recover chat", "restore chat", "undo delete", "undelete",
       "reopen chat", "trash", "bin", "recycle", "deleted", "lost chat", "chat history", "bring back",
     ],
@@ -1426,8 +1427,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "storage.lane-rules",
-    label: "Archive lanes automatically",
-    keywords: ["archive", "idle", "inactivity", "cleanup", "worktree", "retention", "lane storage rules", "days"],
+    label: "Archive idle lanes",
+    keywords: ["archive", "archive lanes automatically", "automatic cleanup", "auto archive", "idle", "inactivity", "cleanup", "rules", "worktree", "retention", "lane storage rules", "days", "never"],
     tab: "storage",
     anchor: "lane-storage-rules",
     scope: "machine-repo",
@@ -1436,8 +1437,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "storage.archived-lanes",
-    label: "Archived lanes",
-    keywords: ["archived", "free up space", "reclaim", "remove folder", "worktree", "delete after", "auto delete", "local branch", "ask me", "automatically", "retention", "days"],
+    label: "Free up space and delete archived lanes",
+    keywords: ["archived lanes", "archived", "free up space", "reclaim", "remove folder", "worktree", "delete after", "delete archived lanes", "auto delete", "local branch", "ask me", "automatically", "retention", "days"],
     tab: "storage",
     anchor: "archived-lanes",
     scope: "machine-repo",
@@ -1446,8 +1447,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "storage.lane-build-output",
-    label: "Clean build output from idle lanes",
-    keywords: ["node_modules", "dist", "build", "target", ".next", "build output", "idle", "disk space", "free space", "cleanup", "reinstall"],
+    label: "Remove build output from idle lanes",
+    keywords: ["node_modules", "dist", "build", "target", ".next", "build output", "clean build output", "idle", "disk space", "free space", "cleanup", "reinstall"],
     tab: "storage",
     anchor: "lane-build-output",
     scope: "machine-repo",
@@ -1456,23 +1457,23 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "storage.session-lifecycle",
-    label: "Session lifecycle",
-    keywords: ["session", "idle", "close", "terminal", "cleanup", "settle"],
+    label: "Settle chats when the lane's PR merges",
+    keywords: ["session lifecycle", "auto-settle", "auto settle", "settle", "settled", "chats", "session", "pr merges", "merged", "cleanup"],
     tab: "storage",
     anchor: "session-lifecycle",
     scope: "machine",
     web: "hidden",
-    group: "Sessions",
+    group: "Cleanups",
   },
   {
     id: "storage.project-files",
     label: "Project files",
-    keywords: [".ade", "folder", "repair", "session logs", "config", "icon", "name", "repository", "root"],
+    keywords: [".ade", ".ade folder", "ade folder", "fix .ade folder", "folder", "repair", "session logs", "config", "local.yaml", "icon", "name", "repository", "root"],
     tab: "storage",
     anchor: "project",
     scope: "machine-repo",
     web: "hidden",
-    group: "Sessions",
+    group: "Storage",
   },
   {
     id: "lanes-git.new-lane-start",
@@ -1948,7 +1949,7 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   "github-connection": "integrations.github",
   "linear-connection": "integrations.linear",
   "pr-chat-transcripts": "lanes-git.pr-chat-transcripts",
-  // `session-lifecycle` is still a live anchor (Project → Storage & cleanup → Rules).
+  // `session-lifecycle` is still a live anchor (Project → Storage & cleanup → Rules → Chats).
   // Reset ADE lived inside the About card (#1410) before it got its own section.
   "about.reset": "general.reset",
   "auto-updates": "general.auto-updates",

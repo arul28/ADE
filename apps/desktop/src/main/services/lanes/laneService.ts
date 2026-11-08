@@ -27,6 +27,13 @@ import {
 } from "../git/git";
 import { runGitWithGithubAuthFallback, runGitWithGithubAuthFallbackOrThrow } from "../git/gitTransportAuth";
 import { describeUnsavedWorktreeWork, readWorktreeDirty, UNCOMMITTED_CHANGES_REASON } from "../git/worktreeState";
+import {
+  findDeletedLaneSnapshot,
+  listDeletedLaneSnapshots,
+  pruneDeletedLaneSnapshots,
+  removeDeletedLaneSnapshot,
+  saveDeletedLaneSnapshot,
+} from "./deletedLaneSnapshots";
 import { runGitPushOrThrow } from "../git/gitPushFailure";
 import { GIT_ENGLISH_MESSAGES_ENV } from "../git/gitReadEnv";
 import { detachPullRequestRowsForLane, deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
@@ -90,6 +97,9 @@ import type {
   CreateLaneArgs,
   DeleteLaneArgs,
   DeleteLaneResult,
+  DeletedLaneSnapshot,
+  RestoreDeletedLaneArgs,
+  RestoreDeletedLaneResult,
   LaneDeleteEvent,
   LaneDeleteLeftoverWorktree,
   LaneLifecycleEvent,
@@ -5532,6 +5542,80 @@ export function createLaneService({
     broadcastLifecycleEvent,
   });
 
+  /**
+   * Puts a saved lane's uncommitted files back into `worktreePath` as
+   * uncommitted changes: the save's diff against the commit it sat on.
+   */
+  const applySavedUncommitted = async (
+    snapshot: DeletedLaneSnapshot,
+    worktreePath: string | null | undefined,
+  ): Promise<{ restored: boolean; warning: string | null }> => {
+    if (!snapshot.uncommitted) return { restored: true, warning: null };
+    if (!snapshot.baseCommit || !worktreePath) {
+      return { restored: false, warning: "The lane has no folder to put its files back into." };
+    }
+    const diff = await runGit(["diff", "--binary", "--no-color", snapshot.baseCommit, snapshot.commit], {
+      cwd: projectRoot,
+      timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
+    });
+    if (diff.exitCode !== 0) return { restored: false, warning: diff.stderr.trim() || `git diff exited ${diff.exitCode}` };
+    if (diff.stdout.length === 0) return { restored: true, warning: null };
+    const applied = await runGit(["apply", "--whitespace=nowarn", "-"], {
+      cwd: worktreePath,
+      timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
+      stdin: diff.stdout,
+    });
+    if (applied.exitCode === 0) return { restored: true, warning: null };
+    // A delete that stopped after saving leaves the files where they were;
+    // they are back already when the save would undo cleanly.
+    const alreadyThere = await runGit(["apply", "--reverse", "--check", "-"], {
+      cwd: worktreePath,
+      timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
+      stdin: diff.stdout,
+    });
+    if (alreadyThere.exitCode === 0) return { restored: true, warning: null };
+    return { restored: false, warning: applied.stderr.trim() || `git apply exited ${applied.exitCode}` };
+  };
+
+  /** Drops the save once everything came back; otherwise it stays to try again. */
+  const finishRestore = async (
+    snapshot: DeletedLaneSnapshot,
+    laneId: string,
+    branchName: string,
+    restored: boolean,
+    warning: string | null,
+  ): Promise<void> => {
+    if (restored) {
+      await removeDeletedLaneSnapshot(projectRoot, snapshot.id).catch((error) => {
+        logger.warn("lane.deleted_saves.remove_after_restore_failed", { id: snapshot.id, error: error instanceof Error ? error.message : String(error) });
+      });
+    } else {
+      logger.warn("lane.deleted_saves.uncommitted_not_restored", { id: snapshot.id, laneId, warning });
+    }
+    logger.info("lane.deleted_saves.restored", { id: snapshot.id, laneId, branchName, restoredUncommitted: restored });
+  };
+
+  /**
+   * A lane whose space was freed with its uncommitted files discarded gets
+   * them back when its folder is rebuilt: the newest "freed" save for it.
+   */
+  const putBackFreedWork = async (
+    laneId: string,
+    worktreePath: string,
+  ): Promise<{ restored: boolean; warning: string | null } | null> => {
+    let saved: DeletedLaneSnapshot | undefined;
+    try {
+      saved = (await listDeletedLaneSnapshots(projectRoot)).find((entry) => entry.laneId === laneId && entry.kind === "freed");
+    } catch (error) {
+      logger.warn("lane.deleted_saves.list_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }
+    if (!saved) return null;
+    const result = await applySavedUncommitted(saved, worktreePath);
+    await finishRestore(saved, laneId, saved.branchName ?? "", result.restored, result.warning);
+    return result;
+  };
+
   const laneServiceApi = {
     async ensurePrimaryLane(): Promise<void> {
       await ensurePrimaryLane();
@@ -7799,6 +7883,30 @@ export function createLaneService({
                     : `${unsavedWork} Confirm that this work may be lost.`,
                 );
               }
+              // Discarding was confirmed; ADE still keeps a copy, the same as a
+              // forced delete does (Recently deleted, 30 days). The branch
+              // stays, so only the uncommitted files are at stake.
+              if (unsavedWork) {
+                try {
+                  const saved = await saveDeletedLaneSnapshot({
+                    projectRoot,
+                    laneId: args.laneId,
+                    laneName: row.name,
+                    branchRef: row.branch_ref,
+                    worktreePath: normalizedWorktree,
+                    branchGoes: false,
+                    kind: "freed",
+                  });
+                  if (saved) {
+                    logger.info("lane.reclaim.work_saved", { laneId: args.laneId, snapshotId: saved.id });
+                    warnings.push("Its uncommitted files are kept for 30 days. Restoring the lane puts them back.");
+                  }
+                } catch (error) {
+                  const message = error instanceof Error ? error.message : String(error);
+                  logger.error("lane.reclaim.save_work_failed", { laneId: args.laneId, error: message });
+                  throw new Error(`ADE could not save this lane's uncommitted files, so it kept the folder: ${message}`);
+                }
+              }
             }
             if (process.platform === "win32" || risk.finishRemoval) {
               // Windows: ADE removes the files itself, never `git worktree
@@ -8144,6 +8252,7 @@ export function createLaneService({
         }
         restoreLaneSessions(laneId, row.archived_at);
         invalidateLanePathCaches();
+        const savedWork = await putBackFreedWork(laneId, targetPath);
         const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
         if (!lane) throw new Error(`Lane not found: ${laneId}`);
         broadcastLifecycleEvent({
@@ -8152,7 +8261,7 @@ export function createLaneService({
           laneName: row.name,
           color: row.color,
         });
-        return { lane, worktreeRecreated: true };
+        return { lane, worktreeRecreated: true, savedWork };
       } finally {
         storageLock.release();
       }
@@ -8463,11 +8572,49 @@ export function createLaneService({
         // git tries to unlink the worktree directory.
         await new Promise((resolve) => setTimeout(resolve, 250));
 
+        // Before anything is removed, keep what the delete would lose: the
+        // worktree's uncommitted files (a forced delete) and commits only this
+        // lane's branch holds. Taken after the chats and terminals stopped, so
+        // nothing writes after it. A save that fails stops the step that needed
+        // it: a forced delete never discards work it could not keep.
+        let savedWorkPromise: Promise<void> | null = null;
+        const ensureWorkSaved = (): Promise<void> => {
+          savedWorkPromise ??= (async () => {
+            const worktreeIsCheckout = hasWorktree
+              && fs.existsSync(row.worktree_path)
+              && await isExpectedGitWorktreeRoot(row.worktree_path);
+            try {
+              progress.savedWork = await saveDeletedLaneSnapshot({
+                projectRoot,
+                laneId,
+                laneName: row.name,
+                branchRef: row.branch_ref,
+                worktreePath: worktreeIsCheckout ? row.worktree_path : null,
+                branchGoes: deleteBranch,
+                remoteGoes: deleteRemoteBranch ? (remoteName.trim() || "origin") : null,
+              });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              logger.error("lane.delete.save_work_failed", { laneId, error: message });
+              throw new Error(`ADE could not save this lane's unsaved work, so it did not delete it: ${message}`);
+            }
+            if (progress.savedWork) {
+              logger.info("lane.delete.work_saved", {
+                laneId,
+                snapshotId: progress.savedWork.id,
+                uncommitted: progress.savedWork.uncommitted,
+              });
+            }
+          })();
+          return savedWorkPromise;
+        };
+
         if (hasWorktree) {
           // The one slow step with no progress to watch, so the user can stop
           // it (see setDeleteStoppable). It also waits here behind other lane
           // git writes.
           await runStep("git_worktree_remove", async () => {
+            await ensureWorkSaved();
             const targetPath = normAbs(row.worktree_path);
             // Rails that must hold for ANY worktree path, not just the ones ADE
             // created: never the repository itself, never the worktrees folder,
@@ -8709,6 +8856,7 @@ export function createLaneService({
 
         if (deleteBranch && row.branch_ref) {
           await runStep("git_branch_delete", async () => {
+            await ensureWorkSaved();
             const branchName = branchNameForDelete(row.branch_ref, remoteName);
             const refCheck = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], {
               cwd: projectRoot,
@@ -8722,6 +8870,7 @@ export function createLaneService({
 
         if (deleteRemoteBranch && row.branch_ref) {
           await runStep("git_remote_branch_delete", async () => {
+            await ensureWorkSaved();
             const remote = remoteName.trim() || "origin";
             const branchName = branchNameForDelete(row.branch_ref, remote);
             const remoteCheck = await runGit(["remote", "get-url", remote], { cwd: projectRoot, timeoutMs: 8_000 });
@@ -8813,6 +8962,7 @@ export function createLaneService({
         });
         finishDeleteOperation("succeeded", {
           overallStatus: progress.overallStatus,
+          ...(progress.savedWork ? { savedWorkId: progress.savedWork.id, savedUncommitted: progress.savedWork.uncommitted } : {}),
           warnings: nonFatalFailures,
           completedAt: progress.completedAt ?? new Date().toISOString(),
         });
@@ -8828,7 +8978,7 @@ export function createLaneService({
             durationMs: totalMs
           });
         }
-        return { leftoverWorktree: progress.leftoverWorktree ?? null };
+        return { leftoverWorktree: progress.leftoverWorktree ?? null, savedWork: progress.savedWork ?? null };
       } catch (error) {
         progress.leftoverWorktree = null;
         const stoppedByUser = error instanceof Error && error.message === LANE_DELETE_CANCEL_MESSAGE;
@@ -8856,6 +9006,82 @@ export function createLaneService({
       }
       logger.info("lane.delete.cancel_requested", { laneId });
       return { cancelled: true };
+    },
+
+    /** Deleted lanes whose work ADE kept, newest first; expired ones are dropped first. */
+    async listDeletedLanes(): Promise<DeletedLaneSnapshot[]> {
+      try {
+        await pruneDeletedLaneSnapshots(projectRoot);
+      } catch (error) {
+        logger.warn("lane.deleted_saves.prune_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+      return listDeletedLaneSnapshots(projectRoot);
+    },
+
+    /** Drops a deleted lane's saved work for good. */
+    async removeDeletedLane(args: { id: string }): Promise<{ removed: boolean }> {
+      const id = typeof args?.id === "string" ? args.id.trim() : "";
+      if (!id) throw new Error("id is required.");
+      return { removed: await removeDeletedLaneSnapshot(projectRoot, id) };
+    },
+
+    /**
+     * Brings a deleted lane back from its saved work: a new lane on the old
+     * branch name (or a free variant), at the commit it had, with its
+     * uncommitted files put back as uncommitted changes. The save is dropped
+     * only once everything came back.
+     */
+    async restoreDeletedLane(args: RestoreDeletedLaneArgs): Promise<RestoreDeletedLaneResult> {
+      const id = typeof args?.id === "string" ? args.id.trim() : "";
+      if (!id) throw new Error("id is required.");
+      const snapshot = await findDeletedLaneSnapshot(projectRoot, id);
+      if (!snapshot) {
+        throw new AdeExpectedError("This deleted lane is no longer saved. It was restored, removed, or kept past 30 days.", "user");
+      }
+      // Freeing up space keeps the lane (archived, folder gone) and saves only
+      // its uncommitted files. Those go back into that lane, not a copy of it.
+      const keptRow = getLaneRow(snapshot.laneId);
+      if (keptRow && keptRow.lane_type !== "primary") {
+        const lane = keptRow.status === "archived"
+          ? (await laneServiceApi.unarchive({ laneId: keptRow.id })).lane
+          : await laneServiceApi.getSummary(keptRow.id, { includeStatus: true });
+        if (!lane) throw new Error(`Lane not found: ${keptRow.id}`);
+        const branchName = branchNameForDelete(keptRow.branch_ref, "origin");
+        // Rebuilding the folder puts the newest freed save back on its own.
+        if (!(await findDeletedLaneSnapshot(projectRoot, snapshot.id))) {
+          return { lane, branchName, restoredUncommitted: true, warning: null };
+        }
+        const { restored, warning } = await applySavedUncommitted(snapshot, lane.worktreePath);
+        await finishRestore(snapshot, lane.id, branchName, restored, warning);
+        return { lane, branchName, restoredUncommitted: restored, warning };
+      }
+
+      const startCommit = snapshot.baseCommit ?? snapshot.commit;
+      const branchExists = async (name: string) =>
+        (await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${name}`], { cwd: projectRoot, timeoutMs: 8_000 })).exitCode === 0;
+      const laneSlug = snapshot.laneName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+      const wanted = snapshot.branchName ?? `ade/${laneSlug || "restored-lane"}`;
+      let branchName = wanted;
+      for (let attempt = 1; await branchExists(branchName); attempt += 1) {
+        if (attempt > 50) throw new Error(`No free branch name near ${wanted}.`);
+        branchName = attempt === 1 ? `${wanted}-restored` : `${wanted}-restored-${attempt}`;
+      }
+      await runGitOrThrow(["branch", branchName, startCommit], { cwd: projectRoot, timeoutMs: 15_000 });
+      let lane: LaneSummary;
+      try {
+        // A restore must not publish work the person never pushed.
+        lane = await laneServiceApi.importBranch({ branchRef: branchName, name: snapshot.laneName, publishUpstream: false });
+      } catch (error) {
+        await runGit(["branch", "-D", branchName], { cwd: projectRoot, timeoutMs: 15_000 }).catch(() => null);
+        throw error;
+      }
+
+      // A branch with no commits: the save itself is the commit the lane starts at.
+      const { restored: restoredUncommitted, warning } = snapshot.baseCommit
+        ? await applySavedUncommitted(snapshot, lane.worktreePath)
+        : { restored: true, warning: null };
+      await finishRestore(snapshot, lane.id, branchName, restoredUncommitted, warning);
+      return { lane, branchName, restoredUncommitted, warning };
     },
 
     /** Stops the git checkout of a create, import or branch switch started with this operation id. */

@@ -6,6 +6,9 @@ import { revealLabel } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { extractError } from "../../lib/format";
 import { useAppStore } from "../../state/appStore";
+import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
+import { navigateToAppTarget } from "../../lib/openExternal";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 
@@ -56,6 +59,63 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
       });
     });
     return unsubscribe;
+  }, []);
+
+  // A delete that kept unsaved work says so once, on the machine it ran on,
+  // with a way back: Restore now, or the list in Recently deleted.
+  useEffect(() => {
+    const subscribe = window.ade?.lanes?.onDeleteEvent;
+    if (!subscribe) return;
+    const announced = new Set<string>();
+    return subscribe((event) => {
+      const progress = event.progress;
+      const saved = progress.savedWork;
+      const finished = progress.overallStatus === "completed" || progress.overallStatus === "completed_with_warnings";
+      if (!finished || !saved || announced.has(saved.id)) return;
+      announced.add(saved.id);
+      const binding = event.origin !== undefined ? event.origin : useAppStore.getState().projectBinding ?? null;
+      const pin = binding?.kind === "remote" ? binding : null;
+      const toastId = `lane-work-saved:${saved.id}`;
+      const openRecentlyDeleted = () => navigateToAppTarget({
+        kind: "settings",
+        entryId: "storage.recentlyDeleted",
+        ...(pin ? { machineId: machineIdForBinding(pin) } : {}),
+      });
+      const restore = () => {
+        showToast({ id: toastId, tone: "info", title: `Restoring ${saved.laneName}…` });
+        void window.ade.lanes.restoreDeleted({ id: saved.id }, pin)
+          .then((result) => {
+            showToast({
+              id: toastId,
+              tone: result.restoredUncommitted ? "success" : "warning",
+              title: `${saved.laneName} is back`,
+              message: result.restoredUncommitted
+                ? `On branch ${result.branchName}, with its uncommitted files.`
+                : `On branch ${result.branchName}. Its uncommitted files did not apply and stay saved: ${result.warning ?? "unknown error"}`,
+            });
+          })
+          .catch((reason: unknown) => {
+            showToast({
+              id: toastId,
+              tone: "error",
+              title: `Couldn't restore ${saved.laneName}`,
+              message: stripElectronErrorWrapper(extractError(reason)),
+              actions: [{ label: "Recently deleted", onClick: openRecentlyDeleted }],
+            });
+          });
+      };
+      showToast({
+        id: toastId,
+        tone: "info",
+        title: saved.uncommitted ? `Kept ${saved.laneName}'s uncommitted work` : `Kept ${saved.laneName}'s unpushed commits`,
+        message: "ADE keeps it for 30 days.",
+        durationMs: READABLE_TOAST_DURATION_MS,
+        actions: [
+          { label: "Restore lane", onClick: restore },
+          { label: "Recently deleted", onClick: openRecentlyDeleted },
+        ],
+      });
+    });
   }, []);
 
   useEffect(() => {

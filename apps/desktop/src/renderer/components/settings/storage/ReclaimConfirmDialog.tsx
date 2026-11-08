@@ -85,7 +85,7 @@ export function ReclaimConfirmDialog({
               onChange={(event) => onDiscardDirtyChange(event.target.checked)}
               style={{ marginTop: 2 }}
             />
-            <span>Discard uncommitted changes in this lane. These file changes cannot be restored.</span>
+            <span>Discard uncommitted changes in this lane. ADE keeps a copy for 30 days in Recently deleted.</span>
           </label>
         ) : null}
         <label style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 14 }}>

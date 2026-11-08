@@ -1312,7 +1312,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   const deleteManagedLanes = async () => {
     const targets = managedLanes.length > 0 ? managedLanes : managedLane ? [managedLane] : [];
-    const actionable = targets.filter((l) => l.laneType !== "primary");
+    // Without Force a batch skips lanes with uncommitted work (the dialog
+    // says how many); the brain still refuses one that turned dirty since.
+    const actionable = targets.filter((l) => l.laneType !== "primary" && (deleteForce || targets.length === 1 || !l.status.dirty));
 
     // Close the dialog and reset the transient delete UI before any async work.
     // The delete itself runs in the background: each lane's row shows the live

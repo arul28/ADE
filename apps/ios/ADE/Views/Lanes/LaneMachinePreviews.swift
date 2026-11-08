@@ -135,4 +135,70 @@ struct LanesAcrossMachinesPreviewHost: View {
     }
   }
 }
+
+/// `-adePreviewScreen lanes-recently-deleted`: the kept-work notice after a
+/// delete and the Archived filter's Recently deleted rows on two machines,
+/// from fixtures, with no pairing.
+struct LanesRecentlyDeletedPreviewHost: View {
+  @EnvironmentObject private var syncService: SyncService
+
+  private static func iso(_ offset: TimeInterval) -> String {
+    ISO8601DateFormatter().string(from: Date().addingTimeInterval(offset))
+  }
+
+  private static func saved(
+    _ id: String, _ name: String, branch: String?, uncommitted: Bool, kind: String = "deleted", ageHours: Double
+  ) -> DeletedLaneSnapshot {
+    DeletedLaneSnapshot(
+      id: id, laneId: "lane-\(id)", laneName: name, branchName: branch,
+      commit: "c0ffee", baseCommit: "decade", uncommitted: uncommitted, kind: kind,
+      deletedAt: iso(-ageHours * 3600), expiresAt: iso(30 * 86_400 - ageHours * 3600)
+    )
+  }
+
+  private let notice = LaneDeletionKept(
+    projectId: "p", projectRootPath: nil,
+    snapshot: saved("k1", "Thread Sharing Links", branch: "ade/thread-sharing-links", uncommitted: true, ageHours: 0.02)
+  )
+
+  private var entries: [String: [DeletedLaneSnapshot]] {
+    [
+      "": [
+        Self.saved("k1", "Thread Sharing Links", branch: "ade/thread-sharing-links", uncommitted: true, ageHours: 0.02),
+        Self.saved("k2", "perf lane 3", branch: "ade/perf-lane-3", uncommitted: false, ageHours: 26),
+        Self.saved("k3", "docs refresh", branch: "ade/docs-refresh-91aa", uncommitted: true, kind: "freed", ageHours: 24 * 9),
+      ],
+      "mbp": [Self.saved("k4", "phase 4 lanes", branch: "ade/mobile-multi-machine-phase-4", uncommitted: true, ageHours: 5)],
+    ]
+  }
+
+  var body: some View {
+    NavigationStack {
+      List {
+        LaneDeletionKeptNotice(kept: notice, canRunLiveActions: true, onRestore: {}, onDismiss: {})
+          .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16), separator: .hidden)
+        LaneRecentlyDeletedSections(
+          syncService: syncService,
+          machines: [
+            LaneRecentlyDeletedMachine(id: "", name: "Arul’s Mac Studio", projectId: nil, rootPath: nil),
+            LaneRecentlyDeletedMachine(id: "mbp", name: "MacBook Pro (97)", projectId: "mbp-p", rootPath: nil),
+          ],
+          canRunLiveActions: true,
+          initialEntries: entries,
+          onRestored: {}
+        )
+      }
+      .adeFlatList()
+      .listSectionSpacing(.compact)
+      .environment(\.defaultMinListRowHeight, 0)
+      .adeScreenBackground()
+      .toolbar(.hidden, for: .navigationBar)
+      .safeAreaInset(edge: .top, spacing: 0) {
+        ADERootTopBar(title: "Lanes", showsGlobalControls: false) {
+          LaneAddButton(enabled: true) {}
+        }
+      }
+    }
+  }
+}
 #endif

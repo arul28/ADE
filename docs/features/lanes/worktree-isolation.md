@@ -130,7 +130,34 @@ the directory first:
    or more levels down, or that ADE cannot read also stops the delete.
    Without force the delete stops with the reason and "Enable force delete
    after confirming warnings.". Archive-and-reclaim runs the same check and
-   asks for `forceDirty` instead.
+   asks for `forceDirty` instead. A batch delete in the Lanes tab (and the
+   phone's batch sheet) deletes its clean lanes and skips the dirty ones unless
+   the person ticks the box that names them; one Force for the whole batch
+   used to discard work in lanes nobody looked at.
+
+   **Saved work.** Right before the first destructive step (worktree remove,
+   local or remote branch delete), and after chats and terminals stopped,
+   `lanes/deletedLaneSnapshots.ts` keeps what the delete would lose: the
+   worktree's uncommitted and untracked files (ignored ones such as
+   `node_modules` stay out), commits no other branch, remote or tag holds, and
+   commits only the remote branch holds when that is deleted too. It writes one
+   commit (the lane's HEAD as first parent, the working tree as its tree,
+   written through a copy of the lane's index) under
+   `refs/ade/deleted-lanes/<epochMs>-<laneId>`, with the lane's name, branch
+   and time in trailers. A clean lane whose commits live elsewhere saves
+   nothing. If the save fails, the delete stops rather than discard the work.
+   Archive-and-reclaim with `forceDirty` saves the same way, as kind `freed`:
+   the lane stays, so `unarchive` puts its newest freed save back when it
+   rebuilds the folder, and Restore goes into that lane instead of a copy.
+   Saves are listed in Settings › Storage & cleanup › Recently deleted, on the
+   phone under Lanes › Archived (each machine's own list, routed to it), and by
+   `ade lanes deleted list`; Restore (`ade lanes deleted restore <id>`) makes a
+   new lane on the old branch name (or `<name>-restored`), at the saved HEAD,
+   never pushed, and applies the uncommitted files back as uncommitted
+   changes. Saves older than 30 days are pruned when the list is read.
+   A save holds the parent repository only, so a delete or reclaim stops, and
+   names the submodule, when a checked-out submodule has uncommitted files or
+   commits no remote or tag of its own holds.
 3. Stop lane runtime work.
 4. Stop PTYs and file watchers for the lane,
    then run any lane-environment cleanup supplied by the runtime.

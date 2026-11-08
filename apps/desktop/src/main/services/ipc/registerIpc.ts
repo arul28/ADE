@@ -322,6 +322,7 @@ import type {
   ResolveLaneBranchDriftArgs,
   ResolveLaneBranchDriftResult,
   DeleteLaneArgs,
+  RestoreDeletedLaneArgs,
   DockLayout,
   FileChangeEvent,
   FileContent,
@@ -7719,6 +7720,14 @@ export function registerIpc({
     const ctx = ensureLaneContext();
     return ctx.laneService.listDeleteProgress();
   });
+
+  ipcMain.handle(IPC.lanesListDeleted, async () => ensureLaneContext().laneService.listDeletedLanes());
+
+  ipcMain.handle(IPC.lanesRestoreDeleted, async (_event, arg: RestoreDeletedLaneArgs) =>
+    ensureLaneContext().laneService.restoreDeletedLane(arg));
+
+  ipcMain.handle(IPC.lanesRemoveDeleted, async (_event, arg: { id: string }) =>
+    ensureLaneContext().laneService.removeDeletedLane(arg));
 
   ipcMain.handle(IPC.lanesGetDeleteRisk, async (_event, arg: { laneId: string }) => {
     const ctx = ensureLaneContext();

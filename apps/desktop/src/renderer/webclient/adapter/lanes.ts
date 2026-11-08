@@ -144,6 +144,19 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       });
     },
     listDeleteProgress: () => call("lanes.listDeleteProgress", {}, []),
+    // An older host has no saved lanes to list.
+    listDeleted: async (pin?: RuntimePinArg) => {
+      guardPin("listDeleted", pin);
+      return await call("lanes.listDeleted", {}, []);
+    },
+    restoreDeleted: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("restoreDeleted", pin);
+      return await call("lanes.restoreDeleted", args, null as never, false);
+    },
+    removeDeleted: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("removeDeleted", pin);
+      return await call("lanes.removeDeleted", args, { removed: false }, false);
+    },
     // An older host without these answers "not stopped", which the UI shows.
     cancelDelete: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("cancelDelete", pin);

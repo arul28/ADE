@@ -283,7 +283,7 @@ struct LaneManageSheet: View {
 
   private var deleteTab: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("Removes what you pick. Cannot be undone.")
+      Text("Removes what you pick. Work only this lane holds is kept for 30 days: Lanes › Archived › Recently deleted.")
         .font(.system(size: 12.5))
         .foregroundStyle(ADEColor.textSecondary)
 

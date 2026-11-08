@@ -884,6 +884,9 @@ import type {
   LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
+  DeletedLaneSnapshot,
+  RestoreDeletedLaneArgs,
+  RestoreDeletedLaneResult,
   LaneReclaimRisk,
   RestoreLaneResult,
   LaneEnvInitProgress,
@@ -7119,6 +7122,18 @@ const adeBridge = {
     listDeleteProgress: async (): Promise<LaneDeleteProgress[]> =>
       callProjectRuntimeActionOr("lane", "listDeleteProgress", {}, () =>
         ipcRenderer.invoke(IPC.lanesListDeleteProgress),
+      ),
+    listDeleted: async (pin?: OpenProjectBinding | null): Promise<DeletedLaneSnapshot[]> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "listDeletedLanes", {}, () =>
+        ipcRenderer.invoke(IPC.lanesListDeleted),
+      ),
+    restoreDeleted: async (args: RestoreDeletedLaneArgs, pin?: OpenProjectBinding | null): Promise<RestoreDeletedLaneResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "restoreDeletedLane", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesRestoreDeleted, args),
+      ),
+    removeDeleted: async (args: { id: string }, pin?: OpenProjectBinding | null): Promise<{ removed: boolean }> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "removeDeletedLane", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesRemoveDeleted, args),
       ),
     getDeleteRisk: async (
       args: { laneId: string },

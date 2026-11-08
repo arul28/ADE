@@ -158,11 +158,16 @@ export function HealthSpace({ data }: { data: HealthData }) {
   const restoreLane = React.useCallback(async (laneId: string) => {
     try {
       const result = await window.ade.lanes.unarchive({ laneId }, pin);
+      const savedWorkFailed = result.savedWork?.restored === false;
       notify(
         result.setupWarning
           ? `Lane restored. Setup needs attention: ${result.setupWarning}`
-          : result.worktreeRecreated ? "Lane restored and its worktree was recreated." : "Lane restored.",
-        result.setupWarning ? "warning" : "success",
+          : savedWorkFailed
+            ? `Lane restored, but its saved uncommitted files did not apply and stay in Recently deleted: ${result.savedWork?.warning ?? "unknown error"}`
+            : result.savedWork?.restored
+              ? "Lane restored with its uncommitted files."
+              : result.worktreeRecreated ? "Lane restored and its worktree was recreated." : "Lane restored.",
+        result.setupWarning || savedWorkFailed ? "warning" : "success",
       );
       refreshAfterChange();
     } catch (err) {

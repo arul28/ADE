@@ -8824,3 +8824,31 @@ struct WorkAutomationRuleSummary: Decodable, Equatable, Identifiable {
     return list.first { $0.type == "handoff" }
   }
 }
+
+/// Work a lane delete kept (uncommitted files, commits only that lane held),
+/// listed in Recently deleted for 30 days. Mirrors the desktop's
+/// `DeletedLaneSnapshot`.
+struct DeletedLaneSnapshot: Codable, Identifiable, Equatable {
+  var id: String
+  var laneId: String
+  var laneName: String
+  var branchName: String?
+  var commit: String
+  var baseCommit: String?
+  var uncommitted: Bool
+  /// "deleted", or "freed" when freeing up space discarded the files and the
+  /// lane is still there (archived). Absent from a host that predates it.
+  var kind: String?
+  var deletedAt: String
+  var expiresAt: String
+
+  var isFreed: Bool { kind == "freed" }
+}
+
+struct RestoreDeletedLaneResult: Decodable, Equatable {
+  var lane: LaneSummary
+  var branchName: String
+  /// False when the uncommitted files did not apply; they stay saved.
+  var restoredUncommitted: Bool
+  var warning: String?
+}

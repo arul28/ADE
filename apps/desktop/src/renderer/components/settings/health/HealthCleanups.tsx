@@ -1,5 +1,5 @@
 import React from "react";
-import { CaretDown } from "@phosphor-icons/react";
+import { ArrowElbowDownRight, CaretDown, Warning } from "@phosphor-icons/react";
 import {
   type LaneBuildOutputSummary,
   type MaintenanceRunReport,
@@ -7,7 +7,7 @@ import {
 } from "../../../../shared/types/storage";
 import type { LaneCleanupConfig, LaneFreeUpSpaceMode } from "../../../../shared/types";
 import { resolveLaneCleanupPolicy } from "../../../../shared/laneCleanup";
-import { ModernRow, ModernRows, ModernSection, SettingsNumber, SettingsSegmented, SettingsToggle } from "../primitives";
+import { ModernRow, ModernSection, SettingsSelect, SettingsToggle } from "../primitives";
 import { showToast } from "../../app/toast/toastStore";
 import { Banner } from "../../ui/notice";
 import { relativeWhen } from "../../../lib/format";
@@ -107,14 +107,14 @@ function CleanupHistory({ runs, loading }: { runs: MaintenanceRunReport[]; loadi
   );
 }
 
-/** Lanes listed under "Last run" before "Show N more". */
+/** Lanes listed under "Lane check" before "Show N more". */
 const INITIAL_RUN_LANES = 6;
 
 /**
- * What the archive rules' last check did: one plain sentence per lane it
- * looked at (archived, kept and why, or what went wrong). This list is the
- * one place those results show; a check never raises a toast for a lane it
- * kept or could not archive.
+ * What the lane rules' last check did: one plain sentence per lane it looked
+ * at (archived, kept and why, or what went wrong). This list is the one place
+ * those results show; a check never raises a toast for a lane it kept or
+ * could not archive.
  */
 function LifecycleLastRun({ run }: { run: StorageLifecycleRunReport }) {
   const [showAll, setShowAll] = React.useState(false);
@@ -135,10 +135,11 @@ function LifecycleLastRun({ run }: { run: StorageLifecycleRunReport }) {
   ].filter(Boolean);
   const lanes = showAll ? run.lanes : run.lanes.slice(0, INITIAL_RUN_LANES);
   return (
-    <div>
-      <p className="ade-modern-muted">
-        Last run {relativeWhen(when)}: {parts.join("; ")}.
-      </p>
+    <div className="ade-cleanup-activity-block">
+      <div className="ade-cleanup-activity-head">
+        <span className="ade-cleanup-activity-title">Lane check</span>
+        <span className="ade-modern-muted">{relativeWhen(when)}: {parts.join("; ")}.</span>
+      </div>
       {run.error ? (
         <Banner
           layout="inline"
@@ -174,62 +175,197 @@ function LifecycleLastRun({ run }: { run: StorageLifecycleRunReport }) {
   );
 }
 
+/** What the build output rule removed: each lane's latest cleanup, newest first. */
+function BuildOutputActivity({ summary }: { summary: LaneBuildOutputSummary }) {
+  const { measured: storageMeasured } = useStorageBytes();
+  const freed = summary.totalFreedBytes > 0 || summary.totalPartial
+    ? `Freed ${storageMeasured(summary.totalFreedBytes, summary.totalPartial)}${summary.since ? ` since ${new Date(summary.since).toLocaleDateString()}` : ""}.`
+    : "Nothing removed yet.";
+  return (
+    <div className="ade-cleanup-activity-block">
+      <div className="ade-cleanup-activity-head">
+        <span className="ade-cleanup-activity-title">Build output</span>
+        <span className="ade-modern-muted">{freed}</span>
+      </div>
+      {summary.lanes.length > 0 ? (
+        <ul className="ade-modern-rows ade-health-runlist">
+          {summary.lanes.map((lane) => (
+            <li key={`${lane.laneId}:${lane.removedAt}`} className="ade-health-run">
+              <div className="ade-health-run-main">
+                <span className="ade-health-run-when">{lane.laneName}</span>
+                <span className="ade-modern-muted">{relativeWhen(lane.removedAt)}</span>
+                <span className="ade-health-run-total kit-num">
+                  {lane.bytes > 0 || lane.partial ? storageMeasured(lane.bytes, lane.partial) : "Nothing freed"}
+                </span>
+              </div>
+              <div className="ade-health-run-sub">
+                {lane.folders.length > 0 ? <span>{lane.folders.join(", ")}</span> : null}
+                {lane.failures.map((failure) => (
+                  <span key={failure.folder} style={{ color: "var(--kit-warn)" }}>
+                    {failure.folder} stayed: {failure.reason}
+                  </span>
+                ))}
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Run history, kept out of the rules: what the last lane check did and what
+ * build output went. Folded by default.
+ */
+function RecentActivity({ lastRun, buildOutput }: { lastRun: StorageLifecycleRunReport | null; buildOutput: LaneBuildOutputSummary | null }) {
+  const [open, setOpen] = React.useState(false);
+  const hasBuildOutput = Boolean(buildOutput && (buildOutput.lanes.length > 0 || buildOutput.totalFreedBytes > 0));
+  if (!lastRun && !hasBuildOutput) return null;
+  return (
+    <details className="ade-cleanup-activity" onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)}>
+      <summary>
+        <CaretDown size={11} weight="bold" className="ade-health-caret" data-open={open ? "" : undefined} />
+        Recent activity
+      </summary>
+      {open ? (
+        <div className="ade-cleanup-activity-body">
+          {lastRun ? <LifecycleLastRun run={lastRun} /> : null}
+          {buildOutput && hasBuildOutput ? <BuildOutputActivity summary={buildOutput} /> : null}
+        </div>
+      ) : null}
+    </details>
+  );
+}
+
 type DayKey = keyof Pick<
   LaneCleanupConfig,
   "archiveIdleAfterDays" | "freeUpSpaceAfterDays" | "deleteArchivedAfterDays" | "cleanBuildOutputAfterDays"
 >;
 
-/** "Reset" beside a rule set on this machine; a rule without it uses the project's shared value. */
-function ResetButton({ onClick }: { onClick: () => void }) {
+/** The day counts every rule offers; any other saved count shows as its own option. */
+const DAY_PRESETS = [1, 3, 7, 14, 30, 60, 90] as const;
+const MAX_DAYS = 3650;
+const CUSTOM_DAYS = "custom";
+
+function daysLabel(days: number): string {
+  if (days <= 0) return "Never";
+  return days === 1 ? "After 1 day" : `After ${days} days`;
+}
+
+/** A typed day count, clamped to whole days in 0..3650; null when it is not a number. */
+function parseDays(text: string): number | null {
+  const raw = text.trim();
+  if (raw === "") return null;
+  const next = Number(raw);
+  if (!Number.isFinite(next)) return null;
+  return Math.min(MAX_DAYS, Math.max(0, Math.floor(next)));
+}
+
+/**
+ * A rule's day count: Never, a preset, or Custom… for any other count. The
+ * custom box saves on blur or Enter, never mid-typing: on the way from 30 to
+ * 60, "Delete after 3 days" must not reach the brain. Escape drops it.
+ */
+function DaysSelect({
+  label,
+  value,
+  disabled = false,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  disabled?: boolean;
+  onChange: (days: number) => void;
+}) {
+  // The text in the custom box while it is open. The ref is what a blur
+  // reads, so an Escape that closed the box is never committed by the blur
+  // that follows it.
+  const [draft, setDraftState] = React.useState<string | null>(null);
+  const draftRef = React.useRef<string | null>(null);
+  const setDraft = (next: string | null) => {
+    draftRef.current = next;
+    setDraftState(next);
+  };
+  const options = React.useMemo(() => {
+    const days: number[] = [0, ...DAY_PRESETS];
+    if (value > 0 && !days.includes(value)) days.push(value);
+    days.sort((a, b) => a - b);
+    return [
+      ...days.map((entry) => ({ value: String(entry), label: daysLabel(entry) })),
+      { value: CUSTOM_DAYS, label: "Custom…" },
+    ];
+  }, [value]);
+  const commit = () => {
+    const typed = draftRef.current;
+    if (typed == null) return;
+    const next = parseDays(typed);
+    setDraft(null);
+    if (next != null && next !== value) onChange(next);
+  };
   return (
-    <button
-      type="button"
-      className="ade-modern-btn"
-      data-variant="link"
-      style={{ fontSize: 11.5 }}
-      onClick={onClick}
-    >
-      Reset
-    </button>
+    <span className="ade-cleanup-days">
+      <SettingsSelect
+        ariaLabel={label}
+        value={draft != null ? CUSTOM_DAYS : String(value)}
+        options={options}
+        disabled={disabled}
+        style={{ minWidth: 132 }}
+        onChange={(next) => {
+          if (next === CUSTOM_DAYS) {
+            setDraft(value > 0 ? String(value) : "");
+            return;
+          }
+          setDraft(null);
+          const days = Number(next);
+          if (days !== value) onChange(days);
+        }}
+      />
+      {draft != null ? (
+        <span className="ade-cleanup-custom">
+          <input
+            type="number"
+            inputMode="numeric"
+            aria-label={`${label}, custom days`}
+            className="ade-cleanup-custom-input"
+            min={0}
+            max={MAX_DAYS}
+            step={1}
+            value={draft}
+            autoFocus
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={commit}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") commit();
+              else if (event.key === "Escape") setDraft(null);
+            }}
+          />
+          days
+        </span>
+      ) : null}
+    </span>
   );
 }
 
 /**
- * The lane cleanup rules this machine sets, over the project's shared ones
- * and the defaults. `value` is local.yaml; `effectiveValue` what is in force.
+ * A rule's control. When this machine sets the rule over the project's
+ * shared value (local.yaml), a quiet "This machine · Reset" sits under it;
+ * Reset hands the rule back to the shared value.
  */
-function policyFields(value: LaneCleanupConfig, effectiveValue: LaneCleanupConfig, onChange: (value: LaneCleanupConfig) => void) {
-  const shown = resolveLaneCleanupPolicy({ ...effectiveValue, ...stripUnset(value) });
-  const dayField = (key: DayKey, label: string, hint: React.ReactNode, extra?: React.ReactNode, resetAlso: Array<keyof LaneCleanupConfig> = []) => (
-    <ModernRow
-      key={key}
-      title={label}
-      hint={hint}
-      control={(
-        <>
-          {value[key] != null || resetAlso.some((other) => value[other] != null) ? (
-            <ResetButton
-              onClick={() => onChange({ ...value, [key]: undefined, ...Object.fromEntries(resetAlso.map((other) => [other, undefined])) })}
-            />
-          ) : null}
-          {extra}
-          <SettingsNumber
-            ariaLabel={label}
-            value={shown[key]}
-            min={0}
-            suffix="days"
-            sentinelLabel="Off"
-            sentinelValue={0}
-            // Saved on blur or Enter, never mid-typing: on the way from 30 to
-            // 60, "Delete after 3 days" must not reach the brain.
-            commitOnBlur
-            onChange={(next) => onChange({ ...value, [key]: Math.max(0, Math.floor(next)) })}
-          />
-        </>
-      )}
-    />
+function RuleControl({ overridden, onReset, children }: { overridden: boolean; onReset: () => void; children: React.ReactNode }) {
+  return (
+    <span className="ade-cleanup-ctrl">
+      <span className="ade-cleanup-ctrl-main">{children}</span>
+      {overridden ? (
+        <span className="ade-cleanup-override">
+          This machine ·{" "}
+          <button type="button" className="ade-modern-btn" data-variant="link" onClick={onReset}>
+            Reset
+          </button>
+        </span>
+      ) : null}
+    </span>
   );
-  return { shown, dayField };
 }
 
 /**
@@ -256,227 +392,214 @@ function stripUnset(value: LaneCleanupConfig): LaneCleanupConfig {
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry != null)) as LaneCleanupConfig;
 }
 
-function sharedNote(value: LaneCleanupConfig, keys: Array<keyof LaneCleanupConfig>): string {
-  return keys.some((key) => value[key] != null)
-    ? "Rules without Reset use the project's shared value."
-    : "Values come from the project's shared settings until you change one.";
-}
-
-/**
- * Archive lanes automatically: one rule, in days. The check runs about every
- * hour while any lane rule is on; "Last run" says what it did, lane by lane.
- */
-function ArchivePolicy({
-  value,
-  effectiveValue,
-  lastScanAt,
-  lastRun,
-  busy,
-  onChange,
-}: {
-  value: LaneCleanupConfig;
-  effectiveValue: LaneCleanupConfig;
-  lastScanAt: string | null;
-  lastRun: StorageLifecycleRunReport | null;
-  busy: boolean;
-  onChange: (value: LaneCleanupConfig) => void;
-}) {
-  const { shown, dayField } = policyFields(value, effectiveValue, onChange);
-  const status = shown.archiveIdleAfterDays <= 0
-    ? "Off. ADE never archives a lane on its own."
-    : `On. ADE checks about every hour${lastScanAt ? `; last check ${relativeWhen(lastScanAt)}` : ""}.`;
-  return (
-    <ModernSection
-      group="Cleanups"
-      anchor="lane-storage-rules"
-      title="Archive lanes automatically"
-      hint={status}
-      actions={busy ? <span className="ade-modern-muted">Saving…</span> : undefined}
-    >
-      <ModernRows>
-        {dayField(
-          "archiveIdleAfterDays",
-          "Archive idle lanes after",
-          "Days without activity. Only lanes with nothing unsaved whose work is merged are archived, never the primary lane.",
-        )}
-      </ModernRows>
-      {lastRun ? <LifecycleLastRun run={lastRun} /> : null}
-      <p className="ade-modern-muted">
-        Archiving hides a lane and deletes nothing: its branch, chats and files stay, and Restore brings it back.
-        {" "}{sharedNote(value, ["archiveIdleAfterDays"])}
-      </p>
-    </ModernSection>
-  );
-}
-
 const FREE_UP_MODES = [
   { value: "ask", label: "Ask me" },
   { value: "auto", label: "Automatically" },
 ] as const satisfies ReadonlyArray<{ value: LaneFreeUpSpaceMode; label: string }>;
 
+/** The newest of two ISO times, either of which may be missing. */
+function latest(a: string | null | undefined, b: string | null | undefined): string | null {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  return Date.parse(a) >= Date.parse(b) ? a : b;
+}
+
 /**
- * What cleanup does to a lane once it is archived: free up its space (the
- * folder goes, the branch and chats stay), and delete it. Both count days
- * from when the lane was archived.
+ * The lane cleanup rules, read top to bottom as a lane's life: archive it
+ * when idle, free up its space, delete it; then build output and chats.
+ *
+ * `value` is this machine's local.yaml; `effectiveValue` what was in force
+ * when the page loaded (local over the project's shared settings over the
+ * defaults). A rule set in local.yaml says "This machine · Reset".
  */
-function ArchivedLanesPolicy({
+function CleanupRules({
   value,
   effectiveValue,
+  lastScanAt,
+  lastRun,
+  buildOutput,
   freeUpDueCount,
   busy,
   onChange,
+  onOpenArchive,
+  chats,
 }: {
   value: LaneCleanupConfig;
   effectiveValue: LaneCleanupConfig;
+  lastScanAt: string | null;
+  lastRun: StorageLifecycleRunReport | null;
+  buildOutput: LaneBuildOutputSummary | null;
   freeUpDueCount: number;
   busy: boolean;
   onChange: (value: LaneCleanupConfig) => void;
+  onOpenArchive?: () => void;
+  chats?: React.ReactNode;
 }) {
-  const { shown, dayField } = policyFields(value, effectiveValue, onChange);
+  const shown = resolveLaneCleanupPolicy({ ...effectiveValue, ...stripUnset(value) });
+  const reset = (...keys: Array<keyof LaneCleanupConfig>) =>
+    onChange({ ...value, ...Object.fromEntries(keys.map((key) => [key, undefined])) });
+  const overridden = (...keys: Array<keyof LaneCleanupConfig>) => keys.some((key) => value[key] != null);
+  const setDays = (key: DayKey) => (days: number) => onChange({ ...value, [key]: days });
+
   const freeUpOn = shown.freeUpSpaceAfterDays > 0;
   const deleteOn = shown.deleteArchivedAfterDays > 0;
-  const freeUpPart = !freeUpOn
-    ? "ADE keeps archived lane folders"
-    : shown.freeUpSpaceMode === "auto"
-      ? `ADE frees up their space after ${shown.freeUpSpaceAfterDays} days`
-      : `ADE asks to free up their space after ${shown.freeUpSpaceAfterDays} days`;
-  const deletePart = deleteOn ? `deletes them after ${shown.deleteArchivedAfterDays} days` : "never deletes them";
-  const due = freeUpDueCount > 0
-    ? ` ${freeUpDueCount === 1 ? "1 lane is" : `${freeUpDueCount} lanes are`} due to free up; see Archive.`
-    : "";
+  const allOff = shown.archiveIdleAfterDays <= 0 && !freeUpOn && !deleteOn && shown.cleanBuildOutputAfterDays <= 0;
+  const lastCheck = latest(lastScanAt, buildOutput?.lastCheckAt);
+  const status = busy
+    ? "Saving…"
+    : allOff
+      ? "Off — ADE never cleans up on its own."
+      : lastCheck ? `Last check ${relativeWhen(lastCheck)}` : "Not checked yet";
+
+  // Drawn under Delete only while Delete is on, so a row that is off never
+  // grows an empty gap.
+  const deleteClash = deleteOn && freeUpOn && shown.deleteArchivedAfterDays <= shown.freeUpSpaceAfterDays;
+  const deleteExtras = deleteOn ? (
+    <>
+      {deleteClash ? (
+        <p className="ade-cleanup-note">
+          <Warning size={12} weight="fill" />
+          Deletes before ADE would free up space, so Free up never runs.
+        </p>
+      ) : null}
+      <div className="ade-cleanup-subrow">
+        <ArrowElbowDownRight size={13} className="ade-cleanup-subrow-icon" />
+        <div className="ade-cleanup-subrow-text">
+          <span className="ade-cleanup-subrow-title">Also delete the local branch</span>
+          <span className="ade-cleanup-subrow-hint">Every commit is on a remote by then. The remote branch stays.</span>
+        </div>
+        <RuleControl overridden={overridden("deleteLocalBranchOnAutoDelete")} onReset={() => reset("deleteLocalBranchOnAutoDelete")}>
+          <SettingsToggle
+            label="Also delete the local branch"
+            checked={shown.deleteLocalBranchOnAutoDelete}
+            onChange={(next) => onChange({ ...value, deleteLocalBranchOnAutoDelete: next })}
+          />
+        </RuleControl>
+      </div>
+    </>
+  ) : null;
+
   return (
     <ModernSection
       group="Cleanups"
-      anchor="archived-lanes"
-      title="Archived lanes"
-      hint={`${freeUpPart}, and ${deletePart}.${due}`}
-      actions={busy ? <span className="ade-modern-muted">Saving…</span> : undefined}
+      title="Automatic cleanup"
+      hint="ADE only cleans up lanes whose work is safe: never the primary lane, never a lane with uncommitted or unpushed work, an open PR, or anything running."
+      actions={<span className="ade-cleanup-status" aria-live="polite">{status}</span>}
     >
-      <ModernRows>
-        {dayField(
-          "freeUpSpaceAfterDays",
-          "Free up space after",
-          shown.freeUpSpaceMode === "auto"
-            ? "Days after archiving. ADE removes the lane's folder; its branch and chats stay, and Restore recreates the folder. Never with uncommitted or unpushed work; files in use are kept and tried again."
-            : "Days after archiving. Nothing is removed: the archive reminder and Settings → Archive point at the lane, and Free up space there removes its folder. Its branch and chats stay.",
-          <SettingsSegmented
-            ariaLabel="Free up space"
-            value={shown.freeUpSpaceMode}
-            options={FREE_UP_MODES}
-            disabled={!freeUpOn}
-            onChange={(next) => onChange({ ...value, freeUpSpaceMode: next })}
-          />,
-          ["freeUpSpaceMode"],
-        )}
-        {dayField(
-          "deleteArchivedAfterDays",
-          "Delete after",
-          "Days after archiving. Never a lane with uncommitted or unpushed work, an open PR or anything running. Its chats go to Recently deleted.",
-        )}
-        <ModernRow
-          title="Also delete its local branch"
-          hint="Only with Delete after. Every commit is on a remote by then. The remote branch is never deleted."
-          control={(
-            <>
-              {value.deleteLocalBranchOnAutoDelete != null ? (
-                <ResetButton onClick={() => onChange({ ...value, deleteLocalBranchOnAutoDelete: undefined })} />
-              ) : null}
-              <SettingsToggle
-                label="Also delete its local branch"
-                checked={shown.deleteLocalBranchOnAutoDelete}
-                disabled={!deleteOn}
-                onChange={(next) => onChange({ ...value, deleteLocalBranchOnAutoDelete: next })}
-              />
-            </>
-          )}
-        />
-      </ModernRows>
-      <p className="ade-modern-muted">
-        Never the primary lane. {sharedNote(value, ["freeUpSpaceAfterDays", "freeUpSpaceMode", "deleteArchivedAfterDays", "deleteLocalBranchOnAutoDelete"])}
-      </p>
+      <div className="ade-cleanup-group" id="lane-storage-rules" data-settings-anchor="lane-storage-rules">
+        <h3 className="ade-cleanup-group-title">Lanes</h3>
+        <div className="ade-cleanup-rows">
+          <ModernRow
+            title="Archive idle lanes"
+            hint="Merged lanes with nothing unsaved. Archiving only hides them; Restore brings them back."
+            control={(
+              <RuleControl overridden={overridden("archiveIdleAfterDays")} onReset={() => reset("archiveIdleAfterDays")}>
+                <DaysSelect label="Archive idle lanes" value={shown.archiveIdleAfterDays} onChange={setDays("archiveIdleAfterDays")} />
+              </RuleControl>
+            )}
+          />
+          <div className="ade-cleanup-rowset" id="archived-lanes" data-settings-anchor="archived-lanes">
+            <ModernRow
+              title="Free up space of archived lanes"
+              hint={(
+                <>
+                  {!freeUpOn
+                    ? "Archived lanes keep their folders."
+                    : `${shown.freeUpSpaceMode === "auto" ? "Removes the folder." : "Asks before removing the folder."} The branch and chats stay; Restore rebuilds it.`}
+                  {freeUpDueCount > 0 ? (
+                    <span className="ade-cleanup-due">
+                      {freeUpDueCount === 1 ? "1 lane is" : `${freeUpDueCount} lanes are`} due to free up.{" "}
+                      {onOpenArchive ? (
+                        <button type="button" className="ade-modern-btn" data-variant="link" onClick={onOpenArchive}>
+                          See Archive
+                        </button>
+                      ) : null}
+                    </span>
+                  ) : null}
+                </>
+              )}
+              control={(
+                <RuleControl
+                  overridden={overridden("freeUpSpaceAfterDays", "freeUpSpaceMode")}
+                  onReset={() => reset("freeUpSpaceAfterDays", "freeUpSpaceMode")}
+                >
+                  <SettingsSelect
+                    ariaLabel="Free up space: ask or automatically"
+                    value={shown.freeUpSpaceMode}
+                    options={FREE_UP_MODES}
+                    disabled={!freeUpOn}
+                    style={{ minWidth: 0, opacity: freeUpOn ? 1 : 0.45 }}
+                    onChange={(next) => onChange({ ...value, freeUpSpaceMode: next })}
+                  />
+                  <DaysSelect label="Free up space of archived lanes" value={shown.freeUpSpaceAfterDays} onChange={setDays("freeUpSpaceAfterDays")} />
+                </RuleControl>
+              )}
+            />
+            <ModernRow
+              title="Delete archived lanes"
+              hint="Chats go to Recently deleted."
+              control={(
+                <RuleControl overridden={overridden("deleteArchivedAfterDays")} onReset={() => reset("deleteArchivedAfterDays")}>
+                  <DaysSelect label="Delete archived lanes" value={shown.deleteArchivedAfterDays} onChange={setDays("deleteArchivedAfterDays")} />
+                </RuleControl>
+              )}
+            >
+              {deleteExtras}
+            </ModernRow>
+          </div>
+        </div>
+      </div>
+
+      <div className="ade-cleanup-group" id="lane-build-output" data-settings-anchor="lane-build-output">
+        <h3 className="ade-cleanup-group-title">Build output</h3>
+        <div className="ade-cleanup-rows">
+          <ModernRow
+            title="Remove build output from idle lanes"
+            hint="node_modules, dist, .next, target… only folders git ignores. A reinstall brings them back."
+            control={(
+              <RuleControl overridden={overridden("cleanBuildOutputAfterDays")} onReset={() => reset("cleanBuildOutputAfterDays")}>
+                <DaysSelect label="Remove build output from idle lanes" value={shown.cleanBuildOutputAfterDays} onChange={setDays("cleanBuildOutputAfterDays")} />
+              </RuleControl>
+            )}
+          />
+        </div>
+      </div>
+
+      {chats}
+
+      <RecentActivity lastRun={lastRun} buildOutput={buildOutput} />
     </ModernSection>
   );
 }
 
-/**
- * The idle-lane build output rule, and what it removed: each lane's latest
- * cleanup, newest first, with the folders that went and any that could not.
- * On by default; the value comes from local.yaml, then the project's shared
- * settings, then the default, like the archive rules.
- */
-function BuildOutputPolicy({
-  value,
-  effectiveValue,
-  summary,
-  busy,
-  onChange,
-}: {
-  value: LaneCleanupConfig;
-  effectiveValue: LaneCleanupConfig;
-  summary: LaneBuildOutputSummary | null;
-  busy: boolean;
-  onChange: (value: LaneCleanupConfig) => void;
-}) {
-  const { measured: storageMeasured } = useStorageBytes();
-  const { shown, dayField } = policyFields(value, effectiveValue, onChange);
-  const days = shown.cleanBuildOutputAfterDays;
-  const lanes = summary?.lanes ?? [];
-  const freed = summary && (summary.totalFreedBytes > 0 || summary.totalPartial)
-    ? `Freed ${storageMeasured(summary.totalFreedBytes, summary.totalPartial)}${summary.since ? ` since ${new Date(summary.since).toLocaleDateString()}` : ""}`
-    : "Nothing removed yet";
-  const status = days <= 0
-    ? "Off. ADE keeps build output in idle lanes."
-    : `On. ${freed}${summary?.lastCheckAt ? `; last check ${relativeWhen(summary.lastCheckAt)}` : ""}.`;
+/** Rows drawn while the rules load, so no rule ever flashes "Never" before its real value. */
+function CleanupRulesSkeleton({ chats }: { chats?: React.ReactNode }) {
   return (
-    <ModernSection
-      group="Cleanups"
-      anchor="lane-build-output"
-      title="Clean build output from idle lanes"
-      hint={status}
-      actions={busy ? <span className="ade-modern-muted">Saving…</span> : undefined}
-    >
-      <ModernRows>
-        {dayField(
-          "cleanBuildOutputAfterDays",
-          "Remove after",
-          "Days a lane sits idle first. A reinstall or build brings the folders back.",
-        )}
-      </ModernRows>
-      {lanes.length > 0 ? (
-        <ul className="ade-modern-rows ade-health-runlist">
-          {lanes.map((lane) => (
-            <li key={`${lane.laneId}:${lane.removedAt}`} className="ade-health-run">
-              <div className="ade-health-run-main">
-                <span className="ade-health-run-when">{lane.laneName}</span>
-                <span className="ade-modern-muted">{relativeWhen(lane.removedAt)}</span>
-                <span className="ade-health-run-total kit-num">
-                  {lane.bytes > 0 || lane.partial ? storageMeasured(lane.bytes, lane.partial) : "Nothing freed"}
-                </span>
-              </div>
-              <div className="ade-health-run-sub">
-                {lane.folders.length > 0 ? <span>{lane.folders.join(", ")}</span> : null}
-                {lane.failures.map((failure) => (
-                  <span key={failure.folder} style={{ color: "var(--kit-warn)" }}>
-                    {failure.folder} stayed: {failure.reason}
-                  </span>
-                ))}
-              </div>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      <p className="ade-modern-muted">
-        Only folders git ignores and tracks nothing in, like node_modules, dist, .next and Cargo target. Lanes with a chat, terminal or program running are skipped.
-      </p>
+    <ModernSection group="Cleanups" title="Automatic cleanup" hint="Loading the cleanup rules…">
+      <div className="ade-lanes-skeleton" aria-busy="true">
+        {[0, 1, 2, 3].map((index) => <span key={index} className="ade-st-shimmer" />)}
+      </div>
+      {chats}
     </ModernSection>
   );
 }
 
 /**
  * The cleanup history (`show="history"`, under Space) or the lane cleanup
- * rules (`show="rules"`, under Rules).
+ * rules (`show="rules"`, under Rules). `chats` is the chat row drawn inside
+ * the rules section; `onOpenArchive` opens the Archive view.
  */
-export function HealthCleanups({ data, show }: { data: HealthData; show: "history" | "rules" }) {
+export function HealthCleanups({
+  data,
+  show,
+  chats,
+  onOpenArchive,
+}: {
+  data: HealthData;
+  show: "history" | "rules";
+  chats?: React.ReactNode;
+  onOpenArchive?: () => void;
+}) {
   const runs = React.useMemo(() => journalEntries(data.storage.snapshot?.extras, 30), [data.storage.snapshot]);
   const [busy, setBusy] = React.useState(false);
   const pending = React.useRef<{ timer: ReturnType<typeof setTimeout>; value: LaneCleanupConfig } | null>(null);
@@ -490,16 +613,16 @@ export function HealthCleanups({ data, show }: { data: HealthData; show: "histor
       captureRuleSwitches(effectivePolicy, next);
       void loadStorage({ force: true, silent: true });
     } catch (err) {
-      showToast({ tone: "error", title: "Couldn't save the archive rules", message: err instanceof Error ? err.message : String(err) });
+      showToast({ tone: "error", title: "Couldn't save the cleanup rules", message: err instanceof Error ? err.message : String(err) });
     } finally {
       setBusy(false);
     }
   }, [effectivePolicy, loadStorage, savePolicy]);
 
-  // Rules save shortly after each change (a day field changes on blur or
-  // Enter, not per keystroke), debounced so quick toggles write once. Leaving
-  // the tab saves a pending change instead of dropping it; a day field still
-  // being typed in was never committed, so it is not saved.
+  // Rules save shortly after each change (a custom day count changes on blur
+  // or Enter, not per keystroke), debounced so quick changes write once.
+  // Leaving the tab saves a pending change instead of dropping it; a custom
+  // count still being typed in was never committed, so it is not saved.
   const commit = React.useCallback((next: LaneCleanupConfig) => {
     setPolicy(next);
     if (pending.current) clearTimeout(pending.current.timer);
@@ -520,32 +643,45 @@ export function HealthCleanups({ data, show }: { data: HealthData; show: "histor
     void savePolicy(queued.value).catch((error: unknown) => console.warn("lane_cleanup_rules.unmount_save_failed", error));
   }, [savePolicy]);
 
-  return show === "history" ? (
-    <CleanupHistory runs={runs} loading={data.storage.loading && !data.storage.snapshot} />
-  ) : (
-    <>
-      <ArchivePolicy
-        value={data.storage.policy}
-        effectiveValue={data.storage.effectivePolicy}
-        lastScanAt={data.storage.snapshot?.lifecycle?.lastScanAt ?? null}
-        lastRun={data.storage.snapshot?.lifecycle?.lastRun ?? null}
-        busy={busy}
-        onChange={commit}
-      />
-      <ArchivedLanesPolicy
-        value={data.storage.policy}
-        effectiveValue={data.storage.effectivePolicy}
-        freeUpDueCount={data.storage.snapshot?.lifecycle?.freeUpDueCount ?? 0}
-        busy={busy}
-        onChange={commit}
-      />
-      <BuildOutputPolicy
-        value={data.storage.policy}
-        effectiveValue={data.storage.effectivePolicy}
-        summary={data.storage.snapshot?.lifecycle?.buildOutput ?? null}
-        busy={busy}
-        onChange={commit}
-      />
-    </>
+  if (show === "history") {
+    return <CleanupHistory runs={runs} loading={data.storage.loading && !data.storage.snapshot} />;
+  }
+
+  const snapshot = data.storage.snapshot;
+  // The rules come with the snapshot: until it is read, any value shown would be a guess.
+  if (!snapshot) {
+    if (data.storage.error && !data.storage.loading) {
+      return (
+        <ModernSection group="Cleanups" title="Automatic cleanup">
+          <Banner
+            layout="inline"
+            model={{
+              id: "lane-cleanup-rules-error",
+              tone: "error",
+              title: "ADE couldn't read the cleanup rules",
+              detail: data.storage.error,
+              actions: [{ label: "Try again", onClick: () => void loadStorage() }],
+            }}
+          />
+          {chats}
+        </ModernSection>
+      );
+    }
+    return <CleanupRulesSkeleton chats={chats} />;
+  }
+
+  return (
+    <CleanupRules
+      value={data.storage.policy}
+      effectiveValue={data.storage.effectivePolicy}
+      lastScanAt={snapshot.lifecycle?.lastScanAt ?? null}
+      lastRun={snapshot.lifecycle?.lastRun ?? null}
+      buildOutput={snapshot.lifecycle?.buildOutput ?? null}
+      freeUpDueCount={snapshot.lifecycle?.freeUpDueCount ?? 0}
+      busy={busy}
+      onChange={commit}
+      onOpenArchive={onOpenArchive}
+      chats={chats}
+    />
   );
 }

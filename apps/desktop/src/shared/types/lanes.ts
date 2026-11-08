@@ -595,6 +595,12 @@ export type RestoreLaneResult = {
   lane: LaneSummary;
   worktreeRecreated: boolean;
   setupWarning?: string | null;
+  /**
+   * The uncommitted files freeing up space had discarded (and ADE kept), when
+   * restoring the lane tried to put them back. `restored: false` leaves them
+   * in Recently deleted.
+   */
+  savedWork?: { restored: boolean; warning: string | null } | null;
 };
 
 /**
@@ -627,6 +633,47 @@ export type LaneDeleteLeftoverWorktree = {
 
 export type DeleteLaneResult = {
   leftoverWorktree: LaneDeleteLeftoverWorktree | null;
+  /** Work the delete would have lost, kept for restore; null when nothing was at risk. */
+  savedWork?: DeletedLaneSnapshot | null;
+};
+
+/**
+ * A deleted lane's work kept as a git ref: uncommitted files and commits no
+ * other branch or remote held. Recently deleted restores it as a new lane.
+ */
+export type DeletedLaneSnapshot = {
+  /** Stable id: `<epochMs>-<laneId>`. */
+  id: string;
+  laneId: string;
+  laneName: string;
+  branchName: string | null;
+  /** The saved commit: the working tree on top of `baseCommit`. */
+  commit: string;
+  /** The lane's HEAD when it was deleted; null for a branch with no commits. */
+  baseCommit: string | null;
+  /** True when the save holds uncommitted files, not only commits. */
+  uncommitted: boolean;
+  /**
+   * "deleted": the lane is gone and Restore brings it back. "freed": freeing
+   * up space discarded the files; the lane is still there (archived), and
+   * restoring it puts them back.
+   */
+  kind: "deleted" | "freed";
+  deletedAt: string;
+  /** When ADE drops the save. */
+  expiresAt: string;
+};
+
+export type RestoreDeletedLaneArgs = { id: string };
+
+export type RestoreDeletedLaneResult = {
+  lane: LaneSummary;
+  /** The branch the restored lane works on (the old name, or a free variant of it). */
+  branchName: string;
+  /** False when the uncommitted files could not be put back; they stay saved. */
+  restoredUncommitted: boolean;
+  /** Why the uncommitted files did not come back, when they did not. */
+  warning: string | null;
 };
 
 export type LaneDeleteStepName =
@@ -677,6 +724,8 @@ export type LaneDeleteProgress = {
    * Present on the terminal progress event the desktop dialog reads.
    */
   leftoverWorktree?: LaneDeleteLeftoverWorktree | null;
+  /** Work the delete kept (uncommitted files, unpushed commits); see DeletedLaneSnapshot. */
+  savedWork?: DeletedLaneSnapshot | null;
 };
 
 export type LaneDeleteEvent = {

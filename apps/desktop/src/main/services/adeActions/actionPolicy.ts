@@ -373,6 +373,8 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // ADE never deletes from the archive on its own, and no agent or automation
   // deletes for the person: a delete can take a lane's uncommitted work.
   archive: ["delete"],
+  // Dropping a deleted lane's saved work means it can no longer be restored.
+  lane: ["removeDeletedLane"],
   // Only the person's desktop saves a key or runs Claude's sign-in for new machines.
   agent37: AGENT37_CLOUD_SIGN_IN_WRITES,
   // An agent asking to move a chat or batch must not approve its own request.
@@ -587,6 +589,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "initEnv",
     "list",
     "listDeleteProgress",
+    "listDeletedLanes",
     "listSnapshots",
     "listTemplates",
     "listLinearIssuesForLaneSessions",
@@ -616,6 +619,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "proxyStart",
     "proxyStop",
     "refreshSnapshots",
+    "removeDeletedLane",
+    "restoreDeletedLane",
     "rebaseAbort",
     "rebasePush",
     "rebaseRollback",
