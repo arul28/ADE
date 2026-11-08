@@ -95,7 +95,7 @@ Agent-focused command-line interface for ADE.
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
+    $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -261,7 +261,7 @@ Agent-focused command-line interface for ADE.
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
+    $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -385,7 +385,7 @@ Lanes
   ade lanes defaults [--text|--json]
   ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
                          [--branch-pattern <pattern>]   (e.g. "ade/{slug}", "{user}/{slug}", "{slug}")
-  ade lanes list | show | archive | unarchive | delete | appearance | templates | actions
+  ade lanes list | show | archive | unarchive | delete | deleted | appearance | templates | actions
 
   The project is the shell's project (ADE_PROJECT_ROOT, else the checkout you
   stand in). --project-root <dir>, before or after the subcommand, names
@@ -425,7 +425,10 @@ Lanes
                                                     env init before returning, a plain unarchive returns immediately
                                                     and restarts Docker in the background (watch lane env init events).
                                                     Run "ade lanes action initEnv --arg laneId=<lane>" for the full sequence
-    $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree
+    $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree. Uncommitted files and
+                                                    commits no other branch or remote holds are kept for 30 days
+    $ ade lanes deleted list --text                 Deleted lanes whose work ADE kept
+    $ ade lanes deleted restore <id>                Bring one back, uncommitted files included: as a new lane, or into its lane if space was freed
     $ ade lanes rename <lane> --name "<name>"       Rename a lane (its branch keeps its name)
     $ ade lanes appearance <lane> --emoji 🐛        Set a lane emoji (use --emoji "" to clear)
     $ ade lanes actions --text                      List callable lane service methods
@@ -702,12 +705,13 @@ Work chats
     $ ade chat list --all-machines --text           Every machine in one table, with a machine column
     $ ade chat create --machine "Mac mini" --lane <lane there> --type subagent --prompt "…"
                                                     Start a child on another machine; it wakes you when done.
+                                                    Without --lane it starts in the project's primary lane there.
                                                     --project <name|path|id> picks the project there, --clone
                                                     sets a missing GitHub repo up, "a,b" starts one per machine.
-    $ ade chat create --machine agent37:ready --prompt "…"
-                                                    Start on this project's ready Agent 37 machine (prepared and
+    $ ade chat create --machine cloud:ready --prompt "…"
+                                                    Start on this project's ready ADE Cloud machine (prepared and
                                                     asleep): ADE wakes it, waits until it is online, then sends.
-                                                    No --lane needed; --json adds readyMachine. See ade agent37 ready.
+                                                    No --lane needed; --json adds readyMachine. See ade cloud ready.
     $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --text
@@ -1070,7 +1074,7 @@ Agent-focused command-line interface for ADE.
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
+    $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -1340,7 +1344,7 @@ Agent-focused command-line interface for ADE.
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
+    $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -2405,7 +2409,7 @@ Agent-focused command-line interface for ADE.
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
+    $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install

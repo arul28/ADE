@@ -1559,6 +1559,44 @@ describe("laneService delete outside .ade/worktrees", () => {
     });
   }
 
+  it("refuses to restore a lane while its delete is still running", async () => {
+    const { db, service, worktreePath } = await setup({
+      projectId: "proj-restore-during-delete",
+      prefix: "ade-lane-restore-during-delete-",
+    });
+    try {
+      stubGitForDelete({ worktreePath });
+      const removeGit = vi.mocked(runGit).getMockImplementation()!;
+      let releaseRemove = () => {};
+      const removeHeld = new Promise<void>((resolve) => { releaseRemove = resolve; });
+      let removeStarted = () => {};
+      const removeReached = new Promise<void>((resolve) => { removeStarted = resolve; });
+      vi.mocked(runGit).mockImplementation(async (gitArgs: string[], opts?: any) => {
+        if (gitArgs[0] === "worktree" && gitArgs[1] === "remove") {
+          removeStarted();
+          await removeHeld;
+        }
+        return removeGit(gitArgs, opts);
+      });
+      const listGit = vi.mocked(runGitOrThrow).getMockImplementation()!;
+      vi.mocked(runGitOrThrow).mockImplementation(async (gitArgs: string[], opts?: any) => {
+        if (gitArgs[0] !== "for-each-ref") return listGit(gitArgs, opts);
+        return `refs/ade/deleted-lanes/1-lane-external\0abc\0ADE-Lane-Id: lane-external\nADE-Deleted-At: ${NOW}\n\x1e` as any;
+      });
+
+      const deleting = service.delete({ laneId: "lane-external", deleteBranch: false });
+      await removeReached;
+
+      await expect(service.restoreDeletedLane({ id: "1-lane-external" })).rejects.toThrow(/still being deleted/i);
+      const updates = vi.mocked(runGitOrThrow).mock.calls.filter(([gitArgs]) => gitArgs[0] === "update-ref");
+      expect(updates).toEqual([]);
+      releaseRemove();
+      await expect(deleting).resolves.toBeDefined();
+    } finally {
+      db.close();
+    }
+  });
+
   it("really removes a worktree that lives outside .ade/worktrees", async () => {
     const { db, service, worktreePath, events } = await setup({
       projectId: "proj-delete-external",

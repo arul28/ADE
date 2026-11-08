@@ -42,7 +42,7 @@ function createMockLaneService() {
     updateAppearance: vi.fn(),
     archive: vi.fn().mockResolvedValue(undefined),
     unarchive: vi.fn().mockResolvedValue(undefined),
-    delete: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn().mockResolvedValue({ savedWork: null }),
     rebaseStart: vi.fn().mockResolvedValue({ runId: "run-1" }),
     rebasePush: vi.fn().mockResolvedValue({ ok: true }),
     rebaseRollback: vi.fn().mockResolvedValue({ ok: true }),
@@ -761,7 +761,7 @@ describe("createSyncRemoteCommandService", () => {
         },
         { teardownEnv: undefined },
       );
-      expect(result).toEqual({ ok: true });
+      expect(result).toEqual({ ok: true, savedWork: null });
     });
 
     it("lanes.delete runs env teardown and releases the port lease", async () => {
@@ -782,6 +782,7 @@ describe("createSyncRemoteCommandService", () => {
       laneService.list.mockResolvedValue([lane]);
       laneService.delete.mockImplementation(async (_args: unknown, opts?: { teardownEnv?: () => Promise<void> }) => {
         await opts?.teardownEnv?.();
+        return { savedWork: null };
       });
       const withRuntimeCleanup = createSyncRemoteCommandService({
         laneService,

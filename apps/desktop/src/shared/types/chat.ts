@@ -5319,6 +5319,8 @@ export type AgentChatCrossMachineHandoffRecord = {
   reason: string | null;
   targetLaneId: string | null;
   targetSessionId: string | null;
+  /** The destination's project id, so a client can open the chat on that machine and project. */
+  targetProjectId?: string | null;
   /**
    * Where this chat last landed, kept across later move attempts: a second
    * move that is cancelled or fails must not erase that the work already
@@ -5349,6 +5351,8 @@ export type AgentChatCrossMachineContinuation = {
   targetMachineName: string;
   targetLaneId: string;
   targetSessionId: string;
+  /** Absent on a move made before ADE recorded it. */
+  targetProjectId?: string | null;
   continuedAt: string;
 };
 

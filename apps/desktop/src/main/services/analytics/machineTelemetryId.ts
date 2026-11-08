@@ -36,6 +36,20 @@ export function machineTelemetryIdFor(
     .slice(0, 16);
 }
 
+const SYNC_DEVICE_TELEMETRY_DOMAIN = "ade-telemetry-sync-device-v1";
+
+/**
+ * A sync device id as it may appear in telemetry. Both ends of a connection
+ * know both device ids, so the machine that dialed and the machine it dialed
+ * derive the same two values and their reports can be matched in Sentry. The
+ * raw id is a credential selector and never leaves the process.
+ */
+export function syncDeviceTelemetryRef(deviceId: string | null | undefined): string | null {
+  const trimmed = deviceId?.trim();
+  if (!trimmed) return null;
+  return createHash("sha256").update(`${SYNC_DEVICE_TELEMETRY_DOMAIN}:${trimmed}`).digest("hex").slice(0, 16);
+}
+
 const byHome = new Map<string, string | null>();
 
 function remember(adeHome: string, rawUuid: string | null): string | null {

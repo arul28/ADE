@@ -68,7 +68,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "checkBranchName", "diagnosticsGetLaneHealth", "diagnosticsGetStatus", "getBranchDrift",
       "getDefaultTemplate", "getNewLaneDefaults", "getDeleteRisk", "getDependencyStatus", "getLeftoverWorktree", "getReclaimRisk",
       "getEnvStatus", "getOverlay", "getSummary", "getTemplate",
-      "list", "listDeleteProgress", "listSnapshots",
+      "list", "listDeleteProgress", "listDeletedLanes", "listSnapshots",
       "listTemplates", "listLinearIssuesForLaneSessions",
       "listLinearIssuesForSession", "listGitHubIssuesForLaneSessions",
       "listGitHubIssuesForSession", "oauthDecodeState", "oauthGenerateRedirectUris",
@@ -85,6 +85,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "detachJiraIssueFromSession",
       "diagnosticsDeactivateFallback", "diagnosticsRunFullCheck", "diagnosticsRunHealthCheck",
       "importBranch", "initEnv",
+      "removeDeletedLane", "restoreDeletedLane",
       "linkLinearIssues", "oauthEncodeState", "oauthUpdateConfig", "portAcquire", "portGetLease",
       "portRecoverOrphans", "portRelease", "proxyAddRoute", "proxyRemoveRoute", "proxyStart",
       "proxyStop", "refreshSnapshots", "rebaseAbort", "rebasePush", "rebaseRollback",
@@ -341,7 +342,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: ["status"],
     write: ["request"],
   },
-  agent37: {
+  cloud: {
     read: ["ready_status", "list", "spending", "make_status", "limits", "cloud_sign_in_status"],
     write: [
       "claim_ready", "release_ready", "create", "sleep", "wake", "resize", "copy", "move", "delete",

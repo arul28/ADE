@@ -35,6 +35,13 @@ export async function readWorktreeDirty(worktreePath: string, timeoutMs = 8_000)
 
 const SUBMODULE_INSPECT_MAX_DEPTH = 4;
 
+/**
+ * "any-doubt" counts what ADE cannot prove safe (a plain delete stops and
+ * asks); "found" counts only work that is really there, for a discard that
+ * has no copy to fall back on and no one left to ask.
+ */
+type RepoWorkMode = "any-doubt" | "found";
+
 function realPathOrNull(target: string): string | null {
   try {
     return fs.realpathSync.native(target);
@@ -43,12 +50,109 @@ function realPathOrNull(target: string): string | null {
   }
 }
 
+/** Reflog actions that create a commit, as opposed to moving to a fetched one. */
+const COMMIT_MADE_HERE = /^(commit|merge|cherry-pick|revert|am|rebase)\b/;
+const REFLOG_SCAN_LIMIT = "2000";
+
+/** True when HEAD's reflog shows a commit no remote has was created in this repository. */
+async function headHoldsCommitsMadeHere(repoPath: string, timeoutMs: number): Promise<boolean> {
+  const notOnRemote = await runGit(["rev-list", "-n", REFLOG_SCAN_LIMIT, "HEAD", "--not", "--remotes"], { cwd: repoPath, timeoutMs });
+  const commits = new Set(notOnRemote.stdout.split(/\r?\n/).filter(Boolean));
+  if (notOnRemote.exitCode !== 0 || commits.size === 0) return false;
+  const reflog = await runGit(["reflog", "show", "-n", REFLOG_SCAN_LIMIT, "--format=%H %gs", "HEAD"], { cwd: repoPath, timeoutMs });
+  return reflog.stdout.split(/\r?\n/).some((line) => {
+    const space = line.indexOf(" ");
+    return space > 0 && commits.has(line.slice(0, space)) && COMMIT_MADE_HERE.test(line.slice(space + 1));
+  });
+}
+
+/**
+ * What only `repoPath`, a git repository inside the lane, holds: uncommitted
+ * changes or commits no remote-tracking branch has. `label` names it in the
+ * sentence ("submodule vendor/x"). Null when nothing would be lost.
+ */
+async function describeRepoWork(
+  repoPath: string,
+  label: string,
+  timeoutMs: number,
+  depth: number,
+  mode: RepoWorkMode,
+  pinnedCommit: string | null,
+): Promise<string | null> {
+  const name = label.charAt(0).toUpperCase() + label.slice(1);
+  const atDepthLimit = depth + 1 >= SUBMODULE_INSPECT_MAX_DEPTH;
+  if (atDepthLimit && mode !== "found") return `${name} is nested too deep for ADE to check.`;
+  const couldNotCheck = (stderr: string, exitCode: number | null) =>
+    mode === "found" ? null : `ADE could not check ${label}: ${stderr.trim() || `git exited ${exitCode}`}`;
+  // Each repository answers for itself; a nested one is checked below.
+  const dirty = await runGit(["status", "--porcelain=v1", "--ignore-submodules=all"], { cwd: repoPath, timeoutMs });
+  if (dirty.exitCode !== 0) return couldNotCheck(dirty.stderr, dirty.exitCode);
+  if (dirty.stdout.trim().length > 0) return `${name} has uncommitted changes.`;
+  const remotes = await runGit(["remote"], { cwd: repoPath, timeoutMs });
+  if (remotes.exitCode !== 0) return couldNotCheck(remotes.stderr, remotes.exitCode);
+  if (!remotes.stdout.trim()) return `${name} has no remote, so its commits may exist only in this lane.`;
+  // Only a remote-tracking ref proves a commit is saved. A tag cannot: it may
+  // never have been pushed, and it lives in this worktree's own submodule
+  // repository, which the removal deletes.
+  // A checkout of the commit the parent pins, fetched by tag or shallowly,
+  // has no remote-tracking ref for it and still holds nothing of its own.
+  // Only `found` may lean on that, and only for commits not made here.
+  const head = mode === "found" && pinnedCommit
+    ? (await runGit(["rev-parse", "HEAD"], { cwd: repoPath, timeoutMs })).stdout.trim()
+    : null;
+  const headIsPinned = head !== null && head === pinnedCommit;
+  const unpushed = await runGit(
+    ["rev-list", "-n", "1", ...(headIsPinned ? [] : ["HEAD"]), "--branches", "--not", "--remotes"],
+    { cwd: repoPath, timeoutMs },
+  );
+  if (unpushed.exitCode !== 0) return couldNotCheck(unpushed.stderr, unpushed.exitCode);
+  if (unpushed.stdout.trim().length > 0) return `${name} has commits that no remote has.`;
+  if (headIsPinned && await headHoldsCommitsMadeHere(repoPath, timeoutMs)) return `${name} has commits that no remote has.`;
+  return atDepthLimit ? null : describeUnsavedSubmoduleWork(repoPath, timeoutMs, depth + 1, mode);
+}
+
+/**
+ * Why a git repository in the lane that is not a registered submodule (a
+ * clone sitting in the folder) holds work removing the worktree would lose.
+ */
+export async function describeUnsavedNestedRepoWork(repoPath: string, relPath: string, timeoutMs = 8_000): Promise<string | null> {
+  return describeRepoWork(repoPath, `git repository ${relPath}`, timeoutMs, 0, "found", null);
+}
+
+/**
+ * Work in the other git repositories inside a lane (its submodules and any
+ * untracked clones), found for certain. ADE's saved copy of a lane holds the
+ * parent repository only, so a discard stops for this. A status that fails
+ * here finds nothing; the save that follows reads it again and stops.
+ */
+export async function describeWorkInOtherRepos(worktreePath: string, timeoutMs = 8_000): Promise<string | null> {
+  const submoduleWork = await describeUnsavedSubmoduleWork(worktreePath, timeoutMs, 0, "found");
+  if (submoduleWork) return submoduleWork;
+  const status = await runGit(["status", "--porcelain=v1", "-z", "--ignore-submodules=all"], { cwd: worktreePath, timeoutMs });
+  if (status.exitCode !== 0) return null;
+  for (const entry of status.stdout.split("\0")) {
+    if (!entry.startsWith("?? ") || !entry.endsWith("/")) continue;
+    const relPath = entry.slice(3, -1);
+    const repoPath = path.join(worktreePath, relPath);
+    if (!fs.existsSync(path.join(repoPath, ".git"))) continue;
+    const work = await describeUnsavedNestedRepoWork(repoPath, relPath, timeoutMs);
+    if (work) return work;
+  }
+  return null;
+}
+
 /**
  * Why a submodule under `repoPath` holds work that removing the worktree would
  * lose, or null. A submodule ADE cannot inspect counts as holding work, so the
- * delete stops and says which one; a force delete still removes it.
+ * delete stops and says which one; a force delete still removes it unless
+ * `mode` is "found" and the work is there for certain.
  */
-async function describeUnsavedSubmoduleWork(repoPath: string, timeoutMs: number, depth = 0): Promise<string | null> {
+async function describeUnsavedSubmoduleWork(
+  repoPath: string,
+  timeoutMs = 8_000,
+  depth = 0,
+  mode: RepoWorkMode = "any-doubt",
+): Promise<string | null> {
   if (!fs.existsSync(path.join(repoPath, ".gitmodules"))) return null;
   const listed = await runGit(
     ["config", "-z", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"],
@@ -57,7 +161,7 @@ async function describeUnsavedSubmoduleWork(repoPath: string, timeoutMs: number,
   // Exit 1 means no submodule path is configured.
   if (listed.exitCode === 1) return null;
   if (listed.exitCode !== 0) {
-    return `ADE could not read the submodule list in ${repoPath}: ${listed.stderr.trim() || `git exited ${listed.exitCode}`}`;
+    return mode === "found" ? null : `ADE could not read the submodule list in ${repoPath}: ${listed.stderr.trim() || `git exited ${listed.exitCode}`}`;
   }
   const realRepoPath = realPathOrNull(repoPath) ?? repoPath;
   for (const record of listed.stdout.split("\0")) {
@@ -73,11 +177,13 @@ async function describeUnsavedSubmoduleWork(repoPath: string, timeoutMs: number,
     try {
       stats = fs.statSync(submodulePath, { throwIfNoEntry: false });
     } catch (error) {
+      if (mode === "found") continue;
       return `ADE could not check submodule ${relPath}: ${error instanceof Error ? error.message : String(error)}`;
     }
     if (!stats?.isDirectory()) continue;
     const realSubmodulePath = realPathOrNull(submodulePath);
     if (!realSubmodulePath || realSubmodulePath === realRepoPath || !isWithinDir(realRepoPath, realSubmodulePath)) {
+      if (mode === "found") continue;
       return `Submodule ${relPath} points outside the lane, so ADE cannot check it.`;
     }
     if (!fs.existsSync(path.join(submodulePath, ".git"))) {
@@ -88,36 +194,17 @@ async function describeUnsavedSubmoduleWork(repoPath: string, timeoutMs: number,
       try {
         entries = fs.readdirSync(submodulePath);
       } catch (error) {
+        if (mode === "found") continue;
         return `ADE could not check submodule folder ${relPath}: ${error instanceof Error ? error.message : String(error)}`;
       }
       if (entries.length > 0) return `Submodule folder ${relPath} holds files that are not in any repository.`;
       continue;
     }
-    if (depth + 1 >= SUBMODULE_INSPECT_MAX_DEPTH) {
-      return `Submodule ${relPath} is nested too deep for ADE to check.`;
-    }
-    const remotes = await runGit(["remote"], { cwd: submodulePath, timeoutMs });
-    if (remotes.exitCode !== 0) {
-      return `ADE could not check submodule ${relPath}: ${remotes.stderr.trim() || `git exited ${remotes.exitCode}`}`;
-    }
-    if (!remotes.stdout.trim()) {
-      return `Submodule ${relPath} has no remote, so its commits may exist only in this lane.`;
-    }
-    // Only a remote-tracking ref proves a commit is saved. A tag cannot: it may
-    // never have been pushed, and it lives in this worktree's own submodule
-    // repository, which the removal deletes.
-    const unpushed = await runGit(
-      ["rev-list", "-n", "1", "HEAD", "--branches", "--not", "--remotes"],
-      { cwd: submodulePath, timeoutMs },
-    );
-    if (unpushed.exitCode !== 0) {
-      return `ADE could not check submodule ${relPath}: ${unpushed.stderr.trim() || `git exited ${unpushed.exitCode}`}`;
-    }
-    if (unpushed.stdout.trim().length > 0) {
-      return `Submodule ${relPath} has commits that no remote has.`;
-    }
-    const nested = await describeUnsavedSubmoduleWork(submodulePath, timeoutMs, depth + 1);
-    if (nested) return nested;
+    const pinned = mode === "found"
+      ? (await runGit(["rev-parse", "--verify", "--quiet", `HEAD:${relPath}`], { cwd: repoPath, timeoutMs })).stdout.trim() || null
+      : null;
+    const work = await describeRepoWork(submodulePath, `submodule ${relPath}`, timeoutMs, depth, mode, pinned);
+    if (work) return work;
   }
   return null;
 }

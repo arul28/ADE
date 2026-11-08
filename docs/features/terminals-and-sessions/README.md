@@ -1699,6 +1699,10 @@ Renderer surfaces:
   rebinding still consults `isLivePin`. `useWorkSessions` owns the single
   instance and re-exports it as `machineRouter` / `resolveSessionRuntimePin`;
   nothing else in Work constructs one.
+- `apps/desktop/src/renderer/lib/firstLoadRetry.ts` — keeps a Work chat or
+  lane list's first load trying until it answers, at once when the tab's
+  machine reconnects, so a machine that was still restarting does not leave
+  an empty list. Nothing runs here unless a load fails.
 - `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` —
   hook that owns work view state (open items, active tab, draft kind,
   view mode, filters) and persists it to `localStorage` under

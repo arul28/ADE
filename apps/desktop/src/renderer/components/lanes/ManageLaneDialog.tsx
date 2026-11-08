@@ -33,6 +33,7 @@ import type {
   LaneSummary,
   OpenProjectBinding,
 } from "../../../shared/types";
+import { DELETED_LANE_KEEP_DAYS } from "../../../shared/laneCleanup";
 import { LaneDialogShell } from "./LaneDialogShell";
 import { LinearMark } from "./linearBrand";
 import { showToast } from "../app/toast/toastStore";
@@ -426,6 +427,15 @@ function ManageLaneTabBar({
   );
 }
 
+/**
+ * The lanes a delete acts on. Never the primary lane, and without Force a
+ * batch skips lanes with uncommitted work: one box ticked for the rest must
+ * not take theirs.
+ */
+export function lanesToDelete<T extends Pick<LaneSummary, "laneType" | "status">>(lanes: T[], force: boolean): T[] {
+  return lanes.filter((lane) => lane.laneType !== "primary" && (force || lanes.length === 1 || !lane.status.dirty));
+}
+
 export function ManageLaneDialog({
   open,
   onOpenChange,
@@ -473,6 +483,11 @@ export function ManageLaneDialog({
   const isBatch = lanes.length > 1;
   const allPrimary = lanes.length > 0 && lanes.every((l) => l.laneType === "primary");
   const hasAnyDirty = lanes.some((l) => l.status.dirty);
+  // A batch never takes a lane's uncommitted work because one box was ticked
+  // for the rest: without Force it deletes the clean lanes and skips these.
+  const dirtyLanes = lanes.filter((l) => l.status.dirty && l.laneType !== "primary");
+  const skippedDirtyCount = isBatch && !deleteForce ? dirtyLanes.length : 0;
+  const deleteCount = lanesToDelete(lanes, deleteForce).length;
   const singleLane = !isBatch ? lanes[0] ?? null : null;
 
   const singleLaneId = singleLane?.id ?? null;
@@ -594,14 +609,17 @@ export function ManageLaneDialog({
   }, [open, runtimePin, singleLaneId]);
 
   const hasDeleteSelection = laneDeleteSelectionHasAny(deleteSelection);
-  // A lane with uncommitted work only deletes with Force on; say so at the button.
-  const needsForce = hasAnyDirty && !deleteForce;
-  const deleteDisabledReason = !hasDeleteSelection
+  // A lane with uncommitted work only deletes with Force on; say so at the
+  // button. A batch deletes its clean lanes without it.
+  const needsForce = isBatch ? deleteCount === 0 && dirtyLanes.length > 0 && !deleteForce : hasAnyDirty && !deleteForce;
+  const deleteHint = !hasDeleteSelection
     ? "Pick what to delete"
     : needsForce
-      ? "Tick Force delete to discard uncommitted work"
-      : null;
-  const deleteDisabled = laneActionBusy || deleteDisabledReason != null;
+      ? "Every lane here has uncommitted work. Tick the box above to delete them."
+      : skippedDirtyCount > 0
+        ? `Skips ${skippedDirtyCount === 1 ? "1 lane" : `${skippedDirtyCount} lanes`} with uncommitted work`
+        : null;
+  const deleteDisabled = laneActionBusy || !hasDeleteSelection || needsForce;
   const showStaticBusy = laneActionBusy && !deleteProgress;
   const reclaimBlocked = reclaimRisk?.blockedReasons.some((reason) => reason.disposition === "blocked") ?? false;
 
@@ -820,7 +838,7 @@ export function ManageLaneDialog({
                           disabled={reclaimBusy || laneActionBusy}
                           className="mt-0.5"
                         />
-                        <span>Discard uncommitted changes in this lane. These file changes cannot be restored.</span>
+                        <span>Discard uncommitted changes in this lane. ADE keeps a copy for {DELETED_LANE_KEEP_DAYS} days in Settings › Storage › Recently deleted.</span>
                       </label>
                     ) : null}
                     <label className="mt-3 block text-[11px] text-muted-fg/80">
@@ -873,8 +891,8 @@ export function ManageLaneDialog({
 
           {activeTab === "delete" ? (
             <ManageLaneTabPanel tone="delete">
-              <p className="whitespace-nowrap text-xs text-red-200/70">
-                Stops lane activity and removes what you pick. Cannot be undone.
+              <p className="text-xs text-red-200/70">
+                Stops lane activity and removes what you pick. Work that only this lane holds is kept for {DELETED_LANE_KEEP_DAYS} days in Recently deleted.
                 {!isBatch && reclaimRisk && reclaimRisk.reclaimableBytes > 0 ? (
                   <span className="text-muted-fg/70"> Frees about <strong className="text-fg">{formatBytesCompact(reclaimRisk.reclaimableBytes)}</strong>.</span>
                 ) : null}
@@ -901,11 +919,17 @@ export function ManageLaneDialog({
                 />
               ) : null}
 
-              <label className="mt-3 flex items-center gap-2 whitespace-nowrap text-xs text-muted-fg/80 cursor-pointer select-none">
-                <input type="checkbox" checked={deleteForce} onChange={(event) => setDeleteForce(event.target.checked)} disabled={laneActionBusy} className="rounded accent-red-400" />
-                Force delete
-                <span className="text-muted-fg/50">· discards uncommitted work</span>
-              </label>
+              {isBatch && dirtyLanes.length === 0 ? null : (
+                <label className="mt-3 flex items-start gap-2 text-xs text-muted-fg/80 cursor-pointer select-none">
+                  <input type="checkbox" checked={deleteForce} onChange={(event) => setDeleteForce(event.target.checked)} disabled={laneActionBusy} className="mt-0.5 rounded accent-red-400" />
+                  <span className="min-w-0">
+                    {isBatch
+                      ? `Also delete ${dirtyLanes.length === 1 ? "the lane" : `the ${dirtyLanes.length} lanes`} with uncommitted work: ${dirtyLanes.map((lane) => lane.name).join(", ")}`
+                      : "Force delete: remove the uncommitted work too"}
+                    <span className="block text-muted-fg/50">ADE keeps a copy for {DELETED_LANE_KEEP_DAYS} days. Restore it from Settings › Storage › Recently deleted.</span>
+                  </span>
+                </label>
+              )}
 
               {deleteProgress ? (
                 <DeleteProgressStrip progress={deleteProgress} />
@@ -948,11 +972,11 @@ export function ManageLaneDialog({
                   {laneActionBusy && laneActionKind === "delete"
                     ? "Deleting..."
                     : isBatch
-                      ? `Delete ${lanes.length} lanes`
+                      ? `Delete ${deleteCount === 1 ? "1 lane" : `${deleteCount} lanes`}`
                       : "Delete lane"}
                 </Button>
-                {deleteDisabledReason && !laneActionBusy ? (
-                  <span className="whitespace-nowrap text-xs text-muted-fg/70">{deleteDisabledReason}</span>
+                {deleteHint && !laneActionBusy ? (
+                  <span className="whitespace-nowrap text-xs text-muted-fg/70">{deleteHint}</span>
                 ) : null}
               </div>
             </ManageLaneTabPanel>

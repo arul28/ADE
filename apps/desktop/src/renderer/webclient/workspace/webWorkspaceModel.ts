@@ -22,6 +22,7 @@ import {
   accountMachineRowLabel,
 } from "../../../shared/accountDirectory";
 import type { AdeAccountMachine } from "../../../shared/types/account";
+import { resolveMachinePresence } from "../../../shared/types/power";
 import type { RecentProjectSummary } from "../../../shared/types";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type {
@@ -334,7 +335,9 @@ export function mergeWebMachines(args: {
         environment: entry.environment,
         session: entry.session,
         status,
-        statusLabel: webMachineStatusLabel(status),
+        statusLabel: status === "available" && entry.accountMachine
+          ? accountPresenceLabel(entry.accountMachine)
+          : webMachineStatusLabel(status),
         reachability: rememberedOnly
           ? `This browser still remembers ${entry.name}, but it is not on your ADE account`
           : reachabilityCopy(status, lastSeenAt),
@@ -349,6 +352,25 @@ export function mergeWebMachines(args: {
       STATUS_ORDER[left.status] - STATUS_ORDER[right.status]
       || left.name.localeCompare(right.name)
     ));
+}
+
+/**
+ * A dialable machine's label from what the account last heard from it: a
+ * relay route alone made every machine read "Available", asleep and long-gone
+ * ones too.
+ */
+function accountPresenceLabel(machine: AdeAccountMachine): string {
+  const presence = resolveMachinePresence({
+    connected: false,
+    online: machine.online,
+    sleepState: machine.sleepState,
+    sleepStateAt: machine.sleepStateAt,
+    lastSeenAt: machine.lastSeenAt,
+  });
+  if (presence === "online") return "Online";
+  if (presence === "asleep") return "Asleep";
+  const seen = webMachineLastSeenPhrase(machine.lastSeenAt);
+  return seen ? `Last seen ${seen}` : "Not seen recently";
 }
 
 /** What a merged row's dot and label report, in precedence order. */

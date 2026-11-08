@@ -122,7 +122,7 @@ function createHarness(options: { permissionLevel?: string; turnActive?: boolean
         if (input.action === "acceptCrossMachineHandoff") {
           const args = input.args as { capsule: AgentChatCrossMachineHandoffCapsule; capsuleFingerprint: string };
           accepted.push(args);
-          return { machine, result: accept(args.capsule) };
+          return { machine, project: { projectId: "project-there" }, result: accept(args.capsule) };
         }
         throw new Error(`unexpected destination action ${input.action}`);
       },
@@ -722,7 +722,7 @@ describe("cross-machine move orchestrator", () => {
     expect(await h.settled()).toMatchObject({
       handoffId: started.handoffId,
       state: "continued",
-      continuedOn: { handoffId: started.handoffId, targetSessionId: "chat-there" },
+      continuedOn: { handoffId: started.handoffId, targetSessionId: "chat-there", targetProjectId: "project-there" },
     });
     expect(h.prepared).toHaveLength(1);
     expect(h.accepted).toHaveLength(2);

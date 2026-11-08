@@ -241,7 +241,7 @@ export function CrossMachineMoveSubmenu({
               className={MENU_ITEM_CLASS}
               onClick={() => {
                 onClose();
-                openChatOnOtherMachine(unknownTargetSessionId);
+                openChatOnOtherMachine(unknownTargetSessionId, record);
               }}
             >
               <MenuRowIcon icon={ArrowSquareOut} />
@@ -268,7 +268,7 @@ export function CrossMachineMoveSubmenu({
                 className={MENU_ITEM_CLASS}
                 onClick={() => {
                   onClose();
-                  openChatOnOtherMachine(continuation.targetSessionId);
+                  openChatOnOtherMachine(continuation.targetSessionId, continuation);
                 }}
               >
                 <MenuRowIcon icon={ArrowSquareOut} />

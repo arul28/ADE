@@ -40,7 +40,7 @@ import { sleep } from "../shared/utils";
  * - macOS: `~/Library/Caches/TemporaryItems/avd/running`;
  * - Linux: `$XDG_RUNTIME_DIR/avd/running`, else `/tmp/android-<user>/avd/running`.
  *   Emulator 37 with no `XDG_RUNTIME_DIR` (a brain run as a service, with no
- *   login session, as on an Agent37 VM) writes to `<Android user home>/avd/running`
+ *   login session, as on a cloud VM) writes to `<Android user home>/avd/running`
  *   instead, so that folder is read too.
  */
 export function androidDiscoveryDirs(

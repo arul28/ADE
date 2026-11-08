@@ -164,8 +164,8 @@ struct ContentView: View {
         CursorCloudPaneSheet(syncService: syncService)
           .environmentObject(syncService)
       }
-      .sheet(isPresented: syncService.bindings.agent37PanePresented) {
-        Agent37PaneSheet(syncService: syncService)
+      .sheet(isPresented: syncService.bindings.cloudPanePresented) {
+        CloudPaneSheet(syncService: syncService)
           .environmentObject(syncService)
       }
       .sheet(isPresented: syncService.bindings.githubIssuesPanePresented) {

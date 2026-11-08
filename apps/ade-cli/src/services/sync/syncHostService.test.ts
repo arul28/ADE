@@ -2950,8 +2950,10 @@ describe("sync host account authentication", () => {
     const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
     const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
     const baseArgs = createHostArgs(projectRoot, []);
+    const logger = createDiscoveryLogger();
     const host = createSyncHostService({
       ...baseArgs,
+      logger,
       ...accountDependencies(),
       pinStore,
       pairingSecretsPath,
@@ -3058,7 +3060,8 @@ describe("sync host account authentication", () => {
             deviceId: "legacy-relay-peer",
             deviceName: "Legacy Relay peer",
             platform: "iOS",
-            deviceType: "phone",
+            // Anyone who reaches the port can send this; the log must stay bounded.
+            deviceType: "x".repeat(200_000),
             siteId: "legacy-relay-site",
             dbVersion: 0,
           },
@@ -3076,6 +3079,10 @@ describe("sync host account authentication", () => {
         code: "relay_account_required",
         message: "Sign in with the same ADE account on both machines.",
       });
+      const rejection = vi.mocked(logger.warn).mock.calls.find(([event]) => event === "sync_host.hello_rejected")?.[1];
+      expect(rejection).toMatchObject({ code: "relay_account_required", authKind: "bootstrap" });
+      expect(String(rejection?.deviceType).length).toBeLessThanOrEqual(32);
+      expect(JSON.stringify(rejection)).not.toContain("legacy-relay-peer");
     } finally {
       for (const client of clients) client.ws.close();
       await host.dispose();
@@ -6673,9 +6680,9 @@ describe("CTO-gated Linear sync commands", () => {
         "ai.antigravitySignInStatus",
         "ai.antigravitySignInComplete",
         "ai.antigravitySignInCancel",
-        // Making, waking, resizing or deleting an Agent 37 machine spends or
+        // Making, waking, resizing or deleting a cloud machine spends or
         // deletes: the phone's controller only, never a read-only viewer.
-        "agent37.write",
+        "cloud.write",
         // An MCP App request runs a tool or reads a resource on the host, so a
         // read-only viewer never sends one.
         "chat.mcpAppRequest",
@@ -6719,7 +6726,7 @@ describe("CTO-gated Linear sync commands", () => {
         "chat.mcpAppRequest",
         // The phone's Chat Info account row moves a chat to another account.
         "chat.switchAccount",
-        "agent37.write",
+        "cloud.write",
         // The phone's sign-in card.
         "ai.cliLoginStart",
         "ai.cliLoginStatus",
@@ -6754,9 +6761,9 @@ describe("CTO-gated Linear sync commands", () => {
         const RUNTIME_SCOPED_OPTIONAL_ACTIONS = new Set([
           "chat.resolveSourceFavicons",
           "account.getMachineInventory",
-          // Agent 37 is the account's, so any brain answers the phone's page.
-          "agent37.read",
-          "agent37.write",
+          // the provider is the account's, so any brain answers the phone's page.
+          "cloud.read",
+          "cloud.write",
           // An agent's sign-in lands in the machine's home, never a project.
           "ai.cliLoginStart",
           "ai.cliLoginStatus",

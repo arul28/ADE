@@ -223,9 +223,9 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // limited.
   "ai.cursorCloudFleet",
   "ai.getCursorCloudFleet",
-  // The phone's Agent 37 page; optional so an older brain simply omits it.
-  "agent37.read",
-  "agent37.write",
+  // The phone's ADE Cloud page; optional so an older brain simply omits it.
+  "cloud.read",
+  "cloud.write",
   "ai.cursorCloudResolveLane",
   "ai.cursorCloudPullIntoLane",
   "ai.cursorCloudStopRun",

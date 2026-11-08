@@ -150,6 +150,7 @@ import type {
   CreatePrFromLaneArgs,
   CreateGitHubPrStackArgs,
   DeleteLaneArgs,
+  DeletedLaneSnapshot,
   DeletePrArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
@@ -617,8 +618,8 @@ type SyncRemoteCommandServiceArgs = {
   agentChatService?: ReturnType<typeof createAgentChatService>;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
-  /** The `agent37` action domain (the phone's Agent 37 page); null with no project runtime yet. */
-  agent37Actions?: () => Record<string, unknown> | null;
+  /** The `cloud` action domain (the phone's ADE Cloud page); null with no project runtime yet. */
+  cloudActions?: () => Record<string, unknown> | null;
   cloudAgentsService?: CloudAgentsService | null;
   personalChatScope?: Pick<PersonalChatScopeContract, "call" | "streamEvents">;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
@@ -3845,7 +3846,7 @@ function resolveLaneWorktreePathForSync(args: SyncRemoteCommandServiceArgs, lane
 async function deleteLaneWithRuntimeCleanup(
   args: SyncRemoteCommandServiceArgs,
   payload: Record<string, unknown>,
-): Promise<{ ok: true }> {
+): Promise<{ ok: true; savedWork: DeletedLaneSnapshot | null }> {
   const deleteArgs = parseDeleteLaneArgs(payload);
   const teardownEnv = await buildLaneEnvTeardown(
     {
@@ -3859,9 +3860,10 @@ async function deleteLaneWithRuntimeCleanup(
     { includeArchived: true },
   );
 
-  await args.laneService.delete(deleteArgs, { teardownEnv });
+  const result = await args.laneService.delete(deleteArgs, { teardownEnv });
   args.portAllocationService?.release(deleteArgs.laneId);
-  return { ok: true };
+  // The phone offers to restore what the delete kept.
+  return { ok: true, savedWork: result.savedWork ?? null };
 }
 
 async function unarchiveLaneWithRuntimeSetup(
@@ -4329,6 +4331,12 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     unarchiveLaneWithRuntimeSetup(args, payload));
   register("lanes.delete", { viewerAllowed: true, queueable: true }, async (payload) =>
     deleteLaneWithRuntimeCleanup(args, payload));
+  // Deleted lanes whose unsaved work a delete kept (Recently deleted).
+  register("lanes.listDeleted", { viewerAllowed: true }, async () => args.laneService.listDeletedLanes());
+  register("lanes.restoreDeleted", { viewerAllowed: true }, async (payload) =>
+    args.laneService.restoreDeletedLane({ id: requireString(payload.id, "lanes.restoreDeleted requires id.") }));
+  register("lanes.removeDeleted", { viewerAllowed: true }, async (payload) =>
+    args.laneService.removeDeletedLane({ id: requireString(payload.id, "lanes.removeDeleted requires id.") }));
   // A stop is only worth anything now, so neither is queued.
   register("lanes.cancelDelete", { viewerAllowed: true }, async (payload) =>
     args.laneService.cancelDelete(requireString(payload.laneId, "lanes.cancelDelete requires laneId.")));
@@ -6595,9 +6603,9 @@ function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegis
     ));
 }
 
-/** What the phone's Agent 37 page may run (`agent37.read` / `agent37.write`). */
-const AGENT37_REMOTE_READS: ReadonlySet<string> = new Set(["list", "spending", "limits", "ready_status", "make_status"]);
-const AGENT37_REMOTE_WRITES: ReadonlySet<string> = new Set([
+/** What the phone's ADE Cloud page may run (`cloud.read` / `cloud.write`). */
+const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set(["list", "spending", "limits", "ready_status", "make_status"]);
+const CLOUD_REMOTE_WRITES: ReadonlySet<string> = new Set([
   "create", "copy", "move", "sleep", "wake", "resize", "delete", "set_sleep", "set_cap", "set_limits",
   "ready_set", "ready_off", "ready_retry",
 ]);
@@ -8268,24 +8276,24 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     return args.usageTrackingService.getUsageRollup();
   }, "runtime");
 
-  // The phone's Agent 37 page: the same actions as `ade agent37`, run here.
+  // The phone's ADE Cloud page: the same actions as `ade cloud`, run here.
   // The phone is the person's own client, so nothing it asks raises a card.
   // Reads are viewer-allowed; anything that spends, deletes or changes a
   // setting needs a controlling device. Account-wide, so any brain answers.
-  const agent37Call = async (payload: Record<string, unknown>, allowed: ReadonlySet<string>) => {
+  const cloudCall = async (payload: Record<string, unknown>, allowed: ReadonlySet<string>) => {
     const action = asTrimmedString(payload.action) ?? "";
-    if (!allowed.has(action)) throw new Error(`agent37 has no "${action}" here.`);
-    const domain = args.agent37Actions?.() ?? null;
+    if (!allowed.has(action)) throw new Error(`cloud has no "${action}" here.`);
+    const domain = args.cloudActions?.() ?? null;
     const handler = domain?.[action];
-    if (typeof handler !== "function") throw new Error("Agent 37 isn't available on this machine.");
+    if (typeof handler !== "function") throw new Error("ADE Cloud isn't available on this machine.");
     const input = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args) ? payload.args as Record<string, unknown> : {};
     const { approval: _ignored, ...rest } = input;
     return await (handler as (input: unknown) => Promise<unknown>).call(domain, { ...rest, approval: { by: "person" } });
   };
-  register("agent37.read", { viewerAllowed: true }, async (payload) =>
-    await agent37Call(payload, AGENT37_REMOTE_READS), "runtime");
-  register("agent37.write", { viewerAllowed: false, controllerAllowed: true }, async (payload) =>
-    await agent37Call(payload, AGENT37_REMOTE_WRITES), "runtime");
+  register("cloud.read", { viewerAllowed: true }, async (payload) =>
+    await cloudCall(payload, CLOUD_REMOTE_READS), "runtime");
+  register("cloud.write", { viewerAllowed: false, controllerAllowed: true }, async (payload) =>
+    await cloudCall(payload, CLOUD_REMOTE_WRITES), "runtime");
 
   register("account.getMachineInventory", { viewerAllowed: true }, async (payload) => {
     const machineKey = asTrimmedString(payload.machineKey);

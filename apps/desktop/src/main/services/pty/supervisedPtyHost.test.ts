@@ -288,6 +288,36 @@ describe("createSupervisedPtyLoader", () => {
     expect(mocks.fork).toHaveBeenCalledTimes(1);
   });
 
+  it("hands a quick command's output and exit to listeners attached after the host reported them", async () => {
+    const child = createFakeChild();
+    mocks.fork.mockReturnValueOnce(child);
+    const loader = createSupervisedPtyLoader({ logger: createLogger() as any });
+    const pty = loader().spawn("/bin/sh", ["-c", "echo done"], spawnOptions()) as HostedPty;
+    const spawnRequest = child.sent[0] as { requestId: string; ptyId: string };
+    // A busy brain reads all three from one IPC chunk, before the caller's
+    // `await __adePtyHostReady` resumes and attaches its listeners.
+    child.emitMessage({
+      type: "spawned",
+      requestId: spawnRequest.requestId,
+      ptyId: spawnRequest.ptyId,
+      pid: 123,
+      process: "/bin/sh",
+      cols: 80,
+      rows: 24,
+    });
+    child.emitMessage({ type: "data", ptyId: spawnRequest.ptyId, data: "done\r\n" });
+    child.emitMessage({ type: "exit", ptyId: spawnRequest.ptyId, exitCode: 0, signal: null });
+    await pty.__adePtyHostReady;
+
+    const events: string[] = [];
+    pty.onData((data) => events.push(`data:${data}`));
+    pty.onExit((event) => events.push(`exit:${event.exitCode}`));
+    // Queued after the listeners attached, so it settles after their replay.
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+    expect(events).toEqual(["data:done\r\n", "exit:0"]);
+  });
+
   it("acknowledges PTY output in batches even when a data listener throws", async () => {
     const child = createFakeChild();
     mocks.fork.mockReturnValueOnce(child);

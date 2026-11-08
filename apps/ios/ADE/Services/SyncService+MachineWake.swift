@@ -63,12 +63,12 @@ extension SyncService {
   @discardableResult
   func dismissSheetsCompetingWithMachineWake() -> Bool {
     let hadSheet = settingsPresented || attentionDrawerPresented || linearPanePresented
-      || cursorCloudPanePresented || agent37PanePresented
+      || cursorCloudPanePresented || cloudPanePresented
     settingsPresented = false
     attentionDrawerPresented = false
     linearPanePresented = false
     cursorCloudPanePresented = false
-    agent37PanePresented = false
+    cloudPanePresented = false
     return hadSheet
   }
 

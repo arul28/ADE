@@ -57,6 +57,15 @@ extension LanesTabView {
         }
       }
       laneListSections
+      if quickFilter == .archived {
+        LaneRecentlyDeletedSections(
+          syncService: syncService,
+          machines: recentlyDeletedMachines,
+          canRunLiveActions: canRunLiveActions,
+          reloadToken: "\(refreshFeedbackToken)|\(inputs.laneDeletionsKeptIds.joined(separator: ","))",
+          onRestored: { await reload(refreshRemote: true) }
+        )
+      }
     }
     .adeFlatList()
     .listSectionSpacing(.compact)

@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import {
   selectActiveProjectRoot,
   selectActiveProjectStateKey,
+  selectLanesLoadError,
   useAppStore,
   useAppStoreApi,
   type LaneInspectorTab,
@@ -32,6 +33,7 @@ import {
   type LaneActionError,
   type LaneDeleteSelection,
   type ManageLaneTab,
+  lanesToDelete,
 } from "./ManageLaneDialog";
 import { LaneDashboard } from "./overview/LaneDashboard";
 import { useDialogBus } from "../../lib/useDialogBus";
@@ -212,6 +214,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const focusSession = useAppStore((s) => s.focusSession);
   const lanes = useAppStore((s) => s.lanes);
   const lanesLoading = useAppStore((s) => s.lanesLoading);
+  const lanesLoadError = useAppStore(selectLanesLoadError);
 
   const urlLaneDeeplinks = useMemo(() => {
     const p = new URLSearchParams(location.search);
@@ -1312,7 +1315,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   const deleteManagedLanes = async () => {
     const targets = managedLanes.length > 0 ? managedLanes : managedLane ? [managedLane] : [];
-    const actionable = targets.filter((l) => l.laneType !== "primary");
+    // The brain still refuses a lane that turned dirty since the dialog.
+    const actionable = lanesToDelete(targets, deleteForce);
 
     // Close the dialog and reset the transient delete UI before any async work.
     // The delete itself runs in the background: each lane's row shows the live
@@ -2083,6 +2087,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       canCreateLane={canCreateLane}
       onCreateLane={() => openCreateDialog()}
       loading={lanesLoading}
+      loadError={lanesLoadError}
       totalLaneCount={visibleLanes.length}
       laneRuntimeById={laneRuntimeById}
       rebaseLineByLaneId={rebaseLineByLaneId}
@@ -2247,7 +2252,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
               {lanesLoading && visibleLanes.length === 0
                 ? "Loading lanes…"
                 : visibleLanes.length === 0
-                  ? "No lanes yet."
+                  ? (lanesLoadError ? `Couldn't load lanes. ${lanesLoadError}` : "No lanes yet.")
                   : "No lane matches the filter."}
             </div>
             {!lanesLoading || visibleLanes.length > 0 ? (

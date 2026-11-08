@@ -570,6 +570,8 @@ ade lanes archive-and-reclaim lane-id --confirm RECLAIM    # preserve lane histo
 ade lanes unarchive lane-id                                # restore the lane; recreate its managed worktree when needed. A recreated worktree re-runs the whole env init before returning; a plain unarchive returns immediately and restarts Docker in the background, so don't assume services are up when the command exits
 ade lanes action initEnv --arg laneId=lane-id              # re-run the full env init (env files, copies, deps, mounts, setup script, docker)
 ade lanes delete lane-id --force --delete-branch
+ade lanes deleted list --text                              # lanes whose unsaved work a delete kept, for 30 days
+ade lanes deleted restore <id>                             # bring one back with its uncommitted files; never pushes
 ade chat update [<session>] --title "Fix login" --tag review-ready   # also --model, --effort, --permissions, --fast/--ultrafast; defaults to $ADE_CHAT_SESSION_ID
 ade chat attach-linear-issue <session> --issue-id ENG-431
 ade chat create --from-linear-issue ENG-431
@@ -886,10 +888,10 @@ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
 ade secrets set TOKEN --value-file token.txt
 ade secrets delete STRIPE_API_KEY
 ade secrets request WEBHOOK_SECRET --reason "Signs deliveries" --generate  # private secret card in the chat; prints the outcome, never the value
-ade integrations status --text                    # GitHub, Linear, Jira, Agent 37: connected here or not, and as whom; never a credential
+ade integrations status --text                    # GitHub, Linear, Jira: connected here or not, and as whom; never a credential
 ade integrations connect linear --reason "…"      # connect card in the chat (browser sign-in or key); saved for the project on your machines, prints the outcome
-ade agent37 ready --json                          # Agent 37 ready machines per project: ready / preparing / in use / failed
-ade chat create --machine agent37:ready --prompt "…"  # start on this project's ready Agent 37 machine: wakes it, waits until it is online, then sends
+ade cloud ready --json                          # ADE Cloud ready machines per project: ready / preparing / in use / failed
+ade chat create --machine cloud:ready --prompt "…"  # start on this project's ready ADE Cloud machine: wakes it, waits until it is online, then sends
 ade usage snapshot --text                          # live quota headroom per window, the account it belongs to, and the provider limits link
 ade usage stats --preset 7d --text                 # tokens, cost, and activity for a range
 ade usage stats --scope account --text             # merged across every machine on the account

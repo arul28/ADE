@@ -22,7 +22,7 @@ import { createSuspendGapDetector } from "./suspendGapDetector";
 
 /**
  * How often the wake check runs, from `ADE_SUSPEND_GAP_TICK_MS`. Cloud machines
- * that are slept and woken on demand (Agent 37) set 1000 so a wake is noticed in
+ * that are slept and woken on demand (the provider) set 1000 so a wake is noticed in
  * a second, not fifteen; a laptop keeps the default and its idle wake-ups.
  */
 function suspendGapTickMsFromEnv(env: NodeJS.ProcessEnv = process.env): number | null {

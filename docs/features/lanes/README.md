@@ -140,6 +140,9 @@ either fallback targets or thin desktop-side helpers.
 
 Runtime services (`apps/ade-cli/src/services/lanes/` and friends):
 
+- `apps/desktop/src/main/services/lanes/deletedLaneSnapshots.ts` keeps what a
+  lane delete or a discard would lose as git refs for 30 days, and restores it;
+  see Saved work in [worktree-isolation.md](./worktree-isolation.md).
 - `apps/ade-cli/src/services/projects/projectRuntime.ts` exposes the
   `lane` action domain (CRUD, runtime isolation, branch switching,
   templates, diagnostics) over JSON-RPC; remote runtimes are reached

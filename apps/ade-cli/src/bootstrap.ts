@@ -257,8 +257,8 @@ import {
 import { createAppControlRecorderBridgeClient } from "./services/builtInBrowser/appControlRecorderBridgeClient";
 import { createDemoEngineBridgeClient } from "./services/builtInBrowser/demoEngineBridgeClient";
 import { createScenePreviewBridgeClient, type ScenePreviewer } from "./services/builtInBrowser/scenePreviewBridgeClient";
-import { createAgent37DesktopBridgeClient } from "./services/builtInBrowser/agent37DesktopBridgeClient";
-import type { Agent37DesktopBridge } from "../../desktop/src/main/services/agent37/agent37AgentActions";
+import { createCloudDesktopBridgeClient } from "./services/builtInBrowser/cloudDesktopBridgeClient";
+import type { CloudDesktopBridge } from "../../desktop/src/main/services/adeCloud/cloudAgentActions";
 import { createDemoEngineSet } from "../../desktop/src/main/services/demoVideo/demoEngines";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
 import {
@@ -451,6 +451,7 @@ export type AdeRuntimeSyncOptions = {
   localDeviceIdPath?: string;
   phonePairingStateDir?: string;
   projectCatalogProvider?: Parameters<typeof createSyncService>[0]["projectCatalogProvider"];
+  onRemoteFileWrite?: Parameters<typeof createSyncService>[0]["onRemoteFileWrite"];
   rosterProvider?: Parameters<typeof createSyncService>[0]["rosterProvider"];
   activityRosterProvider?: PushPublisherDeps["activityRosterProvider"];
   foreignChatProvider?: Parameters<typeof createSyncService>[0]["foreignChatProvider"];
@@ -542,8 +543,8 @@ export type AdeRuntime = {
    * desktop bridge. Null while no desktop has attached to this brain.
    */
   getScenePreviewer?: () => ScenePreviewer | null;
-  /** The attached desktop's Agent 37 machine making (create, copy, move), or null with no desktop. */
-  getAgent37Desktop?: () => Agent37DesktopBridge | null;
+  /** The attached desktop's cloud machine making (create, copy, move), or null with no desktop. */
+  getCloudDesktop?: () => CloudDesktopBridge | null;
   macDesktopService?: MacDesktopService | null;
   /**
    * One Android emulator per lane (`android_emulator` domain, `ade android`).
@@ -2181,9 +2182,9 @@ export async function createAdeRuntime(args: {
       demoEngine: ReturnType<typeof createDemoEngineBridgeClient> | null;
       /** The desktop's scene previewer, over the same bridge. */
       scenePreview: ScenePreviewer | null;
-      /** The desktop's Agent 37 machine making, over the same bridge. */
-      agent37: (Agent37DesktopBridge & { dispose(): void }) | null;
-    } = { current: null, demoEngine: null, scenePreview: null, agent37: null };
+      /** The desktop's cloud machine making, over the same bridge. */
+      cloud: (CloudDesktopBridge & { dispose(): void }) | null;
+    } = { current: null, demoEngine: null, scenePreview: null, cloud: null };
     const appControlService = chatOnlyRuntime
       ? null
       : createAppControlService({
@@ -2249,9 +2250,9 @@ export async function createAdeRuntime(args: {
       const scenePreview = desktopBridgeHolder.scenePreview;
       desktopBridgeHolder.scenePreview = null;
       scenePreview?.dispose();
-      const agent37 = desktopBridgeHolder.agent37;
-      desktopBridgeHolder.agent37 = null;
-      agent37?.dispose();
+      const cloud = desktopBridgeHolder.cloud;
+      desktopBridgeHolder.cloud = null;
+      cloud?.dispose();
     });
     teardown.push(() => appControlService?.dispose());
     if (appControlService) {
@@ -2525,7 +2526,7 @@ export async function createAdeRuntime(args: {
       desktopBridgeHolder.scenePreview = createScenePreviewBridgeClient({
         socketPath: builtInBrowserBridgeSocketPath,
       });
-      desktopBridgeHolder.agent37 = createAgent37DesktopBridgeClient({
+      desktopBridgeHolder.cloud = createCloudDesktopBridgeClient({
         socketPath: builtInBrowserBridgeSocketPath,
       });
       void refreshDesktopBridgeProbe();
@@ -3947,7 +3948,7 @@ export async function createAdeRuntime(args: {
         chatLaunchService,
         cursorCloudFleetService,
         // Read when a phone asks: the runtime is built a little later.
-        agent37Actions: () => (runtimeForCtoActions ? (getAdeActionDomainServices(runtimeForCtoActions).agent37 as Record<string, unknown> | null | undefined) ?? null : null),
+        cloudActions: () => (runtimeForCtoActions ? (getAdeActionDomainServices(runtimeForCtoActions).cloud as Record<string, unknown> | null | undefined) ?? null : null),
         cloudAgentsService,
         pushPublisherService,
         ctoStateService,
@@ -3995,6 +3996,7 @@ export async function createAdeRuntime(args: {
         hostDiscoveryEnabled: syncRuntimeOptions.hostDiscoveryEnabled ?? true,
         forceHostRole: syncRuntimeOptions.forceHostRole ?? false,
         projectCatalogProvider: syncRuntimeOptions.projectCatalogProvider,
+        onRemoteFileWrite: syncRuntimeOptions.onRemoteFileWrite,
         rosterProvider: syncRuntimeOptions.rosterProvider,
         foreignChatProvider: syncRuntimeOptions.foreignChatProvider,
         personalChatScope: syncRuntimeOptions.personalChatScope,
@@ -4159,7 +4161,7 @@ export async function createAdeRuntime(args: {
       iosSimulatorService,
       appControlService,
       getScenePreviewer: () => (desktopBridgeAttached() ? desktopBridgeHolder.scenePreview : null),
-      getAgent37Desktop: () => (desktopBridgeAttached() ? desktopBridgeHolder.agent37 : null),
+      getCloudDesktop: () => (desktopBridgeAttached() ? desktopBridgeHolder.cloud : null),
       macDesktopService,
       androidEmulatorService,
       builtInBrowserService: builtInBrowserBridge,

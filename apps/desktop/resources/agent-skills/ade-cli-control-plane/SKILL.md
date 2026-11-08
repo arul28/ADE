@@ -52,9 +52,8 @@ something) are the **ade-webhooks** skill. Full detail:
 
 GitHub, Linear and Jira are ADE integrations: ADE holds the credential, and
 you use them through `ade prs`, `ade github`, `ade linear` and `ade jira`.
-Agent 37 (cloud Linux machines) is one too: once connected, the person makes
-machines from Add a computer in ADE; there are no `ade` verbs for it yet.
-Never ask for a key in chat. Check, then ask with the connect card:
+ADE Cloud machines aren't connected with `ade integrations`: use `ade cloud`
+(the `ade-cloud` skill). Never ask for a key in chat. Check, then ask with the connect card:
 
 ```
 ade integrations status --text
@@ -428,7 +427,7 @@ agent, under that machine's own policy.
 ade machines list --projects --text              # who is online, what projects each has
 ade chat list --all-machines --text              # every machine in one table
 ade chat create --machine "Mac mini" --lane <lane there> \
-  --provider claude --model anthropic/claude-opus-5 --prompt "…"   # your subagent there
+  --provider claude --model anthropic/claude-opus-5 --prompt "…"   # your subagent there (no --lane: the primary lane there)
 ade chat read <id> --machine "Mac mini" --text
 ade shell start --machine "Windows PC" --wait -- npm test   # one command there, in this chat's work copy
 ade files push --machine "Windows PC" ./fixture.bin test/   # one file into that work copy (pull copies back)

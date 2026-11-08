@@ -439,7 +439,7 @@ export function SettingsPage({
         land(card);
         return;
       }
-      // A card shown only after its data loads (the Agent 37 sign-ins) is not
+      // A card shown only after its data loads (the provider sign-ins) is not
       // there yet: wait a few seconds for it to appear.
       const root = contentRef.current;
       if (!root) return;
@@ -488,40 +488,59 @@ export function SettingsPage({
   useEffect(() => {
     const root = contentRef.current;
     if (!root) return;
-    const cards = root.querySelectorAll<HTMLElement>("[data-settings-anchor]");
-    const groups = root.querySelectorAll<HTMLElement>("[data-settings-group]");
-    if (!trimmedQuery) {
-      cards.forEach((card) => { card.style.display = ""; });
-      groups.forEach((group) => { group.style.display = ""; });
-      return;
-    }
-    const visible = new Set((matchesThisTab ?? []).map((entry) => entry.anchor));
-    cards.forEach((card) => {
-      card.style.display = visible.has(card.dataset.settingsAnchor ?? "") ? "" : "none";
+    const applyFilter = () => {
+      const cards = root.querySelectorAll<HTMLElement>("[data-settings-anchor]");
+      const groups = root.querySelectorAll<HTMLElement>("[data-settings-group]");
+      if (!trimmedQuery) {
+        cards.forEach((card) => { card.style.display = ""; });
+        groups.forEach((group) => { group.style.display = ""; });
+        return;
+      }
+      const visible = new Set((matchesThisTab ?? []).map((entry) => entry.anchor));
+      cards.forEach((card) => {
+        card.style.display = visible.has(card.dataset.settingsAnchor ?? "") ? "" : "none";
+      });
+      // Some settings are intentionally nested inside a larger card (for
+      // example, update preferences inside the ADE status card). Keep that
+      // parent mounted when a child is the search result; otherwise the child
+      // would be marked visible inside an ancestor that remains display:none.
+      cards.forEach((card) => {
+        if (card.style.display !== "none") return;
+        const hasVisibleChild = [...card.querySelectorAll<HTMLElement>("[data-settings-anchor]")]
+          .some((child) => child !== card && visible.has(child.dataset.settingsAnchor ?? ""));
+        if (hasVisibleChild) card.style.display = "";
+      });
+      // A group whose cards all filtered out would otherwise leave a heading
+      // hanging over nothing.
+      // A `ModernSection` is both a group and a card: when it matched itself,
+      // it stays.
+      groups.forEach((group) => {
+        const matchedItself = group.hasAttribute("data-settings-anchor") && group.style.display !== "none";
+        const hasVisibleCard = matchedItself || [...group.querySelectorAll<HTMLElement>("[data-settings-anchor]")]
+          .some((card) => card.style.display !== "none");
+        group.style.display = hasVisibleCard ? "" : "none";
+      });
+    };
+    applyFilter();
+    if (!trimmedQuery) return;
+    // A page can mount cards without a tab or URL change: Storage's
+    // Space / Archive / Rules views, or a card that finishes loading. While a
+    // search is on, filter those too, at most once a frame.
+    let frame = 0;
+    const observer = new MutationObserver(() => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        applyFilter();
+      });
     });
-    // Some settings are intentionally nested inside a larger card (for
-    // example, update preferences inside the ADE status card). Keep that
-    // parent mounted when a child is the search result; otherwise the child
-    // would be marked visible inside an ancestor that remains display:none.
-    cards.forEach((card) => {
-      if (card.style.display !== "none") return;
-      const hasVisibleChild = [...card.querySelectorAll<HTMLElement>("[data-settings-anchor]")]
-        .some((child) => child !== card && visible.has(child.dataset.settingsAnchor ?? ""));
-      if (hasVisibleChild) card.style.display = "";
-    });
-    // A group whose cards all filtered out would otherwise leave a heading
-    // hanging over nothing.
-    // A `ModernSection` is both a group and a card: when it matched itself,
-    // it stays.
-    groups.forEach((group) => {
-      const matchedItself = group.hasAttribute("data-settings-anchor") && group.style.display !== "none";
-      const hasVisibleCard = matchedItself || [...group.querySelectorAll<HTMLElement>("[data-settings-anchor]")]
-        .some((card) => card.style.display !== "none");
-      group.style.display = hasVisibleCard ? "" : "none";
-    });
+    observer.observe(root, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
     // `location.search` and `location.hash`: a sub-page (one provider or
-    // integration, opened by its param or a deeplink) mounts new cards without
-    // changing the tab, and they need the filter too.
+    // integration, opened by its param or a deeplink) is a new set of matches.
   }, [trimmedQuery, matchesThisTab, section, location.search, location.hash]);
 
   const projectDisplayName = useAppStore((state) => state.project?.displayName);

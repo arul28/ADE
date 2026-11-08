@@ -32,7 +32,7 @@ import { BackgroundServiceSection } from "./BackgroundServiceSection";
 import { CaptureGestureSection } from "./CaptureGestureSection";
 import { LinearIntegrationSection } from "./LinearIntegrationSection";
 import { JiraSection } from "./JiraSection";
-import { Agent37Section } from "./Agent37Section";
+import { CloudSection } from "./CloudSection";
 import { NotificationsSection } from "./NotificationsSection";
 import { McpServersSection } from "./mcp/McpServersSection";
 import { BrowserLinksSection } from "./BrowserLinksSection";
@@ -72,7 +72,7 @@ import {
 } from "./settingsManifest";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { decodeSettingsHash } from "./settingsHash";
-import { Agent37Mark, AGENT37_NAME } from "../remoteTargets/agent37Brand";
+import { CloudMark, ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
 
 /**
  * What each Settings tab renders: its sections as data (`TAB_SECTIONS`), the
@@ -220,7 +220,7 @@ function IntegrationsTabContent({ machine, standalone }: { machine: SettingsMach
   const { pin } = useSettingsMachineScope();
   const requested = openIntegrationFromUrl(searchParams, location.hash);
   const sections = (TAB_SECTIONS.integrations ?? []).filter((section) => standalone
-    // No project: only the account's pages (Agent 37, MCP servers) can load.
+    // No project: only the account's pages (the provider, MCP servers) can load.
     ? standaloneSection(section)
     : !machine || !section.machine || machineSectionAvailable(section.machine, machine));
   const section = requested ? sections.find((entry) => entry.group === requested) : undefined;
@@ -367,10 +367,10 @@ const TAB_GROUPS = {
     icon: <JiraMark size={15} />,
     tone: "blue",
   },
-  agent37: {
-    title: AGENT37_NAME,
+  cloud: {
+    title: ADE_CLOUD_NAME,
     description: "Cloud Linux machines, made and signed in from ADE.",
-    icon: <Agent37Mark size={15} strokeWidth={26} />,
+    icon: <CloudMark size={15} bold />,
     tone: "slate",
   },
   mcp: {
@@ -540,7 +540,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["integrations.linear", "integrations.linear-top-bar"], render: () => <LinearIntegrationSection />, machine: "routed", title: "Linear", group: "linear" },
     { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", title: "Jira", group: "jira" },
     // Account-wide: one workspace key in the account vault, so no machine kind and no pin.
-    { entryIds: ["integrations.agent37", "integrations.agent37-sign-ins", "integrations.agent37-ready", "integrations.agent37-spending", "integrations.agent37-agent-limits"], render: () => <Agent37Section />, title: AGENT37_NAME, group: "agent37" },
+    { entryIds: ["integrations.ade-cloud", "integrations.ade-cloud-sign-ins", "integrations.ade-cloud-ready", "integrations.ade-cloud-spending", "integrations.ade-cloud-agent-limits"], render: () => <CloudSection />, title: ADE_CLOUD_NAME, group: "cloud" },
     { entryIds: ["mcp.servers", "mcp.found"], render: () => <McpServersSection />, title: "MCP servers", group: "mcp" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],

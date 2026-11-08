@@ -32,6 +32,7 @@ import {
   dominantPairedRuntimeFailure,
   isRelayHostReplacedError,
   orderPairedCandidates,
+  pairedRuntimeFailureCode,
   pairedRuntimeFailureMessage,
   pairedRouteConnectTimeoutMs,
   pairedRuntimeRouteHost,
@@ -236,6 +237,7 @@ export async function bootstrapPairedRuntime(args: {
         durationMs: Math.max(0, Date.now() - attemptStartedAt),
         outcome: "failed",
         failure,
+        errorCode: pairedRuntimeFailureCode(error),
       });
       continue;
     }
@@ -281,6 +283,7 @@ export async function bootstrapPairedRuntime(args: {
           durationMs: Math.max(0, Date.now() - attemptStartedAt),
           outcome: "failed",
           failure,
+          errorCode: pairedRuntimeFailureCode(error),
         });
         continue;
       }
@@ -317,6 +320,7 @@ export async function bootstrapPairedRuntime(args: {
           durationMs: Math.max(0, Date.now() - attemptStartedAt),
           outcome: "failed",
           failure,
+          errorCode: pairedRuntimeFailureCode(error),
         });
         continue;
       }

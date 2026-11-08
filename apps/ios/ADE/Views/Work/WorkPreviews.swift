@@ -1503,6 +1503,9 @@ enum ADEPreviewScreen: String, CaseIterable {
   case chatInfo = "chat-info"
   /// The Lanes list across machines. See `LanesAcrossMachinesPreviewHost`.
   case lanesMachines = "lanes-machines"
+  /// The Archived filter's Recently deleted rows and the kept-work notice.
+  /// See `LanesRecentlyDeletedPreviewHost`.
+  case lanesRecentlyDeleted = "lanes-recently-deleted"
   /// The connected-machines card and MACHINES rows. See
   /// `SettingsMachinesPreviewHost`.
   case settingsMachines = "settings-machines"
@@ -1640,6 +1643,8 @@ struct ADEPreviewScreenHost: View {
       )
     case .lanesMachines:
       LanesAcrossMachinesPreviewHost()
+    case .lanesRecentlyDeleted:
+      LanesRecentlyDeletedPreviewHost()
     case .settingsMachines:
       SettingsMachinesPreviewHost()
     case .settingsMachinePage:

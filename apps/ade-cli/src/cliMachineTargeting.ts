@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { pullFileFromWorkCopy, pushFileToWorkCopy, withRemoteAndroidArgs, withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
-import { AGENT37_READY_WAKE_WAIT_MS, isAgent37ReadyMachineSelector } from "../../desktop/src/shared/agent37Ready";
+import { CLOUD_READY_WAKE_WAIT_MS, isCloudReadyMachineSelector } from "../../desktop/src/shared/cloudReady";
 import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
@@ -357,6 +357,20 @@ export async function createMachineRemoteConnection(
   };
   const callRemote = async (method: string, params?: JsonObject): Promise<unknown> =>
     (await callRemoteAnswer(method, params)).result;
+
+  /** The primary lane of the project there (cloned first under --clone, like any call). */
+  const remotePrimaryLaneId = async (): Promise<string> => {
+    const listed = unwrapToolResult(await callRemote("ade/actions/call", { name: "list_lanes", arguments: {} }));
+    const lanes = isRecord(listed) && Array.isArray(listed.lanes) ? listed.lanes : listed;
+    const primary = Array.isArray(lanes) ? lanes.find((lane) => isRecord(lane) && lane.laneType === "primary") : null;
+    const laneId = isRecord(primary) ? asString(primary.id) : null;
+    if (!laneId) {
+      throw new CliUsageError(
+        `The project on ${machine} has no primary lane to start the chat in. Pass --lane <lane there> (see \`ade lanes list --machine ${JSON.stringify(machine)}\`).`,
+      );
+    }
+    return laneId;
+  };
 
   let localProjectId: string | null = null;
   const callLocalProject = async (method: string, params: JsonObject): Promise<unknown> => {
@@ -786,6 +800,11 @@ export async function createMachineRemoteConnection(
         // review reads proof from it: this one.
         return await callLocalProject(method, params);
       }
+      if (method === "ade/actions/call" && params && chatCreateCallWithoutLane(params)) {
+        // Lane ids are per machine, so a chat create that names none starts
+        // in the primary lane there: the project's main checkout.
+        return await callRemote(method, withChatCreateLane(params, await remotePrimaryLaneId()));
+      }
       return await callRemote(method, params);
     },
     close: () => socketClient.close(),
@@ -1076,7 +1095,7 @@ async function executePlanOnMachines(
 }
 
 const READY_MACHINE_POLL_MS = 1_000;
-/** One reachability check on the woken machine; the overall wait is AGENT37_READY_WAKE_WAIT_MS. */
+/** One reachability check on the woken machine; the overall wait is CLOUD_READY_WAKE_WAIT_MS. */
 const READY_MACHINE_PROBE_TIMEOUT_MS = 15_000;
 
 /**
@@ -1087,25 +1106,34 @@ const READY_MACHINE_PROBE_TIMEOUT_MS = 15_000;
 function withDefaultChatLane<T extends CliPlan & { kind: "execute" }>(plan: T, laneId: string): T {
   return {
     ...plan,
-    steps: plan.steps.map((step) => {
-      const params = step.params;
-      if (!isRecord(params) || params.name !== "run_ade_action" || !isRecord(params.arguments)) return step;
-      const call = params.arguments;
-      if (call.domain !== "chat" || call.action !== "createSession" || !isRecord(call.args) || asString(call.args.laneId)) return step;
-      return { ...step, params: { ...params, arguments: { ...call, args: { ...call.args, laneId } } } };
-    }),
+    steps: plan.steps.map((step) => (isRecord(step.params) && chatCreateCallWithoutLane(step.params)
+      ? { ...step, params: withChatCreateLane(step.params, laneId) }
+      : step)),
   };
 }
 
-/** An `agent37` action on this machine's brain, in the project the CLI runs in; its `result`. */
-async function runAgent37Action(options: GlobalOptions, projectRoot: string, action: string, args: JsonObject): Promise<unknown> {
+/** The `chat.createSession` call in an `ade/actions/call` request, when it names no lane. */
+function chatCreateCallWithoutLane(params: JsonObject): (JsonObject & { args: JsonObject }) | null {
+  if (params.name !== "run_ade_action" || !isRecord(params.arguments)) return null;
+  const call = params.arguments;
+  if (call.domain !== "chat" || call.action !== "createSession" || !isRecord(call.args) || asString(call.args.laneId)) return null;
+  return call as JsonObject & { args: JsonObject };
+}
+
+function withChatCreateLane(params: JsonObject, laneId: string): JsonObject {
+  const call = chatCreateCallWithoutLane(params);
+  return call ? { ...params, arguments: { ...call, args: { ...call.args, laneId } } } : params;
+}
+
+/** An `cloud` action on this machine's brain, in the project the CLI runs in; its `result`. */
+async function runCloudAction(options: GlobalOptions, projectRoot: string, action: string, args: JsonObject): Promise<unknown> {
   return await withMachineBrain(options, async (client) => {
     const registered = await client.request("projects.add", automaticProjectRegistrationParams(projectRoot));
     const projectId = isRecord(registered) ? asString(registered.projectId) : null;
     if (!projectId) throw new Error("This machine's brain did not register the project.");
     const answer = unwrapToolResult(await client.request("ade/actions/call", withProjectId({
       name: "run_ade_action",
-      arguments: { domain: "agent37", action, args },
+      arguments: { domain: "cloud", action, args },
     }, projectId)));
     return isRecord(answer) && isRecord(answer.result) ? answer.result : answer;
   });
@@ -1121,7 +1149,7 @@ async function waitForReadyMachine(options: GlobalOptions, machineKey: string, n
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   let lastError: unknown = null;
   const timedOut = () => new CliExecutionError(
-    `${name} woke on Agent 37 but its ADE didn't answer within ${AGENT37_READY_WAKE_WAIT_MS / 1000} s`
+    `${name} woke on ADE Cloud but its ADE didn't answer within ${CLOUD_READY_WAKE_WAIT_MS / 1000} s`
       + `${lastError ? ` (${failureCause(lastError)})` : ""}. Nothing was sent; ADE put it back to sleep for the next chat.`,
     {},
   );
@@ -1155,30 +1183,30 @@ async function waitForReadyMachine(options: GlobalOptions, machineKey: string, n
 }
 
 /**
- * `ade chat create --machine agent37:ready`: take this project's ready Agent 37
+ * `ade chat create --machine cloud:ready`: take this project's ready the provider
  * machine (prepared and asleep), wake it, wait until it takes requests, then
  * start the chat there like on any machine. A machine ADE still shows offline
  * refuses work at once ("Nothing was sent"), so all the waiting comes before
  * the send. If nothing was sent, the claim is given back (ready again,
  * asleep); once the chat create went out, the machine is the caller's.
  */
-async function executePlanOnAgent37ReadyMachine(
+async function executePlanOnCloudReadyMachine(
   plan: CliPlan & { kind: "execute" },
   options: GlobalOptions,
 ): Promise<unknown> {
   if (!plan.machineFanOut) {
-    throw new CliUsageError("--machine agent37:ready starts a new chat: use it with `ade chat create`.");
+    throw new CliUsageError("--machine cloud:ready starts a new chat: use it with `ade chat create`.");
   }
   const roots = resolveRoots(options);
   const originUrl = getGitRemote(roots.projectRoot);
   if (!originUrl) {
-    throw new CliUsageError("--machine agent37:ready needs a project with a git origin: the ready machine is the one kept for that repository.");
+    throw new CliUsageError("--machine cloud:ready needs a project with a git origin: the ready machine is the one kept for that repository.");
   }
   const say = (line: string) => {
     if (!options.json) process.stderr.write(`ade: ${line}\n`);
   };
   const startedAt = Date.now();
-  const claim = await runAgent37Action(options, roots.projectRoot, "claim_ready", { originUrl });
+  const claim = await runCloudAction(options, roots.projectRoot, "claim_ready", { originUrl });
   const field = (key: string) => (isRecord(claim) ? asString(claim[key]) : null);
   const instanceId = field("instanceId");
   const machineKey = field("machineKey");
@@ -1188,9 +1216,9 @@ async function executePlanOnAgent37ReadyMachine(
   const wakeMs = isRecord(claim) && typeof claim.wakeMs === "number" ? claim.wakeMs : null;
   let sending = false;
   try {
-    if (!machineKey) throw new CliExecutionError("Agent 37 answered the claim without a machine. Try again.", {});
-    say(`Woke ${name} on Agent 37 (${Math.round(wakeMs ?? 0)} ms). Waiting for its ADE…`);
-    await waitForReadyMachine(options, machineKey, name, startedAt + AGENT37_READY_WAKE_WAIT_MS);
+    if (!machineKey) throw new CliExecutionError("ADE Cloud answered the claim without a machine. Try again.", {});
+    say(`Woke ${name} on ADE Cloud (${Math.round(wakeMs ?? 0)} ms). Waiting for its ADE…`);
+    await waitForReadyMachine(options, machineKey, name, startedAt + CLOUD_READY_WAKE_WAIT_MS);
     const onlineMs = Date.now() - startedAt;
     say(`${name} is online (${(onlineMs / 1000).toFixed(1)} s). Starting the chat…`);
     // From here a request may reach the machine: never repeated, never given back.
@@ -1201,7 +1229,7 @@ async function executePlanOnAgent37ReadyMachine(
     return isRecord(result) ? { ...result, readyMachine } : { result, readyMachine };
   } finally {
     if (!sending && instanceId && claimToken) {
-      await runAgent37Action(options, roots.projectRoot, "release_ready", { instanceId, claimToken }).catch((error: unknown) => {
+      await runCloudAction(options, roots.projectRoot, "release_ready", { instanceId, claimToken }).catch((error: unknown) => {
         say(`couldn't put ${name} back to sleep (${error instanceof Error ? error.message : String(error)}). Sleep it from its row under Your computers.`);
       });
     }
@@ -1218,7 +1246,7 @@ export async function executePlanAcrossMachines(
   options: GlobalOptions,
 ): Promise<{ value: unknown } | null> {
   if (options.allMachines) return { value: await executePlanOnAllMachines(plan, options) };
-  if (isAgent37ReadyMachineSelector(options.machine)) return { value: await executePlanOnAgent37ReadyMachine(plan, options) };
+  if (isCloudReadyMachineSelector(options.machine)) return { value: await executePlanOnCloudReadyMachine(plan, options) };
   const machineList = [...new Set((options.machine ?? "").split(",").map((entry) => entry.trim()).filter(Boolean))];
   if (machineList.length > 1) return { value: await executePlanOnMachines(plan, options, machineList) };
   if (options.machine && plan.steps.some((step) => step.injectProjectRootIntoArgs)) {

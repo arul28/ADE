@@ -46,6 +46,9 @@ const LOG_ONLY_EVENTS = new Set<string>([
 const RELEASE_HEALTH_EVENTS = new Set<string>([
   "app.started",
   "brain.started",
+  // When this machine could take connections again: the other half of a
+  // `remote.connect_failed` from the machine that was dialing it.
+  "sync.host_started",
   "autoUpdate.update_downloaded",
   "autoUpdate.track_switch_started",
   "autoUpdate.quit_and_install",
@@ -100,15 +103,21 @@ function signalLimiter(event: string): ReturnType<typeof createEventLimiter> | n
 }
 
 /**
- * A warn-level signal on the tight budget above. `key` narrows it within the
- * event (one notice surface, one provider) so one noisy source cannot use up
- * another's; it defaults to the event name.
+ * A signal on the tight budget above, warn-level unless it reports something
+ * going right. `key` narrows it within the event (one notice surface, one
+ * provider) so one noisy source cannot use up another's; it defaults to the
+ * event name.
  */
-export function forwardSignalToSentry(event: string, meta?: Record<string, unknown>, key: string = event): void {
+export function forwardSignalToSentry(
+  event: string,
+  meta?: Record<string, unknown>,
+  key: string = event,
+  level: "warn" | "info" = "warn",
+): void {
   if (!isSentryActive()) return;
   const attributes = scrubRecord(meta) ?? {};
-  if (signalLimiter(event)?.admit(key)) sendSentryLog("warn", event, attributes);
-  addSentryBreadcrumb("log", event, attributes, "warning");
+  if (signalLimiter(event)?.admit(key)) sendSentryLog(level, event, attributes);
+  addSentryBreadcrumb("log", event, attributes, level === "warn" ? "warning" : "info");
 }
 
 export function forwardLogToSentry(level: Level, event: string, meta?: Record<string, unknown>): void {

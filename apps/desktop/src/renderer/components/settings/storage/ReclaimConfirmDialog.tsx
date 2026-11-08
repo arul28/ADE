@@ -1,5 +1,6 @@
 import { X } from "@phosphor-icons/react";
 import type { LaneReclaimRisk } from "../../../../shared/types";
+import { DELETED_LANE_KEEP_DAYS } from "../../../../shared/laneCleanup";
 import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { Banner } from "../../ui/notice";
 import { StorageDialogFrame } from "./StorageCleanupDialog";
@@ -85,7 +86,7 @@ export function ReclaimConfirmDialog({
               onChange={(event) => onDiscardDirtyChange(event.target.checked)}
               style={{ marginTop: 2 }}
             />
-            <span>Discard uncommitted changes in this lane. These file changes cannot be restored.</span>
+            <span>Discard uncommitted changes in this lane. ADE keeps a copy for {DELETED_LANE_KEEP_DAYS} days in Recently deleted.</span>
           </label>
         ) : null}
         <label style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 14 }}>

@@ -170,6 +170,7 @@ import {
 } from "./syncChatWire";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
+import { reportHelloRejected, reportPeerAccepted } from "./syncHelloTelemetry";
 import type { AccountAuthService } from "../account/accountAuthService";
 import type { AccountSettingsStore } from "../account/accountSettingsStore";
 import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
@@ -205,6 +206,7 @@ import {
   assertFileRequestWorkspaceVisibleToPeer,
   createSyncArtifactReads,
   fileContentToBlob,
+  isSyncFileWriteRequest,
   runSyncFileServiceRequest,
   syncFileRequestWorkspaceId,
   visibleFileWorkspacesForPeer,
@@ -1200,8 +1202,8 @@ type SyncHostServiceArgs = {
   agentChatService?: ReturnType<typeof createAgentChatService>;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
-  /** The `agent37` action domain (the phone's Agent 37 page); null with no project runtime yet. */
-  agent37Actions?: () => Record<string, unknown> | null;
+  /** The `cloud` action domain (the phone's ADE Cloud page); null with no project runtime yet. */
+  cloudActions?: () => Record<string, unknown> | null;
   cloudAgentsService?: CloudAgentsService | null;
   personalChatScope?: Pick<
     PersonalChatScopeContract,
@@ -1324,6 +1326,8 @@ type SyncHostServiceArgs = {
   remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
   /** Booted project scopes only; routed file requests must never start a runtime. */
   projectScopes?: { getIfBooted(projectId: string): Promise<unknown> | null };
+  /** A connected client just changed a file here (a save from the web or the phone). */
+  onRemoteFileWrite?: () => void;
   productAnalyticsService?: ProductAnalyticsService | null;
   /**
    * When true, paired hellos from devices WITHOUT a registered DPoP key are
@@ -2485,7 +2489,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     agentChatService: args.agentChatService,
     chatLaunchService: args.chatLaunchService,
     cursorCloudFleetService: args.cursorCloudFleetService,
-    agent37Actions: args.agent37Actions,
+    cloudActions: args.cloudActions,
     cloudAgentsService: args.cloudAgentsService,
     personalChatScope: args.personalChatScope,
     aiIntegrationService: args.aiIntegrationService,
@@ -6979,6 +6983,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             artifacts: artifactReads,
           }) as typeof result;
       }
+      if (isSyncFileWriteRequest(payload)) args.onRemoteFileWrite?.();
 
       respond({
         ok: true,
@@ -7015,6 +7020,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     };
     try {
       const result = await executeFileRequest(projectId, payload, { isMobile: isMobilePeer(peer) });
+      if (isSyncFileWriteRequest(payload)) args.onRemoteFileWrite?.();
       respond({ ok: true, action: payload.action, result: result as SyncFileResponsePayload["result"] });
     } catch (error) {
       respond({
@@ -7281,6 +7287,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               ...(macDesktopStreamSink ? { macDesktopStream: macDesktopStreamSink } : {}),
               ...(appControlStreamSink ? { appControlStream: appControlStreamSink } : {}),
             });
+        if (payload.action === "files.writeTextAtomic") args.onRemoteFileWrite?.();
       } finally {
         stopTrackingCommand();
         const durationMs = Math.max(0, Date.now() - executionStartedAtMs);
@@ -8352,6 +8359,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // rejecting machine's identity matches the client's saved pairing may
         // the client safely drop its credentials.
         const rejectingHost = readBrainMetadata();
+        reportHelloRejected(
+          { logger: args.logger, hello, transportOrigin: peer.transportOrigin, hostDeviceId: () => rejectingHost.deviceId },
+          authFailureCode,
+        );
         send(peer.ws, "hello_error", {
           code: authFailureCode,
           message: authFailureMessage,
@@ -8519,8 +8530,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         pipelinedHelloAccepted: sealedAdoption ? 0 : (hello.pipelined?.length ?? 0),
         knownProjectCatalogDigest: hello.projectCatalogDigest ?? null,
       });
+      let helloOkSent: boolean;
       if (sealedAdoption) {
-        send(peer.ws, "hello_ok", sealAdoptHelloOk(sealedAdoption, helloOkPayload), envelope.requestId);
+        helloOkSent = send(peer.ws, "hello_ok", sealAdoptHelloOk(sealedAdoption, helloOkPayload), envelope.requestId);
         if (!sealedAdoption.aeadBoundToSignature) {
           args.logger.warn("sync_host.legacy_adoption_aead_unbound", {
             deviceId: hello.peer.deviceId,
@@ -8530,7 +8542,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           });
         }
       } else {
-        send(peer.ws, "hello_ok", helloOkPayload, envelope.requestId);
+        helloOkSent = send(peer.ws, "hello_ok", helloOkPayload, envelope.requestId);
+      }
+      if (helloOkSent) {
+        reportPeerAccepted({
+          logger: args.logger,
+          hello,
+          transportOrigin: peer.transportOrigin,
+          hostDeviceId: () => readBrainMetadata().deviceId,
+        });
       }
       // hello_ok itself uses the legacy encoder so the selected codec is never
       // required before the client has observed the negotiation result.

@@ -41,8 +41,8 @@ import {
   SCENE_PREVIEW_BRIDGE_PREFIX,
   isScenePreviewBridgeMethod,
 } from "../../../../../ade-cli/src/services/builtInBrowser/scenePreviewBridgeClient";
-import { AGENT37_BRIDGE_PREFIX, isAgent37BridgeMethod } from "../../../../../ade-cli/src/services/builtInBrowser/agent37DesktopBridgeClient";
-import { agent37DesktopActions } from "../agent37/agent37DesktopActions";
+import { CLOUD_BRIDGE_PREFIX, isCloudBridgeMethod } from "../../../../../ade-cli/src/services/builtInBrowser/cloudDesktopBridgeClient";
+import { cloudDesktopActions } from "../adeCloud/cloudDesktopActions";
 import {
   SCENE_PREVIEW_MAX_SOURCE_BYTES,
   type ScenePreviewRequest,
@@ -405,7 +405,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     { prefix: APP_CONTROL_RECORDER_BRIDGE_PREFIX, handle: (name, params, connection) => handleAppControlRecorder(name, params, connection) },
     { prefix: DEMO_ENGINE_BRIDGE_PREFIX, handle: (name, params, connection) => handleDemoEngine(name, params, connection) },
     { prefix: SCENE_PREVIEW_BRIDGE_PREFIX, handle: (name, params) => handleScenePreview(name, params) },
-    { prefix: AGENT37_BRIDGE_PREFIX, handle: (name, params) => handleAgent37(name, params) },
+    { prefix: CLOUD_BRIDGE_PREFIX, handle: (name, params) => handleCloud(name, params) },
   ];
 
   async function handleRequest(request: JsonRpcRequest, connection: BridgeConnectionState): Promise<unknown> {
@@ -580,13 +580,13 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
    * the screenshot comes back in the answer for the daemon to file.
    */
   /**
-   * Agent 37 machine making, for the runtime daemon: the brain decided and
+   * cloud machine making, for the runtime daemon: the brain decided and
    * asked for approval; this app signs the new machine in through its window.
    */
-  async function handleAgent37(name: string, params: Record<string, unknown>): Promise<unknown> {
-    const actions = agent37DesktopActions();
-    if (!actions || !isAgent37BridgeMethod(name)) {
-      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${AGENT37_BRIDGE_PREFIX}${name}' is not exposed by the desktop bridge.`);
+  async function handleCloud(name: string, params: Record<string, unknown>): Promise<unknown> {
+    const actions = cloudDesktopActions();
+    if (!actions || !isCloudBridgeMethod(name)) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${CLOUD_BRIDGE_PREFIX}${name}' is not exposed by the desktop bridge.`);
     }
     const input = isRecord(params.input) ? params.input : {};
     try {

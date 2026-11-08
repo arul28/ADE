@@ -376,7 +376,7 @@ export type MultiProjectRpcHandlerOptions = {
   > | null;
   /**
    * The account-level action domains, over the machine's account stores
-   * (`buildMachineAccountDomainServices`), for `agent37.call` and
+   * (`buildMachineAccountDomainServices`), for `cloud.call` and
    * `accountVault.call`. Without it, those methods answer unavailable.
    */
   machineAccountDomains?: MachineAccountDomains;
@@ -574,7 +574,7 @@ const RUNTIME_METHODS = new Set([
   "account.call",
   "remoteMcp.call",
   "keepAwake.call",
-  "agent37.call",
+  "cloud.call",
   "accountVault.call",
   "attention.call",
   "notify.send",
@@ -1363,9 +1363,17 @@ async function cloneRepositoryForRemoteAgent(
       "Only GitHub repositories can be set up automatically on another machine. Clone it there by hand.",
     );
   }
+  // A person's agent asked for this repository here, so it is listed with the
+  // machine's projects (the web and phone catalogs show only those), as a clone
+  // from the desktop is. An earlier agent clone was registered hidden.
+  const asked: ProjectRegistrationIntent = { catalogVisibility: "recent", registrationSource: "cli-explicit" };
   const existing = projectRegistry.list()
     .find((record) => gitRemoteIdentity(record.gitOriginUrl ?? null) === identity);
-  if (existing) return existing;
+  if (existing) {
+    return existing.catalogVisibility === "recent"
+      ? existing
+      : projectRegistry.setCatalogVisibilityByRootPath(existing.rootPath, asked.catalogVisibility, asked.registrationSource) ?? existing;
+  }
   const repoName = match[2]!;
   const parentDir = await defaultParentDir(projectRegistry);
   fs.mkdirSync(parentDir, { recursive: true });
@@ -1378,7 +1386,7 @@ async function cloneRepositoryForRemoteAgent(
     parentDir,
     name: repoName,
   });
-  return projectRegistry.add(result.rootPath);
+  return projectRegistry.add(result.rootPath, asked);
 }
 
 function readEventCategory(value: unknown): RuntimeEventCategory | null {
@@ -2937,7 +2945,7 @@ export function createMultiProjectRpcRequestHandler(
       return remoteMcpActionHandlers(getSharedRemoteMcpService(), surface)[action](isRecord(params.args) ? params.args : {});
     }
 
-    // The Agent 37 account and the account vault with no project open, for
+    // The provider account and the account vault with no project open, for
     // this computer's own connections (machineAccountActions.ts).
     if (isMachineAccountMethod(method)) {
       return await runMachineAccountAction(method, params, {

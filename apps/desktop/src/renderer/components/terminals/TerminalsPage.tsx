@@ -2173,6 +2173,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             reorderWorkLanes={work.reorderWorkLanes}
             handoffJobs={handoffLaunchJobs}
             crossMachineSyncActive={active}
+            firstLoadRetrying={work.firstLoadRetrying}
           />
       </div>
     ),
