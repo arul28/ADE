@@ -759,7 +759,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         message: (
           <>
             <span className="line-clamp-2 break-words font-medium text-fg/80" title={label}>{label}</span>
-            <span className="block whitespace-nowrap">You can bring it back from Recently deleted.</span>
+            <span className="block whitespace-nowrap">A chat with messages can come back from Recently deleted.</span>
           </>
         ),
         icon: <Trash size={16} weight="duotone" />,

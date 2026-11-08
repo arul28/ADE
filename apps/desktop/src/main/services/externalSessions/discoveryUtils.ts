@@ -370,7 +370,7 @@ function stripTerminalControlSequences(raw: string): string {
   return raw
     // The OSC body stops at ESC, so it ends at the first ST: a greedy body ran
     // to the last one and ate the text between OSC 8 hyperlinks.
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/gu, "")
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|(?=\x1b))/gu, "")
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, "")
     .replace(/\x1b[@-Z\\-_]/gu, "")
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/gu, "");

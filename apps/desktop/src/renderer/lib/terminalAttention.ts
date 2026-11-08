@@ -44,7 +44,7 @@ export type TerminalAttentionSummary = {
 
 // The OSC body stops at ESC, so it ends at the first ST: a greedy body ran
 // to the last one and ate the text between OSC 8 hyperlinks.
-const OSC_REGEX = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
+const OSC_REGEX = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\|(?=\u001b))/g;
 const APC_REGEX = /\u001b_[\s\S]*?(?:\u0007|\u001b\\)/g;
 const DCS_REGEX = /\u001bP[\s\S]*?(?:\u0007|\u001b\\)/g;
 const PM_REGEX = /\u001b\^[\s\S]*?(?:\u0007|\u001b\\)/g;

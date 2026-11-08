@@ -109,11 +109,23 @@ jobs:
             ' "${PACKAGE}")"
             latest="$(npm view "${PACKAGE}" version)"
           fi
+          # A version is plain text; anything else is a broken or hostile reply.
+          case "${latest}" in
+            *[!A-Za-z0-9._+-]*)
+              echo "${ITEM}: refusing the version \"${latest}\"." >&2
+              exit 1
+              ;;
+          esac
           echo "current=${current}" >> "$GITHUB_OUTPUT"
           echo "latest=${latest}" >> "$GITHUB_OUTPUT"
           pr="$(gh pr list --head "${BRANCH}" --base main --state open --json number,title --jq '.[0] // empty')"
           pr_number="$(jq -r '.number // empty' <<<"${pr:-null}")"
-          if [ -z "${latest}" ] || [ "${latest}" = "${current}" ]; then
+          # No version is a failed lookup, not "up to date": keep any open PR.
+          if [ -z "${latest}" ]; then
+            echo "${ITEM}: the newest-version lookup returned nothing." >&2
+            exit 1
+          fi
+          if [ "${latest}" = "${current}" ]; then
             echo "${ITEM}: main has ${current}, the newest version."
             # Nothing left to upgrade: an open PR or a leftover branch is stale.
             if [ -n "${pr_number}" ]; then
@@ -135,7 +147,10 @@ jobs:
 
       - name: Pin the new tool version
         if: steps.check.outputs.needed == 'true' && matrix.kind == 'tool'
-        run: cd apps/ade-cli && node scripts/pin-tool.mjs "${ITEM}" "${{ steps.check.outputs.latest }}"
+        # The version is vendor text: an env value, never pasted into the script.
+        env:
+          LATEST: ${{ steps.check.outputs.latest }}
+        run: cd apps/ade-cli && node scripts/pin-tool.mjs "${ITEM}" "${LATEST}"
 
       - name: Bump the SDK
         if: steps.check.outputs.needed == 'true' && matrix.kind == 'sdk'

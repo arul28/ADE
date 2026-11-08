@@ -6609,9 +6609,12 @@ function readGlobalValueFlag(
  * exist, or a project under the current directory picked by mistake.
  */
 function resolveCliFolderArg(value: string): string {
-  if (value === "~") return os.homedir();
+  // The home the shell means by `~`: Git Bash on Windows sets HOME, which can
+  // differ from the profile folder Node reads.
+  const home = process.platform === "win32" ? process.env.HOME?.trim() || os.homedir() : os.homedir();
+  if (value === "~") return home;
   const homeRelative = process.platform === "win32" ? /^~[\\/]/ : /^~\//;
-  if (homeRelative.test(value)) return path.join(os.homedir(), value.slice(2));
+  if (homeRelative.test(value)) return path.join(home, value.slice(2));
   return path.resolve(value);
 }
 

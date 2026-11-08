@@ -19,6 +19,7 @@ import { cn } from "../ui/cn";
 import { useChatChromeTint } from "./chatAppearance";
 import { RTL_FOLLOWS_FIRST_BLOCK_CLASS, RTL_TABLE_FOLLOWS_FIRST_CELL_CLASS, chatMarkdownUrlTransform } from "./chatMarkdown";
 import {
+  isExternalHref,
   looksLikeWorkspacePath,
   parseWorkspacePathLocation,
   resolveWorkspacePathFromHref,
@@ -568,6 +569,11 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
             {children}
           </WorkspacePathLink>
         );
+      }
+      // A path that is not one of the workspace's (`~/x`, `../x`, a shortened
+      // `/tmp/.../out.txt`) has no scheme: the browser would read it as a site.
+      if (typeof href === "string" && !isExternalHref(href) && !/^[a-z][a-z0-9+.-]*:/i.test(href.trim())) {
+        return <span>{children}</span>;
       }
       return (
         <a
