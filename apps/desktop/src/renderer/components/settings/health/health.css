@@ -198,7 +198,7 @@
 /* Rows here wrap their controls under the text when the column is narrow. */
 .ade-cleanup-rows .ade-ap-rowcard { flex-wrap: wrap; row-gap: 10px; border: 0; border-radius: 0; background: transparent; }
 /* The control keeps to the right edge, wrapped or not, so every rule lines up. */
-.ade-cleanup-rows .ade-ap-rowcard > :nth-child(2) { margin-left: auto; }
+.ade-cleanup-rows .ade-ap-rowcontrol { margin-left: auto; }
 .ade-cleanup-rows > :not(:first-child),
 .ade-cleanup-rowset > :not(:first-child) { border-top: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent); }
 .ade-cleanup-ctrl { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 4px; }

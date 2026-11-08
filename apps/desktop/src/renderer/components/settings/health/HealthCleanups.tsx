@@ -438,7 +438,10 @@ function CleanupRules({
   const shown = resolveLaneCleanupPolicy({ ...effectiveValue, ...stripUnset(value) });
   const reset = (...keys: Array<keyof LaneCleanupConfig>) =>
     onChange({ ...value, ...Object.fromEntries(keys.map((key) => [key, undefined])) });
-  const overridden = (...keys: Array<keyof LaneCleanupConfig>) => keys.some((key) => value[key] != null);
+  const ruleProps = (...keys: Array<keyof LaneCleanupConfig>) => ({
+    overridden: keys.some((key) => value[key] != null),
+    onReset: () => reset(...keys),
+  });
   const setDays = (key: DayKey) => (days: number) => onChange({ ...value, [key]: days });
 
   const freeUpOn = shown.freeUpSpaceAfterDays > 0;
@@ -468,7 +471,7 @@ function CleanupRules({
           <span className="ade-cleanup-subrow-title">Also delete the local branch</span>
           <span className="ade-cleanup-subrow-hint">Every commit is on a remote by then. The remote branch stays.</span>
         </div>
-        <RuleControl overridden={overridden("deleteLocalBranchOnAutoDelete")} onReset={() => reset("deleteLocalBranchOnAutoDelete")}>
+        <RuleControl {...ruleProps("deleteLocalBranchOnAutoDelete")}>
           <SettingsToggle
             label="Also delete the local branch"
             checked={shown.deleteLocalBranchOnAutoDelete}
@@ -493,7 +496,7 @@ function CleanupRules({
             title="Archive idle lanes"
             hint="Merged lanes with nothing unsaved. Archiving only hides them; Restore brings them back."
             control={(
-              <RuleControl overridden={overridden("archiveIdleAfterDays")} onReset={() => reset("archiveIdleAfterDays")}>
+              <RuleControl {...ruleProps("archiveIdleAfterDays")}>
                 <DaysSelect label="Archive idle lanes" value={shown.archiveIdleAfterDays} onChange={setDays("archiveIdleAfterDays")} />
               </RuleControl>
             )}
@@ -520,8 +523,7 @@ function CleanupRules({
               )}
               control={(
                 <RuleControl
-                  overridden={overridden("freeUpSpaceAfterDays", "freeUpSpaceMode")}
-                  onReset={() => reset("freeUpSpaceAfterDays", "freeUpSpaceMode")}
+                  {...ruleProps("freeUpSpaceAfterDays", "freeUpSpaceMode")}
                 >
                   <SettingsSelect
                     ariaLabel="Free up space: ask or automatically"
@@ -539,7 +541,7 @@ function CleanupRules({
               title="Delete archived lanes"
               hint="Chats go to Recently deleted."
               control={(
-                <RuleControl overridden={overridden("deleteArchivedAfterDays")} onReset={() => reset("deleteArchivedAfterDays")}>
+                <RuleControl {...ruleProps("deleteArchivedAfterDays")}>
                   <DaysSelect label="Delete archived lanes" value={shown.deleteArchivedAfterDays} onChange={setDays("deleteArchivedAfterDays")} />
                 </RuleControl>
               )}
@@ -557,7 +559,7 @@ function CleanupRules({
             title="Remove build output from idle lanes"
             hint="node_modules, dist, .next, target… only folders git ignores. A reinstall brings them back."
             control={(
-              <RuleControl overridden={overridden("cleanBuildOutputAfterDays")} onReset={() => reset("cleanBuildOutputAfterDays")}>
+              <RuleControl {...ruleProps("cleanBuildOutputAfterDays")}>
                 <DaysSelect label="Remove build output from idle lanes" value={shown.cleanBuildOutputAfterDays} onChange={setDays("cleanBuildOutputAfterDays")} />
               </RuleControl>
             )}
@@ -584,23 +586,25 @@ function CleanupRulesSkeleton({ chats }: { chats?: React.ReactNode }) {
   );
 }
 
+/** What cleanups have run: the list under Space. */
+export function HealthCleanupHistory({ data }: { data: HealthData }) {
+  const runs = React.useMemo(() => journalEntries(data.storage.snapshot?.extras, 30), [data.storage.snapshot]);
+  return <CleanupHistory runs={runs} loading={data.storage.loading && !data.storage.snapshot} />;
+}
+
 /**
- * The cleanup history (`show="history"`, under Space) or the lane cleanup
- * rules (`show="rules"`, under Rules). `chats` is the chat row drawn inside
- * the rules section; `onOpenArchive` opens the Archive view.
+ * The lane cleanup rules. `chats` is the chat row drawn inside the section;
+ * `onOpenArchive` opens the Archive view.
  */
-export function HealthCleanups({
+export function HealthCleanupRules({
   data,
-  show,
   chats,
   onOpenArchive,
 }: {
   data: HealthData;
-  show: "history" | "rules";
   chats?: React.ReactNode;
   onOpenArchive?: () => void;
 }) {
-  const runs = React.useMemo(() => journalEntries(data.storage.snapshot?.extras, 30), [data.storage.snapshot]);
   const [busy, setBusy] = React.useState(false);
   const pending = React.useRef<{ timer: ReturnType<typeof setTimeout>; value: LaneCleanupConfig } | null>(null);
   const { savePolicy, setPolicy, loadStorage } = data;
@@ -642,10 +646,6 @@ export function HealthCleanups({
     pending.current = null;
     void savePolicy(queued.value).catch((error: unknown) => console.warn("lane_cleanup_rules.unmount_save_failed", error));
   }, [savePolicy]);
-
-  if (show === "history") {
-    return <CleanupHistory runs={runs} loading={data.storage.loading && !data.storage.snapshot} />;
-  }
 
   const snapshot = data.storage.snapshot;
   // The rules come with the snapshot: until it is read, any value shown would be a guess.

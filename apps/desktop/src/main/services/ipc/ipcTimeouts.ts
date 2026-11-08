@@ -63,6 +63,7 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   lane: {
     create: IPC.lanesCreate,
     importBranch: IPC.lanesImportBranch,
+    restoreDeletedLane: IPC.lanesRestoreDeleted,
     switchBranch: IPC.lanesSwitchBranch,
     unarchive: IPC.lanesUnarchive,
     archiveAndReclaim: IPC.lanesArchiveAndReclaim,
@@ -269,6 +270,8 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return localRuntimeActionIpcTimeoutMs("lane", "create");
     case IPC.lanesImportBranch:
       return localRuntimeActionIpcTimeoutMs("lane", "importBranch");
+    case IPC.lanesRestoreDeleted:
+      return localRuntimeActionIpcTimeoutMs("lane", "restoreDeletedLane");
     case IPC.lanesSwitchBranch:
       return localRuntimeActionIpcTimeoutMs("lane", "switchBranch");
     // The lane branch picker's switch: the same checkout as lane.switchBranch.

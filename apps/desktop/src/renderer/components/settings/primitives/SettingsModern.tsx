@@ -98,7 +98,7 @@ export function ModernRow({
           {hint ? <div className="ade-ap-rowhint">{hint}</div> : null}
         </div>
       </div>
-      {control ? <div style={{ display: "flex", alignItems: "center", gap: 8, flex: "none" }}>{control}</div> : null}
+      {control ? <div className="ade-ap-rowcontrol" style={{ display: "flex", alignItems: "center", gap: 8, flex: "none" }}>{control}</div> : null}
       {children ? <div style={{ flex: "1 0 100%", minWidth: 0 }}>{children}</div> : null}
     </div>
   );

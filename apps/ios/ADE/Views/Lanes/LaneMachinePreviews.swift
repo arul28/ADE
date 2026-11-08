@@ -157,7 +157,7 @@ struct LanesRecentlyDeletedPreviewHost: View {
   }
 
   private let notice = LaneDeletionKept(
-    projectId: "p", projectRootPath: nil,
+    shownInProjectId: "p", projectId: "p", projectRootPath: nil,
     snapshot: saved("k1", "Thread Sharing Links", branch: "ade/thread-sharing-links", uncommitted: true, ageHours: 0.02)
   )
 

@@ -9,6 +9,7 @@ import { pendingCliDelegation } from "./lib/cliDelegationEntry";
 import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
+import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
 import type { Agent37ReadyPool } from "../../desktop/src/shared/agent37Ready";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
@@ -2429,9 +2430,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     and restarts Docker in the background (watch lane env init events).
                                                     Run "ade lanes action initEnv --arg laneId=<lane>" for the full sequence
     $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree. Uncommitted files and
-                                                    commits no other branch or remote holds are kept for 30 days
+                                                    commits no other branch or remote holds are kept for ${DELETED_LANE_KEEP_DAYS} days
     $ ade lanes deleted list --text                 Deleted lanes whose work ADE kept
-    $ ade lanes deleted restore <id>                Bring one back as a new lane, uncommitted files included
+    $ ade lanes deleted restore <id>                Bring one back, uncommitted files included: as a new lane, or into its lane if space was freed
     $ ade lanes rename <lane> --name "<name>"       Rename a lane (its branch keeps its name)
     $ ade lanes appearance <lane> --emoji 🐛        Set a lane emoji (use --emoji "" to clear)
     $ ade lanes actions --text                      List callable lane service methods

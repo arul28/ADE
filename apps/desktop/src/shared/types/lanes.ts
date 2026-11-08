@@ -600,7 +600,13 @@ export type RestoreLaneResult = {
    * restoring the lane tried to put them back. `restored: false` leaves them
    * in Recently deleted.
    */
-  savedWork?: { restored: boolean; warning: string | null } | null;
+  restoredFiles?: RestoredLaneFiles | null;
+};
+
+export type RestoredLaneFiles = {
+  restored: boolean;
+  /** Why the files did not come back, when they did not. */
+  warning: string | null;
 };
 
 /**
@@ -659,12 +665,23 @@ export type DeletedLaneSnapshot = {
    * restoring it puts them back.
    */
   kind: "deleted" | "freed";
+  /** Commits the lane's HEAD does not hold that would otherwise be lost. */
+  extraTips: DeletedLaneTip[];
   deletedAt: string;
   /** When ADE drops the save. */
   expiresAt: string;
 };
 
+/**
+ * A commit kept alongside the lane's HEAD: `remote` is the tip of the remote
+ * branch the delete removed, `previous` the lane's branch when its folder had
+ * moved to another one.
+ */
+export type DeletedLaneTip = { label: "remote" | "previous"; commit: string };
+
 export type RestoreDeletedLaneArgs = { id: string };
+
+export type RemoveDeletedLaneArgs = { id: string };
 
 export type RestoreDeletedLaneResult = {
   lane: LaneSummary;
@@ -674,6 +691,8 @@ export type RestoreDeletedLaneResult = {
   restoredUncommitted: boolean;
   /** Why the uncommitted files did not come back, when they did not. */
   warning: string | null;
+  /** Other branches a restore made for commits the lane's branch does not hold. */
+  extraBranches: string[];
 };
 
 export type LaneDeleteStepName =

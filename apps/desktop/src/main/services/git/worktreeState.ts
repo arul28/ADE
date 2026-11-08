@@ -44,11 +44,51 @@ function realPathOrNull(target: string): string | null {
 }
 
 /**
+ * What only `repoPath`, a git repository inside the lane, holds: uncommitted
+ * changes or commits no remote-tracking branch has. `label` names it in the
+ * sentence ("submodule vendor/x"). Null when nothing would be lost.
+ */
+async function describeRepoWork(repoPath: string, label: string, timeoutMs: number, depth: number): Promise<string | null> {
+  const name = label.charAt(0).toUpperCase() + label.slice(1);
+  if (depth + 1 >= SUBMODULE_INSPECT_MAX_DEPTH) {
+    return `${name} is nested too deep for ADE to check.`;
+  }
+  const couldNotCheck = (stderr: string, exitCode: number | null) =>
+    `ADE could not check ${label}: ${stderr.trim() || `git exited ${exitCode}`}`;
+  // Each repository answers for itself; a nested one is checked below.
+  const dirty = await runGit(["status", "--porcelain=v1", "--ignore-submodules=all"], { cwd: repoPath, timeoutMs });
+  if (dirty.exitCode !== 0) return couldNotCheck(dirty.stderr, dirty.exitCode);
+  if (dirty.stdout.trim().length > 0) return `${name} has uncommitted changes.`;
+  const remotes = await runGit(["remote"], { cwd: repoPath, timeoutMs });
+  if (remotes.exitCode !== 0) return couldNotCheck(remotes.stderr, remotes.exitCode);
+  if (!remotes.stdout.trim()) return `${name} has no remote, so its commits may exist only in this lane.`;
+  // Only a remote-tracking ref proves a commit is saved. A tag cannot: it may
+  // never have been pushed, and it lives in this worktree's own submodule
+  // repository, which the removal deletes.
+  const unpushed = await runGit(
+    ["rev-list", "-n", "1", "HEAD", "--branches", "--not", "--remotes"],
+    { cwd: repoPath, timeoutMs },
+  );
+  if (unpushed.exitCode !== 0) return couldNotCheck(unpushed.stderr, unpushed.exitCode);
+  if (unpushed.stdout.trim().length > 0) return `${name} has commits that no remote has.`;
+  return describeUnsavedSubmoduleWork(repoPath, timeoutMs, depth + 1);
+}
+
+/**
+ * Why a git repository in the lane that is not a registered submodule (a
+ * clone sitting in the folder) holds work removing the worktree would lose.
+ */
+export async function describeUnsavedNestedRepoWork(repoPath: string, relPath: string, timeoutMs = 8_000): Promise<string | null> {
+  return describeRepoWork(repoPath, `git repository ${relPath}`, timeoutMs, 0);
+}
+
+/**
  * Why a submodule under `repoPath` holds work that removing the worktree would
  * lose, or null. A submodule ADE cannot inspect counts as holding work, so the
- * delete stops and says which one; a force delete still removes it.
+ * delete stops and says which one. ADE's saved copy of a lane holds the parent
+ * repository only, so a force delete stops here too.
  */
-async function describeUnsavedSubmoduleWork(repoPath: string, timeoutMs: number, depth = 0): Promise<string | null> {
+export async function describeUnsavedSubmoduleWork(repoPath: string, timeoutMs = 8_000, depth = 0): Promise<string | null> {
   if (!fs.existsSync(path.join(repoPath, ".gitmodules"))) return null;
   const listed = await runGit(
     ["config", "-z", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"],
@@ -93,31 +133,8 @@ async function describeUnsavedSubmoduleWork(repoPath: string, timeoutMs: number,
       if (entries.length > 0) return `Submodule folder ${relPath} holds files that are not in any repository.`;
       continue;
     }
-    if (depth + 1 >= SUBMODULE_INSPECT_MAX_DEPTH) {
-      return `Submodule ${relPath} is nested too deep for ADE to check.`;
-    }
-    const remotes = await runGit(["remote"], { cwd: submodulePath, timeoutMs });
-    if (remotes.exitCode !== 0) {
-      return `ADE could not check submodule ${relPath}: ${remotes.stderr.trim() || `git exited ${remotes.exitCode}`}`;
-    }
-    if (!remotes.stdout.trim()) {
-      return `Submodule ${relPath} has no remote, so its commits may exist only in this lane.`;
-    }
-    // Only a remote-tracking ref proves a commit is saved. A tag cannot: it may
-    // never have been pushed, and it lives in this worktree's own submodule
-    // repository, which the removal deletes.
-    const unpushed = await runGit(
-      ["rev-list", "-n", "1", "HEAD", "--branches", "--not", "--remotes"],
-      { cwd: submodulePath, timeoutMs },
-    );
-    if (unpushed.exitCode !== 0) {
-      return `ADE could not check submodule ${relPath}: ${unpushed.stderr.trim() || `git exited ${unpushed.exitCode}`}`;
-    }
-    if (unpushed.stdout.trim().length > 0) {
-      return `Submodule ${relPath} has commits that no remote has.`;
-    }
-    const nested = await describeUnsavedSubmoduleWork(submodulePath, timeoutMs, depth + 1);
-    if (nested) return nested;
+    const work = await describeRepoWork(submodulePath, `submodule ${relPath}`, timeoutMs, depth);
+    if (work) return work;
   }
   return null;
 }

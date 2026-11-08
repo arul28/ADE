@@ -8851,4 +8851,6 @@ struct RestoreDeletedLaneResult: Decodable, Equatable {
   /// False when the uncommitted files did not apply; they stay saved.
   var restoredUncommitted: Bool
   var warning: String?
+  /// Other branches made for commits the lane's branch does not hold.
+  var extraBranches: [String]?
 }

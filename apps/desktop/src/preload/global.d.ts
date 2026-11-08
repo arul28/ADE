@@ -844,6 +844,7 @@ import type {
   LaneDeleteProgress,
   LaneDeleteRisk,
   DeletedLaneSnapshot,
+  RemoveDeletedLaneArgs,
   RestoreDeletedLaneArgs,
   RestoreDeletedLaneResult,
   LaneReclaimRisk,
@@ -2327,7 +2328,7 @@ declare global {
         /** Brings a deleted lane back as a new lane, with its uncommitted files. */
         restoreDeleted: (args: RestoreDeletedLaneArgs, pin?: OpenProjectBinding | null) => Promise<RestoreDeletedLaneResult>;
         /** Drops a deleted lane's saved work for good. */
-        removeDeleted: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<{ removed: boolean }>;
+        removeDeleted: (args: RemoveDeletedLaneArgs, pin?: OpenProjectBinding | null) => Promise<{ removed: boolean }>;
         getDeleteRisk: (
           args: { laneId: string },
           pin?: OpenProjectBinding | null,

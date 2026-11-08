@@ -3,8 +3,10 @@ import { ArrowCounterClockwise, CircleNotch, GitBranch, X } from "@phosphor-icon
 import type { DeletedLaneSnapshot, OpenProjectBinding } from "../../../shared/types";
 import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import { ipcErrorMessage, relativeWhen } from "../../lib/format";
+import { restoredLaneToast } from "../app/toast/restoredLaneToast";
 import { showToast } from "../app/toast/toastStore";
 import { confirmDialog } from "../ui/dialog";
+import { Banner } from "../ui/notice";
 
 const TOAST_ID = "settings-deleted-lanes";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -27,11 +29,14 @@ export function DeletedLanesList({ pin }: { pin: OpenProjectBinding | null }) {
   pinRef.current = pin;
   const pinKey = pin?.key ?? "";
   const [lanes, setLanes] = React.useState<DeletedLaneSnapshot[] | null>(null);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
+  const [attempt, setAttempt] = React.useState(0);
   const [running, setRunning] = React.useState<{ id: string; kind: "restore" | "remove" } | null>(null);
 
   React.useEffect(() => {
     let cancelled = false;
     setLanes(null);
+    setLoadError(null);
     setRunning(null);
     const list = window.ade.lanes?.listDeleted;
     if (!list) return;
@@ -42,16 +47,17 @@ export function DeletedLanesList({ pin }: { pin: OpenProjectBinding | null }) {
       .catch((error: unknown) => {
         if (cancelled) return;
         setLanes([]);
-        if (!isUnsupportedAdeActionError(error)) {
-          console.warn("deleted_lanes.load_failed", error);
-        }
+        // A machine on an older ADE simply has none to list.
+        if (isUnsupportedAdeActionError(error)) return;
+        console.warn("deleted_lanes.load_failed", error);
+        setLoadError(ipcErrorMessage(error) || "Something went wrong.");
       });
     return () => {
       cancelled = true;
     };
-  }, [pinKey]);
+  }, [pinKey, attempt]);
 
-  const restore = React.useCallback(async (lane: DeletedLaneSnapshot) => {
+  const restore = async (lane: DeletedLaneSnapshot) => {
     if (running) return;
     setRunning({ id: lane.id, kind: "restore" });
     try {
@@ -59,25 +65,24 @@ export function DeletedLanesList({ pin }: { pin: OpenProjectBinding | null }) {
       if (result.restoredUncommitted) {
         setLanes((prev) => prev?.filter((entry) => entry.id !== lane.id) ?? prev);
       }
-      const freed = lane.kind === "freed";
       showToast({
         id: TOAST_ID,
-        tone: result.restoredUncommitted ? "success" : "warning",
-        title: freed ? `${lane.laneName}'s files are back` : `${lane.laneName} is back`,
-        message: !result.restoredUncommitted
-          ? `On branch ${result.branchName}. Its uncommitted files did not apply and stay saved here: ${result.warning ?? "unknown error"}`
-          : freed
-            ? `The lane is restored on ${result.branchName}, with its uncommitted files.`
-            : `On branch ${result.branchName}${lane.uncommitted ? ", with its uncommitted files" : ""}. Its chats are below; Reopen puts them in the lane.`,
+        ...restoredLaneToast(lane, result, lane.kind === "freed" ? undefined : "Its chats are below; Reopen puts them in the lane."),
       });
     } catch (error) {
-      showToast({ id: TOAST_ID, tone: "error", title: `Couldn't restore ${lane.laneName}`, message: ipcErrorMessage(error) || "Something went wrong." });
+      showToast({
+        id: TOAST_ID,
+        tone: "error",
+        title: `Couldn't restore ${lane.laneName}`,
+        message: ipcErrorMessage(error) || "Something went wrong.",
+        replayMask: { title: true },
+      });
     } finally {
       setRunning(null);
     }
-  }, [running]);
+  };
 
-  const remove = React.useCallback(async (lane: DeletedLaneSnapshot) => {
+  const remove = async (lane: DeletedLaneSnapshot) => {
     if (running) return;
     const ok = await confirmDialog({
       title: "Drop this lane's saved work?",
@@ -99,7 +104,24 @@ export function DeletedLanesList({ pin }: { pin: OpenProjectBinding | null }) {
     } finally {
       setRunning(null);
     }
-  }, [running]);
+  };
+
+  if (loadError) {
+    return (
+      <div className="ade-ar-block" data-deleted-lanes>
+        <Banner
+          layout="inline"
+          model={{
+            id: "deleted-lanes-load-error",
+            tone: "error",
+            title: "ADE couldn't read the deleted lanes",
+            detail: loadError,
+            actions: [{ label: "Try again", onClick: () => setAttempt((value) => value + 1) }],
+          }}
+        />
+      </div>
+    );
+  }
 
   if (!lanes || lanes.length === 0) return null;
 
@@ -114,7 +136,7 @@ export function DeletedLanesList({ pin }: { pin: OpenProjectBinding | null }) {
           const restoring = running?.id === lane.id && running.kind === "restore";
           return (
             <div key={lane.id} role="listitem" className="ade-ar-row ade-rd-row">
-              <div className="ade-rd-open" style={{ cursor: "default" }}>
+              <div className="ade-rd-open ade-rd-info">
                 <span className="ade-ar-mark">
                   <GitBranch size={15} />
                 </span>

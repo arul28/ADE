@@ -3863,7 +3863,7 @@ async function deleteLaneWithRuntimeCleanup(
   const result = await args.laneService.delete(deleteArgs, { teardownEnv });
   args.portAllocationService?.release(deleteArgs.laneId);
   // The phone offers to restore what the delete kept.
-  return { ok: true, savedWork: result?.savedWork ?? null };
+  return { ok: true, savedWork: result.savedWork ?? null };
 }
 
 async function unarchiveLaneWithRuntimeSetup(

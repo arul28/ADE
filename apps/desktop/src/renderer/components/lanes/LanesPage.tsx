@@ -32,6 +32,7 @@ import {
   type LaneActionError,
   type LaneDeleteSelection,
   type ManageLaneTab,
+  lanesToDelete,
 } from "./ManageLaneDialog";
 import { LaneDashboard } from "./overview/LaneDashboard";
 import { useDialogBus } from "../../lib/useDialogBus";
@@ -1312,9 +1313,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   const deleteManagedLanes = async () => {
     const targets = managedLanes.length > 0 ? managedLanes : managedLane ? [managedLane] : [];
-    // Without Force a batch skips lanes with uncommitted work (the dialog
-    // says how many); the brain still refuses one that turned dirty since.
-    const actionable = targets.filter((l) => l.laneType !== "primary" && (deleteForce || targets.length === 1 || !l.status.dirty));
+    // The brain still refuses a lane that turned dirty since the dialog.
+    const actionable = lanesToDelete(targets, deleteForce);
 
     // Close the dialog and reset the transient delete UI before any async work.
     // The delete itself runs in the background: each lane's row shows the live

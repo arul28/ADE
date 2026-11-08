@@ -921,6 +921,9 @@ private struct LaneDeletionFailure: Equatable {
 
 /// A lane delete that kept work, for the Lanes tab's "Kept … Restore" notice.
 struct LaneDeletionKept: Equatable, Identifiable {
+  /// The project on screen when the delete started: where the notice shows.
+  let shownInProjectId: String?
+  /// Where the save lives, which is another machine's project for its lanes.
   let projectId: String?
   let projectRootPath: String?
   let snapshot: DeletedLaneSnapshot
@@ -14654,9 +14657,8 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "lanes.unarchive", args: ["laneId": laneId])
   }
 
-  /// Returns the work the host kept (Recently deleted), if any; the Lanes
-  /// tab offers to restore it.
-  @discardableResult
+  /// Work the host kept (Recently deleted) goes to `laneDeletionsKept`, which
+  /// the Lanes tab offers to restore.
   func deleteLane(
     _ laneId: String,
     deleteBranch: Bool = true,
@@ -14665,7 +14667,17 @@ final class SyncService: ObservableObject {
     force: Bool = false,
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil
-  ) async throws -> DeletedLaneSnapshot? {
+  ) async throws {
+    // Deletes run in the background; the project may change before this answers.
+    let shownInProjectId = activeProjectId
+    var keptProjectId = targetProjectId ?? activeProjectId
+    var keptRootPath = targetProjectRootPath ?? (targetProjectId == nil ? activeProjectRootPath : nil)
+    if let laneTarget = try? syncRemoteLaneTarget(args: ["laneId": laneId]),
+       laneTarget.machineKey != focusedMachineKey,
+       let repo = try? requireRemoteLaneRepo(machineKey: laneTarget.machineKey) {
+      keptProjectId = repo.markedProjectId
+      keptRootPath = repo.rootPath
+    }
     let response = try await sendCommand(action: "lanes.delete", args: [
       "laneId": laneId,
       "deleteBranch": deleteBranch,
@@ -14676,14 +14688,14 @@ final class SyncService: ObservableObject {
     // A queued delete or an older host answers without it.
     guard let payload = response as? [String: Any], let savedWork = payload["savedWork"], !(savedWork is NSNull),
           let snapshot = try? decode(savedWork, as: DeletedLaneSnapshot.self)
-    else { return nil }
+    else { return }
     laneDeletionsKept.removeAll { $0.id == snapshot.id }
     laneDeletionsKept.append(LaneDeletionKept(
-      projectId: targetProjectId ?? activeProjectId,
-      projectRootPath: targetProjectRootPath ?? (targetProjectId == nil ? activeProjectRootPath : nil),
+      shownInProjectId: shownInProjectId,
+      projectId: keptProjectId,
+      projectRootPath: keptRootPath,
       snapshot: snapshot
     ))
-    return snapshot
   }
 
   /// Deleted lanes whose work the machine kept, newest first.
@@ -14725,7 +14737,7 @@ final class SyncService: ObservableObject {
 
   /// Kept-work notices for the project on screen.
   var activeLaneDeletionsKept: [LaneDeletionKept] {
-    laneDeletionsKept.filter { $0.projectId == activeProjectId }
+    laneDeletionsKept.filter { $0.shownInProjectId == activeProjectId }
   }
 
   func dismissLaneDeletionKept(_ id: String) {

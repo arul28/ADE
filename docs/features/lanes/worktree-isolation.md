@@ -140,7 +140,8 @@ the directory first:
    `lanes/deletedLaneSnapshots.ts` keeps what the delete would lose: the
    worktree's uncommitted and untracked files (ignored ones such as
    `node_modules` stay out), commits no other branch, remote or tag holds, and
-   commits only the remote branch holds when that is deleted too. It writes one
+   commits only the remote branch holds when that is deleted too (it fetches
+   that branch first, so a newer push counts). It writes one
    commit (the lane's HEAD as first parent, the working tree as its tree,
    written through a copy of the lane's index) under
    `refs/ade/deleted-lanes/<epochMs>-<laneId>`, with the lane's name, branch
@@ -154,10 +155,13 @@ the directory first:
    `ade lanes deleted list`; Restore (`ade lanes deleted restore <id>`) makes a
    new lane on the old branch name (or `<name>-restored`), at the saved HEAD,
    never pushed, and applies the uncommitted files back as uncommitted
-   changes. Saves older than 30 days are pruned when the list is read.
+   changes. Commits the lane's branch does not hold (the deleted remote's, or
+   the old branch's when the folder had moved) go on sibling branches such as
+   `<name>-remote`. Saves older than 30 days are pruned after each save and by
+   the lifecycle scan.
    A save holds the parent repository only, so a delete or reclaim stops, and
-   names the submodule, when a checked-out submodule has uncommitted files or
-   commits no remote or tag of its own holds.
+   names it, when a checked-out submodule or an untracked git repository in
+   the lane has uncommitted files or commits no remote of its own holds.
 3. Stop lane runtime work.
 4. Stop PTYs and file watchers for the lane,
    then run any lane-environment cleanup supplied by the runtime.

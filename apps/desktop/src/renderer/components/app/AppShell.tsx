@@ -72,6 +72,7 @@ import { SituationalSuggestions } from "./suggestions/SituationalSuggestions";
 import { SurveyHost } from "./surveys/SurveyHost";
 import { useOnboardingChatImport } from "../onboarding/useOnboardingChatImport";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
+import { useLaneWorkSavedToast } from "./toast/useLaneWorkSavedToast";
 import { useAutoDiagnosticsToast } from "./toast/useAutoDiagnosticsToast";
 import { useProductAnalyticsLifecycle } from "../analytics/ProductAnalyticsLifecycle";
 import { useAppWideSessionAttention } from "../../hooks/useAppWideSessionAttention";
@@ -257,6 +258,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   useLaneEventToasts(navigate);
+  useLaneWorkSavedToast();
   usePrEventToasts(navigate);
   useAutoDiagnosticsToast();
   const setProject = useAppStore((s) => s.setProject);

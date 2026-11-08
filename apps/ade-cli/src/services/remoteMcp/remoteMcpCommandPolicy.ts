@@ -85,6 +85,9 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   // `defaults` reads the new-lane defaults; `defaults set` is refused below.
   ["lanes", new Set(["list", "show", "actions", "reclaim-preview", "defaults"])],
   ["lane", new Set(["list", "show", "actions", "reclaim-preview", "defaults"])],
+  // `ade lanes deleted list` reads Recently deleted; `restore` creates a lane.
+  ["lanes deleted", new Set(["list", "ls"])],
+  ["lane deleted", new Set(["list", "ls"])],
   ["git", new Set(["status", "branches", "is-reachable"])],
   ["diff", new Set(["changes", "file", "patch", "actions"])],
   ["files", new Set(["tree", "read", "search", "workspaces", "quick-open"])],
@@ -133,7 +136,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
 /** Commands whose `<command> <word>` names a nested group, not a subcommand. */
 const NESTED_GROUPS: ReadonlySet<string> = new Set([
   "prs stacks", "github issue", "github app-auth", "automations webhook", "usage budget", "providers accounts",
-  "chat deleted",
+  "chat deleted", "lanes deleted", "lane deleted",
 ]);
 
 type RemoteCommandVerdict =

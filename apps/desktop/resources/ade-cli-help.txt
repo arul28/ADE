@@ -385,7 +385,7 @@ Lanes
   ade lanes defaults [--text|--json]
   ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
                          [--branch-pattern <pattern>]   (e.g. "ade/{slug}", "{user}/{slug}", "{slug}")
-  ade lanes list | show | archive | unarchive | delete | appearance | templates | actions
+  ade lanes list | show | archive | unarchive | delete | deleted | appearance | templates | actions
 
   The project is the shell's project (ADE_PROJECT_ROOT, else the checkout you
   stand in). --project-root <dir>, before or after the subcommand, names
@@ -425,7 +425,10 @@ Lanes
                                                     env init before returning, a plain unarchive returns immediately
                                                     and restarts Docker in the background (watch lane env init events).
                                                     Run "ade lanes action initEnv --arg laneId=<lane>" for the full sequence
-    $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree
+    $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree. Uncommitted files and
+                                                    commits no other branch or remote holds are kept for 30 days
+    $ ade lanes deleted list --text                 Deleted lanes whose work ADE kept
+    $ ade lanes deleted restore <id>                Bring one back as a new lane, uncommitted files included
     $ ade lanes rename <lane> --name "<name>"       Rename a lane (its branch keeps its name)
     $ ade lanes appearance <lane> --emoji 🐛        Set a lane emoji (use --emoji "" to clear)
     $ ade lanes actions --text                      List callable lane service methods

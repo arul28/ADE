@@ -46,6 +46,7 @@ export type LaneLifecycleBackend = {
   archiveAndReclaim?: (args: ArchiveAndReclaimLaneArgs) => Promise<ArchiveAndReclaimLaneResult>;
   /** The lane delete, with its own guards; the automatic delete of archived lanes calls it. */
   delete?: (args: { laneId: string; deleteBranch?: boolean; deleteRemoteBranch?: boolean; force?: boolean }) => Promise<unknown>;
+  pruneDeletedLanes?: () => Promise<void>;
   /** Open chats, live terminals and watchers in the lane; null when not known yet. */
   getLiveWorkCounts?: (laneId: string) => {
     activeChatCount: number;
@@ -511,6 +512,8 @@ export function createLaneLifecycleScan(options: {
         writeLastRun(projectId, report(`The check stopped: ${errorText(error)}`));
         return;
       }
+
+      await laneService.pruneDeletedLanes?.();
 
       const now = new Date().toISOString();
       const nextScanAt = new Date(Date.now() + intervalMs).toISOString();

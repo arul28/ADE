@@ -12,7 +12,7 @@ import { ProjectSection } from "../ProjectSection";
 import { NewLaneSettingsSection } from "../NewLaneSettingsSection";
 import { LaneTemplatesSection } from "../LaneTemplatesSection";
 import { HEALTH_DETAIL_ANCHORS, HealthSpace } from "../health/HealthSpace";
-import { HealthCleanups } from "../health/HealthCleanups";
+import { HealthCleanupHistory, HealthCleanupRules } from "../health/HealthCleanups";
 import { ProjectIssueList, useProjectFix } from "../health/ProjectIssues";
 import { issuesForPage } from "../health/healthModel";
 import { useHealthData } from "../health/useHealthData";
@@ -227,7 +227,7 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
         return (
           <>
             <HealthSpace data={data} />
-            <HealthCleanups data={data} show="history" />
+            <HealthCleanupHistory data={data} />
             {isAdeAvailable(window.ade.project?.getSnapshot) ? <ProjectSection /> : null}
           </>
         );
@@ -250,9 +250,8 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
             <SessionLifecycleSection />
           </ModernSection>
         ) : (
-          <HealthCleanups
+          <HealthCleanupRules
             data={data}
-            show="rules"
             chats={<SessionLifecycleSection />}
             onOpenArchive={() => setView("archive")}
           />
