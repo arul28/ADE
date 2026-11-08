@@ -2487,7 +2487,20 @@ update", or "Restart and switch to Stable" for a track switch, the same name
 the top bar, the floating prompt and the restart dialog use), the update
 track, automatic installs, and one update row per machine. A failed read
 appears as a "couldn't check" row with Check again instead of claiming nothing
-needs attention. The problems are gathered in the renderer
+needs attention. The header counts problems and warnings, with notes beside it
+("3 things need attention · 2 notes"); notes sit under "Good to know".
+
+The list only names real problems. A provider shows only when you use it
+(signed in here, a Claude or Codex account usage tracking lists on this
+machine, or an account whose saved login broke) and it can't start chats;
+never for a provider you never set up, one you switched off, one whose
+runtime is still downloading (`runtimeDownloadPending` on its connection), or
+one that runs with a side note such as a Codex token too old for usage
+polling. "Background service calls failed" counts a call once after its last
+retry, skips refusals the brain marks expected, and lists the calls that
+failed most (`RuntimeHealthSnapshot.failedActionsTop`). An unreachable Agent 37
+box that is asleep, stopped, or on its way to or from that is dropped once the
+box list answers. The problems are gathered in the renderer
 (`settings/overview/useNeedsAttention.ts`); the project part is
 `projectHealth.getReport` ([`project-health.md`](./project-health.md)).
 
