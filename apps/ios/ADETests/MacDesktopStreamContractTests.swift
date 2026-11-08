@@ -314,11 +314,11 @@ final class MacDesktopStreamContractTests: XCTestCase {
       } catch {
         XCTAssertEqual((error as NSError).userInfo["ADEErrorCode"] as? String, "unsupported_action")
       }
+      // Best effort: nothing is advertised, so nothing is sent and nothing throws.
       do {
-        try await service.macDesktopStreamUnsubscribe(subscriptionId: "sub-1")
-        XCTFail("An unadvertised macDesktop.streamUnsubscribe must not be attempted.")
+        try await service.macDesktopStreamUnsubscribe(laneId: "lane-1", subscriptionId: "sub-1")
       } catch {
-        XCTAssertEqual((error as NSError).userInfo["ADEErrorCode"] as? String, "unsupported_action")
+        XCTFail("An unadvertised macDesktop.streamUnsubscribe must quietly do nothing: \(error)")
       }
     }
   }

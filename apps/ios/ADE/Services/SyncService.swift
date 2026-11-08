@@ -17073,7 +17073,7 @@ final class SyncService: ObservableObject {
   /// cellular round trip.
   func fetchWorkToolsLaneState(laneId: String) async throws -> WorkToolsLaneState {
     guard supportsWorkToolsState(laneId: laneId) else {
-      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "The Work tools pane is not available on this machine version."])
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "The Work tools pane is not available on this machine version.", "ADEErrorCode": "unsupported_action"])
     }
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     // Project-scoped, resolved from the active project binding: a lane only
@@ -17100,7 +17100,7 @@ final class SyncService: ObservableObject {
 
   func readWorkToolsObservationPreview(path: String, laneId: String) async throws -> WorkToolsObservationPreview? {
     guard supportsWorkToolsObservationPreview(laneId: laneId) else {
-      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "The Work tools preview is not available on this machine version."])
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "The Work tools preview is not available on this machine version.", "ADEErrorCode": "unsupported_action"])
     }
     let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
@@ -17283,7 +17283,7 @@ final class SyncService: ObservableObject {
 
   func linuxDesktopStop(laneId: String) async throws {
     guard canManageLinuxDesktop("macDesktop.stopSeat", laneId: laneId) else {
-      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This machine cannot stop the Linux screen from here."])
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This machine cannot stop the Linux screen from here.", "ADEErrorCode": "unsupported_action"])
     }
     _ = try await sendCommand(action: "macDesktop.stopSeat", args: ["laneId": laneId],
       disconnectOnTimeout: false, timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
@@ -17292,7 +17292,7 @@ final class SyncService: ObservableObject {
 
   func linuxDesktopCloseWindow(laneId: String, windowId: Int) async throws {
     guard canManageLinuxDesktop("macDesktop.closeWindow", laneId: laneId) else {
-      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This machine cannot close the window from here."])
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This machine cannot close the window from here.", "ADEErrorCode": "unsupported_action"])
     }
     _ = try await sendCommand(action: "macDesktop.closeWindow", args: ["laneId": laneId, "windowId": windowId],
       disconnectOnTimeout: false, timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
