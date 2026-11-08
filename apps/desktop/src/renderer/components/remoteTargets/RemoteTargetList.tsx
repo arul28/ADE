@@ -131,7 +131,7 @@ type AddMode = "choose" | "nearby" | "pair" | "ssh" | "code" | "cloud";
  */
 type CloudPickerState =
   | { kind: "loading" }
-  | { kind: "none" }
+  | { kind: "none"; signedOut: boolean }
   | { kind: "ready"; status: CloudStatus }
   | { kind: "unreachable"; refused: boolean; message: string };
 
@@ -141,7 +141,7 @@ function cloudPickerState(status: CloudStatus | null): CloudPickerState {
   if (status.error) {
     return { kind: "unreachable", refused: !status.connected, message: status.error ?? "ADE couldn't reach ADE Cloud." };
   }
-  return { kind: "none" };
+  return { kind: "none", signedOut: status.signedOut };
 }
 
 /** While a new box finishes starting, how often the account list is refreshed. */
@@ -941,7 +941,7 @@ export function RemoteTargetList({
   const loadCloudStatus = useCallback((): (() => void) => {
     const bridge = window.ade.cloud;
     if (!bridge) {
-      setCloud({ kind: "none" });
+      setCloud({ kind: "none", signedOut: false });
       return () => undefined;
     }
     let cancelled = false;
@@ -1700,7 +1700,7 @@ export function RemoteTargetList({
               </div>
             ) : null}
             {addMode === "cloud" && cloud.kind === "none" ? (
-              <div style={helperTextStyle}>{ADE_CLOUD_NAME} isn't available on this account yet.</div>
+              <div style={helperTextStyle}>{cloud.signedOut ? `Sign in to ADE to use ${ADE_CLOUD_NAME}.` : `${ADE_CLOUD_NAME} isn't available on this account yet.`}</div>
             ) : null}
             {addMode === "code" ? (
               <div style={{ display: "grid", gap: 10 }}>

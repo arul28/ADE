@@ -301,7 +301,7 @@ import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
-import { CLOUD_PROVIDER_VAULT_ITEM, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
+import { CLOUD_PROVIDER_VAULT_ITEM, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
 import { cloudMachineEnv, type CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
 import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
@@ -4178,6 +4178,7 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
   });
   const machines = createCloudMachines({
     client: () => getCloudProvider(credentials),
+    whyNoClient: () => cloudNoProviderSentence(credentials),
     removeAccountMachine: async (machineKey) => {
       if (!runtime.accountAuthService) throw new Error("This ADE isn't signed in to your account.");
       return await new AccountMachineDirectoryService(runtime.accountAuthService, {

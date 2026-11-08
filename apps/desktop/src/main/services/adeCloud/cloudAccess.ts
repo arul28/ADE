@@ -124,6 +124,12 @@ export async function getCloudProvider(deps: CloudAccessDeps): Promise<CloudProv
   return access.state === "ready" ? access.provider : null;
 }
 
+/** Why this computer has no ADE Cloud right now, or null when it has it. */
+export async function cloudNoProviderSentence(deps: CloudAccessDeps): Promise<string | null> {
+  const access = await readCloudAccess(deps);
+  return access.state === "ready" ? null : NO_PROVIDER_SENTENCE[access.state];
+}
+
 /** ADE Cloud for this account; throws a plain sentence when there is none. */
 export async function requireCloudProvider(deps: CloudAccessDeps): Promise<CloudProvider> {
   const access = await readCloudAccess(deps);
@@ -131,17 +137,21 @@ export async function requireCloudProvider(deps: CloudAccessDeps): Promise<Cloud
   return access.provider;
 }
 
-const NO_ACCESS: CloudStatus = { connected: false, instanceCount: null, runningCount: null, error: null };
+const NO_ACCESS: CloudStatus = { connected: false, signedOut: false, instanceCount: null, runningCount: null, error: null };
 
 export async function readCloudStatus(deps: CloudAccessDeps): Promise<CloudStatus> {
   const access = await readCloudAccess(deps);
-  if (access.state === "no_access") return NO_ACCESS;
-  // Not a fact about the account, so the surfaces show it as a failed check.
-  if (access.state !== "ready") return { ...NO_ACCESS, connected: true, error: NO_PROVIDER_SENTENCE[access.state] };
+  if (access.state !== "ready") {
+    if (access.state === "no_access") return NO_ACCESS;
+    if (access.state === "signed_out") return { ...NO_ACCESS, signedOut: true };
+    // Not a fact about the account, so the surfaces show it as a failed check.
+    return { ...NO_ACCESS, connected: true, error: NO_PROVIDER_SENTENCE.unreadable };
+  }
   try {
     const instances = await access.provider.listInstances();
     return {
       connected: true,
+      signedOut: false,
       instanceCount: instances.filter((instance) => instance.status !== "deleted" && instance.status !== "failed").length,
       runningCount: instances.filter((instance) => cloudStatusAwake(instance.status)).length,
       error: null,

@@ -53,6 +53,8 @@ export const CLOUD_MACHINE_KEY_METADATA = "ade_machine_key";
 export type CloudMachinesDeps = {
   /** ADE Cloud for this account, or null when it has no access. */
   client: () => Promise<CloudProvider | null>;
+  /** The sentence for why `client` answered null. */
+  whyNoClient?: () => Promise<string | null>;
   /** Removes a machine from the ADE account directory (the "Remove from ADE" half of a delete). */
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
   /** The account's monthly cap; absent reads as no cap. */
@@ -231,7 +233,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
    */
   async function list(): Promise<CloudMachinesResult> {
     const client = await deps.client();
-    if (!client) return emptyResult("not_connected", null);
+    if (!client) return emptyResult("not_connected", (await deps.whyNoClient?.()) ?? null);
     let instances: CloudInstance[];
     try {
       instances = await client.listInstances();
@@ -293,7 +295,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
 
   async function run(args: CloudMachineActionArgs): Promise<CloudMachineActionResult> {
     const client = await deps.client();
-    if (!client) return { ok: false, blocker: null, message: "ADE Cloud isn't available on this account yet." };
+    if (!client) return { ok: false, blocker: null, message: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };
     const instanceId = typeof args?.instanceId === "string" ? args.instanceId.trim() : "";
     if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that box." };
     const action = args.action;

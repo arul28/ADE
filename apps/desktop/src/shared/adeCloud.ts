@@ -164,6 +164,8 @@ export function cloudAndroidNeedsVmMessage(boxShape: CloudShape | null): string 
 /** ADE Cloud's state, as Settings and the machine picker read it. */
 export type CloudStatus = {
   connected: boolean;
+  /** This computer isn't signed in to ADE, so nothing is known about the account. */
+  signedOut: boolean;
   /** Every machine on the account, asleep and stopped ones included. */
   instanceCount: number | null;
   /** The machines awake right now. */
@@ -496,7 +498,7 @@ export function cloudSavedUsd(args: {
 
 export type CloudMachinesResult = {
   /**
-   * `ok`: read. `not_connected`: this account has no ADE Cloud. `access_refused`: the
+   * `ok`: read. `not_connected`: no ADE Cloud from here (no access, signed out, or the vault couldn't be read), with `message` saying which. `access_refused`: the
    * provider refused this account. `unreachable`: the provider did not answer.
    */
   state: "ok" | "not_connected" | "access_refused" | "unreachable";

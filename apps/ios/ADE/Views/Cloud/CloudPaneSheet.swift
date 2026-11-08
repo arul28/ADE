@@ -193,7 +193,7 @@ final class CloudPaneStore: ObservableObject {
       readyProjects = (try? await syncService.cloudRead("ready_status", as: CloudPhoneReadyPool.self))?.projects ?? []
     } catch {
       let message = error.localizedDescription
-      if message.localizedCaseInsensitiveContains("ADE Cloud isn't available") {
+      if message.localizedCaseInsensitiveContains("isn't available on this account") {
         phase = .notConnected
       } else if machines.isEmpty {
         phase = .failed(message)

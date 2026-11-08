@@ -37,6 +37,7 @@ import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/pro
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import {
   CLOUD_PROVIDER_VAULT_ITEM,
+  cloudNoProviderSentence,
   cloudVaultFromBridge,
   getCloudProvider,
   readCloudStatus,
@@ -218,6 +219,7 @@ export function registerCloudIpc(args: {
   app.once("will-quit", () => readyKeeper.stop());
 
   const machines = createCloudMachines({
+    whyNoClient: () => cloudNoProviderSentence(credentials),
     client: savedClient,
     removeAccountMachine: args.removeAccountMachine,
     readBudget: () => budget.read(),

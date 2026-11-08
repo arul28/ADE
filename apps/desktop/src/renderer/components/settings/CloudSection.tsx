@@ -101,6 +101,8 @@ export function CloudSection() {
 
   const heroStatus = loading && !status
     ? { tone: "checking" as const, label: "Checking…" }
+    : status?.signedOut
+      ? { tone: "neutral" as const, label: "Sign in to ADE" }
     : status?.error
       ? { tone: "warn" as const, label: connected ? `Couldn't reach ${ADE_CLOUD_NAME}` : "Not available" }
       : connected
@@ -184,7 +186,7 @@ export function CloudSection() {
           </>
         ) : !connected ? (
           <p className="ade-ig-note">
-            {loading ? <CircleNotch size={14} className="animate-spin" /> : `${ADE_CLOUD_NAME} isn't available on this account yet.`}
+            {loading ? <CircleNotch size={14} className="animate-spin" /> : status?.signedOut ? `Sign in to ADE to use ${ADE_CLOUD_NAME}.` : `${ADE_CLOUD_NAME} isn't available on this account yet.`}
           </p>
         ) : null}
         {BRING_YOUR_OWN_CLOUD_ENABLED ? <BringYourOwnCloudCard /> : null}

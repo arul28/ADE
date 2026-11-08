@@ -61,9 +61,10 @@ function savedIn(id: IntegrationId, summary?: Summary): string {
 
 async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): Promise<Summary> {
   if (id === "cloud") {
-    // Account-wide: the key is in the account vault, so this computer answers for every machine.
+    // Account-wide: access is the account's, so this computer answers for every machine.
     const status = await window.ade.cloud?.getStatus();
     if (!status) return UNKNOWN;
+    if (status.signedOut) return { tone: "neutral", label: "Sign in to ADE" };
     if (status.error) return { tone: "warn", label: status.connected ? "Couldn't reach ADE Cloud" : "Not available" };
     if (status.connected) return { tone: "ok", label: "Ready", savedIn: "Your account" };
     return { tone: "neutral", label: "Not available yet" };

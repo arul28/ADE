@@ -161,7 +161,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
 
   const readMachines = async (): Promise<CloudMachinesResult> => {
     const result = await deps.machines.list();
-    if (result.state === "not_connected") throw new Error("ADE Cloud isn't available right now.");
+    if (result.state === "not_connected") throw new Error(result.message ?? "ADE Cloud isn't available on this account yet.");
     if (result.state !== "ok") throw new Error(result.message ?? "ADE couldn't read your ADE Cloud machines.");
     return result;
   };

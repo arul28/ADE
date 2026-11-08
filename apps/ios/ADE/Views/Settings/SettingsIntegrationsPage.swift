@@ -232,7 +232,7 @@ struct SettingsIntegrationsPage: View {
       )
     } catch {
       // The same test the cloud pane uses for an account with no ADE Cloud.
-      if error.localizedDescription.localizedCaseInsensitiveContains("ADE Cloud isn't available") {
+      if error.localizedDescription.localizedCaseInsensitiveContains("isn't available on this account") {
         cloud = IntegrationSummary(label: "Not available yet", tone: .neutral)
       } else {
         settingsIntegrationsLog.warning("ADE Cloud status read failed: \(error.localizedDescription, privacy: .public)")
