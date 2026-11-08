@@ -50,6 +50,22 @@ function realPathOrNull(target: string): string | null {
   }
 }
 
+/** Reflog actions that create a commit, as opposed to moving to a fetched one. */
+const COMMIT_MADE_HERE = /^(commit|merge|cherry-pick|revert|am|rebase)\b/;
+const REFLOG_SCAN_LIMIT = "2000";
+
+/** True when HEAD's reflog shows a commit no remote has was created in this repository. */
+async function headHoldsCommitsMadeHere(repoPath: string, timeoutMs: number): Promise<boolean> {
+  const notOnRemote = await runGit(["rev-list", "-n", REFLOG_SCAN_LIMIT, "HEAD", "--not", "--remotes"], { cwd: repoPath, timeoutMs });
+  const commits = new Set(notOnRemote.stdout.split(/\r?\n/).filter(Boolean));
+  if (notOnRemote.exitCode !== 0 || commits.size === 0) return false;
+  const reflog = await runGit(["reflog", "show", "-n", REFLOG_SCAN_LIMIT, "--format=%H %gs", "HEAD"], { cwd: repoPath, timeoutMs });
+  return reflog.stdout.split(/\r?\n/).some((line) => {
+    const space = line.indexOf(" ");
+    return space > 0 && commits.has(line.slice(0, space)) && COMMIT_MADE_HERE.test(line.slice(space + 1));
+  });
+}
+
 /**
  * What only `repoPath`, a git repository inside the lane, holds: uncommitted
  * changes or commits no remote-tracking branch has. `label` names it in the
@@ -78,17 +94,20 @@ async function describeRepoWork(
   // Only a remote-tracking ref proves a commit is saved. A tag cannot: it may
   // never have been pushed, and it lives in this worktree's own submodule
   // repository, which the removal deletes.
-  // The commit the parent pins came from somewhere: a shallow or tag-only
-  // checkout of it holds nothing of its own, and only `found` may assume so.
+  // A checkout of the commit the parent pins, fetched by tag or shallowly,
+  // has no remote-tracking ref for it and still holds nothing of its own.
+  // Only `found` may lean on that, and only for commits not made here.
   const head = mode === "found" && pinnedCommit
     ? (await runGit(["rev-parse", "HEAD"], { cwd: repoPath, timeoutMs })).stdout.trim()
     : null;
+  const headIsPinned = head !== null && head === pinnedCommit;
   const unpushed = await runGit(
-    ["rev-list", "-n", "1", ...(head === pinnedCommit && head ? [] : ["HEAD"]), "--branches", "--not", "--remotes"],
+    ["rev-list", "-n", "1", ...(headIsPinned ? [] : ["HEAD"]), "--branches", "--not", "--remotes"],
     { cwd: repoPath, timeoutMs },
   );
   if (unpushed.exitCode !== 0) return couldNotCheck(unpushed.stderr, unpushed.exitCode);
   if (unpushed.stdout.trim().length > 0) return `${name} has commits that no remote has.`;
+  if (headIsPinned && await headHoldsCommitsMadeHere(repoPath, timeoutMs)) return `${name} has commits that no remote has.`;
   return atDepthLimit ? null : describeUnsavedSubmoduleWork(repoPath, timeoutMs, depth + 1, mode);
 }
 

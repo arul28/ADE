@@ -24,13 +24,14 @@ extension LanesTabView {
         targetProjectId: kept.projectId,
         targetProjectRootPath: kept.projectRootPath
       )
+      await reload(refreshRemote: true)
+      // After the reload, which clears the tab's message when it succeeds.
       if result.restoredUncommitted {
         ADEHaptics.success()
       } else {
         ADEHaptics.warning()
         errorMessage = deletedLaneRestoreMessage(kept.snapshot, result)
       }
-      await reload(refreshRemote: true)
     } catch {
       ADEHaptics.error()
       errorMessage = "Couldn’t restore \(kept.snapshot.laneName): \(SyncUserFacingError.message(for: error))"

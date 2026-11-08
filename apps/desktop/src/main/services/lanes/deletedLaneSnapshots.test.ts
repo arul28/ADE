@@ -138,10 +138,24 @@ describe("deletedLaneSnapshots", () => {
       refused: /submodule sub has commits/i,
     },
     {
-      name: "a clean submodule pinned to a tag-only commit",
+      name: "a pinned commit made here and held only by a local tag",
       arrange: () => {
         const sub = addSubmodule();
         sh("git commit -q --allow-empty -m pin && git tag t && git checkout -q --detach t && git branch -q -D main", sub);
+        sh("git add sub && git commit -qm pin", worktree);
+      },
+      refused: /submodule sub has commits/i,
+    },
+    {
+      name: "a clean submodule pinned to a fetched commit only a tag holds",
+      arrange: () => {
+        sh("git init -q -b main upstream", root);
+        const upstream = path.join(root, "upstream");
+        fs.writeFileSync(path.join(upstream, "s.txt"), "s\n");
+        sh("git add . && git commit -qm s", upstream);
+        sh("git checkout -q -b old && git commit -q --allow-empty -m tagged && git tag v1 && git checkout -q main && git branch -q -D old", upstream);
+        sh(`git submodule add -q ${upstream} sub && git commit -qm sub`, worktree);
+        sh("git checkout -q --detach v1", path.join(worktree, "sub"));
         sh("git add sub && git commit -qm pin", worktree);
       },
       refused: null,

@@ -7491,6 +7491,11 @@ function buildLanePlan(args: string[]): CliPlan {
         kind: "execute",
         label: "lanes deleted restore",
         steps: [actionStep("result", "lane", "restoreDeletedLane", { id })],
+        // Lane back, files not: a script chaining on this must not carry on.
+        exitCodeFromResult: (result) => {
+          const restored = unwrapActionEnvelope(result);
+          return isRecord(restored) && restored.restoredUncommitted === false ? 1 : 0;
+        },
       };
     }
     if (verb === "remove" || verb === "rm" || verb === "delete") {
