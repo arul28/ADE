@@ -1024,6 +1024,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   activeItemId = null,
   handoffJobs = [],
   crossMachineSyncActive = true,
+  firstLoadRetrying = false,
   resolveSessionRuntimePin,
 }: {
   lanes: LaneSummary[];
@@ -1163,6 +1164,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   }) => void;
   handoffJobs?: HandoffLaunchJob[];
   crossMachineSyncActive?: boolean;
+  /** The list has never loaded and is still trying, so an empty list says nothing yet. */
+  firstLoadRetrying?: boolean;
   /**
    * The machine a chat runs on: `null` is the project tab's own machine. Asks
    * which machine owns a chat whose lane is missing, so the archived-lane read
@@ -4256,8 +4259,12 @@ export const SessionListPane = React.memo(function SessionListPane({
         ) : !hasAnySessions && !hasForeignSessions ? (
           <div className="flex flex-col items-center justify-center h-full px-3 py-10 text-center">
             <Terminal size={16} weight="regular" className="text-muted-fg/45 mb-2" />
-            <div className="text-[12px] font-medium text-fg/70">No chats yet</div>
-            <div className="mt-1 text-[11px] text-muted-fg/60">Start one from the prompt box</div>
+            <div className="text-[12px] font-medium text-fg/70">
+              {firstLoadRetrying ? "Waiting for this machine to answer" : "No chats yet"}
+            </div>
+            <div className="mt-1 text-[11px] text-muted-fg/60">
+              {firstLoadRetrying ? "Your chats will show up as soon as it does" : "Start one from the prompt box"}
+            </div>
           </div>
         ) : !isByLane && hasForeignSessions && !hasAnySessions ? (
           <div className="flex h-full flex-col items-center justify-center px-3 py-10 text-center">

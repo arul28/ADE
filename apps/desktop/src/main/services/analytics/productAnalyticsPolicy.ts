@@ -223,6 +223,12 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // theirs) | cancelled (password prompt dismissed) | failed.
   "bundle_ownership_fix",
   "machine_reconnect",
+  // Feature "connections". `remote_connect`: an automatic or manual dial to
+  // another machine failed, or came back after failing. `work_first_load`: the
+  // Work chat or lane list could not load, or loaded after retrying. completed |
+  // failed, deduped per outcome per hour; the detail is in Sentry.
+  "remote_connect",
+  "work_first_load",
   "mention_expanded",
   "hooks_ignored",
   "plugins_ignored",

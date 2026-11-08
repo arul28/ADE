@@ -3,6 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { syncDeviceTelemetryRef } from "../analytics/machineTelemetryId";
 import { createAttachmentUploadRegistry } from "../../../../../ade-cli/src/services/sync/attachmentUploadService";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
@@ -36,6 +37,12 @@ import {
 
 const getSshHostKeyTrustForTargetMock = vi.hoisted(() => vi.fn());
 const trustSshHostKeyForTargetMock = vi.hoisted(() => vi.fn());
+
+const forwardSignalToSentryMock = vi.hoisted(() => vi.fn());
+vi.mock("../../../shared/sentry/logBridge", async (actual) => ({
+  ...(await actual<object>()),
+  forwardSignalToSentry: forwardSignalToSentryMock,
+}));
 
 vi.mock("./sshTransport", () => ({
   getSshHostKeyTrustForTarget: getSshHostKeyTrustForTargetMock,
@@ -98,6 +105,72 @@ describe("RemoteConnectionService", () => {
   beforeEach(() => {
     getSshHostKeyTrustForTargetMock.mockReset();
     trustSshHostKeyForTargetMock.mockReset();
+    forwardSignalToSentryMock.mockClear();
+  });
+
+  it("reports a failed dial once per outage, with no address, under refs the other machine also derives", () => {
+    vi.useFakeTimers();
+    try {
+      const remote = {
+        id: "paired-1",
+        pairedMachine: { deviceId: "studio-device" },
+        lastConnectedAt: 1,
+      } as unknown as RemoteRuntimeTarget;
+      const registry = { list: () => [remote], get: () => remote } as unknown as RemoteTargetRegistry;
+      let dialFailed!: (targetId: string, error: unknown) => void;
+      let connected!: (targetId: string, result: RemoteRuntimeConnectResult) => void;
+      const pool = {
+        onHostStorageWait: vi.fn(() => () => {}),
+        onEntryEvicted: vi.fn(() => () => {}),
+        onDialFailed: (listener: typeof dialFailed) => {
+          dialFailed = listener;
+          return () => {};
+        },
+        onEntryConnected: (listener: typeof connected) => {
+          connected = listener;
+          return () => {};
+        },
+        ...poolConnectStateStubs(),
+      } as unknown as RemoteConnectionPool;
+      const pairedStore = {
+        getForReference: () => ({ deviceId: "macbook-device", hostIdentity: { deviceId: "studio-device" } }),
+      };
+      const logger = { info: vi.fn() };
+      const onDialOutcome = vi.fn();
+      new RemoteConnectionService(registry, pool, { logger: logger as never, onDialOutcome }, pairedStore as never);
+      const error = new PairedRuntimeTransportUnavailableError("Can't reach Studio.", undefined, {
+        correlationId: "dial-1",
+        failure: "timeout",
+        attempts: [{ kind: "lan", host: "192.168.1.5:8787", startedAt: 0, durationMs: 3_003, outcome: "failed", failure: "timeout", errorCode: "timeout" }],
+      });
+
+      dialFailed(remote.id, error);
+      vi.advanceTimersByTime(60_000);
+      dialFailed(remote.id, error);
+      expect(forwardSignalToSentryMock).toHaveBeenCalledTimes(1);
+      expect(onDialOutcome.mock.calls).toEqual([["failed"]]);
+
+      vi.advanceTimersByTime(60 * 60 * 1_000);
+      dialFailed(remote.id, error);
+      expect(forwardSignalToSentryMock).toHaveBeenCalledTimes(2);
+
+      connected(remote.id, connectResult(remote));
+      connected(remote.id, connectResult(remote));
+      expect(onDialOutcome.mock.calls).toEqual([["failed"], ["recovered"]]);
+
+      const [event, fields] = forwardSignalToSentryMock.mock.calls[0]!;
+      expect(event).toBe("remote.connect_failed");
+      expect(fields).toMatchObject({
+        correlationId: "dial-1",
+        device_ref: syncDeviceTelemetryRef("macbook-device"),
+        peer_device_ref: syncDeviceTelemetryRef("studio-device"),
+        routes: "lan:failed:timeout:timeout:3003",
+      });
+      expect(JSON.stringify(forwardSignalToSentryMock.mock.calls)).not.toContain("192.168.1.5");
+      expect(JSON.stringify(logger.info.mock.calls[0])).toContain("192.168.1.5");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not send a Relay PIN pairing request while signed out", async () => {
@@ -109,6 +182,7 @@ describe("RemoteConnectionService", () => {
     const pool = {
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -181,6 +255,7 @@ describe("RemoteConnectionService", () => {
     const pool = {
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -257,6 +332,7 @@ describe("RemoteConnectionService", () => {
     const pool = {
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -354,6 +430,7 @@ describe("RemoteConnectionService", () => {
     const pool = {
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -405,6 +482,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn((listener: (targetId: string, error: Error) => void) => {
         evicted = listener;
         return () => {};
@@ -453,6 +531,7 @@ describe("RemoteConnectionService", () => {
       connect: vi.fn(async () => connectResult(remote)),
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryConnected: vi.fn((listener: (targetId: string, result: RemoteRuntimeConnectResult) => void) => {
         connected = listener;
         return () => {};
@@ -501,6 +580,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -550,6 +630,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -588,6 +669,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -639,6 +721,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
       hasEntry: () => open,
@@ -683,6 +766,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -725,6 +809,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -774,6 +859,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -808,6 +894,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -855,6 +942,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -904,6 +992,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -938,6 +1027,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -969,6 +1059,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1019,6 +1110,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1064,6 +1156,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1098,6 +1191,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1126,6 +1220,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1156,6 +1251,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1186,6 +1282,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1228,6 +1325,7 @@ describe("RemoteConnectionService", () => {
       callActionForTarget: vi.fn(async () => actionResult),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1280,6 +1378,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1328,6 +1427,7 @@ describe("RemoteConnectionService", () => {
       callActionForTarget: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1377,6 +1477,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1415,6 +1516,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1464,6 +1566,7 @@ describe("RemoteConnectionService", () => {
         callActionForTarget: vi.fn(),
         onHostStorageWait: vi.fn(() => () => {}),
         onEntryConnected: vi.fn(() => () => {}),
+        onDialFailed: vi.fn(() => () => {}),
         onEntryEvicted: vi.fn(() => () => {}),
         ...poolConnectStateStubs(),
       } as unknown as RemoteConnectionPool;
@@ -1521,6 +1624,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1556,6 +1660,7 @@ describe("RemoteConnectionService", () => {
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1598,6 +1703,7 @@ describe("RemoteConnectionService", () => {
       }),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1652,6 +1758,7 @@ describe("RemoteConnectionService", () => {
       }),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1694,6 +1801,7 @@ describe("RemoteConnectionService", () => {
       }),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1743,6 +1851,7 @@ describe("RemoteConnectionService", () => {
       }),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1783,6 +1892,7 @@ describe("RemoteConnectionService", () => {
       }),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1821,6 +1931,7 @@ describe("RemoteConnectionService", () => {
       }),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1862,6 +1973,7 @@ describe("RemoteConnectionService", () => {
       }),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool;
@@ -1913,6 +2025,7 @@ describe("RemoteConnectionService", () => {
       }),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn((listener: (targetId: string, error: Error) => void) => {
         evicted = listener;
         return () => {};
@@ -2024,6 +2137,7 @@ describe("uploadChatAttachment", () => {
     const pool = {
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       getAttachmentUploadRoute: vi.fn(async () => ({
         url: `http://127.0.0.1:${port}/ade-attachments/upload`,
@@ -2118,6 +2232,7 @@ describe("uploadChatAttachment", () => {
     } as unknown as RemoteTargetRegistry, {
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       getAttachmentUploadRoute: vi.fn(async () => ({
         url: `http://127.0.0.1:${port}/ade-attachments/upload`,
@@ -2193,6 +2308,7 @@ describe("uploadChatAttachment", () => {
     const pool = {
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       getAttachmentUploadRoute: vi.fn(async () => ({
         url: "http://127.0.0.1:1/ade-attachments/upload",

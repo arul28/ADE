@@ -2950,8 +2950,10 @@ describe("sync host account authentication", () => {
     const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
     const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
     const baseArgs = createHostArgs(projectRoot, []);
+    const logger = createDiscoveryLogger();
     const host = createSyncHostService({
       ...baseArgs,
+      logger,
       ...accountDependencies(),
       pinStore,
       pairingSecretsPath,
@@ -3058,7 +3060,8 @@ describe("sync host account authentication", () => {
             deviceId: "legacy-relay-peer",
             deviceName: "Legacy Relay peer",
             platform: "iOS",
-            deviceType: "phone",
+            // Anyone who reaches the port can send this; the log must stay bounded.
+            deviceType: "x".repeat(200_000),
             siteId: "legacy-relay-site",
             dbVersion: 0,
           },
@@ -3076,6 +3079,10 @@ describe("sync host account authentication", () => {
         code: "relay_account_required",
         message: "Sign in with the same ADE account on both machines.",
       });
+      const rejection = vi.mocked(logger.warn).mock.calls.find(([event]) => event === "sync_host.hello_rejected")?.[1];
+      expect(rejection).toMatchObject({ code: "relay_account_required", authKind: "bootstrap" });
+      expect(String(rejection?.deviceType).length).toBeLessThanOrEqual(32);
+      expect(JSON.stringify(rejection)).not.toContain("legacy-relay-peer");
     } finally {
       for (const client of clients) client.ws.close();
       await host.dispose();
