@@ -702,6 +702,7 @@ Work chats
     $ ade chat list --all-machines --text           Every machine in one table, with a machine column
     $ ade chat create --machine "Mac mini" --lane <lane there> --type subagent --prompt "…"
                                                     Start a child on another machine; it wakes you when done.
+                                                    Without --lane it starts in the project's primary lane there.
                                                     --project <name|path|id> picks the project there, --clone
                                                     sets a missing GitHub repo up, "a,b" starts one per machine.
     $ ade chat create --machine agent37:ready --prompt "…"
