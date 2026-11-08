@@ -1,6 +1,6 @@
-/** `1 tool`, `2 tools`, `0 files`. */
-export function pluralCount(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+/** `1 tool`, `2 tools`, `0 files`; pass `many` when the plural is not `noun` + "s". */
+export function pluralCount(count: number, noun: string, many: string = `${noun}s`): string {
+  return `${count} ${count === 1 ? noun : many}`;
 }
 
 /**

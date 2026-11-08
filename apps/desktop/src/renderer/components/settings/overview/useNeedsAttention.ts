@@ -5,6 +5,10 @@ import type { ProjectHealthIssue, ProjectHealthReport } from "../../../../shared
 import type { UsageSnapshot } from "../../../../shared/types/usage";
 import type { AiProviderConnectionStatus } from "../../../../shared/types/config";
 import { isBackgroundItemBlocked } from "../../../../shared/types/core";
+import { agent37MachineResting } from "../../../../shared/agent37";
+import type { AiConfig } from "../../../../shared/types/config";
+import type { ProviderInstance } from "../../../../shared/types/providerInstances";
+import { isProviderDisabled } from "../../../../shared/providerEnablement";
 import { THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
 import { RELAY_HELD_BY_OTHER_ADE_APP } from "../../../../shared/connectionDiagnosis";
 import { ACCOUNT_SCOPE_ALL } from "../../../../shared/accountSettingsScope";
@@ -15,6 +19,7 @@ import {
   knownAdeVersions,
   machinesBehindOnTheirTrack,
 } from "../../remoteTargets/remoteMachineModel";
+import { agent37BoxForMachine } from "../../remoteTargets/agent37MachineModel";
 import { missingMcpSecrets } from "../mcp/useMcpRegistry";
 import { settingsRouteFor } from "../settingsManifest";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
@@ -43,9 +48,11 @@ export type AttentionItem = {
   id: string;
   severity: AttentionSeverity;
   title: string;
-  /** One line, shown on hover and handed to the agent. */
+  /** One line under the title, also handed to the agent. */
   detail?: string;
-  /** Where it lives, for the chip: "Project", "This computer", "Providers"… */
+  /** What the row counts, one line each (the failing calls, the folders). */
+  items?: string[];
+  /** Where it lives, before the detail: "Project", "This computer", "Providers"… */
   where: string;
   /** The settings page that holds it. */
   route: string;
@@ -145,11 +152,16 @@ function serviceItems(info: AppInfo | null, health: RuntimeHealthSnapshot | null
   }
   const failed = health?.failedActions24h ?? 0;
   if (failed > 0) {
+    const top = health?.failedActionsTop ?? [];
+    const [first] = top;
     items.push({
       id: "service-failures",
       severity: "warning",
       title: failed === 1 ? "1 background service call failed today" : `${failed} background service calls failed today`,
-      detail: "Errors and timeouts in the last 24 hours.",
+      detail: first
+        ? `Most often ${first.action}${first.count > 1 ? ` (${first.count} times)` : ""}. Errors and timeouts in the last 24 hours.`
+        : "Errors and timeouts in the last 24 hours.",
+      items: top.map((entry) => `${entry.action} × ${entry.count}${entry.lastError ? ` — ${entry.lastError}` : ""}`),
       where: THIS_MACHINE_NAME,
       route,
     });
@@ -208,19 +220,53 @@ function pressureItems(pressure: DiskPressureSnapshot | null): AttentionItem[] {
   }];
 }
 
-function providerItems(providers: readonly AiProviderConnectionStatus[]): AttentionItem[] {
+/**
+ * A provider is a problem only when you use it and it can't start chats.
+ * "You use it" means you are signed in to it here, or ADE has a Claude or
+ * Codex account of yours on this machine that names someone (an email or a
+ * plan), that usage found signed out, or whose saved login broke. Only those
+ * accounts (the ones with an `instanceId`) track ADE's own login: usage lists
+ * a Cursor account from the Cursor editor's session, which says nothing about
+ * ADE's Cursor key. Usage always lists each default account, named or not, so
+ * an unnamed one is not "used". A login that left no trace reads the same as
+ * one never made. A blocker alone
+ * is not a problem: a provider you never set up has one ("not signed in"), so
+ * does one whose runtime is still on its way ("downloads the first time it is
+ * used"), and so does one that runs fine with a side note (a Codex token too
+ * old for usage polling, a Muse login the Keychain hides). A provider you
+ * switched off is your choice.
+ */
+function providerItems(
+  providers: readonly AiProviderConnectionStatus[],
+  ai: Pick<AiConfig, "disabledProviders"> | null | undefined,
+  usage: UsageSnapshot | null,
+  accounts: readonly ProviderInstance[],
+): AttentionItem[] {
+  // A provider whose signed-out account usage already lists (`usageItems`) is not listed twice.
+  const listedByUsage = new Set<string>((usage?.balanceIssues ?? []).filter((issue) => issue.kind === "signed_out").map((issue) => issue.provider));
+  const usedHere = new Set<string>([
+    ...(usage?.accounts ?? [])
+      .filter((account) => account.instanceId && !account.notSignedInHere
+        && (account.email || account.plan || account.login === "signed_out"))
+      .map((account) => account.provider),
+    ...accounts.filter((account) => account.loginBroken).map((account) => account.provider),
+  ].filter((provider) => !listedByUsage.has(provider)));
   return providers.flatMap((provider): AttentionItem[] => {
+    if (provider.runtimeAvailable || provider.runtimeDownloadPending || isProviderDisabled(ai, provider.provider)) return [];
+    const lostLogin = !provider.authAvailable && usedHere.has(provider.provider);
+    if (!provider.authAvailable && !lostLogin) return [];
     const name = humanizeProvider(provider.provider);
     // A provider without its own page (Devin, for one) opens the Providers grid.
     const ownRoute = settingsRouteFor(`agents.provider.${provider.provider}`);
     const route = ownRoute === "/settings" ? settingsRouteFor("agents.providers") : ownRoute;
-    if (provider.blocker) {
-      return [{ id: `provider-${provider.provider}`, severity: "warning", title: `${name} can't run`, detail: provider.blocker, where: "Providers", route }];
-    }
-    if (provider.runtimeDetected && !provider.runtimeAvailable) {
-      return [{ id: `provider-${provider.provider}`, severity: "warning", title: `${name} needs you to sign in`, where: "Providers", route }];
-    }
-    return [];
+    return [{
+      id: `provider-${provider.provider}`,
+      severity: "warning",
+      title: lostLogin ? `${name} is signed out` : `${name} can't start chats`,
+      detail: provider.blocker ?? (lostLogin ? "Sign in again to use it here." : "You're signed in, but ADE couldn't start it."),
+      where: "Providers",
+      route,
+    }];
   });
 }
 
@@ -266,16 +312,47 @@ function cliItems(status: Awaited<ReturnType<typeof window.ade.adeCli.getStatus>
   }];
 }
 
-function machineItems(
-  snapshot: Awaited<ReturnType<typeof window.ade.remoteRuntime.getConnectionSnapshot>> | null,
-  update: AutoUpdateSnapshot | null,
-): AttentionItem[] {
+type ConnectionSnapshot = Awaited<ReturnType<typeof window.ade.remoteRuntime.getConnectionSnapshot>>;
+
+const machineItemId = (targetId: string) => `machine-${targetId}`;
+
+function unreachableConnections(snapshot: ConnectionSnapshot | null) {
+  return snapshot?.connections.filter((connection) => connection.state === "error" || connection.state === "parked") ?? [];
+}
+
+/**
+ * The "Can't reach" rows that are an Agent 37 box resting
+ * (`agent37MachineResting`): it can't answer by design, and wakes when it is
+ * used. The
+ * box list is a network read, so it runs after first paint and only when
+ * something is unreachable; the rows show meanwhile and drop when it answers.
+ */
+async function restingAgent37ItemIds(snapshot: ConnectionSnapshot | null): Promise<Set<string>> {
+  const unreachable = unreachableConnections(snapshot);
+  const listMachines = window.ade?.agent37?.listMachines;
+  if (unreachable.length === 0 || !isAdeAvailable(listMachines)) return new Set();
+  const listed = await listMachines().catch((error: unknown) => {
+    console.warn("[needs-attention] reading Agent 37 boxes failed", error);
+    return null;
+  });
+  const boxes = listed?.state === "ok" ? listed.machines : [];
+  return new Set(unreachable
+    .filter((connection) => {
+      const box = agent37BoxForMachine(boxes, {
+        machineKey: connection.target.pairedMachine?.machineKey,
+        hostname: connection.target.hostname,
+      });
+      return box != null && agent37MachineResting(box.state);
+    })
+    .map((connection) => machineItemId(connection.target.id)));
+}
+
+function machineItems(snapshot: ConnectionSnapshot | null, update: AutoUpdateSnapshot | null): AttentionItem[] {
   if (!snapshot) return [];
   const items: AttentionItem[] = [];
-  for (const connection of snapshot.connections) {
-    if (connection.state !== "error" && connection.state !== "parked") continue;
+  for (const connection of unreachableConnections(snapshot)) {
     items.push({
-      id: `machine-${connection.target.id}`,
+      id: machineItemId(connection.target.id),
       severity: "warning",
       title: `Can't reach ${connection.target.name}`,
       detail: connection.lastError ?? undefined,
@@ -452,14 +529,18 @@ export function sortAttention(items: readonly AttentionItem[]): AttentionItem[] 
     .map((entry) => entry.item);
 }
 
+/** The lines a row lists under its detail: its own, else its project check's. */
+export function attentionLines(item: AttentionItem): readonly string[] {
+  return item.items?.length ? item.items : item.projectIssue?.items ?? [];
+}
+
 /** The prompt "Ask an agent" starts from: every row, where it lives, and the ask-first rule. */
 export function attentionAgentPrompt(items: readonly AttentionItem[], projectRoot: string | null): string {
   const lines = items.map((item, index) => {
     const head = `${index + 1}. [${item.where}] ${item.title}`;
     const detail = item.detail ? `\n   ${item.detail}` : "";
-    const list = item.projectIssue?.items?.length
-      ? `\n${item.projectIssue.items.slice(0, 15).map((entry) => `   - ${entry}`).join("\n")}`
-      : "";
+    const entries = attentionLines(item);
+    const list = entries.length ? `\n${entries.slice(0, 15).map((entry) => `   - ${entry}`).join("\n")}` : "";
     const fix = item.fix ? `\n   ADE's own fix: "${item.fix.label}" in Settings.` : item.projectIssue?.fix ? `\n   ADE's own fix: "${item.projectIssue.fix.label}": ${item.projectIssue.fix.description}` : "";
     return `${head}${detail}${list}${fix}`;
   });
@@ -488,7 +569,7 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     if (opts.force) setChecking(true);
     const ade = window.ade;
     const failed: string[] = [];
-    const [info, update, pressure, runtimeHealth, report, usage, ai, cli, machines, sync, github] = await Promise.all([
+    const [info, update, pressure, runtimeHealth, report, usage, ai, cli, machines, sync, github, projectConfig, providerAccounts] = await Promise.all([
       quiet(() => ade.app.getInfo(), failed, "ADE's service"),
       quiet(ade.updateGetState ? () => ade.updateGetState() : null, failed, "updates"),
       quiet(isAdeAvailable(ade.storage?.getPressure) ? () => ade.storage.getPressure() : null, failed, "disk space"),
@@ -505,6 +586,10 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
         return snapshot;
       } : null, failed, "sync"),
       hasProject ? quiet(ade.github?.getStatus ? () => ade.github.getStatus({}) : null, failed, "GitHub") : Promise.resolve(null),
+      // Only for the providers you switched off; without it they show, and the list says it couldn't check.
+      hasProject ? quiet(ade.projectConfig?.get ? () => ade.projectConfig.get() : null, failed, "provider settings") : Promise.resolve(null),
+      // Same machine as `ai.getStatus` (unpinned), so the two describe one provider set.
+      quiet(ade.providerInstances?.list ? () => ade.providerInstances.list() : null, failed, "provider accounts"),
     ]);
     if (current !== request.current) return;
     const providers = connectedProviders(ai);
@@ -515,7 +600,7 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
       ...updateItems(update),
       ...pressureItems(pressure),
       ...cliItems(cli),
-      ...providerItems(providers),
+      ...providerItems(providers, projectConfig?.effective.ai, usage, providerAccounts ?? []),
       ...usageItems(usage),
       ...githubItems(github),
       ...machineItems(machines, update),
@@ -525,6 +610,11 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     setLoading(false);
     setChecking(false);
     // The slow ones, after the list is on screen.
+    // The Agent 37 read can take long; it never holds back the other rows.
+    void restingAgent37ItemIds(machines).then((resting) => {
+      if (current !== request.current || resting.size === 0) return;
+      setItems((currentItems) => currentItems.filter((item) => !resting.has(item.id)));
+    });
     const late = await Promise.all([
       quiet(mcpItems, failed, "MCP servers"),
       quiet(() => integrationItems(hasProject, failed), failed, "integrations"),

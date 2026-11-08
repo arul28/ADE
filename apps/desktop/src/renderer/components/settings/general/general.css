@@ -61,6 +61,11 @@
   font-weight: 500;
   color: var(--kit-text-2);
 }
+.ade-gen-attn-sub {
+  flex-shrink: 0;
+  color: var(--kit-text-3);
+  white-space: nowrap;
+}
 .ade-gen-attn-preview {
   min-width: 0;
   overflow: hidden;
@@ -78,7 +83,7 @@
   transform: rotate(180deg);
 }
 .ade-gen-attn-body {
-  padding: 2px 12px 12px;
+  padding: 12px;
   border-top: 1px solid var(--kit-rule);
 }
 .ade-gen-attn-askbtn {

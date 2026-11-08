@@ -374,7 +374,7 @@ describe("local runtime connection pool", () => {
   it("aggregates slow actions into a bounded 24h runtime-health window", () => {
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never) as unknown as {
-      recordSlowAction: (atMs: number, totalMs: number) => void;
+      recordHealthSample: (domain: string, sample: { at: number; failed: false; totalMs: number }) => void;
       getRuntimeHealth: (nowMs?: number) => {
         slowActions24h: number;
         slowActionP95Ms: number | null;
@@ -388,9 +388,9 @@ describe("local runtime connection pool", () => {
     expect(pool.getRuntimeHealth(now)).toMatchObject({ slowActions24h: 0, slowActionP95Ms: null });
 
     // One sample 25h old (out of window) plus 100 in-window samples 501..600 ms.
-    pool.recordSlowAction(now - 25 * 60 * 60_000, 9_000);
+    pool.recordHealthSample("chat", { at: now - 25 * 60 * 60_000, failed: false, totalMs: 9_000 });
     for (let index = 0; index < 100; index += 1) {
-      pool.recordSlowAction(now - index * 60_000, 501 + index);
+      pool.recordHealthSample("chat", { at: now - index * 60_000, failed: false, totalMs: 501 + index });
     }
     const health = pool.getRuntimeHealth(now);
     expect(health.slowActions24h).toBe(100); // the 25h-old sample is pruned
@@ -1756,7 +1756,35 @@ describe("local runtime connection pool", () => {
     expect(call.mock.calls.filter(([method]) => method === "projects.add")).toHaveLength(1);
   });
 
-  it("logs daemon action envelopes that fail after a successful RPC response", async () => {
+  // What Settings → General counts as "background service calls failed": a
+  // call that failed for good, once, with what failed. A dropped connection a
+  // retry recovered, or a refusal the brain marks expected, is not a failure.
+  it.each([
+    {
+      name: "a failure the brain reports counts once, with its message",
+      request: { domain: "chat", action: "getChatEventHistoryPage", args: { sessionId: "chat-1", beforeOffset: 4_096 } },
+      replies: [{ ok: false, error: { message: "Expected 'beforeOffset' to be a finite number." } }],
+      firstError: "Expected 'beforeOffset' to be a finite number.",
+      settles: "rejects",
+      failedTop: [{ action: "chat.getChatEventHistoryPage", count: 1, lastError: "Expected 'beforeOffset' to be a finite number." }],
+    },
+    {
+      name: "a refusal the brain marks expected is not counted",
+      request: { domain: "chat", action: "getChatEventHistoryPage", args: { sessionId: "gone" } },
+      replies: [{ ok: false, error: { message: "Chat session 'gone' was not found.", expected: "user" } }],
+      firstError: "Chat session 'gone' was not found.",
+      settles: "rejects",
+      failedTop: [],
+    },
+    {
+      name: "a dropped connection a retry recovers is not counted",
+      request: { domain: "lane", action: "list", args: {} },
+      replies: [new Error("Remote ADE service connection closed."), { domain: "lane", action: "list", result: [], statusHints: {} }],
+      firstError: "Remote ADE service connection closed.",
+      settles: "resolves",
+      failedTop: [],
+    },
+  ])("counts failed actions for runtime health: $name", async ({ request, replies, firstError, settles, failedTop }) => {
     const logger = {
       debug: vi.fn(),
       info: vi.fn(),
@@ -1764,13 +1792,18 @@ describe("local runtime connection pool", () => {
       error: vi.fn(),
     };
     const rootPath = path.resolve("/repo");
+    const pending = [...replies];
     const call = vi.fn(async (method: string) => {
       if (method !== "ade/actions/call") throw new Error(`Unexpected method ${method}`);
-      return {
-        ok: false,
-        error: { message: "Expected 'beforeOffset' to be a finite number." },
-      };
+      const reply = pending.shift();
+      if (reply instanceof Error) throw reply;
+      return reply;
     });
+    const entry = {
+      client: { call, close: vi.fn(), isClosed: vi.fn(() => false) },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    };
     const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never);
     (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
       projectId: "project-1",
@@ -1780,26 +1813,21 @@ describe("local runtime connection pool", () => {
       lastOpenedAt: 1,
       gitOriginUrl: null,
     });
-    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
-      client: { call, isClosed: vi.fn(() => false) },
-      child: null,
-      socketPath: "/tmp/ade.sock",
-    });
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve(entry);
+    (pool as unknown as { createConnection: () => Promise<unknown> }).createConnection = async () => entry;
 
-    await expect(pool.callActionForRoot(rootPath, {
-      domain: "chat",
-      action: "getChatEventHistoryPage",
-      args: { sessionId: "chat-1", beforeOffset: 4_096 },
-    })).rejects.toThrow("Expected 'beforeOffset' to be a finite number.");
+    const outcome = pool.callActionForRoot(rootPath, request);
+    if (settles === "rejects") await expect(outcome).rejects.toThrow(firstError);
+    else await expect(outcome).resolves.toMatchObject({ domain: request.domain, action: request.action });
 
+    expect(pending, "every scripted reply was used").toHaveLength(0);
     expect(logger.warn).toHaveBeenCalledWith(
       "local_runtime.action_slow",
-      expect.objectContaining({
-        domain: "chat",
-        action: "getChatEventHistoryPage",
-        error: "Expected 'beforeOffset' to be a finite number.",
-      }),
+      expect.objectContaining({ domain: request.domain, action: request.action, error: firstError }),
     );
+    const health = pool.getRuntimeHealth();
+    expect(health.failedActions24h).toBe(failedTop.reduce((sum, entry) => sum + entry.count, 0));
+    expect(health.failedActionsTop).toEqual(failedTop);
   });
 
   it("single-flights initial project registration without dropping or reordering PTY writes", async () => {
