@@ -55,7 +55,7 @@ Nothing in ADE writes that item any more. Cloud 2 replaces this body of
 `getCloudProvider` with a provider that calls ADE's server. A development brain
 runs with sync off and has no vault, so it takes the key from `ADE_CLOUD_DEV_KEY`.
 
-## Where each piece lives
+## Source file map
 
 | Area | File (under `services/adeCloud/`) |
 |---|---|
