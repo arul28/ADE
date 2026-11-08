@@ -26,6 +26,21 @@ whole fallback range indiscriminately. If multicast is unavailable, use an
 available direct address, Tailscale or relay route; pairing still needs the
 machine's configured PIN or other authorized pairing flow.
 
+## Decisions
+
+- **Formats:** AppImage and deb, x64 and arm64, named `ADE-<version>-linux-<x64|arm64>.<ext>`. Other formats are not built.
+- **Updates:** the AppImage updates in place from `latest-linux.yml` (x64) or `latest-linux-arm64.yml` (arm64), through the same stop-brain, swap, relaunch path as macOS and Windows. A deb cannot update itself without root, so it links the download. An apt repository is the follow-up that would change this.
+- **Sandbox:** never turned off automatically. electron-builder's AppRun appends `--no-sandbox` when user namespaces are blocked, so `scripts/linux-appimage-launcher.sh` strips it and stops with an explanation; `ADE_ALLOW_NO_SANDBOX=1` is the person's explicit opt-in. No AppArmor profile is offered for the AppImage, because it could only match a path under `/tmp` that any local user could create. The deb installs a profile for its fixed path.
+- **Brain:** an AppImage copies its standalone runtime to the same `~/.ade` layout `install.sh` uses, so the service never points into the temporary mount. A deb can use its stable `/opt` path. A compatible running brain is adopted; a newer one is kept.
+
+## Release flow
+
+`release-core.yml` builds each architecture in `build-linux-release`, and `release-publish.yml` refuses to publish without all four packages and both manifests. Beta and stable use the same job. On a beta, `scripts/beta/feed.mjs` publishes the two Linux manifests to `beta-feed` with absolute URLs, as for macOS and Windows.
+
+To try a release without reaching any machine's update feed, dispatch `beta.yml` from the branch with `preview_ref` set. It publishes a prerelease that is installed by hand.
+
+Testing a build at a new version: delete `apps/desktop/resources/runtime/ade-linux-*` first, or the stale brain binary fails the AppImage's version check. `ADE_UPDATE_FEED_URL` is honored only by unpacked builds, so an update test against a local feed needs a throwaway build with that guard lifted.
+
 ## Release evidence
 
 The release target is unsigned AppImage and deb for x64 and arm64, with
@@ -41,7 +56,7 @@ missing evidence stays unverified, never inferred from macOS or a container.
 |---|---|
 | Wrong architecture, missing executable, native addon or CR-SQLite | Inspect checksums and package contents; launch each architecture and make a real CRR mutation with its packaged extension. |
 | Brain duplicated or existing headless identity lost | Start a headless brain, open the installed desktop in the same home, verify the same process/identity and a working project; restart both. |
-| AppImage fails on FUSE or user-namespace policy | Run on a normal installed host with sandbox enabled and test affected Ubuntu AppArmor policy. A container's `--appimage-extract-and-run` is useful smoke, not FUSE or sandbox proof. |
+| AppImage fails on FUSE or user-namespace policy | Run on a normal installed host with sandbox enabled and confirm an Ubuntu host with the namespace restriction gets the explanation, and that the deb works there. A container's `--appimage-extract-and-run` is useful smoke, not FUSE or sandbox proof. |
 | Window fails under X11 or Wayland | Launch and exercise window, input, resize and scaling in native X11 and Wayland sessions; Xvfb smoke alone is not either proof. |
 | Package integration or cleanup fails | Install deb and run AppImage as a normal user; check launcher, protocol link, CLI, restart and removal without deleting user data. |
 | Update feed points to wrong architecture or deb offers a failing install | Verify release metadata references matching published bytes and checksums; exercise AppImage N-to-N+1 and verify deb offers a download, not install. |

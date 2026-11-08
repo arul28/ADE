@@ -94,9 +94,13 @@ export function useMachineFacts(
   useEffect(() => {
     if (!active || !hasRemoteMachine) return;
     let cancelled = false;
+    // Only a hint for the platform label: without it the row falls back to
+    // the connection's architecture and hostname.
     void fetchAccountMachines().then((result) => {
       if (!cancelled && result.state === "ok") setDirectory(result.machines);
-    }).catch(() => undefined);
+    }).catch((error: unknown) => {
+      console.warn("[machines] could not read the account directory for machine platforms", error);
+    });
     return () => { cancelled = true; };
   }, [active, hasRemoteMachine]);
   return useMemo(() => {

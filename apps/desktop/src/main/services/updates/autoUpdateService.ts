@@ -1714,6 +1714,7 @@ export function createAutoUpdateService({
           error: null,
         });
       })().catch((error: unknown) => {
+        logger.warn("autoUpdate.manual_release_check_failed", { message: formatErrorMessage(error) });
         patchSnapshot({ status: "error", version: null, error: error instanceof Error ? error.message : String(error) });
       }).finally(() => { checkPromise = null; });
       return checkPromise.then(() => undefined);

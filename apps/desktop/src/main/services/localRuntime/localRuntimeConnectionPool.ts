@@ -8,6 +8,8 @@ import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
 import { materializeAppImageRuntime } from "./appImageRuntime";
+import { runningAppImagePath } from "../native/runningAppImage";
+import type { ServiceManagerResult } from "../../../../../ade-cli/src/serviceManager/common";
 import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
 import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
 import { signalChildProcessTree } from "../shared/utils";
@@ -1941,6 +1943,13 @@ export class LocalRuntimeConnectionPool {
     });
   }
 
+  /** Puts the AppImage's service back on its durable standalone runtime, after an aborted update. */
+  async reinstallStandaloneService(): Promise<ServiceManagerResult> {
+    await this.installServiceBestEffort();
+    const { state, path: servicePath, message } = this.serviceInstallStatus;
+    return { ok: state === "installed", serviceName: "ade", action: "install", path: servicePath, message: message ?? "" };
+  }
+
   private async runServiceInstallBestEffort(options: { forceRestart?: boolean } = {}): Promise<void> {
     const cliPath = resolveCliScriptPath();
     const releaseBuildBlock = localReleaseBuildOutputRuntimeBlock(cliPath);
@@ -2012,10 +2021,12 @@ export class LocalRuntimeConnectionPool {
       return;
     }
     let standalone: Awaited<ReturnType<typeof materializeAppImageRuntime>> | null = null;
-    if (process.platform === "linux" && process.env.APPIMAGE?.trim()) {
-      // Never replace files under a live brain. The normal update handoff stops
-      // it before the new app launch; preserve any other answering brain.
-      if (runningProbe || getRuntimeServiceStatus().running === true) {
+    if (runningAppImagePath()) {
+      // Never replace files under a live brain unless the caller is replacing
+      // that brain: a forced install restarts it right after, and the staged
+      // update swaps its files atomically. The normal update handoff stops it
+      // before the new app launch; preserve any other answering brain.
+      if (!options.forceRestart && (runningProbe || getRuntimeServiceStatus().running === true)) {
         this.serviceInstallStatus = {
           state: "skipped", attempted: false, path: cliPath,
           message: "A brain is already running; its runtime was left unchanged.",
@@ -2026,6 +2037,9 @@ export class LocalRuntimeConnectionPool {
       try {
         standalone = await materializeAppImageRuntime(this.appVersion);
       } catch (error) {
+        this.logger.warn("local_runtime.appimage_runtime_prepare_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
         this.serviceInstallStatus = {
           state: "failed", attempted: true, path: cliPath,
           message: `Could not prepare the AppImage brain: ${error instanceof Error ? error.message : String(error)}`,

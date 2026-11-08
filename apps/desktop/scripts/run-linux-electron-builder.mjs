@@ -8,6 +8,7 @@ import { ensureIcnsPng } from "./extract-icns-png.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const identity = resolveWindowsPackageIdentity(process.env.ADE_PACKAGE_CHANNEL);
 const channel = identity.packageChannel;
+if (channel === "beta") throw new Error("Beta is an update track of the normal app, not a separate Linux package. Build the normal package with ADE_RELEASE_TAG set to a beta tag.");
 const executable = channel === "stable" ? "ade-desktop" : `ade-desktop-${channel}`;
 const repository = process.env.ADE_RELEASE_REPOSITORY?.trim() || "arul28/ADE";
 if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error("ADE_RELEASE_REPOSITORY must be an owner/repo pair");

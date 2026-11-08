@@ -12,6 +12,7 @@
  * wanted.
  */
 
+import { runningAppImagePath } from "./runningAppImage";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -216,7 +217,7 @@ export function recordInstalledDesktopApp(input: {
   const resourcesPath = path.resolve(input.resourcesPath);
   // An AppImage's resources and executable are in a temporary mount. Keep the
   // actual image path so the record remains useful after the process exits.
-  const imagePath = platform === "linux" ? (input.env ?? process.env).APPIMAGE?.trim() : null;
+  const imagePath = runningAppImagePath(input.env ?? process.env, platform);
   const appPath = imagePath
     ? path.resolve(imagePath)
     : platform === "darwin" ? path.dirname(path.dirname(resourcesPath)) : path.dirname(resourcesPath);
@@ -250,7 +251,7 @@ export function recordInstalledDesktopApp(input: {
   }
 }
 
-function readDesktopAppRecord(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): DesktopAppRecord | null {
+export function readDesktopAppRecord(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): DesktopAppRecord | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(desktopAppRecordPath(env), "utf8")) as Partial<DesktopAppRecord>;
     if (parsed.platform !== platform || typeof parsed.resourcesPath !== "string" || !parsed.resourcesPath) return null;
@@ -641,23 +642,6 @@ export function readInstalledDesktopAppVersion(input: {
   homeDir?: string;
 } = {}): string | null {
   return readInstalledDesktopApp(input)?.version ?? null;
-}
-
-/** Installation policy reported by the host, never inferred by a remote client. */
-export function readDesktopUpdateInstallMode(): {
-  updateInstallMode: "in_place" | "manual_download" | "runtime_only";
-  downloadUrl: string | null;
-} {
-  const app = readInstalledDesktopApp();
-  if (!app) return { updateInstallMode: "runtime_only", downloadUrl: null };
-  if (process.platform === "linux") {
-    const record = readDesktopAppRecord(process.env, process.platform);
-    const image = record?.executablePath === app.path
-      ? record.linuxAppImage === true
-      : app.path.toLowerCase().endsWith(".appimage");
-    if (!image) return { updateInstallMode: "manual_download", downloadUrl: record?.downloadUrl ?? "https://github.com/arul28/ADE/releases/latest" };
-  }
-  return { updateInstallMode: "in_place", downloadUrl: null };
 }
 
 /**

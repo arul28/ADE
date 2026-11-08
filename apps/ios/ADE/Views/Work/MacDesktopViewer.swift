@@ -479,7 +479,7 @@ struct MacDesktopViewer: View {
     if desktop?.linuxDesktop != nil, desktop?.display != nil,
        syncService.canManageLinuxDesktop("macDesktop.stopSeat", laneId: laneId) { return "linux" }
     guard let seat = windowsDesktopSeat(desktop?.windowsDesktop, display: desktop?.display),
-          syncService.canStopWindowsDesktop(seat: seat) else { return nil }
+          syncService.canStopWindowsDesktop(seat: seat, laneId: laneId) else { return nil }
     return seat
   }
 

@@ -527,6 +527,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake git build-essential
       - name: Install Rust target
         run: rustup target add ${{ matrix.rust }}
+      - name: Locate npm download cache
+        id: npm_cache_dir
+        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+      - name: Restore npm download cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.npm_cache_dir.outputs.dir }}
+          key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
+          restore-keys: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-
       - name: Install desktop dependencies
         run: cd apps/desktop && npm ci
       - name: Install CLI dependencies
@@ -535,6 +544,8 @@ jobs:
         with:
           name: ade-runtime-linux-${{ matrix.arch }}
           path: apps/desktop/resources/runtime
+      - name: Gate runtime resources to linux-${{ matrix.arch }}
+        run: cd apps/desktop && npm run assert:runtime-target
       - name: Stamp release version
         env:
           ADE_RELEASE_TAG: ${{ inputs.release_tag }}
@@ -543,7 +554,35 @@ jobs:
         env:
           ADE_RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/beta/apply-build-track.mjs
+      # What's new comes from the same place as on macOS and Windows.
+      - name: Take release notes from main
+        if: ${{ !contains(inputs.release_tag, '-') }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin main
+          git checkout FETCH_HEAD -- changelog
+      - name: Write the beta's release notes
+        if: ${{ contains(inputs.release_tag, '-') && inputs.beta_notes != '' }}
+        env:
+          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+          ADE_BETA_NOTES: ${{ inputs.beta_notes }}
+        run: node scripts/beta/write-beta-changelog.mjs
+      - name: Reset release output
+        run: |
+          rm -rf apps/desktop/release apps/desktop/.cache
+          mkdir -p apps/desktop/.cache
+      - name: Prefetch Electron for ${{ matrix.arch }}
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron
+        run: cd apps/desktop && node scripts/prefetch-electron.mjs --platform=linux --arch=${{ matrix.arch }}
       - name: Build and validate Linux packages
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron-builder
+          ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
+          ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
+          # See the equivalent step in build-mac-release.
+          ADE_BUILD_SOURCEMAPS: "1"
         run: cd apps/desktop && npm run dist:linux
       - uses: actions/upload-artifact@v4
         with:
@@ -553,6 +592,20 @@ jobs:
             apps/desktop/release/ADE-*-linux-${{ matrix.arch }}.deb
             apps/desktop/release/latest-linux*.yml
           if-no-files-found: error
+      - name: Upload ${{ matrix.arch }} source maps to Sentry
+        continue-on-error: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/sentry/sentry-release.mjs upload --version "$RELEASE_TAG" --dist "linux-${{ matrix.arch }}"
+      - name: Upload ${{ matrix.arch }} source maps to PostHog
+        continue-on-error: true
+        env:
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          POSTHOG_PROJECT_ID: ${{ secrets.POSTHOG_PROJECT_ID }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/posthog/upload-sourcemaps.mjs --version "$RELEASE_TAG"
 
   build-win-release:
     # Same shape as build-mac-release: the tagged commit is built, signed and

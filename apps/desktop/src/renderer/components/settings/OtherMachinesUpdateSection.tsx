@@ -9,6 +9,7 @@ import {
   requestMachineUpdates,
   useKnownAdeVersions,
   useMachineUpdates,
+  machineUpdateIsManual,
 } from "../remoteTargets/machineUpdates";
 import {
   connectedMachinesFromSnapshot,
@@ -86,7 +87,7 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
   // here is not called behind.
   const known = useKnownAdeVersions();
   const behind = machinesBehindOnTheirTrack(machines, known);
-  const automaticBehind = behind.filter((machine) => (machine.updateInstallMode ?? machineUpdates.attempts[machine.id]?.updateInstallMode) !== "manual_download");
+  const automaticBehind = behind.filter((machine) => !machineUpdateIsManual(machine, machineUpdates.attempts[machine.id]));
   const targetById = new Map(behind.map((machine) => [machine.id, machine.targetVersion]));
   const anyBusy = automaticBehind.some((machine) => isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
   // Name tracks once Beta is anywhere in the picture: here, or on a machine.
@@ -138,7 +139,7 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
           const checking = machineUpdates.checkingIds.has(machine.id);
           const track = machineUpdateTrack(machine);
           const targetVersion = targetById.get(machine.id) ?? null;
-          const manual = (machine.updateInstallMode ?? attempt?.updateInstallMode) === "manual_download";
+          const manual = machineUpdateIsManual(machine, attempt);
           const downloadUrl = machine.downloadUrl ?? attempt?.downloadUrl;
           // Up to date only when this computer knows a build on that track to
           // compare with; otherwise the version stands alone.

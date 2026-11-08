@@ -73,7 +73,7 @@ import {
 } from "../../../shared/machinePresence";
 import { SavedMachineRow } from "./SavedMachineRow";
 import { MachinesBehindBanner } from "./MachinesBehindBanner";
-import { isMachineUpdateBusy, requestMachineUpdates, useKnownAdeVersions, useMachineUpdates } from "./machineUpdates";
+import { isMachineUpdateBusy, machineUpdateIsManual, requestMachineUpdates, useKnownAdeVersions, useMachineUpdates } from "./machineUpdates";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
 import { AccountMachineRow } from "./AccountMachineRow";
 import { accountRowKey, useRowActions } from "./useRowActions";
@@ -1333,14 +1333,14 @@ export function RemoteTargetList({
                 ? machineUpdateTargetVersion({ version: row.version }, knownVersions)
                 : null
           }
-          manualDownloadUrl={(row.status?.updateInstallMode ?? updateAttempt?.updateInstallMode) === "manual_download" ? row.status?.downloadUrl ?? updateAttempt?.downloadUrl ?? null : undefined}
+          manualDownloadUrl={machineUpdateIsManual(row.status ?? {}, updateAttempt) ? row.status?.downloadUrl ?? updateAttempt?.downloadUrl ?? null : undefined}
           updatePhase={updatePhase}
           power={pairAgainMachine?.power ?? null}
           updating={machineUpdates.updatingIds.has(row.target.id) || updateStatus?.inFlight === true}
           checkingUpdate={machineUpdates.checkingIds.has(row.target.id)}
           updateStatus={updateStatus ? { ok: updateStatus.ok, message: updateStatus.message } : null}
           onUpdateAndRestart={(targetVersion) =>
-            (row.status?.updateInstallMode ?? updateAttempt?.updateInstallMode) === "manual_download" ? openExternalUrl(row.status?.downloadUrl ?? updateAttempt?.downloadUrl) : void requestMachineUpdates(
+            machineUpdateIsManual(row.status ?? {}, updateAttempt) ? openExternalUrl(row.status?.downloadUrl ?? updateAttempt?.downloadUrl) : void requestMachineUpdates(
               [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel, targetVersion }],
             )
           }
@@ -1460,7 +1460,7 @@ export function RemoteTargetList({
               ? [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel, updateInstallMode: row.status?.updateInstallMode }]
               : []),
           knownVersions,
-        ).filter((machine) => (machine.updateInstallMode ?? machineUpdates.attempts[machine.id]?.updateInstallMode) !== "manual_download")
+        ).filter((machine) => !machineUpdateIsManual(machine, machineUpdates.attempts[machine.id]))
       : [];
     const updateAllBusy = behindMachines.some((machine) =>
       isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));

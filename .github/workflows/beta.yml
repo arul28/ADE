@@ -11,7 +11,8 @@ run-name: ${{ inputs.preview_ref && format('Beta preview {0}', inputs.preview_re
 # a newer commit's CI still runs), and, at most once every 3 hours, builds it
 # as vX.Y.Z-beta.N (X.Y.Z = latest stable + one patch). The build is the
 # stable release build (release-core.yml), stamped as a beta: same app id and
-# name, orange icon, updater manifests still named latest-mac.yml/latest.yml.
+# name, orange icon, updater manifests still named latest-mac.yml/latest.yml/
+# latest-linux*.yml.
 # It is published as a GitHub prerelease (release-publish.yml): a draft until
 # every asset is attached, then public, never "latest". Only then does the
 # feed job point the fixed beta-feed prerelease at it, which is what Beta
@@ -234,7 +235,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/feed-in" "$RUNNER_TEMP/feed-out"
           gh release view "$TAG_NAME" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/feed-assets.txt"
           gh release download "$TAG_NAME" --dir "$RUNNER_TEMP/feed-in" \
-            --pattern latest-mac.yml --pattern latest.yml --pattern release-manifest.json
+            --pattern latest-mac.yml --pattern latest.yml --pattern 'latest-linux*.yml' \
+            --pattern release-manifest.json
           node scripts/beta/feed.mjs --tag "$TAG_NAME" --repo "$GH_REPO" \
             --in "$RUNNER_TEMP/feed-in" --out "$RUNNER_TEMP/feed-out" \
             --assets "$RUNNER_TEMP/feed-assets.txt"
@@ -257,13 +259,15 @@ jobs:
           # A file being replaced is briefly missing; clients read a 404 as
           # "no beta right now" and check again later.
           manifests=("$out/latest-mac.yml")
-          if [ -f "$out/latest.yml" ]; then
-            manifests+=("$out/latest.yml")
-          elif gh release view beta-feed --json assets --jq '.assets[].name' | grep -qx latest.yml; then
-            # This beta has no Windows build; do not leave Windows machines on
-            # an older beta's manifest that names a different version.
-            gh release delete-asset beta-feed latest.yml --yes
-          fi
+          # A beta without one platform's build must not leave that platform's
+          # machines on an older beta's manifest that names a different version.
+          for manifest in latest.yml latest-linux.yml latest-linux-arm64.yml; do
+            if [ -f "$out/$manifest" ]; then
+              manifests+=("$out/$manifest")
+            elif gh release view beta-feed --json assets --jq '.assets[].name' | grep -qx "$manifest"; then
+              gh release delete-asset beta-feed "$manifest" --yes
+            fi
+          done
           gh release upload beta-feed "${manifests[@]}" --clobber
           gh release upload beta-feed "$out/beta.json" --clobber
           feed_tag="$(gh release download beta-feed --pattern beta.json --output - | jq -r .tag)"

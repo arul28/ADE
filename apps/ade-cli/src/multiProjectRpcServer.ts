@@ -162,7 +162,8 @@ import {
 } from "./services/account/agentRemoteRpc";
 import { gitRemoteIdentity, peerGitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { readPermissionLevel } from "../../desktop/src/shared/permissionLadder";
-import { readInstalledDesktopAppVersion, readDesktopUpdateInstallMode } from "../../desktop/src/main/services/native/nativeHelperPaths";
+import { readInstalledDesktopAppVersion } from "../../desktop/src/main/services/native/nativeHelperPaths";
+import { readDesktopUpdateInstallMode } from "../../desktop/src/main/services/native/desktopUpdateInstallMode";
 
 type HandlerEntry = {
   handler: JsonRpcHandler & { dispose?: () => void };

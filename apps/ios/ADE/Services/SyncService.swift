@@ -17245,17 +17245,22 @@ final class SyncService: ObservableObject {
   /// this separately from controller-only desktop actions: `stopSeat` stops
   /// either seat (private, or the user's main desktop); an older host has only
   /// `stopPrivate`, for the private screen. A Mac lane is never a viewer's to stop.
-  func canStopWindowsDesktop(seat: String?) -> Bool {
+  func canStopWindowsDesktop(seat: String?, laneId: String) -> Bool {
+    let stopSeat = laneAllowsViewer("macDesktop.stopSeat", laneId: laneId)
     switch seat {
-    case "shared": return supportsViewerRemoteAction("macDesktop.stopSeat")
-    case "private":
-      return supportsViewerRemoteAction("macDesktop.stopSeat") || supportsViewerRemoteAction("macDesktop.stopPrivate")
+    case "shared": return stopSeat
+    case "private": return stopSeat || laneAllowsViewer("macDesktop.stopPrivate", laneId: laneId)
     default: return false
     }
   }
 
+  /// Asked of the machine that owns the lane, which may not be the focused one.
+  private func laneAllowsViewer(_ action: String, laneId: String) -> Bool {
+    laneCommandDescriptor(action, laneId: laneId)?.policy.allowsPhone == true
+  }
+
   func windowsDesktopStop(laneId: String, seat: String?) async throws {
-    guard canStopWindowsDesktop(seat: seat) else {
+    guard canStopWindowsDesktop(seat: seat, laneId: laneId) else {
       throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This host cannot stop the Windows screen from here."])
     }
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -17263,7 +17268,7 @@ final class SyncService: ObservableObject {
       throw NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: "No lane was selected."])
     }
     _ = try await sendCommand(
-      action: supportsViewerRemoteAction("macDesktop.stopSeat") ? "macDesktop.stopSeat" : "macDesktop.stopPrivate",
+      action: laneAllowsViewer("macDesktop.stopSeat", laneId: trimmed) ? "macDesktop.stopSeat" : "macDesktop.stopPrivate",
       args: ["laneId": trimmed],
       disconnectOnTimeout: false,
       timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
@@ -17370,10 +17375,12 @@ final class SyncService: ObservableObject {
   }
 
   private func resetMacDesktopStreamHandlers() {
-    macDesktopStreamMachineKeys.removeAll()
-    macDesktopStreamRecordHandlers.removeAll()
-    macDesktopStreamEndedHandlers.removeAll()
-    macDesktopStreamDecodeQueue.removeAll()
+    // A stream on another machine rides that machine's own socket, so it
+    // outlives this one. Without its key, its records would be dropped.
+    for subscriptionId in macDesktopStreamRecordHandlers.keys
+    where macDesktopStreamMachineKeys[subscriptionId] == nil {
+      unregisterMacDesktopStream(subscriptionId: subscriptionId)
+    }
   }
 
   /// Refuses a live-stream call the connected host never advertised, rather

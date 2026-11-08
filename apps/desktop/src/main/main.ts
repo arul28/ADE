@@ -385,6 +385,7 @@ import {
   getSharedAccountDirectoryBaseUrl,
   registerAccountConfigProjectRoot,
 } from "../../../ade-cli/src/services/account/sharedAccountAuthService";
+import { runningAppImagePath } from "./services/native/runningAppImage";
 import { checkRuntimeServiceRemovable, installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
 import {
   deferToRunningWindowsInstall,
@@ -3413,7 +3414,11 @@ app.whenReady().then(async () => {
     // whether or not this abort has anything to reinstall.
     localRuntimePool.endUpdateWindow(`install_aborted:${reason}`);
     if (!runtimeServiceUninstalledForUpdate) return;
-    const result = await installRuntimeService();
+    // From an AppImage, the plain install would point the service into this
+    // launch's temporary mount, so it goes through the durable standalone copy.
+    const result = runningAppImagePath()
+      ? await localRuntimePool.reinstallStandaloneService()
+      : await installRuntimeService();
     const payload = {
       reason,
       ok: result.ok,
@@ -3503,7 +3508,7 @@ app.whenReady().then(async () => {
   // Channel builds do not check for updates. There is no per-channel publish
   // feed: an Alpha would poll Stable's feed and offer to "update" itself into
   // a Stable installer with a different appId and ADE home.
-  const linuxManualUpdate = app.isPackaged && process.platform === "linux" && !process.env.APPIMAGE?.trim();
+  const linuxManualUpdate = app.isPackaged && process.platform === "linux" && !runningAppImagePath();
   const hasReleaseChannel = app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
   const hasUpdateFeed = hasReleaseChannel && !linuxManualUpdate;
   // The "ADE could not start" window. Built right after the update service,
@@ -3524,7 +3529,7 @@ app.whenReady().then(async () => {
       return release ? { version: release.version, url: `https://github.com/${packagedReleaseRepository}/releases/tag/${encodeURIComponent(release.tagName)}` } : null;
     } : undefined,
     updaterCacheDir: app.isPackaged ? resolveAutoUpdaterCacheDir() : undefined,
-    installTargetPath: process.platform === "linux" ? process.env.APPIMAGE?.trim() || process.execPath : process.execPath,
+    installTargetPath: runningAppImagePath() ?? process.execPath,
     autoCheckEnabled: hasReleaseChannel,
     autoApplyEnabled: hasUpdateFeed && process.env.ADE_DISABLE_AUTO_UPDATE_APPLY !== "1",
     // Stable and Beta are tracks of this same install, not channels: the

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { safeStorage } from "electron";
-import { isSecureStorageAvailable } from "../shared/secureStorage";
+import { canDecryptStoredSecrets, isSecureStorageAvailable } from "../shared/secureStorage";
 
 /**
  * Where a music provider's sign-in lives: one small file per provider in this
@@ -33,7 +33,7 @@ export function createMusicTokenStore(args: {
     if (loaded) return;
     loaded = true;
     try {
-      if (!fs.existsSync(file) || !isSecureStorageAvailable(safeStorage)) return;
+      if (!fs.existsSync(file) || !canDecryptStoredSecrets(safeStorage)) return;
       const parsed = JSON.parse(safeStorage.decryptString(fs.readFileSync(file))) as Record<string, unknown>;
       for (const [key, value] of Object.entries(parsed)) {
         if (typeof value === "string") values.set(key, value);

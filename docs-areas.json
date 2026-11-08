@@ -16,7 +16,8 @@
         "getting-started/install",
         "getting-started/ade-beta",
         "getting-started/connect-machine",
-        "getting-started/windows"
+        "getting-started/windows",
+        "getting-started/linux"
       ]
     },
     {

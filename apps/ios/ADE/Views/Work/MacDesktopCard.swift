@@ -153,7 +153,7 @@ struct MacDesktopCard: View {
                     Button("Keep running", role: .cancel) {}
                   } message: { Text("This closes the lane's screen and its apps.") }
               } else if let seat = windowsDesktopSeat(macDesktop.windowsDesktop, display: display),
-                 syncService.canStopWindowsDesktop(seat: seat) {
+                 syncService.canStopWindowsDesktop(seat: seat, laneId: laneId) {
                 let copy = windowsDesktopStopCopy(seat: seat)
                 // Asks first, like every Stop on the desktop.
                 Button(stopping ? "Stopping…" : "Stop", role: .destructive) {

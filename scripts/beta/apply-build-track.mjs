@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Turns a release build into a Beta build when its tag is a beta. Run by
-// release-core.yml right after "Stamp release version", on every macOS and
-// Windows packaging job; on a stable tag it changes nothing.
+// release-core.yml right after "Stamp release version", on every macOS, Windows
+// and Linux packaging job; on a stable tag it changes nothing.
 //
 //   ADE_RELEASE_TAG=v1.2.128-beta.3 node scripts/beta/apply-build-track.mjs
 //
@@ -12,9 +12,10 @@
 // here is committed.
 //
 // 1. build.detectUpdateChannel = false. electron-builder otherwise reads the
-//    "beta" out of 1.2.128-beta.3 and writes beta-mac.yml / beta.yml, which
-//    the release jobs, the publish job and the beta feed all expect as
-//    latest-mac.yml / latest.yml (docs/plans/beta-track.md).
+//    "beta" out of 1.2.128-beta.3 and writes beta-mac.yml / beta.yml /
+//    beta-linux.yml, which the release jobs, the publish job and the beta feed
+//    all expect as latest-mac.yml / latest.yml / latest-linux*.yml
+//    (docs/plans/beta-track.md).
 // 2. build.mac.icon = build/icon.beta.icns, the orange icon.
 // 3. build/icon.ico is overwritten with the orange icon. validate-win-artifacts
 //    requires build.win.icon to stay "build/icon.ico", so the file changes and
