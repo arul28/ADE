@@ -35,6 +35,8 @@ beforeEach(() => {
   worktree = path.join(root, "lane");
   sh(`git init -q --bare ${path.join(root, "origin.git")}`, root);
   sh("git init -q -b main repo", root);
+  // Git for Windows turns LF into CRLF on checkout by default, as it would for any restored file.
+  sh("git config core.autocrlf false");
   fs.writeFileSync(path.join(repo, "a.txt"), "a\n");
   sh("git add . && git commit -qm init");
   sh(`git remote add origin ${path.join(root, "origin.git")} && git push -q -u origin main`);

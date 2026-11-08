@@ -127,6 +127,7 @@ export function createLaneLifecycleScan(options: {
   onReportChanged: () => void;
 }) {
   let flight: Promise<void> | null = null;
+  let lastPruneMs = 0;
 
   /** Chats or terminals the database records as running in the lane, loaded into memory or not. */
   const hasPersistedRunningSession = (laneId: string): boolean => Boolean(options.db.get<{ found: number }>(
@@ -270,8 +271,12 @@ export function createLaneLifecycleScan(options: {
       const laneService = options.laneService;
       const projectId = options.projectId?.trim();
       if (!laneService || !options.hasConfig || !projectId) return;
-      // Saved lane work expires whether or not any cleanup rule is on.
-      await laneService.pruneDeletedLanes?.();
+      // Saved lane work expires whether or not any cleanup rule is on. This
+      // runs every minute, so the git call behind it waits its own interval.
+      if (Date.now() - lastPruneMs >= LIFECYCLE_SCAN_INTERVAL_MS) {
+        lastPruneMs = Date.now();
+        await laneService.pruneDeletedLanes?.();
+      }
       const policy = options.policy();
       if (!laneCleanupChecksOn(policy)) return;
       const previous = options.db.get<{ last_scan_at: string | null; last_attempt_at: string | null }>(
