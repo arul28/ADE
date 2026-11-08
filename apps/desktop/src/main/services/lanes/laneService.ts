@@ -27,7 +27,7 @@ import {
   type GitCheckoutProgress,
 } from "../git/git";
 import { runGitWithGithubAuthFallback, runGitWithGithubAuthFallbackOrThrow } from "../git/gitTransportAuth";
-import { describeUnsavedSubmoduleWork, describeUnsavedWorktreeWork, readWorktreeDirty, UNCOMMITTED_CHANGES_REASON } from "../git/worktreeState";
+import { describeUnsavedWorktreeWork, describeWorkInOtherRepos, readWorktreeDirty, UNCOMMITTED_CHANGES_REASON } from "../git/worktreeState";
 import {
   applySavedLaneFiles,
   createRestoredLaneBranches,
@@ -7812,6 +7812,8 @@ export function createLaneService({
             // would answer for the main checkout instead.
             if (!risk.finishRemoval) {
               const unsavedWork = await describeUnsavedWorktreeWork(normalizedWorktree);
+              const otherRepoWork = unsavedWork ? await describeWorkInOtherRepos(normalizedWorktree) : null;
+              if (otherRepoWork) throw new AdeExpectedError(`${otherRepoWork} ${NESTED_REPO_WORK_NOT_KEPT}`, "user");
               if (unsavedWork && args.forceDirty !== true) {
                 logger.info("lane.reclaim.unsaved_work", { laneId: args.laneId, reason: unsavedWork });
                 throw new LaneUnsavedWorkError(
@@ -8421,15 +8423,16 @@ export function createLaneService({
               return { detail: fs.existsSync(row.worktree_path) ? "stale worktree directory" : "missing worktree directory" };
             }
             const unsavedWork = await describeUnsavedWorktreeWork(row.worktree_path);
+            // Force keeps a copy of the lane, but a copy cannot hold another
+            // repository. Refused here, before anything is stopped, and
+            // without offering a force that would refuse too.
+            const otherRepoWork = unsavedWork ? await describeWorkInOtherRepos(row.worktree_path) : null;
+            if (otherRepoWork) throw new AdeExpectedError(`${otherRepoWork} ${NESTED_REPO_WORK_NOT_KEPT}`, "user");
             if (unsavedWork && !force) {
               logger.info("lane.delete.unsaved_work", { laneId, reason: unsavedWork });
               // An answer for the user, not a defect: keep it out of Sentry issues.
               throw new AdeExpectedError(`${unsavedWork} Enable force delete after confirming warnings.`, "user");
             }
-            // Force keeps a copy of the lane, but a copy cannot hold another
-            // repository. Refused here, before anything is stopped.
-            const submoduleWork = force ? await describeUnsavedSubmoduleWork(row.worktree_path) : null;
-            if (submoduleWork) throw new AdeExpectedError(`${submoduleWork} ${NESTED_REPO_WORK_NOT_KEPT}`, "user");
             return { detail: unsavedWork ? "dirty (force enabled)" : "clean" };
           });
         }
@@ -9006,13 +9009,18 @@ export function createLaneService({
       if (!snapshot) {
         throw new AdeExpectedError(`This deleted lane is no longer saved. It was restored, removed, or kept past ${DELETED_LANE_KEEP_DAYS} days.`, "user");
       }
+      // The save exists from before the folder goes; taking it now would
+      // leave nothing once the delete finishes.
+      if (deleteProgressByLaneId.get(snapshot.laneId)?.overallStatus === "running") {
+        throw new AdeExpectedError("This lane is still being deleted. Restore it once that finishes.", "user");
+      }
       const keptRow = getLaneRow(snapshot.laneId);
       // Freeing up space keeps the lane, and a delete that stopped partway
       // can leave its checkout intact. A lane that lost its folder or branch
       // cannot hold the work, so it gets a new one instead.
       const restoresIntoKeptLane = keptRow != null && keptRow.lane_type !== "primary" && (
         snapshot.kind === "freed"
-        || (fs.existsSync(keptRow.worktree_path) && snapshot.baseCommit != null && (await runGit(
+        || (await isExpectedGitWorktreeRoot(keptRow.worktree_path) && snapshot.baseCommit != null && (await runGit(
           ["merge-base", "--is-ancestor", snapshot.baseCommit, "HEAD"],
           { cwd: keptRow.worktree_path, timeoutMs: 8_000 },
         )).exitCode === 0)

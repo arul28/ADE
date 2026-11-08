@@ -1,10 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import { GitTimeoutError, runGit, runGitOrThrow } from "../git/git";
 import { GIT_TREE_WRITE_TIMEOUT_MS } from "../git/gitTimeouts";
-import { describeUnsavedNestedRepoWork, describeUnsavedSubmoduleWork } from "../git/worktreeState";
+import { describeUnsavedNestedRepoWork, describeWorkInOtherRepos } from "../git/worktreeState";
 import type { Logger } from "../logging/logger";
 import { DELETED_LANE_KEEP_DAYS } from "../../../shared/laneCleanup";
 import { laneBranchSlug } from "../../../shared/laneBranchName";
@@ -26,6 +25,7 @@ const DELETED_LANE_REF_PREFIX = "refs/ade/deleted-lanes/";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SNAPSHOT_TIMEOUT_MS = 120_000;
 const READ_TIMEOUT_MS = 15_000;
+const RAW_DIFF_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 
 /** Commits are written as ADE, so a machine with no git identity can still save. */
 const SNAPSHOT_IDENTITY_ENV: NodeJS.ProcessEnv = {
@@ -106,8 +106,8 @@ async function hasUncommittedFiles(worktreePath: string): Promise<boolean> {
  */
 async function refuseUnsavedNestedRepos(worktreePath: string, env: NodeJS.ProcessEnv): Promise<void> {
   const added = await runGitOrThrow(
-    ["diff", "--cached", "--raw", "-z", "--no-renames", "--no-abbrev", "--ignore-submodules=none", "--diff-filter=AT"],
-    { cwd: worktreePath, timeoutMs: SNAPSHOT_TIMEOUT_MS, env },
+    ["diff", "--cached", "--raw", "-z", "--no-renames", "--no-abbrev", "--ignore-submodules=none", "--diff-filter=ATM"],
+    { cwd: worktreePath, timeoutMs: SNAPSHOT_TIMEOUT_MS, env, maxOutputBytes: RAW_DIFF_MAX_OUTPUT_BYTES },
   );
   // `-z` alternates `:<oldMode> <newMode> <old> <new> <status>` and the path.
   const fields = added.split("\0");
@@ -119,14 +119,24 @@ async function refuseUnsavedNestedRepos(worktreePath: string, env: NodeJS.Proces
   }
 }
 
+/** A folder only this user can read, for the lane's file contents passing through it. */
+async function withPrivateTempDir<T>(run: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-deleted-lane-"));
+  try {
+    return await run(dir);
+  } finally {
+    await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 /**
  * The tree of everything in the worktree right now, written through a copy
  * of its index so the lane's own staging area is left as it was. Ignored
  * files (node_modules, build output) stay out, as they would in a commit.
  */
 async function writeWorkingTree(worktreePath: string): Promise<string> {
-  const tempIndex = path.join(os.tmpdir(), `ade-deleted-lane-${randomUUID()}.index`);
-  try {
+  return withPrivateTempDir(async (dir) => {
+    const tempIndex = path.join(dir, "index");
     const indexPathRes = await runGit(["rev-parse", "--git-path", "index"], { cwd: worktreePath, timeoutMs: READ_TIMEOUT_MS });
     const indexPath = indexPathRes.stdout.trim();
     if (indexPathRes.exitCode === 0 && indexPath) {
@@ -142,9 +152,7 @@ async function writeWorkingTree(worktreePath: string): Promise<string> {
     await runGitOrThrow(["add", "-A", "--", "."], { cwd: worktreePath, timeoutMs: SNAPSHOT_TIMEOUT_MS, env });
     await refuseUnsavedNestedRepos(worktreePath, env);
     return (await runGitOrThrow(["write-tree"], { cwd: worktreePath, timeoutMs: SNAPSHOT_TIMEOUT_MS, env })).trim();
-  } finally {
-    await fs.promises.rm(tempIndex, { force: true }).catch(() => undefined);
-  }
+  });
 }
 
 /**
@@ -185,8 +193,8 @@ export async function saveDeletedLaneSnapshot(args: {
     : null;
   const branchTip = branchName ? await revParse(args.projectRoot, `refs/heads/${branchName}`) : null;
   const uncommitted = args.worktreePath ? await hasUncommittedFiles(args.worktreePath) : false;
-  const submoduleWork = args.worktreePath ? await describeUnsavedSubmoduleWork(args.worktreePath) : null;
-  if (submoduleWork) throw new Error(`${submoduleWork} ${NESTED_REPO_WORK_NOT_KEPT}`);
+  const otherRepoWork = args.worktreePath ? await describeWorkInOtherRepos(args.worktreePath) : null;
+  if (otherRepoWork) throw new Error(`${otherRepoWork} ${NESTED_REPO_WORK_NOT_KEPT}`);
   const atRisk = (commit: string) => hasCommitsOnlyThisLaneHolds({
     projectRoot: args.projectRoot,
     tip: commit,
@@ -363,11 +371,12 @@ export async function applySavedLaneFiles(
   if (!snapshot.baseCommit || !worktreePath) {
     return { restored: false, warning: "The lane has no folder to put its files back into." };
   }
-  const patchPath = path.join(os.tmpdir(), `ade-deleted-lane-${randomUUID()}.patch`);
+  const { baseCommit } = snapshot;
   const limits = { timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS };
-  try {
+  return withPrivateTempDir(async (dir) => {
+    const patchPath = path.join(dir, "saved.patch");
     const diff = await runGit(
-      ["diff", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", `--output=${patchPath}`, snapshot.baseCommit, snapshot.commit],
+      ["diff", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", `--output=${patchPath}`, baseCommit, snapshot.commit],
       { cwd: projectRoot, ...limits },
     );
     if (diff.exitCode !== 0) return { restored: false, warning: diff.stderr.trim() || `git diff exited ${diff.exitCode}` };
@@ -379,9 +388,7 @@ export async function applySavedLaneFiles(
     const alreadyThere = await runGit(["apply", "--reverse", "--check", patchPath], { cwd: worktreePath, ...limits });
     if (alreadyThere.exitCode === 0) return { restored: true, warning: null };
     return { restored: false, warning: applied.stderr.trim() || `git apply exited ${applied.exitCode}` };
-  } finally {
-    await fs.promises.rm(patchPath, { force: true }).catch(() => undefined);
-  }
+  });
 }
 
 /** Drops the save once everything came back; otherwise it stays to try again. */

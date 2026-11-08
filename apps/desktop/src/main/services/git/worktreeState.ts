@@ -35,6 +35,13 @@ export async function readWorktreeDirty(worktreePath: string, timeoutMs = 8_000)
 
 const SUBMODULE_INSPECT_MAX_DEPTH = 4;
 
+/**
+ * "any-doubt" counts what ADE cannot prove safe (a plain delete stops and
+ * asks); "found" counts only work that is really there, for a discard that
+ * has no copy to fall back on and no one left to ask.
+ */
+type RepoWorkMode = "any-doubt" | "found";
+
 function realPathOrNull(target: string): string | null {
   try {
     return fs.realpathSync.native(target);
@@ -48,13 +55,20 @@ function realPathOrNull(target: string): string | null {
  * changes or commits no remote-tracking branch has. `label` names it in the
  * sentence ("submodule vendor/x"). Null when nothing would be lost.
  */
-async function describeRepoWork(repoPath: string, label: string, timeoutMs: number, depth: number): Promise<string | null> {
+async function describeRepoWork(
+  repoPath: string,
+  label: string,
+  timeoutMs: number,
+  depth: number,
+  mode: RepoWorkMode,
+  pinnedCommit: string | null,
+): Promise<string | null> {
   const name = label.charAt(0).toUpperCase() + label.slice(1);
   if (depth + 1 >= SUBMODULE_INSPECT_MAX_DEPTH) {
-    return `${name} is nested too deep for ADE to check.`;
+    return mode === "found" ? null : `${name} is nested too deep for ADE to check.`;
   }
   const couldNotCheck = (stderr: string, exitCode: number | null) =>
-    `ADE could not check ${label}: ${stderr.trim() || `git exited ${exitCode}`}`;
+    mode === "found" ? null : `ADE could not check ${label}: ${stderr.trim() || `git exited ${exitCode}`}`;
   // Each repository answers for itself; a nested one is checked below.
   const dirty = await runGit(["status", "--porcelain=v1", "--ignore-submodules=all"], { cwd: repoPath, timeoutMs });
   if (dirty.exitCode !== 0) return couldNotCheck(dirty.stderr, dirty.exitCode);
@@ -65,13 +79,18 @@ async function describeRepoWork(repoPath: string, label: string, timeoutMs: numb
   // Only a remote-tracking ref proves a commit is saved. A tag cannot: it may
   // never have been pushed, and it lives in this worktree's own submodule
   // repository, which the removal deletes.
+  // The commit the parent pins came from somewhere: a shallow or tag-only
+  // checkout of it holds nothing of its own, and only `found` may assume so.
+  const head = mode === "found" && pinnedCommit
+    ? (await runGit(["rev-parse", "HEAD"], { cwd: repoPath, timeoutMs })).stdout.trim()
+    : null;
   const unpushed = await runGit(
-    ["rev-list", "-n", "1", "HEAD", "--branches", "--not", "--remotes"],
+    ["rev-list", "-n", "1", ...(head === pinnedCommit && head ? [] : ["HEAD"]), "--branches", "--not", "--remotes"],
     { cwd: repoPath, timeoutMs },
   );
   if (unpushed.exitCode !== 0) return couldNotCheck(unpushed.stderr, unpushed.exitCode);
   if (unpushed.stdout.trim().length > 0) return `${name} has commits that no remote has.`;
-  return describeUnsavedSubmoduleWork(repoPath, timeoutMs, depth + 1);
+  return describeUnsavedSubmoduleWork(repoPath, timeoutMs, depth + 1, mode);
 }
 
 /**
@@ -79,16 +98,43 @@ async function describeRepoWork(repoPath: string, label: string, timeoutMs: numb
  * clone sitting in the folder) holds work removing the worktree would lose.
  */
 export async function describeUnsavedNestedRepoWork(repoPath: string, relPath: string, timeoutMs = 8_000): Promise<string | null> {
-  return describeRepoWork(repoPath, `git repository ${relPath}`, timeoutMs, 0);
+  return describeRepoWork(repoPath, `git repository ${relPath}`, timeoutMs, 0, "found", null);
+}
+
+/**
+ * Work in the other git repositories inside a lane (its submodules and any
+ * untracked clones), found for certain. ADE's saved copy of a lane holds the
+ * parent repository only, so a discard stops for this. A status that fails
+ * here finds nothing; the save that follows reads it again and stops.
+ */
+export async function describeWorkInOtherRepos(worktreePath: string, timeoutMs = 8_000): Promise<string | null> {
+  const submoduleWork = await describeUnsavedSubmoduleWork(worktreePath, timeoutMs, 0, "found");
+  if (submoduleWork) return submoduleWork;
+  const status = await runGit(["status", "--porcelain=v1", "-z", "--ignore-submodules=all"], { cwd: worktreePath, timeoutMs });
+  if (status.exitCode !== 0) return null;
+  for (const entry of status.stdout.split("\0")) {
+    if (!entry.startsWith("?? ") || !entry.endsWith("/")) continue;
+    const relPath = entry.slice(3, -1);
+    const repoPath = path.join(worktreePath, relPath);
+    if (!fs.existsSync(path.join(repoPath, ".git"))) continue;
+    const work = await describeUnsavedNestedRepoWork(repoPath, relPath, timeoutMs);
+    if (work) return work;
+  }
+  return null;
 }
 
 /**
  * Why a submodule under `repoPath` holds work that removing the worktree would
  * lose, or null. A submodule ADE cannot inspect counts as holding work, so the
- * delete stops and says which one. ADE's saved copy of a lane holds the parent
- * repository only, so a force delete stops here too.
+ * delete stops and says which one; a force delete still removes it unless
+ * `mode` is "found" and the work is there for certain.
  */
-export async function describeUnsavedSubmoduleWork(repoPath: string, timeoutMs = 8_000, depth = 0): Promise<string | null> {
+async function describeUnsavedSubmoduleWork(
+  repoPath: string,
+  timeoutMs = 8_000,
+  depth = 0,
+  mode: RepoWorkMode = "any-doubt",
+): Promise<string | null> {
   if (!fs.existsSync(path.join(repoPath, ".gitmodules"))) return null;
   const listed = await runGit(
     ["config", "-z", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"],
@@ -97,7 +143,7 @@ export async function describeUnsavedSubmoduleWork(repoPath: string, timeoutMs =
   // Exit 1 means no submodule path is configured.
   if (listed.exitCode === 1) return null;
   if (listed.exitCode !== 0) {
-    return `ADE could not read the submodule list in ${repoPath}: ${listed.stderr.trim() || `git exited ${listed.exitCode}`}`;
+    return mode === "found" ? null : `ADE could not read the submodule list in ${repoPath}: ${listed.stderr.trim() || `git exited ${listed.exitCode}`}`;
   }
   const realRepoPath = realPathOrNull(repoPath) ?? repoPath;
   for (const record of listed.stdout.split("\0")) {
@@ -113,11 +159,13 @@ export async function describeUnsavedSubmoduleWork(repoPath: string, timeoutMs =
     try {
       stats = fs.statSync(submodulePath, { throwIfNoEntry: false });
     } catch (error) {
+      if (mode === "found") continue;
       return `ADE could not check submodule ${relPath}: ${error instanceof Error ? error.message : String(error)}`;
     }
     if (!stats?.isDirectory()) continue;
     const realSubmodulePath = realPathOrNull(submodulePath);
     if (!realSubmodulePath || realSubmodulePath === realRepoPath || !isWithinDir(realRepoPath, realSubmodulePath)) {
+      if (mode === "found") continue;
       return `Submodule ${relPath} points outside the lane, so ADE cannot check it.`;
     }
     if (!fs.existsSync(path.join(submodulePath, ".git"))) {
@@ -128,12 +176,16 @@ export async function describeUnsavedSubmoduleWork(repoPath: string, timeoutMs =
       try {
         entries = fs.readdirSync(submodulePath);
       } catch (error) {
+        if (mode === "found") continue;
         return `ADE could not check submodule folder ${relPath}: ${error instanceof Error ? error.message : String(error)}`;
       }
       if (entries.length > 0) return `Submodule folder ${relPath} holds files that are not in any repository.`;
       continue;
     }
-    const work = await describeRepoWork(submodulePath, `submodule ${relPath}`, timeoutMs, depth);
+    const pinned = mode === "found"
+      ? (await runGit(["rev-parse", "--verify", "--quiet", `HEAD:${relPath}`], { cwd: repoPath, timeoutMs })).stdout.trim() || null
+      : null;
+    const work = await describeRepoWork(submodulePath, `submodule ${relPath}`, timeoutMs, depth, mode, pinned);
     if (work) return work;
   }
   return null;
