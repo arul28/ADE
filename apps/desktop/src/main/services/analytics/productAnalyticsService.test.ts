@@ -2515,6 +2515,8 @@ describe("product analytics producers", () => {
     ["lanes", "auto_delete_changed", "enabled"],
     ["lanes", "space_freed", "completed"],
     ["lanes", "space_freed", "failed"],
+    ["lanes", "deleted_lane_restored", "completed"],
+    ["lanes", "deleted_lane_restored", "failed"],
     ["star_prompt", "star_prompt_shown", "prompt_first"],
     ["star_prompt", "star_prompt_clicked", "prompt_second"],
     ["star_prompt", "star_prompt_dismissed", "prompt_first"],

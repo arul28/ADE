@@ -69,6 +69,19 @@ struct LaneBatchManageSheet: View {
     snapshots.map(\.lane.id)
   }
 
+  /// Lanes with uncommitted work. Without the toggle a batch skips them, so
+  /// one switch flipped for the rest never takes their work.
+  private var dirtyLaneNames: [String] {
+    snapshots.map(\.lane).filter { $0.status.dirty && $0.laneType != "primary" }.map(\.name)
+  }
+
+  private var deletableLaneIds: [String] {
+    snapshots
+      .map(\.lane)
+      .filter { $0.laneType != "primary" && (deleteForce || !$0.status.dirty) }
+      .map(\.id)
+  }
+
   private var archivableLaneIds: [String] {
     snapshots
       .map(\.lane)
@@ -142,10 +155,19 @@ struct LaneBatchManageSheet: View {
                   .autocorrectionDisabled()
               }
 
-              Toggle("Force delete", isOn: $deleteForce)
-                .font(.system(size: 14.5))
-                .foregroundStyle(ADEColor.textPrimary)
+              if !dirtyLaneNames.isEmpty {
+                Toggle(isOn: $deleteForce) {
+                  VStack(alignment: .leading, spacing: 2) {
+                    Text("Also delete lanes with uncommitted work: \(dirtyLaneNames.joined(separator: ", "))")
+                      .font(.system(size: 14.5))
+                      .foregroundStyle(ADEColor.textPrimary)
+                    Text("ADE keeps a copy for 30 days. Restore it from Archived › Recently deleted.")
+                      .font(.system(size: 12))
+                      .foregroundStyle(ADEColor.textMuted)
+                  }
+                }
                 .tint(ADEColor.accent)
+              }
 
               LaneTextField("Type delete open lanes to confirm", text: $confirmText)
                 .textInputAutocapitalization(.never)
@@ -154,10 +176,13 @@ struct LaneBatchManageSheet: View {
               Button(role: .destructive) {
                 Task { await deleteSelected() }
               } label: {
-                Label("Delete selected lanes", systemImage: "trash")
+                Label(
+                  deletableLaneIds.count == 1 ? "Delete 1 lane" : "Delete \(deletableLaneIds.count) lanes",
+                  systemImage: "trash"
+                )
               }
               .buttonStyle(ADEKitButtonStyle(tone: .crit, wide: true))
-              .disabled(confirmText.lowercased() != "delete open lanes" || busy || laneIds.isEmpty)
+              .disabled(confirmText.lowercased() != "delete open lanes" || busy || deletableLaneIds.isEmpty)
             }
           }
 
@@ -224,7 +249,7 @@ struct LaneBatchManageSheet: View {
     let remoteName = deleteRemoteName
     let force = deleteForce
 
-    let results = await runLaneDeleteBatchWithConcurrency(laneIds: laneIds) { laneId in
+    let results = await runLaneDeleteBatchWithConcurrency(laneIds: deletableLaneIds) { laneId in
       try await syncService.deleteLane(
         laneId,
         deleteBranch: deleteBranch,
@@ -252,6 +277,6 @@ struct LaneBatchManageSheet: View {
       return
     }
 
-    errorMessage = "Deleted \(deletedLaneIds.count)/\(laneIds.count) lanes. Failed: \(failures.joined(separator: "; "))"
+    errorMessage = "Deleted \(deletedLaneIds.count)/\(deletableLaneIds.count) lanes. Failed: \(failures.joined(separator: "; "))"
   }
 }

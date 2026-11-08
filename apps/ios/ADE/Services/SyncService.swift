@@ -887,7 +887,8 @@ enum SyncRequestTimeout {
 
   static func commandTimeoutNanoseconds(for action: String) -> UInt64 {
     switch action {
-    case "lanes.delete":
+    case "lanes.delete", "lanes.restoreDeleted":
+      // A restore checks the branch out into a new worktree on the host.
       return laneDeleteTimeoutNanoseconds
     case "chat.cancelLaunch":
       // Waits out an in-flight checkout, then deletes the lane (worktree,
@@ -916,6 +917,17 @@ private struct LaneDeletionFailure: Equatable {
   let projectId: String
   let projectRootPath: String?
   let message: String
+}
+
+/// A lane delete that kept work, for the Lanes tab's "Kept … Restore" notice.
+struct LaneDeletionKept: Equatable, Identifiable {
+  /// The project on screen when the delete started: where the notice shows.
+  let shownInProjectId: String?
+  /// Where the save lives, which is another machine's project for its lanes.
+  let projectId: String?
+  let projectRootPath: String?
+  let snapshot: DeletedLaneSnapshot
+  var id: String { snapshot.id }
 }
 
 private let syncTerminalSubscriptionMaxBytes = 240_000
@@ -4366,6 +4378,7 @@ final class SyncService: ObservableObject {
   /// the pending ids so lane-bound UI can stop presenting stale controls.
   @Published private(set) var pendingLaneDeletionIds: Set<String> = []
   @Published private var laneDeletionFailure: LaneDeletionFailure?
+  @Published private(set) var laneDeletionsKept: [LaneDeletionKept] = []
   @Published private(set) var laneDetailProjectionRevision = 0
   /// Per-lane detail revisions bumped only for local `lane_detail_snapshots`
   /// writes with a known lane id, so an open lane detail stops reloading when an
@@ -14644,6 +14657,8 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "lanes.unarchive", args: ["laneId": laneId])
   }
 
+  /// Work the host kept (Recently deleted) goes to `laneDeletionsKept`, which
+  /// the Lanes tab offers to restore.
   func deleteLane(
     _ laneId: String,
     deleteBranch: Bool = true,
@@ -14653,13 +14668,86 @@ final class SyncService: ObservableObject {
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil
   ) async throws {
-    _ = try await sendCommand(action: "lanes.delete", args: [
+    // Deletes run in the background; the project may change before this answers.
+    let shownInProjectId = activeProjectId
+    var keptProjectId = targetProjectId ?? activeProjectId
+    var keptRootPath = targetProjectRootPath ?? (targetProjectId == nil ? activeProjectRootPath : nil)
+    if let laneTarget = try? syncRemoteLaneTarget(args: ["laneId": laneId]),
+       laneTarget.machineKey != focusedMachineKey,
+       let repo = try? requireRemoteLaneRepo(machineKey: laneTarget.machineKey) {
+      keptProjectId = repo.markedProjectId
+      keptRootPath = repo.rootPath
+    }
+    let response = try await sendCommand(action: "lanes.delete", args: [
       "laneId": laneId,
       "deleteBranch": deleteBranch,
       "deleteRemoteBranch": deleteRemoteBranch,
       "remoteName": remoteName,
       "force": force,
     ], targetProjectId: targetProjectId, targetProjectRootPath: targetProjectRootPath)
+    // A queued delete or an older host answers without it.
+    guard let payload = response as? [String: Any], let savedWork = payload["savedWork"], !(savedWork is NSNull) else { return }
+    let snapshot: DeletedLaneSnapshot
+    do {
+      snapshot = try decode(savedWork, as: DeletedLaneSnapshot.self)
+    } catch {
+      // The work is still in Recently deleted; only the notice is lost.
+      CrashReporting.capture(error, context: ["area": "sync.lane_delete_saved_work"])
+      return
+    }
+    laneDeletionsKept.removeAll { $0.id == snapshot.id }
+    laneDeletionsKept.append(LaneDeletionKept(
+      shownInProjectId: shownInProjectId,
+      projectId: keptProjectId,
+      projectRootPath: keptRootPath,
+      snapshot: snapshot
+    ))
+  }
+
+  /// Deleted lanes whose work the machine kept, newest first.
+  func listDeletedLanes(targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws -> [DeletedLaneSnapshot] {
+    try await sendDecodableCommand(
+      action: "lanes.listDeleted",
+      args: [:],
+      disconnectOnTimeout: false,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: [DeletedLaneSnapshot].self
+    )
+  }
+
+  /// Brings a deleted lane back (or puts a freed lane's files back) from its
+  /// saved work. Never pushes.
+  func restoreDeletedLane(_ id: String, targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws -> RestoreDeletedLaneResult {
+    let result = try await sendDecodableCommand(
+      action: "lanes.restoreDeleted",
+      args: ["id": id],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: RestoreDeletedLaneResult.self
+    )
+    if result.restoredUncommitted { laneDeletionsKept.removeAll { $0.id == id } }
+    return result
+  }
+
+  /// Drops a deleted lane's saved work for good.
+  func removeDeletedLane(_ id: String, targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws {
+    _ = try await sendCommand(
+      action: "lanes.removeDeleted",
+      args: ["id": id],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    )
+    laneDeletionsKept.removeAll { $0.id == id }
+  }
+
+  /// Kept-work notices for the project on screen.
+  var activeLaneDeletionsKept: [LaneDeletionKept] {
+    laneDeletionsKept.filter { $0.shownInProjectId == activeProjectId }
+  }
+
+  func dismissLaneDeletionKept(_ id: String) {
+    laneDeletionsKept.removeAll { $0.id == id }
   }
 
   /// Starts a destructive lane cleanup without keeping the caller's sheet or

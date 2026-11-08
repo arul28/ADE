@@ -150,6 +150,7 @@ import type {
   CreatePrFromLaneArgs,
   CreateGitHubPrStackArgs,
   DeleteLaneArgs,
+  DeletedLaneSnapshot,
   DeletePrArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
@@ -3845,7 +3846,7 @@ function resolveLaneWorktreePathForSync(args: SyncRemoteCommandServiceArgs, lane
 async function deleteLaneWithRuntimeCleanup(
   args: SyncRemoteCommandServiceArgs,
   payload: Record<string, unknown>,
-): Promise<{ ok: true }> {
+): Promise<{ ok: true; savedWork: DeletedLaneSnapshot | null }> {
   const deleteArgs = parseDeleteLaneArgs(payload);
   const teardownEnv = await buildLaneEnvTeardown(
     {
@@ -3859,9 +3860,10 @@ async function deleteLaneWithRuntimeCleanup(
     { includeArchived: true },
   );
 
-  await args.laneService.delete(deleteArgs, { teardownEnv });
+  const result = await args.laneService.delete(deleteArgs, { teardownEnv });
   args.portAllocationService?.release(deleteArgs.laneId);
-  return { ok: true };
+  // The phone offers to restore what the delete kept.
+  return { ok: true, savedWork: result.savedWork ?? null };
 }
 
 async function unarchiveLaneWithRuntimeSetup(
@@ -4329,6 +4331,12 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     unarchiveLaneWithRuntimeSetup(args, payload));
   register("lanes.delete", { viewerAllowed: true, queueable: true }, async (payload) =>
     deleteLaneWithRuntimeCleanup(args, payload));
+  // Deleted lanes whose unsaved work a delete kept (Recently deleted).
+  register("lanes.listDeleted", { viewerAllowed: true }, async () => args.laneService.listDeletedLanes());
+  register("lanes.restoreDeleted", { viewerAllowed: true }, async (payload) =>
+    args.laneService.restoreDeletedLane({ id: requireString(payload.id, "lanes.restoreDeleted requires id.") }));
+  register("lanes.removeDeleted", { viewerAllowed: true }, async (payload) =>
+    args.laneService.removeDeletedLane({ id: requireString(payload.id, "lanes.removeDeleted requires id.") }));
   // A stop is only worth anything now, so neither is queued.
   register("lanes.cancelDelete", { viewerAllowed: true }, async (payload) =>
     args.laneService.cancelDelete(requireString(payload.laneId, "lanes.cancelDelete requires laneId.")));

@@ -61,7 +61,7 @@ func laneListFilteredSnapshots(
     .sorted(by: laneListSortSnapshots)
 }
 
-private func parseLaneTimestamp(_ rawValue: String) -> Date? {
+func parseLaneTimestamp(_ rawValue: String) -> Date? {
   cachedISO8601Formatter.date(from: rawValue) ?? cachedISO8601FormatterNoFractional.date(from: rawValue)
 }
 
@@ -680,11 +680,7 @@ private let cachedISO8601FormatterNoFractional: ISO8601DateFormatter = {
 }()
 
 func relativeTimestamp(_ timestamp: String?) -> String {
-  guard let timestamp else { return "Unknown" }
-  guard let date = cachedISO8601Formatter.date(from: timestamp)
-          ?? cachedISO8601FormatterNoFractional.date(from: timestamp) else {
-    return "Unknown"
-  }
+  guard let timestamp, let date = parseLaneTimestamp(timestamp) else { return "Unknown" }
   return cachedRelativeDateFormatter.localizedString(for: date, relativeTo: Date())
 }
 

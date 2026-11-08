@@ -247,6 +247,7 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   // above it (localRuntimeActionIpcTimeoutMs).
   ["lane.create", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.importBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.restoreDeletedLane", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.switchBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["git.checkoutBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   // A pull fetches and then writes the tree; see GIT_PULL_TIMEOUT_MS.

@@ -9,6 +9,7 @@ import { pendingCliDelegation } from "./lib/cliDelegationEntry";
 import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
+import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
 import type { Agent37ReadyPool } from "../../desktop/src/shared/agent37Ready";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
@@ -975,6 +976,7 @@ export type FormatterId =
   | "harness-test"
   | "archive-list"
   | "deleted-chats"
+  | "deleted-lanes"
   | "archive-summary"
   | "archive-action"
   | "storage-snapshot"
@@ -2389,7 +2391,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   ade lanes defaults [--text|--json]
   ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
                          [--branch-pattern <pattern>]   (e.g. "ade/{slug}", "{user}/{slug}", "{slug}")
-  ade lanes list | show | archive | unarchive | delete | appearance | templates | actions
+  ade lanes list | show | archive | unarchive | delete | deleted | appearance | templates | actions
 
   The project is the shell's project (ADE_PROJECT_ROOT, else the checkout you
   stand in). --project-root <dir>, before or after the subcommand, names
@@ -2429,7 +2431,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     env init before returning, a plain unarchive returns immediately
                                                     and restarts Docker in the background (watch lane env init events).
                                                     Run "ade lanes action initEnv --arg laneId=<lane>" for the full sequence
-    $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree
+    $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree. Uncommitted files and
+                                                    commits no other branch or remote holds are kept for ${DELETED_LANE_KEEP_DAYS} days
+    $ ade lanes deleted list --text                 Deleted lanes whose work ADE kept
+    $ ade lanes deleted restore <id>                Bring one back, uncommitted files included: as a new lane, or into its lane if space was freed
     $ ade lanes rename <lane> --name "<name>"       Rename a lane (its branch keeps its name)
     $ ade lanes appearance <lane> --emoji 🐛        Set a lane emoji (use --emoji "" to clear)
     $ ade lanes actions --text                      List callable lane service methods
@@ -7513,6 +7518,37 @@ function buildLanePlan(args: string[]): CliPlan {
         ),
       ],
     };
+  }
+  if (sub === "deleted") {
+    // Lanes whose unsaved work a delete kept (Settings › Storage › Recently deleted).
+    const verb = firstPositional(args) ?? "list";
+    if (verb === "list" || verb === "ls") {
+      return {
+        kind: "execute",
+        label: "lanes deleted list",
+        formatter: "deleted-lanes",
+        steps: [actionStep("result", "lane", "listDeletedLanes", {})],
+      };
+    }
+    if (verb === "restore" || verb === "undo" || verb === "reopen") {
+      const id = requireValue(firstPositional(args), "deleted lane id (see `ade lanes deleted list`)");
+      return {
+        kind: "execute",
+        label: "lanes deleted restore",
+        steps: [actionStep("result", "lane", "restoreDeletedLane", { id })],
+        // Lane back, files not: a script chaining on this must not carry on.
+        exitCodeFromResult: (result) => {
+          const restored = unwrapActionEnvelope(result);
+          return isRecord(restored) && restored.restoredUncommitted === false ? 1 : 0;
+        },
+      };
+    }
+    if (verb === "remove" || verb === "rm" || verb === "delete") {
+      throw new CliUsageError(
+        "Drop a deleted lane's saved work in ADE: Settings › Storage › Recently deleted. The command line can list and restore them.",
+      );
+    }
+    throw new CliUsageError("lanes deleted supports list or restore <id>.");
   }
   if (sub === "delete" || sub === "rm") {
     const laneId = requireValue(
@@ -32927,6 +32963,27 @@ function formatDeletedChats(value: unknown): string {
   );
 }
 
+function formatDeletedLanes(value: unknown): string {
+  const raw = unwrapActionEnvelope(value);
+  const lanes = Array.isArray(raw) ? raw.filter(isRecord) : [];
+  return renderTable(
+    ["ID", "LANE", "BRANCH", "SAVED", "WHEN", "AT", "KEPT UNTIL"],
+    lanes.map((lane) => [
+      asString(lane.id) ?? "?",
+      cell(lane.laneName, 32),
+      cell(lane.branchName ?? "-", 32),
+      lane.uncommitted === true ? "files + commits" : "commits",
+      // A freed lane is still there (archived); restoring it puts the files back.
+      lane.kind === "freed" ? "space freed" : "deleted",
+      cell(lane.deletedAt, 24),
+      cell(lane.expiresAt, 24),
+    ]),
+    "No deleted lanes with saved work.",
+    // An id is pasted back into `ade lanes deleted restore`.
+    { fullColumns: ["ID"] },
+  );
+}
+
 function formatArchiveList(value: unknown): string {
   if (!isRecord(value)) return JSON.stringify(value, null, 2);
   const items = Array.isArray(value.items) ? value.items.filter(isRecord) : [];
@@ -37314,6 +37371,8 @@ function formatTextOutput(
       return formatArchiveList(value);
     case "deleted-chats":
       return formatDeletedChats(value);
+    case "deleted-lanes":
+      return formatDeletedLanes(value);
     case "archive-summary":
       return formatArchiveSummary(value);
     case "archive-action":

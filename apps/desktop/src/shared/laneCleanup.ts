@@ -102,3 +102,6 @@ export function laneFreeUpStatus(
   if (!archivedForDays(lane.archivedAt, policy.freeUpSpaceAfterDays, nowMs)) return "not_due";
   return lane.pendingRemoval ? "waiting" : "due";
 }
+
+/** How long ADE keeps the work a lane delete or a discard would have lost. */
+export const DELETED_LANE_KEEP_DAYS = 30;

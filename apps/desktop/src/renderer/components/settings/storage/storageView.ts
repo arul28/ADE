@@ -796,7 +796,7 @@ export function buildSafeCleanupPlan(
     // Older hosts send the hour keys; these read as off there.
     const policy = lifecycle?.policy;
     if ((policy?.archiveIdleAfterDays ?? 0) > 0) {
-      alsoRuns.push("Checks for idle lanes first and archives the ones your Archive lanes automatically rule allows. Their branches, chats and files are kept.");
+      alsoRuns.push("Checks for idle lanes first and archives the ones your Archive idle lanes rule allows. Their branches, chats and files are kept.");
     }
     if (policy?.freeUpSpaceMode === "auto" && (policy.freeUpSpaceAfterDays ?? 0) > 0) {
       alsoRuns.push(`Frees up space from lanes archived over ${policy.freeUpSpaceAfterDays} days: their folders go, their branches and chats stay.`);

@@ -734,6 +734,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `lanes` | `branch_renamed` | `completed`, `failed` | omitted; never the lane, either branch name, the machine, or the error |
 | `lanes` | `auto_archive_changed`, `auto_free_up_changed`, `auto_delete_changed` | `enabled`, `disabled` (an automatic cleanup rule turned on or off) | omitted; never a day count, a lane, or the machine |
 | `lanes` | `space_freed` | `completed`, `failed` (Free up space on an archived lane in Settings › Archive) | omitted; never the lane, its size, the machine, or the error |
+| `lanes` | `deleted_lane_restored` | `completed`, `failed` (Restore from the notice after a delete, or from Recently deleted; `failed` includes files that did not apply) | omitted; never the lane, branch, machine, or the error |
 | `star_prompt` | `star_prompt_shown`, `star_prompt_clicked`, `star_prompt_dismissed`, `repo_starred` | `prompt_first`, `prompt_second` (which showing of the pill) | omitted; never the GitHub account, a message count, or the machine |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in

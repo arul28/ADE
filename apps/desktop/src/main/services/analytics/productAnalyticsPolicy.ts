@@ -446,6 +446,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "auto_free_up_changed",
   "auto_delete_changed",
   "space_freed",
+  "deleted_lane_restored",
   // The desktop "Star ADE on GitHub" pill: seen, clicked, dismissed, and a
   // star detected while it showed. Never the GitHub account or a count.
   "star_prompt_shown",
