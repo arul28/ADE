@@ -315,7 +315,8 @@ function installUnits(checkoutRoot: string, logger: Pick<Logger, "warn">): strin
   return units.filter((unit) => hasPackageInstall(unit, logger));
 }
 
-type DependencyInstall = { checkout: Checkout; command: string };
+/** `folders` are relative to the checkout; "" is the checkout itself. */
+type DependencyInstall = { checkout: Checkout; command: string; folders: string[] };
 
 /**
  * What to install where. A unit of the main checkout with no `node_modules`
@@ -326,6 +327,30 @@ type DependencyInstall = { checkout: Checkout; command: string };
  * installing the lane (that would replace a shared link with gigabytes of
  * copies). Links to anywhere else that is gone are reported as broken.
  */
+/**
+ * The dependencies row in words that say how much is missing: one example
+ * package is not "builds fail in the main checkout".
+ */
+function dependencyIssueText(plan: { installs: DependencyInstall[]; brokenLinks: string[] }): { title: string; detail: string } {
+  if (!plan.installs.length) {
+    return {
+      title: `${plural(plan.brokenLinks.length, "dependency link")} point${plan.brokenLinks.length === 1 ? "s" : ""} at nothing`,
+      detail: "Code that loads packages through these links fails until they point at installed packages.",
+    };
+  }
+  const folders = plan.installs.flatMap((install) => install.folders.map((folder) => folder
+    ? (install.checkout.primary ? folder : `${install.checkout.label}/${folder}`)
+    : install.checkout.primary ? "The main checkout" : install.checkout.label));
+  const rootMissing = plan.installs.some((install) => install.folders.includes(""));
+  const named = folders.length <= 2 ? folders.join(" and ") : `${folders.length} folders`;
+  return {
+    title: `${named} ${folders.length === 1 ? "has" : "have"} no packages installed`,
+    detail: rootMissing
+      ? "Builds, tests and dev servers fail until packages are installed."
+      : `Building or running ${folders.length === 1 ? "it" : "them"} fails until ${folders.length === 1 ? "it is" : "they are"} installed. The rest of the project has its packages.`,
+  };
+}
+
 function dependencyPlan(ctx: Context, logger: Pick<Logger, "warn">): { installs: DependencyInstall[]; brokenLinks: string[] } {
   const primary = ctx.checkouts.find((checkout) => checkout.primary) ?? null;
   const needs = new Map<Checkout, Set<string>>();
@@ -368,9 +393,13 @@ function dependencyPlan(ctx: Context, logger: Pick<Logger, "warn">): { installs:
   }
   const installs: DependencyInstall[] = [];
   for (const [checkout, units] of needs) {
+    const folders = [...units].sort().map((unit) => path.relative(checkout.root, unit));
+    // A setup script bootstraps a checkout with nothing installed. It need not
+    // cover every folder (a repo's setup may skip an example package), so a
+    // checkout whose root is installed installs only the folders missing.
     const setup = installCommandFor(checkout.root);
-    if (setup && setup.endsWith(" run setup")) {
-      installs.push({ checkout, command: setup });
+    if (setup && setup.endsWith(" run setup") && units.has(checkout.root)) {
+      installs.push({ checkout, command: setup, folders });
       continue;
     }
     const parts = [...units].sort().map((unit) => {
@@ -378,7 +407,7 @@ function dependencyPlan(ctx: Context, logger: Pick<Logger, "warn">): { installs:
       const relative = path.relative(checkout.root, unit);
       return relative ? `(cd ${JSON.stringify(relative)} && ${command})` : command;
     });
-    installs.push({ checkout, command: parts.join(" && ") });
+    installs.push({ checkout, command: parts.join(" && "), folders });
   }
   return { installs, brokenLinks };
 }
@@ -822,10 +851,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           id: "dependencies",
           area: "dependencies",
           severity: "warning",
-          title: plan.installs.length
-            ? `${plural(plan.installs.length, "checkout")} need${plan.installs.length === 1 ? "s" : ""} dependencies installed`
-            : `${plural(plan.brokenLinks.length, "dependency link")} point${plan.brokenLinks.length === 1 ? "s" : ""} at nothing`,
-          detail: "Builds, tests and dev servers in the main checkout fail until dependencies are installed. Older lanes that link to the main checkout's dependencies work again once it is installed.",
+          ...dependencyIssueText(plan),
           items: [
             ...plan.installs.map((install) => `${install.checkout.label}: ${install.command}`),
             ...plan.brokenLinks.map((link) => `broken link: ${path.relative(projectRoot, link)}`),

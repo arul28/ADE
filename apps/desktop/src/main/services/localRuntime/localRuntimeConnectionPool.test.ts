@@ -374,7 +374,7 @@ describe("local runtime connection pool", () => {
   it("aggregates slow actions into a bounded 24h runtime-health window", () => {
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never) as unknown as {
-      recordSlowAction: (atMs: number, totalMs: number) => void;
+      recordSlowAction: (sample: { at: number; totalMs: number; failed: boolean }) => void;
       getRuntimeHealth: (nowMs?: number) => {
         slowActions24h: number;
         slowActionP95Ms: number | null;
@@ -388,9 +388,9 @@ describe("local runtime connection pool", () => {
     expect(pool.getRuntimeHealth(now)).toMatchObject({ slowActions24h: 0, slowActionP95Ms: null });
 
     // One sample 25h old (out of window) plus 100 in-window samples 501..600 ms.
-    pool.recordSlowAction(now - 25 * 60 * 60_000, 9_000);
+    pool.recordSlowAction({ at: now - 25 * 60 * 60_000, totalMs: 9_000, failed: false });
     for (let index = 0; index < 100; index += 1) {
-      pool.recordSlowAction(now - index * 60_000, 501 + index);
+      pool.recordSlowAction({ at: now - index * 60_000, totalMs: 501 + index, failed: false });
     }
     const health = pool.getRuntimeHealth(now);
     expect(health.slowActions24h).toBe(100); // the 25h-old sample is pruned

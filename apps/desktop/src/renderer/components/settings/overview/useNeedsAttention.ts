@@ -5,6 +5,9 @@ import type { ProjectHealthIssue, ProjectHealthReport } from "../../../../shared
 import type { UsageSnapshot } from "../../../../shared/types/usage";
 import type { AiProviderConnectionStatus } from "../../../../shared/types/config";
 import { isBackgroundItemBlocked } from "../../../../shared/types/core";
+import type { Agent37Machine } from "../../../../shared/agent37";
+import type { RemoteRuntimeTarget } from "../../../../shared/types/remoteRuntime";
+import { disabledProviderSet } from "../../../../shared/providerEnablement";
 import { THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
 import { RELAY_HELD_BY_OTHER_ADE_APP } from "../../../../shared/connectionDiagnosis";
 import { ACCOUNT_SCOPE_ALL } from "../../../../shared/accountSettingsScope";
@@ -43,8 +46,10 @@ export type AttentionItem = {
   id: string;
   severity: AttentionSeverity;
   title: string;
-  /** One line, shown on hover and handed to the agent. */
+  /** One line under the title, also handed to the agent. */
   detail?: string;
+  /** What the row counts, one line each (the failing calls, the folders). */
+  items?: string[];
   /** Where it lives, for the chip: "Project", "This computer", "Providers"… */
   where: string;
   /** The settings page that holds it. */
@@ -145,11 +150,15 @@ function serviceItems(info: AppInfo | null, health: RuntimeHealthSnapshot | null
   }
   const failed = health?.failedActions24h ?? 0;
   if (failed > 0) {
+    const top = health?.failedActionsTop ?? [];
     items.push({
       id: "service-failures",
       severity: "warning",
       title: failed === 1 ? "1 background service call failed today" : `${failed} background service calls failed today`,
-      detail: "Errors and timeouts in the last 24 hours.",
+      detail: top.length
+        ? `Most often ${top[0]!.action}${top[0]!.count > 1 ? ` (${top[0]!.count} times)` : ""}. Errors and timeouts in the last 24 hours.`
+        : "Errors and timeouts in the last 24 hours.",
+      items: top.map((entry) => `${entry.action} × ${entry.count}${entry.lastError ? ` — ${entry.lastError}` : ""}`),
       where: THIS_MACHINE_NAME,
       route,
     });
@@ -208,19 +217,30 @@ function pressureItems(pressure: DiskPressureSnapshot | null): AttentionItem[] {
   }];
 }
 
-function providerItems(providers: readonly AiProviderConnectionStatus[]): AttentionItem[] {
+/**
+ * A provider is a problem only when you signed in to it and it still can't
+ * run. A blocker alone is not one: a provider you never set up has one ("not
+ * signed in", "downloads the first time it is used"), and so does one that
+ * runs fine but carries a side note (a Codex token too old for usage
+ * polling, a Muse login the Keychain hides). A provider you switched off is
+ * your choice. A provider you use that lost its login shows from the usage
+ * read instead (`usageItems`).
+ */
+function providerItems(providers: readonly AiProviderConnectionStatus[], disabled: ReadonlySet<string>): AttentionItem[] {
   return providers.flatMap((provider): AttentionItem[] => {
+    if (provider.runtimeAvailable || !provider.authAvailable || disabled.has(provider.provider)) return [];
     const name = humanizeProvider(provider.provider);
     // A provider without its own page (Devin, for one) opens the Providers grid.
     const ownRoute = settingsRouteFor(`agents.provider.${provider.provider}`);
     const route = ownRoute === "/settings" ? settingsRouteFor("agents.providers") : ownRoute;
-    if (provider.blocker) {
-      return [{ id: `provider-${provider.provider}`, severity: "warning", title: `${name} can't run`, detail: provider.blocker, where: "Providers", route }];
-    }
-    if (provider.runtimeDetected && !provider.runtimeAvailable) {
-      return [{ id: `provider-${provider.provider}`, severity: "warning", title: `${name} needs you to sign in`, where: "Providers", route }];
-    }
-    return [];
+    return [{
+      id: `provider-${provider.provider}`,
+      severity: "warning",
+      title: `${name} can't start chats`,
+      detail: provider.blocker ?? "You're signed in, but ADE couldn't start it.",
+      where: "Providers",
+      route,
+    }];
   });
 }
 
@@ -266,23 +286,47 @@ function cliItems(status: Awaited<ReturnType<typeof window.ade.adeCli.getStatus>
   }];
 }
 
-function machineItems(
-  snapshot: Awaited<ReturnType<typeof window.ade.remoteRuntime.getConnectionSnapshot>> | null,
-  update: AutoUpdateSnapshot | null,
-): AttentionItem[] {
-  if (!snapshot) return [];
-  const items: AttentionItem[] = [];
-  for (const connection of snapshot.connections) {
-    if (connection.state !== "error" && connection.state !== "parked") continue;
-    items.push({
+type ConnectionSnapshot = Awaited<ReturnType<typeof window.ade.remoteRuntime.getConnectionSnapshot>>;
+
+function unreachableConnections(snapshot: ConnectionSnapshot | null) {
+  return snapshot?.connections.filter((connection) => connection.state === "error" || connection.state === "parked") ?? [];
+}
+
+/** The Agent 37 box behind a machine: its account key, else its hostname, which on Agent 37 is the instance id. */
+function agent37BoxFor(target: RemoteRuntimeTarget, boxes: readonly Agent37Machine[]): Agent37Machine | null {
+  const key = target.pairedMachine?.machineKey ?? null;
+  const host = target.hostname.trim().toLowerCase();
+  return boxes.find((box) => (key != null && box.machineKey === key) || box.instanceId.toLowerCase() === host) ?? null;
+}
+
+/**
+ * Machines this computer can't reach. An Agent 37 box that is asleep or
+ * stopped can't answer by design and wakes when it is used, so it is not one.
+ * The box list is a network read, made only when something is unreachable.
+ */
+async function unreachableMachineItems(snapshot: ConnectionSnapshot | null): Promise<AttentionItem[]> {
+  const unreachable = unreachableConnections(snapshot);
+  if (unreachable.length === 0) return [];
+  const listMachines = window.ade?.agent37?.listMachines;
+  const listed = isAdeAvailable(listMachines) ? await listMachines().catch(() => null) : null;
+  const boxes = listed?.state === "ok" ? listed.machines : [];
+  return unreachable.flatMap((connection): AttentionItem[] => {
+    const box = agent37BoxFor(connection.target, boxes);
+    if (box && (box.state === "asleep" || box.state === "stopped" || box.state === "starting")) return [];
+    return [{
       id: `machine-${connection.target.id}`,
       severity: "warning",
       title: `Can't reach ${connection.target.name}`,
       detail: connection.lastError ?? undefined,
       where: connection.target.name,
       route: settingsRouteFor("account.computers"),
-    });
-  }
+    }];
+  });
+}
+
+function machineItems(snapshot: ConnectionSnapshot | null, update: AutoUpdateSnapshot | null): AttentionItem[] {
+  if (!snapshot) return [];
+  const items: AttentionItem[] = [];
   // Behind on its own track only: a Stable machine is not "older" than this
   // computer's Beta.
   const behind = machinesBehindOnTheirTrack(connectedMachinesFromSnapshot(snapshot), knownAdeVersions(update));
@@ -452,14 +496,18 @@ export function sortAttention(items: readonly AttentionItem[]): AttentionItem[] 
     .map((entry) => entry.item);
 }
 
+/** The lines a row lists under its detail: its own, else its project check's. */
+export function attentionLines(item: AttentionItem): readonly string[] {
+  return item.items?.length ? item.items : item.projectIssue?.items ?? [];
+}
+
 /** The prompt "Ask an agent" starts from: every row, where it lives, and the ask-first rule. */
 export function attentionAgentPrompt(items: readonly AttentionItem[], projectRoot: string | null): string {
   const lines = items.map((item, index) => {
     const head = `${index + 1}. [${item.where}] ${item.title}`;
     const detail = item.detail ? `\n   ${item.detail}` : "";
-    const list = item.projectIssue?.items?.length
-      ? `\n${item.projectIssue.items.slice(0, 15).map((entry) => `   - ${entry}`).join("\n")}`
-      : "";
+    const entries = attentionLines(item);
+    const list = entries.length ? `\n${entries.slice(0, 15).map((entry) => `   - ${entry}`).join("\n")}` : "";
     const fix = item.fix ? `\n   ADE's own fix: "${item.fix.label}" in Settings.` : item.projectIssue?.fix ? `\n   ADE's own fix: "${item.projectIssue.fix.label}": ${item.projectIssue.fix.description}` : "";
     return `${head}${detail}${list}${fix}`;
   });
@@ -488,7 +536,7 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     if (opts.force) setChecking(true);
     const ade = window.ade;
     const failed: string[] = [];
-    const [info, update, pressure, runtimeHealth, report, usage, ai, cli, machines, sync, github] = await Promise.all([
+    const [info, update, pressure, runtimeHealth, report, usage, ai, cli, machines, sync, github, projectConfig] = await Promise.all([
       quiet(() => ade.app.getInfo(), failed, "ADE's service"),
       quiet(ade.updateGetState ? () => ade.updateGetState() : null, failed, "updates"),
       quiet(isAdeAvailable(ade.storage?.getPressure) ? () => ade.storage.getPressure() : null, failed, "disk space"),
@@ -505,6 +553,8 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
         return snapshot;
       } : null, failed, "sync"),
       hasProject ? quiet(ade.github?.getStatus ? () => ade.github.getStatus({}) : null, failed, "GitHub") : Promise.resolve(null),
+      // Only for the providers you switched off; without it they just show.
+      hasProject ? quiet(ade.projectConfig?.get ? () => ade.projectConfig.get() : null) : Promise.resolve(null),
     ]);
     if (current !== request.current) return;
     const providers = connectedProviders(ai);
@@ -515,7 +565,7 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
       ...updateItems(update),
       ...pressureItems(pressure),
       ...cliItems(cli),
-      ...providerItems(providers),
+      ...providerItems(providers, disabledProviderSet(projectConfig?.effective.ai)),
       ...usageItems(usage),
       ...githubItems(github),
       ...machineItems(machines, update),
@@ -528,6 +578,7 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     const late = await Promise.all([
       quiet(mcpItems, failed, "MCP servers"),
       quiet(() => integrationItems(hasProject, failed), failed, "integrations"),
+      quiet(() => unreachableMachineItems(machines), failed, "other machines"),
     ]);
     if (current !== request.current) return;
     setLateItems(late.flatMap((entry) => entry ?? []));

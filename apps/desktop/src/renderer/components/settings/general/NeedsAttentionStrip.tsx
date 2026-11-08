@@ -1,6 +1,6 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowClockwise, ArrowRight, CaretDown, CircleNotch, Robot } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowRight, CaretDown, CaretRight, CircleNotch, Info, Robot, Warning, WarningOctagon } from "@phosphor-icons/react";
 import { confirmDialog } from "../../ui/dialog";
 import { showToast } from "../../app/toast/toastStore";
 import { AgentLaunchSetup } from "../../shared/AgentLaunchSetup";
@@ -8,21 +8,26 @@ import { useProjectFix } from "../health/ProjectIssues";
 import type { SettingsTabId } from "../settingsManifest";
 // Read only while rendering, so the import cycle with the tab table is safe.
 import { STANDALONE_TAB_IDS } from "../settingsTabContent";
-import { attentionAgentPrompt, type AttentionItem, type useNeedsAttention } from "../overview/useNeedsAttention";
+import { attentionAgentPrompt, attentionLines, type AttentionItem, type useNeedsAttention } from "../overview/useNeedsAttention";
 import "../health/health.css";
 import "../overview/overview.css";
 
-const DOT_STATE: Record<AttentionItem["severity"], "crit" | "warn" | undefined> = {
-  problem: "crit",
-  warning: "warn",
-  note: undefined,
+const SEVERITY_ICON: Record<AttentionItem["severity"], React.ReactNode> = {
+  problem: <WarningOctagon size={15} weight="fill" aria-hidden />,
+  warning: <Warning size={15} weight="fill" aria-hidden />,
+  note: <Info size={15} aria-hidden />,
 };
 
-/**
- * Everything that needs attention, as ONE row at the top of General: a count
- * and the worst state. It opens in place to the list, each item with its fix
- * and a link to its page, and "Ask an agent".
- */
+const SEVERITY_LABEL: Record<AttentionItem["severity"], string> = {
+  problem: "Problem",
+  warning: "Needs a look",
+  note: "Note",
+};
+
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
 export function NeedsAttentionStrip({
   attention,
   hasProject,
@@ -40,10 +45,18 @@ export function NeedsAttentionStrip({
   // The project's own fixes run on the machine that owns the project: the
   // tab's binding, so unpinned.
   const projectFix = useProjectFix(null, attention.setReport);
-  const problems = items.filter((item) => item.severity !== "note").length;
+  const [unfolded, setUnfolded] = React.useState<ReadonlySet<string>>(() => new Set());
+  const needs = items.filter((item) => item.severity !== "note");
+  const notes = items.filter((item) => item.severity === "note");
   const worst = items.some((item) => item.severity === "problem")
     ? "crit"
-    : items.some((item) => item.severity === "warning") ? "warn" : items.length > 0 ? "note" : "ok";
+    : needs.length > 0 ? "warn" : notes.length > 0 ? "note" : "ok";
+  const toggleLines = (id: string) => setUnfolded((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
   // With no project open, a link to a page that needs one would go nowhere.
   const canOpen = (route: string): boolean => {
     if (hasProject) return true;
@@ -78,10 +91,75 @@ export function NeedsAttentionStrip({
     ? "Checking…"
     : items.length === 0
       ? "Nothing needs attention"
-      : problems > 0
-        ? (problems === 1 ? "1 thing needs attention" : `${problems} things need attention`)
-        : (items.length === 1 ? "1 note" : `${items.length} notes`);
+      : needs.length > 0
+        ? `${plural(needs.length, "thing needs", "things need")} attention`
+        : plural(notes.length, "note", "notes");
+  // Notes are counted beside the title, so the header and the list agree.
+  const subtitle = !loading && needs.length > 0 && notes.length > 0 ? plural(notes.length, "note", "notes") : null;
   const expandable = !loading && items.length > 0;
+
+  const renderRow = (item: AttentionItem) => {
+    const busy = fixingId === item.id || (item.projectIssue?.fix != null && projectFix.fixingId === item.projectIssue.fix.id);
+    const fixLabel = item.projectIssue?.fix?.label ?? item.fix?.label ?? null;
+    const lines = attentionLines(item);
+    const linesOpen = unfolded.has(item.id);
+    return (
+      <li key={item.id} className="ade-attn-row" data-severity={item.severity}>
+        <span className="ade-attn-icon" title={SEVERITY_LABEL[item.severity]}>{SEVERITY_ICON[item.severity]}</span>
+        <div className="ade-attn-text">
+          <span className="ade-attn-title">{item.title}</span>
+          <span className="ade-attn-meta">
+            <span className="ade-attn-where">{item.where}</span>
+            {item.detail ? <span className="ade-attn-detail">{item.detail}</span> : null}
+          </span>
+          {lines.length > 0 ? (
+            <>
+              <button
+                type="button"
+                className="ade-attn-lines-toggle"
+                aria-expanded={linesOpen}
+                onClick={() => toggleLines(item.id)}
+              >
+                <CaretRight size={10} weight="bold" className="ade-attn-lines-caret" aria-hidden />
+                {linesOpen ? "Hide details" : `Show ${plural(lines.length, "detail", "details")}`}
+              </button>
+              {linesOpen ? (
+                <ul className="ade-attn-lines">
+                  {lines.map((line) => <li key={line}>{line}</li>)}
+                </ul>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+        <span className="ade-attn-actions">
+          {fixLabel ? (
+            <button
+              type="button"
+              className="ade-modern-btn"
+              data-size="sm"
+              disabled={busy}
+              title={item.projectIssue?.fix?.description}
+              onClick={() => void runFix(item)}
+            >
+              {busy ? <CircleNotch size={12} className="animate-spin" /> : null}
+              {fixLabel}
+            </button>
+          ) : null}
+          {canOpen(item.route) ? (
+            <button
+              type="button"
+              className="kit-icon-btn ade-attn-open"
+              aria-label={`Open ${item.where} settings for: ${item.title}`}
+              title="Open its page"
+              onClick={() => navigate(item.route)}
+            >
+              <ArrowRight size={13} />
+            </button>
+          ) : null}
+        </span>
+      </li>
+    );
+  };
 
   return (
     <section
@@ -101,8 +179,9 @@ export function NeedsAttentionStrip({
         >
           {loading ? <CircleNotch size={13} className="animate-spin" aria-hidden /> : <span className="kit-dot" data-state={worst === "note" ? undefined : worst} aria-hidden />}
           <span className="ade-gen-attn-title">{title}</span>
+          {subtitle ? <span className="ade-gen-attn-sub">· {subtitle}</span> : null}
           {expandable && !open ? (
-            <span className="ade-gen-attn-preview">{items.slice(0, 2).map((item) => item.title).join(" · ")}</span>
+            <span className="ade-gen-attn-preview">{(needs.length > 0 ? needs : notes).slice(0, 2).map((item) => item.title).join(" · ")}</span>
           ) : null}
           {expandable ? <CaretDown size={11} weight="bold" className="ade-gen-attn-caret" aria-hidden /> : null}
         </button>
@@ -120,48 +199,15 @@ export function NeedsAttentionStrip({
 
       {open && expandable ? (
         <div className="ade-gen-attn-body">
-          <ul className="ade-attn-list" aria-label="Needs attention">
-            {items.map((item) => {
-              const busy = fixingId === item.id || (item.projectIssue?.fix != null && projectFix.fixingId === item.projectIssue.fix.id);
-              const fixLabel = item.projectIssue?.fix?.label ?? item.fix?.label ?? null;
-              return (
-                <li key={item.id} className="ade-attn-row" data-severity={item.severity}>
-                  <span className="kit-dot" data-state={DOT_STATE[item.severity]} aria-hidden />
-                  <span className="ade-attn-text">
-                    <span className="ade-attn-title">{item.title}</span>
-                    {item.detail ? <span className="ade-attn-detail" title={item.detail}>{item.detail}</span> : null}
-                  </span>
-                  <span className="ade-attn-where-col"><span className="kit-tag ade-attn-where">{item.where}</span></span>
-                  <span className="ade-attn-fix-col">
-                    {fixLabel ? (
-                      <button
-                        type="button"
-                        className="ade-modern-btn"
-                        data-size="sm"
-                        disabled={busy}
-                        title={item.projectIssue?.fix?.description}
-                        onClick={() => void runFix(item)}
-                      >
-                        {busy ? <CircleNotch size={12} className="animate-spin" /> : null}
-                        {fixLabel}
-                      </button>
-                    ) : null}
-                  </span>
-                  {canOpen(item.route) ? (
-                    <button
-                      type="button"
-                      className="kit-icon-btn ade-attn-open"
-                      aria-label={`Open ${item.where} settings for: ${item.title}`}
-                      title="Open its page"
-                      onClick={() => navigate(item.route)}
-                    >
-                      <ArrowRight size={13} />
-                    </button>
-                  ) : <span aria-hidden />}
-                </li>
-              );
-            })}
-          </ul>
+          {needs.length > 0 ? (
+            <ul className="ade-attn-list" aria-label="Needs attention">{needs.map(renderRow)}</ul>
+          ) : null}
+          {notes.length > 0 ? (
+            <>
+              {needs.length > 0 ? <div className="ade-attn-group-label">Good to know</div> : null}
+              <ul className="ade-attn-list" data-kind="notes" aria-label="Notes">{notes.map(renderRow)}</ul>
+            </>
+          ) : null}
           {hasProject ? (
             askOpen ? (
               <div className="ade-gen-attn-ask">
@@ -179,7 +225,7 @@ export function NeedsAttentionStrip({
             ) : (
               <button type="button" className="ade-modern-btn ade-gen-attn-askbtn" data-variant="ghost" onClick={() => setAskOpen(true)}>
                 <Robot size={13} />
-                Ask an agent
+                Ask an agent to go through these
               </button>
             )
           ) : null}

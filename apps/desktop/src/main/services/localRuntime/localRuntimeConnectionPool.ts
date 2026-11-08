@@ -70,6 +70,7 @@ import {
 import type { RuntimeHealthSnapshot } from "../../../shared/types/storage";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import { runtimeActionReplyError } from "../../../shared/runtimeActionReplyError";
+import { expectedErrorKind } from "../../../shared/expectedError";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS,
@@ -108,7 +109,11 @@ type LocalRuntimeConnection = {
   socketPath: string;
 };
 
-type SlowActionSample = { at: number; totalMs: number; failed: boolean };
+/** A slow call, or a failed one with its `domain.action` and error message. */
+type SlowActionSample = { at: number; totalMs: number; failed: boolean; action?: string; error?: string };
+
+/** How many failing actions the health snapshot names, most frequent first. */
+const RUNTIME_HEALTH_TOP_FAILURES = 5;
 
 type RuntimeEventNotification = {
   subscriptionId: string;
@@ -1542,16 +1547,34 @@ export class LocalRuntimeConnectionPool {
     return { warn: true, since: last?.quieted ?? 0 };
   }
 
-  private recordSlowAction(atMs: number, totalMs: number, failed = false): void {
-    this.slowActionSamples.push({ at: atMs, totalMs, failed });
+  private recordSlowAction(sample: SlowActionSample): void {
+    this.slowActionSamples.push(sample);
     // Keep the window bounded on both age and count.
-    const horizon = atMs - RUNTIME_HEALTH_WINDOW_MS;
+    const horizon = sample.at - RUNTIME_HEALTH_WINDOW_MS;
     if (this.slowActionSamples.length > RUNTIME_HEALTH_MAX_SAMPLES || this.slowActionSamples[0]!.at < horizon) {
       this.slowActionSamples = this.slowActionSamples.filter((sample) => sample.at >= horizon);
       if (this.slowActionSamples.length > RUNTIME_HEALTH_MAX_SAMPLES) {
         this.slowActionSamples = this.slowActionSamples.slice(-RUNTIME_HEALTH_MAX_SAMPLES);
       }
     }
+  }
+
+  /**
+   * A call that failed for good: counted once, after its last attempt, so a
+   * dropped connection a retry recovered is not a failure. A refusal the brain
+   * marks expected (not found, signed out, declined) is the action answering,
+   * not the service failing, and is not counted.
+   */
+  private recordFailedAction(request: RemoteRuntimeActionRequest, startedAtMs: number, error: Error): void {
+    if (RUNTIME_HEALTH_EXCLUDED_DOMAINS.has(request.domain) || expectedErrorKind(error)) return;
+    const at = Date.now();
+    this.recordSlowAction({
+      at,
+      totalMs: at - startedAtMs,
+      failed: true,
+      action: `${request.domain}.${request.action}`,
+      error: error.message.slice(0, 200),
+    });
   }
 
   getRuntimeHealth(nowMs: number = Date.now()): RuntimeHealthSnapshot {
@@ -1569,10 +1592,24 @@ export class LocalRuntimeConnectionPool {
       const rank = Math.min(sorted.length - 1, Math.max(0, Math.ceil(0.95 * sorted.length) - 1));
       p95 = sorted[rank]!;
     }
+    // Which calls failed, so the count can say what it counts. Samples are in
+    // time order, so the last error seen for an action is its newest.
+    const failures = new Map<string, { action: string; count: number; lastError: string | null }>();
+    for (const sample of recent) {
+      if (!sample.failed) continue;
+      const action = sample.action ?? "unknown";
+      const entry = failures.get(action) ?? { action, count: 0, lastError: null };
+      entry.count += 1;
+      entry.lastError = sample.error ?? entry.lastError;
+      failures.set(action, entry);
+    }
     return {
       slowActions24h: slow.length,
       slowActionP95Ms: p95,
       failedActions24h: recent.length - slow.length,
+      failedActionsTop: [...failures.values()]
+        .sort((left, right) => right.count - left.count)
+        .slice(0, RUNTIME_HEALTH_TOP_FAILURES),
       sampledAt: new Date(nowMs).toISOString(),
     };
   }
@@ -2537,8 +2574,9 @@ export class LocalRuntimeConnectionPool {
         const tCall = Date.now();
         const totalMs = tCall - tStart;
         if (totalMs > SLOW_ACTION_THRESHOLD_MS || callError) {
-          if (!RUNTIME_HEALTH_EXCLUDED_DOMAINS.has(request.domain)) {
-            this.recordSlowAction(tCall, totalMs, Boolean(callError));
+          // A failure is counted where it is thrown, after its last attempt.
+          if (!callError && !RUNTIME_HEALTH_EXCLUDED_DOMAINS.has(request.domain)) {
+            this.recordSlowAction({ at: tCall, totalMs, failed: false });
           }
           const slowMeta = {
             domain: request.domain,
@@ -2594,6 +2632,7 @@ export class LocalRuntimeConnectionPool {
           lastError = callError;
           continue;
         }
+        this.recordFailedAction(request, tStart, callError);
         throw callError;
       }
 
@@ -2619,7 +2658,9 @@ export class LocalRuntimeConnectionPool {
 
     // Loop only falls through here after exhausting retries on a dropped
     // connection (it returns or throws on every other path).
-    throw lastError ?? new Error("Local ADE service action failed.");
+    const finalError = lastError ?? new Error("Local ADE service action failed.");
+    this.recordFailedAction(request, Date.now(), finalError);
+    throw finalError;
   }
 
   async listActionRegistryForRoot(rootPath: string): Promise<AdeActionRegistryEntry[]> {

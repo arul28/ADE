@@ -407,7 +407,13 @@ export type RuntimeHealthSnapshot = {
   slowActions24h: number;
   /** 95th percentile duration of those slow calls, in ms. */
   slowActionP95Ms: number | null;
-  /** Calls that failed in the last 24 h (same exclusions). Absent on older builds. */
+  /**
+   * Calls that failed in the last 24 h (same exclusions), counted once after
+   * their last retry. Refusals the brain marks expected are not failures.
+   * Absent on older builds.
+   */
   failedActions24h?: number;
+  /** The actions behind `failedActions24h`, most frequent first. Absent on older builds. */
+  failedActionsTop?: Array<{ action: string; count: number; lastError: string | null }>;
   sampledAt: string;
 };
