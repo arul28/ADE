@@ -57,6 +57,9 @@ export async function materializeAppImageRuntime(version: string): Promise<{ bin
     await exec(stagedBinary, ["brain", "update", "--apply-staged", manifest], {
       env: { ...stagedEnv, ADE_BRAIN_UPDATE_APPLY: "1" }, timeout: 120_000, maxBuffer: 1024 * 1024,
     });
+    // Its status would read as a brain update still running, and hold off the
+    // connection this install is about to make.
+    await fs.rm(path.join(layout.runtimeDir, "update-status.json"), { force: true });
     return { binary, env };
   } catch (error) {
     // The update transaction may have retained recovery files here.
