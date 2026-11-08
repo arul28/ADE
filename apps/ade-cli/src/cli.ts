@@ -10062,7 +10062,7 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
   return refuseUnknownSubcommand("prs", "pr", sub);
 }
 
-function buildShellPlan(args: string[], inWorkCopy = false, machine: string | null = null): CliPlan {
+function buildShellPlan(args: string[], inWorkCopy = false, remote: ShellRemoteTarget | null = null): CliPlan {
   const sub = firstPositional(args) ?? "start";
   if (sub === "actions")
     return {
@@ -10140,9 +10140,9 @@ function buildShellPlan(args: string[], inWorkCopy = false, machine: string | nu
             return typeof code === "number" ? (code < 0 ? 1 : Math.min(code, 255)) : 1;
           },
         }
-      : machine
+      : remote
         // The shell is on that machine, so reading it needs --machine too.
-        ? { formatText: (result: unknown) => formatPtyCreate(result, machine) }
+        ? { formatText: (result: unknown) => formatPtyCreate(result, remote) }
         : {};
     const shellStart = { kind: "execute", label: "shell start", formatter: "pty-create", ...followPlan } as const;
     if (ownLane) {
@@ -22917,7 +22917,7 @@ function hasHelpFlag(
 
 function buildCliPlan(
   command: string[],
-  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json" | "machine" | "machineWorkCopy">> = {
+  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json" | "machine" | "machineProject" | "machineWorkCopy">> = {
     socketPath: null,
     projectRoot: null,
   },
@@ -23279,7 +23279,9 @@ function buildCliPlan(
   if (primary === "files" || primary === "file") return buildFilesPlan(args, options.machine ?? null);
   if (primary === "search") return buildSearchPlan(args);
   if (primary === "prs" || primary === "pr") return buildPrPlan(args, options.projectRoot ?? null);
-  if (primary === "shell" || primary === "pty") return buildShellPlan(args, options.machineWorkCopy != null, options.machine?.trim() || null);
+  if (primary === "shell" || primary === "pty") return buildShellPlan(args, options.machineWorkCopy != null, options.machine?.trim()
+    ? { machine: options.machine.trim(), project: options.machineProject?.trim() || null }
+    : null);
   if (primary === "terminal" || primary === "term")
     return buildTerminalPlan(args);
   if (primary === "history") return buildHistoryPlan(args);
@@ -36049,18 +36051,24 @@ function formatTerminalList(value: unknown): string {
   );
 }
 
-function formatPtyCreate(value: unknown, machine: string | null = null): string {
+/** Where `shell start --machine` ran, for the command that reads it back. */
+type ShellRemoteTarget = { machine: string; project: string | null };
+
+function formatPtyCreate(value: unknown, remote: ShellRemoteTarget | null = null): string {
   const result = isRecord(value) ? value : {};
   const sessionId = typeof result.sessionId === "string" ? result.sessionId : null;
   const ptyId = typeof result.ptyId === "string" ? result.ptyId : null;
-  const onMachine = machine ? ` --machine ${shellEscapeToken(machine)}` : "";
+  const onMachine = remote
+    ? ` --machine ${quoteShellArg(remote.machine)}${remote.project ? ` --machine-project ${quoteShellArg(remote.project)}` : ""}`
+    : "";
   const readCommand = sessionId ? `ade terminal read --terminal ${sessionId}${onMachine} --text` : null;
-  return renderKeyValues("ADE shell session", [
+  const details = renderKeyValues("ADE shell session", [
     ["session", sessionId],
     ["pty", ptyId],
     ["pid", result.pid],
-    ["read with", readCommand],
   ]);
+  // Last and whole: the table clips a long value, and this one is to be copied.
+  return readCommand ? `${details}\nread with  ${readCommand}` : details;
 }
 
 function formatTerminalRead(value: unknown): string {
