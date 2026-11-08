@@ -264,7 +264,8 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       }
       if (limits && card.newMachine) {
         const listed = await deps.machines.agentMadeToday().catch(() => 0);
-        const made = Math.max(listed, madeHereToday() + reservedHere);
+        // Makes still running are in neither count: they go on top of the larger one.
+        const made = Math.max(listed, madeHereToday()) + reservedHere;
         if (made >= limits.machinesPerDay) {
           refuse(`agents already started ${made} new machine${made === 1 ? "" : "s"} today, your daily limit.`);
         }

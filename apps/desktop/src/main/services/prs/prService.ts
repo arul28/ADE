@@ -4138,16 +4138,19 @@ export function createPrService({
     localAhead: number;
   }> => {
     const upstreamCheck = await runGit(
-      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+      ["rev-parse", "--symbolic-full-name", "@{upstream}"],
       { cwd: lane.worktreePath, timeoutMs: 10_000 }
     );
 
-    const upstreamRef = upstreamCheck.exitCode === 0 ? upstreamCheck.stdout.trim() : "";
+    // The full name tells a remote upstream (`refs/remotes/origin/x`) from a
+    // local one (`--track develop` or `--track team/fix`, `refs/heads/…`). A
+    // local upstream means the head is not on a remote yet, so the remote
+    // check below decides.
+    const upstreamFull = upstreamCheck.exitCode === 0 ? upstreamCheck.stdout.trim() : "";
+    const upstreamRef = upstreamFull.startsWith("refs/remotes/") ? upstreamFull.slice("refs/remotes/".length) : "";
     const parsedUpstream = upstreamRef ? parseUpstreamRef(upstreamRef) : null;
     // A branch made with `git checkout -b <new> origin/main` tracks main. The
     // PR head is <new>, so compare with and push to origin/<new> instead.
-    // An upstream with no remote part is a local branch (`--track develop`):
-    // the head is not on a remote yet, so the remote check below decides.
     if (parsedUpstream && parsedUpstream.branch === headBranch) {
       await fetchRemoteBranchForPrCheck({
         cwd: lane.worktreePath,

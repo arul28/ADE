@@ -204,21 +204,25 @@ jobs:
           gh workflow run ci.yml --ref "${BRANCH}"
 
   retire-dependabot:
-    # Dependabot no longer watches these SDKs; its open PRs for them are stale.
+    # Dependabot watched these SDKs until .github/dependabot.yml was removed;
+    # its version PRs from then are stale. A workflow cannot tell a security
+    # update from a version update, so only PRs opened before the cutoff (when
+    # it still opened version PRs) are closed; any later one is a security
+    # update and stays open.
     name: close old Dependabot SDK PRs
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CUTOFF: "2026-11-10T00:00:00Z"
     steps:
       - name: Close them
         run: |
           set -euo pipefail
           sdks='@anthropic-ai/claude-agent-sdk @openai/codex @opencode/cli @opencode/client @cursor/sdk @factory/droid-sdk @github/copilot-sdk @muse-code/sdk'
-          gh pr list --repo "${GITHUB_REPOSITORY}" --app dependabot --state open --limit 100 --json number,title \
-            --jq '.[] | "\(.number)\t\(.title)"' | while IFS=$'\t' read -r number title; do
+          gh pr list --repo "${GITHUB_REPOSITORY}" --app dependabot --state open --limit 100 --json number,title,createdAt \
+            --jq '.[] | select(.createdAt < env.CUTOFF) | "\(.number)\t\(.title)"' | while IFS=$'\t' read -r number title; do
             for sdk in ${sdks}; do
-              # Only version bumps of these SDKs: a security update stays open.
               case "${title}" in
                 *"bump ${sdk} "*)
                   gh pr close "${number}" --repo "${GITHUB_REPOSITORY}" --delete-branch \

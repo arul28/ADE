@@ -1089,8 +1089,10 @@ an SDK):
 - **Main has the newest:** it closes the item's open PR and deletes
   `pins/<item>`, or deletes a leftover branch with no PR.
 
-A second job closes open Dependabot PRs that bump one of these SDKs (from the
-old config); a Dependabot security update stays open. Two items run at a time.
+A second job closes open Dependabot PRs that bump one of these SDKs and were
+opened before 2026-11-10, when the old config still opened version PRs; a
+workflow cannot tell a security update from a version update, so any later
+Dependabot PR (a security update) stays open. Two items run at a time.
 Opening a PR needs the repository setting "Allow GitHub Actions to create and
 approve pull requests".
 
