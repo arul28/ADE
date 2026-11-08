@@ -64,9 +64,8 @@ async function describeRepoWork(
   pinnedCommit: string | null,
 ): Promise<string | null> {
   const name = label.charAt(0).toUpperCase() + label.slice(1);
-  if (depth + 1 >= SUBMODULE_INSPECT_MAX_DEPTH) {
-    return mode === "found" ? null : `${name} is nested too deep for ADE to check.`;
-  }
+  const atDepthLimit = depth + 1 >= SUBMODULE_INSPECT_MAX_DEPTH;
+  if (atDepthLimit && mode !== "found") return `${name} is nested too deep for ADE to check.`;
   const couldNotCheck = (stderr: string, exitCode: number | null) =>
     mode === "found" ? null : `ADE could not check ${label}: ${stderr.trim() || `git exited ${exitCode}`}`;
   // Each repository answers for itself; a nested one is checked below.
@@ -90,7 +89,7 @@ async function describeRepoWork(
   );
   if (unpushed.exitCode !== 0) return couldNotCheck(unpushed.stderr, unpushed.exitCode);
   if (unpushed.stdout.trim().length > 0) return `${name} has commits that no remote has.`;
-  return describeUnsavedSubmoduleWork(repoPath, timeoutMs, depth + 1, mode);
+  return atDepthLimit ? null : describeUnsavedSubmoduleWork(repoPath, timeoutMs, depth + 1, mode);
 }
 
 /**

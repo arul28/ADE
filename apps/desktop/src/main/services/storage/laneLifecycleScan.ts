@@ -270,6 +270,8 @@ export function createLaneLifecycleScan(options: {
       const laneService = options.laneService;
       const projectId = options.projectId?.trim();
       if (!laneService || !options.hasConfig || !projectId) return;
+      // Saved lane work expires whether or not any cleanup rule is on.
+      await laneService.pruneDeletedLanes?.();
       const policy = options.policy();
       if (!laneCleanupChecksOn(policy)) return;
       const previous = options.db.get<{ last_scan_at: string | null; last_attempt_at: string | null }>(
@@ -512,8 +514,6 @@ export function createLaneLifecycleScan(options: {
         writeLastRun(projectId, report(`The check stopped: ${errorText(error)}`));
         return;
       }
-
-      await laneService.pruneDeletedLanes?.();
 
       const now = new Date().toISOString();
       const nextScanAt = new Date(Date.now() + intervalMs).toISOString();
