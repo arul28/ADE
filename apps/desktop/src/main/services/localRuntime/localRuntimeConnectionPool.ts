@@ -2020,13 +2020,17 @@ export class LocalRuntimeConnectionPool {
       });
       return;
     }
+    let forceRestart = options.forceRestart === true;
     let standalone: Awaited<ReturnType<typeof materializeAppImageRuntime>> | null = null;
     if (runningAppImagePath()) {
-      // Never replace files under a live brain unless the caller is replacing
-      // that brain: a forced install restarts it right after, and the staged
-      // update swaps its files atomically. The normal update handoff stops it
-      // before the new app launch; preserve any other answering brain.
-      if (!options.forceRestart && (runningProbe || getRuntimeServiceStatus().running === true)) {
+      // Never replace files under a live brain unless it is being replaced:
+      // a forced install restarts it right after, and the staged update swaps
+      // its files atomically. A brain older than this image can't serve it, so
+      // it goes too (a person swapped the AppImage by hand). The normal update
+      // handoff stops the brain before the new app launches; any other brain
+      // that answers is preserved.
+      if (runningCompatibilityError?.skewState === "runtime_older") forceRestart = true;
+      if (!forceRestart && (runningProbe || getRuntimeServiceStatus().running === true)) {
         this.serviceInstallStatus = {
           state: "skipped", attempted: false, path: cliPath,
           message: "A brain is already running; its runtime was left unchanged.",
@@ -2093,7 +2097,7 @@ export class LocalRuntimeConnectionPool {
         timeoutMs: this.options.serviceInstallTimeoutMs ?? LOCAL_RUNTIME_SERVICE_INSTALL_TIMEOUT_MS,
         env: {
           ...(standalone?.env ?? buildLocalRuntimeNodeEnv(this.appVersion)),
-          ...(options.forceRestart ? { ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" } : {}),
+          ...(forceRestart ? { ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" } : {}),
         },
       });
     } catch (error) {
