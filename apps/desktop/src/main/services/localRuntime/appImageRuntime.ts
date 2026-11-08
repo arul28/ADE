@@ -22,18 +22,16 @@ export async function materializeAppImageRuntime(version: string): Promise<{ bin
   delete env.ADE_CLI_JS;
   delete env.ADE_RUNTIME_BUILD_HASH;
   for (const key of ["ADE_CHAT_SESSION_ID", "ADE_RUN_ID", "ADE_STEP_ID", "ADE_ATTEMPT_ID", "ADE_OWNER_ID"]) delete env[key];
-  const hasInstalledBinary = await fs.access(binary).then(() => true, (error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return false;
-    throw error;
-  });
-  if (hasInstalledBinary) {
-    // An unreadable existing install may be a newer headless brain. Never
-    // replace it merely because its version or dependencies could not be read.
-    await fs.access(path.join(runtimeRoot, "node_modules"));
-    const current = await exec(binary, ["--version"], { env, timeout: 30_000 });
-    const installed = current.stdout.trim().replace(/^ade\s+/i, "");
-    if (!/^\d+\.\d+\.\d+/.test(installed)) throw new Error("Could not identify the existing ADE runtime version.");
-    if (compareUpdateVersions(installed, version) >= 0) return { binary, env };
+  // A runtime that cannot report its version cannot serve a brain either, so
+  // it is repaired from this image. One that can report a newer version stays.
+  const installed = await exec(binary, ["--version"], { env, timeout: 30_000 }).then(
+    (result) => result.stdout.trim().replace(/^ade\s+/i, ""),
+    () => null,
+  );
+  if (installed && /^\d+\.\d+\.\d+/.test(installed)
+    && compareUpdateVersions(installed, version) >= 0
+    && await fs.access(path.join(runtimeRoot, "node_modules")).then(() => true, () => false)) {
+    return { binary, env };
   }
   const source = path.join(process.resourcesPath, "runtime");
   await fs.mkdir(path.join(layout.runtimeDir, "updates"), { recursive: true });

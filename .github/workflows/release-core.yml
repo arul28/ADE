@@ -593,12 +593,14 @@ jobs:
             apps/desktop/release/latest-linux*.yml
           if-no-files-found: error
       - name: Upload ${{ matrix.arch }} source maps to Sentry
+        if: ${{ !inputs.windows_proof }}
         continue-on-error: true
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/sentry/sentry-release.mjs upload --version "$RELEASE_TAG" --dist "linux-${{ matrix.arch }}"
       - name: Upload ${{ matrix.arch }} source maps to PostHog
+        if: ${{ !inputs.windows_proof }}
         continue-on-error: true
         env:
           POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
