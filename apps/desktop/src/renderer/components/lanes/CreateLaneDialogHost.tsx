@@ -315,9 +315,11 @@ function runDetachedLaneCreate(params: DetachedCreateParams): void {
           // The caller's follow-up must not cost the lane its setup.
           console.warn("create_lane.on_created_failed", err);
         }
-      } else if (callPin.kind === "remote") {
+      } else if (pin || callPin.kind === "remote") {
         // No page to hand it to, and the "Lane created" toast follows the tab
-        // on screen: a lane made on a remote machine would finish without a word.
+        // on screen: a lane on a machine the user picked, or on a remote tab's
+        // own machine, would finish without a word. A lifecycle toast for the
+        // same lane has the same id and takes this one's place.
         showToast({
           id: laneCreatedToastId(lane.id),
           title: lane.name,
