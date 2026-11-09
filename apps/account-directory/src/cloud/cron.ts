@@ -228,11 +228,11 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
 const HOURS_WARNINGS: Record<Exclude<CloudHoursState, "none">, {
   column: "warned_zero_at" | "warned_95_at" | "warned_80_at";
   subject: string;
-  text: (percent: number) => string;
+  text: string;
 }> = {
-  zero: { column: "warned_zero_at", subject: "You're out of ADE Cloud hours", text: () => "Your ADE Cloud computers have stopped. You can add hours, or wait for your hours to reset." },
-  warn95: { column: "warned_95_at", subject: "You've used 95% of your ADE Cloud hours", text: () => "You've used 95% of this period's ADE Cloud hours. When they run out, your computers stop." },
-  warn80: { column: "warned_80_at", subject: "You've used 80% of your ADE Cloud hours", text: (percent) => `You've used ${percent}% of this period's ADE Cloud hours.` },
+  zero: { column: "warned_zero_at", subject: "You're out of ADE Cloud hours", text: "Your ADE Cloud computers have stopped. You can add hours, or wait for your hours to reset." },
+  warn95: { column: "warned_95_at", subject: "You've used 95% of your ADE Cloud hours", text: "You're almost out. When your hours run out, your computers stop until you add hours or they reset." },
+  warn80: { column: "warned_80_at", subject: "You've used 80% of your ADE Cloud hours", text: "Your computers keep working for now. When your hours run out, they stop until you add hours or they reset." },
 };
 
 async function warnHours(env: CloudEnv, account: AccountRow, state: CloudHoursState, used: number, now: number): Promise<void> {
@@ -240,7 +240,8 @@ async function warnHours(env: CloudEnv, account: AccountRow, state: CloudHoursSt
   const warning = HOURS_WARNINGS[state];
   if (account[warning.column] != null) return;
   await env.DB.prepare(`update cloud_accounts set ${warning.column} = ?, updated_at = ? where user_id = ?`).bind(now, now, account.user_id).run();
-  await sendCloudEmail(env, { userId: account.user_id, subject: warning.subject, text: warning.text(percentUsed(account, used)) });
+  const percent = state === "zero" ? 100 : percentUsed(account, used);
+  await sendCloudEmail(env, { userId: account.user_id, subject: warning.subject, text: warning.text, percentUsed: percent });
 }
 
 /** Asks each awake computer to save and interrupt its work, then stops it; a sleeper just stops. */

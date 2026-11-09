@@ -1,12 +1,16 @@
 /**
- * Plain email from ADE Cloud through Resend. With no `RESEND_API_KEY`, logs the
- * subject and carries on. A failed send never fails the work that asked for it.
+ * ADE Cloud's email through Resend, as a branded page with a plain-text copy.
+ * With no `RESEND_API_KEY`, logs the subject and carries on. A failed send never
+ * fails the work that asked for it.
  */
 
 const RESEND_URL = "https://api.resend.com/emails";
 const CLERK_USERS_URL = "https://api.clerk.com/v1/users";
 const FROM_ADDRESS = "ADE <notifications@ade-app.dev>";
 const REQUEST_TIMEOUT_MS = 10_000;
+const LOGO_URL = "https://ade-app.dev/logo.png";
+const SITE_URL = "https://ade-app.dev";
+const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 
 export type CloudEmailEnv = {
   RESEND_API_KEY?: string;
@@ -15,8 +19,48 @@ export type CloudEmailEnv = {
 };
 
 export type CloudEmail =
-  | { userId: string; subject: string; text: string }
+  /** `percentUsed` draws the hours meter. */
+  | { userId: string; subject: string; text: string; percentUsed?: number }
   | { owner: true; subject: string; text: string };
+
+const escapeHtml = (value: string): string => value
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;");
+
+function hoursMeter(percentUsed: number): string {
+  const percent = Math.min(100, Math.max(0, Math.round(percentUsed)));
+  const color = percent >= 100 ? "#ef4444" : percent >= 95 ? "#f59e0b" : "#7c3aed";
+  // A zero-width cell makes some clients drop the row, so an empty side is left out.
+  const left = percent > 0 ? `<td width="${percent}%" height="8" bgcolor="${color}" style="background:${color};font-size:0;line-height:0;">&nbsp;</td>` : "";
+  const right = percent < 100 ? `<td height="8" bgcolor="#27273a" style="background:#27273a;font-size:0;line-height:0;">&nbsp;</td>` : "";
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 8px;border-radius:4px;overflow:hidden;"><tr>${left}${right}</tr></table>
+<p style="margin:0 0 24px;font:13px/18px ${FONT};color:#8b8b9a;">${percent}% of this period's hours used</p>`;
+}
+
+function renderCloudEmail(email: CloudEmail): string {
+  const lines = email.text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const paragraphs = lines
+    .map((line) => `<p style="margin:0 0 16px;font:16px/25px ${FONT};color:#c9c9d4;">${escapeHtml(line)}</p>`)
+    .join("\n");
+  const meter = "percentUsed" in email && email.percentUsed != null ? hoursMeter(email.percentUsed) : "";
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark"><meta name="supported-color-schemes" content="dark"><title>${escapeHtml(email.subject)}</title></head>
+<body style="margin:0;padding:0;background:#0a0a0f;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">${escapeHtml(lines[0] ?? email.subject)}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#0a0a0f" style="background:#0a0a0f;"><tr><td align="center" style="padding:40px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;">
+<tr><td style="padding:0 4px 20px;"><a href="${SITE_URL}" style="text-decoration:none;"><img src="${LOGO_URL}" width="72" height="35" alt="ADE" style="display:block;border:0;font:700 24px ${FONT};color:#f5f5f7;"></a></td></tr>
+<tr><td bgcolor="#16161e" style="background:#16161e;border:1px solid #27273a;border-radius:12px;padding:32px;">
+<h1 style="margin:0 0 16px;font:600 22px/30px ${FONT};color:#f5f5f7;">${escapeHtml(email.subject)}</h1>
+${meter}${paragraphs}
+</td></tr>
+<tr><td style="padding:20px 4px 0;font:12px/18px ${FONT};color:#6b6b7a;">ADE Cloud account notice, sent automatically. Replies to this address aren't read.<br><a href="${SITE_URL}" style="color:#8b8b9a;text-decoration:underline;">ade-app.dev</a></td></tr>
+</table></td></tr></table>
+</body></html>`;
+}
 
 function logEmail(event: string, meta: Record<string, unknown>): void {
   console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "ade-account-directory", kind: event, ...meta }));
@@ -55,7 +99,7 @@ export async function sendCloudEmail(env: CloudEmailEnv, email: CloudEmail): Pro
     const response = await fetch(RESEND_URL, {
       method: "POST",
       headers: { authorization: `Bearer ${resendKey}`, "content-type": "application/json" },
-      body: JSON.stringify({ from: FROM_ADDRESS, to: [to], subject: email.subject, text: email.text }),
+      body: JSON.stringify({ from: FROM_ADDRESS, to: [to], subject: email.subject, text: email.text, html: renderCloudEmail(email) }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     logEmail(response.ok ? "cloud.email_sent" : "cloud.email_refused", { target, subject: email.subject, status: response.status });
