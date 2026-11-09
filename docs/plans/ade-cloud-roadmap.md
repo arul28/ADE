@@ -67,7 +67,7 @@ Cloud 2, Cloud 3 and Cloud 4 can run at the same time after Cloud 1.
 
 ## Where each lane starts (after Cloud 1)
 
-- **Cloud 2:** replace the body of `getCloudProvider` (`cloudAccess.ts`) with a provider that calls ADE's server, and delete the vault read and `ADE_CLOUD_DEV_KEY`. Hours and limits start at the cap check in `cloudSleep.ts` / `cloudMachines.ts`. Build the `ade` template in the release (`infra/ade-cloud/build-template.sh`): the app no longer builds it. Rebuild it once right after the Cloud 1 release, because the entrypoint changed.
+- **Cloud 2:** replace the body of `getCloudProvider` (`cloudAccess.ts`) with a provider that calls ADE's server, and delete the vault read and `ADE_CLOUD_DEV_KEY`. Hours and limits start at the cap check in `cloudSleep.ts` / `cloudMachines.ts`. Every release builds the `ade` template (`.github/workflows/cloud-template.yml`, `infra/ade-cloud/build-template.sh`), and `infra/ade-cloud/promote-template.mjs` tests a build and moves the version the server creates from. Rebuild it once right after the Cloud 1 release, because the entrypoint changed.
 - **Cloud 3:** `cloudReadyMachines.ts` and `cloudReadyClaim.ts` (claim has no fetch of the newest code yet), the picker in `useCloudReadyDraftMachine.ts`.
 - **Cloud 4:** for sign-ins, `cloudSignInStore.ts`, `cloudSignInBoot.ts`, and the `machineEnv` hook in `cloudMachineCreator.ts`.
 - **Cloud 5:** `CloudSection.tsx` and `window.ade.cloud`; the web app reaches the same actions through `cloud.read` / `cloud.write`.

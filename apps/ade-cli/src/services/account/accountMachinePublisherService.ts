@@ -68,9 +68,9 @@ import { trackBrainLoopWatchdogCommand } from "../runtime/brainLoopWatchdog";
 import { createEpisodeAnalytics } from "./episodeAnalytics";
 import { readAccountHardwareId } from "./hardwareAnchor";
 
-export const ACCOUNT_MACHINE_HEARTBEAT_MS = 30_000;
+export const ACCOUNT_MACHINE_HEARTBEAT_MS = 60_000;
 export const ACCOUNT_MACHINE_RELAY_STATE_POLL_MS = 2_000;
-// Keep outage recovery comfortably inside the directory's 90-second online
+// Keep outage recovery comfortably inside the directory's 150-second online
 // window while bounding sustained failures at a 20-second request cadence.
 export const ACCOUNT_MACHINE_RETRY_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 20_000] as const;
 const DEFAULT_REQUEST_TIMEOUT_MS = 8_000;
@@ -164,7 +164,7 @@ export type AccountMachineRegistration = {
    * Marks a deliberate, user-initiated link of this machine to the account —
    * the only thing the directory accepts as clearing a revocation.
    *
-   * NEVER set on the 30-second heartbeat. A removed machine that keeps
+   * NEVER set on the 60-second heartbeat. A removed machine that keeps
    * heartbeating is exactly how removal stopped being durable: the directory
    * re-inserted the row it had just deleted. A heartbeat asserts "still here",
    * which is only meaningful if the account already agrees this machine
@@ -823,7 +823,7 @@ export function createAccountMachinePublisherService(options: {
    * its lifecycle belongs to that shared instance and not to any consumer.
    */
   powerSource?: MachinePowerSource;
-  /** Best-effort provider/preset counts for the 30-second directory beat. */
+  /** Best-effort provider/preset counts for the 60-second directory beat. */
   getInventorySummary?: () => Promise<MachineInventorySummary | null>;
   /**
    * The ADE process that holds the machine-wide sync host lease when it is NOT
@@ -1797,7 +1797,7 @@ export function createAccountMachinePublisherService(options: {
 
   const requestTriggeredPublish = (): void => {
     // A relay-state write becomes the new heartbeat anchor, avoiding a second
-    // directory write when the old 30-second deadline arrives.
+    // directory write when the old 60-second deadline arrives.
     clearHeartbeatTimer();
     if (triggeredPublishPending) return;
     triggeredPublishPending = true;
@@ -1909,7 +1909,7 @@ export function createAccountMachinePublisherService(options: {
     const signature = relayPublishStateSignature(snapshot, registration);
     // A first valid observation also publishes: startup may have run before an
     // active sync scope existed, and waiting for the heartbeat would re-create
-    // the directory's 30-second connected-machine delay.
+    // the directory's one-heartbeat connected-machine delay.
     if (observeRelayPublishState(signature)) {
       requestTriggeredPublish();
     }
@@ -1941,7 +1941,7 @@ export function createAccountMachinePublisherService(options: {
           return;
         }
         if (event.kind === "resume") {
-          // Say "awake" at once. Waiting up to 30 s for the heartbeat would
+          // Say "awake" at once. Waiting up to 60 s for the heartbeat would
           // leave a woken machine reading as asleep for longer than it took to
           // wake up.
           requestTriggeredPublish();
@@ -2003,7 +2003,7 @@ export function createAccountMachinePublisherService(options: {
       // Scope the one-shot to THIS call. `publish` consumes the flag only once
       // it is past its early returns, so an attempt abandoned before that point
       // (no sync scope, no machine key, signed out, …) would otherwise leave the
-      // intent armed for the very next 30-second heartbeat — which would then
+      // intent armed for the very next 60-second heartbeat — which would then
       // send `pairing: true` plus the single-use grant on a request the user
       // never made, spending the grant and possibly clearing a revocation the
       // owner applied in the meantime. Clearing it here is a no-op on the
@@ -2111,7 +2111,7 @@ export function createBrainAccountMachinePublisherService(options: {
   captureAnalytics?: (input: ProductAnalyticsCapture) => void;
   /** See the same option on `createAccountMachinePublisherService`. */
   onSustainedFailure?: (input: { code: SyncAccountDirectoryHealth["state"] }) => void;
-  /** Best-effort provider/preset counts for the 30-second directory beat. */
+  /** Best-effort provider/preset counts for the 60-second directory beat. */
   getInventorySummary?: () => Promise<MachineInventorySummary | null>;
   /** See the same option on `createAccountMachinePublisherService`. */
   readCompetingSyncHostOwner?: () => CompetingSyncHostOwner | null;

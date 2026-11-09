@@ -1,0 +1,70 @@
+name: Build the ADE Cloud template
+
+# Builds the template new ADE Cloud computers start from, from a release's tag,
+# and prints the new build number. It changes nothing else: ADE's server keeps
+# creating computers from the build it has pinned until someone tests the new
+# one and moves the version with infra/ade-cloud/promote-template.mjs.
+#
+# The release's files must be public first, because the image installs that
+# release. A stable release turns public when the release skill undrafts it,
+# which is the `release` trigger here (betas turn public with GITHUB_TOKEN,
+# which starts no workflow, so beta.yml calls this itself).
+#
+# It never blocks a release: the job is allowed to fail, and nothing waits on it.
+
+on:
+  release:
+    types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to build from, for example v1.2.130-beta.1.
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build from, for example v1.2.129.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-template:
+    # beta-feed and any prerelease published by hand are not releases of the
+    # template; betas come through workflow_call instead.
+    if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    # Must never fail the run that called it.
+    continue-on-error: true
+    timeout-minutes: 45
+    # One build at a time. A queued build that a newer one replaces is harmless:
+    # only a tested build ever becomes the one computers start from.
+    concurrency:
+      group: ade-cloud-template
+      cancel-in-progress: false
+    env:
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build the template
+        env:
+          AGENT37_API_KEY: ${{ secrets.AGENT37_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AGENT37_API_KEY" ]; then
+            echo "::warning::AGENT37_API_KEY is not set; skipping the template build for $TAG."
+            exit 0
+          fi
+          build="$(sh infra/ade-cloud/build-template.sh ade "$TAG" | tail -n 1)"
+          echo "Built $build from $TAG"
+          echo "ADE Cloud template: \`$build\` from \`$TAG\`. Test it with \`node infra/ade-cloud/promote-template.mjs ${build#*@}\`." >> "$GITHUB_STEP_SUMMARY"

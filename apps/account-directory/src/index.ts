@@ -1,4 +1,7 @@
-import { handleCloudWakeRequest, isCloudWakeRequest, runCloudWakes } from "./cloudWake";
+import { runCloudWakes } from "./cloudWake";
+import { handleCloudRequest, isCloudRequest } from "./cloud/routes";
+import { runCloudMinuteCron } from "./cloud/cron";
+import type { CloudEnv } from "./cloud/store";
 import * as Sentry from "@sentry/cloudflare";
 import { handleRequest } from "./directory";
 import { logScheduledCleanupFailure } from "./logging";
@@ -35,7 +38,7 @@ import {
 } from "./usageResearch";
 
 type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & JevBonusEnv
-  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv;
+  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv & CloudEnv;
 
 const WORKER_NAME = "ade-account-directory";
 
@@ -72,9 +75,9 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // The Jev bonus: account bearer, POST only, no CORS — the ADE brain is the
   // only caller. It forwards to TypeSafe with ADE's key under a daily cap.
   if (isJevBonusRequest(url)) return handleJevBonusRequest(request, env);
-  // the provider timed wakes: account bearer, PUT and DELETE only, no CORS (a
-  // machine's ADE is the only caller). The minute cron below delivers them.
-  if (isCloudWakeRequest(url)) return handleCloudWakeRequest(request, env);
+  // ADE Cloud (src/cloud): account bearer, no CORS. Timed wakes ride the same
+  // gate. Everything under /cloud answers 404 for an account not on the list.
+  if (isCloudRequest(url)) return handleCloudRequest(request, env);
   // Clerk's sign-up webhook: Svix-signed, POST only, no CORS (Clerk is the
   // only caller). It records one `ade_signed_up` per account.
   if (isSignupAnalyticsRequest(url)) return handleSignupAnalyticsRequest(request, env);
@@ -152,6 +155,10 @@ export default Sentry.withSentry(sentryOptions, {
         settle("jev_bonus_days", () => cleanupJevBonusDays(env)),
         // the provider timed wakes: requests each due machine's wake URL.
         settle("cloud_wakes", () => runCloudWakes(env)),
+        // ADE Cloud: reads the provider list once, meters hours, stops computers
+        // at 0 hours, and runs the daily and ten-minute checks. No computers, no
+        // provider calls.
+        settle("cloud_account", () => runCloudMinuteCron(env)),
       ]);
     } catch (error) {
       status = "error";

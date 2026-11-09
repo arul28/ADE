@@ -80,7 +80,7 @@ de-authorized machine's agents on every surface of the account. The handler:
 1. records a `revoked_machines` row (before dropping the machine row, so a
    half-completed removal fails closed) — `POST /account/machines/register` is
    refused with `403 machine_revoked` while it stands, which is what stops the
-   removed machine's 30-second heartbeat from re-registering itself;
+   removed machine's 60-second heartbeat from re-registering itself;
 2. deletes the machine row;
 3. forwards the removal to `DELETE /attention/account/machines/:machineKey` on
    the relay (`PUSH_RELAY_URL`, or the optional `ACTIVITY_RELAY` service
@@ -787,6 +787,53 @@ minutes early (`src/cloudWake.ts`, table `cloud_wakes`):
 
 Nothing else about the machine is stored, and no request body is logged.
 
+## ADE Cloud account
+
+The server holds the provider key and owns every ADE Cloud computer
+(`src/cloud/`, migration `0018_cloud_account.sql`, secrets `AGENT37_API_KEY`
+and optional `RESEND_API_KEY`). `src/cloud/contract.ts` lists the routes and
+their shapes for a client to mirror. Every route takes the account bearer.
+
+- `CLOUD_ACCESS_ACCOUNTS` is a comma list of Clerk user ids, or `*`. Unset means
+  nobody. `GET /cloud/access` answers `{ enabled }` for the bearer; every other
+  `/cloud/*` route, including `/cloud/wake`, answers 404 `not_found` to a caller
+  not on the list.
+- `cloud_computers` records each computer's owner. Every call by instance id
+  checks it, and not yours or unknown is 404. Provider errors become one plain
+  sentence.
+- A create ignores any template from the client and uses `template_version` in
+  `cloud_settings` (an exact `ade@N`; unset refuses with a log line). Sizes are
+  the eight in `src/cloud/plans.ts`. Disk is 4 GB on create. Limits on create and
+  copy: free 3 computers, paid 10. Free computers stay at 4 GB; paid accounts
+  share 40 GB and grow in 4 GB steps, while the computer is idle.
+- Every delete, automatic ones included, writes `cloud_delete_log`, with the
+  provider's start and sleep history read first. Every power change writes
+  `cloud_power_log`.
+- `POST /cloud/instances/:id/idle` is the computer asking to be slept.
+
+The minute cron reads the provider's list once, and only when a computer
+exists. It writes only on change: hours settle when a stretch of awake time
+ends, and live hours are the settled figure plus the open stretches. Hours
+are integer thousandths of a Small-hour. Free accounts reset on the 1st UTC;
+paid accounts wait for Stripe to move `period_end`
+(`applyCloudPlanChange` in `store.ts` is the one place a plan changes).
+
+At 0 hours with extra hours off, the cron runs
+`ade cloud prepare-stop --timeout 40` on each awake computer, treating a failure
+as "stop anyway", then stops it, because a sleeping computer wakes on any
+request. A stop answering 409 retries; a stop answering 400 is cold storage and
+is left alone until something wakes it. Starts and creates are refused, except
+`POST .../start` with `{ "reason": "push_work" }`: a free 15-minute wake, once a
+day per computer. Timed wakes are dropped while an account is at 0 hours.
+
+An awake computer with no check-in for 10 minutes (`machines.last_seen_at`) is
+slept. Daily after 02:00 UTC, the cron compares each computer-day with the
+provider's `awake_minutes`, corrects the account to the provider's number, and
+alerts the owner to minutes the power log can't explain. Every 10 minutes it
+checks the wallet (`$15` floor, automatic top-up) and awake computers against
+the provider's limit (80%). A computer not awake for 30 days is deleted after
+7-day and 1-day warnings; the clock waits for an hours reset.
+
 ## Sign-up analytics
 
 `POST /webhooks/clerk` takes Clerk's `user.created` and `user.deleted`
@@ -888,4 +935,4 @@ deployment:
    `ADE_ACCOUNT_DIRECTORY_URL=https://<worker-host>` only for a trusted
    self-hosted override.
 
-`ONLINE_WINDOW_MS` defaults to 90 seconds and can be adjusted as a Worker var.
+`ONLINE_WINDOW_MS` defaults to 150 seconds and can be adjusted as a Worker var.

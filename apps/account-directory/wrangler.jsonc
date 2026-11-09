@@ -28,13 +28,26 @@
   // 503 and the app opens the browser page instead. It can sign in as any user
   // of that instance, so it is set out of band like the secret above.
   //
+  // REQUIRED SECRET — AGENT37_API_KEY (ADE Cloud)
+  // The workspace key ADE Cloud runs computers on, set out of band like the
+  // secret above. Only this Worker holds it: the desktop and brains never do.
+  // Without it every /cloud route refuses with 503 and the cron does nothing.
+  //
+  // OPTIONAL SECRET — RESEND_API_KEY (ADE Cloud)
+  // Sends hours warnings, deletion warnings and owner alerts. Unset, those log
+  // a line and carry on. Recipients come from CLERK_SECRET_KEY above.
+  //
+  // CLOUD_ACCESS_ACCOUNTS (ADE Cloud, deliberately absent below)
+  // A comma list of Clerk user ids, or `*`. Unset means nobody: every /cloud
+  // route answers 404. The owner's id is set at rollout, out of band.
+  //
   // OPTIONAL SECRETS — CLERK_WEBHOOK_SIGNING_SECRET, POSTHOG_PROJECT_TOKEN
   // `/webhooks/clerk` records one `ade_signed_up` PostHog event per new account
   // (src/signupAnalytics.ts). Create a Clerk webhook for `user.created` pointing
   // at https://<this worker>/webhooks/clerk, then set its `whsec_…` signing
   // secret and the public `phc_…` project token. Unset, the route answers 503.
   "vars": {
-    "ONLINE_WINDOW_MS": "90000",
+    "ONLINE_WINDOW_MS": "150000",
     // Public Sentry DSN of the ade-workers project. Not a secret (it only lets
     // events in). SENTRY_RELEASE is set at deploy, not here. No
     // SENTRY_ENVIRONMENT here: this development Worker and `wrangler dev`
@@ -125,7 +138,7 @@
         // every sign-in link is a 404; the deploy preflight checks the page
         // is live (`scripts/verify-deployment-config.mjs`).
         "DEVICE_PAGE_ORIGIN": "https://ade-app.dev",
-        "ONLINE_WINDOW_MS": "90000",
+        "ONLINE_WINDOW_MS": "150000",
         // Same public DSN as above; vars do not inherit into an environment.
         "SENTRY_DSN": "https://7b05312b178df4f7d294794aa9ff7cde@o4512249455640576.ingest.us.sentry.io/4512249615024128",
         // The only environment Sentry hears from (src/sentry.ts drops the rest).

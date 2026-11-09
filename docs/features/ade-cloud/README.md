@@ -100,8 +100,10 @@ Machine metadata keys are `ade_*` (`ade_machine_key`, `ade_request_id`,
 `infra/ade-cloud/` holds the image every machine starts from. It sets
 `ADE_HOST_INSTANCE_ID=cloud:<hostname>` and `ADE_CLOUD_INSTANCE_ID`, the only
 variables the rest of ADE reads to know it runs on a cloud machine. ADE does
-not build the template from the app: `infra/ade-cloud/build-template.sh` does,
-and a development desktop can use a trial template with `ADE_CLOUD_TEMPLATE`.
+not build the template from the app: every release builds it
+(`.github/workflows/cloud-template.yml`), and a tested build is moved to with
+`infra/ade-cloud/promote-template.mjs`. A development desktop can use a trial
+template with `ADE_CLOUD_TEMPLATE`.
 On first boot a new machine installs the ADE version of the app that made it,
 when the image's ADE is older.
 
