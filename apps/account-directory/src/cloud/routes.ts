@@ -165,13 +165,19 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
     select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?
     where (select count(*) from cloud_computers where user_id = ? and deleted_at is null and (status != 'provisioning' or created_at > ?)) < ?
       and (? is null or (select coalesce(sum(disk_gb), 0) from cloud_computers where user_id = ? and deleted_at is null) + ? <= ?)
+      and not exists (select 1 from cloud_computers where request_id = ? and user_id <> ?)
   `).bind(
     pendingId, account.user_id, args.requestId, args.size.type, args.size.cpu, args.size.memoryGb, args.diskGb, args.size.multiplierMilli,
     args.templateVersion, args.name, args.now, args.now, args.now,
     account.user_id, cutoff, limit,
     rules === "paid" ? PAID_DISK_POOL_GB : null, account.user_id, args.diskGb, PAID_DISK_POOL_GB,
+    args.requestId, account.user_id,
   ).run();
   if (result.meta.changes === 1) return { ok: true, pendingId };
+  // The tag finds a lost create in the shared provider list, so it can only ever be one account's.
+  const tagTaken = await env.DB.prepare("select 1 as taken from cloud_computers where request_id = ? and user_id <> ? limit 1")
+    .bind(args.requestId, account.user_id).first<{ taken: number }>();
+  if (tagTaken) return { ok: false, response: badRequest("That request can't be used.") };
   const computers = await listComputers(env, account.user_id);
   if (computers.length >= limit) {
     const message = rules === "paid"
@@ -495,8 +501,8 @@ async function handleList(env: CloudEnv, userId: string, provider: CloudProvider
   for (const instance of all) {
     const pendingId = pendingRequestIds.get(instance.metadata.ade_request_id ?? "");
     if (pendingId && !owned.has(instance.id)) {
-      await env.DB.batch(adoptionStatements(env, { pendingId, instance, machineKey: instance.metadata.ade_machine_key ?? null, now, reason: "create_adopted" }));
-      owned.add(instance.id);
+      const [adopted] = await env.DB.batch(adoptionStatements(env, { pendingId, instance, machineKey: instance.metadata.ade_machine_key ?? null, now, reason: "create_adopted" }));
+      if (adopted?.meta.changes === 1) owned.add(instance.id);
     }
   }
   return json({ data: all.filter((instance) => owned.has(instance.id)) });

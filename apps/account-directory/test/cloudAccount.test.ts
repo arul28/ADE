@@ -472,6 +472,17 @@ describe("ADE Cloud account", () => {
       expect(harness.rows("select instance_id from cloud_computers where instance_id like 'pending:%'")).toEqual([]);
       expect(computer(harness, "lateid123456")).toEqual(expect.objectContaining({ user_id: OWNER, status: "running", awake_since: NOW, request_id: "req-create" }));
     }],
+    ["a request tag is one account's: another can't take it or see that computer", async () => {
+      harness.net.once.push({ match: /POST .*\/instances$/, reply: harness.net.reply({ error: { code: "upstream_timeout" } }, 504) });
+      const body = { type: "default", resources: { cpu: 2, memory: 4 }, metadata: { ade_request_id: "req-mine" } };
+      expect((await harness.send(OWNER, "POST", "/cloud/instances", body)).status).toBe(504);
+      provide(harness, "mineid123456", "running", { ade_request_id: "req-mine" });
+
+      expect((await harness.send(OTHER, "POST", "/cloud/instances", body)).status).toBe(400);
+      const list = await (await harness.send(OTHER, "GET", "/cloud/instances")).json() as { data: unknown[] };
+      expect(list.data).toEqual([]);
+      expect(harness.rows("select user_id from cloud_computers where instance_id like 'pending:%'")).toEqual([{ user_id: OWNER }]);
+    }],
     ["a copy the provider timed out on keeps its slot", async () => {
       seedComputer(harness);
       provide(harness);

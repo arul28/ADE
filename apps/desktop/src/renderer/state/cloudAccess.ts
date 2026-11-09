@@ -73,6 +73,9 @@ export function useAdeCloudEnabled(): boolean {
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
+/** For code outside a component that has to act when the answer changes. */
+export const subscribeAdeCloudAccess = subscribe;
+
 /** For code outside a component (settings search, one-shot reads). Starts the watch if nothing has. */
 export function adeCloudEnabled(): boolean {
   startWatch();

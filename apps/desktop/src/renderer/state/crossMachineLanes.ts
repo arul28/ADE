@@ -75,6 +75,7 @@ import {
 } from "./appStore";
 import { chatLaunchBindingKey, noteChatLaunchSourceRead } from "./chatLaunchStore";
 import { isAdeAvailable } from "../lib/adeAvailability";
+import { subscribeAdeCloudAccess } from "./cloudAccess";
 import { isSavedChatsMachineId } from "./cloudSavedChats";
 import { scheduleCloudSavedChatsRefresh, type SavedChatsContext } from "./cloudSavedChatsSync";
 
@@ -2174,6 +2175,10 @@ function attach(): void {
   if (!remoteRuntime) return;
   const unsubscribeSnapshot = remoteRuntime.onConnectionSnapshotChanged?.(applySnapshot);
   if (unsubscribeSnapshot) runtime.disposers.push(unsubscribeSnapshot);
+  // The first read is dropped when the access answer lands after its debounce.
+  runtime.disposers.push(subscribeAdeCloudAccess(() => {
+    if (connectionSnapshotSeen) scheduleCloudSavedChatsRefresh(savedChatsContext, { force: true });
+  }));
   // These events cover the active binding. Other machines are covered by the
   // shared bounded refresh below because preload exposes no per-target push
   // subscription.

@@ -418,7 +418,8 @@ async function reconcileDays(env: CloudEnv, provider: CloudProvider, last: strin
         ? Math.round((providerBillableMs * meteredMilli) / meteredMs)
         : hoursMilliFor(providerBillableMs, multiplier);
       const delta = providerMilli - meteredMilli;
-      const inPeriod = row.period_start != null && Date.parse(`${day}T00:00:00Z`) >= row.period_start - 86_400_000;
+      // A day that ended by the time the period began belongs to the one before.
+      const inPeriod = row.period_start != null && Date.parse(`${day}T00:00:00Z`) + 86_400_000 > row.period_start;
       // First: it reads the mark the next statement sets, so a repeat of this day charges once.
       if (inPeriod && delta !== 0) {
         statements.push(env.DB.prepare(`

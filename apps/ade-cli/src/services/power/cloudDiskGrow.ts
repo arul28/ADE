@@ -48,7 +48,7 @@ export function createCloudDiskGrower(deps: {
 
   return {
     /** True when a grow started; the computer restarts and the idle sleep waits for that. */
-    async growIfNeeded(): Promise<boolean> {
+    async growIfNeeded(stillIdle: () => boolean): Promise<boolean> {
       const used = usedFraction(deps.path);
       if (used == null) return false;
       if (used < NEAR_FULL) {
@@ -69,6 +69,8 @@ export function createCloudDiskGrower(deps: {
         return null;
       });
       const { diskStepGb } = cloudCatalogOf(account);
+      // A grow restarts the computer, and work may have started during those reads.
+      if (!stillIdle()) return false;
       try {
         const { cpu, memory, disk } = instance.resources;
         await client.resizeInstance(deps.instanceId, { cpu, memory, disk: disk + diskStepGb }, { computerIdle: true });

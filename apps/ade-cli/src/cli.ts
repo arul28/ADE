@@ -28690,7 +28690,7 @@ async function runServe(
           if (!client) throw new Error("no ADE Cloud access");
           await client.requestIdleSleep(instanceId);
         },
-        growDiskIfNeeded: async () => await cloudDiskGrower?.growIfNeeded() ?? false,
+        growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
         sendTimedWake: async (wake) => {
           const auth = brainAccountAuthService;
           if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");

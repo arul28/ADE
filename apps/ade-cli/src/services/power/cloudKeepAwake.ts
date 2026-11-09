@@ -130,7 +130,7 @@ export type CloudKeepAwakeOptions = {
   /** Asks ADE's server to sleep this machine now (three minutes idle). Rejects when it couldn't; the provider's timer is the backstop. */
   requestIdleSleep?: (instanceId: string) => Promise<void>;
   /** Grows the disk if it's near full (it restarts the machine). True when it did, so sleep waits for the restart. */
-  growDiskIfNeeded?: () => Promise<boolean>;
+  growDiskIfNeeded?: (stillIdle: () => boolean) => Promise<boolean>;
   fetch?: (url: string, init: { method: string; signal: AbortSignal }) => Promise<{ status: number }>;
   logger?: {
     info(event: string, data?: unknown): void;
@@ -264,7 +264,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
     if (!options.requestIdleSleep || at - lastBusyAt < CLOUD_IDLE_SLEEP_AFTER_MS - 5_000) return;
     askedToSleep = true;
     try {
-      if (await options.growDiskIfNeeded?.()) return;
+      if (await options.growDiskIfNeeded?.(() => !usedSinceTick)) return;
       // Work noted while the disk check ran wins: sleep waits for the next idle stretch.
       if (usedSinceTick) {
         askedToSleep = false;
