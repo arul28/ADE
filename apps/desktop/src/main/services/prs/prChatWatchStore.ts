@@ -6,6 +6,7 @@ import {
   type PrWatchMode,
   type PrWatchState,
   type PrWatchStopReason,
+  type SessionActivePrWatch,
 } from "../../../shared/prWatch";
 import type { Logger } from "../logging/logger";
 import type { AdeDb, SqlValue } from "../state/kvDb";
@@ -165,6 +166,33 @@ export function createPrChatWatchStore(args: { db: AdeDb; projectId: string; log
   };
 
   /**
+   * Every chat's live watches, folded for its Work row. One read for a whole
+   * chat listing: the list is a hot path and most chats have no watch.
+   */
+  const activeBySession = (): Map<string, SessionActivePrWatch> => {
+    const bySession = new Map<string, SessionActivePrWatch>();
+    let rows: Array<{ session_id: string; started_at: string; github_pr_number: number | null }> = [];
+    try {
+      rows = db.all(
+        `select w.session_id, w.started_at, p.github_pr_number
+           from pull_request_chat_watches w
+           left join pull_requests p on p.id = w.pr_id
+          where w.project_id = ? and w.stopped_at is null
+          order by w.started_at asc`,
+        [projectId],
+      );
+    } catch (error) {
+      logger.warn("prs.chat_watch_read_failed", { error: getErrorMessage(error) });
+    }
+    for (const row of rows) {
+      const existing = bySession.get(row.session_id);
+      if (existing) existing.count += 1;
+      else bySession.set(row.session_id, { startedAt: row.started_at, githubPrNumber: row.github_pr_number, count: 1 });
+    }
+    return bySession;
+  };
+
+  /**
    * Start, switch, or restart a watch. Switching Watch ↔ Ship keeps what the
    * agent was already told, so the switch itself is not news.
    */
@@ -288,5 +316,5 @@ export function createPrChatWatchStore(args: { db: AdeDb; projectId: string; log
     }
   };
 
-  return { get, getForPair, list, arm, stop, commitPass, recordAdeComment, adeCommentIds };
+  return { get, getForPair, list, activeBySession, arm, stop, commitPass, recordAdeComment, adeCommentIds };
 }

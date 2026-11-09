@@ -4625,6 +4625,7 @@ app.whenReady().then(async () => {
       if (event.type === "prs-updated") {
         for (const pr of event.prs) searchServiceHolder.current?.notifyPrChanged(pr.id);
       }
+      if (event.type === "pr-chat-watch-changed") agentChatServiceRef?.notifyPrWatchChanged(event.sessionId);
     };
 
     // Wire auto-map-by-branch: the PR service emits Undo-able toasts through the
@@ -5043,6 +5044,7 @@ app.whenReady().then(async () => {
     };
 
     const agentChatService = createAgentChatService({
+      listActivePrWatches: () => prService.chatWatchStore.activeBySession(),
       museQuota,
       // One value per machine (in-process runtimes in dev share this machine's).
       readContinueAfterRestart: () => resolveContinueAfterRestart(),

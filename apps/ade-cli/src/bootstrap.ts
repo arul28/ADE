@@ -2767,6 +2767,7 @@ export async function createAdeRuntime(args: {
     let linearAgentRuntime: LinearAgentRuntime | null = null;
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
+        listActivePrWatches: () => headlessLinearServices.prService.chatWatchStore.activeBySession(),
         machineAdeHome: resolveMachineAdeLayout().adeDir,
         // One value per machine: this brain decides its own resumes.
         readContinueAfterRestart: () => resolveContinueAfterRestart(),
@@ -3470,6 +3471,7 @@ export async function createAdeRuntime(args: {
     // history was never compacted, even with no paired device.
     const emitPrEvent = (event: PrEventPayload): void => {
       pushEvent("runtime", { type: "pr_event", event });
+      if (event.type === "pr-chat-watch-changed") agentChatService?.notifyPrWatchChanged(event.sessionId);
       if (event.type === "prs-updated") {
         syncService?.notifyPrsUpdated();
       }

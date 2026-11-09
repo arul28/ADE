@@ -81,6 +81,8 @@ export type RosterLiveSession = {
   activeBackgroundTaskCount?: number | null;
   /** The chat's next scheduled wake, if one is parked. */
   nextWakeAt?: string | null;
+  /** A PR watch is live on this chat: it reads running between wakes, like the Work row. */
+  activePrWatch?: unknown;
   /**
    * Set on CTO/identity chats. Identity sessions are deliberately omitted from
    * the normal project roster, but this marker remains available as a
@@ -676,7 +678,7 @@ function liveChatStatus(live: RosterLiveSession): SyncRosterChatStatus {
   // too without any change here. The phone deliberately reads the TOTAL rather
   // than the working/monitoring split — a roster row has one status, and
   // "something is still running" is the fact it needs.
-  if ((live.activeBackgroundTaskCount ?? 0) > 0) return "running";
+  if ((live.activeBackgroundTaskCount ?? 0) > 0 || live.activePrWatch) return "running";
   if (live.status === "idle") return "idle";
   return "ended";
 }

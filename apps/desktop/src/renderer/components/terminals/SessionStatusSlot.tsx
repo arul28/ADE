@@ -135,7 +135,8 @@ export function SessionStatusSlot({
     && !session.pendingInputItemId
     && !isActivelyRunning
     && (session.activeBackgroundTaskCount ?? 0) <= 0
-    && totalBackgroundWork(session.backgroundWork) === 0,
+    && totalBackgroundWork(session.backgroundWork) === 0
+    && !session.activePrWatch,
   );
 
   return (

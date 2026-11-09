@@ -86,10 +86,10 @@ function canonicalActivity(summary: TerminalSessionSummary): LaneAgentActivity {
 }
 
 function chatActivity(summary: AgentChatSessionSummary): LaneAgentActivity {
-  if (summary.status === "ended") return "ended";
+  if (summary.status === "ended") return summary.activePrWatch ? "monitoring" : "ended";
   if (summary.awaitingInput) return "awaiting-input";
   if (summary.status === "active") return "working";
-  return backgroundActivity(summary) ?? "idle";
+  return backgroundActivity(summary) ?? (summary.activePrWatch ? "monitoring" : "idle");
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -140,6 +140,7 @@ function backgroundHint(
   summary: {
     backgroundWork?: SessionBackgroundWork;
     activeBackgroundTaskCount?: number;
+    activePrWatch?: TerminalSessionSummary["activePrWatch"];
   },
   turnActive: boolean,
 ): string | null {
@@ -147,7 +148,10 @@ function backgroundHint(
   if (turnActive) return null;
   const work = backgroundWorkFromSummary(summary);
   const total = totalBackgroundWork(work);
-  if (total <= 0) return null;
+  if (total <= 0) {
+    const prNumber = summary.activePrWatch?.githubPrNumber;
+    return summary.activePrWatch ? (prNumber != null ? `Shipping PR #${prNumber}` : "Shipping") : null;
+  }
   const noun = (work?.workingCount ?? 0) > 0 ? "background job" : "monitor";
   return `${total} ${noun}${total === 1 ? "" : "s"} still running`;
 }

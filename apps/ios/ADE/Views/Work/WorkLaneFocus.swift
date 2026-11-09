@@ -92,11 +92,19 @@ func workRowFocus(
 ) -> WorkRowFocus? {
   if archived { return nil }
   if session.isFiledAsSnoozed(summary: summary, now: now) { return nil }
-  let phase = workCanonicalSessionState(session: session, summary: summary, now: now).phase
+  let state = workCanonicalSessionState(session: session, summary: summary, now: now)
+  let phase = state.phase
   switch phase {
   case .needsYou:
     return WorkRowFocus(status: .needsYou, holdsOut: true, missedWake: false)
   case .starting, .running:
+    // A PR watch must not hide a wake that came due and never ran. Mirrors
+    // desktop `workRowFocus`.
+    if state.restingOnPrWatch,
+       workParsedDate(summary?.nextWakeAt) != nil,
+       !workScheduledWakeIsPending(summary?.nextWakeAt, now: now) {
+      return WorkRowFocus(status: .working, holdsOut: true, missedWake: true)
+    }
     // A live turn that went silent with no open work may be stuck. It stays
     // filed as running, but like a stale run it holds its lane out of the
     // fold, so the user sees it instead of trusting a dead "Working".

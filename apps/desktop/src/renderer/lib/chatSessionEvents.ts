@@ -1,6 +1,7 @@
 import type { AgentChatEventEnvelope, AgentChatSession, AgentChatSessionSummary } from "../../shared/types";
 import { isClaudePluginUiOnlyMetaEvent } from "../../shared/claudePluginUi";
 import { isThreadCommentsOnlyMetaEvent } from "../../shared/threadComments";
+import { isSessionMetaOnly } from "../../shared/sessionMetaEvents";
 import { invalidateAgentChatSessionListCache } from "./agentChatSessionListCache";
 import { invalidateSessionListCache } from "./sessionListCache";
 
@@ -90,14 +91,21 @@ export function compareChatSessionsByEffectiveRecency(
   return left.sessionId.localeCompare(right.sessionId);
 }
 
+function isPrWatchChangedOnlyMetaEvent(event: { type: string }): boolean {
+  return isSessionMetaOnly(event, "prWatchChanged");
+}
+
 export function getChatSessionLocalTouchTimestampForEvent(
   envelope: AgentChatEventEnvelope,
 ): string | null {
   switch (envelope.event.type) {
     case "session_meta_updated":
       // A comment edit, or what a mod draws, is not chat activity: it must
-      // not move the chat up the list or refetch it.
-      return isThreadCommentsOnlyMetaEvent(envelope.event) || isClaudePluginUiOnlyMetaEvent(envelope.event)
+      // not move the chat up the list or refetch it. Nor is a PR watch change,
+      // which still refetches (`shouldRefreshSessionListForChatEvent`).
+      return isThreadCommentsOnlyMetaEvent(envelope.event)
+        || isClaudePluginUiOnlyMetaEvent(envelope.event)
+        || isPrWatchChangedOnlyMetaEvent(envelope.event)
         ? null
         : envelope.timestamp;
     case "approval_request":
@@ -122,5 +130,5 @@ export function getChatSessionLocalTouchTimestampForEvent(
 }
 
 export function shouldRefreshSessionListForChatEvent(envelope: AgentChatEventEnvelope): boolean {
-  return getChatSessionLocalTouchTimestampForEvent(envelope) != null;
+  return isPrWatchChangedOnlyMetaEvent(envelope.event) || getChatSessionLocalTouchTimestampForEvent(envelope) != null;
 }

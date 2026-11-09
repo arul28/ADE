@@ -144,6 +144,7 @@ export type SessionCanonicalUiInput = {
   currentTurnStartedAt?: TerminalSessionSummary["currentTurnStartedAt"];
   activeBackgroundTaskCount?: number;
   backgroundWork?: SessionBackgroundWork | null;
+  activePrWatch?: TerminalSessionSummary["activePrWatch"];
   /** Live-turn open work (host fold); see `sessionTurnStallMs`. */
   turnOpenWorkCount?: number;
   nowMs?: number;
@@ -175,6 +176,7 @@ export function canonicalInputFromSummary(session: TerminalSessionSummary): Sess
     currentTurnStartedAt: session.currentTurnStartedAt,
     activeBackgroundTaskCount: session.activeBackgroundTaskCount,
     backgroundWork: backgroundWorkFromSummary(session),
+    activePrWatch: session.activePrWatch,
     turnOpenWorkCount: session.turnOpenWorkCount,
   };
 }
@@ -194,6 +196,7 @@ export function sessionCanonicalUiState(session: SessionCanonicalUiInput): Canon
     attentionRequestedAt: session.attentionRequestedAt ?? null,
     lastTurnFailedAt: session.lastTurnFailedAt ?? null,
     backgroundWork: backgroundWorkFromSummary(session),
+    prWatchActive: Boolean(session.activePrWatch),
     nowMs: session.nowMs,
     isChatTool: isChatToolType,
   });
@@ -269,6 +272,7 @@ export function sessionStatusDisplay(
     currentTurnStartedAt: session.currentTurnStartedAt,
     liveness: state.liveness,
     backgroundWork: backgroundWorkFromSummary(session),
+    activePrWatch: session.activePrWatch,
     nextWakeAt: session.nextWakeAt,
     subagentBusy: context.subagentBusy,
     nowMs: session.nowMs,
@@ -436,6 +440,7 @@ export function sessionStatusDot(
     currentTurnStartedAt: session.currentTurnStartedAt,
     liveness: state.liveness,
     backgroundWork: backgroundWorkFromSummary(session),
+    activePrWatch: session.activePrWatch,
     // Same forward as the full slot: without it a chat parked on a published
     // usage-limit reset paints the red dot that means "it broke". `nowMs`
     // travels with it — the resume state is resolved against a clock, so a dot

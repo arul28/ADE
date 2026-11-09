@@ -1242,6 +1242,15 @@ struct AgentChatReasoningEffortChange: Codable, Equatable {
   var appliesAfter: String
 }
 
+/// A chat's live PR watches, as its Work row needs them
+/// (`SessionActivePrWatch` in `apps/desktop/src/shared/prWatch.ts`).
+struct SessionActivePrWatch: Codable, Equatable, Hashable {
+  /// The oldest live watch's start: the row's elapsed counts from here.
+  var startedAt: String
+  var githubPrNumber: Int? = nil
+  var count: Int
+}
+
 struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var compactionIdleMode: String? = nil
   /// Claude only: the chat's prompt cache after its last turn.
@@ -1389,6 +1398,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var usageLimitResumeWasCleared: Bool? = nil
   /// Live background tasks still running after the foreground turn. Older hosts omit it.
   var activeBackgroundTaskCount: Int? = nil
+  /// The chat's live PR watches, from the machine running them. Older hosts omit it.
+  var activePrWatch: SessionActivePrWatch? = nil
   /// Settings the user changed that the host holds until this chat's background
   /// work ends (`reasoningEffort`, `fastMode`): applying them restarts the agent
   /// process, which would stop that work. Live only; older hosts omit it.
@@ -1498,6 +1509,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.usageLimitResume == rhs.usageLimitResume
       && lhs.usageLimitResumeWasCleared == rhs.usageLimitResumeWasCleared
       && lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount
+      && lhs.activePrWatch == rhs.activePrWatch
       && lhs.pendingSettingsAfterBackground == rhs.pendingSettingsAfterBackground
       && lhs.reasoningEffortChange == rhs.reasoningEffortChange
       && lhs.turnOpenWorkCount == rhs.turnOpenWorkCount

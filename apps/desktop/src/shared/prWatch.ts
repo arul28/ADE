@@ -723,6 +723,21 @@ export type PrChatWatchSummary = {
   holding: boolean;
 };
 
+/**
+ * A chat's live PR watches, as its Work row needs them. Built by the machine
+ * that runs the watch and carried on the chat summary, so a row listed from
+ * another machine reads the same thing. Absent when no watch is live, or from
+ * a host older than this field.
+ */
+export type SessionActivePrWatch = {
+  /** The oldest live watch's start: the row's elapsed counts from here. */
+  startedAt: string;
+  /** The oldest live watch's PR. Null when its PR row is gone. */
+  githubPrNumber: number | null;
+  /** How many PRs this chat is watching. Always at least 1. */
+  count: number;
+};
+
 export type SetPrChatWatchArgs = {
   prId: string;
   sessionId: string;

@@ -144,6 +144,7 @@ export function deriveWorkBoardColumn(
     attentionRequestedAt: session.attentionRequestedAt ?? null,
     lastTurnFailedAt: session.lastTurnFailedAt ?? null,
     backgroundWork: backgroundWorkFromSummary(session),
+    prWatchActive: Boolean(session.activePrWatch),
     nowMs,
     isChatTool: isChatToolType,
   }).phase;
@@ -622,6 +623,7 @@ function boardMoveRow(
   return {
     ...base,
     ...(link.nextWakeAt !== undefined ? { nextWakeAt: link.nextWakeAt } : {}),
+    ...(link.activePrWatch ? { activePrWatch: link.activePrWatch } : {}),
     ...(link.orchestrationParentSessionId ? { orchestrationParentSessionId: link.orchestrationParentSessionId } : {}),
     ...(link.spawnKind === "subagent" || link.spawnKind === "peer" ? { spawnKind: link.spawnKind } : {}),
   };

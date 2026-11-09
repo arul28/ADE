@@ -203,6 +203,7 @@ import {
 } from "./chatProviderFork";
 import { createClaudePluginUiService } from "./claudePluginUiService";
 import type { ClaudePluginUiGetArgs, ClaudePluginUiSnapshot } from "../../../shared/claudePluginUi";
+import type { SessionActivePrWatch } from "../../../shared/prWatch";
 import {
   CODEX_COMPACTION_STALL_MS,
   type CodexCompactionFailReason,
@@ -11891,6 +11892,8 @@ export function createAgentChatService(args: {
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
+  /** This machine's live PR watches by chat, for the Work row. One read per chat listing. */
+  listActivePrWatches?: () => ReadonlyMap<string, SessionActivePrWatch>;
   processRegistry?: ProcessRegistryService | null;
   /** The installed machine brain's pid when it is live on this project. */
   machineBrainPid?: () => number | null;
@@ -21787,6 +21790,7 @@ export function createAgentChatService(args: {
     let batchApprovals: Map<string, AgentChatCrossMachineBatchMoveApproval> | null = null;
     const claudePointers = new Map<string, ReturnType<typeof getClaudeSessionPointerForChat>>();
     const parentsPresent = new Map<string, boolean>();
+    let activePrWatches: ReadonlyMap<string, SessionActivePrWatch> | null = null;
     let movedSessionIds: ReadonlySet<string> | null | undefined;
     let idleOpenCodeCompact: Promise<boolean> | null = null;
     return {
@@ -21818,6 +21822,13 @@ export function createAgentChatService(args: {
       projectConfig: () => {
         config ??= projectConfigService.get();
         return config;
+      },
+      // A watch on a chat that moved to another machine is parked here until
+      // the chat comes back (`prWatchService` skips it), so the row claims nothing.
+      activePrWatch: (sessionId: string): SessionActivePrWatch | null => {
+        activePrWatches ??= args.listActivePrWatches?.() ?? new Map();
+        const watch = activePrWatches.get(sessionId) ?? null;
+        return watch && !getCrossMachineMoveLock(sessionId, "pr_watch") ? watch : null;
       },
       providerInstance: (id: string) => {
         accounts ??= getMachineProviderInstanceStore().list();
@@ -67969,6 +67980,7 @@ export function createAgentChatService(args: {
       : undefined;
     const backgroundWork = runtimeBackgroundWork(liveManaged?.runtime ?? null);
     const activeBackgroundTaskCount = totalBackgroundWork(backgroundWork);
+    const activePrWatch = scope.activePrWatch(row.id);
     const reasoningEffortChange = liveManaged ? managedReasoningEffortChange(liveManaged) : null;
     // Older clients read a held effort from this list. It is listed only while
     // `reasoningEffortChange` names it, which is how newer clients tell this
@@ -68266,6 +68278,7 @@ export function createAgentChatService(args: {
       usageLimitResume,
       autoContinueAtUsageLimit: sessionAutoContinueAtUsageLimit(liveSession ?? persisted),
       activeBackgroundTaskCount,
+      ...(activePrWatch ? { activePrWatch } : {}),
       // Present (zero included) whenever a turn is live: a reader treats a
       // missing count as unknown (an older host) and never calls that stalled.
       ...(liveSession?.status === "active"
@@ -78042,6 +78055,12 @@ export function createAgentChatService(args: {
     getCrossMachineHandoffOptions: (options: AgentChatCrossMachineHandoffSessionArgs) =>
       requireCrossMachineHandoff().getOptions(options.sourceSessionId),
     getCrossMachineMoveLock,
+    /** A PR watch on this chat started or stopped: its row and summary must re-read. */
+    notifyPrWatchChanged: (sessionId: string): void => {
+      // The list channel for the Work row, the chat channel for its open pane.
+      sessionService.notifyChanged(sessionId);
+      emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", prWatchChanged: true });
+    },
     /**
      * A chat's direct parent from its own lineage (the live session, else its
      * persisted state): where ADE chats keep `orchestrationParentSessionId`.
