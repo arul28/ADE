@@ -3236,3 +3236,16 @@ Apple, Android, screen, and tool markers reuse the lane data already in the pane
 Kanban already shows lane identity, and both State and Stack organizations in
 the Lanes sidebar keep the lane name and color. None of these labels adds a
 fetch, effect, or subscription per row.
+
+## Releasing what settled chats were using
+
+Settings › Lanes › "Release what settled chats were using" (off by default, per
+machine). Once every live chat in a lane has been settled for five minutes
+(`settledLaneReleaseService.ts`), the lane's simulators and emulators are powered
+off, dev servers its chats started are stopped, and Mac Desktop screens its chats
+hold are released. A chat waking cancels it, and "Keep running" pins and devices
+in use are honored by the same paths the agent cleanup commands use. The wait is
+read from the chats' `settled_at` columns on a slow sweep, so it survives a brain
+restart and notices a chat settled from a phone. A quiet line in the last chat to
+settle says what was released. Built-in browser tabs are left alone: they belong
+to the project, not to a lane's chats.

@@ -1049,4 +1049,10 @@ export type SessionDeltaSummary = {
 
 export type SessionLifecycleSettings = {
   autoSettleLaneSessionsOnPrMerge: boolean;
+  /**
+   * After a lane's chats have all been settled for five minutes, power off its
+   * simulators and emulators, stop the dev servers its chats started and
+   * release its Mac Desktop screens. Off by default.
+   */
+  releaseLaneResourcesOnSettle?: boolean;
 };

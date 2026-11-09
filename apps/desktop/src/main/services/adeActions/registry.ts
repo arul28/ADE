@@ -1830,13 +1830,24 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
     getLifecycleSettings: () => getSessionLifecycleSettings(runtime.db),
     updateLifecycleSettings: (args?: unknown) => {
       const record = readObjectActionArg(args, "session.updateLifecycleSettings");
-      if (typeof record.autoSettleLaneSessionsOnPrMerge !== "boolean") {
+      const { autoSettleLaneSessionsOnPrMerge, releaseLaneResourcesOnSettle } = record;
+      if (autoSettleLaneSessionsOnPrMerge !== undefined && typeof autoSettleLaneSessionsOnPrMerge !== "boolean") {
         throw new Error("autoSettleLaneSessionsOnPrMerge must be a boolean.");
       }
+      if (releaseLaneResourcesOnSettle !== undefined && typeof releaseLaneResourcesOnSettle !== "boolean") {
+        throw new Error("releaseLaneResourcesOnSettle must be a boolean.");
+      }
+      if (autoSettleLaneSessionsOnPrMerge === undefined && releaseLaneResourcesOnSettle === undefined) {
+        throw new Error("Name a lifecycle setting to change.");
+      }
+      // A caller that knows only one setting (a phone on an older build) must
+      // not reset the other.
+      const current = getSessionLifecycleSettings(runtime.db);
       return setSessionLifecycleSettings({
         db: runtime.db,
         settings: {
-          autoSettleLaneSessionsOnPrMerge: record.autoSettleLaneSessionsOnPrMerge,
+          autoSettleLaneSessionsOnPrMerge: autoSettleLaneSessionsOnPrMerge ?? current.autoSettleLaneSessionsOnPrMerge,
+          releaseLaneResourcesOnSettle: releaseLaneResourcesOnSettle ?? current.releaseLaneResourcesOnSettle,
         },
         currentPrs: runtime.prService?.listAll() ?? [],
       });

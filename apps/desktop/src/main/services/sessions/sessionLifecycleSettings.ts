@@ -6,6 +6,7 @@ const PR_MERGE_STATE_KEY = "session:pr-merge-auto-settle:v1";
 
 const DEFAULT_SETTINGS: SessionLifecycleSettings = {
   autoSettleLaneSessionsOnPrMerge: true,
+  releaseLaneResourcesOnSettle: false,
 };
 
 export type PrMergeAutoSettlementState = {
@@ -22,6 +23,8 @@ export function getSessionLifecycleSettings(db: Pick<AdeDb, "getJson">): Session
   return {
     autoSettleLaneSessionsOnPrMerge:
       stored?.autoSettleLaneSessionsOnPrMerge !== false,
+    // Off unless the owner turned it on: this stops things.
+    releaseLaneResourcesOnSettle: stored?.releaseLaneResourcesOnSettle === true,
   };
 }
 
@@ -36,6 +39,7 @@ export function setSessionLifecycleSettings(args: {
   const settings = {
     autoSettleLaneSessionsOnPrMerge:
       args.settings.autoSettleLaneSessionsOnPrMerge === true,
+    releaseLaneResourcesOnSettle: args.settings.releaseLaneResourcesOnSettle === true,
   };
   args.db.setJson(SETTINGS_KEY, settings);
   if (

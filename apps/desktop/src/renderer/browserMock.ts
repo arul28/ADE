@@ -7579,8 +7579,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onProxyEvent: noop,
     },
     sessions: {
-      getLifecycleSettings: resolved({ autoSettleLaneSessionsOnPrMerge: true }),
-      updateLifecycleSettings: resolvedArg({ autoSettleLaneSessionsOnPrMerge: true }),
+      getLifecycleSettings: resolved({ autoSettleLaneSessionsOnPrMerge: true, releaseLaneResourcesOnSettle: false }),
+      updateLifecycleSettings: resolvedArg({ autoSettleLaneSessionsOnPrMerge: true, releaseLaneResourcesOnSettle: false }),
       list: async (args: any = {}) => {
         let rows = MOCK_SESSIONS;
         if (typeof args?.laneId === "string" && args.laneId.trim()) {

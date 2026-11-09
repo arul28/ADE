@@ -1022,3 +1022,20 @@ For deeper detail on the watcher + trust boundary, see
 - Processes and tests can monitor the workspace for changes via the
   watcher — see [../terminals-and-sessions/](../terminals-and-sessions/)
   for the transcript and log story.
+
+## Opening a file from elsewhere
+
+A path clicked in a chat, tool-call or diff row, or printed in a terminal opens
+through `useWorkspacePathOpener` (`chatWorkspacePaths.tsx`). An absolute path
+resolves to the deepest workspace root that holds it, so a file in another lane's
+worktree opens in that lane. A relative path that is not at the workspace root
+resolves by its ending: one match opens, several open the search panel, and none
+says so in a toast after a real read (the file index can be stale). Navigating to
+Files carries the file in router state; `App.tsx` passes page routes the real
+location for this reason, because a route given to `<Routes>` as a string loses
+its state.
+
+Terminal paths become links only under the pointer: `terminalPathLinks.ts` scans
+the hovered row (and the rows it wraps onto) in one forward pass with capped
+lengths, checks the file exists after a short rest on the row, and offers a link
+only for real files. A network path never becomes a link.

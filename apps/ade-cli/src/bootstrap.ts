@@ -114,6 +114,7 @@ import { createPrPollingService } from "../../desktop/src/main/services/prs/prPo
 import { createPrWatchService } from "../../desktop/src/main/services/prs/prWatchService";
 import { createTerminalWatchService, type TerminalWatchService } from "../../desktop/src/main/services/pty/terminalWatchService";
 import { createPrShellLinkWatcher, shellPrBodyRepairVia } from "../../desktop/src/main/services/prs/prShellLinkWatcher";
+import { createSettledLaneReleaseActions, createSettledLaneReleaseService } from "../../desktop/src/main/services/sessions/settledLaneReleaseService";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
@@ -3500,6 +3501,23 @@ export async function createAdeRuntime(args: {
       logger,
       getChatLiveness: agentChatService ? chatLivenessReader(agentChatService) : undefined,
     });
+
+    const chatForSettledRelease = agentChatService;
+    const settledLaneRelease = createSettledLaneReleaseService({
+      db,
+      logger,
+      listSessions: () => sessionService.list({ limit: 2000 }),
+      notify: (notice) => chatForSettledRelease?.recordSystemNotice?.(notice),
+      ...createSettledLaneReleaseActions({
+        devServers: devServerRegistry,
+        scanDevServers: () => devServerWatcher?.refresh() ?? Promise.resolve(),
+        iosSimulatorService,
+        androidEmulatorService,
+        macDesktopService,
+        logger,
+      }),
+    });
+    teardown.push(() => settledLaneRelease.dispose());
 
     // PR Watch / Ship: wakes a chat on this brain when its watched PR changes.
     const chatForPrWatch = agentChatService;
