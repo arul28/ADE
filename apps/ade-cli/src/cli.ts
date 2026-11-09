@@ -28939,6 +28939,21 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
+  // Work the busy list can't see (a first clone, a push). Held while it runs
+  // and counted as use when it ends: the checks come once a minute, so work
+  // that fits between two of them would otherwise leave no trace, and the
+  // machine slept seconds after a clone.
+  const holdCloudWork = cloudKeepAwake && cloudKeepAwakeModule
+    ? async <T>(reason: string, ttlMs: number, run: () => Promise<T>): Promise<T> => {
+        const release = cloudKeepAwakeModule.holdCloudBusy(layout.adeDir, reason, ttlMs);
+        try {
+          return await run();
+        } finally {
+          release();
+          void cloudKeepAwake.noteUse();
+        }
+      }
+    : null;
   const createHeadlessProjectScaffoldService = () => {
     const githubService = createHeadlessGitHubService(
       process.cwd(),
@@ -28948,19 +28963,12 @@ async function runServe(
       logger: headlessProjectLogger,
       githubService,
     });
-    if (!cloudKeepAwake || !cloudKeepAwakeModule) return service;
+    if (!holdCloudWork) return service;
     // A first clone can take many minutes; the machine stays awake for it.
-    const { holdCloudBusy } = cloudKeepAwakeModule;
     return {
       ...service,
-      cloneRepository: async (input: Parameters<typeof service.cloneRepository>[0]) => {
-        const release = holdCloudBusy(layout.adeDir, "first_clone", 30 * 60_000);
-        try {
-          return await service.cloneRepository(input);
-        } finally {
-          release();
-        }
-      },
+      cloneRepository: (input: Parameters<typeof service.cloneRepository>[0]) =>
+        holdCloudWork("first_clone", 30 * 60_000, () => service.cloneRepository(input)),
     };
   };
   const getHeadlessDefaultParentDir = (): string => {
@@ -30034,18 +30042,14 @@ async function runServe(
   };
   const createHandler = (context?: { peerDeviceId: string | null }) =>
     withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
-      pushCloudWork: cloudKeepAwake && cloudKeepAwakeModule
+      holdCloudWork,
+      pushCloudWork: holdCloudWork
         ? async () => {
             const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");
-            const release = cloudKeepAwakeModule.holdCloudBusy(layout.adeDir, "push_work", 10 * 60_000);
-            try {
-              return await pushCloudComputerWork({
-                projects: projectRegistry.list().map((record) => async () => (await scopeRegistry.get(record.projectId)).runtime),
-                logger: headlessProjectLogger,
-              });
-            } finally {
-              release();
-            }
+            return await holdCloudWork("push_work", 10 * 60_000, () => pushCloudComputerWork({
+              projects: projectRegistry.list().map((record) => async () => (await scopeRegistry.get(record.projectId)).runtime),
+              logger: headlessProjectLogger,
+            }));
           }
         : null,
       prepareCloudStop: cloudKeepAwake

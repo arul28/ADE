@@ -1781,6 +1781,61 @@ describe("RemoteConnectionService", () => {
     expect(service.snapshot().connections[0]?.lastError).toBeNull();
   });
 
+  it("rests a sleeping cloud computer quietly, sends it no read, and wakes it for a write", async () => {
+    const computer = target("cloud-computer", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [computer]),
+      get: vi.fn((id: string) => (id === computer.id ? computer : null)),
+    } as unknown as RemoteTargetRegistry;
+    let frozen = false;
+    const pool = {
+      connect: vi.fn(async (target: RemoteRuntimeTarget) => connectResult(target)),
+      disconnect: vi.fn(),
+      callActionForTarget: vi.fn(async (_target: RemoteRuntimeTarget, _projectId: string, request: { domain: string; action: string }) => {
+        if (frozen) throw new Error("Remote ADE service timed out waiting for method ade/actions/call (25000ms).");
+        return { domain: request.domain, action: request.action, result: { ok: true }, statusHints: {} };
+      }),
+      onHostStorageWait: vi.fn(() => () => {}),
+      onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
+      onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
+    } as unknown as RemoteConnectionPool;
+    let asleep = false;
+    const asleepForUse = vi.fn(() => Promise.resolve(asleep));
+    const wakeForUse = vi.fn(async () => {
+      frozen = false;
+      return true;
+    });
+    const service = new RemoteConnectionService(registry, pool, { asleepForUse, wakeForUse });
+    const read = () => service.callAction(computer.id, "project-1", { domain: "lane", action: "list" });
+    await read();
+
+    // Awake and slow: one timed-out read leaves the connection as it was.
+    frozen = true;
+    await expect(read()).rejects.toThrow(/timed out/i);
+    await vi.waitFor(() => expect(asleepForUse).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(service.snapshot().connections[0]?.state).toBe("connected");
+
+    // Asleep: not an error, the link closes, and the next read never leaves this app.
+    asleep = true;
+    await expect(read()).rejects.toThrow(/timed out/i);
+    await vi.waitFor(() => expect(service.snapshot().connections[0]?.state).toBe("idle"));
+    expect(service.snapshot().connections[0]?.lastError).toBeNull();
+    expect(pool.disconnect).toHaveBeenCalledWith(computer.id);
+    const sent = vi.mocked(pool.callActionForTarget).mock.calls.length;
+    await expect(read()).rejects.toThrow(/asleep/i);
+    expect(vi.mocked(pool.callActionForTarget).mock.calls.length).toBe(sent);
+    expect(wakeForUse).not.toHaveBeenCalled();
+
+    // A person's write wakes it and goes through.
+    await service.callAction(computer.id, "project-1", { domain: "lane", action: "create" });
+    expect(wakeForUse).toHaveBeenCalledTimes(1);
+    expect(service.snapshot().connections[0]?.state).toBe("connected");
+    await read();
+  });
+
   it("does not disconnect a healthy client when a resume probe request times out", async () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
     const registry = {

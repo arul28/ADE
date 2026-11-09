@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, powerMonitor, type WebContents } from "electron";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
-import { cloudUpdateBlocker, cloudWakeForUse } from "../adeCloud/cloudWakeHook";
+import { cloudAsleepForUse, cloudUpdateBlocker, cloudWakeForUse } from "../adeCloud/cloudWakeHook";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import { localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
@@ -622,6 +622,8 @@ export function registerRuntimeBridge({
       explicitConnectOnly: !app.isPackaged && process.env.ADE_DEV_REMOTE_AUTOCONNECT !== "1",
       // A sleeping cloud box wakes when the person uses it (registerCloudIpc).
       wakeForUse: cloudWakeForUse,
+      // A sleeping one is shown as not connected, not as a failed connection.
+      asleepForUse: cloudAsleepForUse,
     },
     pairedMachineStore,
   );

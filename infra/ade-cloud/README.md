@@ -80,7 +80,9 @@ skips with a warning. Rerun it by hand from the Actions tab (it takes a tag).
 
 `infra/ade-cloud/promote-template.mjs` tests one build on a real computer: it
 creates one from `ade@N` (tagged `created_by: ade-template-check`), checks ADE is there and
-its version, that a command runs and that ADE's brain answers, that a file in
+its version, that a command runs and that ADE's brain answers, that a project
+opens, its lanes list and a terminal runs a command (`ade@9` passed without this
+check and could not open a project), that a file in
 `/home/node` survives sleep and wake and then stop and start, and deletes the
 computer in a `finally` (Ctrl-C included). It prints first-start timings.
 

@@ -1,6 +1,6 @@
 /**
  * The desktop's ADE Cloud answers for remote connections: "wake it for use",
- * and whether an update can take effect on a box. The remote connection
+ * "is it asleep", and whether an update can take effect on a box. The remote connection
  * service is built before the provider integration, so it asks through these
  * hooks, which `registerCloudIpc` fills in. Unset (no integration in this
  * process), nothing wakes and nothing is refused.
@@ -18,6 +18,19 @@ export function setCloudWakeForUse(next: WakeForUse | null): void {
 
 export async function cloudWakeForUse(target: RemoteRuntimeTarget): Promise<boolean> {
   return hook ? await hook(target) : false;
+}
+
+type AsleepCheck = (target: RemoteRuntimeTarget) => Promise<boolean> | null;
+
+let asleepCheck: AsleepCheck | null = null;
+
+export function setCloudAsleepCheck(next: AsleepCheck | null): void {
+  asleepCheck = next;
+}
+
+/** Whether this machine is a cloud computer that is asleep or stopped. Null at once when it isn't a cloud computer. */
+export function cloudAsleepForUse(target: RemoteRuntimeTarget): Promise<boolean> | null {
+  return asleepCheck ? asleepCheck(target) : null;
 }
 
 type UpdateBlocker = (target: RemoteRuntimeTarget) => Promise<string | null>;

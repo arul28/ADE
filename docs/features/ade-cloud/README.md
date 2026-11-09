@@ -135,6 +135,10 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   setup, first clone, move, copy (holds in `$ADE_HOME/cloud/holds/*.json`), someone
   watching a tool (`work_tools.noteWatching`, once a minute, from the desktop, while
   its window is in front and the person moved in the last 3 minutes).
+- A hold also counts as use when it ends (`holdCloudWork` in `cli.ts`): the checks
+  run once a minute, so a clone that fits between two of them would leave no trace.
+  A clone asked for by another machine (`projects.clone`, `machines.cloneForAgent`)
+  runs with no project open and takes the same hold.
 - Idle: a shell at its prompt, an agent CLI at its prompt or asking (`waiting-input`),
   a chat waiting on approval, and a command or turn with no output and no touch for 60 minutes.
 - A shell's prompt state is read from `/proc` (`readPtyForeground` in `ptyService.ts`):
@@ -145,6 +149,14 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   own 5-minute timer stays on as the backstop.
 - The app's own writes (opening a view, window focus: `isBackgroundAdeWrite`) neither wake
   a sleeping computer nor keep one awake.
+- A sleeping computer's relay tunnel looks open until a call times out. When a call
+  to a cloud computer fails that way, the desktop asks once whether it is asleep
+  (`asleepForUse` in `remoteConnectionService.ts`, filled by `registerCloudIpc`). If
+  so the link closes and the status goes to idle with no error, so the lists show
+  its saved chats and send it no reads. The same question follows a dropped link
+  and a failed redial, and is asked again 45 s and 90 s later: a computer closes
+  its link up to a minute before its status says asleep. A person's write wakes it; the saved-connection
+  maintenance asks again every 5 minutes and redials once it is awake.
 - `ade cloud prepare-stop --timeout 40` (the server runs it before a stop at 0 hours)
   interrupts running chat turns and agent CLIs and writes the saved chat copy.
 - Disk (`cloudDiskGrow.ts`): when idle and at 85% used, a paid computer grows 4 GB

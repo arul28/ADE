@@ -100,6 +100,7 @@ import {
   type HostWentAwayRecovery,
 } from "../../../shared/connectionDiagnosis";
 import { adeActionAccess, isBackgroundAdeWrite, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
+import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
@@ -137,11 +138,27 @@ type RemoteConnectionServiceOptions = {
    * reads never wake a box, or an open window would keep it awake forever.
    */
   wakeForUse?: (target: RemoteRuntimeTarget) => Promise<boolean>;
+  /**
+   * Whether a cloud computer is asleep or stopped. Asked when a call to it
+   * fails the way a sleeping computer fails (its relay tunnel looks open until
+   * a call times out), so the app shows it as not connected, quietly, where it
+   * used to show a connected machine whose reads fail. Null at once for a
+   * machine that isn't a cloud computer: nothing else pays for the question.
+   */
+  asleepForUse?: (target: RemoteRuntimeTarget) => Promise<boolean> | null;
 };
 
 /** How long a woken machine gets to come back online before the call fails as usual. */
 const WOKEN_MACHINE_CONNECT_WAIT_MS = 45_000;
 const WOKEN_MACHINE_RETRY_MS = 1_500;
+/**
+ * How often a cloud computer found asleep is asked about again, so one that
+ * something else woke (a timer, the phone) reconnects by itself. No dial goes
+ * out in between; a person's use wakes it at once.
+ */
+const CLOUD_ASLEEP_RECHECK_MS = 5 * 60_000;
+/** After a link dropped and the computer still read as awake: when to ask again. */
+const CLOUD_ASLEEP_FOLLOW_UP_MS = [45_000, 90_000];
 
 const EXPLICIT_CONNECT_ONLY_MESSAGE =
   "This development ADE connects to other machines only when you press Connect, so the installed ADE keeps its connections.";
@@ -354,6 +371,12 @@ export class RemoteConnectionService {
     number
   >();
   private readonly automaticReconnectRetryAtByTargetId = new Map<string, number>();
+  /** Cloud computers found asleep: nothing dials one until a person uses it or a later check finds it awake. */
+  private readonly asleepTargetIds = new Set<string>();
+  private readonly asleepChecksByTargetId = new Map<string, Promise<boolean>>();
+  private readonly asleepFollowUpsByTargetId = new Map<string, NodeJS.Timeout>();
+  /** Goes up each time a machine answers or is connected on purpose; a sleep check older than that is dropped. */
+  private readonly aliveStampByTargetId = new Map<string, number>();
   private readonly disconnectGenerationByTargetId = new Map<string, number>();
   private readonly latencyProbeTargetIds = new Set<string>();
   /** Redials for each dropped link, until the machine is back or the time is up. */
@@ -481,6 +504,9 @@ export class RemoteConnectionService {
         lastAttemptedAt: Date.now(),
         recovery,
       });
+      // A cloud computer that went to sleep closes its link the same way; it
+      // then rests instead of showing an error and redialing.
+      void this.asleepAfterFailure(targetId, error);
     });
   }
 
@@ -979,6 +1005,8 @@ export class RemoteConnectionService {
   /** Ends every redial for a dropped link at once (the app is quitting). */
   stopHostReturnWatches(): void {
     this.hostReturnWatches.stopAll();
+    for (const timer of this.asleepFollowUpsByTargetId.values()) clearTimeout(timer);
+    this.asleepFollowUpsByTargetId.clear();
   }
 
   async connect(
@@ -1088,6 +1116,9 @@ export class RemoteConnectionService {
         lastAttemptedAt: Date.now(),
         recovery: this.recoveryAfterFailure(target.id),
       });
+      // A redial that found a cloud computer asleep ends the redials. A
+      // person's Connect woke it first, so its failure is a real one.
+      if (!explicit) void this.asleepAfterFailure(target.id, error);
       throw error;
     }
   }
@@ -1701,6 +1732,17 @@ export class RemoteConnectionService {
       if (!shouldAutoconnectTarget(target)) continue;
       if (this.isManuallyDisconnected(target) || this.isHeldForUserAction(target.id)) continue;
       if (!this.automaticReconnectRetryIsDue(target.id)) continue;
+      if (this.asleepTargetIds.has(target.id)) {
+        // Still asleep: no dial, ask again later. Awake (something else woke
+        // it), or no longer a cloud computer: the dial below brings it back.
+        const stillAsleep = await (this.options.asleepForUse?.(target)?.catch(() => false) ?? false);
+        if (!this.asleepTargetIds.has(target.id)) continue;
+        if (stillAsleep) {
+          this.automaticReconnectRetryAtByTargetId.set(target.id, Date.now() + CLOUD_ASLEEP_RECHECK_MS);
+          continue;
+        }
+        this.asleepTargetIds.delete(target.id);
+      }
       const status = this.statusById.get(target.id);
       if (status?.state === "connecting") continue;
       if (status?.state === "connected") {
@@ -1727,6 +1769,7 @@ export class RemoteConnectionService {
           }
           continue;
         } catch (error) {
+          if (await this.asleepAfterFailure(target.id, error)) continue;
           if (!isImplicitConnectionFailure(error)) continue;
           this.pool.disconnect(target.id);
           // Without the 30 s maintenance (a dev app, after a wake) the
@@ -1831,7 +1874,9 @@ export class RemoteConnectionService {
     if (retryAt != null && retryAt > Date.now()) {
       const status = this.statusById.get(targetId);
       throw new RemoteConnectBackoffError(
-        status?.lastErrorInfo?.message ?? status?.lastError ?? "the machine did not answer",
+        this.asleepTargetIds.has(targetId)
+          ? "the computer is asleep"
+          : status?.lastErrorInfo?.message ?? status?.lastError ?? "the machine did not answer",
         retryAt,
       );
     }
@@ -1968,6 +2013,92 @@ export class RemoteConnectionService {
   private clearAutomaticReconnectState(targetId: string): void {
     this.automaticReconnectFailuresByTargetId.delete(targetId);
     this.automaticReconnectRetryAtByTargetId.delete(targetId);
+    // The machine answered, or a person is connecting it: it is not asleep,
+    // and a sleep check still running for an older failure is out of date.
+    this.asleepTargetIds.delete(targetId);
+    this.aliveStampByTargetId.set(targetId, (this.aliveStampByTargetId.get(targetId) ?? 0) + 1);
+    const followUp = this.asleepFollowUpsByTargetId.get(targetId);
+    if (followUp) clearTimeout(followUp);
+    this.asleepFollowUpsByTargetId.delete(targetId);
+  }
+
+  /**
+   * A call failed the way a sleeping cloud computer fails. Asks whether the
+   * machine is one, once however many calls fail together, and rests the
+   * connection when it is. Null when nothing was asked (not a cloud computer,
+   * or an answer from the machine, which proves it awake).
+   */
+  private asleepAfterFailure(targetId: string, error: unknown): Promise<boolean> | null {
+    const ask = this.options.asleepForUse;
+    if (!ask || isConnectionBackoffThrottle(error)) return null;
+    if (
+      !isRuntimeTransportTimeoutError(error)
+      && !(error instanceof RemoteActionOutcomeUnknownError)
+      && !this.isConnectionFailure(targetId, error)
+    ) return null;
+    const running = this.asleepChecksByTargetId.get(targetId);
+    if (running) return running;
+    const target = this.registry.get(targetId);
+    const asked = target ? ask(target) : null;
+    if (!target || !asked) return null;
+    const stamp = this.aliveStampByTargetId.get(targetId) ?? 0;
+    const check = asked.catch(() => false).then((asleep) => {
+      this.asleepChecksByTargetId.delete(targetId);
+      // Woken, reconnected, removed or disconnected by hand while the question was out.
+      if (
+        (this.aliveStampByTargetId.get(targetId) ?? 0) !== stamp
+        || !this.registry.get(targetId)
+        || this.isManuallyDisconnected(target)
+      ) return false;
+      if (!asleep) {
+        this.askAsleepAgainLater(target, stamp, 0);
+        return false;
+      }
+      this.restAsleep(target);
+      return true;
+    });
+    this.asleepChecksByTargetId.set(targetId, check);
+    return check;
+  }
+
+  /**
+   * A computer going to sleep closes its link up to a minute before its status
+   * says asleep (seen on a real one, 2026-11-09), so the first answer is "no".
+   * Asked again twice, only while the link is still down.
+   */
+  private askAsleepAgainLater(target: RemoteRuntimeTarget, stamp: number, asked: number): void {
+    if (asked >= CLOUD_ASLEEP_FOLLOW_UP_MS.length || this.asleepFollowUpsByTargetId.has(target.id)) return;
+    const timer = setTimeout(() => {
+      this.asleepFollowUpsByTargetId.delete(target.id);
+      if (
+        (this.aliveStampByTargetId.get(target.id) ?? 0) !== stamp
+        || this.statusById.get(target.id)?.state !== "error"
+        || !this.registry.get(target.id)
+        || this.isManuallyDisconnected(target)
+      ) return;
+      void (this.options.asleepForUse?.(target)?.catch(() => false) ?? Promise.resolve(false)).then((asleep) => {
+        if ((this.aliveStampByTargetId.get(target.id) ?? 0) !== stamp || this.statusById.get(target.id)?.state !== "error") return;
+        if (asleep) this.restAsleep(target);
+        else this.askAsleepAgainLater(target, stamp, asked + 1);
+      });
+    }, CLOUD_ASLEEP_FOLLOW_UP_MS[asked]);
+    timer.unref?.();
+    this.asleepFollowUpsByTargetId.set(target.id, timer);
+  }
+
+  /**
+   * The cloud computer is asleep: not an error and nothing to redial. The link
+   * closes and the status says idle, so the lists show its saved chats and no
+   * read goes out. A person's use wakes it; the maintenance asks again later.
+   */
+  private restAsleep(target: RemoteRuntimeTarget): void {
+    this.pool.disconnect(target.id);
+    this.hostReturnWatches.stop(target.id);
+    this.automaticReconnectFailuresByTargetId.delete(target.id);
+    this.automaticReconnectRetryAtByTargetId.set(target.id, Date.now() + CLOUD_ASLEEP_RECHECK_MS);
+    this.asleepTargetIds.add(target.id);
+    this.mergeStatus(target.id, { state: "idle", lastError: null, recovery: null });
+    this.options.logger?.info("remote.cloud_computer_asleep", { targetId: target.id });
   }
 
   private automaticReconnectRetryIsDue(targetId: string): boolean {
@@ -1990,6 +2121,21 @@ export class RemoteConnectionService {
    * backoff state; everything else is left to rethrow to the caller untouched.
    */
   private markCallFailure(targetId: string, error: unknown): void {
+    const asleep = this.asleepAfterFailure(targetId, error);
+    if (!asleep) {
+      this.recordCallFailure(targetId, error);
+      return;
+    }
+    // A sleeping cloud computer is not a failed connection. The status waits
+    // for the answer, and takes the failure only if the machine is awake and
+    // nothing has reached it since.
+    const stamp = this.aliveStampByTargetId.get(targetId) ?? 0;
+    void asleep.then((isAsleep) => {
+      if (!isAsleep && (this.aliveStampByTargetId.get(targetId) ?? 0) === stamp) this.recordCallFailure(targetId, error);
+    });
+  }
+
+  private recordCallFailure(targetId: string, error: unknown): void {
     if (!this.isConnectionFailure(targetId, error)) return;
     // A refusal to dial changes nothing; the status already holds the failure
     // that started the wait, with its kind (SSH sign-in, unreachable).
