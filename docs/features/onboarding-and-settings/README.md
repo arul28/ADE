@@ -2819,6 +2819,11 @@ file, so they have exactly one identity per machine.
   `compaction` on that account
   record; it overrides the provider value field by field. See
   [Compaction per provider](../chat/agent-routing.md#compaction-per-provider).
+- **Claude sign-in end date.** A Claude account card shows one dim line, "Sign-in
+  ends around Nov 17", once a chat on that account has reported the date
+  (`credential_expires_at`, kept as `claudeLoginEndsAt` on the account record).
+  It says "around" because the date can be an estimate, and it goes away when
+  the account is replaced by a different login. It appears only on this page.
 - **Subagent prompt cache (Claude).** The actions menu of each Claude account
   card has a **Subagent cache** page (`AccountCard.tsx`) that explains the two
   choices: 5 minutes, the Claude Code default, or 1 hour. With 1 hour, the card

@@ -63,7 +63,7 @@ export type McpAppProviderLink = {
   listTools(): Promise<McpAppToolDescriptor[]>;
   /** `resources/read` on one server. Resolves the raw result (`{ contents }`). */
   readResource(server: string, uri: string): Promise<unknown>;
-  callTool(server: string, tool: string, args: Record<string, unknown>): Promise<McpAppToolResult>;
+  callTool(server: string, tool: string, args: Record<string, unknown>, options?: { readOnly?: boolean }): Promise<McpAppToolResult>;
 };
 
 export type McpAppHostDeps = {
@@ -456,7 +456,7 @@ export function createMcpAppHost(deps: McpAppHostDeps) {
         }
       }
       deps.log("info", "agent_chat.mcp_app_tool_call", { sessionId: app.sessionId, server: app.server, tool: name, readOnly: tool.readOnly });
-      const result = await link.callTool(app.server, name, args);
+      const result = await link.callTool(app.server, name, args, { readOnly: tool.readOnly });
       if (jsonBytes(result) > MCP_APP_LIMITS.maxCallResultBytes) return mcpAppRefusal("The result is too large to hand to the app.");
       return { ok: true, result };
     } catch (error) {

@@ -625,6 +625,8 @@ export type AgentChatAutomationRunMetadata = {
   runId?: string;
   /** The automation's name when it ran. */
   name: string;
+  /** Someone is there to answer this run's cards: a Linear delegator. */
+  attended?: true;
 };
 
 export type AgentChatHostContinuationMetadata = {
@@ -1625,6 +1627,8 @@ export type AgentChatEvent =
         files?: number;
         lines?: number;
       };
+      /** Grep or Glob hit its time limit, so more matches may exist. */
+      searchTimedOut?: boolean;
       runtime?: AgentChatRuntime;
     }
   | {

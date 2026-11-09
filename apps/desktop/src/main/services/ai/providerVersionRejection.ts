@@ -6,7 +6,7 @@
  * too old, ADE moves to Anthropic's newest build on its own
  * (`claudeFallForward.ts`). A false trigger would replace a tested binary
  * with an untested one, so these matchers recognise only the refusals the
- * shipped binary itself emits (re-checked in CLI 2.1.300, SDK 0.3.300), and
+ * shipped binary itself emits (re-checked in CLI 2.1.319, SDK 0.3.319), and
  * nothing else: no network, auth, rate-limit, crash, timeout or local
  * database error, and no vague "please update".
  *

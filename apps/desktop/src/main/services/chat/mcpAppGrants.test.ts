@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createMcpAppGrantStore, mcpServerFingerprint } from "./mcpAppGrants";
+import { claudeMcpAppLink, takeClaudeMcpAppClearance } from "./mcpAppProviderLinks";
 
 /** A grant store over one in-memory value, the way the project settings hold it. */
 function memoryGrants() {
@@ -44,5 +45,58 @@ describe("mcp app grants", () => {
     expect(mcpServerFingerprint({ ...base, env: { TOKEN: "second" } })).toBe(fingerprint);
     // A change to what runs does.
     expect(mcpServerFingerprint({ command: "uvx", args: ["mcp-git", "--read-only"] })).not.toBe(fingerprint);
+  });
+});
+
+describe("an MCP App call's permission clearance", () => {
+  function pendingCall() {
+    let settle!: { resolve: (value: unknown) => void; reject: (error: Error) => void };
+    const reply = new Promise((resolve, reject) => {
+      settle = { resolve, reject };
+    });
+    const runtime = { query: { request: () => reply } as never, queryStartPromise: null };
+    const link = claudeMcpAppLink({
+      protocolCapabilities: ["mcp_read_resource_v1"],
+      runtime,
+      isPlanMode: () => false,
+    });
+    const result = link!.callTool("srv", "save", { id: 1 });
+    return { runtime, settle, result, tool: "mcp__srv__save" };
+  }
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+  it("answers only that call's own ask, and only once", async () => {
+    const { runtime, settle, result, tool } = pendingCall();
+    await tick();
+
+    expect(takeClaudeMcpAppClearance(runtime, tool, { id: 1 }, "toolu_model_call")).toBeNull();
+    expect(takeClaudeMcpAppClearance(runtime, tool, { id: 2 }, "toolu_mcp_call_1")).toBeNull();
+    expect(takeClaudeMcpAppClearance(runtime, "mcp__srv__other", { id: 1 }, "toolu_mcp_call_1")).toBeNull();
+    expect(takeClaudeMcpAppClearance(runtime, tool, { id: 1 }, "toolu_mcp_call_1")).not.toBeNull();
+    expect(takeClaudeMcpAppClearance(runtime, tool, { id: 1 }, "toolu_mcp_call_1")).toBeNull();
+
+    settle.resolve({ response: { content: [] } });
+    await result;
+  });
+
+  it("is gone once the call ends", async () => {
+    const { runtime, settle, result, tool } = pendingCall();
+    await tick();
+    settle.resolve({ response: { content: [] } });
+    await result;
+
+    expect(takeClaudeMcpAppClearance(runtime, tool, { id: 1 }, "toolu_mcp_call_1")).toBeNull();
+  });
+
+  it("withdraws an open card when the app stops waiting", async () => {
+    const { runtime, settle, result, tool } = pendingCall();
+    await tick();
+    const clearance = takeClaudeMcpAppClearance(runtime, tool, { id: 1 }, "toolu_mcp_call_1");
+    expect(clearance?.signal.aborted).toBe(false);
+
+    settle.reject(new Error("Claude did not finish the tool call in time."));
+    await expect(result).rejects.toThrow("in time");
+
+    expect(clearance?.signal.aborted).toBe(true);
   });
 });

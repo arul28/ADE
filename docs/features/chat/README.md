@@ -1491,6 +1491,12 @@ come):
   the same kind of waiter with a `send` action: once every named chat is idle,
   B receives the prompt as a wake (a new turn if B is idle, queued at its turn
   boundary if not).
+- **Long MCP calls and subagents in Claude chats** move to the Background
+  list after two minutes (`CLAUDE_AUTO_BACKGROUND_TASKS`), with the same Stop
+  button as a shell, and the agent wakes when they finish. `mcp_task` maps to
+  `background`. Automation-launched and lightweight chats stay in the
+  foreground, and ADE's own tool server opts out because its tools can wait on
+  a person.
 - **Waiting on background work** (`chat.holdBackgroundWork`,
   `ade chat wait --background [--job <id>]`) is the agent's call, with no UI. A
   chat with live background work already shows as working: **Background work ×N**
