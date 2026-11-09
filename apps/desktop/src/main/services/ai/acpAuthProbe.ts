@@ -335,7 +335,11 @@ export async function probeAcpProviderAuth(
         // login the user has to do (Grok's), and session/new already failed
         // as sign-in: still not signed in, not a broken agent.
         if (isAcpAuthError(error) || error instanceof AcpRequestTimeoutError) {
-          return { state: "auth-failed", message: loginBlocker(provider) };
+          // The agent's own reason (not entitled, key expired) beats a generic hint.
+          const reason = !(error instanceof AcpRequestTimeoutError) && error instanceof Error
+            ? Array.from(error.message.trim()).slice(0, 200).join("")
+            : "";
+          return { state: "auth-failed", message: reason ? `${loginBlocker(provider)} The agent said: ${reason}` : loginBlocker(provider) };
         }
         return {
           state: "runtime-failed",

@@ -26,7 +26,7 @@ import {
 } from "./sessionNaming";
 import type { Logger } from "../logging/logger";
 import { buildCodexSamplePrompt, type CodexSampleOutcome } from "./codexThreadSample";
-import { presentChatFailure, isSandboxUnsupportedFailureText } from "../../../shared/chatErrorPresentation";
+import { presentChatFailure, isSandboxUnsupportedFailureText, sanitizeAcpStderrTail } from "../../../shared/chatErrorPresentation";
 
 export type SessionMetadataManagedSession = {
   session: AgentChatSession;
@@ -295,8 +295,8 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
         // No model produced names, so keep the current ones and say why. A
         // name guessed from the transcript tail is worse than the old name:
         // it overwrites a title the user may have liked with clipped words.
-        generationError = generated.lastFailure?.error
-          ?? (candidateModelIds.length
+        generationError = (generated.lastFailure ? sanitizeAcpStderrTail(generated.lastFailure.error) : null)
+          || (candidateModelIds.length
             ? "The AI returned no usable names."
             : "No AI model is available to generate names.");
         if (isSandboxUnsupportedFailureText(generationError)) {

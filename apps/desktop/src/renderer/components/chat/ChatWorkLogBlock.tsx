@@ -672,11 +672,11 @@ function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
   if (entry.entryKind === "tool") {
     const command = computerUseEntryCommand(entry);
     if (command?.trim()) {
-      const out = entry.result === undefined ? "" : (toolEntryFailureText(entry) ?? formatStructuredValue(entry.result));
+      const out = entry.result === undefined ? "" : (toolEntryFailureText(entry) ?? formatStructuredValue(maskInlineImages(entry.result)));
       return out.trim() ? `$ ${command}\n${out}` : `$ ${command}`;
     }
     if (entry.result !== undefined) {
-      return toolEntryFailureText(entry) ?? formatStructuredValue(entry.result);
+      return toolEntryFailureText(entry) ?? formatStructuredValue(maskInlineImages(entry.result));
     }
     const args = readRecord(entry.args);
     if (args && Object.keys(args).length > 0) return formatStructuredValue(maskShellCommandArgs(entry.toolName, args));
@@ -685,6 +685,15 @@ function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
     return replaceInternalToolNames(entry.detail);
   }
   return null;
+}
+
+/** A tool's image blocks as a short label, so a result doesn't print its base64. */
+function maskInlineImages(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(maskInlineImages);
+  const record = readRecord(value);
+  if (!record) return value;
+  if (record.type === "image") return "[image]";
+  return Array.isArray(record.content) ? { ...record, content: maskInlineImages(record.content) } : value;
 }
 
 function ToolCallsPanel({

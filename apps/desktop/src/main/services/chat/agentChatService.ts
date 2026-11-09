@@ -1675,6 +1675,7 @@ import {
   isSandboxUnsupportedFailureText,
   presentChatFailure,
   presentExternalProcessStop,
+  sanitizeAcpStderrTail,
 } from "../../../shared/chatErrorPresentation";
 import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentation";
 import { resolveCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
@@ -3901,6 +3902,9 @@ type CopilotRuntime = {
   slashCommands: CopilotSlashCommandInfo[] | null;
 };
 
+/** A compaction that outlives this is stuck; the send then gets Pi's own refusal. */
+const PI_COMPACTION_WAIT_MS = 10 * 60_000;
+
 type PiRuntime = {
   kind: "pi";
   poolKey: string;
@@ -5543,6 +5547,8 @@ type ManagedChatSession = {
    * which is where it becomes the durable `lastTurnFailure`.
    */
   liveTurnErrorText: string | null;
+  /** Why Claude says this turn's compaction failed; cleared when the turn ends. */
+  claudeCompactError?: string | null;
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
@@ -25093,14 +25099,19 @@ export function createAgentChatService(args: {
         // its own failure paths (refused, abandoned on teardown).
         if (compact.type === "context_compact" && compact.trigger === "ade_fallback") continue;
         openNativeCompactions.get(managed.session.id)?.delete(key);
-        const detail = (event.status !== "completed" ? managed.liveTurnErrorText : null)
+        const compactError = managed.claudeCompactError || null;
+        const detail = compactError
+          ?? (event.status !== "completed" ? managed.liveTurnErrorText : null)
           ?? "The turn ended before compaction completed.";
-        emitChatEvent(managed, { ...compact, state: "failed", failReason: event.status === "interrupted" ? "interrupted" : /quota|weekly limit|usage limit/i.test(detail) ? "quota" : "provider_error", failDetail: detail });
+        // A steer aborts the summary request: the user moved on, nothing broke.
+        const aborted = /request was aborted/i.test(compactError ?? "");
+        emitChatEvent(managed, { ...compact, state: "failed", failReason: event.status === "interrupted" || aborted ? "interrupted" : /quota|weekly limit|usage limit/i.test(detail) ? "quota" : "provider_error", failDetail: detail });
       }
     }
     managed.lastActivityTimestamp = Date.now();
     chatWaits?.signal(managed.session.id);
     if (event.type === "done") {
+      managed.claudeCompactError = null;
       if (event.turnId) managed.lastFinishedTurnId = event.turnId;
       settleClaudeGoalOnTurnEnd(managed, event.status);
       if (event.status === "completed") maybeStartAutoTitleRefine(managed);
@@ -32153,6 +32164,7 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (msg.type === "system" && record.subtype === "status") noteClaudeCompactFailure(managed, record);
     if (msg.type === "system" && record.subtype === "status" && record.status === "compacting") {
       const turnId = startClaudeIdleTurn(managed, runtime, state, "Claude is compacting context");
       observeClaudeCompaction(managed, runtime, { completed: false });
@@ -33683,6 +33695,7 @@ export function createAgentChatService(args: {
               });
             }
           }
+          noteClaudeCompactFailure(managed, statusMsg);
           if (statusMsg.status === "compacting") {
             observeClaudeCompaction(managed, runtime, { completed: false });
             emitClaudeContextUsageState(managed, runtime, "compacting", "compact", turnId);
@@ -37581,7 +37594,11 @@ export function createAgentChatService(args: {
     if (runtime.hostStartedTurnIds.delete(turnId)) {
       const status = museTerminalStatus(ended.terminal);
       if (status === "failed" && ended.error && typeof ended.error.message === "string") {
-        emitChatEvent(managed, { type: "error", message: ended.error.message, turnId });
+        emitChatEvent(managed, {
+          type: "error",
+          message: sanitizeAcpStderrTail(ended.error.message) || "The turn failed.",
+          turnId,
+        });
       }
       const usage = museDoneUsage(runtime, ended.usage);
       emitChatEvent(managed, { type: "status", turnStatus: status, turnId });
@@ -38675,6 +38692,17 @@ export function createAgentChatService(args: {
     return true;
   };
 
+  /**
+   * Pi refuses a prompt during compaction, and a steer sent then sits unread
+   * until some later turn, so a send waits the compaction out first.
+   */
+  const waitForPiCompaction = async (managed: ManagedChatSession, runtime: PiRuntime): Promise<void> => {
+    const deadline = Date.now() + PI_COMPACTION_WAIT_MS;
+    while (managed.runtime === runtime && runtime.activeCompactionId && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  };
+
   const runPiTurn = async (
     managed: ManagedChatSession,
     args: {
@@ -38694,6 +38722,7 @@ export function createAgentChatService(args: {
     let runtime: PiRuntime;
     try {
       runtime = await startPiRuntime(managed);
+      await waitForPiCompaction(managed, runtime);
       const validation = validateSessionReadyForTurn(managed);
       if (!validation.ready) throw new Error(validation.reason);
     } catch (error) {
@@ -47840,6 +47869,11 @@ export function createAgentChatService(args: {
       clearDeliveredDirectiveEpoch(managed);
       persistChatState(managed);
     }
+  };
+
+  const noteClaudeCompactFailure = (managed: ManagedChatSession, status: Record<string, unknown>): void => {
+    if (status.compact_result !== "failed") return;
+    managed.claudeCompactError = typeof status.compact_error === "string" ? status.compact_error : null;
   };
 
   const cancelQueuedSteers = (
@@ -62704,6 +62738,8 @@ export function createAgentChatService(args: {
         const validation = validateSessionReadyForTurn(managed);
         if (!validation.ready) throw new Error(validation.reason);
         runtime.busy = true;
+        // Set before Pi reports it, so a send right after /compact waits too.
+        runtime.activeCompactionId = randomUUID();
         runtime.interrupted = false;
         onDispatched?.();
         try {
@@ -62713,7 +62749,10 @@ export function createAgentChatService(args: {
           onBackendDispatched?.();
           persistChatState(managed);
         } finally {
-          if (managed.runtime === runtime) runtime.busy = false;
+          if (managed.runtime === runtime) {
+            runtime.busy = false;
+            runtime.activeCompactionId = null;
+          }
         }
         return;
       }
@@ -64093,6 +64132,7 @@ export function createAgentChatService(args: {
     }
 
     if (managed.session.provider === "pi") {
+      if (managed.runtime?.kind === "pi") await waitForPiCompaction(managed, managed.runtime);
       if (managed.runtime?.kind === "pi" && (managed.runtime.busy || managed.session.status === "active")) {
         const runtime = managed.runtime;
         const preparedSteer = prepareSendMessage({
@@ -64994,6 +65034,19 @@ export function createAgentChatService(args: {
     // would then be wiped by exactly the stop this call issued.
     const armedHere = Boolean(queueOwner && !queueOwner.preserveQueuedSteersOnInterrupt);
     if (armedHere && queueOwner) queueOwner.preserveQueuedSteersOnInterrupt = true;
+    // A subagent's result waiting in the queue is not what the user is
+    // replacing, and nothing resends it once cancelled. It sits out the stop
+    // and is delivered after the redirect turn.
+    const queue = !preserveQueuedSteers && runtime && "pendingSteers" in runtime ? runtime.pendingSteers : null;
+    const heldChildResults: QueuedSteer[] = [];
+    if (queue) {
+      for (let index = queue.length - 1; index >= 0; index -= 1) {
+        if (queue[index]?.metadata?.spawnCompletion) heldChildResults.unshift(...queue.splice(index, 1));
+      }
+    }
+    const restoreChildResults = () => {
+      if (queue && managed.runtime === runtime) queue.push(...heldChildResults);
+    };
     try {
       await interrupt({ sessionId: args.sessionId, mode: preserveQueuedSteers ? "stop_only" : "stop_and_clear" });
     } catch (error) {
@@ -65001,9 +65054,11 @@ export function createAgentChatService(args: {
       // Disarm rather than leaving the flag to swallow an unrelated interrupt's
       // cancel later.
       if (armedHere && queueOwner) queueOwner.preserveQueuedSteersOnInterrupt = false;
+      restoreChildResults();
       throw error;
     }
     await waitForHostedTurnToSettleAfterInterrupt(managed, args.sessionId);
+    restoreChildResults();
     // Settled, so the turn's tail has already run `cancelQueuedSteers` and
     // consumed the flag; this is the no-op that closes the case where it did
     // not (nothing queued, or a runtime that never reached its tail).
