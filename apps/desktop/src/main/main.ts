@@ -387,6 +387,8 @@ import {
 } from "../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { registerAppImageDesktopEntry } from "./services/native/appImageDesktopEntry";
 import { runningAppImagePath } from "./services/native/runningAppImage";
+import { compareUpdateVersions } from "../shared/updateVersions";
+import { markAppImageDowngrade } from "./services/localRuntime/appImageRuntime";
 import { checkRuntimeServiceRemovable, installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
 import {
   deferToRunningWindowsInstall,
@@ -3499,6 +3501,10 @@ app.whenReady().then(async () => {
     }
     updateLogger.info("autoUpdate.runtime_service_uninstalled_before_install", payload);
     runtimeServiceUninstalledForUpdate = true;
+    const installingVersion = autoUpdateService.getSnapshot().version;
+    if (runningAppImagePath() && installingVersion && compareUpdateVersions(installingVersion, app.getVersion()) < 0) {
+      await markAppImageDowngrade(installingVersion);
+    }
     if (autoUpdateInstallRollbackReason) {
       await reinstallRuntimeServiceAfterUpdateAbort(autoUpdateInstallRollbackReason);
       return interruptedChats;

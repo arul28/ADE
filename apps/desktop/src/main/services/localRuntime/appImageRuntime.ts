@@ -7,6 +7,17 @@ import { compareUpdateVersions } from "../../../shared/updateVersions";
 
 const exec = promisify(execFile);
 
+const appImageDowngradePath = (): string => path.join(resolveMachineAdeLayout().runtimeDir, "appimage-downgrade-target");
+
+/**
+ * Go back and a switch to an older track install an older AppImage on purpose.
+ * Its brain has to go back too, which the next launch's install would otherwise
+ * refuse. Written once the old service is stopped; only that version honours it.
+ */
+export async function markAppImageDowngrade(version: string): Promise<void> {
+  await fs.writeFile(appImageDowngradePath(), version);
+}
+
 /** Promote the bundled standalone runtime through the same transaction as `ade brain update`. */
 export async function materializeAppImageRuntime(version: string): Promise<{ binary: string; env: NodeJS.ProcessEnv }> {
   const layout = resolveMachineAdeLayout();
@@ -28,9 +39,14 @@ export async function materializeAppImageRuntime(version: string): Promise<{ bin
     (result) => result.stdout.trim().replace(/^ade\s+/i, ""),
     () => null,
   );
-  if (installed && /^\d+\.\d+\.\d+/.test(installed)
+  const downgradeMarker = appImageDowngradePath();
+  const downgradeTarget = await fs.readFile(downgradeMarker, "utf8").then((raw) => raw.trim(), () => null);
+  if (downgradeTarget !== version
+    && installed && /^\d+\.\d+\.\d+/.test(installed)
     && compareUpdateVersions(installed, version) >= 0
     && await fs.access(path.join(runtimeRoot, "node_modules")).then(() => true, () => false)) {
+    // An install that was marked and then called off leaves its marker here.
+    await fs.rm(downgradeMarker, { force: true });
     return { binary, env };
   }
   const source = path.join(process.resourcesPath, "runtime");
@@ -62,6 +78,7 @@ export async function materializeAppImageRuntime(version: string): Promise<{ bin
     const statusPath = path.join(layout.runtimeDir, "update-status.json");
     const status = await fs.readFile(statusPath, "utf8").then((raw) => JSON.parse(raw) as { version?: unknown; state?: unknown }, () => null);
     if (status?.version === version && status.state === "succeeded") await fs.rm(statusPath, { force: true });
+    await fs.rm(downgradeMarker, { force: true });
     return { binary, env };
   } catch (error) {
     // The update transaction may have retained recovery files here.
