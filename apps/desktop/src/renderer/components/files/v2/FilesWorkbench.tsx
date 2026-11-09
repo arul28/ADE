@@ -324,6 +324,8 @@ export function FilesWorkbench({
   // hand it the same request again. Identity is the durable "already handled"
   // record — every request is a fresh object.
   const consumedWorkspaceOpenRef = useRef<unknown>(null);
+  const pendingWorkspaceOpenRef = useRef(pendingWorkspaceOpen);
+  pendingWorkspaceOpenRef.current = pendingWorkspaceOpen;
   const lastGlobalLaneIdRef = useRef(globalLaneId);
   const workspacesProjectRootRef = useRef(projectRootPath);
   const workspacesCacheKeyRef = useRef(projectCacheKey);
@@ -812,6 +814,9 @@ export function FilesWorkbench({
     if (!workspaces.length) return;
     const laneChanged = lastGlobalLaneIdRef.current !== globalLaneId;
     lastGlobalLaneIdRef.current = globalLaneId;
+    // A file open waits for its own workspace to be selected. Following the
+    // selected lane now would move away from it and strand the open.
+    if (pendingWorkspaceOpenRef.current) return;
     // The selected lane is a lane on the tab's machine. While Files reads
     // another machine, that id must not be matched against its roster (a lane
     // id can exist on both); go back to the tab's machine for it instead.
@@ -1039,11 +1044,14 @@ export function FilesWorkbench({
 
   const openFile = useCallback(
     async (path: string, opts: { preview?: boolean; line?: number; column?: number } = {}) => {
-      if (!workspaceId) return;
+      if (!workspaceId) {
+        setError(`Couldn't open ${path}: no workspace is selected.`);
+        return;
+      }
       setSelectedNodePath(path);
       setEmbeddedSurface("editor");
       if (opts.line && opts.line > 0) {
-        setPendingReveal(path, { line: opts.line, column: opts.column });
+        setPendingReveal(path, { line: opts.line, column: opts.column }, workspaceId);
       }
       try {
         // The viewer reads the same LRU through useFileContent, so a cached
@@ -1079,7 +1087,7 @@ export function FilesWorkbench({
         applyGroups((s) => openInGroup(s, s.activeGroupId, tab, { preview: opts.preview ?? true }));
         recordRecentFile(recentSessionKey, path);
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatFilesError(err));
       }
     },
     [files, workspace, workspaceId, applyGroups, recentSessionKey, revalidateOpenedFile],
@@ -1171,8 +1179,12 @@ export function FilesWorkbench({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedPinKey]);
 
+  // Once per navigation: the request is rebuilt on every render and must not
+  // undo a machine picked afterwards.
+  const appliedNavigationPinRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!active || !navigationOpenRequest) return;
+    if (!active || !navigationOpenRequest || appliedNavigationPinRef.current === navigationOpenRequest.nonce) return;
+    appliedNavigationPinRef.current = navigationOpenRequest.nonce;
     const requestedPin = navigationOpenRequest.pin ?? null;
     setMachinePin((current) => (current?.key === requestedPin?.key ? current : requestedPin));
   }, [active, navigationOpenRequest]);

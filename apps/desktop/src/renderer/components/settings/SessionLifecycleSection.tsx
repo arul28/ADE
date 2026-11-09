@@ -6,7 +6,7 @@ import { useSettingsMachineScope } from "./SettingsMachineScope";
 
 /**
  * The "Chats" group of Storage & cleanup → Rules: settle a lane's chats when
- * its PR merges. Stored in each machine's runtime; read and written on the
+ * its PR merges, and optionally release what they were using once settled. Stored in each machine's runtime; read and written on the
  * machine shown (`useSettingsMachineScope().pin`).
  */
 export function SessionLifecycleSection() {
@@ -41,13 +41,14 @@ export function SessionLifecycleSection() {
     };
   }, [pinKey, attempt]);
 
-  const update = async (enabled: boolean) => {
-    if (saving) return;
+  const update = async (patch: Partial<SessionLifecycleSettings>) => {
+    if (saving || !settings) return;
     setSaving(true);
     setError(null);
     try {
       setSettings(await window.ade.sessions.updateLifecycleSettings({
-        autoSettleLaneSessionsOnPrMerge: enabled,
+        ...settings,
+        ...patch,
       }, pinRef.current));
     } catch {
       setError("ADE couldn't save this chat setting.");
@@ -72,7 +73,7 @@ export function SessionLifecycleSection() {
                 label="Settle chats when the lane's PR merges"
                 checked={settings.autoSettleLaneSessionsOnPrMerge}
                 disabled={saving}
-                onChange={(enabled) => void update(enabled)}
+                onChange={(enabled) => void update({ autoSettleLaneSessionsOnPrMerge: enabled })}
               />
             ) : loadFailed ? (
               <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => setAttempt((value) => value + 1)}>
@@ -96,6 +97,22 @@ export function SessionLifecycleSection() {
             />
           ) : null}
         </ModernRow>
+        <ModernRow
+          title="Release what settled chats were using"
+          hint="Five minutes after a lane's last chat settles, power off the simulators and emulators its chats started, stop their dev servers, and give up the Mac Desktop control they held. Anything you started yourself, pinned to keep running, or are viewing stays on. A chat waking cancels it. Applies to every project on this machine."
+          control={
+            settings ? (
+              <SettingsToggle
+                label="Release what settled chats were using"
+                checked={settings.releaseLaneResourcesOnSettle === true}
+                disabled={saving}
+                onChange={(enabled) => void update({ releaseLaneResourcesOnSettle: enabled })}
+              />
+            ) : (
+              <span className="ade-modern-muted" aria-live="polite">{loadFailed ? "" : "Loading…"}</span>
+            )
+          }
+        />
       </div>
     </div>
   );

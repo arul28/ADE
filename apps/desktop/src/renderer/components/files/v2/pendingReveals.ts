@@ -14,6 +14,21 @@ export type PendingFileReveal = {
 
 const reveals = createKeyedPendingStore<PendingFileReveal>();
 
-export const setPendingReveal = reveals.set;
+const revealListeners = new Set<(path: string, workspaceId: string | null) => void>();
+
+export function setPendingReveal(path: string, reveal: PendingFileReveal, workspaceId: string | null = null): void {
+  reveals.set(path, reveal);
+  for (const listener of revealListeners) listener(path, workspaceId);
+}
+
+/**
+ * For an editor already showing the file, where no model bind will come.
+ * `workspaceId` is where the file is being opened: two lanes share relative
+ * paths, and the lane being left must not take the other lane's reveal.
+ */
+export function subscribePendingReveals(listener: (path: string, workspaceId: string | null) => void): () => void {
+  revealListeners.add(listener);
+  return () => revealListeners.delete(listener);
+}
 
 export const takePendingReveal = reveals.take;

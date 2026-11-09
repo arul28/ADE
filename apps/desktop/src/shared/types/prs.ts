@@ -723,6 +723,47 @@ export type CreateLaneFromPrBranchResult = {
   pr: PrSummary;
 };
 
+/** A person who can be mentioned in, or asked to review, this repo's PRs. */
+export type PrMentionableUser = {
+  login: string;
+  name: string | null;
+  avatarUrl: string | null;
+};
+
+/** A team that can be asked to review; absent where the token cannot read teams. */
+export type PrMentionableTeam = {
+  slug: string;
+  name: string;
+};
+
+export type SearchPrMentionablesArgs = {
+  /** Omitted for the project's own GitHub repo (a PR that does not exist yet). */
+  repoOwner?: string | null;
+  repoName?: string | null;
+  query: string;
+  /** Also search the owner's teams; only the reviewer picker asks. */
+  includeTeams?: boolean;
+};
+
+export type SearchPrMentionablesResult = {
+  users: PrMentionableUser[];
+  teams: PrMentionableTeam[];
+  /** Repo write permission of the viewer, when GitHub said. */
+  viewerPermission: string | null;
+};
+
+export type PrRepoReference = {
+  number: number;
+  title: string;
+  kind: "issue" | "pr";
+  state: string;
+};
+
+export type GetPrRepoReferencesArgs = {
+  repoOwner?: string | null;
+  repoName?: string | null;
+};
+
 export type UpdatePrDescriptionArgs = {
   prId: string;
   body: string;

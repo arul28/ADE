@@ -14,6 +14,7 @@ import {
 import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { isMac } from "../../../lib/platform";
 import { PrMarkdown } from "./PrMarkdown";
+import { PrWritingTextarea } from "./PrWritingTextarea";
 
 type EditorMode = "write" | "preview";
 
@@ -250,8 +251,10 @@ export function PrMarkdownEditor({
 
       {/* Body */}
       {mode === "write" ? (
-        <textarea
+        <PrWritingTextarea
           ref={textareaRef}
+          repoOwner={repoOwner}
+          repoName={repoName}
           value={value}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={handleKeyDown}

@@ -53,6 +53,9 @@ type RunCommand = (
 ) => Promise<{ stdout: string; stderr: string }>;
 
 /** `ADE_APPLE_IDLE_POWER_OFF_MINUTES`: minutes, `0` turns idle power-off off. */
+/** Which chat's agent booted the device, while it stays on. Absent when anyone else did. */
+export const APPLE_DEVICE_BOOTED_BY_FILE = "ade-booted-by-chat" as const;
+
 export function appleIdlePowerOffMs(env: NodeJS.ProcessEnv = process.env): number {
   return deviceIdleMsFromEnv(env, "ADE_APPLE_IDLE_POWER_OFF_MINUTES", DEFAULT_IDLE_MS);
 }
@@ -129,8 +132,11 @@ export type LaneDeviceMaintenanceDeps = {
   run: RunCommand;
   /** Power off through the service's own path, so the helper and recorder hear it. */
   powerOffDevice: (device: AppleLaneDevice) => Promise<void>;
-  /** This process is streaming, recording, testing or launching on the device. */
-  isBusyHere: (udid: string) => boolean;
+  /**
+   * This process is streaming, recording, testing or launching on the device.
+   * With `onlyWatchedStreams`, a stream nobody is viewing does not count.
+   */
+  isBusyHere: (udid: string, options?: { onlyWatchedStreams?: boolean }) => boolean;
   deviceDataRoot?: string | null;
   idleMs?: number;
   now?: () => number;
@@ -200,6 +206,32 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
     }
   };
 
+  const bootedByFile = (udid: string) => path.join(root(), udid, APPLE_DEVICE_BOOTED_BY_FILE);
+
+  /** A chat, or null when something other than an agent's call brought the device up. Never throws. */
+  const recordBootedBy = (udid: string, chatSessionId: string | null): void => {
+    try {
+      if (!chatSessionId) {
+        fs.rmSync(bootedByFile(udid), { force: true });
+      } else if (fs.existsSync(path.join(root(), udid))) {
+        fs.writeFileSync(bootedByFile(udid), chatSessionId, "utf8");
+      }
+    } catch (error) {
+      deps.logger.debug("apple.device_booted_by_record_failed", {
+        udid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const readBootedBy = (udid: string): string | null => {
+    try {
+      return fs.readFileSync(bootedByFile(udid), "utf8").trim() || null;
+    } catch {
+      return null;
+    }
+  };
+
   /** When an app was last installed or removed on the device, from its bundle folder; 0 when unreadable. */
   const lastInstallChangeMs = (udid: string): number => {
     try {
@@ -222,16 +254,24 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
    * powered off. With `force`, "idle" means "nothing is using it right now",
    * whatever the last activity was. `onlyUdids` limits the pass: an agent's
    * request may power off its own lane's device and nobody else's.
+   * `onlyBootedBy` limits it further, to devices one of these chats booted.
    */
   type IdlePassResult = {
     poweredOff: AppleDeviceCleanupResult["poweredOff"];
     skipped: AppleDeviceCleanupResult["powerOffSkipped"];
+    /** ADE could not read the devices, or a power-off failed. */
+    failed?: true;
   };
   const runIdlePass = async (
-    options: { force?: boolean; onlyUdids?: ReadonlySet<string> | null } = {},
+    options: { force?: boolean; onlyUdids?: ReadonlySet<string> | null; onlyBootedBy?: ReadonlySet<string> | null } = {},
   ): Promise<IdlePassResult> => {
     const poweredOff: AppleDeviceCleanupResult["poweredOff"] = [];
-    const done = (skipped: IdlePassResult["skipped"] = null): IdlePassResult => ({ poweredOff, skipped });
+    let failed = false;
+    const done = (skipped: IdlePassResult["skipped"] = null): IdlePassResult => ({
+      poweredOff,
+      skipped,
+      ...(failed || skipped === "process-list-unavailable" ? { failed: true as const } : {}),
+    });
     if (!options.force && idleMs <= 0) return done();
     const devices = deps.laneDevices.list().filter((device) => (
       isAdeOwnedLaneDevice(device.origin) && (!options.onlyUdids || options.onlyUdids.has(device.udid))
@@ -242,11 +282,21 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
       const { stdout } = await deps.run("xcrun", ["simctl", "list", "devices", "--json"], { timeoutMs: 30_000 });
       states = parseSimctlDevices(stdout);
     } catch {
+      failed = true;
       return done();
     }
     let psOutput: string | null = null;
     for (const device of devices) {
       const listed = states.get(device.udid);
+      // Off, by whatever means: whoever boots it next is a new question.
+      if (listed?.state === "Shutdown") {
+        recordBootedBy(device.udid, null);
+        continue;
+      }
+      if (options.onlyBootedBy) {
+        const bootedBy = readBootedBy(device.udid);
+        if (!bootedBy || !options.onlyBootedBy.has(bootedBy)) continue;
+      }
       // A device still booting is in use by whoever booted it (often a raw
       // `simctl boot` outside ADE): restart its idle clock, never power it off.
       if (listed?.state === "Booting") {
@@ -254,7 +304,9 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
         continue;
       }
       if (listed?.state !== "Booted") continue;
-      if (deps.isBusyHere(device.udid)) {
+      // An agent's `apple start` leaves its stream running with nobody watching;
+      // that must not keep a settled chat's device on.
+      if (deps.isBusyHere(device.udid, { onlyWatchedStreams: Boolean(options.onlyBootedBy) })) {
         touch(device.udid);
         continue;
       }
@@ -299,6 +351,7 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
           idleMinutes,
         });
       } catch (error) {
+        failed = true;
         deps.logger.warn("apple.lane_device_idle_power_off_failed", {
           laneId: device.laneId,
           udid: device.udid,
@@ -354,7 +407,7 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
     stopTimers = null;
   };
 
-  return { touch, readPowerOff, clearPowerOff, runIdlePass, runCleanup, start, stop };
+  return { touch, readPowerOff, clearPowerOff, recordBootedBy, runIdlePass, runCleanup, start, stop };
 }
 
 export type LaneDeviceMaintenance = ReturnType<typeof createLaneDeviceMaintenance>;

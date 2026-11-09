@@ -1582,6 +1582,7 @@ export function createFileService({
       // query still guard on their own side (global search, chat.fileSearch).
       const query = args.query.trim();
       const limit = typeof args.limit === "number" ? Math.max(1, Math.min(500, args.limit)) : 120;
+      if (args.refreshIndex) indexService.invalidateWorkspace(args.workspaceId);
       return await indexService.quickOpen({
         workspaceId: args.workspaceId,
         rootPath: workspace.rootPath,

@@ -1,3 +1,4 @@
+import { PrWritingTextarea } from "./shared/PrWritingTextarea";
 import React from "react";
 import * as RadixDialog from "@radix-ui/react-dialog";
 import { CheckCircle, Warning, CircleNotch, X, ArrowRight, ArrowLeft, Check } from "@phosphor-icons/react";
@@ -939,7 +940,7 @@ export function CreatePrModal({
 
                     <div>
                       <span style={labelStyle}>DESCRIPTION</span>
-                      <textarea
+                      <PrWritingTextarea
                         value={normalBody}
                         onChange={(e) => setNormalBody(e.target.value)}
                         rows={6}

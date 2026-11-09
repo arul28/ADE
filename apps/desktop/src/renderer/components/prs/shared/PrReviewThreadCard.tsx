@@ -35,6 +35,7 @@ import {
   fgTint,
 } from "../../lanes/laneDesignTokens";
 import { formatTimeAgo } from "./prFormatters";
+import { PrWritingTextarea } from "./PrWritingTextarea";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrUserAvatar } from "./PrUserAvatar";
 import { PrCommentEditForm } from "./PrCommentEditForm";
@@ -605,7 +606,7 @@ export const PrReviewThreadCard = memo(
 
         {canMutate && replyOpen ? (
           <div className="flex flex-col gap-2 border-t px-4 py-3" style={{ borderColor: COLORS.border }}>
-            <textarea
+            <PrWritingTextarea
               value={replyValue}
               onChange={(e) => setReplyValue(e.target.value)}
               placeholder={viewerLogin ? `Reply as @${viewerLogin}…` : "Reply…"}

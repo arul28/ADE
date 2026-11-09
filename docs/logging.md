@@ -863,6 +863,10 @@ untracked. They stay local operational logs.
 Settle records one thing at the session-service owner boundary, on the
 existing `ade_feature_used` event with `feature: "work"`.
 
+`action: "settled_lane_released"` fires from the brain when the optional
+settled-lane release actually let go of something, with `mode: "automatic"` so
+it never counts as user activity; it is deduplicated to one an hour, so the worst case is 24 events a day inside the `ade_feature_used` limits.
+
 `action: "settle_remote_write_reconciled"` fires when an inbound changeset
 carried settle-tuple columns and the session layer re-asserted them through the
 chokepoint. It carries the coarse `outcome` and a bucketed `count_bucket` of how

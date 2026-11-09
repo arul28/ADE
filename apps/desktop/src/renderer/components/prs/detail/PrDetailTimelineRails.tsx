@@ -150,6 +150,8 @@ type Props = {
   onPrStateAction?: (action: PrStateAction) => Promise<void>;
   /** A file chip in the description: open that file's diff in the Files tab. */
   onOpenPrFile?: (path: string) => void;
+  /** Absent unless the viewer can edit the description. */
+  onToggleDescriptionTask?: (slice: string, index: number, nextChecked: boolean) => void;
   /** Open the Merge card by itself on a new PR (the PRs tab). Off in a chat's PR view. */
   autoOpenMergeCard?: boolean;
 };
@@ -710,6 +712,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       onHandPrompt,
       autoOpenMergeCard = true,
       onAddToChat,
+      onToggleDescriptionTask,
       onPrStateAction,
       onOpenPrFile,
     } = props;
@@ -1100,6 +1103,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
         prFiles: files.map((file) => file.filename),
         prStateByNumber,
         onAddToChat,
+        onToggleDescriptionTask,
         onOpenFile: (path, inPr) => {
           if (inPr && onOpenPrFile) {
             onOpenPrFile(path);
@@ -1120,7 +1124,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
           });
         },
       };
-    }, [files, navigate, onAddToChat, onOpenPrFile, pr.laneId, pr.repoName, pr.repoOwner, repoPrs]);
+    }, [files, navigate, onAddToChat, onOpenPrFile, onToggleDescriptionTask, pr.laneId, pr.repoName, pr.repoOwner, repoPrs]);
 
     const closeDock = useCallback(() => setDockOpen(null), []);
     const dockItems = useMemo<PrDockItem[]>(() => {

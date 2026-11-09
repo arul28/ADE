@@ -1138,9 +1138,7 @@ describe("prMergeAutoSettlementService", () => {
       mergedAt: "2026-03-24T10:00:00.000Z",
     });
 
-    expect(getSessionLifecycleSettings(db as any)).toEqual({
-      autoSettleLaneSessionsOnPrMerge: true,
-    });
+    expect(getSessionLifecycleSettings(db as any).autoSettleLaneSessionsOnPrMerge).toBe(true);
     await service.processSnapshot({
       prs: [oldMerge],
       polledAt: "2026-03-24T12:00:00.000Z",

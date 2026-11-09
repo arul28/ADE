@@ -252,6 +252,8 @@ export type FilesQuickOpenArgs = {
   query: string;
   limit?: number;
   includeIgnored?: boolean;
+  /** Re-walk the workspace first: one click on a name the index did not know. */
+  refreshIndex?: boolean;
   /** Allow the composer-only path-prefix match for trailing prose. */
   allowComposerPrefixFallback?: boolean;
   /**

@@ -32,7 +32,7 @@ export const ANDROID_NOT_USE_METHODS: ReadonlySet<string> = new Set([
   "getStatus", "listDevices", "getStreamStatus", "deviceLeaseStatus", "recordList", "getAutoRecord",
   "getMachinePreferences", "getSdkSetupPlan", "getSdkInstallState", "listSystemImages", "deviceCleanup",
   "stop", "stopForLane", "releaseDevice", "dispose", "onEvent", "releaseIfOwnedBy", "streamRemoteBitrateKbpsCap",
-  "setKeepRunning",
+  "setKeepRunning", "powerOffEmulators",
 ]);
 
 /** A lane's use is passed to the lifecycle at most this often; the lifecycle writes the file once a minute. */

@@ -52,7 +52,7 @@ vi.mock("../../../../lib/monacoLoader", () => {
   };
 });
 
-vi.mock("../pendingReveals", () => ({ takePendingReveal: () => null }));
+vi.mock("../pendingReveals", () => ({ takePendingReveal: () => null, subscribePendingReveals: () => () => undefined }));
 vi.mock("../useFileContent", () => ({ updateCachedFileContentText: vi.fn() }));
 
 const registry = {

@@ -13433,6 +13433,8 @@ export function registerIpc({
   ipcMain.handle(IPC.prsReplyToReviewThread, (_e, args: ReplyToPrReviewThreadArgs) => ensurePrReadContext().prService.replyToReviewThread(args));
   ipcMain.handle(IPC.prsResolveReviewThread, (_e, args: ResolvePrReviewThreadArgs) => ensurePrReadContext().prService.resolveReviewThread(args));
   ipcMain.handle(IPC.prsUpdateTitle, (_e, args) => ensurePrReadContext().prService.updateTitle(args));
+  ipcMain.handle(IPC.prsSearchMentionables, (_e, args) => ensurePrReadContext().prService.searchMentionables(args));
+  ipcMain.handle(IPC.prsGetRepoReferences, (_e, args) => ensurePrReadContext().prService.getRepoReferences(args));
   ipcMain.handle(IPC.prsUpdateBody, (_e, args) => ensurePrReadContext().prService.updateBody(args));
   ipcMain.handle(IPC.prsSetLabels, (_e, args) => ensurePrReadContext().prService.setLabels(args));
   ipcMain.handle(IPC.prsSetAssignees, (_e, args) => ensurePrReadContext().prService.setAssignees(args));

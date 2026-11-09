@@ -1,5 +1,6 @@
 import React from "react";
 import { GitMerge, GitPullRequest, Info, Lightbulb, Warning, WarningOctagon, XCircle, Megaphone, type Icon } from "@phosphor-icons/react";
+import type { OpenProjectBinding } from "../../../../shared/types/core";
 import type { PrState } from "../../../../shared/types/prs";
 import { getFileIcon } from "../../files/filePresentation";
 import { COLORS, fgTint } from "../../lanes/laneDesignTokens";
@@ -18,12 +19,21 @@ export type PrMarkdownEnv = {
   /** State of other PRs in this repo, for `#123` pills. */
   prStateByNumber?: ReadonlyMap<number, PrState>;
   onOpenPr?: (number: number) => void;
+  /** Set for a viewer who can edit the description; its checkboxes become clickable. */
+  onToggleDescriptionTask?: PrTaskToggler;
   /**
    * Quote something from this PR in the chat that works on it. Absent when the
    * PR has no lane to hold a chat; the "Add to chat" controls then stay hidden.
    */
   onAddToChat?: (quote: PrChatQuote) => void;
 };
+
+/**
+ * Set around the PR description for a viewer who can edit it: checkboxes under
+ * it become clickable. `slice` is the markdown the box was rendered from.
+ */
+export type PrTaskToggler = (slice: string, index: number, nextChecked: boolean) => void;
+export const PrTaskToggleContext = React.createContext<PrTaskToggler | null>(null);
 
 /** One thing a reader hands to the chat: its text, and where in the PR it is from. */
 export type PrChatQuote = {
@@ -34,6 +44,14 @@ export type PrChatQuote = {
 };
 
 export const PrMarkdownEnvContext = React.createContext<PrMarkdownEnv | null>(null);
+
+/** Repo and machine for `@` and `#` suggestions in the writing surfaces under it. */
+export type PrWritingScope = {
+  repoOwner: string | null;
+  repoName: string | null;
+  pin: OpenProjectBinding | null;
+};
+export const PrWritingScopeContext = React.createContext<PrWritingScope | null>(null);
 
 /**
  * Which part of the PR the markdown below belongs to, for a quote's `from`.

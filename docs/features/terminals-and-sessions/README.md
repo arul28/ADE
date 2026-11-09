@@ -3239,3 +3239,23 @@ Apple, Android, screen, and tool markers reuse the lane data already in the pane
 Kanban already shows lane identity, and both State and Stack organizations in
 the Lanes sidebar keep the lane name and color. None of these labels adds a
 fetch, effect, or subscription per row.
+
+## Releasing what settled chats were using
+
+Settings › Lanes › "Release what settled chats were using" (off by default, one
+setting for every project on the machine, kept in `<ADE home>/session-lifecycle.json`). Once every live chat in a lane has been settled for five minutes
+(`settledLaneReleaseService.ts`), ADE powers off the simulators and emulators
+those chats' agents booted, stops the dev servers they started, and gives up any
+Mac Desktop control they held (the screen itself closes on its own idle timer).
+Nothing a person started is touched: an agent's boot
+writes `ade-booted-by-chat` in the simulator's folder (cleared when it goes off),
+and an emulator's owner record names its chat. A device already on when an agent
+reached it stays unattributed. A chat waking cancels the release, "Keep running"
+pins are honored, and a device in use or a stream someone is viewing stays on. A step that
+fails is tried again on later sweeps, up to five passes, and every step first re-reads the lane
+so a chat that just woke keeps the rest. The
+wait is read from the chats' `settled_at` columns on a slow sweep (a board pin has none, so the
+first sweep that sees it stamps it), so it survives a brain
+restart and notices a chat settled from a phone. A quiet line in the last chat to
+settle says what was released. Built-in browser tabs are left alone: they belong
+to the project, not to a lane's chats.

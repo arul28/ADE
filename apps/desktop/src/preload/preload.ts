@@ -632,6 +632,10 @@ import type {
   SetPrDraftArgs,
   RerunPrChecksArgs,
   UpdatePrDescriptionArgs,
+  GetPrRepoReferencesArgs,
+  PrRepoReference,
+  SearchPrMentionablesArgs,
+  SearchPrMentionablesResult,
   LandPrArgs,
   LandResult,
   UpdateBranchArgs,
@@ -13289,9 +13293,17 @@ const adeBridge = {
       callPrReadRuntimeActionOr(pin, "getReviewThreads", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetReviewThreads, { prId }),
       ),
-    updateDescription: async (args: UpdatePrDescriptionArgs): Promise<void> =>
-      callProjectRuntimeActionOr("pr", "updateDescription", { args }, () =>
+    updateDescription: async (args: UpdatePrDescriptionArgs, pin?: OpenProjectBinding | null): Promise<void> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "pr", "updateDescription", { args }, () =>
         ipcRenderer.invoke(IPC.prsUpdateDescription, args),
+      ),
+    searchMentionables: async (args: SearchPrMentionablesArgs, pin?: OpenProjectBinding | null): Promise<SearchPrMentionablesResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "pr", "searchMentionables", { args }, () =>
+        ipcRenderer.invoke(IPC.prsSearchMentionables, args),
+      ),
+    getRepoReferences: async (args: GetPrRepoReferencesArgs, pin?: OpenProjectBinding | null): Promise<PrRepoReference[]> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "pr", "getRepoReferences", { args }, () =>
+        ipcRenderer.invoke(IPC.prsGetRepoReferences, args),
       ),
     delete: async (args: DeletePrArgs, pin?: OpenProjectBinding | null): Promise<DeletePrResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "pr", "delete", { args }, () =>

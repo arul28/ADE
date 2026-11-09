@@ -68,9 +68,9 @@ export function FilesTab(props: FilesTabProps) {
   // at a machine that does not exist.
   const navigationPin = readOpenProjectBinding(navigationState?.filesPin);
   const navigationLaneId = typeof navigationState?.laneId === "string" ? navigationState.laneId : null;
-  // A lane on another machine with no file: Files moves to that machine and
-  // shows the lane (the Lanes tab's "Open files" for a foreign lane).
-  const laneOnlyRequest = Boolean(navigationLaneId && navigationPin);
+  // A lane with no file, on any machine: Files moves there and shows the lane
+  // (the Lanes tab's "Open files", a finished turn's "Review changes").
+  const laneOnlyRequest = Boolean(navigationLaneId);
   const navigationOpenRequest: FilesNavigationOpenRequest | null = navigationOpenPath || navigationSearchQuery || laneOnlyRequest
     ? {
         path: navigationOpenPath,

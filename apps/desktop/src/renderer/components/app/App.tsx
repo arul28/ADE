@@ -445,6 +445,12 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   const [heldRoute, setHeldRoute] = React.useState<string>(() => overlayOpen ? defaultHeldRouteForOverlay(pathname) : route);
   const pageRoute = overlayOpen ? heldRoute : route;
   const pagePath = pageRoute ? pageRoute.split(/[?#]/, 1)[0] || "/work" : null;
+  // `<Routes location="…">` gives every page under it a location built from
+  // that string: no `state`, and the key "default". A navigation's `state` (the
+  // file a click wants open, a draft to show) only reaches the page when the
+  // real location goes in, so it does whenever it is the route on screen.
+  const liveLocation = useLocation();
+  const pageLocation = pageRoute && serializeProjectRoute(liveLocation) === pageRoute ? liveLocation : pageRoute;
   const heldWork = overlayOpen && pagePath != null && isWorkRoutePath(pagePath);
   const heldLanes = overlayOpen && pagePath != null && isLanesRoutePath(pagePath);
   const [workRoute, setWorkRoute] = React.useState(() => isWorkRoute ? route : "/work");
@@ -595,7 +601,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
               {...parkedSurfaceProps(overlayOpen)}
             >
               <ProjectSidebarHold held={overlayOpen}>
-                <Routes location={pageRoute}>
+                <Routes location={pageLocation ?? undefined}>
                   <Route path="/" element={<Navigate to="/work" replace />} />
                   <Route path="/onboarding" element={<Navigate to="/work" replace />} />
                   <Route path="/files" element={

@@ -763,6 +763,10 @@ import type {
   SetPrDraftArgs,
   RerunPrChecksArgs,
   UpdatePrDescriptionArgs,
+  GetPrRepoReferencesArgs,
+  PrRepoReference,
+  SearchPrMentionablesArgs,
+  SearchPrMentionablesResult,
   ListOverlapsArgs,
   LaneGitHubIssue,
   LaneLinearIssue,
@@ -4876,7 +4880,9 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<PrReview[]>;
         getReviewThreads: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrReviewThread[]>;
-        updateDescription: (args: UpdatePrDescriptionArgs) => Promise<void>;
+        updateDescription: (args: UpdatePrDescriptionArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        searchMentionables: (args: SearchPrMentionablesArgs, pin?: OpenProjectBinding | null) => Promise<SearchPrMentionablesResult>;
+        getRepoReferences: (args: GetPrRepoReferencesArgs, pin?: OpenProjectBinding | null) => Promise<PrRepoReference[]>;
         delete: (args: DeletePrArgs, pin?: OpenProjectBinding | null) => Promise<DeletePrResult>;
         land: (args: LandPrArgs, pin?: OpenProjectBinding | null) => Promise<LandResult>;
         updateBranch: (args: UpdateBranchArgs, pin?: OpenProjectBinding | null) => Promise<UpdateBranchResult>;

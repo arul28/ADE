@@ -27,7 +27,10 @@ import {
 import { TerminalImagePasteNotice } from "./TerminalImagePasteNotice";
 import { endsInsideOsc52, parseOsc52Payload } from "./osc52";
 import { showToast } from "../app/toast/toastStore";
+import { useInRouterContext } from "react-router-dom";
 import { openLinkFromUi } from "../../lib/openExternal";
+import { TerminalPathLinkBridge, type TerminalPathLinkHandle } from "./terminalPathLinkBridge";
+import { createTerminalPathLinkProvider, readOsc7Cwd, type TerminalPathLinkContext } from "./terminalPathLinks";
 import { attachCursorBlinkClock } from "../../lib/xtermCursorBlink";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { TerminalToolType } from "../../../shared/types";
@@ -195,6 +198,8 @@ type CachedRuntime = {
   ptyExitUnsub: (() => void) | null;
   termDataSub: { dispose: () => void } | null;
   linkProviderSub: { dispose: () => void } | null;
+  pathLinkProviderSub: { dispose: () => void } | null;
+  pathLinks: TerminalPathLinkContext;
   /** Drives the DOM renderer's cursor blink; null while WebGL draws the cursor. */
   cursorBlinkClock: { dispose: () => void } | null;
   rendererInitStarted: boolean;
@@ -1648,6 +1653,7 @@ function teardownRuntime(runtime: CachedRuntime) {
   }
   try {
     runtime.linkProviderSub?.dispose();
+    runtime.pathLinkProviderSub?.dispose();
   } catch {
     // ignore
   }
@@ -3133,6 +3139,16 @@ function createRuntime(args: {
   const linkProviderSub = typeof term.registerLinkProvider === "function"
     ? term.registerLinkProvider(createTerminalLinkProvider(term, args.runtimePin))
     : null;
+  const pathLinks: TerminalPathLinkContext = {
+    runtimePin: args.runtimePin,
+    laneId: null,
+    cwd: null,
+    openWorkspacePath: null,
+    ensureLaneId: null,
+  };
+  const pathLinkProviderSub = typeof term.registerLinkProvider === "function"
+    ? term.registerLinkProvider(createTerminalPathLinkProvider(term, pathLinks))
+    : null;
 
   const runtime: CachedRuntime = {
     key: terminalRuntimeKey(args),
@@ -3206,6 +3222,8 @@ function createRuntime(args: {
     ptyExitUnsub: null,
     termDataSub: null,
     linkProviderSub,
+    pathLinkProviderSub,
+    pathLinks,
     cursorBlinkClock: null,
     rendererInitStarted: false,
     webglReleaseTimer: null,
@@ -3229,6 +3247,12 @@ function createRuntime(args: {
   // frames the sequence across chunks and terminators; the handler decides.
   // Disposed with the terminal.
   term.parser.registerOscHandler(52, (data) => handleTerminalOsc52(runtime, data));
+  // The shell's working directory, when it reports one: where a relative path
+  // printed in this terminal is relative to.
+  term.parser.registerOscHandler(7, (data) => {
+    runtime.pathLinks.cwd = readOsc7Cwd(data);
+    return true;
+  });
 
   // Capture-phase paste listener on host: intercepts ALL paste sources (Cmd+V,
   // Electron default-menu Edit→Paste, right-click, middle-click) before xterm
@@ -3551,6 +3575,8 @@ export function TerminalView({
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const runtimeRef = useRef<CachedRuntime | null>(null);
+  const pathLinkHandleRef = useRef<TerminalPathLinkHandle | null>(null);
+  const inRouter = useInRouterContext();
   const [exited, setExited] = useState<number | null>(null);
   const [imagePasteNotice, setImagePasteNotice] = useState<string | null>(null);
 
@@ -3596,6 +3622,10 @@ export function TerminalView({
       imagePasteMode,
     });
     runtimeRef.current = runtime;
+    if (pathLinkHandleRef.current) {
+      runtime.pathLinks.openWorkspacePath = pathLinkHandleRef.current.openWorkspacePath;
+      runtime.pathLinks.ensureLaneId = pathLinkHandleRef.current.ensureLaneId;
+    }
     const wasReceivingBeforeRef = shouldRuntimeReceivePtyData(runtime);
     runtime.refs += 1;
     syncRuntimePtyDataStreaming(runtime, wasReceivingBeforeRef);
@@ -4042,6 +4072,14 @@ export function TerminalView({
       )}
     >
       <div ref={containerRef} className="ade-terminal-host h-full w-full m-0 p-0 border-0 overflow-hidden" />
+      {inRouter ? (
+        <TerminalPathLinkBridge
+          handleRef={pathLinkHandleRef}
+          runtimeRef={runtimeRef}
+          sessionId={sessionId}
+          runtimePin={runtimeRuntimePin}
+        />
+      ) : null}
       {exited != null ? (
         <div className="pointer-events-none absolute bottom-2 right-2 rounded-lg border border-border/15 bg-card backdrop-blur-sm shadow-card px-2 py-1 text-[11px] text-muted-fg">
           exited {exited}

@@ -2856,3 +2856,16 @@ a successful API read does not re-arm a still-broken push alarm. Missing App
 issue-write permission is a setup reminder when another credential covers issue
 edits, and an alarm when none does. Recovery never clears the setup snooze.
 GitHub outage notices retain their existing incident handling.
+
+## Writing in a PR
+
+Comments, reviews, replies and the new-PR description share `PrWritingTextarea`:
+`@` suggests people who can be mentioned (`searchMentionables`, a debounced
+GraphQL read cached per repo and query) and `#` suggests issues and pull requests
+(`getRepoReferences`, cached per repo). The reviewer card searches people a
+review can be requested from (`assignableUsers`, the same action with
+`includeTeams`) and teams, so it reaches past GitHub's first page. Task-list boxes in the
+description are clickable for its author and anyone with write access: the box
+changes at once, saves go to GitHub in click order, and a failed save returns to
+GitHub's text. Boxes are found with the renderer's markdown grammar, so look-alikes
+in code and HTML blocks do not count, and a CRLF body keeps its line endings.

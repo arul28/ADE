@@ -61,6 +61,7 @@ export type FeatureAnalyticsAction =
   | "mcp_server_requested"
   | "mcp_server_remove_requested"
   | "notification_sent"
+  | "settled_lane_released"
   | "music_connected"
   | "spotify_connected"
   | "server_toggled"
@@ -126,6 +127,8 @@ export function captureFeatureUsedAnalytics(args: {
   outcome: FeatureAnalyticsOutcome;
   provider?: unknown;
   sessionId?: string | null;
+  /** Background work nobody asked for at that moment: not counted as activity. */
+  automatic?: boolean;
 }): void {
   if (!args.analytics) return;
   const provider = args.provider === undefined ? undefined : coarseProviderFamily(args.provider);
@@ -135,6 +138,7 @@ export function captureFeatureUsedAnalytics(args: {
     action: args.action,
     outcome: args.outcome,
     ...(provider ? { provider } : {}),
+    ...(args.automatic ? { mode: "automatic" } : {}),
   };
   const dedupeProvider = provider ? `:${provider}` : "";
   args.analytics.captureInternal({

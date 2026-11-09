@@ -32,9 +32,11 @@ import {
   PrMarkdownEnvContext,
   PrQuoteSourceContext,
   PrRefPill,
+  PrTaskToggleContext,
   resolveInlineFile,
   type GithubAlertKind,
 } from "./prMarkdownContext";
+import { PrTaskCheckbox, PrTaskScopeContext, rehypeNumberTaskBoxes } from "./PrTaskCheckbox";
 import { getFileIcon } from "../../files/filePresentation";
 import {
   PR_COMPARE_FENCE_LANGUAGE,
@@ -554,23 +556,7 @@ function PrLink({
 
 /* ── Task-list checkbox ────────────────────────────────────────────── */
 
-function PrTaskCheckbox({ checked }: { checked?: boolean }) {
-  return (
-    <input
-      type="checkbox"
-      checked={!!checked}
-      readOnly
-      disabled
-      aria-readonly
-      className="pr-md-task-checkbox relative mr-1.5 inline-block h-[12px] w-[12px] shrink-0 appearance-none rounded-[3px] border align-middle"
-      style={{
-        borderColor: checked ? COLORS.accent : COLORS.outlineBorder,
-        background: checked ? COLORS.accent : "transparent",
-        cursor: "default",
-      }}
-    />
-  );
-}
+const PR_REHYPE_PLUGINS = [rehypeRaw, [rehypeSanitize, PR_SAFE_SCHEMA], rehypeNumberTaskBoxes] as Parameters<typeof ReactMarkdown>[0]["rehypePlugins"];
 
 /* ── Component overrides ───────────────────────────────────────────── */
 
@@ -838,7 +824,9 @@ function buildPrOverrides({
     // GFM: task-list checkbox inputs.
     input: (props) => {
       const { type, checked } = props as { type?: string; checked?: boolean };
-      if (type === "checkbox") return <PrTaskCheckbox checked={checked} />;
+      const rawIndex = (props as { "data-task-index"?: number | string })["data-task-index"];
+      const taskIndex = rawIndex === undefined ? undefined : Number(rawIndex);
+      if (type === "checkbox") return <PrTaskCheckbox checked={checked} taskIndex={taskIndex} />;
       return null;
     },
     // GFM: tables need horizontal scroll with sticky header.
@@ -944,19 +932,27 @@ export const PrMarkdown = memo(function PrMarkdown({
 
   const mediaRepo = useMemo(() => ({ repoOwner, repoName }), [repoOwner, repoName]);
 
+  const taskToggle = useContext(PrTaskToggleContext);
+  const taskScope = useMemo(
+    () => (taskToggle ? { toggle: (index: number, nextChecked: boolean) => taskToggle(children, index, nextChecked) } : null),
+    [taskToggle, children],
+  );
+
   return (
     <div
       className={`pr-md-root min-w-0 max-w-full ${variant === "document" ? "text-[13.5px] leading-[1.65]" : "text-[13px] leading-[1.55]"} ${dense ? "pr-md-dense" : ""}`}
       style={{ color: COLORS.textPrimary }}
     >
       <PrMediaRepoContext.Provider value={mediaRepo}>
-        <ReactMarkdown
-          remarkPlugins={remarkPlugins}
-          rehypePlugins={[rehypeRaw, [rehypeSanitize, PR_SAFE_SCHEMA]]}
-          components={components}
-        >
-          {markdown}
-        </ReactMarkdown>
+        <PrTaskScopeContext.Provider value={taskScope}>
+          <ReactMarkdown
+            remarkPlugins={remarkPlugins}
+            rehypePlugins={PR_REHYPE_PLUGINS}
+            components={components}
+          >
+            {markdown}
+          </ReactMarkdown>
+        </PrTaskScopeContext.Provider>
       </PrMediaRepoContext.Provider>
     </div>
   );
