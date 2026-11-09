@@ -322,14 +322,13 @@ export function createChatWebhookRegistry(deps: {
       }
       let changed = false;
       for (const hook of hooks.filter((entry) => checksHook(entry) && (!sessions || sessions.has(entry.sessionId)))) {
+        // Marked before the awaits: a write while this check reads or posts must keep this copy, not the file's.
+        changedHere.add(hook.id);
         const hookChanged = await checkHook(hook).catch((error: unknown) => {
           warn("agent_chat.webhook_check_failed", error, { webhookId: hook.id, sessionId: hook.sessionId });
           return false;
         });
-        if (hookChanged) {
-          changed = true;
-          changedHere.add(hook.id);
-        }
+        if (hookChanged) changed = true;
       }
       const at = now();
       const kept = hooks.filter((hook) => hook.deliveries.length > 0 || Date.parse(hook.expiresAt) > at);
@@ -364,10 +363,15 @@ export function createChatWebhookRegistry(deps: {
      */
     signal(sessionId: string, event?: { type: string; turnStatus?: string }): void {
       // A webhook another brain armed for a chat this one runs arrives through the file.
-      if (fileChanged()) {
-        const onDisk = load();
-        if (onDisk) absorb(onDisk);
-        syncBackstop();
+      // This runs inside chat event handling, so it never throws.
+      try {
+        if (fileChanged()) {
+          const onDisk = load();
+          if (onDisk) absorb(onDisk);
+          syncBackstop();
+        }
+      } catch (error) {
+        warn("agent_chat.webhooks_read_failed", error);
       }
       const mine = hooks.filter((hook) => hook.sessionId === sessionId);
       if (!mine.length) return;

@@ -502,12 +502,18 @@ function decodeBase64Strict(text: string): Buffer {
   return Buffer.from(compact, "base64");
 }
 
-/** The file's bytes for an appended chunk, read inside the root without following links; empty when it is not there. */
-function readExistingWithinRoot(rootPath: string, relPath: string): Buffer {
+/**
+ * The file's bytes for a chunk appended at `offset`, read inside the root
+ * without following links; empty when it is not there. A file longer than
+ * `offset` is refused before it is read, so a wrong offset never loads a huge file.
+ */
+function readExistingWithinRoot(rootPath: string, relPath: string, offset: number): Buffer {
   try {
-    return readFileWithinRootSecure(rootPath, relPath);
+    return readFileWithinRootSecure(rootPath, relPath, { maxBytes: offset });
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return Buffer.alloc(0);
+    const tooLarge = error instanceof Error ? /^File is too large \((\d+) bytes\)$/.exec(error.message) : null;
+    if (tooLarge) throw new Error(`Can't write at byte ${offset}: ${relPath} is ${tooLarge[1]} bytes. Send the chunk that starts there.`);
     throw error;
   }
 }
@@ -1402,7 +1408,7 @@ export function createFileService({
       }
       let content = chunk;
       if (offset > 0) {
-        const existing = readExistingWithinRoot(workspace.rootPath, normalizedRel);
+        const existing = readExistingWithinRoot(workspace.rootPath, normalizedRel, offset);
         if (existing.length !== offset) {
           throw new Error(`Can't write at byte ${offset}: ${normalizedRel} is ${existing.length} bytes. Send the chunk that starts there.`);
         }
