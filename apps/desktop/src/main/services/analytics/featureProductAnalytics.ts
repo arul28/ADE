@@ -61,6 +61,7 @@ export type FeatureAnalyticsAction =
   | "mcp_server_requested"
   | "mcp_server_remove_requested"
   | "notification_sent"
+  | "settled_lane_released"
   | "music_connected"
   | "spotify_connected"
   | "server_toggled"

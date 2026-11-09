@@ -721,7 +721,9 @@ assumed any separator-less token sat at the workspace root. The probe resolves
 a bare name to its real path, opens the search panel (`searchQuery` in router
 state) when several files share that name, reveals a folder in the tree instead
 of opening it as a file, and raises a toast for a path that is not inside this
-project. A probe **miss is not fatal** for a path containing `/`: the index is
+project. A bare name the index does not know walks the workspace again once, on
+that click (`refreshIndex`), because a file an agent just created is not indexed
+yet. A probe **miss is not fatal** for a path containing `/`: the index is
 stale by design (built once per workspace, refreshed only from watcher events,
 which run only while a Files or Git panel is open, and it excludes gitignored
 files and stops at 25,000), so the file an agent just created would otherwise be

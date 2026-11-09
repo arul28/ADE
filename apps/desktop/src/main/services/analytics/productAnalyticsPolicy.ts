@@ -237,6 +237,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "scope_selected",
   // A peer settle-tuple write that had to be reconciled through the chokepoint.
   "settle_remote_write_reconciled",
+  "settled_lane_released",
   // The chat auto-resume loop after a provider usage limit: whether a resume
   // was scheduled, whether one actually ran, and whether the re-arm cap stopped
   // the chat from spending another turn. Three coarse transitions and nothing

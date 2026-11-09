@@ -2838,9 +2838,10 @@ GitHub outage notices retain their existing incident handling.
 Comments, reviews, replies and the new-PR description share `PrWritingTextarea`:
 `@` suggests people who can be mentioned (`searchMentionables`, a debounced
 GraphQL read cached per repo and query) and `#` suggests issues and pull requests
-(`getRepoReferences`, cached per repo). The reviewer card searches people and
-teams the same way, so it reaches past GitHub's first page. Task-list boxes in the
+(`getRepoReferences`, cached per repo). The reviewer card searches people a
+review can be requested from (`assignableUsers`, the same action with
+`includeTeams`) and teams, so it reaches past GitHub's first page. Task-list boxes in the
 description are clickable for its author and anyone with write access: the box
 changes at once, saves go to GitHub in click order, and a failed save returns to
-GitHub's text. Boxes in code fences and HTML comments do not count, and a CRLF body
-keeps its line endings.
+GitHub's text. Boxes are found with the renderer's markdown grammar, so look-alikes
+in code and HTML blocks do not count, and a CRLF body keeps its line endings.

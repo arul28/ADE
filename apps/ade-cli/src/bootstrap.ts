@@ -211,6 +211,7 @@ import {
   captureNewLaneLaunchAnalytics,
   capturePendingInputDismissedAnalytics,
   captureSessionImportAnalytics,
+  captureFeatureUsedAnalytics,
 } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
 import { createProcessRegistryService } from "../../desktop/src/main/services/runtime/processRegistryService";
@@ -3509,6 +3510,13 @@ export async function createAdeRuntime(args: {
       listSessions: () => sessionService.list({ limit: 2000 }),
       listLaneSessions: (laneId) => sessionService.list({ laneId, limit: null, includeArchived: false }),
       notify: (notice) => chatForSettledRelease?.recordSystemNotice?.(notice),
+      onReleased: () => captureFeatureUsedAnalytics({
+        analytics: productAnalyticsService,
+        surface: "api",
+        feature: "work",
+        action: "settled_lane_released",
+        outcome: "completed",
+      }),
       ...createSettledLaneReleaseActions({
         devServers: devServerRegistry,
         scanDevServers: () => devServerWatcher?.refresh() ?? Promise.resolve(),

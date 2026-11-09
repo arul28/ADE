@@ -51,6 +51,8 @@ export type SettledLaneReleaseDeps = SettledLaneReleaseActions & {
   listLaneSessions: (laneId: string) => readonly TerminalSessionSummary[];
   /** A quiet line in one of the lane's chats. */
   notify: (args: { sessionId: string; message: string; detail?: string | null }) => void;
+  /** Something was actually let go of. */
+  onReleased?: () => void;
   logger?: Pick<Logger, "info" | "warn"> | null;
   now?: () => number;
   everyMs?: number;
@@ -118,6 +120,7 @@ export function createSettledLaneReleaseService(deps: SettledLaneReleaseDeps) {
 
     deps.logger?.info("settled_lane_release.done", { laneId, chats: chats.length, released: parts.length, incomplete, cancelled });
     if (parts.length > 0) {
+      deps.onReleased?.();
       try {
         deps.notify({
           sessionId: lastChat.id,
@@ -178,11 +181,9 @@ export function createSettledLaneReleaseService(deps: SettledLaneReleaseDeps) {
         const lastMs = Date.parse(lastSettledAt);
         if (!Number.isFinite(lastMs) || now() - lastMs < SETTLED_LANE_RELEASE_DELAY_MS) continue;
         if (state[laneId] === lastSettledAt) continue;
-        // The page above is bounded; the whole lane decides.
-        const laneChats = liveLaneChats(laneId);
-        if (!laneChats.every(isSettleTupleSettled)) continue;
+        // The page above is bounded; every step reads the whole lane first.
         const lastChat = chats[times.indexOf(lastSettledAt)]!;
-        const outcome = await releaseLane(laneId, laneChats, lastChat);
+        const outcome = await releaseLane(laneId, liveLaneChats(laneId), lastChat);
         if (outcome === "cancelled") continue;
         const passes = (passesByLane.get(laneId) ?? 0) + 1;
         if (outcome === "incomplete" && passes < MAX_RELEASE_PASSES) {

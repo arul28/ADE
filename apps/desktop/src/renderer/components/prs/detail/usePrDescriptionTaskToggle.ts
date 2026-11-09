@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../../shared/types/core";
+import { logRendererDebugEvent } from "../../../lib/debugLog";
 import { showToast } from "../../app/toast/toastStore";
 import { togglePrTaskInBody } from "../shared/prTaskList";
 
@@ -46,6 +47,13 @@ export function usePrDescriptionTaskToggle(args: {
     setPendingBody(null);
   }, [body]);
 
+  const reread = useCallback(async () => {
+    // The optimistic text stays until a reading lands, so a miss costs nothing visible.
+    await refresh().catch((error: unknown) => {
+      logRendererDebugEvent("prs.description_reread_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+  }, [refresh]);
+
   const toggleTask = useCallback((slice: string, index: number, nextChecked: boolean) => {
     if (!enabled) return;
     const base = pendingRef.current ?? bodyRef.current ?? "";
@@ -79,7 +87,7 @@ export function usePrDescriptionTaskToggle(args: {
           tone: "error",
         });
         // The clicks saved before this one did land.
-        await refresh().catch(() => undefined);
+        await reread();
         return;
       }
       inFlightRef.current -= 1;
@@ -87,9 +95,9 @@ export function usePrDescriptionTaskToggle(args: {
       // Everything has landed: the host's next body replaces the optimistic
       // copy, so a later edit elsewhere can show through.
       awaitingHostRef.current = true;
-      await refresh().catch(() => undefined);
+      await reread();
     });
-  }, [enabled, pin, prId, refresh]);
+  }, [enabled, pin, prId, reread]);
 
   return { body: pendingBody ?? body, toggleTask };
 }
