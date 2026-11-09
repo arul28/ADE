@@ -815,7 +815,7 @@ function CliSessionSurface({
           isVisible={pageActive && terminalVisible}
           runtimePin={runtimePin}
           toolType={session.toolType}
-          imagePasteMode="runtime-attachment"
+          imagePasteMode="agent-cli"
           className="h-full w-full"
         />
       </div>

@@ -4,8 +4,10 @@ import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, 
 import { useNavigate } from "react-router-dom";
 import {
   projectStateKeyForBinding,
+  selectActiveProjectStateKey,
   useAppStore,
 } from "../../state/appStore";
+import { trackPendingLaneCreate } from "../../lib/pendingLaneCreates";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { selectOtherMachineBranchStates, useLanesForPin } from "../../state/crossMachineLanes";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
@@ -302,6 +304,8 @@ export function LaneGitActionsPane({
   const lanes = useAppStore((s) => s.lanes);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  // This tab's key for the "Creating…" row; the global store can name another tab by then.
+  const tabScopeKey = useAppStore(selectActiveProjectStateKey);
   // Cross-machine lane union, produced by `crossMachineLanes`. Feeds the push
   // divergence guard below; the slice is reference-stable while unchanged.
   const crossMachineLanesByMachineId = useAppStore((s) => s.crossMachineLanesByMachineId ?? EMPTY_CROSS_MACHINE_LANES);
@@ -1027,9 +1031,13 @@ export function LaneGitActionsPane({
     });
     try {
       // Made on this lane's machine: the copy reads this lane's folder.
-      const created = await window.ade.lanes.create(
-        { name: name.trim(), start: { from: "branch", branch, on: "uncommitted" } },
-        pin,
+      // The lane lists show a "Creating…" row while this runs.
+      const created = await trackPendingLaneCreate(
+        { name: name.trim(), scopeKey: tabScopeKey },
+        () => window.ade.lanes.create(
+          { name: name.trim(), start: { from: "branch", branch, on: "uncommitted" } },
+          pin,
+        ),
       );
       // The lane is made even when the copy did not apply (or a fallback was
       // taken); say so instead of claiming the changes came along.

@@ -49,7 +49,6 @@ Renderer surfaces:
 
 | Component | Role |
 |-----------|------|
-| `renderer/components/lanes/LaneEnvInitProgress.tsx` | Per-step env init progress inside `CreateLaneDialog` |
 | `renderer/components/settings/storage/StorageDiagnostics.tsx` | Diagnostics view, inside Project → Storage & cleanup → Space |
 | `renderer/components/settings/LaneTemplatesSection.tsx` | Template management |
 | `renderer/components/settings/NewLaneSettingsSection.tsx` | Start defaults and lane templates. Cleanup policy lives in `StorageSection.tsx`. |
@@ -81,16 +80,17 @@ steps in order:
 Each step is reported through `LaneEnvInitProgress` IPC events with
 status (`pending | running | completed | failed | skipped`) and a
 duration. `skipped` carries a reason rather than a fault — it is what a
-cancelled run marks its remaining steps with — so both the desktop
-(`LaneEnvInitProgress.tsx`) and iOS (`LaneEnvInitProgressView.swift`)
-renderers show a `skipped` step's message in muted text instead of the
-red used for `failed`.
-`CreateLaneDialogHost` decides how that progress is surfaced. In the
-Lanes tab it keeps `CreateLaneDialog` open and renders
-`LaneEnvInitProgress` inline so the user can watch or retry setup in the
-modal. In the Work tab it closes as soon as the lane row exists and runs
-setup detached; failures create a sticky toast with a Retry action so
-the session sidebar does not need to stay mounted.
+cancelled run marks its remaining steps with — so the iOS renderer
+(`LaneEnvInitProgressView.swift`) shows a `skipped` step's message in
+muted text instead of the red used for `failed`.
+On desktop the create dialog does not wait for setup. `CreateLaneDialogHost`
+closes the dialog on submit and runs the create and the setup in the
+background (`runDetachedLaneCreate`), on the machine the user chose. The
+Lanes sidebar shows the progress from `renderer/lib/pendingLaneCreates.ts`: a
+"Creating…" row with Stop until the lane exists, then "Setting up…" on
+the lane's own row in the Lanes tab. A failed setup leaves a sticky toast
+that names the failed step and has a Retry action; a failed create leaves
+one with "Try again".
 
 A lane created by a new-lane chat launch runs its setup inside the
 launch instead: the brain's `chatLaunchService` calls

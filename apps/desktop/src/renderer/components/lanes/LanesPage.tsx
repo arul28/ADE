@@ -25,7 +25,9 @@ import {
   type CreatingIssuePlaceholder,
 } from "../../lib/launchedLanesHighlight";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
-import { CreateLaneDialogHost, type CreateLanePrefill } from "./CreateLaneDialogHost";
+import { CreateLaneDialogHost, type CreateLanePrefill, type LaneCreatedHandler } from "./CreateLaneDialogHost";
+import { laneCreatedToastId, stopPendingLaneCreate, usePendingLaneCreates } from "../../lib/pendingLaneCreates";
+import { useActiveRef } from "../../lib/useActiveRef";
 import {
   ManageLaneDialog,
   EMPTY_LANE_DELETE_SELECTION,
@@ -344,13 +346,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [manageInitialTab, setManageInitialTab] = useState<ManageLaneTab | null>(null);
   // Lanes the Behind group's "Rebase all" confirm step lists.
   const [bulkCatchUpLaneIds, setBulkCatchUpLaneIds] = useState<string[] | null>(null);
-  // Create-lane dialog is hosted by CreateLaneDialogHost, which owns the form,
-  // submit and env-setup state. The page tracks only whether it is open, the
-  // prefill, and (via a ref) whether a create is in flight so a forced close
-  // from the dialog bus can be blocked.
+  // Create-lane dialog is hosted by CreateLaneDialogHost, which owns the form
+  // and the submit. The page tracks only whether it is open and the prefill.
+  // The create itself runs in the background once submitted.
   const [createOpen, setCreateOpen] = useState(false);
   const [createPrefill, setCreatePrefill] = useState<CreateLanePrefill | null>(null);
-  const createBusyRef = useRef(false);
+  const pendingLaneCreates = usePendingLaneCreates(activeProjectStateKey);
+  const pageActiveRef = useActiveRef(active);
   const canCreateLane = Boolean(activeProjectRoot);
   const [deleteSelection, setDeleteSelection] = useState<LaneDeleteSelection>(EMPTY_LANE_DELETE_SELECTION);
   const [deleteForce, setDeleteForce] = useState(false);
@@ -1843,21 +1845,59 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setCreateOpen(open);
   }, []);
 
-  // Blocked by the dialog bus while a create/setup is in flight; the host owns
-  // the busy state and mirrors it into the ref.
   const handleCreateDialogBusClose = useCallback(() => {
-    if (createBusyRef.current) return;
     setCreateOpen(false);
   }, []);
 
-  // After the lane record exists and the list is refreshed, select the new
-  // lane (the host keeps streaming env-setup progress in the dialog).
-  const handleLaneCreated = useCallback((lane: LaneSummary, machine?: { machineId: string; pin: unknown }) => {
-    // A lane created on another machine is selected through its machine, so
-    // the bare id cannot pick a same-id lane on this tab's machine.
-    const machineParam = machine?.pin ? `&machineId=${encodeURIComponent(machine.machineId)}` : "";
-    navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}${machineParam}`);
-  }, [navigate]);
+  // The create runs in the background and can end long after the user moved
+  // on. Select the new lane only when they are still on this page with the
+  // selection they had at submit; otherwise it waits in the list.
+  const handleLaneCreateStarted = useCallback((): LaneCreatedHandler => {
+    const selectionAtStart = selectedLaneIdRef.current;
+    return (lane, machine) => {
+      // A lane created on another machine is selected through its machine, so
+      // the bare id cannot pick a same-id lane on this tab's machine.
+      const machineParam = machine.pin ? `&machineId=${encodeURIComponent(machine.machineId)}` : "";
+      const lanePath = `/lanes?laneId=${encodeURIComponent(lane.id)}${machineParam}`;
+      if (pageActiveRef.current && selectedLaneIdRef.current === selectionAtStart) {
+        navigate(lanePath);
+        return;
+      }
+      // The "Lane created" toast comes from this tab's own machine only; a
+      // lane made on another machine would otherwise finish without a word.
+      if (!machine.pin) return;
+      showToast({
+        id: laneCreatedToastId(lane.id),
+        title: lane.name,
+        message: "Lane created",
+        replayMask: { title: true },
+        tone: "success",
+        colorDot: lane.color ?? undefined,
+        actions: [{ label: "View", onClick: () => navigate(lanePath) }],
+      });
+    };
+  }, [navigate, pageActiveRef]);
+
+  // Rows of lanes whose setup still runs, by row key (the lane's id and machine).
+  const settingUpLaneIds = useMemo(() => {
+    if (creatingLaneIds.size === 0 && pendingLaneCreates.length === 0) return creatingLaneIds;
+    const next = new Set(creatingLaneIds);
+    for (const entry of pendingLaneCreates) {
+      if (entry.phase !== "setup" || !entry.laneId) continue;
+      next.add(entry.machineId ? foreignLaneKey(entry.machineId, entry.laneId) : entry.laneId);
+    }
+    return next;
+  }, [creatingLaneIds, pendingLaneCreates]);
+  // The placeholder stays until the lane's own row is in the list: the list
+  // is re-read after the create ends, and for another machine that takes a while.
+  const pendingCreatingLanes = useMemo(
+    () => pendingLaneCreates.filter((entry) => (
+      entry.phase === "creating"
+      || !entry.laneId
+      || !lanesById.has(entry.machineId ? foreignLaneKey(entry.machineId, entry.laneId) : entry.laneId)
+    )),
+    [lanesById, pendingLaneCreates],
+  );
 
   const openManageDialog = useCallback((laneId: string) => {
     if (deletingLaneIds.has(laneId)) return;
@@ -2096,8 +2136,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       lanePrTagsByLaneId={lanePrTagsByLaneId}
       deleteProgressByLaneId={deleteProgressByLaneId}
       onStopDelete={handleStopDelete}
-      creatingLaneIds={creatingLaneIds}
+      settingUpLaneIds={settingUpLaneIds}
       pendingCreatingIssues={pendingCreatingIssues}
+      pendingCreatingLanes={pendingCreatingLanes}
+      onStopCreate={stopPendingLaneCreate}
       pulsingLaneId={pulsingLaneId}
       onSelectRow={handleRowSelect}
       onStepSelection={stepLaneSelection}
@@ -2365,10 +2407,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       <CreateLaneDialogHost
         open={createOpen}
         onOpenChange={handleCreateDialogOpenChange}
-        behavior="stay-open-setup"
+        behavior="create"
         prefill={createPrefill}
-        onCreated={handleLaneCreated}
-        onBusyChange={(busy) => { createBusyRef.current = busy; }}
+        onCreateStarted={handleLaneCreateStarted}
         onOpenLinearSettings={() => navigate(settingsRouteFor("integrations.linear"))}
         onNavigateToTemplates={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
       />

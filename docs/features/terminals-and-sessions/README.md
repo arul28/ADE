@@ -1257,11 +1257,7 @@ Renderer surfaces:
   progress is dimmed and
   interaction-blocked: its lane-group header shows the deletion status, and
   every session card for that lane is disabled in lane, status, and time
-  organization modes. The bottom Add Lane button opens
-  `CreateLaneDialogHost` in `close-on-create` mode, so a new lane can
-  be created from Work without navigating away; once the lane record
-  exists, env setup continues detached and failures surface as a sticky
-  retry toast. It also builds parent-title and live-child indexes from the
+  organization modes. It also builds parent-title and live-child indexes from the
   unfiltered session list, so a lineage tooltip can name a parent hidden by
   the current lane/search filter. In Lane organization, the primary lane stays
   first and the remaining rows are ordered by the Work-only tiers pinned,
@@ -1546,8 +1542,14 @@ Renderer surfaces:
   back to `terminal.preview`. Work-tracked agent CLI terminals paste clipboard
   images by saving the bytes as chat temp attachments on the session's machine
   (`agentChat.saveTempAttachment` with the session's `runtimePin`) and
-  bracketed-pasting a short path/type stub into the PTY, while standalone
-  terminals keep the native clipboard-image shortcut behavior. On a paired
+  bracketed-pasting a short path/type stub into the PTY. A standalone
+  terminal (a plain shell) on this computer keeps the native shortcut: it
+  gets `^V` and its program reads this machine's clipboard. A standalone
+  terminal whose session runs on another machine (a pinned session, a tab
+  bound to a remote machine, the web client) cannot use `^V`, because the
+  program would read that machine's clipboard and find no image; the image
+  is saved on the session's machine the same way and its path alone is
+  pasted, quoted for a shell and with no newline. On a paired
   machine that takes the streamed upload, preload sends the bytes through that
   upload, not the runtime command (see
   [Composer and UI](../chat/composer-and-ui.md), "Remote hosts"). A failed save

@@ -192,7 +192,6 @@ export function CreateLaneFromPrBranchDialog({
   item,
   preflight,
   loading,
-  busy,
   error,
   onCancel,
   onConfirm,
@@ -203,7 +202,6 @@ export function CreateLaneFromPrBranchDialog({
   machineName?: string | null;
   preflight: CreateLaneFromPrBranchPreflight | null;
   loading: boolean;
-  busy: boolean;
   error: string | null;
   onCancel: () => void;
   /** Receives the (possibly edited) lane name the user wants to create. */
@@ -229,12 +227,12 @@ export function CreateLaneFromPrBranchDialog({
   // field as soon as it becomes editable, so keyboard and screen-reader users
   // land on the one control that takes input.
   useEffect(() => {
-    if (loading || busy) return;
+    if (loading) return;
     nameInputRef.current?.focus();
-  }, [loading, busy]);
+  }, [loading]);
 
   const blockingConflict = preflightBlockingConflict(preflight);
-  const canConfirm = Boolean(preflight?.canCreate) && !loading && !busy && laneName.trim().length > 0;
+  const canConfirm = Boolean(preflight?.canCreate) && !loading && laneName.trim().length > 0;
   const sourceBranch = preflightRemoteBranch(preflight, item);
   const importRef = preflightImportRef(preflight);
   const rows = [
@@ -254,24 +252,22 @@ export function CreateLaneFromPrBranchDialog({
   return (
     <Dialog
       open
-      onOpenChange={(open) => { if (!open && !busy) onCancel(); }}
+      onOpenChange={(open) => { if (!open) onCancel(); }}
       title="Create lane from PR branch"
       description="Check this pull request's branch out into a local lane. Give the lane a name you'll recognize in the Lanes tab."
       size="md"
-      dismissible={!busy}
       // Only point the primitive's open-time autofocus at the field once it is
       // enabled. While the preflight runs the field is disabled, so a focus
       // call on it is a no-op that would leave focus behind the modal; the
       // effect above owns focus and lands it the moment the field enables.
-      initialFocusRef={loading || busy ? undefined : nameInputRef}
+      initialFocusRef={loading ? undefined : nameInputRef}
       testId="create-lane-from-pr-dialog"
       actions={[
-        { label: "Cancel", variant: "secondary", onClick: onCancel, disabled: busy },
+        { label: "Cancel", variant: "secondary", onClick: onCancel },
         {
-          label: busy ? "Creating…" : "Create lane",
+          label: "Create lane",
           variant: "solid",
           icon: <GitBranch size={14} />,
-          busy,
           disabled: !canConfirm,
           onClick: handleSubmit,
         },
@@ -284,7 +280,7 @@ export function CreateLaneFromPrBranchDialog({
             ref={nameInputRef}
             type="text"
             value={laneName}
-            disabled={loading || busy}
+            disabled={loading}
             aria-label="Lane name"
             placeholder="New lane"
             onChange={(event) => setLaneName(event.target.value)}
@@ -305,7 +301,7 @@ export function CreateLaneFromPrBranchDialog({
               fontFamily: SANS_FONT,
               fontSize: 12.5,
               outline: "none",
-              opacity: loading || busy ? 0.6 : 1,
+              opacity: loading ? 0.6 : 1,
             }}
           />
         </label>

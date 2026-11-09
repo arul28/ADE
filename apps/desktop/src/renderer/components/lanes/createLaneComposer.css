@@ -482,18 +482,3 @@
 .cl-swatch { flex: none; width: 10px; height: 10px; margin: 0 7px; border-radius: 999px; }
 
 .cl-colors { padding: 6px; }
-
-/* Setup progress, shown once the lane is being created. */
-.cl-setup {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  border-radius: 10px;
-  background: var(--kit-hover);
-}
-.cl-setup-title { font-size: 12.5px; font-weight: 500; }
-.cl-step { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; }
-.cl-step > svg { flex: none; margin-top: 1px; }
-.cl-step[data-state="pending"] { color: var(--kit-text-3); }
-.cl-step-detail { font-size: 11px; color: var(--kit-text-3); }

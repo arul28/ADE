@@ -727,6 +727,7 @@ export function GitHubTab({
     result: CreateLaneFromPrBranchResult,
     createLaneItem: GitHubPrListItem,
     createProjectRoot: string | null,
+    stillHere: () => boolean,
   ) => {
     const mappedPrId = createLaneMappedPrId(result);
     const mappedLaneId = createLaneMappedLaneId(result);
@@ -738,6 +739,10 @@ export function GitHubTab({
             laneName: createLaneMappedLaneName(result),
           })
         : current);
+    }
+    // The create ran in the background. A user who left this page keeps their
+    // place: selecting the PR rewrites the route to `/prs`.
+    if (mappedPrId && stillHere()) {
       setSelectedItemId(createLaneItem.id);
       setSelectedItemIdsByFilter((prev) => ({ ...prev, [filterRef.current]: createLaneItem.id }));
       onSelectPr(mappedPrId, {
@@ -759,7 +764,7 @@ export function GitHubTab({
             ),
             lanesLoading: false,
           }));
-          selectLane(result.lane.id);
+          if (stillHere()) selectLane(result.lane.id);
         })
       : Promise.resolve();
     await Promise.all([
@@ -778,7 +783,7 @@ export function GitHubTab({
     // new lane open, where its new-chat button and git pane are. Skip it when
     // the active project changed during creation: the lane belongs to the
     // original project, and its id would resolve to nothing in the new one.
-    if (createdLaneId) {
+    if (createdLaneId && stillHere()) {
       const currentProjectRoot = selectActiveProjectRoot(appStore.getState());
       if (!createProjectRoot || currentProjectRoot === createProjectRoot) {
         navigate(openLaneInLanesTabPath(createdLaneId));
@@ -788,6 +793,7 @@ export function GitHubTab({
 
   const { open: handleOpenCreateLaneFromPrBranch, element: createLaneFromPrBranchElement } = useCreateLaneFromPrBranch({
     machineIndex,
+    active,
     onCreatedOnTabMachine: handleLaneCreatedOnTabMachine,
   });
 
