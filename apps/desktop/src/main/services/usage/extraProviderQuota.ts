@@ -528,7 +528,8 @@ export async function pollCursorQuota(
       return {
         windows: [],
         errors: ["cursor: limits are only readable after signing in to the Cursor app"],
-        errorKind: "unavailable",
+        errorKind: "auth",
+        authMessage: "Sign in to the Cursor app to see Cursor limits",
         source: "http",
       };
     }

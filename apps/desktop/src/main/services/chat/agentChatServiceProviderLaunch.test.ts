@@ -520,6 +520,10 @@ describe("Pi follows the chat's effort and names another provider's route", () =
 
     pooled.bridge.onEvent({ type: "compaction_end" });
     await vi.waitFor(() => expect(pooled.sendPrompt).toHaveBeenCalledTimes(1));
+    // The queued row becomes the delivered one; a second copy would stay queued beside it.
+    const rows = events.flatMap(({ event }) => (event.type === "user_message" && event.text === "after compaction" ? [event] : []));
+    expect(new Set(rows.map((row) => row.steerId)).size).toBe(1);
+    expect(rows.at(-1)?.deliveryState).toBe("delivered");
     service.forceDisposeAll();
   });
 

@@ -38695,7 +38695,7 @@ export function createAgentChatService(args: {
 
   /** Starts the next queued message once nothing holds Pi back. */
   const deliverPiQueuedSteers = async (managed: ManagedChatSession, runtime: PiRuntime): Promise<void> => {
-    if (managed.closed || managed.runtime !== runtime || runtime.busy || !runtime.pendingSteers.length) return;
+    if (managed.closed || managed.runtime !== runtime || runtime.busy || runtime.activeCompactionId || !runtime.pendingSteers.length) return;
     await deliverNextQueuedSteer(managed, runtime).catch((error) => {
       logger.warn("agent_chat.pi_deliver_queued_steer_failed", {
         sessionId: managed.session.id,
@@ -38715,6 +38715,8 @@ export function createAgentChatService(args: {
       resolvedAttachments?: ResolvedAgentChatFileRef[];
       metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
+      /** The queued row this turn delivers, so it does not get a second row. */
+      steerId?: string;
       onDispatched?: () => void;
       onBackendDispatched?: () => void;
     },
@@ -38783,6 +38785,7 @@ export function createAgentChatService(args: {
       contextAttachments: args.contextAttachments ?? [],
       metadata: args.metadata,
       turnId,
+      ...(args.steerId ? { steerId: args.steerId } : {}),
       laneDirectiveKey: args.laneDirectiveKey,
       onDispatched: args.onDispatched,
     });
@@ -48536,6 +48539,7 @@ export function createAgentChatService(args: {
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
         metadata: nextSteer.metadata,
+        steerId: nextSteer.steerId,
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
     } else {
