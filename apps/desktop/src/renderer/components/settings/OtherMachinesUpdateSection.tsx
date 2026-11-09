@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowsClockwise } from "@phosphor-icons/react";
 import type { RemoteRuntimeConnectionSnapshot } from "../../../shared/types";
+import { openExternalUrl } from "../../lib/openExternal";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import {
   canUpdateOtherMachines,
@@ -8,6 +9,7 @@ import {
   requestMachineUpdates,
   useKnownAdeVersions,
   useMachineUpdates,
+  machineUpdateIsManual,
 } from "../remoteTargets/machineUpdates";
 import {
   connectedMachinesFromSnapshot,
@@ -85,8 +87,9 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
   // here is not called behind.
   const known = useKnownAdeVersions();
   const behind = machinesBehindOnTheirTrack(machines, known);
+  const automaticBehind = behind.filter((machine) => !machineUpdateIsManual(machine, machineUpdates.attempts[machine.id]));
   const targetById = new Map(behind.map((machine) => [machine.id, machine.targetVersion]));
-  const anyBusy = behind.some((machine) => isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
+  const anyBusy = automaticBehind.some((machine) => isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
   // Name tracks once Beta is anywhere in the picture: here, or on a machine.
   const showTracks = updateSnapshot.track?.running === "beta"
     || updateSnapshot.track?.selected === "beta"
@@ -102,15 +105,15 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
       tone="green"
       title="Update other machines"
       hint="With the ADE app open there, the app and its background service update together; otherwise only the service does."
-      actions={behind.length > 1 ? (
+      actions={automaticBehind.length > 1 ? (
         <button
           type="button"
           className="ade-modern-btn"
           disabled={anyBusy}
-          onClick={() => void requestMachineUpdates(behind)}
+          onClick={() => void requestMachineUpdates(automaticBehind)}
         >
           <ArrowsClockwise size={13} weight="bold" />
-          {`Update all ${behind.length}`}
+          {`Update all ${automaticBehind.length}`}
         </button>
       ) : undefined}
     >
@@ -136,6 +139,8 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
           const checking = machineUpdates.checkingIds.has(machine.id);
           const track = machineUpdateTrack(machine);
           const targetVersion = targetById.get(machine.id) ?? null;
+          const manual = machineUpdateIsManual(machine, attempt);
+          const downloadUrl = machine.downloadUrl ?? attempt?.downloadUrl;
           // Up to date only when this computer knows a build on that track to
           // compare with; otherwise the version stands alone.
           const knowsTrack = newestKnownVersionOnTrack(known, track) != null;
@@ -169,11 +174,11 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
                 <button
                   type="button"
                   className="ade-modern-btn"
-                  disabled={updating || checking}
-                  onClick={() => void requestMachineUpdates([{ ...machine, targetVersion }])}
+                  disabled={updating || checking || (manual && !downloadUrl)}
+                  onClick={() => manual ? openExternalUrl(downloadUrl) : void requestMachineUpdates([{ ...machine, targetVersion }])}
                 >
                   <ArrowsClockwise size={13} weight="bold" className={updating ? "animate-spin" : undefined} />
-                  {updating ? "Updating…" : checking ? "Checking…" : "Update & restart"}
+                  {manual ? "Download update" : updating ? "Updating…" : checking ? "Checking…" : "Update & restart"}
                 </button>
               ) : machine.version && knowsTrack ? (
                 <span className="kit-tag" data-tone="ok">Up to date</span>

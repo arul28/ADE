@@ -99,7 +99,7 @@ import {
   createProjectHealthTurnStateReader,
 } from "./services/projects/projectHealth/projectHealthService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
-import { createAgentChatService, listMachineProviderAccountChatLoad } from "../../desktop/src/main/services/chat/agentChatService";
+import { createAgentChatService, flushAllQueuedTranscriptWrites, listMachineProviderAccountChatLoad } from "../../desktop/src/main/services/chat/agentChatService";
 import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
 import { borrowSharedMachinePowerSource } from "./services/power/sharedMachinePowerMonitor";
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
@@ -162,7 +162,7 @@ import {
   joinAdeAgentSkillRoots,
   splitAdeAgentSkillRoots,
 } from "../../desktop/src/shared/agentSkillRoots";
-import { adePromptAgentSkillRoots } from "../../desktop/src/main/services/skills/agentSkillRuntimeService";
+import { adePromptAgentSkillRoots, withoutWithheldAgentSkillsEnv } from "../../desktop/src/main/services/skills/agentSkillRuntimeService";
 import {
   attachSharedUsageTrackingScope,
   createUsageTrackingService,
@@ -299,7 +299,11 @@ import {
   resolveMachineEndpointNames,
   resolveReachableMachineDesktopBridgeSocketPath,
 } from "./services/projects/machineLayout";
-import { sha256Hex } from "../../desktop/src/main/services/shared/utils";
+import { redactSecrets, sha256Hex } from "../../desktop/src/main/services/shared/utils";
+import { createCloudChatUploader } from "./services/cloudChats/cloudChatUploader";
+import { isCloudMachine } from "./services/power/cloudKeepAwake";
+import { normalizeGitRemoteIdentity } from "../../desktop/src/shared/crossMachineHandoff";
+import { readGitOriginUrl } from "../../desktop/src/main/services/projects/recentProjectSummary";
 import { BRAIN_HEARTBEAT_STALE_MS, readBrainHeartbeat, servesMachineRuntimeEndpoint } from "./services/runtime/brainHeartbeat";
 import { readExistingOsBoundKeyMaterialAsync } from "./services/credentials/osBoundKeyMaterial";
 import { createBrainLogger } from "./services/runtime/brainLogger";
@@ -932,6 +936,8 @@ export function createHeadlessAdeCliAgentEnv(
   next[ADE_AGENT_SKILLS_DIRS_ENV] = joinAdeAgentSkillRoots(adePromptAgentSkillRoots({
     env: next,
     cwd: options.cwd ?? process.cwd(),
+    // Filtered per launch: this variable outlives any one access answer.
+    includeWithheld: true,
   }));
   if (inferredSkillRoots.bundledRoot) {
     next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV] = inferredSkillRoots.bundledRoot;
@@ -1302,6 +1308,8 @@ export async function createAdeRuntime(args: {
     const searchServiceHolder: { current: SearchService | null } = { current: null };
     /** Frees a deleted or archived lane's browser tabs; set once the browser surface exists. */
     const releaseLaneBrowserTabsHolder: { current: ((laneId: string) => Promise<void>) | null } = { current: null };
+    // Built after the chat service; a lane's delete reaches it through here.
+    const cloudChatUploaderRef: { current: ReturnType<typeof createCloudChatUploader> | null } = { current: null };
     let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
     let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
     let jiraServiceRef: ReturnType<typeof createJiraService> | null = null;
@@ -1351,6 +1359,7 @@ export async function createAdeRuntime(args: {
         if (event.laneId) searchServiceHolder.current?.notifyLaneActivity(event.laneId);
         // Its chats are gone, so nothing would ever let go of its tabs: free
         // them in every browser, and close none.
+        if (event.type === "lane-deleted" && event.laneId) cloudChatUploaderRef.current?.noteLaneDeleted(event.laneId);
         if ((event.type === "lane-archived" || event.type === "lane-deleted") && event.laneId) {
           void releaseLaneBrowserTabsHolder.current?.(event.laneId).catch((error: unknown) => {
             logger.warn("built_in_browser.release_lane_failed", {
@@ -1802,7 +1811,7 @@ export async function createAdeRuntime(args: {
           });
         });
       },
-      getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
+      getAdeCliAgentEnv: (baseEnv) => withoutWithheldAgentSkillsEnv(createHeadlessAdeCliAgentEnv(baseEnv)),
       releaseChatBrowser,
       appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
       terminalShellPreferences: terminalShellPreferenceStoreFor(resolveMachineAdeLayout().adeDir, logger),
@@ -2763,6 +2772,46 @@ export async function createAdeRuntime(args: {
     const modelRouter = sharedModelRouter.service;
 
     let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
+    // Saved chats: a cloud computer only. Fed by the chat service's events below.
+    const cloudChatUploader = isCloudMachine() && resolvedArgs.chatRuntime === "agent"
+      ? createCloudChatUploader({
+          adeDir: paths.adeDir,
+          chatTranscriptsDir: paths.chatTranscriptsDir,
+          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }) || null,
+          getAccessToken: () => getAccountAccessToken(),
+          getMachineKey: () => {
+            try {
+              return cloudRelayStore.getMachineIdentity().machineKey;
+            } catch {
+              return null;
+            }
+          },
+          readChatRow: async (sessionId) => {
+            const row = sessionService.get(sessionId);
+            if (!row) return null;
+            const summary = await agentChatService?.getSessionSummary(sessionId).catch(() => null);
+            const projectKey = normalizeGitRemoteIdentity(readGitOriginUrl(projectRoot));
+            return {
+              title: redactSecrets(row.title ?? row.goal ?? ""),
+              laneId: row.laneId ?? null,
+              laneName: redactSecrets(row.laneName ?? ""),
+              status: summary?.status ?? row.status ?? null,
+              toolType: row.toolType ?? null,
+              provider: summary?.provider ?? null,
+              model: summary?.model ?? null,
+              projectKey,
+              projectId,
+              projectRoot,
+              lastActivityAt: row.lastActivityAt ?? row.startedAt ?? null,
+            };
+          },
+          flushTranscript: () => flushAllQueuedTranscriptWrites(),
+          redactSecrets,
+          logger,
+        })
+      : null;
+    cloudChatUploaderRef.current = cloudChatUploader;
+    teardown.push(() => cloudChatUploader?.dispose());
     // Built after automations; chat events reach it through this late binding.
     let linearAgentRuntime: LinearAgentRuntime | null = null;
     if (resolvedArgs.chatRuntime === "agent") {
@@ -2917,14 +2966,16 @@ export async function createAdeRuntime(args: {
         },
         logger,
         appVersion: "ade-cli",
-        getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
+        getAdeCliAgentEnv: (baseEnv) => withoutWithheldAgentSkillsEnv(createHeadlessAdeCliAgentEnv(baseEnv)),
         getLocalGitHubToken: () => headlessLinearServices.githubService.getGitTransportTokenOrThrowAsync(),
         onLinearIssueChatLinked: publishLinearChatLink,
         onEvent: (event) => {
           feedDemoTrackFromChatEvent(event);
           linearAgentRuntime?.onChatEvent(event);
           pushEvent("runtime", event as unknown as Record<string, unknown>);
+          if (event.event.type === "done") cloudChatUploader?.noteTurnEnded(event.sessionId);
         },
+        onChatDeleted: (sessionId) => cloudChatUploader?.noteChatDeleted(sessionId),
         onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
           analytics: productAnalyticsService,
           projectId,

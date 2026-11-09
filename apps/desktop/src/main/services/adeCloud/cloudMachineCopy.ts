@@ -24,8 +24,8 @@
 
 import { randomUUID } from "node:crypto";
 import {
-  cloudCapReachedMessage,
   cloudInstanceType,
+  cloudKindLabel,
   cloudShape,
   cloudShapeById,
   cloudShapeFor,
@@ -34,7 +34,6 @@ import {
   type CloudCreateProgress,
   type CloudMachineKind,
   type CloudShapeId,
-  type CloudSpending,
 } from "../../../shared/adeCloud";
 import { CLOUD_MADE_BY_CHAT_METADATA } from "../../../shared/adeCloud";
 import { CLOUD_READY_METADATA } from "../../../shared/cloudReady";
@@ -50,9 +49,9 @@ import {
 import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
 import { wakeThroughTransition } from "./cloudReadyClaim";
+import { cloudHoldCommand, cloudReleaseHoldCommand } from "./cloudSleep";
 
 export type CloudCopyDeps = CloudMachineCreatorDeps & {
-  spending?: () => Promise<CloudSpending | null>;
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
 };
 
@@ -63,6 +62,9 @@ const POLL_MS = 3_000;
 const MOVE_TRANSFER_TIMEOUT_MS = 40 * 60_000;
 /** The port the old machine serves its home folder on, once, behind a short-lived signed URL. */
 const MOVE_SERVE_PORT = 7338;
+/** Holds on sleep (`cloudHoldCommand`); each expires on its own if ADE quits mid-way. */
+const COPY_HOLD_MS = 20 * 60_000;
+const MOVE_HOLD_MS = 45 * 60_000;
 
 /** Metadata a copy must not carry: it is a new machine, not the source's ready machine or row. */
 const NOT_COPIED_METADATA = new Set<string>([
@@ -78,11 +80,6 @@ function copyMetadata(source: CloudInstance, requestId: string, extra: Record<st
     if (!NOT_COPIED_METADATA.has(key)) metadata[key] = value;
   }
   return { ...metadata, ...extra, created_by: "ade", ade_request_id: requestId };
-}
-
-async function assertUnderCap(deps: Pick<CloudCopyDeps, "spending">): Promise<void> {
-  const month = await deps.spending?.().catch(() => null) ?? null;
-  if (month?.capReached) throw new Error(cloudCapReachedMessage(month));
 }
 
 async function waitForRunning(client: CloudProvider, instanceId: string, signal: AbortSignal | undefined, sleep: (ms: number) => Promise<void>): Promise<CloudInstance> {
@@ -116,10 +113,9 @@ export async function copyCloudMachine(
   const directory = deps.directoryBaseUrl();
   if (!directory) throw new Error("ADE's account service isn't configured on this computer, so it can't sign the copy in.");
   if (!(await deps.getAccountToken())) throw new Error("Sign in to ADE on this computer first. The copy joins your account.");
-  await assertUnderCap(deps);
   const source = await client.getInstance(args.instanceId);
   if (!["running", "sleeping", "stopped"].includes(source.status)) {
-    throw new Error(`The box is ${source.status}; ADE Cloud copies a box that is running, asleep or stopped.`);
+    throw new Error(`The computer is ${source.status}; ADE Cloud copies a computer that is running, asleep or stopped.`);
   }
   const shape = args.shape ? cloudShape(args.shape) : null;
   if (args.shape && !shape) throw new Error("Pick a size.");
@@ -131,12 +127,17 @@ export async function copyCloudMachine(
     throw new Error("ADE couldn't save a note of the copy it's about to make, so it didn't make one. Check that ADE can write to its folder, then try again.");
   }
   progress("creating", `Copying ${source.name ?? source.id} on ADE Cloud…`);
+  // A running source must not fall asleep mid-copy.
+  if (source.status === "running") {
+    await client.exec(source.id, cloudHoldCommand("copy", COPY_HOLD_MS), { timeoutMs: 30_000 })
+      .catch((error: unknown) => logger.warn?.("cloud.machine_copy_hold_failed", { error: getErrorMessage(error) }));
+  }
   const forkStarted = Date.now();
   let fork: CloudInstance;
   try {
     fork = await client.forkInstance(source.id, {
       name,
-      ...(shape ? { resources: { cpu: shape.cpu, memory: shape.memoryGb, disk: Math.max(shape.diskGb, source.resources?.disk ?? 0) } } : {}),
+      ...(shape ? { resources: { cpu: shape.cpu, memory: shape.memoryGb } } : {}),
       metadata: copyMetadata(source, requestId, {
         ade_copied_from: source.id,
         ...(args.madeByChat ? { [CLOUD_MADE_BY_CHAT_METADATA]: args.madeByChat } : {}),
@@ -162,8 +163,12 @@ export async function copyCloudMachine(
   const forkMs = Date.now() - forkStarted;
   logger.info?.("cloud.machine_copied", { sourceId: source.id, instanceId: fork.id, forkMs });
   // The source's sign-in files came with the disk; the copy signs in fresh.
-  await client.exec(fork.id, 'rm -f "$ADE_HOME/logs/cloud-sign-in.log" "$ADE_HOME/logs/cloud-sign-in.pid"', { timeoutMs: 60_000 })
+  await client.exec(fork.id, `rm -f "$ADE_HOME/logs/cloud-sign-in.log" "$ADE_HOME/logs/cloud-sign-in.pid"; ${cloudReleaseHoldCommand("copy")}`, { timeoutMs: 60_000 })
     .catch((error: unknown) => logger.warn?.("cloud.machine_copy_cleanup_failed", { instanceId: fork.id, error: getErrorMessage(error) }));
+  if (source.status === "running") {
+    await client.exec(source.id, cloudReleaseHoldCommand("copy"), { timeoutMs: 30_000 })
+      .catch((error: unknown) => logger.warn?.("cloud.machine_copy_release_failed", { error: getErrorMessage(error) }));
+  }
   // The copy came up signed out (the copied-home guard): sign it in like a new box.
   const result = await bringCloudBoxIntoAde(deps, { client, instance: fork, name, requestId, signal: options.signal, progress, directory });
   return { ...result, copiedFrom: source.id, forkMs };
@@ -239,21 +244,20 @@ export async function moveCloudMachine(
   onProgress: (progress: CloudCreateProgress) => void,
   options: { signal?: AbortSignal } = {},
 ): Promise<CloudMoveResult> {
-  if (!isCloudMachineKind(args.to)) throw new Error("Move it to a box or a VM.");
+  if (!isCloudMachineKind(args.to)) throw new Error("Move it to a standard or a full computer.");
   const requestId = args.requestId ?? randomUUID();
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const logger: CloudLogger = deps.logger ?? {};
   const progress = (stage: CloudCreateProgress["stage"], message: string, instanceId?: string, approvalUrl?: string) =>
     onProgress({ requestId, stage, message, ...(instanceId ? { instanceId } : {}), ...(approvalUrl ? { approvalUrl } : {}) });
   const client = await deps.client();
-  await assertUnderCap(deps);
   const source = await client.getInstance(args.instanceId);
   const targetType = cloudInstanceType(args.to);
   if ((source.type ?? "default") === targetType) {
-    throw new Error(`It's already a ${args.to === "vm" ? "VM" : "box"}. Use Resize to change its size.`);
+    throw new Error(`It's already a ${cloudKindLabel(args.to)}. Use Resize to change its size.`);
   }
   const sourceResources = source.resources ? { cpu: source.resources.cpu, memoryGb: source.resources.memory } : null;
-  const shape = (args.shape ? cloudShape(args.shape) : null) ?? cloudShapeFor(sourceResources) ?? cloudShapeById(args.to === "vm" ? "4x8" : "2x4");
+  const shape = (args.shape ? cloudShape(args.shape) : null) ?? cloudShapeFor(sourceResources) ?? cloudShapeById("2x4");
   const sourceName = source.name ?? source.id;
   // The old box must be awake to hand its files over.
   if (source.status !== "running") {
@@ -267,9 +271,10 @@ export async function moveCloudMachine(
   const target = await createCloudMachine(deps, requestId, {
     kind: args.to,
     shape: shape.id,
-    name: normalizeCloudMachineName(`${sourceName} (${args.to === "vm" ? "VM" : "box"})`),
+    name: normalizeCloudMachineName(`${sourceName} (${cloudKindLabel(args.to)})`),
   }, onProgress, {
     signal: options.signal,
+    moveFromInstanceId: source.id,
     metadata: { ade_moved_from: source.id, ...(args.madeByChat ? { [CLOUD_MADE_BY_CHAT_METADATA]: args.madeByChat } : {}) },
   });
 
@@ -277,7 +282,7 @@ export async function moveCloudMachine(
   try {
     // 2. Quiet the old machine's ADE so its databases are copied whole: the
     //    entrypoint holds the brain while `brain.paused` exists.
-    progress("joining", `Copying ${sourceName}'s files to the new ${args.to === "vm" ? "VM" : "box"}…`, target.instanceId);
+    progress("joining", `Copying ${sourceName}'s files to the new ${cloudKindLabel(args.to)}…`, target.instanceId);
     const paused = await client.exec(source.id, [
       'touch "$ADE_HOME/brain.paused"',
       'pkill -f "serve --socket $ADE_HOME/sock/ade.sock" || true',
@@ -288,7 +293,8 @@ export async function moveCloudMachine(
     const signed = await client.signedUrl(source.id, { port: MOVE_SERVE_PORT, ttlSeconds: 3_600 });
     const url = `${signed.url.split("?")[0]?.replace(/\/$/, "")}/home.tar.gz?${signed.url.split("?")[1] ?? ""}`;
     const started = Date.now();
-    await client.exec(target.instanceId, receiveHomeCommand(url), { timeoutMs: 60_000 });
+    // The new machine's brain, idle during the copy, must not sleep it.
+    await client.exec(target.instanceId, `${cloudHoldCommand("move", MOVE_HOLD_MS)}\n${receiveHomeCommand(url)}`, { timeoutMs: 60_000 });
     let exit: number | null = null;
     while (exit == null) {
       if (Date.now() - started > MOVE_TRANSFER_TIMEOUT_MS) throw new Error("Copying the files took too long.");
@@ -333,7 +339,7 @@ export async function moveCloudMachine(
   // 4. The old box goes; the new one takes its name.
   let sourceDeleted = false;
   try {
-    await client.deleteInstance(source.id);
+    await client.deleteInstance(source.id, { reason: "moved" });
     sourceDeleted = await deleteCloudInstanceConfirmed(client, source.id, { logger, sleep });
   } catch (error) {
     if (error instanceof CloudProviderError && error.status === 404) sourceDeleted = true;

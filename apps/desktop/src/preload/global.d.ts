@@ -1,7 +1,8 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
-import type { CloudBudget, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
 import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
@@ -4691,11 +4692,26 @@ declare global {
         repairSession?: () => Promise<AdeAccountSessionRepairResult>;
       };
       /**
+       * Whether ADE Cloud exists for this account: the desktop's own answer, or
+       * on the web, a connected machine's through `cloud.read`. No answer yet
+       * reads as no. Account-wide, so no pin.
+       */
+      cloudAccess?: {
+        read: () => Promise<{ enabled: boolean }>;
+        onChanged: (cb: () => void) => () => void;
+      };
+      /**
        * ADE Cloud, account-wide: the machines and
        * new machines made on it. No pin: nothing here acts on a lane, chat or
        * another machine. Optional because the web client does not expose it.
        */
       cloud?: {
+        /** Saved chats: account-level. Reads a computer's copy while it can't answer. */
+        savedChats?: {
+          list: (args: CloudSavedChatsListArgs) => Promise<CloudSavedChatList | null>;
+          read: (args: CloudSavedChatReadArgs) => Promise<CloudSavedChatPage | null>;
+          delete: (args: CloudSavedChatDeleteArgs) => Promise<void>;
+        };
         getStatus: () => Promise<CloudStatus | null>;
         /** Returns at once; the create reports through `onCreateProgress`, ending in `done` or `failed`. */
         createMachine: (requestId: string, machine: CloudCreateMachineArgs) => Promise<{ started: boolean }>;
@@ -4737,9 +4753,13 @@ declare global {
         /** Gives back a claim no chat used yet: ready again, and asleep. */
         readyRelease?: (instanceId: string, claimToken: string) => Promise<{ released: boolean } | null>;
         onReadyStatus?: (cb: (status: CloudReadyStatus) => void) => () => void;
-        /** The account's monthly cap and agent limits for cloud machines (account vault; no pin). */
-        getBudget?: () => Promise<CloudBudget | null>;
-        setBudget?: (budget: Partial<CloudBudget>) => Promise<CloudBudget | null>;
+        /** What unattended agents may do on ADE Cloud (account vault; no pin). */
+        getAgentLimits?: () => Promise<CloudAgentLimits | null>;
+        setAgentLimits?: (limits: Partial<CloudAgentLimits>) => Promise<CloudAgentLimits | null>;
+        /** The account's plan (no pin): extra hours for paid accounts, and Stripe's pages in the browser. */
+        setExtraHours?: (enabled: boolean) => Promise<CloudAccountState | null>;
+        openCheckout?: () => Promise<{ opened: boolean }>;
+        openBillingPortal?: () => Promise<{ opened: boolean }>;
         /**
          * Copy (fork) or move (box ↔ VM) one box. Both answer at once and
          * report through `onCreateProgress` with this request id. Account
@@ -4749,6 +4769,8 @@ declare global {
         moveMachine?: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }) => Promise<{ started: boolean }>;
         /** Signs a box that was removed from the account ("Not in ADE") back in, as the same machine. Reports like a copy. */
         reconnectMachine?: (args: { requestId: string; instanceId: string }) => Promise<{ started: boolean }>;
+        personIsHere?: () => Promise<boolean>;
+        pushAllWork?: (instanceId: string) => Promise<CloudMachineActionResult>;
       };
       /**
        * The account settings store (the `account_settings` action domain),
@@ -5003,6 +5025,7 @@ declare global {
       /** Read-only Work tools-pane mirror; `null` when no runtime is bound. */
       workTools: {
         getLaneState: (laneId: string) => Promise<WorkToolsLaneState | null>;
+        noteWatching?: (pin?: OpenProjectBinding | null) => Promise<void>;
         /**
          * `openTools` is the pane's whole tab strip in order; `tool` is the one
          * on screen. Defaulted so an older caller still publishes coherently.

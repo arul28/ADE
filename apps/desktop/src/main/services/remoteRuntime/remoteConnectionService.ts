@@ -99,7 +99,7 @@ import {
   describeLinkHeldByOtherAdeApp,
   type HostWentAwayRecovery,
 } from "../../../shared/connectionDiagnosis";
-import { adeActionAccess, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
+import { adeActionAccess, isBackgroundAdeWrite, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
@@ -332,6 +332,18 @@ function sameStatusValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/**
+ * After a wake, may this call go out again? Replay-safe actions may. A chat send
+ * may when it carries a client id and the brain says it recognizes a retry of one
+ * it already took, so a message caught by a sleep is delivered, and never twice.
+ */
+function isRetriableAfterSleep(request: RemoteRuntimeActionRequest, brainDedupesSends: boolean): boolean {
+  if (isReplaySafeAdeAction(request.domain, request.action)) return true;
+  if (!brainDedupesSends || request.domain !== "chat" || request.action !== "sendMessage") return false;
+  const args = request.args as { clientSendId?: unknown } | undefined;
+  return typeof args?.clientSendId === "string" && args.clientSendId.length > 0;
+}
+
 export class RemoteConnectionService {
   private readonly statusById = new Map<string, StatusPatch>();
   private readonly manuallyDisconnectedTargetIds = new Set<string>();
@@ -401,6 +413,8 @@ export class RemoteConnectionService {
         version: result.version,
         // Read with the version, so a brain that stopped reporting it clears it.
         appVersion: result.appVersion ?? null,
+        updateInstallMode: result.updateInstallMode,
+        downloadUrl: result.downloadUrl ?? null,
         arch: result.arch,
         ...(result.route ? { route: result.route } : {}),
         ...(result.capabilities ? { capabilities: result.capabilities } : {}),
@@ -904,6 +918,8 @@ export class RemoteConnectionService {
           // Only beside the live version it was read with, never beside the
           // persisted one, which can be from another connection.
           appVersion: status.version != null ? status.appVersion ?? null : null,
+          updateInstallMode: status.version != null ? status.updateInstallMode : undefined,
+          downloadUrl: status.version != null ? status.downloadUrl ?? null : null,
           ...(status.route ? { route: status.route } : {}),
           ...(status.capabilities ? { capabilities: status.capabilities } : {}),
           ...(status.compatibilityWarnings
@@ -1029,6 +1045,8 @@ export class RemoteConnectionService {
         arch: connectedResult.arch,
         version: connectedResult.version,
         appVersion: connectedResult.appVersion ?? null,
+        updateInstallMode: connectedResult.updateInstallMode,
+        downloadUrl: connectedResult.downloadUrl ?? null,
         route: connectedResult.route,
         capabilities: connectedResult.capabilities,
         compatibilityWarnings: connectedResult.compatibilityWarnings,
@@ -1471,8 +1489,10 @@ export class RemoteConnectionService {
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
     // Sending to a chat or changing anything on a sleeping cloud machine wakes
-    // it first, and waits for it to come back.
-    if (!this.pool.hasEntry(targetId) && adeActionAccess(request.domain, request.action) === "write") {
+    // it first, and waits for it to come back. The app's own background writes don't.
+    const wakes = adeActionAccess(request.domain, request.action) === "write"
+      && !isBackgroundAdeWrite(request.domain, request.action);
+    if (!this.pool.hasEntry(targetId) && wakes) {
       const sleeping = this.registry.get(targetId);
       // The same guards as any implicit use, but for the reconnect backoff a
       // sleeping box has run up: nothing is woken that the call may not reach.
@@ -1498,10 +1518,11 @@ export class RemoteConnectionService {
         // call is sent once more only when sending it twice is safe, or when
         // it never went out; otherwise its unknown outcome stands, and the
         // person's retry reaches the woken machine.
-        if (adeActionAccess(request.domain, request.action) !== "write" || !(await this.wakeForUse(target))) throw error;
+        if (!wakes || !(await this.wakeForUse(target))) throw error;
         this.clearAutomaticReconnectState(targetId);
         await this.connectWokenMachine(target);
-        if (error instanceof RemoteActionOutcomeUnknownError && !isReplaySafeAdeAction(request.domain, request.action)) throw error;
+        if (error instanceof RemoteActionOutcomeUnknownError
+          && !isRetriableAfterSleep(request, this.statusById.get(targetId)?.capabilities?.clientSendDedupe === true)) throw error;
         result = await this.pool.callActionForTarget(target, projectId, request);
       }
       this.mergeStatus(targetId, {

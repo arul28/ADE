@@ -215,7 +215,7 @@ import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
 import { CompactFirstChip } from "./CompactFirstChip";
 import { McpRefreshChip } from "./McpRefreshChip";
-import { resolveContextCompactControl } from "../../../shared/contextCompaction";
+import { manualCompactDependsOnChat, resolveContextCompactControl } from "../../../shared/contextCompaction";
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
 } from "../shared/ModelPicker/runtimeCatalogCache";
@@ -238,6 +238,7 @@ import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import { noteFastModeAllowedFromHost, useFastModeEnabled } from "../../lib/fastModePolicy";
 import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
+import { savedChatAwareAgentChatApi } from "../../state/cloudSavedChatsSync";
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
@@ -4267,8 +4268,8 @@ export function AgentChatPane({
   // The chat API this pane talks to. A ref so every callback below reads the
   // current one without joining its dependency list; the scope a pane is given
   // does not change over its life.
-  const agentChatApiRef = useRef<AgentChatApi>(chatScope?.agentChat ?? window.ade?.agentChat);
-  agentChatApiRef.current = chatScope?.agentChat ?? window.ade?.agentChat;
+  const agentChatApiRef = useRef<AgentChatApi>(chatScope?.agentChat ?? savedChatAwareAgentChatApi(window.ade?.agentChat));
+  agentChatApiRef.current = chatScope?.agentChat ?? savedChatAwareAgentChatApi(window.ade?.agentChat);
   const personalScope = chatScope?.kind === "personal" ? chatScope : null;
   // The boolean the pane's hooks gate on: stable for the pane's life, so it
   // joins a dependency list without re-running anything.
@@ -15659,7 +15660,7 @@ export function AgentChatPane({
       provider: liveProvider,
       state: selectedUsageViewModel?.state ?? "unknown",
       enabled: Boolean(selectedUsageViewModel),
-      openCodeCompactAvailable: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
+      compactAvailableOnChat: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
       turnActive,
       busy: busy || parallelLaunchBusy || projectTransitionBlocksChat || submitInFlightRef.current,
       pendingInput: Boolean(pendingInput),
@@ -18356,10 +18357,10 @@ export function AgentChatPane({
 
   const compactionIdleMode = selectedSession?.compactionIdleMode;
   const selectedProvider = selectedSession?.provider ?? "";
-  // OpenCode only offers `/compact` when its server lists the command, so a
-  // chat without it has nothing the offer could run.
+  // OpenCode only offers `/compact` when its server lists the command, and
+  // Cursor only on local chats, so a chat without it has nothing to run.
   const compactionOfferable = compactionIdleMode != null
-    && (selectedProvider !== "opencode" || selectedSession?.manualCompactAvailable === true);
+    && (!manualCompactDependsOnChat(selectedProvider) || selectedSession?.manualCompactAvailable === true);
   const measuredContextTokens = selectedUsageViewModel?.state === "measured" ? selectedUsageViewModel.usedTokens : null;
   // Below the early return, so no hook here. The idle check keeps the event scan off hot renders:
   // it only runs once a chat has sat its cache window out, when no deltas stream.

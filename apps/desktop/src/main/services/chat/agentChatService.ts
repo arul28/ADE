@@ -1292,7 +1292,7 @@ import {
 } from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import { CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE, cursorOwnsSessionName } from "../../../shared/cursorCloudNaming";
-import { isManualCompactCommand } from "../../../shared/contextCompaction";
+import { COMPACT_BLOCKED_TURN_ACTIVE, isManualCompactCommand, manualCompactInstructions } from "../../../shared/contextCompaction";
 import {
   deriveDeterministicAutoLaneIdentity,
   deriveDeterministicLaneNameFromPrompt,
@@ -1655,6 +1655,9 @@ import {
   isCursorSdkUsageExhaustedText,
   isCursorSdkStaleAccessTokenText,
   readCursorSdkStaleTokenFailure,
+  isCursorSdkBusyErrorText,
+  readCursorSdkCompactSkipped,
+  type CursorSdkCompactSkipped,
   type CursorSdkStaleTokenFailure,
   type CursorSdkErrorKind,
   type CursorSdkAgentMode,
@@ -5995,6 +5998,16 @@ type PreparedSendMessage = {
   cloudOverrides?: AgentChatCloudOverrides;
 };
 
+/** Cursor Cloud agents compact on their own; only a local chat can be asked to. */
+function cursorRuntimeCanCompact(runtime: AgentChatRuntime | null | undefined): boolean {
+  return runtime !== "cloud";
+}
+
+const CURSOR_COMPACT_SKIPPED_NOTICE: Record<CursorSdkCompactSkipped, string> = {
+  empty: "Nothing to compact yet. Send a message first.",
+  cut_off_run: "Your last turn was cut off, so Cursor can't compact yet. Send a message, then try again.",
+};
+
 /** Where a Cursor turn runs: the turn's own choice, then the chat's default. */
 function effectiveCursorRuntime(
   managed: ManagedChatSession,
@@ -6238,17 +6251,19 @@ export const TURN_ACCEPTED_START_TIMEOUT_MS = 60_000;
 // cache and a resumed Codex thread adds ~200 tokens, while each idle chat
 // holds 200-500 MB of provider and MCP processes.
 const SESSION_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+/** How long a retried send is recognized (a wake and reconnect take seconds; this is wide). */
+const CLIENT_SEND_DEDUPE_MS = 10 * 60_000;
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
 /** Longest a fresh Codex runtime's first turn waits for its skill list. */
 const CODEX_SKILL_CATALOG_SETTLE_MS = 1_500;
 const CODEX_SKILL_CATALOG_POLL_MS = 100;
 
 /**
- * How long Compact first holds a message for a provider whose `/compact` is an
- * action rather than a turn (Codex, Pi, OpenCode). Past this the person is
- * waiting on a send that should have returned; the message goes with the full
- * chat and the compaction keeps running on its own. Claude has no such cap:
- * its message queues behind a real turn and returns at once.
+ * How long Compact first holds a message for a provider it waits out (Codex,
+ * Pi, OpenCode, Cursor). Past this the person is waiting on a send that should
+ * have returned; the message goes on without it and the compaction keeps
+ * running on its own. Claude has no such cap: its message queues behind a real
+ * turn and returns at once.
  */
 const COMPACT_FIRST_INLINE_WAIT_MS = 90_000;
 /**
@@ -8315,14 +8330,9 @@ function isCursorSdkAgentBusyError(error: unknown): boolean {
   const record = error && typeof error === "object" ? error as Record<string, unknown> : null;
   const code = typeof record?.code === "string" ? record.code.trim().toLowerCase() : "";
   const statusCode = readErrorStatusCode(error);
-  const message = readErrorMessage(error).toLowerCase();
   return code === "agent_busy"
     || statusCode === 409
-    || message.includes("agent_busy")
-    || message.includes("agent busy")
-    || message.includes("already has an active run")
-    || message.includes("active run in progress")
-    || message.includes("already running another task");
+    || isCursorSdkBusyErrorText(readErrorMessage(error));
 }
 
 function isCursorSdkRuntimeProcessAlive(runtime: CursorRuntime): boolean {
@@ -11967,6 +11977,8 @@ export function createAgentChatService(args: {
   claudeSubprocessReaper?: ClaudeSubprocessReaper;
   createScheduledWorkScheduler?: typeof createChatScheduledWorkScheduler;
   onEvent?: (event: AgentChatEventEnvelope) => void;
+  /** A chat was deleted. Fires once, after its transcript is gone. */
+  onChatDeleted?: (sessionId: string) => void;
   /** Low-frequency, content-free hook emitted once when a persisted turn reaches a terminal state. */
   onTurnSettled?: (event: AgentChatTurnSettledEvent) => void;
   /**
@@ -12165,6 +12177,7 @@ export function createAgentChatService(args: {
     claudeSubprocessReaper: injectedClaudeSubprocessReaper,
     createScheduledWorkScheduler = createChatScheduledWorkScheduler,
     onEvent,
+    onChatDeleted,
     onTurnSettled,
     requestSessionAttention = (request) =>
       sessionService.requestAttention(request.sessionId, request.message, request.source),
@@ -30809,7 +30822,7 @@ export function createAgentChatService(args: {
 
     if (/^\/compact(?:\s|$)/i.test(slashText)) {
       try {
-        if (slashText.replace(/^\/compact(?:\s+|$)/i, "").trim()) {
+        if (manualCompactInstructions(slashText)) {
           emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: "Codex compaction ignores custom instructions." });
         }
         await runtime.request("thread/compact/start", {
@@ -58923,6 +58936,8 @@ export function createAgentChatService(args: {
   };
 
   type CursorSdkTurnArgs = {
+    /** ADE's `/compact`: run Cursor's summarize, send no prompt, and never recycle the thread. */
+    compactOnly?: boolean;
     promptText: string;
     userText?: string;
     displayText: string;
@@ -59088,53 +59103,57 @@ export function createAgentChatService(args: {
     // agent instead of flattening replay + continuity into one string.
     let consumedTurnContext: ConsumedTurnContextPrefix | null = null;
     let cursorLaneGuidance: string | null = null;
+    const compactOnly = args.compactOnly === true;
     try {
       let composed = args.promptText;
       // Consumes the pending transcript replay and the continuity context in
       // one shot; the parts are kept so a thread recycle can restage each
       // bucket rather than losing them with the abandoned prompt.
-      const pendingTurnContext = consumePendingTurnContextPrefix(managed, false);
-      consumedTurnContext = pendingTurnContext;
-      if (pendingTurnContext?.composed) {
-        composed = `${pendingTurnContext.composed}\n\n${composed}`;
-      }
       const policy = runtime.sdkPolicy ?? resolveCursorSdkPolicy(managed.session);
-      const modeDirective = buildCursorSdkModeDirective(managed, policy);
-      if (modeDirective) {
-        composed = `${modeDirective}\n\n${composed}`;
-      }
-      const personalSession = isPersonalSession(managed.session);
-      if (personalSession) {
-        const injected = resolvePersonalPromptFor(
-          managed.session,
-          managed.laneWorktreePath,
-          buildSessionActivityGuidance(managed.session, policy.chatMode === "agent"),
-        );
-        if (injected.length) {
-          composed = `${injected}\n\n${composed}`;
+      // A compaction sends no prompt, so all of its framing waits for the next
+      // real turn.
+      if (!compactOnly) {
+        const pendingTurnContext = consumePendingTurnContextPrefix(managed, false);
+        consumedTurnContext = pendingTurnContext;
+        if (pendingTurnContext?.composed) {
+          composed = `${pendingTurnContext.composed}\n\n${composed}`;
         }
-      } else {
-        // Cursor's framing and ADE's `## ADE` block, once per Cursor agent
-        // (see laneGuidanceKey). The old "first send for this lane" check
-        // compared against the send's lane key, which is null on every later
-        // turn, so both rode every turn.
-        cursorLaneGuidance = undeliveredLaneGuidance(
-          managed,
-          runtime.sdkAgentId,
-          [
-            await buildCursorSdkInjectedSystemPrompt({
-              runtime: "local",
-              laneWorktreePath: managed.laneWorktreePath,
-            }),
-            buildAdeGuidanceForLane(
-              managed.laneWorktreePath,
-              managed.session,
-              spawnSelfReportOpts(managed.session),
-            ),
-          ].filter((part) => part.trim().length > 0).join("\n\n"),
-        );
-        if (cursorLaneGuidance) {
-          composed = `${cursorLaneGuidance}\n\n${composed}`;
+        const modeDirective = buildCursorSdkModeDirective(managed, policy);
+        if (modeDirective) {
+          composed = `${modeDirective}\n\n${composed}`;
+        }
+        if (isPersonalSession(managed.session)) {
+          const injected = resolvePersonalPromptFor(
+            managed.session,
+            managed.laneWorktreePath,
+            buildSessionActivityGuidance(managed.session, policy.chatMode === "agent"),
+          );
+          if (injected.length) {
+            composed = `${injected}\n\n${composed}`;
+          }
+        } else {
+          // Cursor's framing and ADE's `## ADE` block, once per Cursor agent
+          // (see laneGuidanceKey). The old "first send for this lane" check
+          // compared against the send's lane key, which is null on every later
+          // turn, so both rode every turn.
+          cursorLaneGuidance = undeliveredLaneGuidance(
+            managed,
+            runtime.sdkAgentId,
+            [
+              await buildCursorSdkInjectedSystemPrompt({
+                runtime: "local",
+                laneWorktreePath: managed.laneWorktreePath,
+              }),
+              buildAdeGuidanceForLane(
+                managed.laneWorktreePath,
+                managed.session,
+                spawnSelfReportOpts(managed.session),
+              ),
+            ].filter((part) => part.trim().length > 0).join("\n\n"),
+          );
+          if (cursorLaneGuidance) {
+            composed = `${cursorLaneGuidance}\n\n${composed}`;
+          }
         }
       }
 
@@ -59166,8 +59185,10 @@ export function createAgentChatService(args: {
 
       // At most one automatic recovery per user turn — attempt 2 runs with this
       // flag set, so a second failure surfaces to the user.
-      const canRecoverCursorThread = (): boolean =>
+      const canRecoverCursorThread = (reason: CursorSdkRecycleReason): boolean =>
         args.cursorRecoveryAttempt !== true
+        // The other recoveries rotate to a new agent, which has nothing to compact.
+        && (!compactOnly || reason === "stale_token")
         && !managed.closed
         && !runtime.interrupted
         && managed.runtime === runtime;
@@ -59190,9 +59211,10 @@ export function createAgentChatService(args: {
 
       // Consume the one-shot expiry flag before dispatch so it cannot survive a
       // failed send into the turn after it. The durable copy is cleared with it.
-      const forceExpireActiveRun =
-        args.cursorRecoveryAttempt === true || managed.cursorSdkForceExpireNextSend === true;
-      if (managed.cursorSdkForceExpireNextSend) {
+      // A compaction cannot expire a run, so it leaves the flag for the next send.
+      const forceExpireActiveRun = !compactOnly
+        && (args.cursorRecoveryAttempt === true || managed.cursorSdkForceExpireNextSend === true);
+      if (forceExpireActiveRun && managed.cursorSdkForceExpireNextSend) {
         managed.cursorSdkForceExpireNextSend = false;
         persistChatState(managed);
       }
@@ -59207,6 +59229,7 @@ export function createAgentChatService(args: {
         // re-send, or a send after settlement dismissal). A normal send must
         // never do this — it would discard a turn still genuinely working.
         ...(forceExpireActiveRun ? { forceExpireActiveRun: true } : {}),
+        ...(compactOnly ? { summarize: true } : {}),
         // The recovery re-send is a distinct message to Cursor: on the
         // stale-token path it lands on the *same* resumed agent, where reusing
         // the first attempt's key could be deduped away into a silent no-op.
@@ -59240,13 +59263,13 @@ export function createAgentChatService(args: {
         // classifies as `auth`, never `network`) and this one is the narrower.
         const staleToken = !silent && isCursorSdkStaleTokenError(error);
         const transport = !silent && !staleToken && !silenceWatch.seen && isCursorSdkTransportError(error);
-        if ((silent || transport || staleToken) && canRecoverCursorThread()) {
-          return cursorRecoverySentinel(
-            silent ? "silent_run" : staleToken ? "stale_token" : "transport_error",
-            silenceWatch.sawVisibleOutput,
-          );
+        const recoveryReason: CursorSdkRecycleReason | null = silent
+          ? "silent_run"
+          : staleToken ? "stale_token" : transport ? "transport_error" : null;
+        if (recoveryReason && canRecoverCursorThread(recoveryReason)) {
+          return cursorRecoverySentinel(recoveryReason, silenceWatch.sawVisibleOutput);
         }
-        if (silent) {
+        if (silent && !compactOnly) {
           // Terminal silence: the rotated agent stopped answering too. Recycle
           // it without re-sending, so the user's next send genuinely starts on
           // a fresh thread — which is what the error copy promises.
@@ -59265,7 +59288,7 @@ export function createAgentChatService(args: {
       // now permanently unauthenticated, so the turn cannot continue on it.
       const staleTokenFailure = takeCursorSdkStaleTokenFailure(runtime, turnId);
       if (staleTokenFailure || isCursorSdkStaleTokenResult(result)) {
-        if (canRecoverCursorThread()) return cursorRecoverySentinel("stale_token", silenceWatch.sawVisibleOutput);
+        if (canRecoverCursorThread("stale_token")) return cursorRecoverySentinel("stale_token", silenceWatch.sawVisibleOutput);
         // Recovery already spent (or the session went away): surface it once,
         // in plain English, through the shared failure classifier.
         throw cursorSdkStaleTokenError(staleTokenFailure ?? {
@@ -59274,7 +59297,7 @@ export function createAgentChatService(args: {
             || CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT,
         });
       }
-      if (!silenceWatch.seen && isCursorSdkTransportErrorResult(result) && canRecoverCursorThread()) {
+      if (!silenceWatch.seen && isCursorSdkTransportErrorResult(result) && canRecoverCursorThread("transport_error")) {
         // The run failed on the wire before emitting anything: recycling and
         // re-sending cannot duplicate visible output.
         return cursorRecoverySentinel("transport_error");
@@ -59294,6 +59317,13 @@ export function createAgentChatService(args: {
       const resultRecord = asRecord(result);
       const resultStatus = typeof resultRecord?.status === "string" ? resultRecord.status : "";
       adoptRuntimeSessionTitle(managed, resultRecord, "cursor_sdk_run_result");
+      const compactSkipped = compactOnly ? readCursorSdkCompactSkipped(result) : null;
+      if (compactSkipped) {
+        emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: CURSOR_COMPACT_SKIPPED_NOTICE[compactSkipped], turnId });
+      } else if (compactOnly) {
+        // The summarize call's own usage measures the chat before it shrank.
+        delete runtime.eventMapperState.lastContextTokens;
+      }
       let doneEvent = mapCursorSdkRunResultToDoneEvent(result, {
         turnId,
         model: turnModel,
@@ -59302,7 +59332,8 @@ export function createAgentChatService(args: {
       if (runtime.eventMapperState.lastContextTokens != null) {
         doneEvent = { ...doneEvent, usage: { ...doneEvent.usage, contextTokens: runtime.eventMapperState.lastContextTokens, contextWindow: runtime.eventMapperState.contextWindow } };
       }
-      const localAgentId = runtime.sdkAgentId;
+      // A skipped compaction ran nothing, so the last run's usage is not its own.
+      const localAgentId = compactSkipped ? null : runtime.sdkAgentId;
       if (localAgentId) {
         doneEvent = await fetchAndApplyCursorUsage({
           managed,
@@ -59319,7 +59350,10 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, { ...doneEvent, status: "interrupted" });
       } else if (resultStatus === "error" || doneEvent.status === "failed") {
         markSessionIdleWithFreshCache(managed);
-        cancelQueuedSteers(managed, runtime, "failed");
+        // A failed compaction says nothing about the messages queued behind it,
+        // so they still go, with the full chat.
+        if (compactOnly) shouldDeliverQueuedSteer = runtime.pendingSteers.length > 0;
+        else cancelQueuedSteers(managed, runtime, "failed");
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, doneEvent);
       } else {
@@ -59419,7 +59453,7 @@ export function createAgentChatService(args: {
    * same turnId and swallowed the rethrow — leaving `awaitBackendDispatch`
    * callers (cross-machine handoff, steer replay) waiting forever.
    */
-  const runCursorSdkTurn = async (
+  const runCursorSdkTurnWithRecovery = async (
     managed: ManagedChatSession,
     args: CursorSdkTurnArgs,
   ): Promise<void> => {
@@ -59588,6 +59622,19 @@ export function createAgentChatService(args: {
       if (carriedSteers.length && (!requeuedOn || managed.runtime !== requeuedOn)) {
         cancelCarriedCursorSteers(managed, turnId, carriedSteers);
       }
+    }
+  };
+
+  const runCursorSdkTurn = async (
+    managed: ManagedChatSession,
+    args: CursorSdkTurnArgs,
+  ): Promise<void> => {
+    try {
+      await runCursorSdkTurnWithRecovery(managed, args);
+    } finally {
+      // A compaction that was skipped or failed early draws no divider, and
+      // Compact first would sit out its whole wait for one.
+      if (args.compactOnly) settleCompactionWaiters(managed.session.id);
     }
   };
 
@@ -62599,7 +62646,12 @@ export function createAgentChatService(args: {
         markEpochDirectivesDelivered();
         return;
       }
+      const compactOnly = isManualCompactCommand(submittedText);
+      if (compactOnly && manualCompactInstructions(submittedText)) {
+        emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: "Cursor compaction ignores custom instructions." });
+      }
       await runCursorSdkTurn(managed, {
+        ...(compactOnly ? { compactOnly: true } : {}),
         promptText,
         userText: submittedText,
         displayText: visibleText,
@@ -63231,6 +63283,19 @@ export function createAgentChatService(args: {
     }
   };
 
+  /** Recent client send ids, per chat. True when this one was already seen. */
+  const seenClientSends = new Map<string, number>();
+  const noteClientSendSeen = (sessionId: string, clientSendId: string): boolean => {
+    const key = `${sessionId}:${clientSendId}`;
+    const now = Date.now();
+    for (const [seen, at] of seenClientSends) {
+      if (now - at > CLIENT_SEND_DEDUPE_MS) seenClientSends.delete(seen);
+    }
+    if (seenClientSends.has(key)) return true;
+    seenClientSends.set(key, now);
+    return false;
+  };
+
   async function sendMessage(
     args: AgentChatSendArgs,
     options: {
@@ -63264,6 +63329,9 @@ export function createAgentChatService(args: {
   ): Promise<void | AgentChatSteerResult> {
     assertChatRuntimeOwnedHere(args.sessionId, "send to");
     assertChatNotMovedAway(args.sessionId, "send_message");
+    // A send retried after a sleep (its first copy may have landed before the
+    // machine froze): the client's id tells a retry from a second message.
+    if (args.clientSendId && noteClientSendSeen(args.sessionId, args.clientSendId)) return;
     const managed = ensureManagedSession(args.sessionId);
     // `/side <question>` from any client (the desktop and iOS composers catch
     // it first; `ade chat send` and SDK hosts reach here) opens the
@@ -63295,10 +63363,13 @@ export function createAgentChatService(args: {
       // Pending input includes Claude's native resume_return, which owns its
       // send; never combine it with ADE's pill.
       if (args.compactFirst === true && compactFirstSupportedProvider(managed.session.provider) && !isManualCompactCommand(args.text) && isIdleForCompactFirst(managed)) {
-        // OpenCode answers `/compact` only when its server lists the command;
-        // without it the text would reach the model as a literal prompt, so the
-        // brain refuses the same way the client hides the offer.
-        const runnable = managed.session.provider !== "opencode" || await openCodeCompactListed(managed.session.id);
+        // OpenCode answers `/compact` only when its server lists the command,
+        // and Cursor only on local chats; otherwise the text would reach the
+        // model as a literal prompt, so the brain refuses the same way the
+        // client hides the offer.
+        const runnable = managed.session.provider === "opencode"
+          ? await openCodeCompactListed(managed.session.id)
+          : managed.session.provider !== "cursor" || cursorRuntimeCanCompact(managed.session.cursorRuntime);
         const offer = runnable ? compactFirstOffer(await compactFirstArgs(managed)) : null;
         // Checked again: a turn may have started while the history loaded.
         if (offer && isIdleForCompactFirst(managed)) {
@@ -63306,11 +63377,11 @@ export function createAgentChatService(args: {
             compactFirst = await startCompactFirstTurn(managed);
           } else {
             // Codex, Pi and OpenCode run `/compact` as an action, not a turn,
-            // so there is no queue to put the message behind. Wait for the
-            // compaction to end, then send: the message always reaches the
-            // provider either with a compacted chat or, on failure or a wait
-            // that runs long, with the full one and the same notice Claude's
-            // fallback uses.
+            // so there is no queue to put the message behind. Cursor's is a
+            // short turn, waited out the same way. Wait for the compaction to
+            // end, then send: the message always reaches the provider either
+            // with a compacted chat or, on failure or a wait that runs long,
+            // with the full one and the same notice Claude's fallback uses.
             compactFirstInline = await runCompactFirstInline(managed);
           }
         }
@@ -63321,15 +63392,20 @@ export function createAgentChatService(args: {
       // covers the sliver between "the chat is idle" and this send: a turn that
       // started in that moment takes the message as a steer instead of
       // refusing it.
+      // A Cursor compaction is a turn, so one that outlasts the wait would
+      // refuse the send. The message queues behind it and lands once it ends.
+      const queuedBehindCursorCompaction = compactFirstInline === "failed"
+        && managed.session.provider === "cursor"
+        && !isIdleForCompactFirst(managed);
       const result = await sendMessageWithoutReview(
         reviewed.args,
-        compactFirst || compactFirstInline === "completed" ? { ...options, routeActiveToSteer: true } : options,
+        compactFirst || compactFirstInline === "completed" || queuedBehindCursorCompaction ? { ...options, routeActiveToSteer: true } : options,
       );
       // Rerouted into a steer the queue refused: nothing was delivered.
       if (isDroppedSteer(result)) reviewed.restore();
       else if (reviewed.block && result && result.queued) rememberQueuedSteerReview(result.steerId, reviewed.block, reviewed.restore);
       if (compactFirst) void settleCompactFirstTurn(managed, compactFirst, Boolean(result && result.queued));
-      else if (compactFirstInline === "failed") emitCompactFirstFallbackNotice(managed);
+      else if (compactFirstInline === "failed" && !queuedBehindCursorCompaction) emitCompactFirstFallbackNotice(managed);
       return result;
     } catch (error) {
       reviewed.restore();
@@ -63342,8 +63418,8 @@ export function createAgentChatService(args: {
   }
 
   /**
-   * Compact first for a provider whose `/compact` is an action rather than a
-   * turn (Codex, Pi, OpenCode): dispatch the same `/compact` the meter's
+   * Compact first for a provider it waits out rather than queues behind
+   * (Codex, Pi, OpenCode, Cursor): dispatch the same `/compact` the meter's
    * "Compact now" sends, wait for the compaction to end, and report whether it
    * did. Never throws; on a failure or a wait that runs long the caller sends
    * the message with the full chat.
@@ -63653,6 +63729,14 @@ export function createAgentChatService(args: {
     ) {
       if (dispatchPromise) await dispatchPromise;
       return;
+    }
+
+    if (
+      prepared.managed.session.provider === "cursor"
+      && isManualCompactCommand(prepared.submittedText)
+      && !cursorRuntimeCanCompact(effectiveCursorRuntime(prepared.managed, prepared.runtime))
+    ) {
+      throw new Error("Cursor Cloud agents compact on their own. /compact only works in local Cursor chats.");
     }
 
     if (prepared.managed.session.provider === "cursor" || prepared.managed.session.provider === "droid") {
@@ -64143,6 +64227,8 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "cursor") {
       if (managed.runtime?.kind === "cursor" && managed.runtime.busy) {
+        // A steer reaches the model as text; `/compact` is an action on the idle chat.
+        if (isManualCompactCommand(trimmed)) throw turnInFlightError(COMPACT_BLOCKED_TURN_ACTIVE);
         // Reassignable: a refused inline steer can discover that a recycle
         // rotated the runtime, and the message must be staged on the live one.
         let rt = managed.runtime;
@@ -68143,6 +68229,7 @@ export function createAgentChatService(args: {
       provider,
       model,
       ...(provider === "opencode" ? { manualCompactAvailable: await openCodeCompactListed(row.id, scope) } : {}),
+      ...(provider === "cursor" ? { manualCompactAvailable: cursorRuntimeCanCompact(liveSession?.cursorRuntime ?? persisted?.cursorRuntime) } : {}),
       ...(compactFirstSupportedProvider(provider)
         ? {
             compactionIdleMode: compactionIdleModeFor({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }, scope),
@@ -69661,6 +69748,39 @@ export function createAgentChatService(args: {
       if (hasRuntimeActiveWorkload(managed.runtime)) return true;
     }
     return false;
+  };
+
+  /**
+   * Every chat with work in hand, for the cloud busy list (`decideCloudBusy`):
+   * whether it is stopped waiting on a person, and when it last moved.
+   */
+  const listBusyFacts = (): Array<{ waitingOnPerson: boolean; lastActivityAt: number }> => {
+    const facts: Array<{ waitingOnPerson: boolean; lastActivityAt: number }> = [];
+    for (const managed of managedSessions.values()) {
+      if (managed.closed || managed.deleted) continue;
+      const waitingOnPerson = hasLivePendingInput(managed);
+      if (!waitingOnPerson && managed.session.status !== "active" && !hasRuntimeActiveWorkload(managed.runtime)) continue;
+      facts.push({ waitingOnPerson, lastActivityAt: managed.lastActivityTimestamp });
+    }
+    return facts;
+  };
+
+  /**
+   * Stops every running turn, for a computer about to be stopped at 0 hours
+   * (`ade cloud prepare-stop`). A turn stopped this way shows as interrupted,
+   * the same as a Stop, and the chat copy written afterwards records it.
+   */
+  const interruptRunningTurns = async (): Promise<number> => {
+    const running = [...managedSessions.values()].filter((managed) =>
+      !managed.closed && !managed.deleted && (managed.session.status === "active" || hasRuntimeActiveWorkload(managed.runtime)));
+    await Promise.allSettled(running.map(async (managed) => {
+      try {
+        await interrupt({ sessionId: managed.session.id, mode: DEFAULT_AGENT_CHAT_STOP_MODE });
+      } catch (error) {
+        logger.warn("agent_chat.prepare_stop_interrupt_failed", { sessionId: managed.session.id, error: String(error) });
+      }
+    }));
+    return running.length;
   };
 
   // Broader than hasActiveWorkloads: a session that's between turns still
@@ -72539,6 +72659,11 @@ export function createAgentChatService(args: {
 
     sessionService.deleteSession(trimmedSessionId);
     notifyChatSessionEnded(trimmedSessionId);
+    try {
+      onChatDeleted?.(trimmedSessionId);
+    } catch (error) {
+      logger.warn("agent_chat.on_deleted_failed", { sessionId: trimmedSessionId, error: getErrorMessage(error) });
+    }
     return { recoverable };
   };
 
@@ -74575,6 +74700,7 @@ export function createAgentChatService(args: {
       : [
           { name: "/clear", description: "Clear chat history", source: "local" },
           ...(provider === "pi" ? [{ name: "/compact", description: "Summarize older context to free tokens.", source: "local" as const, argumentHint: "[instructions]" }] : []),
+          ...(provider === "cursor" && cursorRuntimeCanCompact(managed?.session.cursorRuntime) ? [{ name: "/compact", description: "Summarize older context to free tokens.", source: "local" as const }] : []),
         ];
 
     // Claude command/skill files carry their kind and where they came from, so
@@ -78351,6 +78477,8 @@ export function createAgentChatService(args: {
     ensureSessionSurface,
     adoptLegacyPersonalSessionAsAssistant,
     hasActiveWorkloads,
+    listBusyFacts,
+    interruptRunningTurns,
     hasRetainableSessions,
     residentChatEventHistorySessionCount: () => eventHistoryBySession.size,
     seedLiveChatEventHistory(envelopes: AgentChatEventEnvelope[]): void {

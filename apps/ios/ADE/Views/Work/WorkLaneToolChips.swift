@@ -133,7 +133,7 @@ func macDesktopToolChip(_ macDesktop: WorkToolsMacDesktopState?) -> WorkToolChip
   return WorkToolChip(kind: .macDesktop(
     streamLive: stream?.running == true && stream?.idle != true,
     agentDriving: macDesktop.lease?.holder == "agent"
-  ), desktopPlatformLabel: macDesktop.windowsDesktop == nil ? nil : "Windows")
+  ), desktopPlatformLabel: macDesktop.linuxDesktop != nil ? "Linux" : (macDesktop.windowsDesktop == nil ? nil : "Windows"))
 }
 
 /// The Android chip, or nil when the lane has no emulator to open: no status
@@ -338,7 +338,7 @@ final class WorkLaneToolsModel: ObservableObject {
   /// state but no Apple or Android support keeps the chips it always could
   /// show, and no read goes on the wire unadvertised.
   func refresh(laneId: String, syncService: SyncService) async {
-    let readTools = syncService.supportsWorkToolsState
+    let readTools = syncService.supportsWorkToolsState(laneId: laneId)
     // Asked of the lane's own machine: a lane on another Mac answers there.
     let readApple = syncService.supportsAppleDeviceStatus(laneId: laneId)
     // Android is offered only where the host can also mint a stream ticket.
@@ -446,7 +446,7 @@ struct WorkLaneToolsPresenter: ViewModifier {
       // Which tools exist is the same answer the chips give; the pane only
       // needs the identities, and this fires only when the chip set changes.
       .onAppear {
-        var macDesktopStream = syncService.supportsMacDesktopStream
+        var macDesktopStream = syncService.supportsMacDesktopStream(laneId: laneId)
         #if DEBUG
         // A fixture chat's lane screen streams from a drawn stand-in.
         if preview != nil || WorkRootPreviewFixture.active != nil { macDesktopStream = true }
@@ -462,7 +462,7 @@ struct WorkLaneToolsPresenter: ViewModifier {
           macDesktop: model.macDesktopState,
           appControl: model.appControlState,
           appControlStream: model.appControlStream,
-          macDesktopStream: syncService.supportsMacDesktopStream,
+          macDesktopStream: syncService.supportsMacDesktopStream(laneId: laneId),
           androidStatus: model.androidStatus
         )
         #if DEBUG

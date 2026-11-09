@@ -92,6 +92,7 @@ The log tails go as ADE wrote them, on purpose: they hold paths, action argument
 - every `logger.error` line, grouped by the error it carries and by event name when it carries only a message (`shared/sentry/logBridge.ts`), except `window.console` (renderer console output, kept as warn-level logs only: the renderer SDK reports the real errors itself, and the error-level log lines the beta gate reads stay ADE's own). `logger.warn` lines become Sentry Logs and breadcrumbs, not issues. Info and debug never leave the machine, except the release-health lines below;
 - a brain that keeps restarting (`The brain kept restarting`, `ade-cli/src/sentry/brainRestartLoop.ts`), as a warning, reported by the brain itself so it works with no desktop window open. Every service brain (not one the desktop app started, which the app kills outright when it quits, and not a hand-run `ade serve` on the machine endpoint: on macOS its parent must be launchd, on Windows the supervisor whose pid the service's pid record names) records its start in `runtime/brain-starts.json` and marks it stopped when it shuts down in an orderly way (an update, the restart button, a shutdown request). A start counts when the brain before it died without that mark, ran the same build, started since the computer last booted and is gone, or when the build goes back to one an earlier brain in the window left (two installs replacing each other). Three counted starts within 10 minutes are a loop. One report per loop, sent by the first brain that stays up 2 minutes, or by whichever brain is up 5 minutes after the loop was found, so its later restarts are in it; at most once a day per machine (`lastReportedAt` in the same file), with one fingerprint per platform. It carries `desktop-logs.txt.gz` (above) beside the service's own logs;
 - the first provider health transition into `runtime-failed` for each provider and kind of failure in a process, as a warning (`providerRuntimeHealth.ts`); later ones are Sentry Logs, and the in-app health display shows every one. The kind comes from a closed list matched on the message (`root-refused`, `session-missing`, `turn-active`, `method-missing`, `owned-elsewhere`, `timeout:<ACP method>`, `spawn-failed`, `exited`, else `other`), rides as the `provider.failure` tag, and is part of the fingerprint, so unrelated failures of one provider are separate issues. A Claude failure also carries `extra.stderrTail`: the CLI's last 20 stderr lines (`claudeSubprocessReaper.ts`), each scrubbed with `scrubFreeText` before it is cut, and with any line whose start fell outside the kept buffer dropped, so a secret cut off from the prefix the scrubber knows it by never goes.
+- a failure of ADE Cloud's server work (`cloud.stripe_webhook_failed`, `cloud.stripe_claim_release_failed`, `cloud.meter_report_failed`, `cloud.tick_account_failed`, `cloud.stop_failed`, `cloud.backstop_sleep_failed`, `cloud.delete_inactive_failed`, `cloud.account_delete_failed`: `reportCloudFailure`, `apps/account-directory/src/cloud/store.ts`), one issue per event name with the name as the fingerprint and no account or instance id (those stay in the Worker's own log line), at most one event per name per isolate per hour;
 - on iOS, a Live Inspect reply the app cannot decode (`area: live_inspect`, `LiveInspectMarkupModel.fail`): the host and app disagree on the format. Offline machines, timeouts and older hosts are shown to the user and not reported.
 - a Linux lane screen that fails on its host (`linux_screen.<kind>`, `linuxDesktop/linuxScreenTelemetry.ts`), as a warning with a fixed description per kind and structured fields only (the helper's error text can carry Xvfb or ffmpeg output, so it stays in the local log), once per kind and detail per process: the helper not starting or exiting with lanes up (`helper_start_failed`, `helper_lost`), `display.create` failing for anything but a caller's mistake (`display_create_failed`), an accessibility bus that would not start (`display_degraded`), a recording whose encoder died (`recording_interrupted`), and an `ade screen setup` that failed or left something missing (`setup_failed`). Each carries the host as tags: `linux.distro`, `linux.distro_version`, `linux.distro_like` (from `/etc/os-release`), `linux.container` and `arch`, because only Ubuntu x64 is exercised by hand. What a host lacks before setup, a sudo that needs a password and a missing window manager are Sentry Logs (`linux_screen.host_report`, `linux_screen.setup_needs_user`, `linux_screen.display_degraded`), searchable by the same fields;
 - a recording whose demo every engine failed to make (`demo_video.all_engines_failed`, tagged `platform`, `arch` and on Linux the distribution, with the failed stage but not the engines' errors, which can carry ffmpeg's stderr), once per process per engine set: the user gets the uncut recording, and nothing else says the demo pipeline is broken on that machine;
@@ -616,7 +617,7 @@ or imported (`trigger: "cli_session_started"`), since ADE sees no turns inside
 a CLI.
 
 `install_source` is `direct_download` (the Mac app in an `Applications`
-folder, the Windows installer's `ADE.exe`, or an AppImage), `homebrew` (a
+folder, the Windows installer's `ADE.exe`, an AppImage, or the Linux `.deb` under `/opt/ADE`), `homebrew` (a
 Homebrew path, or the Mac app with a `Caskroom/ade` entry, since the cask copies
 the app to `/Applications`), `install_script` (the standalone brain from
 `install.sh` / `install.ps1` in `~/.ade/bin`), `development`, or `unknown`
@@ -1781,18 +1782,25 @@ The box actions on an ADE Cloud card record `feature: "connections"`, `action:
 "cloud_machine_action"` when ADE Cloud confirms the action, in the same IPC
 handler (`registerCloudIpc.ts`). The outcome is the action, prefixed:
 `box_sleep`, `box_wake`, `box_resize`, `box_backup`, `box_delete`,
-`box_set_sleep` (Sleep when idle…), `box_copy` / `box_move` when a copy or
-move finishes, or `box_reconnect` when Reconnect to ADE brings a removed box
-back. The product question is which parts of the box lifecycle
+`box_copy` / `box_move` when a copy or move finishes, `box_reconnect` when
+Reconnect to ADE brings a removed box back, or `box_push_all_work` when Push
+all work to GitHub finished. The product question is which parts of the box lifecycle
 people run from ADE. A
 refusal (limit, no access) is not an event; it stays in the local
 `cloud.machine_action_failed` log line. Remove from ADE is already
 `machine_removed`. A six-hour key per outcome bounds this to 36 accepted events
 per installation per UTC day, inside the existing `ade_feature_used` ceilings.
 The machine list's reads (open, focus, the short settling poll) are not
-analytics, and neither is sleeping on its own, waking for use, the monthly
-cap, the spending card, or the `ade cloud` commands an agent runs: those
-run without a person deciding anything, or are a setting.
+analytics, and neither is sleeping on its own, waking for use, the hours
+readout, or the `ade cloud` commands an agent runs: those run without a person
+deciding anything, or are a setting.
+
+The plan records `feature: "connections"`, `action: "cloud_plan"` in the same
+handler: `plan_checkout` and `plan_portal` when the Stripe page opens,
+`extra_on` / `extra_off` when the extra-hours switch moves. The question is
+whether people buy from ADE and use extra hours. No amount, plan id or Stripe
+identifier travels. A six-hour key per outcome bounds it to 16 accepted events
+per installation per UTC day, inside the existing `ade_feature_used` ceilings.
 
 Ready machines record `feature: "connections"`, `action: "cloud_ready"`.
 The desktop records `enabled` and `disabled` when a project is turned on or

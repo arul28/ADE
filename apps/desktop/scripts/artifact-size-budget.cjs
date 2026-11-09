@@ -21,7 +21,15 @@ const MAC_UPDATE_ARCHIVE_MAX_BYTES = 800 * MIB;
 // that outgrows this has picked up payload it should not be carrying.
 const WINDOWS_INSTALLER_MAX_BYTES = 900 * MIB;
 
+const LINUX_PACKAGE_MAX_BYTES = 900 * MIB;
+
 const ARTIFACT_SIZE_BUDGETS = [
+  {
+    id: "linux-package",
+    label: "Linux package",
+    maxBytes: LINUX_PACKAGE_MAX_BYTES,
+    matches: (name) => name.endsWith(".AppImage") || name.endsWith(".deb"),
+  },
   {
     id: "mac-update-archive",
     label: "macOS update archive",

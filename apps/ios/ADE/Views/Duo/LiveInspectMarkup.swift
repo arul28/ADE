@@ -343,7 +343,7 @@ final class LiveInspectMarkupModel: ObservableObject {
       let reply = try await syncService.macDesktopObserve(laneId: laneId)
       guard !Task.isCancelled, generation == loadGeneration else { return }
       let observation = reply.observation
-      guard let preview = try await syncService.readWorkToolsObservationPreview(path: observation.screenshotPath),
+      guard let preview = try await syncService.readWorkToolsObservationPreview(path: observation.screenshotPath, laneId: laneId),
             let data = WorkToolsSheet.decodeDataUrl(preview.dataUrl),
             let image = UIImage(data: data) else {
         throw LiveInspectFailure("The desktop captured a frame this phone couldn't read.")

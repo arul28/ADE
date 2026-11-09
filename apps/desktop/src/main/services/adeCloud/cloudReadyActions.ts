@@ -10,7 +10,7 @@
  * every computer.
  */
 
-import { isCloudInstanceId, type CloudSpending } from "../../../shared/adeCloud";
+import { isCloudInstanceId } from "../../../shared/adeCloud";
 import {
   CLOUD_READY_METADATA,
   type CloudReadyClaim,
@@ -29,8 +29,6 @@ export type CloudReadyActionDeps = {
   readSettings: () => Promise<CloudReadyProjectSettings[]>;
   /** A claim from the CLI or an agent (analytics; coarse, never the project or machine). */
   onClaimed?: () => void;
-  /** This month against the cap: a claim at the cap is refused. */
-  spending?: () => Promise<CloudSpending | null>;
   logger?: CloudLogger;
 };
 
@@ -80,7 +78,7 @@ export function buildCloudReadyActions(deps: CloudReadyActionDeps) {
     async claim_ready(args?: unknown): Promise<CloudReadyClaim> {
       const identity = normalizeGitRemoteIdentity(readString(args, "originUrl"));
       if (!identity) throw new Error("Pass the project's git origin (originUrl); a project without one has no ready machine.");
-      const claim = await claimCloudReadyMachine(await requireCloudProvider(deps.credentials), identity, { logger: deps.logger, spending: deps.spending });
+      const claim = await claimCloudReadyMachine(await requireCloudProvider(deps.credentials), identity, { logger: deps.logger });
       deps.onClaimed?.();
       return claim;
     },

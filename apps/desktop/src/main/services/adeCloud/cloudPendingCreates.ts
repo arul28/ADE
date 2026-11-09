@@ -146,10 +146,10 @@ async function lookUp(client: CloudProvider, instanceId: string, logger: Logger)
 export async function deleteCloudInstanceConfirmed(
   client: CloudProvider,
   instanceId: string,
-  deps: { logger: Logger; sleep: (ms: number) => Promise<void> },
+  deps: { logger: Logger; sleep: (ms: number) => Promise<void>; reason?: string },
 ): Promise<boolean> {
   try {
-    await client.deleteInstance(instanceId);
+    await client.deleteInstance(instanceId, { reason: deps.reason ?? "cleanup" });
   } catch (error) {
     // A repeat delete answers 404; the read below says whether it is gone.
     if (!isNotFound(error)) {
@@ -275,7 +275,7 @@ export async function reconcileCloudPendingCreate(
 
 /**
  * Creates a quit (or a lost answer) left unresolved: a box that never signed
- * in is only a bill, so it is deleted; one that signed in is a real machine
+ * in is only waste, so it is deleted; one that signed in is a real machine
  * and is kept. Records stay until the provider confirms, so a failure here is
  * retried at the next start.
  */

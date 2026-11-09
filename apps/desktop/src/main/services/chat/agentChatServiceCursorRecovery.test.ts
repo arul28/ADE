@@ -542,6 +542,64 @@ describe("createAgentChatService", () => {
         .toMatchObject({ status: "completed" });
     });
 
+    it("still sends a message queued behind a /compact that fails", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      mockState.cursorSteerOutcome = "revert_to_followup";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      const releaseCompaction = parkCursorSend();
+      void service.sendMessage({ sessionId: session.id, text: "/compact" }, { awaitDispatch: true }).catch(() => undefined);
+      await vi.waitFor(() => expect(mockState.cursorSdkSendCalls).toHaveLength(1));
+
+      await service.steer({ sessionId: session.id, text: "Message queued behind it." });
+      mockState.cursorSendPromptResult = { id: "cursor-sdk-run-1", status: "error", error: { message: "summary failed" } };
+      mockState.onCursorSendPrompt = () => { mockState.cursorSendPromptResult = null; };
+      releaseCompaction();
+
+      await vi.waitFor(() => expect(mockState.cursorSdkSendCalls).toHaveLength(2));
+      expect(mockState.cursorSdkSendCalls[0]?.summarize).toBe(true);
+      expect(mockState.cursorSdkSendCalls[1]?.summarize).toBeUndefined();
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? "")).toContain("Message queued behind it.");
+    });
+
+    it("retries a /compact whose access token expired on the same agent, without an error card", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const staleTokenMessage = "Authentication error If you are logged in, try logging out and back in.";
+      mockState.onCursorSendPrompt = () => {
+        mockState.cursorSendPromptResult = mockState.cursorSdkSendCalls.length > 1
+          ? null
+          : { id: "cursor-sdk-run-1", status: "error", error: { message: staleTokenMessage, code: staleTokenMessage } };
+      };
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "/compact" }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.event.type === "done")).toBe(true);
+      });
+
+      expect(mockState.cursorSdkSendCalls.map((call) => call.summarize)).toEqual([true, true]);
+      expect(mockState.cursorSdkAcquireCalls[1]?.agentId).toBe("cursor-sdk-agent-1");
+      expect(events.filter((event) => event.event.type === "error")).toHaveLength(0);
+      expect(events.filter((event) => event.event.type === "done").at(-1)?.event).toMatchObject({ status: "completed" });
+    });
+
     it("ignores visible output from an abandoned run when deciding to resume mid-turn", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       // Same stale-token recovery, but the only "real output" belongs to a run

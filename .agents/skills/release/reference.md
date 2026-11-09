@@ -13,7 +13,7 @@ a TestFlight build, or reconcile the hosted Cloudflare surfaces.
 
 ADE ships **three independent tiers**, and a release conductor owns all three:
 
-- **desktop** — GitHub Actions release workflow, macOS + Windows assets
+- **desktop** — GitHub Actions release workflow, macOS, Windows and Linux assets
 - **iOS** — local ASC archive/export/upload to TestFlight
 - **Cloudflare web tier** — the `ade-web-client` Pages project and four Workers,
   plus the account-side state they depend on (D1 databases and their applied
@@ -23,11 +23,12 @@ ADE ships **three independent tiers**, and a release conductor owns all three:
   to every test in the repository because they live in account state, not code.
 
 This is a **GitHub desktop + local ASC iOS release flow**. Desktop releases must
-use the repository GitHub Actions release workflow for **both** platforms: macOS
+use the repository GitHub Actions release workflow for **every** platform: macOS
 updater assets are produced reproducibly as per-arch ZIP/DMG artifacts on a macOS
-runner, and the signed Windows installer is produced on a Windows runner. Neither
-is built from the release host, whatever that host is — macOS and Windows are
-peers here, not a primary and a follow-up.
+runner, the signed Windows installer on a Windows runner, and the Linux AppImage
+and `.deb` on x64 and arm64 Linux runners. None is built from the release host,
+whatever that host is — the platforms are peers here, not a primary and a
+follow-up.
 
 The release host runs checks, creates release docs/tags, and monitors and
 recovers the workflow. The only host-dependent phase is iOS: building and

@@ -73,7 +73,7 @@ import {
 } from "../../../shared/machinePresence";
 import { SavedMachineRow } from "./SavedMachineRow";
 import { MachinesBehindBanner } from "./MachinesBehindBanner";
-import { isMachineUpdateBusy, requestMachineUpdates, useKnownAdeVersions, useMachineUpdates } from "./machineUpdates";
+import { isMachineUpdateBusy, machineUpdateIsManual, requestMachineUpdates, useKnownAdeVersions, useMachineUpdates } from "./machineUpdates";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
 import { AccountMachineRow } from "./AccountMachineRow";
 import { accountRowKey, useRowActions } from "./useRowActions";
@@ -82,6 +82,7 @@ import {
   panelStyle,
 } from "./remoteTargetListStyles";
 import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { useCloudMachineGroup, type RowExtras } from "./useCloudMachineGroup";
 import type { MachineRow } from "./remoteMachineModel";
 
@@ -667,6 +668,8 @@ export function RemoteTargetList({
             arch: result.arch,
             version: result.version,
             appVersion: result.appVersion ?? null,
+            updateInstallMode: result.updateInstallMode,
+            downloadUrl: result.downloadUrl,
             route: result.route,
             capabilities: result.capabilities,
             compatibilityWarnings: result.compatibilityWarnings,
@@ -937,10 +940,11 @@ export function RemoteTargetList({
   // the provider is account-wide (its key is in the account vault), so this asks
   // with no pin. Read when the sheet opens, not polled. A saved key whose
   // status couldn't be read still offers the option, which then says so.
+  const cloudEnabled = useAdeCloudEnabled();
   const [cloud, setCloud] = useState<CloudPickerState>({ kind: "loading" });
   const loadCloudStatus = useCallback((): (() => void) => {
     const bridge = window.ade.cloud;
-    if (!bridge) {
+    if (!bridge || !cloudEnabled) {
       setCloud({ kind: "none", signedOut: false });
       return () => undefined;
     }
@@ -953,12 +957,16 @@ export function RemoteTargetList({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [cloudEnabled]);
   useEffect(() => {
     if (addMode !== "choose") return;
     // The last answer stays up while this one loads, so the option never flickers.
     return loadCloudStatus();
   }, [addMode, loadCloudStatus]);
+  // Access went away while its form was open: the choice is gone with it.
+  useEffect(() => {
+    if (!cloudEnabled && addMode === "cloud") setAddMode("choose");
+  }, [addMode, cloudEnabled]);
   const retryCloudStatus = useCallback(() => {
     setCloud({ kind: "loading" });
     loadCloudStatus();
@@ -1333,13 +1341,14 @@ export function RemoteTargetList({
                 ? machineUpdateTargetVersion({ version: row.version }, knownVersions)
                 : null
           }
+          manualDownloadUrl={machineUpdateIsManual(row.status ?? {}, updateAttempt) ? row.status?.downloadUrl ?? updateAttempt?.downloadUrl ?? null : undefined}
           updatePhase={updatePhase}
           power={pairAgainMachine?.power ?? null}
           updating={machineUpdates.updatingIds.has(row.target.id) || updateStatus?.inFlight === true}
           checkingUpdate={machineUpdates.checkingIds.has(row.target.id)}
           updateStatus={updateStatus ? { ok: updateStatus.ok, message: updateStatus.message } : null}
           onUpdateAndRestart={(targetVersion) =>
-            void requestMachineUpdates(
+            machineUpdateIsManual(row.status ?? {}, updateAttempt) ? openExternalUrl(row.status?.downloadUrl ?? updateAttempt?.downloadUrl) : void requestMachineUpdates(
               [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel, targetVersion }],
             )
           }
@@ -1456,10 +1465,10 @@ export function RemoteTargetList({
       ? machinesBehindOnTheirTrack(
           rows.flatMap((row) =>
             row.kind === "saved" && row.connected
-              ? [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel }]
+              ? [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel, updateInstallMode: row.status?.updateInstallMode }]
               : []),
           knownVersions,
-        )
+        ).filter((machine) => !machineUpdateIsManual(machine, machineUpdates.attempts[machine.id]))
       : [];
     const updateAllBusy = behindMachines.some((machine) =>
       isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
@@ -1522,12 +1531,12 @@ export function RemoteTargetList({
     detail: string;
   }> = [
     // With ADE Cloud access: a new cloud machine, signed in for you.
-    ...(cloud.kind === "ready" || cloud.kind === "unreachable"
+    ...(cloudEnabled && (cloud.kind === "ready" || cloud.kind === "unreachable")
       ? [{
           key: "cloud" as const,
           icon: <CloudMark size={18} bold />,
           label: `New ${ADE_CLOUD_NAME} machine`,
-          detail: "A cloud Linux box or VM, signed in to your account for you",
+          detail: "A cloud Linux computer, signed in to your account for you",
         }]
       : []),
     {
@@ -1677,10 +1686,10 @@ export function RemoteTargetList({
               </>
             ) : null}
 
-            {addMode === "cloud" && cloud.kind === "ready" ? (
+            {addMode === "cloud" && cloudEnabled && cloud.kind === "ready" ? (
               <NewCloudMachineForm onCreated={(result) => void onCloudMachineCreated(result)} />
             ) : null}
-            {addMode === "cloud" && cloud.kind === "unreachable" ? (
+            {addMode === "cloud" && cloudEnabled && cloud.kind === "unreachable" ? (
               <Banner
                 layout="inline"
                 model={{
@@ -1694,12 +1703,12 @@ export function RemoteTargetList({
                 }}
               />
             ) : null}
-            {addMode === "cloud" && cloud.kind === "loading" ? (
+            {addMode === "cloud" && cloudEnabled && cloud.kind === "loading" ? (
               <div role="status" style={{ ...helperTextStyle, display: "flex", gap: 8, alignItems: "center" }}>
                 <CircleNotch size={14} className="animate-spin" /> Checking {ADE_CLOUD_NAME}…
               </div>
             ) : null}
-            {addMode === "cloud" && cloud.kind === "none" ? (
+            {addMode === "cloud" && cloudEnabled && cloud.kind === "none" ? (
               <div style={helperTextStyle}>{cloud.signedOut ? `Sign in to ADE to use ${ADE_CLOUD_NAME}.` : `${ADE_CLOUD_NAME} isn't available on this account yet.`}</div>
             ) : null}
             {addMode === "code" ? (

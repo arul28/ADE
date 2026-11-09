@@ -12,7 +12,7 @@
  * main process with the account's ADE Cloud access and takes no pin.
  */
 
-import { cloudCapReachedMessage, type CloudCreateMachineResult, type CloudCreateProgress } from "../../../shared/adeCloud";
+import type { CloudCreateMachineResult, CloudCreateProgress } from "../../../shared/adeCloud";
 import { getErrorMessage } from "../shared/utils";
 import {
   CloudCreateCancelled,
@@ -23,7 +23,6 @@ import {
   waitForCloudBoxAuth,
 } from "./cloudMachineCreator";
 import type { CloudMachineCreatorDeps } from "./cloudMachineCreator";
-import type { CloudCopyDeps } from "./cloudMachineCopy";
 import { enableCloudSleep } from "./cloudSleep";
 import { wakeThroughTransition } from "./cloudReadyClaim";
 
@@ -32,7 +31,7 @@ function inAccount(auth: Record<string, unknown> | null): boolean {
   return auth?.signedIn === true && (auth.thisComputerRefusal == null);
 }
 
-type ReconnectDeps = CloudMachineCreatorDeps & Pick<CloudCopyDeps, "spending">;
+type ReconnectDeps = CloudMachineCreatorDeps;
 
 export async function reconnectCloudMachine(
   deps: ReconnectDeps,
@@ -45,7 +44,7 @@ export async function reconnectCloudMachine(
   } catch (error) {
     // The shared steps word a cancel for a create.
     if (error instanceof CloudCreateCancelled) {
-      throw new CloudCreateCancelled("You stopped the reconnect. If the box had already signed in, it shows under Your computers when it's ready.");
+      throw new CloudCreateCancelled("You stopped the reconnect. If the computer had already signed in, it shows under Your computers when it's ready.");
     }
     throw error;
   }
@@ -69,12 +68,6 @@ async function reconnect(
   const name = instance.name ?? instance.id;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   if (instance.status !== "running") {
-    // A wake bills like any other: refused past the month's cap.
-    const month = await deps.spending?.().catch((error: unknown) => {
-      logger.warn?.("cloud.reconnect_spending_failed", { instanceId: instance.id, error: getErrorMessage(error) });
-      return null;
-    });
-    if (month?.capReached) throw new Error(cloudCapReachedMessage(month));
     progress("creating", `Waking ${name}…`, instance.id);
     await wakeThroughTransition(client, instance.id);
   }
@@ -101,7 +94,7 @@ async function reconnect(
   progress("joining", `${name} is signed in. Adding it to your computers…`, instance.id);
   const joined = await waitForCloudAccountRow(deps, { client, instanceId: instance.id, name, requestId, signal });
   if (joined.machineKey) {
-    await enableCloudSleep(client, instance.id, { afterMinutes: deps.sleepAfterMinutes?.() ?? undefined, logger })
+    await enableCloudSleep(client, instance.id, { logger })
       .catch((error: unknown) => logger.warn?.("cloud.reconnect_sleep_failed", { instanceId: instance.id, error: getErrorMessage(error) }));
   }
   logger.info?.("cloud.machine_reconnected", { instanceId: instance.id, joined: joined.joined });

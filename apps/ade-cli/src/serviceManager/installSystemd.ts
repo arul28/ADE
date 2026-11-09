@@ -52,41 +52,14 @@ type SystemdServiceManagerDeps = {
 };
 
 /** See `launchAgentPath` for why `serviceName` is a parameter. */
-/**
- * Where this user's systemd manager reads unit files. Normally
- * `~/.config/systemd/user`, but a relocated `XDG_CONFIG_HOME` moves it, and a
- * unit written anywhere else is never seen. The answer comes from the manager
- * itself; an unusable manager or another home keeps the default.
- */
-let cachedUserUnitDirectory: string | null = null;
-
-function userUnitDirectory(homeDir: string): string {
-  const fallback = path.join(homeDir, ".config", "systemd", "user");
-  if (process.platform !== "linux" || homeDir !== os.homedir()) return fallback;
-  if (cachedUserUnitDirectory) return cachedUserUnitDirectory;
-  try {
-    const result = spawnSync("systemctl", ["--user", "show", "--property=UnitPath", "--value"], { encoding: "utf8", timeout: 2_000 });
-    if (result.status === 0) {
-      const userConfigDir = String(result.stdout ?? "")
-        .trim()
-        .split(/\s+/)
-        .find((dir) => dir.endsWith("/systemd/user") && !/^\/(?:run|usr|etc|var)\//.test(dir));
-      if (userConfigDir) {
-        cachedUserUnitDirectory = userConfigDir;
-        return userConfigDir;
-      }
-    }
-  } catch {
-    // No systemd here: the default location is as good as any.
-  }
-  return fallback;
-}
-
 export function servicePath(
   homeDir = os.homedir(),
   serviceName: string = ADE_RUNTIME_SERVICE_NAME,
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return path.join(userUnitDirectory(homeDir), `${serviceName}.service`);
+  const configured = env.XDG_CONFIG_HOME?.trim();
+  const configHome = configured && path.isAbsolute(configured) ? configured : path.join(homeDir, ".config");
+  return path.join(configHome, "systemd", "user", `${serviceName}.service`);
 }
 
 function serviceUnitName(): string {
@@ -227,7 +200,7 @@ export async function installSystemdService(
   const run = deps.spawnSync ?? spawnSync;
   const env = deps.env ?? process.env;
   const homeDir = deps.homeDir ?? os.homedir();
-  const targetPath = servicePath(homeDir);
+  const targetPath = servicePath(homeDir, ADE_RUNTIME_SERVICE_NAME, env);
   const command = deps.command ?? resolveAdeServeCommand();
   const adeHome = command.env?.ADE_HOME?.trim() || env.ADE_HOME?.trim() || path.join(homeDir, ".ade");
   const socketPath = path.join(adeHome, "sock", "ade.sock");

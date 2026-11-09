@@ -2536,11 +2536,11 @@ function AgentChatComposerImpl({
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   usageViewModel?: ContextUsageViewModel | null;
   compactionPulse?: boolean;
-  /** Sends `/compact` without replacing the unsent draft. Claude/Codex/Pi only. */
+  /** Sends `/compact` without replacing the unsent draft. */
   onCompactContext?: () => void;
   /**
    * Provider of the open session. Compact must follow the live session, not the
-   * model picker, so a Cursor chat does not grow a compact control just because
+   * model picker, so a Droid chat does not grow a compact control just because
    * Claude is selected for the next turn.
    */
   compactSessionProvider?: string | null;
@@ -5845,7 +5845,7 @@ function AgentChatComposerImpl({
       provider: compactSessionProvider === undefined ? sessionProvider : compactSessionProvider,
       state: usageViewModel?.state ?? "unknown",
       enabled: Boolean(onCompactContext && usageViewModel),
-      openCodeCompactAvailable: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
+      compactAvailableOnChat: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
       turnActive,
       busy,
       pendingInput: hasPendingInput,

@@ -343,10 +343,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     write: ["request"],
   },
   cloud: {
-    read: ["ready_status", "list", "spending", "make_status", "limits", "cloud_sign_in_status"],
+    read: ["access", "ready_status", "list", "hours", "make_status", "limits", "cloud_sign_in_status"],
     write: [
       "claim_ready", "release_ready", "create", "sleep", "wake", "resize", "copy", "move", "delete",
-      "set_sleep", "set_cap", "ready_set", "ready_off", "ready_retry", "set_limits",
+      "update", "ready_set", "ready_off", "ready_retry", "set_limits",
       "cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_save_key", "cloud_sign_in_remove",
     ],
     // Claude's sign-in for new machines is a terminal the brain keeps open.
@@ -560,7 +560,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   work_tools: {
     live: "all",
     read: [
-      "getLaneState", "readObservationPreview", "listDevServers", "probePort",
+      "getLaneState", "readObservationPreview", "listDevServers", "probePort", "noteWatching",
     ],
     write: [
       "setActiveTool", "show", "acknowledgeShow", "stopDevServer",
@@ -805,6 +805,22 @@ const UNREPLAYED_READS = new Set<string>([
   "storage.cleanupPreview",
   "project_health.getReport",
 ]);
+
+/**
+ * Writes the app sends on its own (opening a view, window focus), never because
+ * a person asked: they don't wake a sleeping cloud computer or keep one awake.
+ */
+const BACKGROUND_WRITES = new Set<string>([
+  "pr.reconcileOnFocus",
+  "session.backfillDeltas",
+  "session.clearWokeMarker",
+  "work_tools.acknowledgeShow",
+  "work_tools.setActiveTool",
+]);
+
+export function isBackgroundAdeWrite(domain: string, action: string): boolean {
+  return BACKGROUND_WRITES.has(`${domain}.${action}`);
+}
 
 /**
  * May a runtime call whose connection dropped before it answered run again?

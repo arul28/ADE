@@ -4,7 +4,7 @@ description: "Install ADE with one command on macOS, Linux, or Windows, or downl
 icon: "download"
 ---
 
-ADE is a native desktop app, a headless engine, and an iOS companion. The desktop app is available on macOS and Windows 10/11 x64, and the brain runs headless on Linux. The fastest path on every platform is one command.
+ADE is a native desktop app, a headless engine, and an iOS companion. The desktop app is available on macOS, Windows 10/11 x64, and Linux x64 and arm64. The brain can also run headless on a Linux server. The fastest path on every platform is one command.
 
 ## Install from your terminal
 
@@ -20,7 +20,7 @@ irm https://ade-app.dev/install.ps1 | iex
 
 This installs the **brain** — ADE's always-on engine. The script downloads a self-contained runtime binary, verifies it against the published `SHA256SUMS`, and stages it under `~/.ade`, rolling back if anything fails. There is no Node, npm, or other prerequisite.
 
-It then registers the brain as a per-user background service, offers to sign you in with [`ade connect`](/getting-started/connect-machine), and — on macOS and Windows — offers to install the desktop app too.
+It then registers the brain as a per-user background service, offers to sign you in with [`ade connect`](/getting-started/connect-machine), and — on macOS and Windows — offers to install the desktop app too. On Linux, [download the app](/getting-started/linux) if the machine has a screen.
 
 | Platform | Background service |
 | --- | --- |
@@ -62,10 +62,10 @@ When no terminal is attached — CI, or a provisioning script — the installer 
 
     It is a per-user NSIS installer: no administrator rights, and it installs the app, the `ade` CLI and the background ADE brain into your user profile. Read [ADE on Windows](/getting-started/windows) for the capabilities that differ from macOS.
   </Accordion>
-  <Accordion title="Linux — the brain only" icon="linux">
-    There is no ADE desktop app for Linux, and none is needed. Install the brain with the one-liner above on any x64 or arm64 box, connect it to your account, and drive it from ADE on your Mac, Windows PC, phone, or the web.
+  <Accordion title="Linux" icon="linux">
+    Download the **AppImage** ([x64](https://ade-app.dev/download/linux-x64-appimage), [arm64](https://ade-app.dev/download/linux-arm64-appimage)), which updates itself, or the **`.deb`** ([x64](https://ade-app.dev/download/linux-x64-deb), [arm64](https://ade-app.dev/download/linux-arm64-deb)) for Debian and Ubuntu. Read [ADE on Linux](/getting-started/linux) for which one to pick.
 
-    See [Connect a machine](/getting-started/connect-machine) for the full server workflow.
+    On a server with no screen, install just the brain with the one-liner above and control it from another ADE desktop, your phone, or the web. See [Connect a machine](/getting-started/connect-machine).
   </Accordion>
   <Accordion title="Install the iOS companion" icon="mobile-screen">
     Open [TestFlight](https://testflight.apple.com/join/ZSdJGKPy) on your iPhone and install ADE Mobile. Sign in with the same account to see your machines automatically, or pair directly from the desktop **Mobile** control.
@@ -82,7 +82,7 @@ Want the brain binary directly, without piping a script? Download it for [`darwi
 
 <CardGroup cols={3}>
   <Card title="macOS 13+, Windows 10/11, or Linux" icon="desktop">
-    macOS on Apple Silicon or Intel, shipped as a signed, notarized app. Windows supports x64 only — see [ADE on Windows](/getting-started/windows). Linux runs the brain headless on x64 and arm64.
+    macOS on Apple Silicon or Intel, shipped as a signed, notarized app. Windows supports x64 only — see [ADE on Windows](/getting-started/windows). Linux runs the desktop app or a headless brain on x64 and arm64 — see [ADE on Linux](/getting-started/linux).
   </Card>
   <Card title="Git" icon="git-alt">
     Required — ADE uses branches and worktrees to run lanes.

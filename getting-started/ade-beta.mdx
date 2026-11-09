@@ -10,7 +10,7 @@ Beta builds are less tested than stable ones. Use Beta if you want the newest wo
 
 <CardGroup cols={2}>
   <Card title="Desktop Beta" icon="desktop" href="#desktop">
-    Switch any Mac or Windows machine to the Beta track in Settings.
+    Switch any Mac, Windows, or Linux machine to the Beta track in Settings.
   </Card>
   <Card title="ADE Beta for iPhone" icon="mobile-screen" href="https://testflight.apple.com/join/SsxDjqbF">
     Join the public TestFlight beta. It installs beside the normal app.
@@ -28,6 +28,8 @@ The desktop app, the brain and the `ade` CLI all follow the track of their machi
 A beta build is the same ADE install with the same data, projects and `ade` CLI. It shows an orange icon and a **Beta** label next to the logo, and its version looks like `1.2.129-beta.3`. A new beta comes out when something that ships has changed, at most every few hours.
 
 Each machine has its own track. You can keep your main Mac on Stable and run Beta on a second machine; they work together either way. A phone shows a **Beta** chip on a machine that runs the Beta track.
+
+On Linux, the AppImage can follow either track. A `.deb` install stays on Stable, because it can't update itself.
 
 To leave, choose **Stable** under **Update track**. ADE installs the newest stable build, even though it is older than the beta you are on. If a beta ever fails to start, the **ADE could not start** window offers **Go back** to the previous version.
 

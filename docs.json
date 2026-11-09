@@ -50,7 +50,8 @@
               "getting-started/connect-machine",
               "getting-started/connect-provider",
               "getting-started/open-project",
-              "getting-started/windows"
+              "getting-started/windows",
+              "getting-started/linux"
             ]
           },
           {

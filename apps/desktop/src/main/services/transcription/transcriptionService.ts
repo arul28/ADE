@@ -318,6 +318,9 @@ export function createTranscriptionService({
   };
 
   const downloadModel = (onProgress?: (p: ModelInstallProgress) => void): Promise<void> => {
+    if (process.platform === "linux" && !resolveBinary()) {
+      return Promise.reject(new TranscriptionError("engine_unsupported", "Voice transcription is unavailable in this Linux build because its speech engine is not included."));
+    }
     // Join an in-flight install before checking disk: the model is on disk
     // while warm-up still runs, and a caller must not resolve ahead of it.
     if (modelDownloadPromise) return modelDownloadPromise;
@@ -466,6 +469,9 @@ export function createTranscriptionService({
     }
 
     const status = getStatus();
+    if (process.platform === "linux" && !status.binaryInstalled) {
+      throw new TranscriptionError("engine_unsupported", "Voice transcription is unavailable in this Linux build because its speech engine is not included.");
+    }
     if (!status.installed || !status.binaryPath || !status.modelPath) {
       logger.warn("transcription.model_not_installed", { engineDir });
       throw new TranscriptionError(

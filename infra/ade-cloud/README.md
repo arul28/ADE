@@ -61,12 +61,46 @@ the provider to save and ingest the image). Building an existing name publishes 
 new revision; boxes already made keep their image, and `ade brain update`
 updates their ADE.
 
-ADE creates from the template named `ade`. A development desktop can point at a
-trial template with `ADE_CLOUD_TEMPLATE=ade-a1-test`.
+ADE's server creates from the exact template version pinned in `cloud_settings`
+(`template_version`, like `ade@8`); bare `ade` means newest and is never sent.
 
-## Keeping it current
+## Every release builds it
 
-ADE does not build the template from the app. Run this script after a release
-that changes `template/`. On first boot a new machine installs the ADE version
-of the app that made it when the image's ADE is older, so a template only has to be rebuilt when the image or
-the entrypoint changes.
+`.github/workflows/cloud-template.yml` builds the template named `ade` from a
+release's tag once that release's files are public: on stable publish (the
+`release` trigger, when the release skill undrafts it) and from `beta.yml`
+beside the feed job. Previews do not build one. Each build gets the next build
+number, `ade@N`, written to the run's summary. It changes nothing else: the job
+is allowed to fail, nothing waits on it, and ADE's server keeps creating
+computers from the version it has pinned (bare `ade` means newest and is never
+sent). A build needs the repository secret `AGENT37_API_KEY`; without it the job
+skips with a warning. Rerun it by hand from the Actions tab (it takes a tag).
+
+## Testing a build and moving the version
+
+`infra/ade-cloud/promote-template.mjs` tests one build on a real computer: it
+creates one from `ade@N` (tagged `created_by: ade-template-check`), checks ADE is there and
+its version, that a command runs and that ADE's brain answers, that a file in
+`/home/node` survives sleep and wake and then stop and start, and deletes the
+computer in a `finally` (Ctrl-C included). It prints first-start timings.
+
+```sh
+AGENT37_API_KEY=sk_live_... node infra/ade-cloud/promote-template.mjs 9                       # test only
+AGENT37_API_KEY=sk_live_... node infra/ade-cloud/promote-template.mjs 9 --move --env production  # test, then move
+AGENT37_API_KEY=sk_live_... node infra/ade-cloud/promote-template.mjs --move-back 8 --env production
+```
+
+`--move` runs only after a passing test and sets `cloud_settings.template_version`
+through `wrangler d1 execute` (`--env` is `production`, `development` or `local`).
+`--move-back` is the same step for a previous build and runs no test. Add
+`--min-version vX.Y.Z` to time the first-start install of a newer ADE.
+
+Measured on 2026-11-08 with `ade@8` (ADE 1.2.129-beta.24, a 2 CPU / 4 GB computer
+on a 4 GB disk): create answered in 0.8 s, first command at 1.1 s, `ade --version`
+at 2.4 s, ADE's brain answering at 4.0 s. Sleep 1.3 s, wake to a brain answering
+1.9 s; stop 1.1 s, start to a brain answering 3.7 s.
+
+A computer that an ADE older than the template already built keeps its image
+until it is updated; `ade brain update` updates its ADE. On first boot a new
+computer installs the ADE version of the app that made it when the image's ADE
+is older (`ADE_MIN_VERSION`).

@@ -33,7 +33,21 @@ if [ ! -x "$ADE_BIN" ]; then
 fi
 
 mkdir -p "$TARGET_DIR"
-ln -sf "$ADE_BIN" "$TARGET_PATH"
+if [ "$(uname -s 2>/dev/null || echo unknown)" = Linux ] && [ -n "${APPIMAGE:-}" ] && [ -f "$APPIMAGE" ]; then
+  # A symlink into an AppImage mount dies when the app exits. Keep a shim to
+  # the image itself instead; its launcher resolves the mounted CLI at runtime.
+  quoted_image=$(printf '%s' "$APPIMAGE" | sed "s/'/'\\\\''/g")
+  shim=$(mktemp "$TARGET_DIR/.ade-cli.XXXXXXXX")
+  trap 'rm -f "$shim"' EXIT HUP INT TERM
+  printf "#!/bin/sh\nexport ADE_APPIMAGE_CLI=1 ELECTRON_RUN_AS_NODE=1\nexec '%s' \"\$@\"\n" "$quoted_image" > "$shim"
+  chmod 755 "$shim"
+  mv -f "$shim" "$TARGET_PATH"
+  trap - EXIT HUP INT TERM
+  installed_source=$APPIMAGE
+else
+  ln -sf "$ADE_BIN" "$TARGET_PATH"
+  installed_source=$ADE_BIN
+fi
 
-echo "Installed $CLI_NAME -> $ADE_BIN"
+echo "Installed $CLI_NAME -> $installed_source"
 echo "Ensure $TARGET_DIR is on PATH, then run: $CLI_NAME doctor"

@@ -5,6 +5,7 @@ import type {
 import { isTrackedAgentCliToolType } from "../../../../desktop/src/shared/types";
 import { isChatToolType } from "../../../../desktop/src/shared/sessionSpawnNesting";
 import type { AdeRuntime } from "../../bootstrap";
+import type { CloudBusyFacts } from "../power/cloudKeepAwake";
 
 // What one ADE runtime is doing right now, read from memory: the activity a
 // keep-awake or idle check needs, and what a restart for an update would stop.
@@ -33,6 +34,14 @@ export function summarizeRuntimeActivity(runtime: AdeRuntime): RuntimeActivityCo
     activeAgentTurns: runtime.agentChatService?.hasActiveWorkloads() ? 1 : 0,
     activeWorkSessions: activeWorkSessions.length,
     ...(activeAgentCliSessions > 0 ? { activeAgentCliSessions } : {}),
+  };
+}
+
+/** What the cloud busy list reads from this runtime (`decideCloudBusy`). */
+export function readRuntimeBusyFacts(runtime: AdeRuntime): Pick<CloudBusyFacts, "chats" | "terminals"> {
+  return {
+    chats: runtime.agentChatService?.listBusyFacts?.() ?? [],
+    terminals: runtime.ptyService.listBusyFacts?.() ?? [],
   };
 }
 

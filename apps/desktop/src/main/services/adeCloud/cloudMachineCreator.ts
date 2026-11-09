@@ -20,7 +20,6 @@
  */
 
 import {
-  CLOUD_DEFAULT_TEMPLATE,
   CLOUD_WAKE_PORT,
   CLOUD_WAKE_PORT_LABEL,
   cloudInstanceType,
@@ -90,11 +89,10 @@ export type CloudMachineCreatorDeps = {
   approveHeadless?: (args: { url: string; signal: AbortSignal }) => Promise<CloudApprovalWindowResult>;
   /**
    * Whether this brain may approve the new machine itself: a machine it made
-   * for this request, once, soon after the create, within the cap and the
+   * for this request, once, soon after the create, within the hours and the
    * agent limits. Logged by the brain each time it answers yes.
    */
   selfApproval?: (args: { instanceId: string; requestId: string }) => Promise<boolean>;
-  templateName?: () => string;
   /**
    * Env the new machine starts with: the person's provider sign-ins, so they
    * work from the first chat (cloudSignInStore.ts). the provider
@@ -121,8 +119,6 @@ export type CloudMachineCreatorDeps = {
    * found by its request id and deleted at the next start.
    */
   pendingCreates?: CloudPendingCreateStore;
-  /** Minutes of nothing running before a new box sleeps (the provider's idle timer). */
-  sleepAfterMinutes?: () => number | null;
 };
 
 /** The person cancelled (closed the dialog or pressed Cancel). */
@@ -132,6 +128,8 @@ export class CloudCreateCancelled extends Error {
     this.name = "CloudCreateCancelled";
   }
 }
+
+const CLOUD_CANT_MAKE_COMPUTER_MESSAGE = "ADE Cloud can't make a computer right now. Try again soon.";
 
 const BRAIN_READY_TIMEOUT_MS = 3 * 60_000;
 const SIGN_IN_FINISH_TIMEOUT_MS = 90_000;
@@ -264,7 +262,7 @@ function approvalErrorMessage(status: number, code: string | null): string {
 
 export function normalizeCloudMachineName(raw: string): string {
   const cleaned = raw.replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
-  return cleaned || "ADE Cloud box";
+  return cleaned || "ADE Cloud computer";
 }
 
 /** A published release a machine can install (`ade brain update --version`), or null. */
@@ -285,29 +283,28 @@ export async function createCloudMachine(
     signal?: AbortSignal;
     /** More tags for the box (a ready machine's project and state); ADE's own tags win. */
     metadata?: Record<string, string>;
+    /** The computer this one replaces in a move: its disk size carries over. */
+    moveFromInstanceId?: string;
   } = {},
 ): Promise<CloudCreateMachineResult> {
   const { signal } = options;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  if (!isCloudMachineKind(rawArgs?.kind)) throw new Error("Pick a box or a VM.");
+  if (!isCloudMachineKind(rawArgs?.kind)) throw new Error("Pick a standard or a full computer.");
   const shape = cloudShape(rawArgs?.shape);
   if (!shape) throw new Error("Pick a size.");
   const name = normalizeCloudMachineName(rawArgs?.name ?? "");
-  const template = deps.templateName?.() || CLOUD_DEFAULT_TEMPLATE;
   const progress = (stage: CloudCreateProgress["stage"], message: string, instanceId?: string, approvalUrl?: string) =>
     onProgress({ requestId, stage, message, ...(instanceId ? { instanceId } : {}), ...(approvalUrl ? { approvalUrl } : {}) });
   const checkCancelled = () => {
     if (signal?.aborted) throw new CloudCreateCancelled();
   };
 
-  // Everything that can fail before money is spent is checked first.
+  // Everything that can fail before hours are spent is checked first.
   const client = await deps.client();
   const directory = deps.directoryBaseUrl();
   if (!directory) throw new Error("ADE's account service isn't configured on this computer, so it can't sign the new machine in.");
   if (!(await deps.getAccountToken())) throw new Error("Sign in to ADE on this computer first. The new machine joins your account.");
-  if (!(await client.hasTemplate(template))) {
-    throw new Error(`ADE Cloud's machine template ("${template}") is missing, so ADE can't make a machine right now.`);
-  }
+  if (!(await client.hasTemplate())) throw new Error(CLOUD_CANT_MAKE_COMPUTER_MESSAGE);
   checkCancelled();
   const logger = deps.logger ?? {};
   const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -341,10 +338,10 @@ export async function createCloudMachine(
   let instance: CloudInstance;
   try {
     instance = await client.createInstance({
-      template,
       name,
       type: cloudInstanceType(rawArgs.kind),
-      resources: { cpu: shape.cpu, memory: shape.memoryGb, disk: shape.diskGb },
+      resources: { cpu: shape.cpu, memory: shape.memoryGb },
+      ...(options.moveFromInstanceId ? { moveFromInstanceId: options.moveFromInstanceId } : {}),
       metadata: { ...options.metadata, created_by: "ade", ade_request_id: requestId },
       ...(Object.keys(machineEnv).length ? { env: machineEnv } : {}),
       // The box's wake URL: its brain requests it while it works, which keeps
@@ -369,7 +366,7 @@ export async function createCloudMachine(
     let cleanup = await reconcileOnce();
     // A cancel stops ADE waiting, not the provider making the box: it can still
     // appear a few seconds later. Look for it for a while so a cancelled box
-    // doesn't bill until the next app start (which would still catch it).
+    // doesn't use hours until the next app start (which would still catch it).
     if (signal?.aborted) {
       const lookUntil = Date.now() + CANCELLED_CREATE_LOOK_MS;
       while (cleanup && !cleanup.resolved && Date.now() < lookUntil) {
@@ -399,7 +396,7 @@ export async function createCloudMachine(
         : "ADE stopped making the machine. If ADE Cloud still makes it, ADE deletes it as soon as it appears.");
     }
     if (cleanup && cleanup.unresolved.length) {
-      throw new Error(`${errorText(error).replace(/\.$/, "")}. ADE Cloud may have made the box anyway and ADE couldn't delete it yet; it tries again when ADE next starts.`);
+      throw new Error(`${errorText(error).replace(/\.$/, "")}. ADE Cloud may have made the computer anyway and ADE couldn't delete it yet; it tries again when ADE next starts.`);
     }
     throw error;
   }
@@ -740,7 +737,7 @@ export async function bringCloudBoxIntoAde(
     logger.warn?.("cloud.machine_setup_failed", { instanceId: instance.id, error: errorText(error) });
     const reasonFor = () => (signal?.aborted ? new CloudCreateCancelled().message : errorText(error));
     // A cancel or failure after approval may come after the box signed in: then
-    // it is a real machine on the account, not a bill, and is kept. Asked
+    // it is a real machine on the account, not waste, and is kept. Asked
     // without the create's signal, which a cancel has already aborted.
     if (approvalSent) {
       const signedIn = await readCloudBoxSignedIn(client, instance.id, logger);
@@ -755,8 +752,8 @@ export async function bringCloudBoxIntoAde(
         throw new Error(`${reasonFor()} ADE couldn't tell whether "${name}" (${instance.id}) finished signing in, so it didn't delete it. If it shows as Not in ADE under Your computers, delete it from its row; ADE also checks again when it next starts.`);
       }
     }
-    // A box that never signed in is only a bill: take it back off the provider.
-    const deleted = await deleteCloudInstanceConfirmed(client, instance.id, { logger, sleep });
+    // A box that never signed in is only using hours: take it back off the provider.
+    const deleted = await deleteCloudInstanceConfirmed(client, instance.id, { logger, sleep, reason: "create_failed" });
     // Kept on the pending list until the provider confirms: the next app start tries again.
     if (deleted) {
       logger.warn?.("cloud.half_made_box_deleted", { instanceId: instance.id, requestId });
@@ -765,8 +762,8 @@ export async function bringCloudBoxIntoAde(
     // A request the cancel cut short reads as the cancel, not as its own error.
     const reason = reasonFor();
     throw new Error(deleted
-      ? `${reason} ADE deleted the box it made, so it isn't billing.`
-      : `${reason} ADE couldn't confirm it deleted the box it made ("${name}", ${instance.id}). Delete it from its row under Your computers so it stops billing; ADE also tries again when it next starts.`);
+      ? `${reason} ADE deleted the computer it made.`
+      : `${reason} ADE couldn't confirm it deleted the computer it made ("${name}", ${instance.id}). Delete it from its row under Your computers; ADE also tries again when it next starts.`);
   }
 
   progress("joining", `${name} is signed in. Adding it to your computers…`, instance.id);
@@ -775,7 +772,7 @@ export async function bringCloudBoxIntoAde(
   // it when nothing runs. A brain too old to keep itself awake stays awake;
   // the next pass (registerCloudIpc) tries again once it updates.
   if (machineKey) {
-    await enableCloudSleep(client, instance.id, { afterMinutes: deps.sleepAfterMinutes?.() ?? undefined, logger });
+    await enableCloudSleep(client, instance.id, { logger });
   }
   return { instanceId: instance.id, machineKey, name, joined, renamed };
 }

@@ -205,27 +205,32 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade chat create --machine cloud:ready --prompt \"…\"",
     },
     list: {
-      description: "List the account's ADE Cloud machines: name, id, ADE machine key, state (running, asleep…), type and size, what an hour costs awake and asleep, spend, what sleeping saved, how it sleeps, plus the wallet and this month against the cap. Reads ADE Cloud with the account's key; never returns the key.",
+      description: "List the account's ADE Cloud machines: name, id, ADE machine key, state (running, asleep…), type and size, how fast it uses hours, how it sleeps, plus the account's plan and hours. Reads ADE Cloud with the account's key; never returns the key.",
       input: "no input",
       example: "ade cloud list --text",
     },
-    spending: {
-      description: "This month's ADE Cloud spend against the account's monthly cap and what sleeping saved. Returns {monthlyCapUsd, monthSpentUsd, capReached, capNear, balanceUsd, savedUsd}.",
+    hours: {
+      description: "The account's plan and hours. Returns {plan, rules, hours: {includedMilli, usedMilli, leftMilli, percentUsed, state}, extraHours, disk, computers, dueForDeletion, billing}. Milli values are thousandths of a Small-hour; state is none, warn80, warn95 or zero.",
       input: "no input",
-      example: "ade cloud spending --text",
+      example: "ade cloud hours --text",
+    },
+    update: {
+      description: "Update an ADE Cloud computer to the current ADE: it restarts on the newest ADE release, files stay, running work stops. Asks the person first.",
+      input: "object { machine: string }",
+      example: "ade cloud update \"android vm\"",
     },
     create: {
-      description: "Make an ADE Cloud machine from ADE's template, signed in to the account. With an ADE desktop attached its window approves the sign-in; otherwise the person approves from a link ADE posts in your chat (the command waits up to 10 minutes). Costs money: asks the person in your chat first (a full-auto chat is answered by ADE within the monthly cap). Refused at the cap. Returns the machine {instanceId, machineKey, name, joined}; with background: true, returns {requestId} at once to read with make_status.",
-      input: "object { kind?: \"box\" | \"vm\", shape?: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\", name?: string, background?: boolean }",
+      description: "Make an ADE Cloud computer, signed in to the account. With an ADE desktop attached its window approves the sign-in; otherwise the person approves from a link ADE posts in your chat (the command waits up to 10 minutes). Costs money: asks the person in your chat first (a full-auto chat is answered by ADE within the monthly cap). Refused at the cap. Returns the machine {instanceId, machineKey, name, joined}; with background: true, returns {requestId} at once to read with make_status.",
+      input: "object { kind?: \"box\" | \"vm\" (vm is a full computer: Android and Docker), shape?: \"small\" | \"medium\" | \"large\" | \"x-large\" or \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\", name?: string, background?: boolean }",
       example: "ade cloud create --kind vm --shape 4x8 --name \"android vm\"",
     },
     limits: {
-      description: "What unattended agents (full-auto chats, automation runs) may spend on ADE Cloud alone: {unattendedSpend, machinesPerDay, maxShape, preset: ask | balanced | hands_off | custom}. Attended agents always ask in their chat.",
+      description: "What unattended agents (full-auto chats, automation runs) may do on ADE Cloud alone: {unattendedSpend, machinesPerDay, maxShape, preset: ask | balanced | hands_off | custom}. Attended agents always ask in their chat.",
       input: "none",
       example: "ade cloud limits --text",
     },
     set_limits: {
-      description: "Change what unattended agents may spend: a preset, or single limits. Loosening any limit asks the person; an unattended agent is refused.",
+      description: "Change what unattended agents may do: a preset, or single limits. Loosening any limit asks the person; an unattended agent is refused.",
       input: "object { preset?: \"ask\" | \"balanced\" | \"hands_off\", unattendedSpend?: boolean, machinesPerDay?: number (0-100), maxShape?: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\" }",
       example: "ade cloud limits balanced",
     },
@@ -235,18 +240,18 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade --role agent actions run cloud.make_status --input-json '{\"requestId\":\"…\"}' --json",
     },
     sleep: {
-      description: "Put an ADE Cloud machine to sleep now: memory kept, only its disk bills. Free.",
+      description: "Put an ADE Cloud computer to sleep now: memory kept, it uses no hours.",
       input: "object { machine: string (name, id or machine key) }",
       example: "ade cloud sleep \"android vm\"",
     },
     wake: {
-      description: "Wake an asleep ADE Cloud machine (about a second; ADE on it is online a few seconds later). Bounded by the monthly cap. A --machine call to an asleep machine wakes it on its own.",
+      description: "Wake an asleep ADE Cloud machine (about a second; ADE on it is online a few seconds later). The server refuses it at 0 hours. A --machine call to an asleep machine wakes it on its own.",
       input: "object { machine: string }",
       example: "ade cloud wake \"android vm\"",
     },
     resize: {
       description: "Change an ADE Cloud machine's size (same type). It restarts: files stay, running work stops. Asks the person first.",
-      input: "object { machine: string, shape: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\" }",
+      input: "object { machine: string, shape: \"small\" | \"medium\" | \"large\" | \"x-large\" or \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\" }",
       example: "ade cloud resize \"android vm\" --shape 4x16",
     },
     copy: {
@@ -263,16 +268,6 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Delete an ADE Cloud machine and remove it from the account. Its files are gone for good. Asks the person first; a full-auto chat may delete only a machine it made itself.",
       input: "object { machine: string }",
       example: "ade cloud delete \"lane copy\"",
-    },
-    set_sleep: {
-      description: "How long an ADE Cloud machine waits with nothing running before it sleeps (5 to 1440 minutes), or never. Never asks first: it bills around the clock.",
-      input: "object { machine: string, minutes: number | \"never\" }",
-      example: "ade cloud sleep-after \"my box\" 30",
-    },
-    set_cap: {
-      description: "Set the account's monthly cap for every ADE Cloud machine (dollars), or off. Raising or removing it asks the person first; lowering never does. At the cap ADE makes and wakes nothing.",
-      input: "object { monthlyCapUsd: number | \"off\" }",
-      example: "ade cloud cap 50",
     },
     ready_set: {
       description: "Turn on (or change) \"Keep a cloud machine ready\" for this project: a machine kept prepared and asleep for the next chat. Turning it on asks the person first. A desktop on the account prepares it.",

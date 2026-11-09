@@ -2617,7 +2617,9 @@ export const SessionListPane = React.memo(function SessionListPane({
     const laneDeleteProgress = deleteProgressByLaneId[
       foreignRow ? foreignLaneKey(foreignRow.machineId, session.laneId) : session.laneId
     ] ?? null;
-    const disabledReason = (foreignRow
+    // A saved chat on a computer that isn't connected can still be read.
+    const savedCopyReadable = session.cloudSavedCopy === true && foreignRow != null && !foreignRow.online;
+    const disabledReason = (foreignRow && !savedCopyReadable
       ? machineBlockedReason({ machineName: foreignRow.machineName, online: foreignRow.online, routable: foreignRow.binding != null })
       : null)
       ?? (laneDeleteProgress ? `${getLaneDeleteStatusLabel(laneDeleteProgress)} lane` : null);

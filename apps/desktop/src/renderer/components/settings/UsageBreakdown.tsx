@@ -16,6 +16,7 @@ import type {
   AdeUsageRangePreset,
   AdeUsageScope,
 } from "../../../shared/types";
+import { isMac, modifierChordLabel } from "../../lib/platform";
 import { formatSpend, formatTokens } from "../../lib/format";
 import { triggerBrowserDownload } from "../../lib/transcriptExport";
 import { ProviderLogo } from "../shared/ProviderLogos";
@@ -226,7 +227,7 @@ export function UsageBreakdown({
           disabled={!rows.length}
           className="kit-icon-btn"
           aria-label="Export this view as CSV"
-          title="Export CSV (⌘⇧E)"
+          title={`Export CSV (${modifierChordLabel(isMac ? "⇧E" : "Shift+E")})`}
         >
           <DownloadSimple size={13} />
         </button>

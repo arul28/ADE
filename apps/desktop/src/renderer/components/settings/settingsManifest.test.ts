@@ -21,6 +21,7 @@ import {
   settingsEntryPath,
   settingsGroupsForTab,
   settingsRouteFor,
+  isAdeCloudSettingEntry,
 } from "./settingsManifest";
 
 /**
@@ -489,15 +490,26 @@ describe("web machine-scoped availability", () => {
     { platform: "MacIntel", mac: true },
     { platform: "Win32", mac: false },
     { platform: "Linux x86_64", mac: false },
-  ])("keeps every setting on the desktop ($platform), except web-only cards and macOS-only ones off a Mac", ({ platform, mac }) => {
+  ])("keeps every setting on the desktop ($platform), except web-only cards, macOS-only ones off a Mac, and ADE Cloud off its access list", async ({ platform, mac }) => {
     const spy = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
     try {
       const available = new Set(availableSettingsEntries().map((entry) => entry.id));
       expect(SETTINGS_ENTRIES.some((entry) => entry.webOnly)).toBe(true);
       expect(available.has("general.project-location")).toBe(mac);
       for (const entry of SETTINGS_ENTRIES) {
-        expect(available.has(entry.id)).toBe(entry.webOnly !== true && (mac || entry.macOnly !== true));
+        // ADE Cloud's settings stay hidden until this account has been told yes.
+        expect(available.has(entry.id)).toBe(entry.webOnly !== true && (mac || entry.macOnly !== true) && !isAdeCloudSettingEntry(entry));
       }
+      const access = { enabled: true };
+      (window as { ade?: unknown }).ade = { cloudAccess: { read: async () => access, onChanged: () => () => undefined } };
+      const cloudSettingIds = SETTINGS_ENTRIES.filter(isAdeCloudSettingEntry).map((entry) => entry.id);
+      expect(cloudSettingIds.length).toBeGreaterThan(0);
+      window.dispatchEvent(new Event("focus"));
+      await vi.waitFor(() => expect(availableSettingsEntries().map((entry) => entry.id)).toEqual(expect.arrayContaining(cloudSettingIds)));
+      access.enabled = false;
+      window.dispatchEvent(new Event("focus"));
+      await vi.waitFor(() => expect(availableSettingsEntries().some(isAdeCloudSettingEntry)).toBe(false));
+      delete (window as { ade?: unknown }).ade;
     } finally {
       spy.mockRestore();
     }
@@ -534,7 +546,7 @@ describe("standalone settings availability", () => {
       expect(available.some((entry) => isProjectScoped(entry.scope))).toBe(false);
       expect(available.map((entry) => entry.id)).toEqual(
         SETTINGS_ENTRIES
-          .filter((entry) => !entry.webOnly && !isProjectScoped(entry.scope) && (isMacPlatform() || !entry.macOnly))
+          .filter((entry) => !entry.webOnly && !isProjectScoped(entry.scope) && (isMacPlatform() || !entry.macOnly) && !isAdeCloudSettingEntry(entry))
           .map((entry) => entry.id),
       );
       expect(searchSettingsEntries("reset").map((entry) => entry.id)).toContain("general.reset");

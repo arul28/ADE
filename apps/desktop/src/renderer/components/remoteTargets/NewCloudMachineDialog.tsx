@@ -20,7 +20,7 @@ export function NewCloudMachineDialog({
     <Dialog
       open
       onOpenChange={(open) => { if (!open) onClose(); }}
-      title={`New ${ADE_CLOUD_NAME} machine`}
+      title={`New ${ADE_CLOUD_NAME} computer`}
       description="It signs in to your ADE account on its own and joins Your computers."
       size="lg"
     >

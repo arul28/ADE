@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import type { Logger } from "../logging/logger";
 import type { AdeCliAutoInstall, GlobalState } from "../state/globalState";
+import { runningAppImagePath } from "../native/runningAppImage";
 import type { createAdeCliService } from "./adeCliService";
 
 /**
@@ -54,6 +55,29 @@ type AdeCliAutoInstallArgs = {
   now?: () => Date;
 };
 
+/**
+ * An AppImage's `ade` is a shim that names the image file, and that file moves
+ * when the user moves it and on every update, which renames it to the new
+ * version. The running image re-points a shim of its own kind and nothing else.
+ */
+function appImageShimNamesAnotherFile(shimPath: string, appImage: string): boolean {
+  let shim: string;
+  try {
+    shim = fs.readFileSync(shimPath, "utf8");
+  } catch {
+    return false;
+  }
+  return shim.includes("ADE_APPIMAGE_CLI=1") && !shim.includes(`'${appImage.replace(/'/g, "'\\''")}'`);
+}
+
+function isSameFile(first: string, second: string): boolean {
+  try {
+    return fs.realpathSync(first) === fs.realpathSync(second);
+  } catch {
+    return first === second;
+  }
+}
+
 export async function runAdeCliAutoInstall(
   args: AdeCliAutoInstallArgs,
 ): Promise<AdeCliAutoInstallOutcome> {
@@ -77,8 +101,17 @@ async function attemptAdeCliAutoInstall(
   if (env.ADE_DISABLE_CLI_AUTO_INSTALL === "1") return "disabled";
 
   const repairRequested = args.repairRequestPath != null && fs.existsSync(args.repairRequestPath);
+  const appImage = runningAppImagePath(env);
+  let staleAppImageShim = false;
+  if (appImage != null) {
+    const { terminalCommandPath, installTargetPath } = await args.adeCli.getStatus();
+    // Another `ade` first on PATH is the user's choice; installing would reorder it.
+    staleAppImageShim = (terminalCommandPath == null || isSameFile(terminalCommandPath, installTargetPath))
+      && appImageShimNamesAnotherFile(installTargetPath, appImage);
+  }
+  const repair = repairRequested || staleAppImageShim;
   const state = args.readState();
-  if (state.adeCliAutoInstall && !repairRequested) return "already-settled";
+  if (state.adeCliAutoInstall && !repair) return "already-settled";
 
   const settle = (marker: AdeCliAutoInstall): void => {
     // Re-read: the state file is shared with the rest of main, and this task is
@@ -92,7 +125,7 @@ async function attemptAdeCliAutoInstall(
 
   const status = await args.adeCli.getStatus();
   // A half-written shim still resolves on PATH, so a repair skips this check.
-  if (status.terminalInstalled && !repairRequested) {
+  if (status.terminalInstalled && !repair) {
     settle({ completedAt, outcome: "already-available", command: status.command });
     return "already-available";
   }

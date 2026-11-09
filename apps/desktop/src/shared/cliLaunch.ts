@@ -27,6 +27,7 @@ import {
 } from "./types/chat";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
+  filterAdeAgentSkillRoots,
   getAdeAgentSkillRootsForPrompt,
   getAgentSkillRootCandidates,
   joinAdeAgentSkillRoots,
@@ -1221,7 +1222,7 @@ export function buildTrackedCliLaunchCommand(args: {
   validateLaunchProfilePermissionMode(args.provider, permissionMode);
   const initialPrompt = normalizeInitialPrompt(args.initialPrompt);
   const skillRoots = args.laneWorktreePath
-    ? getAgentSkillRootCandidates({ cwd: args.laneWorktreePath })
+    ? filterAdeAgentSkillRoots(getAgentSkillRootCandidates({ cwd: args.laneWorktreePath }))
     : getAdeAgentSkillRootsForPrompt();
   const sessionGuidance = buildAdeCliSessionGuidance(skillRoots, args.spawnLineage);
   // The preset lands LAST so it outranks the account env: a preset that names

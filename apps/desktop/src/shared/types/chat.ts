@@ -2153,6 +2153,8 @@ export type AgentChatEvent =
       failReason?: ContextCompactFailReason;
       failDetail?: string;
       summary?: string;
+      /** No summary could be written, so the provider kept a shortened copy of the chat. */
+      fallback?: boolean;
       accountLabel?: string;
       turnId?: string;
     }
@@ -5586,6 +5588,13 @@ export type AgentChatSendArgs = {
    * review the user has not sent.
    */
   includeThreadComments?: boolean;
+  /**
+   * Set once per send attempt by a client talking to another machine. A brain
+   * that froze or restarted mid-send may have already taken this message, so
+   * the client's retry after it wakes carries the same id and is dropped here
+   * rather than run twice.
+   */
+  clientSendId?: string;
 };
 
 export type AgentChatDispatchSteerMode = "inline" | "interrupt";

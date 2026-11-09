@@ -1168,9 +1168,9 @@ export function createAccountCacheStore<
      * only that caller's hold, so tearing one project down cannot silence the
      * beat for the projects still running.
      *
-     * The interval matches the account-directory heartbeat, so a machine that
-     * is awake and signed in converges within one beat and an idle one costs a
-     * single `since`-filtered query.
+     * The interval matches the 30 s activity heartbeat whose response carries
+     * the change marks, so a machine that is awake and signed in converges
+     * within one beat and an idle one sends nothing.
      */
     startPeriodicSync(
       intervalMs = config.defaultSyncIntervalMs,

@@ -1,5 +1,5 @@
 import { MAX_STATUS_NOTE_CHARACTERS, STATUS_NOTE_GUIDELINE_WORDS } from "./sessionStatusNote";
-import { formatAdeAgentSkillRootsForPrompt, getAdeAgentSkillRootsForPrompt } from "./agentSkillRoots";
+import { adeWithheldAgentSkills, formatAdeAgentSkillRootsForPrompt, getAdeAgentSkillRootsForPrompt } from "./agentSkillRoots";
 import { SESSION_ACTIVITY_VALUES, type AgentSpawnLineage } from "./types/sessions";
 
 /**
@@ -42,6 +42,12 @@ export const adeBundledAgentSkills = [
  * no agent pays for two names of one skill.
  */
 export const adeDeprecatedAgentSkillAliases: ReadonlySet<string> = new Set(["ade-desktop", "ade-ios-simulator"]);
+
+/** The names a prompt lists: no deprecated aliases, no skills withheld from this account. */
+export function adeAdvertisedAgentSkillNames(): string[] {
+  const withheld = new Set(adeWithheldAgentSkills());
+  return adeBundledAgentSkills.filter((name) => !adeDeprecatedAgentSkillAliases.has(name) && !withheld.has(name));
+}
 
 /**
  * The status protocol agents actually get. Note what is NOT here: settling.
@@ -303,7 +309,7 @@ export function buildAdeBootstrapGuidance(
   return [
     "## ADE",
     "ADE is a local-first dev environment for lanes, chats, terminals, PRs, proof, apps, iOS, and browsers. Its `ade` CLI controls ADE state.",
-    `Skills: read the matching \`ade-*\` skill first: ${adeBundledAgentSkills.filter((name) => !adeDeprecatedAgentSkillAliases.has(name)).map((name) => `\`${name}\``).join(", ")}.`,
+    `Skills: read the matching \`ade-*\` skill first: ${adeAdvertisedAgentSkillNames().map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(skillRoots),
     "No native skills? `ade skill list --text`, then `ade skill show <name> --text`.",
     // The one scene line every agent sees. Without it the skill was opened only

@@ -3,6 +3,7 @@ import { type CloudMachine } from "../../../shared/adeCloud";
 import { CLOUD_READY_WAKE_WAIT_MS } from "../../../shared/cloudReady";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { ipcErrorMessage } from "../../lib/format";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { connectWithRetry } from "./connectWithRetry";
 import type { LaneMachineOption } from "../lanes/laneMachines";
 import type { DraftMachineOption } from "./DraftMachinePicker";
@@ -63,6 +64,7 @@ export function useDraftMachineSetup({
   onNotice: (notice: { message: string; kind: "hint" | "status" } | null) => void;
 }) {
   // Stable for one origin, so the effects below don't restart on each render.
+  const cloudEnabled = useAdeCloudEnabled();
   const clone = useMemo(() => githubCloneUrl(originUrl), [originUrl]);
   const [cloudMachines, setCloudMachines] = useState<CloudMachine[]>([]);
   const [busy, setBusy] = useState<Busy | null>(null);
@@ -73,7 +75,10 @@ export function useDraftMachineSetup({
 
   useEffect(() => {
     const listMachines = window.ade?.cloud?.listMachines;
-    if (!enabled || pickerOpens === 0 || !hasOffline || !listMachines) return;
+    if (!enabled || !cloudEnabled || pickerOpens === 0 || !hasOffline || !listMachines) {
+      setCloudMachines([]);
+      return;
+    }
     let cancelled = false;
     void listMachines().then(
       (result) => { if (!cancelled) setCloudMachines(result?.state === "ok" ? result.machines : []); },
@@ -82,7 +87,7 @@ export function useDraftMachineSetup({
     return () => {
       cancelled = true;
     };
-  }, [enabled, hasOffline, pickerOpens]);
+  }, [cloudEnabled, enabled, hasOffline, pickerOpens]);
 
   const cloudOffline = useMemo(() => {
     const byKey = new Map(cloudMachines.filter((machine) => machine.machineKey).map((machine) => [machine.machineKey!, machine]));

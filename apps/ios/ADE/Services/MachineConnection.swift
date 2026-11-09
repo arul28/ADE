@@ -52,6 +52,8 @@ final class MachineConnection {
   }
   /// Wall time of the last frame from this machine (drives "last update").
   private(set) var lastUpdateAt: Date?
+  private(set) var supportsMacDesktopStream = false
+  private(set) var supportsMacDesktopControl = false
   private(set) var supportsChatStreaming = false
   private(set) var supportsChatLogV2 = false
   private(set) var supportsChatHistoryPaging = false
@@ -283,6 +285,8 @@ final class MachineConnection {
       setPhase(.needsUpdate)
       return false
     }
+    supportsMacDesktopStream = featureEnabled("macDesktopStream", "mac_desktop_stream")
+    supportsMacDesktopControl = featureEnabled("macDesktopControl", "mac_desktop_control")
     supportsChatStreaming = featureEnabled("chatStreaming", "chat_streaming")
     supportsChatHistoryPaging = featureEnabled("chatHistoryPaging", "chat_history_paging")
     supportsChatLogV2 = featureEnabled("chatLogV2", "chat_log_v2")
@@ -498,6 +502,12 @@ final class MachineConnection {
       await handleChatSnapshot(payload, generation: frameGeneration)
     case "chat_event":
       await handleChatEvent(payload, generation: frameGeneration)
+    case "macDesktop.streamRecord":
+      await syncService?.receiveRemoteMacDesktopRecord(payload, machineKey: machineKey) { [weak self] in
+        self?.generation == frameGeneration && self?.isLive == true
+      }
+    case "macDesktop.streamEnded":
+      syncService?.receiveRemoteMacDesktopEnded(payload, machineKey: machineKey)
     default:
       // Changesets, catalogs, terminals and anything else are not for a
       // roster peer. Hosts that know `syncRole: "roster"` never send them.

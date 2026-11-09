@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { app, BrowserWindow, ipcMain } from "electron";
+import { hostname } from "node:os";
+import { app, BrowserWindow, ipcMain, powerMonitor } from "electron";
 import {
-  CLOUD_DEFAULT_TEMPLATE,
+  cloudKindLabel,
   cloudStillStartingMessage,
   CLOUD_MADE_BY_CHAT_METADATA,
-  cloudCapReachedMessage,
-  type CloudBudget,
+  type CloudAccountState,
+  type CloudAgentLimits,
   type CloudShapeId,
   isCloudInstanceId,
   type CloudCreateMachineArgs,
@@ -36,12 +37,15 @@ import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/service
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import {
-  CLOUD_PROVIDER_VAULT_ITEM,
+  cloudAccessDepsFor,
+  cloudAccessEnabled,
   cloudNoProviderSentence,
   cloudVaultFromBridge,
   getCloudProvider,
+  knownCloudProvider,
   readCloudStatus,
   requireCloudProvider,
+  watchCloudAccessForSkills,
   type CloudAccessDeps,
 } from "./cloudAccess";
 import { createCloudMachine } from "./cloudMachineCreator";
@@ -50,17 +54,19 @@ import { createCloudMachines } from "./cloudMachines";
 import { claimCloudReadyMachine, releaseCloudReadyMachine } from "./cloudReadyClaim";
 import { createCloudReadyKeeper } from "./cloudReadyMachines";
 import { setCloudUpdateBlocker, setCloudWakeForUse } from "./cloudWakeHook";
-import { startCloudMoneyWatch } from "./cloudMoneyWatch";
+import { startCloudSleepWatch } from "./cloudSleepWatch";
 import { setCloudDesktopActions } from "./cloudDesktopActions";
 import { copyCloudMachine, moveCloudMachine, type CloudCopyDeps } from "./cloudMachineCopy";
 import { reconnectCloudMachine } from "./cloudReconnect";
 import {
-  CLOUD_BUDGET_VAULT_KEY,
-  createCloudBudgetStore,
+  CLOUD_AGENT_LIMITS_VAULT_KEY,
+  createCloudAgentLimitsStore,
   cloudInstanceForMachine,
   wakeCloudMachineForUse,
 } from "./cloudSleep";
 import { CLOUD_READY_VAULT_KEY, createCloudReadySettingsStore } from "./cloudReadySettings";
+import { openExternalUrl } from "../shared/externalLinks";
+import { getErrorMessage } from "../shared/utils";
 import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { createCloudPendingCreateStore, sweepCloudPendingCreates } from "./cloudPendingCreates";
@@ -71,7 +77,7 @@ type Logger = {
 };
 
 /**
- * the provider in Settings and the machine picker.
+ * ADE Cloud in Settings and the machine picker.
  *
  * No pin anywhere: cloud access is account-wide (the account vault answers the same
  * on every computer), and making a box acts on the account's cloud machines and the
@@ -90,6 +96,14 @@ function sendToAllWindows(channel: string, payload?: unknown): void {
   }
 }
 
+/** Set while the app is up: re-asks ADE Cloud's access after a sign-in or sign-out. */
+let recheckCloudAccess: (() => void) | null = null;
+
+/** The ADE account on this computer changed: ask the server again, and tell every window if the answer moved. */
+export function cloudAccountChanged(): void {
+  recheckCloudAccess?.();
+}
+
 export function registerCloudIpc(args: {
   vaultBridge: Parameters<typeof cloudVaultFromBridge>[0];
   listAccountMachines: () => Promise<AdeAccountMachinesResult>;
@@ -101,9 +115,11 @@ export function registerCloudIpc(args: {
   /** One coarse product fact per finished create (analytics; never the box or the error). */
   recordMachineCreate?: (outcome: "completed" | "partial" | "cancelled" | "failed") => void;
   /** One coarse product fact per box action that worked (analytics; never the box). */
-  recordMachineAction?: (action: CloudMachineActionKind | "copy" | "move" | "reconnect") => void;
+  recordMachineAction?: (action: CloudMachineActionKind | "copy" | "move" | "reconnect" | "push_all_work") => void;
+  /** One coarse fact per plan decision (analytics; never an amount). */
+  recordPlan?: (outcome: "plan_checkout" | "plan_portal" | "extra_on" | "extra_off") => void;
   /**
-   * An `cloud` action on this computer's brain. Sign-ins for cloud machines
+   * A `cloud` action on this computer's brain. Sign-ins for cloud machines
    * run there: a PTY can't start from this process in a packaged app.
    */
   brainAction: (action: string, actionArgs?: Record<string, unknown>) => Promise<unknown>;
@@ -113,22 +129,31 @@ export function registerCloudIpc(args: {
   const account = () => getSharedAccountAuthService();
   let machineStore: EncryptedFileCredentialStore | null = null;
   const getMachineStore = () => (machineStore ??= new EncryptedFileCredentialStore({ secretsDir: resolveMachineAdeLayout().secretsDir }));
-  const credentials: CloudAccessDeps = {
-    vault: () => cloudVaultFromBridge(args.vaultBridge, CLOUD_PROVIDER_VAULT_ITEM),
-    signedIn: () => account().getStatus().signedIn === true,
-    logger,
-  };
   const getAccountToken = () => getSignedInAccountAccessToken(account());
-  const directoryBaseUrl = () => {
-    try {
-      return getSharedAccountDirectoryBaseUrl() || null;
-    } catch (error) {
-      logger.warn("cloud.account_directory_unavailable", { error: error instanceof Error ? error.message : String(error) });
-      return null;
-    }
+  const credentials: CloudAccessDeps = cloudAccessDepsFor({
+    account,
+    directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl(),
+    deviceName: () => hostname(),
+    logger,
+    onDirectoryUnavailable: (error) => logger.warn("cloud.account_directory_unavailable", { error: getErrorMessage(error) }),
+  });
+  const directoryBaseUrl = credentials.directoryBaseUrl;
+
+  // The one answer that decides whether ADE Cloud exists in this app. No poll:
+  // asked when a window opens or takes focus, and on a sign-in or sign-out;
+  // its cache keeps that to the server at most every 10 minutes.
+  let lastAccess: boolean | null = null;
+  const readAccess = async (): Promise<boolean> => {
+    const enabled = await cloudAccessEnabled(credentials).catch((error: unknown) => {
+      logger.warn("cloud.access_read_failed", { error: getErrorMessage(error) });
+      return false;
+    });
+    if (lastAccess !== null && lastAccess !== enabled) sendToAllWindows(IPC.cloudStatusChanged);
+    lastAccess = enabled;
+    return enabled;
   };
-  // A trial template (`ade-a1-test`) for development and live checks.
-  const templateName = () => process.env.ADE_CLOUD_TEMPLATE?.trim() || CLOUD_DEFAULT_TEMPLATE;
+  recheckCloudAccess = () => void readAccess();
+  watchCloudAccessForSkills(credentials);
 
   const pendingCreates = createCloudPendingCreateStore(getMachineStore, logger);
   // Read now, before any create of this session can add to it.
@@ -139,7 +164,7 @@ export function registerCloudIpc(args: {
       if (!leftoverCreates.length) return;
       const provider = await getCloudProvider(credentials);
       if (provider) await sweepCloudPendingCreates(provider, leftoverCreates, pendingCreates, logger);
-    })().catch((error: unknown) => logger.warn("cloud.startup_check_failed", { error: error instanceof Error ? error.message : String(error) }));
+    })().catch((error: unknown) => logger.warn("cloud.startup_check_failed", { error: getErrorMessage(error) }));
   }, STARTUP_CHECK_DELAY_MS);
   startupTimer.unref?.();
 
@@ -176,15 +201,14 @@ export function registerCloudIpc(args: {
     listAccountMachines: args.listAccountMachines,
     renameMachine: args.renameMachine,
     approveInWindow: (window) => openCloudApprovalWindow(window, logger),
-    templateName,
     machineEnv: () => cloudMachineEnv(cloudSignInVaults, logger),
     minAdeVersion: releasedAdeVersion,
     pendingCreates,
     logger,
   };
 
-  const budget = createCloudBudgetStore({
-    vault: () => (credentials.signedIn() ? cloudVaultFromBridge(args.vaultBridge, CLOUD_BUDGET_VAULT_KEY) : null),
+  const agentLimits = createCloudAgentLimitsStore({
+    vault: () => (credentials.signedIn() ? cloudVaultFromBridge(args.vaultBridge, CLOUD_AGENT_LIMITS_VAULT_KEY) : null),
     machineStore: getMachineStore,
     logger,
   });
@@ -207,7 +231,7 @@ export function registerCloudIpc(args: {
     preparerId: readyPreparerId(logger),
     currentAdeVersion: releasedAdeVersion,
     // Declared below; first called after the startup delay.
-    spending: () => machines.spending(),
+    account: () => machines.account(),
     onStatus: (status) => sendToAllWindows(IPC.cloudReadyStatusChanged, status),
     onPrepared: (outcome) => args.recordReady?.(outcome),
     logger,
@@ -222,10 +246,10 @@ export function registerCloudIpc(args: {
     whyNoClient: () => cloudNoProviderSentence(credentials),
     client: savedClient,
     removeAccountMachine: args.removeAccountMachine,
-    readBudget: () => budget.read(),
     logger,
   });
-  startCloudMoneyWatch({ client: savedClient, machines, logger, firstPassDelayMs: STARTUP_CHECK_DELAY_MS + 30_000 });
+  // Off the list this asks nothing: access is read at sign-in and on focus only.
+  startCloudSleepWatch({ client: async () => knownCloudProvider(credentials), logger, firstPassDelayMs: STARTUP_CHECK_DELAY_MS + 30_000 });
   // Remote connections wake a sleeping box the person is about to use. Only a
   // machine the machine list showed as a cloud box is looked up, so a
   // Connect to a laptop never waits on the provider.
@@ -234,11 +258,8 @@ export function registerCloudIpc(args: {
     if (!machineKey || !machines.isKnownBox(machineKey)) return false;
     const client = await savedClient().catch(() => null);
     if (!client) return false;
-    const result = await wakeCloudMachineForUse(client, { machineKey, hostname: target.hostname }, {
-      spending: () => machines.spending(),
-      logger,
-    }).catch((error: unknown) => {
-      logger.warn("cloud.wake_for_use_failed", { error: error instanceof Error ? error.message : String(error) });
+    const result = await wakeCloudMachineForUse(client, { machineKey, hostname: target.hostname }, { logger }).catch((error: unknown) => {
+      logger.warn("cloud.wake_for_use_failed", { error: getErrorMessage(error) });
       return null;
     });
     if (!result) return false;
@@ -247,9 +268,9 @@ export function registerCloudIpc(args: {
     return result.state === "woken";
   });
 
-  // A box from a template older than the entrypoint-supervised one always
-  // starts the ADE its image has, so an update installs and then never runs.
-  // Asked before the update goes out, so the card says so at once.
+  // A computer whose ADE start script can't restart on an update would install
+  // the update and keep running the old ADE. Asked before the update goes out,
+  // so the card says so at once and points at Update this computer.
   setCloudUpdateBlocker(async (target) => {
     const machineKey = target.pairedMachine?.machineKey?.trim();
     if (!machineKey || !machines.isKnownBox(machineKey)) return null;
@@ -262,16 +283,20 @@ export function registerCloudIpc(args: {
       if (!instance || instance.status !== "running") return null;
       probe = await client.exec(instance.id, CLOUD_ENTRYPOINT_SUPERVISOR_PROBE, { timeoutMs: 15_000 });
     } catch (error) {
-      // Unknown is not "blocked": the update goes out, and the box's own ADE
-      // refuses it there if its template is too old.
-      logger.warn("cloud.update_blocker_check_failed", { error: error instanceof Error ? error.message : String(error) });
+      // Unknown is not "blocked": the update goes out, and the computer's own
+      // ADE refuses it there if it can't take it.
+      logger.warn("cloud.update_blocker_check_failed", { error: getErrorMessage(error) });
       return null;
     }
     if (probe.exitCode !== 1) return null;
-    logger.info("cloud.update_blocked_old_template", { instanceId: instance.id });
-    return "This machine was made from an older ADE machine template, which always starts the ADE it was built with, "
-      + "so an update can't take effect on it. Make a new ADE Cloud machine to get the current version, and move your lanes to it. "
-      + "A copy keeps the old template.";
+    logger.info("cloud.update_blocked_needs_update", { instanceId: instance.id });
+    return "This computer needs updating before ADE can update it. Choose Update this computer in its menu.";
+  });
+
+  // Account-level, so no pin: every computer answers the same for this account.
+  ipcMain.handle(IPC.cloudGetAccess, async (event): Promise<{ enabled: boolean }> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGetAccess)) return { enabled: false };
+    return { enabled: await readAccess() };
   });
 
   ipcMain.handle(IPC.cloudGetStatus, async (event): Promise<CloudStatus | null> => {
@@ -295,24 +320,73 @@ export function registerCloudIpc(args: {
     return result;
   });
 
-  ipcMain.handle(IPC.cloudGetBudget, async (event): Promise<CloudBudget | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGetBudget)) return null;
-    return await budget.read();
+  ipcMain.handle(IPC.cloudGetAgentLimits, async (event): Promise<CloudAgentLimits | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGetAgentLimits)) return null;
+    return await agentLimits.read();
   });
 
-  ipcMain.handle(IPC.cloudSetBudget, async (event, arg: { budget?: Partial<CloudBudget> }): Promise<CloudBudget | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetBudget)) return null;
-    // Either part may come alone: the cap, or what agents may spend.
-    const current = await budget.read();
-    const next = arg?.budget ?? {};
-    const raw = "monthlyCapUsd" in next ? next.monthlyCapUsd : current.monthlyCapUsd;
-    const saved = await budget.write({
-      monthlyCapUsd: typeof raw === "number" ? raw : null,
-      agents: next.agents ? { ...current.agents, ...next.agents } : current.agents,
-    });
-    logger.info("cloud.budget_set", { capped: saved.monthlyCapUsd != null, unattendedSpend: saved.agents.unattendedSpend, machinesPerDay: saved.agents.machinesPerDay });
+  ipcMain.handle(IPC.cloudSetAgentLimits, async (event, arg: { limits?: Partial<CloudAgentLimits> }): Promise<CloudAgentLimits | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetAgentLimits)) return null;
+    const current = await agentLimits.read();
+    const saved = await agentLimits.write({ ...current, ...(arg?.limits ?? {}) });
+    logger.info("cloud.agent_limits_set", { unattendedSpend: saved.unattendedSpend, machinesPerDay: saved.machinesPerDay });
     sendToAllWindows(IPC.cloudStatusChanged);
     return saved;
+  });
+
+  /** The server's one sentence, so the renderer shows it without an error class name in front. */
+  const billingCall = async <T,>(run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  };
+
+  // Account-level like the rest of this file: the plan is the account's, so no pin.
+  ipcMain.handle(IPC.cloudSetExtraHours, async (event, arg: { enabled?: unknown }): Promise<CloudAccountState | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetExtraHours)) return null;
+    const account = await billingCall(async () => (await requireCloudProvider(credentials)).setExtraHours(arg?.enabled === true));
+    logger.info("cloud.extra_hours_set", { enabled: arg?.enabled === true });
+    if (account) args.recordPlan?.(arg?.enabled === true ? "extra_on" : "extra_off");
+    sendToAllWindows(IPC.cloudStatusChanged);
+    return account;
+  });
+
+  /** Opens Stripe's checkout or billing portal in the person's browser. The plan changes reach the app on the next read. */
+  ipcMain.handle(IPC.cloudOpenCheckout, async (event): Promise<{ opened: boolean }> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudOpenCheckout)) return { opened: false };
+    const { url } = await billingCall(async () => (await requireCloudProvider(credentials)).billingCheckout());
+    await openExternalUrl(url);
+    args.recordPlan?.("plan_checkout");
+    return { opened: true };
+  });
+
+  // "Still watching": the window is in front and the person moved or typed
+  // lately. The system's idle time covers what the renderer can't see (a
+  // browser view, a remote desktop); a window in front keeps it about this app.
+  ipcMain.handle(IPC.cloudPersonIsHere, (event): boolean => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudPersonIsHere)) return false;
+    const window = BrowserWindow.fromWebContents(event.sender);
+    return Boolean(window?.isFocused()) && powerMonitor.getSystemIdleTime() < PERSON_ACTIVE_WITHIN_S;
+  });
+
+  ipcMain.handle(IPC.cloudPushAllWork, async (event, arg: { instanceId?: unknown }): Promise<CloudMachineActionResult> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudPushAllWork)) return { ok: false, blocker: null, message: "ADE can't do that from here." };
+    const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
+    if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
+    const result = await machines.pushAllWork(instanceId);
+    if (result.ok) args.recordMachineAction?.("push_all_work");
+    sendToAllWindows(IPC.cloudStatusChanged);
+    return result;
+  });
+
+  ipcMain.handle(IPC.cloudOpenBillingPortal, async (event): Promise<{ opened: boolean }> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudOpenBillingPortal)) return { opened: false };
+    const { url } = await billingCall(async () => (await requireCloudProvider(credentials)).billingPortal());
+    await openExternalUrl(url);
+    args.recordPlan?.("plan_portal");
+    return { opened: true };
   });
 
   /** A project's identity from the renderer, normalized like every stored one. */
@@ -351,7 +425,7 @@ export function registerCloudIpc(args: {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudReadyClaim)) return null;
     const identity = normalizeGitRemoteIdentity(typeof arg?.originUrl === "string" ? arg.originUrl : null);
     if (!identity) throw new Error("This project has no git origin, so it has no ready machine.");
-    const claim = await claimCloudReadyMachine(await requireCloudProvider(credentials), identity, { logger, spending: () => machines.spending() });
+    const claim = await claimCloudReadyMachine(await requireCloudProvider(credentials), identity, { logger });
     args.recordReady?.("ready_picker");
     // The pool is one short: make the next one.
     void readyKeeper.refresh();
@@ -373,15 +447,12 @@ export function registerCloudIpc(args: {
 
   const copyDeps: CloudCopyDeps = {
     ...machineCreatorDeps,
-    spending: () => machines.spending(),
     removeAccountMachine: args.removeAccountMachine,
   };
   // The CLI and agents make, copy and move machines through this app (the
   // new machine signs in through its approval window), over the desktop bridge.
   setCloudDesktopActions({
     create: async (machine) => {
-      const month = await machines.spending().catch(() => null);
-      if (month?.capReached) throw new Error(cloudCapReachedMessage(month));
       const { madeByChat, ...shape } = machine;
       const result = await createCloudMachine(machineCreatorDeps, randomUUID(), shape, () => undefined, {
         ...(madeByChat ? { metadata: { [CLOUD_MADE_BY_CHAT_METADATA]: madeByChat } } : {}),
@@ -430,7 +501,7 @@ export function registerCloudIpc(args: {
     void run(controller.signal, send).then(
       (done) => send({ requestId, stage: "done", message: done.message, ...(done.result ? { result: done.result } : {}) }),
       (error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = getErrorMessage(error);
         logger.warn("cloud.long_action_failed", { error: message });
         send({ requestId, stage: "failed", message, error: message });
       },
@@ -445,7 +516,7 @@ export function registerCloudIpc(args: {
   ipcMain.handle(IPC.cloudCopyMachine, async (event, arg: { requestId?: unknown; instanceId?: unknown; name?: unknown; shape?: unknown }) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudCopyMachine)) return { started: false };
     const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
-    if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that box.");
+    if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that computer.");
     const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
     return startLongAction(event, requestId, async (signal, send) => {
       const result = await copyCloudMachine(copyDeps, {
@@ -462,8 +533,8 @@ export function registerCloudIpc(args: {
   ipcMain.handle(IPC.cloudMoveMachine, async (event, arg: { requestId?: unknown; instanceId?: unknown; machineKey?: unknown; to?: unknown; shape?: unknown }) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudMoveMachine)) return { started: false };
     const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
-    if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that box.");
-    if (arg?.to !== "vm" && arg?.to !== "box") throw new Error("Move it to a box or a VM.");
+    if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that computer.");
+    if (arg?.to !== "vm" && arg?.to !== "box") throw new Error("Move it to a standard or a full computer.");
     const to = arg.to;
     const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
     return startLongAction(event, requestId, async (signal, send) => {
@@ -477,8 +548,8 @@ export function registerCloudIpc(args: {
       args.recordMachineAction?.("move");
       return {
         message: result.sourceDeleted
-          ? `${result.name} is now a ${to === "vm" ? "VM" : "box"}, with all its files.`
-          : `${result.name} has all its files on the new ${to === "vm" ? "VM" : "box"}. ADE couldn't delete the old one; delete it from its card.`,
+          ? `${result.name} is now a ${cloudKindLabel(to)}, with all its files.`
+          : `${result.name} has all its files on the new ${cloudKindLabel(to)}. ADE couldn't delete the old one; delete it from its card.`,
         result,
       };
     });
@@ -487,10 +558,10 @@ export function registerCloudIpc(args: {
   ipcMain.handle(IPC.cloudReconnectMachine, async (event, arg: { requestId?: unknown; instanceId?: unknown }) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudReconnectMachine)) return { started: false };
     const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
-    if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that box.");
+    if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that computer.");
     const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
     return startLongAction(event, requestId, async (signal, send) => {
-      const result = await reconnectCloudMachine({ ...machineCreatorDeps, spending: () => machines.spending() }, { instanceId, requestId }, send, { signal });
+      const result = await reconnectCloudMachine(machineCreatorDeps, { instanceId, requestId }, send, { signal });
       args.recordMachineAction?.("reconnect");
       return {
         message: result.joined ? `${result.name} is back in ADE.` : `${result.name} is signed in again. It shows up in a minute.`,
@@ -517,7 +588,7 @@ export function registerCloudIpc(args: {
       const controller = new AbortController();
       creates.set(requestId, controller);
       // The window that asked went away (closed, reloaded): nobody is waiting
-      // for this box, so stop and delete it rather than leave it billing.
+      // for this box, so stop and delete it rather than leave it using hours.
       const onSenderGone = () => controller.abort();
       sender.once("destroyed", onSenderGone);
       const send = (progress: CloudCreateProgress) => {
@@ -552,7 +623,7 @@ export function registerCloudIpc(args: {
           });
         },
         (error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = getErrorMessage(error);
           args.recordMachineCreate?.(controller.signal.aborted ? "cancelled" : "failed");
           logger.warn("cloud.create_machine_failed", { error: message });
           send({ requestId, stage: "failed", message, error: message });
@@ -595,12 +666,15 @@ function readyPreparerId(logger: Logger): string {
   try {
     fs.writeFileSync(file, id, { mode: 0o600 });
   } catch (error) {
-    logger.warn("cloud.ready_preparer_id_not_saved", { error: error instanceof Error ? error.message : String(error) });
+    logger.warn("cloud.ready_preparer_id_not_saved", { error: getErrorMessage(error) });
   }
   return id;
 }
 
 /** Long enough that the boot path, the brain and the vault are settled first. */
+/** Moved or typed within this long counts as here, for "still watching". */
+const PERSON_ACTIVE_WITHIN_S = 3 * 60;
+
 const STARTUP_CHECK_DELAY_MS = 20_000;
 
 /**

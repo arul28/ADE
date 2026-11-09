@@ -18,6 +18,15 @@ description: >-
 
 # Quality Skill
 
+## Linux desktop parity
+
+Review Linux alongside the other desktops on every run. For host-sensitive
+changes, read `references/linux-quirks.md` and `docs/development/linux-support.md`;
+record focused existing tests and real-Linux evidence or the specific unverified
+case. Do not duplicate full suites. Platform limitations must be capability-gated
+without hiding features on a pinned remote machine.
+
+
 The loop's quality gate: find the bugs, clean up the code. Run after the work is
 implemented (`/context → work → /quality`), before `/test`. It opens the PR as
 its first step so CI and the review bots run while it reviews, and it acts on
