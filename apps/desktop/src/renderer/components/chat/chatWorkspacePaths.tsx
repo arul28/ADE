@@ -491,6 +491,53 @@ async function workspaceFileIsMissing(args: {
   }
 }
 
+/**
+ * Whether a path printed in a terminal can be opened, for its hover link: same
+ * rules as a click on one in chat, with cached roots and only one real read.
+ * A relative path is tried against the terminal's own folder first.
+ */
+export async function probeTerminalPath(args: {
+  location: WorkspacePathLocation;
+  laneId: string | null;
+  cwd: string | null;
+  pin: OpenProjectBinding | null;
+}): Promise<{ openable: boolean; path: string }> {
+  const closed = { openable: false, path: args.location.path };
+  let workspaces = await loadFilesWorkspaces(args.pin);
+  if (workspaces.length === 0) workspaces = await loadFilesWorkspaces(args.pin, true);
+  const target = resolveFilesNavigationTarget({
+    path: args.location,
+    workspaces,
+    fallbackLaneId: args.laneId,
+  });
+  if (!target) return closed;
+  const workspace = target.workspace
+    ?? workspaces.find((candidate) => candidate.laneId === target.laneId)
+    ?? null;
+  if (!workspace) return closed;
+
+  if (!target.workspace && args.cwd) {
+    const root = normalizePath(workspace.rootPath);
+    const cwd = normalizePath(args.cwd);
+    if (isPathEqualOrDescendant(cwd, root)) {
+      const joined = `${cwd.replace(/\/+$/, "")}/${target.openFilePath}`;
+      const relative = joined.slice(root.length).replace(/^\/+/, "");
+      const probe = await probeWorkspacePath({ workspaceId: workspace.id, path: relative, pin: args.pin });
+      if (probe.kind === "file" && normalizePath(probe.path).toLowerCase() === relative.toLowerCase()) {
+        return { openable: true, path: joined };
+      }
+      if (probe.kind === "directory") return { openable: true, path: joined };
+    }
+  }
+
+  const probe = await probeWorkspacePath({ workspaceId: workspace.id, path: target.openFilePath, pin: args.pin });
+  if (probe.kind !== "missing") return { openable: true, path: args.location.path };
+  // The index misses new files. Only a name that looks like a file earns a read.
+  if (!target.openFilePath.includes("/") || !/\.[A-Za-z0-9]{1,8}$/.test(target.openFilePath)) return closed;
+  const missing = await workspaceFileIsMissing({ workspaceId: workspace.id, path: target.openFilePath, pin: args.pin });
+  return missing ? closed : { openable: true, path: args.location.path };
+}
+
 export function useWorkspacePathOpener(args: {
   /**
    * The chat's lane. The router's `location.state.laneId` is folded in here
