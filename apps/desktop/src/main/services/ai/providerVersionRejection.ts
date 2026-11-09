@@ -273,7 +273,7 @@ const CODEX_MODEL_FLOOR_TEXT =
  */
 const CODEX_FLOOR_ERROR_KINDS = new Set(["badrequest", "other", "modelnotfound"]);
 
-function codexErrorKind(errorInfo: unknown): string | null {
+export function codexErrorKind(errorInfo: unknown): string | null {
   if (errorInfo == null) return null;
   if (typeof errorInfo === "string") return errorInfo.replace(/[_\s-]/g, "").toLowerCase();
   const record = asRecord(errorInfo);

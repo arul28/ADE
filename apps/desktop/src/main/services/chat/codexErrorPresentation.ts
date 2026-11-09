@@ -1,4 +1,5 @@
 import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentation";
+import { codexErrorKind } from "../ai/providerVersionRejection";
 
 /**
  * Card copy for the Codex refusals a person can act on, read from what the
@@ -10,7 +11,7 @@ import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentatio
  * when Codex is now configured for another one. Any other `data` is not one of
  * these and keeps the normal failure path.
  */
-export type CodexModelProviderError =
+type CodexModelProviderError =
   | { type: "modelProviderMismatch"; modelProvider: string; currentModelProvider: string }
   | { type: "modelProviderNotConfigured"; modelProvider: string }
   | { type: "modelProviderPolicyConflict"; modelProvider: string; requiredModelProvider: string };
@@ -19,7 +20,7 @@ function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length ? value.trim() : null;
 }
 
-export function readCodexModelProviderError(data: unknown): CodexModelProviderError | null {
+function readCodexModelProviderError(data: unknown): CodexModelProviderError | null {
   if (!data || typeof data !== "object" || Array.isArray(data)) return null;
   const record = data as Record<string, unknown>;
   const modelProvider = nonEmptyString(record.modelProvider);
@@ -52,10 +53,13 @@ function modelProviderLabel(id: string): string {
   return MODEL_PROVIDER_LABELS[id.toLowerCase()] ?? id;
 }
 
+/** The card for a JSON-RPC error's `data`, or null when it is no `ModelProviderError`. */
 export function presentCodexModelProviderError(
-  error: CodexModelProviderError,
+  data: unknown,
   technicalDetail: string,
-): ChatErrorPresentation {
+): ChatErrorPresentation | null {
+  const error = readCodexModelProviderError(data);
+  if (!error) return null;
   const provider = modelProviderLabel(error.modelProvider);
   const detail = technicalDetail.trim() ? { technicalDetail: technicalDetail.trim() } : {};
   switch (error.type) {
@@ -95,15 +99,15 @@ export function presentCodexTurnError(args: {
   const technicalDetail = [args.message.trim(), args.detail?.trim()].filter(Boolean).join("\n");
   const detail = technicalDetail ? { technicalDetail } : {};
   const model = args.model?.trim();
-  switch (args.errorInfo) {
-    case "modelNotFound":
+  switch (codexErrorKind(args.errorInfo)) {
+    case "modelnotfound":
       return {
         title: "Model not available",
         body: `Codex can't find ${model || "this model"}, or this account doesn't have access to it.`,
         nextAction: "Choose another model, then retry.",
         ...detail,
       };
-    case "policyCapacityUnavailable":
+    case "policycapacityunavailable":
       return {
         title: "No capacity available",
         body: "OpenAI's policy limits which servers can run this request, and none of them has room right now.",

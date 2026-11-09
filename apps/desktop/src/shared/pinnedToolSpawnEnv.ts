@@ -65,11 +65,16 @@ export const PINNED_PROVIDER_TOOLS: Readonly<Record<string, PinnedProviderToolSp
 export const CODEX_NO_UPDATE_CHECK_ARGS: readonly string[] = ["-c", "check_for_update_on_startup=false"];
 
 /**
- * `codex app-server` flags that skip its startup fetch of the plugin directory
- * and recommendations (0.166+; older builds ignore the key). ADE only reads the
- * installed inventory through `plugin/list`, which this leaves unchanged.
+ * Flags for every `codex app-server` ADE starts: no update check, and no
+ * startup fetch of the plugin directory and recommendations (0.166+; older
+ * builds ignore the key). ADE only reads the installed inventory through
+ * `plugin/list`, which this leaves unchanged.
  */
-export const CODEX_NO_PLUGIN_PREFETCH_ARGS: readonly string[] = ["-c", "features.plugin_discovery_prefetch=false"];
+export const CODEX_APP_SERVER_STARTUP_ARGS: readonly string[] = [
+  ...CODEX_NO_UPDATE_CHECK_ARGS,
+  "-c",
+  "features.plugin_discovery_prefetch=false",
+];
 
 /** Grok's flag for the same, passed before its subcommand. */
 export const GROK_NO_AUTO_UPDATE_ARG = "--no-auto-update";

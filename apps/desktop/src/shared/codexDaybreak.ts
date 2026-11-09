@@ -17,7 +17,7 @@
 // ---------------------------------------------------------------------------
 
 export type CodexDaybreakProgram = "daybreakBlue" | "daybreakRed";
-/** The access programs Codex 0.164 knows, in the app-server's camelCase names. */
+/** The access programs Codex 0.167 knows, in the app-server's camelCase names. */
 export type CodexAccessProgram = "standard" | CodexDaybreakProgram;
 
 const PROGRAM_ALIASES: Record<string, CodexAccessProgram> = {

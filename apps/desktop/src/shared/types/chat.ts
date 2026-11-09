@@ -706,6 +706,11 @@ export type AgentChatNoticeDetail = {
   reason?: AgentChatResumeFailureKind;
   originalThreadId?: string | null;
   reconstructedThreadId?: string;
+  /**
+   * "Try again" got the same thread back. Nothing resent the failed message,
+   * so that turn keeps its failure and Retry (a rebuild answers it instead).
+   */
+  originalThreadResumed?: boolean;
   supersededBySessionId?: string;
   /**
    * Continuity recovery that ADE runs by itself. `pending` while it rebuilds

@@ -5773,7 +5773,8 @@ func workContinuityNotice(from detail: RemoteJSONValue?) -> WorkContinuityNotice
     originalThreadId: text("originalThreadId") ?? "",
     supersededBySessionId: text("supersededBySessionId"),
     autoRecovery: text("autoRecovery"),
-    autoRecoveryStartedAt: text("autoRecoveryStartedAt")
+    autoRecoveryStartedAt: text("autoRecoveryStartedAt"),
+    originalThreadResumed: object["originalThreadResumed"] == .bool(true)
   )
 }
 
@@ -5824,11 +5825,13 @@ func workFoldSelfHealedFailures(_ transcript: [WorkChatEnvelope]) -> WorkSelfHea
   if hasContinuity {
     var lastNoticeIndexByThread: [String: Int] = [:]
     for (index, envelope) in transcript.enumerated() {
-      if workIsUntaggedReconnectNotice(envelope) { lastNoticeIndexByThread.removeAll() }
+      if workIsUntaggedReconnectNotice(envelope) {
+        lastNoticeIndexByThread = lastNoticeIndexByThread.filter { transcript[$0.value].continuityNotice?.isResolved == true }
+      }
       if let notice = envelope.continuityNotice { lastNoticeIndexByThread[notice.originalThreadId] = index }
     }
     let resolvedThreads = Set(lastNoticeIndexByThread.compactMap { thread, index in
-      transcript[index].continuityNotice?.isResolved == true ? thread : nil
+      transcript[index].continuityNotice?.hidesFailedTurns == true ? thread : nil
     })
     // Turns that failed because the thread was gone, for threads that came back.
     // A "not found" error belongs to the next notice after it: a thread lost
@@ -5876,7 +5879,8 @@ func workFoldSelfHealedFailures(_ transcript: [WorkChatEnvelope]) -> WorkSelfHea
 }
 
 /// What "Try again" wrote before its receipt carried a continuity detail. It
-/// names no thread, so in those saved transcripts it settles every notice so far.
+/// names no thread, so in those saved transcripts it settles every unresolved
+/// notice so far.
 private func workIsUntaggedReconnectNotice(_ envelope: WorkChatEnvelope) -> Bool {
   guard envelope.continuityNotice == nil, case .systemNotice(_, let message, _, _, _) = envelope.event else { return false }
   return message == "Reconnected to the original thread."

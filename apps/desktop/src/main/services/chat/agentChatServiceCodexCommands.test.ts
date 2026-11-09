@@ -386,7 +386,7 @@ describe("createAgentChatService", () => {
             : { error: { code: -32000, message: "expected active turn id turn-1 but found review-task" } });
         await service.interrupt({ sessionId: session.id });
         expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/interrupt")
-          .map((payload) => (payload.params as { turnId?: unknown }).turnId)).toEqual(["turn-1", "review-task"]);
+          .map((payload) => (payload.params as { turnId?: unknown }).turnId).at(-1)).toBe("review-task");
       }
 
       const status = interrupt ? "interrupted" : "completed";

@@ -527,6 +527,7 @@ export function ProviderSignInComposer({
   const onKeyDown = cardEscapeHandler({ signingIn, cancelSignIn: cancel, responding: false, onDecline: onDismiss });
   const host = linkHost(flow.url);
   const heading = need.reason === "failed-turn" ? `Sign in to ${spec.label} again` : `Sign in to ${spec.label}`;
+  const startLabel = spec.via ? `Continue with ${spec.via}` : `Sign in to ${spec.label}`;
   const reason = need.reason === "failed-turn"
     ? `${spec.label} is signed out on ${machineName}. Your message sends again as soon as you're back in.`
     : spec.kind === "settings"
@@ -575,117 +576,115 @@ export function ProviderSignInComposer({
 
       <div className="ade-icc-body">
         <div className="ade-psc-main" data-wide={flow.phase === "waiting" && (flow.awaitingCode || flow.deviceCode) ? "true" : undefined}>
-        <p className="ade-icc-reason">{reason}</p>
-        <div className="ade-icc-row">
-          {flow.phase === "waiting" && flow.awaitingCode ? (
-            <>
-              {flow.url ? (
-                <button type="button" className="ade-icc-link" onClick={() => openExternalUrl(flow.url)}>
-                  {host ? `Open ${host}` : "Open the sign-in page"}
-                  <ArrowSquareOut size={10} weight="bold" />
-                </button>
-              ) : null}
-              <span className="ade-icc-fields">
-                <CardFieldInput
-                  kind="text"
-                  label={spec.kind === "antigravity" ? "The address the browser ended on" : "The code from the sign-in page"}
-                  placeholder={spec.kind === "antigravity" ? "Paste the address it ends on" : "Paste the code it shows"}
-                  value={code}
-                  onChange={setCode}
-                  onSubmit={() => void submitCode(code)}
-                  disabled={false}
-                  autoFocus
-                  testId="provider-sign-in-code"
-                />
-              </span>
-              <button
-                type="button"
-                className="ade-icc-primary ade-icc-primary-brand"
-                disabled={!code.trim()}
-                data-testid="provider-sign-in-submit-code"
-                onClick={() => void submitCode(code)}
-              >
-                Finish
-              </button>
-              <button type="button" className="ade-icc-link ade-icc-link-dim" onClick={cancel}>Cancel</button>
-            </>
-          ) : flow.phase === "waiting" && flow.deviceCode ? (
-            <span className="ade-icc-code" data-testid="provider-sign-in-device-code">
-              <button
-                type="button"
-                className="ade-icc-code-value"
-                title="Copy the code"
-                onClick={() => {
-                  void navigator.clipboard?.writeText(flow.deviceCode ?? "").then(() => setCopied(true), () => {});
-                }}
-              >
-                {flow.deviceCode}
-                {copied ? <Check size={12} weight="bold" /> : <Copy size={12} />}
-              </button>
-              {flow.url ? (
-                <button type="button" className="ade-icc-link" onClick={() => openExternalUrl(flow.url)}>
-                  {host ? `Enter it on ${host}` : "Open the sign-in page"}
-                  <ArrowSquareOut size={10} weight="bold" />
-                </button>
-              ) : null}
-              <SpinnerGap size={13} weight="bold" className="ade-icc-wait motion-safe:animate-spin" aria-label="Waiting for the sign-in" />
-              <button type="button" className="ade-icc-link ade-icc-link-dim" onClick={cancel}>Cancel</button>
-            </span>
-          ) : (
-            <>
-              {need.provider === "kimi" && !signingIn ? (
-                <span className="ade-icc-tabs" role="tablist" aria-label="Kimi account region">
-                  {KIMI_REGIONS.map((entry) => (
-                    <button
-                      key={entry.id}
-                      type="button"
-                      role="tab"
-                      aria-selected={entry.id === region}
-                      className="ade-icc-tab"
-                      onClick={() => setRegion(entry.id)}
-                    >
-                      {entry.label}
-                    </button>
-                  ))}
+          <p className="ade-icc-reason">{reason}</p>
+          <div className="ade-icc-row">
+            {flow.phase === "waiting" && flow.awaitingCode ? (
+              <>
+                {flow.url ? (
+                  <button type="button" className="ade-icc-link" onClick={() => openExternalUrl(flow.url)}>
+                    {host ? `Open ${host}` : "Open the sign-in page"}
+                    <ArrowSquareOut size={10} weight="bold" />
+                  </button>
+                ) : null}
+                <span className="ade-icc-fields">
+                  <CardFieldInput
+                    kind="text"
+                    label={spec.kind === "antigravity" ? "The address the browser ended on" : "The code from the sign-in page"}
+                    placeholder={spec.kind === "antigravity" ? "Paste the address it ends on" : "Paste the code it shows"}
+                    value={code}
+                    onChange={setCode}
+                    onSubmit={() => void submitCode(code)}
+                    disabled={false}
+                    autoFocus
+                    testId="provider-sign-in-code"
+                  />
                 </span>
-              ) : null}
-              <button
-                type="button"
-                className="ade-icc-primary ade-icc-primary-brand"
-                disabled={signingIn || flow.phase === "done"}
-                autoFocus
-                data-testid="provider-sign-in-start"
-                onClick={begin}
-              >
-                {signingIn || flow.phase === "done" ? (
-                  <SpinnerGap size={14} weight="bold" className="motion-safe:animate-spin" />
-                ) : (
-                  <span className="ade-icc-primary-mark" aria-hidden>{brandMark(need.provider, 14)}</span>
-                )}
-                {flow.phase === "starting"
-                  ? "Starting…"
-                  : flow.phase === "verifying" || flow.phase === "done"
-                    ? "Checking…"
-                    : flow.phase === "waiting"
-                      ? host ? `Waiting for ${host}…` : "Waiting for the browser…"
-                      : spec.kind === "settings"
-                        ? `Set up ${spec.label} on ${machineName}`
-                        : flow.phase === "failed"
-                          ? "Try again"
-                          : spec.via ? `Continue with ${spec.via}` : `Sign in to ${spec.label}`}
-              </button>
-              {flow.phase === "waiting" && flow.url ? (
-                <button type="button" className="ade-icc-link" onClick={() => openExternalUrl(flow.url)}>
-                  {host ? `Open ${host}` : "Open the sign-in page"}
-                  <ArrowSquareOut size={10} weight="bold" />
+                <button
+                  type="button"
+                  className="ade-icc-primary ade-icc-primary-brand"
+                  disabled={!code.trim()}
+                  data-testid="provider-sign-in-submit-code"
+                  onClick={() => void submitCode(code)}
+                >
+                  Finish
                 </button>
-              ) : null}
-              {signingIn ? (
                 <button type="button" className="ade-icc-link ade-icc-link-dim" onClick={cancel}>Cancel</button>
-              ) : null}
-            </>
-          )}
-        </div>
+              </>
+            ) : flow.phase === "waiting" && flow.deviceCode ? (
+              <span className="ade-icc-code" data-testid="provider-sign-in-device-code">
+                <button
+                  type="button"
+                  className="ade-icc-code-value"
+                  title="Copy the code"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(flow.deviceCode ?? "").then(() => setCopied(true), () => {});
+                  }}
+                >
+                  {flow.deviceCode}
+                  {copied ? <Check size={12} weight="bold" /> : <Copy size={12} />}
+                </button>
+                {flow.url ? (
+                  <button type="button" className="ade-icc-link" onClick={() => openExternalUrl(flow.url)}>
+                    {host ? `Enter it on ${host}` : "Open the sign-in page"}
+                    <ArrowSquareOut size={10} weight="bold" />
+                  </button>
+                ) : null}
+                <SpinnerGap size={13} weight="bold" className="ade-icc-wait motion-safe:animate-spin" aria-label="Waiting for the sign-in" />
+                <button type="button" className="ade-icc-link ade-icc-link-dim" onClick={cancel}>Cancel</button>
+              </span>
+            ) : (
+              <>
+                {need.provider === "kimi" && !signingIn ? (
+                  <span className="ade-icc-tabs" role="tablist" aria-label="Kimi account region">
+                    {KIMI_REGIONS.map((entry) => (
+                      <button
+                        key={entry.id}
+                        type="button"
+                        role="tab"
+                        aria-selected={entry.id === region}
+                        className="ade-icc-tab"
+                        onClick={() => setRegion(entry.id)}
+                      >
+                        {entry.label}
+                      </button>
+                    ))}
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  className="ade-icc-primary ade-icc-primary-brand"
+                  disabled={signingIn || flow.phase === "done"}
+                  autoFocus
+                  data-testid="provider-sign-in-start"
+                  onClick={begin}
+                >
+                  {signingIn || flow.phase === "done" ? (
+                    <SpinnerGap size={14} weight="bold" className="motion-safe:animate-spin" />
+                  ) : (
+                    <span className="ade-icc-primary-mark" aria-hidden>{brandMark(need.provider, 14)}</span>
+                  )}
+                  {flow.phase === "starting"
+                    ? "Starting…"
+                    : flow.phase === "verifying" || flow.phase === "done"
+                      ? "Checking…"
+                      : flow.phase === "waiting"
+                        ? host ? `Waiting for ${host}…` : "Waiting for the browser…"
+                        : spec.kind === "settings"
+                          ? `Set up ${spec.label} on ${machineName}`
+                          : flow.phase === "failed" ? "Try again" : startLabel}
+                </button>
+                {flow.phase === "waiting" && flow.url ? (
+                  <button type="button" className="ade-icc-link" onClick={() => openExternalUrl(flow.url)}>
+                    {host ? `Open ${host}` : "Open the sign-in page"}
+                    <ArrowSquareOut size={10} weight="bold" />
+                  </button>
+                ) : null}
+                {signingIn ? (
+                  <button type="button" className="ade-icc-link ade-icc-link-dim" onClick={cancel}>Cancel</button>
+                ) : null}
+              </>
+            )}
+          </div>
         </div>
         {shownError ? <CardError id="provider-sign-in-error" message={shownError} /> : null}
       </div>
