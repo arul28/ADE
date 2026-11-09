@@ -9,6 +9,7 @@ import {
 import type { KeybindingsSnapshot } from "../../../../shared/types";
 import { resolveModelDescriptor } from "../../../../shared/modelRegistry";
 import { quickSlotChordConflict, resolveBindingChords, type KeyboardPlatform } from "../../../../shared/keybindingEditor";
+import { modifierChordLabel } from "../../../lib/platform";
 import { getEffectiveBinding } from "../../../lib/keybindings";
 import {
   QUICK_SLOT_COMMANDS,
@@ -376,7 +377,7 @@ export function QuickSlotsCards({ snapshot, platform }: { snapshot: KeybindingsS
         open={addProfileOpen}
         onOpenChange={setAddProfileOpen}
         title="Add a model profile"
-        description="The faster path is to save the active chat's model from ⌘K. This form is for a model you know by id."
+        description={`The faster path is to save the active chat's model from ${modifierChordLabel("K")}. This form is for a model you know by id.`}
       >
         <div className="ade-qs-profile-form">
           <label className="ade-qs-form-label">

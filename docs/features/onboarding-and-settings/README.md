@@ -2641,7 +2641,7 @@ value only after the brain confirms the migration:
 | Level | What it does | Where it works |
 |---|---|---|
 | `never` (default) | ADE holds nothing. Turns pause when the machine sleeps, and the chat says so. | everywhere |
-| `while-away` | The brain holds one OS wake lock **only while work is running**. macOS runs `caffeinate -i -w <brain pid>`; Windows runs a helper using `SetThreadExecutionState` that exits with the brain. Stops idle sleep. Not the lid. | macOS, Windows |
+| `while-away` | The brain holds one OS wake lock **only while work is running**. macOS runs `caffeinate -i -w <brain pid>`; Windows runs a helper using `SetThreadExecutionState` that exits with the brain; Linux runs `systemd-inhibit --what=idle:sleep` around a `tail --pid=<brain pid>`. Stops idle sleep. Not the lid. | macOS, Windows, Linux with systemd |
 | `lid-closed` | `pmset -a disablesleep 1` through the system authorization dialog. Machine-wide, and it outlives ADE. | macOS only |
 
 The distinction between the middle and top levels is the whole point of the

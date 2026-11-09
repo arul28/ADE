@@ -11,6 +11,7 @@ import {
   upgradeAttentionEventPolicies,
   type AttentionPreferences,
 } from "../../../shared/types";
+import { isMac } from "../../lib/platform";
 import { useAccountStatus } from "../../lib/account";
 import { useActivityStore } from "../../state/activityStore";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
@@ -356,12 +357,12 @@ export function ActivitySettingsControls({
           <h3>Account</h3>
           <PopoverRow
             icon={DesktopTower}
-            label="Dock badge counts"
-            description="Choose whether the dock badge counts this computer or your whole account."
+            label={isMac ? "Dock badge counts" : "App badge counts"}
+            description="Choose whether the app badge counts this computer or your whole account."
             disabled={busy}
             control={
               <select
-                aria-label="Dock badge counts"
+                aria-label={isMac ? "Dock badge counts" : "App badge counts"}
                 value={account.dockBadgeScope}
                 disabled={busy}
                 onChange={(event) => updateAccount({
@@ -536,11 +537,11 @@ export function ActivityPrivacySection({ model }: { model: ActivitySettingsModel
         />
         <ModernRow
           anchor="activity-dock-badge"
-          title="Dock badge counts"
+          title={isMac ? "Dock badge counts" : "App badge counts"}
           hint="Work waiting on this computer, or on every machine."
           control={
             <SegmentedChoice
-              ariaLabel="Dock badge counts"
+              ariaLabel={isMac ? "Dock badge counts" : "App badge counts"}
               value={account.dockBadgeScope}
               options={DOCK_BADGE_SCOPE_OPTIONS}
               disabled={busy}

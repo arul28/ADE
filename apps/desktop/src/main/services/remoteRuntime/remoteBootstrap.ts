@@ -13,6 +13,7 @@ import type {
   RemoteRuntimeProjectRecord,
   RemoteRuntimeTarget,
   RemoteRuntimeTargetRoute,
+  RemoteRuntimeUpdateInstallMode,
 } from "../../../shared/types/remoteRuntime";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
 import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
@@ -128,6 +129,8 @@ type RemoteRuntimeInitializeInfo = {
   version: string | null;
   /** The machine's installed desktop app version; null with no app or from an older brain. */
   desktopAppVersion: string | null;
+  updateInstallMode?: RemoteRuntimeUpdateInstallMode;
+  downloadUrl?: string | null;
   packageChannel: string | null;
   capabilities: RemoteRuntimeCapabilities;
   compatibilityWarnings: string[];
@@ -181,9 +184,14 @@ export function validateRemoteRuntimeInitializeResult(args: {
   const desktopAppVersion = typeof runtimeInfo.desktopAppVersion === "string" && runtimeInfo.desktopAppVersion.trim()
     ? runtimeInfo.desktopAppVersion.trim()
     : null;
+  const updateInstallMode = runtimeInfo.updateInstallMode === "in_place" || runtimeInfo.updateInstallMode === "manual_download" || runtimeInfo.updateInstallMode === "runtime_only"
+    ? runtimeInfo.updateInstallMode : undefined;
+  const downloadUrl = typeof runtimeInfo.downloadUrl === "string" ? runtimeInfo.downloadUrl : null;
   return {
     version,
     desktopAppVersion,
+    updateInstallMode,
+    downloadUrl,
     packageChannel,
     capabilities: {
       projects: true,
@@ -2433,6 +2441,8 @@ async function bootstrapWindowsRemoteRuntime(args: {
       arch: platform.label,
       version: opened.initializeInfo.version ?? runtimeVersion,
       appVersion: opened.initializeInfo.desktopAppVersion,
+      updateInstallMode: opened.initializeInfo.updateInstallMode,
+      downloadUrl: opened.initializeInfo.downloadUrl,
       route: { kind: "ssh", endpoint: `${host}:${connectedRoute.port ?? request.target.port ?? 22}` },
       capabilities: opened.initializeInfo.capabilities,
       compatibilityWarnings,
@@ -2881,6 +2891,8 @@ export async function bootstrapRemoteRuntime(args: {
         arch: arch.label,
         version: initializeInfo.version ?? runtimeVersion,
         appVersion: initializeInfo.desktopAppVersion,
+        updateInstallMode: initializeInfo.updateInstallMode,
+        downloadUrl: initializeInfo.downloadUrl,
         route: {
           kind: "ssh",
           endpoint: (() => {

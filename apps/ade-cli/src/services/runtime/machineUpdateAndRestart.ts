@@ -45,6 +45,8 @@ export type MachineUpdateAndRestartResult = {
    * trusting "reconnecting…".
    */
   pendingVersion: string | null;
+  updateInstallMode?: "manual_download";
+  downloadUrl?: string | null;
 };
 
 export type MachineUpdateCheck = {
@@ -76,6 +78,7 @@ export type MachineUpdateAndRestartDeps = {
    * machine for nothing (or, with no app open, installs an older build).
    */
   currentVersion?: string | null;
+  updateInstallMode?: () => { updateInstallMode: "in_place" | "manual_download" | "runtime_only"; downloadUrl: string | null };
   /**
    * Is a newer build actually published for this machine's channel?
    *
@@ -133,6 +136,7 @@ export type MachineUpdateControlsArgs = {
    * newest version" and leave the app behind for good.
    */
   installedApp?: () => Promise<{ name: string; version: string | null; updatable: boolean } | null>;
+  updateInstallMode?: MachineUpdateAndRestartDeps["updateInstallMode"];
 };
 
 // One comparator for the whole app. Slightly wider than the old local
@@ -165,6 +169,7 @@ export function createMachineUpdateControls(
 ): MachineUpdateAndRestartDeps {
   return {
     currentVersion: args.version,
+    updateInstallMode: args.updateInstallMode,
     selectedTrack: () => resolveSelectedUpdateTrack(args.version),
     checkForUpdate: async (targetVersion) => {
       const normalizedTarget = targetVersion?.trim() || null;
@@ -528,6 +533,16 @@ export async function runMachineUpdateAndRestart(
   requestedTargetVersion: string | null = null,
 ): Promise<MachineUpdateAndRestartResult> {
   const ownVersion = deps.currentVersion?.trim() || null;
+  const install = deps.updateInstallMode?.();
+  if (install?.updateInstallMode === "manual_download") {
+    const message = "This Linux package must be downloaded and installed manually on that computer.";
+    return {
+      ok: false, updateApplied: false, currentVersion: ownVersion,
+      targetVersion: requestedTargetVersion, pendingVersion: null,
+      route: "desktop_app", steps: [step("check", "failed", message)], message,
+      updateInstallMode: "manual_download", downloadUrl: install.downloadUrl,
+    };
+  }
   // A client on the other track names a build from its own track. "Update &
   // restart" never moves a machine across tracks: that is the guarded switch,
   // made on the machine itself, which checks its databases first. Such a

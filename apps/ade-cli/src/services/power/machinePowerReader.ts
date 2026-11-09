@@ -2,10 +2,8 @@
  * Reads this machine's battery and wall-power state, on every platform ADE
  * runs on, without Electron.
  *
- * The brain has no `powerMonitor`, and Linux has no ADE desktop app at all
- * (`linux: false` in the build config), so every Linux power fact has to come
- * from here. The desktop main process shares this module rather than growing a
- * second macOS-only implementation.
+ * The brain has no `powerMonitor`, so power facts must also be available here
+ * when the desktop app is closed. The desktop main process shares this module.
  *
  * A machine with no battery reports `battery: undefined`, never 0% or 100%: a
  * Mac Studio showing "0%" would be a lie about hardware that does not exist.

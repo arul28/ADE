@@ -30,6 +30,8 @@ struct MacDesktopCard: View {
   @State private var stopping = false
   @State private var confirmingStop = false
   @State private var stopError: String?
+  @State private var closingWindow: WorkToolsMacDesktopWindow?
+  @State private var confirmingClose = false
 
   var body: some View {
     card
@@ -64,7 +66,7 @@ struct MacDesktopCard: View {
   @ViewBuilder
   private var card: some View {
     if let macDesktop = macDesktop, macDesktop.supported {
-      ADEKitCard(title: macDesktop.windowsDesktop == nil ? "macOS" : "Windows", hint: macDesktopSubtitle(macDesktop)) {
+      ADEKitCard(title: macDesktop.linuxDesktop != nil ? "Linux" : (macDesktop.windowsDesktop == nil ? "macOS" : "Windows"), hint: macDesktopSubtitle(macDesktop)) {
         if let display = macDesktop.display {
           VStack(alignment: .leading, spacing: 10) {
             macDesktopChips(macDesktop, display: display)
@@ -73,27 +75,49 @@ struct MacDesktopCard: View {
             macDesktopLeaseRibbon(macDesktop.lease)
             let windows = macDesktop.windows ?? []
             if windows.isEmpty {
-              Text("No windows are parked on this desktop.")
+              Text(macDesktop.linuxDesktop != nil ? "No windows are open on this screen." : "No windows are parked on this desktop.")
                 .font(.caption)
                 .foregroundStyle(ADEColor.textMuted)
             } else {
               VStack(alignment: .leading, spacing: 6) {
                 ForEach(windows) { window in
-                  VStack(alignment: .leading, spacing: 1) {
-                    Text(window.appName)
-                      .font(.subheadline.weight(.medium))
-                      .foregroundStyle(ADEColor.textPrimary)
-                      .lineLimit(1)
-                    if let title = window.title, !title.isEmpty {
-                      Text(title)
-                        .font(.caption)
-                        .foregroundStyle(ADEColor.textMuted)
+                  HStack {
+                    VStack(alignment: .leading, spacing: 1) {
+                      Text(window.appName)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(ADEColor.textPrimary)
                         .lineLimit(1)
+                      if let title = window.title, !title.isEmpty {
+                        Text(title)
+                          .font(.caption)
+                          .foregroundStyle(ADEColor.textMuted)
+                          .lineLimit(1)
+                      }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if macDesktop.linuxDesktop != nil && syncService.canManageLinuxDesktop("macDesktop.closeWindow", laneId: laneId) {
+                      Button("Close window", role: .destructive) {
+                        closingWindow = window
+                        confirmingClose = true
+                      }
+                      .accessibilityLabel("Close \(window.appName) window")
                     }
                   }
-                  .frame(maxWidth: .infinity, alignment: .leading)
                 }
               }
+              .confirmationDialog("Close this window?", isPresented: $confirmingClose, titleVisibility: .visible) {
+                Button("Close window", role: .destructive) {
+                  if let window = closingWindow {
+                    Task {
+                      do {
+                        try await syncService.linuxDesktopCloseWindow(laneId: laneId, windowId: window.id)
+                        await refreshLane()
+                      } catch { stopError = macDesktopVisibleMessage(for: error) }
+                    }
+                  }
+                }
+                Button("Keep open", role: .cancel) {}
+              } message: { Text("Unsaved changes in the window may be lost.") }
             }
             // A window that would not park is still on the human's own Mac,
             // which is the one thing this pane cannot show a picture of — so it
@@ -110,8 +134,26 @@ struct MacDesktopCard: View {
             }
             HStack {
               macDesktopWatchButton
-              if let seat = windowsDesktopSeat(macDesktop.windowsDesktop, display: display),
-                 syncService.canStopWindowsDesktop(seat: seat) {
+              if macDesktop.linuxDesktop != nil && syncService.canManageLinuxDesktop("macDesktop.stopSeat", laneId: laneId) {
+                Button(stopping ? "Stopping…" : "Stop", role: .destructive) { confirmingStop = true }
+                  .disabled(stopping)
+                  .frame(minHeight: 44)
+                  .confirmationDialog("Stop the Linux screen?", isPresented: $confirmingStop, titleVisibility: .visible) {
+                    Button("Stop screen", role: .destructive) {
+                      Task {
+                        stopping = true
+                        stopError = nil
+                        defer { stopping = false }
+                        do {
+                          try await syncService.linuxDesktopStop(laneId: laneId)
+                          await refreshLane()
+                        } catch { stopError = macDesktopVisibleMessage(for: error) }
+                      }
+                    }
+                    Button("Keep running", role: .cancel) {}
+                  } message: { Text("This closes the lane's screen and its apps.") }
+              } else if let seat = windowsDesktopSeat(macDesktop.windowsDesktop, display: display),
+                 syncService.canStopWindowsDesktop(seat: seat, laneId: laneId) {
                 let copy = windowsDesktopStopCopy(seat: seat)
                 // Asks first, like every Stop on the desktop.
                 Button(stopping ? "Stopping…" : "Stop", role: .destructive) {
@@ -155,7 +197,7 @@ struct MacDesktopCard: View {
   /// "The macOS desktop is off." and Start, like the Apple Off card. The poll brings
   /// the display in once the host has made it.
   private var macDesktopOffRow: some View {
-    let canStart = syncService.supportsMacDesktopStart
+    let canStart = syncService.laneCommandDescriptor("macDesktop.start", laneId: laneId)?.policy.allowsPhone == true
     return HStack(spacing: 10) {
       if macDesktopStarting {
         ProgressView()
@@ -165,6 +207,7 @@ struct MacDesktopCard: View {
         error: macDesktopStartError,
         canStart: canStart,
         hostIsWindows: macDesktop?.windowsDesktop != nil,
+        hostIsLinux: macDesktop?.linuxDesktop != nil,
         pcOperation: macDesktop?.windowsDesktop?.operation?.kind
       ))
         .font(.footnote)
@@ -184,10 +227,12 @@ struct MacDesktopCard: View {
             .background(Capsule().fill(ADEColor.textPrimary.opacity(0.1)))
         }
         .buttonStyle(.plain)
-        .disabled(syncService.connectionState != .connected)
-        .accessibilityHint(macDesktop?.windowsDesktop == nil
-          ? "Starts this lane's macOS desktop on your Mac"
-          : "Starts this lane's private Windows screen on the PC")
+        .disabled(!syncService.isLaneMachineConnected(laneId: laneId))
+        .accessibilityHint(macDesktop?.linuxDesktop != nil
+          ? "Starts this lane's Linux screen"
+          : (macDesktop?.windowsDesktop == nil
+            ? "Starts this lane's macOS desktop on your Mac"
+            : "Starts this lane's private Windows screen on the PC"))
       }
     }
   }
@@ -261,7 +306,7 @@ struct MacDesktopCard: View {
   /// also hands back any control it held — and a placeholder stands in.
   @ViewBuilder
   private func macDesktopStage(_ macDesktop: WorkToolsMacDesktopState) -> some View {
-    let isLive = syncService.supportsMacDesktopStream && liveSession != nil
+    let isLive = syncService.supportsMacDesktopStream(laneId: laneId) && liveSession != nil
     if !macDesktopViewerPresented,
        let display = macDesktop.display,
        isLive || macDesktopFrame != nil {
@@ -292,7 +337,7 @@ struct MacDesktopCard: View {
   /// Same stage the Apple card draws when it has no picture: a dark slot that
   /// opens the viewer when the host can stream.
   private func macDesktopStagePlaceholder(_ stream: WorkToolsMacDesktopStream?) -> some View {
-    let canWatch = syncService.supportsMacDesktopStream
+    let canWatch = syncService.supportsMacDesktopStream(laneId: laneId)
     let caption: String
     if macDesktopViewerPresented {
       caption = "Watching full screen"
@@ -331,7 +376,7 @@ struct MacDesktopCard: View {
     }
     .buttonStyle(.plain)
     .disabled(!canWatch)
-    .accessibilityLabel("Watch this lane's macOS desktop")
+    .accessibilityLabel("Watch this lane's screen")
     .accessibilityHint("Opens the lane's screen full screen")
   }
 
@@ -384,7 +429,7 @@ struct MacDesktopCard: View {
 
   @ViewBuilder
   private var macDesktopWatchButton: some View {
-    if syncService.supportsMacDesktopStream {
+    if syncService.supportsMacDesktopStream(laneId: laneId) {
       Button {
         ADEHaptics.light()
         macDesktopViewerPresented = true
@@ -422,13 +467,13 @@ struct MacDesktopCard: View {
       loadedMacDesktopFramePath = path
       return
     }
-    guard allowFetch, syncService.supportsWorkToolsObservationPreview else { return }
+    guard allowFetch, syncService.supportsWorkToolsObservationPreview(laneId: laneId) else { return }
     guard !isFetchingMacDesktopFrame else { return }
     isFetchingMacDesktopFrame = true
     defer { isFetchingMacDesktopFrame = false }
     let preview: WorkToolsObservationPreview?
     do {
-      preview = try await syncService.readWorkToolsObservationPreview(path: path)
+      preview = try await syncService.readWorkToolsObservationPreview(path: path, laneId: laneId)
     } catch {
       // Transient; the next allowed call retries. Never recorded as a verdict.
       return
@@ -454,7 +499,7 @@ struct MacDesktopCard: View {
   /// True when the host can stream and this lane has a display to stream. The
   /// feature-absent host and the lane with no desktop both keep the still.
   private var isLiveCapable: Bool {
-    syncService.supportsMacDesktopStream
+    syncService.supportsMacDesktopStream(laneId: laneId)
       && macDesktop?.supported == true
       && macDesktop?.display != nil
   }
@@ -469,7 +514,7 @@ struct MacDesktopCard: View {
     let shouldRun = isLiveCapable
       && !macDesktopViewerPresented
       && scenePhase == .active
-      && syncService.connectionState == .connected
+      && syncService.isLaneMachineConnected(laneId: laneId)
     if shouldRun {
       startLiveSessionIfNeeded()
     } else {
@@ -512,7 +557,7 @@ struct MacDesktopCard: View {
     guard isLiveCapable,
           !macDesktopViewerPresented,
           scenePhase == .active,
-          syncService.connectionState == .connected
+          syncService.isLaneMachineConnected(laneId: laneId)
     else { return }
     Task { await session.start(using: syncService) }
   }

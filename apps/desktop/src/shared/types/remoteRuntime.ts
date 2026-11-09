@@ -115,6 +115,8 @@ export type RemoteRuntimeProjectRecord = {
   icon?: ProjectIcon | null;
 };
 
+export type RemoteRuntimeUpdateInstallMode = "in_place" | "manual_download" | "runtime_only";
+
 export type RemoteRuntimeConnectResult = {
   target: RemoteRuntimeTarget;
   arch: string;
@@ -124,6 +126,8 @@ export type RemoteRuntimeConnectResult = {
    * Null with no app (a headless server); absent from brains before v1.2.126.
    */
   appVersion?: string | null;
+  updateInstallMode?: RemoteRuntimeUpdateInstallMode;
+  downloadUrl?: string | null;
   route?: RemoteRuntimeConnectionRoute;
   capabilities?: RemoteRuntimeCapabilities;
   compatibilityWarnings?: string[];
@@ -332,6 +336,8 @@ export type RemoteRuntimeConnectionStatus = {
   version: string | null;
   /** See `RemoteRuntimeConnectResult.appVersion`. Live while connected; not persisted. */
   appVersion?: string | null;
+  updateInstallMode?: RemoteRuntimeUpdateInstallMode;
+  downloadUrl?: string | null;
   route?: RemoteRuntimeConnectionRoute;
   capabilities?: RemoteRuntimeCapabilities;
   compatibilityWarnings?: string[];
@@ -632,6 +638,9 @@ export type RemoteRuntimeUpdateAndRestartResult = {
    * `targetVersion` for an `ok` result that applied an update.
    */
   pendingVersion?: string | null;
+  /** A manual package cannot be changed by the remote update operation. */
+  updateInstallMode?: RemoteRuntimeUpdateInstallMode;
+  downloadUrl?: string | null;
 };
 
 export type RemoteRuntimeLocalWorkMatch = {

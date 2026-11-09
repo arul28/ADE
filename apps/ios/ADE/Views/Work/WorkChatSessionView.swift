@@ -1353,12 +1353,12 @@ struct WorkChatSessionView: View {
                   duoPane.open(
                     chip: chip,
                     tools: laneTools,
-                    macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false,
+                    macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream(laneId: session.laneId) ?? false,
                     origin: .bottomLeading
                   )
                 }
               } else {
-                laneTools.open(chip, macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false)
+                laneTools.open(chip, macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream(laneId: session.laneId) ?? false)
               }
             }
           }

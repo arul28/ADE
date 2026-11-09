@@ -8128,8 +8128,17 @@ struct WindowsDesktopOperationState: Codable, Equatable {
   var startedAt: String?
 }
 
+/// An additive Linux host report. Unknown future fields are ignored, and older
+/// hosts that omit the field retain the existing macOS presentation.
+struct LinuxDesktopHostFacts: Codable, Equatable {
+  var missing: [String]?
+  var encoder: String?
+  var installCommand: String?
+}
+
 struct WorkToolsMacDesktopState: Codable, Equatable {
   var windowsDesktop: WindowsDesktopHostState? = nil
+  var linuxDesktop: LinuxDesktopHostFacts? = nil
   var supported: Bool
   var display: WorkToolsMacDesktopDisplay?
   /// Absent from a host that sends no list; both nil and empty read as "nothing
@@ -8161,6 +8170,7 @@ struct WorkToolsObservationPreview: Codable, Equatable {
 /// redacts it on this method and only `startStream` ever carries it.
 struct MacDesktopStatus: Codable, Equatable {
   var windowsDesktop: WindowsDesktopHostState? = nil
+  var linuxDesktop: LinuxDesktopHostFacts? = nil
   var supported: Bool
   var display: WorkToolsMacDesktopDisplay?
   var windows: [WorkToolsMacDesktopWindow]?

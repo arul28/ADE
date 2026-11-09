@@ -9,8 +9,8 @@
  * reads the real configuration and says what it will do, rather than promising
  * something the OS is about to override.
  *
- * Linux is deliberately absent: no ADE desktop app ships for it (`linux:
- * false`), so there is nothing here to read on that platform.
+ * Linux is deliberately absent: its sleep timer belongs to the desktop
+ * environment, and there is no one setting ADE could read or fix.
  *
  * Every spawn passes `windowsHide: true` — a poll that flashes a console window
  * on Windows is the failure this repo has already been bitten by — and the

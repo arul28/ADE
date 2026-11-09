@@ -617,7 +617,7 @@ or imported (`trigger: "cli_session_started"`), since ADE sees no turns inside
 a CLI.
 
 `install_source` is `direct_download` (the Mac app in an `Applications`
-folder, the Windows installer's `ADE.exe`, or an AppImage), `homebrew` (a
+folder, the Windows installer's `ADE.exe`, an AppImage, or the Linux `.deb` under `/opt/ADE`), `homebrew` (a
 Homebrew path, or the Mac app with a `Caskroom/ade` entry, since the cask copies
 the app to `/Applications`), `install_script` (the standalone brain from
 `install.sh` / `install.ps1` in `~/.ade/bin`), `development`, or `unknown`

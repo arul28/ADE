@@ -213,6 +213,10 @@ type CreateAutoUpdateServiceArgs = {
   autoApplySuppressionMs?: number;
   activityCheckMs?: number;
   autoCheckEnabled?: boolean;
+  /** A Linux package which must be updated by the package manager or by hand. */
+  manualInstallOnly?: boolean;
+  /** Fetches the newest stable release for a package managed outside ADE. */
+  checkManualRelease?: () => Promise<{ version: string; url: string | null } | null>;
   autoApplyEnabled?: boolean;
   /**
    * The machine's chosen update track (`~/.ade/update-track.json`). Read again
@@ -615,6 +619,8 @@ export function createAutoUpdateService({
   autoApplySuppressionMs = DEFAULT_AUTO_APPLY_SUPPRESSION_MS,
   activityCheckMs = DEFAULT_ACTIVITY_CHECK_MS,
   autoCheckEnabled = true,
+  manualInstallOnly = false,
+  checkManualRelease,
   autoApplyEnabled = autoCheckEnabled && process.env.ADE_DISABLE_AUTO_UPDATE_APPLY !== "1",
   readSelectedTrack,
   writeSelectedTrack,
@@ -764,6 +770,8 @@ export function createAutoUpdateService({
 
   let snapshot: AutoUpdateSnapshot = {
     ...createEmptyAutoUpdateSnapshot(currentVersion),
+    installMode: manualInstallOnly ? "manual" : "automatic",
+    downloadUrl: manualInstallOnly ? `https://github.com/${releaseRepository}/releases/latest` : null,
     recentlyInstalled: initialState.recentlyInstalled,
     lastInstallFailed: initialState.failedInstall,
     ...trackPatch(),
@@ -1688,6 +1696,29 @@ export function createAutoUpdateService({
    * fire and forget; a caller that must know the outcome awaits it.
    */
   function checkForUpdates(options: { userInitiated?: boolean } = {}): Promise<void> {
+    if (manualInstallOnly) {
+      if (checkPromise) return checkPromise.then(() => undefined);
+      patchSnapshot({ status: "checking", error: null });
+      checkPromise = (async () => {
+        const release = await checkManualRelease?.();
+        if (!release || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(release.version)) {
+          throw new Error("Could not check the latest ADE release. Try again or open the download page.");
+        }
+        const newer = compareUpdateVersions(release.version, currentVersion) > 0;
+        patchSnapshot({
+          status: newer ? "ready" : "idle",
+          version: newer ? release.version : null,
+          latestKnownVersion: release.version,
+          downloadUrl: release.url || `https://github.com/${releaseRepository}/releases/latest`,
+          lastCheckedAt: nowMs(),
+          error: null,
+        });
+      })().catch((error: unknown) => {
+        logger.warn("autoUpdate.manual_release_check_failed", { message: formatErrorMessage(error) });
+        patchSnapshot({ status: "error", version: null, error: error instanceof Error ? error.message : String(error) });
+      }).finally(() => { checkPromise = null; });
+      return checkPromise.then(() => undefined);
+    }
     logger.info("autoUpdate.check_requested", {
       userInitiated: options.userInitiated === true,
       status: snapshot.status,
@@ -2301,6 +2332,7 @@ export function createAutoUpdateService({
       closeAfterInstall?: boolean;
     } = {},
   ): Promise<boolean> {
+    if (manualInstallOnly) return false;
     // Mirrors checkPromise: collapse concurrent IPC/idle-timer calls onto one
     // transaction so cleanup, rollback, and native handoff cannot race.
     if (quitAndInstallPromise) return quitAndInstallPromise;
@@ -2525,6 +2557,7 @@ export function createAutoUpdateService({
    * installed yet.
    */
   function startTrackSwitch(target: UpdateTrack): UpdateTrackSwitchResult {
+    if (manualInstallOnly) return { ok: false, target, reason: "This Linux installation must be updated manually." };
     if (!writeSelectedTrack) {
       return { ok: false, target, reason: "This build can't change its update track." };
     }
@@ -2584,6 +2617,7 @@ export function createAutoUpdateService({
    * caller puts the database copies back in `beforeQuitAndInstall`.
    */
   async function startGoBack(version: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (manualInstallOnly) return { ok: false, reason: "This Linux installation must be updated manually." };
     if (snapshot.status === "installing" || quitAndInstallPromise != null || installQuitArmed) {
       return { ok: false, reason: "An update is installing. Wait for ADE to restart." };
     }

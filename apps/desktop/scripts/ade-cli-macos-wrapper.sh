@@ -104,6 +104,26 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
     ;;
 esac
 
+if [ "$(uname -s 2>/dev/null || echo unknown)" = Linux ]; then
+  RESOURCES_DIR=$(CDPATH= cd -P -- "$SCRIPT_DIR/../.." && pwd)
+  case "$CHANNEL" in
+    alpha|beta) APP_EXE="$RESOURCES_DIR/../ade-desktop-$CHANNEL" ;;
+    *) APP_EXE="$RESOURCES_DIR/../ade-desktop" ;;
+  esac
+  if [ -z "${ADE_AGENT_SKILLS_DIRS:-}" ] && [ -d "$RESOURCES_DIR/agent-skills" ]; then
+    export ADE_AGENT_SKILLS_DIRS="$RESOURCES_DIR/agent-skills"
+  fi
+  NODE_PATH_VALUE="$RESOURCES_DIR/app.asar.unpacked/node_modules:$RESOURCES_DIR/app.asar/node_modules${NODE_PATH:+:$NODE_PATH}"
+  if [ -n "${ADE_CLI_NODE:-}" ]; then
+    NODE_PATH="$NODE_PATH_VALUE" exec "$ADE_CLI_NODE" "$CLI_JS" "$@"
+  fi
+  if [ -x "$APP_EXE" ]; then
+    ELECTRON_RUN_AS_NODE=1 NODE_PATH="$NODE_PATH_VALUE" exec "$APP_EXE" "$CLI_JS" "$@"
+  fi
+  echo "ade: packaged ADE runtime is missing: $APP_EXE" >&2
+  exit 127
+fi
+
 if [ -n "${ADE_CLI_NODE:-}" ]; then
   exec "$ADE_CLI_NODE" "$CLI_JS" "$@"
 fi

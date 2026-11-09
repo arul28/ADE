@@ -170,7 +170,7 @@ struct WorkToolsSheet: View {
           // On the Duo's outer display the bar's trailing items are the edge
           // rail: close there as an ×, like the other screens, and leave the
           // top to the content (each card already names the tool).
-          .navigationTitle(displayHasEdgeRail ? "" : (tool == .macDesktop && state?.macDesktop?.windowsDesktop != nil ? "Windows" : tool.title))
+          .navigationTitle(displayHasEdgeRail ? "" : (tool == .macDesktop && state?.macDesktop?.linuxDesktop != nil ? "Linux" : (tool == .macDesktop && state?.macDesktop?.windowsDesktop != nil ? "Windows" : tool.title)))
           .navigationBarTitleDisplayMode(.inline)
           .toolbar {
             if displayHasEdgeRail {
@@ -477,7 +477,7 @@ struct WorkToolsSheet: View {
       observationPath: observationPath,
       loadedFramePath: frame == nil ? nil : loadedFramePath,
       unreadableFramePath: unreadableFramePath,
-      supportsObservationPreview: syncService.supportsWorkToolsObservationPreview
+      supportsObservationPreview: syncService.supportsWorkToolsObservationPreview(laneId: laneId)
     )
   }
 
@@ -525,7 +525,7 @@ struct WorkToolsSheet: View {
     // chip that has already checked this, but a reconnect to an older brain can
     // drop the action while the sheet is open — and a 3s timer must not keep
     // putting an unknown command on the wire.
-    guard syncService.supportsWorkToolsState else {
+    guard syncService.supportsWorkToolsState(laneId: laneId) else {
       loaded = true
       return
     }
@@ -563,7 +563,7 @@ struct WorkToolsSheet: View {
     // A host that advertises the state read but not the preview read cannot
     // send bytes at all. Nothing is put on the wire, and `frameState` says so
     // instead of spinning under a frame that is never coming.
-    guard syncService.supportsWorkToolsObservationPreview else { return }
+    guard syncService.supportsWorkToolsObservationPreview(laneId: laneId) else { return }
     // The host already answered "no bytes" for this exact path. That verdict is
     // about the file, not the link, so re-asking every 3s would spin forever.
     guard unreadableFramePath != path else { return }
@@ -576,7 +576,7 @@ struct WorkToolsSheet: View {
     }
     let preview: WorkToolsObservationPreview?
     do {
-      preview = try await syncService.readWorkToolsObservationPreview(path: path)
+      preview = try await syncService.readWorkToolsObservationPreview(path: path, laneId: laneId)
     } catch {
       // Transient: a timeout or a dropped socket. Deliberately NOT recorded as
       // unreadable — the spinner stays and the next poll asks again.

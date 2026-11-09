@@ -4,6 +4,7 @@ import {
   type AutoUpdatePreferences,
 } from "../../../shared/types";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { Banner } from "../ui/notice";
 
 /**
@@ -14,6 +15,7 @@ import { Banner } from "../ui/notice";
  * `AppearanceSection` uses.
  */
 export function AutoUpdatesControls() {
+  const snapshot = useAutoUpdateSnapshot();
   const [preferences, setPreferences] = useState<AutoUpdatePreferences | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,6 +52,10 @@ export function AutoUpdatesControls() {
   };
 
   const current = preferences ?? DEFAULT_AUTO_UPDATE_PREFERENCES;
+
+  if (snapshot.installMode === "manual") {
+    return <ModernRows><ModernRow anchor="auto-updates" title="Install updates manually" hint="Download and install the latest package to update ADE." /></ModernRows>;
+  }
 
   return (
     <ModernRows>

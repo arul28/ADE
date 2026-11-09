@@ -1347,7 +1347,7 @@ export function CommandPalette({
   const openTargetLabel = openTarget ? pathLabel(openTarget) : null;
   const canOpenHighlighted =
     Boolean(openTarget) && openTarget !== activeBrowseRoot;
-  const openShortcutLabel = `${isMacPlatform() ? "⌘" : modifierKeyLabel}↵`;
+  const openShortcutLabel = `${isMacPlatform() ? "⌘" : `${modifierKeyLabel}+`}↵`;
 
   // Restore the per-location last path whenever browsing begins or the active
   // location changes. `startProjectBrowse` already seeds the path for the

@@ -12,6 +12,7 @@
  * wanted.
  */
 
+import { runningAppImagePath } from "./runningAppImage";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -178,6 +179,8 @@ type DesktopAppRecord = {
   /** Electron's `userData`, where the app's own logs live; absent in older records. */
   userDataPath?: string | null;
   version: string | null;
+  downloadUrl?: string | null;
+  linuxAppImage?: boolean;
 };
 
 function desktopAppRecordPath(env: NodeJS.ProcessEnv): string {
@@ -203,6 +206,7 @@ export function recordInstalledDesktopApp(input: {
   /** `app.getPath("userData")`: a brain restart report reads the app's logs there. */
   userDataPath: string | null | undefined;
   version: string | null;
+  downloadUrl?: string | null;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   logger?: { warn: (event: string, detail?: Record<string, unknown>) => void } | null;
@@ -211,15 +215,21 @@ export function recordInstalledDesktopApp(input: {
   desktopAppRecordWritten = true;
   const platform = input.platform ?? process.platform;
   const resourcesPath = path.resolve(input.resourcesPath);
-  // macOS: <App>.app/Contents/Resources. Windows: <install dir>/resources.
-  const appPath = platform === "darwin" ? path.dirname(path.dirname(resourcesPath)) : path.dirname(resourcesPath);
+  // An AppImage's resources and executable are in a temporary mount. Keep the
+  // actual image path so the record remains useful after the process exits.
+  const imagePath = runningAppImagePath(input.env ?? process.env, platform);
+  const appPath = imagePath
+    ? path.resolve(imagePath)
+    : platform === "darwin" ? path.dirname(path.dirname(resourcesPath)) : path.dirname(resourcesPath);
   const record: DesktopAppRecord = {
     platform,
     appPath,
     resourcesPath,
-    executablePath: input.executablePath ? path.resolve(input.executablePath) : null,
+    executablePath: imagePath ? path.resolve(imagePath) : input.executablePath ? path.resolve(input.executablePath) : null,
     userDataPath: input.userDataPath ? path.resolve(input.userDataPath) : null,
     version: input.version?.trim() || null,
+    downloadUrl: input.downloadUrl ?? null,
+    ...(platform === "linux" ? { linuxAppImage: Boolean(imagePath) } : {}),
   };
   const body = `${JSON.stringify(record, null, 2)}\n`;
   const target = desktopAppRecordPath(input.env ?? process.env);
@@ -241,7 +251,7 @@ export function recordInstalledDesktopApp(input: {
   }
 }
 
-function readDesktopAppRecord(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): DesktopAppRecord | null {
+export function readDesktopAppRecord(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): DesktopAppRecord | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(desktopAppRecordPath(env), "utf8")) as Partial<DesktopAppRecord>;
     if (parsed.platform !== platform || typeof parsed.resourcesPath !== "string" || !parsed.resourcesPath) return null;
@@ -251,6 +261,8 @@ function readDesktopAppRecord(env: NodeJS.ProcessEnv, platform: NodeJS.Platform)
       resourcesPath: parsed.resourcesPath,
       executablePath: typeof parsed.executablePath === "string" && parsed.executablePath ? parsed.executablePath : null,
       version: typeof parsed.version === "string" ? parsed.version : null,
+      downloadUrl: typeof parsed.downloadUrl === "string" ? parsed.downloadUrl : null,
+      linuxAppImage: parsed.linuxAppImage === true,
     };
   } catch {
     return null;
@@ -509,7 +521,8 @@ function windowsDesktopAppExecutables(env: NodeJS.ProcessEnv, record: DesktopApp
  * Info.plist names a different bundle id than this channel's
  * (`resolveAssociatedAppBundleId`, the id the service plist associates) is
  * skipped. On Windows: the recorded install, then `%LOCALAPPDATA%\Programs`
- * and `%ProgramFiles%`. Linux has no desktop app.
+ * and `%ProgramFiles%`. On Linux use the recorded resources while they exist;
+ * an AppImage mount disappears when the app exits.
  */
 export function installedDesktopAppNativeDirs(input: {
   platform?: NodeJS.Platform;
@@ -530,6 +543,9 @@ export function installedDesktopAppNativeDirs(input: {
       roots.push(win.join(win.dirname(executable), "resources"));
     }
     return dedupePaths(roots).map((root) => win.join(root, "native"));
+  }
+  if (platform === "linux" && record && existsOnDisk(record.resourcesPath)) {
+    return [path.join(record.resourcesPath, "native")];
   }
   return [];
 }
@@ -562,9 +578,9 @@ export type InstalledDesktopApp = {
  * /Applications and ~/Applications, read from its Info.plist, so an app
  * updated since it last ran still reads right, running or not. Windows: the
  * recorded install, then the per-user and machine-wide install folders, read
- * from the `.exe`'s version resource (a closed app updated by the brain never
- * rewrote its record). Null when no app is installed (Linux, a headless
- * server).
+ * from the `.exe`'s version resource. Linux uses the recorded executable and
+ * version, which are refreshed when the desktop starts. A removed or moved
+ * executable is not reported as installed until the app starts at its new path.
  */
 export function readInstalledDesktopApp(input: {
   platform?: NodeJS.Platform;
@@ -600,6 +616,21 @@ export function readInstalledDesktopApp(input: {
       };
     }
     return null;
+  }
+  if (platform === "linux") {
+    const executable = [
+      explicitDesktopAppPath(env), record?.executablePath,
+      ...(stableChannel ? ["/opt/ADE/ade-desktop", "/opt/ade-desktop/ade-desktop", "/usr/lib/ade-desktop/ade-desktop"] : []),
+    ].find((candidate): candidate is string => Boolean(candidate && existsOnDisk(candidate)));
+    if (!executable) return null;
+    const recordedVersion = record?.executablePath === executable ? record.version : null;
+    return {
+      platform,
+      path: executable,
+      name: path.basename(executable),
+      version: recordedVersion,
+      updatable: stableChannel && (record?.executablePath === executable ? record.linuxAppImage === true : executable.toLowerCase().endsWith(".appimage")),
+    };
   }
   return null;
 }
