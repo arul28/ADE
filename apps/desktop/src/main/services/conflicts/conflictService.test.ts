@@ -413,13 +413,13 @@ describe("conflictService conflict context integrity", () => {
       commitFile("child.txt", "child\n", "child work");
       git(repoRoot, ["checkout", "main"]);
       git(repoRoot, ["merge", "--squash", "feature/parent"]);
-      git(repoRoot, ["commit", "-m", "squash parent"]);
+      git(repoRoot, ["commit", "-m", "Parent work (#7)"]);
       git(repoRoot, ["checkout", "feature/child"]);
       db.run(
         `insert into pull_requests(id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, title, state,
           base_branch, head_branch, merged_head_sha, merged_at, created_at, updated_at)
-         values (?, ?, ?, 'o', 'r', 7, 'https://github.com/o/r/pull/7', 'Parent', 'merged', 'main', 'feature/parent', ?, ?, ?, ?)`,
-        ["pr-parent", projectId, "lane-parent", mergedHeadSha, new Date(Date.now() + 3_600_000).toISOString(), now, now],
+         values (?, ?, ?, 'o', 'r', 8, 'https://github.com/o/r/pull/8', 'Parent', 'merged', 'main', 'feature/parent', ?, ?, ?, ?)`,
+        ["pr-parent", projectId, "lane-parent", mergedHeadSha, new Date().toISOString(), now, now],
       );
       const child = createLaneSummary(repoRoot, { id: "lane-child", name: "Child", branchRef: "feature/child", baseRef: "main", parentLaneId: null });
       const service = createConflictService({
@@ -435,12 +435,12 @@ describe("conflictService conflict context integrity", () => {
         projectConfigService: { get: () => ({ effective: { providerMode: "guest" }, local: {} }) } as any,
       });
 
-      // Merged on GitHub, but the local base predates it: replaying past the
-      // parent's head would lose its work.
+      // Merged on GitHub as #8, but the base holds no merge of #8: replaying
+      // past the parent's head would lose its work.
       const [staleBase] = await service.scanRebaseNeeds();
       expect(staleBase).toMatchObject({ kind: "behind", mergedPr: null });
 
-      db.run("update pull_requests set merged_at = ? where id = 'pr-parent'", [new Date(Date.now() - 3_600_000).toISOString()]);
+      db.run("update pull_requests set github_pr_number = 7 where id = 'pr-parent'");
       const [need] = await service.scanRebaseNeeds();
       expect(need).toMatchObject({ kind: "built_on_merged", conflictPredicted: false, mergedPr: { number: 7 } });
 

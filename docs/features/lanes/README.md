@@ -133,7 +133,8 @@ The gate is `evaluateDefaultBranchAutoPull` in
 unit-tested independently of git.
 
 A lane built on a recently squash-merged lane rebases only its own commits onto
-the target base when ADE knows the merged PR head. Prediction uses the same
+the target base when ADE knows the merged PR head and finds that PR's merge
+commit in the base. Prediction uses the same
 replay. Rollback checks every affected lane before resetting: it refuses if a
 lane moved or has uncommitted work, and is unavailable after a push. A merged
 lane whose remote branch is gone shows that it merged rather than offering to
