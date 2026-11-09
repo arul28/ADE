@@ -2,6 +2,7 @@ import type { ChatLaunchService } from "../../../../desktop/src/main/services/ch
 import { fallbackUnprojectedChatSession } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
 import { readGithubContributionCalendar } from "../../../../desktop/src/main/services/usage/githubActivityStats";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
+import { cloudDomainEnabled } from "../../../../desktop/src/shared/adeCloud";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
 import { normalizeGitHubPrListFilters } from "../../../../desktop/src/shared/githubPrSearch";
 import type { JiraIssueListState, LaneJiraIssue } from "../../../../desktop/src/shared/types/jira";
@@ -6604,9 +6605,9 @@ function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegis
 }
 
 /** What the phone's ADE Cloud page may run (`cloud.read` / `cloud.write`). */
-const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set(["list", "spending", "limits", "ready_status", "make_status"]);
+const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set(["access", "list", "hours", "limits", "ready_status", "make_status"]);
 const CLOUD_REMOTE_WRITES: ReadonlySet<string> = new Set([
-  "create", "copy", "move", "sleep", "wake", "resize", "delete", "set_sleep", "set_cap", "set_limits",
+  "create", "copy", "move", "sleep", "wake", "resize", "delete", "update", "set_limits",
   "ready_set", "ready_off", "ready_retry",
 ]);
 
@@ -8285,7 +8286,16 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     if (!allowed.has(action)) throw new Error(`cloud has no "${action}" here.`);
     const domain = args.cloudActions?.() ?? null;
     const handler = domain?.[action];
-    if (typeof handler !== "function") throw new Error("ADE Cloud isn't available on this machine.");
+    // No ADE Cloud for this account: everything but `access` answers as if the
+    // command weren't here, so the phone hides the page instead of showing a card.
+    if (action === "access") {
+      if (typeof handler !== "function") return { enabled: false };
+      return await (handler as () => Promise<unknown>).call(domain);
+    }
+    const accessOn = await cloudDomainEnabled(domain, (error) => {
+      args.logger.warn("cloud.remote_access_read_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+    if (typeof handler !== "function" || !accessOn) throw new Error(`cloud has no "${action}" here.`);
     const input = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args) ? payload.args as Record<string, unknown> : {};
     const { approval: _ignored, ...rest } = input;
     return await (handler as (input: unknown) => Promise<unknown>).call(domain, { ...rest, approval: { by: "person" } });

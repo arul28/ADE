@@ -328,6 +328,8 @@ export type SessionActiveGoal = {
 
 export type TerminalSessionSummary = {
   id: string;
+  /** A row built from an ADE Cloud computer's saved chats, because the computer isn't connected. */
+  cloudSavedCopy?: boolean;
   laneId: string;
   laneName: string;
   ptyId: string | null;

@@ -627,8 +627,11 @@ export function createPushRelayClient(args: {
   /**
    * Settings/vault change marks ride on the publish response (additive; older
    * relays omit them). They are advisory, so a missing or malformed value is
-   * ignored rather than failing the publish, and marks for any account other
-   * than the one this publish was for are dropped.
+   * ignored rather than failing the publish. The publish carried this
+   * account's token, and marks are dropped if the account changed meanwhile.
+   * `accountChanges.accountUserId` is the relay's hash of the issuer and
+   * subject, so it can never equal the client's id: comparing the two threw
+   * away every mark and left every brain polling on every tick.
    */
   const recordPublishedAccountChangeMarks = (body: unknown, expectedAccountUserId: string): void => {
     if (!isRecord(body) || !isRecord(body.accountChanges)) return;
@@ -637,7 +640,7 @@ export function createPushRelayClient(args: {
       value === null ? null : typeof value === "string" && value.length <= 64 ? value : undefined;
     const settings = mark(changes.settings);
     const vault = mark(changes.vault);
-    if (changes.accountUserId !== expectedAccountUserId || settings === undefined || vault === undefined) return;
+    if (args.getAccountUserId?.() !== expectedAccountUserId || settings === undefined || vault === undefined) return;
     recordAccountChangeMarks(expectedAccountUserId, { settings, vault });
   };
 

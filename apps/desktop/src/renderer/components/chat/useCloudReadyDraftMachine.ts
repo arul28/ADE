@@ -4,6 +4,7 @@ import { CLOUD_READY_WAKE_WAIT_MS, type CloudReadyProjectStatus } from "../../..
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { captureError } from "../../../shared/sentry/capture";
 import { ipcErrorMessage } from "../../lib/format";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import type { DraftMachineOption } from "./DraftMachinePicker";
 import { connectWithRetry } from "./connectWithRetry";
 
@@ -35,7 +36,7 @@ const SELECT_WAIT_MS = 20_000;
  * machine's own connection carries every call to it.
  */
 export function useCloudReadyDraftMachine({
-  enabled,
+  enabled: enabledProp,
   originUrl,
   pickerOpened,
   connectedMachineIds,
@@ -52,6 +53,8 @@ export function useCloudReadyDraftMachine({
   onMachineReady: (machineId: string) => void;
   onNotice: (notice: { message: string; kind: "hint" | "status" } | null) => void;
 }) {
+  const cloudEnabled = useAdeCloudEnabled();
+  const enabled = enabledProp && cloudEnabled;
   const bridge = window.ade.cloud;
   const identity = normalizeGitRemoteIdentity(originUrl);
   const [project, setProject] = useState<CloudReadyProjectStatus | null>(null);
@@ -150,7 +153,7 @@ export function useCloudReadyDraftMachine({
   }, [giveBack]);
 
   const cloudConnected = cloudStatus?.connected === true && !cloudStatus.error;
-  const option: DraftMachineOption | null = project
+  const option: DraftMachineOption | null = !enabled ? null : project
     ? {
         id: CLOUD_READY_MACHINE_ID,
         name: waking ? `Waking ${waking.name}…` : "ADE Cloud · ready",

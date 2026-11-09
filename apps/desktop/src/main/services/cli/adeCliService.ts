@@ -9,6 +9,7 @@ import {
   splitAdeAgentSkillRoots,
 } from "../../../shared/agentSkillRoots";
 import { cleanupLegacyAdeSkills } from "../skills/legacySkillCleanupService";
+import { withoutWithheldAgentSkillsEnv } from "../skills/agentSkillRuntimeService";
 import type { Logger } from "../logging/logger";
 import { spawnAsync } from "../shared/utils";
 import { pathsEqual } from "../shared/pathCompare";
@@ -836,7 +837,7 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
   return {
     getStatus,
     installForUser,
-    agentEnv,
+    agentEnv: (baseEnv?: NodeJS.ProcessEnv) => withoutWithheldAgentSkillsEnv(agentEnv(baseEnv)),
     applyToProcessEnv,
     resolved,
   };

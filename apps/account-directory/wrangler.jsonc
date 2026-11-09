@@ -28,13 +28,39 @@
   // 503 and the app opens the browser page instead. It can sign in as any user
   // of that instance, so it is set out of band like the secret above.
   //
+  // REQUIRED SECRET — AGENT37_API_KEY (ADE Cloud)
+  // The workspace key ADE Cloud runs computers on, set out of band like the
+  // secret above. Only this Worker holds it: the desktop and brains never do.
+  // Without it every /cloud route refuses with 503 and the cron does nothing.
+  //
+  // OPTIONAL SECRET — RESEND_API_KEY (ADE Cloud)
+  // Sends hours warnings, deletion warnings and owner alerts. Unset, those log
+  // a line and carry on. Recipients come from CLERK_SECRET_KEY above.
+  //
+  // SECRETS — STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET (ADE Cloud)
+  // The Stripe key that sells the plan, and the `whsec_...` signing secret of the
+  // webhook endpoint pointing at https://<this worker>/webhooks/stripe, subscribed
+  // to checkout.session.completed, customer.subscription.updated and .deleted,
+  // invoice.paid and invoice.payment_failed. Set out of band. Without them the
+  // billing routes answer 503, the webhook answers 503, and no hours are reported.
+  //
+  // CLOUD_ACCESS_ACCOUNTS (ADE Cloud, deliberately absent below)
+  // A comma list of Clerk user ids, or `*`. Unset means nobody: every /cloud
+  // route answers 404. The owner's id is set at rollout, out of band.
+  //
+  // SECRET — CLOUD_CHAT_MASTER_KEY (ADE Cloud, saved chats)
+  // 32 random bytes, base64 (`openssl rand -base64 32`). Seals the per-user key
+  // that encrypts saved chats. Set out of band. Rotating it makes existing saved
+  // chats unreadable, so it is never rotated in place. Unset, the chat routes
+  // answer 503.
+  //
   // OPTIONAL SECRETS — CLERK_WEBHOOK_SIGNING_SECRET, POSTHOG_PROJECT_TOKEN
   // `/webhooks/clerk` records one `ade_signed_up` PostHog event per new account
-  // (src/signupAnalytics.ts). Create a Clerk webhook for `user.created` pointing
+  // (src/signupAnalytics.ts). Create a Clerk webhook for `user.created` and `user.deleted` pointing
   // at https://<this worker>/webhooks/clerk, then set its `whsec_…` signing
-  // secret and the public `phc_…` project token. Unset, the route answers 503.
+  // secret and the public `phc_…` project token. Unset, the route answers 503 (a `user.deleted` needs only the signing secret).
   "vars": {
-    "ONLINE_WINDOW_MS": "90000",
+    "ONLINE_WINDOW_MS": "150000",
     // Public Sentry DSN of the ade-workers project. Not a secret (it only lets
     // events in). SENTRY_RELEASE is set at deploy, not here. No
     // SENTRY_ENVIRONMENT here: this development Worker and `wrangler dev`
@@ -86,7 +112,12 @@
     // nothing else on this Worker depends on it.
     "MUSICKIT_KEY_ID": "3NNQ5Y43RA",
     "MUSICKIT_TEAM_ID": "VQ372F39G6",
-    "MUSICKIT_TOKEN_TTL_SECONDS": "2592000"
+    "MUSICKIT_TOKEN_TTL_SECONDS": "2592000",
+    // ADE Cloud prices and meter in the Stripe SANDBOX. `scripts/stripe-setup.mjs`
+    // creates or finds them and prints these ids.
+    "STRIPE_PLAN_PRICE_ID": "price_1UZkLZBsy4QVYccDJhyDhBPZ",
+    "STRIPE_EXTRA_PRICE_ID": "price_1UZkLZBsy4QVYccDDwJ33ruZ",
+    "STRIPE_METER_EVENT": "ade_cloud_small_hours"
   },
   // REQUIRED, not optional. Cloudflare refuses a Worker's fetch to another
   // Worker of the same account through its workers.dev URL (error 1042): the
@@ -110,6 +141,13 @@
     {
       "binding": "DIAGNOSTICS",
       "bucket_name": "ade-diagnostics"
+    },
+    // ADE Cloud saved chats (src/cloud/chats.ts). The bucket is NOT created by
+    // deploying: run `wrangler r2 bucket create ade-cloud-chats` at rollout. A
+    // missing binding is handled: the chat routes answer 503.
+    {
+      "binding": "CLOUD_CHATS",
+      "bucket_name": "ade-cloud-chats"
     }
   ],
   "env": {
@@ -125,7 +163,7 @@
         // every sign-in link is a 404; the deploy preflight checks the page
         // is live (`scripts/verify-deployment-config.mjs`).
         "DEVICE_PAGE_ORIGIN": "https://ade-app.dev",
-        "ONLINE_WINDOW_MS": "90000",
+        "ONLINE_WINDOW_MS": "150000",
         // Same public DSN as above; vars do not inherit into an environment.
         "SENTRY_DSN": "https://7b05312b178df4f7d294794aa9ff7cde@o4512249455640576.ingest.us.sentry.io/4512249615024128",
         // The only environment Sentry hears from (src/sentry.ts drops the rest).
@@ -147,6 +185,9 @@
         "MUSICKIT_KEY_ID": "3NNQ5Y43RA",
         "MUSICKIT_TEAM_ID": "VQ372F39G6",
         "MUSICKIT_TOKEN_TTL_SECONDS": "2592000"
+        // STRIPE_PLAN_PRICE_ID, STRIPE_EXTRA_PRICE_ID and STRIPE_METER_EVENT are
+        // left out until rollout: run `scripts/stripe-setup.mjs` with the live key
+        // and put the ids it prints here. Unset, billing answers 503.
       },
       "services": [{ "binding": "ACTIVITY_RELAY", "service": "ade-push-relay" }],
       "d1_databases": [
@@ -161,6 +202,11 @@
         {
           "binding": "DIAGNOSTICS",
           "bucket_name": "ade-diagnostics-production"
+        },
+        // Saved chats: created at rollout (`wrangler r2 bucket create ade-cloud-chats-production`).
+        {
+          "binding": "CLOUD_CHATS",
+          "bucket_name": "ade-cloud-chats-production"
         }
       ]
     }

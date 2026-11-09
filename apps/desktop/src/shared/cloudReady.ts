@@ -12,7 +12,7 @@
 import type { CloudCreateStage, CloudMachineKind, CloudShapeId } from "./adeCloud";
 
 /** The size a new ready machine gets until the person picks one: a 4 vCPU / 8 GB VM runs a Docker stack. */
-export const CLOUD_READY_DEFAULT_SHAPE: CloudShapeId = "4x8";
+export const CLOUD_READY_DEFAULT_SHAPE: CloudShapeId = "2x4";
 
 /**
  * How long a chat start waits, from the claim, for the woken machine's ADE to

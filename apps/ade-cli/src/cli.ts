@@ -119,8 +119,9 @@ import { quoteShellArg } from "../../desktop/src/shared/shell";
 import type { MachineWorkCopy } from "./cliRemoteWork";
 import { machineVersionsDrift } from "../../desktop/src/shared/machineVersions";
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
-import { findSettingsEntries, settingsEntryLabel } from "../../desktop/src/shared/settingsManifest";
+import { findSettingsEntries, isAdeCloudSettingEntry, settingsEntryLabel } from "../../desktop/src/shared/settingsManifest";
 import { settingAgentAccess } from "../../desktop/src/shared/settingsAgentAccess";
+import { setAdeCloudSkillVisible } from "../../desktop/src/shared/agentSkillRoots";
 import { OPEN_PLACES } from "../../desktop/src/shared/openPlaces";
 import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
 import { canonicalGitOriginUrl } from "../../desktop/src/main/services/github/githubSshAlias";
@@ -263,7 +264,7 @@ import {
   resolvePendingInputResponse,
   type PendingInputResponse,
 } from "../../desktop/src/shared/pendingInputCommand";
-import { adeActionAccess } from "../../desktop/src/shared/adeActionAccess";
+import { adeActionAccess, isBackgroundAdeWrite } from "../../desktop/src/shared/adeActionAccess";
 import {
   isAgentChatStopMode,
   type AgentChatStopMode,
@@ -947,6 +948,7 @@ export type FormatterId =
   | "integrations"
   | "cloud-ready"
   | "cloud-list"
+  | "cloud-hours"
   | "cloud-result"
   | "mcp-servers"
   | "mcp-servers-remove"
@@ -1623,6 +1625,30 @@ function remoteMcpHelpScope(): "read" | "write" | undefined {
   return scope === "read" || scope === "write" ? scope : undefined;
 }
 
+/** Whether this account has ADE Cloud, answered by this machine's brain; false until it does. */
+let cliCloudEnabled = false;
+
+const CHAT_CLOUD_READY_HELP = `    $ ade chat create --machine cloud:ready --prompt "…"
+                                                    Start on this project's ready ADE Cloud machine (prepared and
+                                                    asleep): ADE wakes it, waits until it is online, then sends.
+                                                    No --lane needed; --json adds readyMachine. See ade cloud ready.
+`;
+
+/**
+ * The `cloud` commands exist only for an account on the access list, so its
+ * help does too. Off the list `ade cloud` and its topic are simply absent.
+ */
+function withoutHiddenCloudHelp(text: string): string;
+function withoutHiddenCloudHelp(text: string | undefined): string | undefined;
+function withoutHiddenCloudHelp(text: string | undefined): string | undefined {
+  return text && !cliCloudEnabled ? text.replace(CHAT_CLOUD_READY_HELP, "") : text;
+}
+
+function helpPagesWithoutCloud(): Record<string, string> {
+  const { cloud: _cloud, ...pages } = HELP_BY_COMMAND;
+  return Object.fromEntries(Object.entries(pages).map(([key, text]) => [key, withoutHiddenCloudHelp(text)]));
+}
+
 function commandHelpText(key: string): string | undefined {
   if (key === "automations" && !automationsCliEnabled()) {
     return internalFeatureUnavailableHelp(
@@ -1630,6 +1656,9 @@ function commandHelpText(key: string): string | undefined {
       AUTOMATIONS_COMING_SOON_MESSAGE,
       "ADE_ENABLE_AUTOMATIONS",
     );
+  }
+  if (key === "cloud" || key.startsWith("cloud ")) {
+    return cliCloudEnabled ? HELP_BY_COMMAND[key] : undefined;
   }
   if (
     key === "screen" || key === "windows-desktop" || key === "windows-desk"
@@ -1641,7 +1670,7 @@ function commandHelpText(key: string): string | undefined {
     // Mac-only name keeps its own.
     return HELP_BY_COMMAND["screen"];
   }
-  return HELP_BY_COMMAND[key];
+  return withoutHiddenCloudHelp(HELP_BY_COMMAND[key]);
 }
 
 function helpCatalogTopic(key: string): string {
@@ -2745,11 +2774,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Without --lane it starts in the project's primary lane there.
                                                     --project <name|path|id> picks the project there, --clone
                                                     sets a missing GitHub repo up, "a,b" starts one per machine.
-    $ ade chat create --machine cloud:ready --prompt "…"
-                                                    Start on this project's ready ADE Cloud machine (prepared and
-                                                    asleep): ADE wakes it, waits until it is online, then sends.
-                                                    No --lane needed; --json adds readyMachine. See ade cloud ready.
-    $ ade chat actions --personal --text            List machine personal-chat actions
+${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --text
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
@@ -4650,33 +4675,33 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   cloud: `${ADE_BANNER}
   ADE Cloud machines
 
-  Machines on your ADE Cloud account: boxes (sandboxed Linux) and
-  VMs (their own kernel: Docker, Android). They sleep on their own after a few
-  idle minutes and bill only their disk; a --machine call or opening a lane
-  wakes one in about a second. <machine> is its name or id.
+  Computers on your ADE Cloud account. They sleep on their own after a few
+  idle minutes and use no hours while asleep; a --machine call or opening a
+  lane wakes one in about a second. <machine> is its name or id. Sizes: small,
+  medium, large, x-large (or 2x4, 4x8, 4x16, 4x32). --kind vm is a full
+  computer: Android (medium or bigger) and Docker.
 
-    $ ade cloud list --text                       Machines, state, size, price, spend, saved asleep
-    $ ade cloud spending --text                   This month against the cap, saved asleep
-    $ ade cloud create --kind vm --shape 4x8 --name "android vm"
-    $ ade cloud sleep <machine>                   Sleep now (free)
-    $ ade cloud wake <machine>                    Wake (bounded by the monthly cap)
-    $ ade cloud resize <machine> --shape 4x16     Same type, new size; it restarts
-    $ ade cloud copy <machine> --name "lane box"  A new machine with the same files (a warm copy)
-    $ ade cloud move <machine> --to vm|box        Change type, keeping every repo, lane and chat
+    $ ade cloud list --text                       Computers, state, size, how fast each uses hours
+    $ ade cloud hours --text                      Plan, hours left, reset date
+    $ ade cloud create --kind vm --shape medium --name "android vm"
+    $ ade cloud sleep <machine>                   Sleep now (uses no hours)
+    $ ade cloud wake <machine>                    Wake (the server refuses it at 0 hours)
+    $ ade cloud resize <machine> --shape large    Same kind, new size; it restarts
+    $ ade cloud update <machine>                  Restart on the current ADE; files stay
+    $ ade cloud copy <machine> --name "lane box"  A new computer with the same files (a warm copy)
+    $ ade cloud move <machine> --to vm|box        Change kind, keeping every repo, lane and chat
     $ ade cloud delete <machine>                  Gone for good, files and all
-    $ ade cloud sleep-after <machine> 10|never    Minutes idle before it sleeps
-    $ ade cloud cap 50|off                        The account's optional monthly cap
-    $ ade cloud limits [ask|balanced|hands-off]   What unattended agents may spend (--per-day N, --max-shape 4x16, --unattended on|off)
+    $ ade cloud limits [ask|balanced|hands-off]   What unattended agents may do (--per-day N, --max-shape large, --unattended on|off)
     $ ade cloud ready [status|on|off|retry]       Keep a cloud machine ready for this project
                                                     on takes --kind, --shape, --setup "npm ci"
     $ ade chat create --machine cloud:ready --prompt "…"
                                                     Start the chat on this project's ready machine
 
-  list, spending, limits (reading them), sleep and wake are the account's and
+  list, hours, limits (reading them), sleep and wake are the account's and
   work from any folder; the rest run in this folder's project.
 
-  Asks first: create, resize, copy, move, delete, sleep-after never, raising
-  the cap or the limits, ready on. The card shows in your chat and gives up
+  Asks first: create, resize, update, copy, move, delete,
+  raising the limits, ready on. The card shows in your chat and gives up
   after 5 minutes. In a full-auto chat or an automation ADE answers it with
   the person's limits (balanced: 3 new machines a day, up to 4x16), and says
   no to deleting a machine that chat didn't make. create, copy and move work
@@ -19631,7 +19656,7 @@ type SettingsFindRow = {
  * it needs no brain and costs one short line per hit.
  */
 function findSettings(query: string): { query: string; results: SettingsFindRow[] } {
-  const rows: SettingsFindRow[] = findSettingsEntries(query, 3).map((entry) => {
+  const rows: SettingsFindRow[] = findSettingsEntries(query, 3, cliCloudEnabled ? undefined : isAdeCloudSettingEntry).map((entry) => {
     const access = settingAgentAccess(entry.id);
     return {
       path: settingsEntryLabel(entry),
@@ -20473,6 +20498,37 @@ function cloudStep(label: string, action: string, input: JsonObject, formatter: 
   };
 }
 
+/** `ade cloud push-work --json`: every lane's work committed and pushed. With ADE's 25 s to answer first, this fits inside the 3-minute exec that runs it. */
+function buildCloudPushWorkPlan(): CliPlan {
+  return {
+    kind: "execute",
+    label: "cloud push-work",
+    steps: [{ key: "result", method: "cloud.pushWork", params: {} }],
+    machineOnly: true,
+    minTimeoutMs: 150_000,
+  };
+}
+
+/** `ade cloud prepare-stop --timeout 40`: exit 0 when done or at the timeout, non-zero only when it could do nothing. */
+function buildCloudPrepareStopPlan(args: string[]): CliPlan {
+  const raw = readValue(args, ["--timeout"]);
+  const seconds = raw == null ? 40 : Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) throw new CliUsageError("ade cloud prepare-stop --timeout <seconds>");
+  return {
+    kind: "execute",
+    label: "cloud prepare-stop",
+    steps: [{ key: "result", method: "cloud.prepareStop", params: { timeoutMs: Math.round(seconds * 1000) } }],
+    machineOnly: true,
+    minTimeoutMs: Math.round(seconds * 1000) + 15_000,
+  };
+}
+
+/** What the server runs on a computer, whatever the access answer. */
+const CLOUD_ON_COMPUTER_PLANS = new Map<string, (args: string[]) => CliPlan>([
+  ["prepare-stop", buildCloudPrepareStopPlan],
+  ["push-work", buildCloudPushWorkPlan],
+]);
+
 function buildCloudPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.cloud ?? topLevelHelpText() };
@@ -20496,10 +20552,8 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "ls":
     case "machines":
       return cloudStep("list", "list", {}, "cloud-list");
-    case "spending":
-    case "spend":
-    case "cost":
-      return cloudStep("spending", "spending", {});
+    case "hours":
+      return cloudStep("hours", "hours", {}, "cloud-hours");
     case "create":
     case "new":
       return cloudStep("create", "create", { ...(kind ? { kind } : {}), ...(shape ? { shape } : {}), ...(name ? { name } : {}) }, "cloud-result", true);
@@ -20526,19 +20580,8 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "delete":
     case "rm":
       return cloudStep("delete", "delete", { machine: target() }, "cloud-result", true);
-    case "sleep-after": {
-      const machine = target();
-      const raw = firstPositional(args);
-      if (!raw) throw new CliUsageError("ade cloud sleep-after <machine> <minutes|never>");
-      const minutes = raw === "never" ? "never" : Number(raw.replace(/m(in)?$/, ""));
-      return cloudStep("sleep-after", "set_sleep", { machine, minutes }, "cloud-result", minutes === "never");
-    }
-    case "cap": {
-      const raw = firstPositional(args);
-      if (!raw) return cloudStep("spending", "spending", {});
-      const cap = raw === "off" ? "off" : Number(raw.replace(/^\$/, ""));
-      return cloudStep("cap", "set_cap", { monthlyCapUsd: cap }, "cloud-result", true);
-    }
+    case "update":
+      return cloudStep("update", "update", { machine: target() }, "cloud-result", true);
     case "limits": {
       const preset = firstPositional(args);
       const perDay = readValue(args, ["--per-day"]);
@@ -20575,28 +20618,35 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "status":
       return cloudStep("ready", "ready_status", {}, "cloud-ready");
     default:
-      throw new CliUsageError(`Unknown cloud command "${sub}". Use: list, create, sleep, wake, resize, copy, move, delete, sleep-after, cap, limits, spending, ready.`);
+      throw new CliUsageError(`Unknown cloud command "${sub}". Use: list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, ready, prepare-stop, push-work.`);
   }
 }
 
 function formatCloudList(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const machines = isRecord(raw) && Array.isArray(raw.machines) ? raw.machines.filter(isRecord) : [];
-  const usd = (amount: unknown) => (typeof amount === "number" ? `$${amount.toFixed(2)}` : "—");
-  const cents = (amount: unknown) => (typeof amount === "number" ? `${(amount * 100).toFixed(1)}¢/h` : "—");
   const lines: string[] = [];
-  if (!machines.length) lines.push("No ADE Cloud machines. ade cloud create makes one.");
+  if (!machines.length) lines.push("No ADE Cloud computers. ade cloud create makes one.");
   for (const box of machines) {
-    const sleep = isRecord(box.sleep)
-      ? box.sleep.state === "auto" ? `sleeps after ${box.sleep.afterMinutes} min` : box.sleep.state === "never" ? "never sleeps" : "sleep pending"
-      : "";
-    lines.push(`${String(box.name ?? box.instanceId)}  ${String(box.state)}  ${String(box.size ?? "")}  ${cents(box.state === "asleep" ? box.idleHourlyUsd : box.runningHourlyUsd)}  spent ${usd(box.spentUsd)}  saved ${usd(box.savedUsd)}  ${sleep}  (${String(box.instanceId)})`);
+    const sleep = isRecord(box.sleep) && box.sleep.state !== "auto" ? "sleep pending" : "";
+    const rate = typeof box.hoursRate === "number" ? `${box.hoursRate}× hours` : "—";
+    lines.push(`${String(box.name ?? box.instanceId)}  ${String(box.state)}  ${String(box.size ?? "")}  ${rate}  ${sleep}  (${String(box.instanceId)})`);
   }
-  const spending = isRecord(raw) && isRecord(raw.spending) ? raw.spending : null;
-  if (spending) {
-    lines.push(`This month ${usd(spending.monthSpentUsd)} of ${spending.monthlyCapUsd == null ? "no cap" : usd(spending.monthlyCapUsd)}${spending.capReached ? " (cap reached)" : ""}`);
-  }
+  const account = isRecord(raw) && isRecord(raw.account) ? raw.account : null;
+  if (account) lines.push(formatCloudHours(account));
   return lines.join("\n");
+}
+
+function formatCloudHours(value: unknown): string {
+  const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
+  const account = isRecord(raw) ? raw : {};
+  const hours = isRecord(account.hours) ? account.hours : {};
+  const hoursOf = (milli: unknown) => (typeof milli === "number" ? `${(milli / 1000).toFixed(1).replace(/\.0$/, "")}` : "—");
+  const billing = isRecord(account.billing) ? account.billing : {};
+  const resets = typeof billing.periodEnd === "number" ? new Date(billing.periodEnd).toISOString().slice(0, 10) : "—";
+  const plan = account.plan === "paid" ? "Paid plan" : "Free plan";
+  const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left, resets ${resets}`;
+  return hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`;
 }
 
 function formatCloudResult(value: unknown): string {
@@ -23399,7 +23449,13 @@ function buildCliPlan(
     return buildSecretsPlan(args);
   if (primary === "integrations" || primary === "integration")
     return buildIntegrationsPlan(args);
-  if (primary === "cloud") return buildCloudPlan(args);
+  if (primary === "cloud") {
+    // The server runs this before a stop; it's for this computer's own brain.
+    if (!cliCloudEnabled) throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
+    const buildOnComputerPlan = CLOUD_ON_COMPUTER_PLANS.get(firstPositional([...args]) ?? "");
+    if (buildOnComputerPlan) return buildOnComputerPlan(args);
+    return buildCloudPlan(args);
+  }
   if (primary === "proxy") return buildProxyPlan(args);
   if (primary === "harness" || primary === "harnesses") return buildHarnessPlan(args);
   if (primary === "providers" || primary === "provider")
@@ -25114,6 +25170,8 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "remoteMcp.call" ||
     method === "keepAwake.call" ||
     method === "cloud.call" ||
+    method === "cloud.prepareStop" ||
+    method === "cloud.pushWork" ||
     method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
@@ -28297,6 +28355,7 @@ async function runServe(
       createPersonalChatScope,
       createProviderStatusService,
       readMachineRuntimeActivitySummary,
+      readMachineBusyFacts,
       readMachineNextScheduledWakeAt,
     },
     { createSharedSyncListener },
@@ -28585,24 +28644,53 @@ async function runServe(
   const cloudKeepAwakeModule = !embedded && servesMachineEndpoint
     ? await import("./services/power/cloudKeepAwake")
     : null;
+  // This brain's agents reaching the account's other machines. One per brain
+  // (it owns the agents' paired connections), built on first use; an embedded
+  // guest has no machine authority and gets none.
+  let cloudBrainAccess: Promise<import("../../desktop/src/main/services/adeCloud/cloudBrainAccess").CloudBrainAccess> | null = null;
+  const getCloudBrainAccess = () => {
+    cloudBrainAccess ??= Promise.all([
+      import("../../desktop/src/main/services/adeCloud/cloudBrainAccess"),
+      import("../../desktop/src/main/services/adeCloud/cloudAccess"),
+    ]).then(([{ createCloudBrainAccess }, { cloudAccessDepsFor }]) => createCloudBrainAccess(cloudAccessDepsFor({
+      account: () => brainAccountAuthService,
+      directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl(),
+      logger: headlessProjectLogger,
+    })));
+    return cloudBrainAccess;
+  };
+  const cloudDiskGrower = cloudKeepAwakeModule?.isCloudMachine()
+    ? (await import("./services/power/cloudDiskGrow")).createCloudDiskGrower({
+        instanceId: process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "",
+        client: async () => (await getCloudBrainAccess()).client(),
+        path: os.homedir(),
+        logger: headlessProjectLogger,
+      })
+    : null;
   const cloudKeepAwake = cloudKeepAwakeModule?.isCloudMachine()
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
         readBusy: async () => {
           const sources = { projectRegistry, scopeRegistry };
-          const [activity, nextWakeAt] = await Promise.all([
-            readMachineRuntimeActivitySummary({ ...sources, personalChatScope }),
+          const [facts, nextWakeAt] = await Promise.all([
+            readMachineBusyFacts({ ...sources, personalChatScope }),
             readMachineNextScheduledWakeAt(sources),
           ]);
-          const reasons: string[] = [];
-          if (activity.activeAgentTurns > 0) reasons.push("chat");
-          if ((activity.activeAgentCliSessions ?? 0) > 0) reasons.push("agent_cli");
-          if (activity.activeWorkSessions > (activity.activeAgentCliSessions ?? 0)) reasons.push("terminal");
-          if (cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir)) reasons.push("setup");
+          const { busy, reasons } = cloudKeepAwakeModule.decideCloudBusy({
+            ...facts,
+            setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
+            holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
+          }, Date.now());
           // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
           // one goes to the account server, which wakes the machine for it.
-          return { busy: reasons.length > 0, reasons, nextWakeAt };
+          return { busy, reasons, nextWakeAt };
         },
+        requestIdleSleep: async (instanceId) => {
+          const client = await (await getCloudBrainAccess()).client();
+          if (!client) throw new Error("no ADE Cloud access");
+          await client.requestIdleSleep(instanceId);
+        },
+        growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
         sendTimedWake: async (wake) => {
           const auth = brainAccountAuthService;
           if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");
@@ -28625,10 +28713,24 @@ async function runServe(
       process.cwd(),
       headlessProjectLogger,
     );
-    return createProjectScaffoldService({
+    const service = createProjectScaffoldService({
       logger: headlessProjectLogger,
       githubService,
     });
+    if (!cloudKeepAwake || !cloudKeepAwakeModule) return service;
+    // A first clone can take many minutes; the machine stays awake for it.
+    const { holdCloudBusy } = cloudKeepAwakeModule;
+    return {
+      ...service,
+      cloneRepository: async (input: Parameters<typeof service.cloneRepository>[0]) => {
+        const release = holdCloudBusy(layout.adeDir, "first_clone", 30 * 60_000);
+        try {
+          return await service.cloneRepository(input);
+        } finally {
+          release();
+        }
+      },
+    };
   };
   const getHeadlessDefaultParentDir = (): string => {
     const firstProjectRoot = projectRegistry.list()[0]?.rootPath;
@@ -29443,27 +29545,14 @@ async function runServe(
     return routing;
   };
 
-  // This brain's agents reaching the account's other machines. One per brain
-  // (it owns the agents' paired connections), built on first use; an embedded
-  // guest has no machine authority and gets none.
-  let cloudBrainAccess: Promise<import("../../desktop/src/main/services/adeCloud/cloudBrainAccess").CloudBrainAccess> | null = null;
-  const getCloudBrainAccess = () => {
-    cloudBrainAccess ??= import("../../desktop/src/main/services/adeCloud/cloudBrainAccess").then(
-      ({ createCloudBrainAccess }) => createCloudBrainAccess({
-        // Any booted project's vault: the provider items are account-wide.
-        vaultStore: async () => {
-          for (const record of projectRegistry.list()) {
-            const scope = await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
-            if (scope?.runtime.accountVaultStore) return scope.runtime.accountVaultStore;
-          }
-          return null;
-        },
-        signedIn: () => brainAccountAuthService.getStatus().signedIn === true,
-        logger: headlessProjectLogger,
-      }),
-    );
-    return cloudBrainAccess;
-  };
+  // Ask once, off the boot path: agents and `ade cloud` read this answer, and a
+  // chat that launches later keeps it current (`watchCloudAccessForSkills`).
+  if (!embedded && servesMachineEndpoint) {
+    const firstCloudAccessRead = setTimeout(() => {
+      void getCloudBrainAccess().then((access) => access.client()).catch(() => undefined);
+    }, 3_000);
+    firstCloudAccessRead.unref?.();
+  }
   let agentMachineBridge: Promise<import("./services/account/agentMachineBridge").AgentMachineBridge> | null = null;
   const getAgentMachineBridge = () => {
     agentMachineBridge ??= import("./services/account/agentMachineBridge").then(
@@ -29699,7 +29788,10 @@ async function runServe(
     if (params.name !== "run_ade_action") return false;
     const domain = asString(params.arguments.domain);
     const action = asString(params.arguments.action);
-    return Boolean(domain && action && adeActionAccess(domain, action) === "write");
+    // A person watching a tool (Linux Desktop, a preview): a read, so it never
+    // wakes a sleeping computer, but it does keep an awake one awake.
+    if (domain === "work_tools" && action === "noteWatching") return true;
+    return Boolean(domain && action && adeActionAccess(domain, action) === "write" && !isBackgroundAdeWrite(domain, action));
   };
   const withRemoteUseNoted = <H extends JsonRpcHandler>(peerDeviceId: string | null, handler: H): H => {
     if (!peerDeviceId || !cloudKeepAwake) return handler;
@@ -29711,6 +29803,30 @@ async function runServe(
   };
   const createHandler = (context?: { peerDeviceId: string | null }) =>
     withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
+      pushCloudWork: cloudKeepAwake && cloudKeepAwakeModule
+        ? async () => {
+            const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");
+            const release = cloudKeepAwakeModule.holdCloudBusy(layout.adeDir, "push_work", 10 * 60_000);
+            try {
+              return await pushCloudComputerWork({
+                projects: projectRegistry.list().map((record) => async () => (await scopeRegistry.get(record.projectId)).runtime),
+                logger: headlessProjectLogger,
+              });
+            } finally {
+              release();
+            }
+          }
+        : null,
+      prepareCloudStop: cloudKeepAwake
+        ? async ({ timeoutMs }) => {
+            const { prepareCloudComputerToStop } = await import("./services/power/cloudPrepareStop");
+            const booted = await Promise.all(projectRegistry.list().map(async (record) =>
+              (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null));
+            const personal = await personalChatScope.bootedRuntime().catch(() => null);
+            const runtimes = [...booted, personal].filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
+            return await prepareCloudComputerToStop({ runtimes, timeoutMs, logger: headlessProjectLogger });
+          }
+        : null,
       serverVersion: VERSION,
       peerDeviceId: context?.peerDeviceId ?? null,
       agentMachineBridge: agentMachineBridgeProxy,
@@ -37309,6 +37425,8 @@ function formatTextOutput(
       return formatCloudReady(value);
     case "cloud-list":
       return formatCloudList(value);
+    case "cloud-hours":
+      return formatCloudHours(value);
     case "cloud-result":
       return formatCloudResult(value);
     case "mcp-servers":
@@ -39657,6 +39775,65 @@ async function runOnMachine(
   }
 }
 
+/**
+ * Asks this machine's brain whether the account has ADE Cloud, for the few
+ * commands that change with the answer. An `ade cloud` starts the brain like
+ * any account command would; help and skills use one only when it's running.
+ */
+async function resolveCliCloudEnabled(parsed: ReturnType<typeof extractMachineTargeting>): Promise<void> {
+  const primary = parsed.command[0]?.toLowerCase();
+  const isCloud = primary === "cloud";
+  // What the server runs on a cloud computer never depends on the answer.
+  if (isCloud && CLOUD_ON_COMPUTER_PLANS.has(parsed.command[1]?.toLowerCase() ?? "")) {
+    const { isCloudMachine } = await import("./services/power/cloudKeepAwake");
+    if (isCloudMachine()) {
+      cliCloudEnabled = true;
+      setAdeCloudSkillVisible(true);
+      return;
+    }
+  }
+  const skipped = !isCloud && primary !== "skill" && primary !== "skills" && primary !== "help" && primary !== "settings" && primary !== "setting";
+  if (skipped && !hasHelpFlag(parsed.command)) return;
+  let client: Pick<CliConnection, "request" | "close"> | null = null;
+  try {
+    if (isCloud) {
+      client = await createConnection(
+        { ...parsed.options, machine: null, machineProject: null, requireSocket: false },
+        { autoRegisterProject: false, machineRuntimeOnly: true },
+      );
+    } else {
+      const { connectMachineBrainForRefresh } = await import("./services/account/cliRefreshBroker");
+      const brain = await connectMachineBrainForRefresh({
+        clientName: "ade-cli-cloud-access",
+        version: VERSION,
+        protocolVersion: PROTOCOL_VERSION,
+        socketPath: parsed.options.socketPath ?? null,
+      });
+      if (brain) {
+        client = {
+          request: (method, params) => brain.request(method, params),
+          close: () => brain.close(),
+        };
+      }
+    }
+    if (client) {
+      const asked = client.request("cloud.call", { action: "access", args: {} });
+      const answer = await Promise.race([
+        asked,
+        new Promise<null>((resolve) => { setTimeout(() => resolve(null), 5_000).unref?.(); }),
+      ]);
+      const result = isRecord(answer) && isRecord(answer.result) ? answer.result : isRecord(answer) ? answer : null;
+      cliCloudEnabled = result?.enabled === true;
+    }
+  } catch {
+    // Old brain, no brain: not known, so ADE Cloud isn't here for this command.
+    cliCloudEnabled = false;
+  } finally {
+    await client?.close();
+  }
+  setAdeCloudSkillVisible(cliCloudEnabled);
+}
+
 async function runParsedCli(
   parsed: ReturnType<typeof extractMachineTargeting>,
 ): Promise<{ output: string; exitCode: number }> {
@@ -39664,6 +39841,7 @@ async function runParsedCli(
   if (primary && IOS_SIM_DEPRECATED_PRIMARIES.has(primary)) {
     warnDeprecatedIosSimAlias();
   }
+  await resolveCliCloudEnabled(parsed);
   const plan = buildCliPlan(parsed.command, parsed.options);
   if (plan.kind === "help") {
     let output: string;
@@ -39671,7 +39849,7 @@ async function runParsedCli(
       const scope = remoteMcpHelpScope();
       const catalog = createHelpCatalog({
         version: VERSION,
-        pages: HELP_BY_COMMAND,
+        pages: cliCloudEnabled ? HELP_BY_COMMAND : helpPagesWithoutCloud(),
         aliases: CLI_COMMAND_ALIASES,
         topic: plan.catalogTopic,
         scope,

@@ -130,7 +130,6 @@ export default [
     files: ["src/main/**/*.ts"],
     ignores: [
       "src/main/services/adeCloud/cloudAccess.ts",
-      "src/main/services/adeCloud/provider/**",
       "src/main/**/*.test.ts",
     ],
     rules: {
@@ -139,7 +138,7 @@ export default [
         {
           patterns: [
             {
-              group: ["**/adeCloud/provider/**", "**/provider/agent37/**"],
+              group: ["**/adeCloud/cloudServerProvider", "**/cloudServerProvider"],
               message: "Use `getCloudProvider` from adeCloud/cloudAccess.ts; only it may import a cloud provider.",
             },
           ],

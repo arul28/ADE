@@ -8,8 +8,9 @@
 #              Use something like "ade-a1-test" for a trial build.
 # ade-version  the ADE release baked in; default "latest".
 #
-# Building an existing name publishes a new revision. Boxes already made from
-# the template keep their image until they are updated.
+# Building an existing name publishes a new revision, its build number. The
+# last line printed is `name@N`. Boxes already made from the template keep
+# their image until they are updated.
 set -eu
 
 name="${1:-ade}"
@@ -26,8 +27,10 @@ command -v npx >/dev/null 2>&1 || { echo "build-template: needs Node's npx." >&2
 
 # The build context is the template folder only: Dockerfile + entrypoint.
 # Copy it so a stray file next to them never ships in the image.
-context="$(mktemp -d "${TMPDIR:-/tmp}/ade-cloud-template.XXXXXX")"
-trap 'rm -rf "$context"' EXIT INT TERM
+work="$(mktemp -d "${TMPDIR:-/tmp}/ade-cloud-template.XXXXXX")"
+trap 'rm -rf "$work"' EXIT INT TERM
+context="$work/context"
+mkdir "$context"
 cp "$here/template/Dockerfile" "$here/template/ade-entrypoint.sh" "$context/"
 if [ "$ade_version" != "latest" ]; then
   # A pinned release goes in as the Dockerfile's default, so the cloud build
@@ -36,4 +39,15 @@ if [ "$ade_version" != "latest" ]; then
 fi
 
 echo "Building ADE Cloud template \"$name\" (ADE $ade_version)…" >&2
-npx --yes agent37 templates build "$context" --name "$name"
+# The provider's own build log goes straight through; only the build number is
+# read from it. Its CLI version is pinned because this runs with the key in CI.
+{ npx --yes agent37@0.4.1 templates build "$context" --name "$name" 2>&1; echo $? > "$work/status"; } \
+  | tee "$work/build.log"
+status="$(cat "$work/status")"
+[ "$status" = 0 ] || exit "$status"
+revision="$(sed -n 's/^Revision: *\([0-9][0-9]*\)$/\1/p' "$work/build.log" | tail -n 1)"
+if [ -z "$revision" ]; then
+  echo "build-template: the build finished but printed no build number." >&2
+  exit 1
+fi
+echo "$name@$revision"

@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
+import { isChatToolType } from "../../../shared/sessionSpawnNesting";
+import { readProcChildren, readPtyForeground, type ProcChildren } from "./procForeground";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -1069,6 +1071,16 @@ function terminatePtyProcessTree(
   }, PTY_PROCESS_TREE_KILL_DELAY_MS);
   timer.unref?.();
 }
+
+/** One live terminal, for the cloud busy list. */
+export type CloudBusyTerminalFacts = {
+  kind: "agent_cli" | "shell";
+  state: TerminalRuntimeState;
+  atPrompt: boolean | null;
+  foreground: string | null;
+  lastOutputAt: number;
+  lastInputAt: number;
+};
 
 type RuntimeStateEntry = {
   state: TerminalRuntimeState;
@@ -8876,6 +8888,47 @@ export function createPtyService({
         logger.warn("pty.write_by_session_failed", { sessionId, err: String(err) });
         return false;
       }
+    },
+
+    /**
+     * What each live terminal is doing, for the cloud busy list
+     * (`decideCloudBusy` in cloudKeepAwake.ts). Chat CLI rows are skipped: their
+     * chat answers for them. Reads `/proc` once per live terminal per check.
+     */
+    listBusyFacts(): CloudBusyTerminalFacts[] {
+      const facts: CloudBusyTerminalFacts[] = [];
+      let children: ProcChildren | null = null;
+      const procChildren = () => children ??= readProcChildren();
+      for (const entry of ptys.values()) {
+        if (entry.disposed || !entry.tracked || isChatToolType(entry.toolTypeHint)) continue;
+        const runtime = runtimeStates.get(entry.sessionId);
+        const foreground = readPtyForeground(entry.pty.pid, procChildren);
+        facts.push({
+          kind: isTrackedAgentCliToolType(entry.toolTypeHint) ? "agent_cli" : "shell",
+          state: runtime?.state ?? "running",
+          atPrompt: foreground?.atPrompt ?? (entry.shellPromptVisible ? true : null),
+          foreground: foreground?.name ?? null,
+          lastOutputAt: runtime?.lastActivityAt ?? entry.createdAt,
+          lastInputAt: entry.lastUserInputAt ?? 0,
+        });
+      }
+      return facts;
+    },
+
+    /** Interrupts every agent CLI mid-work (Ctrl-C), for a computer about to stop at 0 hours. Returns how many. */
+    interruptAgentClis(): number {
+      let interrupted = 0;
+      for (const entry of ptys.values()) {
+        if (entry.disposed || !entry.tracked || !isTrackedAgentCliToolType(entry.toolTypeHint)) continue;
+        if (runtimeStates.get(entry.sessionId)?.state !== "running") continue;
+        try {
+          entry.pty.write("\x03");
+          interrupted += 1;
+        } catch (error) {
+          logger.warn("pty.prepare_stop_interrupt_failed", { sessionId: entry.sessionId, err: String(error) });
+        }
+      }
+      return interrupted;
     },
 
     /** Whether a live (non-disposed) PTY currently backs `sessionId`. */

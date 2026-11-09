@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect } from "react";
+import { useCloudComputerAsleep } from "../remoteTargets/useCloudComputer";
 import { X } from "@phosphor-icons/react";
 import type { AgentChatContextAttachment, OpenProjectBinding } from "../../../shared/types";
 import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
@@ -70,6 +71,7 @@ export function IssuesToolPanel({
 
   const active = refs.find((ref) => issueRefKey(ref) === activeKey) ?? refs[refs.length - 1] ?? null;
   const activePin = active ? tabs.pins?.[issueRefKey(active)] ?? null : null;
+  const activeJiraPin = useCloudComputerAsleep(activePin) ? null : activePin;
   const openRelated = useCallback((ref: IssueRef) => openIssueTab(scope, ref, ref.provider === "jira" ? activePin : null), [activePin, scope]);
 
   if (!active) {
@@ -112,7 +114,7 @@ export function IssuesToolPanel({
         <IssueViewer
           key={issueRefKey(active)}
           issueRef={active}
-          pin={activePin}
+          pin={activeJiraPin}
           variant="tool"
           onAttachToChat={onAttachToChat}
           onOpenRelated={openRelated}
@@ -137,7 +139,9 @@ function IssueTabChip({
 }) {
   const linearIssue = useLinearIssuePeek(issueRef.provider === "linear" ? issueRef.identifier : null);
   const githubIssue = useGitHubIssuePeek(issueRef.provider === "github" ? { owner: issueRef.owner, repo: issueRef.repo, number: issueRef.number } : null);
-  const jiraIssue = useJiraIssuePeek(issueRef.provider === "jira" ? issueRef : null, pin);
+  // A sleeping computer's Jira comes through this window's own machine and sign-in.
+  const asleep = useCloudComputerAsleep(pin);
+  const jiraIssue = useJiraIssuePeek(issueRef.provider === "jira" ? issueRef : null, asleep ? null : pin);
   const label = issueRefLabel(issueRef);
   const title = linearIssue?.title ?? githubIssue?.title ?? jiraIssue?.title ?? null;
   const dragAttachment = linearIssue

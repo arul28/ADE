@@ -112,7 +112,7 @@ export function accountMachinePresence(
  * The one predicate every surface uses for the lit dot, the dimmed row, and the
  * "N online" count — because those used to be re-derived from the raw `online`
  * flag while the words beside them came from `resolveMachinePresence`. A
- * machine that announced a suspend is still inside the directory's 90-second
+ * machine that announced a suspend is still inside the directory's 150-second
  * online window, so the two disagreed INSIDE one row: a green dot next to the
  * word "Asleep". Presence already weighed that evidence; nothing downstream
  * gets to weigh it again.

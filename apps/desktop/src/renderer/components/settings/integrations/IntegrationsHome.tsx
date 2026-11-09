@@ -26,6 +26,7 @@ import { INTEGRATION_IDS, integrationBrand, integrationThemeVars, type Integrati
 import type { IntegrationTone } from "./IntegrationChrome";
 import { SolidLogo } from "../providers/ProviderHero";
 import { useMcpRegistry } from "../mcp/useMcpRegistry";
+import { useAdeCloudEnabled } from "../../../state/cloudAccess";
 import { MCP_ACCENT, mcpCatalogueBrand } from "../mcp/mcpCatalogueBrand";
 import { McpCatalogueAddDialog } from "../mcp/McpCatalogueAddDialog";
 import { McpServerDialog } from "../mcp/McpServerDialog";
@@ -175,7 +176,7 @@ function IntegrationMark({ server, entry, integration }: {
 export function IntegrationsHome({
   pin,
   machineOnline = true,
-  integrations = INTEGRATION_IDS,
+  integrations: integrationsProp = INTEGRATION_IDS,
   onOpen,
 }: {
   /** The page's machine: each integration status is read where its credential lives. */
@@ -187,6 +188,11 @@ export function IntegrationsHome({
   /** Opens a page; `server` focuses one MCP server on it. */
   onOpen: (page: IntegrationsPageId, server?: string) => void;
 }) {
+  const cloudEnabled = useAdeCloudEnabled();
+  const integrations = useMemo(
+    () => integrationsProp.filter((id) => id !== "cloud" || cloudEnabled),
+    [cloudEnabled, integrationsProp],
+  );
   const summaries = useIntegrationSummaries(pin, machineOnline, integrations);
   const registry = useMcpRegistry();
   const [query, setQuery] = useState("");

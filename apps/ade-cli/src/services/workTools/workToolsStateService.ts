@@ -207,6 +207,11 @@ export const WORK_TOOLS_PRESENCE_EVENT_WINDOW_MS = BUILT_IN_BROWSER_PRESENCE_EXP
 export type WorkToolsStateService = {
   setActiveTool(args: WorkToolsSetActiveToolArgs): { ok: true };
   /**
+   * A person is watching a tool on a cloud computer (Linux Desktop, a preview),
+   * once a minute. A plain answer here: the keep-awake counts the call itself.
+   */
+  noteWatching(): { ok: true };
+  /**
    * An agent-authenticated browser command just passed through this daemon.
    *
    * Event scheduling only — it publishes nothing. The presence STATE is the
@@ -889,6 +894,10 @@ export function createWorkToolsStateService(
       // clients re-read the desktop's presence, which the bridge has by now
       // rolled back for the same failed call.
       emitStateChanged(laneId);
+    },
+
+    noteWatching() {
+      return { ok: true };
     },
 
     setActiveTool(input) {

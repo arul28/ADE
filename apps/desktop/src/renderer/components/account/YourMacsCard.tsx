@@ -655,7 +655,7 @@ export function YourMacsCard({
   const onExpandRoutes = routes.onExpand;
 
   // Counted off the rows' own resolved presence, never the raw directory flag:
-  // a machine that announced a suspend is still inside the 90-second online
+  // a machine that announced a suspend is still inside the 150-second online
   // window, so counting it here would put "2 online" above a row saying Asleep.
   const onlineCount = rows.filter((row) => row.awake).length;
 
@@ -722,7 +722,7 @@ export function YourMacsCard({
   /**
    * Is THIS computer missing from its own account directory?
    *
-   * A connected machine republishes itself every 30 seconds. A directory that
+   * A connected machine republishes itself every 60 seconds. A directory that
    * answers `ok` without a row for this machine can mean removal — or a publish
    * gap (expired sign-in, split sync listener, skipped publisher). `machineKey`
    * is checked for emptiness because the hosted web adapter reports a blank

@@ -10,6 +10,7 @@ import { isDeletedCloudRow, matchCloudBoxes } from "./cloudMachineModel";
 import type { MachineAction } from "./MachineActionsMenu";
 import type { MachineRow, MachineSection, MachineSections } from "./remoteMachineModel";
 import { cloudBoxContext, useCloudBoxActions, type CloudBoxContext } from "./useCloudBoxActions";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { useCloudMachines } from "./useCloudMachines";
 
 /** While a box's row lags, how often the account list is read again. */
@@ -55,7 +56,8 @@ export function useCloudMachineGroup(args: {
     onAccountMachinesChanged,
     onOpenSettings,
   } = args;
-  const cloudMachines = useCloudMachines(args.enabled && Boolean(window.ade?.cloud?.listMachines));
+  const cloudEnabled = useAdeCloudEnabled();
+  const cloudMachines = useCloudMachines(args.enabled && cloudEnabled && Boolean(window.ade?.cloud?.listMachines));
   const cloudResult = cloudMachines.result;
   const cloudBoxes = useMemo(
     () => (cloudResult?.state === "ok" ? cloudResult.machines : []),
@@ -202,8 +204,8 @@ export function useCloudMachineGroup(args: {
     }
   }
   // Boxes ADE made that no row stands for: joining, removed from ADE, or
-  // never signed in. They still bill, so they stay visible.
-  const looseBoxes = cloudBoxes.filter((box) => box.madeByAde && !matchedBoxIds.has(box.instanceId));
+  // never signed in. They still use hours, so they stay visible.
+  const looseBoxes = cloudBoxes.filter((box) => !matchedBoxIds.has(box.instanceId));
   const cloudGroupBoxes = [...cloudRows.map(({ box }) => box), ...looseBoxes];
   const showCloudGroup = cloudResult != null && cloudResult.state !== "not_connected"
     && (cloudGroupBoxes.length > 0 || cloudResult.state !== "ok");

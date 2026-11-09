@@ -942,7 +942,8 @@ import {
   createBrainRefreshBroker,
 } from "../account/accountBridge";
 import { createAccountVaultBridge } from "../account/accountVaultBridge";
-import { registerCloudIpc } from "../adeCloud/registerCloudIpc";
+import { cloudAccountChanged, registerCloudIpc } from "../adeCloud/registerCloudIpc";
+import { registerCloudSavedChatsIpc } from "../cloudChats/registerCloudSavedChatsIpc";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
 import type { McpRegistryServer } from "../../../shared/mcpRegistry";
 import type {
@@ -12523,6 +12524,8 @@ export function registerIpc({
   };
   const accountVaultBridge = createAccountVaultBridge(vaultBridgeOptions);
 
+  registerCloudSavedChatsIpc({ logger: getCtx().logger });
+
   // the provider: the account-wide key and new machines made on it (no pin; see the module).
   registerCloudIpc({
     // Its items in this computer's brain, also with no project here: then the
@@ -12575,6 +12578,18 @@ export function registerIpc({
         properties: { feature: "connections", action: "cloud_machine_action", outcome },
         projectId: null,
         dedupeKey: `cloud_machine_action:${outcome}`,
+        minimumIntervalMs: 6 * 60 * 60 * 1_000,
+      });
+    },
+    // The plan and extra-hours switch: which of them people use. A six-hour
+    // dedupe per outcome: at most 16 accepted events a day.
+    recordPlan: (outcome) => {
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: "cloud_plan", outcome },
+        projectId: null,
+        dedupeKey: `cloud_plan:${outcome}`,
         minimumIntervalMs: 6 * 60 * 60 * 1_000,
       });
     },
@@ -12759,6 +12774,7 @@ export function registerIpc({
       accountSignInAnalytics.polled(arg?.sessionId, result.status, result.message);
       if (result.authStatus.signedIn) {
         productAnalyticsService?.identifyAccount(result.authStatus.userId);
+        cloudAccountChanged();
       }
       accountMigrationStartRetry.tryStart(result.authStatus.signedIn);
       return result;
@@ -12799,6 +12815,7 @@ export function registerIpc({
       accountSignInAnalytics.polled(arg?.sessionId, result.status, result.message);
       if (result.authStatus.signedIn) {
         productAnalyticsService?.identifyAccount(result.authStatus.userId);
+        cloudAccountChanged();
       }
       accountMigrationStartRetry.tryStart(result.authStatus.signedIn);
       return result;
@@ -12817,6 +12834,7 @@ export function registerIpc({
   ipcMain.handle(IPC.accountSignOut, async (): Promise<AdeAccountStatus> => {
     const status = accountBridge.signOut();
     productAnalyticsService?.resetAccountIdentity();
+    cloudAccountChanged();
     return status;
   });
 

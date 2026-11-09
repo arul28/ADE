@@ -1,17 +1,21 @@
 /**
- * Keeps a cloud machine awake exactly while ADE is doing something on it.
+ * Keeps a cloud machine awake exactly while ADE is doing something on it, and
+ * puts it to sleep three minutes after that stops.
+ *
+ * The one busy list lives here (`decideCloudBusy`). Unknown is busy.
  *
  * the provider sleeps a machine with auto-sleep once nothing has moved through any
- * of its URLs for the idle timeout. It counts only that traffic, so a brain
- * working through its outbound relay connection looks idle to it. While this
- * brain has work (a chat turn, a running terminal command, an agent CLI, a
- * ready machine's setup, a scheduled wake-up due soon), it requests its own
- * wake URL once a minute: a public port ADE made for the machine, which counts
- * as traffic. Measured on a real box (2026-11-05): pings kept it awake past
- * the timer, and it slept 312 s after they stopped with a 300 s timeout.
+ * of its URLs for the idle timeout, 5 minutes at its shortest. It counts only that
+ * traffic, so a brain working through its outbound relay connection looks idle to it.
+ * While this brain has work (a chat turn, a running command, an agent CLI working,
+ * setup, a scheduled wake-up due soon), it requests its own wake URL once a minute:
+ * a public port ADE made for the machine, which counts as traffic. Measured on a
+ * real box (2026-11-05): pings kept it awake past the timer, and it slept 312 s
+ * after they stopped with a 300 s timeout. Sleep comes sooner, at three minutes
+ * idle: this brain asks ADE's server to sleep it (`/cloud/instances/:id/idle`).
  *
- * The sleeping itself is the provider's, so it happens even when every ADE window
- * on the account is closed. ADE writes the URL to `$ADE_HOME/cloud/wake.json`
+ * The backstop sleeping is the provider's, so it happens even when every ADE window
+ * on the account is closed and this brain can't reach the server. ADE writes the URL to `$ADE_HOME/cloud/wake.json`
  * when it makes the machine (with the machine's id: a copy of the disk on
  * another machine must not keep this one awake), and turns auto-sleep on only once this brain has
  * written `keep-awake.json`, so an older brain that never pings is never put
@@ -33,9 +37,82 @@ export const CLOUD_KEEP_AWAKE_SCHEDULE_WINDOW_MS = 5 * 60_000;
 export const CLOUD_KEEP_AWAKE_UNSENT_SCHEDULE_WINDOW_MS = 60 * 60_000;
 const PING_TIMEOUT_MS = 10_000;
 
+/** Idle this long and the brain asks the server to sleep it; matches the chat process timer `SESSION_INACTIVITY_TIMEOUT_MS`. */
+export const CLOUD_IDLE_SLEEP_AFTER_MS = 3 * 60_000;
+/** A command or turn this silent, with nothing typed, counts as idle. */
+export const CLOUD_UNTOUCHED_IDLE_MS = 60 * 60_000;
+/** A gap this many intervals long between checks means the machine was asleep. */
+const SLEEP_GAP_INTERVALS = 2.5;
+
+/** What the busy list reads, per runtime on this brain. */
+export type CloudBusyTerminal = {
+  /** A tracked agent CLI session, or a terminal (a shell, or a command run in one). */
+  kind: "agent_cli" | "shell";
+  state: "running" | "idle" | "waiting-input" | string;
+  /** The shell itself is in the foreground, so it sits at its prompt. Null when ADE can't tell. */
+  atPrompt: boolean | null;
+  /** The foreground process's name, or null. */
+  foreground: string | null;
+  lastOutputAt: number;
+  lastInputAt: number;
+};
+
+export type CloudBusyChat = {
+  /** The turn is stopped on a person's approval or question. */
+  waitingOnPerson: boolean;
+  /** Last event, send or answer in the chat. */
+  lastActivityAt: number;
+};
+
+export type CloudBusyFacts = {
+  chats: CloudBusyChat[];
+  terminals: CloudBusyTerminal[];
+  setupRunning: boolean;
+  /** A move, copy, resize or first clone in progress (`holdCloudBusy`). */
+  holds: string[];
+};
+
+/** Names an agent CLI runs under when someone starts it by hand in a shell. */
+const AGENT_CLI_PROCESS_NAMES = new Set(["claude", "codex", "cursor-agent", "agent", "droid", "opencode", "muse"]);
+
+function terminalBusyReason(terminal: CloudBusyTerminal, now: number): "agent_cli" | "terminal" | null {
+  const untouched = now - Math.max(terminal.lastOutputAt, terminal.lastInputAt) >= CLOUD_UNTOUCHED_IDLE_MS;
+  if (terminal.kind === "agent_cli" || (terminal.foreground != null && AGENT_CLI_PROCESS_NAMES.has(terminal.foreground))) {
+    // An agent CLI's own screen moves (a spinner, a timer) while it works, and
+    // stops at its prompt. `waiting-input` is it asking the person: idle.
+    return terminal.state === "running" && !untouched ? "agent_cli" : null;
+  }
+  // A plain shell: its pty's output-based state reads idle under a quiet
+  // command (`sleep 300`, a slow build), so what's in the foreground decides.
+  // Not knowing is a command running; only 60 silent minutes make that idle.
+  if (terminal.atPrompt === true) return null;
+  return untouched ? null : "terminal";
+}
+
+/**
+ * The busy list. Busy: a running chat turn, a real running command, an agent CLI
+ * actually working, setup, first clone, move, copy, resize. Idle: a shell at its
+ * prompt, an agent CLI at its prompt, a chat waiting on approval (answering wakes
+ * it), and a command or turn with no output and no touch for an hour. Someone
+ * watching a tool (`noteUse`) and a timer due soon are added by the keep-awake.
+ */
+export function decideCloudBusy(facts: CloudBusyFacts, now: number): { busy: boolean; reasons: string[] } {
+  const reasons = new Set<string>();
+  for (const chat of facts.chats) {
+    if (!chat.waitingOnPerson && now - chat.lastActivityAt < CLOUD_UNTOUCHED_IDLE_MS) reasons.add("chat");
+  }
+  for (const terminal of facts.terminals) {
+    const reason = terminalBusyReason(terminal, now);
+    if (reason) reasons.add(reason);
+  }
+  if (facts.setupRunning) reasons.add("setup");
+  for (const hold of facts.holds) reasons.add(hold);
+  return { busy: reasons.size > 0, reasons: [...reasons] };
+}
+
 export type CloudKeepAwakeBusy = {
   busy: boolean;
-  /** What is running, for the state file and logs: "chat", "terminal", "agent_cli", "setup", "schedule", "in_use". */
+  /** What is running, for the state file and logs: "chat", "terminal", "agent_cli", "setup", "move", "copy", "first_clone", "schedule", "in_use". */
   reasons: string[];
   /** When the machine's next timer is due (a scheduled wake-up, an automation), or null. */
   nextWakeAt?: number | null;
@@ -50,6 +127,10 @@ export type CloudKeepAwakeOptions = {
   readBusy: () => Promise<CloudKeepAwakeBusy>;
   /** Sends the next timer to ADE's account server (it wakes the machine then). Rejects when it couldn't. */
   sendTimedWake?: (wake: CloudTimedWake) => Promise<void>;
+  /** Asks ADE's server to sleep this machine now (three minutes idle). Rejects when it couldn't; the provider's timer is the backstop. */
+  requestIdleSleep?: (instanceId: string) => Promise<void>;
+  /** Grows the disk if it's near full (it restarts the machine). True when it did, so sleep waits for the restart. */
+  growDiskIfNeeded?: (stillIdle: () => boolean) => Promise<boolean>;
   fetch?: (url: string, init: { method: string; signal: AbortSignal }) => Promise<{ status: number }>;
   logger?: {
     info(event: string, data?: unknown): void;
@@ -115,6 +196,13 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   let warnedNoUrl = false;
   /** What the account server holds for this machine, as last sent: `none`, `<url>|<at>`, or null before the first send. */
   let sentWake: string | null = null;
+  /** The last moment the machine had work. Starts at boot: a fresh machine gets the full three minutes. */
+  let lastBusyAt = now();
+  let lastTickAt: number | null = null;
+  /** The last check found work. */
+  let wasBusy = false;
+  /** Asked the server to sleep this machine; the next check runs after a wake, or a failed ask. */
+  let askedToSleep = false;
 
   /** Sends the next timer when it changed; true when the server holds it. */
   const syncTimedWake = async (url: string | null, nextWakeAt: number | null): Promise<boolean> => {
@@ -170,6 +258,26 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
     }
   };
 
+  /** Three minutes with no work: a grow if the disk is near full, else ask the server to sleep the machine. */
+  const sleepIfIdleLongEnough = async (at: number): Promise<void> => {
+    // Checks land a few milliseconds around each minute; that shouldn't cost a whole extra minute.
+    if (!options.requestIdleSleep || at - lastBusyAt < CLOUD_IDLE_SLEEP_AFTER_MS - 5_000) return;
+    askedToSleep = true;
+    try {
+      if (await options.growDiskIfNeeded?.(() => !usedSinceTick)) return;
+      // Work noted while the disk check ran wins: sleep waits for the next idle stretch.
+      if (usedSinceTick) {
+        askedToSleep = false;
+        return;
+      }
+      await options.requestIdleSleep(instanceId);
+      options.logger?.info("cloud.idle_sleep_requested", { idleMs: at - lastBusyAt });
+    } catch (error) {
+      // The provider's own timer still sleeps it a couple of minutes later.
+      options.logger?.warn("cloud.idle_sleep_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   /** A ping within the interval already holds the idle timer back. */
   const pingIsDue = (): boolean => lastPingAt == null || now() - lastPingAt >= intervalMs;
 
@@ -186,7 +294,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
         options.logger?.warn("cloud.keep_awake_read_failed", { error: error instanceof Error ? error.message : String(error) });
         state = { busy: true, reasons: ["unknown"] };
       }
-      // Used since the last check: the machine sleeps its sleep-after time after the last use.
+      // Used since the last check: the machine sleeps three minutes after the last use.
       if (usedSinceTick && !state.reasons.includes("in_use")) {
         state = { ...state, busy: true, reasons: [...state.reasons, "in_use"] };
       }
@@ -204,6 +312,19 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
         lastPingOk = await ping(url);
         lastPingAt = now();
       }
+      const at = now();
+      // Time spent asleep doesn't count: woken, the machine gets its full three
+      // minutes. A short sleep leaves no gap, so a check after an ask counts too.
+      if (askedToSleep || (lastTickAt != null && at - lastTickAt > intervalMs * SLEEP_GAP_INTERVALS)) {
+        lastBusyAt = at;
+        askedToSleep = false;
+      }
+      lastTickAt = at;
+      // Work ends between checks. The first idle check still counts it, so a
+      // machine sleeps at least three minutes after its last work, never less.
+      if (state.busy || wasBusy) lastBusyAt = at;
+      wasBusy = state.busy;
+      if (!state.busy) await sleepIfIdleLongEnough(at);
       if (!url && state.busy && !warnedNoUrl) {
         warnedNoUrl = true;
         options.logger?.info("cloud.keep_awake_no_wake_url", {});
@@ -239,10 +360,63 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
     async noteUse() {
       if (!enabled) return;
       usedSinceTick = true;
+      lastBusyAt = now();
       if (pingIsDue()) await tick();
     },
     tick,
   };
+}
+
+/** One hold on sleep, `$ADE_HOME/cloud/holds/<reason>.json`: `{ reason, until }`. */
+function holdFile(adeHome: string, reason: string): string {
+  return path.join(cloudKeepAwakePaths(adeHome).dir, "holds", `${reason}.json`);
+}
+
+/**
+ * Keeps this machine from sleeping for something the brain's own lists don't see
+ * (a first clone; the desktop writes the same file over exec for a move or copy).
+ * Expires on its own so a crashed caller never keeps a machine awake.
+ */
+export function holdCloudBusy(adeHome: string, reason: string, ttlMs: number): () => void {
+  const file = holdFile(adeHome, reason);
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ reason, until: Date.now() + ttlMs }), { mode: 0o600 });
+  } catch {
+    // Without the hold the machine may sleep early; the clone still works when it wakes.
+  }
+  return () => {
+    try {
+      fs.rmSync(file, { force: true });
+    } catch {
+      // Expires on its own.
+    }
+  };
+}
+
+/** Holds still in force; a stale one is removed so it can't keep the machine awake. */
+export function cloudBusyHolds(adeHome: string, now: number = Date.now()): string[] {
+  const dir = path.join(cloudKeepAwakePaths(adeHome).dir, "holds");
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir).filter((name) => name.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  const reasons: string[] = [];
+  for (const name of names) {
+    try {
+      const hold = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) as { reason?: unknown; until?: unknown };
+      if (typeof hold.reason === "string" && typeof hold.until === "number" && hold.until > now) {
+        reasons.push(hold.reason);
+        continue;
+      }
+      fs.rmSync(path.join(dir, name), { force: true });
+    } catch {
+      // A hold ADE can't read is left for its own expiry.
+    }
+  }
+  return reasons;
 }
 
 /** The ready machine's setup job is running (cloudReadyMachines.ts writes it, the entrypoint runs it). */

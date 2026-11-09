@@ -6,6 +6,7 @@
  * `run_ade_action`, for the actions in `ADE_ACTION_MACHINE_SCOPED`.
  */
 import { JsonRpcError, JsonRpcErrorCode } from "../../jsonrpc";
+import { cloudDomainEnabled } from "../../../../desktop/src/shared/adeCloud";
 import { callerIdentityIsAgent, type AdeRuntimeRole } from "../../runtimeRoles";
 import {
   adeActionCallerRefusal,
@@ -81,7 +82,10 @@ export async function runMachineAccountAction(
   }
   const service = (await domains?.())?.[domain] ?? null;
   const callable = service?.[action];
-  if (typeof callable !== "function") {
+  // No ADE Cloud for this account: `cloud` answers as if it weren't here, like
+  // a missing action below. `access` itself stays, it is the answer.
+  const hiddenCloud = domain === "cloud" && action !== "access" && !(await cloudDomainEnabled(service, (error) => console.warn("[cloud] access read failed", error instanceof Error ? error.message : String(error))));
+  if (typeof callable !== "function" || hiddenCloud) {
     throw new JsonRpcError(
       JsonRpcErrorCode.methodNotFound,
       encodeCodedErrorMessage(ACTION_NOT_CALLABLE_CODE, `${domain}.${action} is unavailable in this runtime.`),
