@@ -47,6 +47,25 @@ export function isDirectChildFolder(
   return sameFolder(path.dirname(child), parent, platform);
 }
 
+/**
+ * Whether `candidate` sits anywhere below `parent`, with each level compared by
+ * {@link sameFolder}. `parent` is not inside itself.
+ */
+export function isFolderInside(
+  parent: string | null | undefined,
+  candidate: string | null | undefined,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (!parent || !candidate) return false;
+  let current = path.resolve(candidate);
+  for (;;) {
+    const up = path.dirname(current);
+    if (up === current) return false;
+    if (sameFolder(up, parent, platform)) return true;
+    current = up;
+  }
+}
+
 function realPathOrNull(target: string): string | null {
   try {
     // Unpatched fs: under Electron a lane path through an `.asar` reads as a folder.
