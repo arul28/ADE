@@ -1242,6 +1242,13 @@ struct AgentChatReasoningEffortChange: Codable, Equatable {
   var appliesAfter: String
 }
 
+/// The live background work split into real jobs and watch-only monitors
+/// (`SessionBackgroundWork` in `apps/desktop/src/shared/sessionCanonicalState.ts`).
+struct SessionBackgroundWork: Codable, Equatable {
+  var workingCount: Int
+  var monitoringCount: Int
+}
+
 /// A chat's live PR watches, as its Work row needs them
 /// (`SessionActivePrWatch` in `apps/desktop/src/shared/prWatch.ts`).
 struct SessionActivePrWatch: Codable, Equatable, Hashable {
@@ -1398,6 +1405,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var usageLimitResumeWasCleared: Bool? = nil
   /// Live background tasks still running after the foreground turn. Older hosts omit it.
   var activeBackgroundTaskCount: Int? = nil
+  /// The same work split into real jobs and monitors. Older hosts omit it.
+  var backgroundWork: SessionBackgroundWork? = nil
   /// The chat's live PR watches, from the machine running them. Older hosts omit it.
   var activePrWatch: SessionActivePrWatch? = nil
   /// Settings the user changed that the host holds until this chat's background
@@ -1509,6 +1518,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.usageLimitResume == rhs.usageLimitResume
       && lhs.usageLimitResumeWasCleared == rhs.usageLimitResumeWasCleared
       && lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount
+      && lhs.backgroundWork == rhs.backgroundWork
       && lhs.activePrWatch == rhs.activePrWatch
       && lhs.pendingSettingsAfterBackground == rhs.pendingSettingsAfterBackground
       && lhs.reasoningEffortChange == rhs.reasoningEffortChange

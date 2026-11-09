@@ -25381,12 +25381,14 @@ extension SyncService {
       }
 
       let runtime = session.runtimeState.lowercased()
-      let isRunningRuntime = runtime == "running" || canonical.restingOnPrWatch
-      let isIdleRuntime = canonical.phase == .ready || canonical.phase == .idle
+      let isRunningRuntime = runtime == "running"
+      // A chat resting on a PR watch counts as working but its turn is over, so
+      // the snapshot does not present it as producing output.
+      let isIdleRuntime = canonical.phase == .ready || canonical.phase == .idle || canonical.restingOnPrWatch
       let isEndedRuntime = runtime == "exited" || runtime == "killed" || runtime == "stopped"
 
       if isEndedRuntime && !isFailedStatus && !isAwaiting { continue }
-      if isRunningRuntime && !isFailedStatus && !isAwaiting { runningChatCount += 1 }
+      if (isRunningRuntime || canonical.restingOnPrWatch) && !isFailedStatus && !isAwaiting { runningChatCount += 1 }
 
       let started = parseIso8601(session.startedAt) ?? now
       // For active sessions there is no `endedAt`. Use the chat summary's
@@ -25446,7 +25448,7 @@ extension SyncService {
         awaitingInputCount += 1
       } else if isRunningRuntime && lastActivity >= runningRecencyCutoff {
         runningAgents.append(snap)
-      } else if isIdleRuntime {
+      } else if isIdleRuntime && !canonical.restingOnPrWatch {
         idleCount += 1
       }
     }

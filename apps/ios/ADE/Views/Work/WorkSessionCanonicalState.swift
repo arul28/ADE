@@ -196,6 +196,7 @@ func workCanonicalSessionState(
   attentionRequestedAt: String? = nil,
   lastTurnFailedAt: String? = nil,
   backgroundTaskCount: Int = 0,
+  backgroundWorkingCount: Int? = nil,
   prWatchActive: Bool = false,
   now: Date = Date(),
   isChatTool: (String?) -> Bool = isWorkChatToolType
@@ -295,10 +296,12 @@ func workCanonicalSessionState(
   // claims live background work and that claim has gone quiet: chat rows keep
   // status "running" between turns, so checking silence first filed every
   // reply older than three hours as busy.
-  // Mirrors desktop `canonicalSessionState`. A PR watch alone is never stale
-  // (the host polls the PR every minute), but background jobs still are.
+  // Mirrors desktop `canonicalSessionState`. A PR watch is never stale (the host
+  // polls the PR every minute) and covers quiet monitors, but real jobs still
+  // go stale. An older host sends no split, so its count is read as real jobs.
   if runtimeLower == "idle" {
-    if backgroundTaskCount > 0 && silentPastStale {
+    let onlyMonitorsBesideWatch = prWatchActive && backgroundWorkingCount == 0
+    if backgroundTaskCount > 0 && silentPastStale && !onlyMonitorsBesideWatch {
       return CanonicalSessionState(phase: .stale)
     }
     if chat && prWatchActive {
@@ -735,6 +738,7 @@ func workCanonicalSessionState(
     attentionRequestedAt: session.attentionRequestedAt,
     lastTurnFailedAt: session.lastTurnFailedAt,
     backgroundTaskCount: summary?.activeBackgroundTaskCount ?? 0,
+    backgroundWorkingCount: summary?.backgroundWork?.workingCount,
     prWatchActive: summary?.activePrWatch != nil,
     now: now
   )
