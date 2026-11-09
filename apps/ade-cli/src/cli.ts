@@ -38,6 +38,7 @@ import {
 } from "./cliMachineTargeting";
 import {
   chatIdForLookup,
+  chatDeletedSentence,
   chatLocateValue,
   describeUnasked,
   formatChatLocate,
@@ -281,6 +282,8 @@ import {
   type ChatTurnStatusSnapshot,
 } from "../../desktop/src/shared/chatTurnStatus";
 import { chatWaitsOnUser, chatWaitTargetMatches } from "../../desktop/src/shared/chatWait";
+import { CHAT_SETTING_FIELDS } from "../../desktop/src/shared/chatTurnStatus";
+import { chatWebhookUrlProblem } from "../../desktop/src/main/services/chat/chatWebhookRegistry";
 import type { SessionActivitySource, TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import { SESSION_ACTIVITY_VALUES } from "../../desktop/src/shared/types/sessions";
 import {
@@ -1206,6 +1209,7 @@ export type CliPlan =
       kind: "chat-launch";
       launchArgs: JsonObject;
       startOverrides?: { from?: string; on?: string };
+      notify?: { url: string; token: string | null };
       wait: boolean;
       timeoutMs: number;
       pollIntervalMs: number;
@@ -2712,6 +2716,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade files read --workspace <lane> <path> --text Read a file
     $ ade files write --workspace <lane> <path> --stdin
     $ ade files write --workspace <lane> <path> --text "new content"
+    $ ade files write --workspace <lane> <path> --stdin --base64 --offset 262144  Add a chunk at that byte; answers path, bytes, sha256
     $ ade files create --workspace <lane> <path> --text "content"
     $ ade files mkdir --workspace <lane> src/new
     $ ade files search --workspace <lane> -q <text> Search text in a workspace
@@ -2891,6 +2896,9 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                                                     reject the flag outright and nothing is sent; omit
                                                     --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
+    $ ade chat events <session> --since <cursor> --json   Turn starts and ends, input needed, errors since a cursor; answers at once
+    $ ade chat notify <session> --url https://… --token-stdin   POST there each time it goes idle, needs input or fails (7 days)
+    $ ade chat notify <session> --list | --cancel
                                                     Wait for idle, active, awaiting-input, or terminal.
                                                     Stops early with waiting_on_user when only the user
                                                     can answer the chat's card
@@ -3227,6 +3235,7 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade proof review artifact-id --text           A sheet of a video's key moments (or a picture's path) to check before publishing
     $ ade proof review artifact-id --from 12 --to 18 --text  A closer look at seconds 12–18
     $ ade proof review --chat <session-id> --text   The newest video (else proof) a chat filed
+    $ ade proof review artifact-id --page 2 --text  Page 2 of a tall picture, cut out as a readable image (or --y-from/--y-to)
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
     $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
@@ -11018,6 +11027,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   if (findFlagName(args, ["--base", "--base-branch"])) throw new CliUsageError("Unsupported lane creation flag.");
   const launchIdFlag = readValue(args, ["--launch-id"]);
   const laneIdFlag = readValue(args, ["--lane-id"]);
+  const notify = readChatNotifyFlags(args);
   const foreground = readFlag(args, ["--foreground"]);
   const wait = readFlag(args, ["--wait"]);
   const printConfig = readFlag(args, ["--print-config"]);
@@ -11109,7 +11119,45 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
       value: { ok: true, dryRun: true, action: "chat.startLaunch", input: launchArgs, ...(needsDefaults && !("laneConfig" in input) ? { startOverrides, note: "The missing start choice is filled from project defaults at launch." } : {}) },
     };
   }
-  return { kind: "chat-launch", launchArgs, ...(needsDefaults && !("laneConfig" in input) ? { startOverrides } : {}), wait, timeoutMs, pollIntervalMs };
+  return { kind: "chat-launch", launchArgs, ...(needsDefaults && !("laneConfig" in input) ? { startOverrides } : {}), ...(notify ? { notify } : {}), wait, timeoutMs, pollIntervalMs };
+}
+
+/** The settings a chat really runs with, for a caller to check what it started. */
+function pickChatSettings(summary: Record<string, unknown>): JsonObject {
+  const out: JsonObject = {};
+  for (const key of CHAT_SETTING_FIELDS) {
+    const value = summary[key];
+    if (value !== undefined && value !== null) out[key] = value as JsonObject[string];
+  }
+  return out;
+}
+
+function assertChatWebhookUrl(url: string): void {
+  const problem = chatWebhookUrlProblem(url);
+  if (problem) throw new CliUsageError(problem);
+}
+
+/**
+ * `--notify-url <https> [--notify-token <key> | --notify-token-stdin]` on
+ * `chat launch` and `chat create`. Stdin keeps the key out of the process list.
+ */
+function readChatNotifyFlags(args: string[]): { url: string; token: string | null } | null {
+  const url = readValue(args, ["--notify-url"]);
+  if (url?.startsWith("-")) throw new CliUsageError("--notify-url needs an https URL.");
+  const tokenFromStdin = readFlag(args, ["--notify-token-stdin"]);
+  if (tokenFromStdin && args.some((word, index) => /^--(?:prompt|text)-file(?:=-)?$/.test(word) && (word.endsWith("=-") || args[index + 1] === "-"))) {
+    throw new CliUsageError("Stdin can carry the prompt or the notify token, not both: pass the prompt with --prompt.");
+  }
+  const inlineToken = readValue(args, ["--notify-token"]);
+  if (inlineToken?.startsWith("--")) throw new CliUsageError("--notify-token needs a value; for one that starts with -- use --notify-token-stdin.");
+  const token = tokenFromStdin ? readAllStdinSync().trim() : inlineToken;
+  if (tokenFromStdin && !token) throw new CliUsageError("--notify-token-stdin got no token on stdin.");
+  if (!url) {
+    if (token) throw new CliUsageError("--notify-token needs --notify-url.");
+    return null;
+  }
+  assertChatWebhookUrl(url);
+  return { url, token: token ?? null };
 }
 
 function requireCliUuid(value: string, flag: string): string {
@@ -11161,8 +11209,17 @@ async function runChatLaunchCommand(
     if (!isRecord(started) || typeof started.launchId !== "string") {
       throw new CliExecutionError("chat.startLaunch returned an unexpected result.", { result: started });
     }
+    // A chat's id is its launch's, so the webhook is armed before the chat exists.
+    const notifyResult = plan.notify
+      ? await callChat("armWebhook", { sessionId: started.launchId, url: plan.notify.url, ...(plan.notify.token ? { token: plan.notify.token } : {}) })
+        .then(() => ({ notify: { armed: true } }), (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          process.stderr.write(`ade: the chat starts, but its notify webhook was not armed: ${message}\n`);
+          return { notify: { armed: false, error: message } };
+        })
+      : {};
     if (!plan.wait) {
-      return { output: formatOutput(started, options, "chat-launch"), exitCode: 0 };
+      return { output: formatOutput({ ...started, ...notifyResult }, options, "chat-launch"), exitCode: 0 };
     }
     const launchId = started.launchId;
     const startedAt = Date.now();
@@ -11179,7 +11236,11 @@ async function runChatLaunchCommand(
       const phase = asString(launch.phase) ?? "running";
       const elapsedMs = Date.now() - startedAt;
       if (CHAT_LAUNCH_TERMINAL_PHASES.has(phase)) {
-        const result = { ok: phase === "completed", launchId, phase, elapsedMs, launch };
+        // What the chat really runs with, which the caller may have left to defaults.
+        const session = phase === "completed"
+          ? await callChat("getSessionSummary", { sessionId: asString(launch.sessionId) ?? launchId }).catch(() => null)
+          : null;
+        const result = { ok: phase === "completed", launchId, phase, elapsedMs, launch, ...notifyResult, ...(isRecord(session) ? { session: pickChatSettings(session) } : {}) };
         return { output: formatOutput(result, options, "chat-launch"), exitCode: phase === "completed" ? 0 : 1 };
       }
       if (elapsedMs >= plan.timeoutMs) {
@@ -11986,6 +12047,7 @@ function buildChatPlan(args: string[]): CliPlan {
       linearIssue = issues[0]!;
     }
     const noKickoff = readFlag(args, ["--no-kickoff"]);
+    const notify = readChatNotifyFlags(args);
     const explicitKickoff =
       readChatTextFile(args, ["--prompt-file"], ["--prompt"])
       ?? readValue(args, ["--prompt"]);
@@ -12064,6 +12126,25 @@ function buildChatPlan(args: string[]): CliPlan {
         },
       }]
       : [];
+    // Armed before the kickoff, so the first turn's end is reported.
+    // Optional: a webhook that can't be armed (an older host, the cap) must not
+    // strand a made chat without its prompt. The answer says it wasn't armed.
+    const notifySteps = (createKey: string): InvocationStep[] => notify
+      ? [{
+        key: "notify",
+        method: "ade/actions/call",
+        unwrapToolResult: true,
+        optional: true,
+        params: (values) => ({
+          name: "run_ade_action",
+          arguments: {
+            domain: "chat",
+            action: "armWebhook",
+            args: { sessionId: sessionIdFromCreateChatValue(values[createKey]), url: notify.url, ...(notify.token ? { token: notify.token } : {}) },
+          },
+        }),
+      }]
+      : [];
     const chatCreateCheck = {
       laneId: explicitLane,
       permissionMode: asString(actionArgs.permissionMode),
@@ -12093,6 +12174,7 @@ function buildChatPlan(args: string[]): CliPlan {
           chatCreateCheck,
           steps: [
             { ...createStep, key: "session" },
+            ...notifySteps("session"),
             ...laneChatsSteps("session"),
             {
               key: "result",
@@ -12120,12 +12202,16 @@ function buildChatPlan(args: string[]): CliPlan {
           ],
         };
       }
+      if (notify) {
+        return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, steps: [{ ...createStep, key: "session" }, ...notifySteps("session"), ...laneChatsSteps("session")] };
+      }
       return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, steps: [createStep, ...laneChatsSteps("result")] };
     }
     const issueForKickoff = linearIssue;
     const steps: InvocationStep[] = [
       // First step keyed "session" so attach/kickoff can read the new id.
       { ...createStep, key: "session" },
+      ...notifySteps("session"),
       ...laneChatsSteps("session"),
       {
         key: "attach",
@@ -12227,6 +12313,8 @@ function buildChatPlan(args: string[]): CliPlan {
       label: "chat send",
       steps: [
         actionStep("result", "chat", "messageSession", messageArgs),
+        // For the link in the answer. Optional: the message already went.
+        { ...actionArgsListStep("summary", "chat", "getSessionSummary", [targetSession]), optional: true },
       ],
     };
   }
@@ -12337,6 +12425,46 @@ function buildChatPlan(args: string[]): CliPlan {
     const input: JsonObject = {};
     maybePut(input, "sessionId", sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID) ?? undefined);
     return { kind: "execute", label: "chat waits", steps: [actionStep("result", "chat", "listWaits", input)] };
+  }
+  if (sub === "events") {
+    const since = readNumberOption(args, ["--since", "--cursor"]);
+    const limit = readIntOption(args, ["--limit"], undefined);
+    return {
+      kind: "execute",
+      label: "chat events",
+      steps: [actionStep("result", "chat", "getChatEvents", {
+        sessionId: requireValue(sessionId, "sessionId"),
+        ...(since != null ? { since } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      })],
+    };
+  }
+  if (sub === "notify") {
+    if (readFlag(args, ["--list"])) {
+      return { kind: "execute", label: "chat notify list", steps: [actionStep("result", "chat", "listWebhooks", sessionId ? { sessionId } : {})] };
+    }
+    if (readFlag(args, ["--cancel"])) {
+      return { kind: "execute", label: "chat notify cancel", steps: [actionStep("result", "chat", "cancelWebhook", { sessionId: requireValue(sessionId, "sessionId") })] };
+    }
+    const url = requireValue(readValue(args, ["--url"]), "--url");
+    assertChatWebhookUrl(url);
+    const tokenFromStdin = readFlag(args, ["--token-stdin"]);
+    const token = tokenFromStdin ? readAllStdinSync().trim() : readValue(args, ["--token"]);
+    if (tokenFromStdin && !token) throw new CliUsageError("--token-stdin got no token on stdin.");
+    const target = requireValue(sessionId, "sessionId");
+    return {
+      kind: "execute",
+      label: "chat notify",
+      steps: [
+        // Only the chat's own project can report on it: a miss here goes
+        // looking on the account's other machines, like `chat status`.
+        actionArgsListStep("summary", "chat", "getSessionSummary", [target]),
+        {
+          ...actionStep("result", "chat", "armWebhook", { sessionId: target, url, ...(token ? { token } : {}) }),
+          skipWhen: (values) => unwrapActionEnvelope(values.summary) == null,
+        },
+      ],
+    };
   }
   if (sub === "wait" && readFlag(args, ["--background"])) {
     // Wake me when my background jobs end: every running job, or the ones
@@ -14265,21 +14393,38 @@ function warnInlineChatTextThroughCmd(args: string[], inlineFlags: readonly stri
 let stdinTextRead: string | null = null;
 
 function readAllStdinSync(): string {
-  stdinTextRead ??= fs.readFileSync(0, "utf8");
+  stdinTextRead ??= readStdinSync();
   return stdinTextRead;
 }
 
-function readBoundedStdinSync(maxBytes: number, label: string): string {
+/**
+ * Stdin to its end, refused past `bound.maxBytes`. `readFileSync(0)` failed
+ * with EAGAIN when stdin was a non-blocking pipe whose writer had not caught
+ * up (a large `stdin` from ADE MCP did it at ~230 KB), so this reads in a
+ * loop, pausing briefly while the pipe is empty.
+ */
+function readStdinSync(bound?: { maxBytes: number; label: string }): string {
   const chunks: Buffer[] = [];
+  const pause = new Int32Array(new SharedArrayBuffer(4));
   let total = 0;
   while (true) {
-    const chunk = Buffer.alloc(Math.min(8_192, maxBytes + 1 - total));
-    const bytes = fs.readSync(0, chunk, 0, chunk.length, null);
+    const chunk = Buffer.allocUnsafe(bound ? Math.min(64 * 1024, bound.maxBytes + 1 - total) : 64 * 1024);
+    let bytes = 0;
+    try {
+      bytes = fs.readSync(0, chunk, 0, chunk.length, null);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EAGAIN" || code === "EINTR") {
+        Atomics.wait(pause, 0, 0, 5);
+        continue;
+      }
+      // Windows reports a closed pipe as EOF instead of a zero-length read.
+      if (code === "EOF") break;
+      throw error;
+    }
     if (bytes === 0) break;
     total += bytes;
-    if (total > maxBytes) {
-      throw new CliUsageError(`${label} must be ${maxBytes} bytes or fewer.`);
-    }
+    if (bound && total > bound.maxBytes) throw new CliUsageError(`${bound.label} must be ${bound.maxBytes} bytes or fewer.`);
     chunks.push(chunk.subarray(0, bytes));
   }
   return Buffer.concat(chunks).toString("utf8");
@@ -14451,6 +14596,8 @@ function buildFilesPlan(args: string[], machine: string | null = null): CliPlan 
     };
   }
   if (sub === "write") {
+    const base64 = readFlag(args, ["--base64"]);
+    const offset = readIntOption(args, ["--offset"], undefined);
     const text = readFileTextInput(args);
     if (text == null)
       throw new CliUsageError(
@@ -14470,6 +14617,8 @@ function buildFilesPlan(args: string[], machine: string | null = null): CliPlan 
               "path",
             ),
             text,
+            ...(base64 ? { encoding: "base64" } : {}),
+            ...(offset ? { offset } : {}),
           }),
         ),
       ],
@@ -14765,6 +14914,9 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     const from = readNumberOption(args, ["--from"]);
     const to = readNumberOption(args, ["--to"]);
     const frames = readNumberOption(args, ["--frames"]);
+    const page = readNumberOption(args, ["--page"]);
+    const yFrom = readNumberOption(args, ["--y-from"]);
+    const yTo = readNumberOption(args, ["--y-to"]);
     const artifactId = readValue(args, ["--id", "--artifact-id"]) ?? args.find((value) => !value.startsWith("-"));
     if (!artifactId && !chatSessionId) {
       throw new CliUsageError("ade proof review needs a proof id: ade proof review <id>, or a chat: ade proof review --chat <session-id>. Copy the id from a cite: line or the `id` field of `ade proof list --json`.");
@@ -14778,6 +14930,9 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
         ...(from != null ? { from } : {}),
         ...(to != null ? { to } : {}),
         ...(frames != null ? { frames } : {}),
+        ...(page != null ? { page } : {}),
+        ...(yFrom != null ? { yFrom } : {}),
+        ...(yTo != null ? { yTo } : {}),
       })],
     };
   }
@@ -15293,6 +15448,7 @@ async function runChatHereThenElsewhere(
     }
   }
   if (!match) chatLookupMiss = report;
+  if (!match && report.deleted) process.stderr.write(`${chatDeletedSentence(sessionId, report.deleted)}\n`);
   if (failure) throw failure;
   const hint = chatOtherMachineHint(process.argv.slice(2));
   if (hint) process.stderr.write(`${hint}\n`);
@@ -15309,7 +15465,8 @@ async function runChatLocate(
   if (parsed.options.machine || parsed.options.allMachines) {
     throw new CliUsageError("chat locate asks every machine itself; drop --machine/--all-machines.");
   }
-  const value = chatLocateValue(await locateChatOnAccount(parsed.options, sessionId.trim()));
+  const onlyThisMachine = readFlag(args, ["--this-machine"]);
+  const value = chatLocateValue(await locateChatOnAccount(parsed.options, sessionId.trim(), { onlyThisMachine }));
   return {
     output: parsed.options.text ? formatChatLocate(value) : `${JSON.stringify(value, null, 2)}\n`,
     exitCode: value.found === true ? 0 : 1,
@@ -25512,7 +25669,7 @@ Usage:
       );
     }
     const request = parseObjectJson(
-      readBoundedStdinSync(64 * 1024, "SSH pairing request"),
+      readStdinSync({ maxBytes: 64 * 1024, label: "SSH pairing request" }),
       "SSH pairing request",
     );
     return {
@@ -38120,11 +38277,18 @@ function summarizeExecution(args: {
       plan.label === "chat create from Linear issue") &&
     values.session !== undefined
   ) {
+    const notified = values.notify === undefined ? null : unwrapActionEnvelope(values.notify);
+    if (isRecord(notified) && notified.ok === false) {
+      process.stderr.write(`ade: the chat started, but its notify webhook was not armed: ${String(notified.error ?? "unknown error")}\n`);
+    }
     return {
       ok: true,
       session: unwrapActionEnvelope(values.session),
       ...(values.attach !== undefined ? { attach: unwrapActionEnvelope(values.attach) } : {}),
       ...(values.result !== undefined ? { kickoff: unwrapActionEnvelope(values.result) } : {}),
+      ...(notified !== null
+        ? { notify: isRecord(notified) && notified.ok === false ? { armed: false, error: notified.error ?? null } : { armed: true } }
+        : {}),
     };
   }
 
@@ -38169,6 +38333,7 @@ function summarizeExecution(args: {
     const enrichment = isRecord(summary) ? summary : null;
     return {
       ...turnStatus,
+      ...(enrichment ? pickChatSettings(enrichment) : {}),
       ...(enrichment?.usageLimitResume !== undefined
         ? { usageLimitResume: enrichment.usageLimitResume }
         : {}),
@@ -38176,9 +38341,25 @@ function summarizeExecution(args: {
     };
   }
 
+  if (plan.label === "chat notify") {
+    if (unwrapActionEnvelope(values.summary) == null) {
+      chatMissedHere = true;
+      return { result: null };
+    }
+    return unwrapActionEnvelope(values.result);
+  }
+
+  if (plan.label === "chat events") {
+    const events = unwrapActionEnvelope(values.result);
+    if (events == null) chatMissedHere = true;
+    return events;
+  }
+
   if (plan.label === "chat send" || plan.label === "chat steer" || plan.label === "chat message") {
     const raw = unwrapActionEnvelope(values.result);
-    if (isRecord(raw)) return raw;
+    const chatSummary = values.summary !== undefined ? unwrapActionEnvelope(values.summary) : null;
+    const chatLaneId = isRecord(chatSummary) ? asString(chatSummary.laneId) : null;
+    if (isRecord(raw)) return chatLaneId ? { ...raw, laneId: chatLaneId } : raw;
     return {
       ok: true,
       accepted: true,

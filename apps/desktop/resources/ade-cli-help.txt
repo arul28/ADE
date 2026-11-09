@@ -493,6 +493,7 @@ Files
     $ ade files read --workspace <lane> <path> --text Read a file
     $ ade files write --workspace <lane> <path> --stdin
     $ ade files write --workspace <lane> <path> --text "new content"
+    $ ade files write --workspace <lane> <path> --stdin --base64 --offset 262144  Add a chunk at that byte; answers path, bytes, sha256
     $ ade files create --workspace <lane> <path> --text "content"
     $ ade files mkdir --workspace <lane> src/new
     $ ade files search --workspace <lane> -q <text> Search text in a workspace
@@ -814,6 +815,9 @@ Work chats
                                                     reject the flag outright and nothing is sent; omit
                                                     --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
+    $ ade chat events <session> --since <cursor> --json   Turn starts and ends, input needed, errors since a cursor; answers at once
+    $ ade chat notify <session> --url https://… --token-stdin   POST there each time it goes idle, needs input or fails (7 days)
+    $ ade chat notify <session> --list | --cancel
                                                     Wait for idle, active, awaiting-input, or terminal.
                                                     Stops early with waiting_on_user when only the user
                                                     can answer the chat's card
@@ -1428,6 +1432,7 @@ Proof and computer use
     $ ade proof review artifact-id --text           A sheet of a video's key moments (or a picture's path) to check before publishing
     $ ade proof review artifact-id --from 12 --to 18 --text  A closer look at seconds 12–18
     $ ade proof review --chat <session-id> --text   The newest video (else proof) a chat filed
+    $ ade proof review artifact-id --page 2 --text  Page 2 of a tall picture, cut out as a readable image (or --y-from/--y-to)
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
     $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source

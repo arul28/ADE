@@ -614,6 +614,16 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
       example: "ade actions run chat.getTurnStatus --scalar chat-123",
     },
+    getChatEvents: {
+      description: "What happened to a chat since a cursor (turn starts and ends, input needed, errors), answered at once. Pass the returned cursor back as since.",
+      input: "object { sessionId: string, since?: number, limit?: number }",
+      example: "ade chat events chat-123 --since 412 --json",
+    },
+    armWebhook: {
+      description: "POST to a public https URL each time a chat goes idle, needs input or fails. Retries a failed POST; lasts 7 days.",
+      input: "object { sessionId: string, url: string, token?: string }",
+      example: "ade chat notify chat-123 --url https://example.com/hook --token-stdin",
+    },
     listPendingInputs: {
       description: "List the questions and approvals a chat is blocked on right now, with each item id, kind, questions and options. Empty after a restart: the provider request died with the process.",
       input: "object { sessionId: string }",

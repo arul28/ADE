@@ -197,7 +197,13 @@ export type FilesWriteTextArgs = {
   workspaceId: string;
   path: string; // relative to workspace root
   text: string;
+  /** `base64`: `text` holds the file's bytes. Default utf8. */
+  encoding?: "utf8" | "base64";
+  /** Write this chunk at this byte. It must equal the file's current size, so a chunk sent twice can't corrupt it. Default 0: replace the file. */
+  offset?: number;
 };
+
+export type FilesWriteReceipt = { path: string; bytes: number; sha256: string };
 
 export type FilesCreateFileArgs = {
   workspaceId: string;

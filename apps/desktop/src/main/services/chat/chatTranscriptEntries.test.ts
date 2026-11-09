@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types/chat";
-import { transcriptEntriesFromEnvelopes } from "./chatTranscriptEntries";
+import { chatEventsPage, transcriptEntriesFromEnvelopes } from "./chatTranscriptEntries";
 
 const SESSION = "session-1";
 
@@ -329,5 +329,35 @@ describe("transcriptEntriesFromEnvelopes", () => {
       expect(entries).toHaveLength(1);
       expect(entries[0]!.text).toBe(source);
     }
+  });
+});
+
+describe("chatEventsPage", () => {
+  // A polling client passes each answer's cursor back; it must never skip a turn's end.
+  it("pages lifecycle events after a cursor without skipping or repeating one", () => {
+    const at = (seq: number, event: AgentChatEvent): AgentChatEventEnvelope => ({ sessionId: SESSION, timestamp: `t${seq}`, sequence: seq, event });
+    const envelopes = [
+      at(1, { type: "status", turnStatus: "started", turnId: "a" }),
+      at(2, { type: "text", text: "working" } as AgentChatEvent),
+      at(3, { type: "status", turnStatus: "completed", turnId: "a" }),
+      // The same turn's end reported a second way is one event.
+      at(4, { type: "done", turnId: "a", status: "completed" } as AgentChatEvent),
+      at(5, { type: "status", turnStatus: "started", turnId: "b" }),
+      at(6, { type: "status", turnStatus: "failed", turnId: "b" }),
+    ];
+
+    const latest = chatEventsPage(envelopes, null, 2, true);
+    expect(latest.events.map((event) => event.kind)).toEqual(["turn_started", "turn_failed"]);
+    expect(latest).toMatchObject({ cursor: 6, truncated: false });
+
+    const first = chatEventsPage(envelopes, 0, 2, true);
+    expect(first.events.map((event) => [event.sequence, event.kind])).toEqual([[1, "turn_started"], [3, "turn_completed"]]);
+    expect(first).toMatchObject({ cursor: 3, truncated: true });
+    const second = chatEventsPage(envelopes, first.cursor, 2, true);
+    expect(second.events.map((event) => [event.sequence, event.kind])).toEqual([[5, "turn_started"], [6, "turn_failed"]]);
+    expect(second).toMatchObject({ cursor: 6, truncated: false });
+
+    expect(chatEventsPage(envelopes, 6, 2, true)).toMatchObject({ events: [], cursor: 6, truncated: false });
+    expect(chatEventsPage(envelopes.slice(3), 0, 50, false).gap).toBe(true);
   });
 });

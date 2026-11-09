@@ -96,7 +96,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["prs stacks", new Set(["list"])],
   ["chat", new Set([
     "list", "inbox", "pending", "read", "show", "status", "launches", "launch-status", "waits", "subagents", "models",
-    "linear-issues", "actions", "wait",
+    "linear-issues", "actions", "wait", "events",
   ])],
   // `ade chat deleted list` reads Recently deleted; `reopen` creates a chat.
   ["chat deleted", new Set(["list", "ls"])],
@@ -401,7 +401,7 @@ function checkActionsCommand(words: readonly string[], scope: RemoteMcpScope, ar
 }
 
 /** Flags that make a command read its input from stdin. */
-const STDIN_FLAGS: ReadonlySet<string> = new Set(["--stdin", "--json-stdin", "--token-stdin"]);
+const STDIN_FLAGS: ReadonlySet<string> = new Set(["--stdin", "--json-stdin", "--token-stdin", "--notify-token-stdin"]);
 
 /** `--stdin`, or `-` as the value of a file or prompt flag (`--body-file -`, `--prompt -`). */
 function readsStdin(args: readonly string[]): boolean {
@@ -431,6 +431,34 @@ function asksForHelp(args: readonly string[]): boolean {
 /** `chat wait` flags that arm, hold or cancel a wait instead of only watching. */
 const CHAT_WAIT_WRITE_FLAGS = /^--(?:async|background|cancel|cancel-wait)(?:=|$)/;
 
+const ENV_FILE = /^\.env(?:\.(?!example$|sample$|template$)[\w.-]+)?$/i;
+
+/** A word or `--flag=value` that names an env file. ADE's own secret folders are refused by the file service itself. */
+function namesEnvFile(word: string): boolean {
+  const value = word.startsWith("--") && word.includes("=") ? word.slice(word.indexOf("=") + 1) : word;
+  return ENV_FILE.test(value.split(/[\\/]/).pop() ?? "");
+}
+
+function readsEnvFile(command: string, args: readonly string[]): boolean {
+  if ((command === "files" || command === "file") && (args[1] === "read" || args[1] === "cat")) {
+    return args.slice(2).some(namesEnvFile);
+  }
+  return false;
+}
+
+/**
+ * `actions run file.readFile|readFileRange` (or `file readFile`): the CLI
+ * takes its input through more than a dozen flags, so a read-only connection
+ * reads files with `files read`, whose path the check above can see.
+ */
+function readsFileThroughAction(command: string, args: readonly string[]): boolean {
+  if (command !== "actions" && command !== "action") return false;
+  const words = args.slice(1).filter((word) => !word.startsWith("-"));
+  if (words[0] !== "run") return false;
+  const target = words[1]?.includes(".") ? words[1] : `${words[1] ?? ""}.${words[2] ?? ""}`;
+  return /^file\.(?:readFile|readFileRange)$/.test(target);
+}
+
 function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandVerdict {
   const refuse = (): RemoteCommandVerdict => ({
     ok: false,
@@ -440,6 +468,15 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
   });
   const command = args[0]!;
   if (asksForHelp(args)) return { ok: true, args };
+  if ((command === "files" || command === "file") && args[1] === "search" && args.some((word) => word === "--include-ignored" || word.startsWith("--include-ignored="))) {
+    return { ok: false, reason: "A read-only connection searches only files git tracks: ignored files such as `.env` hold secrets." };
+  }
+  if (readsFileThroughAction(command, args)) {
+    return { ok: false, reason: "A read-only connection reads files with `files read` (files_read), not `actions run file.readFile`." };
+  }
+  if (readsEnvFile(command, args)) {
+    return { ok: false, reason: "A read-only connection can't read `.env` files, which hold secrets. Ask the person for full access if it needs one." };
+  }
   const group = args[1] && !args[1].startsWith("-") ? `${command} ${args[1]}` : null;
   if (group && NESTED_GROUPS.has(group)) {
     const allowed = READ_ONLY_COMMANDS.get(group);

@@ -6,6 +6,7 @@ import {
   permissionLevelRank,
   type PermissionLevel,
 } from "../../desktop/src/shared/permissionLadder";
+import { CHAT_HAS_NO_PROOF_YET } from "../../desktop/src/shared/proofProvenance";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { DEMO_STEP_MAX_CHARS, RECORDING_MAX_MS, parseDemoStepFocus } from "../../desktop/src/shared/demoVideo/demoContract";
 import { cloudDomainEnabled } from "../../desktop/src/shared/adeCloud";
@@ -857,6 +858,9 @@ const TOOL_SPECS: ToolSpec[] = [
         from: { type: "number", minimum: 0 },
         to: { type: "number", minimum: 0 },
         frames: { type: "integer", minimum: 1, maximum: SHEET_MAX_FRAMES },
+        page: { type: "integer", minimum: 1 },
+        yFrom: { type: "integer", minimum: 0 },
+        yTo: { type: "integer", minimum: 1 },
       }
     }
   },
@@ -1900,7 +1904,22 @@ function proofReviewWindow(toolArgs: Record<string, unknown>): ProofReviewWindow
   if (frames != null && (typeof frames !== "number" || !Number.isInteger(frames) || frames < 1 || frames > SHEET_MAX_FRAMES)) {
     throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `\`frames\` is a whole number from 1 to ${SHEET_MAX_FRAMES}.`);
   }
-  return { from, to, frames: typeof frames === "number" ? frames : null };
+  const pixel = (key: "page" | "yFrom" | "yTo", minimum: number): number | null => {
+    const value = toolArgs[key];
+    if (value == null) return null;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < minimum) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `\`${key}\` is a whole number, ${minimum} or more.`);
+    }
+    return value;
+  };
+  return {
+    from,
+    to,
+    frames: typeof frames === "number" ? frames : null,
+    page: pixel("page", 1),
+    yFrom: pixel("yFrom", 0),
+    yTo: pixel("yTo", 1),
+  };
 }
 
 function asNumber(value: unknown, fallback: number): number {
@@ -8503,7 +8522,7 @@ async function runTool(args: {
       const chatProof = listChatProof();
       artifact = reviewable("video_recording") ?? reviewable("screenshot");
       if (!artifact) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Chat ${chatSessionId} has no video or picture to review yet. Wait for it to finish (chat wait), or ask it to record one.`);
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Chat ${chatSessionId} ${CHAT_HAS_NO_PROOF_YET}. Wait for it to finish (chat wait), or ask it to record one.`);
       }
       const shown = artifact.id;
       otherProof = chatProof

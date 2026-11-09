@@ -67,7 +67,9 @@ export function getSharedRemoteMcpService(logger?: RemoteMcpLogger): RemoteMcpSe
     // chat_start opens on the model a new chat in ADE would.
     launchDefaults: () => {
       const defaults = readChatLaunchDefaults(layout.adeDir);
-      return defaults?.provider && defaults.modelId ? { provider: defaults.provider, model: defaults.modelId } : null;
+      return defaults?.provider && defaults.modelId
+        ? { provider: defaults.provider, model: defaults.modelId, reasoningEffort: defaults.reasoningEffort }
+        : null;
     },
     // The same account, Clerk client and attestation the relay's phone hellos
     // use: an app may connect only after its person signs in as this account.
@@ -95,6 +97,7 @@ export function getSharedRemoteMcpService(logger?: RemoteMcpLogger): RemoteMcpSe
         machineKey: machine.machineKey,
         name: accountMachineDisplayName(machine),
         online: machine.online,
+        lastSeenAt: machine.lastSeenAt,
       }));
     },
     logger: forwardingLogger,

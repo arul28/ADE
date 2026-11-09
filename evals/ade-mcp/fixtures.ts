@@ -5,6 +5,8 @@
  * Invented data only — never a real person's projects, chats or paths.
  */
 
+import { createHash } from "node:crypto";
+
 export type Input = Record<string, unknown>;
 export type Fixture = unknown | ((input: Input) => unknown);
 
@@ -80,6 +82,20 @@ export const DEFAULT_RESULTS: Record<string, Fixture> = {
     decision: input.decision === "deny" ? "decline" : input.decision === "approve_for_session" ? "accept_for_session" : "accept",
   }),
   chat_send: (input: Input) => ({ sessionId: input.session, kind: "auto", routedAction: "sendMessage", statusBefore: "idle", awaitingInputBefore: false, delivery: "delivered" }),
+  chat_events: (input: Input) => ({
+    sessionId: input.session, cursor: 431, phase: "idle", truncated: false,
+    events: [
+      { sequence: 418, at: recent(20), kind: "turn_started", turnId: "t-2" },
+      { sequence: 430, at: recent(4), kind: "turn_completed", turnId: "t-2" },
+    ],
+  }),
+  chat_interrupt: { mode: "stop_and_clear", cancelledQueuedCount: 0 },
+  chat_update: (input: Input) => ({ id: input.session, model: input.model ?? "gpt-5.6", reasoningEffort: input.reasoning_effort ?? null }),
+  files_write: (input: Input) => {
+    const bytes = Buffer.from(String(input.text ?? ""), input.base64 === true ? "base64" : "utf8");
+    return { path: input.path, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+  },
+  lanes_create: (input: Input) => ({ lane: { id: "lane-new", name: input.name, branchRef: `ade/${String(input.name)}`, baseRef: "main", laneType: "worktree" } }),
   chat_start: (input: Input) => ({
     ok: true, launchId: "chat-new", phase: "completed", elapsedMs: 25_000,
     launch: { sessionId: "chat-new", laneId: "lane-new", laneName: "fix-flaky-test", title: String(input.prompt).slice(0, 40), phase: "completed", error: null },

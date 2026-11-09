@@ -35,7 +35,7 @@ Auto-create lanes start on a placeholder `<prefix><8 hex>` chosen by the lane's 
 
 Settings → Lanes → New lanes saves where new lanes start (one **New lanes start from** dropdown: the default branch from the remote or your local copy, the primary lane's branch, or **Another branch…** from that machine's branch list), the branch pattern, and the template, per account and repository. A saved start the list doesn't offer shows as its own entry; a saved `uncommitted` from an older version reads as local. If a saved branch is deleted, new lanes start from the default branch with a note. If the repository has no remote, defaults are saved on this computer. Auto-create lane, `ade lanes create` without flags, the New lane dialog's first choice, and phone use these defaults. Run `ade lanes defaults --text` to inspect them, and `ade lanes defaults set --from <branch>` or `--branch-pattern "{user}/{slug}"` to change them.
 
-A lane compares against its open PR's base branch, or the project's default branch when there is no open PR, just as GitHub does. The primary lane compares to its upstream. The Lanes tab shows a quiet notice when work is behind or built on work now in the base: **N behind <base>** or **Built on work now in <base>**.
+A lane compares against its open PR's base branch, or the project's default branch when there is no open PR, just as GitHub does. When the local copy of that branch only trails `origin/<base>`, the counts use the remote one and `status.comparedTo` says so, so commits merged since the last pull don't read as the lane's own. The primary lane compares to its upstream. The Lanes tab shows a quiet notice when work is behind or built on work now in the base: **N behind <base>** or **Built on work now in <base>**.
 
 ### Catch up
 

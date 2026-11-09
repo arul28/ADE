@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type fs from "node:fs";
 import path from "node:path";
 import type {
@@ -30,6 +31,7 @@ import type {
   FilesSearchTextMatch,
   FilesWatchArgs,
   FilesWorkspace,
+  FilesWriteReceipt,
   FilesWriteTextArgs
 } from "../../../shared/types";
 import type { createLaneService } from "../lanes/laneService";
@@ -43,7 +45,8 @@ import {
   secureMkdirWithinRoot,
   secureRenameWithinRoot,
   secureWriteFileWithinRoot,
-  secureWriteTextAtomicWithinRoot,
+  readFileWithinRootSecure,
+  secureWriteAtomicWithinRoot,
 } from "../shared/utils";
 import { createFileWatcherService } from "./fileWatcherService";
 import { createFileSearchIndexService } from "./fileSearchIndexService";
@@ -450,16 +453,27 @@ async function runGitCheckIgnoreBatch(args: {
   return ignored;
 }
 
+/**
+ * Whether a path, once `..` is collapsed, lands in ADE's runtime folders.
+ * Checking the text as given let `foo/../.ade/secrets/x` (and `.ADE/Secrets`
+ * on a case-insensitive disk) through.
+ */
+function resolvesIntoVolatileAdePath(rootPath: string, joinedPath: string): boolean {
+  const relative = path.relative(path.normalize(rootPath), joinedPath).split(path.sep).join("/");
+  const folded = process.platform === "darwin" || process.platform === "win32" ? relative.toLowerCase() : relative;
+  return isVolatileAdeRuntimePath(folded);
+}
+
 function ensureSafePath(
   rootPath: string,
   relPath: string,
   opts: { allowMissing?: boolean } = {},
 ): { absPath: string; normalizedRel: string } {
   const normalizedRel = normalizeRelative(relPath);
-  if (isVolatileAdeRuntimePath(normalizedRel)) {
+  const joinedPath = path.normalize(path.join(rootPath, normalizedRel));
+  if (isVolatileAdeRuntimePath(normalizedRel) || resolvesIntoVolatileAdePath(rootPath, joinedPath)) {
     throw new Error("Refusing to access ADE runtime paths");
   }
-  const joinedPath = path.normalize(path.join(rootPath, normalizedRel));
   let absPath: string;
   try {
     absPath = resolvePathWithinRoot(rootPath, joinedPath, { allowMissing: opts.allowMissing });
@@ -480,12 +494,36 @@ function ensureSafePath(
   return { absPath, normalizedRel };
 }
 
+const CHUNKED_WRITE_MAX_BYTES = 64 * 1024 * 1024;
+
+function decodeBase64Strict(text: string): Buffer {
+  const compact = text.replace(/\s+/g, "");
+  if (compact.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) throw new Error("The text isn't valid base64.");
+  return Buffer.from(compact, "base64");
+}
+
+/**
+ * The file's bytes for a chunk appended at `offset`, read inside the root
+ * without following links; empty when it is not there. A file longer than
+ * `offset` is refused before it is read, so a wrong offset never loads a huge file.
+ */
+function readExistingWithinRoot(rootPath: string, relPath: string, offset: number): Buffer {
+  try {
+    return readFileWithinRootSecure(rootPath, relPath, { maxBytes: offset });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return Buffer.alloc(0);
+    const tooLarge = error instanceof Error ? /^File is too large \((\d+) bytes\)$/.exec(error.message) : null;
+    if (tooLarge) throw new Error(`Can't write at byte ${offset}: ${relPath} is ${tooLarge[1]} bytes. Send the chunk that starts there.`);
+    throw error;
+  }
+}
+
 function assertMutablePathAllowed(rootPath: string, relPath: string): string {
   const normalizedRel = normalizeRelative(relPath);
-  if (isVolatileAdeRuntimePath(normalizedRel)) {
+  const candidatePath = path.join(rootPath, normalizedRel);
+  if (isVolatileAdeRuntimePath(normalizedRel) || resolvesIntoVolatileAdePath(rootPath, path.normalize(candidatePath))) {
     throw new Error("Refusing to mutate ADE runtime paths");
   }
-  const candidatePath = path.join(rootPath, normalizedRel);
   if (containsDotGit(candidatePath)) {
     throw new Error("Refusing to access .git internals");
   }
@@ -1029,7 +1067,7 @@ export function createFileService({
     writeTextAtomic({ laneId, relPath, text }: { laneId: string; relPath: string; text: string }): void {
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
       assertMutablePathAllowed(worktreePath, relPath);
-      secureWriteTextAtomicWithinRoot(worktreePath, relPath, text);
+      secureWriteAtomicWithinRoot(worktreePath, relPath, text);
       invalidateGitStatusCache(worktreePath);
       clearPagedDirectoryEntriesCacheForRoot(worktreePath);
       if (onLaneWorktreeMutation) {
@@ -1358,10 +1396,30 @@ export function createFileService({
       return { path: normalizedRel, lines };
     },
 
-    writeWorkspaceText(args: FilesWriteTextArgs): void {
+    writeWorkspaceText(args: FilesWriteTextArgs): FilesWriteReceipt {
       const workspace = resolveWorkspace(args.workspaceId);
       const normalizedRel = assertMutablePathAllowed(workspace.rootPath, args.path);
-      secureWriteTextAtomicWithinRoot(workspace.rootPath, args.path, args.text);
+      const chunk = args.encoding === "base64" ? decodeBase64Strict(args.text) : Buffer.from(args.text, "utf8");
+      const offset = args.offset ?? 0;
+      if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("`offset` is the number of bytes already written: a whole number, 0 or more.");
+      // Each chunk rewrites the whole file, so a chunked write stops at a size where that stays cheap.
+      if (offset > 0 && offset + chunk.length > CHUNKED_WRITE_MAX_BYTES) {
+        throw new Error(`A chunked write stops at ${CHUNKED_WRITE_MAX_BYTES / (1024 * 1024)} MB. Move bigger files another way (git, a clone).`);
+      }
+      let content = chunk;
+      if (offset > 0) {
+        const existing = readExistingWithinRoot(workspace.rootPath, normalizedRel, offset);
+        if (existing.length !== offset) {
+          throw new Error(`Can't write at byte ${offset}: ${normalizedRel} is ${existing.length} bytes. Send the chunk that starts there.`);
+        }
+        content = Buffer.concat([existing, chunk]);
+      }
+      secureWriteAtomicWithinRoot(workspace.rootPath, args.path, content);
+      const receipt: FilesWriteReceipt = {
+        path: normalizedRel,
+        bytes: content.length,
+        sha256: createHash("sha256").update(content).digest("hex"),
+      };
       invalidateGitStatusCache(workspace.rootPath);
       clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       if (normalizedRel === ".gitignore") {
@@ -1375,6 +1433,7 @@ export function createFileService({
         shouldIgnore: shouldIgnoreForRoot(workspace.rootPath)
       });
       emitLaneMutation(args.workspaceId, "file_write");
+      return receipt;
     },
 
     createFile(args: FilesCreateFileArgs): void {
