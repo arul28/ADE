@@ -221,6 +221,7 @@ function BranchPatternRow({
       setError(null);
       flash();
     } catch (err) {
+      if (!savedIsPreset) setCustom(true);
       const message = err instanceof Error ? err.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "") : String(err);
       setError(message);
       fail(message);

@@ -721,7 +721,10 @@ describe("AppShell AI provider status", () => {
     } as any);
 
     vi.mocked(window.ade.app.getWindowSession).mockResolvedValue({
-      project, binding: useAppStore.getState().projectBinding,
+      windowId: 1,
+      project,
+      binding: useAppStore.getState().projectBinding,
+      openProjectTabs: [project],
     });
     render(
       <MemoryRouter initialEntries={["/prs"]}>
