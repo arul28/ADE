@@ -28943,14 +28943,25 @@ async function runServe(
   // and counted as use when it ends: the checks come once a minute, so work
   // that fits between two of them would otherwise leave no trace, and the
   // machine slept seconds after a clone.
+  // A hold is one file per reason, so two clones at once share it: the file
+  // goes only when the last of them ends.
+  const cloudWorkRunning = new Map<string, number>();
   const holdCloudWork = cloudKeepAwake && cloudKeepAwakeModule
     ? async <T>(reason: string, ttlMs: number, run: () => Promise<T>): Promise<T> => {
         const release = cloudKeepAwakeModule.holdCloudBusy(layout.adeDir, reason, ttlMs);
+        cloudWorkRunning.set(reason, (cloudWorkRunning.get(reason) ?? 0) + 1);
         try {
           return await run();
         } finally {
-          release();
-          void cloudKeepAwake.noteUse();
+          const left = (cloudWorkRunning.get(reason) ?? 1) - 1;
+          if (left > 0) cloudWorkRunning.set(reason, left);
+          else {
+            cloudWorkRunning.delete(reason);
+            release();
+          }
+          void cloudKeepAwake.noteUse().catch((error: unknown) => {
+            headlessProjectLogger.warn("cloud.keep_awake_note_use_failed", { error: error instanceof Error ? error.message : String(error) });
+          });
         }
       }
     : null;
