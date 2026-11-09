@@ -4444,7 +4444,7 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
 
     $ ade router routes --text                      Every route with score, cost, time, and billing
     $ ade router routes --provider codex --limit 20 One harness, best first
-    $ ade router pick "summarize how sync works" --provider claude --model opus --effort high --text
+    $ ade router pick "summarize how sync works" --provider claude --model claude-opus-5-5 --effort high --text
                                                     The route it would pick for one task (dry run)
     $ ade router pick "fix the flaky test" --provider codex --model gpt-6-sol --kind light_edit
     $ ade router shadow --days 7 --text             What it would have changed for recent subagents
@@ -20042,7 +20042,7 @@ function buildRouterPlan(args: string[]): CliPlan {
     const kind = readValue(args, ["--kind"]);
     const description = firstPositional(args);
     if (!description || !provider || !model) {
-      throw new CliUsageError('router pick needs a task and --provider and --model, e.g. ade router pick "summarize the sync code" --provider claude --model opus');
+      throw new CliUsageError('router pick needs a task and --provider and --model, e.g. ade router pick "summarize the sync code" --provider claude --model claude-opus-5-5');
     }
     if (kind != null && !(ROUTER_TASK_KINDS as readonly string[]).includes(kind)) {
       throw new CliUsageError(`router pick --kind must be one of ${ROUTER_TASK_KINDS.join(", ")}.`);

@@ -93,7 +93,13 @@ type ModelDescriptor = {
 Helpers (also re-exported through `shared/modelRegistry.ts`):
 
 - `getModelById(id)` -- exact id match.
-- `resolveModelAlias(alias)` -- resolves user-facing aliases.
+- `resolveModelAlias(alias)` -- resolves saved aliases and retired ids.
+- `shorthandModelNameRefusal(ref)` -- why a model name coming in now is
+  refused: requests through `run_ade_action`, `start_cli_session` and
+  `spawn_agent` (the CLI, MCP, agents) must name a model by its full name,
+  the registry id or the wire id. Short names (`opus`, `fable`, `sol`), old
+  spellings and retired ids are refused with the full name to use. Saved
+  chats, presets and automation rules still resolve through the aliases.
 - `getDefaultModelDescriptor()` -- default model.
 - `resolveModelDescriptorForProvider(provider, modelId?)` -- fallback
   resolution when an agent requests a model not available under a
@@ -170,13 +176,13 @@ Claude's global quick-pick vocabulary is `low | medium | high | max`
 (`CLAUDE_THINKING_LEVELS` in `shared/modelProfiles.ts`), while model
 descriptors advertise their provider-native ladders to model-specific
 pickers. Opus 5.5 and Opus 5 expose `low|medium|high|xhigh|max`;
-Fable 5.1 adds `ultracode`; Sonnet 5.5 exposes `low|medium|high|xhigh|max`;
+Fable 5.2 and Fable 5.1 add `ultracode`; Sonnet 5.5 exposes `low|medium|high|xhigh|max`;
 Sonnet 5 exposes `low|medium|high|max`; Haiku 5.5 exposes
 `low|medium|high|xhigh|max` and defaults to `medium`. Haiku 4.5 is retired:
 every Haiku 4.5 id on the Claude route resolves to Haiku 5.5, while OpenCode,
 Droid and Copilot keep the Haiku rows their own catalogs serve.
-The Claude registry is ordered as Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5,
-then the retained Sonnet 5 and Opus 5. Claude and Codex are the two providers
+The Claude registry is ordered as Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5,
+Fable 5.1, then the retained Sonnet 5 and Opus 5. Claude and Codex are the two providers
 whose default is not hoisted to the front of `listModelDescriptorsForProvider`,
 so the desktop picker catalog, Settings, and the CTO picker all show
 this same registry order.
@@ -186,6 +192,10 @@ Claude default and the app-wide default (set in `model-manifest.json`), so
 pickers list it first.
 Opus 5 selects provider model `claude-opus-5`, defaults to `high`
 effort, and exposes `low|medium|high|xhigh|max` plus Fast Mode.
+Fable 5.2 selects provider model `claude-fable-5-2`, defaults to `medium`
+effort (Anthropic's default), exposes `low|medium|high|xhigh|max|ultracode`
+plus Fast Mode, and prices at $8 / $40 per million input / output tokens.
+It has no short aliases. Mythos 5.2 is not listed.
 Fable 5.1 selects provider model `claude-fable-5-1`, defaults to `high`
 effort, and exposes `low|medium|high|xhigh|max|ultracode` plus Fast Mode.
 Sonnet 5.5 selects provider model `claude-sonnet-5-5`, defaults to `high`

@@ -1,3 +1,4 @@
+import { resolveModelSlug, type ModelProviderGroup } from "../../../../desktop/src/shared/modelRegistry";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { ProjectRegistry } from "../projects/projectRegistry";
@@ -67,9 +68,11 @@ export function getSharedRemoteMcpService(logger?: RemoteMcpLogger): RemoteMcpSe
     // chat_start opens on the model a new chat in ADE would.
     launchDefaults: () => {
       const defaults = readChatLaunchDefaults(layout.adeDir);
-      return defaults?.provider && defaults.modelId
-        ? { provider: defaults.provider, model: defaults.modelId, reasoningEffort: defaults.reasoningEffort }
-        : null;
+      if (!defaults?.provider || !defaults.modelId) return null;
+      // A saved pick may predate full model names (`opus`); requests must
+      // carry the full name, so the saved one is resolved here.
+      const model = resolveModelSlug(defaults.modelId, defaults.provider as ModelProviderGroup) ?? defaults.modelId;
+      return { provider: defaults.provider, model, reasoningEffort: defaults.reasoningEffort };
     },
     // The same account, Clerk client and attestation the relay's phone hellos
     // use: an app may connect only after its person signs in as this account.

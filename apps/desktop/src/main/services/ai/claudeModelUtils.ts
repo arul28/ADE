@@ -3,7 +3,7 @@ import { getDefaultModelDescriptor, getModelById, resolveModelAlias } from "../.
 
 /**
  * Normalize arbitrary Claude model strings into CLI-safe values accepted by
- * Claude Code (`claude-fable-5-1`, `claude-opus-5-5`, `claude-opus-5`, `claude-sonnet-5`,
+ * Claude Code (`claude-fable-5-2`, `claude-fable-5-1`, `claude-opus-5-5`, `claude-opus-5`, `claude-sonnet-5`,
  * `claude-haiku-5-5`) where possible. Retired Opus 4.8 ids resolve to Opus 5,
  * and retired Haiku 4.5 ids to Haiku 5.5.
  */
