@@ -150,6 +150,7 @@ import {
   markGithubRequestError,
 } from "./githubReadBackoff";
 import { createMergeStateGraphqlBrake } from "./mergeStateGraphqlBrake";
+import { setBounded } from "../../../shared/boundedMap";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 import { carryExpected, markExpected } from "../../../shared/expectedError";
 import { isOfflineFetchError } from "../../../shared/sentry/expectedFailure";
@@ -862,9 +863,13 @@ function latestReviewStatesByUser(reviews: readonly PrReview[]): Map<string, str
  * approved. `reviewStatesByUser` decides only when GitHub has none, as on a
  * repo with no required reviews. Hidden reviews are already out of the map, so
  * a changes-requested verdict that rests on one alone does not count.
+ *
+ * `verdictUnavailable` means GitHub could not be asked. An approval alone then
+ * proves nothing, so "approved" can only be the status the PR already had.
  */
 function computeReviewStatus(args: {
   reviewDecision?: PrReviewDecision;
+  verdictUnavailable?: { previousStatus: string | null | undefined };
   requestedReviewers: string[];
   requestedTeams?: string[];
   reviewStatesByUser: Map<string, string>;
@@ -873,6 +878,11 @@ function computeReviewStatus(args: {
   if (args.reviewDecision === "approved") return "approved";
   if (args.reviewDecision === "review_required") return visibleChangesRequested ? "changes_requested" : "requested";
   if (visibleChangesRequested) return "changes_requested";
+  if (args.verdictUnavailable) {
+    const stillApproved = Array.from(args.reviewStatesByUser.values()).includes("APPROVED");
+    if (args.verdictUnavailable.previousStatus === "approved" && stillApproved) return "approved";
+    return args.requestedReviewers.length > 0 || (args.requestedTeams?.length ?? 0) > 0 ? "requested" : "none";
+  }
   for (const state of args.reviewStatesByUser.values()) {
     if (state === "APPROVED") return "approved";
   }
@@ -880,9 +890,11 @@ function computeReviewStatus(args: {
   return "none";
 }
 
-type PrVisibility = { reviewDecision: PrReviewDecision; hiddenNodeIds: string[] };
+/** `verdictKnown` is false when GitHub could not be asked this time. */
+type PrVisibility = { reviewDecision: PrReviewDecision; hiddenNodeIds: string[]; verdictKnown: boolean };
 
-const NO_PR_VISIBILITY: PrVisibility = { reviewDecision: null, hiddenNodeIds: [] };
+const NO_PR_VISIBILITY: PrVisibility = { reviewDecision: null, hiddenNodeIds: [], verdictKnown: false };
+const LAST_PR_VISIBILITY_MAX_ENTRIES = 256;
 
 /** A PR's review verdict and hidden items, reused while the PR is quiet. */
 const PR_VISIBILITY_REUSE_MS = 10 * 60_000;
@@ -5214,16 +5226,25 @@ export function createPrService({
    * What REST cannot say about a PR: GitHub's review verdict and which comments
    * and reviews a moderator hid. Reuse follows `whileQuiet`, for longer than the
    * merge box: this is read for every open PR on every poll, and hiding a
-   * comment is rare. A failed read means "no verdict, nothing hidden".
+   * comment is rare. A failed read says the verdict is unknown and keeps the
+   * hidden items from the last read that worked, so an outage cannot turn one
+   * approval into "Approved" or bring hidden items back.
    */
+  const lastPrVisibility = new Map<string, PrVisibility>();
   const fetchPrVisibility = async (repo: GitHubRepoRef, prNumber: number): Promise<PrVisibility> => {
     const brakeRepoKey = `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}`;
-    if (mergeStateGraphqlBrake.cooldown(brakeRepoKey)) return NO_PR_VISIBILITY;
+    const lastKey = `${brakeRepoKey}#${prNumber}`;
+    // Hidden items stay hidden. The verdict does not carry over: reviews may have
+    // moved since it was read.
+    const lastKnown = (): PrVisibility => ({ ...(lastPrVisibility.get(lastKey) ?? NO_PR_VISIBILITY), reviewDecision: null, verdictKnown: false });
+    if (mergeStateGraphqlBrake.cooldown(brakeRepoKey)) return lastKnown();
     try {
       const pull = await fetchPr(repo, prNumber);
       const what = `visibility:${prNumber}`;
-      return await readCache.shared(repo, what, () =>
+      const visibility = await readCache.shared(repo, what, () =>
         readCache.whileQuiet(repo, what, pull, () => fetchPrVisibilityUncached(repo, prNumber), undefined, PR_VISIBILITY_REUSE_MS));
+      setBounded(lastPrVisibility, lastKey, visibility, LAST_PR_VISIBILITY_MAX_ENTRIES);
+      return visibility;
     } catch (error) {
       if (isGithubRateLimitFailure(error)) {
         mergeStateGraphqlBrake.armRateLimitCooldown(brakeRepoKey, githubRateLimitResetAtMsOf(error));
@@ -5233,7 +5254,7 @@ export function createPrService({
         prNumber,
         error: getErrorMessage(error),
       });
-      return NO_PR_VISIBILITY;
+      return lastKnown();
     }
   };
 
@@ -5265,7 +5286,7 @@ export function createPrService({
       ...reviewNodes,
       ...reviewNodes.flatMap((review) => review?.comments?.nodes ?? []),
     ].flatMap((node) => (node?.isMinimized === true && asString(node.id) ? [asString(node.id)] : []));
-    return { reviewDecision: normalizeReviewDecision(pull?.reviewDecision), hiddenNodeIds };
+    return { reviewDecision: normalizeReviewDecision(pull?.reviewDecision), hiddenNodeIds, verdictKnown: true };
   };
 
   const fetchReviewsUncached = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReview[]> => {
@@ -5649,7 +5670,13 @@ export function createPrService({
         };
     const checksStatus = checksRollup.status;
     const reviewStatus = shouldFetchLiveStatus
-      ? computeReviewStatus({ reviewDecision: visibility.reviewDecision, requestedReviewers, requestedTeams, reviewStatesByUser })
+      ? computeReviewStatus({
+        reviewDecision: visibility.reviewDecision,
+        ...(visibility.verdictKnown ? {} : { verdictUnavailable: { previousStatus: row.review_status } }),
+        requestedReviewers,
+        requestedTeams,
+        reviewStatesByUser,
+      })
       : (row.review_status as PrReviewStatus | null) ?? "none";
     const additions = Number(pr?.additions ?? 0);
     const deletions = Number(pr?.deletions ?? 0);
@@ -6034,8 +6061,14 @@ export function createPrService({
       previous: previousChecksRollup(prId),
     });
     const checksStatus = checksRollup.status;
-    const reviewDecision = mergeState ? mergeState.reviewDecision : (await fetchPrVisibility(repo, prNumber)).reviewDecision;
-    const reviewStatus = computeReviewStatus({ reviewDecision, requestedReviewers, requestedTeams, reviewStatesByUser });
+    const visibility = mergeState ? null : await fetchPrVisibility(repo, prNumber);
+    const reviewStatus = computeReviewStatus({
+      reviewDecision: mergeState ? mergeState.reviewDecision : visibility?.reviewDecision,
+      ...(visibility?.verdictKnown === false ? { verdictUnavailable: { previousStatus: getRowById(prId)?.review_status } } : {}),
+      requestedReviewers,
+      requestedTeams,
+      reviewStatesByUser,
+    });
     const behindBaseBy = compare.behindBy;
 
     const mergeStateStatus = mergeState?.mergeStateStatus ?? null;

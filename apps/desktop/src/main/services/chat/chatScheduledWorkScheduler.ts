@@ -605,9 +605,12 @@ export function createChatScheduledWorkScheduler(
       return "wait";
     }
     try {
-      return (await options.wakeMessageRecorded(cloneSchedule(schedule))) ? "keep" : "give_back";
+      const recorded = await options.wakeMessageRecorded(cloneSchedule(schedule));
+      // A cancel or a starting turn can land during the read; it decides then.
+      if (schedules.get(schedule.id) !== schedule || schedule.status !== "fired" || schedule.activeTurnId) return "wait";
+      return recorded ? "keep" : "give_back";
     } catch {
-      return "keep";
+      return schedules.get(schedule.id) !== schedule || schedule.status !== "fired" || schedule.activeTurnId ? "wait" : "keep";
     }
   };
 

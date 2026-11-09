@@ -2719,7 +2719,8 @@ export function createConflictService({
       mergeBase,
       branchA: baseHead,
       branchB: laneHead,
-      timeoutMs: 60_000
+      timeoutMs: 60_000,
+      exactMergeBase: builtOn != null,
     });
     // Exit 0 is clean and 1 is conflicts; anything else (a bad object, a git
     // too old for --write-tree) is no answer, which must not read as "clean".

@@ -6276,24 +6276,33 @@ function isCodexThreadArchivedMessage(message: string): boolean {
  * finds its own thread archived. An unarchive that fails keeps the original
  * refusal, which is what the caller classifies.
  */
-async function resumeCodexThread<T>(
+async function retryAfterCodexUnarchive<T>(
   runtime: Pick<CodexRuntime, "request">,
-  params: { threadId: string } & Record<string, unknown>,
-  options?: CodexRequestOptions,
+  threadId: unknown,
+  send: () => Promise<T>,
 ): Promise<T> {
   try {
-    return await runtime.request<T>("thread/resume", params, options);
+    return await send();
   } catch (error) {
     if (!isCodexThreadArchivedMessage(error instanceof Error ? error.message : String(error))) throw error;
     try {
-      await runtime.request("thread/unarchive", { threadId: params.threadId }, {
+      await runtime.request("thread/unarchive", { threadId }, {
         timeoutMs: CODEX_ARCHIVE_REQUEST_TIMEOUT_MS,
       });
     } catch {
       throw error;
     }
-    return await runtime.request<T>("thread/resume", params, options);
+    return await send();
   }
+}
+
+async function resumeCodexThread<T>(
+  runtime: Pick<CodexRuntime, "request">,
+  params: { threadId: string } & Record<string, unknown>,
+  options?: CodexRequestOptions,
+): Promise<T> {
+  return await retryAfterCodexUnarchive(runtime, params.threadId, () =>
+    runtime.request<T>("thread/resume", params, options));
 }
 
 /** `thread/fork` that unarchives a thread Codex archived, then forks it. */
@@ -6301,19 +6310,8 @@ async function forkCodexThread(
   runtime: Pick<CodexRuntime, "request">,
   params: { threadId: string; excludeTurns: boolean } & Record<string, unknown>,
 ): Promise<CodexThreadLifecycleResponse> {
-  try {
-    return await runtime.request<CodexThreadLifecycleResponse>("thread/fork", params);
-  } catch (error) {
-    if (!isCodexThreadArchivedMessage(error instanceof Error ? error.message : String(error))) throw error;
-    try {
-      await runtime.request("thread/unarchive", { threadId: params.threadId }, {
-        timeoutMs: CODEX_ARCHIVE_REQUEST_TIMEOUT_MS,
-      });
-    } catch {
-      throw error;
-    }
-    return await runtime.request<CodexThreadLifecycleResponse>("thread/fork", params);
-  }
+  return await retryAfterCodexUnarchive(runtime, params.threadId, () =>
+    runtime.request<CodexThreadLifecycleResponse>("thread/fork", params));
 }
 
 type PendingTranscriptWrite = {
@@ -30877,6 +30875,7 @@ export function createAgentChatService(args: {
     const planningApprovalGuarded = managed.session.permissionMode === "plan";
     let result: { turn?: { id?: string } };
     runtime.turnStartReserved = true;
+    runtime.stopRequestedDuringTurnStart = false;
     try {
       const reconstructionContext = suppressTurnContext
         ? ""
@@ -30960,7 +30959,6 @@ export function createAgentChatService(args: {
       });
     } catch (error) {
       const contextToRestore = runtime.turnStartContextConsumed ? consumedTurnContext : null;
-      runtime.stopRequestedDuringTurnStart = false;
       runtime.turnStartReserved = false;
       runtime.awaitingTurnStart = false;
       runtime.turnStartContextConsumed = false;
@@ -30975,6 +30973,10 @@ export function createAgentChatService(args: {
     }
     runtime.turnStartReserved = false;
     runtime.turnStartContextConsumed = false;
+    // Read once here: a turn that already ended, or an answer with no id, has
+    // nothing to stop, and the request must not carry over to the next turn.
+    const stopRequestedDuringStart = runtime.stopRequestedDuringTurnStart;
+    runtime.stopRequestedDuringTurnStart = false;
     markDispatched();
     persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
@@ -31007,8 +31009,7 @@ export function createAgentChatService(args: {
       }
       // A Stop that arrived before the turn existed had nothing to stop; the
       // turn has an id now, so carry it out.
-      if (managed.runtime.stopRequestedDuringTurnStart) {
-        managed.runtime.stopRequestedDuringTurnStart = false;
+      if (stopRequestedDuringStart) {
         void interrupt({ sessionId: managed.session.id, mode: DEFAULT_AGENT_CHAT_STOP_MODE }).catch((error) => {
           logger.warn("agent_chat.codex_stop_after_turn_start_failed", {
             sessionId: managed.session.id,
@@ -63571,11 +63572,6 @@ export function createAgentChatService(args: {
         resetSessionActivity(args.sessionId);
       }
     };
-    // Cursor's SDK has no way to compact on request, so the words would go to
-    // the model as a normal message and spend a turn.
-    if (managed.session.provider === "cursor" && isManualCompactCommand(args.text)) {
-      throw markExpected(new Error("Cursor chats can't compact on request. Start a new chat to free up context."), "user");
-    }
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
       if (isManualCompactCommand(args.text)) {
         throw turnInFlightError("A turn is already active. Use steer or interrupt.");

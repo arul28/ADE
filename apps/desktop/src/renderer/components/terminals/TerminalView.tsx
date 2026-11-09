@@ -108,6 +108,8 @@ type CachedRuntime = {
   lastDims: TerminalDims | null;
   lastPtyResizeDims: TerminalDims | null;
   ptyResizeInFlight: boolean;
+  /** Resizes lost in a row, which sets how long the next retry waits. */
+  ptyResizeFailedAttempts: number;
   inFlightPtyResizeDims: TerminalDims | null;
   queuedPtyResizeDims: TerminalDims | null;
   pendingForceResize: boolean;
@@ -845,21 +847,17 @@ function reportTerminalDimsMismatch(
 /**
  * A resize lost to a dropped connection is sent again until it lands, or the
  * pane is resized to something else, so the PTY does not stay at the old width
- * until the next focus.
+ * until the next focus. It goes through `requestPtyResize`, which keeps sends
+ * in order with any newer size.
  */
-function retryFailedPtyResize(runtime: CachedRuntime, dims: TerminalDims, attempt = 0): void {
+function scheduleFailedPtyResizeRetry(runtime: CachedRuntime, dims: TerminalDims): void {
+  const attempt = runtime.ptyResizeFailedAttempts;
+  runtime.ptyResizeFailedAttempts += 1;
   if (runtime.disposed || attempt >= PTY_RESIZE_MAX_RETRIES) return;
-  const delayMs = Math.min(PTY_RESIZE_RETRY_MAX_MS, PTY_RESIZE_RETRY_MIN_MS * 2 ** attempt);
   window.setTimeout(() => {
     if (runtime.disposed || !sameDims(runtime.lastDims, dims) || sameDims(runtime.lastPtyResizeDims, dims)) return;
-    const resize = runtime.runtimePin
-      ? window.ade.pty.resize({ ptyId: runtime.ptyId, cols: dims.cols, rows: dims.rows }, runtime.runtimePin)
-      : window.ade.pty.resize({ ptyId: runtime.ptyId, cols: dims.cols, rows: dims.rows });
-    resize.then(
-      () => { runtime.lastPtyResizeDims = dims; },
-      () => retryFailedPtyResize(runtime, dims, attempt + 1),
-    );
-  }, delayMs);
+    requestPtyResize(runtime, dims);
+  }, Math.min(PTY_RESIZE_RETRY_MAX_MS, PTY_RESIZE_RETRY_MIN_MS * 2 ** attempt));
 }
 
 function sendPtyResize(runtime: CachedRuntime, dims: TerminalDims): void {
@@ -877,6 +875,7 @@ function sendPtyResize(runtime: CachedRuntime, dims: TerminalDims): void {
     .then(
       () => {
         runtime.lastPtyResizeDims = dims;
+        runtime.ptyResizeFailedAttempts = 0;
         // The round trip is not instant, and the PTY repaints at the size it
         // was given. If the grid moved while this was in flight, the repaint
         // now landing was produced for a width xterm no longer has — the
@@ -889,7 +888,7 @@ function sendPtyResize(runtime: CachedRuntime, dims: TerminalDims): void {
           runtime.lastPtyResizeDims = null;
         }
         logTerminalDiag("warn", describeTerminalDims(runtime, { reason: "pty-resize-failed", sentResize: dims }));
-        retryFailedPtyResize(runtime, dims);
+        scheduleFailedPtyResizeRetry(runtime, dims);
       },
     )
     .finally(() => {
@@ -3156,6 +3155,7 @@ function createRuntime(args: {
     health: { fitFailures: 0, zeroDimFits: 0, rendererFallbacks: 0, droppedChunks: 0, fitRecoveries: 0 },
     lastDims: null,
     lastPtyResizeDims: null,
+    ptyResizeFailedAttempts: 0,
     ptyResizeInFlight: false,
     inFlightPtyResizeDims: null,
     queuedPtyResizeDims: null,

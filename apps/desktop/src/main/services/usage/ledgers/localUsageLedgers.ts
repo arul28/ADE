@@ -87,6 +87,8 @@ type PendingCodexUsageRecord = {
   cachedTokens: number;
   outputTokens: number;
   timestamp: number;
+  model: string;
+  speed: UsageSpeed;
 };
 
 /** A rollout quiet for this long is finished: no snapshot is still on its way. */
@@ -463,9 +465,19 @@ async function scanCodexLogsOnce(
       // snapshots normally cover them; a response from a turn that was cut off,
       // or a compaction, never reaches a snapshot and is billed from here.
       let pendingUsageRecords: PendingCodexUsageRecord[] = [];
-      const billUncoveredUsageRecords = (coveredTokens: number): void => {
-        let remaining = coveredTokens;
-        for (const pending of pendingUsageRecords) {
+      const billUncoveredUsageRecords = (coverage: { lastResponseTokens: number } | { coveredTokens: number }): void => {
+        let records = pendingUsageRecords;
+        let remaining = "coveredTokens" in coverage ? coverage.coveredTokens : 0;
+        if ("lastResponseTokens" in coverage) {
+          // The snapshot bills the newest response that matches it. One that
+          // matches nothing is a different response, so every record stands.
+          let newest = -1;
+          for (let index = records.length - 1; index >= 0 && newest < 0; index -= 1) {
+            if (records[index]!.totalTokens === coverage.lastResponseTokens) newest = index;
+          }
+          records = records.filter((_, index) => index !== newest);
+        }
+        for (const pending of records) {
           if (pending.totalTokens <= remaining) {
             remaining -= pending.totalTokens;
             continue;
@@ -476,7 +488,7 @@ async function scanCodexLogsOnce(
           const inputTokens = Math.max(0, pending.rawInputTokens - pending.cachedTokens);
           entries.push({
             messageId: dedupeKey,
-            model: sessionModel,
+            model: pending.model,
             originator: sessionOriginator,
             ...(sessionProjectPath ? { projectPath: sessionProjectPath } : {}),
             adeOriginated: sessionOriginator.trim().toLowerCase().startsWith("ade"),
@@ -488,7 +500,7 @@ async function scanCodexLogsOnce(
             cachedTokens: pending.cachedTokens,
             billableCachedTokens: pending.cachedTokens,
             cacheWriteTokens: 0,
-            ...(sessionSpeed !== "standard" ? { speed: sessionSpeed } : {}),
+            ...(pending.speed !== "standard" ? { speed: pending.speed } : {}),
             requests: 1,
             timestamp: pending.timestamp,
           });
@@ -553,6 +565,8 @@ async function scanCodexLogsOnce(
               cachedTokens: numberFromRecord(usage, "cached_input_tokens", "cache_read_input_tokens"),
               outputTokens: numberFromRecord(usage, "output_tokens"),
               timestamp: timestampMsFromValue(record.timestamp),
+              model: sessionModel,
+              speed: sessionSpeed,
             });
           }
           continue;
@@ -565,14 +579,15 @@ async function scanCodexLogsOnce(
           const totalUsage = isRecord(info.total_token_usage) ? info.total_token_usage : undefined;
           const lastUsage = isRecord(info.last_token_usage) ? info.last_token_usage : undefined;
           const cumulativeTotal = numberFromRecord(totalUsage, "total_tokens");
-          // What this snapshot accounts for: its cumulative step, or the single
-          // response it reports. A repeat of the last snapshot accounts for nothing.
+          // What this snapshot bills below: the single response it reports, else
+          // its cumulative step. A repeat of the last snapshot bills nothing.
           const repeatsLastSnapshot = previousCumulativeTotal !== null && cumulativeTotal === previousCumulativeTotal;
           if (pendingUsageRecords.length > 0) {
-            billUncoveredUsageRecords(repeatsLastSnapshot ? 0 : Math.max(
-              previousCumulativeTotal === null ? cumulativeTotal : cumulativeTotal - previousCumulativeTotal,
-              numberFromRecord(lastUsage, "total_tokens"),
-            ));
+            billUncoveredUsageRecords(repeatsLastSnapshot
+              ? { coveredTokens: 0 }
+              : lastUsage
+                ? { lastResponseTokens: numberFromRecord(lastUsage, "total_tokens") }
+                : { coveredTokens: cumulativeTotal - (previousCumulativeTotal ?? 0) });
             if (entries.length >= maxJsonlEntries) return entries;
           }
           // Consecutive-duplicate guard. The null sentinel on `previousCumulativeTotal`
@@ -750,7 +765,7 @@ async function scanCodexLogsOnce(
       if (pendingUsageRecords.length > 0) {
         const modifiedAtMs = (await fs.promises.stat(filePath)).mtimeMs;
         if (Date.now() - modifiedAtMs >= CODEX_LIVE_ROLLOUT_QUIET_MS) {
-          billUncoveredUsageRecords(0);
+          billUncoveredUsageRecords({ coveredTokens: 0 });
           if (entries.length >= maxJsonlEntries) return entries;
         }
       }

@@ -2537,6 +2537,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    */
   type LaneRuntime = {
     lastListedDevices?: IosSimulatorDevice[];
+    deviceListingFailed?: boolean;
     key: string;
     laneId: string | null;
     activeSession: IosSimulatorSession | null;
@@ -4073,8 +4074,23 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const tools = buildToolStatuses();
     // A listing that failed says nothing about the devices, so the last good
     // one stands and no device is reported as powered off.
-    const listed = isDarwin ? await listDevices().catch(() => null) : [];
-    if (listed) runtime.lastListedDevices = listed;
+    const listed = isDarwin
+      ? await listDevices().catch((error: unknown) => {
+        // Once per outage: this read sits on a polled status.
+        if (!runtime.deviceListingFailed) {
+          args.logger.warn("apple.device_listing_failed", {
+            laneId: runtime.key,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        runtime.deviceListingFailed = true;
+        return null;
+      })
+      : [];
+    if (listed) {
+      runtime.lastListedDevices = listed;
+      runtime.deviceListingFailed = false;
+    }
     const devices = listed ?? runtime.lastListedDevices ?? [];
     // An open device session names the device as surely as an app session does,
     // and it comes second only because an app session is the more specific

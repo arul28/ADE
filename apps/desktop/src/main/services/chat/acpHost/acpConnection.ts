@@ -562,6 +562,12 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
       return;
     }
     exitAwaitingStdout = exit;
+    // The process is gone, so the only answers left are already in the pipe.
+    // The exit settles whatever they do not.
+    for (const waiter of pending.values()) {
+      if (waiter.timer) clearTimeout(waiter.timer);
+      waiter.timer = null;
+    }
     stdoutGraceTimer = setTimeout(finishStdout, ACP_STDOUT_END_GRACE_MS);
     stdoutGraceTimer.unref?.();
   });

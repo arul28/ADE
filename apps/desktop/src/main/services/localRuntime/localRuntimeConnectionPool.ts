@@ -2900,6 +2900,16 @@ export class LocalRuntimeConnectionPool {
    * `closeAdmission` defaults to true for app quit. An updater handoff passes
    * false because the app may remain open if the installer does not take over.
    */
+  /**
+   * The last act of a forced quit. The kill `dispose()` schedules is a timer,
+   * and that timer dies with this process, so a brain ignoring SIGTERM would
+   * outlive the app.
+   */
+  killOwnedRuntimeNow(): void {
+    const child = this.ownedRuntimeChild;
+    if (child && !hasChildExited(child)) signalRuntimeChildProcess(child, "SIGKILL");
+  }
+
   async stopOwnedRuntimeCooperatively(options: { closeAdmission?: boolean } = {}): Promise<void> {
     if (process.platform !== "win32") {
       // The kill timer `dispose()` leaves behind dies with this process, so a

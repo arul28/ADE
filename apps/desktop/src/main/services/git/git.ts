@@ -1499,10 +1499,14 @@ export async function runGitMergeTree(args: {
   branchA: string;
   branchB: string;
   timeoutMs?: number;
+  /** `mergeBase` is not the branches' own, so a git that would ignore it must not be asked. */
+  exactMergeBase?: boolean;
 }): Promise<GitMergeTreeResult> {
   const timeoutMs = args.timeoutMs ?? 45_000;
   const capabilities = await mergeTreeCapabilities(args.cwd);
-  if (!capabilities.writeTree) return await runLegacyGitMergeTree({ ...args, timeoutMs });
+  if (!capabilities.writeTree || (args.exactMergeBase && !capabilities.mergeBaseFlag)) {
+    return await runLegacyGitMergeTree({ ...args, timeoutMs });
+  }
   const writeTreeCmd = (mergeBaseFlag: boolean) => mergeBaseFlag
     ? [
         "merge-tree",
@@ -1533,6 +1537,7 @@ export async function runGitMergeTree(args: {
   }
   if (usedMergeBaseFlag && looksLikeMergeTreeUsage(combined)) {
     mergeTreeCapabilitiesPromise = Promise.resolve({ mergeBaseFlag: false, writeTree: true });
+    if (args.exactMergeBase) return await runLegacyGitMergeTree({ ...args, timeoutMs });
     usedMergeBaseFlag = false;
     writeTree = await runGit(writeTreeCmd(false), { cwd: args.cwd, timeoutMs });
     combined = `${writeTree.stdout}\n${writeTree.stderr}`;

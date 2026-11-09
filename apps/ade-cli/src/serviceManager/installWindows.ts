@@ -489,6 +489,12 @@ export function parseWindowsRunKeyValues(
   return values;
 }
 
+/** The launcher script a Run value's command starts, or null. */
+function windowsRunCommandLauncherPath(command: string): string | null {
+  const fileArg = /(?:^|\s)"?-file"?\s+(?:"([^"]+)"|(\S+))(?=\s|$)/i.exec(command);
+  return fileArg ? fileArg[1] ?? fileArg[2] ?? null : null;
+}
+
 /** True when a Run value's command launches this exact launcher script. */
 export function windowsRunCommandNamesLauncher(
   command: string,
@@ -496,8 +502,8 @@ export function windowsRunCommandNamesLauncher(
 ): boolean {
   const normalizedLauncher = normalizeWindowsPathText(launcherPath);
   if (!normalizedLauncher) return false;
-  const fileArg = /(?:^|\s)"?-file"?\s+(?:"([^"]+)"|(\S+))(?=\s|$)/i.exec(command);
-  return fileArg != null && normalizeWindowsPathText(fileArg[1] ?? fileArg[2] ?? "") === normalizedLauncher;
+  const fileArg = windowsRunCommandLauncherPath(command);
+  return fileArg != null && normalizeWindowsPathText(fileArg) === normalizedLauncher;
 }
 
 /**
@@ -940,16 +946,27 @@ function readLauncherBrainCommand(launcherPath: string): AdeServiceCommand | nul
 }
 
 /**
- * The ADE home the installed Windows service serves. The launcher lives under
- * the machine's default home, so it is found without the shell's `ADE_HOME`.
- * Null when no launcher can be read, so an unreadable or absent one stays
+ * The ADE home the installed Windows service serves. The launcher sits under
+ * that home, so the shell's `ADE_HOME` cannot find it: the startup entry names
+ * it. Null when no launcher can be read, so an unreadable or absent one stays
  * removable. A launcher that sets no `ADE_HOME` serves the default home.
  */
-export function readWindowsServiceHome(env: NodeJS.ProcessEnv = process.env): string | null {
+export function readWindowsServiceHome(
+  env: NodeJS.ProcessEnv = process.env,
+  run: ServiceManagerSpawnSync = spawnSync,
+): string | null {
   const launcherEnv = { ...env, ADE_HOME: "" };
+  const query = run(windowsRegCommand(), buildWindowsRunKeyQueryArgs(resolveWindowsTaskName()), {
+    encoding: "utf8",
+    timeout: 5_000,
+    windowsHide: true,
+  });
+  const registered = query.status === 0
+    ? parseWindowsRunKeyValues(query.stdout).map((value) => windowsRunCommandLauncherPath(value.command)).find(Boolean)
+    : null;
   let script: string;
   try {
-    script = fs.readFileSync(resolveWindowsServiceLauncherPath({ env: launcherEnv }), "utf8");
+    script = fs.readFileSync(registered ?? resolveWindowsServiceLauncherPath({ env: launcherEnv }), "utf8");
   } catch {
     return null;
   }

@@ -2272,6 +2272,7 @@ function AgentChatComposerImpl({
   isActive = false,
   shouldAutofocus = isActive,
   caretToEndRequest = 0,
+  focusRequest = 0,
   browserTabInsertRequest = null,
   threadComments = EMPTY_THREAD_COMMENTS,
   threadCommentsSessionId = null,
@@ -2468,6 +2469,8 @@ function AgentChatComposerImpl({
    * editor with the caret at the very end, after the added chip.
    */
   caretToEndRequest?: number;
+  /** Each new value focuses the composer, leaving its draft and caret alone. */
+  focusRequest?: number;
   /**
    * A browser tab attached from the Browser panel ("Attach to chat"). Each new
    * `id` inserts the tab's `<ade-browser-tab>` token as a chip at the caret the
@@ -4327,6 +4330,12 @@ function AgentChatComposerImpl({
   // exists: a quote promotes the plain textarea to the rich editor one render
   // later, and focusing the textarea in between would put the caret in an
   // element that is about to unmount.
+  const appliedFocusRequestRef = useRef(focusRequest);
+  useEffect(() => {
+    if (focusRequest === appliedFocusRequestRef.current) return;
+    appliedFocusRequestRef.current = focusRequest;
+    focusComposerInput();
+  }, [focusComposerInput, focusRequest]);
   const appliedCaretToEndRequestRef = useRef(caretToEndRequest);
   useEffect(() => {
     if (caretToEndRequest === appliedCaretToEndRequestRef.current) return;

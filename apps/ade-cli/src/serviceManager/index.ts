@@ -38,7 +38,7 @@ function readInstalledServiceHome(): string | null {
 function rerunWithHome(home: string, sub: string): string {
   return process.platform === "win32"
     ? `$env:ADE_HOME='${home.replace(/'/g, "''")}'; ade service ${sub}`
-    : `ADE_HOME=${JSON.stringify(home)} ade service ${sub}`;
+    : `ADE_HOME='${home.replace(/'/g, "'\\''")}' ade service ${sub}`;
 }
 
 /**

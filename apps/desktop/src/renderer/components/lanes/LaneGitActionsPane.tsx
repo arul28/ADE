@@ -1211,11 +1211,19 @@ export function LaneGitActionsPane({
     setMergedPrNumber(null);
     if (!laneId || !upstreamMissing) return;
     let cancelled = false;
-    window.ade.prs.getForLane(laneId, pin).then((pr) => {
-      if (!cancelled && pr?.state === "merged") setMergedPrNumber(pr.githubPrNumber);
-    }).catch((error) => console.warn("git_pane.lane_pr_read_failed", error));
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    const read = (attempt: number): void => {
+      window.ade.prs.getForLane(laneId, pin).then((pr) => {
+        if (!cancelled && pr?.state === "merged") setMergedPrNumber(pr.githubPrNumber);
+      }).catch((error) => {
+        console.warn("git_pane.lane_pr_read_failed", error);
+        if (!cancelled && attempt < 3) retry = setTimeout(() => read(attempt + 1), 3_000 * (attempt + 1));
+      });
+    };
+    read(0);
     return () => {
       cancelled = true;
+      if (retry) clearTimeout(retry);
     };
     // Keyed on the stable pin key: a rebuilt pin is the same machine.
     // eslint-disable-next-line react-hooks/exhaustive-deps

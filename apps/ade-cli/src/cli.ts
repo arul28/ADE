@@ -7885,8 +7885,8 @@ function refuseStrandedNewChatTextFlags(args: string[]): void {
 }
 
 function readNewChatPrompt(args: string[]): string | null {
-  refuseStrandedNewChatTextFlags(args);
   const promptArgs = takeArgsAfterTerminator(args);
+  refuseStrandedNewChatTextFlags(args);
   const fileText = readChatTextFile(args, ["--prompt-file", "--text-file"], ["--prompt", "--message", "--initial-input"]);
   if (fileText !== null) {
     if (promptArgs) throw new CliUsageError("Use --prompt-file or text after --, not both.");
