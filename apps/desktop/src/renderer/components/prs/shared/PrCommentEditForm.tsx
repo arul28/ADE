@@ -1,3 +1,4 @@
+import { PrWritingTextarea } from "./PrWritingTextarea";
 import type { CSSProperties } from "react";
 
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
@@ -24,7 +25,7 @@ export function PrCommentEditForm({
   const disabled = editBusy || !editValue.trim();
   return (
     <div className="flex flex-col gap-2">
-      <textarea
+      <PrWritingTextarea
         value={editValue}
         onChange={(event) => setEditValue(event.target.value)}
         rows={4}

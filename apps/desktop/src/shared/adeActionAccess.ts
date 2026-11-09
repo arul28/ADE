@@ -144,6 +144,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getGithubSnapshot", "listGithubFilterOptions", "searchGithubPrs", "listGithubStacks",
       "getMobileGithubDetail", "getMobileSnapshot",
       "getPrHealth", "getReviewThreads", "getReviewThreadsByGithub",
+      "searchMentionables", "getRepoReferences",
       "getReviews", "getReviewsByGithub", "getStatus", "listAll",
       "listPrsByLane",
       "listOpenPullRequests", "listSnapshots", "listWithConflicts", "listChatSessionsForPr",

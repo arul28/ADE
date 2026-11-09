@@ -1496,6 +1496,16 @@ GitHub does not count against the rate limit. The tab still loads the first
 PR's detail when it opens without a deep link: that PR is the one on screen,
 so its reads are the point, not waste.
 
+Writing in a PR (mention search, references, checkbox permission), dev app on the
+Mac Studio against a private test repo, 2026-11-09:
+
+| Metric | Measured | Ceiling |
+|---|---|---|
+| A new `@` query: GraphQL requests | 1 per distinct query per repo and minute, after 180 ms of no typing (312 ms) | not set yet; needs approval |
+| The same `@` query again, or five at once | 0 requests (1 ms; joined and cached 60 s) | not set yet; needs approval |
+| `#` references for a repo: GraphQL requests | 1 per repo per 2 minutes, however many writers type | not set yet; needs approval |
+| Opening a PR with task boxes when the viewer is not its author | 1 permission read, shared with the mention cache; 0 otherwise | not set yet; needs approval |
+
 ## iOS app: Lanes and PRs (simulator)
 
 The iOS app is measured on its own columns: a simulator on the Mac Studio

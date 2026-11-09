@@ -1,0 +1,237 @@
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { PrMentionableUser, PrRepoReference } from "../../../../shared/types/prs";
+import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { ViewportOverlayPortal } from "../../ui/ViewportOverlayHost";
+import { PrWritingScopeContext } from "./prMarkdownContext";
+
+const SEARCH_DEBOUNCE_MS = 180;
+const MAX_SUGGESTIONS = 8;
+
+type Trigger = { kind: "mention" | "ref"; query: string; start: number };
+
+type Suggestion =
+  | { kind: "user"; user: PrMentionableUser }
+  | { kind: "ref"; ref: PrRepoReference };
+
+/** The `@name` or `#12` the caret is on, if any. Looks back a bounded distance. */
+function readTrigger(value: string, caret: number): Trigger | null {
+  const before = value.slice(Math.max(0, caret - 100), caret);
+  const match = /(?:^|[\s(])([@#])([\w.-]*)$/.exec(before);
+  if (!match) return null;
+  const query = match[2] ?? "";
+  return {
+    kind: match[1] === "@" ? "mention" : "ref",
+    query,
+    start: caret - query.length - 1,
+  };
+}
+
+function filterRefs(refs: PrRepoReference[], query: string): PrRepoReference[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return refs.slice(0, MAX_SUGGESTIONS);
+  const byNumber = /^\d+$/.test(needle);
+  return refs
+    .filter((ref) => (byNumber ? String(ref.number).startsWith(needle) : ref.title.toLowerCase().includes(needle)))
+    .slice(0, MAX_SUGGESTIONS);
+}
+
+export type PrWritingTextareaProps = React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  /** Overrides the surrounding scope; the markdown editor passes its own repo. */
+  repoOwner?: string;
+  repoName?: string;
+};
+
+/**
+ * The textarea every PR writing surface uses: `@` suggests people who can be
+ * mentioned and `#` suggests issues and pull requests, inserted in place.
+ */
+export const PrWritingTextarea = React.forwardRef<HTMLTextAreaElement, PrWritingTextareaProps>(function PrWritingTextarea(
+  { repoOwner: repoOwnerProp, repoName: repoNameProp, onKeyDown, onSelect, onBlur, ...rest },
+  forwardedRef,
+) {
+  const scope = React.useContext(PrWritingScopeContext);
+  const repoOwner = repoOwnerProp ?? scope?.repoOwner ?? null;
+  const repoName = repoNameProp ?? scope?.repoName ?? null;
+  const pin = scope?.pin ?? null;
+  const pinKey = pin?.key ?? null;
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [trigger, setTrigger] = useState<Trigger | null>(null);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [anchor, setAnchor] = useState<{ left: number; bottom: number; width: number } | null>(null);
+  const requestRef = useRef(0);
+
+  useEffect(() => {
+    if (!forwardedRef) return;
+    if (typeof forwardedRef === "function") forwardedRef(textareaRef.current);
+    else forwardedRef.current = textareaRef.current;
+  }, [forwardedRef]);
+
+  const syncTrigger = React.useCallback(() => {
+    const node = textareaRef.current;
+    if (!node) return;
+    const caret = node.selectionStart ?? node.value.length;
+    const next = node.selectionEnd === caret ? readTrigger(node.value, caret) : null;
+    setTrigger((current) => (
+      current?.kind === next?.kind && current?.query === next?.query && current?.start === next?.start ? current : next
+    ));
+    if (next) {
+      const rect = node.getBoundingClientRect();
+      setAnchor({ left: rect.left, bottom: window.innerHeight - rect.top + 4, width: Math.min(rect.width, 360) });
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    syncTrigger();
+    // The caret can only have moved with the value; selection changes arrive
+    // through onSelect.
+  }, [rest.value, syncTrigger]);
+
+  useEffect(() => {
+    const generation = ++requestRef.current;
+    if (!trigger) {
+      setSuggestions([]);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      const read = trigger.kind === "mention"
+        ? window.ade.prs.searchMentionables({ repoOwner, repoName, query: trigger.query }, pin)
+            .then((result) => result.users.slice(0, MAX_SUGGESTIONS).map((user): Suggestion => ({ kind: "user", user })))
+        : window.ade.prs.getRepoReferences({ repoOwner, repoName }, pin)
+            .then((refs) => filterRefs(refs, trigger.query).map((ref): Suggestion => ({ kind: "ref", ref })));
+      read
+        .then((next) => {
+          if (generation !== requestRef.current) return;
+          setSuggestions(next);
+          setActiveIndex(0);
+        })
+        .catch(() => {
+          if (generation === requestRef.current) setSuggestions([]);
+        });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+    // `pin` is keyed by its identity string.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinKey, repoName, repoOwner, trigger]);
+
+  const close = React.useCallback(() => {
+    requestRef.current += 1;
+    setTrigger(null);
+    setSuggestions([]);
+  }, []);
+
+  const apply = React.useCallback((suggestion: Suggestion) => {
+    const node = textareaRef.current;
+    if (!node || !trigger) return;
+    const inserted = suggestion.kind === "user" ? `@${suggestion.user.login} ` : `#${suggestion.ref.number} `;
+    const caret = node.selectionStart ?? node.value.length;
+    const next = `${node.value.slice(0, trigger.start)}${inserted}${node.value.slice(caret)}`;
+    const nextCaret = trigger.start + inserted.length;
+    // The field is controlled; setting the value through the DOM's own setter
+    // and firing `input` runs the caller's onChange like a real keystroke.
+    const setValue = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+    setValue?.call(node, next);
+    node.dispatchEvent(new Event("input", { bubbles: true }));
+    close();
+    requestAnimationFrame(() => {
+      const current = textareaRef.current;
+      if (!current) return;
+      current.focus();
+      current.setSelectionRange(nextCaret, nextCaret);
+    });
+  }, [close, trigger]);
+
+  const open = trigger != null && suggestions.length > 0 && anchor != null;
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (open) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setActiveIndex((index) => (index + 1) % suggestions.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setActiveIndex((index) => (index - 1 + suggestions.length) % suggestions.length);
+        return;
+      }
+      if ((event.key === "Enter" && !event.metaKey && !event.ctrlKey) || event.key === "Tab") {
+        event.preventDefault();
+        const picked = suggestions[activeIndex];
+        if (picked) apply(picked);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+        return;
+      }
+    }
+    onKeyDown?.(event);
+  };
+
+  const list = useMemo(() => {
+    if (!open || !anchor) return null;
+    return (
+      <ViewportOverlayPortal layer="tooltip">
+        <div
+          role="listbox"
+          aria-label={trigger?.kind === "mention" ? "Mention someone" : "Reference an issue or pull request"}
+          data-testid="pr-writing-suggestions"
+          className="pointer-events-auto absolute overflow-hidden rounded-lg border shadow-2xl"
+          style={{ left: anchor.left, bottom: anchor.bottom, width: anchor.width, background: COLORS.cardBgSolid, borderColor: COLORS.border, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary }}
+        >
+          {suggestions.map((suggestion, index) => (
+            <button
+              key={suggestion.kind === "user" ? `u:${suggestion.user.login}` : `r:${suggestion.ref.kind}:${suggestion.ref.number}`}
+              type="button"
+              role="option"
+              aria-selected={index === activeIndex}
+              onMouseDown={(event) => event.preventDefault()}
+              onMouseEnter={() => setActiveIndex(index)}
+              onClick={() => apply(suggestion)}
+              className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
+              style={{ background: index === activeIndex ? COLORS.hoverBg : "transparent", border: "none", cursor: "pointer", color: "inherit" }}
+            >
+              {suggestion.kind === "user" ? (
+                <>
+                  {suggestion.user.avatarUrl ? <img src={suggestion.user.avatarUrl} alt="" width={16} height={16} className="rounded-full" /> : null}
+                  <span style={{ fontFamily: MONO_FONT }}>@{suggestion.user.login}</span>
+                  {suggestion.user.name ? <span className="truncate" style={{ color: COLORS.textMuted }}>{suggestion.user.name}</span> : null}
+                </>
+              ) : (
+                <>
+                  <span style={{ fontFamily: MONO_FONT, color: COLORS.textMuted }}>#{suggestion.ref.number}</span>
+                  <span className="truncate">{suggestion.ref.title}</span>
+                  <span className="ml-auto shrink-0" style={{ color: COLORS.textDim, fontSize: 11 }}>
+                    {suggestion.ref.kind === "pr" ? "PR" : "Issue"}
+                  </span>
+                </>
+              )}
+            </button>
+          ))}
+        </div>
+      </ViewportOverlayPortal>
+    );
+  }, [activeIndex, anchor, apply, open, suggestions, trigger?.kind]);
+
+  return (
+    <>
+      <textarea
+        {...rest}
+        ref={textareaRef}
+        onKeyDown={handleKeyDown}
+        onSelect={(event) => {
+          syncTrigger();
+          onSelect?.(event);
+        }}
+        onBlur={(event) => {
+          close();
+          onBlur?.(event);
+        }}
+      />
+      {list}
+    </>
+  );
+});

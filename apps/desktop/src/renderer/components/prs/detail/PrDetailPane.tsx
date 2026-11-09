@@ -35,7 +35,9 @@ import { formatChatOutputContextBlock } from "../../../../shared/chatOutputConte
 import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
 import { showToast } from "../../app/toast/toastStore";
 import { useChatRuntimeScope } from "../../chat/ChatRuntimeScope";
-import type { PrChatQuote } from "../shared/prMarkdownContext";
+import { PrWritingScopeContext, type PrChatQuote } from "../shared/prMarkdownContext";
+import { findPrTaskBoxes } from "../shared/prTaskList";
+import { usePrDescriptionTaskToggle } from "./usePrDescriptionTaskToggle";
 import {
   buildPrChatPrompt,
   chatLabel,
@@ -481,6 +483,7 @@ export function PrDetailPane({
   );
   // Bumped by the `g k` chord so the CI tab knows to open its checks palette.
   const [checksPaletteRequest, setChecksPaletteRequest] = React.useState(0);
+  const [canEditDescription, setCanEditDescription] = React.useState(false);
   const [detail, setDetail] = React.useState<PrDetail | null>(() => initialSnapshotHydration?.detail ?? initialPaneWarmCache?.detail ?? null);
   const [files, setFiles] = React.useState<PrFile[]>(() => initialSnapshotHydration?.files ?? initialPaneWarmCache?.files ?? []);
   const changeSummary = React.useMemo(() => (files.length > 0 ? summarizePrChangeKinds(files) : null), [files]);
@@ -1358,6 +1361,55 @@ export function PrDetailPane({
   // editor hides on an older host without the action, and when the snapshot
   // says there is no write-capable GitHub account (`writeViewerLogin: null`).
   const canEditAssignees = typeof window.ade.prs.setAssignees === "function" && writeViewerLogin !== null;
+
+  // Only an author or someone with write access can edit a description, and
+  // only a description with boxes needs to know. The permission read shares
+  // the per-repo cache the @-mention search fills.
+  const descriptionHasTasks = React.useMemo(() => findPrTaskBoxes(detail?.body ?? "").length > 0, [detail?.body]);
+  const detailAuthorLogin = detail?.author?.login ?? null;
+  React.useEffect(() => {
+    if (!descriptionHasTasks || !writeViewerLogin) {
+      setCanEditDescription(false);
+      return undefined;
+    }
+    if (detailAuthorLogin && detailAuthorLogin.toLowerCase() === writeViewerLogin.toLowerCase()) {
+      setCanEditDescription(true);
+      return undefined;
+    }
+    let cancelled = false;
+    void window.ade.prs.searchMentionables({ repoOwner: pr.repoOwner, repoName: pr.repoName, query: "" }, ...onPin)
+      .then((result) => {
+        if (!cancelled) setCanEditDescription(["WRITE", "MAINTAIN", "ADMIN"].includes(result.viewerPermission ?? ""));
+      })
+      .catch(() => {
+        if (!cancelled) setCanEditDescription(false);
+      });
+    return () => { cancelled = true; };
+    // `onPin` follows the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [descriptionHasTasks, detailAuthorLogin, onPin, pr.repoName, pr.repoOwner, writeViewerLogin]);
+
+  const reloadDetailAfterTaskSave = React.useCallback(
+    () => loadDetail({ forceLive: true, showLoading: false }),
+    [loadDetail],
+  );
+  const { body: displayedDescriptionBody, toggleTask } = usePrDescriptionTaskToggle({
+    prId: pr.id,
+    body: detail?.body,
+    enabled: canEditDescription,
+    pin: runtimePin ?? null,
+    refresh: reloadDetailAfterTaskSave,
+  });
+  const displayedDetail = React.useMemo(
+    () => (detail && displayedDescriptionBody !== detail.body ? { ...detail, body: displayedDescriptionBody ?? null } : detail),
+    [detail, displayedDescriptionBody],
+  );
+  const writingScope = React.useMemo(
+    () => ({ repoOwner: pr.repoOwner, repoName: pr.repoName, pin: runtimePin ?? null }),
+    // `runtimePin` compared by key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pr.repoName, pr.repoOwner, runtimePin?.key],
+  );
   const handleSetAssignees = React.useCallback(async (change: PrAssigneeChange): Promise<SetPrAssigneesResult> => {
     const setAssignees = window.ade.prs.setAssignees;
     if (!setAssignees) throw new Error("This machine's ADE cannot assign people yet.");
@@ -1628,11 +1680,13 @@ export function PrDetailPane({
       <div style={{ position: "relative", flex: 1, minHeight: 0, overflow: overviewRailsActive ? "hidden" : "auto" }}>
         {showDetailLoadingPill ? <PrDetailLoadingPill /> : null}
         {activeTab === "overview" && (
+          <PrWritingScopeContext.Provider value={writingScope}>
           <TimelineRailsOverview
             ref={timelineRailsRef}
             autoOpenMergeCard={autoOpenMergeCard}
             pr={pr}
-            detail={detail}
+            detail={displayedDetail}
+            onToggleDescriptionTask={canEditDescription ? toggleTask : undefined}
             status={status}
             checks={checks}
             reviews={reviews}
@@ -1674,6 +1728,7 @@ export function PrDetailPane({
             }}
             onPrStateAction={handlePrStateAction}
           />
+          </PrWritingScopeContext.Provider>
         )}
         <PrManageLaneDialogHost
           open={manageLaneOpen}

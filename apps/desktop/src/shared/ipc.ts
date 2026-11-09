@@ -1208,6 +1208,8 @@ export const IPC = {
   prsGetReviews: "ade.prs.getReviews",
   prsGetReviewThreads: "ade.prs.getReviewThreads",
   prsUpdateDescription: "ade.prs.updateDescription",
+  prsSearchMentionables: "ade.prs.searchMentionables",
+  prsGetRepoReferences: "ade.prs.getRepoReferences",
   prsDelete: "ade.prs.delete",
   prsLand: "ade.prs.land",
   prsUpdateBranch: "ade.prs.updateBranch",

@@ -59,6 +59,11 @@ import type {
   PrMobileSnapshot,
   PrMobileGithubDetailSnapshot,
   UpdatePrDescriptionArgs,
+  GetPrRepoReferencesArgs,
+  PrMentionableTeam,
+  PrRepoReference,
+  SearchPrMentionablesArgs,
+  SearchPrMentionablesResult,
   AddPrCommentArgs,
   UpdatePrCommentArgs,
   UpdatePrTitleArgs,
@@ -119,7 +124,8 @@ import type { AdeDb, SqlValue } from "../state/kvDb";
 import { createRetentionPruneGate } from "../state/dbMaintenanceApi";
 import type { Logger } from "../logging/logger";
 import { createPrListFilterOps } from "./prListFilters";
-import { createPrGithubReadCache } from "./prGithubReadCache";
+import { createPrGithubReadCache, githubRepoKey } from "./prGithubReadCache";
+import { createKeyedPromiseCache } from "../../../shared/expiringPromiseCache";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
 import type { createGithubService } from "../github/githubService";
@@ -7090,16 +7096,112 @@ export function createPrService({
     upsertSnapshotRow({ prId, detail, status, checks, reviews, comments, files, commits });
   };
 
+  /** One writer's typing is a stream of nearly identical reads: join and keep them per repo and query. */
+  const mentionablesCache = createKeyedPromiseCache<SearchPrMentionablesResult>({ ttlMs: 60_000, maxEntries: 200 });
+  const repoReferencesCache = createKeyedPromiseCache<PrRepoReference[]>({ ttlMs: 2 * 60_000, maxEntries: 64 });
+
+  const resolveWritingRepo = async (repoOwner?: string | null, repoName?: string | null): Promise<GitHubRepoRef> => {
+    const owner = repoOwner?.trim();
+    const name = repoName?.trim();
+    if (owner && name) return { owner, name };
+    const repo = await githubService.getRepoOrThrow();
+    return { owner: repo.owner, name: repo.name };
+  };
+
+  const searchMentionables = async (args: SearchPrMentionablesArgs): Promise<SearchPrMentionablesResult> => {
+    const repo = await resolveWritingRepo(args.repoOwner, args.repoName);
+    const query = args.query.trim().replace(/^@/, "").slice(0, 80);
+    const cacheKey = `${githubRepoKey(repo)}\0${args.includeTeams ? "t" : "u"}\0${query.toLowerCase()}`;
+    return await mentionablesCache.read(cacheKey, async () => {
+      const data = await graphqlRequest<{
+        repository?: {
+          viewerPermission?: unknown;
+          mentionableUsers?: { nodes?: Array<{ login?: unknown; name?: unknown; avatarUrl?: unknown } | null> | null } | null;
+        } | null;
+      }>(
+        `query($owner: String!, $name: String!, $query: String, $first: Int!) {
+          repository(owner: $owner, name: $name) {
+            viewerPermission
+            mentionableUsers(query: $query, first: $first) {
+              nodes { login name avatarUrl(size: 48) }
+            }
+          }
+        }`,
+        { owner: repo.owner, name: repo.name, query: query || null, first: 20 },
+        { repo },
+      );
+      const users = (data.repository?.mentionableUsers?.nodes ?? []).flatMap((node) => {
+        const login = asString(node?.login).trim();
+        if (!login) return [];
+        return [{ login, name: asString(node?.name).trim() || null, avatarUrl: asString(node?.avatarUrl).trim() || null }];
+      });
+      let teams: PrMentionableTeam[] = [];
+      if (args.includeTeams) {
+        // Asked separately: a personal account has no organization, and a token
+        // without read:org gets an error that would otherwise lose the users.
+        try {
+          const teamData = await graphqlRequest<{
+            organization?: { teams?: { nodes?: Array<{ slug?: unknown; name?: unknown } | null> | null } | null } | null;
+          }>(
+            `query($owner: String!, $query: String, $first: Int!) {
+              organization(login: $owner) {
+                teams(query: $query, first: $first) { nodes { slug name } }
+              }
+            }`,
+            { owner: repo.owner, query: query || null, first: 10 },
+            { repo },
+          );
+          teams = (teamData.organization?.teams?.nodes ?? []).flatMap((node) => {
+            const slug = asString(node?.slug).trim();
+            return slug ? [{ slug, name: asString(node?.name).trim() || slug }] : [];
+          });
+        } catch {
+          teams = [];
+        }
+      }
+      return { users, teams, viewerPermission: asString(data.repository?.viewerPermission).trim() || null };
+    });
+  };
+
+  const getRepoReferences = async (args: GetPrRepoReferencesArgs): Promise<PrRepoReference[]> => {
+    const repo = await resolveWritingRepo(args.repoOwner, args.repoName);
+    return await repoReferencesCache.read(githubRepoKey(repo), async () => {
+      const data = await graphqlRequest<{
+        repository?: {
+          issues?: { nodes?: Array<{ number?: unknown; title?: unknown; state?: unknown } | null> | null } | null;
+          pullRequests?: { nodes?: Array<{ number?: unknown; title?: unknown; state?: unknown } | null> | null } | null;
+        } | null;
+      }>(
+        `query($owner: String!, $name: String!) {
+          repository(owner: $owner, name: $name) {
+            issues(first: 50, orderBy: { field: UPDATED_AT, direction: DESC }) { nodes { number title state } }
+            pullRequests(first: 50, orderBy: { field: UPDATED_AT, direction: DESC }) { nodes { number title state } }
+          }
+        }`,
+        { owner: repo.owner, name: repo.name },
+        { repo },
+      );
+      const toRefs = (kind: "issue" | "pr", nodes: Array<{ number?: unknown; title?: unknown; state?: unknown } | null> | null | undefined) =>
+        (nodes ?? []).flatMap((node): PrRepoReference[] => {
+          const number = Number(node?.number);
+          if (!Number.isInteger(number) || number <= 0) return [];
+          return [{ number, title: asString(node?.title), kind, state: asString(node?.state).toLowerCase() }];
+        });
+      return [...toRefs("issue", data.repository?.issues?.nodes), ...toRefs("pr", data.repository?.pullRequests?.nodes)]
+        .sort((left, right) => right.number - left.number);
+    });
+  };
+
   const updateDescription = async (args: UpdatePrDescriptionArgs): Promise<void> => {
-    const row = getRow(args.prId);
-    if (!row) throw new Error(`PR not found: ${args.prId}`);
-    const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+    // A PR opened from the list may have no local row; its id then names the repo.
+    const target = resolvePrTarget(args.prId);
     await githubService.apiRequest({
       method: "PATCH",
-      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`,
+      path: `/repos/${target.repo.owner}/${target.repo.name}/pulls/${target.prNumber}`,
       body: { body: args.body }
     });
-    await refreshOne(args.prId);
+    readCache.forgetRepo(target.repo);
+    if (target.row) await refreshOne(target.row.id);
   };
 
   const deletePr = async (args: DeletePrArgs): Promise<DeletePrResult> => {
@@ -10280,6 +10382,14 @@ export function createPrService({
 
     async updateDescription(args: UpdatePrDescriptionArgs): Promise<void> {
       return await updateDescription(args);
+    },
+
+    async searchMentionables(args: SearchPrMentionablesArgs): Promise<SearchPrMentionablesResult> {
+      return await searchMentionables(args);
+    },
+
+    async getRepoReferences(args: GetPrRepoReferencesArgs): Promise<PrRepoReference[]> {
+      return await getRepoReferences(args);
     },
 
     async delete(args: DeletePrArgs): Promise<DeletePrResult> {
