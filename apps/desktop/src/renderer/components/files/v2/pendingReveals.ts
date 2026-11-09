@@ -14,6 +14,17 @@ export type PendingFileReveal = {
 
 const reveals = createKeyedPendingStore<PendingFileReveal>();
 
-export const setPendingReveal = reveals.set;
+const revealListeners = new Set<(path: string) => void>();
+
+export function setPendingReveal(path: string, reveal: PendingFileReveal): void {
+  reveals.set(path, reveal);
+  for (const listener of revealListeners) listener(path);
+}
+
+/** For an editor already showing the file, where no model bind will come. */
+export function subscribePendingReveals(listener: (path: string) => void): () => void {
+  revealListeners.add(listener);
+  return () => revealListeners.delete(listener);
+}
 
 export const takePendingReveal = reveals.take;

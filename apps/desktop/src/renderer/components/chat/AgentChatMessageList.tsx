@@ -7642,9 +7642,11 @@ function AgentChatMessageListMain({
   // every done divider in the thread renders this, so that gate made the
   // control a silent no-op on every turn but the last.
   const handleReviewChanges = useCallback(() => {
-    const state = currentLaneId ? { laneId: currentLaneId } : undefined;
+    const state = currentLaneId
+      ? { laneId: currentLaneId, ...(runtimePin ? { filesPin: runtimePin } : {}) }
+      : undefined;
     navigate("/files", state ? { state } : undefined);
-  }, [currentLaneId, navigate]);
+  }, [currentLaneId, navigate, runtimePin]);
 
   useEffect(() => {
     stickToBottomRef.current = stickToBottom;

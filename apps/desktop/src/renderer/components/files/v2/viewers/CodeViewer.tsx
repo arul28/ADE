@@ -6,7 +6,7 @@ import { resolveLanguageId } from "../../filePresentation";
 import { adeMonacoTheme, loadMonaco } from "../../../../lib/monacoLoader";
 import { applyMonacoTheme } from "../../../../theme/codeTheme";
 import { useActiveResolvedTheme } from "../../../../theme/useActiveTheme";
-import { takePendingReveal } from "../pendingReveals";
+import { subscribePendingReveals, takePendingReveal } from "../pendingReveals";
 import { updateCachedFileContentText } from "../useFileContent";
 import type { EditorApi, ViewerProps } from "./types";
 
@@ -158,6 +158,15 @@ export function CodeViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.id, content.content, content.languageId]);
 
+  // The same file clicked again: its model is already bound, so no bind will
+  // pick the reveal up.
+  useEffect(() => subscribePendingReveals((path) => {
+    const editor = editorRef.current;
+    if (!editor || path !== ctxRef.current.tab.path) return;
+    consumePendingReveal(path, editor);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), []);
+
   /**
    * ⌘F while this editor is where the user is.
    *
@@ -210,17 +219,20 @@ export function CodeViewer({
       }, 120);
     });
     // Jump to a line requested by the search overlay (one-shot).
-    const reveal = takePendingReveal(tab.path);
-    if (reveal && reveal.line > 0) {
-      requestAnimationFrame(() => {
-        try {
-          editor.revealLineInCenter(reveal.line);
-          editor.setPosition({ lineNumber: reveal.line, column: reveal.column ?? 1 });
-        } catch {
-          /* model swapped out before reveal */
-        }
-      });
-    }
+    consumePendingReveal(tab.path, editor);
+  }
+
+  function consumePendingReveal(path: string, editor: Monaco.editor.IStandaloneCodeEditor) {
+    const reveal = takePendingReveal(path);
+    if (!reveal || reveal.line <= 0) return;
+    requestAnimationFrame(() => {
+      try {
+        editor.revealLineInCenter(reveal.line);
+        editor.setPosition({ lineNumber: reveal.line, column: reveal.column ?? 1 });
+      } catch {
+        /* model swapped out before reveal */
+      }
+    });
   }
 
   return <div ref={hostRef} className="h-full w-full min-h-0" data-testid="files-v2-code-editor" data-ade-find-scope="code-editor" />;

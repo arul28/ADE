@@ -169,7 +169,7 @@ export function resolveWorkspacePathFromHref(href: string | undefined): Workspac
  * it, and the path relative to that workspace root.
  *
  * Absolute paths are matched against every known workspace root, preferring the
- * chat's own lane and then the longest matching root (nested worktrees). All
+ * longest matching root (nested worktrees) and then the chat's own lane. All
  * comparisons run through `pathUtils`, so Windows drive letters, UNC roots, and
  * case-insensitive volumes behave. Relative paths are taken as already
  * workspace-relative and attributed to the chat's lane.
@@ -199,10 +199,12 @@ export function resolveFilesNavigationTarget<W extends Pick<FilesWorkspace, "roo
       }))
       .filter(({ rootPath }) => isPathEqualOrDescendant(normalizedCandidate, rootPath))
       .sort((left, right) => {
+        // The deepest root owns the path: lane worktrees live inside the primary
+        // checkout, so a chat in Primary quoting another lane's file matches both.
+        if (right.rootPath.length !== left.rootPath.length) return right.rootPath.length - left.rootPath.length;
         const rightMatchesLane = right.workspace.laneId != null && right.workspace.laneId === args.fallbackLaneId ? 1 : 0;
         const leftMatchesLane = left.workspace.laneId != null && left.workspace.laneId === args.fallbackLaneId ? 1 : 0;
-        if (rightMatchesLane !== leftMatchesLane) return rightMatchesLane - leftMatchesLane;
-        return right.rootPath.length - left.rootPath.length;
+        return rightMatchesLane - leftMatchesLane;
       });
 
     const match = matches[0];
@@ -434,7 +436,6 @@ export async function probeWorkspacePath(args: {
 
   const normalized = normalizePath(args.path).replace(/^\/+/, "").replace(/\/+$/, "");
   if (!normalized.length) return { kind: "missing" };
-  const hasSeparator = normalized.includes("/");
   // A bare name is searched by name; a full path is searched by itself so an
   // exact hit ranks at all in a repo with many same-named files.
   const query = normalized;
@@ -462,16 +463,32 @@ export async function probeWorkspacePath(args: {
     return { kind: "directory", path: normalized };
   }
 
-  if (hasSeparator) return { kind: "missing" };
-
-  // Bare name: match on the basename, since the index returns full paths.
-  const matches = items.filter((item) => {
-    const segments = normalizePath(item.path).toLowerCase().split("/");
-    return segments[segments.length - 1] === lowered;
-  });
+  // Not relative to the workspace root as written: a bare name, or a path the
+  // agent gave from inside a subfolder. Any indexed file ending in those
+  // segments is a candidate, and the index ranks them ahead of loose matches.
+  const suffix = `/${lowered}`;
+  const matches = items.filter((item) => normalizePath(item.path).toLowerCase().endsWith(suffix));
   if (matches.length === 1) return { kind: "file", path: normalizePath(matches[0]!.path) };
   if (matches.length > 1) return { kind: "ambiguous", query: normalized };
   return { kind: "missing" };
+}
+
+/** Real read of a path the index does not know, for a file it has not indexed yet. */
+async function workspaceFileIsMissing(args: {
+  workspaceId: string;
+  path: string;
+  pin: OpenProjectBinding | null | undefined;
+}): Promise<boolean> {
+  const readFile = typeof window !== "undefined" ? window.ade?.files?.readFile : undefined;
+  if (typeof readFile !== "function") return false;
+  try {
+    await readFile({ workspaceId: args.workspaceId, path: args.path }, args.pin);
+    return false;
+  } catch (error) {
+    // Anything other than "not there" (a binary refusal, a permission error) is
+    // better explained by the workbench than by a false "can't find it".
+    return /does not exist|ENOENT|no such file/i.test(error instanceof Error ? error.message : String(error));
+  }
 }
 
 export function useWorkspacePathOpener(args: {
@@ -565,13 +582,18 @@ export function useWorkspacePathOpener(args: {
       // runs unless the Files or Git tools panel is open. It also excludes
       // gitignored files and `dist`/`node_modules`/`coverage` outright, and
       // stops at 25,000 files. So the file an agent just created — the single
-      // most common thing to click — would be reported as missing forever.
-      // Open it and let a real read error speak for itself, which is what
-      // clicking a path did before the probe existed.
-      if (!target.openFilePath.includes("/")) {
+      // most common thing to click — must not be reported missing on the
+      // index's word alone: read it first.
+      const hasDirectory = target.openFilePath.includes("/");
+      if (
+        !hasDirectory
+        || (workspace && await workspaceFileIsMissing({ workspaceId: workspace.id, path: target.openFilePath, pin: runtimePin }))
+      ) {
         showToast({
           title: "Can't find that file",
-          message: `Nothing named ${target.openFilePath} in ${workspace?.name ?? "this project"}.`,
+          message: hasDirectory
+            ? `${target.openFilePath} doesn't exist in ${workspace?.name ?? "this project"}.`
+            : `Nothing named ${target.openFilePath} in ${workspace?.name ?? "this project"}.`,
           tone: "error",
         });
         return;
