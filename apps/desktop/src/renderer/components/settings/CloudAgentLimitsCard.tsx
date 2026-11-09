@@ -1,42 +1,34 @@
 import { useCallback, useEffect, useState } from "react";
 import { Lock, Robot } from "@phosphor-icons/react";
 import {
-  CLOUD_CAP_CHOICES_USD,
   CLOUD_LIMITS_PRESETS,
   CLOUD_MACHINES_PER_DAY_CHOICES,
   CLOUD_SHAPES,
   cloudLimitsPresetOf,
   type CloudAgentLimits,
-  type CloudBudget,
 } from "../../../shared/adeCloud";
 import { IntegrationCard, IntegrationChoice } from "./integrations/IntegrationChrome";
 import { Banner } from "../ui/notice";
 import { ipcErrorMessage } from "../../lib/format";
 
-function shapeLabel(id: string): string {
-  const shape = CLOUD_SHAPES.find((entry) => entry.id === id);
-  return shape ? `${shape.cpu} vCPU · ${shape.memoryGb} GB` : id;
-}
-
 /**
- * Settings › Integrations › ADE Cloud › What agents may spend: what an agent
- * may do when nobody is watching (a full-auto chat, an automation), as one
- * yes/no with its limits under Yes (the preset is derived), and the optional
- * monthly cap. Account-wide (the
- * account vault), so it asks this desktop's main process with no pin.
+ * Settings › Integrations › ADE Cloud › What agents may do: what an agent may
+ * do when nobody is watching (a full-auto chat, an automation), as one yes/no
+ * with its limits under Yes (the preset is derived). Account-wide (the account
+ * vault), so it asks this desktop's main process with no pin.
  */
 export function CloudAgentLimitsCard() {
   const bridge = window.ade.cloud;
-  const [budget, setBudget] = useState<CloudBudget | null>(null);
+  const [limits, setLimits] = useState<CloudAgentLimits | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    if (!bridge?.getBudget) return;
+    if (!bridge?.getAgentLimits) return;
     try {
-      setBudget(await bridge.getBudget());
+      setLimits(await bridge.getAgentLimits());
     } catch (loadError) {
-      setError(ipcErrorMessage(loadError) || "Couldn't read what agents may spend.");
+      setError(ipcErrorMessage(loadError) || "Couldn't read what agents may do.");
     }
   }, [bridge]);
 
@@ -46,15 +38,15 @@ export function CloudAgentLimitsCard() {
     return () => off?.();
   }, [bridge, load]);
 
-  if (!bridge?.getBudget || !bridge.setBudget) return null;
-  const write = bridge.setBudget;
+  if (!bridge?.getAgentLimits || !bridge.setAgentLimits) return null;
+  const write = bridge.setAgentLimits;
 
-  const save = async (next: Partial<CloudBudget>) => {
+  const save = async (next: Partial<CloudAgentLimits>) => {
     setBusy(true);
     setError(null);
     try {
       const saved = await write(next);
-      if (saved) setBudget(saved);
+      if (saved) setLimits(saved);
     } catch (saveError) {
       setError(ipcErrorMessage(saveError) || "Couldn't save that.");
     } finally {
@@ -62,19 +54,17 @@ export function CloudAgentLimitsCard() {
     }
   };
 
-  const limits = budget?.agents ?? null;
   const preset = limits ? cloudLimitsPresetOf(limits) : null;
   const setLimit = (patch: Partial<CloudAgentLimits>) => {
-    if (limits) void save({ agents: { ...limits, ...patch } });
+    if (limits) void save({ ...limits, ...patch });
   };
-  const disabled = busy || budget == null;
-  const cap = budget?.monthlyCapUsd ?? null;
+  const disabled = busy || limits == null;
 
   const unattended = limits?.unattendedSpend ?? null;
   // "Yes" starts from Balanced's limits when the saved ones are the "No" preset's leftovers.
   const allow = (value: boolean) => {
     if (!limits || limits.unattendedSpend === value) return;
-    void save({ agents: value && preset === "ask" ? CLOUD_LIMITS_PRESETS.balanced : { ...limits, unattendedSpend: value } });
+    void save(value && preset === "ask" ? CLOUD_LIMITS_PRESETS.balanced : { ...limits, unattendedSpend: value });
   };
 
   return (
@@ -82,14 +72,14 @@ export function CloudAgentLimitsCard() {
       anchor="cloud-agent-limits"
       span="full"
       icon={<Robot size={15} weight="fill" />}
-      title="What agents may spend"
+      title="What agents may do"
       hint="A watched agent always asks in its chat with an Allow / Don't allow card."
     >
       <div className="ade-ig-limit-rows">
         <div className="ade-ig-limit-row">
-          <div><b>When nobody is watching, may agents make or change machines?</b><small>Nobody is watching a full-auto chat or an automation run.</small></div>
+          <div><b>When nobody is watching, may agents make or change computers?</b><small>Nobody is watching a full-auto chat or an automation run.</small></div>
           <IntegrationChoice
-            label="When nobody is watching, may agents make or change machines?"
+            label="When nobody is watching, may agents make or change computers?"
             value={unattended == null ? null : unattended ? "yes" : "no"}
             disabled={disabled}
             onChange={(choice) => allow(choice === "yes")}
@@ -102,9 +92,9 @@ export function CloudAgentLimitsCard() {
         {unattended ? (
           <>
             <div className="ade-ig-limit-row">
-              <div><b>New machines a day</b><small>Made, copied or moved by agents</small></div>
+              <div><b>New computers a day</b><small>Made, copied or moved by agents</small></div>
               <IntegrationChoice
-                label="New machines a day"
+                label="New computers a day"
                 value={limits?.machinesPerDay ?? null}
                 disabled={disabled}
                 sentenceCase={false}
@@ -113,33 +103,23 @@ export function CloudAgentLimitsCard() {
               />
             </div>
             <div className="ade-ig-limit-row">
-              <div><b>Largest size</b><small>Bigger machines cost more an hour</small></div>
+              <div><b>Largest size</b><small>Bigger computers use hours faster</small></div>
               <IntegrationChoice
                 label="Largest size"
                 value={limits?.maxShape ?? null}
                 disabled={disabled}
                 sentenceCase={false}
                 onChange={(maxShape) => setLimit({ maxShape })}
-                options={CLOUD_SHAPES.map((shape) => ({ value: shape.id, label: `${shape.cpu}·${shape.memoryGb}`, title: shapeLabel(shape.id) }))}
+                options={CLOUD_SHAPES.map((shape) => ({ value: shape.id, label: shape.label, title: `${shape.cpu} CPU · ${shape.memoryGb} GB` }))}
               />
             </div>
           </>
         ) : null}
-        <div className="ade-ig-limit-row">
-          <div><b>Monthly cap</b><small>Optional, for every machine.</small></div>
-          <IntegrationChoice
-            label="Monthly cap"
-            value={cap ?? "off"}
-            disabled={disabled}
-            onChange={(choice) => void save({ monthlyCapUsd: choice === "off" ? null : choice })}
-            options={[{ value: "off" as const, label: "Off" }, ...CLOUD_CAP_CHOICES_USD.map((usd) => ({ value: usd, label: `$${usd}` }))]}
-          />
-        </div>
       </div>
 
-      <p className="ade-ig-note"><Lock size={13} weight="fill" /> Always yours to decide: keeping a machine awake for good, raising the cap or these limits, and deleting a machine an agent didn't make.</p>
+      <p className="ade-ig-note"><Lock size={13} weight="fill" /> Always yours to decide: keeping a computer awake for good, raising these limits, and deleting a computer an agent didn't make.</p>
       {error ? (
-        <Banner layout="inline" model={{ id: "cloud-limits-error", tone: "error", title: "What agents may spend", detail: error, actions: [{ label: "Dismiss", onClick: () => setError(null) }] }} />
+        <Banner layout="inline" model={{ id: "cloud-limits-error", tone: "error", title: "What agents may do", detail: error, actions: [{ label: "Dismiss", onClick: () => setError(null) }] }} />
       ) : null}
     </IntegrationCard>
   );

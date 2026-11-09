@@ -253,6 +253,8 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return 4 * 60_000;
     // A box's sleep, wake, resize, backup or delete answers once the provider is done.
     case IPC.cloudMachineAction:
+    // A wake, then every lane's commit and push on the computer.
+    case IPC.cloudPushAllWork:
       return CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS;
     case IPC.cloudListMachines:
       return CLOUD_LIST_MACHINES_IPC_TIMEOUT_MS;

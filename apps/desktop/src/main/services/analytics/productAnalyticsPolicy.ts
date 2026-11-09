@@ -262,6 +262,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // box_copy | box_move | box_reconnect), only when it worked.
   // Never the box, its size, price, workspace, or a refusal.
   "cloud_machine_action",
+  // ADE Cloud's plan and hours (feature "connections"): plan_checkout | plan_portal
+  // (the Stripe page opened) | extra_on | extra_off (the switch). Never an amount.
+  "cloud_plan",
   // Ready machines (feature "connections"): whether people keep a cloud
   // machine ready for a project, how often preparing one fails, and where the
   // chats that take one start. enabled | disabled (the per-project switch),
@@ -653,7 +656,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // confused with another action's outcome.
     "mode_focus", "mode_focus_grid",
     // The cloud box actions, prefixed like the tool ids.
-    "box_sleep", "box_wake", "box_resize", "box_backup", "box_delete", "box_set_sleep", "box_copy", "box_move", "box_reconnect",
+    "box_sleep", "box_wake", "box_resize", "box_backup", "box_delete", "box_set_sleep", "box_copy", "box_move", "box_reconnect", "box_push_all_work",
+    // ADE Cloud's plan: the Stripe pages opened and the extra-hours switch.
+    "plan_checkout", "plan_portal", "extra_on", "extra_off",
     // Where a chat that took a ready machine started, prefixed the same way.
     "ready_picker", "ready_cli",
     // The provider of a sign-in saved for cloud machines (`CLOUD_SIGN_INS`).

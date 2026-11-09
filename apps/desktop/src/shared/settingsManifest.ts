@@ -1570,7 +1570,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: [
       "cloud", "machine", "box", "vm", "linux", "sandbox", "ade cloud",
       // The machines themselves live in Your computers; the page header opens it.
-      "sleep", "wake", "resize", "back up", "backup", "delete box", "spending", "cost", "price", "suspended",
+      "sleep", "wake", "resize", "back up", "backup", "delete box", "hours", "plan", "extra hours", "billing", "suspended",
     ],
     tab: "integrations",
     anchor: "cloud-connection",
@@ -1603,8 +1603,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "integrations.ade-cloud-spending",
-    label: "ADE Cloud machines and spending",
-    keywords: ["machines", "new machine", "spending cap", "monthly cap", "budget", "limit spend", "saved", "sleep", "auto-sleep", "idle", "cost"],
+    label: "ADE Cloud computers and hours",
+    keywords: ["machines", "new machine", "hours", "plan", "extra hours", "saved", "sleep", "auto-sleep", "idle", "cost"],
     tab: "integrations",
     anchor: "cloud-machines",
     // Every machine with this month's spend and what sleeping saved; read from the provider.
@@ -1615,7 +1615,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "integrations.ade-cloud-agent-limits",
     label: "What agents may spend on ADE Cloud",
-    keywords: ["agent limits", "unattended", "full-auto", "automation", "machines a day", "largest size", "monthly cap", "spending cap", "budget", "ask me", "balanced", "hands-off"],
+    keywords: ["agent limits", "unattended", "full-auto", "automation", "machines a day", "largest size", "budget", "ask me", "balanced", "hands-off"],
     tab: "integrations",
     anchor: "cloud-agent-limits",
     // What unattended agents may spend alone, and the optional cap, in the account vault.
@@ -1969,6 +1969,13 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   "hide-previews": "activity.hide-details",
 };
 
+/** ADE Cloud's settings: they do not exist for an account not on its access list. */
+export const ADE_CLOUD_SETTINGS_GROUP = "ADE Cloud";
+
+export function isAdeCloudSettingEntry(entry: Pick<SettingEntry, "group">): boolean {
+  return entry.group === ADE_CLOUD_SETTINGS_GROUP;
+}
+
 const ENTRIES_BY_ID = new Map(SETTINGS_ENTRIES.map((entry) => [entry.id, entry]));
 const ENTRIES_BY_ANCHOR = new Map(SETTINGS_ENTRIES.map((entry) => [entry.anchor, entry]));
 
@@ -2196,10 +2203,14 @@ function findIndex(): FindRow[] {
  * for more than one many do ("mode"). Every entry is searched: whether a
  * client can show it is that client's call, and its chip says so.
  */
-export function findSettingsEntries(query: string, limit = 3): SettingEntry[] {
+export function findSettingsEntries(
+  query: string,
+  limit = 3,
+  excluded?: (entry: SettingEntry) => boolean,
+): SettingEntry[] {
   const words = findWords(query);
   if (words.length === 0) return [];
-  const rows = findIndex();
+  const rows = excluded ? findIndex().filter((row) => !excluded(row.entry)) : findIndex();
   const rarity = new Map<string, number>();
   for (const word of words) {
     const count = rows.filter((row) => wordHits(`${row.label} ${row.tab} ${row.group} ${row.keywords}`, word)).length;

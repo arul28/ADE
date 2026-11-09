@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCloudMachines } from "../remoteTargets/useCloudMachines";
 import { ArrowClockwise, CircleNotch, Info, Lightning, Moon } from "@phosphor-icons/react";
 import {
-  CLOUD_KINDS,
+  CLOUD_FULL_COMPUTER_LABEL,
   CLOUD_SHAPES,
-  cloudHourlyUsd,
-  cloudReadyIdleMonthlyUsd,
+  cloudCatalogOf,
+  cloudHoursRate,
   cloudShapeById,
-  formatCloudUsd,
+  formatCloudHoursRate,
   type CloudMachineKind,
   type CloudShapeId,
-  type CloudStatus,
 } from "../../../shared/adeCloud";
 import {
   CLOUD_READY_DEFAULT_SHAPE,
@@ -80,8 +80,9 @@ function setupSuggestion(fileNames: readonly string[]): string | null {
  * seconds. Account-wide (the choice is in the account vault, the machines on
  * the provider), so it asks this desktop's main process with no pin.
  */
-export function CloudReadyMachinesCard({ status, cloudSignIns }: { status: CloudStatus | null; cloudSignIns: CloudSignInStatus | null }) {
+export function CloudReadyMachinesCard({ cloudSignIns }: { cloudSignIns: CloudSignInStatus | null }) {
   const bridge = window.ade.cloud;
+  const catalog = cloudCatalogOf(useCloudMachines(true).result?.account);
   const binding = useAppStore((state) => state.projectBinding);
   const identity = normalizeGitRemoteIdentity(originUrlForBinding(binding));
   // The repo names the project here: a project called "ADE" reads like the product.
@@ -257,11 +258,10 @@ export function CloudReadyMachinesCard({ status, cloudSignIns }: { status: Cloud
                 value={kind}
                 disabled={busy}
                 onChange={setKind}
-                options={CLOUD_KINDS.map((spec) => ({
-                  value: spec.kind,
-                  label: spec.kind === "vm" ? "VM · Docker" : "Box",
-                  title: spec.summary,
-                }))}
+                options={[
+                  { value: "box", label: "Standard", title: "A sandboxed computer. Uses hours the slowest." },
+                  { value: "vm", label: "Full computer", title: CLOUD_FULL_COMPUTER_LABEL },
+                ]}
               />
               <IntegrationChoice
                 label="Size"
@@ -270,7 +270,8 @@ export function CloudReadyMachinesCard({ status, cloudSignIns }: { status: Cloud
                 onChange={setShapeId}
                 options={CLOUD_SHAPES.map((candidate) => ({
                   value: candidate.id,
-                  label: `${candidate.cpu} CPU · ${candidate.memoryGb} GB`,
+                  label: candidate.label,
+                  title: `${candidate.cpu} CPU · ${candidate.memoryGb} GB`,
                 }))}
               />
             </div>
@@ -304,15 +305,15 @@ export function CloudReadyMachinesCard({ status, cloudSignIns }: { status: Cloud
           <div className="ade-ig-figures">
             <div className="ade-ig-figure">
               <span className="kit-eyebrow">Asleep</span>
-              <b>{formatCloudUsd(cloudReadyIdleMonthlyUsd(shape))}<small>a month</small></b>
+              <b>0<small>hours</small></b>
             </div>
             <div className="ade-ig-figure">
               <span className="kit-eyebrow">Awake</span>
-              <b>{(cloudHourlyUsd(kind, shape) * 100).toFixed(1)}¢<small>an hour</small></b>
+              <b>{formatCloudHoursRate(cloudHoursRate(kind, shape.id, catalog))}</b>
             </div>
             <div className="ade-ig-figure">
               <span className="kit-eyebrow">Docker</span>
-              <b>{kind === "vm" ? "Yes" : "No"}<small>{kind === "vm" ? "and Android" : "pick a VM"}</small></b>
+              <b>{kind === "vm" ? "Yes" : "No"}<small>{kind === "vm" ? "and Android" : "pick Full computer"}</small></b>
             </div>
           </div>
 

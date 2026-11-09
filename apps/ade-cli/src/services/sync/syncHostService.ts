@@ -620,6 +620,12 @@ const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
 // state a wake trigger fails to observe.
 const DEFAULT_SYNC_POLL_IDLE_INTERVAL_MS = 2_000;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
+// A peer on the relay gets the periodic status at most this often. Every frame
+// through the tunnel relay wakes its Durable Object from hibernation, and the
+// periodic status was most of an idle peer's traffic (docs/perf/cloudflare-costs.md).
+// Changes still go out at once: broadcastBrainStatus is called with no options
+// for those. Kept under half of the web client's 75 s inbound-silence limit.
+const RELAY_PEER_BRAIN_STATUS_INTERVAL_MS = 30_000;
 const NATIVE_LAN_DISCOVERY_RECOVERY_DELAY_MS = 1_000;
 const NATIVE_LAN_DISCOVERY_FALLBACK_MS = 30_000;
 const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
@@ -947,6 +953,8 @@ type PeerState = {
    * the same weight as a peer that tried to authenticate and was rejected.
    */
   framesReceived: number;
+  /** When this peer was last sent a brain_status. */
+  lastBrainStatusAtMs: number;
   transportOrigin: SyncTransportOrigin;
   relayAuthorization: RelayAuthorizationLifecycle | null;
   reportedIncompatibleAdoptCipher: boolean;
@@ -3609,7 +3617,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (dbVersionError) throw dbVersionError;
   }
   const brainStatusTimer = setInterval(() => {
-    broadcastBrainStatus();
+    broadcastBrainStatus({ periodic: true });
   }, brainStatusIntervalMs);
   const accountLeaseTimer = setInterval(() => {
     void refreshAccountLease();
@@ -3936,6 +3944,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       changesetRecoveryNotBeforeMs: 0,
       remoteAddress,
       remotePort,
+      lastBrainStatusAtMs: 0,
       transportOrigin,
       relayAuthorization: null,
       reportedIncompatibleAdoptCipher: false,
@@ -5860,22 +5869,36 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   });
 
-  function broadcastBrainStatus(): void {
+  /**
+   * `periodic` is the 5 s timer. It paces relay peers: a frame through the
+   * relay is not free, and a change reaches them through the other callers.
+   */
+  function broadcastBrainStatus(options: { periodic?: boolean } = {}): void {
     if (disposed) return;
     // Building the status is not free: it reads the local device row (a
     // replicating CRR write), the database version and the running-session
     // list. With nothing connected there is nobody to publish to, and a peer
     // that connects is sent a fresh status by its own handshake, so an idle
     // host should not pay for the build every five seconds.
+    const sentAtMs = Date.now();
     const recipients = [...peers].filter(
-      (peer) => peer.authenticated && peer.ws.readyState === WebSocket.OPEN,
+      (peer) => peer.authenticated
+        && peer.ws.readyState === WebSocket.OPEN
+        && !(
+          options.periodic
+          && peer.transportOrigin === "relay-bridge"
+          && sentAtMs - peer.lastBrainStatusAtMs < RELAY_PEER_BRAIN_STATUS_INTERVAL_MS
+        ),
     );
     if (recipients.length === 0) return;
     // Runs from timers and event handlers alike; a failed build (the device
     // row write hit a disk I/O error) skips this status, never the process.
     try {
       const payload = buildBrainStatus();
-      for (const peer of recipients) send(peer.ws, "brain_status", payload);
+      for (const peer of recipients) {
+        peer.lastBrainStatusAtMs = sentAtMs;
+        send(peer.ws, "brain_status", payload);
+      }
       timerTickFailures.clear("brain_status");
     } catch (error) {
       reportTimerTickFailure("brain_status", error);

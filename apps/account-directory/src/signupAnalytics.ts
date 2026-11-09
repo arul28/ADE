@@ -21,14 +21,23 @@
  * private or public metadata; the sign-up then carries `is_internal: true`
  * (event property and person property) so dashboards can leave them out.
  *
- * Both `CLERK_WEBHOOK_SIGNING_SECRET` and `POSTHOG_PROJECT_TOKEN` must be set;
- * without either the route answers 503 and Clerk keeps retrying for a while.
+ * `CLERK_WEBHOOK_SIGNING_SECRET` must be set, and `POSTHOG_PROJECT_TOKEN` for
+ * sign-ups. Without them the route answers 503 and Clerk keeps retrying for a
+ * while; a `user.deleted` still deletes the account's ADE Cloud data with no token.
  */
+
+import { deleteCloudAccount } from "./cloud/accountDeletion";
+import { reportCloudFailure } from "./cloud/store";
 
 export type SignupAnalyticsEnv = {
   CLERK_WEBHOOK_SIGNING_SECRET?: string;
   POSTHOG_PROJECT_TOKEN?: string;
   POSTHOG_HOST?: string;
+  /** For `user.deleted`: the account's ADE Cloud computers, plan and saved chats go with it. */
+  DB?: D1Database;
+  CLOUD_CHATS?: R2Bucket;
+  AGENT37_API_KEY?: string;
+  STRIPE_SECRET_KEY?: string;
 };
 
 const ROUTE = "/webhooks/clerk";
@@ -202,7 +211,9 @@ export async function handleSignupAnalyticsRequest(
   if (request.method !== "POST") return json(405, { error: "method_not_allowed" });
   const secret = env.CLERK_WEBHOOK_SIGNING_SECRET?.trim();
   const token = env.POSTHOG_PROJECT_TOKEN?.trim();
-  if (!secret || !token || !/^phc_[A-Za-z0-9_-]{8,}$/.test(token)) return json(503, { error: "not_configured" });
+  const analyticsToken = token && /^phc_[A-Za-z0-9_-]{8,}$/.test(token) ? token : null;
+  // Without analytics a deleted account must still lose its ADE Cloud data.
+  if (!secret || (!analyticsToken && !env.DB)) return json(503, { error: "not_configured" });
 
   const id = request.headers.get("svix-id") ?? "";
   const timestamp = request.headers.get("svix-timestamp") ?? "";
@@ -230,6 +241,17 @@ export async function handleSignupAnalyticsRequest(
   const userId = typeof payload.data?.id === "string" ? payload.data.id.trim() : "";
   if (!userId || userId.length > 512) return json(400, { error: "bad_user" });
 
+  if (payload.type === "user.deleted" && env.DB) {
+    // Before the capture, so a failure here asks Clerk to deliver again.
+    try {
+      await deleteCloudAccount({ ...env, DB: env.DB }, userId);
+    } catch (error) {
+      reportCloudFailure("cloud.account_delete_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+      return json(502, { error: "cloud_delete_failed" });
+    }
+  }
+  if (!analyticsToken) return payload.type === "user.deleted" ? json(200, { deleted: true }) : json(503, { error: "not_configured" });
+
   const distinctId = await accountDistinctId(userId);
   let capture: Record<string, unknown>;
   if (payload.type === "user.created") {
@@ -237,7 +259,7 @@ export async function handleSignupAnalyticsRequest(
     const signedUpAt = createdAtMs ? new Date(createdAtMs).toISOString() : null;
     const isInternal = isInternalAccount(payload.data);
     capture = {
-      api_key: token,
+      api_key: analyticsToken,
       distinct_id: distinctId,
       event: "ade_signed_up",
       uuid: await signupEventUuid(userId),
@@ -258,7 +280,7 @@ export async function handleSignupAnalyticsRequest(
     // the retry lands on the same day and PostHog still keeps one.
     const eventMs = typeof payload.timestamp === "number" ? payload.timestamp : null;
     capture = {
-      api_key: token,
+      api_key: analyticsToken,
       distinct_id: distinctId,
       event: "ade_account_deleted",
       uuid: await accountDeletedEventUuid(userId),

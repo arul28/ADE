@@ -17,10 +17,10 @@
  *      the box's ADE, run the person's setup commands. The template's
  *      entrypoint runs it (`$ADE_HOME/ready/job.sh`), so what it starts is part
  *      of the entrypoint's process tree and survives sleep.
- *   3. Tag it `ready` and put it to sleep. Asleep it bills only its disk.
+ *   3. Tag it `ready` and put it to sleep. Asleep it uses no hours.
  *
- * A failure deletes the machine (a half-prepared machine is only a bill) and
- * waits for Retry: ADE never loops on something that costs money. Turning
+ * A failure deletes the machine (a half-prepared machine is only waste) and
+ * waits for Retry: ADE never loops on something that uses hours. Turning
  * the project off deletes its unclaimed machine. A claimed machine is the
  * person's and is never touched here.
  *
@@ -31,14 +31,14 @@
 
 import { randomUUID } from "node:crypto";
 import {
-  CLOUD_SPEND_UNKNOWN_MESSAGE,
-  cloudCapReachedMessage,
+  CLOUD_HOURS_UNKNOWN_MESSAGE,
+  CLOUD_OUT_OF_HOURS_MESSAGE,
   cloudShape,
-  cloudUnattendedSpendBlock,
+  cloudUnattendedHoursBlock,
   type CloudCreateMachineArgs,
   type CloudCreateMachineResult,
   type CloudCreateProgress,
-  type CloudSpending,
+  type CloudAccountState,
 } from "../../../shared/adeCloud";
 import {
   CLOUD_READY_METADATA,
@@ -78,7 +78,7 @@ export type CloudReadyKeeperDeps = {
   /**
    * This copy of ADE, stable across restarts and distinct from another copy
    * on the same computer. A machine it was preparing when it quit is its own
-   * leftover, deleted on the next pass instead of billing until it goes stale.
+   * leftover, deleted on the next pass instead of using hours until it goes stale.
    */
   preparerId: string;
   /**
@@ -87,8 +87,8 @@ export type CloudReadyKeeperDeps = {
    * is replaced, so a ready machine runs the same ADE as the desktop that keeps it.
    */
   currentAdeVersion?: () => string | null;
-  /** This month against the cap: at the cap, or while it can't be read, no machine is prepared. */
-  spending?: () => Promise<CloudSpending | null>;
+  /** Plan and hours: out of hours, or while they can't be read, no machine is prepared. */
+  account?: () => Promise<CloudAccountState | null>;
   onStatus?: (status: CloudReadyStatus) => void;
   /** A prepare ended: the machine is ready, or it failed (a cancel is neither). */
   onPrepared?: (outcome: "completed" | "failed") => void;
@@ -110,7 +110,7 @@ const LOG_TAIL_LINES = 6;
 /**
  * Used ready machines (claimed, now asleep) a project may hold before ADE
  * stops preparing new ones. Each ready chat claims a machine and the next pass
- * prepares another, so without a limit they pile up, each billing its disk.
+ * prepares another, so without a limit they pile up, each holding its disk.
  * They are the person's, so ADE never deletes them; it waits until one goes.
  */
 const CLOUD_READY_USED_ASLEEP_LIMIT = 3;
@@ -380,7 +380,7 @@ export function createCloudReadyKeeper(deps: CloudReadyKeeperDeps) {
       read = parseJobRead(answer.stdout);
       if (!read.started && now() - began > RUNNER_START_GRACE_MS) {
         // Made from a template older than ready machines: nothing on it runs the job.
-        throw new Error("the machine's template is too old to run a setup. ADE updates its template on its own; Retry once it's ready.");
+        throw new Error("this computer is too old to run a setup. Update it from its card, then Retry.");
       }
       // The step only: the setup's own output is install noise, and it can echo anything.
       if (read.started) setLocalMessage(settings.identity, "setup", "Running your setup…");
@@ -451,7 +451,7 @@ export function createCloudReadyKeeper(deps: CloudReadyKeeperDeps) {
       try {
         await client.sleepInstance(created.instanceId);
       } catch (error) {
-        // Ready, but awake and billing; the next pass tries the sleep again.
+        // Ready, but awake and using hours; the next pass tries the sleep again.
         logger.warn?.("cloud.ready_sleep_failed", { instanceId: created.instanceId, error: getErrorMessage(error) });
       }
       logger.info?.("cloud.ready_prepared", { instanceId: created.instanceId, ms: now() - entry.startedAt });
@@ -471,7 +471,7 @@ export function createCloudReadyKeeper(deps: CloudReadyKeeperDeps) {
         cancelled,
         ...(error instanceof CloudReadySetupFailed ? { setupExitCode: error.exitCode } : { error: reason }),
       });
-      // A machine made for the pool that isn't ready is only a bill.
+      // A machine made for the pool that isn't ready is only waste.
       // createCloudMachine already deleted one that never signed in.
       let left = false;
       if (entry.instanceId) {
@@ -479,11 +479,11 @@ export function createCloudReadyKeeper(deps: CloudReadyKeeperDeps) {
       }
       if (!cancelled) {
         // Bounded: ADE tries a couple more times on its own (a flaky setup
-        // step, a busy host), never when a machine may still be billing or the
+        // step, a busy host), never when a machine may still be using hours or the
         // template can't run a setup, then waits for Retry.
         const attempts = (failureOf(settings)?.attempts ?? 0) + 1;
         const at = now();
-        const retriable = !left && !/template is too old/.test(reason);
+        const retriable = !left && !/too old to run a setup/.test(reason);
         const retryAt = cloudReadyRetryAt(attempts, at, retriable);
         const failure: CloudReadyFailure = {
           error: left
@@ -602,15 +602,15 @@ export function createCloudReadyKeeper(deps: CloudReadyKeeperDeps) {
         && !blockedByFailure(settings)
         && usedAsleep(machines) < CLOUD_READY_USED_ASLEEP_LIMIT;
     });
-    // Nobody approves a prepare, so at the monthly cap, or with a month ADE
+    // Nobody approves a prepare, so out of hours, or with hours ADE
     // can't read, it makes nothing new; a later pass prepares once it can.
     const month = missing.length
-      ? await deps.spending?.().catch((error: unknown) => {
-        logger.warn?.("cloud.ready_spending_read_failed", { error: getErrorMessage(error) });
+      ? await deps.account?.().catch((error: unknown) => {
+        logger.warn?.("cloud.ready_account_read_failed", { error: getErrorMessage(error) });
         return null;
       }) ?? null
       : null;
-    const blocked = missing.length ? cloudUnattendedSpendBlock(month) : null;
+    const blocked = missing.length ? cloudUnattendedHoursBlock(month) : null;
     if (!blocked) {
       for (const settings of missing) void prepare(settings);
     }
@@ -619,8 +619,8 @@ export function createCloudReadyKeeper(deps: CloudReadyKeeperDeps) {
         settings,
         cloudReadyMachinesFor(instances, settings.identity).filter((instance) => instance.status !== "failed"),
       )),
-      error: blocked === "cap_reached" && month ? cloudCapReachedMessage(month)
-        : blocked === "spend_unknown" ? CLOUD_SPEND_UNKNOWN_MESSAGE
+      error: blocked === "out_of_hours" ? CLOUD_OUT_OF_HOURS_MESSAGE
+        : blocked === "hours_unknown" ? CLOUD_HOURS_UNKNOWN_MESSAGE
         : null,
     });
   };

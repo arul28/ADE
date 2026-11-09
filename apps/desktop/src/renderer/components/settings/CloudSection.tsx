@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { CircleNotch } from "@phosphor-icons/react";
 import {
   BRING_YOUR_OWN_CLOUD_ENABLED,
-  formatCloudUsd,
+  cloudAccountBanner,
+  formatCloudHours,
   type CloudCreateMachineResult,
   type CloudStatus,
 } from "../../../shared/adeCloud";
@@ -20,6 +21,7 @@ import { CloudMachinesCard } from "./CloudMachinesCard";
 import { CloudSignInsCard, useCloudSignIns } from "./CloudSignInsCard";
 import { useCloudMachines } from "../remoteTargets/useCloudMachines";
 import { CloudAgentLimitsCard } from "./CloudAgentLimitsCard";
+import { CloudPlanCard } from "./CloudPlanCard";
 import { ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
 import { showToast } from "../app/toast/toastStore";
 import { NewCloudMachineDialog } from "../remoteTargets/NewCloudMachineDialog";
@@ -48,7 +50,7 @@ export function CloudSection() {
    */
   const [creating, setCreating] = useState(false);
   const [accountChangedAt, setAccountChangedAt] = useState(0);
-  // One read of the account's machines for the hero's month, the warnings and the machines card.
+  // One read of the account's machines for the hero, the warnings and the machines card.
   const machines = useCloudMachines(live);
 
   const load = useCallback(async () => {
@@ -108,12 +110,12 @@ export function CloudSection() {
       : connected
         ? { tone: "ok" as const, label: "Ready" }
         : { tone: "neutral" as const, label: "Not available yet" };
-  const spending = machines.result?.state === "ok" ? machines.result.spending : null;
-  const cap = spending?.monthlyCapUsd ?? null;
+  const account = machines.result?.state === "ok" ? machines.result.account : null;
+  const accountBanner = account ? cloudAccountBanner(account) : null;
   const facts: IntegrationFact[] = live
     ? [
         {
-          label: "Machines",
+          label: "Computers",
           value: status?.instanceCount == null
             ? "—"
             : status.instanceCount === 0
@@ -121,18 +123,15 @@ export function CloudSection() {
               : `${status.instanceCount} · ${status.runningCount ?? 0} awake`,
         },
         {
-          label: "This month",
-          value: spending?.monthSpentUsd != null
-            ? `${formatCloudUsd(spending.monthSpentUsd)}${cap != null ? ` of ${formatCloudUsd(cap)}` : ""}`
-            : "—",
+          label: "Hours left",
+          value: account ? `${formatCloudHours(account.hours.leftMilli)} of ${formatCloudHours(account.hours.includedMilli)}` : "—",
           mono: true,
-          tone: spending?.capReached || spending?.capNear ? "warn" : undefined,
-          title: `${ADE_CLOUD_NAME} settles spend once an hour, so the newest hour shows later.`,
+          tone: account && account.hours.state !== "none" ? "warn" : undefined,
         },
       ]
     : [];
   const heroFoot = live && status?.instanceCount === 0
-    ? <div className="ade-ig-hero-foot-row"><b>Next</b><span>Make a machine below, or pick {ADE_CLOUD_NAME} when you start a chat.</span></div>
+    ? <div className="ade-ig-hero-foot-row"><b>Next</b><span>Make a computer below, or pick {ADE_CLOUD_NAME} when you start a chat.</span></div>
     : null;
 
   return (
@@ -161,26 +160,14 @@ export function CloudSection() {
         <Banner layout="inline" model={{ id: "cloud-status-error", tone: "warning", title: connected ? `Couldn't reach ${ADE_CLOUD_NAME}` : `${ADE_CLOUD_NAME} refused this account`, detail: status.error, actions: [{ label: "Check again", onClick: () => { void load(); } }] }} />
       ) : null}
 
-      {live && spending && (spending.capReached || spending.capNear) ? (
-        <Banner
-          layout="inline"
-          model={{
-            id: spending.capReached ? "cloud-cap-reached" : "cloud-cap-near",
-            tone: spending.capReached ? "warning" : "info",
-            title: spending.capReached ? "You reached this month's cap" : "Close to this month's cap",
-            detail: spending.capReached
-              ? "ADE makes, wakes and resizes nothing until the 1st or until you raise the cap below. Running work carries on."
-              : "At the cap ADE stops making and waking machines. You can raise it below.",
-            report: false,
-          }}
-        />
-      ) : null}
+      {live && accountBanner ? <Banner layout="inline" model={{ ...accountBanner, report: false }} /> : null}
 
       <IntegrationColumns>
         {live ? (
           <>
+            {account ? <CloudPlanCard account={account} onChanged={machines.refresh} /> : null}
             <CloudSignInsCard signIns={cloudSignIns} />
-            <CloudReadyMachinesCard status={status} cloudSignIns={cloudSignIns.status} />
+            <CloudReadyMachinesCard cloudSignIns={cloudSignIns.status} />
             <CloudMachinesCard status={status} machines={machines} onNewMachine={() => setCreating(true)} accountChangedAt={accountChangedAt} />
             <CloudAgentLimitsCard />
           </>

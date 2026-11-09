@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { cloudMachineSettling, type CloudMachinesResult } from "../../../shared/adeCloud";
 import { extractError } from "../../lib/format";
 
@@ -6,6 +6,8 @@ import { extractError } from "../../lib/format";
 const SETTLING_POLL_MS = 4_000;
 /** A box that never settles stops the quick re-reads after this; focus reads again. */
 const SETTLING_POLL_LIMIT_MS = 5 * 60_000;
+/** A surface that opens this soon after a read shares it instead of asking again. */
+const JOIN_LAST_READ_MS = 2_000;
 
 export type CloudMachinesState = {
   /** The last answer; it stays while a refresh runs, so the cards never flicker. */
@@ -16,68 +18,99 @@ export type CloudMachinesState = {
   refresh: () => void;
 };
 
+type Snapshot = Omit<CloudMachinesState, "refresh">;
+
+const EMPTY: Snapshot = { result: null, loading: false, loadError: null };
+
+let snapshot = EMPTY;
+const listeners = new Set<() => void>();
+let generation = 0;
+let lastReadAt = 0;
+let settlingSince: number | null = null;
+let settlingTimer: number | null = null;
+let stopWatching: (() => void) | null = null;
+
+function publish(next: Partial<Snapshot>): void {
+  snapshot = { ...snapshot, ...next };
+  for (const listener of listeners) listener();
+}
+
+function clearSettlingTimer(): void {
+  if (settlingTimer != null) window.clearTimeout(settlingTimer);
+  settlingTimer = null;
+}
+
+function scheduleSettlingRead(result: CloudMachinesResult | null): void {
+  clearSettlingTimer();
+  if (!result?.machines.some((machine) => cloudMachineSettling(machine.state))) {
+    settlingSince = null;
+    return;
+  }
+  settlingSince ??= Date.now();
+  if (Date.now() - settlingSince > SETTLING_POLL_LIMIT_MS) return;
+  settlingTimer = window.setTimeout(load, SETTLING_POLL_MS);
+}
+
+function load(): void {
+  const listMachines = window.ade?.cloud?.listMachines;
+  if (!listMachines || listeners.size === 0) return;
+  const current = ++generation;
+  lastReadAt = Date.now();
+  publish({ loading: true });
+  void listMachines().then(
+    (result) => {
+      if (current !== generation) return;
+      publish({ result, loadError: null });
+      scheduleSettlingRead(result);
+    },
+    (error: unknown) => {
+      if (current === generation) publish({ loadError: extractError(error) });
+    },
+  ).finally(() => {
+    if (current === generation) publish({ loading: false });
+  });
+}
+
+function startWatching(): void {
+  const off = window.ade?.cloud?.onStatusChanged?.(load);
+  window.addEventListener("focus", load);
+  stopWatching = () => {
+    off?.();
+    window.removeEventListener("focus", load);
+    stopWatching = null;
+  };
+}
+
+function subscribe(listener: () => void): () => void {
+  const first = listeners.size === 0;
+  listeners.add(listener);
+  if (first) startWatching();
+  if (first || Date.now() - lastReadAt > JOIN_LAST_READ_MS) load();
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size > 0) return;
+    stopWatching?.();
+    clearSettlingTimer();
+    settlingSince = null;
+    generation += 1;
+    snapshot = EMPTY;
+  };
+}
+
+const subscribeNothing = () => () => undefined;
+const readSnapshot = () => snapshot;
+const readEmpty = () => EMPTY;
+
 /**
  * The account's ADE Cloud boxes for the machine list. Account-level: it asks
  * this desktop's main process with no pin (cloud access is the account's).
  *
- * Read when the list opens, on window focus and when the integration changes,
- * never on a standing poll; only while a box is moving between states does it
- * read again every few seconds, until the box settles.
+ * One shared read however many surfaces show it. Read when the first surface
+ * opens, on window focus and when the integration changes, never on a standing
+ * poll; only while a box is moving between states does it read again every few
+ * seconds, until the box settles.
  */
 export function useCloudMachines(enabled: boolean): CloudMachinesState {
-  const bridge = window.ade?.cloud;
-  const [result, setResult] = useState<CloudMachinesResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const generation = useRef(0);
-  const settlingSince = useRef<number | null>(null);
-
-  const load = useCallback(() => {
-    const listMachines = bridge?.listMachines;
-    if (!enabled || !listMachines) return;
-    const current = ++generation.current;
-    setLoading(true);
-    void listMachines().then(
-      (next) => {
-        if (current !== generation.current) return;
-        setResult(next);
-        setLoadError(null);
-      },
-      (error: unknown) => {
-        if (current !== generation.current) return;
-        setLoadError(extractError(error));
-      },
-    ).finally(() => {
-      if (current === generation.current) setLoading(false);
-    });
-  }, [bridge, enabled]);
-
-  useEffect(() => {
-    if (!enabled) {
-      generation.current += 1;
-      setResult(null);
-      return;
-    }
-    load();
-    const off = bridge?.onStatusChanged?.(load);
-    window.addEventListener("focus", load);
-    return () => {
-      off?.();
-      window.removeEventListener("focus", load);
-    };
-  }, [bridge, enabled, load]);
-
-  const settling = Boolean(result?.machines.some((machine) => cloudMachineSettling(machine.state)));
-  useEffect(() => {
-    if (!settling) {
-      settlingSince.current = null;
-      return;
-    }
-    settlingSince.current ??= Date.now();
-    if (Date.now() - settlingSince.current > SETTLING_POLL_LIMIT_MS) return;
-    const timer = window.setTimeout(load, SETTLING_POLL_MS);
-    return () => window.clearTimeout(timer);
-  }, [load, result, settling]);
-
-  return { result, loading, loadError, refresh: load };
+  const state = useSyncExternalStore(enabled ? subscribe : subscribeNothing, enabled ? readSnapshot : readEmpty, readEmpty);
+  return { ...state, refresh: load };
 }

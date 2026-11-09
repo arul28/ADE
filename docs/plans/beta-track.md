@@ -338,6 +338,15 @@ How the pipeline is built, and what is still open.
   beta, and a replaced pending run is harmless because each run resolves the
   newest green commit itself.
 
+### ADE Cloud template
+
+`beta.yml`'s `cloud-template` job calls `cloud-template.yml` with the beta's tag
+once it is public, beside the feed and outside the report job, so a late or
+failed build blocks nothing and opens no issue. A stable release builds it from
+the `release: published` trigger when the release skill undrafts it (a beta's
+undraft uses GITHUB_TOKEN and starts no workflow, hence the explicit call).
+Previews do not build one. See `infra/ade-cloud/README.md`.
+
 ### iOS TestFlight from CI (work item 8)
 
 - `beta.yml`'s `ios` job calls `ios-testflight.yml` once a real beta is

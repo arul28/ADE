@@ -15,7 +15,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { cloudCapReachedMessage, type CloudSpending } from "../../../shared/adeCloud";
 import {
   CLOUD_READY_METADATA,
   readCloudReadyMachineState,
@@ -72,11 +71,16 @@ const WAKE_RETRY_DEADLINE_MS = 15_000;
 const WAKE_RETRY_DELAY_MS = 500;
 
 /** Wakes (or starts) a box, retrying through the provider's "still changing state" answers for a few seconds. */
-export async function wakeThroughTransition(client: CloudProvider, instanceId: string, now: () => number = () => Date.now()): Promise<void> {
+export async function wakeThroughTransition(
+  client: CloudProvider,
+  instanceId: string,
+  now: () => number = () => Date.now(),
+  options?: { reason?: "push_work" },
+): Promise<void> {
   const deadline = now() + WAKE_RETRY_DEADLINE_MS;
   for (;;) {
     try {
-      await client.startInstance(instanceId);
+      await client.startInstance(instanceId, options);
       return;
     } catch (error) {
       if (!(error instanceof CloudProviderError) || !WAKE_TRANSIENT_CODES.has(error.code) || now() >= deadline) throw error;
@@ -95,13 +99,10 @@ export async function wakeThroughTransition(client: CloudProvider, instanceId: s
 export async function claimCloudReadyMachine(
   client: CloudProvider,
   identity: string,
-  options: { logger?: CloudLogger; now?: () => number; spending?: () => Promise<CloudSpending | null> } = {},
+  options: { logger?: CloudLogger; now?: () => number } = {},
 ): Promise<CloudReadyClaim> {
   const now = options.now ?? (() => Date.now());
   const logger = options.logger ?? {};
-  // A claim wakes a sleeping machine, and at the cap ADE wakes nothing.
-  const month = await options.spending?.().catch(() => null) ?? null;
-  if (month?.capReached) throw new Error(cloudCapReachedMessage(month));
   const pool = cloudReadyMachinesFor(await client.listInstances(), identity);
   const ready = pool.filter((instance) => cloudReadyStateOf(instance) === "ready" && instance.status !== "failed");
   // Without its ADE machine recorded, no caller can tell which computer it is:
@@ -210,7 +211,7 @@ export async function releaseCloudReadyMachine(
   try {
     await client.sleepInstance(instanceId);
   } catch (error) {
-    // Ready but awake: it bills until the next prepare pass sleeps it.
+    // Ready but awake: it uses hours until the next prepare pass sleeps it.
     options.logger?.warn?.("cloud.ready_release_sleep_failed", { instanceId, error: getErrorMessage(error) });
   }
   options.logger?.info?.("cloud.ready_released", { instanceId });

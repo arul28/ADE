@@ -461,7 +461,7 @@ describe("machine directory", () => {
     const now = Date.now();
     const dateNow = vi.spyOn(Date, "now");
 
-    dateNow.mockReturnValue(now - 120_000);
+    dateNow.mockReturnValue(now - 200_000);
     await register(env, token, "offline");
     dateNow.mockReturnValue(now - 70_000);
     await register(env, token, "online-old");
@@ -476,7 +476,7 @@ describe("machine directory", () => {
     expect(body.machines.map((machine) => machine.machineKey)).toEqual(["online-new", "online-old", "offline"]);
     expect(body.machines.map((machine) => machine.online)).toEqual([true, true, false]);
     expect(body.machines[2]).toEqual(expect.objectContaining({
-      lastSeenAt: now - 120_000,
+      lastSeenAt: now - 200_000,
       reachableEndpoints: [{ kind: "lan", host: "mac.local", port: 8787 }],
     }));
     expect(response.headers.get("server-timing")).toMatch(

@@ -6249,6 +6249,8 @@ export const TURN_ACCEPTED_START_TIMEOUT_MS = 60_000;
 // cache and a resumed Codex thread adds ~200 tokens, while each idle chat
 // holds 200-500 MB of provider and MCP processes.
 const SESSION_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+/** How long a retried send is recognized (a wake and reconnect take seconds; this is wide). */
+const CLIENT_SEND_DEDUPE_MS = 10 * 60_000;
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
 /** Longest a fresh Codex runtime's first turn waits for its skill list. */
 const CODEX_SKILL_CATALOG_SETTLE_MS = 1_500;
@@ -11955,6 +11957,8 @@ export function createAgentChatService(args: {
   claudeSubprocessReaper?: ClaudeSubprocessReaper;
   createScheduledWorkScheduler?: typeof createChatScheduledWorkScheduler;
   onEvent?: (event: AgentChatEventEnvelope) => void;
+  /** A chat was deleted. Fires once, after its transcript is gone. */
+  onChatDeleted?: (sessionId: string) => void;
   /** Low-frequency, content-free hook emitted once when a persisted turn reaches a terminal state. */
   onTurnSettled?: (event: AgentChatTurnSettledEvent) => void;
   /**
@@ -12153,6 +12157,7 @@ export function createAgentChatService(args: {
     claudeSubprocessReaper: injectedClaudeSubprocessReaper,
     createScheduledWorkScheduler = createChatScheduledWorkScheduler,
     onEvent,
+    onChatDeleted,
     onTurnSettled,
     requestSessionAttention = (request) =>
       sessionService.requestAttention(request.sessionId, request.message, request.source),
@@ -63289,6 +63294,19 @@ export function createAgentChatService(args: {
     }
   };
 
+  /** Recent client send ids, per chat. True when this one was already seen. */
+  const seenClientSends = new Map<string, number>();
+  const noteClientSendSeen = (sessionId: string, clientSendId: string): boolean => {
+    const key = `${sessionId}:${clientSendId}`;
+    const now = Date.now();
+    for (const [seen, at] of seenClientSends) {
+      if (now - at > CLIENT_SEND_DEDUPE_MS) seenClientSends.delete(seen);
+    }
+    if (seenClientSends.has(key)) return true;
+    seenClientSends.set(key, now);
+    return false;
+  };
+
   async function sendMessage(
     args: AgentChatSendArgs,
     options: {
@@ -63322,6 +63340,9 @@ export function createAgentChatService(args: {
   ): Promise<void | AgentChatSteerResult> {
     assertChatRuntimeOwnedHere(args.sessionId, "send to");
     assertChatNotMovedAway(args.sessionId, "send_message");
+    // A send retried after a sleep (its first copy may have landed before the
+    // machine froze): the client's id tells a retry from a second message.
+    if (args.clientSendId && noteClientSendSeen(args.sessionId, args.clientSendId)) return;
     const managed = ensureManagedSession(args.sessionId);
     // `/side <question>` from any client (the desktop and iOS composers catch
     // it first; `ade chat send` and SDK hosts reach here) opens the
@@ -69806,6 +69827,39 @@ export function createAgentChatService(args: {
     return false;
   };
 
+  /**
+   * Every chat with work in hand, for the cloud busy list (`decideCloudBusy`):
+   * whether it is stopped waiting on a person, and when it last moved.
+   */
+  const listBusyFacts = (): Array<{ waitingOnPerson: boolean; lastActivityAt: number }> => {
+    const facts: Array<{ waitingOnPerson: boolean; lastActivityAt: number }> = [];
+    for (const managed of managedSessions.values()) {
+      if (managed.closed || managed.deleted) continue;
+      const waitingOnPerson = hasLivePendingInput(managed);
+      if (!waitingOnPerson && managed.session.status !== "active" && !hasRuntimeActiveWorkload(managed.runtime)) continue;
+      facts.push({ waitingOnPerson, lastActivityAt: managed.lastActivityTimestamp });
+    }
+    return facts;
+  };
+
+  /**
+   * Stops every running turn, for a computer about to be stopped at 0 hours
+   * (`ade cloud prepare-stop`). A turn stopped this way shows as interrupted,
+   * the same as a Stop, and the chat copy written afterwards records it.
+   */
+  const interruptRunningTurns = async (): Promise<number> => {
+    const running = [...managedSessions.values()].filter((managed) =>
+      !managed.closed && !managed.deleted && (managed.session.status === "active" || hasRuntimeActiveWorkload(managed.runtime)));
+    await Promise.allSettled(running.map(async (managed) => {
+      try {
+        await interrupt({ sessionId: managed.session.id, mode: DEFAULT_AGENT_CHAT_STOP_MODE });
+      } catch (error) {
+        logger.warn("agent_chat.prepare_stop_interrupt_failed", { sessionId: managed.session.id, error: String(error) });
+      }
+    }));
+    return running.length;
+  };
+
   // Broader than hasActiveWorkloads: a session that's between turns still
   // owns a live agent runtime (Claude SDK client, Codex app-server, etc.) the
   // user expects to keep using after switching away and back. Project context
@@ -72682,6 +72736,11 @@ export function createAgentChatService(args: {
 
     sessionService.deleteSession(trimmedSessionId);
     notifyChatSessionEnded(trimmedSessionId);
+    try {
+      onChatDeleted?.(trimmedSessionId);
+    } catch (error) {
+      logger.warn("agent_chat.on_deleted_failed", { sessionId: trimmedSessionId, error: getErrorMessage(error) });
+    }
     return { recoverable };
   };
 
@@ -78475,6 +78534,8 @@ export function createAgentChatService(args: {
     ensureSessionSurface,
     adoptLegacyPersonalSessionAsAssistant,
     hasActiveWorkloads,
+    listBusyFacts,
+    interruptRunningTurns,
     hasRetainableSessions,
     residentChatEventHistorySessionCount: () => eventHistoryBySession.size,
     seedLiveChatEventHistory(envelopes: AgentChatEventEnvelope[]): void {

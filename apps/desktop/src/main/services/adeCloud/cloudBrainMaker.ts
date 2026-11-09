@@ -11,7 +11,8 @@
 import { randomUUID } from "node:crypto";
 import {
   CLOUD_MADE_BY_CHAT_METADATA,
-  cloudUnattendedSpendBlock,
+  cloudUnattendedHoursBlock,
+  type CloudAccountState,
   type CloudCreateMachineArgs,
   type CloudCreateProgress,
   type CloudMachineKind,
@@ -45,7 +46,7 @@ export type CloudMakeInput = (
 ) & {
   /**
    * The yes came from what the person lets unattended agents do (a full-auto
-   * chat or an automation, within the cap and the agent limits): this brain
+   * chat or an automation, within the agent limits): this brain
    * may approve the new machine's sign-in itself, with no tap.
    */
   selfApprove?: boolean;
@@ -58,7 +59,10 @@ const SELF_APPROVAL_WINDOW_MS = 20 * 60_000;
 
 export function createCloudBrainMaker(deps: {
   /** The creator's deps without a window: the approval is handed off. */
-  base: Omit<CloudCopyDeps, "approveInWindow" | "handOffApproval" | "selfApproval">;
+  base: Omit<CloudCopyDeps, "approveInWindow" | "handOffApproval" | "selfApproval"> & {
+    /** Plan and hours, for a sign-in the brain approves itself. */
+    account?: () => Promise<CloudAccountState | null>;
+  };
   logger?: {
     info?(event: string, meta?: Record<string, unknown>): void;
     warn?(event: string, meta?: Record<string, unknown>): void;
@@ -72,7 +76,7 @@ export function createCloudBrainMaker(deps: {
    * Whether this brain may approve `instanceId`'s sign-in itself, with no
    * tap: the machine carries the request id of a make this brain started
    * with an unattended yes, the make is recent, it is the first ask for that
-   * request, and the month is still under the cap. Every answer is logged.
+   * request, and the account still has hours. Every answer is logged.
    */
   const allowSelfApproval = async (
     input: { requestId: string; instanceId: string },
@@ -92,7 +96,7 @@ export function createCloudBrainMaker(deps: {
     const client = await deps.base.client().catch(readFailed("client"));
     const instance = client ? await client.getInstance(input.instanceId).catch(readFailed("instance")) : null;
     if (instance?.metadata?.ade_request_id !== input.requestId) return refuse("request_id_mismatch");
-    const blocked = cloudUnattendedSpendBlock(await deps.base.spending?.().catch(readFailed("spending")));
+    const blocked = cloudUnattendedHoursBlock(await deps.base.account?.().catch(readFailed("account")));
     if (blocked) return refuse(blocked);
     selfApproved.add(input.requestId);
     deps.logger?.info?.("cloud.self_approval_used", input);

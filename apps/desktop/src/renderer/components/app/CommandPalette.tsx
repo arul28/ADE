@@ -152,6 +152,7 @@ import {
   settingsEntryPath,
   settingsTabLabel,
 } from "../settings/settingsManifest";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { isImeComposing } from "../../lib/imeComposition";
 import { InlineErrorNotice } from "../ui/notice";
 
@@ -673,6 +674,7 @@ export function CommandPalette({
     [androidSupport, macDesktopSupport, supportsIosSimulator],
   );
 
+  const cloudEnabled = useAdeCloudEnabled();
   const commands: Command[] = useMemo(() => {
     // The palette is mounted for the life of the window; while it is closed
     // nothing reads the list, so a lane or selection change does not rebuild it.
@@ -1048,6 +1050,7 @@ export function CommandPalette({
 
     return next;
   }, [
+    cloudEnabled,
     open,
     activeSessionTarget,
     hasActiveProject,

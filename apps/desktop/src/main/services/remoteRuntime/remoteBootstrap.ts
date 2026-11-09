@@ -188,6 +188,7 @@ export function validateRemoteRuntimeInitializeResult(args: {
     capabilities: {
       projects: true,
       machineProjects: normalizedMachineProjects,
+      ...(capabilities.clientSendDedupe === true ? { clientSendDedupe: true } : {}),
     },
     compatibilityWarnings,
   };

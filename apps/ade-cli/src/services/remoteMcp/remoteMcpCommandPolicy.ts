@@ -79,7 +79,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["integration", new Set(["status"])],
   // cloud machines and the ready pool: names, states, prices, never the key.
   // Nothing that spends money or deletes is reachable from here.
-  ["cloud", new Set(["ready", "status", "list", "ls", "machines", "spending", "limits"])],
+  ["cloud", new Set(["ready", "status", "list", "ls", "machines", "hours", "limits"])],
   ["machines", new Set(["list", "show"])],
   ["projects", new Set(["list"])],
   // `defaults` reads the new-lane defaults; `defaults set` is refused below.
@@ -208,6 +208,11 @@ export function checkRemoteAdeCommand(
   }
   if (isServiceSignInCommand(command, words)) {
     return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
+  }
+  // Only ADE's server runs these, over exec on a cloud computer: one interrupts
+  // all its work, the other commits and pushes every lane.
+  if (command === "cloud" && (words[0] === "prepare-stop" || words[0] === "push-work")) {
+    return { ok: false, reason: `\`ade cloud ${words[0]}\` is not available remotely. ADE's server runs it on a computer it is about to stop or free-wake.` };
   }
   // Renaming, removing or re-pairing account machines outlives revoking the
   // connection, like account tokens; reading the roster is fine.

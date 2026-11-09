@@ -67,8 +67,8 @@ export type MachinePresence = "connected" | "online" | "asleep" | "offline";
  *
  * This is the INFERRED fallback, used only when no suspend announcement
  * arrived: a machine whose pre-suspend beat was lost, or one running a host too
- * old to send one. The directory's own online window is 90 seconds, so this
- * window effectively covers roughly 90 s to 10 min of silence.
+ * old to send one. The directory's own online window is 150 seconds, so this
+ * window effectively covers roughly 150 s to 10 min of silence.
  *
  * Ten minutes is chosen because the two failure modes are asymmetric. Calling a
  * genuinely-crashed machine "asleep" for a few extra minutes costs the user

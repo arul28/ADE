@@ -1,14 +1,16 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { ArrowClockwise, CircleNotch, GitBranch, Sun, UserMinus } from "@phosphor-icons/react";
 import {
+  cloudAccountBanner,
+  cloudOutOfHours,
   describeCloudMachineSize,
   describeCloudSleepPolicy,
-  formatCloudHourlyPrice,
-  formatCloudUsd,
+  formatCloudHoursRate,
   type CloudMachine,
   type CloudMachinesResult,
 } from "../../../shared/adeCloud";
 import { Banner } from "../ui/notice";
+import { PushAllWorkButton } from "./PushAllWorkButton";
 import type { NoticeAction } from "../ui/notice/NoticeParts";
 import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
 import {
@@ -16,7 +18,6 @@ import {
   cloudGroupTotals,
   cloudStateTone,
   describeCloudRate,
-  describeCloudSpend,
   type CloudBoxWork,
 } from "./cloudMachineModel";
 import { MachineActionsMenu, type MachineAction } from "./MachineActionsMenu";
@@ -30,7 +31,7 @@ const READY_STATE_LABELS = {
 } as const;
 
 
-/** The group's head: the mark, how many boxes, and what they cost now and so far. */
+/** The group's head: the mark, how many computers, and how fast they use hours now. */
 export function CloudGroupHead({
   boxes,
   loading,
@@ -39,20 +40,15 @@ export function CloudGroupHead({
   loading: boolean;
 }) {
   const totals = cloudGroupTotals(boxes);
-  const facts = [
-    boxes.length > 0 ? `${formatCloudHourlyPrice(totals.hourlyUsd)} now` : null,
-    totals.spentUsd != null && boxes.length > 0 ? `${formatCloudUsd(totals.spentUsd)} so far` : null,
-    totals.savedUsd != null && totals.savedUsd >= 0.01 ? `${formatCloudUsd(totals.savedUsd)} saved asleep` : null,
-  ].filter(Boolean);
   return (
     <div className="ade-cx-section-head ade-cx-cloud-head">
       <CloudMark size={12} bold />
       {ADE_CLOUD_NAME}
       <span className="ade-cx-count">{boxes.length}</span>
       {loading ? <CircleNotch size={11} className="animate-spin" aria-label="Checking ADE Cloud" /> : null}
-      {facts.length ? (
-        <span className="ade-cx-cloud-head-facts kit-num" title="ADE Cloud settles what a box spent once an hour, so the newest minutes show later.">
-          {facts.join(" · ")}
+      {totals.hoursRate > 0 ? (
+        <span className="ade-cx-cloud-head-facts kit-num" title="How fast the computers awake now use your hours, as multiples of a Small computer.">
+          {formatCloudHoursRate(totals.hoursRate)} now
         </span>
       ) : null}
     </div>
@@ -60,8 +56,8 @@ export function CloudGroupHead({
 }
 
 /**
- * What stops or threatens every box: ADE Cloud refusing this account, or the
- * monthly cap. Each says what it blocks and offers the next step.
+ * What stops or threatens every box: ADE Cloud refusing this account, or
+ * running out of hours. Each says what it blocks and offers the next step.
  */
 export function CloudGroupBanners({
   result,
@@ -90,44 +86,44 @@ export function CloudGroupBanners({
       <Banner key="unreachable" layout="inline" model={{ id: "cloud-unreachable", tone: "warning", icon: <CloudMark size={15} />, title: `ADE couldn't reach ${ADE_CLOUD_NAME}`, detail: result.message ?? undefined, actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: onRetry }] }} />,
     );
   }
-  if (result?.state === "ok") {
-    const { spending } = result;
-    if (spending.monthlyCapUsd != null && spending.monthSpentUsd != null && (spending.capReached || spending.capNear)) {
-      const capLine = `${formatCloudUsd(spending.monthSpentUsd)} of your ${formatCloudUsd(spending.monthlyCapUsd)} monthly cap`;
+  const accountBanner = result?.state === "ok" && result.account ? cloudAccountBanner(result.account) : null;
+  if (accountBanner) {
+    if (cloudOutOfHours(result?.account) && result?.machines.length) {
       banners.push(
-        <Banner
-          key="cap"
-          layout="inline"
-          model={{
-            id: spending.capReached ? "cloud-cap-reached" : "cloud-cap-near",
-            tone: spending.capReached ? "warning" : "info",
-            icon: <CloudMark size={15} />,
-            title: spending.capReached ? "You reached this month's ADE Cloud cap" : "Close to this month's ADE Cloud cap",
-            detail: spending.capReached
-              ? `${capLine}. ADE makes, wakes and resizes nothing until the 1st or until you raise it. Running work carries on.`
-              : `${capLine}. At the cap ADE stops making and waking machines.`,
-            actions: onOpenSettings ? [{ label: "Change the cap", onClick: onOpenSettings }] : undefined,
-          }}
-        />,
+        <div key="push-work" className="ade-ig-mini-rows">
+          {result.machines.map((box) => (
+            <div key={box.instanceId} className="ade-ig-mini-row">
+              <span className="ade-ig-mini-title">{box.name ?? box.instanceId}</span>
+              <PushAllWorkButton instanceId={box.instanceId} />
+            </div>
+          ))}
+        </div>,
       );
     }
+    banners.push(
+      <Banner
+        key="hours"
+        layout="inline"
+        model={{
+          ...accountBanner,
+          icon: <CloudMark size={15} />,
+          actions: onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined,
+          report: false,
+        }}
+      />,
+    );
   }
   return banners.length ? <div style={{ display: "grid", gap: 8 }}>{banners}</div> : null;
 }
 
 /** What a failed action blocks on, as the buttons that clear it. */
 function errorActions(error: CloudBoxActionError, onOpenSettings?: (() => void) | null): NoticeAction[] | undefined {
-  switch (error.blocker) {
-    case "cap":
-      return onOpenSettings ? [{ label: "Change the cap", onClick: onOpenSettings }] : undefined;
-    default:
-      return undefined;
-  }
+  return error.blocker === "out_of_hours" && onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined;
 }
 
 /**
- * The provider line on a machine's card: state, type and size, the price in
- * this state, what it has spent, and its lanes. A sleeping box gets Wake here,
+ * The provider line on a machine's card: state, type and size, how fast it
+ * uses hours in this state, and its lanes. A sleeping box gets Wake here,
  * where the row would otherwise offer nothing.
  */
 export function CloudBoxStrip({
@@ -151,8 +147,8 @@ export function CloudBoxStrip({
   const tone = cloudStateTone(box);
   const stateLabel = box.pastDue ? "Suspended" : CLOUD_STATE_LABELS[box.state];
   const rate = describeCloudRate(box);
-  const spend = describeCloudSpend(box);
-  const canWake = (box.state === "asleep" || box.state === "stopped") && !box.pastDue;
+  const atRest = box.state === "asleep" || box.state === "stopped";
+  const canWake = atRest && !box.pastDue;
   const laneNames = work.lanes.map((lane) => (lane.projectName ? `${lane.name} (${lane.projectName})` : lane.name));
   // A refusal shows under the card, which can sit at the panel's bottom edge:
   // bring it into view so the answer to the click is never off screen.
@@ -178,22 +174,10 @@ export function CloudBoxStrip({
           ) : null}
           <span className="ade-cx-cloud-fact">{describeCloudMachineSize(box)}</span>
           {rate ? <span className="ade-cx-cloud-fact kit-num">{rate}</span> : null}
-          {spend ? (
-            <span
-              className="ade-cx-cloud-fact kit-num"
-              title={box.spentIsLifetime
-                ? "Everything this box has cost, settled hourly by ADE Cloud."
-                : "What this box cost in the last 90 days, the furthest back ADE Cloud reports."}
-            >
-              {spend}
-            </span>
-          ) : null}
-          {box.madeByAde && box.sleep.state !== "auto" ? (
+          {box.sleep.state !== "auto" ? (
             <span
               className="ade-cx-cloud-fact"
-              title={box.sleep.state === "never"
-                ? "You turned sleep off for this box. Sleep when idle… in its menu turns it back on."
-                : "The ADE on this box is older than sleeping on its own. It sleeps when idle once ADE on it updates."}
+              title="The ADE on this computer is older than sleeping on its own. It sleeps when idle once ADE on it updates."
             >
               {describeCloudSleepPolicy(box.sleep)}
             </span>
@@ -204,7 +188,7 @@ export function CloudBoxStrip({
               <span>{laneNames.length === 1 ? laneNames[0] : `${laneNames.length} lanes`}</span>
             </span>
           ) : null}
-          {work.runningChats > 0 ? (
+          {work.runningChats > 0 && !atRest ? (
             <span className="ade-cx-cloud-fact">{work.runningChats === 1 ? "1 chat running" : `${work.runningChats} chats running`}</span>
           ) : null}
           {canWake && onWake && !pending ? (
@@ -224,6 +208,7 @@ export function CloudBoxStrip({
       {box.failure ? (
         <div className="ade-cx-cloud-note">{ADE_CLOUD_NAME} couldn't run it: {box.failure}</div>
       ) : null}
+      {box.diskFull ? <Banner layout="inline" model={{ id: `cloud-disk-full-${box.instanceId}`, tone: "warning", title: box.diskFull, report: false }} /> : null}
       {error ? (
         <div ref={errorRef}>
           <Banner
@@ -245,8 +230,8 @@ export function CloudBoxStrip({
 
 /**
  * A box with no ADE row: one that is still joining, was removed from ADE, or
- * never signed in. It still bills, so it stays in the list with its price and
- * Delete box.
+ * never signed in. It still uses hours when awake, so it stays in the list with its rate and
+ * Delete computer.
  */
 export function CloudBoxOnlyRow({
   box,
@@ -269,8 +254,8 @@ export function CloudBoxOnlyRow({
     : joining
       ? "Setting up and signing in to your account…"
       : box.machineKey
-        ? `Not in ADE. Reconnect it from ⋯. It bills on ${ADE_CLOUD_NAME} until you delete it.`
-        : `Not in ADE. It bills on ${ADE_CLOUD_NAME} until you delete it.`;
+        ? `Not in ADE. Reconnect it from ⋯, or delete it.`
+        : `Not in ADE. Delete it if you don't need it.`;
   return (
     <div style={machineRowStyle} data-cloud-box-only={box.instanceId}>
       <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 12, alignItems: "center" }}>

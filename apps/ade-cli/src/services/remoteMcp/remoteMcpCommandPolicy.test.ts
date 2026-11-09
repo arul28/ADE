@@ -53,6 +53,8 @@ describe("checkRemoteAdeCommand", () => {
     ["read", "turning the ready machine off (deletes it)", ["cloud", "ready", "--json", "off"]],
     ["read", "retrying a ready prepare", ["cloud", "ready", "retry"]],
     ["read", "making an ADE Cloud machine", ["cloud", "create", "--kind", "box"]],
+    ["write", "stopping a computer's work", ["cloud", "prepare-stop"]],
+    ["write", "pushing a computer's lanes", ["cloud", "push-work"]],
     ["write", "a stdin-reading command without stdin", ["files", "write", "--workspace", "l", "a.txt", "--stdin"]],
     ["write", "a body read from stdin without stdin", ["prs", "create", "--body-file", "-"]],
   ] as const)("%s access refuses %s", (scope, _label, args) => {
@@ -75,7 +77,7 @@ describe("checkRemoteAdeCommand", () => {
     ["read", ["settings", "find", "providers"], ["settings", "find", "providers"]],
     ["read", ["cloud", "ready"], ["cloud", "ready"]],
     ["read", ["cloud", "ready", "status", "--text"], ["cloud", "ready", "status", "--text"]],
-    ["read", ["cloud", "spending", "--text"], ["cloud", "spending", "--text"]],
+    ["read", ["cloud", "hours", "--text"], ["cloud", "hours", "--text"]],
     ["write", ["lanes", "create", "--name", "fix-login"], ["lanes", "create", "--name", "fix-login"]],
     ["write", ["android", "sdk", "status"], ["android", "sdk", "status"]],
     ["write", ["action", "run", "lane.create", "--arg", "name=x"], ["action", "run", "lane.create", "--arg", "name=x"]],

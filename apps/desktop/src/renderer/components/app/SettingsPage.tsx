@@ -35,6 +35,7 @@ import { MachinePicker, reachableMachines } from "../settings/ProvidersMachinePi
 import { useProjectMachines, type ProjectMachine } from "../../state/projectMachines";
 import { Banner } from "../ui/notice";
 import { SettingsSidebarHeader } from "../settings/SettingsSidebarHeader";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import {
   SETTINGS_ENTRIES,
   availableSettingsTabs,
@@ -465,6 +466,7 @@ export function SettingsPage({
   }, [section]);
 
   const trimmedQuery = deferredQuery.trim();
+  const cloudEnabled = useAdeCloudEnabled();
   const { matchesThisTab, matchesOtherTabs } = useMemo(() => {
     if (!trimmedQuery) {
       return { matchesThisTab: null as SettingEntry[] | null, matchesOtherTabs: [] as SettingEntry[] };
@@ -480,7 +482,7 @@ export function SettingsPage({
       matchesThisTab: all.filter((entry) => !elsewhere(entry)),
       matchesOtherTabs: all.filter(elsewhere),
     };
-  }, [trimmedQuery, section, searchParams, location.hash]);
+  }, [trimmedQuery, section, searchParams, location.hash, cloudEnabled]);
 
   // Searching hides non-matching cards on this tab. Sections own their own
   // markup, so the filter runs over the `data-settings-anchor` ids the

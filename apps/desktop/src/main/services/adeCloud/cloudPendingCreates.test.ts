@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
-import { createAgent37Provider as createProvider } from "./provider/agent37/agent37Client";
+import { createCloudServerProvider } from "./cloudServerProvider";
+
+const createProvider = ({ fetch }: { fetch: (url: string, init?: RequestInit) => Promise<Response> }) =>
+  createCloudServerProvider({ accessToken: async () => "account-token", baseUrl: () => "https://directory.invalid", fetch });
 import { createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { createCloudMachines } from "./cloudMachines";
 import {
@@ -34,15 +37,13 @@ function fakeCloud(initial: FakeBox[], options: { createLosesAnswer?: (body: Rec
   const wire = (box: FakeBox) => ({ id: box.id, status: box.status, metadata: box.metadata });
   const fetch = async (url: string, init?: RequestInit): Promise<Response> => {
     const method = init?.method ?? "GET";
-    const route = url.startsWith("https://sandbox.agent37.app/v1")
-      ? `sandbox${url.slice("https://sandbox.agent37.app/v1".length)}`
-      : url.slice("https://api.agent37.com/v1".length);
+    const route = url.slice("https://directory.invalid/cloud".length);
     calls.push(`${method} ${route}`);
-    const exec = /^sandbox\/instances\/([^/]+)\/exec$/.exec(route);
+    const exec = /^\/instances\/([^/]+)\/exec$/.exec(route);
     if (exec) {
       const box = boxes.get(decodeURIComponent(exec[1]!));
-      if (!box || box.auth === "unreachable") return json(502, { error: "container_unreachable" });
-      return json(200, { exit_code: box.auth.exitCode, stdout: box.auth.stdout, stderr: "" });
+      if (!box || box.auth === "unreachable") return json(502, { error: { code: "container_unreachable", message: "unreachable" } });
+      return json(200, { exitCode: box.auth.exitCode, stdout: box.auth.stdout, stderr: "" });
     }
     if (route === "/instances" && method === "GET") return json(200, { data: [...boxes.values()].map(wire) });
     if (route === "/instances" && method === "POST") {
@@ -53,7 +54,7 @@ function fakeCloud(initial: FakeBox[], options: { createLosesAnswer?: (body: Rec
       }
       return json(500, { error: { code: "internal_error", message: "not in this fixture" } });
     }
-    if (route.startsWith("/templates/")) return json(200, { name: "ade", description: null });
+    if (route.startsWith("/templates/")) return json(200, { exists: true });
     const one = /^\/instances\/([^/]+)$/.exec(route);
     if (one) {
       const box = boxes.get(decodeURIComponent(one[1]!));
@@ -91,13 +92,12 @@ const noWait = async () => undefined;
 
 function creatorDeps(fake: ReturnType<typeof fakeCloud>, pendingCreates: CloudMachineCreatorDeps["pendingCreates"]): CloudMachineCreatorDeps {
   return {
-    client: async () => createProvider({ apiKey: "sk_test_fixture", fetch: fake.fetch }),
+    client: async () => createProvider({ fetch: fake.fetch }),
     getAccountToken: async () => "account-token",
     directoryBaseUrl: () => "https://directory.invalid",
     listAccountMachines: async () => { throw new Error("not reached in this fixture"); },
     renameMachine: async () => undefined,
     approveInWindow: async () => { throw new Error("not reached in this fixture"); },
-    templateName: () => "ade",
     sleep: noWait,
     logger: quiet,
     pendingCreates,
@@ -123,7 +123,7 @@ describe("ADE Cloud half-made boxes", () => {
     const store = createCloudPendingCreateStore(() => file.store, quiet);
     // Recorded before the create went out; the quit lost the box's id.
     store.begin("req-1", Date.now());
-    const client = createProvider({ apiKey: "sk_test_fixture", fetch: fake.fetch });
+    const client = createProvider({ fetch: fake.fetch });
 
     const result = await reconcileCloudPendingCreate(client, store.list()[0]!, {
       store,
@@ -190,7 +190,7 @@ describe("ADE Cloud half-made boxes", () => {
       : []);
     const removed: string[] = [];
     const machines = createCloudMachines({
-      client: async () => createProvider({ apiKey: "sk_test_fixture", fetch: fake.fetch }),
+      client: async () => createProvider({ fetch: fake.fetch }),
       removeAccountMachine: async (machineKey) => {
         if (rowRemoval === "throws") throw new Error("The account directory refused the removal.");
         removed.push(machineKey);
