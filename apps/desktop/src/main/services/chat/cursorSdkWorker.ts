@@ -28,6 +28,7 @@ import {
   CURSOR_SDK_COMPACT_SKIPPED_KEY,
   type CursorSdkCompactSkipped,
   isCursorSdkBusyErrorText,
+  isCursorSdkNothingToSummarizeText,
   CURSOR_SDK_TURN_TELEMETRY_KEY,
   CURSOR_SDK_USAGE_UNAVAILABLE,
   isCursorSdkBackoffErrorText,
@@ -194,7 +195,6 @@ function errorCode(error: unknown): string | undefined {
 }
 
 function isAgentBusyError(error: unknown): boolean {
-  const message = errorMessage(error).toLowerCase();
   const code = errorCode(error)?.toLowerCase();
   const record = error && typeof error === "object" ? error as Record<string, unknown> : null;
   const status = typeof record?.status === "number"
@@ -206,7 +206,57 @@ function isAgentBusyError(error: unknown): boolean {
   return (BusyCtor != null && error instanceof BusyCtor)
     || code === "agent_busy"
     || status === 409
-    || isCursorSdkBusyErrorText(message);
+    || isCursorSdkBusyErrorText(errorMessage(error));
+}
+
+/**
+ * Starts a `/compact`, or says why it cannot run. `summarize()` has no `force`
+ * option, so a run a dead worker left behind blocks it until the next message
+ * clears that run.
+ */
+async function summarizeOrSkip(target: SdkAgent): Promise<CursorSdkCompactSkipped | null> {
+  try {
+    currentRun = await target.summarize();
+    return null;
+  } catch (error) {
+    const skipped: CursorSdkCompactSkipped | null = isCursorSdkNothingToSummarizeText(errorMessage(error))
+      ? "empty"
+      : isAgentBusyError(error) ? "cut_off_run" : null;
+    if (!skipped) throw error;
+    post({
+      type: "log",
+      level: skipped === "cut_off_run" ? "warn" : "info",
+      message: `Cursor SDK compaction skipped: ${skipped}.`,
+      detail: { error: errorMessage(error) },
+    });
+    return skipped;
+  }
+}
+
+/**
+ * Sends a message. Each chat has one worker, so when this one is running
+ * nothing, a run the SDK's store still lists as active was left by a worker
+ * that died, and no send gets past it until it is expired. The rejected send
+ * recorded nothing, so retrying cannot duplicate the message.
+ */
+async function sendExpiringDeadRun(
+  target: SdkAgent,
+  message: Awaited<ReturnType<typeof cursorSdkSendMessage>>,
+  options: SendOptionsWithAdeMode,
+): Promise<void> {
+  const ownRunActive = currentRun != null;
+  try {
+    currentRun = await target.send(message, options);
+  } catch (error) {
+    if (ownRunActive || options.local?.force === true || !isAgentBusyError(error)) throw error;
+    post({
+      type: "log",
+      level: "warn",
+      message: "Cursor SDK local agent had a run left by a dead worker; expiring it and resending.",
+      detail: { error: errorMessage(error) },
+    });
+    currentRun = await target.send(message, { ...options, local: { force: true } });
+  }
 }
 
 function isCursorSdkBackoffError(error: unknown): boolean {
@@ -719,7 +769,8 @@ async function sendPrompt(payload: CursorSdkSendPrompt): Promise<unknown> {
       ? applyError
       : new Error("Cursor SDK worker is not initialized.");
   }
-  const message = await cursorSdkSendMessage(payload.promptText, payload.images);
+  const summarize = payload.summarize === true;
+  const message = summarize ? null : await cursorSdkSendMessage(payload.promptText, payload.images);
   const mode = payload.mode ?? cursorSdkLocalAgentMode(initState.policy);
   const idempotencyKey = trimIdempotencyKey(payload.idempotencyKey);
   const sendOptions: SendOptionsWithAdeMode = {
@@ -727,44 +778,20 @@ async function sendPrompt(payload: CursorSdkSendPrompt): Promise<unknown> {
     mode,
     ...(idempotencyKey ? { idempotencyKey } : {}),
     // `local.force` expires a stuck active persisted run before starting this
-    // message as a new follow-up. Only ADE's recovery re-send sets it, after a
-    // run went silent or died on the wire. A normal send must never expire an
-    // active run — that would discard a turn that is genuinely still working.
+    // message as a new follow-up. ADE's recovery re-send sets it after a run
+    // went silent or died on the wire. A normal send must not expire a run that
+    // may still be working; `sendExpiringDeadRun` covers the one proven dead.
     local: { force: payload.forceExpireActiveRun === true },
   };
   startAccountEmailLookup();
-  runTelemetry.beginRun(payload.modelSdkId ?? initState.modelSdkId, payload.summarize === true ? "manual" : "auto");
-  if (payload.summarize === true) {
-    try {
-      currentRun = await agent.summarize();
-    } catch (error) {
-      // `summarize()` has no `force` option, so a run a dead worker left behind
-      // blocks it until the next message clears that run.
-      const skipped: CursorSdkCompactSkipped | null = /no saved conversation to summarize/i.test(errorMessage(error))
-        ? "empty"
-        : isAgentBusyError(error) ? "cut_off_run" : null;
-      if (!skipped) throw error;
-      return { status: "finished", [CURSOR_SDK_COMPACT_SKIPPED_KEY]: skipped };
-    }
+  runTelemetry.beginRun(payload.modelSdkId ?? initState.modelSdkId, summarize ? "manual" : "auto");
+  if (message === null) {
+    const skipped = await summarizeOrSkip(agent);
+    if (skipped) return { status: "finished", [CURSOR_SDK_COMPACT_SKIPPED_KEY]: skipped };
   } else {
-    const ownRunActive = currentRun != null;
-    try {
-      currentRun = await agent.send(message, sendOptions);
-    } catch (error) {
-      if (ownRunActive || payload.forceExpireActiveRun === true || !isAgentBusyError(error)) throw error;
-      // Each chat has one worker, and this one is running nothing, so the run
-      // the SDK's store still lists as active was left by a worker that died.
-      // No send gets past it until it is expired. The rejected send recorded
-      // nothing, so retrying cannot duplicate the message.
-      post({
-        type: "log",
-        level: "warn",
-        message: "Cursor SDK local agent had a run left by a dead worker; expiring it and resending.",
-        detail: { error: errorMessage(error) },
-      });
-      currentRun = await agent.send(message, { ...sendOptions, local: { force: true } });
-    }
+    await sendExpiringDeadRun(agent, message, sendOptions);
   }
+  if (!currentRun) throw new Error("Cursor SDK run did not start.");
   localAgentPrompted = true;
   const runModelParams = normalizeCursorModelParams(payload.modelParams ?? initState.modelParams);
   const sdkRequestId = cursorRunRequestId(currentRun);
@@ -1135,7 +1162,7 @@ async function streamCloudRun(args: {
     const cloudStatus = result && typeof result === "object" ? (result as { status?: unknown }).status : undefined;
     const cloudCompactionEnd = cloudTelemetry.endRun(streamErrorDetail ? "error" : typeof cloudStatus === "string" ? cloudStatus : null);
     if (cloudCompactionEnd) postCloudCompaction(cloudCompactionEnd);
-    const errored = result && typeof result === "object" && (result as { status?: unknown }).status === "error";
+    const errored = cloudStatus === "error";
     const runFailure = errored
       ? await readCursorSdkRunFailureDetail({
           run,

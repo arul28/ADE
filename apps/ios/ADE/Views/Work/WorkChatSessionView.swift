@@ -1755,7 +1755,7 @@ struct WorkChatSessionView: View {
       canSend: canSendMessages,
       pendingInput: hasPendingInputGate,
       turnBusy: sending || sendingSnapshot || actionInFlight || isStreamingTurn || sessionStatus == "active",
-      compactCommandListed: chatSummaryContext.manualCompactAvailable
+      compactAvailableOnChat: chatSummaryContext.manualCompactAvailable
     )
     return WorkComposerContextMeterModel(
       usage: usage,

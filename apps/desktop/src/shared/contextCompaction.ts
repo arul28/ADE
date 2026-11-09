@@ -17,6 +17,11 @@ export function isManualCompactCommand(text: string | null | undefined): boolean
   return /^\/compact(?:\s|$)/i.test(text.trim());
 }
 
+/** What follows `/compact`; empty when the command stands alone. */
+export function manualCompactInstructions(text: string): string {
+  return text.trim().replace(/^\/compact(?:\s+|$)/i, "").trim();
+}
+
 export function providerSupportsManualCompact(
   provider: string | null | undefined,
 ): provider is ManualCompactProvider {
@@ -34,9 +39,9 @@ export function providerSupportsManualCompact(
 }
 
 /**
- * Providers whose `/compact` exists only on some chats, so the chat's own
- * command list decides: OpenCode's server may not list it, and Cursor runs it
- * on local chats but not Cursor Cloud.
+ * Providers whose `/compact` exists only on some chats, so each chat reports
+ * whether it has one: OpenCode's server may not list it, and Cursor runs it on
+ * local chats but not Cursor Cloud.
  */
 export function manualCompactDependsOnChat(provider: string | null | undefined): boolean {
   return provider === "opencode" || provider === "cursor";
@@ -58,13 +63,13 @@ export function resolveContextCompactControl(args: {
   provider?: string | null;
   state: AgentChatContextUsageState;
   enabled: boolean;
-  compactCommandListed?: boolean;
+  compactAvailableOnChat?: boolean;
   turnActive?: boolean;
   busy?: boolean;
   pendingInput?: boolean;
   inputLocked?: boolean;
 }): ContextCompactControl {
-  if ((manualCompactDependsOnChat(args.provider) && !args.compactCommandListed) || !args.enabled || args.inputLocked || !providerSupportsManualCompact(args.provider)) {
+  if ((manualCompactDependsOnChat(args.provider) && !args.compactAvailableOnChat) || !args.enabled || args.inputLocked || !providerSupportsManualCompact(args.provider)) {
     return HIDDEN_CONTEXT_COMPACT;
   }
   switch (args.state) {
@@ -106,6 +111,7 @@ export type NormalizedContextCompact = {
   provider?: AgentChatCompactProvider;
   sessionCompactionCount?: number;
   detection?: AgentChatCompactDetection;
+  fallback?: boolean;
 };
 
 const PROVIDER_TINTS: Record<AgentChatCompactProvider, { ring: string; border: string }> = {
@@ -148,6 +154,7 @@ export function normalizeContextCompactEvent(event: AgentChatEvent): NormalizedC
       provider: event.provider,
       sessionCompactionCount: event.sessionCompactionCount,
       ...(event.detection ? { detection: event.detection } : {}),
+      ...(event.fallback ? { fallback: true } : {}),
     };
   }
   if (event.type === "codex_context_compaction") {
@@ -285,6 +292,7 @@ export function toContextCompactChatEvent(
     ...(compact.durationMs != null ? { durationMs: compact.durationMs } : {}),
     ...(compact.provider ? { provider: compact.provider } : {}),
     ...(compact.sessionCompactionCount != null ? { sessionCompactionCount: compact.sessionCompactionCount } : {}),
+    ...(compact.fallback ? { fallback: true } : {}),
   };
 }
 

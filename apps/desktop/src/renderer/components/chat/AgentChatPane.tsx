@@ -15658,7 +15658,7 @@ export function AgentChatPane({
       provider: liveProvider,
       state: selectedUsageViewModel?.state ?? "unknown",
       enabled: Boolean(selectedUsageViewModel),
-      compactCommandListed: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
+      compactAvailableOnChat: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
       turnActive,
       busy: busy || parallelLaunchBusy || projectTransitionBlocksChat || submitInFlightRef.current,
       pendingInput: Boolean(pendingInput),

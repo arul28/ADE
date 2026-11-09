@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { claudeSubagentWindowIneffective, compactionIdleModeDefault, type ProviderCompactionSettings } from "../../../../shared/compactionSettings";
+import { compactFirstSupportedProvider } from "../../../../shared/compactFirst";
 import { providerSupportsManualCompact } from "../../../../shared/contextCompaction";
 import { ModernRow, ModernRows } from "../primitives/SettingsModern";
 import { showToast } from "../../app/toast/toastStore";
@@ -8,9 +9,6 @@ const FIELD_CLASS = "rounded border border-border bg-background px-2 py-1 text-x
 const NUMBER_INPUT_CLASS = `w-28 ${FIELD_CLASS}`;
 /** Claude's compaction windows, in the 100k steps it accepts. */
 const CLAUDE_WINDOW_STEPS = Array.from({ length: 10 }, (_, i) => (i + 1) * 100_000);
-
-/** Providers whose `/compact` ADE can run, so the idle offer can exist for them. */
-const COMPACT_FIRST_PROVIDERS = new Set(["claude", "codex", "pi", "opencode", "cursor"]);
 
 /**
  * The window the pill waits out, named per provider from each vendor's own
@@ -77,6 +75,29 @@ export function CompactionSettings({ provider, value, account = false, onChange 
       <option value="auto">{autoLabel}</option>{CLAUDE_WINDOW_STEPS.map((n) => <option key={n} value={n}>{n / 1000}k</option>)}
     </select>
   );
+  const thresholdRows = () => {
+    switch (provider) {
+      case "claude":
+        return <>
+          <ModernRow title="Compact at" hint="Applies at the next query start." control={windowSelect("atTokens", "Compact at", "Auto (default)")} />
+          <ModernRow title="Subagents compact at" hint={claudeSubagentWindowIneffective(settings)
+            ? "No effect: subagents can only compact earlier than the main chat. Pick a lower number, or raise Compact at."
+            : "Subagents can only compact earlier than the main chat, never later. Applies at the next query start."}
+            control={windowSelect("subagentAtTokens", "Subagents compact at", "Auto (same as the main chat)")} />
+        </>;
+      // Cursor does not let ADE choose when it compacts.
+      case "cursor":
+        return null;
+      case "codex":
+      case "copilot":
+        return <ModernRow title="Compact at" hint="Token count, capped at the active model window. Empty is Auto." control={control("atTokens", "Compact at")} />;
+      default:
+        return <>
+          <ModernRow title={provider === "opencode" ? "Compaction buffer" : "Reserve tokens"} control={control("reserveTokens", "Reserve tokens")} />
+          <ModernRow title="Keep recent tokens" control={control("keepRecentTokens", "Keep recent tokens")} />
+        </>;
+    }
+  };
   return <ModernRows>
     {account ? <ModernRow title="This account" control={<select aria-label="Account compaction setting" disabled={saving} value={value ? "custom" : "inherit"}
       className={FIELD_CLASS}
@@ -84,17 +105,8 @@ export function CompactionSettings({ provider, value, account = false, onChange 
       <option value="inherit">Same as provider default</option><option value="custom">Custom</option>
     </select>} /> : null}
     {(!account || value) ? <>
-      {provider === "claude" ? <>
-        <ModernRow title="Compact at" hint="Applies at the next query start." control={windowSelect("atTokens", "Compact at", "Auto (default)")} />
-        <ModernRow title="Subagents compact at" hint={claudeSubagentWindowIneffective(settings)
-          ? "No effect: subagents can only compact earlier than the main chat. Pick a lower number, or raise Compact at."
-          : "Subagents can only compact earlier than the main chat, never later. Applies at the next query start."}
-          control={windowSelect("subagentAtTokens", "Subagents compact at", "Auto (same as the main chat)")} />
-      </> : provider === "cursor" ? null : provider === "codex" || provider === "copilot" ? <ModernRow title="Compact at" hint="Token count, capped at the active model window. Empty is Auto." control={control("atTokens", "Compact at")} /> : <>
-        <ModernRow title={provider === "opencode" ? "Compaction buffer" : "Reserve tokens"} control={control("reserveTokens", "Reserve tokens")} />
-        <ModernRow title="Keep recent tokens" control={control("keepRecentTokens", "Keep recent tokens")} />
-      </>}
-      {COMPACT_FIRST_PROVIDERS.has(provider) ? <ModernRow title="After the cache expires"
+      {thresholdRows()}
+      {compactFirstSupportedProvider(provider) ? <ModernRow title="After the cache expires"
         hint={compactFirstIdleHint(provider)}
         control={<select aria-label="After the cache expires" disabled={saving} value={settings.idleMode ?? compactionIdleModeDefault(provider)}
           className={FIELD_CLASS}

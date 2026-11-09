@@ -1,6 +1,6 @@
 import {
   CURSOR_SDK_COMPACTION_EVENT,
-  CURSOR_SDK_PRECOMPACT_HOOK_MARK,
+  CURSOR_SDK_COMPACTION_SIGNAL_MARK,
   type CursorSdkCompactionWireEvent,
   type CursorSdkTurnTelemetry,
 } from "./cursorSdkProtocol";
@@ -79,15 +79,16 @@ type PendingCompaction = {
   trigger: "manual" | "auto";
   contextTokens: number | null;
   startedAtMs: number;
-  /** Cursor's own `summary` message said it is running, so only its end may close this. */
-  summaryRunning: boolean;
-  /** Opened by the `summary` message; a hook that lands later joins it. */
-  openedBySummary: boolean;
+  /**
+   * What has reported this compaction. Once a `summary` message has, only its
+   * end may close it. While it is `summary` alone, a hook that lands joins it.
+   */
+  source: "hook" | "summary" | "both";
 };
 
 /**
- * Worker-side state for the local run in flight: the compaction the
- * `preCompact` hook opened, and the account/model facts hook payloads carry.
+ * Worker-side state for the local run in flight: the compaction under way, and
+ * the account/model facts hook payloads carry.
  *
  * Since `@cursor/sdk` 1.2.0 the stream carries `summary` messages (running,
  * completed, error), which are the real start and end of a compaction. The
@@ -133,7 +134,7 @@ export function createCursorSdkRunTelemetry(now: () => number = Date.now) {
     if (status !== "running") return null;
     compactionSignalThisRun = true;
     if (pending) {
-      pending.summaryRunning = true;
+      if (pending.source === "hook") pending.source = "both";
       return null;
     }
     compactions += 1;
@@ -142,8 +143,7 @@ export function createCursorSdkRunTelemetry(now: () => number = Date.now) {
       trigger: runTrigger,
       contextTokens: null,
       startedAtMs: now(),
-      summaryRunning: true,
-      openedBySummary: true,
+      source: "summary",
     };
     return { type: CURSOR_SDK_COMPACTION_EVENT, phase: "started", seq: compactions, trigger: runTrigger };
   };
@@ -171,10 +171,10 @@ export function createCursorSdkRunTelemetry(now: () => number = Date.now) {
     preCompactStarted(payload: CursorPreCompactHookPayload): CursorSdkCompactionWireEvent {
       compactionSignalThisRun = true;
       const trigger = runTrigger === "manual" ? "manual" : payload.trigger;
-      if (pending?.openedBySummary) {
+      if (pending?.source === "summary") {
         // The `summary` message got here first: same compaction, now with sizes.
         pending.contextTokens = payload.contextTokens;
-        pending.openedBySummary = false;
+        pending.source = "both";
       } else {
         compactions += 1;
         pending = {
@@ -182,8 +182,7 @@ export function createCursorSdkRunTelemetry(now: () => number = Date.now) {
           trigger,
           contextTokens: payload.contextTokens,
           startedAtMs: now(),
-          summaryRunning: false,
-          openedBySummary: false,
+          source: "hook",
         };
       }
       return {
@@ -209,11 +208,11 @@ export function createCursorSdkRunTelemetry(now: () => number = Date.now) {
       const record = asRecord(event);
       const type = typeof record?.type === "string" ? record.type : "";
       if (type === "summary") return { compaction: fromSummaryMessage(record), event: null };
-      const compaction = POST_COMPACTION_STREAM_TYPES.has(type) && !pending?.summaryRunning
+      const compaction = POST_COMPACTION_STREAM_TYPES.has(type) && pending?.source === "hook"
         ? close("completed", "next_event")
         : null;
       const forwarded = compactionSignalThisRun && type === "status"
-        ? { ...record, [CURSOR_SDK_PRECOMPACT_HOOK_MARK]: true }
+        ? { ...record, [CURSOR_SDK_COMPACTION_SIGNAL_MARK]: true }
         : event;
       return { compaction, event: forwarded };
     },

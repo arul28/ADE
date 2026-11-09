@@ -688,7 +688,7 @@ Settings live in project config `ai.compaction.<provider>` (`shared/compactionSe
 `idleMode`). `idleMode` is the Compact first offer: Claude, Codex, Pi, OpenCode and local Cursor chats — the providers whose
 `/compact` ADE can run — each wait out their own prompt-cache window (`compactFirstIdleMs`: Claude's measured
 5m/1h, OpenAI's documented `30m`, or the window of the model's vendor for Pi/OpenCode/Cursor) and then offer to
-compact before the next send. Claude defaults to `ask`; the other three default to `never`, so their offer
+compact before the next send. Claude defaults to `ask`; the others default to `never`, so their offer
 appears only once someone enables it on the provider page. Only Claude has the automatic warm timer. Compaction itself is always on: a chat that cannot compact only overflows, so there is no off switch,
 and an `enabled: false` saved before is dropped on read. `subagentAtTokens` reaches Claude as `autoCompactWindow` on
 every subagent definition. The SDK only lets it lower the window a subagent inherits, so Settings says "No effect"

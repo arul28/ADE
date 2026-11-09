@@ -118,9 +118,10 @@ export type CursorSdkWorkerInit = {
 };
 
 /**
- * `sdk_event` type the worker posts for a Cursor compaction seen through the
- * `preCompact` hook. It rides the SDK message channel so the main process maps
- * it next to the stream it interleaves with.
+ * `sdk_event` type the worker posts for a Cursor compaction, seen through the
+ * stream's `summary` messages or the `preCompact` hook. It rides the SDK
+ * message channel so the main process maps it next to the stream it interleaves
+ * with.
  */
 export const CURSOR_SDK_COMPACTION_EVENT = "ade_cursor_compaction";
 
@@ -144,15 +145,23 @@ export type CursorSdkCompactionWireEvent = {
 };
 
 /**
- * Set on a forwarded local `status` event once the `preCompact` hook fired in
- * the run, so the text-matching compaction fallback stays quiet.
+ * Set on a forwarded `status` event once a `summary` message or the
+ * `preCompact` hook reported a compaction in the run, so the text-matching
+ * compaction fallback stays quiet.
  */
-export const CURSOR_SDK_PRECOMPACT_HOOK_MARK = "adePreCompactHook";
+export const CURSOR_SDK_COMPACTION_SIGNAL_MARK = "adePreCompactHook";
 
 /** Set on the result of a `/compact` that did not run, with the reason. */
 export const CURSOR_SDK_COMPACT_SKIPPED_KEY = "adeCompactSkipped";
 
 export type CursorSdkCompactSkipped = "empty" | "cut_off_run";
+
+export function readCursorSdkCompactSkipped(result: unknown): CursorSdkCompactSkipped | null {
+  const value = result && typeof result === "object"
+    ? (result as Record<string, unknown>)[CURSOR_SDK_COMPACT_SKIPPED_KEY]
+    : null;
+  return value === "empty" || value === "cut_off_run" ? value : null;
+}
 
 /** Key of the per-turn telemetry the worker attaches to a local run result. */
 export const CURSOR_SDK_TURN_TELEMETRY_KEY = "adeTurnTelemetry";
@@ -597,6 +606,11 @@ export function readCursorSdkStaleTokenFailure(
     ...(detailCode ? { code: detailCode } : {}),
     ...(requestId ? { requestId } : {}),
   };
+}
+
+/** `agent.summarize()` on an agent with no saved conversation yet. */
+export function isCursorSdkNothingToSummarizeText(text: string | null | undefined): boolean {
+  return /no saved conversation to summarize/i.test(text ?? "");
 }
 
 export function isCursorSdkBusyErrorText(text: string | null | undefined): boolean {

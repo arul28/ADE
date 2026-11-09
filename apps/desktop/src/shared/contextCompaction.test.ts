@@ -151,9 +151,9 @@ describe("contextCompaction", () => {
   it("gates OpenCode compact on the server listing the compact command", () => {
     const base = { provider: "opencode", state: "measured" as const, enabled: true };
     expect(resolveContextCompactControl(base)).toEqual({ status: "hidden" });
-    expect(resolveContextCompactControl({ ...base, compactCommandListed: false })).toEqual({ status: "hidden" });
-    expect(resolveContextCompactControl({ ...base, compactCommandListed: true })).toEqual({ status: "ready" });
-    expect(resolveContextCompactControl({ ...base, compactCommandListed: true, turnActive: true })).toMatchObject({ status: "disabled" });
+    expect(resolveContextCompactControl({ ...base, compactAvailableOnChat: false })).toEqual({ status: "hidden" });
+    expect(resolveContextCompactControl({ ...base, compactAvailableOnChat: true })).toEqual({ status: "ready" });
+    expect(resolveContextCompactControl({ ...base, compactAvailableOnChat: true, turnActive: true })).toMatchObject({ status: "disabled" });
   });
 
   it("disables compact during a turn or pending input, and is ready when idle", () => {

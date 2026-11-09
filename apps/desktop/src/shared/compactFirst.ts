@@ -199,9 +199,11 @@ function compactFirstCandidate({ provider, model, events, contextTokens, cache, 
       const lastInput = event.usage?.last?.inputTokens;
       if (lastInput != null && Number.isFinite(lastInput) && lastInput > 0) measured = lastInput;
     }
-    if (event.type === "context_compact" && event.state !== "started" && event.state !== "failed" && event.postTokens != null) {
-      lastPost = event.postTokens;
-      if (contextTokens == null) measured = lastPost;
+    if (event.type === "context_compact" && event.state !== "started" && event.state !== "failed") {
+      if (event.postTokens != null) lastPost = event.postTokens;
+      // A compaction that reports no size (Cursor's `/compact`) leaves only the
+      // reading from before it, so nothing is known until the next turn.
+      if (contextTokens == null) measured = event.postTokens ?? null;
     }
   }
   if (measured == null || !Number.isFinite(measured) || measured < (minTokens ?? COMPACT_FIRST_MIN_TOKENS) || endedAt == null || !Number.isFinite(endedAt)) return null;
