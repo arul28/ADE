@@ -65096,6 +65096,8 @@ export function createAgentChatService(args: {
       mentionsAlreadyExpanded?: boolean;
       /** Set only when this caller has already expanded pasted-file contents. */
       pastedPromptAlreadyMaterialized?: boolean;
+      /** Makes the send wait until the provider took the message, and reports it. */
+      onRedirectAccepted?: () => void;
     },
   ): Promise<void> => {
     const runtime = managed.runtime;
@@ -65143,7 +65145,8 @@ export function createAgentChatService(args: {
     await sendMessage(
       args.mentionsAlreadyExpanded ? markChatMentionsExpanded(sendArgs) : sendArgs,
         {
-          awaitDispatch: false,
+          awaitDispatch: Boolean(args.onRedirectAccepted),
+          ...(args.onRedirectAccepted ? { onBackendDispatched: args.onRedirectAccepted } : {}),
           ...(args.pastedPromptAlreadyMaterialized ? { pastedPromptAlreadyMaterialized: true } : {}),
         },
     );
@@ -65172,15 +65175,36 @@ export function createAgentChatService(args: {
       await replaceRunningTurn(managed, args);
       return;
     }
+    let accepted = false;
+    // A refused send (low disk, a blocked route) can return without throwing.
+    // The results then wait in the queue, visibly, for the next turn to end.
+    const requeueChildResults = () => {
+      const live = managed.runtime;
+      if (live && live.kind !== "opencode" && "pendingSteers" in live) {
+        live.pendingSteers.unshift(...childResults);
+      } else {
+        logger.warn("agent_chat.replaced_turn_child_results_dropped", {
+          sessionId: managed.session.id,
+          count: childResults.length,
+        });
+      }
+    };
     try {
       await replaceRunningTurn(managed, {
         ...args,
         displayText: args.displayText ?? args.text,
         text: [args.text, ...childResults.map((steer) => steer.text)].join("\n\n"),
+        onRedirectAccepted: () => {
+          accepted = true;
+        },
       });
     } catch (error) {
-      if (managed.runtime === runtime) runtime.pendingSteers.unshift(...childResults);
+      requeueChildResults();
       throw error;
+    }
+    if (!accepted) {
+      requeueChildResults();
+      return;
     }
     for (const steer of childResults) {
       if (claimSteerSettlement(managed, steer.steerId)) emitSteerUserRow(managed, steer, "inline", undefined);
