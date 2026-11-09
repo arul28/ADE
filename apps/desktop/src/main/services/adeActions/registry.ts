@@ -301,7 +301,7 @@ import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
-import { CLOUD_PROVIDER_VAULT_ITEM, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
+import { cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
 import { cloudMachineEnv, type CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
 import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
@@ -309,9 +309,8 @@ import { buildCloudReadyActions } from "../adeCloud/cloudReadyActions";
 import { buildCloudAgentActions } from "../adeCloud/cloudAgentActions";
 import { createCloudBrainMaker, type CloudBrainMaker } from "../adeCloud/cloudBrainMaker";
 import { approveInHeadlessChromium, findHeadlessChromium } from "../adeCloud/cloudHeadlessApproval";
-import { CLOUD_DEFAULT_TEMPLATE } from "../../../shared/adeCloud";
 import { createCloudMachines } from "../adeCloud/cloudMachines";
-import { CLOUD_BUDGET_VAULT_KEY, createCloudBudgetStore } from "../adeCloud/cloudSleep";
+import { CLOUD_AGENT_LIMITS_VAULT_KEY, createCloudAgentLimitsStore } from "../adeCloud/cloudSleep";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
 import { getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { CLOUD_READY_VAULT_KEY, createCloudReadySettingsStore } from "../adeCloud/cloudReadySettings";
@@ -4079,8 +4078,21 @@ function cloudSignInVaults(runtime: AccountDomainRuntime): CloudSignInVaults | n
 
 function cloudAccessDeps(runtime: AccountDomainRuntime): CloudAccessDeps {
   return {
-    vault: () => (runtime.accountVaultStore ? cloudVaultFromStore(runtime.accountVaultStore, CLOUD_PROVIDER_VAULT_ITEM) : null),
     signedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
+    accountId: () => runtime.accountAuthService?.getStatus().userId ?? null,
+    accessToken: async () => {
+      const account = runtime.accountAuthService;
+      if (!account?.getStatus().signedIn) return null;
+      return await account.getAccessToken().catch(() => null);
+    },
+    directoryBaseUrl: () => {
+      try {
+        return getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }) || null;
+      } catch {
+        return null;
+      }
+    },
+    deviceName: () => os.hostname(),
     logger: runtime.logger,
   };
 }
@@ -4135,13 +4147,12 @@ function cloudBrainMakerFor(runtime: AccountDomainRuntime, machines: ReturnType<
       directoryBaseUrl,
       listAccountMachines: () => directory().listMachines(),
       renameMachine: (machineKey, name) => directory().renameMachine(machineKey, name),
-      templateName: () => process.env.ADE_CLOUD_TEMPLATE?.trim() || CLOUD_DEFAULT_TEMPLATE,
       // The person's provider sign-ins, so they are signed in on the new machine (cloudSignInStore.ts).
       machineEnv: () => cloudMachineEnv(cloudSignInVaults(runtime), runtime.logger),
       // This brain's release: a machine made from an older template installs it on boot.
       // Only a released build: a development build's version may not be published.
       minAdeVersion: () => stampedAdeVersion(),
-      spending: () => machines.spending(),
+      account: () => machines.account(),
       removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
       // No window here: the sign-in of a machine this brain made with an
       // unattended yes opens in a headless Chromium (the template ships one).
@@ -4171,8 +4182,8 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
     logger: runtime.logger,
   });
   const credentials = cloudAccessDeps(runtime);
-  const budget = createCloudBudgetStore({
-    vault: () => (signedIn() && runtime.accountVaultStore ? cloudVaultFromStore(runtime.accountVaultStore, CLOUD_BUDGET_VAULT_KEY) : null),
+  const agentLimits = createCloudAgentLimitsStore({
+    vault: () => (signedIn() && runtime.accountVaultStore ? cloudVaultFromStore(runtime.accountVaultStore, CLOUD_AGENT_LIMITS_VAULT_KEY) : null),
     machineStore: () => cloudMachineStore(),
     logger: runtime.logger,
   });
@@ -4186,7 +4197,6 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
         directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }),
       }).deleteMachine(machineKey);
     },
-    readBudget: () => budget.read(),
     logger: runtime.logger,
   });
   const agentChatService = runtime.agentChatService ?? null;
@@ -4194,7 +4204,6 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
   const ready = buildCloudReadyActions({
     credentials,
     readSettings: async () => (await settings.read()).projects,
-    spending: () => machines.spending(),
     // A six-hour dedupe, as on the desktop: claims are frequent in a benchmark loop.
     onClaimed: () => runtime.productAnalyticsService?.capture({
       event: "ade_feature_used",
@@ -4208,7 +4217,7 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
   });
   const verbs = buildCloudAgentActions({
     machines,
-    budget,
+    limits: agentLimits,
     readySettings: settings,
     desktop: () => runtime.getCloudDesktop?.() ?? null,
     maker,

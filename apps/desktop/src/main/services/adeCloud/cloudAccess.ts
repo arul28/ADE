@@ -1,21 +1,17 @@
 /**
- * How ADE reaches the cloud provider, and the one place that picks it.
- *
- * Today the provider is the account's Agent 37 workspace, reached with the key
- * already in the account vault. Cloud 2 replaces `getCloudProvider` with a
- * provider that goes through ADE's server, and nothing above it changes.
+ * How ADE reaches ADE Cloud, and the one place that picks it: ADE's server,
+ * called with the signed-in account's token. The server holds the provider's
+ * key, so nothing here ever has one.
  */
 
-import { isSourceCheckoutRuntimeModule } from "../../../../../ade-cli/src/runtimePackaging";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { cloudStatusAwake, type CloudStatus } from "../../../shared/adeCloud";
 import type { AccountVaultResult } from "../../../shared/types/accountVault";
 import { getErrorMessage } from "../shared/utils";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider } from "./cloudProvider";
-import { AGENT37_KEY_VAULT_ITEM, createAgent37Provider } from "./provider/agent37/agent37Client";
+import { createCloudServerProvider } from "./cloudServerProvider";
 
 export const CLOUD_VAULT_KIND = "integration";
-export const CLOUD_PROVIDER_VAULT_ITEM = AGENT37_KEY_VAULT_ITEM;
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -27,9 +23,14 @@ export type CloudVault = {
 };
 
 export type CloudAccessDeps = {
-  /** Null when this runtime has no vault (no brain, nothing booted). */
-  vault: () => CloudVault | null;
   signedIn: () => boolean;
+  /** The signed-in account, so a cached access answer never outlives the person. */
+  accountId: () => string | null;
+  accessToken: () => Promise<string | null>;
+  /** The account directory; `ADE_ACCOUNT_DIRECTORY_URL` points a dev build at a local server. */
+  directoryBaseUrl: () => string | null;
+  /** Names this computer in the server's delete log. */
+  deviceName?: () => string | null;
   fetch?: FetchLike;
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
 };
@@ -75,18 +76,6 @@ export function cloudVaultFromStore(store: {
   };
 }
 
-function decodeKey(raw: string | null, deps: CloudAccessDeps): string | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return parsed?.v === 1 && typeof parsed.key === "string" && parsed.key.trim() ? parsed.key.trim() : null;
-  } catch (error) {
-    // A fixed reason only: V8's JSON.parse message quotes the text it read, which here is the key.
-    deps.logger?.warn("cloud.key_item_unreadable", { reason: error instanceof SyntaxError ? "invalid_json" : "unreadable" });
-    return null;
-  }
-}
-
 type CloudAccess =
   | { state: "ready"; provider: CloudProvider }
   | { state: "no_access" | "signed_out" | "unreadable" };
@@ -97,31 +86,49 @@ const NO_PROVIDER_SENTENCE: Record<Exclude<CloudAccess["state"], "ready">, strin
   unreadable: "ADE couldn't check this account's ADE Cloud access. Try again in a moment.",
 };
 
-/** A source checkout's own key: a development brain runs with sync off and never opens the vault. Shipped builds ignore it. */
-function developmentCloudKey(): string | null {
-  const modulePath = typeof __filename === "string" ? __filename : process.argv[1] ?? "";
-  return isSourceCheckoutRuntimeModule(modulePath) ? process.env.ADE_CLOUD_DEV_KEY?.trim() || null : null;
+/** `/cloud/access` is asked at most this often per account. */
+const ACCESS_TTL_MS = 10 * 60_000;
+
+/** The last answer: per process, so every surface in it shares one check. */
+let accessCache: { key: string; enabled: boolean; at: number } | null = null;
+let accessAsking: { key: string; answer: Promise<boolean | null> } | null = null;
+
+/** Yes or no from the server, or null when it couldn't be asked; a cached yes rides out a failure. */
+async function readAccessFlag(key: string, provider: CloudProvider, deps: CloudAccessDeps): Promise<boolean | null> {
+  const now = Date.now();
+  if (accessCache?.key === key && now - accessCache.at < ACCESS_TTL_MS) return accessCache.enabled;
+  if (accessAsking?.key === key) return await accessAsking.answer;
+  const answer = provider.accessEnabled().then(
+    (enabled) => {
+      accessCache = { key, enabled, at: Date.now() };
+      return enabled;
+    },
+    (error: unknown) => {
+      deps.logger?.warn("cloud.access_read_failed", { error: getErrorMessage(error) });
+      return accessCache?.key === key && accessCache.enabled ? true : null;
+    },
+  );
+  accessAsking = { key, answer };
+  try {
+    return await answer;
+  } finally {
+    if (accessAsking?.key === key && accessAsking.answer === answer) accessAsking = null;
+  }
 }
 
 async function readCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
-  const developmentKey = developmentCloudKey();
-  if (developmentKey) return { state: "ready", provider: createAgent37Provider({ apiKey: developmentKey, fetch: deps.fetch }) };
   if (!deps.signedIn()) return { state: "signed_out" };
-  let vault: CloudVault | null;
-  try {
-    vault = deps.vault();
-  } catch (error) {
-    deps.logger?.warn("cloud.vault_unavailable", { error: getErrorMessage(error) });
-    return { state: "unreadable" };
-  }
-  if (!vault) return { state: "unreadable" };
-  const got = await vault.get().catch((error: unknown) => {
-    deps.logger?.warn("cloud.vault_read_failed", { error: getErrorMessage(error) });
-    return { ok: false as const };
+  const baseUrl = deps.directoryBaseUrl();
+  if (!baseUrl) return { state: "unreadable" };
+  const provider = createCloudServerProvider({
+    accessToken: deps.accessToken,
+    baseUrl: deps.directoryBaseUrl,
+    deviceName: deps.deviceName,
+    fetch: deps.fetch,
   });
-  if (!got.ok) return { state: "unreadable" };
-  const apiKey = decodeKey(got.value, deps);
-  return apiKey ? { state: "ready", provider: createAgent37Provider({ apiKey, fetch: deps.fetch }) } : { state: "no_access" };
+  const enabled = await readAccessFlag(`${baseUrl}|${deps.accountId() ?? ""}`, provider, deps);
+  if (enabled == null) return { state: "unreadable" };
+  return enabled ? { state: "ready", provider } : { state: "no_access" };
 }
 
 /** ADE Cloud for this account, or null when it can't be used from here right now. */

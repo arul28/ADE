@@ -26,7 +26,7 @@ import {
 } from "./services/sync/brainMachineSyncStores";
 import { createSyncCloudRelayStore } from "./services/sync/syncCloudRelayStore";
 import { createSyncPinStore } from "./services/sync/syncPinStore";
-import { CLOUD_PROVIDER_VAULT_ITEM } from "../../desktop/src/main/services/adeCloud/cloudAccess";
+const CLOUD_PROVIDER_VAULT_ITEM = "agent37";
 import { SyncHostSingletonConflictError } from "./services/sync/syncHostSingleton";
 import {
   createSyncAccountDirectoryHealth,

@@ -1,5 +1,6 @@
 import { authenticate } from "../callerToken";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
+import { CloudBillingError, createCheckoutUrl, createPortalUrl, setExtraHours } from "./billing";
 import { CLOUD_PATHS, type CloudInstance } from "./contract";
 import {
   DISK_ON_CREATE_GB,
@@ -560,6 +561,23 @@ async function routeInstance(request: Request, env: CloudEnv, provider: CloudPro
   return handler ? handler(request, env, computer, provider, now) : notFound();
 }
 
+/** The billing routes, or null when `path` isn't one of them. */
+async function routeBilling(request: Request, url: URL, path: string, env: CloudEnv, userId: string, now: number): Promise<Response | null> {
+  if (path !== CLOUD_PATHS.billingCheckout && path !== CLOUD_PATHS.billingPortal && path !== CLOUD_PATHS.billingExtraHours) return null;
+  if (request.method !== "POST") return notFound();
+  try {
+    if (path === CLOUD_PATHS.billingCheckout) return json(await createCheckoutUrl(env, userId, url.origin, now));
+    if (path === CLOUD_PATHS.billingPortal) return json(await createPortalUrl(env, userId, url.origin, now));
+    const body = await readJson(request);
+    if (typeof body?.enabled !== "boolean") return badRequest("That request could not be read.");
+    await setExtraHours(env, userId, body.enabled, now);
+    return json(await buildAccountState(env, userId, now));
+  } catch (error) {
+    if (error instanceof CloudBillingError) return fail(error.code, error.message, error.status);
+    throw error;
+  }
+}
+
 export async function handleCloudRequest(request: Request, env: CloudEnv): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -589,6 +607,8 @@ export async function handleCloudRequest(request: Request, env: CloudEnv): Promi
   if (path === CLOUD_PATHS.account) {
     return request.method === "GET" ? json(await buildAccountState(env, caller.userId, now)) : notFound();
   }
+  const billing = await routeBilling(request, url, path, env, caller.userId, now);
+  if (billing) return billing;
   if (!provider) {
     logCloud("cloud.no_provider_key");
     return fail("unavailable", cloudErrorMessage("no_provider_key", 503), 503);

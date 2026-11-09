@@ -1,7 +1,7 @@
 /**
  * The `cloud` action domain's machine verbs, behind `ade cloud …`: list,
- * create, sleep, wake, resize, copy, move, delete, the sleep setting, the
- * monthly cap, and "keep a cloud machine ready" on, off or retry.
+ * create, sleep, wake, resize, update, copy, move, delete, the sleep setting,
+ * hours, and "keep a cloud machine ready" on, off or retry.
  *
  * Account-level like the rest of the integration: each acts on the account's
  * cloud machines, from whichever brain is asked, and takes
@@ -9,35 +9,36 @@
  * through a desktop's approval window, so those go to the desktop attached to
  * this brain over the desktop bridge; a brain with none says so.
  *
- * Money and deletes ask first. A person's own client (the desktop, the CTO)
+ * Spending hours and deletes ask first. A person's own client (the desktop, the CTO)
  * already decided. An agent's call raises an approval card in its own chat,
  * which gives up after five minutes. A full-auto chat or an automation run has
  * nobody watching, so ADE answers for it, never stalling the agent: yes to
- * spending within the monthly cap, no to deleting a machine that chat didn't
+ * spending hours within the agent limits, no to deleting a machine that chat didn't
  * make. Plan mode says no to all of it. Every answer ADE gives itself leaves
  * a line in the chat.
  */
 
 import {
+  CLOUD_HOURS_UNKNOWN_MESSAGE,
   CLOUD_MADE_BY_CHAT_METADATA,
+  CLOUD_OUT_OF_HOURS_MESSAGE,
   CLOUD_SHAPES,
-  CLOUD_SPEND_UNKNOWN_MESSAGE,
-  cloudCapReachedMessage,
-  cloudHourlyUsd,
+  cloudHoursRate,
+  cloudOutOfHours,
   cloudShape,
   cloudShapeById,
   cloudShapeWithin,
-  cloudUnattendedSpendBlock,
+  cloudUnattendedHoursBlock,
   cloudLimitsPresetOf,
   CLOUD_DEFAULT_AGENT_LIMITS,
   CLOUD_LIMITS_PRESETS,
+  type CloudAccountState,
   type CloudAgentLimits,
   type CloudLimitsPreset,
+  describeCloudHoursUse,
   describeCloudMachineSize,
-  formatCloudHourlyPrice,
-  formatCloudUsd,
+  formatCloudHoursRate,
   isCloudMachineKind,
-  type CloudBudget,
   type CloudCreateMachineArgs,
   type CloudCreateMachineResult,
   type CloudMachine,
@@ -45,7 +46,6 @@ import {
   type CloudMachineKind,
   type CloudMachinesResult,
   type CloudShapeId,
-  type CloudSpending,
 } from "../../../shared/adeCloud";
 import { type CloudReadyProjectSettings } from "../../../shared/cloudReady";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
@@ -56,7 +56,7 @@ import type { CloudMoveResult } from "./cloudMachineCopy";
 import type { CloudBrainMaker, CloudMakeInput } from "./cloudBrainMaker";
 import type { createCloudMachines } from "./cloudMachines";
 import { normalizeCloudReadySettings, type CloudReadySettingsStore } from "./cloudReadySettings";
-import type { CloudBudgetStore } from "./cloudSleep";
+import type { CloudAgentLimitsStore } from "./cloudSleep";
 
 /** Who is asking, stamped by the RPC server from the caller's session; never taken from the arguments. */
 export type CloudApproval =
@@ -94,7 +94,7 @@ export type CloudChatApprovals = {
 
 export type CloudAgentActionDeps = {
   machines: ReturnType<typeof createCloudMachines>;
-  budget: CloudBudgetStore;
+  limits: CloudAgentLimitsStore;
   readySettings: CloudReadySettingsStore;
   /** The desktop attached to this brain, or null. */
   desktop: () => CloudDesktopBridge | null;
@@ -180,16 +180,15 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     return { box: matches[0]!, all };
   };
 
-  /** This month against the cap; null when it can't be read. */
-  const readSpending = (): Promise<CloudSpending | null> => deps.machines.spending().catch((error: unknown) => {
-    logger.warn?.("cloud.spending_read_failed", { error: getErrorMessage(error) });
+  /** Plan and hours; null when they can't be read. */
+  const readAccount = (): Promise<CloudAccountState | null> => deps.machines.account().catch((error: unknown) => {
+    logger.warn?.("cloud.account_read_failed", { error: getErrorMessage(error) });
     return null;
   });
 
-  const capCheck = async (): Promise<CloudSpending | null> => {
-    const month = await readSpending();
-    if (month?.capReached) throw new Error(cloudCapReachedMessage(month));
-    return month;
+  /** Refuses before a card goes up for something the server would only refuse. */
+  const hoursCheck = async (): Promise<void> => {
+    if (cloudOutOfHours(await readAccount())) throw new Error(CLOUD_OUT_OF_HOURS_MESSAGE);
   };
 
   /**
@@ -197,16 +196,16 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
    * to call once a new machine really exists (it counts toward an unattended
    * agent's daily limit then, so a make that failed costs no slot) and whether
    * the yes came from what the person lets unattended agents do (a full-auto
-   * chat or an automation, within the cap and the agent limits); throws
+   * chat or an automation, within the agent limits); throws
    * `CloudDeclined` (with why) when not.
    */
   const approve = async (
     approval: CloudApproval,
     card: {
       /**
-       * `uncapped`: what can spend past the monthly cap, the one limit on
-       * unattended spending (raising or removing it, keeping a machine awake);
-       * only a person answers it.
+       * `uncapped`: what unattended agents may not decide alone (keeping a
+       * machine awake for good, loosening what they may do); only a person
+       * answers it.
        */
       action: "spend" | "delete" | "uncapped";
       title: string;
@@ -223,7 +222,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     if (approval.by === "person") return nothing;
     const chatSessionId = approval.chatSessionId;
     if (!chatSessionId || !deps.approvals) {
-      throw new CloudDeclined(`${card.title} costs money or deletes something, so it needs your yes, and ADE has no chat to ask you in. Run it from an ADE chat, or use the machine's card in ADE (Your computers).`);
+      throw new CloudDeclined(`${card.title} uses hours or deletes something, so it needs your yes, and ADE has no chat to ask you in. Run it from an ADE chat, or use the machine's card in ADE (Your computers).`);
     }
     const approvals = deps.approvals;
     const level = approvals.permissionLevel(chatSessionId);
@@ -235,8 +234,8 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     if (automation || level === "full-auto") {
       const where = automation ? "this automation run" : "this full-auto chat";
       if (card.action === "uncapped") {
-        approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: it could spend past your monthly cap, so only you can decide it.`);
-        throw new CloudDeclined(`${card.title}: declined. It could spend past the monthly cap, so only the person can decide it (Settings › Integrations › ADE Cloud).`);
+        approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: only you can decide it.`);
+        throw new CloudDeclined(`${card.title}: declined. Only the person can decide it (Settings › Integrations › ADE Cloud).`);
       }
       if (card.action === "delete" && !card.madeByThisChat) {
         approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: nobody is here to approve deleting a machine this chat didn't make.`);
@@ -244,21 +243,20 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       }
       // What the person chose agents may do alone (Settings › Integrations › the provider).
       const costs = card.action === "spend" || card.newMachine === true;
-      const limits = costs ? (await deps.budget.read().catch(() => null))?.agents ?? CLOUD_DEFAULT_AGENT_LIMITS : null;
+      const limits = costs ? await deps.limits.read().catch(() => CLOUD_DEFAULT_AGENT_LIMITS) : null;
       const refuse = (why: string): never => {
         approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: ${why}`);
-        throw new CloudDeclined(`${card.title}: declined. ${why} The person can change what agents may spend in Settings › Integrations › ADE Cloud.`);
+        throw new CloudDeclined(`${card.title}: declined. ${why} The person can change what agents may do in Settings › Integrations › ADE Cloud.`);
       };
-      if (limits && !limits.unattendedSpend) refuse("your settings say unattended agents ask before anything that costs money.");
+      if (limits && !limits.unattendedSpend) refuse("your settings say unattended agents ask before anything that uses hours.");
       if (limits && card.shape && !cloudShapeWithin(card.shape, limits.maxShape)) {
         const max = cloudShapeById(limits.maxShape);
-        refuse(`agents may pick up to ${max.cpu} vCPU · ${max.memoryGb} GB on their own.`);
+        refuse(`agents may pick up to ${max.label} on their own.`);
       }
-      // capCheck lets a month it couldn't read through, for a person to decide; nobody decides here.
-      const month = costs ? await readSpending() : null;
-      const blocked = costs ? cloudUnattendedSpendBlock(month) : null;
+      // hoursCheck lets hours it couldn't read through, for a person to decide; nobody decides here.
+      const blocked = costs ? cloudUnattendedHoursBlock(await readAccount()) : null;
       if (blocked) {
-        const why = blocked === "cap_reached" && month ? cloudCapReachedMessage(month) : CLOUD_SPEND_UNKNOWN_MESSAGE;
+        const why = blocked === "out_of_hours" ? CLOUD_OUT_OF_HOURS_MESSAGE : CLOUD_HOURS_UNKNOWN_MESSAGE;
         approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: ${why}`);
         throw new CloudDeclined(`${card.title}: declined. ${why}`);
       }
@@ -270,7 +268,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
           refuse(`agents already started ${made} new machine${made === 1 ? "" : "s"} today, your daily limit.`);
         }
       }
-      approvals.notice(chatSessionId, `ADE approved "${card.title}" for ${where}, within what you let agents spend.`);
+      approvals.notice(chatSessionId, `ADE approved "${card.title}" for ${where}, within what you let agents do.`);
       if (!card.newMachine) return { counted: () => undefined, release: () => undefined, unattended: true };
       reservedHere += 1;
       let held = true;
@@ -354,10 +352,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     type: box.type,
     size: describeCloudMachineSize(box),
     shape: box.shapeId,
-    runningHourlyUsd: box.runningHourlyUsd,
-    idleHourlyUsd: box.idleHourlyUsd,
-    spentUsd: box.spentUsd,
-    savedUsd: box.savedUsd,
+    hoursRate: box.hoursRate,
     sleep: box.sleep,
     madeByAde: box.madeByAde,
     ready: box.ready,
@@ -367,8 +362,9 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
   const shapeArg = (args: Record<string, unknown>): CloudShapeId | null => {
     const raw = text(args, "shape");
     if (!raw) return null;
-    const shape = cloudShape(raw.replace(/\s+/g, "").replace("/", "x"));
-    if (!shape) throw new Error(`Pick a size: ${CLOUD_SHAPES.map((candidate) => candidate.id).join(", ")} (vCPU x GB).`);
+    const named = CLOUD_SHAPES.find((candidate) => candidate.label.toLowerCase() === raw.toLowerCase().replace(/\s+/g, "-"));
+    const shape = named ?? cloudShape(raw.replace(/\s+/g, "").replace("/", "x"));
+    if (!shape) throw new Error(`Pick a size: ${CLOUD_SHAPES.map((candidate) => `${candidate.label.toLowerCase()} (${candidate.id})`).join(", ")}.`);
     return shape.id;
   };
 
@@ -378,7 +374,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       return {
         machines: all.machines.map(summary),
         runningCount: all.runningCount,
-        spending: all.spending,
+        account: all.account,
       };
     },
 
@@ -386,16 +382,16 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const args = record(rawArgs);
       const kind = (text(args, "kind") ?? "box") as CloudMachineKind;
       if (!isCloudMachineKind(kind)) throw new Error("Make a box or a VM (--kind box|vm).");
-      const shapeId = shapeArg(args) ?? (kind === "vm" ? "4x8" : "2x4");
+      const shapeId = shapeArg(args) ?? "2x4";
       const shape = cloudShapeById(shapeId);
-      const name = text(args, "name") ?? (kind === "vm" ? "ADE Cloud VM" : "ADE Cloud box");
-      await capCheck();
+      const name = text(args, "name") ?? ("ADE Cloud computer");
+      await hoursCheck();
       if (cannotMake()) throw new Error(NO_DESKTOP);
       const approval = readApproval(args);
       const yes = await approve(approval, {
         action: "spend",
         title: `Make "${name}" on ADE Cloud`,
-        body: `A ${kind === "vm" ? "VM" : "box"} with ${shape.cpu} vCPU and ${shape.memoryGb} GB, about ${formatCloudHourlyPrice(cloudHourlyUsd(kind, shape))} while awake. It sleeps when idle and then bills only its disk.`,
+        body: `A ${shape.label}${kind === "vm" ? " full computer" : " computer"} (${shape.cpu} CPU, ${shape.memoryGb} GB). It uses ${describeCloudHoursUse(kind, shape.id)}, and none while it sleeps.`,
         confirm: "Make it",
         newMachine: true,
         shape: shapeId,
@@ -414,7 +410,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       return await runAction(box, { instanceId: box.instanceId, action: "sleep" });
     },
 
-    /** Wake costs what a running box costs, like opening one of its lanes; the monthly cap bounds it. */
+    /** A wake uses hours like opening one of its lanes; the server refuses it at 0 hours. */
     async wake(rawArgs?: unknown) {
       const { box } = await resolveMachine(text(record(rawArgs), "machine"));
       return await runAction(box, { instanceId: box.instanceId, action: "wake" });
@@ -426,11 +422,11 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const shapeId = shapeArg(args);
       if (!shapeId) throw new Error("Pass the new size (--shape 4x8).");
       const shape = cloudShapeById(shapeId);
-      await capCheck();
+      await hoursCheck();
       await approve(readApproval(args), {
         action: "spend",
-        title: `Resize "${box.name ?? box.instanceId}" to ${shape.cpu} vCPU · ${shape.memoryGb} GB`,
-        body: `It restarts to change size: files stay, running chats, terminals and processes stop. Awake it then costs about ${formatCloudHourlyPrice(cloudHourlyUsd(box.type === "vm" ? "vm" : "box", shape))}.`,
+        title: `Resize "${box.name ?? box.instanceId}" to ${shape.label}`,
+        body: `It restarts to change size: files stay, running chats, terminals and processes stop. It then uses ${describeCloudHoursUse(box.type === "vm" ? "vm" : "box", shape.id)}.`,
         confirm: "Resize",
         shape: shapeId,
       });
@@ -442,14 +438,14 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const { box } = await resolveMachine(text(args, "machine"));
       const name = text(args, "name") ?? `${box.name ?? box.instanceId} copy`;
       const shapeId = shapeArg(args);
-      await capCheck();
+      await hoursCheck();
       if (cannotMake()) throw new Error(NO_DESKTOP);
-      const rate = box.runningHourlyUsd != null ? formatCloudHourlyPrice(box.runningHourlyUsd) : null;
+      const rate = box.hoursRate != null ? formatCloudHoursRate(box.hoursRate) : null;
       const approval = readApproval(args);
       const yes = await approve(approval, {
         action: "spend",
         title: `Copy "${box.name ?? box.instanceId}" into a new machine`,
-        body: `"${name}" gets the same files (repos, lanes, installed dependencies) and signs in as a new machine${rate ? `, about ${rate} while awake` : ""}. A big disk takes a few minutes to copy.`,
+        body: `"${name}" gets the same files (repos, lanes, installed dependencies) and signs in as a new computer${rate ? `, and uses ${rate}` : ""}. A big disk takes a few minutes to copy.`,
         confirm: "Copy it",
         newMachine: true,
         shape: shapeId ?? box.shapeId,
@@ -474,7 +470,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         throw new Error(`"${box.name ?? box.instanceId}" is the machine this runs on, so it can't move itself. Make the new machine (ade cloud create --kind ${to}), then hand this chat to it: ade chat handoff "$ADE_CHAT_SESSION_ID" --machine <new machine> --fork --include-changes --clone --when-turn-ends --note "<the task>". This machine stays and sleeps when idle; offer to delete it from the new chat.`);
       }
       const shapeId = shapeArg(args);
-      await capCheck();
+      await hoursCheck();
       if (cannotMake()) throw new Error(NO_DESKTOP);
       const name = box.name ?? box.instanceId;
       const approval = readApproval(args);
@@ -521,7 +517,26 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         madeByThisChat: approval.by === "agent" && approval.chatSessionId != null
           && instance?.[CLOUD_MADE_BY_CHAT_METADATA] === approval.chatSessionId,
       });
-      return await runAction(box, { instanceId: box.instanceId, action: "delete", machineKey: box.machineKey });
+      return await runAction(box, {
+        instanceId: box.instanceId,
+        action: "delete",
+        machineKey: box.machineKey,
+        who: approval.by === "agent" && approval.chatSessionId ? `chat ${approval.chatSessionId}` : null,
+      });
+    },
+
+    /** Moves the computer to ADE's current image: it restarts, running work stops. */
+    async update(rawArgs?: unknown) {
+      const args = record(rawArgs);
+      const { box } = await resolveMachine(text(args, "machine"));
+      await hoursCheck();
+      await approve(readApproval(args), {
+        action: "spend",
+        title: `Update "${box.name ?? box.instanceId}"`,
+        body: "It restarts on the current ADE. Files and repos stay; running chats, terminals and processes stop.",
+        confirm: "Update it",
+      });
+      return await runAction(box, { instanceId: box.instanceId, action: "update" });
     },
 
     async set_sleep(rawArgs?: unknown) {
@@ -530,59 +545,38 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const raw = args.minutes;
       const minutes = raw === null || raw === "never" ? null : typeof raw === "number" ? raw : Number(raw);
       if (minutes !== null && !Number.isFinite(minutes)) throw new Error("Pass minutes (5 to 1440) or never.");
-      // Never sleeping bills around the clock: that asks first.
+      // Never sleeping uses hours around the clock: that asks first.
       if (minutes === null) {
-        // Running boxes aren't slept at the cap, so this bills past it.
         await approve(readApproval(args), {
           action: "uncapped",
           title: `Keep "${box.name ?? box.instanceId}" awake`,
-          body: `It won't sleep on its own, so it bills ${box.runningHourlyUsd != null ? formatCloudHourlyPrice(box.runningHourlyUsd) : "its full rate"} around the clock until someone sleeps it.`,
+          body: `It won't sleep on its own, so it uses ${box.hoursRate != null ? formatCloudHoursRate(box.hoursRate) : "hours"} around the clock until someone sleeps it.`,
           confirm: "Keep it awake",
         });
       }
       return await runAction(box, { instanceId: box.instanceId, action: "set_sleep", sleepAfterMinutes: minutes });
     },
 
-    async spending() {
-      const all = await readMachines();
-      const saved = all.machines.reduce<number | null>((total, box) => (total == null || box.savedUsd == null ? null : total + box.savedUsd), 0);
-      return { ...all.spending, savedUsd: saved };
+    /** Plan, hours left, and what happens at 0. */
+    async hours() {
+      const account = await deps.machines.account();
+      if (!account) throw new Error("ADE Cloud isn't available on this account yet.");
+      return account;
     },
 
-    async set_cap(rawArgs?: unknown) {
-      const args = record(rawArgs);
-      const raw = args.monthlyCapUsd;
-      const cap = raw === null || raw === "off" ? null : typeof raw === "number" ? raw : Number(raw);
-      if (cap !== null && !(Number.isFinite(cap) && cap > 0)) throw new Error("Pass a dollar amount above zero, or off.");
-      const current: CloudBudget = await deps.budget.read();
-      // Raising the cap (or removing it) lets more money be spent: that asks. Lowering never does.
-      const raising = cap === null || (current.monthlyCapUsd != null && cap > current.monthlyCapUsd);
-      if (raising) {
-        await approve(readApproval(args), {
-          action: "uncapped",
-          title: cap === null ? "Turn off the ADE Cloud monthly cap" : `Raise the ADE Cloud monthly cap to ${formatCloudUsd(cap)}`,
-          body: cap === null
-            ? "With no cap, agents can keep making and waking machines for the whole month."
-            : `Machines may then spend up to ${formatCloudUsd(cap)} this month (now ${current.monthlyCapUsd != null ? formatCloudUsd(current.monthlyCapUsd) : "no cap"}).`,
-          confirm: cap === null ? "Turn it off" : "Raise it",
-        });
-      }
-      return await deps.budget.write({ ...current, monthlyCapUsd: cap });
-    },
-
-    /** What agents may spend alone: a preset (ask, balanced, hands_off) or single limits. Loosening asks the person. */
+    /** What agents may do alone: a preset (ask, balanced, hands_off) or single limits. Loosening asks the person. */
     async limits() {
-      const current = await deps.budget.read();
-      return { ...current.agents, preset: cloudLimitsPresetOf(current.agents) ?? "custom" };
+      const current = await deps.limits.read();
+      return { ...current, preset: cloudLimitsPresetOf(current) ?? "custom" };
     },
 
     async set_limits(rawArgs?: unknown) {
       const args = record(rawArgs);
-      const current = await deps.budget.read();
+      const current = await deps.limits.read();
       const presetName = text(args, "preset")?.replace("-", "_") ?? null;
       const preset = presetName ? CLOUD_LIMITS_PRESETS[presetName as CloudLimitsPreset] ?? null : null;
       if (presetName && !preset) throw new Error("Pick a preset: ask, balanced or hands-off.");
-      const next: CloudAgentLimits = { ...current.agents, ...(preset ?? {}) };
+      const next: CloudAgentLimits = { ...current, ...(preset ?? {}) };
       if (typeof args.unattendedSpend === "boolean") next.unattendedSpend = args.unattendedSpend;
       if (args.machinesPerDay != null) {
         const perDay = Number(args.machinesPerDay);
@@ -591,7 +585,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       }
       const maxShape = typeof args.maxShape === "string" ? shapeArg({ shape: args.maxShape }) : null;
       if (maxShape) next.maxShape = maxShape;
-      const was = current.agents;
+      const was = current;
       const looser = (next.unattendedSpend && !was.unattendedSpend)
         || next.machinesPerDay > was.machinesPerDay
         || !cloudShapeWithin(next.maxShape, was.maxShape);
@@ -599,12 +593,12 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         const max = cloudShapeById(next.maxShape);
         await approve(readApproval(args), {
           action: "uncapped",
-          title: "Let agents spend more on ADE Cloud",
-          body: `Unattended agents could then ${next.unattendedSpend ? `start ${next.machinesPerDay} new machine${next.machinesPerDay === 1 ? "" : "s"} a day, up to ${max.cpu} vCPU · ${max.memoryGb} GB` : "spend nothing"}.`,
+          title: "Let agents use more on ADE Cloud",
+          body: `Unattended agents could then ${next.unattendedSpend ? `start ${next.machinesPerDay} new computer${next.machinesPerDay === 1 ? "" : "s"} a day, up to ${max.label}` : "use nothing"}.`,
           confirm: "Allow it",
         });
       }
-      return (await deps.budget.write({ ...current, agents: next })).agents;
+      return await deps.limits.write(next);
     },
 
     async ready_set(rawArgs?: unknown) {
@@ -627,7 +621,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       if (!next) throw new Error("That isn't a project ADE can keep a machine ready for.");
       // Turning it on, or a bigger or other kind of machine, asks (and is held to the agent limits).
       if (!existing || existing.shape !== next.shape || existing.kind !== next.kind) {
-        await capCheck();
+        await hoursCheck();
         const shape = cloudShapeById(next.shape);
         // The keeper makes the machine later; this only asks, so it holds no slot.
         (await approve(readApproval(args), {
@@ -635,7 +629,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
           newMachine: true,
           shape: next.shape,
           title: `Keep a cloud machine ready for ${next.projectName}`,
-          body: `ADE prepares a ${next.kind === "vm" ? "VM" : "box"} (${shape.cpu} vCPU · ${shape.memoryGb} GB) with the repository cloned and setup run, then keeps it asleep (about ${formatCloudUsd(shape.diskGb * 0.09)} a month for its disk). A chat on it bills ${formatCloudHourlyPrice(cloudHourlyUsd(next.kind, shape))} while awake.`,
+          body: `ADE prepares a ${shape.label}${next.kind === "vm" ? " full computer" : " computer"} with the repository cloned and setup run, then keeps it asleep. A chat on it uses ${describeCloudHoursUse(next.kind, shape.id)}.`,
           confirm: "Keep one ready",
         })).release();
       }
@@ -662,7 +656,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const { projects } = await deps.readySettings.read();
       const entry = projects.find((candidate) => candidate.identity === identity);
       if (!entry) throw new Error("This project doesn't keep a machine ready. ade cloud ready on turns it on.");
-      await capCheck();
+      await hoursCheck();
       await deps.readySettings.write(projects.map((candidate) => (candidate.identity === identity ? { ...candidate, failure: null } : candidate)));
       await deps.desktop()?.readyRefresh().catch(() => null);
       return { identity, retrying: true };

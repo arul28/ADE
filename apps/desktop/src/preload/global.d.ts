@@ -1,5 +1,5 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
-import type { CloudBudget, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
 import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
@@ -4737,9 +4737,13 @@ declare global {
         /** Gives back a claim no chat used yet: ready again, and asleep. */
         readyRelease?: (instanceId: string, claimToken: string) => Promise<{ released: boolean } | null>;
         onReadyStatus?: (cb: (status: CloudReadyStatus) => void) => () => void;
-        /** The account's monthly cap and agent limits for cloud machines (account vault; no pin). */
-        getBudget?: () => Promise<CloudBudget | null>;
-        setBudget?: (budget: Partial<CloudBudget>) => Promise<CloudBudget | null>;
+        /** What unattended agents may do on ADE Cloud (account vault; no pin). */
+        getAgentLimits?: () => Promise<CloudAgentLimits | null>;
+        setAgentLimits?: (limits: Partial<CloudAgentLimits>) => Promise<CloudAgentLimits | null>;
+        /** The account's plan (no pin): extra hours for paid accounts, and Stripe's pages in the browser. */
+        setExtraHours?: (enabled: boolean) => Promise<CloudAccountState | null>;
+        openCheckout?: () => Promise<{ opened: boolean }>;
+        openBillingPortal?: () => Promise<{ opened: boolean }>;
         /**
          * Copy (fork) or move (box ↔ VM) one box. Both answer at once and
          * report through `onCreateProgress` with this request id. Account

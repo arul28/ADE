@@ -29,12 +29,18 @@
  *   PUT    /cloud/instances/:id/name           { ok: true }
  *   PUT    /cloud/instances/:id/metadata       { ok: true }
  *   POST   /cloud/instances/:id/exec           { exitCode, stdout, stderr }
+ *   POST   /cloud/billing/checkout             { url }   409 `already_paid`
+ *   POST   /cloud/billing/portal               { url }   409 `no_billing`
+ *   POST   /cloud/billing/extra-hours          CloudAccountState   403 `needs_paid_plan`
  *
  * `POST /cloud/instances/:id/start` with `{ reason: "push_work" }` is the one
  * wake allowed at 0 hours: free, short, once a day per computer.
  * `DELETE /cloud/instances/:id` takes `{ who, reason }`, recorded in the log.
  * `POST /cloud/instances/:id/resize` needs `{ computerIdle: true }` to grow the
  * disk of a running computer (a disk grow restarts it).
+ * `POST /cloud/billing/extra-hours` takes `{ enabled }`, on a paid plan only.
+ * The checkout and portal URLs open in the person's browser and come back to
+ * a plain page; read `GET /cloud/account` again to see what changed.
  */
 
 export const CLOUD_PATHS = {
@@ -43,6 +49,9 @@ export const CLOUD_PATHS = {
   usage: "/cloud/usage",
   templates: "/cloud/templates",
   instances: "/cloud/instances",
+  billingCheckout: "/cloud/billing/checkout",
+  billingPortal: "/cloud/billing/portal",
+  billingExtraHours: "/cloud/billing/extra-hours",
 } as const;
 
 /** `/cloud/instances/:id` and its actions. */
@@ -111,5 +120,7 @@ export type CloudAccountState = {
     periodEnd: number;
     stripeStatus: string | null;
     cancelAtPeriodEnd: boolean;
+    /** Banner: a failed payment, or a plan a paid invoice just brought back. */
+    notice: "past_due" | "restored" | null;
   };
 };

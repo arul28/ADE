@@ -12,7 +12,7 @@
  * main process with the account's ADE Cloud access and takes no pin.
  */
 
-import { cloudCapReachedMessage, type CloudCreateMachineResult, type CloudCreateProgress } from "../../../shared/adeCloud";
+import type { CloudCreateMachineResult, CloudCreateProgress } from "../../../shared/adeCloud";
 import { getErrorMessage } from "../shared/utils";
 import {
   CloudCreateCancelled,
@@ -23,7 +23,6 @@ import {
   waitForCloudBoxAuth,
 } from "./cloudMachineCreator";
 import type { CloudMachineCreatorDeps } from "./cloudMachineCreator";
-import type { CloudCopyDeps } from "./cloudMachineCopy";
 import { enableCloudSleep } from "./cloudSleep";
 import { wakeThroughTransition } from "./cloudReadyClaim";
 
@@ -32,7 +31,7 @@ function inAccount(auth: Record<string, unknown> | null): boolean {
   return auth?.signedIn === true && (auth.thisComputerRefusal == null);
 }
 
-type ReconnectDeps = CloudMachineCreatorDeps & Pick<CloudCopyDeps, "spending">;
+type ReconnectDeps = CloudMachineCreatorDeps;
 
 export async function reconnectCloudMachine(
   deps: ReconnectDeps,
@@ -69,12 +68,6 @@ async function reconnect(
   const name = instance.name ?? instance.id;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   if (instance.status !== "running") {
-    // A wake bills like any other: refused past the month's cap.
-    const month = await deps.spending?.().catch((error: unknown) => {
-      logger.warn?.("cloud.reconnect_spending_failed", { instanceId: instance.id, error: getErrorMessage(error) });
-      return null;
-    });
-    if (month?.capReached) throw new Error(cloudCapReachedMessage(month));
     progress("creating", `Waking ${name}…`, instance.id);
     await wakeThroughTransition(client, instance.id);
   }

@@ -13,10 +13,7 @@ function box(instanceId: string, machineKey: string | null): CloudMachine {
     resources: { cpu: 2, memoryGb: 4, diskGb: 20 },
     shapeId: "2x4",
     region: null,
-    runningHourlyUsd: 0.008,
-    idleHourlyUsd: 0.001,
-    spentUsd: null,
-    spentIsLifetime: false,
+    hoursRate: 1,
     pastDue: false,
     failure: null,
     machineKey,
@@ -24,7 +21,6 @@ function box(instanceId: string, machineKey: string | null): CloudMachine {
     createdAtMs: null,
     ready: null,
     sleep: { state: "auto", afterMinutes: 10 },
-    savedUsd: null,
   };
 }
 

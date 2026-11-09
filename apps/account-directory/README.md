@@ -834,6 +834,29 @@ checks the wallet (`$15` floor, automatic top-up) and awake computers against
 the provider's limit (80%). A computer not awake for 30 days is deleted after
 7-day and 1-day warnings; the clock waits for an hours reset.
 
+### Payments
+
+`src/cloud/billing.ts` sells the plan through Stripe Managed Payments (secrets
+`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`; vars `STRIPE_PLAN_PRICE_ID`,
+`STRIPE_EXTRA_PRICE_ID`, `STRIPE_METER_EVENT`, from
+`scripts/stripe-setup.mjs`). `POST /cloud/billing/checkout` and `/portal` answer
+a URL for the person's browser, which comes back to `/billing/return`.
+`POST /cloud/billing/extra-hours` takes `{ enabled }`, paid plan only.
+
+`POST /webhooks/stripe` is outside the access list and is checked with the
+signature instead. `cloud_stripe_events` makes each event run once. A handler
+uses its event only to find the subscription and re-reads it from Stripe, so
+late or reordered events land in the same place. Checkout completing sets the
+plan, then adds the $5 threshold, which Stripe refuses at Checkout. `invoice.paid`
+for a renewal starts fresh hours; a subscription that is `active` again restores
+from `past_due`. A failure moves the account to free rules and turns extra hours
+off, with an email each way and `billing.notice` for the banner.
+
+Each tick reports every whole extra Small-hour as one meter event (the rest
+waits). The identifier is the hour's place in the billing period, so a retry
+can't count one twice. Only accounts with extra hours on and past their plan's
+hours are reported.
+
 ## Sign-up analytics
 
 `POST /webhooks/clerk` takes Clerk's `user.created` and `user.deleted`

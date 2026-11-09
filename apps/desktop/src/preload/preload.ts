@@ -80,7 +80,7 @@ import { machineNameForBinding } from "../shared/machineIdentity";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
-import type { CloudBudget, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
 import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import {
@@ -13048,14 +13048,18 @@ const adeBridge = {
     listMachines: (): Promise<CloudMachinesResult | null> => ipcRenderer.invoke(IPC.cloudListMachines),
     machineAction: (args: CloudMachineActionArgs): Promise<CloudMachineActionResult | null> =>
       ipcRenderer.invoke(IPC.cloudMachineAction, args),
-    getBudget: (): Promise<CloudBudget | null> => ipcRenderer.invoke(IPC.cloudGetBudget),
+    getAgentLimits: (): Promise<CloudAgentLimits | null> => ipcRenderer.invoke(IPC.cloudGetAgentLimits),
+    setAgentLimits: (limits: Partial<CloudAgentLimits>): Promise<CloudAgentLimits | null> =>
+      ipcRenderer.invoke(IPC.cloudSetAgentLimits, { limits }),
+    setExtraHours: (enabled: boolean): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraHours, { enabled }),
+    openCheckout: (): Promise<{ opened: boolean }> => ipcRenderer.invoke(IPC.cloudOpenCheckout),
+    openBillingPortal: (): Promise<{ opened: boolean }> => ipcRenderer.invoke(IPC.cloudOpenBillingPortal),
     copyMachine: (args: { requestId: string; instanceId: string; name?: string | null; shape?: string | null }): Promise<{ started: boolean }> =>
       ipcRenderer.invoke(IPC.cloudCopyMachine, args),
     moveMachine: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }): Promise<{ started: boolean }> =>
       ipcRenderer.invoke(IPC.cloudMoveMachine, args),
     reconnectMachine: (args: { requestId: string; instanceId: string }): Promise<{ started: boolean }> =>
       ipcRenderer.invoke(IPC.cloudReconnectMachine, args),
-    setBudget: (budget: Partial<CloudBudget>): Promise<CloudBudget | null> => ipcRenderer.invoke(IPC.cloudSetBudget, { budget }),
     /** ADE Cloud's status changed; read it again. */
     onStatusChanged: (cb: () => void): (() => void) => {
       const listener = () => cb();

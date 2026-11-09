@@ -6604,9 +6604,9 @@ function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegis
 }
 
 /** What the phone's ADE Cloud page may run (`cloud.read` / `cloud.write`). */
-const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set(["list", "spending", "limits", "ready_status", "make_status"]);
+const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set(["list", "hours", "limits", "ready_status", "make_status"]);
 const CLOUD_REMOTE_WRITES: ReadonlySet<string> = new Set([
-  "create", "copy", "move", "sleep", "wake", "resize", "delete", "set_sleep", "set_cap", "set_limits",
+  "create", "copy", "move", "sleep", "wake", "resize", "delete", "set_sleep", "update", "set_limits",
   "ready_set", "ready_off", "ready_retry",
 ]);
 

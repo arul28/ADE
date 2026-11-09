@@ -416,7 +416,7 @@ export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): bo
  * items (cloudVaultItems.ts).
  */
 export const ADE_ACTION_MACHINE_SCOPED = {
-  cloud: ["list", "spending", "limits", "sleep", "wake", "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES],
+  cloud: ["list", "hours", "limits", "sleep", "wake", "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES],
   account_vault: ["get", "set", "remove"],
 } as const satisfies Partial<Record<AdeActionDomain, readonly string[]>>;
 
@@ -1126,8 +1126,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // give an unused claim back) and the machine verbs. What spends money or
   // deletes asks the person first (the RPC server stamps who asks). Never the key.
   cloud: [
-    "ready_status", "claim_ready", "release_ready", "list", "spending", "create", "sleep", "wake", "resize",
-    "copy", "move", "delete", "set_sleep", "set_cap", "ready_set", "ready_off", "ready_retry", "make_status", "limits", "set_limits",
+    "ready_status", "claim_ready", "release_ready", "list", "hours", "create", "sleep", "wake", "resize", "update",
+    "copy", "move", "delete", "set_sleep", "ready_set", "ready_off", "ready_retry", "make_status", "limits", "set_limits",
     // Sign-ins for new machines: which are kept (never a value), and the
     // person's own saves and Claude sign-in (user-only, below).
     "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES,

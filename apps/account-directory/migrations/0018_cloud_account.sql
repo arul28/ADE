@@ -97,11 +97,15 @@ create table if not exists cloud_accounts (
   warned_zero_at integer,
   -- When hours came back after running out: the 30-day delete clock waits for this.
   hours_restored_at integer,
+  -- When a paid invoice last brought the plan back from `past_due` (the banner).
+  billing_restored_at integer,
   created_at integer not null,
   updated_at integer not null
 );
 create index if not exists idx_cloud_accounts_period on cloud_accounts (period_end);
 create index if not exists idx_cloud_accounts_stripe_customer on cloud_accounts (stripe_customer_id);
+-- Keeps the minute's extra-hours read to the accounts that have them on.
+create index if not exists idx_cloud_accounts_extra on cloud_accounts (user_id) where extra_enabled = 1;
 
 -- One row per computer and UTC day: what the meter charged and, after the
 -- daily reconcile, the provider's own `awake_minutes` for it. `free_ms` is the

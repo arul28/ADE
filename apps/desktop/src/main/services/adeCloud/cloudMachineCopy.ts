@@ -24,7 +24,6 @@
 
 import { randomUUID } from "node:crypto";
 import {
-  cloudCapReachedMessage,
   cloudInstanceType,
   cloudShape,
   cloudShapeById,
@@ -34,7 +33,6 @@ import {
   type CloudCreateProgress,
   type CloudMachineKind,
   type CloudShapeId,
-  type CloudSpending,
 } from "../../../shared/adeCloud";
 import { CLOUD_MADE_BY_CHAT_METADATA } from "../../../shared/adeCloud";
 import { CLOUD_READY_METADATA } from "../../../shared/cloudReady";
@@ -52,7 +50,6 @@ import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
 import { wakeThroughTransition } from "./cloudReadyClaim";
 
 export type CloudCopyDeps = CloudMachineCreatorDeps & {
-  spending?: () => Promise<CloudSpending | null>;
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
 };
 
@@ -78,11 +75,6 @@ function copyMetadata(source: CloudInstance, requestId: string, extra: Record<st
     if (!NOT_COPIED_METADATA.has(key)) metadata[key] = value;
   }
   return { ...metadata, ...extra, created_by: "ade", ade_request_id: requestId };
-}
-
-async function assertUnderCap(deps: Pick<CloudCopyDeps, "spending">): Promise<void> {
-  const month = await deps.spending?.().catch(() => null) ?? null;
-  if (month?.capReached) throw new Error(cloudCapReachedMessage(month));
 }
 
 async function waitForRunning(client: CloudProvider, instanceId: string, signal: AbortSignal | undefined, sleep: (ms: number) => Promise<void>): Promise<CloudInstance> {
@@ -116,7 +108,6 @@ export async function copyCloudMachine(
   const directory = deps.directoryBaseUrl();
   if (!directory) throw new Error("ADE's account service isn't configured on this computer, so it can't sign the copy in.");
   if (!(await deps.getAccountToken())) throw new Error("Sign in to ADE on this computer first. The copy joins your account.");
-  await assertUnderCap(deps);
   const source = await client.getInstance(args.instanceId);
   if (!["running", "sleeping", "stopped"].includes(source.status)) {
     throw new Error(`The box is ${source.status}; ADE Cloud copies a box that is running, asleep or stopped.`);
@@ -136,7 +127,7 @@ export async function copyCloudMachine(
   try {
     fork = await client.forkInstance(source.id, {
       name,
-      ...(shape ? { resources: { cpu: shape.cpu, memory: shape.memoryGb, disk: Math.max(shape.diskGb, source.resources?.disk ?? 0) } } : {}),
+      ...(shape ? { resources: { cpu: shape.cpu, memory: shape.memoryGb } } : {}),
       metadata: copyMetadata(source, requestId, {
         ade_copied_from: source.id,
         ...(args.madeByChat ? { [CLOUD_MADE_BY_CHAT_METADATA]: args.madeByChat } : {}),
@@ -246,14 +237,13 @@ export async function moveCloudMachine(
   const progress = (stage: CloudCreateProgress["stage"], message: string, instanceId?: string, approvalUrl?: string) =>
     onProgress({ requestId, stage, message, ...(instanceId ? { instanceId } : {}), ...(approvalUrl ? { approvalUrl } : {}) });
   const client = await deps.client();
-  await assertUnderCap(deps);
   const source = await client.getInstance(args.instanceId);
   const targetType = cloudInstanceType(args.to);
   if ((source.type ?? "default") === targetType) {
     throw new Error(`It's already a ${args.to === "vm" ? "VM" : "box"}. Use Resize to change its size.`);
   }
   const sourceResources = source.resources ? { cpu: source.resources.cpu, memoryGb: source.resources.memory } : null;
-  const shape = (args.shape ? cloudShape(args.shape) : null) ?? cloudShapeFor(sourceResources) ?? cloudShapeById(args.to === "vm" ? "4x8" : "2x4");
+  const shape = (args.shape ? cloudShape(args.shape) : null) ?? cloudShapeFor(sourceResources) ?? cloudShapeById("2x4");
   const sourceName = source.name ?? source.id;
   // The old box must be awake to hand its files over.
   if (source.status !== "running") {
@@ -333,7 +323,7 @@ export async function moveCloudMachine(
   // 4. The old box goes; the new one takes its name.
   let sourceDeleted = false;
   try {
-    await client.deleteInstance(source.id);
+    await client.deleteInstance(source.id, { reason: "moved" });
     sourceDeleted = await deleteCloudInstanceConfirmed(client, source.id, { logger, sleep });
   } catch (error) {
     if (error instanceof CloudProviderError && error.status === 404) sourceDeleted = true;

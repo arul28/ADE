@@ -1,7 +1,7 @@
 /**
- * Sleep and money for cloud machines: turning the provider's own idle sleep on
- * for a box once its brain keeps it awake while it works, the person's sleep
- * setting per box, waking a box for use, and the account's monthly cap.
+ * Sleep for cloud machines: turning the provider's own idle sleep on for a box
+ * once its brain keeps it awake while it works, the person's sleep setting per
+ * box, waking a box for use, and what unattended agents may do.
  *
  * Why the provider's sleep and not ADE's: the provider sleeps a box once nothing has
  * reached its URLs for the idle timeout, and does it whether or not any ADE
@@ -16,23 +16,18 @@
 
 import {
   CLOUD_DEFAULT_AGENT_LIMITS,
-  CLOUD_DEFAULT_MONTHLY_CAP_USD,
   CLOUD_DEFAULT_SLEEP_AFTER_MINUTES,
   CLOUD_SLEEP_METADATA,
   CLOUD_WAKE_PORT,
   CLOUD_WAKE_PORT_LABEL,
-  cloudCapReachedMessage,
   cloudShape,
-  cloudSpendingFor,
   isCloudSleepAfterMinutes,
   type CloudAgentLimits,
-  type CloudBudget,
   type CloudSleepPolicy,
-  type CloudSpending,
   type CloudWakeForUseResult,
 } from "../../../shared/adeCloud";
 import { getErrorMessage } from "../shared/utils";
-import { cloudUsageDay, type CloudProvider, type CloudInstance, type CloudLogger, type CloudUsage } from "./cloudProvider";
+import { CloudProviderError, type CloudProvider, type CloudInstance, type CloudLogger } from "./cloudProvider";
 import type { CloudVault } from "./cloudAccess";
 import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
 import { patchCloudMetadata, wakeThroughTransition } from "./cloudReadyClaim";
@@ -170,12 +165,12 @@ export function cloudInstanceForMachine(
 /**
  * Wakes the cloud box behind an ADE machine because the person (or an
  * agent) is about to use it: opening one of its lanes, sending to one of its
- * chats, a `--machine` call. At the monthly cap it refuses with the reason.
+ * chats, a `--machine` call. Out of hours, the server refuses it.
  */
 export async function wakeCloudMachineForUse(
   client: CloudProvider,
   machine: { machineKey: string; hostname?: string | null },
-  options: { spending?: () => Promise<CloudSpending | null>; logger?: CloudLogger; now?: () => number } = {},
+  options: { logger?: CloudLogger; now?: () => number } = {},
 ): Promise<CloudWakeForUseResult> {
   const now = options.now ?? (() => Date.now());
   // Bounded: this sits in front of a connect, which must not wait on a slow the provider.
@@ -198,10 +193,13 @@ export async function wakeCloudMachineForUse(
   if (instance.pastDue) {
     return { state: "refused", message: "ADE Cloud suspended this machine, so ADE can't wake it right now." };
   }
-  const spending = await options.spending?.().catch(() => null) ?? null;
-  if (spending?.capReached) return { state: "refused", message: cloudCapReachedMessage(spending) };
   const started = now();
-  await wakeThroughTransition(client, instance.id, now);
+  try {
+    await wakeThroughTransition(client, instance.id, now);
+  } catch (error) {
+    if (error instanceof CloudProviderError && error.code === "out_of_hours") return { state: "refused", message: error.message };
+    throw error;
+  }
   options.logger?.info?.("cloud.machine_woken_for_use", { instanceId: instance.id, wakeMs: now() - started });
   return { state: "woken", instanceId: instance.id, wakeMs: now() - started };
 }
@@ -209,11 +207,11 @@ export async function wakeCloudMachineForUse(
 /** How long a wake for use may spend finding the box before the connect goes ahead as usual. */
 const WAKE_LOOKUP_TIMEOUT_MS = 5_000;
 
-/* The monthly cap. */
+/* What unattended agents may do, kept in the account. */
 
-/** The account vault item for the cap; this computer's copy sits in the shared credential file. */
-export const CLOUD_BUDGET_VAULT_KEY = "cloud-budget";
-const CLOUD_BUDGET_MACHINE_CREDENTIAL_KEY = "cloud.budget.v1";
+/** The account vault item; the name dates from when it also held a dollar cap. This computer's copy sits in the shared credential file. */
+export const CLOUD_AGENT_LIMITS_VAULT_KEY = "cloud-budget";
+const CLOUD_AGENT_LIMITS_MACHINE_CREDENTIAL_KEY = "cloud.budget.v1";
 
 function parseAgentLimits(raw: unknown): CloudAgentLimits {
   const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
@@ -226,37 +224,34 @@ function parseAgentLimits(raw: unknown): CloudAgentLimits {
   };
 }
 
-/** v1 held the cap alone (set by the person); v2 adds what unattended agents may do. */
-function parseBudget(raw: string | null | undefined): CloudBudget | null {
+/** v2 also held the dollar cap, now gone; only the agents part is read. */
+function parseStoredLimits(raw: string | null | undefined): CloudAgentLimits | null {
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as { v?: unknown; monthlyCapUsd?: unknown; agents?: unknown };
-    if (parsed?.v !== 1 && parsed?.v !== 2) return null;
-    const cap = parsed.monthlyCapUsd;
-    const agents = parseAgentLimits(parsed.agents);
-    if (cap === null) return { monthlyCapUsd: null, agents };
-    return typeof cap === "number" && Number.isFinite(cap) && cap > 0 ? { monthlyCapUsd: Math.round(cap * 100) / 100, agents } : null;
+    const parsed = JSON.parse(raw) as { v?: unknown; agents?: unknown };
+    if (parsed?.v !== 2 && parsed?.v !== 3) return null;
+    return parseAgentLimits(parsed.agents);
   } catch {
     return null;
   }
 }
 
-export type CloudBudgetStore = {
-  read(): Promise<CloudBudget>;
-  write(budget: CloudBudget): Promise<CloudBudget>;
+export type CloudAgentLimitsStore = {
+  read(): Promise<CloudAgentLimits>;
+  write(limits: CloudAgentLimits): Promise<CloudAgentLimits>;
 };
 
-/** The cap, from the account when it answers, else this computer's copy, else the default. */
-export function createCloudBudgetStore(deps: {
+/** From the account when it answers, else this computer's copy, else the default. */
+export function createCloudAgentLimitsStore(deps: {
   vault: () => CloudVault | null;
   machineStore: () => { getSync(key: string): string | null; setSync(key: string, value: string): void } | null;
   logger?: CloudLogger;
-}): CloudBudgetStore {
+}): CloudAgentLimitsStore {
   const local = () => {
     try {
       return deps.machineStore();
     } catch (error) {
-      deps.logger?.warn?.("cloud.budget_local_unavailable", { error: getErrorMessage(error) });
+      deps.logger?.warn?.("cloud.agent_limits_local_unavailable", { error: getErrorMessage(error) });
       return null;
     }
   };
@@ -266,60 +261,34 @@ export function createCloudBudgetStore(deps: {
       const got = vault
         ? await vault.get().catch((error: unknown) => {
           // This computer's copy answers instead.
-          deps.logger?.warn?.("cloud.budget_account_read_failed", { error: getErrorMessage(error) });
+          deps.logger?.warn?.("cloud.agent_limits_account_read_failed", { error: getErrorMessage(error) });
           return { ok: false as const };
         })
         : { ok: false as const };
-      const fromAccount = got.ok ? parseBudget(got.value) : null;
+      const fromAccount = got.ok ? parseStoredLimits(got.value) : null;
       if (fromAccount) return fromAccount;
-      return parseBudget(local()?.getSync(CLOUD_BUDGET_MACHINE_CREDENTIAL_KEY))
-        ?? { monthlyCapUsd: CLOUD_DEFAULT_MONTHLY_CAP_USD, agents: CLOUD_DEFAULT_AGENT_LIMITS };
+      return parseStoredLimits(local()?.getSync(CLOUD_AGENT_LIMITS_MACHINE_CREDENTIAL_KEY)) ?? CLOUD_DEFAULT_AGENT_LIMITS;
     },
-    async write(budget) {
-      const cap = budget.monthlyCapUsd;
-      if (cap !== null && !(typeof cap === "number" && Number.isFinite(cap) && cap > 0 && cap <= 100_000)) {
-        throw new Error("Set the cap to a dollar amount above zero, or turn it off.");
-      }
-      const next: CloudBudget = { monthlyCapUsd: cap === null ? null : Math.round(cap * 100) / 100, agents: parseAgentLimits(budget.agents) };
-      const raw = JSON.stringify({ v: 2, ...next });
+    async write(limits) {
+      const next = parseAgentLimits(limits);
+      const raw = JSON.stringify({ v: 3, agents: next });
       let savedHere = false;
       try {
         const store = local();
-        store?.setSync(CLOUD_BUDGET_MACHINE_CREDENTIAL_KEY, raw);
+        store?.setSync(CLOUD_AGENT_LIMITS_MACHINE_CREDENTIAL_KEY, raw);
         savedHere = store != null;
       } catch (error) {
-        deps.logger?.warn?.("cloud.budget_local_write_failed", { error: getErrorMessage(error) });
+        deps.logger?.warn?.("cloud.agent_limits_local_write_failed", { error: getErrorMessage(error) });
       }
       const vault = deps.vault();
       const saved = vault
         ? await vault.set(raw).catch((error: unknown) => {
-          deps.logger?.warn?.("cloud.budget_account_write_failed", { error: getErrorMessage(error) });
+          deps.logger?.warn?.("cloud.agent_limits_account_write_failed", { error: getErrorMessage(error) });
           return false;
         })
         : false;
-      if (!saved && !savedHere) throw new Error("ADE couldn't save the cap to your account or this computer. Try again.");
+      if (!saved && !savedHere) throw new Error("ADE couldn't save that to your account or this computer. Try again.");
       return next;
     },
   };
-}
-
-/** What the account spent this UTC month, from a usage read that covers it. */
-export function cloudMonthSpentUsd(usage: Pick<CloudUsage, "byDay"> | null, nowMs: number): number | null {
-  if (!usage) return null;
-  const monthStart = `${cloudUsageDay(nowMs).slice(0, 7)}-01`;
-  let total = 0;
-  for (const [day, usd] of Object.entries(usage.byDay)) {
-    if (day >= monthStart) total += usd;
-  }
-  return total;
-}
-
-/** This month against the cap. */
-export async function readCloudSpending(
-  budget: CloudBudgetStore,
-  usage: () => Promise<CloudUsage | null>,
-  nowMs: number = Date.now(),
-): Promise<CloudSpending> {
-  const [cap, read] = await Promise.all([budget.read(), usage()]);
-  return cloudSpendingFor(cap, cloudMonthSpentUsd(read, nowMs));
 }

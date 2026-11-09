@@ -9,13 +9,13 @@
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { CLOUD_SIGN_INS } from "../../../shared/cloudSignIns";
 import { cloudSignInVaultKey } from "./cloudSignInStore";
-import { CLOUD_PROVIDER_VAULT_ITEM, CLOUD_VAULT_KIND } from "./cloudAccess";
+import { CLOUD_VAULT_KIND } from "./cloudAccess";
 import { CLOUD_READY_VAULT_KEY } from "./cloudReadySettings";
-import { CLOUD_BUDGET_VAULT_KEY } from "./cloudSleep";
+import { CLOUD_AGENT_LIMITS_VAULT_KEY } from "./cloudSleep";
 
-/** What desktop main writes itself: the cap and limits, and ready machines. */
+/** What desktop main writes itself: agent limits and ready machines. */
 const DESKTOP_ITEMS: ReadonlySet<string> = new Set([
-  CLOUD_BUDGET_VAULT_KEY,
+  CLOUD_AGENT_LIMITS_VAULT_KEY,
   CLOUD_READY_VAULT_KEY,
 ]);
 
@@ -24,7 +24,6 @@ const SIGN_IN_ITEMS: ReadonlySet<string> = new Set(CLOUD_SIGN_INS.map((spec) => 
 
 function allows(action: string, [scope, kind, key]: unknown[]): boolean {
   if (scope !== ACCOUNT_SCOPE_ALL || kind !== CLOUD_VAULT_KIND || typeof key !== "string") return false;
-  if (key === CLOUD_PROVIDER_VAULT_ITEM) return action === "get";
   if (DESKTOP_ITEMS.has(key)) return action === "get" || action === "set" || action === "remove";
   return action === "get" && SIGN_IN_ITEMS.has(key);
 }

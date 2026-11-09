@@ -1,6 +1,6 @@
 /**
- * cloud boxes in the machine list: what each one is, costs and has spent,
- * and the lifecycle actions on it (sleep, wake, resize, back up, delete).
+ * cloud boxes in the machine list: what each one is and how fast it uses
+ * hours, and the lifecycle actions on it (sleep, wake, resize, back up, delete).
  *
  * Account-level, like the rest of the integration: every call goes to the
  * the account's cloud machines, from the desktop the person is
@@ -9,32 +9,27 @@
  */
 
 import {
-  CLOUD_DEFAULT_AGENT_LIMITS,
   CLOUD_MADE_BY_CHAT_METADATA,
+  CLOUD_OUT_OF_HOURS_MESSAGE,
   isCloudInstanceId,
-  cloudIdleHourlyUsd,
+  cloudHoursRate,
+  cloudMachineKindOf,
   cloudMachineState,
   cloudMachineType,
-  cloudResizeBody,
-  cloudRunningHourlyUsd,
   cloudShape,
   cloudShapeFor,
   cloudStatusAwake,
-  cloudCapReachedMessage,
-  cloudSavedUsd,
-  cloudSpendingFor,
-  type CloudBudget,
+  type CloudAccountState,
   type CloudMachine,
   type CloudMachineActionArgs,
   type CloudMachineActionResult,
   type CloudMachinesResult,
-  type CloudMonthSpend,
   type CloudResources,
 } from "../../../shared/adeCloud";
 import { CLOUD_READY_METADATA, readCloudReadyMachineState } from "../../../shared/cloudReady";
 import { CLOUD_ACCESS_REFUSED, cloudUsageDay, CloudProviderError, type CloudProvider, type CloudInstance, type CloudUsage } from "./cloudProvider";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
-import { cloudMonthSpentUsd, cloudSleepPolicyOf, setCloudSleepAfter } from "./cloudSleep";
+import { cloudSleepPolicyOf, setCloudSleepAfter } from "./cloudSleep";
 
 type Logger = {
   info?(event: string, meta?: Record<string, unknown>): void;
@@ -44,7 +39,7 @@ type Logger = {
 /** the provider's usage window reaches back 90 days at most. */
 const USAGE_WINDOW_DAYS = 90;
 const DAY_MS = 24 * 60 * 60_000;
-/** Compute settles hourly on the provider, so a fresher read shows nothing new. */
+/** Which deleted machines the usage still lists changes slowly. */
 const USAGE_CACHE_MS = 5 * 60_000;
 
 /** The metadata key ADE writes once a box joins the account: its ADE machine key. */
@@ -57,8 +52,6 @@ export type CloudMachinesDeps = {
   whyNoClient?: () => Promise<string | null>;
   /** Removes a machine from the ADE account directory (the "Remove from ADE" half of a delete). */
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
-  /** The account's monthly cap; absent reads as no cap. */
-  readBudget?: () => Promise<CloudBudget>;
   logger?: Logger;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -79,46 +72,27 @@ function cloudInstanceMadeByAde(instance: Pick<CloudInstance, "metadata">): bool
   return instance.metadata.created_by === "ade" || Boolean(instance.metadata[CLOUD_MACHINE_KEY_METADATA]);
 }
 
-function toCloudMachine(
-  instance: CloudInstance,
-  usage: CloudUsage | null,
-  nowMs: number,
-): CloudMachine {
+function toCloudMachine(instance: CloudInstance): CloudMachine {
   const resources = resourcesOf(instance);
-  const createdAtMs = instance.created != null ? instance.created * 1000 : null;
-  const windowStartMs = nowMs - (USAGE_WINDOW_DAYS - 1) * DAY_MS;
-  const spentIsLifetime = createdAtMs != null && createdAtMs >= windowStartMs;
-  const runningHourlyUsd = resources ? cloudRunningHourlyUsd(instance.type, resources) : null;
-  const spentUsd = usage ? usage.byInstance[instance.id] ?? 0 : null;
+  const type = cloudMachineType(instance.type);
+  const shape = cloudShapeFor(resources);
   return {
     instanceId: instance.id,
     name: instance.name,
     status: instance.status,
     state: cloudMachineState(instance.status),
-    type: cloudMachineType(instance.type),
+    type,
     resources,
-    shapeId: cloudShapeFor(resources)?.id ?? null,
+    shapeId: shape?.id ?? null,
     region: instance.region,
-    runningHourlyUsd,
-    idleHourlyUsd: resources ? cloudIdleHourlyUsd(resources) : null,
-    // A box absent from a usage read has spent nothing billed yet.
-    spentUsd,
-    spentIsLifetime,
+    hoursRate: shape ? cloudHoursRate(cloudMachineKindOf(type), shape.id) : null,
     pastDue: instance.pastDue,
     failure: instance.status === "failed" ? instance.statusReason?.message ?? null : null,
     machineKey: instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null,
-    createdAtMs,
+    createdAtMs: instance.created != null ? instance.created * 1000 : null,
     madeByAde: cloudInstanceMadeByAde(instance),
     ready: readyOf(instance),
     sleep: cloudSleepPolicyOf(instance),
-    // the provider settles compute hourly, so the newest hour reads as saved
-    // until it lands; the window stops an hour back to stay honest.
-    savedUsd: cloudSavedUsd({
-      runningHourlyUsd,
-      spentUsd,
-      windowStartMs: usage ? (spentIsLifetime ? createdAtMs : windowStartMs) : null,
-      nowMs: nowMs - 60 * 60_000,
-    }),
   };
 }
 
@@ -133,58 +107,13 @@ function readyOf(instance: CloudInstance): CloudMachine["ready"] {
   };
 }
 
-/** The first instant of `nowMs`'s UTC month. */
-function monthStartMs(nowMs: number): number {
-  const date = new Date(nowMs);
-  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
-}
-
-/**
- * This month per listed machine (spent, and what sleeping saved it since the
- * month or its creation, whichever is later), and what machines no longer in
- * the account spent this month: the provider's usage keeps a deleted machine's
- * id, its list does not.
- */
-function cloudMonthSpend(
-  machines: readonly Pick<CloudMachine, "instanceId" | "runningHourlyUsd" | "createdAtMs">[],
-  monthUsage: Pick<CloudUsage, "byInstance"> | null,
-  nowMs: number,
-): CloudMonthSpend | null {
-  if (!monthUsage) return null;
-  const sinceMs = monthStartMs(nowMs);
-  const listed = new Set(machines.map((machine) => machine.instanceId));
-  const byInstance: CloudMonthSpend["byInstance"] = {};
-  for (const machine of machines) {
-    const spentUsd = monthUsage.byInstance[machine.instanceId] ?? 0;
-    byInstance[machine.instanceId] = {
-      spentUsd,
-      // As for `savedUsd`: the newest hour is not settled yet, so the window stops an hour back.
-      savedUsd: cloudSavedUsd({
-        runningHourlyUsd: machine.runningHourlyUsd,
-        spentUsd,
-        windowStartMs: Math.max(sinceMs, machine.createdAtMs ?? sinceMs),
-        nowMs: nowMs - 60 * 60_000,
-      }),
-    };
-  }
-  let deletedSpentUsd = 0;
-  let deletedCount = 0;
-  for (const [id, usd] of Object.entries(monthUsage.byInstance)) {
-    if (listed.has(id) || usd <= 0) continue;
-    deletedSpentUsd += usd;
-    deletedCount += 1;
-  }
-  return { sinceMs, byInstance, deletedSpentUsd, deletedCount };
-}
-
 function emptyResult(state: CloudMachinesResult["state"], message: string | null): CloudMachinesResult {
   return {
     state,
     machines: [],
     instanceCount: null,
     runningCount: null,
-    usageAvailable: false,
-    spending: cloudSpendingFor({ monthlyCapUsd: null }, null),
+    account: null,
     message,
   };
 }
@@ -197,22 +126,6 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
   /** The ADE machines the last good list showed as cloud boxes: only those are worth a wake lookup. */
   let knownMachineKeys = new Set<string>();
 
-  let monthUsageCache: { at: number; month: number; usage: CloudUsage } | null = null;
-  /** This UTC month's usage, for the per-machine month figures. Cached like the 90-day read. */
-  async function readMonthUsage(client: CloudProvider): Promise<CloudUsage | null> {
-    const at = now();
-    const month = monthStartMs(at);
-    if (monthUsageCache && monthUsageCache.month === month && at - monthUsageCache.at < USAGE_CACHE_MS) return monthUsageCache.usage;
-    try {
-      const usage = await client.usage({ from: cloudUsageDay(month) });
-      monthUsageCache = { at, month, usage };
-      return usage;
-    } catch (error) {
-      logger.warn?.("cloud.month_usage_read_failed", { error: errorText(error) });
-      return monthUsageCache?.month === month ? monthUsageCache.usage : null;
-    }
-  }
-
   async function readUsage(client: CloudProvider): Promise<CloudUsage | null> {
     const at = now();
     if (usageCache && at - usageCache.at < USAGE_CACHE_MS) return usageCache.usage;
@@ -221,7 +134,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       usageCache = { at, usage };
       return usage;
     } catch (error) {
-      // The boxes still show without their spend.
+      // The boxes still show without it.
       logger.warn?.("cloud.usage_read_failed", { error: errorText(error) });
       return usageCache?.usage ?? null;
     }
@@ -242,36 +155,27 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       logger.warn?.("cloud.machines_read_failed", { error: errorText(error), refused });
       return emptyResult(refused ? "access_refused" : "unreachable", errorText(error));
     }
-    const [usage, monthUsage, budget] = await Promise.all([readUsage(client), readMonthUsage(client), readBudget()]);
-    const at = now();
+    const [usage, account] = await Promise.all([readUsage(client), readAccount(client)]);
     const live = instances.filter((instance) => instance.status !== "deleted");
     knownMachineKeys = new Set(live.map((instance) => instance.metadata[CLOUD_MACHINE_KEY_METADATA]).filter((key): key is string => Boolean(key)));
-    const machines = live.map((instance) => toCloudMachine(instance, usage, at));
+    const machines = live.map((instance) => toCloudMachine(instance));
     return {
       state: "ok",
       machines,
       instanceCount: live.filter((instance) => instance.status !== "failed").length,
       runningCount: live.filter((instance) => cloudStatusAwake(instance.status)).length,
-      usageAvailable: usage != null,
-      spending: cloudSpendingFor(budget, cloudMonthSpentUsd(usage, at)),
-      month: cloudMonthSpend(machines, monthUsage, at),
+      account,
       deletedInstanceIds: usage ? Object.keys(usage.byInstance).filter((id) => !live.some((instance) => instance.id === id)) : [],
       message: null,
     };
   }
 
-  const readBudget = async (): Promise<CloudBudget> => {
-    if (!deps.readBudget) return { monthlyCapUsd: null, agents: CLOUD_DEFAULT_AGENT_LIMITS };
-    return await deps.readBudget().catch((error: unknown) => {
-      logger.warn?.("cloud.budget_read_failed", { error: errorText(error) });
-      return { monthlyCapUsd: null, agents: CLOUD_DEFAULT_AGENT_LIMITS };
+  /** Plan and hours, or null when they can't be read. Unknown is not "out". */
+  async function readAccount(client: CloudProvider): Promise<CloudAccountState | null> {
+    return await client.getAccount().catch((error: unknown) => {
+      logger.warn?.("cloud.account_read_failed", { error: errorText(error) });
+      return null;
     });
-  };
-
-  /** This month against the cap, for a costly action. Unknown spend is not "over". */
-  async function spending(client: CloudProvider) {
-    const [usage, budget] = await Promise.all([readUsage(client), readBudget()]);
-    return cloudSpendingFor(budget, cloudMonthSpentUsd(usage, now()));
   }
 
   /** The sentence and the way out for a provider refusal of a lifecycle action. */
@@ -287,6 +191,9 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
         message: "ADE Cloud takes one backup of a box every 15 minutes. Try again in a few minutes. It also keeps the last seven nights on its own.",
       };
     }
+    if (code === "out_of_hours") {
+      return { ok: false, blocker: "out_of_hours", message: error instanceof Error ? error.message : CLOUD_OUT_OF_HOURS_MESSAGE };
+    }
     if (code === "try_again") {
       return { ok: false, blocker: null, message: "The box is busy changing state. Try again in a moment." };
     }
@@ -301,15 +208,10 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     const action = args.action;
     logger.info?.("cloud.machine_action", { instanceId, action, shape: args.shape ?? null });
     try {
-      // What adds to the bill stops at the cap; sleeping, backing up and deleting never do.
-      if (action === "wake" || action === "resize") {
-        const month = await spending(client);
-        if (month.capReached) return { ok: false, blocker: "cap", message: cloudCapReachedMessage(month) };
-      }
       switch (action) {
         case "sleep": {
           await client.sleepInstance(instanceId);
-          return { ok: true, blocker: null, message: "Asleep. Only its disk bills until it wakes." };
+          return { ok: true, blocker: null, message: "Asleep. It uses no hours until it wakes." };
         }
         case "wake": {
           const status = await client.startInstance(instanceId);
@@ -328,22 +230,26 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
           if (current.cpu === shape.cpu && current.memoryGb === shape.memoryGb) {
             return { ok: true, blocker: null, message: "It's already that size." };
           }
-          const status = await client.resizeInstance(instanceId, cloudResizeBody(current, shape));
+          const status = await client.resizeInstance(instanceId, { cpu: shape.cpu, memory: shape.memoryGb });
           return {
             ok: true,
             blocker: null,
             message: status === "running"
-              ? `Resized to ${shape.cpu} vCPU · ${shape.memoryGb} GB. ADE on it is starting again.`
-              : `Resizing to ${shape.cpu} vCPU · ${shape.memoryGb} GB. ADE Cloud is moving it to a host with room; it is back in a few minutes.`,
+              ? `Resized to ${shape.label}. ADE on it is starting again.`
+              : `Resizing to ${shape.label}. It is back in a few minutes.`,
           };
         }
         case "backup": {
           await client.createBackup(instanceId);
           return { ok: true, blocker: null, message: "Backed up. ADE Cloud keeps this one until your next backup, plus the last seven nights." };
         }
+        case "update": {
+          await client.updateInstance(instanceId);
+          return { ok: true, blocker: null, message: "Updating. It restarts and is back in a few minutes." };
+        }
         case "delete": {
           try {
-            await client.deleteInstance(instanceId);
+            await client.deleteInstance(instanceId, { who: args.who ?? null, reason: "user" });
           } catch (error) {
             // A box already gone is what a delete wants.
             if (!(error instanceof CloudProviderError && error.status === 404)) throw error;
@@ -367,11 +273,11 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
                 ok: true,
                 blocker: null,
                 accountRowLeft: true,
-                message: `Deleted on ADE Cloud, so it no longer bills. ADE couldn't take it off your computers (${errorText(error).replace(/\.$/, "")}); use Remove from ADE on its row.`,
+                message: `Deleted on ADE Cloud. ADE couldn't take it off your computers (${errorText(error).replace(/\.$/, "")}); use Remove from ADE on its row.`,
               };
             }
           }
-          return { ok: true, blocker: null, message: "Deleted on ADE Cloud and removed from ADE. It no longer bills." };
+          return { ok: true, blocker: null, message: "Deleted on ADE Cloud and removed from ADE." };
         }
         case "set_sleep": {
           const minutes = args.sleepAfterMinutes ?? null;
@@ -381,7 +287,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
           const result = await setCloudSleepAfter(client, instanceId, minutes, logger);
           switch (result.state) {
             case "never":
-              return { ok: true, blocker: null, message: "It won't sleep on its own. It bills its full rate until you sleep it." };
+              return { ok: true, blocker: null, message: "It won't sleep on its own. It uses hours until you sleep it." };
             case "on":
               return { ok: true, blocker: null, message: `It sleeps after ${result.afterMinutes} minutes with nothing running on it.` };
             case "brain_too_old":
@@ -424,10 +330,10 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
         return createdMs >= midnight.getTime();
       }).length;
     },
-    /** This month against the cap (a costly action from elsewhere checks it). */
-    spending: async () => {
+    /** Plan and hours (a costly action from elsewhere checks them). */
+    account: async (): Promise<CloudAccountState | null> => {
       const client = await deps.client();
-      return client ? await spending(client) : null;
+      return client ? await client.getAccount() : null;
     },
   };
 }

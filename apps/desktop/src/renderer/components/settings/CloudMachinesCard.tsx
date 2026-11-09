@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { CircleNotch, HardDrives, Plus, Sun } from "@phosphor-icons/react";
 import {
   describeCloudMachineSize,
-  formatCloudUsd,
   type CloudMachine,
   type CloudStatus,
 } from "../../../shared/adeCloud";
@@ -26,8 +25,8 @@ import type { CloudMachinesState } from "../remoteTargets/useCloudMachines";
 import "../remoteTargets/connections.css";
 
 /**
- * Settings › Integrations › ADE Cloud › Machines: every machine on the
- * account with what it costs now and spent this month, its lanes and chats,
+ * Settings › Integrations › ADE Cloud › Machines: every computer on the
+ * account with how fast it uses hours, its lanes and chats,
  * and the same actions and confirmations as Your computers. Account-level (cloud
  * access is the account's), so every call goes out with no pin.
  */
@@ -69,7 +68,6 @@ export function CloudMachinesCard({ status, machines, onNewMachine, accountChang
   const activityItems = useMemo(() => Object.values(activityItemsById), [activityItemsById]);
   const boxes = useMemo(() => (machines.result?.state === "ok" ? machines.result.machines : []), [machines.result]);
   const byMachineKey = useMemo(() => matchCloudBoxes(boxes, accountMachines), [boxes, accountMachines]);
-  const month = machines.result?.state === "ok" ? machines.result.month ?? null : null;
 
   // Instance id → its account row, the reverse of the match above.
   const accountMachineByInstance = useMemo(() => {
@@ -93,10 +91,9 @@ export function CloudMachinesCard({ status, machines, onNewMachine, accountChang
     });
   };
 
-  const savedUsd = month ? Object.values(month.byInstance).reduce((sum, entry) => sum + (entry.savedUsd ?? 0), 0) : null;
   const newButton = (
     <button type="button" className="ade-modern-btn" data-size="sm" disabled={!status?.connected} onClick={onNewMachine}>
-      <Plus size={12} /> New machine
+      <Plus size={12} /> New computer
     </button>
   );
 
@@ -105,7 +102,7 @@ export function CloudMachinesCard({ status, machines, onNewMachine, accountChang
       anchor="cloud-machines"
       span="full"
       icon={<HardDrives size={15} weight="fill" />}
-      title="Machines"
+      title="Computers"
       badge={machines.loading && !machines.result ? <CircleNotch size={12} className="animate-spin" /> : null}
       actions={boxes.length ? newButton : null}
     >
@@ -118,7 +115,7 @@ export function CloudMachinesCard({ status, machines, onNewMachine, accountChang
 
       {machines.result?.state === "ok" && boxes.length === 0 ? (
         <div className="ade-ig-card-foot">
-          <span className="ade-ig-note">No machines yet. A new one signs in to your ADE account on its own.</span>
+          <span className="ade-ig-note">No computers yet. A new one signs in to your ADE account on its own.</span>
           {newButton}
         </div>
       ) : null}
@@ -131,7 +128,6 @@ export function CloudMachinesCard({ status, machines, onNewMachine, accountChang
             const pending = actions.pendingById[box.instanceId] ?? null;
             const error = actions.errorById[box.instanceId] ?? null;
             const rate = describeCloudRate(box);
-            const spent = month?.byInstance[box.instanceId]?.spentUsd ?? null;
             const lanes = ctx.work.lanes.map((lane) => lane.name);
             const canWake = (box.state === "asleep" || box.state === "stopped") && !box.pastDue;
             return (
@@ -144,8 +140,7 @@ export function CloudMachinesCard({ status, machines, onNewMachine, accountChang
                   <span className="ade-ig-mini-detail">
                     {[
                       describeCloudMachineSize(box),
-                      rate ? `${rate} now` : null,
-                      spent != null ? `${formatCloudUsd(spent)} this month` : null,
+                      rate,
                       lanes.length ? (lanes.length === 1 ? lanes[0] : `${lanes.length} lanes`) : null,
                       ctx.work.runningChats > 0 ? (ctx.work.runningChats === 1 ? "1 chat running" : `${ctx.work.runningChats} chats running`) : null,
                     ].filter(Boolean).join(" · ")}
@@ -172,16 +167,6 @@ export function CloudMachinesCard({ status, machines, onNewMachine, accountChang
         </div>
       ) : null}
 
-      {month && (savedUsd != null && savedUsd >= 0.01 || month.deletedSpentUsd >= 0.01) ? (
-        <p className="ade-ig-note" title={`${ADE_CLOUD_NAME} settles spend once an hour, so the newest hour shows later.`}>
-          {[
-            savedUsd != null && savedUsd >= 0.01 ? `Sleeping saved ${formatCloudUsd(savedUsd)} this month.` : null,
-            month.deletedSpentUsd >= 0.01
-              ? `Deleted machines spent ${formatCloudUsd(month.deletedSpentUsd)} this month.`
-              : null,
-          ].filter(Boolean).join(" ")}
-        </p>
-      ) : null}
       {/* Room for the stale-rows cleanup line (backend to come). */}
       {actions.dialog}
     </IntegrationCard>

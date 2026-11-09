@@ -20,7 +20,7 @@
  *   3. Tag it `ready` and put it to sleep. Asleep it bills only its disk.
  *
  * A failure deletes the machine (a half-prepared machine is only a bill) and
- * waits for Retry: ADE never loops on something that costs money. Turning
+ * waits for Retry: ADE never loops on something that uses hours. Turning
  * the project off deletes its unclaimed machine. A claimed machine is the
  * person's and is never touched here.
  *
@@ -31,14 +31,14 @@
 
 import { randomUUID } from "node:crypto";
 import {
-  CLOUD_SPEND_UNKNOWN_MESSAGE,
-  cloudCapReachedMessage,
+  CLOUD_HOURS_UNKNOWN_MESSAGE,
+  CLOUD_OUT_OF_HOURS_MESSAGE,
   cloudShape,
-  cloudUnattendedSpendBlock,
+  cloudUnattendedHoursBlock,
   type CloudCreateMachineArgs,
   type CloudCreateMachineResult,
   type CloudCreateProgress,
-  type CloudSpending,
+  type CloudAccountState,
 } from "../../../shared/adeCloud";
 import {
   CLOUD_READY_METADATA,
@@ -87,8 +87,8 @@ export type CloudReadyKeeperDeps = {
    * is replaced, so a ready machine runs the same ADE as the desktop that keeps it.
    */
   currentAdeVersion?: () => string | null;
-  /** This month against the cap: at the cap, or while it can't be read, no machine is prepared. */
-  spending?: () => Promise<CloudSpending | null>;
+  /** Plan and hours: out of hours, or while they can't be read, no machine is prepared. */
+  account?: () => Promise<CloudAccountState | null>;
   onStatus?: (status: CloudReadyStatus) => void;
   /** A prepare ended: the machine is ready, or it failed (a cancel is neither). */
   onPrepared?: (outcome: "completed" | "failed") => void;
@@ -380,7 +380,7 @@ export function createCloudReadyKeeper(deps: CloudReadyKeeperDeps) {
       read = parseJobRead(answer.stdout);
       if (!read.started && now() - began > RUNNER_START_GRACE_MS) {
         // Made from a template older than ready machines: nothing on it runs the job.
-        throw new Error("the machine's template is too old to run a setup. ADE updates its template on its own; Retry once it's ready.");
+        throw new Error("this computer is too old to run a setup. Update it from its card, then Retry.");
       }
       // The step only: the setup's own output is install noise, and it can echo anything.
       if (read.started) setLocalMessage(settings.identity, "setup", "Running your setup…");
@@ -483,7 +483,7 @@ export function createCloudReadyKeeper(deps: CloudReadyKeeperDeps) {
         // template can't run a setup, then waits for Retry.
         const attempts = (failureOf(settings)?.attempts ?? 0) + 1;
         const at = now();
-        const retriable = !left && !/template is too old/.test(reason);
+        const retriable = !left && !/too old to run a setup/.test(reason);
         const retryAt = cloudReadyRetryAt(attempts, at, retriable);
         const failure: CloudReadyFailure = {
           error: left
@@ -602,15 +602,15 @@ export function createCloudReadyKeeper(deps: CloudReadyKeeperDeps) {
         && !blockedByFailure(settings)
         && usedAsleep(machines) < CLOUD_READY_USED_ASLEEP_LIMIT;
     });
-    // Nobody approves a prepare, so at the monthly cap, or with a month ADE
+    // Nobody approves a prepare, so out of hours, or with hours ADE
     // can't read, it makes nothing new; a later pass prepares once it can.
     const month = missing.length
-      ? await deps.spending?.().catch((error: unknown) => {
-        logger.warn?.("cloud.ready_spending_read_failed", { error: getErrorMessage(error) });
+      ? await deps.account?.().catch((error: unknown) => {
+        logger.warn?.("cloud.ready_account_read_failed", { error: getErrorMessage(error) });
         return null;
       }) ?? null
       : null;
-    const blocked = missing.length ? cloudUnattendedSpendBlock(month) : null;
+    const blocked = missing.length ? cloudUnattendedHoursBlock(month) : null;
     if (!blocked) {
       for (const settings of missing) void prepare(settings);
     }
@@ -619,8 +619,8 @@ export function createCloudReadyKeeper(deps: CloudReadyKeeperDeps) {
         settings,
         cloudReadyMachinesFor(instances, settings.identity).filter((instance) => instance.status !== "failed"),
       )),
-      error: blocked === "cap_reached" && month ? cloudCapReachedMessage(month)
-        : blocked === "spend_unknown" ? CLOUD_SPEND_UNKNOWN_MESSAGE
+      error: blocked === "out_of_hours" ? CLOUD_OUT_OF_HOURS_MESSAGE
+        : blocked === "hours_unknown" ? CLOUD_HOURS_UNKNOWN_MESSAGE
         : null,
     });
   };

@@ -23,6 +23,11 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   DB: D1Database;
   AGENT37_API_KEY?: string;
   CLOUD_ACCESS_ACCOUNTS?: string;
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
+  STRIPE_PLAN_PRICE_ID?: string;
+  STRIPE_EXTRA_PRICE_ID?: string;
+  STRIPE_METER_EVENT?: string;
 };
 
 export type ComputerRow = {
@@ -71,6 +76,7 @@ export type AccountRow = {
   warned_95_at: number | null;
   warned_zero_at: number | null;
   hours_restored_at: number | null;
+  billing_restored_at: number | null;
   created_at: number;
   updated_at: number;
 };
@@ -373,7 +379,7 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
   } else if (wasPastDue && !isPastDue && nextPlan === "paid") {
     const stashEnd = account.past_due_period_end;
     const paidEnd = change.periodEnd ?? stashEnd ?? period.end;
-    const stillSamePeriod = change.periodStart === undefined && stashEnd != null && stashEnd > now && paidEnd === stashEnd;
+    const stillSamePeriod = stashEnd != null && stashEnd > now && paidEnd === stashEnd;
     if (stillSamePeriod) {
       account = await startFreshPeriod(env, account, {
         plan: "paid", start: change.periodStart ?? account.period_start, end: paidEnd, included: PAID_INCLUDED_MILLI,
@@ -384,12 +390,14 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
       account = await startFreshPeriod(env, account, {
         plan: "paid", start: change.periodStart ?? now, end: paidEnd, included: PAID_INCLUDED_MILLI,
       }, now);
+      extras.push(["extra_reported_milli", 0]);
     }
     extras.push(["past_due_used_milli", null], ["past_due_period_end", null]);
   } else if (account.plan === "free" && nextPlan === "paid") {
     account = await startFreshPeriod(env, account, {
       plan: "paid", start: change.periodStart ?? now, end: change.periodEnd ?? period.end, included: PAID_INCLUDED_MILLI,
     }, now);
+    extras.push(["extra_reported_milli", 0]);
   } else if (account.plan === "paid" && nextPlan === "free") {
     account = await startFreshPeriod(env, account, { plan: "free", start: period.start, end: period.end, included: FREE_INCLUDED_MILLI }, now);
     extras.push(["extra_enabled", 0]);
@@ -397,6 +405,7 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
     account = await startFreshPeriod(env, account, {
       plan: "paid", start: change.periodStart, end: change.periodEnd ?? account.period_end, included: PAID_INCLUDED_MILLI,
     }, now);
+    extras.push(["extra_reported_milli", 0]);
   }
 
   if (change.extraEnabled !== undefined && nextPlan === "paid" && !isPastDue) extras.push(["extra_enabled", change.extraEnabled ? 1 : 0]);
@@ -408,6 +417,7 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
   return (await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>()) ?? account;
 }
 
+const BILLING_RESTORED_NOTICE_MS = 3 * 24 * 60 * 60_000;
 export const DELETION_AFTER_INACTIVE_MS = 30 * 24 * 60 * 60_000;
 export const DELETION_WARNING_LATE_MS = 7 * 24 * 60 * 60_000;
 
@@ -421,6 +431,13 @@ export function deletionDueAt(computer: ComputerRow, account: AccountRow, liveUs
   const lastAwake = computer.last_awake_at ?? computer.created_at;
   const since = Math.max(lastAwake, account.hours_restored_at ?? 0);
   return since + DELETION_AFTER_INACTIVE_MS;
+}
+
+/** The banner for the account: a failed payment, or a plan that just came back. */
+function billingNotice(account: AccountRow, now: number): "past_due" | "restored" | null {
+  if (account.plan !== "paid") return null;
+  if (account.stripe_status === "past_due") return "past_due";
+  return account.billing_restored_at != null && now - account.billing_restored_at < BILLING_RESTORED_NOTICE_MS ? "restored" : null;
 }
 
 export async function buildAccountState(env: CloudEnv, userId: string, now: number): Promise<CloudAccountState> {
@@ -464,6 +481,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
       periodEnd: account.period_end,
       stripeStatus: account.stripe_status,
       cancelAtPeriodEnd: account.cancel_at_period_end === 1,
+      notice: billingNotice(account, now),
     },
   };
 }

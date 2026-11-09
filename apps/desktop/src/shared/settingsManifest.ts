@@ -1570,7 +1570,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: [
       "cloud", "machine", "box", "vm", "linux", "sandbox", "ade cloud",
       // The machines themselves live in Your computers; the page header opens it.
-      "sleep", "wake", "resize", "back up", "backup", "delete box", "spending", "cost", "price", "suspended",
+      "sleep", "wake", "resize", "back up", "backup", "delete box", "hours", "plan", "extra hours", "billing", "suspended",
     ],
     tab: "integrations",
     anchor: "cloud-connection",

@@ -15,7 +15,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { cloudCapReachedMessage, type CloudSpending } from "../../../shared/adeCloud";
 import {
   CLOUD_READY_METADATA,
   readCloudReadyMachineState,
@@ -95,13 +94,10 @@ export async function wakeThroughTransition(client: CloudProvider, instanceId: s
 export async function claimCloudReadyMachine(
   client: CloudProvider,
   identity: string,
-  options: { logger?: CloudLogger; now?: () => number; spending?: () => Promise<CloudSpending | null> } = {},
+  options: { logger?: CloudLogger; now?: () => number } = {},
 ): Promise<CloudReadyClaim> {
   const now = options.now ?? (() => Date.now());
   const logger = options.logger ?? {};
-  // A claim wakes a sleeping machine, and at the cap ADE wakes nothing.
-  const month = await options.spending?.().catch(() => null) ?? null;
-  if (month?.capReached) throw new Error(cloudCapReachedMessage(month));
   const pool = cloudReadyMachinesFor(await client.listInstances(), identity);
   const ready = pool.filter((instance) => cloudReadyStateOf(instance) === "ready" && instance.status !== "failed");
   // Without its ADE machine recorded, no caller can tell which computer it is:

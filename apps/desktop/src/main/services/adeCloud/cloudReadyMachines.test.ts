@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { CloudAccountState } from "../../../shared/adeCloud";
 import { CLOUD_READY_METADATA, type CloudReadyProjectSettings } from "../../../shared/cloudReady";
-import { createAgent37Provider as createProvider } from "./provider/agent37/agent37Client";
+import { createCloudServerProvider } from "./cloudServerProvider";
 import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
 import { claimCloudReadyMachine, releaseCloudReadyMachine } from "./cloudReadyClaim";
 import { createCloudReadyKeeper } from "./cloudReadyMachines";
@@ -26,7 +27,7 @@ function fakeCloud(initial: FakeBox[]) {
     new Response(body == null ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const fetch = async (url: string, init?: RequestInit): Promise<Response> => {
     const method = init?.method ?? "GET";
-    const route = url.slice("https://api.agent37.com/v1".length);
+    const route = url.slice("https://directory.invalid/cloud".length);
     if (route === "/instances" && method === "GET") return json(200, { data: [...boxes.values()] });
     const action = /^\/instances\/([^/]+)\/(sleep|start)$/.exec(route);
     if (action) {
@@ -36,6 +37,13 @@ function fakeCloud(initial: FakeBox[]) {
       if (action[2] === "sleep") slept.push(box.id);
       return json(200, { status: box.status });
     }
+    const metadata = /^\/instances\/([^/]+)\/metadata$/.exec(route);
+    if (metadata && method === "PUT") {
+      const box = boxes.get(metadata[1]!);
+      if (!box) return json(404, { error: { code: "not_found", message: "gone" } });
+      box.metadata = { ...(JSON.parse(String(init?.body)) as { metadata: Record<string, string> }).metadata };
+      return json(200, { ok: true });
+    }
     const one = /^\/instances\/([^/]+)$/.exec(route);
     if (one) {
       const box = boxes.get(one[1]!);
@@ -44,15 +52,15 @@ function fakeCloud(initial: FakeBox[]) {
         boxes.delete(box.id);
         return new Response(null, { status: 204 });
       }
-      if (method === "PATCH") {
-        box.metadata = { ...(JSON.parse(String(init?.body)) as { metadata: Record<string, string> }).metadata };
-        return json(200, box);
-      }
       return json(200, box);
     }
     return json(500, { error: { code: "internal_error", message: `no route ${method} ${route}` } });
   };
-  return { client: createProvider({ apiKey: "sk_test", fetch }), boxes, slept };
+  return {
+    client: createCloudServerProvider({ accessToken: async () => "account-token", baseUrl: () => "https://directory.invalid", fetch }),
+    boxes,
+    slept,
+  };
 }
 
 function readyBox(id: string, extra: Record<string, string> = {}, status = "sleeping"): FakeBox {
@@ -148,14 +156,14 @@ describe("ready machine keeper", () => {
   });
 
   it.each([
-    { month: "at the cap", error: /cap/i },
-    { month: "unreadable", error: /could not read your ADE Cloud spend/i },
-  ] as const)("with a month $month makes no ready machine, until it can", async ({ month, error }) => {
+    { month: "out of hours", error: /out of ADE Cloud hours/i },
+    { month: "unreadable", error: /couldn't read your ADE Cloud hours/i },
+  ] as const)("with hours $month makes no ready machine, until it can", async ({ month, error }) => {
     const fake = fakeCloud([readyBox("other001", { [CLOUD_READY_METADATA.project]: OTHER })]);
     let blocked = true;
-    const spending = async () => {
-      if (blocked && month === "unreadable") throw new Error("ADE Cloud usage timed out");
-      return { monthlyCapUsd: 20, monthSpentUsd: blocked ? 20 : 5, capNear: blocked, capReached: blocked };
+    const account = async () => {
+      if (blocked && month === "unreadable") throw new Error("ADE Cloud account read timed out");
+      return { hours: { state: blocked ? "zero" : "none" } } as unknown as CloudAccountState;
     };
     const made: string[] = [];
     let prepareStarted!: () => void;
@@ -170,20 +178,13 @@ describe("ready machine keeper", () => {
       },
       removeAccountMachine: async () => undefined,
       preparerId: ME,
-      spending,
+      account,
       sleep: async () => undefined,
     });
 
     const held = await keeper.refresh();
     expect(made).toEqual([]);
     expect(held.error).toMatch(error);
-    if (month === "at the cap") {
-      // A claim at the cap hands nothing out either.
-      await expect(claimCloudReadyMachine(fake.client, OTHER, { spending })).rejects.toThrow(/cap/i);
-      expect(fake.boxes.get("other001")?.status).toBe("sleeping");
-      expect(fake.boxes.get("other001")?.metadata[CLOUD_READY_METADATA.state]).toBe("ready");
-    }
-
     blocked = false;
     const cleared = await keeper.refresh();
     await started;

@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, CircleNotch, Minus } from "@phosphor-icons/react";
+import { useEffect, useRef, useState } from "react";
+import { Check, CircleNotch } from "@phosphor-icons/react";
 import {
-  CLOUD_KINDS,
+  CLOUD_FULL_COMPUTER_LABEL,
   CLOUD_SHAPES,
-  cloudHourlyUsd,
+  cloudHoursRate,
   cloudShapeById,
-  formatCloudHourlyPrice,
+  cloudShapeRunsAndroid,
+  formatCloudHoursRate,
   type CloudCreateMachineResult,
   type CloudCreateProgress,
   type CloudMachineKind,
@@ -15,6 +16,7 @@ import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { Banner } from "../ui/notice";
 import { captureError } from "../../../shared/sentry/capture";
 import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
+import { SettingsToggle } from "../settings/primitives/SettingsControls";
 
 function newRequestId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -23,9 +25,9 @@ function newRequestId(): string {
 }
 
 /**
- * "New cloud machine" in Add a computer: pick a box or a VM and a size, see
- * plainly what it can and cannot do and what an hour costs, and make it. The
- * box signs in to this account on its own; the caller connects to it when
+ * "New cloud computer" in Add a computer: pick a size, and whether it is a
+ * full computer (Android, Docker), see how fast it uses hours, and make it.
+ * It signs in to this account on its own; the caller connects to it when
  * `onCreated` hands back its machine key.
  *
  * Account-level: the box is made on the account's ADE Cloud and joins
@@ -38,7 +40,7 @@ export function NewCloudMachineForm({
 }) {
   const [kind, setKind] = useState<CloudMachineKind>("box");
   const [shapeId, setShapeId] = useState<CloudShapeId>("2x4");
-  const [name, setName] = useState(`${ADE_CLOUD_NAME} box`);
+  const [name, setName] = useState(`${ADE_CLOUD_NAME} computer`);
   const [progress, setProgress] = useState<CloudCreateProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const requestRef = useRef<string | null>(null);
@@ -51,8 +53,8 @@ export function NewCloudMachineForm({
   const running = progress != null && progress.stage !== "done" && progress.stage !== "failed";
   runningRef.current = running;
   const shape = cloudShapeById(shapeId);
-  // Closing the dialog mid-create cancels it, and main deletes the box it
-  // made, so nothing is left billing. A box that already signed in is kept.
+  // Closing the dialog mid-create cancels it, and main deletes the computer it
+  // made, so nothing is left running. One that already signed in is kept.
   useEffect(() => () => {
     const requestId = requestRef.current;
     if (requestId && runningRef.current) {
@@ -74,16 +76,6 @@ export function NewCloudMachineForm({
     });
   }, []);
 
-  const prices = useMemo(() => {
-    const out: Record<string, string> = {};
-    for (const spec of CLOUD_KINDS) {
-      for (const candidate of CLOUD_SHAPES) {
-        out[`${spec.kind}:${candidate.id}`] = formatCloudHourlyPrice(cloudHourlyUsd(spec.kind, candidate));
-      }
-    }
-    return out;
-  }, []);
-
   const create = async () => {
     const bridge = window.ade.cloud;
     if (!bridge || running) return;
@@ -91,12 +83,12 @@ export function NewCloudMachineForm({
     requestRef.current = requestId;
     cancelledRef.current = false;
     setError(null);
-    setProgress({ requestId, stage: "creating", message: `Asking ${ADE_CLOUD_NAME} for the machine…` });
+    setProgress({ requestId, stage: "creating", message: `Asking ${ADE_CLOUD_NAME} for the computer…` });
     try {
       const started = await bridge.createMachine(requestId, { kind, shape: shapeId, name });
       if (!started.started) {
         setProgress(null);
-        setError("ADE couldn't start making the machine.");
+        setError("ADE couldn't start making the computer.");
       }
     } catch (startError) {
       setProgress(null);
@@ -108,7 +100,7 @@ export function NewCloudMachineForm({
     const requestId = requestRef.current;
     if (!requestId || !running) return;
     cancelledRef.current = true;
-    setProgress((current) => current ? { ...current, message: "Cancelling and deleting the box…" } : current);
+    setProgress((current) => current ? { ...current, message: "Cancelling and deleting the computer…" } : current);
     void window.ade.cloud?.cancelCreate(requestId).catch((cancelError: unknown) => {
       cancelledRef.current = false;
       setError(`ADE couldn't cancel: ${cancelError instanceof Error ? cancelError.message : String(cancelError)}`);
@@ -117,49 +109,6 @@ export function NewCloudMachineForm({
 
   return (
     <div className="ade-cloud-form" style={{ display: "grid", gap: 12 }}>
-      <div role="radiogroup" aria-label="Machine type" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-        {CLOUD_KINDS.map((spec) => {
-          const selected = kind === spec.kind;
-          return (
-            <button
-              key={spec.kind}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              disabled={running}
-              className="ade-cx-way"
-              data-selected={selected ? "true" : undefined}
-              onClick={() => setKind(spec.kind)}
-              style={{
-                alignItems: "flex-start",
-                textAlign: "left",
-                outline: selected ? "2px solid var(--color-accent, #F25F29)" : undefined,
-              }}
-            >
-              <span className="ade-cx-way-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <CloudMark size={14} bold={selected} /> {spec.label}
-                <span style={{ marginLeft: "auto", fontWeight: 400, opacity: 0.75 }}>
-                  from {prices[`${spec.kind}:2x4`]}
-                </span>
-              </span>
-              <span className="ade-cx-way-detail">{spec.summary}</span>
-              <span style={{ display: "grid", gap: 2, marginTop: 6, fontSize: 11.5 }}>
-                {spec.can.map((line) => (
-                  <span key={line} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <Check size={11} weight="bold" color="var(--color-success, #3FB950)" /> {line}
-                  </span>
-                ))}
-                {spec.cannot.map((line) => (
-                  <span key={line} style={{ display: "flex", gap: 6, alignItems: "center", opacity: 0.75 }}>
-                    <Minus size={11} weight="bold" /> {line}
-                  </span>
-                ))}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
       <div role="radiogroup" aria-label="Size" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
         {CLOUD_SHAPES.map((candidate) => {
           const selected = shapeId === candidate.id;
@@ -169,7 +118,7 @@ export function NewCloudMachineForm({
               type="button"
               role="radio"
               aria-checked={selected}
-              aria-label={`${candidate.cpu} CPUs, ${candidate.memoryGb} GB memory`}
+              aria-label={`${candidate.label}: ${candidate.cpu} CPUs, ${candidate.memoryGb} GB memory`}
               disabled={running}
               className="ade-cx-way"
               onClick={() => setShapeId(candidate.id)}
@@ -179,11 +128,29 @@ export function NewCloudMachineForm({
                 outline: selected ? "2px solid var(--color-accent, #F25F29)" : undefined,
               }}
             >
-              <span className="ade-cx-way-label">{candidate.cpu} CPU · {candidate.memoryGb} GB</span>
-              <span className="ade-cx-way-detail">{prices[`${kind}:${candidate.id}`]}</span>
+              <span className="ade-cx-way-label">{candidate.label}</span>
+              <span className="ade-cx-way-detail">{candidate.cpu} CPU · {candidate.memoryGb} GB</span>
+              <span className="ade-cx-way-detail">{formatCloudHoursRate(cloudHoursRate(kind, candidate.id))}</span>
             </button>
           );
         })}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, fontSize: 12 }}>
+        <span style={{ display: "grid", gap: 2 }}>
+          <span>{CLOUD_FULL_COMPUTER_LABEL}</span>
+          <span style={{ opacity: 0.7 }}>
+            {kind === "vm" && !cloudShapeRunsAndroid(shapeId)
+              ? "Docker works. Android needs Medium or bigger."
+              : "Its own Linux kernel. Uses hours faster."}
+          </span>
+        </span>
+        <SettingsToggle
+          checked={kind === "vm"}
+          disabled={running}
+          label={CLOUD_FULL_COMPUTER_LABEL}
+          onChange={(full) => setKind(full ? "vm" : "box")}
+        />
       </div>
 
       <label style={{ display: "grid", gap: 4, fontSize: 12 }}>
@@ -193,7 +160,7 @@ export function NewCloudMachineForm({
           maxLength={60}
           disabled={running}
           onChange={(event) => setName(event.target.value)}
-          aria-label="Machine name"
+          aria-label="Computer name"
           style={{
             width: "100%",
             height: 34,
@@ -210,7 +177,7 @@ export function NewCloudMachineForm({
       </label>
 
       <div style={{ fontSize: 12, opacity: 0.8 }}>
-        {shape.cpu} CPUs, {shape.memoryGb} GB memory, {shape.diskGb} GB disk. About {prices[`${kind}:${shape.id}`]} while it runs; asleep, only the disk bills.
+        {shape.label}: {shape.cpu} CPUs, {shape.memoryGb} GB memory. Uses {formatCloudHoursRate(cloudHoursRate(kind, shape.id))} while it runs, none while it sleeps.
       </div>
 
       {progress && progress.stage !== "failed" ? (
@@ -231,7 +198,7 @@ export function NewCloudMachineForm({
                 id: "cloud-create-failed",
                 tone: "error",
                 icon: <CloudMark size={16} />,
-                title: "ADE couldn't make the machine",
+                title: "ADE couldn't make the computer",
                 detail: error,
                 report: { surface: "cloud_create_machine", code: "cloud_create_failed", technicalDetail: error },
               }}
@@ -252,7 +219,7 @@ export function NewCloudMachineForm({
           onClick={() => void create()}
         >
           {running ? <CircleNotch size={13} className="animate-spin" /> : <CloudMark size={13} />}
-          {running ? "Making the machine…" : `Make ${kind === "vm" ? "VM" : "box"}`}
+          {running ? "Making the computer…" : "Make computer"}
         </button>
       </div>
     </div>

@@ -209,7 +209,7 @@ bash scripts/release-tools/verify-desktop-draft.sh <V>                 # must pr
 gh release edit v<V> --repo arul28/ADE --draft=false --latest
 ```
 
-Undraft starts `publish-runtime-packages.yml` and `update-brew-tap.yml`. Both
+Undraft also starts `cloud-template.yml`, which builds the ADE Cloud computer template from this tag; it changes nothing else and a failure there blocks nothing. Undraft starts `publish-runtime-packages.yml` and `update-brew-tap.yml`. Both
 must succeed. npm can take ~10 minutes to show new versions after a successful
 publish; the run log's `+ @ade-dev/runtime@<V>` lines are the proof. Done when
 `npm view @ade-dev/runtime@<V> version` answers `<V>`.

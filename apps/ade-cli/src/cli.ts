@@ -947,6 +947,7 @@ export type FormatterId =
   | "integrations"
   | "cloud-ready"
   | "cloud-list"
+  | "cloud-hours"
   | "cloud-result"
   | "mcp-servers"
   | "mcp-servers-remove"
@@ -4650,33 +4651,34 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   cloud: `${ADE_BANNER}
   ADE Cloud machines
 
-  Machines on your ADE Cloud account: boxes (sandboxed Linux) and
-  VMs (their own kernel: Docker, Android). They sleep on their own after a few
-  idle minutes and bill only their disk; a --machine call or opening a lane
-  wakes one in about a second. <machine> is its name or id.
+  Computers on your ADE Cloud account. They sleep on their own after a few
+  idle minutes and use no hours while asleep; a --machine call or opening a
+  lane wakes one in about a second. <machine> is its name or id. Sizes: small,
+  medium, large, x-large (or 2x4, 4x8, 4x16, 4x32). --kind vm is a full
+  computer: Android (medium or bigger) and Docker.
 
-    $ ade cloud list --text                       Machines, state, size, price, spend, saved asleep
-    $ ade cloud spending --text                   This month against the cap, saved asleep
-    $ ade cloud create --kind vm --shape 4x8 --name "android vm"
-    $ ade cloud sleep <machine>                   Sleep now (free)
-    $ ade cloud wake <machine>                    Wake (bounded by the monthly cap)
-    $ ade cloud resize <machine> --shape 4x16     Same type, new size; it restarts
-    $ ade cloud copy <machine> --name "lane box"  A new machine with the same files (a warm copy)
-    $ ade cloud move <machine> --to vm|box        Change type, keeping every repo, lane and chat
+    $ ade cloud list --text                       Computers, state, size, how fast each uses hours
+    $ ade cloud hours --text                      Plan, hours left, reset date
+    $ ade cloud create --kind vm --shape medium --name "android vm"
+    $ ade cloud sleep <machine>                   Sleep now (uses no hours)
+    $ ade cloud wake <machine>                    Wake (the server refuses it at 0 hours)
+    $ ade cloud resize <machine> --shape large    Same kind, new size; it restarts
+    $ ade cloud update <machine>                  Restart on the current ADE; files stay
+    $ ade cloud copy <machine> --name "lane box"  A new computer with the same files (a warm copy)
+    $ ade cloud move <machine> --to vm|box        Change kind, keeping every repo, lane and chat
     $ ade cloud delete <machine>                  Gone for good, files and all
     $ ade cloud sleep-after <machine> 10|never    Minutes idle before it sleeps
-    $ ade cloud cap 50|off                        The account's optional monthly cap
-    $ ade cloud limits [ask|balanced|hands-off]   What unattended agents may spend (--per-day N, --max-shape 4x16, --unattended on|off)
+    $ ade cloud limits [ask|balanced|hands-off]   What unattended agents may do (--per-day N, --max-shape large, --unattended on|off)
     $ ade cloud ready [status|on|off|retry]       Keep a cloud machine ready for this project
                                                     on takes --kind, --shape, --setup "npm ci"
     $ ade chat create --machine cloud:ready --prompt "…"
                                                     Start the chat on this project's ready machine
 
-  list, spending, limits (reading them), sleep and wake are the account's and
+  list, hours, limits (reading them), sleep and wake are the account's and
   work from any folder; the rest run in this folder's project.
 
-  Asks first: create, resize, copy, move, delete, sleep-after never, raising
-  the cap or the limits, ready on. The card shows in your chat and gives up
+  Asks first: create, resize, update, copy, move, delete, sleep-after never,
+  raising the limits, ready on. The card shows in your chat and gives up
   after 5 minutes. In a full-auto chat or an automation ADE answers it with
   the person's limits (balanced: 3 new machines a day, up to 4x16), and says
   no to deleting a machine that chat didn't make. create, copy and move work
@@ -20496,10 +20498,10 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "ls":
     case "machines":
       return cloudStep("list", "list", {}, "cloud-list");
+    case "hours":
     case "spending":
-    case "spend":
     case "cost":
-      return cloudStep("spending", "spending", {});
+      return cloudStep("hours", "hours", {}, "cloud-hours");
     case "create":
     case "new":
       return cloudStep("create", "create", { ...(kind ? { kind } : {}), ...(shape ? { shape } : {}), ...(name ? { name } : {}) }, "cloud-result", true);
@@ -20526,18 +20528,14 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "delete":
     case "rm":
       return cloudStep("delete", "delete", { machine: target() }, "cloud-result", true);
+    case "update":
+      return cloudStep("update", "update", { machine: target() }, "cloud-result", true);
     case "sleep-after": {
       const machine = target();
       const raw = firstPositional(args);
       if (!raw) throw new CliUsageError("ade cloud sleep-after <machine> <minutes|never>");
       const minutes = raw === "never" ? "never" : Number(raw.replace(/m(in)?$/, ""));
       return cloudStep("sleep-after", "set_sleep", { machine, minutes }, "cloud-result", minutes === "never");
-    }
-    case "cap": {
-      const raw = firstPositional(args);
-      if (!raw) return cloudStep("spending", "spending", {});
-      const cap = raw === "off" ? "off" : Number(raw.replace(/^\$/, ""));
-      return cloudStep("cap", "set_cap", { monthlyCapUsd: cap }, "cloud-result", true);
     }
     case "limits": {
       const preset = firstPositional(args);
@@ -20575,28 +20573,37 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "status":
       return cloudStep("ready", "ready_status", {}, "cloud-ready");
     default:
-      throw new CliUsageError(`Unknown cloud command "${sub}". Use: list, create, sleep, wake, resize, copy, move, delete, sleep-after, cap, limits, spending, ready.`);
+      throw new CliUsageError(`Unknown cloud command "${sub}". Use: list, create, sleep, wake, resize, update, copy, move, delete, sleep-after, limits, hours, ready.`);
   }
 }
 
 function formatCloudList(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const machines = isRecord(raw) && Array.isArray(raw.machines) ? raw.machines.filter(isRecord) : [];
-  const usd = (amount: unknown) => (typeof amount === "number" ? `$${amount.toFixed(2)}` : "—");
-  const cents = (amount: unknown) => (typeof amount === "number" ? `${(amount * 100).toFixed(1)}¢/h` : "—");
   const lines: string[] = [];
-  if (!machines.length) lines.push("No ADE Cloud machines. ade cloud create makes one.");
+  if (!machines.length) lines.push("No ADE Cloud computers. ade cloud create makes one.");
   for (const box of machines) {
     const sleep = isRecord(box.sleep)
       ? box.sleep.state === "auto" ? `sleeps after ${box.sleep.afterMinutes} min` : box.sleep.state === "never" ? "never sleeps" : "sleep pending"
       : "";
-    lines.push(`${String(box.name ?? box.instanceId)}  ${String(box.state)}  ${String(box.size ?? "")}  ${cents(box.state === "asleep" ? box.idleHourlyUsd : box.runningHourlyUsd)}  spent ${usd(box.spentUsd)}  saved ${usd(box.savedUsd)}  ${sleep}  (${String(box.instanceId)})`);
+    const rate = typeof box.hoursRate === "number" ? `${box.hoursRate}× hours` : "—";
+    lines.push(`${String(box.name ?? box.instanceId)}  ${String(box.state)}  ${String(box.size ?? "")}  ${rate}  ${sleep}  (${String(box.instanceId)})`);
   }
-  const spending = isRecord(raw) && isRecord(raw.spending) ? raw.spending : null;
-  if (spending) {
-    lines.push(`This month ${usd(spending.monthSpentUsd)} of ${spending.monthlyCapUsd == null ? "no cap" : usd(spending.monthlyCapUsd)}${spending.capReached ? " (cap reached)" : ""}`);
-  }
+  const account = isRecord(raw) && isRecord(raw.account) ? raw.account : null;
+  if (account) lines.push(formatCloudHours(account));
   return lines.join("\n");
+}
+
+function formatCloudHours(value: unknown): string {
+  const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
+  const account = isRecord(raw) ? raw : {};
+  const hours = isRecord(account.hours) ? account.hours : {};
+  const hoursOf = (milli: unknown) => (typeof milli === "number" ? `${(milli / 1000).toFixed(1).replace(/\.0$/, "")}` : "—");
+  const billing = isRecord(account.billing) ? account.billing : {};
+  const resets = typeof billing.periodEnd === "number" ? new Date(billing.periodEnd).toISOString().slice(0, 10) : "—";
+  const plan = account.plan === "paid" ? "Paid plan" : "Free plan";
+  const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left, resets ${resets}`;
+  return hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`;
 }
 
 function formatCloudResult(value: unknown): string {
@@ -29450,15 +29457,16 @@ async function runServe(
   const getCloudBrainAccess = () => {
     cloudBrainAccess ??= import("../../desktop/src/main/services/adeCloud/cloudBrainAccess").then(
       ({ createCloudBrainAccess }) => createCloudBrainAccess({
-        // Any booted project's vault: the provider items are account-wide.
-        vaultStore: async () => {
-          for (const record of projectRegistry.list()) {
-            const scope = await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
-            if (scope?.runtime.accountVaultStore) return scope.runtime.accountVaultStore;
-          }
-          return null;
-        },
         signedIn: () => brainAccountAuthService.getStatus().signedIn === true,
+        accountId: () => brainAccountAuthService.getStatus().userId ?? null,
+        accessToken: async () => (brainAccountAuthService.getStatus().signedIn ? await brainAccountAuthService.getAccessToken().catch(() => null) : null),
+        directoryBaseUrl: () => {
+          try {
+            return getSharedAccountDirectoryBaseUrl() || null;
+          } catch {
+            return null;
+          }
+        },
         logger: headlessProjectLogger,
       }),
     );
@@ -37309,6 +37317,8 @@ function formatTextOutput(
       return formatCloudReady(value);
     case "cloud-list":
       return formatCloudList(value);
+    case "cloud-hours":
+      return formatCloudHours(value);
     case "cloud-result":
       return formatCloudResult(value);
     case "mcp-servers":

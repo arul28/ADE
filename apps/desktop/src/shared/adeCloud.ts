@@ -15,9 +15,6 @@ import type { CloudReadyMachineState } from "./cloudReady";
 /** The own-provider card in Settings: layout only until a provider is wired to it. */
 export const BRING_YOUR_OWN_CLOUD_ENABLED = false;
 
-/** The template ADE creates boxes from (infra/ade-cloud). */
-export const CLOUD_DEFAULT_TEMPLATE = "ade";
-
 /** What the person picks: a sandboxed box, or a full VM. */
 export type CloudMachineKind = "box" | "vm";
 
@@ -28,17 +25,17 @@ export type CloudResources = { cpu: number; memoryGb: number; diskGb: number };
 
 export type CloudShape = {
   id: CloudShapeId;
+  /** The size's name, shown everywhere a person picks one. */
+  label: string;
   cpu: number;
   memoryGb: number;
-  /** The disk ADE asks for: the most each shape allows, since repos and lanes grow. */
-  diskGb: number;
 };
 
 const CLOUD_SHAPE_BY_ID: Record<CloudShapeId, CloudShape> = {
-  "2x4": { id: "2x4", cpu: 2, memoryGb: 4, diskGb: 12 },
-  "4x8": { id: "4x8", cpu: 4, memoryGb: 8, diskGb: 20 },
-  "4x16": { id: "4x16", cpu: 4, memoryGb: 16, diskGb: 40 },
-  "4x32": { id: "4x32", cpu: 4, memoryGb: 32, diskGb: 80 },
+  "2x4": { id: "2x4", label: "Small", cpu: 2, memoryGb: 4 },
+  "4x8": { id: "4x8", label: "Medium", cpu: 4, memoryGb: 8 },
+  "4x16": { id: "4x16", label: "Large", cpu: 4, memoryGb: 16 },
+  "4x32": { id: "4x32", label: "X-Large", cpu: 4, memoryGb: 32 },
 };
 
 /** Smallest first. */
@@ -63,76 +60,36 @@ export function cloudInstanceType(kind: CloudMachineKind): "default" | "vm" {
   return kind === "vm" ? "vm" : "default";
 }
 
+export const CLOUD_FULL_COMPUTER_LABEL = "Full computer (Android, Docker)";
+
 /**
- * the provider's published rates (2026-11): $0.80 per vCPU-month, $0.70 per
- * GB-month of memory, $0.09 per GB-month of disk, 730 hours a month. A VM's
- * compute costs 2.5x; disk is the same.
+ * How fast each size uses hours, as multiples of a Small computer. The eight
+ * sizes are the server's (`apps/account-directory/src/cloud/plans.ts`).
  */
-const VCPU_MONTH_USD = 0.8;
-const MEMORY_GB_MONTH_USD = 0.7;
-const DISK_GB_MONTH_USD = 0.09;
-const HOURS_PER_MONTH = 730;
-
-/** What one running hour costs, in US dollars. Asleep or stopped, only the disk bills. */
-export function cloudHourlyUsd(kind: CloudMachineKind, shape: CloudShape): number {
-  return cloudRunningHourlyUsd(cloudInstanceType(kind), { cpu: shape.cpu, memoryGb: shape.memoryGb, diskGb: shape.diskGb });
-}
-
-/** How the provider's compute multiplier reads each instance type: a VM 2.5x, a performance box 4x. */
-function computeMultiplier(type: string | null): number {
-  if (type === "vm") return 2.5;
-  if (type === "performance") return 4;
-  return 1;
-}
-
-/** A running hour of any shape, in US dollars. */
-export function cloudRunningHourlyUsd(type: string | null, resources: CloudResources): number {
-  const compute = resources.cpu * VCPU_MONTH_USD + resources.memoryGb * MEMORY_GB_MONTH_USD;
-  return (compute * computeMultiplier(type) + resources.diskGb * DISK_GB_MONTH_USD) / HOURS_PER_MONTH;
-}
-
-/** An hour asleep or stopped: the disk alone. */
-export function cloudIdleHourlyUsd(resources: CloudResources): number {
-  return (resources.diskGb * DISK_GB_MONTH_USD) / HOURS_PER_MONTH;
-}
-
-/** "$0.06", "$1.20", "$12". Under a cent reads "under 1¢". */
-export function formatCloudUsd(usd: number): string {
-  if (usd > 0 && usd < 0.01) return "under 1¢";
-  return usd >= 10 ? `$${Math.round(usd)}` : `$${usd.toFixed(2)}`;
-}
-
-/** "0.7¢ an hour" / "3.4¢ an hour". */
-export function formatCloudHourlyPrice(usd: number): string {
-  const cents = usd * 100;
-  return `${cents < 10 ? cents.toFixed(1) : Math.round(cents)}¢ an hour`;
-}
-
-export type CloudKindSpec = {
-  kind: CloudMachineKind;
-  label: string;
-  /** One line under the label. */
-  summary: string;
-  can: readonly string[];
-  cannot: readonly string[];
+const CLOUD_HOURS_RATE: Record<CloudMachineKind, Record<CloudShapeId, number>> = {
+  box: { "2x4": 1, "4x8": 2, "4x16": 3.3, "4x32": 5.8 },
+  vm: { "2x4": 2.5, "4x8": 5, "4x16": 8.2, "4x32": 14.5 },
 };
 
-export const CLOUD_KINDS: readonly CloudKindSpec[] = [
-  {
-    kind: "box",
-    label: "Box",
-    summary: "A sandboxed Linux machine. The cheapest way to run lanes in the cloud.",
-    can: ["Lanes and Git", "Chats, CLIs and terminals", "A Linux Desktop screen for browser and app testing"],
-    cannot: ["No Android emulator", "No Docker"],
-  },
-  {
-    kind: "vm",
-    label: "VM",
-    summary: "A full Linux virtual machine with its own kernel.",
-    can: ["Everything a box does", "Android emulator", "Docker"],
-    cannot: ["Costs about 2.5 times a box"],
-  },
-];
+/** Hours of a Small computer this size uses per hour awake. */
+export function cloudHoursRate(kind: CloudMachineKind, shape: CloudShapeId): number {
+  return CLOUD_HOURS_RATE[kind][shape];
+}
+
+/** "2× hours". */
+export function formatCloudHoursRate(rate: number): string {
+  return `${rate}× hours`;
+}
+
+/** "about 3.3 hours" per hour awake, for approval cards. */
+export function describeCloudHoursUse(kind: CloudMachineKind, shape: CloudShapeId): string {
+  return `about ${cloudHoursRate(kind, shape)} hours of your plan for each hour it's awake`;
+}
+
+/** Android needs a full computer of Medium or bigger. */
+export function cloudShapeRunsAndroid(shape: CloudShapeId): boolean {
+  return shape !== "2x4";
+}
 
 /** The shape with this CPU count and memory (what a box sees from inside), or null. */
 export function cloudShapeForResources(cpu: number, memoryBytes: number): CloudShape | null {
@@ -140,25 +97,25 @@ export function cloudShapeForResources(cpu: number, memoryBytes: number): CloudS
   return CLOUD_SHAPES.find((shape) => shape.cpu === cpu && shape.memoryGb === memoryGb) ?? null;
 }
 
-/** The smallest VM that runs the Android emulator well. */
+/** The smallest full computer that runs the Android emulator. */
 const CLOUD_ANDROID_VM_SHAPE = cloudShapeById("4x8");
 
 /**
- * Why a cloud box can't run the Android emulator, in plain words for the
- * person: a VM can, what that costs more, and what happens to the box. The
- * agent's next steps are in the `ade-android` and `ade-cloud` skills.
+ * Why a computer can't run the Android emulator, in plain words for the
+ * person: a full computer can, what that uses in hours, and what happens to
+ * this one. The agent's next steps are in the `ade-android` and `ade-cloud` skills.
  */
 export function cloudAndroidNeedsVmMessage(boxShape: CloudShape | null): string {
-  // A box bigger than the Android VM moves to a VM of its own size.
+  // A computer bigger than Medium moves to a full computer of its own size.
   const vmShape = boxShape && CLOUD_SHAPES.indexOf(boxShape) > CLOUD_SHAPES.indexOf(CLOUD_ANDROID_VM_SHAPE)
     ? boxShape
     : CLOUD_ANDROID_VM_SHAPE;
-  const vmHourly = cloudHourlyUsd("vm", vmShape);
-  const more = boxShape ? `, ${formatCloudHourlyPrice(Math.max(0, vmHourly - cloudHourlyUsd("box", boxShape)))} more than this box` : "";
-  return "This machine is an ADE Cloud box, and a box can't run the Android emulator. An ADE Cloud VM can. "
-    + `A ${vmShape.id} VM costs ${formatCloudHourlyPrice(vmHourly)} while it's awake${more}. `
-    + "ADE can make the VM and continue this chat there, with its history and changes. "
-    + "This box stays, and you can delete it from the new chat.";
+  const rate = cloudHoursRate("vm", vmShape.id);
+  const more = boxShape ? `, about ${(rate - cloudHoursRate("box", boxShape.id)).toFixed(1).replace(/\.0$/, "")} more than this computer` : "";
+  return "This computer can't run the Android emulator. A full computer can, at Medium or bigger. "
+    + `A ${vmShape.label} full computer uses about ${rate} hours for each hour it's awake${more}. `
+    + "ADE can make it and continue this chat there, with its history and changes. "
+    + "This computer stays, and you can delete it from the new chat.";
 }
 
 /** ADE Cloud's state, as Settings and the machine picker read it. */
@@ -177,7 +134,7 @@ export type CloudStatus = {
 export type CloudCreateMachineArgs = {
   kind: CloudMachineKind;
   shape: CloudShapeId;
-  /** The name the machine gets in ADE and on the provider. */
+  /** The name the machine gets in ADE and on ADE Cloud. */
   name: string;
 };
 
@@ -234,9 +191,9 @@ export type CloudCreateProgress = {
 };
 
 /**
- * A box as the machine list shows it. `asleep` and `stopped` bill the disk
- * only; `starting` covers provisioning, waking, restarting and a resize or
- * update in flight.
+ * A box as the machine list shows it. `asleep` and `stopped` use no hours;
+ * `starting` covers provisioning, waking, restarting and a resize or update
+ * in flight.
  */
 export type CloudMachineState = "running" | "asleep" | "starting" | "stopping" | "stopped" | "deleting" | "error";
 
@@ -296,7 +253,7 @@ export function cloudMachineType(type: string | null): CloudMachineType {
 /** One cloud box that ADE made (or that is signed in to the account), for the machine list. */
 export type CloudMachine = {
   instanceId: string;
-  /** the provider's label; ADE sets it to the machine's name at create. */
+  /** ADE sets this to the machine's name at create. */
   name: string | null;
   /** the provider's own status word, for logs and the tooltip. */
   status: string;
@@ -306,13 +263,8 @@ export type CloudMachine = {
   /** The size ADE offers this shape as, when it is one of them. */
   shapeId: CloudShapeId | null;
   region: string | null;
-  /** What an hour costs awake, and asleep or stopped (disk only). Null without resources. */
-  runningHourlyUsd: number | null;
-  idleHourlyUsd: number | null;
-  /** What it has spent so far (the provider settles compute hourly), or null when unknown. */
-  spentUsd: number | null;
-  /** True when that window starts at the box's creation: the figure is everything it cost. */
-  spentIsLifetime: boolean;
+  /** How fast it uses hours while awake, as multiples of a Small computer. Null at a size ADE doesn't offer. */
+  hoursRate: number | null;
   /** Suspended for non-payment (the provider's `past_due`). */
   pastDue: boolean;
   /** the provider's reason for the last failed lifecycle action. */
@@ -332,11 +284,6 @@ export type CloudMachine = {
   ready: { projectName: string; state: CloudReadyMachineState } | null;
   /** How the box sleeps when nothing runs on it (see `CloudSleepPolicy`). */
   sleep: CloudSleepPolicy;
-  /**
-   * What sleeping saved over the spend window: the hours in it at the running
-   * rate, less what it actually spent. Null without a spend read.
-   */
-  savedUsd: number | null;
 };
 
 /*
@@ -426,74 +373,116 @@ export function cloudShapeWithin(shape: CloudShapeId, max: CloudShapeId): boolea
   return order.indexOf(shape) <= order.indexOf(max);
 }
 
-/**
- * The account's ADE Cloud spending choices: an optional monthly cap for every
- * machine (at the cap ADE makes, wakes, resizes and copies nothing; running
- * work carries on, and boxes still sleep when idle; 80% shows a warning) and
- * what unattended agents may do. No cap by default.
- */
-export type CloudBudget = { monthlyCapUsd: number | null; agents: CloudAgentLimits };
-export const CLOUD_DEFAULT_MONTHLY_CAP_USD: number | null = null;
-export const CLOUD_CAP_CHOICES_USD = [10, 25, 50, 100] as const;
+/** The warning state of an account's hours (the server's `CloudHoursState`). `zero` is out with extra hours off. */
+export type CloudHoursState = "none" | "warn80" | "warn95" | "zero";
 
-/** What this month cost against the cap, for Settings, the group head and the refusals. */
-export type CloudSpending = {
-  monthlyCapUsd: number | null;
-  /** This UTC month so far, the whole account (the provider settles compute hourly). */
-  monthSpentUsd: number | null;
-  /** True at or past the cap: costly actions are refused. */
-  capReached: boolean;
-  /** True from 80% of the cap. */
-  capNear: boolean;
+/**
+ * Plan, hours and billing, read from `GET /cloud/account`. Mirrors
+ * `apps/account-directory/src/cloud/contract.ts`. Hours are integer
+ * thousandths of a Small-hour.
+ */
+export type CloudAccountState = {
+  plan: "free" | "paid";
+  /** The rules in force: `past_due` is `free` until a paid invoice. */
+  rules: "free" | "paid";
+  hours: {
+    includedMilli: number;
+    usedMilli: number;
+    leftMilli: number;
+    percentUsed: number;
+    state: CloudHoursState;
+  };
+  extraHours: { available: boolean; enabled: boolean; usedMilli: number };
+  disk: { usedGb: number; limitGb: number | null };
+  computers: { total: number; awake: number; limit: number };
+  /** Inactive computers, soonest first; each is deleted at `deletesAt` unless used. */
+  dueForDeletion: Array<{ instanceId: string; name: string | null; deletesAt: number }>;
+  billing: {
+    periodStart: number;
+    periodEnd: number;
+    stripeStatus: string | null;
+    cancelAtPeriodEnd: boolean;
+    /** `past_due` while a payment failed; `restored` for a few days after a paid invoice brings the plan back. */
+    notice?: "past_due" | "restored" | null;
+  };
 };
 
-export function cloudSpendingFor(budget: Pick<CloudBudget, "monthlyCapUsd">, monthSpentUsd: number | null): CloudSpending {
-  const cap = budget.monthlyCapUsd;
-  const reached = cap != null && monthSpentUsd != null && monthSpentUsd >= cap;
-  return {
-    monthlyCapUsd: cap,
-    monthSpentUsd,
-    capReached: reached,
-    capNear: !reached && cap != null && monthSpentUsd != null && monthSpentUsd >= cap * 0.8,
-  };
-}
+/** The server's sentence for what needs hours at 0. The server enforces it; these two only stop a request that can't work. */
+export const CLOUD_OUT_OF_HOURS_MESSAGE = "You're out of ADE Cloud hours for this period.";
 
-/** The refusal for a costly action at the cap. */
-export function cloudCapReachedMessage(spending: Pick<CloudSpending, "monthlyCapUsd" | "monthSpentUsd">): string {
-  const cap = spending.monthlyCapUsd != null ? formatCloudUsd(spending.monthlyCapUsd) : "your cap";
-  return `Your ADE Cloud machines reached this month's ${cap} cap. Raise it in Settings › Integrations › ADE Cloud to make, wake or resize machines.`;
-}
+export const CLOUD_HOURS_UNKNOWN_MESSAGE =
+  "ADE couldn't read your ADE Cloud hours, so it didn't start or change a computer. Try again in a minute.";
 
-export const CLOUD_SPEND_UNKNOWN_MESSAGE =
-  "ADE could not read your ADE Cloud spend this month, so it did not start or change a machine. Try again in a minute.";
+export function cloudOutOfHours(account: Pick<CloudAccountState, "hours"> | null | undefined): boolean {
+  return account?.hours.state === "zero";
+}
 
 /**
- * Why spending that nobody approves (a full-auto chat, an automation, the
+ * Why work that nobody approves (a full-auto chat, an automation, the
  * ready-machine keeper, a sign-in the brain approves itself) may not go ahead:
- * the month is at the cap, or ADE could not read it. A month it can't read
- * counts as over the cap. Null when it may go ahead.
+ * the account is out of hours, or ADE could not read it. Unknown counts as out.
+ * Null when it may go ahead.
  */
-export function cloudUnattendedSpendBlock(
-  month: Pick<CloudSpending, "monthSpentUsd" | "capReached"> | null | undefined,
-): "spend_unknown" | "cap_reached" | null {
-  if (!month || month.monthSpentUsd == null) return "spend_unknown";
-  return month.capReached ? "cap_reached" : null;
+export function cloudUnattendedHoursBlock(
+  account: Pick<CloudAccountState, "hours"> | null | undefined,
+): "hours_unknown" | "out_of_hours" | null {
+  if (!account) return "hours_unknown";
+  return cloudOutOfHours(account) ? "out_of_hours" : null;
 }
 
-/**
- * What sleeping saved a box over a window: the window at its running rate,
- * less what it spent. the provider bills an awake hour at the running rate and an
- * asleep one at the disk alone, so this is the asleep hours' compute.
- */
-export function cloudSavedUsd(args: {
-  runningHourlyUsd: number | null;
-  spentUsd: number | null;
-  windowStartMs: number | null;
-  nowMs: number;
-}): number | null {
-  if (args.runningHourlyUsd == null || args.spentUsd == null || args.windowStartMs == null) return null;
-  const hours = Math.max(0, args.nowMs - args.windowStartMs) / 3_600_000;
-  return Math.max(0, hours * args.runningHourlyUsd - args.spentUsd);
+/** "412" or "49.5" hours from thousandths. */
+export function formatCloudHours(milli: number): string {
+  const hours = Math.max(0, milli) / 1000;
+  return hours >= 100 ? String(Math.floor(hours)) : String(Math.floor(hours * 10) / 10);
+}
+
+/** The banner for an account, or null when there is nothing to warn about. */
+export type CloudAccountBanner = {
+  id: string;
+  tone: "info" | "warning";
+  title: string;
+  detail: string;
+};
+
+function formatCloudDate(ms: number): string {
+  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
+/** "You're out of hours", "You've used 95%", a failed payment: one banner, the most urgent. */
+export function cloudAccountBanner(account: CloudAccountState): CloudAccountBanner | null {
+  const resetDate = formatCloudDate(account.billing.periodEnd);
+  const left = formatCloudHours(account.hours.leftMilli);
+  if (account.billing.notice === "past_due") {
+    return {
+      id: "cloud-hours-past-due",
+      tone: "warning",
+      title: "Your last ADE Cloud payment failed",
+      detail: "Your account follows the free plan until it's paid. Update your card to bring your plan back.",
+    };
+  }
+  if (account.hours.state === "zero") {
+    return {
+      id: "cloud-hours-zero",
+      tone: "warning",
+      title: "You're out of ADE Cloud hours",
+      detail: account.extraHours.available
+        ? `Your computers are stopped until ${resetDate}. Turn on extra hours to keep going sooner.`
+        : `Your computers are stopped until ${resetDate}. The paid plan has 500 hours a month.`,
+    };
+  }
+  if (account.hours.state === "warn95" || account.hours.state === "warn80") {
+    const percent = account.hours.state === "warn95" ? 95 : 80;
+    return {
+      id: `cloud-hours-${percent}`,
+      tone: percent === 95 ? "warning" : "info",
+      title: `You've used ${percent}% of your ADE Cloud hours`,
+      detail: `${left} ${left === "1" ? "hour" : "hours"} left until ${resetDate}.`,
+    };
+  }
+  if (account.billing.notice === "restored") {
+    return { id: "cloud-hours-restored", tone: "info", title: "Your ADE Cloud plan is back", detail: "Your payment went through. Thanks." };
+  }
+  return null;
 }
 
 export type CloudMachinesResult = {
@@ -505,22 +494,18 @@ export type CloudMachinesResult = {
   machines: CloudMachine[];
   instanceCount: number | null;
   runningCount: number | null;
-  /** False when the spend could not be read; the boxes still show. */
-  usageAvailable: boolean;
-  /** This month against the cap. */
-  spending: CloudSpending;
-  /** This UTC month per machine, and what deleted machines spent (see `CloudMonthSpend`). */
-  month?: CloudMonthSpend | null;
+  /** Plan and hours, or null when they couldn't be read; the computers still show. */
+  account: CloudAccountState | null;
   /**
-   * Instances that spent in the last 90 days and are gone from the account:
-   * boxes deleted on the provider site, whose ADE rows stay on the account.
+   * Instances with use in the last 90 days that are gone from the account,
+   * whose ADE rows stay on the account until someone removes them.
    */
   deletedInstanceIds?: string[];
   /** A plain sentence for `access_refused` and `unreachable`. */
   message: string | null;
 };
 
-export type CloudMachineActionKind = "sleep" | "wake" | "resize" | "backup" | "delete" | "set_sleep";
+export type CloudMachineActionKind = "sleep" | "wake" | "resize" | "backup" | "delete" | "set_sleep" | "update";
 
 export type CloudMachineActionArgs = {
   instanceId: string;
@@ -529,6 +514,8 @@ export type CloudMachineActionArgs = {
   shape?: CloudShapeId;
   /** For `delete`: the box's ADE machine, removed from the account once the box is gone. */
   machineKey?: string | null;
+  /** For `delete`: who asked, for the server's delete log (an agent's chat; a person's desktop leaves it unset). */
+  who?: string | null;
   /** For `set_sleep`: minutes of nothing running before it sleeps, or null for never. */
   sleepAfterMinutes?: number | null;
 };
@@ -539,18 +526,25 @@ export type CloudMachineActionResult = {
   message: string;
   /**
    * What stops the action, so the card can offer the way out:
-   * raise the cap, or wait for a backup window.
+   * plans and hours, or wait for a backup window.
    */
-  blocker: "rate_limited" | "cap" | null;
+  blocker: "rate_limited" | "out_of_hours" | null;
   /** For `delete`: the box is gone but its account row could not be removed. */
   accountRowLeft?: boolean;
 };
 
-/** "Box · 2 vCPU · 4 GB". */
-export function describeCloudMachineSize(machine: Pick<CloudMachine, "type" | "resources">): string {
-  const kind = machine.type === "vm" ? "VM" : machine.type === "performance" ? "Performance box" : "Box";
-  if (!machine.resources) return kind;
-  return `${kind} · ${machine.resources.cpu} vCPU · ${machine.resources.memoryGb} GB`;
+/** "Small · 2 CPU · 4 GB", with "Full computer" in front for a VM. */
+export function describeCloudMachineSize(machine: Pick<CloudMachine, "type" | "resources" | "shapeId">): string {
+  const shape = machine.shapeId ? cloudShapeById(machine.shapeId) : null;
+  const size = machine.resources
+    ? `${machine.resources.cpu} CPU · ${machine.resources.memoryGb} GB`
+    : null;
+  return [machine.type === "vm" ? "Full computer" : null, shape?.label ?? null, size].filter(Boolean).join(" · ");
+}
+
+/** The kind of machine this instance type is. */
+export function cloudMachineKindOf(type: CloudMachineType): CloudMachineKind {
+  return type === "vm" ? "vm" : "box";
 }
 
 /** The shape ADE offers for these resources (cpu and memory decide it), or null. */
@@ -559,44 +553,9 @@ export function cloudShapeFor(resources: Pick<CloudResources, "cpu" | "memoryGb"
   return CLOUD_SHAPES.find((shape) => shape.cpu === resources.cpu && shape.memoryGb === resources.memoryGb) ?? null;
 }
 
-/**
- * The resize body for a target shape. Disk only grows on the provider, so a
- * smaller shape keeps the disk it has, and a bigger one grows it to the
- * shape's disk when that is larger.
- */
-export function cloudResizeBody(
-  current: CloudResources,
-  target: CloudShape,
-): { cpu: number; memory: number; disk?: number } {
-  const body: { cpu: number; memory: number; disk?: number } = { cpu: target.cpu, memory: target.memoryGb };
-  if (target.diskGb > current.diskGb) body.disk = target.diskGb;
-  return body;
-}
+
 
 /** a provider instance id, as ADE accepts one from a caller. */
 export function isCloudInstanceId(value: unknown): value is string {
   return typeof value === "string" && /^[a-z0-9]{4,40}$/.test(value);
 }
-
-/** What a ready machine costs a month asleep: its disk. */
-export function cloudReadyIdleMonthlyUsd(shape: CloudShape): number {
-  return shape.diskGb * DISK_GB_MONTH_USD;
-}
-
-/*
- * Settings › Integrations › ADE Cloud: the page's own links and the month's
- * spend per machine.
- */
-
-/**
- * This UTC month on the provider (settled hourly), for the machines card: what each
- * listed machine spent and what sleeping saved it, and what machines that are
- * gone (listed in the usage, absent from the account) spent before they went.
- */
-export type CloudMonthSpend = {
-  /** Epoch ms of the month's first instant (UTC). */
-  sinceMs: number;
-  byInstance: Record<string, { spentUsd: number; savedUsd: number | null }>;
-  deletedSpentUsd: number;
-  deletedCount: number;
-};

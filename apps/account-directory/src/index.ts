@@ -1,6 +1,7 @@
 import { runCloudWakes } from "./cloudWake";
 import { handleCloudRequest, isCloudRequest } from "./cloud/routes";
 import { runCloudMinuteCron } from "./cloud/cron";
+import { handleCloudBillingPublicRequest, isCloudBillingPublicRequest, reportExtraHours } from "./cloud/billing";
 import type { CloudEnv } from "./cloud/store";
 import * as Sentry from "@sentry/cloudflare";
 import { handleRequest } from "./directory";
@@ -78,6 +79,9 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // ADE Cloud (src/cloud): account bearer, no CORS. Timed wakes ride the same
   // gate. Everything under /cloud answers 404 for an account not on the list.
   if (isCloudRequest(url)) return handleCloudRequest(request, env);
+  // Stripe's webhook (signed, so no bearer and no access list) and the page
+  // Stripe sends a person back to after Checkout or the billing portal.
+  if (isCloudBillingPublicRequest(url)) return handleCloudBillingPublicRequest(request, env);
   // Clerk's sign-up webhook: Svix-signed, POST only, no CORS (Clerk is the
   // only caller). It records one `ade_signed_up` per account.
   if (isSignupAnalyticsRequest(url)) return handleSignupAnalyticsRequest(request, env);
@@ -159,6 +163,9 @@ export default Sentry.withSentry(sentryOptions, {
         // at 0 hours, and runs the daily and ten-minute checks. No computers, no
         // provider calls.
         settle("cloud_account", () => runCloudMinuteCron(env)),
+        // ADE Cloud extra hours: reports whole hours to the Stripe meter. One
+        // indexed read when no account has extra hours on.
+        settle("cloud_extra_hours", () => reportExtraHours(env)),
       ]);
     } catch (error) {
       status = "error";
