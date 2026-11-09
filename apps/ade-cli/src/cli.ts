@@ -6,6 +6,8 @@ import "./lib/nodeWarnings";
 // Second on purpose: hands this run to $ADE_CLI_PATH when a shell rc put an
 // older `ade` first on PATH, before the rest of the bundle loads.
 import { pendingCliDelegation } from "./lib/cliDelegationEntry";
+// Third: bootstrap is loaded only on demand, and this flag must not wait for it.
+import "./lib/packagedRuntimeFlag";
 import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
@@ -613,7 +615,6 @@ import {
 } from "./sessionSnoozeDuration";
 import { snoozeWakeLabel } from "../../desktop/src/renderer/lib/sessionSnooze";
 import type { AdeRuntime } from "./bootstrap";
-import { cleanupLegacyBundledAdeSkillsForCli } from "./bootstrap";
 import {
   EncryptedFileCredentialStore,
   inspectCredentialStoreHealth,
@@ -25131,11 +25132,14 @@ export function automaticProjectRegistrationParams(rootPath: string): {
   rootPath: string;
   catalogVisibility: "system";
   registrationSource: "runtime-auto";
+  withoutIcon: true;
 } {
   return {
     rootPath,
     catalogVisibility: "system",
     registrationSource: "runtime-auto",
+    // The CLI only wants the id; an icon costs the brain a worker process.
+    withoutIcon: true,
   };
 }
 
@@ -39738,7 +39742,14 @@ async function runParsedCli(
     (plan.kind === "execute" &&
       /^(chat create|personal chat create|new chat|shell start cli)\b/.test(plan.label))
   ) {
-    cleanupLegacyBundledAdeSkillsForCli();
+    try {
+      // Only here and on demand: evaluating bootstrap took more than half of
+      // every `ade` command's startup, and cheap commands never need it.
+      const { cleanupLegacyBundledAdeSkillsForCli } = await import("./bootstrap");
+      cleanupLegacyBundledAdeSkillsForCli();
+    } catch (error) {
+      process.stderr.write(`ade: skipped legacy skill cleanup: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
   }
 
   // Exactly one process per machine may exchange the rotating refresh token,

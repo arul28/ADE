@@ -101,6 +101,15 @@ function renderShShim(args: {
       "fi",
     );
   }
+  if (isJsEntry) {
+    // Node's compile cache, as bin/ade does: re-parsing the ~27 MB cli.cjs is
+    // most of a cold agent `ade` call. A bad path only loses the speedup.
+    lines.push(
+      'if [ -z "${NODE_COMPILE_CACHE:-}" ] && [ -z "${NODE_DISABLE_COMPILE_CACHE:-}" ]; then',
+      '  NODE_COMPILE_CACHE="${ADE_HOME:-${USERPROFILE:-$HOME}/.ade}/cache/node-compile"; export NODE_COMPILE_CACHE',
+      "fi",
+    );
+  }
   if (isJsEntry && args.nodeModulePaths.length) {
     const separator = args.pathSeparator;
     lines.push(`NODE_PATH=${shellQuote(args.nodeModulePaths.join(separator))}\${NODE_PATH:+${separator}$NODE_PATH}; export NODE_PATH`);
@@ -148,6 +157,10 @@ export function renderAdeCliShim(args: {
       );
     }
     if (isJsEntry) {
+      lines.push(
+        'if not defined NODE_COMPILE_CACHE if not defined NODE_DISABLE_COMPILE_CACHE if defined ADE_HOME set "NODE_COMPILE_CACHE=%ADE_HOME%\\cache\\node-compile"',
+        'if not defined NODE_COMPILE_CACHE if not defined NODE_DISABLE_COMPILE_CACHE set "NODE_COMPILE_CACHE=%USERPROFILE%\\.ade\\cache\\node-compile"',
+      );
       if (nodeModulePaths.length) {
         // An unset NODE_PATH expands to nothing in a batch file; Node skips
         // the empty entry the trailing `;` leaves.
