@@ -1257,11 +1257,7 @@ Renderer surfaces:
   progress is dimmed and
   interaction-blocked: its lane-group header shows the deletion status, and
   every session card for that lane is disabled in lane, status, and time
-  organization modes. The bottom Add Lane button opens
-  `CreateLaneDialogHost` in `close-on-create` mode, so a new lane can
-  be created from Work without navigating away; once the lane record
-  exists, env setup continues detached and failures surface as a sticky
-  retry toast. It also builds parent-title and live-child indexes from the
+  organization modes. It also builds parent-title and live-child indexes from the
   unfiltered session list, so a lineage tooltip can name a parent hidden by
   the current lane/search filter. In Lane organization, the primary lane stays
   first and the remaining rows are ordered by the Work-only tiers pinned,

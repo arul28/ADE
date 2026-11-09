@@ -26,7 +26,8 @@ import {
 } from "../../lib/launchedLanesHighlight";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
 import { CreateLaneDialogHost, type CreateLanePrefill, type LaneCreatedHandler } from "./CreateLaneDialogHost";
-import { stopPendingLaneCreate, usePendingLaneCreates } from "../../lib/pendingLaneCreates";
+import { laneCreatedToastId, stopPendingLaneCreate, usePendingLaneCreates } from "../../lib/pendingLaneCreates";
+import { useActiveRef } from "../../lib/useActiveRef";
 import {
   ManageLaneDialog,
   EMPTY_LANE_DELETE_SELECTION,
@@ -345,20 +346,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [manageInitialTab, setManageInitialTab] = useState<ManageLaneTab | null>(null);
   // Lanes the Behind group's "Rebase all" confirm step lists.
   const [bulkCatchUpLaneIds, setBulkCatchUpLaneIds] = useState<string[] | null>(null);
-  // Create-lane dialog is hosted by CreateLaneDialogHost, which owns the form,
-  // submit and env-setup state. The page tracks only whether it is open, the
-  // and prefill. The create itself runs in the background once submitted.
+  // Create-lane dialog is hosted by CreateLaneDialogHost, which owns the form
+  // and the submit. The page tracks only whether it is open and the prefill.
+  // The create itself runs in the background once submitted.
   const [createOpen, setCreateOpen] = useState(false);
   const [createPrefill, setCreatePrefill] = useState<CreateLanePrefill | null>(null);
-  const pendingLaneCreates = usePendingLaneCreates(activeProjectRoot);
-  // True only while this page is mounted and is the one on screen.
-  const pageActiveRef = useRef(false);
-  useEffect(() => {
-    pageActiveRef.current = active;
-    return () => {
-      pageActiveRef.current = false;
-    };
-  }, [active]);
+  const pendingLaneCreates = usePendingLaneCreates(activeProjectStateKey);
+  const pageActiveRef = useActiveRef(active);
   const canCreateLane = Boolean(activeProjectRoot);
   const [deleteSelection, setDeleteSelection] = useState<LaneDeleteSelection>(EMPTY_LANE_DELETE_SELECTION);
   const [deleteForce, setDeleteForce] = useState(false);
@@ -1857,17 +1851,32 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   // The create runs in the background and can end long after the user moved
   // on. Select the new lane only when they are still on this page with the
-  // selection they had at submit; otherwise the "Lane created" toast offers it.
+  // selection they had at submit; otherwise it waits in the list.
   const handleLaneCreateStarted = useCallback((): LaneCreatedHandler => {
     const selectionAtStart = selectedLaneIdRef.current;
     return (lane, machine) => {
-      if (!pageActiveRef.current || selectedLaneIdRef.current !== selectionAtStart) return;
       // A lane created on another machine is selected through its machine, so
       // the bare id cannot pick a same-id lane on this tab's machine.
       const machineParam = machine.pin ? `&machineId=${encodeURIComponent(machine.machineId)}` : "";
-      navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}${machineParam}`);
+      const lanePath = `/lanes?laneId=${encodeURIComponent(lane.id)}${machineParam}`;
+      if (pageActiveRef.current && selectedLaneIdRef.current === selectionAtStart) {
+        navigate(lanePath);
+        return;
+      }
+      // The "Lane created" toast comes from this tab's own machine only; a
+      // lane made on another machine would otherwise finish without a word.
+      if (!machine.pin) return;
+      showToast({
+        id: laneCreatedToastId(lane.id),
+        title: lane.name,
+        message: "Lane created",
+        replayMask: { title: true },
+        tone: "success",
+        colorDot: lane.color ?? undefined,
+        actions: [{ label: "View", onClick: () => navigate(lanePath) }],
+      });
     };
-  }, [navigate]);
+  }, [navigate, pageActiveRef]);
 
   // Rows of lanes whose setup still runs, by row key (the lane's id and machine).
   const settingUpLaneIds = useMemo(() => {
@@ -1879,9 +1888,15 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     }
     return next;
   }, [creatingLaneIds, pendingLaneCreates]);
+  // The placeholder stays until the lane's own row is in the list: the list
+  // is re-read after the create ends, and for another machine that takes a while.
   const pendingCreatingLanes = useMemo(
-    () => pendingLaneCreates.filter((entry) => entry.phase === "creating"),
-    [pendingLaneCreates],
+    () => pendingLaneCreates.filter((entry) => (
+      entry.phase === "creating"
+      || !entry.laneId
+      || !lanesById.has(entry.machineId ? foreignLaneKey(entry.machineId, entry.laneId) : entry.laneId)
+    )),
+    [lanesById, pendingLaneCreates],
   );
 
   const openManageDialog = useCallback((laneId: string) => {
@@ -2121,7 +2136,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       lanePrTagsByLaneId={lanePrTagsByLaneId}
       deleteProgressByLaneId={deleteProgressByLaneId}
       onStopDelete={handleStopDelete}
-      creatingLaneIds={settingUpLaneIds}
+      settingUpLaneIds={settingUpLaneIds}
       pendingCreatingIssues={pendingCreatingIssues}
       pendingCreatingLanes={pendingCreatingLanes}
       onStopCreate={stopPendingLaneCreate}

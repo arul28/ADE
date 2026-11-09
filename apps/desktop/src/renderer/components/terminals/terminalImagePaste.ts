@@ -3,14 +3,14 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { TERMINAL_BRACKETED_PASTE_END, TERMINAL_BRACKETED_PASTE_START } from "./terminalBracketedPaste";
 
 /**
- * Clipboard-image paste for terminals whose program cannot read this
- * computer's clipboard itself.
+ * Clipboard-image paste for terminals that take the image as a saved file.
  *
  * The image is saved as a chat temp attachment on the session's machine, and
- * a reference to that file goes into the PTY as a bracketed paste: a short
- * path/type stub for a tracked agent CLI, or the bare path for a plain shell
- * on another machine. The terminal runtime lives in `TerminalView`; this
- * module sees only the fields it needs.
+ * a reference to that file is pasted into the PTY: a short path/type stub for
+ * a tracked agent CLI (always a bracketed paste), or the bare path for a plain
+ * shell on another machine (bracketed only when its program asked for that).
+ * The terminal runtime lives in `TerminalView`; this module sees only the
+ * fields it needs.
  */
 
 /**
@@ -53,13 +53,17 @@ function bracketedPaste(text: string): string {
  * A path as one shell word. The path comes from the session's machine, which
  * can be Windows: a drive or UNC path takes double quotes there, and every
  * other path takes POSIX single quotes. A plain path stays bare.
+ *
+ * Known limits of the double-quoted form, all rare for an attachment path: Git
+ * Bash reads the `\\` that starts a UNC path as one backslash, and a `$name`
+ * (PowerShell, Git Bash) or `%NAME%` (cmd) inside the path is expanded.
  */
 function quotePathForShell(path: string): string {
-  if (/^[A-Za-z0-9_\-./:\\~@+]+$/.test(path)) return path;
+  // No backslash in the bare set: Git Bash drops an unquoted one.
+  if (/^[A-Za-z0-9_\-./:~@+]+$/.test(path)) return path;
   if (/^[A-Za-z]:[\\/]|^\\\\/.test(path)) return `"${path}"`;
   return `'${path.replaceAll("'", "'\\''")}'`;
 }
-
 
 function formatClipboardImageForPty(path: string, mimeType: string): string {
   return [
@@ -124,7 +128,7 @@ export async function attachClipboardImageToRuntime(
   runtime: TerminalImagePasteRuntime,
   io: TerminalImagePasteIo,
   image: TerminalClipboardImage,
-  form: TerminalImagePasteForm = "agent-stub",
+  form: TerminalImagePasteForm,
 ): Promise<boolean> {
   if (runtime.disposed) return false;
   const data = base64FromImageData(image.data);
@@ -154,7 +158,7 @@ export async function attachClipboardImageToRuntime(
 export async function pasteRuntimeClipboardImageAttachment(
   runtime: TerminalImagePasteRuntime,
   io: TerminalImagePasteIo,
-  form: TerminalImagePasteForm = "agent-stub",
+  form: TerminalImagePasteForm,
 ): Promise<boolean> {
   if (runtime.disposed) return false;
   let image: TerminalClipboardImage | null = null;
@@ -212,7 +216,7 @@ export async function pasteClipboardImageBlob(
   runtime: TerminalImagePasteRuntime,
   io: TerminalImagePasteIo,
   blob: Blob,
-  form: TerminalImagePasteForm = "agent-stub",
+  form: TerminalImagePasteForm,
 ): Promise<boolean> {
   if (runtime.disposed) return false;
   const mimeType = blob.type?.toLowerCase() || "image/png";

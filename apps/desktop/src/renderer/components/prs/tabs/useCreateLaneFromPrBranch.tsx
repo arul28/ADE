@@ -6,10 +6,20 @@ import type {
   GitHubPrListItem,
 } from "../../../../shared/types";
 import { openLaneOnMachinePath } from "../../../lib/laneNavigation";
-import { selectActiveProjectRoot, useAppStore, useAppStoreApi } from "../../../state/appStore";
+import {
+  selectActiveProjectRoot,
+  selectActiveProjectStateKey,
+  useAppStore,
+  useAppStoreApi,
+} from "../../../state/appStore";
 import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineLanes";
-import { trackPendingLaneCreate } from "../../../lib/pendingLaneCreates";
-import { showToast } from "../../app/toast/toastStore";
+import {
+  isProjectTabOnScreen,
+  laneCreateFailureToastId,
+  trackPendingLaneCreate,
+} from "../../../lib/pendingLaneCreates";
+import { useActiveRef } from "../../../lib/useActiveRef";
+import { dismissToast, showToast } from "../../app/toast/toastStore";
 import type { LaneMachine } from "../../../state/laneMachineRouting";
 import { withMachineTimeout } from "../../../state/projectMachines";
 import { useProjectMachinePicker } from "../../lanes/ProjectMachinePicker";
@@ -20,6 +30,7 @@ import {
   createLaneFromPrBranchArgs,
   createLaneFromPrBranchRequestKey,
   formatActionError,
+  upsertLaneSummary,
 } from "./GitHubTabCreateLaneDialog";
 
 const CREATE_LANE_MACHINE_COPY = {
@@ -47,19 +58,22 @@ export function useCreateLaneFromPrBranch({
   /** Whether the page that holds this hook is the one on screen. */
   active: boolean;
   /**
-   * `follow` is false when the user left the page before the lane was made:
-   * do the bookkeeping, but do not change a selection or the route.
+   * `stillHere()` is false once the user left the page: do the bookkeeping,
+   * but do not change a selection or the route. Ask it at each such step; the
+   * refreshes in between take seconds.
    */
   onCreatedOnTabMachine: (
     result: CreateLaneFromPrBranchResult,
     item: GitHubPrListItem,
     createProjectRoot: string | null,
-    options: { follow: boolean },
+    stillHere: () => boolean,
   ) => Promise<void>;
 }): { open: (item: GitHubPrListItem) => Promise<void>; element: React.ReactNode } {
   const navigate = useNavigate();
   const appStore = useAppStoreApi();
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  const tabBinding = useAppStore((state) => state.projectBinding);
+  const tabScopeKey = useAppStore(selectActiveProjectStateKey);
   const { ask: askForMachine, element: machinePicker } = useProjectMachinePicker();
   const [item, setItem] = React.useState<GitHubPrListItem | null>(null);
   /** The machine the open dialog creates on; null = the tab's machine. */
@@ -74,6 +88,11 @@ export function useCreateLaneFromPrBranch({
   const onCreatedRef = React.useRef(onCreatedOnTabMachine);
   onCreatedRef.current = onCreatedOnTabMachine;
 
+  /** The latest `open`, for a failure toast that outlives this render. */
+  const openRef = React.useRef<(item: GitHubPrListItem) => Promise<void>>(async () => {});
+  /** PRs with a create in flight, so the same one is not started twice. */
+  const creatingKeysRef = React.useRef(new Set<string>());
+
   const close = React.useCallback(() => {
     requestRef.current = null;
     setItem(null);
@@ -84,6 +103,10 @@ export function useCreateLaneFromPrBranch({
   }, []);
 
   const open = React.useCallback(async (next: GitHubPrListItem) => {
+    if (creatingKeysRef.current.has(createLaneFromPrBranchRequestKey(next))) {
+      showToast({ title: "A lane for this pull request is already being created.", tone: "info" });
+      return;
+    }
     const laneCountByMachineId = new Map(
       machineIndex.machines.map((machine) => [
         machine.machineId,
@@ -119,61 +142,95 @@ export function useCreateLaneFromPrBranch({
         if (isCurrent()) setLoading(false);
       });
   }, [askForMachine, machineIndex.lanesByMachineId, machineIndex.machines]);
+  openRef.current = open;
 
   // The dialog closes on confirm and the create runs in the background; the
-  // lane lists show a "Creating…" row until the lane exists. This hook's page
-  // can be gone by then, so what follows a create is decided from the page the
-  // user is on at that time.
-  const stillHereRef = React.useRef(false);
-  React.useEffect(() => {
-    stillHereRef.current = active;
-    return () => {
-      stillHereRef.current = false;
-    };
-  }, [active]);
-
+  // Lanes sidebar shows a "Creating…" row until the lane exists. The user can
+  // be on another page by then, so what follows a create asks `stillHereRef`.
+  const stillHereRef = useActiveRef(active);
   const confirm = React.useCallback((laneName: string) => {
     if (!item) return;
     const createItem = item;
+    const createKey = createLaneFromPrBranchRequestKey(createItem);
     const createProjectRoot = projectRoot;
     const createTarget = target;
+    // The user is free to switch project tabs while this runs, and an unpinned
+    // call follows the active tab: pin it to the tab that started it.
+    const callPin = createTarget?.pin ?? tabBinding;
+    if (!callPin) {
+      setError("This project is still opening. Try again in a moment.");
+      return;
+    }
+    const failureToastId = laneCreateFailureToastId(tabScopeKey, laneName);
     close();
-    const api = createLaneFromPrBranchApi();
-    const createArgs = createLaneFromPrBranchArgs(createItem, laneName);
-    void trackPendingLaneCreate(
-      {
-        name: laneName,
-        projectRoot: createProjectRoot,
-        machineId: createTarget?.pin ? createTarget.machineId : null,
-      },
-      () => (createTarget?.pin
-        ? api.createLaneFromPrBranch(createArgs, createTarget.pin)
-        : api.createLaneFromPrBranch(createArgs)),
-    ).then(async (result) => {
-      if (!createTarget?.pin) {
-        await onCreatedRef.current(result, createItem, createProjectRoot, { follow: stillHereRef.current });
+    void (async () => {
+      const api = createLaneFromPrBranchApi();
+      const createArgs = createLaneFromPrBranchArgs(createItem, laneName);
+      let result: CreateLaneFromPrBranchResult;
+      creatingKeysRef.current.add(createKey);
+      try {
+        result = await trackPendingLaneCreate(
+          { name: laneName, scopeKey: tabScopeKey },
+          () => api.createLaneFromPrBranch(createArgs, callPin),
+        );
+        // An earlier failure for this name is answered now.
+        dismissToast(failureToastId);
+      } catch (err) {
+        console.warn("create_lane_from_pr.failed", err);
+        showToast({
+          id: failureToastId,
+          title: `Could not create ${laneName}`,
+          message: formatActionError(err),
+          // The lane name is the person's own text, and an error can quote a path.
+          replayMask: { title: true, message: true },
+          tone: "error",
+          durationMs: 0,
+          actions: [{
+            label: "Try again",
+            onClick: () => {
+              // The dialog opens on this page; a page the user left cannot show it.
+              if (stillHereRef.current) void openRef.current(createItem);
+              else showToast({ title: "Open the pull request again to create its lane.", tone: "info" });
+            },
+          }],
+        });
         return;
+      } finally {
+        creatingKeysRef.current.delete(createKey);
       }
-      // The lane and its PR row now live on that machine. Nothing here may
-      // hold their ids as the tab machine's: refresh that machine's slice of
-      // the union instead, and let the lane open where it lives.
-      requestCrossMachineLanesForMachine(createTarget.machineId);
-      const createdLaneId = result.lane?.id ?? null;
-      const currentProjectRoot = selectActiveProjectRoot(appStore.getState());
-      // Only while the user is still on this page; a lane that finishes later
-      // must not pull them away from where they went.
-      if (stillHereRef.current && createdLaneId && (!createProjectRoot || currentProjectRoot === createProjectRoot)) {
-        navigate(openLaneOnMachinePath(createdLaneId, createTarget.machineId));
+      // The create was pinned, so it also ends after a switch to another
+      // project tab. The follow-up below is not pinned: it re-reads through
+      // the active tab into this tab's lists, so it runs only from this tab.
+      const stillHere = () => stillHereRef.current && isProjectTabOnScreen(tabScopeKey);
+      try {
+        if (!createTarget?.pin) {
+          if (isProjectTabOnScreen(tabScopeKey)) {
+            await onCreatedRef.current(result, createItem, createProjectRoot, stillHere);
+          } else if (result.lane) {
+            // Another project's tab is on screen, and a read would go through
+            // it: put the new lane in this tab's list as the create returned it.
+            const createdLane = result.lane;
+            appStore.setState((prev) => ({ lanes: upsertLaneSummary(prev.lanes, createdLane) }));
+          }
+          return;
+        }
+        // The lane and its PR row now live on that machine. Nothing here may
+        // hold their ids as the tab machine's: refresh that machine's slice of
+        // the union instead, and let the lane open where it lives.
+        requestCrossMachineLanesForMachine(createTarget.machineId);
+        const createdLaneId = result.lane?.id ?? null;
+        const currentProjectRoot = selectActiveProjectRoot(appStore.getState());
+        // Only while the user is still on this page; a lane that finishes
+        // later must not pull them away from where they went.
+        if (stillHere() && createdLaneId && (!createProjectRoot || currentProjectRoot === createProjectRoot)) {
+          navigate(openLaneOnMachinePath(createdLaneId, createTarget.machineId));
+        }
+      } catch (err) {
+        // The lane exists; only the follow-up on this page failed.
+        console.warn("create_lane_from_pr.follow_up_failed", err);
       }
-    }).catch((err: unknown) => {
-      showToast({
-        title: `Could not create ${laneName}`,
-        message: formatActionError(err),
-        tone: "error",
-        durationMs: 0,
-      });
-    });
-  }, [appStore, close, item, navigate, projectRoot, target]);
+    })();
+  }, [appStore, close, item, navigate, projectRoot, stillHereRef, tabBinding, tabScopeKey, target]);
 
   const element = (
     <>

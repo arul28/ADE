@@ -31,8 +31,6 @@ const EMPTY_AGENTS: LaneAgent[] = [];
 
 export const LANES_FILTER_INPUT_ID = "lanes-filter-input";
 
-const NO_PENDING_CREATING_LANES: PendingLaneCreate[] = [];
-
 export type LaneSidebarListProps = {
   layout: LaneSidebarLayout;
   onGroupByChange: (next: LaneSidebarGroupBy) => void;
@@ -63,12 +61,13 @@ export type LaneSidebarListProps = {
   deleteProgressByLaneId: Record<string, LaneDeleteProgress>;
   /** Stops a running delete, by row key. */
   onStopDelete?: (laneId: string) => void;
-  creatingLaneIds: ReadonlySet<string>;
+  /** Rows of lanes whose setup still runs, by row key. */
+  settingUpLaneIds: ReadonlySet<string>;
   pendingCreatingIssues: CreatingIssuePlaceholder[];
   /** Lanes a background create has not made yet. */
-  pendingCreatingLanes?: PendingLaneCreate[];
+  pendingCreatingLanes: PendingLaneCreate[];
   /** Stops a running create, by its pending id. */
-  onStopCreate?: (pendingId: string) => void;
+  onStopCreate: (pendingId: string) => void;
   pulsingLaneId: string | null;
   onSelectRow: (laneId: string, event: React.MouseEvent) => void;
   onStepSelection: (direction: -1 | 1) => void;
@@ -120,9 +119,9 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     lanePrTagsByLaneId,
     deleteProgressByLaneId,
     onStopDelete,
-    creatingLaneIds,
+    settingUpLaneIds,
     pendingCreatingIssues,
-    pendingCreatingLanes = NO_PENDING_CREATING_LANES,
+    pendingCreatingLanes,
     onStopCreate,
     pulsingLaneId,
     onSelectRow,
@@ -188,7 +187,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
         onStopDelete={deleting && onStopDelete && (deleteProgress?.cancellable || foreignLaneIds?.has(laneId))
           ? () => onStopDelete(laneId)
           : null}
-        creating={!deleting && creatingLaneIds.has(laneId)}
+        creating={!deleting && settingUpLaneIds.has(laneId)}
         needsYouReason={needsYouReasonByLaneId.get(laneId) ?? null}
         machineChip={machineChipByLaneId?.get(laneId) ?? null}
         disabledReason={disabledReasonByLaneId?.get(laneId) ?? null}
@@ -211,7 +210,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
       <LaneSidebarCreatingRow
         key={`creating-lane:${entry.id}`}
         name={entry.name}
-        onStop={entry.canStop && onStopCreate ? () => onStopCreate(entry.id) : undefined}
+        onStop={entry.canStop ? () => onStopCreate(entry.id) : undefined}
       />
     )),
   ];

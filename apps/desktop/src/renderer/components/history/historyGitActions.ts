@@ -2,7 +2,7 @@ import type { GitCommitSummary } from "../../../shared/types";
 import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
 import { confirmDialog, promptDialog } from "../ui/dialog/confirm";
 import { trackPendingLaneCreate } from "../../lib/pendingLaneCreates";
-import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
 
 export type HistoryGitActionId =
   | "checkout"
@@ -359,6 +359,8 @@ export async function runHistoryGitAction(args: {
         return;
       }
       case "create_lane": {
+        // Read before the prompts: the user can switch project tabs while they are open.
+        const scopeKey = selectActiveProjectStateKey(useAppStore.getState());
         const fallbackBranchName = defaultBranchNameForCommit(commit);
         const branchName = await promptDialog({
           title: `Create lane branch at ${commit.shortSha}`,
@@ -376,7 +378,7 @@ export async function runHistoryGitAction(args: {
         if (!laneName) return;
         // The lane lists show a "Creating…" row while this runs.
         const lane = await trackPendingLaneCreate(
-          { name: laneName, projectRoot: selectActiveProjectRoot(useAppStore.getState()) },
+          { name: laneName, scopeKey },
           () => window.ade.lanes.create({
             name: laneName,
             branchName: trimmedBranchName,

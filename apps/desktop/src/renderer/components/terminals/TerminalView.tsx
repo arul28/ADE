@@ -291,7 +291,7 @@ const TERMINAL_CTRL_V = "\x16";
 const TERMINAL_BRACKETED_PASTE_MODE = 2004;
 const TERMINAL_LINK_PATTERN = /(?:https?:\/\/[^\s<>"'`]+|(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/[^\s<>"'`]*)?)/gi;
 const TERMINAL_MOUSE_TRACKING_EVENT_MODES = new Set([1000, 1002, 1003]);
-type TerminalImagePasteMode = "native-shortcut" | "runtime-attachment";
+type TerminalImagePasteMode = "shell" | "agent-cli";
 const runtimeCache = new Map<string, CachedRuntime>();
 const ptyDataRuntimesByPtyId = new Map<string, Set<CachedRuntime>>();
 const ptyExitRuntimesByPtyId = new Map<string, Set<CachedRuntime>>();
@@ -1554,7 +1554,7 @@ function terminalRunsOnThisComputer(runtime: CachedRuntime): boolean {
  * machine's clipboard and find nothing, so it gets the saved file's path.
  */
 function imagePasteForm(runtime: CachedRuntime): TerminalImagePasteForm | null {
-  if (runtime.imagePasteMode === "runtime-attachment") return "agent-stub";
+  if (runtime.imagePasteMode === "agent-cli") return "agent-stub";
   return terminalRunsOnThisComputer(runtime) ? null : "path";
 }
 
@@ -3298,12 +3298,12 @@ function createRuntime(args: {
     // this machine's own clipboard; every other terminal uploads the bytes.
     const form = runtime.disposed ? null : imagePasteForm(runtime);
     const imageBlob = form ? clipboardImageBlobFromEvent(ev.clipboardData) : null;
-    if (imageBlob) {
+    if (form && imageBlob) {
       // A blob whose mime is not in the extension table (or that fails to read)
       // answers false, and dropping the paste there is silent — the user sees a
       // paste that did nothing at all. Fall through to the shortcut path, which
       // reads the clipboard itself and can still handle it.
-      void pasteClipboardImageBlob(runtime, imagePasteIo(runtime), imageBlob, form ?? undefined).then((handled) => {
+      void pasteClipboardImageBlob(runtime, imagePasteIo(runtime), imageBlob, form).then((handled) => {
         if (handled || runtime.disposed) return;
         void pasteClipboardImageShortcut(runtime);
       });
@@ -3543,7 +3543,7 @@ export function TerminalView({
   className,
   isActive,
   isVisible = isActive,
-  imagePasteMode = "native-shortcut",
+  imagePasteMode = "shell",
   toolType = null,
 }: {
   ptyId: string;

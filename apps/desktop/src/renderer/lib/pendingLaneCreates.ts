@@ -1,4 +1,5 @@
 import { useMemo, useSyncExternalStore } from "react";
+import { selectActiveProjectStateKey, useAppStore } from "../state/appStore";
 
 /**
  * Lanes that are being created right now, for the lane lists to show.
@@ -12,8 +13,11 @@ import { useMemo, useSyncExternalStore } from "react";
 export type PendingLaneCreate = {
   id: string;
   name: string;
-  /** The project the lane belongs to; a list shows only its own project's. */
-  projectRoot: string | null;
+  /**
+   * The project tab that started the create (`selectActiveProjectStateKey`).
+   * A list shows only its own tab's: two tabs can hold one path on two machines.
+   */
+  scopeKey: string | null;
   /** The lane's machine when it is not the tab's own; null for the tab's machine. */
   machineId: string | null;
   /** `creating`: no lane yet. `setup`: the lane exists and its setup is running. */
@@ -44,7 +48,7 @@ function patch(id: string, next: Partial<PendingLaneCreate>): void {
 /** Record a create that is starting. `stop` asks the lane's machine to stop it. */
 export function beginPendingLaneCreate(args: {
   name: string;
-  projectRoot: string | null;
+  scopeKey: string | null;
   machineId?: string | null;
   stop?: () => void;
 }): string {
@@ -52,7 +56,7 @@ export function beginPendingLaneCreate(args: {
   pending.set(id, {
     id,
     name: args.name,
-    projectRoot: args.projectRoot,
+    scopeKey: args.scopeKey,
     machineId: args.machineId ?? null,
     phase: "creating",
     laneId: null,
@@ -90,7 +94,7 @@ export function allowPendingLaneCreateStop(id: string): void {
 
 /** Show a "Creating…" row for as long as `run` takes. */
 export async function trackPendingLaneCreate<T>(
-  args: { name: string; projectRoot: string | null; machineId?: string | null },
+  args: { name: string; scopeKey: string | null },
   run: () => Promise<T>,
 ): Promise<T> {
   const id = beginPendingLaneCreate(args);
@@ -99,6 +103,21 @@ export async function trackPendingLaneCreate<T>(
   } finally {
     endPendingLaneCreate(id);
   }
+}
+
+/** Is the project tab that started a create the one on screen? The global store follows the active tab. */
+export function isProjectTabOnScreen(scopeKey: string | null): boolean {
+  return selectActiveProjectStateKey(useAppStore.getState()) === scopeKey;
+}
+
+/** The sticky "Could not create" toast of one lane name in one tab; a later create of that name clears it. */
+export function laneCreateFailureToastId(scopeKey: string | null, name: string): string {
+  return `lane-create-failed:${scopeKey ?? ""}:${name}`;
+}
+
+/** The id `useLaneEventToasts` gives its "Lane created" toast, so a second one for the lane replaces it. */
+export function laneCreatedToastId(laneId: string): string {
+  return `lane-lane-created-${laneId}`;
 }
 
 function subscribe(listener: () => void): () => void {
@@ -112,11 +131,11 @@ function getSnapshot(): PendingLaneCreate[] {
   return snapshot;
 }
 
-/** The creates in flight for one project. The array is stable until one changes. */
-export function usePendingLaneCreates(projectRoot: string | null): PendingLaneCreate[] {
+/** The creates in flight for one project tab. The array is stable until one changes. */
+export function usePendingLaneCreates(scopeKey: string | null): PendingLaneCreate[] {
   const all = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   return useMemo(
-    () => (all.length === 0 ? all : all.filter((entry) => entry.projectRoot === projectRoot)),
-    [all, projectRoot],
+    () => (all.length === 0 ? all : all.filter((entry) => entry.scopeKey === scopeKey)),
+    [all, scopeKey],
   );
 }

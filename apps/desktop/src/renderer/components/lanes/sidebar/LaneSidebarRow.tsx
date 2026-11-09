@@ -343,18 +343,11 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
           <>
             <span className="truncate">{deleteStatusLabel}</span>
             {onStopDelete ? (
-              <button
-                type="button"
-                className="ml-auto shrink-0 rounded px-1 text-fg/85 hover:bg-fg/[0.08]"
+              <SidebarStopButton
                 title="Stop the delete. The lane stays, and part of its folder may already be gone."
-                data-testid="lane-sidebar-stop-delete"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onStopDelete();
-                }}
-              >
-                Stop
-              </button>
+                testId="lane-sidebar-stop-delete"
+                onStop={onStopDelete}
+              />
             ) : null}
           </>
         ) : creating ? (
@@ -396,6 +389,24 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
   );
 });
 
+/** Stops the delete or the create a row shows. Clickable inside an inert row. */
+function SidebarStopButton({ title, testId, onStop }: { title: string; testId: string; onStop: () => void }) {
+  return (
+    <button
+      type="button"
+      className="pointer-events-auto ml-auto shrink-0 rounded px-1 text-fg/85 hover:bg-fg/[0.08]"
+      title={title}
+      data-testid={testId}
+      onClick={(event) => {
+        event.stopPropagation();
+        onStop();
+      }}
+    >
+      Stop
+    </button>
+  );
+}
+
 /** Placeholder for a lane that is still being created. `onStop` adds a Stop button. */
 export function LaneSidebarCreatingRow({ name, onStop }: { name: string; onStop?: () => void }) {
   return (
@@ -413,18 +424,7 @@ export function LaneSidebarCreatingRow({ name, onStop }: { name: string; onStop?
       <div className="flex h-4 min-w-0 items-center gap-1.5 text-[11px] leading-4 text-muted-fg/70">
         <span className="truncate">Creating…</span>
         {onStop ? (
-          <button
-            type="button"
-            className="pointer-events-auto ml-auto shrink-0 rounded px-1 text-fg/85 hover:bg-fg/[0.08]"
-            title="Stop creating this lane."
-            data-testid="lane-sidebar-stop-create"
-            onClick={(event) => {
-              event.stopPropagation();
-              onStop();
-            }}
-          >
-            Stop
-          </button>
+          <SidebarStopButton title="Stop creating this lane." testId="lane-sidebar-stop-create" onStop={onStop} />
         ) : null}
       </div>
     </div>
