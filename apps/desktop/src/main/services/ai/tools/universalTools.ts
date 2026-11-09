@@ -2566,7 +2566,9 @@ function createGitDiffTool(cwd: string) {
       try {
         const args = ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--stat", "--patch"];
         if (staged && !ref) args.push("--cached");
-        if (ref) args.push(ref);
+        // `ref` comes from the model; `--end-of-options` keeps a value like
+        // `--output=<path>` from being read as an option.
+        if (ref) args.push("--end-of-options", ref);
         if (filePath) {
           args.push("--");
           args.push(filePath);
@@ -2603,7 +2605,7 @@ function createGitLogTool(cwd: string) {
         } else {
           args.push("--format=%H %an %ad %s", "--date=short");
         }
-        if (ref) args.push(ref);
+        if (ref) args.push("--end-of-options", ref);
         const { stdout } = await execFileAsync("git", toolGitArgs(args), { cwd, timeout: 15_000, env: toolGitEnv(), windowsHide: true });
         return { log: stdout.trim() };
       } catch (err) {
