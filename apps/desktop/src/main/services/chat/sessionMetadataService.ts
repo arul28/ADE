@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import type {
@@ -239,7 +241,9 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
         });
         generated = await runSessionMetadataGeneration({
           candidateModelIds,
-          cwd: managed.laneWorktreePath,
+          // A title can be regenerated after the lane's folder is gone; only the
+          // model's answer matters here, so any directory will do.
+          cwd: fs.existsSync(managed.laneWorktreePath) ? managed.laneWorktreePath : os.tmpdir(),
           prompt,
           systemPrompt: buildSessionMetadataSystemPrompt(fields),
           runPrompt: (promptArgs) => dependencies.runPrompt(promptArgs, managed),

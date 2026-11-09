@@ -2840,6 +2840,8 @@ type CodexRuntime = {
   activeTurnId: string | null;
   startedTurnId: string | null;
   awaitingTurnStart: boolean;
+  /** Stop arrived while `turn/start` was in flight, with no turn yet to interrupt. */
+  stopRequestedDuringTurnStart: boolean;
   /**
    * Held from the turn-start admission check until `turn/start` returns or
    * fails. Only that check reads it: a send that awaits attachment staging
@@ -6291,6 +6293,26 @@ async function resumeCodexThread<T>(
       throw error;
     }
     return await runtime.request<T>("thread/resume", params, options);
+  }
+}
+
+/** `thread/fork` that unarchives a thread Codex archived, then forks it. */
+async function forkCodexThread(
+  runtime: Pick<CodexRuntime, "request">,
+  params: { threadId: string; excludeTurns: boolean } & Record<string, unknown>,
+): Promise<CodexThreadLifecycleResponse> {
+  try {
+    return await runtime.request<CodexThreadLifecycleResponse>("thread/fork", params);
+  } catch (error) {
+    if (!isCodexThreadArchivedMessage(error instanceof Error ? error.message : String(error))) throw error;
+    try {
+      await runtime.request("thread/unarchive", { threadId: params.threadId }, {
+        timeoutMs: CODEX_ARCHIVE_REQUEST_TIMEOUT_MS,
+      });
+    } catch {
+      throw error;
+    }
+    return await runtime.request<CodexThreadLifecycleResponse>("thread/fork", params);
   }
 }
 
@@ -30938,6 +30960,7 @@ export function createAgentChatService(args: {
       });
     } catch (error) {
       const contextToRestore = runtime.turnStartContextConsumed ? consumedTurnContext : null;
+      runtime.stopRequestedDuringTurnStart = false;
       runtime.turnStartReserved = false;
       runtime.awaitingTurnStart = false;
       runtime.turnStartContextConsumed = false;
@@ -30980,6 +31003,18 @@ export function createAgentChatService(args: {
           type: "activity",
           ...initialTurnActivity(managed.session),
           turnId,
+        });
+      }
+      // A Stop that arrived before the turn existed had nothing to stop; the
+      // turn has an id now, so carry it out.
+      if (managed.runtime.stopRequestedDuringTurnStart) {
+        managed.runtime.stopRequestedDuringTurnStart = false;
+        void interrupt({ sessionId: managed.session.id, mode: DEFAULT_AGENT_CHAT_STOP_MODE }).catch((error) => {
+          logger.warn("agent_chat.codex_stop_after_turn_start_failed", {
+            sessionId: managed.session.id,
+            turnId,
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
       }
     }
@@ -45935,6 +45970,7 @@ export function createAgentChatService(args: {
       activeTurnId: null,
       startedTurnId: null,
       awaitingTurnStart: false,
+      stopRequestedDuringTurnStart: false,
       turnStartReserved: false,
       turnStartContextConsumed: false,
       threadResumed: false,
@@ -53950,7 +53986,7 @@ export function createAgentChatService(args: {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
       const runtime = await ensureCodexSessionRuntime(args.managed);
-      const forkResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
+      const forkResponse = await forkCodexThread(runtime, {
         threadId: transport.nativeSessionId,
         excludeTurns: true,
         ...codexThreadIdentityConfig(args.managed),
@@ -55505,7 +55541,7 @@ export function createAgentChatService(args: {
             `External Codex thread '${externalThreadId}' was not found by thread/read.`,
           );
         }
-        const forkResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
+        const forkResponse = await forkCodexThread(runtime, {
           threadId: sourceThread.responseThreadId,
           excludeTurns: true,
           ...codexThreadIdentityConfig(managed),
@@ -63535,6 +63571,11 @@ export function createAgentChatService(args: {
         resetSessionActivity(args.sessionId);
       }
     };
+    // Cursor's SDK has no way to compact on request, so the words would go to
+    // the model as a normal message and spend a turn.
+    if (managed.session.provider === "cursor" && isManualCompactCommand(args.text)) {
+      throw markExpected(new Error("Cursor chats can't compact on request. Start a new chat to free up context."), "user");
+    }
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
       if (isManualCompactCommand(args.text)) {
         throw turnInFlightError("A turn is already active. Use steer or interrupt.");
@@ -66565,6 +66606,7 @@ export function createAgentChatService(args: {
         return result;
       }
       if (!runtime.activeTurnId) {
+        if (runtime.awaitingTurnStart || runtime.turnStartReserved) runtime.stopRequestedDuringTurnStart = true;
         settleCardsIfClearing();
         await clearCodexQueueIfAsked();
         await interruptActiveCodexSubagentTurns(managed, runtime);

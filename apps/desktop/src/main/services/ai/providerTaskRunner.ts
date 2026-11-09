@@ -156,9 +156,14 @@ function extractClaudeError(stdout: string): string | null {
   try {
     const parsed = JSON.parse(trimmed) as Record<string, unknown>;
     if (parsed.is_error !== true) return null;
+    const errors = Array.isArray(parsed.errors)
+      ? parsed.errors.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0 && !entry.trim().startsWith("[ede_diagnostic]"))
+      : [];
     const message = typeof parsed.result === "string" && parsed.result.trim()
       ? parsed.result.trim()
-      : "Claude reported an error";
+      : errors.length > 0
+        ? errors.join("; ").trim()
+        : "Claude reported an error";
     const status = typeof parsed.api_error_status === "number" ? parsed.api_error_status : null;
     return status ? `${message} (HTTP ${status})` : message;
   } catch {
