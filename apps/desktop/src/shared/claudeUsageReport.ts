@@ -4,7 +4,7 @@
  *
  * The SDK marks the shape experimental, so every field is read defensively:
  * a missing or renamed field drops that part of the sheet, never the whole
- * answer. Verified against @anthropic-ai/claude-agent-sdk 0.3.310.
+ * answer. Verified against @anthropic-ai/claude-agent-sdk 0.3.319.
  */
 
 import { isRecord } from "./agentObservationNormalizers";

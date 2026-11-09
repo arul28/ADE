@@ -14,6 +14,7 @@
  * (build 2026-09-01T21:54:40Z, git sha b3cd543a1f6fcdf4d8fabc0f5e5538d2ee7f38e1).
  * The 2.1.300 re-extraction compared whole templates, not only ADE's lines:
  * general-purpose had gained its strengths and guidelines block upstream.
+ * Compared again at 2.1.319: no prompt text changed.
  *
  * FIDELITY: the built-ins fill their templates' holes at runtime from the
  * tools Claude Code gives its agents: the shell tool (Bash, or PowerShell on
@@ -32,7 +33,7 @@ import { claudeCompactWindow, claudeSubagentWindowIneffective, type ProviderComp
 import { HARNESS_PRESET_AGENT_KEYS, type HarnessPresetAgentKey } from "./harnessPresets";
 
 /** The CLI build these prompts are taken from. */
-export const CLAUDE_BUILTIN_AGENT_PROMPT_SOURCE_VERSION = "2.1.300";
+export const CLAUDE_BUILTIN_AGENT_PROMPT_SOURCE_VERSION = "2.1.319";
 
 /**
  * Tools each read-only built-in declares as denied.

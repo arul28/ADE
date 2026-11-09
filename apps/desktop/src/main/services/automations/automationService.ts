@@ -95,6 +95,9 @@ import { CROSS_MACHINE_CALLER_FIELDS } from "../../../shared/crossMachineHandoff
 
 const execFileAsync = promisify(execFile);
 
+/** What an agent step runs with when neither it nor its rule picks a mode. */
+const AUTOMATION_DEFAULT_PERMISSION_MODE = "full-auto" as const;
+
 type CronTask = {
   cronExpression: string;
   stop: () => void;
@@ -2162,7 +2165,8 @@ export function createAutomationService({
         ?? (actionClearedCursor ? undefined : cursorPermissionFromMisfiledOpenCode(actionProviders?.opencode))
         ?? ruleCursor
         ?? cursorPermissionFromMisfiledOpenCode(ruleProviders?.opencode)
-        ?? "edit");
+        ?? AUTOMATION_DEFAULT_PERMISSION_MODE);
+    const codexMode = rule.verification.mode === "dry-run" ? "plan" : (providers.codex ?? AUTOMATION_DEFAULT_PERMISSION_MODE);
     return {
       ...(cli
         ? {
@@ -2180,11 +2184,11 @@ export function createAutomationService({
           }),
       ...(inProcess ? { inProcess } : {}),
       providers: {
-        claude: rule.verification.mode === "dry-run" ? "plan" : (providers.claude ?? "edit"),
-        codex: rule.verification.mode === "dry-run" ? "plan" : (providers.codex ?? "default"),
+        claude: rule.verification.mode === "dry-run" ? "plan" : (providers.claude ?? AUTOMATION_DEFAULT_PERMISSION_MODE),
+        codex: codexMode,
         cursor: cursorMode,
-        opencode: rule.verification.mode === "dry-run" ? "plan" : (providers.opencode ?? "edit"),
-        codexSandbox: providers.codexSandbox ?? "workspace-write",
+        opencode: rule.verification.mode === "dry-run" ? "plan" : (providers.opencode ?? AUTOMATION_DEFAULT_PERMISSION_MODE),
+        codexSandbox: providers.codexSandbox ?? (codexMode === "full-auto" ? "danger-full-access" : "workspace-write"),
         ...(providers.writablePaths?.length ? { writablePaths: providers.writablePaths } : {}),
         allowedTools,
       },
@@ -2195,10 +2199,10 @@ export function createAutomationService({
     providerGroup: string,
     permissionConfig: ReturnType<typeof buildPermissionConfig>,
   ) => {
-    if (providerGroup === "claude") return permissionConfig.providers?.claude ?? "edit";
-    if (providerGroup === "codex") return permissionConfig.providers?.codex ?? "default";
-    if (providerGroup === "cursor") return permissionConfig.providers?.cursor ?? "edit";
-    return permissionConfig.providers?.opencode ?? "edit";
+    if (providerGroup === "claude") return permissionConfig.providers?.claude ?? AUTOMATION_DEFAULT_PERMISSION_MODE;
+    if (providerGroup === "codex") return permissionConfig.providers?.codex ?? AUTOMATION_DEFAULT_PERMISSION_MODE;
+    if (providerGroup === "cursor") return permissionConfig.providers?.cursor ?? AUTOMATION_DEFAULT_PERMISSION_MODE;
+    return permissionConfig.providers?.opencode ?? AUTOMATION_DEFAULT_PERMISSION_MODE;
   };
 
   const cursorModeIdForPermissionMode = (mode: string | null | undefined): string => {

@@ -9,6 +9,7 @@ import {
   type McpAppToolDescriptor,
 } from "../../../shared/mcpApp";
 import { withTimeout } from "../ai/utils";
+import { stableStringify } from "../shared/utils";
 import { sendClaudeControlRequest } from "./claudeSdkCompat";
 import { mcpServerFingerprint } from "./mcpAppGrants";
 import type { McpAppProviderLink } from "./mcpAppHost";
@@ -40,11 +41,56 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+/**
+ * Asks `check_permissions` raises for calls ADE's app gate already allowed.
+ *
+ * With `check_permissions` the CLI decides an app's call as the model's own,
+ * so a call it would ask about reaches `canUseTool` like one of the model's. A
+ * clearance names one such call by tool and arguments, is used at most once,
+ * and goes away with the call. Only a `mcp_call` can use it: the CLI gives those
+ * a `toolu_mcp_call_` id (measured on 2.1.319, recheck on a bump). If that spelling
+ * changes the ask gets an ordinary card, never a silent allow.
+ */
+type McpAppClearance = { key: string; signal: AbortSignal; abort: () => void };
+const appClearancesByRuntime = new WeakMap<object, McpAppClearance[]>();
+
+const appClearanceKey = (tool: string, input: unknown): string => `${tool}\0${stableStringify(input ?? {})}`;
+
+function beginAppClearance(runtime: object, tool: string, input: unknown): McpAppClearance {
+  const controller = new AbortController();
+  const clearance = { key: appClearanceKey(tool, input), signal: controller.signal, abort: () => controller.abort() };
+  appClearancesByRuntime.set(runtime, [...(appClearancesByRuntime.get(runtime) ?? []), clearance]);
+  return clearance;
+}
+
+function endAppClearance(runtime: object, clearance: McpAppClearance): void {
+  const left = (appClearancesByRuntime.get(runtime) ?? []).filter((entry) => entry !== clearance);
+  if (left.length) appClearancesByRuntime.set(runtime, left);
+  else appClearancesByRuntime.delete(runtime);
+}
+
+/** The clearance for this exact call, removed so it answers one ask only. */
+export function takeClaudeMcpAppClearance(
+  runtime: object,
+  tool: string,
+  input: unknown,
+  toolUseId: string | undefined,
+): { signal: AbortSignal } | null {
+  if (!toolUseId?.startsWith("toolu_mcp_call_")) return null;
+  const key = appClearanceKey(tool, input);
+  const clearance = appClearancesByRuntime.get(runtime)?.find((entry) => entry.key === key);
+  if (!clearance) return null;
+  endAppClearance(runtime, clearance);
+  return clearance;
+}
+
 export function claudeMcpAppLink(args: {
   /** What the chat's Claude CLI said it can do (`session.protocolCapabilities`). */
   protocolCapabilities: readonly string[] | null | undefined;
   /** The chat's runtime. Read again on every call: a query comes and goes between turns. */
   runtime: { query: ClaudeQuery | null; queryStartPromise: Promise<ClaudeQuery> | null };
+  /** The chat is planning right now. Read on every call. */
+  isPlanMode?: () => boolean;
   /** A bounded caller cache of provider-reported tools and failures. */
   onServerStatus?: (status: McpServerObservation) => void;
 }): McpAppProviderLink | null {
@@ -89,8 +135,14 @@ export function claudeMcpAppLink(args: {
       const query = await liveQuery();
       return withTimeout(query.readMcpResource(server, uri), MCP_APP_PROVIDER_TIMEOUT_MS, "Claude did not read the resource in time.");
     },
-    callTool: async (server, tool, toolArgs) => {
+    callTool: async (server, tool, toolArgs, options) => {
       const query = await liveQuery();
+      const toolName = claudeMcpToolName(server, tool);
+      // `check_permissions` (Claude Code 2.1.319+) applies the user's rules
+      // and hooks to an app's call. The CLI refuses everything in plan mode,
+      // and a page only reading its own data must still load while planning.
+      const checkPermissions = !(options?.readOnly === true && args.isPlanMode?.() === true);
+      const clearance = checkPermissions ? beginAppClearance(runtime, toolName, toolArgs) : null;
       // `result_not_for_model` (Claude Code 2.1.301+; older CLIs ignore it):
       // the app gets the server's own content blocks, as Codex hands them,
       // not the copy reshaped for a model (images resized, text beside
@@ -99,18 +151,27 @@ export function claudeMcpAppLink(args: {
       // only to the server's own sandboxed app.
       const call = sendClaudeControlRequest(query, {
         subtype: "mcp_call",
-        tool: claudeMcpToolName(server, tool),
+        tool: toolName,
         arguments: toolArgs,
         result_not_for_model: true,
+        ...(checkPermissions ? { check_permissions: true } : {}),
       });
-      // Without the channel an app's tool calls are refused, nothing else.
-      if (!call) throw new Error("This version of Claude Code cannot run a tool for an app.");
-      const reply = await withTimeout(
-        call,
-        MCP_APP_PROVIDER_TIMEOUT_MS,
-        "Claude did not finish the tool call in time.",
-      );
-      return toMcpAppToolResult(reply?.response);
+      try {
+        // Without the channel an app's tool calls are refused, nothing else.
+        if (!call) throw new Error("This version of Claude Code cannot run a tool for an app.");
+        const reply = await withTimeout(
+          call,
+          MCP_APP_PROVIDER_TIMEOUT_MS,
+          "Claude did not finish the tool call in time.",
+        );
+        return toMcpAppToolResult(reply?.response);
+      } catch (error) {
+        // The app has its answer now, so a card still open must not run the call later.
+        clearance?.abort();
+        throw error;
+      } finally {
+        if (clearance) endAppClearance(runtime, clearance);
+      }
     },
   };
 }

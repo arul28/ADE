@@ -84,6 +84,7 @@ type StoredInstance = {
   configHome: string;
   createdAt: string;
   account?: { email?: string; plan?: string };
+  claudeLoginEndsAt?: string;
   /** The login this config home held before a different one replaced it. */
   replacedAccount?: ProviderInstanceReplacedAccount;
 };
@@ -226,6 +227,7 @@ function decodeStoredInstance(value: unknown): StoredInstance | null {
     createdAt: createdAt ?? DEFAULT_INSTANCE_CREATED_AT,
     ...(account && (account.email || account.plan) ? { account } : {}),
     ...(replacedAccount ? { replacedAccount } : {}),
+    ...(provider === "claude" && trimmedString(value.claudeLoginEndsAt) ? { claudeLoginEndsAt: trimmedString(value.claudeLoginEndsAt)! } : {}),
   };
 }
 
@@ -397,6 +399,16 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
    * account's email after the provider CLI clears a broken login, so the email
    * alone said "signed in" for an account that could not run a chat.
    */
+  /** Writes only on a change: every Claude turn reports this date. */
+  function noteClaudeLoginEnd(id: string, endsAt: string): void {
+    const iso = Date.parse(endsAt);
+    if (!Number.isFinite(iso)) return;
+    const normalized = new Date(iso).toISOString();
+    const record = findRecord(readFile(), id);
+    if (!record || record.provider !== "claude" || record.claudeLoginEndsAt === normalized) return;
+    mutateRecord(id, "refresh", (current) => ({ ...current, claudeLoginEndsAt: normalized }));
+  }
+
   function setLoginBroken(id: string, broken: boolean): void {
     if (brokenLogins.has(id) === broken) return;
     if (broken) brokenLogins.add(id);
@@ -427,6 +439,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       ...(stored.subagentPromptCacheTtl ? { subagentPromptCacheTtl: stored.subagentPromptCacheTtl } : {}),
       ...(stored.mainPromptCacheTtl ? { mainPromptCacheTtl: stored.mainPromptCacheTtl } : {}),
       ...(stored.onExtraUsage ? { onExtraUsage: stored.onExtraUsage } : {}),
+      ...(stored.claudeLoginEndsAt ? { claudeLoginEndsAt: stored.claudeLoginEndsAt } : {}),
       provider: stored.provider,
       // An account is named by its login, never its id or a typed name: the
       // email once it has signed in (`providerAccountName`).
@@ -912,6 +925,8 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
         ...(hasAccount ? { account: next } : {}),
       };
       if (!hasAccount) delete updated.account;
+      // Another login, or none: the old login's end date no longer applies.
+      delete updated.claudeLoginEndsAt;
       // A different email in the same config home means a sign-in elsewhere
       // (`claude /login` in a shell, for the base identity) replaced this
       // login, and its credentials are gone. Remember it so the panel can offer
@@ -971,6 +986,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     setDefault,
     setAccent,
     dismissReplaced,
+    noteClaudeLoginEnd,
     getProviderSettings,
     setProviderSettings,
     getPresetBindings,

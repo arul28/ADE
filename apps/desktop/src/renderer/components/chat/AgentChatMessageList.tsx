@@ -2363,6 +2363,13 @@ function ToolResultCard({
             >
               auto-backgrounded after {timedOutLabel}
             </span>
+          ) : event.searchTimedOut ? (
+            <span
+              className="inline-flex items-center gap-1 rounded-md border border-fg/[0.07] bg-fg/[0.025] px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/55"
+              title="The search hit its time limit, so more matches may exist."
+            >
+              stopped at time limit
+            </span>
           ) : event.status ? (
             <span className={cn("text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-wider", statusColorClass(event.status))}>
               {event.status}

@@ -1130,7 +1130,7 @@ import {
 } from "../../../shared/mcpApp";
 import { createMcpAppGrantStore, MCP_APP_GRANTS_KEY } from "./mcpAppGrants";
 import { createMcpAppHost } from "./mcpAppHost";
-import { claudeMcpAppLink, codexMcpAppLink } from "./mcpAppProviderLinks";
+import { claudeMcpAppLink, codexMcpAppLink, takeClaudeMcpAppClearance } from "./mcpAppProviderLinks";
 import { createMcpAppStore } from "./mcpAppStore";
 import {
   adeCardFallbackText,
@@ -1893,6 +1893,9 @@ function resolveClaudeAgentSdkVersion(): string {
 const CLAUDE_AGENT_SDK_VERSION = resolveClaudeAgentSdkVersion();
 const CLAUDE_AGENT_SDK_API = "v1_query";
 const CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS = 1_000;
+const CLAUDE_UNATTENDED_APPROVAL_MESSAGE = "This automation run has nobody to approve tools, so this call was refused. Keep going with what you are allowed to do, and say in your final message what you could not do.";
+const CLAUDE_UNATTENDED_PLAN_MESSAGE = "This automation run has nobody to approve a plan, so the plan was not approved. Finish without implementing it and report the plan in your final message.";
+const UNATTENDED_QUESTION_MESSAGE = "This automation run has nobody to answer questions. Do not wait for an answer: use your best judgment, and say what you assumed in your final message.";
 /** canUseTool's answer when ADE closed the card (a Stop, the asking subagent ended) before anyone answered. */
 const CLAUDE_CARD_CLOSED_MESSAGE = "ADE closed this approval before the user answered (the turn was stopped or the asking agent ended). Nobody denied it.";
 /** canUseTool's answer when Claude withdrew the request; the SDK discards it. */
@@ -2110,6 +2113,7 @@ function claudeStructuredToolResultFields(toolName: string, structured: unknown)
   timedOutAfterMs?: number;
   backgroundCwdHint?: string;
   grepTotals?: { files?: number; lines?: number };
+  searchTimedOut?: true;
 } {
   const record = asRecord(structured);
   if (!record) return {};
@@ -2124,10 +2128,14 @@ function claudeStructuredToolResultFields(toolName: string, structured: unknown)
   if (toolName === "Grep") {
     const files = numberOrNull(record.totalFiles);
     const lines = numberOrNull(record.totalLines);
-    return files != null || lines != null
-      ? { grepTotals: { ...(files != null ? { files } : {}), ...(lines != null ? { lines } : {}) } }
-      : {};
+    return {
+      ...(files != null || lines != null
+        ? { grepTotals: { ...(files != null ? { files } : {}), ...(lines != null ? { lines } : {}) } }
+        : {}),
+      ...(record.timedOut === true ? { searchTimedOut: true as const } : {}),
+    };
   }
+  if (toolName === "Glob") return record.timedOut === true ? { searchTimedOut: true } : {};
   return {};
 }
 
@@ -3119,6 +3127,8 @@ const STALE_ASSISTANT_ORIGIN_TOLERANCE_MS = 2_000;
 
 type ClaudeRuntime = {
   kind: "claude";
+  /** What `session_writes_lost` has already told the user about. */
+  writesLostNoticed?: Set<string>;
   compactionSummary?: string;
   sdkSessionId: string | null;
   /**
@@ -5400,6 +5410,8 @@ type ManagedChatSession = {
    * run on it. In memory only: a restarted brain builds a new one.
    */
   launchRouteFellBack?: boolean;
+  /** The Auto-mode-on-a-custom-route notice was shown for this chat. */
+  autoRouteNoticeShown?: boolean;
   ctoSessionStartedAt: string | null;
   pendingReconstructionContext: string | null;
   /**
@@ -5907,6 +5919,8 @@ function sanitizePortableReferenceUrl(value: string | null | undefined): string 
 }
 
 type SessionTurnCollector = {
+  /** An automation's own turn: nobody is there to answer a card. */
+  unattended?: boolean;
   resolve: (value: AgentChatBackgroundTurnResult) => void;
   reject: (error: Error) => void;
   outputText: string;
@@ -7902,6 +7916,8 @@ function normalizeClaudeTaskType(value: unknown): ClaudeTaskType | undefined {
   // it in the non-agent bucket until run_in_background, task_updated, or the
   // authoritative background_tasks_changed level proves otherwise.
   if (trimmed === "local_bash") return "other";
+  // An MCP tool call running in the background: the same row as any other job.
+  if (trimmed === "mcp_task") return "background";
   return CLAUDE_TASK_TYPE_SET.has(trimmed as ClaudeTaskType) ? (trimmed as ClaudeTaskType) : undefined;
 }
 
@@ -8975,6 +8991,8 @@ type ClaudeResultMetadata = {
   thinkingTokens?: number;
   costBasis?: ClaudeModelUsageCostBasis;
   startupFailureReason?: string;
+  /** When the stored claude.ai login ends. See `noteClaudeLoginEnd`. */
+  credentialExpiresAt?: string;
   /** Model ModelUsage says answered; `claudeServedModelForSession` decides if it differs. */
   servedModelCandidate?: string;
   /** `usage.cache_creation.ephemeral_1h_input_tokens`: the 1h-TTL share of cache writes. */
@@ -9006,6 +9024,7 @@ function extractClaudeResultMetadata(result: Record<string, unknown>): ClaudeRes
     ...(typeof result.request_sent_wall_ms === "number" ? { requestSentWallMs: result.request_sent_wall_ms } : {}),
     ...(queuedTurnCount != null ? { queuedTurnCount } : {}),
     ...(startupFailureReason ? { startupFailureReason } : {}),
+    ...(typeof result.credential_expires_at === "string" ? { credentialExpiresAt: result.credential_expires_at } : {}),
     ...(cacheWrite1hTokens != null ? { cacheWrite1hTokens } : {}),
   };
 }
@@ -9031,6 +9050,24 @@ function logClaudeStartupFailure(
     reason: metadata.startupFailureReason,
     ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
   });
+}
+
+/**
+ * Keep the end date of the account's claude.ai login for its card in Settings.
+ * The field is absent for API keys, routes and older results, so absence says
+ * nothing and leaves what is stored. A sign-in to another account clears it in
+ * the store, and the next chat overwrites it after signing in to the same one.
+ */
+function noteClaudeLoginEnd(managed: ManagedChatSession, metadata: ClaudeResultMetadata, logger: Pick<Logger, "warn">): void {
+  if (!metadata.credentialExpiresAt || managed.session.provider !== "claude") return;
+  try {
+    const store = getMachineProviderInstanceStore();
+    const resolved = store.resolve("claude", managed.session.instanceId);
+    if (!resolved.fellBack) store.noteClaudeLoginEnd(resolved.instance.id, metadata.credentialExpiresAt);
+  } catch (error) {
+    // A date for a settings line must never touch the turn that carried it.
+    logger.warn("agent_chat.claude_login_end_save_failed", { error: getErrorMessage(error) });
+  }
 }
 
 function resolveClaudeTurnModelPayload(
@@ -10431,7 +10468,7 @@ function hydrateNativePermissionControls(
 
 /**
  * Claude Code exits at startup when asked to skip permissions as root, unless
- * it is told it runs in a sandbox. Its rule, read in the CLI (SDK 0.3.310):
+ * it is told it runs in a sandbox. Its rule, read in the CLI (SDK 0.3.319):
  * `getuid() === 0 && IS_SANDBOX !== "1" && !CLAUDE_CODE_BUBBLEWRAP`. Windows
  * has no `getuid`, so it never applies there.
  */
@@ -13657,6 +13694,7 @@ export function createAgentChatService(args: {
         return claudeMcpAppLink({
           protocolCapabilities: managed.session.protocolCapabilities,
           runtime,
+          isPlanMode: () => isSessionInPlanMode(managed.session),
           onServerStatus: (status) => rememberMcpMentionStatus(status.name, {
             ...(status.toolNames ? { toolNames: status.toolNames } : {}),
             success: status.success,
@@ -14552,7 +14590,7 @@ export function createAgentChatService(args: {
       const response = parked.response;
 
       // Emit tool_result so derivePendingInputRequests clears this entry.
-      const approved = response.decision === "accept" || response.decision === "accept_for_session";
+      const approved = !parked.unattended && (response.decision === "accept" || response.decision === "accept_for_session");
       emitChatEvent(managed, {
         type: "tool_result",
         tool: "ExitPlanMode",
@@ -14609,6 +14647,8 @@ export function createAgentChatService(args: {
         return { behavior: "allow", updatedInput: input };
       }
 
+      if (parked.unattended) return { behavior: "deny", message: CLAUDE_UNATTENDED_PLAN_MESSAGE };
+
       // Denied — tell Claude the user rejected the plan.
       const feedback = typeof response.responseText === "string" ? response.responseText.trim() : "";
       return {
@@ -14661,6 +14701,7 @@ export function createAgentChatService(args: {
         runtime.resolvedToolUseIds.add(String(sdkOptions.toolUseID));
       }
 
+      if (parked.unattended) return { behavior: "deny", message: UNATTENDED_QUESTION_MESSAGE };
       if (response.decision === "cancel" || response.decision === "decline") {
         return {
           behavior: "deny",
@@ -14721,19 +14762,27 @@ export function createAgentChatService(args: {
     // Reaching here under a policy means the policy said "ask": allow and deny
     // both returned above. So the policy decides, and `claudeToolNeedsApproval`
     // is not consulted at all — with no policy its behavior is unchanged.
-    const needsApproval = policyDecision !== null
-      ? policyDecision === "ask"
-      : claudeToolNeedsApproval(toolName, input, effectivePermMode);
+    // `suppressAlwaysAllowRule` says the persistent rule this approval would
+    // write is broader than the ask itself; `askRuleForced` says the user's
+    // own ask rule wants a person. Read them before anything answers this ask:
+    // the session-wide option is dropped, a client that sends
+    // `accept_for_session` anyway is downgraded to a one-shot allow, and an
+    // override from an earlier ask does not auto-answer this card.
+    const approvalFlags = claudeToolApprovalFlags(sdkOptions);
+    const noSessionWideAnswer = approvalFlags.suppressAlwaysAllowRule || approvalFlags.askRuleForced === true;
+    // A call an MCP App made, which ADE's own app gate already allowed. The
+    // user's deny rules and hooks ran before this; only their ask rule still
+    // gets a card.
+    const appCallClearance = takeClaudeMcpAppClearance(runtime, toolName, input, sdkOptions?.toolUseID);
+    if (appCallClearance && !approvalFlags.askRuleForced) return { behavior: "allow", updatedInput: input };
+    // Full-auto keeps meaning no cards, whatever rules the user's settings hold.
+    const needsApproval = (approvalFlags.askRuleForced === true && effectivePermMode !== "bypassPermissions")
+      || (policyDecision !== null
+        ? policyDecision === "ask"
+        : claudeToolNeedsApproval(toolName, input, effectivePermMode));
     if (needsApproval) {
-      // `suppressAlwaysAllowRule` says the persistent rule this approval would
-      // write is broader than the ask itself. Read it before anything answers
-      // this ask: the session-wide option is dropped, a client that sends
-      // `accept_for_session` anyway is downgraded to a one-shot allow, and an
-      // override from an earlier ask does not auto-answer this card — the SDK
-      // raised it because the rule is not enough for this call.
-      const approvalFlags = claudeToolApprovalFlags(sdkOptions);
       // Check session-wide overrides — user already said "Allow for Session" for this tool
-      if (!approvalFlags.suppressAlwaysAllowRule && runtime.approvalOverrides.has(normalizedToolName)) {
+      if (!noSessionWideAnswer && runtime.approvalOverrides.has(normalizedToolName)) {
         return { behavior: "allow", updatedInput: input };
       }
 
@@ -14779,19 +14828,24 @@ export function createAgentChatService(args: {
 
       // Claude withdraws a request it no longer needs (a PermissionRequest
       // hook allowed it, say) by aborting the signal; the card then closes.
-      const parked = await parkClaudeCard(managed, runtime, request, sdkOptions?.signal, {
+      // An app that stopped waiting withdraws the card with it.
+      const cardSignal = appCallClearance
+        ? (sdkOptions?.signal ? AbortSignal.any([sdkOptions.signal, appCallClearance.signal]) : appCallClearance.signal)
+        : sdkOptions?.signal;
+      const parked = await parkClaudeCard(managed, runtime, request, cardSignal, {
         kind: normalizedToolName.includes("bash") ? "command" : "file_change",
         description,
         detail: { tool: toolName, ...(sdkOptions?.blockedPath ? { blockedPath: sdkOptions.blockedPath } : {}) },
       }, "approval");
       if (parked.abandoned) return { behavior: "deny", message: CLAUDE_REQUEST_WITHDRAWN_MESSAGE };
+      if (parked.unattended) return { behavior: "deny", message: CLAUDE_UNATTENDED_APPROVAL_MESSAGE };
       const response = parked.response;
 
       const approved = response.decision === "accept" || response.decision === "accept_for_session";
       // A suppressed ask must not persist anything, even if a client sends
       // `accept_for_session` anyway (an older client, a deeplink, a scripted
       // answer). Downgrade it to a one-shot accept rather than honoring it.
-      const sessionWide = response.decision === "accept_for_session" && !approvalFlags.suppressAlwaysAllowRule;
+      const sessionWide = response.decision === "accept_for_session" && !noSessionWideAnswer;
       if (sessionWide) {
         runtime.approvalOverrides.add(normalizedToolName);
         // Persist now, not on the next provider event: the resolution receipt
@@ -28043,6 +28097,69 @@ export function createAgentChatService(args: {
       turnId: request.turnId ?? undefined,
     });
     persistChatState(managed);
+    // A Cursor planning card comes out of the reply's text and is answered by
+    // a new turn, so nothing is waiting on it.
+    if (args?.detail?.control === undefined) refuseCardNobodyCanAnswer(managed, request);
+  };
+
+  const noteCardRefusedUnattended = (
+    managed: ManagedChatSession,
+    request: PendingInputRequest,
+  ): void => {
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: `Refused automatically: nobody can answer "${clipText(request.description ?? request.title ?? "this request", 80)}" in this automation run.`,
+      ...(request.turnId ? { turnId: request.turnId } : {}),
+    });
+    logger.info("agent_chat.card_refused_unattended", {
+      sessionId: managed.session.id,
+      provider: managed.session.provider,
+      kind: request.kind,
+    });
+  };
+
+  /** True when a provider cannot go on until this card gets an answer. */
+  const isProviderWaitingOnCard = (managed: ManagedChatSession, itemId: string): boolean => {
+    if (managed.localPendingInputs.has(itemId)) return true;
+    const runtime = managed.runtime;
+    if (runtime?.kind === "codex") {
+      // A Codex plan is offered once its turn is over. The person reviews it
+      // later; refusing it would start a new turn to revise the plan.
+      const pending = runtime.approvals.get(itemId);
+      return pending !== undefined && pending.kind !== "plan_approval";
+    }
+    if (runtime?.kind === "opencode") return runtime.pendingApprovals.has(itemId);
+    if (runtime?.kind === "cursor" || runtime?.kind === "droid") return runtime.permissionWaiters.has(itemId);
+    return false;
+  };
+
+  /**
+   * An automation's own turn has nobody behind it, so a card the provider is
+   * blocked on would hold the run until a stop limit. It is declined through
+   * the normal answer path, which words the refusal for each provider. A person
+   * typing in that chat afterwards gets normal cards.
+   *
+   * Claude settles its cards itself, in `parkClaudeCard`, because it can tell
+   * the model why. The check runs a tick later for callers that settle a card
+   * right after showing it (a policy refusal, an auto-approved tool).
+   */
+  const refuseCardNobodyCanAnswer = (managed: ManagedChatSession, request: PendingInputRequest): void => {
+    if (!sessionTurnCollectors.get(managed.session.id)?.unattended) return;
+    if (request.blocking === false) return;
+    const itemId = request.itemId ?? request.requestId;
+    queueMicrotask(() => {
+      if (!isProviderWaitingOnCard(managed, itemId)) return;
+      deliverInputResponse({ sessionId: managed.session.id, itemId, decision: "decline" })
+        .then(() => noteCardRefusedUnattended(managed, request))
+        .catch((error) => {
+          logger.warn("agent_chat.card_refusal_failed", {
+            sessionId: managed.session.id,
+            provider: managed.session.provider,
+            error: getErrorMessage(error),
+          });
+        });
+    });
   };
 
   const emitPendingInputResolved = (
@@ -28482,7 +28599,7 @@ export function createAgentChatService(args: {
         { alwaysLoad: true },
       ),
     );
-    return createSdkMcpServer({
+    const server = createSdkMcpServer({
       name: HTTP_MCP_TOOL_SETS[toolSet].serverName,
       version: appVersion,
       tools: sdkTools,
@@ -28490,6 +28607,9 @@ export function createAgentChatService(args: {
       // The SDK's own cap sits above every ADE budget; ADE ends its waits.
       timeout: ADE_MCP_TRANSPORT_TIMEOUT_MS,
     });
+    // ADE's tools can wait on a person, which must not look like a slow call.
+    // The CLI reads this (0.3.319), but the SDK's types do not name it yet.
+    return Object.assign(server, { disableAutoBackground: true });
   };
 
   /**
@@ -31870,6 +31990,7 @@ export function createAgentChatService(args: {
     | "notification"
     | "permission_denied"
     | "session_state_changed"
+    | "session_writes_lost"
     | "status"
     | "task_notification"
     | "task_progress"
@@ -31894,6 +32015,37 @@ export function createAgentChatService(args: {
   type AssertNever<T extends never> = T;
   type _ClaudeSystemSubtypesAreTriaged = AssertNever<UntriagedClaudeSystemSubtype>;
 
+  /**
+   * Claude could not save to disk. The chat itself keeps going, so nothing
+   * else would tell the user that resuming it later can come back incomplete.
+   */
+  const noteClaudeWritesLost = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    message: Extract<SDKMessage, { subtype: "session_writes_lost" }>,
+    turnId?: string,
+  ): void => {
+    const key = `${message.error_code}:${[...message.lost].sort().join(",")}`;
+    const noticed = (runtime.writesLostNoticed ??= new Set());
+    if (noticed.has(key)) return;
+    noticed.add(key);
+    const reason = message.error_code === "EDQUOT" ? "the disk quota is used up" : "the disk is full";
+    logger.warn("agent_chat.claude_session_writes_lost", {
+      sessionId: managed.session.id,
+      errorCode: message.error_code,
+      lost: message.lost,
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: message.lost.includes("transcript")
+        ? `Claude couldn't save part of this chat because ${reason}. Resuming it later may miss some of the conversation.`
+        : `Claude couldn't save its settings because ${reason}.`,
+      ...(turnId ? { turnId } : {}),
+    });
+  };
+
   const handleClaudeIdleMessage = async (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -31907,6 +32059,11 @@ export function createAgentChatService(args: {
       adoptClaudeProviderSessionId(managed, runtime, messageSessionId);
     }
     trackClaudeForegroundBash(runtime, msg);
+
+    if (msg.type === "system" && msg.subtype === "session_writes_lost") {
+      noteClaudeWritesLost(managed, runtime, msg);
+      return;
+    }
 
     if (record.type === "conversation_reset") {
       const newConversationId = compactString(record.new_conversation_id);
@@ -32431,6 +32588,7 @@ export function createAgentChatService(args: {
       }
       const metadata = extractClaudeResultMetadata(resultMsg);
       logClaudeStartupFailure(logger, managed, metadata, turnId);
+      noteClaudeLoginEnd(managed, metadata, logger);
       const idleVersionRejection = detectClaudeVersionRejectionInMessage(resultMsg);
       if (idleVersionRejection) {
         void handleClaudeChatVersionRejection(managed, runtime, idleVersionRejection, { turnId, restart: null });
@@ -33816,6 +33974,11 @@ export function createAgentChatService(args: {
           continue;
         }
 
+        if (msg.type === "system" && msg.subtype === "session_writes_lost") {
+          noteClaudeWritesLost(managed, runtime, msg, turnId);
+          continue;
+        }
+
         // system:mirror_error — SessionStore transcript mirror failed after retries.
         if (msg.type === "system" && (msg as any).subtype === "mirror_error") {
           const mirrorMsg = msg as any;
@@ -34925,6 +35088,7 @@ export function createAgentChatService(args: {
           }
           const metadata = extractClaudeResultMetadata(resultMsg);
           logClaudeStartupFailure(logger, managed, metadata, turnId);
+          noteClaudeLoginEnd(managed, metadata, logger);
           resultCanonicalModel = metadata.canonicalModel;
           resultModelProvider = metadata.modelProvider;
           resultApiErrorStatus = metadata.apiErrorStatus;
@@ -46325,7 +46489,8 @@ export function createAgentChatService(args: {
     // the user's own allow rules would run without asking.
     ...(managed.session.sideChatParentSessionId
       ? {
-          PreToolUse: [{ hooks: [async (input: HookInput) => {
+          // `block`: a guard that crashes must refuse the call, not wave it through.
+          PreToolUse: [{ onFailure: "block" as const, hooks: [async (input: HookInput) => {
             const refused = input.hook_event_name === "PreToolUse" && (
               input.tool_name === "Bash"
                 ? !claudeSideChatBashIsReadOnly((input.tool_input as { command?: unknown } | undefined)?.command)
@@ -46618,10 +46783,24 @@ export function createAgentChatService(args: {
     cardKind: PendingClaudeApproval["kind"] = "question",
   ): Promise<{
     abandoned: boolean;
+    /** Set when nobody could answer: the card was refused on the spot. */
+    unattended?: true;
     response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
   }> => {
     const itemId = pendingRequest.itemId ?? pendingRequest.requestId;
     emitPendingInputRequest(managed, pendingRequest, ui);
+    // The card and its receipt are still written, so the run says what was
+    // refused. See `refuseCardNobodyCanAnswer`.
+    if (sessionTurnCollectors.get(managed.session.id)?.unattended) {
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: "decline",
+        turnId: pendingRequest.turnId ?? null,
+        questions: pendingRequest.questions,
+      });
+      noteCardRefusedUnattended(managed, pendingRequest);
+      return { abandoned: false, unattended: true, response: { decision: "decline" } };
+    }
     let abandoned = false;
     try {
       runtime.pauseIdleWatchdog?.();
@@ -47092,15 +47271,31 @@ export function createAgentChatService(args: {
       // ADE renders MCP Apps. With this the CLI declares the
       // `io.modelcontextprotocol/ui` extension to each MCP server, so a server
       // that asks before it registers a tool with a page is told so. Read in
-      // the CLI (2.1.293, re-checked 2.1.300 — SDK 0.3.300), not documented:
+      // the CLI (2.1.293, re-checked 2.1.319 — SDK 0.3.319), not documented:
       // recheck on a bump. Without it apps still work for servers that do not
       // ask.
       CLAUDE_CODE_MCP_APPS_HOST: "1",
+      // A long MCP call or subagent moves to the chat's Background list after
+      // two minutes, and the agent is told when it finishes. Not for an
+      // automation: its run ends at the first result and would miss the answer.
+      // Read in the CLI (2.1.319), not documented: recheck on a bump.
+      ...(!lightweight && !managed.session.automationRunId ? { CLAUDE_AUTO_BACKGROUND_TASKS: "1" } : {}),
     };
     // The account's own prompt cache choice. A preset or stored credential
     // bills another endpoint, so it gets none.
     if (!claudePresetPlan) {
       Object.assign(claudeEnv, claudeAccountPromptCacheEnv(managed.session.instanceId, claudeEnv));
+    }
+    // Auto mode's safety check runs on Anthropic's server, which another
+    // vendor's endpoint usually cannot reach. Since 2.1.319 Claude then asks or
+    // refuses instead of using a weaker check of its own.
+    if (claudePresetPlan?.env.ANTHROPIC_BASE_URL && claudePermissionMode === "auto" && !lightweight && !managed.autoRouteNoticeShown) {
+      managed.autoRouteNoticeShown = true;
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: "Auto mode may ask you more often on this route, because Claude's safety check usually can't run through it.",
+      });
     }
     const claudeExecutable = resolveClaudeCodeExecutable({ env: claudeEnv });
     // Callers await the download first; still none means it failed, is not
@@ -57621,6 +57816,7 @@ export function createAgentChatService(args: {
             hook: req,
           },
         });
+        refuseCardNobodyCanAnswer(managed, request);
       });
     };
     runtime.sdk.bridge.onAskUserRequest = async (req: DroidSdkAskUserRequest): Promise<DroidSdkAskUserResponse> => {
@@ -57847,6 +58043,7 @@ export function createAgentChatService(args: {
             policy,
           },
         });
+        refuseCardNobodyCanAnswer(managed, request);
       });
     };
     // The gate hook stopped waiting (its deadline passed, or Cursor killed it),
@@ -70534,7 +70731,9 @@ export function createAgentChatService(args: {
           // (non-blocking) one never paused the turn, so it is told to keep
           // working. The receipt is built from the user's own (empty) answers,
           // not this payload.
-          const declineText = declineMessageForModel(pending.request);
+          const declineText = sessionTurnCollectors.get(sessionId)?.unattended
+            ? UNATTENDED_QUESTION_MESSAGE
+            : declineMessageForModel(pending.request);
           ensureWritable();
           runtime.sendResponse(pending.requestId, {
             answers: Object.fromEntries(
@@ -76348,6 +76547,7 @@ export function createAgentChatService(args: {
       : null;
     return await new Promise<AgentChatBackgroundTurnResult>((resolve, reject) => {
       const collector: SessionTurnCollector = {
+        ...(metadata?.automationRun ? { unattended: true } : {}),
         resolve,
         reject,
         outputText: "",

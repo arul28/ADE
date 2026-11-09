@@ -61,6 +61,12 @@ export type ProviderInstance = {
   /** Read out of the config home by `refreshAccounts()`; absent until then. */
   account?: { email?: string; plan?: string };
   /**
+   * Claude only: when this account's stored claude.ai login ends, ISO 8601, as
+   * the last chat on this machine reported it. May be an estimate, and the
+   * real end can be a few days earlier. Absent when unknown or for an API key.
+   */
+  claudeLoginEndsAt?: string;
+  /**
    * True when the config home names an account (email or plan resolved) and
    * the usage poller has not found its saved login broken.
    */

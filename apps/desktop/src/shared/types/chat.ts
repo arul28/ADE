@@ -1625,6 +1625,8 @@ export type AgentChatEvent =
         files?: number;
         lines?: number;
       };
+      /** Grep or Glob hit its time limit, so more matches may exist. */
+      searchTimedOut?: boolean;
       runtime?: AgentChatRuntime;
     }
   | {

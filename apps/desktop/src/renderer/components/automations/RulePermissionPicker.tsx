@@ -8,7 +8,7 @@ type AutomationPermissionConfig = Parameters<typeof patchPermissionConfig>[0];
 const RULE_DEFAULT_OPTION: PermissionModePickerOption = {
   value: "",
   label: "Rule default",
-  detail: "Use the permission set on the automation rule.",
+  detail: "Use the automation rule's setting. Full-auto if it has none.",
   tone: "slate",
   icon: "config",
 };
