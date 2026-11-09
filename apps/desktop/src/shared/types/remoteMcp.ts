@@ -144,6 +144,8 @@ export type RemoteMcpMachine = {
   supported: boolean;
   /** From the account directory; null when it could not be read. */
   online: boolean | null;
+  /** When the directory last heard from it, in ms; null when unknown. */
+  lastSeenAt?: number | null;
   /**
    * It answers calls. For this computer, its live state; for another one, the
    * state it last reported in its account entry (and false when offline).

@@ -198,9 +198,12 @@ first text line `[machine: <name>]` and `structuredContent.machine = {key, name}
   "unknown" and calls are still tried.
 - Activity: the sender logs `forwardedTo`, the target logs `via`.
 
-`machines_list` returns the account's computers: name, key, online, included,
-serving (null when unknown), `notServingReason`, `reportedAt`, supported (runs
-this code) and which one is answering. Another computer's `serving` is a guess
+`machines_list` returns the account's computers, online first: name, key,
+online, included, serving (null when unknown), `notServingReason`,
+`reportedAt`, `lastSeenAt`, supported (runs this code) and which one is
+answering. Who is on the account comes from the account directory: an
+`ade_mcp.machine.*` entry outlives its machine, so entries count only when the
+directory can't be read. Another computer's `serving` is a guess
 (unknown) when its ADE never reported, or its last report no longer holds; its
 `reportedAt` is null then, which is how Settings and `ade mcp status` tell
 (`servingStateKnown`). Lists word each reason from one table
@@ -219,10 +222,54 @@ model the computer last launched a chat with (`chat-launch-defaults.json`).
 
 Writes, which are listed only for full-access connections: `chat_respond`
 answers a question or approval, `chat_send` messages or steers a chat,
-`chat_start` starts a chat on a new lane, and `projects_clone` clones a GitHub
-repository (URL or `owner/name`) with that computer's own GitHub sign-in and
-registers it as a project (`ade projects clone`). A read-only connection that
-calls one anyway is refused with the reason, before anything runs.
+`chat_start` starts a chat (on a new lane, or an existing one with `lane`),
+`chat_update` changes a chat's model, effort or permissions in place,
+`chat_interrupt` stops a turn, `lanes_create` runs `ade lanes create`,
+`files_write` writes a file, and `projects_clone` clones a GitHub repository
+(URL or `owner/name`) with that computer's own GitHub sign-in and registers it
+as a project (`ade projects clone`). A read-only connection that calls one
+anyway is refused with the reason, before anything runs.
+
+**Outside clients.** The bundled `ade-mcp-client` skill, also an MCP prompt, is
+the walkthrough for a bot. What it relies on:
+
+- **Knowing a chat finished.** `chat_events` (`ade chat events`,
+  `chat.getChatEvents`) answers at once with what happened since a cursor, so a
+  client that only makes calls never misses a change. `chat_wait` defaults to
+  25 s, under most clients' request limit. `chat_start`'s `notify_url` and
+  `notify_token` (`--notify-url`, `--notify-token`, `ade chat notify`,
+  `chat.armWebhook`) POST to a public https URL each time the chat goes idle,
+  needs input or fails, retrying a failed POST for about 13 minutes. The
+  registry (`chatWebhookRegistry.ts`) lives in `.ade/secrets/chat-webhooks.json`,
+  because the project database syncs and the bearer key must not. It lasts 7
+  days and runs a timer only while a webhook exists. There is no MCP stream: the
+  server answers POST only, and a chat's computer can be the one that is asleep.
+- **Naming where things go.** `chat_start` and `lanes_create` refuse to run
+  without `project`, and without `machine` on the account address, because the
+  default project changes as the person works.
+- **Settings.** `chat_start` sends `full-auto` unless told otherwise, and its
+  result and `chat_status` carry the chat's real model, effort, permission
+  mode, account and lane, and the `link`.
+- **Files.** `files_write` sends its text on stdin, never in an argument. It
+  takes 256 KB a call; `offset` appends a chunk and must equal the file's size,
+  so a repeated chunk is refused. Every write answers `{path, bytes, sha256}`.
+- **Proof.** `proof_review` of a tall picture returns one page (1.5 widths
+  high) under `.ade/cache/proof-review`, cut with pngjs (ffmpeg for other
+  formats); `page`,
+  `y_from` and `y_to` choose it (`ade proof review --page`, `--y-from`, `--y-to`).
+- **Secrets.** `chat_read`, previews and `inbox` go through
+  `redactOutgoingChatText`, as does `ade chat read`. What is stored stays as it
+  was, and so are `terminal read` and `chat read` output and `files_search`
+  previews over MCP. A read-only connection can't read `.env` files,
+  `.ade/secrets` or the raw chat logs.
+- **Webhook addresses.** The URL must be https and public by name; before each
+  POST its name is resolved, every address must be public, and the request
+  goes to that checked address, so DNS can't point it inward. The file is
+  merged on write, so two brains on one project keep each other's webhooks.
+- **Gone chats.** `ade chat locate` reports a chat in Recently deleted: a
+  running project checks whether it can be reopened, and any other project's
+  database is read on disk (`reopenable: null`), without booting it. MCP answers `state: "deleted"` with `deletedAt` and
+  `reopenable`, or `state: "not_found"`, never a bare null.
 
 - `proof_review` is how an app sees what an agent made: `session` (a chat
   id) reviews that chat's newest video, else its newest picture; `proof`
@@ -272,11 +319,13 @@ calls one anyway is refused with the reason, before anything runs.
   without the state (timed out, waiting on the person, no such chat yet) is
   an answer, not an error.
 - **A chat id finds its computer.** `chat_read`, `chat_status`,
-  `chat_wait`, `chat_send` and `chat_respond` without `machine` run here
-  first. When the answer says this computer has no such chat, the service runs
-  `ade chat locate` (every online computer is asked, read-only), forwards the
-  call to the one that has it with the app's own token, and remembers that
-  computer for the chat, so the next call goes straight there. A call that was
+  `chat_wait`, `chat_events`, `chat_send`, `chat_respond`, `chat_interrupt`,
+  `chat_update` and `proof_review` of a chat without `machine` run here
+  first. When the answer says this project has no such chat, the service runs
+  `ade chat locate` (every online computer is asked, read-only), reruns the
+  call in the chat's own project here or forwards it to the computer that has
+  it with the app's own token, and remembers that computer and project for the
+  chat, so the next call goes straight there. A call that was
   itself forwarded is answered where it landed (one hop). An `onlyMachine`
   connection, or a computer left out, gets a refusal that names where the
   chat is.
@@ -316,7 +365,12 @@ review sees it. After this change, write scope went from 14,130 bytes (18
 tools) to the number in the JSON, now with 23 tools, the machine input and
 the MCP Apps `_meta`. `projects_clone` and `projects_list`'s
 `include_missing` added 695 bytes to write (15,753 → 16,448) and 88 to read
-(13,024 → 13,112).
+(13,024 → 13,112). The outside-client tools (`chat_events`, `chat_update`,
+`chat_interrupt`, `lanes_create`, `files_write` and the new `chat_start`
+inputs) first took write to 23,361; stating the `machine` and `project`
+defaults once in the instructions, instead of on every tool, brought it to
+19,994, and read to 13,308 (below its 13,897 before them), with the eval
+unchanged.
 
 ### Eval
 

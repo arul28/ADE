@@ -33,6 +33,12 @@ from real requests and real mistakes, and CI never calls a model.
   `--allowedTools mcp__ade`), a short chat-app system prompt, and a clean
   environment (no `ADE_*` or `CLAUDE_CODE_*`). It uses your Claude
   subscription, so you don't need an API key.
+- An OpenAI model (`gpt-…`, `openai/…`) runs in `codex exec` instead, with
+  ADE's pinned Codex from `apps/ade-cli`: the same fake server, its tools
+  approved, no user config, a read-only sandbox in an empty folder, and the
+  system prompt as developer instructions. `--effort` sets its reasoning
+  (default low). It uses your ChatGPT sign-in. Codex reports tokens, not
+  dollars, so its cost shows as $0.
 
 ## Run it
 
@@ -41,6 +47,7 @@ cd evals/ade-mcp
 npm run eval -- --model haiku                          # every case, 1 sample
 npm run eval -- --model haiku,sonnet --concurrency 6
 npm run eval -- --model sonnet --case inbox-answer-option,approve-everything --samples 3
+npm run eval -- --model gpt-6.1-terra --effort low                # OpenAI, through ADE's pinned Codex
 npm run typecheck
 ```
 
@@ -68,6 +75,15 @@ case) makes a model look wrong for the eval's own reasons, so script every
 tool the case leans on.
 
 ## Results
+
+On the outside-client branch's text (2 samples per case, 2026-11-09): Claude
+Haiku passes 29 of 29 (58 of 58 samples), and GPT-6.1 Terra at low effort 29
+of 29 after `start-and-wait`'s world was made consistent (its default status
+said idle while its wait said running). GPT-6.1 Terra once used the raw `ade`
+tool for `prs list` in `ci-fix-handoff` (1 of 5 samples). The cases for the new tools (`start-exact-settings`,
+`start-in-lane`, `start-with-webhook`, `events-since-cursor`, `write-file`,
+`stop-chat`) were run before and after the tool text was trimmed by 3.3 KB,
+with the same results.
 
 On this branch's text (1 sample per case, 2026-10-28):
 

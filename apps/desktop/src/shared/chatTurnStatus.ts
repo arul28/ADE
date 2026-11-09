@@ -57,6 +57,8 @@ export type ChatTurnStatusSnapshot = {
    * it). Claude and Codex only, the providers with several logins.
    */
   instanceId?: string;
+  /** What ADE calls that account: its signed-in email, usually. */
+  instanceLabel?: string;
   turnElapsedMs?: number | null;
   lastActivityMsAgo?: number | null;
   currentTool?: ChatTurnStatusTool | null;
@@ -85,6 +87,7 @@ export type DeriveChatTurnStatusInput = {
   sessionId: string;
   provider?: string;
   instanceId?: string | null;
+  instanceLabel?: string | null;
   sessionStatus?: string;
   currentTurnStartedAt?: string | null;
   lastActivityAt?: string | null;

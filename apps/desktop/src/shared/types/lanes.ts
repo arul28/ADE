@@ -24,6 +24,8 @@ export type LaneStatus = {
   dirty: boolean;
   ahead: number;
   behind: number;
+  /** The ref `ahead` and `behind` count against: the base branch, or `origin/<base>` when the local copy only trails it. */
+  comparedTo?: string;
   /** Commits the remote tracking branch is ahead of local (0 = in sync, -1 = no upstream) */
   remoteBehind: number;
   /** Number of changed worktree entries, including untracked files. */

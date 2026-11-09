@@ -233,6 +233,7 @@ import { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import { buildLaneListSnapshots } from "../lanes/laneListSnapshotService";
 import { getErrorMessage, isRecord, nowIso, resolveWithinAllowedRoots } from "../shared/utils";
+import { redactOutgoingChatText } from "../../utils/redaction";
 import {
   createRemoteWorkCopyService,
   isRemoteWorkCopyInUse,
@@ -1007,11 +1008,11 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         getChatTranscript?: (args: { sessionId: string; limit?: number; maxChars?: number }) => Promise<unknown> | unknown;
       };
       if (typeof chatService.getChatTranscript === "function") {
-        const transcript = await chatService.getChatTranscript({
+        const transcript = redactOutgoingChatText(await chatService.getChatTranscript({
           sessionId,
           ...(limit !== undefined ? { limit } : {}),
           maxChars,
-        });
+        }));
         const entries = Array.isArray(transcript)
           ? transcript
           : isRecord(transcript) && Array.isArray(transcript.entries)
@@ -1090,12 +1091,12 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       if (typeof chatService.getChatTranscriptPage !== "function") {
         throw new Error("Paged chat transcript reads are not available in this runtime.");
       }
-      return chatService.getChatTranscriptPage({
+      return redactOutgoingChatText(await chatService.getChatTranscriptPage({
         sessionId,
         ...(beforeOffset !== undefined ? { beforeOffset } : {}),
         ...(limit !== undefined ? { limit } : {}),
         ...(maxChars !== undefined ? { maxChars } : {}),
-      });
+      }));
     },
     sendMessage: async (args?: unknown) => {
       const { inputOrigin, ...record } = readObjectActionArg(args, "chat.sendMessage");

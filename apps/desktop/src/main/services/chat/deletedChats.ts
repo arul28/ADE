@@ -24,6 +24,8 @@ import { providerPointersFromChatRecord } from "../externalSessions/liveChatProv
 import { isWellFormedExternalSessionId } from "../externalSessions/sessionIds";
 import { machineProviderUsageHomes } from "../usage/providerUsageHomes";
 import { providerThreadIsInHome } from "./providerThreadMove";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { hasTable, openReadOnlyDatabase } from "../projects/readOnlySqlite";
 
 /**
  * Settings › Recently deleted. Deleting a chat removes ADE's own files for it,
@@ -260,6 +262,31 @@ function listDeletedChatRows(db: DeletedChatsDb): DeletedChatRow[] {
       order by d.deleted_at desc limit ?`,
     [LIST_LIMIT],
   ).filter((row) => isExternalProvider(row.externalProvider));
+}
+
+/**
+ * A deleted chat in a project that is not open here, read from its database
+ * without booting it. Whether its conversation can still be reopened is
+ * unknown until the project opens, so `reopenable` is null.
+ */
+export function readDeletedChatOnDisk(projectRoot: string, sessionId: string): { deletedAt: string; title: string | null; reopenable: null } | null {
+  const dbPath = resolveAdeLayout(projectRoot).dbPath;
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(sessionId) || !fs.existsSync(dbPath)) return null;
+  let db: ReturnType<typeof openReadOnlyDatabase> | null = null;
+  try {
+    db = openReadOnlyDatabase(dbPath);
+    db.exec("PRAGMA busy_timeout = 250");
+    if (!hasTable(db, "deleted_chats")) return null;
+    const row = db.prepare(
+      `select deleted_at as deletedAt, title from deleted_chats d where d.id = ? and d.hidden_at is null
+         and ${hasTable(db, "terminal_sessions") ? CHAT_GONE_SQL : "1"} limit 1`,
+    ).get<{ deletedAt?: string; title?: string | null }>(sessionId);
+    return row?.deletedAt ? { deletedAt: row.deletedAt, title: row.title ?? null, reopenable: null } : null;
+  } catch {
+    return null;
+  } finally {
+    try { db?.close(); } catch { /* already closed */ }
+  }
 }
 
 function getDeletedChatRow(db: DeletedChatsDb, id: string): DeletedChatRow | null {
@@ -613,7 +640,21 @@ export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
     return { removed: hideDeletedChats(requireDb(), ids, "removed") };
   };
 
-  return { remember, list, detail, reopen, remove };
+  /** One chat of Recently deleted, for "where did this chat go?"; null when it isn't there. Never throws. */
+  const find = async (rawId: string): Promise<{ deletedAt: string; title: string | null; reopenable: boolean } | null> => {
+    const db = deps.db();
+    if (!db) return null;
+    try {
+      const row = getDeletedChatRow(db, rawId.trim());
+      if (!row) return null;
+      return { deletedAt: row.deletedAt, title: row.title, reopenable: (await locator.locate(row)) != null };
+    } catch (error) {
+      deps.logger.warn("deleted_chats.find_failed", { sessionId: rawId, error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }
+  };
+
+  return { remember, list, detail, reopen, remove, find };
 }
 
 export type DeletedChatsService = ReturnType<typeof createDeletedChatsService>;

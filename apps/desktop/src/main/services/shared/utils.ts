@@ -939,13 +939,13 @@ export function secureWriteFileWithinRoot(
   return targetPath;
 }
 
-export function secureWriteTextAtomicWithinRoot(root: string, candidate: string, text: string): string {
+export function secureWriteTextAtomicWithinRoot(root: string, candidate: string, text: string | Buffer): string {
   const initialTarget = prepareMutationTargetWithinRoot(root, candidate);
   const tmpPath = path.join(
     initialTarget.parentPath,
     `.${path.basename(initialTarget.targetPath) || "tmp"}.${randomUUID()}.tmp`,
   );
-  writeFileByDescriptor(tmpPath, text, "utf8");
+  writeFileByDescriptor(tmpPath, text, typeof text === "string" ? "utf8" : undefined);
   try {
     const { targetPath } = prepareMutationTargetWithinRoot(root, candidate);
     nonAsarFs.renameSync(tmpPath, targetPath);

@@ -28,6 +28,7 @@ export const adeBundledAgentSkills = [
   "ade-lanes-git",
   "ade-linear",
   "ade-webhooks",
+  "ade-mcp-client",
   "ade-proof-artifacts",
   "ade-deeplinks",
   "ade-search",
@@ -328,7 +329,7 @@ export function buildAdeBootstrapGuidance(
     // Without this line an agent that needed Linear asked for the API key in
     // chat, where it stays in the transcript. Each command shows a card only
     // the user can answer, and the value never reaches the agent.
-    "Credentials: never ask in chat. `ade secrets request` (a key), `ade integrations connect` (GitHub/Linear/Jira) and `ade mcp servers add` (MCP) show the user a card. Read only requested `ade secrets`; never print them.",
+    "Credentials: never ask in chat. `ade secrets request` (a key), `ade integrations connect` (GitHub/Linear/Jira) and `ade mcp servers add` (MCP) show the user a card. Read only requested `ade secrets`; never print them. Never print `.env` files or other secret values either: chats can be read by apps connected to ADE. Scratch files go in `.ade/tmp`.",
     // One default per scenario: same chat and lane, subagents for other
     // models, and one wake per thing waited on, so an agent never polls.
     "Stay in this chat and lane unless asked. Another model works as your subagent (`ade new chat --mode chat`). Later: subagents report back; a PR you watch → `ade prs watch`; terminal → `ade terminal watch`; else `ade chat scheduled-work create`. `ade drafts` sends as the user.",

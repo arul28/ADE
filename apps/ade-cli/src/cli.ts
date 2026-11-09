@@ -38,6 +38,7 @@ import {
 } from "./cliMachineTargeting";
 import {
   chatIdForLookup,
+  chatDeletedSentence,
   chatLocateValue,
   describeUnasked,
   formatChatLocate,
@@ -281,6 +282,7 @@ import {
   type ChatTurnStatusSnapshot,
 } from "../../desktop/src/shared/chatTurnStatus";
 import { chatWaitsOnUser, chatWaitTargetMatches } from "../../desktop/src/shared/chatWait";
+import { chatWebhookUrlProblem } from "../../desktop/src/main/services/chat/chatWebhookRegistry";
 import type { SessionActivitySource, TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import { SESSION_ACTIVITY_VALUES } from "../../desktop/src/shared/types/sessions";
 import {
@@ -1206,6 +1208,7 @@ export type CliPlan =
       kind: "chat-launch";
       launchArgs: JsonObject;
       startOverrides?: { from?: string; on?: string };
+      notify?: { url: string; token: string | null };
       wait: boolean;
       timeoutMs: number;
       pollIntervalMs: number;
@@ -2712,6 +2715,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade files read --workspace <lane> <path> --text Read a file
     $ ade files write --workspace <lane> <path> --stdin
     $ ade files write --workspace <lane> <path> --text "new content"
+    $ ade files write --workspace <lane> <path> --stdin --base64 --offset 262144  Add a chunk at that byte; answers path, bytes, sha256
     $ ade files create --workspace <lane> <path> --text "content"
     $ ade files mkdir --workspace <lane> src/new
     $ ade files search --workspace <lane> -q <text> Search text in a workspace
@@ -2891,6 +2895,9 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                                                     reject the flag outright and nothing is sent; omit
                                                     --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
+    $ ade chat events <session> --since <cursor> --json   Turn starts and ends, input needed, errors since a cursor; answers at once
+    $ ade chat notify <session> --url https://… --token-stdin   POST there each time it goes idle, needs input or fails (7 days)
+    $ ade chat notify <session> --list | --cancel
                                                     Wait for idle, active, awaiting-input, or terminal.
                                                     Stops early with waiting_on_user when only the user
                                                     can answer the chat's card
@@ -3227,6 +3234,7 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade proof review artifact-id --text           A sheet of a video's key moments (or a picture's path) to check before publishing
     $ ade proof review artifact-id --from 12 --to 18 --text  A closer look at seconds 12–18
     $ ade proof review --chat <session-id> --text   The newest video (else proof) a chat filed
+    $ ade proof review artifact-id --page 2 --text  Page 2 of a tall picture, cut out as a readable image (or --y-from/--y-to)
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
     $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
@@ -11018,6 +11026,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   if (findFlagName(args, ["--base", "--base-branch"])) throw new CliUsageError("Unsupported lane creation flag.");
   const launchIdFlag = readValue(args, ["--launch-id"]);
   const laneIdFlag = readValue(args, ["--lane-id"]);
+  const notify = readChatNotifyFlags(args);
   const foreground = readFlag(args, ["--foreground"]);
   const wait = readFlag(args, ["--wait"]);
   const printConfig = readFlag(args, ["--print-config"]);
@@ -11109,7 +11118,34 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
       value: { ok: true, dryRun: true, action: "chat.startLaunch", input: launchArgs, ...(needsDefaults && !("laneConfig" in input) ? { startOverrides, note: "The missing start choice is filled from project defaults at launch." } : {}) },
     };
   }
-  return { kind: "chat-launch", launchArgs, ...(needsDefaults && !("laneConfig" in input) ? { startOverrides } : {}), wait, timeoutMs, pollIntervalMs };
+  return { kind: "chat-launch", launchArgs, ...(needsDefaults && !("laneConfig" in input) ? { startOverrides } : {}), ...(notify ? { notify } : {}), wait, timeoutMs, pollIntervalMs };
+}
+
+/** The settings a chat really runs with, for a caller to check what it started. */
+function pickChatSettings(summary: Record<string, unknown>): JsonObject {
+  const out: JsonObject = {};
+  for (const key of ["laneId", "model", "modelId", "reasoningEffort", "permissionMode", "claudePermissionMode", "fastMode", "title", "instanceId"]) {
+    const value = summary[key];
+    if (value !== undefined && value !== null) out[key] = value as JsonObject[string];
+  }
+  return out;
+}
+
+function assertChatWebhookUrl(url: string): void {
+  const problem = chatWebhookUrlProblem(url);
+  if (problem) throw new CliUsageError(problem);
+}
+
+/** `--notify-url <https> [--notify-token <key>]` on `chat launch` and `chat create`. */
+function readChatNotifyFlags(args: string[]): { url: string; token: string | null } | null {
+  const url = readValue(args, ["--notify-url"]);
+  const token = readValue(args, ["--notify-token"]);
+  if (!url) {
+    if (token) throw new CliUsageError("--notify-token needs --notify-url.");
+    return null;
+  }
+  assertChatWebhookUrl(url);
+  return { url, token: token ?? null };
 }
 
 function requireCliUuid(value: string, flag: string): string {
@@ -11161,8 +11197,13 @@ async function runChatLaunchCommand(
     if (!isRecord(started) || typeof started.launchId !== "string") {
       throw new CliExecutionError("chat.startLaunch returned an unexpected result.", { result: started });
     }
+    // A chat's id is its launch's, so the webhook is armed before the chat exists.
+    const notifyResult = plan.notify
+      ? await callChat("armWebhook", { sessionId: started.launchId, url: plan.notify.url, ...(plan.notify.token ? { token: plan.notify.token } : {}) })
+        .then(() => ({ notify: { armed: true } }), (error: unknown) => ({ notify: { armed: false, error: error instanceof Error ? error.message : String(error) } }))
+      : {};
     if (!plan.wait) {
-      return { output: formatOutput(started, options, "chat-launch"), exitCode: 0 };
+      return { output: formatOutput({ ...started, ...notifyResult }, options, "chat-launch"), exitCode: 0 };
     }
     const launchId = started.launchId;
     const startedAt = Date.now();
@@ -11179,7 +11220,14 @@ async function runChatLaunchCommand(
       const phase = asString(launch.phase) ?? "running";
       const elapsedMs = Date.now() - startedAt;
       if (CHAT_LAUNCH_TERMINAL_PHASES.has(phase)) {
-        const result = { ok: phase === "completed", launchId, phase, elapsedMs, launch };
+        // What the chat really runs with, which the caller may have left to defaults.
+        const session = phase === "completed"
+          ? await connection.request("ade/actions/call", {
+            name: "run_ade_action",
+            arguments: { domain: "chat", action: "getSessionSummary", argsList: [asString(launch.sessionId) ?? launchId] },
+          }).then((raw) => unwrapActionEnvelope(unwrapToolResult(raw)), () => null)
+          : null;
+        const result = { ok: phase === "completed", launchId, phase, elapsedMs, launch, ...notifyResult, ...(isRecord(session) ? { session: pickChatSettings(session) } : {}) };
         return { output: formatOutput(result, options, "chat-launch"), exitCode: phase === "completed" ? 0 : 1 };
       }
       if (elapsedMs >= plan.timeoutMs) {
@@ -11986,6 +12034,7 @@ function buildChatPlan(args: string[]): CliPlan {
       linearIssue = issues[0]!;
     }
     const noKickoff = readFlag(args, ["--no-kickoff"]);
+    const notify = readChatNotifyFlags(args);
     const explicitKickoff =
       readChatTextFile(args, ["--prompt-file"], ["--prompt"])
       ?? readValue(args, ["--prompt"]);
@@ -12064,6 +12113,22 @@ function buildChatPlan(args: string[]): CliPlan {
         },
       }]
       : [];
+    // Armed before the kickoff, so the first turn's end is reported.
+    const notifySteps = (createKey: string): InvocationStep[] => notify
+      ? [{
+        key: "notify",
+        method: "ade/actions/call",
+        unwrapToolResult: true,
+        params: (values) => ({
+          name: "run_ade_action",
+          arguments: {
+            domain: "chat",
+            action: "armWebhook",
+            args: { sessionId: sessionIdFromCreateChatValue(values[createKey]), url: notify.url, ...(notify.token ? { token: notify.token } : {}) },
+          },
+        }),
+      }]
+      : [];
     const chatCreateCheck = {
       laneId: explicitLane,
       permissionMode: asString(actionArgs.permissionMode),
@@ -12093,6 +12158,7 @@ function buildChatPlan(args: string[]): CliPlan {
           chatCreateCheck,
           steps: [
             { ...createStep, key: "session" },
+            ...notifySteps("session"),
             ...laneChatsSteps("session"),
             {
               key: "result",
@@ -12120,7 +12186,7 @@ function buildChatPlan(args: string[]): CliPlan {
           ],
         };
       }
-      return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, steps: [createStep, ...laneChatsSteps("result")] };
+      return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, steps: [createStep, ...notifySteps("result"), ...laneChatsSteps("result")] };
     }
     const issueForKickoff = linearIssue;
     const steps: InvocationStep[] = [
@@ -12227,6 +12293,8 @@ function buildChatPlan(args: string[]): CliPlan {
       label: "chat send",
       steps: [
         actionStep("result", "chat", "messageSession", messageArgs),
+        // For the link in the answer. Optional: the message already went.
+        { ...actionArgsListStep("summary", "chat", "getSessionSummary", [targetSession]), optional: true },
       ],
     };
   }
@@ -12337,6 +12405,35 @@ function buildChatPlan(args: string[]): CliPlan {
     const input: JsonObject = {};
     maybePut(input, "sessionId", sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID) ?? undefined);
     return { kind: "execute", label: "chat waits", steps: [actionStep("result", "chat", "listWaits", input)] };
+  }
+  if (sub === "events") {
+    const since = readNumberOption(args, ["--since", "--cursor"]);
+    const limit = readIntOption(args, ["--limit"], undefined);
+    return {
+      kind: "execute",
+      label: "chat events",
+      steps: [actionStep("result", "chat", "getChatEvents", {
+        sessionId: requireValue(sessionId, "sessionId"),
+        ...(since != null ? { since } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      })],
+    };
+  }
+  if (sub === "notify") {
+    if (readFlag(args, ["--list"])) {
+      return { kind: "execute", label: "chat notify list", steps: [actionStep("result", "chat", "listWebhooks", sessionId ? { sessionId } : {})] };
+    }
+    if (readFlag(args, ["--cancel"])) {
+      return { kind: "execute", label: "chat notify cancel", steps: [actionStep("result", "chat", "cancelWebhook", { sessionId: requireValue(sessionId, "sessionId") })] };
+    }
+    const url = requireValue(readValue(args, ["--url"]), "--url");
+    assertChatWebhookUrl(url);
+    const token = readFlag(args, ["--token-stdin"]) ? readAllStdinSync().trim() : readValue(args, ["--token"]);
+    return {
+      kind: "execute",
+      label: "chat notify",
+      steps: [actionStep("result", "chat", "armWebhook", { sessionId: requireValue(sessionId, "sessionId"), url, ...(token ? { token } : {}) })],
+    };
   }
   if (sub === "wait" && readFlag(args, ["--background"])) {
     // Wake me when my background jobs end: every running job, or the ones
@@ -14265,8 +14362,37 @@ function warnInlineChatTextThroughCmd(args: string[], inlineFlags: readonly stri
 let stdinTextRead: string | null = null;
 
 function readAllStdinSync(): string {
-  stdinTextRead ??= fs.readFileSync(0, "utf8");
+  stdinTextRead ??= readStdinToEndSync();
   return stdinTextRead;
+}
+
+/**
+ * `readFileSync(0)` fails with EAGAIN when stdin is a non-blocking pipe whose
+ * writer has not caught up (a large `stdin` from ADE MCP did it at ~230 KB).
+ * Read until end of input, pausing briefly when the pipe is empty.
+ */
+function readStdinToEndSync(): string {
+  const chunks: Buffer[] = [];
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  while (true) {
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    let bytes = 0;
+    try {
+      bytes = fs.readSync(0, chunk, 0, chunk.length, null);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EAGAIN" || code === "EINTR") {
+        Atomics.wait(pause, 0, 0, 5);
+        continue;
+      }
+      // Windows reports a closed pipe as EOF instead of a zero-length read.
+      if (code === "EOF") break;
+      throw error;
+    }
+    if (bytes === 0) break;
+    chunks.push(chunk.subarray(0, bytes));
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function readBoundedStdinSync(maxBytes: number, label: string): string {
@@ -14451,6 +14577,8 @@ function buildFilesPlan(args: string[], machine: string | null = null): CliPlan 
     };
   }
   if (sub === "write") {
+    const base64 = readFlag(args, ["--base64"]);
+    const offset = readIntOption(args, ["--offset"], undefined);
     const text = readFileTextInput(args);
     if (text == null)
       throw new CliUsageError(
@@ -14470,6 +14598,8 @@ function buildFilesPlan(args: string[], machine: string | null = null): CliPlan 
               "path",
             ),
             text,
+            ...(base64 ? { encoding: "base64" } : {}),
+            ...(offset ? { offset } : {}),
           }),
         ),
       ],
@@ -14765,6 +14895,9 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     const from = readNumberOption(args, ["--from"]);
     const to = readNumberOption(args, ["--to"]);
     const frames = readNumberOption(args, ["--frames"]);
+    const page = readNumberOption(args, ["--page"]);
+    const yFrom = readNumberOption(args, ["--y-from"]);
+    const yTo = readNumberOption(args, ["--y-to"]);
     const artifactId = readValue(args, ["--id", "--artifact-id"]) ?? args.find((value) => !value.startsWith("-"));
     if (!artifactId && !chatSessionId) {
       throw new CliUsageError("ade proof review needs a proof id: ade proof review <id>, or a chat: ade proof review --chat <session-id>. Copy the id from a cite: line or the `id` field of `ade proof list --json`.");
@@ -14778,6 +14911,9 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
         ...(from != null ? { from } : {}),
         ...(to != null ? { to } : {}),
         ...(frames != null ? { frames } : {}),
+        ...(page != null ? { page } : {}),
+        ...(yFrom != null ? { yFrom } : {}),
+        ...(yTo != null ? { yTo } : {}),
       })],
     };
   }
@@ -15293,6 +15429,7 @@ async function runChatHereThenElsewhere(
     }
   }
   if (!match) chatLookupMiss = report;
+  if (!match && report.deleted) process.stderr.write(`${chatDeletedSentence(sessionId, report.deleted)}\n`);
   if (failure) throw failure;
   const hint = chatOtherMachineHint(process.argv.slice(2));
   if (hint) process.stderr.write(`${hint}\n`);
@@ -15309,7 +15446,8 @@ async function runChatLocate(
   if (parsed.options.machine || parsed.options.allMachines) {
     throw new CliUsageError("chat locate asks every machine itself; drop --machine/--all-machines.");
   }
-  const value = chatLocateValue(await locateChatOnAccount(parsed.options, sessionId.trim()));
+  const onlyThisMachine = readFlag(args, ["--this-machine"]);
+  const value = chatLocateValue(await locateChatOnAccount(parsed.options, sessionId.trim(), { onlyThisMachine }));
   return {
     output: parsed.options.text ? formatChatLocate(value) : `${JSON.stringify(value, null, 2)}\n`,
     exitCode: value.found === true ? 0 : 1,
@@ -38169,6 +38307,7 @@ function summarizeExecution(args: {
     const enrichment = isRecord(summary) ? summary : null;
     return {
       ...turnStatus,
+      ...(enrichment ? pickChatSettings(enrichment) : {}),
       ...(enrichment?.usageLimitResume !== undefined
         ? { usageLimitResume: enrichment.usageLimitResume }
         : {}),
@@ -38176,9 +38315,17 @@ function summarizeExecution(args: {
     };
   }
 
+  if (plan.label === "chat events") {
+    const events = unwrapActionEnvelope(values.result);
+    if (events == null) chatMissedHere = true;
+    return events;
+  }
+
   if (plan.label === "chat send" || plan.label === "chat steer" || plan.label === "chat message") {
     const raw = unwrapActionEnvelope(values.result);
-    if (isRecord(raw)) return raw;
+    const chatSummary = values.summary !== undefined ? unwrapActionEnvelope(values.summary) : null;
+    const chatLaneId = isRecord(chatSummary) ? asString(chatSummary.laneId) : null;
+    if (isRecord(raw)) return chatLaneId ? { ...raw, laneId: chatLaneId } : raw;
     return {
       ok: true,
       accepted: true,

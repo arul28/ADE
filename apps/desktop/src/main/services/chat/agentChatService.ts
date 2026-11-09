@@ -298,7 +298,7 @@ import {
   recordChatTextFlush,
   type ChatTextFlushReason,
 } from "../perf/chatTextProbe";
-import { transcriptEntriesFromEnvelopes, transcriptTurnFailuresFromEnvelopes } from "./chatTranscriptEntries";
+import { chatLifecycleEvents, transcriptEntriesFromEnvelopes, transcriptTurnFailuresFromEnvelopes, type ChatEventsResult } from "./chatTranscriptEntries";
 import {
   buildFittedTranscriptReplay,
   buildTranscriptReplayDocument,
@@ -1282,6 +1282,7 @@ import {
 import type { MachinePowerSource } from "../../../../../ade-cli/src/services/power/machinePowerMonitor";
 import { createHostSleepChipTracker, sessionTurnInFlight } from "./hostSleepChipTracker";
 import { ChatWakeDeferredError, createChatWaitRegistry, type ChatWaitRegistry } from "./chatWaitRegistry";
+import { createChatWebhookRegistry, type ChatWebhookRegistry } from "./chatWebhookRegistry";
 import { createAgentCliWakes } from "./agentCliWakes";
 import { GOAL_BLOCKED_NOTICE_STATUS, GOAL_REACHED_NOTICE_STATUS, parseClaudeGoalCommand } from "../../../shared/chatGoals";
 import {
@@ -13549,6 +13550,7 @@ export function createAgentChatService(args: {
   // `emitChatEvent` signals it; events emitted before it exists need no
   // signal, since `start()` checks every persisted waiter once ready.
   let chatWaits: ChatWaitRegistry | null = null;
+  let chatWebhooks: ChatWebhookRegistry | null = null;
   const claudeRecurringCronTtlMs = 7 * 24 * 60 * 60 * 1_000;
   let scheduledWorkScheduler: ChatScheduledWorkScheduler | null = null;
   let scheduledWorkReady: Promise<void> = Promise.resolve();
@@ -25153,6 +25155,7 @@ export function createAgentChatService(args: {
     }
     managed.lastActivityTimestamp = Date.now();
     chatWaits?.signal(managed.session.id);
+    chatWebhooks?.signal(managed.session.id);
     if (event.type === "done") {
       managed.claudeCompactError = null;
       if (event.turnId) managed.lastFinishedTurnId = event.turnId;
@@ -68948,6 +68951,18 @@ export function createAgentChatService(args: {
   });
   chatWaits = chatWaitRegistry;
   chatWaitRegistry.start();
+  const chatWebhookRegistry = createChatWebhookRegistry({
+    logger,
+    secretsDir: layout.secretsDir,
+    readSummary: async (sessionId) => {
+      const summary = await getSessionSummary(sessionId);
+      return summary ? { ...summary } : null;
+    },
+    ownedByAnotherBrain: (sessionId) =>
+      liveForeignChatRuntimeOwner(sessionId) != null || agentCliOwnedByAnotherRuntime(sessionId),
+  });
+  chatWebhooks = chatWebhookRegistry;
+  chatWebhookRegistry.start();
 
   const getSessionSummary = async (sessionId: string): Promise<AgentChatSessionSummary | null> => {
     await scheduledWorkReady;
@@ -69010,6 +69025,14 @@ export function createAgentChatService(args: {
     } catch (error) {
       logger.warn("chat.status_account_unavailable", { sessionId: summary.sessionId, error: getErrorMessage(error) });
     }
+    let instanceLabel: string | null = null;
+    if (instanceId && isProviderInstanceProvider(summary.provider)) {
+      try {
+        instanceLabel = getMachineProviderInstanceStore().resolve(summary.provider, instanceId).instance.label;
+      } catch {
+        // The id alone still says which account it is.
+      }
+    }
     return deriveChatTurnStatus({
       sessionId: summary.sessionId,
       provider: summary.provider,
@@ -69028,6 +69051,7 @@ export function createAgentChatService(args: {
       pendingSettingsAfterBackground: summary.pendingSettingsAfterBackground ?? [],
       reasoningEffortChange: summary.reasoningEffortChange ?? null,
       modelId: summary.modelId ?? summary.model,
+      instanceLabel,
       currentTool: runningWithTool?.lastToolName
         ? { name: runningWithTool.lastToolName }
         : null,
@@ -69044,6 +69068,72 @@ export function createAgentChatService(args: {
         ...(snapshot.resourceLinks?.length ? { resourceLinks: snapshot.resourceLinks } : {}),
       })),
     });
+  };
+
+  /**
+   * The chat's events exactly as written, newest pages first, back to `since`
+   * (or just the newest pages without one). The lossy reader behind
+   * `readTranscript` swaps non-conversation rows for stand-ins, which is no
+   * use for these.
+   */
+  const readEnvelopesBackTo = async (
+    sessionId: string,
+    since: number | null,
+  ): Promise<{ envelopes: AgentChatEventEnvelope[]; reachedSince: boolean }> => {
+    const transcriptPath = await resolveTranscriptPathForSessionId(sessionId);
+    if (!transcriptPath) return { envelopes: [], reachedSince: true };
+    const pages: AgentChatEventEnvelope[][] = [];
+    let cursor = await readHistoryFileSize(transcriptPath);
+    let reachedSince = since === null;
+    const maxPages = since === null ? 2 : 16;
+    for (let count = 0; cursor > 0 && count < maxPages; count += 1) {
+      let page: TranscriptHistoryPageRead;
+      try {
+        page = await readTranscriptHistoryPage({ transcriptPath, sessionId, beforeOffset: cursor, maxBytes: CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES });
+      } catch (error) {
+        logger.warn("agent_chat.events_page_failed", { sessionId, error: getErrorMessage(error) });
+        break;
+      }
+      cursor = page.startOffset;
+      pages.unshift(page.envelopes);
+      if (since !== null && page.envelopes.some((entry) => (entry.sequence ?? Number.POSITIVE_INFINITY) <= since)) reachedSince = true;
+      if (reachedSince && since !== null) break;
+      if (!page.hasMore) {
+        reachedSince = true;
+        break;
+      }
+    }
+    return { envelopes: pages.flat(), reachedSince };
+  };
+
+  /**
+   * What happened to a chat since a cursor, for a caller that can only poll:
+   * each turn's start and end, input it waits on, errors. `cursor` goes back
+   * as `since`, so no transition is missed between calls. Answers at once;
+   * null when there is no such chat.
+   */
+  const getChatEvents = async (args: { sessionId: string; since?: number | null; limit?: number | null }): Promise<ChatEventsResult | null> => {
+    const sessionId = String(args?.sessionId ?? "").trim();
+    const status = sessionId ? await getTurnStatus(sessionId) : null;
+    if (!status) return null;
+    const since = typeof args.since === "number" && Number.isFinite(args.since) ? args.since : null;
+    const limit = Math.max(1, Math.min(200, Math.floor(args.limit ?? 50)));
+    const { envelopes, reachedSince } = await readEnvelopesBackTo(sessionId, since);
+    const newer = since === null ? envelopes : envelopes.filter((entry) => (entry.sequence ?? -1) > since);
+    const events = chatLifecycleEvents(newer);
+    const returned = since === null ? events.slice(-limit) : events.slice(0, limit);
+    const truncated = returned.length < events.length;
+    const newest = newer.reduce((max, entry) => Math.max(max, entry.sequence ?? -1), since ?? -1);
+    return {
+      sessionId,
+      // Stopped short: the next call starts after the last event returned.
+      cursor: truncated && since !== null ? returned[returned.length - 1]!.sequence : newest,
+      phase: status.phase,
+      events: returned,
+      truncated,
+      // The cursor is so old that the events right after it were not read.
+      ...(reachedSince ? {} : { gap: true }),
+    };
   };
 
   /**
@@ -72912,6 +73002,7 @@ export function createAgentChatService(args: {
     restartRecoverySweepStopped = true;
     if (restartRecoverySweepTimer) clearTimeout(restartRecoverySweepTimer);
     chatWaits?.dispose();
+    chatWebhooks?.dispose();
     if (heldCodexTerminalTimer) clearInterval(heldCodexTerminalTimer);
     staleRunSweep.dispose();
     // Before the host tears its PTYs down: a brain shutting down must not read
@@ -78553,6 +78644,10 @@ export function createAgentChatService(args: {
     armWait: chatWaitRegistry.arm,
     listWaits: chatWaitRegistry.list,
     cancelWait: chatWaitRegistry.cancel,
+    getChatEvents,
+    armWebhook: chatWebhookRegistry.arm,
+    listWebhooks: chatWebhookRegistry.list,
+    cancelWebhook: chatWebhookRegistry.cancel,
     holdBackgroundWork,
     /**
      * Is a persisted Claude `--bg` job actually still running?
@@ -78696,6 +78791,7 @@ export function createAgentChatService(args: {
     dispose,
     deleteSession: (deleteArgs: AgentChatDeleteArgs) => deleteSession(deleteArgs, { remember: true }),
     listDeletedChats: (listArgs?: DeletedChatListArgs) => deletedChats.list(listArgs),
+    findDeletedChat: (id: string) => deletedChats.find(id),
     getDeletedChatDetail: (detailArgs: DeletedChatDetailArgs) => deletedChats.detail(detailArgs),
     reopenDeletedChat: (reopenArgs: DeletedChatReopenArgs) => deletedChats.reopen(reopenArgs),
     removeDeletedChats: (removeArgs: DeletedChatRemoveArgs) => deletedChats.remove(removeArgs),

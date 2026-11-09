@@ -857,6 +857,9 @@ const TOOL_SPECS: ToolSpec[] = [
         from: { type: "number", minimum: 0 },
         to: { type: "number", minimum: 0 },
         frames: { type: "integer", minimum: 1, maximum: SHEET_MAX_FRAMES },
+        page: { type: "integer", minimum: 1 },
+        yFrom: { type: "integer", minimum: 0 },
+        yTo: { type: "integer", minimum: 1 },
       }
     }
   },
@@ -1900,7 +1903,22 @@ function proofReviewWindow(toolArgs: Record<string, unknown>): ProofReviewWindow
   if (frames != null && (typeof frames !== "number" || !Number.isInteger(frames) || frames < 1 || frames > SHEET_MAX_FRAMES)) {
     throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `\`frames\` is a whole number from 1 to ${SHEET_MAX_FRAMES}.`);
   }
-  return { from, to, frames: typeof frames === "number" ? frames : null };
+  const pixel = (key: "page" | "yFrom" | "yTo", minimum: number): number | null => {
+    const value = toolArgs[key];
+    if (value == null) return null;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < minimum) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `\`${key}\` is a whole number, ${minimum} or more.`);
+    }
+    return value;
+  };
+  return {
+    from,
+    to,
+    frames: typeof frames === "number" ? frames : null,
+    page: pixel("page", 1),
+    yFrom: pixel("yFrom", 0),
+    yTo: pixel("yTo", 1),
+  };
 }
 
 function asNumber(value: unknown, fallback: number): number {

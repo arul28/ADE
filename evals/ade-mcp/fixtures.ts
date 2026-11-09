@@ -80,6 +80,17 @@ export const DEFAULT_RESULTS: Record<string, Fixture> = {
     decision: input.decision === "deny" ? "decline" : input.decision === "approve_for_session" ? "accept_for_session" : "accept",
   }),
   chat_send: (input: Input) => ({ sessionId: input.session, kind: "auto", routedAction: "sendMessage", statusBefore: "idle", awaitingInputBefore: false, delivery: "delivered" }),
+  chat_events: (input: Input) => ({
+    sessionId: input.session, cursor: 431, phase: "idle", truncated: false,
+    events: [
+      { sequence: 418, at: recent(20), kind: "turn_started", turnId: "t-2" },
+      { sequence: 430, at: recent(4), kind: "turn_completed", turnId: "t-2" },
+    ],
+  }),
+  chat_interrupt: { mode: "stop_and_clear", cancelledQueuedCount: 0 },
+  chat_update: (input: Input) => ({ id: input.session, model: input.model ?? "gpt-5.6", reasoningEffort: input.reasoning_effort ?? null }),
+  files_write: (input: Input) => ({ path: input.path, bytes: String(input.text ?? "").length, sha256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" }),
+  lanes_create: (input: Input) => ({ lane: { id: "lane-new", name: input.name, branchRef: `ade/${String(input.name)}`, baseRef: "main", laneType: "worktree" } }),
   chat_start: (input: Input) => ({
     ok: true, launchId: "chat-new", phase: "completed", elapsedMs: 25_000,
     launch: { sessionId: "chat-new", laneId: "lane-new", laneName: "fix-flaky-test", title: String(input.prompt).slice(0, 40), phase: "completed", error: null },

@@ -12,12 +12,14 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { PNG } from "pngjs";
 import type { DemoAnalysis, DemoArtifactMetadata, DemoContactSheetRequest, DemoEngine } from "../../../shared/demoVideo/demoContract";
 import { DEMO_CONTACT_SHEET_MAX_FRAMES, DEMO_CONTACT_SHEET_TILE_WIDTH } from "../../../shared/demoVideo/demoContract";
 import { readProofProvenance } from "../../../shared/proofProvenance";
 import { gifDimensions, jpegDimensions, pngDimensions, webpDimensions, type ImageDimensions } from "../shared/imageDimensions";
 import type { Logger } from "../logging/logger";
 import { readDemoMp4 } from "./demoMp4Source";
+import { ensureFfmpegTools, runFfmpeg } from "./ffmpegDemoEngine";
 import { pickSheetFrames, type SheetFrame } from "./sheetFrames";
 
 /** Sheets kept per project; older ones are removed as new ones are written. */
@@ -58,6 +60,14 @@ export type ProofReview = {
   columns: number;
   /** What ADE found from the file and its record. Empty when nothing. */
   findings: string[];
+  /** A picture taller than one page: how many pages it splits into. */
+  pages?: number;
+  /** The part asked for (`page`, or `yFrom`/`yTo`), as a viewable JPEG, and which part it is. */
+  cropPath?: string;
+  page?: number;
+  yFrom?: number;
+  yTo?: number;
+  cropError?: string;
 };
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm"]);
@@ -67,6 +77,11 @@ export type ProofReviewWindow = {
   from?: number | null;
   to?: number | null;
   frames?: number | null;
+  /** A tall picture's page, from 1. */
+  page?: number | null;
+  /** A band of a tall picture, in its pixels. */
+  yFrom?: number | null;
+  yTo?: number | null;
 };
 
 type ReviewArgs = {
@@ -85,13 +100,141 @@ export async function reviewProofFile(args: ReviewArgs): Promise<ProofReview> {
   if (readProofProvenance(args.artifact.metadata).recordedBeforeRequest) findings.push("Recorded before this request: record it again.");
   return VIDEO_EXTENSIONS.has(path.extname(args.filePath).toLowerCase())
     ? await reviewVideo(args, findings)
-    : reviewImage(args, findings);
+    : await reviewImage(args, findings);
 }
 
-function reviewImage(args: ReviewArgs, findings: string[]): ProofReview {
+/** One page of a tall picture is this many widths high, about a phone or laptop viewport. */
+const PAGE_ASPECT = 1.5;
+/** Wider than this, a model sees the picture scaled down anyway. */
+const CROP_MAX_WIDTH = 1568;
+/** A whole picture over this is re-encoded, so it fits an MCP answer. */
+const WHOLE_PICTURE_MAX_BYTES = 2_000_000;
+const CROP_TIMEOUT_MS = 30_000;
+
+/** The band of the picture a window asks for; null when the whole file serves as it is. */
+function cropBand(
+  size: ImageDimensions,
+  window: ProofReviewWindow | undefined,
+  fileBytes: number,
+): { band: { y: number; height: number; page?: number } | null; error?: string } {
+  if (window?.yFrom != null || window?.yTo != null) {
+    const from = Math.max(0, Math.floor(window.yFrom ?? 0));
+    const to = Math.min(size.height, Math.ceil(window.yTo ?? from + size.width * PAGE_ASPECT));
+    if (to <= from) return { band: null, error: `That band is outside the picture, which is ${size.height} pixels tall.` };
+    return { band: { y: from, height: to - from } };
+  }
+  if (window?.page == null) return { band: null };
+  const pageHeight = Math.max(1, Math.round(size.width * PAGE_ASPECT));
+  const pages = Math.max(1, Math.ceil(size.height / pageHeight));
+  if (window.page > pages) return { band: null, error: `The picture has ${pages} page${pages === 1 ? "" : "s"}.` };
+  if (pages === 1 && fileBytes <= WHOLE_PICTURE_MAX_BYTES) return { band: null };
+  const y = (window.page - 1) * pageHeight;
+  return { band: { y, height: Math.min(pageHeight, size.height - y), page: window.page } };
+}
+
+/** Averages each `factor` × `factor` block into one pixel; the picture as it is when the factor is 1. */
+function shrinkPng(image: PNG, factor: number): PNG {
+  if (factor <= 1) return image;
+  const width = Math.max(1, Math.floor(image.width / factor));
+  const height = Math.max(1, Math.floor(image.height / factor));
+  const out = new PNG({ width, height });
+  const area = factor * factor;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const sums = [0, 0, 0, 0];
+      for (let dy = 0; dy < factor; dy += 1) {
+        const row = ((y * factor + dy) * image.width + x * factor) * 4;
+        for (let dx = 0; dx < factor; dx += 1) {
+          for (let channel = 0; channel < 4; channel += 1) sums[channel]! += image.data[row + dx * 4 + channel]!;
+        }
+      }
+      const at = (y * width + x) * 4;
+      for (let channel = 0; channel < 4; channel += 1) out.data[at + channel] = Math.round(sums[channel]! / area);
+    }
+  }
+  return out;
+}
+
+/** The band as its own PNG. pngjs ships with ADE, so this works on a computer with no ffmpeg. */
+async function cropPng(input: string, output: string, band: { y: number; height: number }): Promise<void> {
+  const source = await new Promise<PNG>((resolve, reject) => {
+    const reader = new PNG();
+    reader.on("parsed", () => resolve(reader));
+    reader.on("error", reject);
+    fs.createReadStream(input).on("error", reject).pipe(reader);
+  });
+  const full = new PNG({ width: source.width, height: band.height });
+  PNG.bitblt(source, full, 0, band.y, source.width, band.height, 0, 0);
+  const cut = shrinkPng(full, Math.ceil(source.width / CROP_MAX_WIDTH));
+  await new Promise<void>((resolve, reject) => {
+    cut.pack().on("error", reject).pipe(fs.createWriteStream(output)).on("finish", () => resolve()).on("error", reject);
+  });
+}
+
+async function cropPicture(
+  args: ReviewArgs,
+  size: ImageDimensions,
+  band: { y: number; height: number },
+): Promise<{ cropPath: string } | { cropError: string }> {
+  const isPng = path.extname(args.filePath).toLowerCase() === ".png";
+  let tools: Awaited<ReturnType<typeof ensureFfmpegTools>> | null = null;
+  if (!isPng) {
+    try {
+      tools = await ensureFfmpegTools();
+    } catch (error) {
+      return { cropError: error instanceof Error ? error.message : String(error) };
+    }
+  }
+  const dir = path.join(args.projectRoot, ".ade", "cache", "proof-review");
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = (args.now?.() ?? new Date()).toISOString().replace(/[:.]/g, "-");
+  const output = path.join(dir, `review-${stamp}-${args.artifact.id.slice(0, 8)}-y${band.y}.${isPng ? "png" : "jpg"}`);
+  try {
+    if (tools) {
+      await runFfmpeg({
+        binaryPath: tools.ffmpegPath,
+        args: [
+          "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
+          "-i", args.filePath,
+          "-vf", `crop=${size.width}:${band.height}:0:${band.y},scale='min(${CROP_MAX_WIDTH},iw)':-2,format=yuvj420p`,
+          "-frames:v", "1", "-update", "1", "-q:v", "3",
+          "-f", "image2", "-c:v", "mjpeg",
+          output,
+        ],
+        timeoutMs: CROP_TIMEOUT_MS,
+        signal: args.signal,
+        logger: null,
+        label: "proof crop",
+      });
+    } else {
+      await cropPng(args.filePath, output, band);
+    }
+    pruneSheets(dir, args.logger);
+    return { cropPath: output };
+  } catch (error) {
+    return { cropError: `ADE could not cut the picture: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+async function reviewImage(args: ReviewArgs, findings: string[]): Promise<ProofReview> {
   const size = readImageSize(args.filePath);
   if (size) imageFindings(size, findings);
+  const pages = size ? Math.max(1, Math.ceil(size.height / Math.max(1, Math.round(size.width * PAGE_ASPECT)))) : 1;
+  const fileBytes = (() => {
+    try {
+      return fs.statSync(args.filePath).size;
+    } catch {
+      return 0;
+    }
+  })();
+  const { band, error: bandError } = size ? cropBand(size, args.window, fileBytes) : { band: null, error: undefined };
+  const cropped = size && band ? await cropPicture(args, size, band) : null;
   return {
+    ...(pages > 1 ? { pages } : {}),
+    ...(bandError ? { cropError: bandError } : {}),
+    ...(cropped ?? {}),
+    ...(band?.page ? { page: band.page } : {}),
+    ...(band ? { yFrom: band.y, yTo: band.y + band.height } : {}),
     artifactId: args.artifact.id,
     media: "image",
     path: args.filePath,
@@ -259,7 +402,7 @@ function round2(value: number): number {
 
 function pruneSheets(dir: string, logger?: Pick<Logger, "warn">): void {
   try {
-    const sheets = fs.readdirSync(dir).filter((entry) => entry.startsWith("review-") && entry.endsWith(".png")).sort();
+    const sheets = fs.readdirSync(dir).filter((entry) => entry.startsWith("review-") && (entry.endsWith(".png") || entry.endsWith(".jpg"))).sort();
     for (const stale of sheets.slice(0, Math.max(0, sheets.length - SHEET_KEEP))) fs.rmSync(path.join(dir, stale), { force: true });
   } catch (error) {
     // Pruning is housekeeping; the sheet itself is written.

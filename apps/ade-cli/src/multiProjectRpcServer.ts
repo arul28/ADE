@@ -1,4 +1,5 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
+import { readDeletedChatOnDisk } from "../../desktop/src/main/services/chat/deletedChats";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { isPathInside } from "../../desktop/src/main/services/shared/pathCompare";
 import { checkHostReachability } from "./services/sync/hostReachabilityCheck";
@@ -3492,7 +3493,19 @@ export function createMultiProjectRpcRequestHandler(
       const sessionId = typeof params.sessionId === "string" ? params.sessionId.trim() : "";
       if (!sessionId) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "chats.locate requires sessionId.");
       const scope = await options.crossScopeChats?.findChat?.(sessionId).catch(() => null) ?? null;
-      if (!scope) return { found: false };
+      if (!scope) {
+        // A running project answers itself (it can also tell whether the
+        // conversation is still there to reopen); any other is read from its
+        // database on disk. A lookup never boots a project.
+        for (const record of projectRegistry.list()) {
+          const running = await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
+          const deleted = running
+            ? await running.runtime?.agentChatService?.findDeletedChat?.(sessionId).catch(() => null)
+            : readDeletedChatOnDisk(record.rootPath, sessionId);
+          if (deleted) return { found: false, deleted: { ...deleted, projectId: record.projectId, projectName: record.displayName } };
+        }
+        return { found: false };
+      }
       if (scope.kind === "personal") return { found: true, scope: { kind: "personal" } };
       const record = projectRegistry.list().find((entry) => entry.projectId === scope.projectId);
       // Archived only when the project is already running here: never a boot.

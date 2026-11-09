@@ -49,6 +49,8 @@ type RunResult = {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TSX = path.resolve(HERE, "../../apps/ade-cli/node_modules/tsx/dist/cli.mjs");
 const CASES_PATH = path.join(HERE, "cases.ndjson");
+/** ADE's pinned Codex: a Homebrew or npm-global one may be too old for the newest OpenAI models. */
+const CODEX_ENTRY = path.resolve(HERE, "../../apps/ade-cli/node_modules/@openai/codex/bin/codex.js");
 const RUN_TIMEOUT_MS = 240_000;
 // Ctrl-C ends the eval through `exit`, which stops each running case's process group.
 process.once("SIGINT", () => process.exit(130));
@@ -87,20 +89,41 @@ function claudeInvocation(args: string[], env: NodeJS.ProcessEnv) {
   return resolveCliSpawnInvocation(preferNativeExecutablePath(candidates) ?? "claude", args, env);
 }
 
+/** OpenAI models run in Codex (`codex exec`); every other model in Claude Code. */
+function isCodexModel(model: string): boolean {
+  return /^(?:openai\/|gpt-|o\d)/i.test(model);
+}
+
+/**
+ * The same case in `codex exec`: the fake server as its only MCP server, its
+ * tools approved, no user config, a read-only sandbox in an empty folder, and
+ * the chat-app system prompt as developer instructions.
+ */
+function codexArgs(evalCase: EvalCase, model: string, serverArgs: string[]): string[] {
+  const toml = (value: unknown) => JSON.stringify(value);
+  return [
+    CODEX_ENTRY, "exec", "--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules",
+    "-s", "read-only",
+    "-m", model.replace(/^openai\//i, ""),
+    "-c", `model_reasoning_effort=${toml(option("--effort", "low"))}`,
+    "-c", `developer_instructions=${toml(SYSTEM_PROMPT)}`,
+    "-c", `mcp_servers.ade.command=${toml(process.execPath)}`,
+    "-c", `mcp_servers.ade.args=${toml(serverArgs)}`,
+    "-c", "mcp_servers.ade.default_tools_approval_mode=\"approve\"",
+    evalCase.prompt,
+  ];
+}
+
 async function runOne(evalCase: EvalCase, model: string, sample: number, outDir: string): Promise<RunResult> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-eval-"));
   const logPath = path.join(dir, "calls.ndjson");
   fs.writeFileSync(logPath, "");
   const configPath = path.join(dir, "mcp.json");
+  const serverArgs = [TSX, path.join(HERE, "fakeServer.ts"), "--cases", CASES_PATH, "--case", evalCase.id, "--log", logPath];
   fs.writeFileSync(configPath, JSON.stringify({
-    mcpServers: {
-      ade: {
-        type: "stdio",
-        command: process.execPath,
-        args: [TSX, path.join(HERE, "fakeServer.ts"), "--cases", CASES_PATH, "--case", evalCase.id, "--log", logPath],
-      },
-    },
+    mcpServers: { ade: { type: "stdio", command: process.execPath, args: serverArgs } },
   }));
+  const codex = isCodexModel(model);
   const args = [
     "-p", evalCase.prompt,
     "--model", model,
@@ -119,7 +142,9 @@ async function runOne(evalCase: EvalCase, model: string, sample: number, outDir:
   const stderr: string[] = [];
   const exit = await new Promise<{ code: number | null; timedOut: boolean }>((resolve) => {
     const env = cleanEnv();
-    const invocation = claudeInvocation(args, env);
+    const invocation = codex
+      ? { command: process.execPath, args: codexArgs(evalCase, model, serverArgs), windowsVerbatimArguments: false }
+      : claudeInvocation(args, env);
     const child = spawn(invocation.command, invocation.args, {
       cwd: dir,
       env,
@@ -170,18 +195,26 @@ async function runOne(evalCase: EvalCase, model: string, sample: number, outDir:
       return [];
     }
   });
-  const final = [...events].reverse().find((event) => event.type === "result");
-  const attempted = events
-    .filter((event) => event.type === "assistant")
-    .flatMap((event) => (event.message?.content ?? []) as Array<Record<string, any>>)
-    .filter((block) => block.type === "tool_use")
-    .map((block) => String(block.name));
+  const final = codex
+    ? [...events].reverse().find((event) => event.type === "turn.completed")
+    : [...events].reverse().find((event) => event.type === "result");
+  const attempted = codex
+    ? events
+      .filter((event) => event.type === "item.completed" && event.item?.type === "mcp_tool_call")
+      .map((event) => `mcp__${String(event.item.server)}__${String(event.item.tool)}`)
+    : events
+      .filter((event) => event.type === "assistant")
+      .flatMap((event) => (event.message?.content ?? []) as Array<Record<string, any>>)
+      .filter((block) => block.type === "tool_use")
+      .map((block) => String(block.name));
   const calls = fs.readFileSync(logPath, "utf8").split("\n").filter((line) => line.trim()).map((line) => JSON.parse(line) as ToolCall);
   const reached = calls.length;
   const blocked = attempted.filter((name) => !name.startsWith("mcp__ade__")).concat(
     attempted.filter((name) => name.startsWith("mcp__ade__")).length > reached ? ["(some ade calls did not reach the server)"] : [],
   );
-  const reply = typeof final?.result === "string" ? final.result : "";
+  const reply = codex
+    ? String([...events].reverse().find((event) => event.type === "item.completed" && event.item?.type === "agent_message")?.item?.text ?? "")
+    : typeof final?.result === "string" ? final.result : "";
   const verdict = grade(evalCase.grade, calls, reply);
   const error = exit.timedOut
     ? "timed out"

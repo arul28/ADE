@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type fs from "node:fs";
 import path from "node:path";
 import type {
@@ -30,6 +31,7 @@ import type {
   FilesSearchTextMatch,
   FilesWatchArgs,
   FilesWorkspace,
+  FilesWriteReceipt,
   FilesWriteTextArgs
 } from "../../../shared/types";
 import type { createLaneService } from "../lanes/laneService";
@@ -478,6 +480,21 @@ function ensureSafePath(
     throw new Error("Refusing to access .git internals");
   }
   return { absPath, normalizedRel };
+}
+
+function decodeBase64Strict(text: string): Buffer {
+  const compact = text.replace(/\s+/g, "");
+  if (compact.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) throw new Error("The text isn't valid base64.");
+  return Buffer.from(compact, "base64");
+}
+
+/** The file's bytes for an appended chunk; the write itself re-checks the path. */
+function readExistingWithinRoot(rootPath: string, relPath: string): Buffer {
+  const target = path.join(rootPath, relPath);
+  const stat = nonAsarFs.lstatSync(target, { throwIfNoEntry: false });
+  if (!stat) return Buffer.alloc(0);
+  if (!stat.isFile()) throw new Error(`${relPath} isn't a regular file.`);
+  return nonAsarFs.readFileSync(target);
 }
 
 function assertMutablePathAllowed(rootPath: string, relPath: string): string {
@@ -1358,10 +1375,25 @@ export function createFileService({
       return { path: normalizedRel, lines };
     },
 
-    writeWorkspaceText(args: FilesWriteTextArgs): void {
+    writeWorkspaceText(args: FilesWriteTextArgs): FilesWriteReceipt {
       const workspace = resolveWorkspace(args.workspaceId);
       const normalizedRel = assertMutablePathAllowed(workspace.rootPath, args.path);
-      secureWriteTextAtomicWithinRoot(workspace.rootPath, args.path, args.text);
+      const chunk = args.encoding === "base64" ? decodeBase64Strict(args.text) : Buffer.from(args.text, "utf8");
+      const offset = args.offset ?? 0;
+      let content = chunk;
+      if (offset > 0) {
+        const existing = readExistingWithinRoot(workspace.rootPath, normalizedRel);
+        if (existing.length !== offset) {
+          throw new Error(`Can't write at byte ${offset}: ${normalizedRel} is ${existing.length} bytes. Send the chunk that starts there.`);
+        }
+        content = Buffer.concat([existing, chunk]);
+      }
+      const targetPath = secureWriteTextAtomicWithinRoot(workspace.rootPath, args.path, content);
+      const receipt: FilesWriteReceipt = {
+        path: normalizedRel,
+        bytes: content.length,
+        sha256: createHash("sha256").update(nonAsarFs.readFileSync(targetPath)).digest("hex"),
+      };
       invalidateGitStatusCache(workspace.rootPath);
       clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       if (normalizedRel === ".gitignore") {
@@ -1375,6 +1407,7 @@ export function createFileService({
         shouldIgnore: shouldIgnoreForRoot(workspace.rootPath)
       });
       emitLaneMutation(args.workspaceId, "file_write");
+      return receipt;
     },
 
     createFile(args: FilesCreateFileArgs): void {

@@ -6,6 +6,7 @@ import type {
 } from "../../../shared/types/chat";
 import { canonicalSteerRows } from "../../../shared/chatTranscript";
 import { canCoalesceBufferedAssistantText, type BufferedAssistantText } from "./chatTextBatching";
+import { redactSecrets } from "../../utils/redaction";
 
 /**
  * Flatten a transcript envelope stream into role-tagged entries.
@@ -367,4 +368,55 @@ export function transcriptTurnFailuresFromEnvelopes(
     failures.push(failure);
   }
   return failures;
+}
+
+export type ChatLifecycleEvent = {
+  sequence: number;
+  at: string;
+  kind: "turn_started" | "turn_completed" | "turn_failed" | "turn_interrupted" | "input_needed" | "input_resolved" | "error";
+  turnId?: string;
+  message?: string;
+};
+
+export type ChatEventsResult = {
+  sessionId: string;
+  cursor: number;
+  phase: string;
+  events: ChatLifecycleEvent[];
+  /** More events follow: call again with `cursor`. */
+  truncated: boolean;
+  /** Events between `since` and the first one returned were too far back to read. */
+  gap?: true;
+};
+
+const TURN_END_KIND = { completed: "turn_completed", failed: "turn_failed", interrupted: "turn_interrupted" } as const;
+
+/** The turning points of a chat, oldest first; a turn's end appears once even when a runtime reports it twice. */
+export function chatLifecycleEvents(envelopes: readonly AgentChatEventEnvelope[]): ChatLifecycleEvent[] {
+  const events: ChatLifecycleEvent[] = [];
+  const endedTurns = new Set<string>();
+  const add = (entry: AgentChatEventEnvelope, kind: ChatLifecycleEvent["kind"], extra: { turnId?: string; message?: string } = {}) => {
+    events.push({ sequence: entry.sequence ?? -1, at: entry.timestamp, kind, ...extra });
+  };
+  const addTurnEnd = (entry: AgentChatEventEnvelope, status: keyof typeof TURN_END_KIND, turnId: string | undefined) => {
+    if (turnId && endedTurns.has(turnId)) return;
+    if (turnId) endedTurns.add(turnId);
+    add(entry, TURN_END_KIND[status], turnId ? { turnId } : {});
+  };
+  for (const entry of envelopes) {
+    const event = entry.event;
+    if (event.type === "status") {
+      if (event.turnStatus === "started") add(entry, "turn_started", event.turnId ? { turnId: event.turnId } : {});
+      else addTurnEnd(entry, event.turnStatus, event.turnId);
+    } else if (event.type === "done") {
+      addTurnEnd(entry, event.status, event.turnId);
+    } else if (event.type === "approval_request") {
+      add(entry, "input_needed", event.turnId ? { turnId: event.turnId } : {});
+    } else if (event.type === "pending_input_resolved") {
+      add(entry, "input_resolved", event.turnId ? { turnId: event.turnId } : {});
+    } else if (event.type === "error") {
+      add(entry, "error", { ...(event.turnId ? { turnId: event.turnId } : {}), message: redactSecrets(event.message).slice(0, 500) });
+    }
+  }
+  return events;
 }

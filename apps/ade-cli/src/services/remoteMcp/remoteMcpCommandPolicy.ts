@@ -96,7 +96,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["prs stacks", new Set(["list"])],
   ["chat", new Set([
     "list", "inbox", "pending", "read", "show", "status", "launches", "launch-status", "waits", "subagents", "models",
-    "linear-issues", "actions", "wait",
+    "linear-issues", "actions", "wait", "events",
   ])],
   // `ade chat deleted list` reads Recently deleted; `reopen` creates a chat.
   ["chat deleted", new Set(["list", "ls"])],
@@ -431,6 +431,16 @@ function asksForHelp(args: readonly string[]): boolean {
 /** `chat wait` flags that arm, hold or cancel a wait instead of only watching. */
 const CHAT_WAIT_WRITE_FLAGS = /^--(?:async|background|cancel|cancel-wait)(?:=|$)/;
 
+const ENV_FILE = /^\.env(?:\.(?!example$|sample$|template$)[\w.-]+)?$/i;
+
+/** ADE's own folders where secrets and raw chat logs live. */
+const SECRET_FOLDER = /(?:^|[\\/])\.ade[\\/](?:secrets|transcripts|chat-sessions)(?:[\\/]|$)/i;
+
+function readsEnvFile(command: string, args: readonly string[]): boolean {
+  if ((command !== "files" && command !== "file") || (args[1] !== "read" && args[1] !== "cat")) return false;
+  return args.slice(2).some((word) => ENV_FILE.test(word.split(/[\\/]/).pop() ?? "") || SECRET_FOLDER.test(word));
+}
+
 function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandVerdict {
   const refuse = (): RemoteCommandVerdict => ({
     ok: false,
@@ -440,6 +450,9 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
   });
   const command = args[0]!;
   if (asksForHelp(args)) return { ok: true, args };
+  if (readsEnvFile(command, args)) {
+    return { ok: false, reason: "A read-only connection can't read `.env` files or ADE's secrets and raw chat logs. Ask the person for full access if it needs one." };
+  }
   const group = args[1] && !args[1].startsWith("-") ? `${command} ${args[1]}` : null;
   if (group && NESTED_GROUPS.has(group)) {
     const allowed = READ_ONLY_COMMANDS.get(group);

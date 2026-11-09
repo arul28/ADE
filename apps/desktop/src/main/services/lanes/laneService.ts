@@ -438,6 +438,7 @@ function cloneLaneStatus(status: LaneStatus): LaneStatus {
     dirty: status.dirty,
     ahead: status.ahead,
     behind: status.behind,
+    ...(status.comparedTo ? { comparedTo: status.comparedTo } : {}),
     remoteBehind: status.remoteBehind,
     changedFileCount: status.changedFileCount ?? 0,
     staged: status.staged ?? 0,
@@ -992,6 +993,35 @@ function remoteTrackingBaseRef(baseRef: string): string | null {
 }
 
 /**
+ * The commit a lane's ahead/behind should count against. A local base that only
+ * trails its remote (nobody pulled it, often because the primary checkout sits
+ * on another branch) would report every commit merged since as this lane's
+ * own; the remote-tracking ref is the truth then. A local base with commits of
+ * its own stays, so unpushed work there still counts. The extra count is keyed
+ * by the two commits, so it runs once per new base commit, not per refresh.
+ */
+async function resolveCompareBase(
+  worktreePath: string,
+  baseRef: string,
+  baseOid: string,
+): Promise<{ oid: string; label: string }> {
+  const local = { oid: baseOid, label: baseRef.trim() };
+  const remote = remoteTrackingBaseRef(baseRef);
+  const remoteOid = remote ? await resolveCommitOid(worktreePath, remote) : null;
+  if (!remoteOid || remoteOid === baseOid) return local;
+  const rangeKey = `${baseOid}...${remoteOid}`;
+  let counts = laneAheadBehindByRange.get(rangeKey) ?? null;
+  if (counts === null) {
+    const res = await runGit(["rev-list", "--left-right", "--count", rangeKey], { cwd: worktreePath, timeoutMs: 8_000 }).catch(() => null);
+    if (res?.exitCode !== 0) return local;
+    counts = res.stdout;
+    rememberAheadBehind(rangeKey, counts);
+  }
+  const [localOnly, remoteOnly] = counts.trim().split(/\s+/).map(Number);
+  return localOnly === 0 && (remoteOnly ?? 0) > 0 ? { oid: remoteOid, label: `origin/${baseRef.trim()}` } : local;
+}
+
+/**
  * Rename evidence only ever accumulates, and a lane can sit drifted for a long
  * time while the lane list keeps refreshing, so the reflog verdict is memoized
  * per (worktree, recorded branch, head branch). The recorded ref's existence is
@@ -1225,7 +1255,12 @@ async function computeLaneStatus(
     && normalizeBranchName(branchRef).trim() === headBranchRef
     ? parsedStatus.headOid
     : null;
-  const baseOid = branchOid ? await resolveCommitOid(worktreePath, baseRef) : null;
+  const localBaseOid = branchOid ? await resolveCommitOid(worktreePath, baseRef) : null;
+  // A lane on the base branch itself is measured by `remoteBehind`.
+  const compareBase = localBaseOid && normalizeBranchName(branchRef).trim() !== normalizeBranchName(baseRef).trim()
+    ? await resolveCompareBase(worktreePath, baseRef, localBaseOid)
+    : null;
+  const baseOid = compareBase?.oid ?? localBaseOid;
   const rangeKey = baseOid && branchOid ? `${baseOid}...${branchOid}` : null;
   const knownCounts = rangeKey ? laneAheadBehindByRange.get(rangeKey) ?? null : null;
   let countsRes = knownCounts
@@ -1297,6 +1332,7 @@ async function computeLaneStatus(
     dirty,
     ahead,
     behind,
+    ...(compareBase ? { comparedTo: compareBase.label } : {}),
     remoteBehind,
     changedFileCount: parsedStatus.changedFileCount,
     staged: parsedStatus.staged,
