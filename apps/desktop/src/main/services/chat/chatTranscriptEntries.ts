@@ -416,7 +416,9 @@ export function chatEventsPage(
   reachedSince: boolean,
 ): Pick<ChatEventsResult, "cursor" | "events" | "truncated" | "gap"> {
   const newer = since === null ? envelopes : envelopes.filter((entry) => (entry.sequence ?? -1) > since);
-  const events = chatLifecycleEvents(newer);
+  // Read from everything on hand, then cut at the cursor: a turn's end reported
+  // twice (its status, then its done) straddling the cursor is still one event.
+  const events = chatLifecycleEvents(envelopes).filter((event) => since === null || event.sequence > since);
   const returned = since === null ? events.slice(-limit) : events.slice(0, limit);
   // Without a cursor the newest events come back and older ones are not "more to read".
   const truncated = since !== null && returned.length < events.length;

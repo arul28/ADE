@@ -25,7 +25,9 @@ calling. See [Typed tools](#typed-tools). Tools with a view come back as an
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpOAuth.ts` | Stateless client registration, redirect URI rules, authorize request parsing, PKCE, pending sign-ins and authorization codes, the sign-in and allow pages. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpKnownApps.ts` | Which app a sign-in is, from the redirect URI it used (and, for local and app-scheme addresses only, its registered name). |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpHttp.ts` | The HTTP shapes, plus brain→relay requests: when a request may be tried again, the call id, plain network-error sentences, and the replay guard that answers a repeated call once. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpTools.ts` | The typed tools: inputs, the argv each builds, how its JSON is trimmed, its `next` hint, and its result shape. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpTools.ts` | The typed tools: inputs, the argv each builds, how its JSON is trimmed, its `next` hint, and its result shape; `printsAgentOutput` (which output gets secrets masked) and `explicitTargetRefusal`. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpChatRouting.ts` | A chat id finds its chat: rerun in its project here, or forward to its computer, remembered per connection; deleted and not-found answers. |
+| `apps/desktop/resources/agent-skills/ade-mcp-client/SKILL.md` | The walkthrough for an outside bot, served as an MCP prompt and left out of in-ADE agents' skill line (`adeOutsideClientAgentSkills`). |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpContextBudget.test.ts`, `.json` | The context-size ratchet. |
 | `apps/ade-cli/src/cliChatInbox.ts` | `ade chat inbox`, the command behind the `inbox` tool. |
 | `evals/ade-mcp/` | The eval of how models use these tools. |

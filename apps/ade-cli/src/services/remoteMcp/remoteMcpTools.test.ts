@@ -34,7 +34,7 @@ describe("ADE MCP typed tools", () => {
     const built = tool.build(everyInput(tool));
     if (!("argv" in built)) throw new Error(`${tool.name} did not build: ${built.error}`);
     // The CLI reads `--stdin` while it builds the plan; the runner pipes the text, so stand it in here.
-    const argv = built.argv.map((word) => (word === "--stdin" ? "--text=x" : word));
+    const argv = built.argv.map((word) => (word === "--stdin" ? "--text=x" : word === "--notify-token-stdin" ? "--notify-token=x" : word));
     expect(() => buildCliPlan(argv)).not.toThrow();
   });
 });

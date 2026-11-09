@@ -588,6 +588,8 @@ ade chat restart [<session>] [--stop | --after-turn]         # fresh provider pr
 ade chat wait <a> <b> --async [--any]                        # durable: wake me when all (or any) are idle
 ade chat waits --text                                        # list waits; ade chat wait --cancel <id>
 ade chat wait --background --job <id>                        # wake me when my background job ends
+ade chat events <id> --since <cursor> --json                 # turn starts/ends, input needed, errors since a cursor; answers at once
+ade chat notify <id> --url https://… --token-stdin           # POST there when it goes idle, needs input or fails (--list, --cancel)
 ade chat send <B> --after <A> "start the review"             # send B this once A is idle
 ade prs watch <pr> | ade prs ship <pr> | ade prs unwatch <pr>  # PR Watch / Ship for the calling chat
 ade chat actions --personal --text
