@@ -1,4 +1,3 @@
-import { resolveModelSlug, type ModelProviderGroup } from "../../../../desktop/src/shared/modelRegistry";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { ProjectRegistry } from "../projects/projectRegistry";
@@ -15,6 +14,7 @@ import { accountMachineDisplayName } from "../../../../desktop/src/shared/accoun
 import { readChatLaunchDefaults } from "../../../../desktop/src/main/services/chat/chatLaunchDefaults";
 import { createRemoteMcpService, type RemoteMcpService } from "./remoteMcpService";
 import { remoteMcpAdeVersion } from "./remoteMcpAccount";
+import { resolveModelSlug, type ModelProviderGroup } from "../../../../desktop/src/shared/modelRegistry";
 
 /**
  * The machine's one ADE MCP service. Machine-level like the relay
@@ -71,6 +71,7 @@ export function getSharedRemoteMcpService(logger?: RemoteMcpLogger): RemoteMcpSe
       if (!defaults?.provider || !defaults.modelId) return null;
       // A saved pick may predate full model names (`opus`); requests must
       // carry the full name, so the saved one is resolved here.
+      // The saved provider is a provider group; an unknown one only skips the hint.
       const model = resolveModelSlug(defaults.modelId, defaults.provider as ModelProviderGroup) ?? defaults.modelId;
       return { provider: defaults.provider, model, reasoningEffort: defaults.reasoningEffort };
     },

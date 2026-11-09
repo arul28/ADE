@@ -1449,6 +1449,9 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
        "anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5-api", "claude-opus-5-5",
        "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5-5":
     return "Claude Opus 5.5"
+  case "claude-fable-5-2", "anthropic/claude-fable-5-2", "anthropic/claude-fable-5-2-api",
+       "opencode/anthropic/claude-fable-5-2":
+    return "Claude Fable 5.2"
   case "fable", "fable-5.1", "fable-5-1", "fable-5", "fable-5.0",
        "anthropic/claude-fable-5-1", "anthropic/claude-fable-5-1-api", "claude-fable-5-1",
        "opencode/anthropic/claude-fable-5-1", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api",

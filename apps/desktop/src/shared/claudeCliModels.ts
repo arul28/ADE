@@ -105,7 +105,7 @@ export function resolveClaudeCliModelAlias(
   const known = getModelById(raw);
   if (known?.providerRoute === "claude-cli") return known.providerModelId;
 
-  if (normalized.includes("fable-5-2") || normalized.includes("fable-5.2")) return "claude-fable-5-2";
+  if (/fable[\s._-]*5[._-]2/.test(normalized)) return "claude-fable-5-2";
   if (normalized.includes("fable")) return "claude-fable-5-1";
   // A generation-qualified Sonnet id resolves to the generation it names: only
   // the unqualified `sonnet` and explicit 5.5 spellings take the newest row.

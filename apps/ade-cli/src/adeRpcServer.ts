@@ -96,7 +96,7 @@ import { isMovedAwayChatError } from "../../desktop/src/shared/crossMachineMoveL
 import { crossMachineMoveRelation, withoutCrossMachineCallerFields } from "../../desktop/src/shared/crossMachineHandoff";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { parseDiffNameOnly, resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
-import { getDefaultModelDescriptor, shorthandModelNameRefusal } from "../../desktop/src/shared/modelRegistry";
+import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
 import { isSceneParseFailure, parseSceneFence } from "../../desktop/src/shared/chatScene";
 import {
@@ -178,6 +178,7 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
+import { assertActionModelNames, assertFullModelName } from "./modelNameGuard";
 import { captureError } from "../../desktop/src/shared/sentry/capture";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
@@ -1786,47 +1787,6 @@ function nowIso(): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Input keys that pick the model a chat, CLI, agent or automation runs. */
-const MODEL_SELECTOR_KEYS = new Set(["model", "modelId", "targetModelId"]);
-
-/**
- * The actions whose model input picks what runs. Elsewhere a `model` key names
- * a model as stats and rate lists do (`usage.*`) or is a saved setting carried
- * along in a larger save (`project_config.save`), and old names there must
- * keep saving.
- */
-function actionPicksModel(domain: string, action: string): boolean {
-  return domain === "chat"
-    || domain === "automations"
-    || domain === "external-sessions"
-    || (domain === "usage" && action === "previewModelRoute");
-}
-
-/**
- * The first model name in an action's input that is shorthand rather than a
- * full model name (see `shorthandModelNameRefusal`).
- */
-function findShorthandModelRefusal(input: unknown, depth = 0): string | null {
-  if (depth > 6 || input === null || typeof input !== "object") return null;
-  const entries = Array.isArray(input) ? input.map((value) => [null, value] as const) : Object.entries(input);
-  for (const [key, value] of entries) {
-    if (key !== null && MODEL_SELECTOR_KEYS.has(key)) {
-      const refusal = shorthandModelNameRefusal(value);
-      if (refusal) return refusal;
-    }
-    if (value !== null && typeof value === "object") {
-      const nested = findShorthandModelRefusal(value, depth + 1);
-      if (nested) return nested;
-    }
-  }
-  return null;
-}
-
-function assertFullModelName(modelRef: string | null | undefined): void {
-  const refusal = shorthandModelNameRefusal(modelRef);
-  if (refusal) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, refusal);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -6501,9 +6461,10 @@ async function runTool(args: {
     // A name typed now must be a full model name. The desktop app is left out:
     // it sends names from its own picker, or saved ones (a preset, a rule, a
     // last-used model) that may predate this rule and must keep working.
-    if (!mayUseUserOnlyActions(session) && actionPicksModel(domain, action)) {
-      const shorthandModel = findShorthandModelRefusal(argsList ?? (hasScalarArg ? null : toolArgs.args));
-      if (shorthandModel) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, shorthandModel);
+    if (!mayUseUserOnlyActions(session)) {
+      // The input the action receives: the first positional argument, a scalar
+      // `arg` (an object there reaches the action too), or `args`.
+      assertActionModelNames(domain, action, argsList ? argsList[0] : hasScalarArg ? toolArgs.arg : toolArgs.args);
     }
     if (
       domain === "cto_state"
@@ -7478,7 +7439,7 @@ async function runTool(args: {
     const rows = clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 200);
     const initialInput = asOptionalTrimmedString(toolArgs.initialInput)?.slice(0, 20_000) ?? null;
     const model = asOptionalTrimmedString(toolArgs.model) ?? asOptionalTrimmedString(toolArgs.modelId);
-    if (!mayUseUserOnlyActions(session)) assertFullModelName(model);
+    if (!mayUseUserOnlyActions(session)) assertFullModelName(model, provider);
     const reasoningEffort = asOptionalTrimmedString(toolArgs.reasoningEffort);
     const fastMode = asOptionalBoolean(toolArgs.fastMode) ?? asOptionalBoolean(toolArgs.codexFastMode);
     const initialInputMeta = deriveTrackedCliInitialInputSessionMeta({
@@ -9222,7 +9183,7 @@ async function runTool(args: {
     }
     const provider = asTrimmedString(toolArgs.provider) === "claude" ? "claude" : "codex";
     const model = asOptionalTrimmedString(toolArgs.model);
-    if (!mayUseUserOnlyActions(session)) assertFullModelName(model);
+    if (!mayUseUserOnlyActions(session)) assertFullModelName(model, provider);
     const requestedSpawnPermissionMode = parseSpawnPermissionMode(toolArgs.permissionMode);
     const spawnCeiling = await agentCliPermissionCeiling(runtime, session, null);
     const permissionMode = spawnCeiling
