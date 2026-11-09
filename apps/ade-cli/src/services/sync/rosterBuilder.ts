@@ -867,8 +867,8 @@ async function buildRosterProject(
           : rosterFailureIsCurrent(row)
             ? "failed"
             // After the settled and failed tiers, as on the Work row: a settled
-            // chat stays settled while its watch runs.
-            : live?.activePrWatch && row.status !== "disposed"
+            // chat stays settled while its watch runs, and a raised hand still wins.
+            : live?.activePrWatch && liveStatus !== "awaiting" && row.status !== "disposed"
               ? "running"
               : liveStatus ?? diskChatStatus(row, Boolean(sidecar?.awaitingInput));
     const awaitingInput = status === "awaiting";

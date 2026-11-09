@@ -457,6 +457,14 @@ describe("buildRosterSnapshot", () => {
       expect(await publishedStatus()).toBe("ended");
       db.prepare("update terminal_sessions set settled_at = null where id = 'chat-run'").run();
       expect(await publishedStatus()).toBe("running");
+      const asking = bootedScopes([{
+        sessionId: "chat-run",
+        status: "idle",
+        awaitingInput: true,
+        activePrWatch: { startedAt: "2026-01-02T00:00:00Z", githubPrNumber: 7, count: 1 },
+      }]);
+      const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: asking, hostProjectId: PROJECT_ID });
+      expect(projects[0]!.chats.find((chat) => chat.id === "chat-run")!.status).toBe("awaiting");
       db.prepare("update terminal_sessions set status = 'disposed' where id = 'chat-run'").run();
       expect(await publishedStatus()).not.toBe("running");
     } finally {
