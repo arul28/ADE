@@ -1179,8 +1179,12 @@ export function FilesWorkbench({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedPinKey]);
 
+  // Once per navigation: the request is rebuilt on every render and must not
+  // undo a machine picked afterwards.
+  const appliedNavigationPinRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!active || !navigationOpenRequest) return;
+    if (!active || !navigationOpenRequest || appliedNavigationPinRef.current === navigationOpenRequest.nonce) return;
+    appliedNavigationPinRef.current = navigationOpenRequest.nonce;
     const requestedPin = navigationOpenRequest.pin ?? null;
     setMachinePin((current) => (current?.key === requestedPin?.key ? current : requestedPin));
   }, [active, navigationOpenRequest]);

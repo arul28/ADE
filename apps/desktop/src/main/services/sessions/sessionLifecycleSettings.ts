@@ -61,12 +61,13 @@ export function setSessionLifecycleSettings(args: {
       args.settings.autoSettleLaneSessionsOnPrMerge === true,
     releaseLaneResourcesOnSettle: args.settings.releaseLaneResourcesOnSettle === true,
   };
-  args.db.setJson(SETTINGS_KEY, { autoSettleLaneSessionsOnPrMerge: settings.autoSettleLaneSessionsOnPrMerge });
+  // The file first: a failed write then changes nothing.
   if (settings.releaseLaneResourcesOnSettle !== previousSettings.releaseLaneResourcesOnSettle) {
     const file = machineSettingsPath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
     writeFileAtomic(file, `${JSON.stringify({ releaseLaneResourcesOnSettle: settings.releaseLaneResourcesOnSettle })}\n`);
   }
+  args.db.setJson(SETTINGS_KEY, { autoSettleLaneSessionsOnPrMerge: settings.autoSettleLaneSessionsOnPrMerge });
   if (
     previousState
     && previousSettings.autoSettleLaneSessionsOnPrMerge === settings.autoSettleLaneSessionsOnPrMerge

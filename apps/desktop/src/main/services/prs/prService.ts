@@ -7206,8 +7206,7 @@ export function createPrService({
       path: `/repos/${target.repo.owner}/${target.repo.name}/pulls/${target.prNumber}`,
       body: { body: args.body }
     });
-    readCache.forgetRepo(target.repo);
-    if (target.row) await refreshOne(target.row.id);
+    await refreshAfterMutation(target, { hot: false });
   };
 
   const deletePr = async (args: DeletePrArgs): Promise<DeletePrResult> => {

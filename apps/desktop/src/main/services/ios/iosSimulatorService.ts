@@ -3466,7 +3466,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (reason === "boot") laneMaintenance().clearPowerOff(udid);
       // Also the one place that knows the boot really happened: a device that
       // was already up keeps its record, and a person's boot records nobody.
-      laneMaintenance().recordBootedBy(udid, reason === "boot" ? agentCallChat.getStore() ?? null : null);
+      // A shutdown leaves it: the shutdown can fail, and the record goes once
+      // the device is seen off.
+      if (reason === "boot") laneMaintenance().recordBootedBy(udid, agentCallChat.getStore() ?? null);
       return resetHelperDevice(udid, reason);
     },
     stopDeviceRecording: (udid, reason) => stopDeviceRecording(udid, reason),

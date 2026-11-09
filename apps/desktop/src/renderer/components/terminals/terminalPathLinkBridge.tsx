@@ -55,7 +55,7 @@ export function TerminalPathLinkBridge({
     const resolved = await read;
     // A failed read is not remembered, so the next hover can try again.
     if (resolved === null && laneReadRef.current?.key === scopeKey) laneReadRef.current = null;
-    setLaneId(resolved);
+    setLaneId(resolved ?? runtimeRef.current?.pathLinks.laneId ?? null);
     return resolved;
   });
 

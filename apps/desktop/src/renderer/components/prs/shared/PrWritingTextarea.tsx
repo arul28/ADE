@@ -80,10 +80,10 @@ export const PrWritingTextarea = React.forwardRef<HTMLTextAreaElement, PrWriting
   const [anchor, setAnchor] = useState<{ left: number; bottom: number; width: number } | null>(null);
   const requestRef = useRef(0);
 
-  useEffect(() => {
-    if (!forwardedRef) return;
-    if (typeof forwardedRef === "function") forwardedRef(textareaRef.current);
-    else forwardedRef.current = textareaRef.current;
+  const setRefs = React.useCallback((node: HTMLTextAreaElement | null) => {
+    textareaRef.current = node;
+    if (typeof forwardedRef === "function") forwardedRef(node);
+    else if (forwardedRef) forwardedRef.current = node;
   }, [forwardedRef]);
 
   const syncTrigger = React.useCallback(() => {
@@ -244,7 +244,7 @@ export const PrWritingTextarea = React.forwardRef<HTMLTextAreaElement, PrWriting
     <>
       <textarea
         {...rest}
-        ref={textareaRef}
+        ref={setRefs}
         onKeyDown={handleKeyDown}
         onSelect={(event) => {
           syncTrigger();

@@ -264,7 +264,9 @@ export function createTerminalPathLinkProvider(term: Terminal, context: Terminal
           return;
         }
         void (async () => {
-          if (!context.laneId) context.laneId = (await context.ensureLaneId?.()) ?? null;
+          // Asked every time: a remounted terminal keeps its lane here, and its
+          // new opener still has to learn it.
+          context.laneId = (await context.ensureLaneId?.()) ?? context.laneId;
           if (!context.laneId) return null;
           return Promise.all(tokens.map((token) => probeWithCache(context, token.location)));
         })()
