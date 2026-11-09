@@ -11,6 +11,7 @@ import {
   type CloudAgentLimits,
   type CloudShapeId,
   isCloudInstanceId,
+  cloudMachineState,
   type CloudCreateMachineArgs,
   type CloudCreateProgress,
   type CloudMachineActionArgs,
@@ -53,7 +54,7 @@ import { openCloudApprovalWindow } from "./cloudApprovalWindow";
 import { createCloudMachines } from "./cloudMachines";
 import { claimCloudReadyMachine, releaseCloudReadyMachine } from "./cloudReadyClaim";
 import { createCloudReadyKeeper } from "./cloudReadyMachines";
-import { setCloudUpdateBlocker, setCloudWakeForUse } from "./cloudWakeHook";
+import { setCloudAsleepCheck, setCloudUpdateBlocker, setCloudWakeForUse } from "./cloudWakeHook";
 import { startCloudSleepWatch } from "./cloudSleepWatch";
 import { setCloudDesktopActions } from "./cloudDesktopActions";
 import { copyCloudMachine, moveCloudMachine, type CloudCopyDeps } from "./cloudMachineCopy";
@@ -266,6 +267,28 @@ export function registerCloudIpc(args: {
     if (result.state === "refused") throw new Error(result.message);
     if (result.state === "woken") sendToAllWindows(IPC.cloudStatusChanged);
     return result.state === "woken";
+  });
+
+  // A call to a sleeping computer times out on a relay tunnel that still looks
+  // open. One bounded read of the account's computers says whether that is why.
+  setCloudAsleepCheck((target) => {
+    const machineKey = target.pairedMachine?.machineKey?.trim();
+    if (!machineKey || !machines.isKnownBox(machineKey)) return null;
+    return (async () => {
+      const client = await savedClient();
+      if (!client) return false;
+      const instances = await Promise.race([
+        client.listInstances(),
+        new Promise<null>((resolve) => { setTimeout(() => resolve(null), 5_000).unref?.(); }),
+      ]);
+      const instance = instances ? cloudInstanceForMachine(instances, machineKey, target.hostname) : null;
+      if (!instance) return false;
+      const state = cloudMachineState(instance.status);
+      return state === "asleep" || state === "stopped" || state === "stopping";
+    })().catch((error: unknown) => {
+      logger.warn("cloud.asleep_check_failed", { error: getErrorMessage(error) });
+      return false;
+    });
   });
 
   // A computer whose ADE start script can't restart on an update would install

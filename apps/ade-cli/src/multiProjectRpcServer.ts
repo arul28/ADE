@@ -377,6 +377,8 @@ export type MultiProjectRpcHandlerOptions = {
   prepareCloudStop?: ((args: { timeoutMs: number }) => Promise<unknown>) | null;
   /** On a cloud computer: commits and pushes every lane's work (`ade cloud push-work`). */
   pushCloudWork?: (() => Promise<unknown>) | null;
+  /** On a cloud computer: keeps it awake while `run` works (a first clone), and counts the end as use. */
+  holdCloudWork?: (<T>(reason: string, ttlMs: number, run: () => Promise<T>) => Promise<T>) | null;
   keepAwakeService?: Pick<
     BrainKeepAwakeService,
     "getSnapshot" | "setLevel" | "migrateLegacyPreference" | "fixSystemSleep"
@@ -1442,6 +1444,10 @@ export function createMultiProjectRpcRequestHandler(
     }
   };
   registerAccountProjects();
+  // A clone another machine asked for runs with no project open, so nothing on
+  // a cloud computer's busy list sees it.
+  const whileFirstCloneHeld = <T>(run: () => Promise<T>): Promise<T> =>
+    options.holdCloudWork ? options.holdCloudWork("first_clone", 30 * 60_000, run) : run();
   const accountAuthService = options.accountAuthService ?? getSharedAccountAuthService({
     projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
   });
@@ -3328,7 +3334,7 @@ export function createMultiProjectRpcRequestHandler(
         throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "machines.cloneForAgent is for another machine's agents.");
       }
       return await decorateProjectWithIcon(
-        await cloneRepositoryForRemoteAgent(projectRegistry, readOptionalString(params.originUrl)),
+        await whileFirstCloneHeld(() => cloneRepositoryForRemoteAgent(projectRegistry, readOptionalString(params.originUrl))),
       );
     }
 
@@ -3733,10 +3739,9 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "projects.clone") {
-      const result =
-        await (await createMachineProjectScaffoldService()).cloneRepository(
-          await readCloneProjectInput(params, () => defaultParentDir(projectRegistry)),
-        );
+      const input = await readCloneProjectInput(params, () => defaultParentDir(projectRegistry));
+      const result = await whileFirstCloneHeld(async () =>
+        (await createMachineProjectScaffoldService()).cloneRepository(input));
       return await decorateProjectWithIcon(
         projectRegistry.add(
           result.rootPath,

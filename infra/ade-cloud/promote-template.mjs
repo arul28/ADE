@@ -8,7 +8,8 @@
 //
 // --env is production, development or local (the `wrangler dev` database).
 // --min-version vX.Y.Z creates the test computer with ADE_MIN_VERSION set, to
-// time the first-start install. The computer is tagged created_by: ade-template-check and
+// time the first-start install. The test opens a project, reads its lanes and
+// runs a command in a terminal before the sleep and stop checks. The computer is tagged created_by: ade-template-check and
 // is always deleted, including on Ctrl-C.
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -90,6 +91,58 @@ async function verifyFile(id, path, token) {
   if (read.stdout.trim() !== token) throw new Error(`the file in the home folder changed: "${read.stdout.trim()}"`);
 }
 
+/** Every value stored under `key` anywhere in a JSON answer. */
+function valuesOf(value, key, found = []) {
+  if (Array.isArray(value)) for (const item of value) valuesOf(item, key, found);
+  else if (value && typeof value === "object") {
+    for (const [name, item] of Object.entries(value)) {
+      if (name === key && typeof item === "string") found.push(item);
+      else valuesOf(item, key, found);
+    }
+  }
+  return found;
+}
+
+/**
+ * What a person does first: open a project, see its lanes, run a command in a
+ * terminal. A brain can answer `ade auth status` and still fail all three (the
+ * terminal module built for a newer Linux than the computer runs, 2026-11-09).
+ */
+async function realUse(id) {
+  const dir = "/home/node/ade-template-check-project";
+  const made = await exec(id, [
+    `rm -rf ${dir} && mkdir -p ${dir} && cd ${dir}`,
+    "git init -q -b main",
+    "git -c user.email=check@ade-app.dev -c user.name=check commit -q --allow-empty -m init",
+    `ade projects add ${dir}`,
+  ].join(" && "), 90_000);
+  if (made.exit_code !== 0) throw new Error(`adding a project failed: ${(made.stderr || made.stdout).trim()}`);
+
+  const lanes = await exec(id, `cd ${dir} && timeout 60 ade lanes list --json`, 90_000);
+  let lanesBody = null;
+  try { lanesBody = JSON.parse(lanes.stdout); } catch { /* not JSON */ }
+  if (lanes.exit_code !== 0 || !lanesBody) throw new Error(`opening the project failed: ${(lanes.stderr || lanes.stdout).trim()}`);
+  console.log(`project opened, ${valuesOf(lanesBody, "branchRef").length} lane(s)`);
+
+  // The output differs from the typed text (the quotes go), so the echo of
+  // the input alone can't pass.
+  const [head, tail] = [`pty-${randomBytes(4).toString("hex")}`, randomBytes(4).toString("hex")];
+  const marker = `${head}-${tail}`;
+  const started = await exec(id, `cd ${dir} && timeout 60 ade --role cto shell start --json -c 'echo ${head}"-"${tail}'`, 90_000);
+  let startedBody = null;
+  try { startedBody = JSON.parse(started.stdout); } catch { /* not JSON */ }
+  const ptyId = startedBody ? valuesOf(startedBody, "ptyId")[0] : null;
+  if (started.exit_code !== 0 || !ptyId) throw new Error(`starting a terminal failed: ${(started.stderr || started.stdout).trim()}`);
+  // Read back from the terminal itself, so the marker shows only if a pty
+  // started. `--role cto`: a person's terminal; the default role may only
+  // touch its own session's.
+  await until("the terminal's output", 60_000, async () => {
+    const read = await exec(id, `cd ${dir} && timeout 20 ade --role cto terminal read --pty ${ptyId} --text`);
+    return read.exit_code === 0 && read.stdout.includes(marker);
+  }, 2_000);
+  console.log("terminal ran a command");
+}
+
 /** Retries a power call while the provider answers `409 try_again` (a sleep save in progress). */
 async function power(id, action) {
   for (let i = 0; ; i += 1) {
@@ -157,6 +210,9 @@ async function test(build, minVersion) {
     const terminal = await exec(id, `sh -c 'cd "$HOME" && echo terminal-$(whoami) && uname -s'`);
     if (terminal.exit_code !== 0 || !terminal.stdout.includes("terminal-")) throw new Error(`terminal command failed: ${terminal.stderr}`);
     console.log(`terminal: ${terminal.stdout.trim().replace(/\n/g, " ")}`);
+
+    await realUse(id);
+    lap("project_and_terminal", start);
 
     const token = randomBytes(8).toString("hex");
     const path = "/home/node/ade-template-check-file";
