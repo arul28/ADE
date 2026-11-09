@@ -11,7 +11,8 @@ import type {
   RuntimeUpdateImpact,
 } from "../../../../desktop/src/shared/types";
 import { PERSONAL_CHAT_ACTIONS } from "../../../../desktop/src/shared/types";
-import { summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "../runtime/runtimeWorkSummary";
+import { readRuntimeBusyFacts, summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "../runtime/runtimeWorkSummary";
+import type { CloudBusyFacts } from "../power/cloudKeepAwake";
 import { USER_ONLY_CONSENT_CARD_REFUSAL } from "../../../../desktop/src/shared/types/macDesktop";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
@@ -270,6 +271,17 @@ export class PersonalChatScope {
     const runtime = await pending.catch(() => null);
     if (!runtime) return { activeAgentTurns: 0, activeWorkSessions: 0 };
     return summarizeRuntimeActivity(runtime);
+  }
+
+  /** The chat runtime if it has been booted; never boots it. */
+  async bootedRuntime() {
+    return await this.runtimePromise?.catch(() => null) ?? null;
+  }
+
+  /** The cloud busy list's read. Same rule as `activitySummary`: never boots the runtime to answer. */
+  async busyFacts(): Promise<Pick<CloudBusyFacts, "chats" | "terminals">> {
+    const runtime = await this.runtimePromise?.catch(() => null);
+    return runtime ? readRuntimeBusyFacts(runtime) : { chats: [], terminals: [] };
   }
 
   /** Same rule as `activitySummary`: never boots the runtime to answer. */

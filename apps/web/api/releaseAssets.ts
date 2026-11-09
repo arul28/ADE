@@ -51,6 +51,10 @@ export const APP_TARGETS: Readonly<Record<string, AppTarget>> = Object.freeze({
   "mac-arm64": { suffix: "-arm64.dmg", platform: "mac", arch: "arm64" },
   "mac-x64": { suffix: "-x64.dmg", platform: "mac", arch: "x64" },
   windows: { suffix: "-win-x64.exe", platform: "windows", arch: "x64" },
+  "linux-x64-appimage": { suffix: "-linux-x64.AppImage", platform: "linux", arch: "x64" },
+  "linux-arm64-appimage": { suffix: "-linux-arm64.AppImage", platform: "linux", arch: "arm64" },
+  "linux-x64-deb": { suffix: "-linux-x64.deb", platform: "linux", arch: "x64" },
+  "linux-arm64-deb": { suffix: "-linux-arm64.deb", platform: "linux", arch: "arm64" },
 });
 
 /** Standalone brain binaries, keyed by the `<target>` in /download/brain/<target>. */

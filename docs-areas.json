@@ -16,7 +16,8 @@
         "getting-started/install",
         "getting-started/ade-beta",
         "getting-started/connect-machine",
-        "getting-started/windows"
+        "getting-started/windows",
+        "getting-started/linux"
       ]
     },
     {
@@ -207,6 +208,7 @@
       "pages": [
         "tools/ios-companion",
         "tools/ios-simulator",
+        "tools/android-development",
         "tools/remote-machines"
       ]
     },

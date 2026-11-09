@@ -5,7 +5,7 @@ import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { revealLabel } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { extractError } from "../../lib/format";
-import { useAppStore } from "../../state/appStore";
+import { deleteEventBinding } from "../app/toast/useLaneWorkSavedToast";
 import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 
@@ -45,7 +45,7 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
       const leftover = progress.leftoverWorktree;
       const finished = progress.overallStatus === "completed" || progress.overallStatus === "completed_with_warnings";
       if (!finished || !leftover?.path) return;
-      const binding = event.origin !== undefined ? event.origin : useAppStore.getState().projectBinding ?? null;
+      const binding = deleteEventBinding(event);
       setQueue((existing) => {
         if (existing.some((entry) => entry.laneId === progress.laneId && entry.path === leftover.path)) {
           return existing;

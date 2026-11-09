@@ -47,6 +47,8 @@ export type LaneSidebarListProps = {
   canCreateLane: boolean;
   onCreateLane: () => void;
   loading: boolean;
+  /** Why the lane list could not be read; shown instead of "No lanes yet". */
+  loadError?: string | null;
   totalLaneCount: number;
   laneRuntimeById: ReadonlyMap<string, LaneListSnapshot["runtime"]>;
   /** The quiet "3 behind main" line per row key, for lanes that need a rebase. */
@@ -102,6 +104,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     canCreateLane,
     onCreateLane,
     loading,
+    loadError = null,
     totalLaneCount,
     laneRuntimeById,
     rebaseLineByLaneId,
@@ -317,7 +320,11 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
         )}
         {rowCount === 0 && pendingCreatingIssues.length === 0 ? (
           <div className="px-2 py-6 text-center text-[12px]" style={{ color: COLORS.textMuted }}>
-            {loading && totalLaneCount === 0 ? "Loading lanes…" : totalLaneCount === 0 ? "No lanes yet" : "No lanes match"}
+            {loading && totalLaneCount === 0
+              ? "Loading lanes…"
+              : totalLaneCount === 0
+                ? (loadError ? `Couldn't load lanes. ${loadError}` : "No lanes yet")
+                : "No lanes match"}
           </div>
         ) : filter.trim().length === 0 && totalLaneCount === 1 && pendingCreatingIssues.length === 0 ? (
           // Only the primary lane: the next step is a lane to work in.

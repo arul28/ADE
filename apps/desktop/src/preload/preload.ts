@@ -80,9 +80,10 @@ import { machineNameForBinding } from "../shared/machineIdentity";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
-import type { Agent37Budget, Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37Status, Agent37TemplateStatus, Agent37WakeForUseResult } from "../shared/agent37";
-import type { Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus } from "../shared/agent37Ready";
-import type { Agent37CloudSignInId, Agent37CloudSignInStatus } from "../shared/agent37CloudSignIns";
+import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
+import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
+import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
+import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -885,6 +886,9 @@ import type {
   LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
+  DeletedLaneSnapshot,
+  RestoreDeletedLaneArgs,
+  RestoreDeletedLaneResult,
   LaneReclaimRisk,
   RestoreLaneResult,
   LaneEnvInitProgress,
@@ -7121,6 +7125,18 @@ const adeBridge = {
       callProjectRuntimeActionOr("lane", "listDeleteProgress", {}, () =>
         ipcRenderer.invoke(IPC.lanesListDeleteProgress),
       ),
+    listDeleted: async (pin?: OpenProjectBinding | null): Promise<DeletedLaneSnapshot[]> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "listDeletedLanes", {}, () =>
+        ipcRenderer.invoke(IPC.lanesListDeleted),
+      ),
+    restoreDeleted: async (args: RestoreDeletedLaneArgs, pin?: OpenProjectBinding | null): Promise<RestoreDeletedLaneResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "restoreDeletedLane", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesRestoreDeleted, args),
+      ),
+    removeDeleted: async (args: { id: string }, pin?: OpenProjectBinding | null): Promise<{ removed: boolean }> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "removeDeletedLane", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesRemoveDeleted, args),
+      ),
     getDeleteRisk: async (
       args: { laneId: string },
       pin?: OpenProjectBinding | null,
@@ -8344,7 +8360,8 @@ const adeBridge = {
       ),
     send: async (args: AgentChatSendArgs, pin?: OpenProjectBinding | null): Promise<void> => {
       agentChatSummaryCache.clear();
-      const stamped = { ...args, inputOrigin: await sessionInputOriginFor(pin) };
+      // `clientSendId`: a send retried after the machine slept mid-call is recognized there, not run twice.
+      const stamped = { ...args, inputOrigin: await sessionInputOriginFor(pin), clientSendId: args.clientSendId ?? randomClientId() };
       if (pin) {
         await callPinnedRuntimeAction<void>(pin, "chat", "sendMessage", { args: stamped });
       } else {
@@ -13019,72 +13036,85 @@ const adeBridge = {
   },
   // Account-wide: the key lives in the account vault and a new box joins the
   // account, so none of these take a pin.
-  agent37: {
-    getStatus: (): Promise<Agent37Status | null> => ipcRenderer.invoke(IPC.agent37GetStatus),
-    saveKey: (apiKey: string): Promise<Agent37Status | null> => ipcRenderer.invoke(IPC.agent37SaveKey, { apiKey }),
-    removeKey: (): Promise<Agent37Status | null> => ipcRenderer.invoke(IPC.agent37RemoveKey),
-    createMachine: (requestId: string, machine: Agent37CreateMachineArgs): Promise<{ started: boolean }> =>
-      ipcRenderer.invoke(IPC.agent37CreateMachine, { requestId, machine }),
-    onCreateProgress: (cb: (progress: Agent37CreateProgress) => void): (() => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, progress: Agent37CreateProgress) => cb(progress);
-      ipcRenderer.on(IPC.agent37CreateProgress, listener);
-      return () => ipcRenderer.removeListener(IPC.agent37CreateProgress, listener);
+  /** Whether ADE Cloud exists for this account (`renderer/state/cloudAccess.ts`). */
+  cloudAccess: {
+    read: (): Promise<{ enabled: boolean }> => ipcRenderer.invoke(IPC.cloudGetAccess),
+    onChanged: (cb: () => void): (() => void) => {
+      const listener = () => cb();
+      ipcRenderer.on(IPC.cloudStatusChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.cloudStatusChanged, listener);
+    },
+  },
+  cloud: {
+    getStatus: (): Promise<CloudStatus | null> => ipcRenderer.invoke(IPC.cloudGetStatus),
+    createMachine: (requestId: string, machine: CloudCreateMachineArgs): Promise<{ started: boolean }> =>
+      ipcRenderer.invoke(IPC.cloudCreateMachine, { requestId, machine }),
+    onCreateProgress: (cb: (progress: CloudCreateProgress) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: CloudCreateProgress) => cb(progress);
+      ipcRenderer.on(IPC.cloudCreateProgress, listener);
+      return () => ipcRenderer.removeListener(IPC.cloudCreateProgress, listener);
     },
     cancelCreate: (requestId: string): Promise<{ cancelled: boolean }> =>
-      ipcRenderer.invoke(IPC.agent37CancelCreate, { requestId }),
-    getTemplateStatus: (): Promise<Agent37TemplateStatus | null> => ipcRenderer.invoke(IPC.agent37GetTemplateStatus),
-    retryTemplate: (): Promise<Agent37TemplateStatus | null> => ipcRenderer.invoke(IPC.agent37RetryTemplate),
-    listMachines: (): Promise<Agent37MachinesResult | null> => ipcRenderer.invoke(IPC.agent37ListMachines),
-    machineAction: (args: Agent37MachineActionArgs): Promise<Agent37MachineActionResult | null> =>
-      ipcRenderer.invoke(IPC.agent37MachineAction, args),
-    getBudget: (): Promise<Agent37Budget | null> => ipcRenderer.invoke(IPC.agent37GetBudget),
+      ipcRenderer.invoke(IPC.cloudCancelCreate, { requestId }),
+    listMachines: (): Promise<CloudMachinesResult | null> => ipcRenderer.invoke(IPC.cloudListMachines),
+    /** True while this window is in front and the person moved or typed in the last few minutes. */
+    personIsHere: (): Promise<boolean> => ipcRenderer.invoke(IPC.cloudPersonIsHere),
+    /** Wakes a computer (free once a day at 0 hours) and pushes its lanes' work to GitHub. */
+    pushAllWork: (instanceId: string): Promise<CloudMachineActionResult> =>
+      ipcRenderer.invoke(IPC.cloudPushAllWork, { instanceId }),
+    machineAction: (args: CloudMachineActionArgs): Promise<CloudMachineActionResult | null> =>
+      ipcRenderer.invoke(IPC.cloudMachineAction, args),
+    getAgentLimits: (): Promise<CloudAgentLimits | null> => ipcRenderer.invoke(IPC.cloudGetAgentLimits),
+    setAgentLimits: (limits: Partial<CloudAgentLimits>): Promise<CloudAgentLimits | null> =>
+      ipcRenderer.invoke(IPC.cloudSetAgentLimits, { limits }),
+    setExtraHours: (enabled: boolean): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraHours, { enabled }),
+    openCheckout: (): Promise<{ opened: boolean }> => ipcRenderer.invoke(IPC.cloudOpenCheckout),
+    openBillingPortal: (): Promise<{ opened: boolean }> => ipcRenderer.invoke(IPC.cloudOpenBillingPortal),
     copyMachine: (args: { requestId: string; instanceId: string; name?: string | null; shape?: string | null }): Promise<{ started: boolean }> =>
-      ipcRenderer.invoke(IPC.agent37CopyMachine, args),
+      ipcRenderer.invoke(IPC.cloudCopyMachine, args),
     moveMachine: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }): Promise<{ started: boolean }> =>
-      ipcRenderer.invoke(IPC.agent37MoveMachine, args),
+      ipcRenderer.invoke(IPC.cloudMoveMachine, args),
     reconnectMachine: (args: { requestId: string; instanceId: string }): Promise<{ started: boolean }> =>
-      ipcRenderer.invoke(IPC.agent37ReconnectMachine, args),
-    setBudget: (budget: Partial<Agent37Budget>): Promise<Agent37Budget | null> => ipcRenderer.invoke(IPC.agent37SetBudget, { budget }),
-    wakeMachine: (machine: { machineKey: string; hostname?: string | null }): Promise<Agent37WakeForUseResult | null> =>
-      ipcRenderer.invoke(IPC.agent37WakeMachine, machine),
-    /** The key was saved or removed in this app; read the status again. */
+      ipcRenderer.invoke(IPC.cloudReconnectMachine, args),
+    /** ADE Cloud's status changed; read it again. */
     onStatusChanged: (cb: () => void): (() => void) => {
       const listener = () => cb();
-      ipcRenderer.on(IPC.agent37StatusChanged, listener);
-      return () => ipcRenderer.removeListener(IPC.agent37StatusChanged, listener);
+      ipcRenderer.on(IPC.cloudStatusChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.cloudStatusChanged, listener);
     },
-    onTemplateStatus: (cb: (status: Agent37TemplateStatus) => void): (() => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, status: Agent37TemplateStatus) => cb(status);
-      ipcRenderer.on(IPC.agent37TemplateStatus, listener);
-      return () => ipcRenderer.removeListener(IPC.agent37TemplateStatus, listener);
+    /** Saved chats: account-level, so no pin. Reads a computer's copy while it can't answer. */
+    savedChats: {
+      list: (args: CloudSavedChatsListArgs): Promise<CloudSavedChatList | null> => ipcRenderer.invoke(IPC.cloudSavedChatsList, args),
+      read: (args: CloudSavedChatReadArgs): Promise<CloudSavedChatPage | null> => ipcRenderer.invoke(IPC.cloudSavedChatsRead, args),
+      delete: (args: CloudSavedChatDeleteArgs): Promise<void> => ipcRenderer.invoke(IPC.cloudSavedChatsDelete, args),
     },
-    cloudSignInStatus: (): Promise<Agent37CloudSignInStatus | null> => ipcRenderer.invoke(IPC.agent37CloudSignInStatus),
-    cloudSignInClaudeStart: (): Promise<Agent37CloudSignInStatus | null> => ipcRenderer.invoke(IPC.agent37CloudSignInClaudeStart),
-    cloudSignInClaudeCode: (code: string): Promise<Agent37CloudSignInStatus | null> =>
-      ipcRenderer.invoke(IPC.agent37CloudSignInClaudeCode, { code }),
-    cloudSignInClaudeCancel: (): Promise<Agent37CloudSignInStatus | null> => ipcRenderer.invoke(IPC.agent37CloudSignInClaudeCancel),
-    cloudSignInSaveKey: (id: Agent37CloudSignInId, key: string): Promise<Agent37CloudSignInStatus | null> =>
-      ipcRenderer.invoke(IPC.agent37CloudSignInSaveKey, { id, key }),
-    cloudSignInRemove: (id: Agent37CloudSignInId): Promise<Agent37CloudSignInStatus | null> =>
-      ipcRenderer.invoke(IPC.agent37CloudSignInRemove, { id }),
+    cloudSignInStatus: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInStatus),
+    cloudSignInClaudeStart: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInClaudeStart),
+    cloudSignInClaudeCode: (code: string): Promise<CloudSignInStatus | null> =>
+      ipcRenderer.invoke(IPC.cloudSignInClaudeCode, { code }),
+    cloudSignInClaudeCancel: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInClaudeCancel),
+    cloudSignInSaveKey: (id: CloudSignInId, key: string): Promise<CloudSignInStatus | null> =>
+      ipcRenderer.invoke(IPC.cloudSignInSaveKey, { id, key }),
+    cloudSignInRemove: (id: CloudSignInId): Promise<CloudSignInStatus | null> =>
+      ipcRenderer.invoke(IPC.cloudSignInRemove, { id }),
     onCloudSignInChanged: (cb: () => void): (() => void) => {
       const listener = () => cb();
-      ipcRenderer.on(IPC.agent37CloudSignInChanged, listener);
-      return () => ipcRenderer.removeListener(IPC.agent37CloudSignInChanged, listener);
+      ipcRenderer.on(IPC.cloudSignInChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.cloudSignInChanged, listener);
     },
-    readyStatus: (): Promise<Agent37ReadyStatus | null> => ipcRenderer.invoke(IPC.agent37ReadyStatus),
-    readySetProject: (settings: Partial<Agent37ReadyProjectSettings>): Promise<Agent37ReadyStatus | null> =>
-      ipcRenderer.invoke(IPC.agent37ReadySetProject, { settings }),
-    readyRemoveProject: (identity: string): Promise<Agent37ReadyStatus | null> =>
-      ipcRenderer.invoke(IPC.agent37ReadyRemoveProject, { identity }),
-    readyRetry: (identity: string): Promise<Agent37ReadyStatus | null> => ipcRenderer.invoke(IPC.agent37ReadyRetry, { identity }),
-    readyClaim: (originUrl: string): Promise<Agent37ReadyClaim | null> => ipcRenderer.invoke(IPC.agent37ReadyClaim, { originUrl }),
+    readyStatus: (): Promise<CloudReadyStatus | null> => ipcRenderer.invoke(IPC.cloudReadyStatus),
+    readySetProject: (settings: Partial<CloudReadyProjectSettings>): Promise<CloudReadyStatus | null> =>
+      ipcRenderer.invoke(IPC.cloudReadySetProject, { settings }),
+    readyRemoveProject: (identity: string): Promise<CloudReadyStatus | null> =>
+      ipcRenderer.invoke(IPC.cloudReadyRemoveProject, { identity }),
+    readyRetry: (identity: string): Promise<CloudReadyStatus | null> => ipcRenderer.invoke(IPC.cloudReadyRetry, { identity }),
+    readyClaim: (originUrl: string): Promise<CloudReadyClaim | null> => ipcRenderer.invoke(IPC.cloudReadyClaim, { originUrl }),
     readyRelease: (instanceId: string, claimToken: string): Promise<{ released: boolean } | null> =>
-      ipcRenderer.invoke(IPC.agent37ReadyRelease, { instanceId, claimToken }),
-    onReadyStatus: (cb: (status: Agent37ReadyStatus) => void): (() => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, status: Agent37ReadyStatus) => cb(status);
-      ipcRenderer.on(IPC.agent37ReadyStatusChanged, listener);
-      return () => ipcRenderer.removeListener(IPC.agent37ReadyStatusChanged, listener);
+      ipcRenderer.invoke(IPC.cloudReadyRelease, { instanceId, claimToken }),
+    onReadyStatus: (cb: (status: CloudReadyStatus) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, status: CloudReadyStatus) => cb(status);
+      ipcRenderer.on(IPC.cloudReadyStatusChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.cloudReadyStatusChanged, listener);
     },
   },
   /**
@@ -13795,6 +13825,9 @@ const adeBridge = {
       );
       return runtime.handled ? runtime.result : null;
     },
+    /** "Still watching" on a cloud computer, to the machine the tool is on. */
+    noteWatching: (pin?: OpenProjectBinding | null): Promise<void> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "work_tools", "noteWatching", {}, async () => undefined),
     setActiveTool: async (
       laneId: string,
       tool: WorkToolId | null,

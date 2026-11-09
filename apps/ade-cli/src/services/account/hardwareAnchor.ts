@@ -89,7 +89,7 @@ export type HardwareAnchorDeps = {
 /**
  * Process-lifetime cache, including the negative answer.
  *
- * The publisher asks for this on every 30-second heartbeat, and the answer
+ * The publisher asks for this on every 60-second heartbeat, and the answer
  * cannot change while the process runs — the identifier is a property of the
  * hardware and the OS install. Caching the null too is deliberate: a machine
  * with no anchor must not respawn `ioreg` twice a minute forever to keep

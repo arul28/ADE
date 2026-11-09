@@ -24,6 +24,7 @@ import type {
   MacDesktopPermissions,
   MacDesktopStreamSummary,
   MacDesktopWindow,
+  LinuxDesktopHostFacts,
   WindowsDesktopStatus,
 } from "./macDesktop";
 
@@ -234,6 +235,8 @@ export type WorkToolsMacDesktopState = {
    * cards only where they apply.
    */
   windowsDesktop?: WindowsDesktopStatus | null;
+  /** Linux host facts, absent on older hosts and null on other platforms. */
+  linuxDesktop?: LinuxDesktopHostFacts | null;
   /**
    * The newest observation, flattened. The full `MacDesktopObservation` carries
    * an element tree a read-only client has no use for, and a state broadcast

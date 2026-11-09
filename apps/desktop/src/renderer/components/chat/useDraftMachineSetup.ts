@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type Agent37Machine } from "../../../shared/agent37";
-import { AGENT37_READY_WAKE_WAIT_MS } from "../../../shared/agent37Ready";
+import { type CloudMachine } from "../../../shared/adeCloud";
+import { CLOUD_READY_WAKE_WAIT_MS } from "../../../shared/cloudReady";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { ipcErrorMessage } from "../../lib/format";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { connectWithRetry } from "./connectWithRetry";
 import type { LaneMachineOption } from "../lanes/laneMachines";
 import type { DraftMachineOption } from "./DraftMachinePicker";
@@ -32,12 +33,12 @@ function githubCloneUrl(originUrl: string | null): { url: string; repo: string }
  *   it): "Clone the project here". Picking it clones the repository there with
  *   that machine's own Git sign-in (nothing travels from this computer), then
  *   selects it.
- * - an Agent 37 machine of the account that is not connected (asleep, or not
+ * - a cloud machine of the account that is not connected (asleep, or not
  *   connected from this window): picking it wakes and connects it, clones the
  *   repository when it is missing, then selects it.
  *
  * Every call goes to the picked machine's own connection (its target id); the
- * Agent 37 list is account-level and takes no pin.
+ * the provider list is account-level and takes no pin.
  */
 export function useDraftMachineSetup({
   enabled,
@@ -51,7 +52,7 @@ export function useDraftMachineSetup({
 }: {
   enabled: boolean;
   originUrl: string | null;
-  /** How many times the person opened the picker: each open reads the Agent 37 list again (0: never read). */
+  /** How many times the person opened the picker: each open reads the provider list again (0: never read). */
   pickerOpens: number;
   /** Connected machines without this repository. */
   cloneCandidates: readonly LaneMachineOption[];
@@ -63,8 +64,9 @@ export function useDraftMachineSetup({
   onNotice: (notice: { message: string; kind: "hint" | "status" } | null) => void;
 }) {
   // Stable for one origin, so the effects below don't restart on each render.
+  const cloudEnabled = useAdeCloudEnabled();
   const clone = useMemo(() => githubCloneUrl(originUrl), [originUrl]);
-  const [agent37Machines, setAgent37Machines] = useState<Agent37Machine[]>([]);
+  const [cloudMachines, setCloudMachines] = useState<CloudMachine[]>([]);
   const [busy, setBusy] = useState<Busy | null>(null);
   /** Prepared (connected, repository there): selected as soon as the picker lists it. */
   const [pendingTargetId, setPendingTargetId] = useState<string | null>(null);
@@ -72,26 +74,29 @@ export function useDraftMachineSetup({
   const hasOffline = offlineMachines.length > 0;
 
   useEffect(() => {
-    const listMachines = window.ade?.agent37?.listMachines;
-    if (!enabled || pickerOpens === 0 || !hasOffline || !listMachines) return;
+    const listMachines = window.ade?.cloud?.listMachines;
+    if (!enabled || !cloudEnabled || pickerOpens === 0 || !hasOffline || !listMachines) {
+      setCloudMachines([]);
+      return;
+    }
     let cancelled = false;
     void listMachines().then(
-      (result) => { if (!cancelled) setAgent37Machines(result?.state === "ok" ? result.machines : []); },
-      (error: unknown) => console.warn("[agent37] machine list for the picker failed", ipcErrorMessage(error)),
+      (result) => { if (!cancelled) setCloudMachines(result?.state === "ok" ? result.machines : []); },
+      (error: unknown) => console.warn("[cloud] machine list for the picker failed", ipcErrorMessage(error)),
     );
     return () => {
       cancelled = true;
     };
-  }, [enabled, hasOffline, pickerOpens]);
+  }, [cloudEnabled, enabled, hasOffline, pickerOpens]);
 
   const cloudOffline = useMemo(() => {
-    const byKey = new Map(agent37Machines.filter((machine) => machine.machineKey).map((machine) => [machine.machineKey!, machine]));
+    const byKey = new Map(cloudMachines.filter((machine) => machine.machineKey).map((machine) => [machine.machineKey!, machine]));
     return offlineMachines.flatMap((machine) => {
-      const agent37 = machine.machineKey ? byKey.get(machine.machineKey) : null;
-      if (!agent37 || agent37.state === "deleting" || agent37.state === "error") return [];
-      return [{ ...machine, asleep: agent37.state === "asleep" || agent37.state === "stopped" }];
+      const cloud = machine.machineKey ? byKey.get(machine.machineKey) : null;
+      if (!cloud || cloud.state === "deleting" || cloud.state === "error") return [];
+      return [{ ...machine, asleep: cloud.state === "asleep" || cloud.state === "stopped" }];
     });
-  }, [agent37Machines, offlineMachines]);
+  }, [cloudMachines, offlineMachines]);
 
   const cloneRepository = useCallback(async (targetId: string, name: string, stillWanted: () => boolean) => {
     if (!clone) throw new Error(`${name} doesn't have this repository, and ADE sets up GitHub repositories only. Clone it there by hand.`);
@@ -116,13 +121,13 @@ export function useDraftMachineSetup({
         return;
       }
       if (!cloneCandidates.some((option) => option.targetId === targetId)) {
-        // Not connected: connecting wakes an asleep Agent 37 machine first.
+        // Not connected: connecting wakes an asleep cloud machine first.
         setBusy({ targetId, name, phase: "waking" });
         onNotice({ message: `Waking ${name}…`, kind: "status" });
         const { value: connected, lastError } = await connectWithRetry({
           connect: () => window.ade.remoteRuntime.connect(targetId),
           stillWanted,
-          waitMs: AGENT37_READY_WAKE_WAIT_MS,
+          waitMs: CLOUD_READY_WAKE_WAIT_MS,
           retryMs: CONNECT_RETRY_MS,
         });
         if (!stillWanted()) return;
@@ -201,7 +206,7 @@ export function useDraftMachineSetup({
         id: `${WAKE_ROW_PREFIX}${machine.targetId}`,
         name: machine.name,
         kind: "cloud" as const,
-        cloudProvider: "agent37" as const,
+        cloudProvider: "cloud" as const,
         detail: busyDetail(machine.targetId) ?? (machine.asleep ? "Asleep · wakes when picked" : "Connects when picked"),
       })),
     ];

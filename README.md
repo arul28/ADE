@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://ade-app.dev/download/mac-arm64">macOS</a> ·
   <a href="https://ade-app.dev/download/windows">Windows</a> ·
+  <a href="https://ade-app.dev/docs/getting-started/linux">Linux</a> ·
   <a href="https://testflight.apple.com/join/ZSdJGKPy">iOS</a> ·
   <a href="#ade-beta">Beta</a> ·
   <a href="https://app.ade-app.dev">Web</a> ·
@@ -72,7 +73,7 @@ curl -fsSL https://ade-app.dev/install.sh | sh
 irm https://ade-app.dev/install.ps1 | iex
 ```
 
-Or download the desktop app for [Apple Silicon](https://ade-app.dev/download/mac-arm64), [Intel](https://ade-app.dev/download/mac-x64), or [Windows](https://ade-app.dev/download/windows). It includes the Brain. On Homebrew: `brew install --cask arul28/ade/ade`.
+Or download the desktop app for [Apple Silicon](https://ade-app.dev/download/mac-arm64), [Intel](https://ade-app.dev/download/mac-x64), [Windows](https://ade-app.dev/download/windows), or [Linux](https://ade-app.dev/docs/getting-started/linux). It includes the Brain. On Homebrew: `brew install --cask arul28/ade/ade`.
 
 **2. Sign in.** The installer asks you to. If you skipped it, run:
 
@@ -105,13 +106,13 @@ More: [AI providers](https://ade-app.dev/docs/configuration/ai-providers).
 
 | | |
 | --- | --- |
-| Desktop app | macOS 13+, Windows 10/11 x64 |
+| Desktop app | macOS 13+, Windows 10/11 x64, Linux x64 and arm64 (AppImage or `.deb`) |
 | `ade` CLI | macOS, Linux, Windows |
 | Web | Any browser, at [app.ade-app.dev](https://app.ade-app.dev) |
 | Phone | iOS on [TestFlight](https://testflight.apple.com/join/ZSdJGKPy). App Store and Android coming soon. |
 | Brain only | Linux (x64, arm64), plus everything above |
 
-There's no Linux desktop app yet, but a Linux machine can run the Brain and you can use it from any client. A few Mac features aren't on Windows yet ([details](https://ade-app.dev/docs/getting-started/windows)).
+A Linux server can run just the Brain, and you can use it from any client. A few Mac features aren't on [Windows](https://ade-app.dev/docs/getting-started/windows) or [Linux](https://ade-app.dev/docs/getting-started/linux) yet.
 
 ## ADE Beta
 

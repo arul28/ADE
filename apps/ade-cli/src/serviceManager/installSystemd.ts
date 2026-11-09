@@ -55,8 +55,11 @@ type SystemdServiceManagerDeps = {
 export function servicePath(
   homeDir = os.homedir(),
   serviceName: string = ADE_RUNTIME_SERVICE_NAME,
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return path.join(homeDir, ".config", "systemd", "user", `${serviceName}.service`);
+  const configured = env.XDG_CONFIG_HOME?.trim();
+  const configHome = configured && path.isAbsolute(configured) ? configured : path.join(homeDir, ".config");
+  return path.join(configHome, "systemd", "user", `${serviceName}.service`);
 }
 
 function serviceUnitName(): string {
@@ -197,7 +200,7 @@ export async function installSystemdService(
   const run = deps.spawnSync ?? spawnSync;
   const env = deps.env ?? process.env;
   const homeDir = deps.homeDir ?? os.homedir();
-  const targetPath = servicePath(homeDir);
+  const targetPath = servicePath(homeDir, ADE_RUNTIME_SERVICE_NAME, env);
   const command = deps.command ?? resolveAdeServeCommand();
   const adeHome = command.env?.ADE_HOME?.trim() || env.ADE_HOME?.trim() || path.join(homeDir, ".ade");
   const socketPath = path.join(adeHome, "sock", "ade.sock");
@@ -217,7 +220,7 @@ export async function installSystemdService(
 
   let state = getSystemdUnitState(run, unitName);
   if (state === null && !isSystemdUserManagerUsable(run)) {
-    // A container whose entrypoint loop runs the brain (ADE's Agent 37
+    // A container whose entrypoint loop runs the brain (ADE's cloud
     // template): the loop is the supervisor, so a restart goes through it.
     const underEntrypoint = await restartEntrypointSupervisedBrain({
       command,
@@ -424,6 +427,24 @@ function ensureLinger(run: ServiceManagerSpawnSync): string {
   const enable = run("loginctl", ["enable-linger", ...(user ? [user] : [])], { encoding: "utf8" });
   if (enable.status === 0) return "";
   return ` To keep ADE running after logout and reboot, run once: sudo loginctl enable-linger ${user || "$USER"}`;
+}
+
+/**
+ * The ADE home the installed systemd unit serves. Null when no unit can be
+ * read, so an unreadable or absent unit stays removable. A unit with no
+ * `ADE_HOME` was installed from the machine's default home.
+ */
+export function readSystemdServiceHome(homeDir = os.homedir()): string | null {
+  let unit: string;
+  try {
+    unit = fs.readFileSync(servicePath(homeDir), "utf8");
+  } catch {
+    return null;
+  }
+  const match = /^Environment="ADE_HOME=((?:[^"\\]|\\.)*)"$/m.exec(unit);
+  if (!match) return path.join(homeDir, ".ade");
+  const value = match[1]!.replace(/%%/g, "%").replace(/\\(.)/g, "$1").trim();
+  return value || path.join(homeDir, ".ade");
 }
 
 export async function uninstallSystemdService(): Promise<ServiceManagerResult> {

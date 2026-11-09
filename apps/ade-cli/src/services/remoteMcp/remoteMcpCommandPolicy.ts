@@ -47,7 +47,7 @@ const BLOCKED_COMMANDS: ReadonlyMap<string, string> = new Map([
  * access runs these; read-only runs the subset in READ_ONLY_COMMANDS.
  */
 const FULL_ACCESS_COMMANDS: ReadonlySet<string> = new Set([
-  "action", "actions", "ade-browser", "agent37", "android", "app", "app-control", "apple", "apps", "archive", "archived", "artifact",
+  "action", "actions", "ade-browser", "cloud", "android", "app", "app-control", "apple", "apps", "archive", "archived", "artifact",
   "artifacts", "auth", "auto-update", "automation", "automations", "browser", "built-in-browser",
   "builtin-browser", "chat", "chats", "computer", "computer-use", "config", "cursor", "desk", "diff", "diffs",
   "disk", "doctor", "drafts", "electron", "file", "files", "gh", "git", "github", "harness", "harnesses",
@@ -77,14 +77,17 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   // Connected or not, and as whom; never a credential.
   ["integrations", new Set(["status"])],
   ["integration", new Set(["status"])],
-  // Agent 37 machines and the ready pool: names, states, prices, never the key.
+  // cloud machines and the ready pool: names, states, prices, never the key.
   // Nothing that spends money or deletes is reachable from here.
-  ["agent37", new Set(["ready", "status", "list", "ls", "machines", "spending", "limits"])],
+  ["cloud", new Set(["ready", "status", "list", "ls", "machines", "hours", "limits"])],
   ["machines", new Set(["list", "show"])],
   ["projects", new Set(["list"])],
   // `defaults` reads the new-lane defaults; `defaults set` is refused below.
   ["lanes", new Set(["list", "show", "actions", "reclaim-preview", "defaults"])],
   ["lane", new Set(["list", "show", "actions", "reclaim-preview", "defaults"])],
+  // `ade lanes deleted list` reads Recently deleted; `restore` creates a lane.
+  ["lanes deleted", new Set(["list", "ls"])],
+  ["lane deleted", new Set(["list", "ls"])],
   ["git", new Set(["status", "branches", "is-reachable"])],
   ["diff", new Set(["changes", "file", "patch", "actions"])],
   ["files", new Set(["tree", "read", "search", "workspaces", "quick-open"])],
@@ -93,7 +96,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["prs stacks", new Set(["list"])],
   ["chat", new Set([
     "list", "inbox", "pending", "read", "show", "status", "launches", "launch-status", "waits", "subagents", "models",
-    "linear-issues", "actions", "wait",
+    "linear-issues", "actions", "wait", "events",
   ])],
   // `ade chat deleted list` reads Recently deleted; `reopen` creates a chat.
   ["chat deleted", new Set(["list", "ls"])],
@@ -133,7 +136,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
 /** Commands whose `<command> <word>` names a nested group, not a subcommand. */
 const NESTED_GROUPS: ReadonlySet<string> = new Set([
   "prs stacks", "github issue", "github app-auth", "automations webhook", "usage budget", "providers accounts",
-  "chat deleted",
+  "chat deleted", "lanes deleted", "lane deleted",
 ]);
 
 type RemoteCommandVerdict =
@@ -205,6 +208,11 @@ export function checkRemoteAdeCommand(
   }
   if (isServiceSignInCommand(command, words)) {
     return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
+  }
+  // Only ADE's server runs these, over exec on a cloud computer: one interrupts
+  // all its work, the other commits and pushes every lane.
+  if (command === "cloud" && (words[0] === "prepare-stop" || words[0] === "push-work")) {
+    return { ok: false, reason: `\`ade cloud ${words[0]}\` is not available remotely. ADE's server runs it on a computer it is about to stop or free-wake.` };
   }
   // Renaming, removing or re-pairing account machines outlives revoking the
   // connection, like account tokens; reading the roster is fine.
@@ -393,7 +401,7 @@ function checkActionsCommand(words: readonly string[], scope: RemoteMcpScope, ar
 }
 
 /** Flags that make a command read its input from stdin. */
-const STDIN_FLAGS: ReadonlySet<string> = new Set(["--stdin", "--json-stdin", "--token-stdin"]);
+const STDIN_FLAGS: ReadonlySet<string> = new Set(["--stdin", "--json-stdin", "--token-stdin", "--notify-token-stdin"]);
 
 /** `--stdin`, or `-` as the value of a file or prompt flag (`--body-file -`, `--prompt -`). */
 function readsStdin(args: readonly string[]): boolean {
@@ -423,6 +431,34 @@ function asksForHelp(args: readonly string[]): boolean {
 /** `chat wait` flags that arm, hold or cancel a wait instead of only watching. */
 const CHAT_WAIT_WRITE_FLAGS = /^--(?:async|background|cancel|cancel-wait)(?:=|$)/;
 
+const ENV_FILE = /^\.env(?:\.(?!example$|sample$|template$)[\w.-]+)?$/i;
+
+/** A word or `--flag=value` that names an env file. ADE's own secret folders are refused by the file service itself. */
+function namesEnvFile(word: string): boolean {
+  const value = word.startsWith("--") && word.includes("=") ? word.slice(word.indexOf("=") + 1) : word;
+  return ENV_FILE.test(value.split(/[\\/]/).pop() ?? "");
+}
+
+function readsEnvFile(command: string, args: readonly string[]): boolean {
+  if ((command === "files" || command === "file") && (args[1] === "read" || args[1] === "cat")) {
+    return args.slice(2).some(namesEnvFile);
+  }
+  return false;
+}
+
+/**
+ * `actions run file.readFile|readFileRange` (or `file readFile`): the CLI
+ * takes its input through more than a dozen flags, so a read-only connection
+ * reads files with `files read`, whose path the check above can see.
+ */
+function readsFileThroughAction(command: string, args: readonly string[]): boolean {
+  if (command !== "actions" && command !== "action") return false;
+  const words = args.slice(1).filter((word) => !word.startsWith("-"));
+  if (words[0] !== "run") return false;
+  const target = words[1]?.includes(".") ? words[1] : `${words[1] ?? ""}.${words[2] ?? ""}`;
+  return /^file\.(?:readFile|readFileRange)$/.test(target);
+}
+
 function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandVerdict {
   const refuse = (): RemoteCommandVerdict => ({
     ok: false,
@@ -432,6 +468,15 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
   });
   const command = args[0]!;
   if (asksForHelp(args)) return { ok: true, args };
+  if ((command === "files" || command === "file") && args[1] === "search" && args.some((word) => word === "--include-ignored" || word.startsWith("--include-ignored="))) {
+    return { ok: false, reason: "A read-only connection searches only files git tracks: ignored files such as `.env` hold secrets." };
+  }
+  if (readsFileThroughAction(command, args)) {
+    return { ok: false, reason: "A read-only connection reads files with `files read` (files_read), not `actions run file.readFile`." };
+  }
+  if (readsEnvFile(command, args)) {
+    return { ok: false, reason: "A read-only connection can't read `.env` files, which hold secrets. Ask the person for full access if it needs one." };
+  }
   const group = args[1] && !args[1].startsWith("-") ? `${command} ${args[1]}` : null;
   if (group && NESTED_GROUPS.has(group)) {
     const allowed = READ_ONLY_COMMANDS.get(group);
@@ -449,9 +494,9 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
   // `lanes defaults set` changes the project's new-lane defaults. Look past
   // the global flags (`--json`, `--pretty`) the CLI strips before it parses.
   if ((command === "lanes" || command === "lane") && sub === "defaults" && args.slice(2).includes("set")) return refuse();
-  // `agent37 ready` alone, `status` or `list` reads the pool; `on`, `off` and
+  // `cloud ready` alone, `status` or `list` reads the pool; `on`, `off` and
   // `retry` make or delete a billed machine.
-  if (command === "agent37" && sub === "ready") {
+  if (command === "cloud" && sub === "ready") {
     const verb = args.slice(2).find((word) => !word.startsWith("-"));
     if (verb && verb !== "status" && verb !== "list") return refuse();
   }

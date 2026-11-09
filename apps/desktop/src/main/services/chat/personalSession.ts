@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { adeBundledAgentSkills } from "../../../shared/adeCliGuidance";
+import { adeWithheldAgentSkills } from "../../../shared/agentSkillRoots";
 import { formatAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import type { AgentChatPersonalProfile, AgentChatSession } from "../../../shared/types/chat";
 
@@ -170,7 +171,7 @@ export function buildPersonalAssistantSystemPrompt(args: {
    */
   activityGuidance?: string | null;
 }): string {
-  const withheld = new Set<string>(PERSONAL_LANE_ONLY_AGENT_SKILLS);
+  const withheld = new Set<string>([...PERSONAL_LANE_ONLY_AGENT_SKILLS, ...adeWithheldAgentSkills()]);
   const skills = adeBundledAgentSkills.filter((name) => !withheld.has(name));
   return [
     "You are the user's assistant inside ADE, running on their own computer.",

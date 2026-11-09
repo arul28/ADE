@@ -99,6 +99,25 @@ export function createAdeWebAdapter(
       }
     })
   );
+  // A reconnect can land on another host on the same machine (its project host
+  // taking over from the machine-wide one), whose answers no view has read:
+  // a cloud machine's lanes stayed "No lanes yet" until a reload. Everything
+  // is read again each time a restored connection is ready, never on the first.
+  let lastReadiness: string = client.getStatus().readiness;
+  let readyBefore = lastReadiness === "ready";
+  addDispose(client.subscribe((status) => {
+    if (status.readiness === lastReadiness) return;
+    lastReadiness = status.readiness;
+    if (status.readiness !== "ready") return;
+    if (readyBefore) {
+      events.emit("invalidation", {
+        tables: [],
+        domains: Object.keys(DOMAIN_EVENTS) as Array<keyof typeof DOMAIN_EVENTS>,
+        at: new Date().toISOString(),
+      });
+    }
+    readyBefore = true;
+  }));
 
   // Pushed new-lane launch updates. Guarded: test doubles and older sync
   // clients may not expose the listener.
@@ -142,6 +161,7 @@ export function createAdeWebAdapter(
     modelPicker: misc.modelPicker,
     agentTools: misc.agentTools,
     cloudAgents: misc.cloudAgents,
+    cloudAccess: misc.cloudAccess,
     adeCli: misc.adeCli,
     devTools: misc.devTools,
     onboarding: misc.onboarding,

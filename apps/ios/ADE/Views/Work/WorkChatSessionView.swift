@@ -1353,12 +1353,12 @@ struct WorkChatSessionView: View {
                   duoPane.open(
                     chip: chip,
                     tools: laneTools,
-                    macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false,
+                    macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream(laneId: session.laneId) ?? false,
                     origin: .bottomLeading
                   )
                 }
               } else {
-                laneTools.open(chip, macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false)
+                laneTools.open(chip, macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream(laneId: session.laneId) ?? false)
               }
             }
           }
@@ -1755,7 +1755,7 @@ struct WorkChatSessionView: View {
       canSend: canSendMessages,
       pendingInput: hasPendingInputGate,
       turnBusy: sending || sendingSnapshot || actionInFlight || isStreamingTurn || sessionStatus == "active",
-      openCodeCompactAvailable: chatSummaryContext.manualCompactAvailable
+      compactAvailableOnChat: chatSummaryContext.manualCompactAvailable
     )
     return WorkComposerContextMeterModel(
       usage: usage,
@@ -1767,8 +1767,8 @@ struct WorkChatSessionView: View {
 
   var composerCompactFirstOffer: WorkCompactFirstOffer? {
     guard chatSummaryContext.compactFirstSupported, chatSummaryContext.compactionIdleMode != "never",
-          // OpenCode only offers `/compact` when its server lists the command.
-          chatSummaryContext.provider != "opencode" || chatSummaryContext.manualCompactAvailable,
+          // OpenCode only offers `/compact` when its server lists the command, Cursor only on local chats.
+          !workManualCompactDependsOnChat(chatSummaryContext.provider) || chatSummaryContext.manualCompactAvailable,
           !hasPendingInputGate, !isStreamingTurn, sessionStatus != "active",
           // A queued message is about to send on its own; the offer would only flash.
           pendingSteers.isEmpty,
@@ -3496,6 +3496,9 @@ private struct WorkChatComposerDraftInput: View {
   @MainActor
   private func performSend(mode: WorkActiveSendMode) {
     guard sendEnabled else { return }
+    // The keyboard can hold an autocorrect it has not applied. Ending editing
+    // applies it and publishes the text, so the send reads the final words.
+    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     if let sendGate {
       let text = draftState.text
       Task { @MainActor in

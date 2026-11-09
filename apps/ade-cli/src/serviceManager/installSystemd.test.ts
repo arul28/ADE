@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, beforeEach, vi } from "vitest";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
@@ -34,6 +34,10 @@ function makeTempHome(prefix: string): string {
   tempDirs.push(dir);
   return dir;
 }
+
+// A runner's own XDG_CONFIG_HOME would move the unit away from the test's home.
+beforeEach(() => { vi.stubEnv("XDG_CONFIG_HOME", ""); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 describe("systemd service rendering", () => {
   it("renders the user service path under the home directory", () => {

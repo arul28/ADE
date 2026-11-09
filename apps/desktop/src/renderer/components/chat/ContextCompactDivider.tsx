@@ -66,6 +66,7 @@ export function ContextCompactDivider({ event, startedAt, onRetry }: {
       : "Automatic";
   const count = event.sessionCompactionCount;
   const facts = [
+    event.fallback ? "The model could not write a summary, so a shortened copy of the chat was kept. Some earlier detail may be gone" : null,
     trigger,
     duration ? `took ${duration}` : null,
     count != null && count >= 2 ? `${count}${ordinalSuffix(count)} time in this chat` : null,
@@ -108,6 +109,7 @@ export function ContextCompactDivider({ event, startedAt, onRetry }: {
       <>
         <ArrowsInLineVertical size={13} weight="bold" className="shrink-0 text-fg/45" aria-hidden />
         <span className="font-medium">Compacted</span>
+        {event.fallback ? <span className="text-fg/45">shortened, not summarized</span> : null}
         {pre && post ? (
           <span className={cn(NUMBER_CLASS, "inline-flex items-center gap-1.5")}>
             <span className="text-fg/40">{pre}</span>

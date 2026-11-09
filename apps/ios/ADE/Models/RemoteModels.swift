@@ -1242,6 +1242,22 @@ struct AgentChatReasoningEffortChange: Codable, Equatable {
   var appliesAfter: String
 }
 
+/// The live background work split into real jobs and watch-only monitors
+/// (`SessionBackgroundWork` in `apps/desktop/src/shared/sessionCanonicalState.ts`).
+struct SessionBackgroundWork: Codable, Equatable {
+  var workingCount: Int
+  var monitoringCount: Int
+}
+
+/// A chat's live PR watches, as its Work row needs them
+/// (`SessionActivePrWatch` in `apps/desktop/src/shared/prWatch.ts`).
+struct SessionActivePrWatch: Codable, Equatable, Hashable {
+  /// The oldest live watch's start: the row's elapsed counts from here.
+  var startedAt: String
+  var githubPrNumber: Int? = nil
+  var count: Int
+}
+
 struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var compactionIdleMode: String? = nil
   /// Claude only: the chat's prompt cache after its last turn.
@@ -1389,6 +1405,10 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var usageLimitResumeWasCleared: Bool? = nil
   /// Live background tasks still running after the foreground turn. Older hosts omit it.
   var activeBackgroundTaskCount: Int? = nil
+  /// The same work split into real jobs and monitors. Older hosts omit it.
+  var backgroundWork: SessionBackgroundWork? = nil
+  /// The chat's live PR watches, from the machine running them. Older hosts omit it.
+  var activePrWatch: SessionActivePrWatch? = nil
   /// Settings the user changed that the host holds until this chat's background
   /// work ends (`reasoningEffort`, `fastMode`): applying them restarts the agent
   /// process, which would stop that work. Live only; older hosts omit it.
@@ -1498,6 +1518,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.usageLimitResume == rhs.usageLimitResume
       && lhs.usageLimitResumeWasCleared == rhs.usageLimitResumeWasCleared
       && lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount
+      && lhs.backgroundWork == rhs.backgroundWork
+      && lhs.activePrWatch == rhs.activePrWatch
       && lhs.pendingSettingsAfterBackground == rhs.pendingSettingsAfterBackground
       && lhs.reasoningEffortChange == rhs.reasoningEffortChange
       && lhs.turnOpenWorkCount == rhs.turnOpenWorkCount
@@ -8128,8 +8150,17 @@ struct WindowsDesktopOperationState: Codable, Equatable {
   var startedAt: String?
 }
 
+/// An additive Linux host report. Unknown future fields are ignored, and older
+/// hosts that omit the field retain the existing macOS presentation.
+struct LinuxDesktopHostFacts: Codable, Equatable {
+  var missing: [String]?
+  var encoder: String?
+  var installCommand: String?
+}
+
 struct WorkToolsMacDesktopState: Codable, Equatable {
   var windowsDesktop: WindowsDesktopHostState? = nil
+  var linuxDesktop: LinuxDesktopHostFacts? = nil
   var supported: Bool
   var display: WorkToolsMacDesktopDisplay?
   /// Absent from a host that sends no list; both nil and empty read as "nothing
@@ -8161,6 +8192,7 @@ struct WorkToolsObservationPreview: Codable, Equatable {
 /// redacts it on this method and only `startStream` ever carries it.
 struct MacDesktopStatus: Codable, Equatable {
   var windowsDesktop: WindowsDesktopHostState? = nil
+  var linuxDesktop: LinuxDesktopHostFacts? = nil
   var supported: Bool
   var display: WorkToolsMacDesktopDisplay?
   var windows: [WorkToolsMacDesktopWindow]?
@@ -8823,4 +8855,34 @@ struct WorkAutomationRuleSummary: Decodable, Equatable, Identifiable {
     let list = (fromExecution?.isEmpty == false ? fromExecution : nil) ?? actions ?? []
     return list.first { $0.type == "handoff" }
   }
+}
+
+/// Work a lane delete kept (uncommitted files, commits only that lane held),
+/// listed in Recently deleted for 30 days. Mirrors the desktop's
+/// `DeletedLaneSnapshot`.
+struct DeletedLaneSnapshot: Codable, Identifiable, Equatable {
+  var id: String
+  var laneId: String
+  var laneName: String
+  var branchName: String?
+  var commit: String
+  var baseCommit: String?
+  var uncommitted: Bool
+  /// "deleted", or "freed" when freeing up space discarded the files and the
+  /// lane is still there (archived). Absent from a host that predates it.
+  var kind: String?
+  var deletedAt: String
+  var expiresAt: String
+
+  var isFreed: Bool { kind == "freed" }
+}
+
+struct RestoreDeletedLaneResult: Decodable, Equatable {
+  var lane: LaneSummary
+  var branchName: String
+  /// False when the uncommitted files did not apply; they stay saved.
+  var restoredUncommitted: Bool
+  var warning: String?
+  /// Other branches made for commits the lane's branch does not hold.
+  var extraBranches: [String]?
 }

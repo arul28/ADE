@@ -80,15 +80,21 @@ export function approxDecodedBytes(base64Length: number): number {
   return Math.floor((base64Length * 3) / 4);
 }
 
+const ATTACHMENT_SIZE_UNITS = ["KB", "MB", "GB"] as const;
+
 /** Human size for composer copy: "9 KB", "1.4 MB". */
 export function formatAttachmentSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "";
   if (bytes < 1024) return `${Math.max(0, Math.round(bytes))} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} KB`;
-  const mb = kb / 1024;
-  if (mb < 1024) return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
-  return `${(mb / 1024).toFixed(1)} GB`;
+  // Round first, then pick the unit: 1023.6 KB is "1.0 MB", never "1024 KB".
+  let value = bytes / 1024;
+  let unit = 0;
+  while (unit < ATTACHMENT_SIZE_UNITS.length - 1 && Math.round(value) >= 1024) {
+    value /= 1024;
+    unit += 1;
+  }
+  const last = unit === ATTACHMENT_SIZE_UNITS.length - 1;
+  return `${last || value < 10 ? value.toFixed(1) : Math.round(value)} ${ATTACHMENT_SIZE_UNITS[unit]}`;
 }
 
 /**

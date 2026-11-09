@@ -8,6 +8,7 @@
  * rather than a comment: one model per chat provider (see
  * buildSessionIntelligenceModelCandidates). Settings pickers are not part of it.
  */
+import { tailTextAtCodePoint } from "../../../shared/codePointText";
 import {
   adeBackgroundUtilityProvider,
   adeBackgroundUtilityProviderFromToolType,
@@ -240,7 +241,7 @@ export function clipFromEnd(text: string, maxChars: number): string {
   const trimmed = text.trim();
   if (!trimmed) return "";
   if (trimmed.length <= maxChars) return trimmed;
-  return `…(earlier omitted)\n${trimmed.slice(trimmed.length - maxChars)}`;
+  return `…(earlier omitted)\n${tailTextAtCodePoint(trimmed, maxChars)}`;
 }
 
 export function formatConversationTranscript(

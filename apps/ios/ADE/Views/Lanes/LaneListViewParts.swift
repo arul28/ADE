@@ -532,6 +532,15 @@ extension LanesTabView {
       ADEFlatInlineNotice(message: errorMessage, tint: ADEColor.danger, retry: { Task { await reload(refreshRemote: true) } })
         .adeFlatRow(separator: .hidden)
     }
+    ForEach(syncService.activeLaneDeletionsKept) { kept in
+      LaneDeletionKeptNotice(
+        kept: kept,
+        canRunLiveActions: canRunLiveActions,
+        onRestore: { await restoreKeptLane(kept) },
+        onDismiss: { syncService.dismissLaneDeletionKept(kept.id) }
+      )
+      .adeFlatRow(insets: EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16), separator: .hidden)
+    }
     if let laneDeletionError = syncService.activeLaneDeletionError {
       ADENoticeCard(
         title: "Lane deletion failed",

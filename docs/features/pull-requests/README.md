@@ -135,6 +135,10 @@ pin through `assertWebRuntimePinRoutable`. A pin naming the host and project
 this adapter is already bound to is a no-op and proceeds unpinned; anything
 else throws rather than silently answering from the only host they have.
 
+Review status uses GitHub’s review decision, including its required-review rules.
+Moderator-hidden comments and reviews are excluded from the timeline and counts
+within the newest 100 of each; older items can still appear.
+
 ## Source file map
 
 Services. The canonical implementations run inside the runtime
@@ -2242,13 +2246,33 @@ transcript; iOS `WorkPrWatchWakeLine`).
   links the chat to the PR, even over an earlier unlink; unlinking it stops
   the watch. Every change emits the PR event `pr-chat-watch-changed`, with
   `watch: null` once it has stopped.
+- **On the Work row.** Between wakes no turn is running, so a chat with a live
+  watch would otherwise read Done. The chat summary carries `activePrWatch`
+  (`SessionActivePrWatch`), built by the machine that runs the watch from one
+  query per chat listing (`prChatWatchStore.activeBySession`) and projected onto
+  the session row, so a row listed from another machine reads the same and an
+  older host simply sends nothing. `canonicalSessionState` promotes such a
+  resting chat to `running` with liveness `pr_watch`: blue **Shipping** (for
+  Watch and Ship alike) with the time since the watch began and the PR number
+  on hover, filed under Working on the board and the running section of the
+  list, its lane folding in Focus with no tile. Needs you, snooze, woke, a live
+  turn's own activity, a failed turn, a usage limit, and running background jobs
+  all outrank it, and a missed scheduled wake still holds the lane out. Unlike
+  background work it is never Stale, because the reactor polls the PR every
+  minute, and a chat a brain restart detached still reads Shipping, because the
+  watch survives and its next wake brings the chat back. Settling is the user's call and stops nothing, so a settled chat stays
+  settled while its watch runs until a wake's turn brings it back. A chat moved
+  to another machine claims no watch here. `pr-chat-watch-changed` nudges the
+  session list through a `session_meta_updated` event marked `prWatchChanged`,
+  which refreshes the row without moving the chat up the list. iOS mirrors the
+  rule in `WorkSessionCanonicalState.swift`.
 - **What wakes the agent.** Each check as soon as it fails (failure, cancelled,
   timed out, action required); the required checks passing (`checksStatus`
   turning `passing`); new comments, inline comments, and submitted reviews from
   people and agent reviewers (deploy, CI, and dependency bots are ignored); a
   review bot's edit of its old comment, which is how such a bot reports a new
   review of a push (a person's edit does not wake the agent); the
-  branch starting to conflict; the PR merging or closing. A head that no CI
+  branch starting to conflict or a new head that remains conflicted; the PR merging or closing. A head that no CI
   check reported on for 10 minutes (`PR_WATCH_NO_CHECKS_GRACE_MS`; a docs-only
   push whose workflows skip it), told once per head and never as a pass —
   review bots and deploy previews do not count as CI, and a head where CI
@@ -2291,10 +2315,10 @@ transcript; iOS `WorkPrWatchWakeLine`).
   the agent got. It is never a user bubble.
 - **Stopping.** The PR merging or closing (one last wake, which still carries
   remarks left on the way out), the user or agent
-  turning it off, the chat being archived or deleted, 10 comment-only wakes in
-  a row (a bot loop), or 15 minutes of GitHub being unreadable (one last wake
-  with the reason). A settled chat keeps its watch and is still woken (settle stops
-  nothing); the wake's turn takes it out of settled. GitHub rate-limit pauses pause the reactor too.
+  turning it off, the chat being archived or deleted, or GitHub confirming the PR
+  or repository is gone or access is lost. Transient failures, rate limits,
+  expired sign-in and offline periods leave the watch armed for recovery. A settled
+  chat keeps its watch and is still woken; the wake takes it out of settled.
 - **Machine-local.** Both tables are excluded from CRR sync: the watch wakes
   the chat on the machine that runs it, and a synced row would let a second
   machine wake its own copy of the chat as well.
@@ -2809,3 +2833,26 @@ markdown layout cost for offscreen or folded content.
   `Accept: application/vnd.github.merge-info-preview+json`; without it
   GitHub errors with "field requires preview header" and the merge box
   silently falls back to the REST heuristic (logged at `warn`).
+
+### GitHub access and reminders
+
+A working GitHub CLI login supplies ADE's GitHub access without a personal
+access token. [GitHub settings](ade://settings/integrations.github) identifies
+the active read and write credentials, including the CLI login.
+The ADE GitHub App adds optional real-time updates independently of that access.
+
+Dismissing setup reminders applies to the lower-cased repository (`owner/name`)
+across worktrees. The dismissal has no expiry and survives equivalent setup
+states and healthy reads. GitHub settings shows the reminder state and offers
+**Dismiss setup reminders** and **Show reminders again**. Older repo/path
+reminders migrate when that repository is opened.
+
+Credential failures, unreadable credential stores, and Git transport failures
+use separate alarm dismissals scoped to the owning machine and repository (or
+project path before repository discovery); setup snoozes never hide them. Each alarm can be
+dismissed until its failing access recovers, at which point a later failure can
+warn again. API access, App authorization, and Git transport recover independently:
+a successful API read does not re-arm a still-broken push alarm. Missing App
+issue-write permission is a setup reminder when another credential covers issue
+edits, and an alarm when none does. Recovery never clears the setup snooze.
+GitHub outage notices retain their existing incident handling.

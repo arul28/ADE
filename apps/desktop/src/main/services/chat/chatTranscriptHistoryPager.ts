@@ -335,3 +335,48 @@ export async function readTranscriptHistoryPageBeforeSequence(args: {
     envelopeStartOffsets: page.envelopeStartOffsets.filter((_, index) => keep[index]),
   };
 }
+
+/**
+ * The chat's events exactly as written, newest pages first, back to the first
+ * one at or before `since` (or just the newest two pages without one).
+ * `reachedSince` is false when the cursor lies further back than the pages
+ * read. The lossy reader behind `readTranscript` swaps non-conversation rows
+ * for stand-ins, so lifecycle events need this one.
+ */
+export async function readEnvelopesBackToSequence(args: {
+  transcriptPath: string;
+  sessionId: string;
+  since: number | null;
+  onPageError: (error: unknown) => void;
+}): Promise<{ envelopes: AgentChatEventEnvelope[]; reachedSince: boolean }> {
+  const { since } = args;
+  const pages: AgentChatEventEnvelope[][] = [];
+  let cursor = await readHistoryFileSize(args.transcriptPath);
+  let reachedSince = since === null;
+  const maxPages = since === null ? 2 : 16;
+  for (let count = 0; cursor > 0 && count < maxPages; count += 1) {
+    let page: TranscriptHistoryPageRead;
+    try {
+      page = await readTranscriptHistoryPage({
+        transcriptPath: args.transcriptPath,
+        sessionId: args.sessionId,
+        beforeOffset: cursor,
+        maxBytes: CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
+      });
+    } catch (error) {
+      args.onPageError(error);
+      break;
+    }
+    cursor = page.startOffset;
+    pages.unshift(page.envelopes);
+    if (since !== null && page.envelopes.some((entry) => (entry.sequence ?? Number.POSITIVE_INFINITY) <= since)) {
+      reachedSince = true;
+      break;
+    }
+    if (!page.hasMore) {
+      reachedSince = true;
+      break;
+    }
+  }
+  return { envelopes: pages.flat(), reachedSince };
+}

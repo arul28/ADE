@@ -5,7 +5,8 @@ import type { ProjectHealthIssue, ProjectHealthReport } from "../../../../shared
 import type { UsageSnapshot } from "../../../../shared/types/usage";
 import type { AiProviderConnectionStatus } from "../../../../shared/types/config";
 import { isBackgroundItemBlocked } from "../../../../shared/types/core";
-import { agent37MachineResting } from "../../../../shared/agent37";
+import { cloudMachineResting } from "../../../../shared/adeCloud";
+import { adeCloudEnabled } from "../../../state/cloudAccess";
 import type { AiConfig } from "../../../../shared/types/config";
 import type { ProviderInstance } from "../../../../shared/types/providerInstances";
 import { isProviderDisabled } from "../../../../shared/providerEnablement";
@@ -19,7 +20,7 @@ import {
   knownAdeVersions,
   machinesBehindOnTheirTrack,
 } from "../../remoteTargets/remoteMachineModel";
-import { agent37BoxForMachine } from "../../remoteTargets/agent37MachineModel";
+import { cloudBoxForMachine } from "../../remoteTargets/cloudMachineModel";
 import { missingMcpSecrets } from "../mcp/useMcpRegistry";
 import { settingsRouteFor } from "../settingsManifest";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
@@ -172,7 +173,7 @@ function serviceItems(info: AppInfo | null, health: RuntimeHealthSnapshot | null
 function updateItems(update: AutoUpdateSnapshot | null): AttentionItem[] {
   if (!update) return [];
   const route = settingsRouteFor("general.auto-updates");
-  if (update.lastInstallFailed && update.status === "ready" && update.lastInstallFailed.targetVersion === update.version) {
+  if (update.installMode !== "manual" && update.lastInstallFailed && update.status === "ready" && update.lastInstallFailed.targetVersion === update.version) {
     return [{
       id: "update-install-failed",
       severity: "warning",
@@ -182,7 +183,7 @@ function updateItems(update: AutoUpdateSnapshot | null): AttentionItem[] {
       route,
     }];
   }
-  if (update.parked) {
+  if (update.installMode !== "manual" && update.parked) {
     return [{
       id: "update-parked",
       severity: "warning",
@@ -321,28 +322,28 @@ function unreachableConnections(snapshot: ConnectionSnapshot | null) {
 }
 
 /**
- * The "Can't reach" rows that are an Agent 37 box resting
- * (`agent37MachineResting`): it can't answer by design, and wakes when it is
+ * The "Can't reach" rows that are a cloud box resting
+ * (`cloudMachineResting`): it can't answer by design, and wakes when it is
  * used. The
  * box list is a network read, so it runs after first paint and only when
  * something is unreachable; the rows show meanwhile and drop when it answers.
  */
-async function restingAgent37ItemIds(snapshot: ConnectionSnapshot | null): Promise<Set<string>> {
+async function restingCloudItemIds(snapshot: ConnectionSnapshot | null): Promise<Set<string>> {
   const unreachable = unreachableConnections(snapshot);
-  const listMachines = window.ade?.agent37?.listMachines;
-  if (unreachable.length === 0 || !isAdeAvailable(listMachines)) return new Set();
+  const listMachines = window.ade?.cloud?.listMachines;
+  if (unreachable.length === 0 || !adeCloudEnabled() || !isAdeAvailable(listMachines)) return new Set();
   const listed = await listMachines().catch((error: unknown) => {
-    console.warn("[needs-attention] reading Agent 37 boxes failed", error);
+    console.warn("[needs-attention] reading ADE Cloud boxes failed", error);
     return null;
   });
   const boxes = listed?.state === "ok" ? listed.machines : [];
   return new Set(unreachable
     .filter((connection) => {
-      const box = agent37BoxForMachine(boxes, {
+      const box = cloudBoxForMachine(boxes, {
         machineKey: connection.target.pairedMachine?.machineKey,
         hostname: connection.target.hostname,
       });
-      return box != null && agent37MachineResting(box.state);
+      return box != null && cloudMachineResting(box.state);
     })
     .map((connection) => machineItemId(connection.target.id)));
 }
@@ -610,8 +611,8 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     setLoading(false);
     setChecking(false);
     // The slow ones, after the list is on screen.
-    // The Agent 37 read can take long; it never holds back the other rows.
-    void restingAgent37ItemIds(machines).then((resting) => {
+    // The provider read can take long; it never holds back the other rows.
+    void restingCloudItemIds(machines).then((resting) => {
       if (current !== request.current || resting.size === 0) return;
       setItems((currentItems) => currentItems.filter((item) => !resting.has(item.id)));
     });

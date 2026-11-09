@@ -8,7 +8,8 @@ import type { ParsedSearchQuery } from "./searchQueryParser";
  * query over the same corpus always produces the same ordering.
  */
 
-export const RANK_TIER_TITLE_EXACT = 4;
+export const RANK_TIER_TITLE_EXACT = 5;
+export const RANK_TIER_TITLE_WHOLE_WORD = 4;
 export const RANK_TIER_TITLE_PREFIX = 3;
 export const RANK_TIER_TITLE_SUBSTRING = 2;
 export const RANK_TIER_BODY = 1;
@@ -31,10 +32,26 @@ export function rankQueryText(parsed: ParsedSearchQuery): string {
   return [...parsed.terms, ...parsed.phrases].join(" ").trim().toLowerCase();
 }
 
+const WORD_CHAR = /[\p{L}\p{N}_]/u;
+
+/** Whether `query` occurs in `title` with no letter or digit touching either end. */
+function containsWholeWord(title: string, query: string): boolean {
+  let from = title.indexOf(query);
+  while (from !== -1) {
+    // Two code units are enough to hold the neighbor even when it is a surrogate pair.
+    const before = Array.from(title.slice(Math.max(0, from - 2), from)).at(-1) ?? "";
+    const after = Array.from(title.slice(from + query.length, from + query.length + 2))[0] ?? "";
+    if (!WORD_CHAR.test(before) && !WORD_CHAR.test(after)) return true;
+    from = title.indexOf(query, from + 1);
+  }
+  return false;
+}
+
 export function titleRankTier(title: string, normalizedQuery: string): number {
   if (!normalizedQuery) return RANK_TIER_BODY;
   const normalizedTitle = title.trim().toLowerCase();
   if (normalizedTitle === normalizedQuery) return RANK_TIER_TITLE_EXACT;
+  if (containsWholeWord(normalizedTitle, normalizedQuery)) return RANK_TIER_TITLE_WHOLE_WORD;
   if (normalizedTitle.startsWith(normalizedQuery)) return RANK_TIER_TITLE_PREFIX;
   if (normalizedTitle.includes(normalizedQuery)) return RANK_TIER_TITLE_SUBSTRING;
   return RANK_TIER_BODY;

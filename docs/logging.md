@@ -92,19 +92,22 @@ The log tails go as ADE wrote them, on purpose: they hold paths, action argument
 - every `logger.error` line, grouped by the error it carries and by event name when it carries only a message (`shared/sentry/logBridge.ts`), except `window.console` (renderer console output, kept as warn-level logs only: the renderer SDK reports the real errors itself, and the error-level log lines the beta gate reads stay ADE's own). `logger.warn` lines become Sentry Logs and breadcrumbs, not issues. Info and debug never leave the machine, except the release-health lines below;
 - a brain that keeps restarting (`The brain kept restarting`, `ade-cli/src/sentry/brainRestartLoop.ts`), as a warning, reported by the brain itself so it works with no desktop window open. Every service brain (not one the desktop app started, which the app kills outright when it quits, and not a hand-run `ade serve` on the machine endpoint: on macOS its parent must be launchd, on Windows the supervisor whose pid the service's pid record names) records its start in `runtime/brain-starts.json` and marks it stopped when it shuts down in an orderly way (an update, the restart button, a shutdown request). A start counts when the brain before it died without that mark, ran the same build, started since the computer last booted and is gone, or when the build goes back to one an earlier brain in the window left (two installs replacing each other). Three counted starts within 10 minutes are a loop. One report per loop, sent by the first brain that stays up 2 minutes, or by whichever brain is up 5 minutes after the loop was found, so its later restarts are in it; at most once a day per machine (`lastReportedAt` in the same file), with one fingerprint per platform. It carries `desktop-logs.txt.gz` (above) beside the service's own logs;
 - the first provider health transition into `runtime-failed` for each provider and kind of failure in a process, as a warning (`providerRuntimeHealth.ts`); later ones are Sentry Logs, and the in-app health display shows every one. The kind comes from a closed list matched on the message (`root-refused`, `session-missing`, `turn-active`, `method-missing`, `owned-elsewhere`, `timeout:<ACP method>`, `spawn-failed`, `exited`, else `other`), rides as the `provider.failure` tag, and is part of the fingerprint, so unrelated failures of one provider are separate issues. A Claude failure also carries `extra.stderrTail`: the CLI's last 20 stderr lines (`claudeSubprocessReaper.ts`), each scrubbed with `scrubFreeText` before it is cut, and with any line whose start fell outside the kept buffer dropped, so a secret cut off from the prefix the scrubber knows it by never goes.
+- a failure of ADE Cloud's server work (`cloud.stripe_webhook_failed`, `cloud.stripe_claim_release_failed`, `cloud.meter_report_failed`, `cloud.tick_account_failed`, `cloud.stop_failed`, `cloud.backstop_sleep_failed`, `cloud.delete_inactive_failed`, `cloud.account_delete_failed`: `reportCloudFailure`, `apps/account-directory/src/cloud/store.ts`), one issue per event name with the name as the fingerprint and no account or instance id (those stay in the Worker's own log line), at most one event per name per isolate per hour;
 - on iOS, a Live Inspect reply the app cannot decode (`area: live_inspect`, `LiveInspectMarkupModel.fail`): the host and app disagree on the format. Offline machines, timeouts and older hosts are shown to the user and not reported.
 - a Linux lane screen that fails on its host (`linux_screen.<kind>`, `linuxDesktop/linuxScreenTelemetry.ts`), as a warning with a fixed description per kind and structured fields only (the helper's error text can carry Xvfb or ffmpeg output, so it stays in the local log), once per kind and detail per process: the helper not starting or exiting with lanes up (`helper_start_failed`, `helper_lost`), `display.create` failing for anything but a caller's mistake (`display_create_failed`), an accessibility bus that would not start (`display_degraded`), a recording whose encoder died (`recording_interrupted`), and an `ade screen setup` that failed or left something missing (`setup_failed`). Each carries the host as tags: `linux.distro`, `linux.distro_version`, `linux.distro_like` (from `/etc/os-release`), `linux.container` and `arch`, because only Ubuntu x64 is exercised by hand. What a host lacks before setup, a sudo that needs a password and a missing window manager are Sentry Logs (`linux_screen.host_report`, `linux_screen.setup_needs_user`, `linux_screen.display_degraded`), searchable by the same fields;
 - a recording whose demo every engine failed to make (`demo_video.all_engines_failed`, tagged `platform`, `arch` and on Linux the distribution, with the failed stage but not the engines' errors, which can carry ffmpeg's stderr), once per process per engine set: the user gets the uncut recording, and nothing else says the demo pipeline is broken on that machine;
 - a Copilot chat failure ADE could have caused (`main/services/chat/copilotSentry.ts`), tagged `provider: copilot`, `copilot.kind` and `copilot.model` and grouped per kind and cause: a `session.error` that is not sign-in, rate limit, quota or an outage (`session_error`, titled by its kind alone and grouped by error type and code, because a provider's message can quote the request; the message and both GitHub request ids are in the scrubbed extra), a failed turn that was not interrupted (`turn_failed`), the SDK worker dying under a live chat (`worker_exited`), the runtime refusing to list or run a slash command (`commands_list_failed`, `command_failed`), a refused model or permission change (`setting_failed`), and a permission or question handler that threw (`handler_failed`). Each sent turn leaves a `copilot` breadcrumb with its model, agent mode, permission level, attachment count and the command name, never the prompt. Its other failures (a lost conversation, a model list or MCP sign-in lookup that failed) are `agent_chat.copilot_*` warn lines, so Sentry Logs only;
+- a Work list (`sessions` or `lanes`) whose first load has failed for 30 seconds while the machine it reads is connected, or is this computer (`Work <surface> list could not load`, `renderer/lib/firstLoadRetry.ts`), once per retry run, grouped per surface and binding kind. It carries the attempts, how long it has been failing, a fixed error class and code (never the message, which can name an address), the connection state and the `correlationId` of the failed dial, so the issue links to that machine's `remote.connect_failed`. A machine that really is offline logs `work.first_load_waiting` instead, and a list that recovers logs `work.first_load_recovered`.
 - on iOS, a chat that is working but draws no messages (`chat.empty_thread.<kind>`, `runEmptyThreadProbe` in `WorkSessionDestinationView.swift`), at most once per time the chat is opened. It carries the chat stream trace from `ChatStreamTrace` (subscribes, history replies applied or dropped and why, live events, socket closes) and the `chat.stream` breadcrumbs, names and counts only.
 
-**Release-health lines.** A few info lines go to Sentry Logs (not issues, not breadcrumbs) so a release shows that it ran and updated cleanly: `app.started` (desktop, once per launch: version, running and selected track, package channel, platform, arch, whether it is the first launch after an update), `brain.started` (the brain, once per start: version, tracks, role, platform, arch), `autoUpdate.update_downloaded`, `autoUpdate.track_switch_started`, `autoUpdate.quit_and_install`, `db.snapshot_written` (the database copy taken before a new version opens it), `startupRecovery.went_back` (a machine left this build from the "ADE could not start" window: from and to version, trigger, databases restored) and `agent_chat.restart_resume_armed` (`RELEASE_HEALTH_EVENTS` in `shared/sentry/logBridge.ts`). They share the Sentry Logs budget below. The release skill's beta gate (`scripts/release-tools/beta-gate.mjs`) reads them, with the issues first seen in a beta and the error-level log lines, before a beta becomes stable.
+**Release-health lines.** A few info lines go to Sentry Logs (not issues, not breadcrumbs) so a release shows that it ran and updated cleanly: `app.started` (desktop, once per launch: version, running and selected track, package channel, platform, arch, whether it is the first launch after an update), `brain.started` (the brain, once per start: version, tracks, role, platform, arch), `sync.host_started` (the brain could take connections again), `autoUpdate.update_downloaded`, `autoUpdate.track_switch_started`, `autoUpdate.quit_and_install`, `db.snapshot_written` (the database copy taken before a new version opens it), `startupRecovery.went_back` (a machine left this build from the "ADE could not start" window: from and to version, trigger, databases restored) and `agent_chat.restart_resume_armed` (`RELEASE_HEALTH_EVENTS` in `shared/sentry/logBridge.ts`). They share the Sentry Logs budget below. The release skill's beta gate (`scripts/release-tools/beta-gate.mjs`) reads them, with the issues first seen in a beta and the error-level log lines, before a beta becomes stable.
 
 **What is a Sentry Log, not an issue.** Things the user is shown or can fix, which say nothing new about ADE's code:
 
 - an error its throw site marked as an answer: `new AdeExpectedError(message, kind)` or `markExpected(error, kind)` from `shared/expectedError.ts`, with `kind` one of `user` (the person or agent asked for something that cannot be done: a missing branch, a closed tab, a path outside the project), `environment` (the machine cannot do it: no git, no Xcode, no simulator runtime) or `network`. The mark keeps the message unchanged, and it crosses the brain-to-desktop hop as `error.expected` beside the JSON-RPC `data`, so the desktop's rebuilt error keeps it (`markExpectedFromWire`). Every `beforeSend` drops a marked error that someone caught and reported, and logs it as `sentry.expected_error`; an uncaught one (an unhandled rejection) and a crash still report, because an answer nobody caught is a bug. Prefer the mark at the throw site to a message pattern: git, for one, answers in the user's language, so "not a repository" is read from `rev-parse`'s exit code 128 on the open-folder path, not from its text;
 - every error toast (`showToast` with `tone: "error"`), as the log event `toast.<start of title>` (`toastGroupKey`, so a lane or file name in the title does not make one event name per name), with the title and message cut to 300 characters. The failure behind a toast already opened its own issue, with a stack. A toast that names a `report` logs as `toast.<surface>` with its title, `code` and `technicalDetail` only, never its message (which can quote the person's words, such as an unsent prompt); `report: false` logs nothing;
 - every failure notice shown (an error-tone `Banner`, `InlineErrorNotice`, or a notice given a `report`, `ui/notice/NoticeReport.tsx`), once per surface and raw error per renderer, as `notice.shown` with its surface, headline, code and the raw error cut to 300 characters; a `hint`, a `status` given no report (`noticeKind.ts`; a lane delete that left files behind is a `status` that passes one, and logs), or `report: false` logs nothing. Its "Report" action sends the manual diagnostic report (`diagnostics.sendManual`), not a Sentry event (on the hosted web client, the User Feedback note below);
+- a failed connection to another machine, and the other machine's view of it. `remote.connect_failed` and `remote.connect_recovered` (`main/services/remoteRuntime/remoteDialTelemetry.ts`) come from the machine dialing, first failure of an outage and then one an hour, with each route's kind, result, fixed error token and duration but never its address (the hosts are only in the local line in `runtime/desktop-main.jsonl`, which a report's log tail carries like any other line). `sync_host.peer_accepted` and `sync_host.hello_rejected` come from the machine being dialed, through either of its hello handlers, and `sync.host_started` says when it could take connections again. `device_ref` and `peer_device_ref` are `syncDeviceTelemetryRef` hashes that both sides can compute and appear swapped on the other side, so filtering on them shows one connection from both machines;
 - conditions worth counting but not worth an issue, through `forwardSignalToSentry` (`shared/sentry/logBridge.ts`): `ai.provider_status.stale_runtime_snapshot` (the CLI snapshot says a provider's runtime is missing while the tools cache says ready; once per disagreement), `work.machine_read_failed` (a paired machine failed the Work sidebar's reads twice in a row), `remote.reconnect_failed` (the fourth automatic reconnect failure of one outage), `local_runtime.service_repair_attempt` (the desktop repairing or starting the brain service, keyed by reason), and `windows_desktop.background_unavailable` (input on the Windows main desktop to an app the background table lists, keyed by exe, input and fallback, with whether the screen then changed; exe and window class only, never a title or typed text: `macDesktopBackgroundInput.ts`);
 - a provider going `auth-failed` (signed out is the user's state);
 - a resource-pressure episode on this machine, `machine.resource_pressure` (warn), from the machine brain's five-minute sample (`ade-cli/src/services/runtime/resourcePressureMonitor.ts`, below in [Resource pressure](#resource-pressure)): the kinds that breached, severity, memory, swap and commit numbers, the largest write-ahead log, the brain's own CPU, the Android emulator count, whether a developer's brain ran beside the installed one, ADE's busiest table, and MB per process group (`installed_brainMb`, `dev_brainMb`, `desktopMb`, `android_emulatorMb`, `ios_simulatorMb`, `otherMb`). Numbers and group names only. One per episode; `machine.resource_pressure_ended` (info, local) when 30 healthy minutes close it;
@@ -614,7 +617,7 @@ or imported (`trigger: "cli_session_started"`), since ADE sees no turns inside
 a CLI.
 
 `install_source` is `direct_download` (the Mac app in an `Applications`
-folder, the Windows installer's `ADE.exe`, or an AppImage), `homebrew` (a
+folder, the Windows installer's `ADE.exe`, an AppImage, or the Linux `.deb` under `/opt/ADE`), `homebrew` (a
 Homebrew path, or the Mac app with a `Caskroom/ade` entry, since the cask copies
 the app to `/Applications`), `install_script` (the standalone brain from
 `install.sh` / `install.ps1` in `~/.ade/bin`), `development`, or `unknown`
@@ -732,6 +735,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `lanes` | `branch_renamed` | `completed`, `failed` | omitted; never the lane, either branch name, the machine, or the error |
 | `lanes` | `auto_archive_changed`, `auto_free_up_changed`, `auto_delete_changed` | `enabled`, `disabled` (an automatic cleanup rule turned on or off) | omitted; never a day count, a lane, or the machine |
 | `lanes` | `space_freed` | `completed`, `failed` (Free up space on an archived lane in Settings › Archive) | omitted; never the lane, its size, the machine, or the error |
+| `lanes` | `deleted_lane_restored` | `completed`, `failed` (Restore from the notice after a delete, or from Recently deleted; `failed` includes files that did not apply) | omitted; never the lane, branch, machine, or the error |
 | `star_prompt` | `star_prompt_shown`, `star_prompt_clicked`, `star_prompt_dismissed`, `repo_starred` | `prompt_first`, `prompt_second` (which showing of the pill) | omitted; never the GitHub account, a message count, or the machine |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
@@ -1715,6 +1719,8 @@ and has no Settings control. It stops under `DO_NOT_TRACK=1` or a persisted
 explicit off, and its flag is separate from analytics' own opt-out. The manual
 "Send a report to ADE" button is always available.
 
+`ade_feature_used` with `feature: "connections"` also carries `action: "remote_connect"` (a dial to another machine failed, or came back after failing) and `action: "work_first_load"` (a Work list's first load kept failing, or loaded after retrying), each with `outcome` `failed` or `completed`, deduplicated per outcome per hour and carrying nothing else. The cause is in Sentry.
+
 Clicking "Reconnect this computer" on the Account pane's removed-machine banner
 records the existing `ade_feature_used` event at the IPC owner boundary (the
 `accountRepairMachinePairing` handler, where the repair outcome is known) with
@@ -1759,61 +1765,67 @@ case the in-process latch cannot see, an app or brain restarting inside the
 refusal. Both events reuse the existing `ade_feature_used` 140-per-day /
 30-per-minute limits and the shared 200-event ceiling; no ceiling was raised.
 
-Making a cloud box with **New Agent 37 machine** records `feature:
-"connections"`, `action: "agent37_machine_create"` once per finished create,
-in the desktop IPC handler that runs it (`registerAgent37Ipc.ts`, where the
+Making a cloud box with **New ADE Cloud machine** records `feature:
+"connections"`, `action: "cloud_machine_create"` once per finished create,
+in the desktop IPC handler that runs it (`registerCloudIpc.ts`, where the
 outcome is known): `completed` (the box joined the account), `partial` (signed
 in, still starting), `cancelled`, or `failed`. The product question is whether
-installations make Agent 37 machines from ADE at all and how often a create
-fails. No box id, name, size, price, workspace, or error travels; those stay in
-the local `agent37.*` log lines. A box takes minutes and costs money, so a
+installations make ADE Cloud machines from ADE at all and how often a create
+fails. No box id, name, size, price, or error travels; those stay in
+the local `cloud.*` log lines. A box takes minutes and costs money, so a
 six-hour deduplication key per outcome bounds it to 16 accepted events per
 installation per UTC day, inside the existing `ade_feature_used` ceilings.
-Connecting the key, the template build and the startup cleanup of half-made
-boxes are not analytics: the first is a one-time setting, the other two run
-without a person deciding anything.
+The startup cleanup of half-made boxes is not analytics: it runs without a
+person deciding anything.
 
-The box actions on an Agent 37 card record `feature: "connections"`, `action:
-"agent37_machine_action"` when Agent 37 confirms the action, in the same IPC
-handler (`registerAgent37Ipc.ts`). The outcome is the action, prefixed:
+The box actions on an ADE Cloud card record `feature: "connections"`, `action:
+"cloud_machine_action"` when ADE Cloud confirms the action, in the same IPC
+handler (`registerCloudIpc.ts`). The outcome is the action, prefixed:
 `box_sleep`, `box_wake`, `box_resize`, `box_backup`, `box_delete`,
-`box_set_sleep` (Sleep when idle…), `box_copy` / `box_move` when a copy or
-move finishes, or `box_reconnect` when Reconnect to ADE brings a removed box
-back. The product question is which parts of the box lifecycle
+`box_copy` / `box_move` when a copy or move finishes, `box_reconnect` when
+Reconnect to ADE brings a removed box back, or `box_push_all_work` when Push
+all work to GitHub finished. The product question is which parts of the box lifecycle
 people run from ADE. A
-refusal (limit, wallet, key) is not an event; it stays in the local
-`agent37.machine_action_failed` log line. Remove from ADE is already
+refusal (limit, no access) is not an event; it stays in the local
+`cloud.machine_action_failed` log line. Remove from ADE is already
 `machine_removed`. A six-hour key per outcome bounds this to 36 accepted events
 per installation per UTC day, inside the existing `ade_feature_used` ceilings.
 The machine list's reads (open, focus, the short settling poll) are not
-analytics, and neither is sleeping on its own, waking for use, the monthly
-cap, the spending card, or the `ade agent37` commands an agent runs: those
-run without a person deciding anything, or are a setting.
+analytics, and neither is sleeping on its own, waking for use, the hours
+readout, or the `ade cloud` commands an agent runs: those run without a person
+deciding anything, or are a setting.
 
-Ready machines record `feature: "connections"`, `action: "agent37_ready"`.
+The plan records `feature: "connections"`, `action: "cloud_plan"` in the same
+handler: `plan_checkout` and `plan_portal` when the Stripe page opens,
+`extra_on` / `extra_off` when the extra-hours switch moves. The question is
+whether people buy from ADE and use extra hours. No amount, plan id or Stripe
+identifier travels. A six-hour key per outcome bounds it to 16 accepted events
+per installation per UTC day, inside the existing `ade_feature_used` ceilings.
+
+Ready machines record `feature: "connections"`, `action: "cloud_ready"`.
 The desktop records `enabled` and `disabled` when a project is turned on or
-off on the Agent 37 page, `completed` or `failed` when a prepare ends (a
+off on the ADE Cloud page, `completed` or `failed` when a prepare ends (a
 cancel is neither), and `ready_picker` when the new-chat picker claims one;
-the brain records `ready_cli` when `ade chat create --machine agent37:ready`
-or an agent claims one (`agent37.claim_ready`). The product question is
+the brain records `ready_cli` when `ade chat create --machine cloud:ready`
+or an agent claims one (`cloud.claim_ready`). The product question is
 whether people keep machines ready, how often preparing one fails, and where
 the chats that take one start. No project, repository, machine, size, setup
 command or error travels; the setup's output stays out of the local log too
-(`agent37.ready_prepare_failed` carries its exit code only). A six-hour key
+(`cloud.ready_prepare_failed` carries its exit code only). A six-hour key
 per outcome bounds it to 24 accepted events per installation per UTC day,
 inside the existing `ade_feature_used` ceilings. The keeper's pool reads are
 not analytics.
 
 Sign-ins for cloud machines record `feature: "connections"`, `action:
-"agent37_cloud_sign_in"` in the brain, when a sign-in is saved
-(`agent37CloudSignInActions.ts`, called from `adeActions/registry.ts`). The
+"cloud_sign_in"` in the brain, when a sign-in is saved
+(`cloudSignInActions.ts`, called from `adeActions/registry.ts`). The
 outcome is the provider, prefixed: `signin_claude` once Claude Code's token is
 kept, or `signin_codex`, `signin_cursor`, `signin_droid`, `signin_grok`,
 `signin_copilot`, `signin_devin`, `signin_muse` or `signin_openrouter` when a
 key is saved. The product question is which providers people want signed in on
 their cloud machines. No key, token, account, link, code or error travels; a
 failed or cancelled sign-in is not an event and stays in the local
-`agent37.*` log lines. Removing one is not an event. A six-hour key per
+`cloud.*` log lines. Removing one is not an event. A six-hour key per
 provider bounds it to 36 accepted events per installation per UTC day, inside
 the existing `ade_feature_used` ceilings. The card's status reads, and the
 1.5-second poll while Claude's sign-in runs, are not analytics.

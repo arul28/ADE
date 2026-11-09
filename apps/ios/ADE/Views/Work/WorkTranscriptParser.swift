@@ -379,6 +379,7 @@ func workContextCompactSummary(from eventDict: [String: Any]) -> String {
     optionalString(eventDict["accountLabel"]).map { "account:\($0)" },
     optionalString(eventDict["failReason"]).map { "failReason:\($0)" },
     optionalString(eventDict["failDetail"]).map { "failure:" + $0.components(separatedBy: .newlines).joined(separator: " ") },
+    eventDict["fallback"] as? Bool == true ? "fallback:true" : nil,
     optionalString(eventDict["summary"]).map { "summary:\($0)" },
   ]
   return header + trailer.compactMap { $0 }.map { "\n" + $0 }.joined()

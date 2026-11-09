@@ -1,7 +1,8 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
-import type { Agent37Budget, Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37Status, Agent37TemplateStatus, Agent37WakeForUseResult } from "../shared/agent37";
-import type { Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus } from "../shared/agent37Ready";
-import type { Agent37CloudSignInId, Agent37CloudSignInStatus } from "../shared/agent37CloudSignIns";
+import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
+import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
+import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
@@ -844,6 +845,10 @@ import type {
   LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
+  DeletedLaneSnapshot,
+  RemoveDeletedLaneArgs,
+  RestoreDeletedLaneArgs,
+  RestoreDeletedLaneResult,
   LaneReclaimRisk,
   RestoreLaneResult,
   LaneEnvInitProgress,
@@ -2320,6 +2325,12 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<CancelLaneGitWriteResult>;
         listDeleteProgress: () => Promise<LaneDeleteProgress[]>;
+        /** Deleted lanes whose unsaved work ADE kept (30 days), newest first. */
+        listDeleted: (pin?: OpenProjectBinding | null) => Promise<DeletedLaneSnapshot[]>;
+        /** Brings a deleted lane back as a new lane, with its uncommitted files. */
+        restoreDeleted: (args: RestoreDeletedLaneArgs, pin?: OpenProjectBinding | null) => Promise<RestoreDeletedLaneResult>;
+        /** Drops a deleted lane's saved work for good. */
+        removeDeleted: (args: RemoveDeletedLaneArgs, pin?: OpenProjectBinding | null) => Promise<{ removed: boolean }>;
         getDeleteRisk: (
           args: { laneId: string },
           pin?: OpenProjectBinding | null,
@@ -4681,76 +4692,85 @@ declare global {
         repairSession?: () => Promise<AdeAccountSessionRepairResult>;
       };
       /**
-       * Agent37, account-wide: the workspace key (in the account vault) and
+       * Whether ADE Cloud exists for this account: the desktop's own answer, or
+       * on the web, a connected machine's through `cloud.read`. No answer yet
+       * reads as no. Account-wide, so no pin.
+       */
+      cloudAccess?: {
+        read: () => Promise<{ enabled: boolean }>;
+        onChanged: (cb: () => void) => () => void;
+      };
+      /**
+       * ADE Cloud, account-wide: the machines and
        * new machines made on it. No pin: nothing here acts on a lane, chat or
        * another machine. Optional because the web client does not expose it.
        */
-      agent37?: {
-        getStatus: () => Promise<Agent37Status | null>;
-        saveKey: (apiKey: string) => Promise<Agent37Status | null>;
-        removeKey: () => Promise<Agent37Status | null>;
+      cloud?: {
+        /** Saved chats: account-level. Reads a computer's copy while it can't answer. */
+        savedChats?: {
+          list: (args: CloudSavedChatsListArgs) => Promise<CloudSavedChatList | null>;
+          read: (args: CloudSavedChatReadArgs) => Promise<CloudSavedChatPage | null>;
+          delete: (args: CloudSavedChatDeleteArgs) => Promise<void>;
+        };
+        getStatus: () => Promise<CloudStatus | null>;
         /** Returns at once; the create reports through `onCreateProgress`, ending in `done` or `failed`. */
-        createMachine: (requestId: string, machine: Agent37CreateMachineArgs) => Promise<{ started: boolean }>;
-        onCreateProgress: (cb: (progress: Agent37CreateProgress) => void) => () => void;
+        createMachine: (requestId: string, machine: CloudCreateMachineArgs) => Promise<{ started: boolean }>;
+        onCreateProgress: (cb: (progress: CloudCreateProgress) => void) => () => void;
         /** Stops a create and deletes the box it made, unless it already signed in. */
         cancelCreate: (requestId: string) => Promise<{ cancelled: boolean }>;
-        /** ADE's template in the Agent37 workspace; asking also starts a check when none ran yet. */
-        getTemplateStatus: () => Promise<Agent37TemplateStatus | null>;
-        retryTemplate: () => Promise<Agent37TemplateStatus | null>;
         /**
-         * The workspace's boxes with state, size, price and spend. Account-level
-         * (the Agent37 key is the account's), so no pin: it answers the same on
+         * The account's boxes with state, size, price and spend. Account-level
+         * (cloud access is the account's), so no pin: it answers the same on
          * every computer.
          */
-        listMachines?: () => Promise<Agent37MachinesResult | null>;
-        /** Sleep, wake, resize, back up or delete one box, on Agent37. No pin, as above. */
-        machineAction?: (args: Agent37MachineActionArgs) => Promise<Agent37MachineActionResult | null>;
+        listMachines?: () => Promise<CloudMachinesResult | null>;
+        /** Sleep, wake, resize, back up or delete one box, on the provider. No pin, as above. */
+        machineAction?: (args: CloudMachineActionArgs) => Promise<CloudMachineActionResult | null>;
         onStatusChanged?: (cb: () => void) => () => void;
-        onTemplateStatus: (cb: (status: Agent37TemplateStatus) => void) => () => void;
         /**
-         * Sign-ins for cloud machines: the provider sign-ins every new Agent
-         * 37 machine starts with. Kept in the account vault and run on this
+         * Sign-ins for cloud machines: the provider sign-ins every new cloud
+         * machine starts with. Kept in the account vault and run on this
          * computer's brain, so no pin: every computer answers the same.
          */
-        cloudSignInStatus?: () => Promise<Agent37CloudSignInStatus | null>;
-        cloudSignInClaudeStart?: () => Promise<Agent37CloudSignInStatus | null>;
-        cloudSignInClaudeCode?: (code: string) => Promise<Agent37CloudSignInStatus | null>;
-        cloudSignInClaudeCancel?: () => Promise<Agent37CloudSignInStatus | null>;
-        cloudSignInSaveKey?: (id: Agent37CloudSignInId, key: string) => Promise<Agent37CloudSignInStatus | null>;
-        cloudSignInRemove?: (id: Agent37CloudSignInId) => Promise<Agent37CloudSignInStatus | null>;
+        cloudSignInStatus?: () => Promise<CloudSignInStatus | null>;
+        cloudSignInClaudeStart?: () => Promise<CloudSignInStatus | null>;
+        cloudSignInClaudeCode?: (code: string) => Promise<CloudSignInStatus | null>;
+        cloudSignInClaudeCancel?: () => Promise<CloudSignInStatus | null>;
+        cloudSignInSaveKey?: (id: CloudSignInId, key: string) => Promise<CloudSignInStatus | null>;
+        cloudSignInRemove?: (id: CloudSignInId) => Promise<CloudSignInStatus | null>;
         onCloudSignInChanged?: (cb: () => void) => () => void;
         /**
          * Ready machines: per project, one machine prepared and kept asleep
          * for the next chat. The choice is in the account vault and the pool
-         * on Agent37, so no pin: every computer answers the same.
+         * on the provider, so no pin: every computer answers the same.
          */
-        readyStatus?: () => Promise<Agent37ReadyStatus | null>;
-        readySetProject?: (settings: Partial<Agent37ReadyProjectSettings>) => Promise<Agent37ReadyStatus | null>;
-        readyRemoveProject?: (identity: string) => Promise<Agent37ReadyStatus | null>;
-        readyRetry?: (identity: string) => Promise<Agent37ReadyStatus | null>;
+        readyStatus?: () => Promise<CloudReadyStatus | null>;
+        readySetProject?: (settings: Partial<CloudReadyProjectSettings>) => Promise<CloudReadyStatus | null>;
+        readyRemoveProject?: (identity: string) => Promise<CloudReadyStatus | null>;
+        readyRetry?: (identity: string) => Promise<CloudReadyStatus | null>;
         /** Takes the project's ready machine and wakes it; the chat then goes to `machineKey` like any machine. */
-        readyClaim?: (originUrl: string) => Promise<Agent37ReadyClaim | null>;
+        readyClaim?: (originUrl: string) => Promise<CloudReadyClaim | null>;
         /** Gives back a claim no chat used yet: ready again, and asleep. */
         readyRelease?: (instanceId: string, claimToken: string) => Promise<{ released: boolean } | null>;
-        onReadyStatus?: (cb: (status: Agent37ReadyStatus) => void) => () => void;
-        /** The account's monthly cap and agent limits for Agent 37 machines (account vault; no pin). */
-        getBudget?: () => Promise<Agent37Budget | null>;
-        setBudget?: (budget: Partial<Agent37Budget>) => Promise<Agent37Budget | null>;
+        onReadyStatus?: (cb: (status: CloudReadyStatus) => void) => () => void;
+        /** What unattended agents may do on ADE Cloud (account vault; no pin). */
+        getAgentLimits?: () => Promise<CloudAgentLimits | null>;
+        setAgentLimits?: (limits: Partial<CloudAgentLimits>) => Promise<CloudAgentLimits | null>;
+        /** The account's plan (no pin): extra hours for paid accounts, and Stripe's pages in the browser. */
+        setExtraHours?: (enabled: boolean) => Promise<CloudAccountState | null>;
+        openCheckout?: () => Promise<{ opened: boolean }>;
+        openBillingPortal?: () => Promise<{ opened: boolean }>;
         /**
          * Copy (fork) or move (box ↔ VM) one box. Both answer at once and
          * report through `onCreateProgress` with this request id. Account
-         * level (they act on the Agent 37 workspace), so no pin.
+         * level (they act on the account's cloud machines), so no pin.
          */
         copyMachine?: (args: { requestId: string; instanceId: string; name?: string | null; shape?: string | null }) => Promise<{ started: boolean }>;
         moveMachine?: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }) => Promise<{ started: boolean }>;
         /** Signs a box that was removed from the account ("Not in ADE") back in, as the same machine. Reports like a copy. */
         reconnectMachine?: (args: { requestId: string; instanceId: string }) => Promise<{ started: boolean }>;
-        /**
-         * Wakes the Agent 37 box behind an account machine because the person
-         * is about to use it (opening one of its lanes). It acts on the Agent
-         * 37 workspace with the account's key, not on the machine, so no pin.
-         */
-        wakeMachine?: (machine: { machineKey: string; hostname?: string | null }) => Promise<Agent37WakeForUseResult | null>;
+        personIsHere?: () => Promise<boolean>;
+        pushAllWork?: (instanceId: string) => Promise<CloudMachineActionResult>;
       };
       /**
        * The account settings store (the `account_settings` action domain),
@@ -5005,6 +5025,7 @@ declare global {
       /** Read-only Work tools-pane mirror; `null` when no runtime is bound. */
       workTools: {
         getLaneState: (laneId: string) => Promise<WorkToolsLaneState | null>;
+        noteWatching?: (pin?: OpenProjectBinding | null) => Promise<void>;
         /**
          * `openTools` is the pane's whole tab strip in order; `tool` is the one
          * on screen. Defaulted so an older caller still publishes coherently.

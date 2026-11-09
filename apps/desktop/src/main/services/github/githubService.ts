@@ -5,6 +5,7 @@ import { issueWriteCandidates } from "./githubIssueWriteAccess";
 import type { GitHubIssueLike, GitHubIssuePatch } from "../../../shared/laneGitHubIssue";
 import path from "node:path";
 import { safeStorage } from "electron";
+import { isSecureStorageAvailable } from "../shared/secureStorage";
 import type { Logger } from "../logging/logger";
 import { getMachineMainLogger } from "../logging/machineLogger";
 import { markExpected } from "../../../shared/expectedError";
@@ -594,7 +595,8 @@ function repoIdentityFromGitHubResponse(
 
 function readOriginUrlFromConfig(configPath: string): string | null {
   try {
-    if (!fs.existsSync(configPath)) return null;
+    // Reading a FIFO here would freeze the whole process.
+    if (!fs.statSync(configPath, { throwIfNoEntry: false })?.isFile()) return null;
     const raw = fs.readFileSync(configPath, "utf8");
     let inOriginSection = false;
     for (const line of raw.split(/\r?\n/)) {
@@ -840,7 +842,7 @@ export function createGithubService({
     if (!fs.existsSync(candidatePath)) return null;
     try {
       const bytes = fs.readFileSync(candidatePath);
-      if (!safeStorage.isEncryptionAvailable()) {
+      if (!isSecureStorageAvailable(safeStorage)) {
         tokenDecryptionFailed = true;
         logger.warn("github.token_decryption_failed", {
           reason: "os_secure_storage_unavailable",
@@ -879,7 +881,11 @@ export function createGithubService({
       return;
     }
 
-    if (!safeStorage.isEncryptionAvailable()) {
+    if (!isSecureStorageAvailable(safeStorage)) {
+      // The machine credential store holds it instead (Linux with no keyring).
+      // The old file stays: this save can still fail, and it may become
+      // readable when the keyring is back.
+      if (credentialStore) return;
       throw new Error("OS secure storage is unavailable. Cannot persist GitHub token.");
     }
 
@@ -930,9 +936,11 @@ export function createGithubService({
       tokenDecryptionFailed = false;
       return machineToken;
     }
+    // Reset, so only this read's legacy file can report itself unreadable.
+    tokenDecryptionFailed = false;
     const token = migrateLegacyTokenIfNeeded();
     if (token) return token;
-    tokenDecryptionFailed = machineTokenReadFailed;
+    tokenDecryptionFailed = tokenDecryptionFailed || machineTokenReadFailed;
     return null;
   };
 

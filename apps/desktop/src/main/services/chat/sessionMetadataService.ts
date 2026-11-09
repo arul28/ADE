@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import type {
@@ -26,7 +28,7 @@ import {
 } from "./sessionNaming";
 import type { Logger } from "../logging/logger";
 import { buildCodexSamplePrompt, type CodexSampleOutcome } from "./codexThreadSample";
-import { presentChatFailure, isSandboxUnsupportedFailureText } from "../../../shared/chatErrorPresentation";
+import { presentChatFailure, isSandboxUnsupportedFailureText, sanitizeAgentFailureText } from "../../../shared/chatErrorPresentation";
 
 export type SessionMetadataManagedSession = {
   session: AgentChatSession;
@@ -239,7 +241,9 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
         });
         generated = await runSessionMetadataGeneration({
           candidateModelIds,
-          cwd: managed.laneWorktreePath,
+          // A title can be regenerated after the lane's folder is gone; only the
+          // model's answer matters here, so any directory will do.
+          cwd: fs.existsSync(managed.laneWorktreePath) ? managed.laneWorktreePath : os.tmpdir(),
           prompt,
           systemPrompt: buildSessionMetadataSystemPrompt(fields),
           runPrompt: (promptArgs) => dependencies.runPrompt(promptArgs, managed),
@@ -295,8 +299,8 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
         // No model produced names, so keep the current ones and say why. A
         // name guessed from the transcript tail is worse than the old name:
         // it overwrites a title the user may have liked with clipped words.
-        generationError = generated.lastFailure?.error
-          ?? (candidateModelIds.length
+        generationError = sanitizeAgentFailureText(generated.lastFailure?.error)
+          || (candidateModelIds.length
             ? "The AI returned no usable names."
             : "No AI model is available to generate names.");
         if (isSandboxUnsupportedFailureText(generationError)) {

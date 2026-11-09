@@ -1,4 +1,5 @@
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
+import { syncDeviceTelemetryRef } from "../analytics/machineTelemetryId";
 import fs from "node:fs";
 import { captureError } from "../../../shared/sentry/capture";
 import { AdeExpectedError } from "../../../shared/expectedError";
@@ -63,6 +64,8 @@ import {
   isRemoteRuntimeConnectionError,
   type RemoteConnectionPool,
 } from "./remoteConnectionPool";
+import type { Logger } from "../logging/logger";
+import { RemoteDialTelemetry, type RemoteDialOutcome } from "./remoteDialTelemetry";
 import { HostReturnWatches } from "./remoteHostReturnWatch";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { DesktopPairedMachineStore } from "./syncPairedMachineStore";
@@ -96,11 +99,14 @@ import {
   describeLinkHeldByOtherAdeApp,
   type HostWentAwayRecovery,
 } from "../../../shared/connectionDiagnosis";
-import { adeActionAccess, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
+import { adeActionAccess, isBackgroundAdeWrite, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
 type RemoteConnectionServiceOptions = {
+  /** Receives one line per outage saying which routes were tried and how each ended. */
+  logger?: Pick<Logger, "info">;
+  onDialOutcome?: (outcome: RemoteDialOutcome) => void;
   autoconnectIntervalMs?: number;
   pingTimeoutMs?: number;
   appVersion?: string;
@@ -124,7 +130,7 @@ type RemoteConnectionServiceOptions = {
    */
   explicitConnectOnly?: boolean;
   /**
-   * Wakes a sleeping cloud machine (an Agent 37 box) the person is about to
+   * Wakes a sleeping cloud machine (a cloud box) the person is about to
    * use. True when it woke one, so the connect waits for it to come back;
    * throws with the reason when it may not (the monthly cap). Asked only for
    * an explicit Connect and for a call that changes something: background
@@ -326,6 +332,18 @@ function sameStatusValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/**
+ * After a wake, may this call go out again? Replay-safe actions may. A chat send
+ * may when it carries a client id and the brain says it recognizes a retry of one
+ * it already took, so a message caught by a sleep is delivered, and never twice.
+ */
+function isRetriableAfterSleep(request: RemoteRuntimeActionRequest, brainDedupesSends: boolean): boolean {
+  if (isReplaySafeAdeAction(request.domain, request.action)) return true;
+  if (!brainDedupesSends || request.domain !== "chat" || request.action !== "sendMessage") return false;
+  const args = request.args as { clientSendId?: unknown } | undefined;
+  return typeof args?.clientSendId === "string" && args.clientSendId.length > 0;
+}
+
 export class RemoteConnectionService {
   private readonly statusById = new Map<string, StatusPatch>();
   private readonly manuallyDisconnectedTargetIds = new Set<string>();
@@ -351,6 +369,7 @@ export class RemoteConnectionService {
     },
     { firstAttemptMs: HOST_RETURN_FIRST_ATTEMPT_MS, watchMs: HOST_RETURN_WATCH_MS },
   );
+  private readonly dialTelemetry: RemoteDialTelemetry;
   private readonly pairedFallbackSshTrustByTargetId = new Map<
     string,
     Extract<RemoteRuntimeSshHostKeyTrustStatus, { state: "needs_trust" | "changed" }>
@@ -372,12 +391,19 @@ export class RemoteConnectionService {
     private readonly options: RemoteConnectionServiceOptions = {},
     private readonly pairedStore: DesktopPairedMachineStore = new DesktopPairedMachineStore(),
   ) {
+    this.dialTelemetry = new RemoteDialTelemetry({
+      describeTarget: (targetId) => this.describeDialTarget(targetId),
+      logger: this.options.logger,
+      onOutcome: this.options.onDialOutcome,
+    });
+    this.pool.onDialFailed((targetId, error) => this.dialTelemetry.noteFailed(targetId, error));
     // A call that finds the machine gone reconnects on its own, without
     // `connect()`. The machine may have restarted on a new version (an update
     // it was just sent), so what it reports now replaces what it reported at
     // the last explicit Connect. Without this the list kept the old version
     // and called a finished update "didn't apply".
     this.pool.onEntryConnected((targetId, result) => {
+      this.dialTelemetry.noteConnected(targetId, result.route);
       // The machine is back, whoever dialed it.
       this.hostReturnWatches.stop(targetId);
       // A connect that finishes after the machine was removed or disconnected
@@ -387,6 +413,8 @@ export class RemoteConnectionService {
         version: result.version,
         // Read with the version, so a brain that stopped reporting it clears it.
         appVersion: result.appVersion ?? null,
+        updateInstallMode: result.updateInstallMode,
+        downloadUrl: result.downloadUrl ?? null,
         arch: result.arch,
         ...(result.route ? { route: result.route } : {}),
         ...(result.capabilities ? { capabilities: result.capabilities } : {}),
@@ -890,6 +918,8 @@ export class RemoteConnectionService {
           // Only beside the live version it was read with, never beside the
           // persisted one, which can be from another connection.
           appVersion: status.version != null ? status.appVersion ?? null : null,
+          updateInstallMode: status.version != null ? status.updateInstallMode : undefined,
+          downloadUrl: status.version != null ? status.downloadUrl ?? null : null,
           ...(status.route ? { route: status.route } : {}),
           ...(status.capabilities ? { capabilities: status.capabilities } : {}),
           ...(status.compatibilityWarnings
@@ -980,7 +1010,7 @@ export class RemoteConnectionService {
     });
     try {
       // Asked even with a pool entry: a sleeping box's relay tunnel can look
-      // open until a call times out. Only Agent 37 boxes cost a lookup.
+      // open until a call times out. Only cloud boxes cost a lookup.
       const woke = explicit && this.options.wakeForUse ? await this.options.wakeForUse(target) : false;
       const result = woke
         ? await this.connectWokenMachine(target)
@@ -1015,6 +1045,8 @@ export class RemoteConnectionService {
         arch: connectedResult.arch,
         version: connectedResult.version,
         appVersion: connectedResult.appVersion ?? null,
+        updateInstallMode: connectedResult.updateInstallMode,
+        downloadUrl: connectedResult.downloadUrl ?? null,
         route: connectedResult.route,
         capabilities: connectedResult.capabilities,
         compatibilityWarnings: connectedResult.compatibilityWarnings,
@@ -1457,8 +1489,10 @@ export class RemoteConnectionService {
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
     // Sending to a chat or changing anything on a sleeping cloud machine wakes
-    // it first, and waits for it to come back.
-    if (!this.pool.hasEntry(targetId) && adeActionAccess(request.domain, request.action) === "write") {
+    // it first, and waits for it to come back. The app's own background writes don't.
+    const wakes = adeActionAccess(request.domain, request.action) === "write"
+      && !isBackgroundAdeWrite(request.domain, request.action);
+    if (!this.pool.hasEntry(targetId) && wakes) {
       const sleeping = this.registry.get(targetId);
       // The same guards as any implicit use, but for the reconnect backoff a
       // sleeping box has run up: nothing is woken that the call may not reach.
@@ -1484,10 +1518,11 @@ export class RemoteConnectionService {
         // call is sent once more only when sending it twice is safe, or when
         // it never went out; otherwise its unknown outcome stands, and the
         // person's retry reaches the woken machine.
-        if (adeActionAccess(request.domain, request.action) !== "write" || !(await this.wakeForUse(target))) throw error;
+        if (!wakes || !(await this.wakeForUse(target))) throw error;
         this.clearAutomaticReconnectState(targetId);
         await this.connectWokenMachine(target);
-        if (error instanceof RemoteActionOutcomeUnknownError && !isReplaySafeAdeAction(request.domain, request.action)) throw error;
+        if (error instanceof RemoteActionOutcomeUnknownError
+          && !isRetriableAfterSleep(request, this.statusById.get(targetId)?.capabilities?.clientSendDedupe === true)) throw error;
         result = await this.pool.callActionForTarget(target, projectId, request);
       }
       this.mergeStatus(targetId, {
@@ -2005,6 +2040,18 @@ export class RemoteConnectionService {
       });
     }
     return errorMessage(error);
+  }
+
+  private describeDialTarget(targetId: string) {
+    const target = this.registry.get(targetId);
+    if (!target) return null;
+    const credentials = target.pairedMachine ? this.pairedStore.getForReference(target.pairedMachine) : null;
+    return {
+      deviceRef: syncDeviceTelemetryRef(credentials?.deviceId),
+      peerDeviceRef: syncDeviceTelemetryRef(credentials?.hostIdentity.deviceId),
+      peerVersion: target.runtimeBinaryVersion ?? null,
+      lastConnectedAt: target.lastConnectedAt ?? null,
+    };
   }
 
   private upsertProject(

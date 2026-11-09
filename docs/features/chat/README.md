@@ -23,10 +23,20 @@ scope while that machine's catalog loads. Project binding changes replace lane
 state immediately, and late runtime action or sync responses are rejected after
 switching projects so they cannot populate the new project's panes.
 
+Provider and title text limits cut at Unicode code-point boundaries so a
+surrogate pair is not split. `apps/desktop/src/shared/codePointText.ts` holds
+the shared helpers.
+
+An auto-resume interrupted by a brain restart is retried only when its wake
+message is definitely absent and no turn started. After a 60-second settling
+window, a delivered message, started turn, or unreadable transcript keeps the
+fire closed to avoid duplicate delivery.
+
 ## Source file map
 
 | Path | Role |
 |---|---|
+| `apps/desktop/src/shared/codePointText.ts` | Code-point-safe text cuts for provider limits and titles. |
 | `apps/desktop/src/renderer/components/chat/ChipText.tsx`, `ChipHoverCard.tsx`, `chipMenu.ts`, `chipActions.ts`, `chipCardBodies.tsx`, `MachineChipCard.tsx`, `McpMentionCardBody.tsx`, `useMachineFacts.ts` | Transcript and composer chip display, held-hover and right-click actions, per-kind information cards, chat-machine-pinned navigation, focused Connections/MCP Settings routes, and the model chip's new-chat draft action. See [Chips](composer-and-ui.md#chips). |
 | `apps/desktop/src/shared/chips.ts`, `apps/desktop/src/shared/types/chatMentions.ts` | Canonical chip and chat mention contracts. `@mcp:<server>` is part of the same parser and token formatter used by desktop, hosted web, and iOS's Swift mirror. |
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserHitTest.ts` | Shared hit-testing for the browser element picker, drag-to-capture, and `ade browser select`. Converts viewport points to CDP document coordinates, falls back to the page's `elementFromPoint`, and reaches same-renderer and cross-site iframe content. |
@@ -127,6 +137,7 @@ switching projects so they cannot populate the new project's panes.
 | `apps/desktop/src/main/services/chat/cursorSdkWorker.ts` | Node worker that hosts the official `@cursor/sdk` and bridges it to the main process via the JSON line protocol in `cursorSdkProtocol.ts`. It creates the SDK local agent platform with the lane workspace/state root, configures local agents to use HTTP/1 by default (`ADE_CURSOR_SDK_USE_HTTP1_FOR_AGENT=0` disables it), enables SDK local agent retries, passes ADE mode/idempotency keys on sends, and tolerates stream-iteration failures long enough to call `run.wait()` and emit a structured terminal result. The SDK's `local.force` send option (expire the currently active persisted run before starting this message as a new follow-up) is wired to the explicit `forceExpireActiveRun` payload flag and is set **only** on ADE's automatic recovery re-send — a normal send that expired a genuinely running turn would discard its output. It also serves the `steer` request added for Cursor's active-turn inline send: only the live **local** run is eligible (cloud runs are tracked separately and never reached from here), a build whose `Run` has no `steer` method reports ADE's diagnostics-only `unsupported`, and nothing throws for a missing channel — the caller's fallback is a normal follow-up message, and an exception would lose text the user already typed. Any outcome other than `complete_delivered` is normalized to `revert_to_followup` so the host keeps ownership of the message. User images are materialized here from attachment paths or URLs (`workerAttachmentImages.ts`) rather than as base64 on the JSON IPC pipe — several large screenshots on `child.send` can stall the turn so Cursor never sees the message. |
 | `apps/desktop/src/main/services/chat/cursorSdkWorkerGuards.ts` | The worker's self-defence once its brain is gone, kept apart from the worker so tests can drive it without the SDK. `sendToCursorSdkParent` drops a message when `process.connected` is false and sends with a callback, so a send on a closed channel never becomes a process `'error'`. `ignoreCursorSdkWorkerPipeErrors` swallows `'error'` on the process and on its stdio, where EPIPE shows after the parent dies. `createCursorSdkWorkerExit` gives every exit path a 2 s timer deadline (`CURSOR_SDK_WORKER_EXIT_DEADLINE_MS`), because timers still fire when promises cannot settle. `cursorSdkOwnerPidArg` / `readCursorSdkOwnerPid` write and read the `--ade-owner-pid=<pid>` argv marker, and `cursorSdkOwnerStillOwns` backs the 2 s owner poll. See [Cursor worker orphan guard](#cursor-worker-orphan-guard). |
 | `apps/desktop/src/main/services/chat/cursorSdkWorkerOrphans.ts` | `recoverCursorSdkWorkerOrphans`, the once-per-process startup sweep that the brain (`ade serve`) and desktop main both run. It lists processes asynchronously (`ps -ww -axo` on POSIX, a PowerShell CIM query on Windows) and `selectOrphanedCursorSdkWorkers` picks the workers whose owner pid is dead, plus unmarked workers from older builds only on POSIX with ppid 1 and the exact legacy command shape. It re-lists before every kill after the first, so a reused pid is never killed. |
+| `apps/desktop/src/main/services/chat/chatWebhookRegistry.ts` | Chat webhooks (`chat.armWebhook` / `listWebhooks` / `cancelWebhook`, `ade chat notify`, `--notify-url`): a POST to a public https URL when a chat goes idle, needs input or fails, retried, pinned to a checked public address. Stored in the project's `.ade/secrets/chat-webhooks.json` with removals kept as tombstones, so two brains on one project agree; only the brain that runs a chat queues news for it. `chat.getChatEvents` (`ade chat events`) is the polling twin: `readEnvelopesBackToSequence` in `chatTranscriptHistoryPager.ts` and `chatEventsPage` in `chatTranscriptEntries.ts`. |
 | `apps/desktop/src/main/services/chat/chatWaitRegistry.ts` | Event-driven chat waits: the `chat.waitFor` long-poll and the durable waiters (`chat.armWait` / `listWaits` / `cancelWait`), re-checked on each target's events, one check at a time. The chat service signals it from `emitChatEvent`. A match seen while the session to wake cannot take a wake (a tracked agent CLI mid-turn) is kept on the waiter (`matchedWhileDeferred`), so it still fires as matched after the target moves on. |
 | `apps/desktop/src/main/services/chat/agentCliWakes.ts` | Wakes for tracked agent CLIs (`createAgentCliWakes`): a wake is typed at the CLI's prompt only at a turn boundary, one at a time per CLI, and a subagent's report to a CLI parent retries every 5 s for up to a day. An archived CLI refuses wakes and is not a reachable parent. |
 | `apps/desktop/src/shared/chatGoals.ts` | `parseClaudeGoalCommand` (what a sent `/goal …` asks for) and the `goal_reached` / `goal_blocked` notice statuses the push publisher alerts on. |
@@ -1492,6 +1503,12 @@ come):
   the same kind of waiter with a `send` action: once every named chat is idle,
   B receives the prompt as a wake (a new turn if B is idle, queued at its turn
   boundary if not).
+- **Long MCP calls and subagents in Claude chats** move to the Background
+  list after two minutes (`CLAUDE_AUTO_BACKGROUND_TASKS`), with the same Stop
+  button as a shell, and the agent wakes when they finish. `mcp_task` maps to
+  `background`. Automation-launched and lightweight chats stay in the
+  foreground, and ADE's own tool server opts out because its tools can wait on
+  a person.
 - **Waiting on background work** (`chat.holdBackgroundWork`,
   `ade chat wait --background [--job <id>]`) is the agent's call, with no UI. A
   chat with live background work already shows as working: **Background work ×N**
@@ -3334,6 +3351,17 @@ brain are separate processes and each keeps its own. Project/window close probes
 workload probe throws, ADE keeps the project alive instead of closing
 over a possibly running agent.
 
+### A Cursor worker that died mid-run
+
+The SDK records each run in its local store and marks it finished when the run
+ends. A worker that dies mid-run never marks it, so every later send on that
+agent, in any worker and after any restart, is refused with `Agent <id> already
+has active run`. Each chat has one worker, so a worker running nothing that gets
+that refusal knows the run is dead: `sendExpiringDeadRun` (`cursorSdkWorker.ts`)
+expires it with `local.force` and sends again, keeping the agent and its history.
+`summarize()` has no `force` option, so a `/compact` in that state reports
+`cut_off_run` and asks for a message first.
+
 ### Cursor thread recycling and the first-event watchdog
 
 A Cursor transport failure — an `NGHTTP2` stream reset, an `[internal] write
@@ -3367,7 +3395,7 @@ first-event watchdog and one automatic recovery attempt.
   dead thread. Logged as `agent_chat.cursor_sdk_worker_poisoned`,
   `agent_chat.cursor_sdk_thread_recycling`, and
   `agent_chat.cursor_sdk_agent_recreated_after_forced_rotation`.
-- **One re-send, one set of terminal events.** `runCursorSdkTurn` runs the
+- **One re-send, one set of terminal events.** `runCursorSdkTurnWithRecovery` runs the
   attempt through `runCursorSdkTurnOnce`, which returns a recovery *sentinel*
   instead of recursing — produced before any error/status/done emission — so a
   turn is reported exactly once no matter which attempt settles it. The

@@ -3,6 +3,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import type { SafeStorage } from "electron";
+import { isSecureStorageAvailable as hasSecureStorage } from "../shared/secureStorage";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { isSafeIdentifier } from "../../../shared/safeIdentifier";
@@ -215,7 +216,7 @@ export function __setSafeStorageForTests(next: SafeStorage | null): void {
 }
 
 function isSecureStorageAvailable(): boolean {
-  return Boolean(safeStorage && typeof safeStorage.isEncryptionAvailable === "function" && safeStorage.isEncryptionAvailable());
+  return hasSecureStorage(safeStorage);
 }
 
 function isMacosKeychainAvailable(): boolean {

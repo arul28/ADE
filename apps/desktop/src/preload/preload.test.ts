@@ -7425,7 +7425,7 @@ describe("per-chat runtime routing", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-b",
       projectId: "project-b",
-      request: { domain: "chat", action: "sendMessage", args: { ...foreignArgs, ...sentFrom(false) } },
+      request: { domain: "chat", action: "sendMessage", args: { ...foreignArgs, ...sentFrom(false), clientSendId: expect.any(String) } },
     });
     expect(invoke).not.toHaveBeenCalledWith(
       IPC.localRuntimeCallAction,
@@ -7440,7 +7440,7 @@ describe("per-chat runtime routing", () => {
     await bridge.agentChat.send(localArgs);
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
       rootPath: "/repo-a",
-      request: { domain: "chat", action: "sendMessage", args: { ...localArgs, ...sentFrom(true) } },
+      request: { domain: "chat", action: "sendMessage", args: { ...localArgs, ...sentFrom(true), clientSendId: expect.any(String) } },
     });
   });
 

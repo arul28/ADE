@@ -6,6 +6,7 @@ import { IssueCreateHost } from "../issues/IssueCreateHost";
 import { IssueLaunchHost } from "./IssueLaunchHost";
 import { CommandPalette, type CommandPaletteIntent } from "./CommandPalette";
 import { QuickSlotsHost } from "../../quickSlots/QuickSlotsHost";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { IntegrationBanners } from "./IntegrationBanners";
 import { isCssZoomedBrowserSurface } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
@@ -42,13 +43,14 @@ import {
   hasConfiguredAiProvider,
   shouldRefreshAiStatusForChatEvent,
 } from "../../lib/aiProviderStatus";
-import { hasRecentBannerDismissal } from "../../lib/bannerDismiss";
+import { hasDismissedGithubReminder } from "../../lib/bannerDismiss";
 import {
   getStoredZoomLevel,
   displayZoomToLevel,
   applyShellHeaderInset,
 } from "../../lib/zoom";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
+import { captureError } from "../../../shared/sentry/capture";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { readLocalSyncStatus } from "../../lib/localSyncStatusReader";
 import { cn } from "../ui/cn";
@@ -72,6 +74,7 @@ import { SituationalSuggestions } from "./suggestions/SituationalSuggestions";
 import { SurveyHost } from "./surveys/SurveyHost";
 import { useOnboardingChatImport } from "../onboarding/useOnboardingChatImport";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
+import { useLaneWorkSavedToast } from "./toast/useLaneWorkSavedToast";
 import { useAutoDiagnosticsToast } from "./toast/useAutoDiagnosticsToast";
 import { useProductAnalyticsLifecycle } from "../analytics/ProductAnalyticsLifecycle";
 import { useAppWideSessionAttention } from "../../hooks/useAppWideSessionAttention";
@@ -257,6 +260,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   useLaneEventToasts(navigate);
+  useLaneWorkSavedToast();
   usePrEventToasts(navigate);
   useAutoDiagnosticsToast();
   const setProject = useAppStore((s) => s.setProject);
@@ -303,16 +307,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isRemoteProject = projectBinding?.kind === "remote";
   const [projectMissing, setProjectMissing] = useState(false);
   const lastRouteSaveProjectRootRef = useRef<string | null | undefined>(undefined);
-  const githubStatusProjectRootRef = useRef<string | null>(null);
+  const githubStatusScope = `${projectBinding?.key ?? "bound"}:${currentProjectRoot ?? ""}`;
+  const githubStatusScopeRef = useRef<string | null>(null);
+  const githubStatusRequestRef = useRef(0);
   const githubConnectionStateRef = useRef<string | null>(null);
   const githubReconnectContextRef = useRef({
     currentProjectRoot,
     isRemoteProject,
+    bindingKey: projectBinding?.key,
     pathname: location.pathname,
   });
   githubReconnectContextRef.current = {
     currentProjectRoot,
     isRemoteProject,
+    bindingKey: projectBinding?.key,
     pathname: location.pathname,
   };
   const isPersonalChatsRoute =
@@ -824,25 +832,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     if (!currentProjectRoot || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) {
-      githubStatusProjectRootRef.current = null;
+      githubStatusScopeRef.current = null;
       setGithubStatus(null);
       return;
     }
-    if (githubStatusProjectRootRef.current !== currentProjectRoot) {
-      githubStatusProjectRootRef.current = currentProjectRoot;
+    if (githubStatusScopeRef.current !== githubStatusScope) {
+      githubStatusScopeRef.current = githubStatusScope;
       setGithubStatus(null);
     }
-    const delayMs = currentProjectRoot && hasRecentBannerDismissal(`github-cli:${currentProjectRoot}`)
+    const delayMs = currentProjectRoot && hasDismissedGithubReminder(currentProjectRoot)
       ? GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS
       : GITHUB_STATUS_STARTUP_DELAY_MS;
     const githubTimer = window.setTimeout(() => {
+      const request = ++githubStatusRequestRef.current;
       void window.ade.github.getStatus({
         forceRefresh: false,
       }).then((status) => {
-        if (cancelled) return;
+        if (cancelled || request !== githubStatusRequestRef.current) return;
         setGithubStatus(status);
       }).catch(() => {
-        if (cancelled) return;
+        if (cancelled || request !== githubStatusRequestRef.current) return;
         setGithubStatus(null);
       });
     }, delayMs);
@@ -852,6 +861,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, [
     currentProjectRoot,
+    githubStatusScope,
+    projectBinding?.key,
     isRemoteProject,
     location.pathname,
   ]);
@@ -873,15 +884,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         && current.currentProjectRoot === context.currentProjectRoot
         && current.pathname === context.pathname
         && current.isRemoteProject === context.isRemoteProject
+        && current.bindingKey === context.bindingKey
       );
     };
     const githubTimer = window.setTimeout(() => {
       if (!isCurrentContext()) return;
+      const request = ++githubStatusRequestRef.current;
       void window.ade.github.getStatus({ forceRefresh: true }).then((status) => {
-        if (!isCurrentContext()) return;
+        if (!isCurrentContext() || request !== githubStatusRequestRef.current) return;
         setGithubStatus(status);
       }).catch(() => {
-        if (isCurrentContext()) setGithubStatus(null);
+        if (isCurrentContext() && request === githubStatusRequestRef.current) setGithubStatus(null);
       });
     }, GITHUB_STATUS_RECONNECT_DELAY_MS);
     return () => {
@@ -890,19 +903,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, [githubConnectionGeneration]);
 
-  // Refresh the GitHub banner the moment Settings saves/clears a token, so the
-  // shell does not lag behind the Settings UI (the original "banner stays up
-  // even though Settings says CONNECTED" bug).
+  // Local events may arrive while this tab owns a remote project. Treat those
+  // as refresh signals and read through the bound route instead of accepting
+  // a status payload from a different machine.
   useEffect(() => {
-    return (
-      window.ade.github?.onStatusChanged?.((status) => {
-        if (!currentProjectRoot || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) {
-          return;
-        }
+    let cancelled = false;
+    const off = window.ade.github?.onStatusChanged?.((status) => {
+      if (!currentProjectRoot || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) return;
+      const request = ++githubStatusRequestRef.current;
+      if (!isRemoteProject) {
         setGithubStatus(status);
-      }) ?? (() => {})
-    );
-  }, [currentProjectRoot, isRemoteProject, location.pathname]);
+        return;
+      }
+      void window.ade.github.getStatus().then((boundStatus) => {
+        if (!cancelled && request === githubStatusRequestRef.current) setGithubStatus(boundStatus);
+      }).catch((error: unknown) => {
+        if (!cancelled && request === githubStatusRequestRef.current) captureError(error, { fingerprint: ["github", "bound-status-refresh"] });
+      });
+    });
+    return () => { cancelled = true; off?.(); };
+  }, [currentProjectRoot, projectBinding?.key, isRemoteProject, location.pathname]);
 
   const relocateMissingProject = useCallback(() => {
     void openRepo()
@@ -1119,8 +1139,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <AppFallbackBanner />
       {!showWelcome && project?.rootPath ? (
         <IntegrationBanners
+          key={projectBinding?.key ?? currentProjectRoot}
+          machineId={machineIdForBinding(projectBinding)}
           currentProjectRoot={currentProjectRoot}
-          githubStatus={githubStatus}
+          githubStatus={githubStatusScopeRef.current === githubStatusScope ? githubStatus : null}
           hasAnyAiProvider={hasAnyAiProvider}
           aiStatusLoaded={aiStatusLoaded && aiStatus !== null}
           relayHealth={syncRelayHealth}

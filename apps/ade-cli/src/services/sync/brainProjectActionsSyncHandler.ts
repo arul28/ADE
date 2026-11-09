@@ -39,6 +39,7 @@ import {
 } from "../../../../desktop/src/shared/types";
 import { isPersonalChatActionQueueable } from "../../../../desktop/src/shared/types/personalChats";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import { reportHelloRejected, reportPeerAccepted } from "./syncHelloTelemetry";
 import { nowIso } from "../../../../desktop/src/main/services/shared/utils";
 import type { SharedSyncListenerConnectionHandler } from "./sharedSyncListener";
 import { SYNC_HOST_BIND_LOOPBACK_ONLY, syncUpgradeHelloEnvelope } from "./sharedSyncListener";
@@ -83,6 +84,7 @@ import {
   mobileAppTooOldHelloError,
   sendSyncProtocolVersionMismatchAndClose,
   SYNC_CHUNKED_ENVELOPES_CAPABILITY,
+  SYNC_RUNTIME_ONLY_CAPABILITY,
   SyncProtocolVersionMismatchError,
 } from "./syncProtocol";
 import { isMobileAppBuildTooOld } from "../../../../desktop/src/shared/syncMobileCompatibility";
@@ -203,6 +205,16 @@ type BrainProjectActionsSyncHandlerArgs = {
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
   /** Runs `command` envelopes that name a registered project in that project. */
   projectCommandRouter?: BrainProjectCommandRouter;
+  /** True while a project sync host owns new sockets on the shared listener. */
+  projectHostAttached?: () => boolean;
+  /** Subscribe to a project sync host attaching to the shared listener. */
+  onProjectHostAttached?: (listener: () => void) => () => void;
+  /**
+   * Start the sync host for the project this machine's catalog names as open.
+   * A browser's first connection takes that project from the catalog without
+   * switching to it, so nothing else would start its host.
+   */
+  activateProjectHost?: () => Promise<void>;
   /**
    * One bounded product-analytics capture per completed host repair. The brain
    * is the durable owner boundary here: the tap happens on a phone or a
@@ -221,6 +233,8 @@ type BrainPeerState = SyncRosterPeerState & {
   ws: WebSocket;
   lifecycleGeneration: number;
   authenticated: boolean;
+  /** Its `hello_ok` went out, so a close now is a reconnect and not a failed connect. */
+  helloAnswered: boolean;
   authKind: "bootstrap" | "paired" | null;
   authTimeout: ReturnType<typeof setTimeout> | null;
   metadata: SyncPeerMetadata | null;
@@ -745,6 +759,34 @@ export function createBrainProjectActionsSyncHandler(
     send,
     isPeerBackpressured,
   });
+  // A project socket (a browser's or the phone's) is served here only until a
+  // project host attaches; closing it then makes the client reconnect onto
+  // that host. On a machine with no host yet (a new cloud machine) it otherwise
+  // kept this ingress's reduced hello (no lanes, no files) until a reload. A
+  // roster socket, and a desktop window's or another brain's runtime-only
+  // connection, are this ingress's for good: closing one would drop its calls.
+  const waitsForProjectHost = (metadata: SyncPeerMetadata | null | undefined): boolean =>
+    metadata != null
+    && !isRosterSyncPeer(metadata)
+    && !(metadata.capabilities ?? []).includes(SYNC_RUNTIME_ONLY_CAPABILITY);
+  const handOverToProjectHost = (peer: BrainPeerState): void => {
+    try {
+      peer.ws.close(1012, "This machine's project host is ready");
+    } catch {
+      // The socket is already going away.
+    }
+  };
+  args.onProjectHostAttached?.(() => {
+    for (const peer of [...peers]) {
+      // Before its hello is answered a close would fail the connection (and
+      // an account pairing) outright; the answer checks for the host instead.
+      if (!peer.helloAnswered || !waitsForProjectHost(peer.metadata) || peer.ws.readyState !== WS_OPEN) continue;
+      args.logger.info("sync_brain.project_socket_handed_to_host", {
+        peerDeviceId: peer.metadata?.deviceId ?? null,
+      });
+      handOverToProjectHost(peer);
+    }
+  });
   const routedCommands = createBrainRoutedCommandHandler<BrainPeerState>({
     router: args.projectCommandRouter,
     send,
@@ -1235,6 +1277,7 @@ export function createBrainProjectActionsSyncHandler(
       ws,
       lifecycleGeneration: 0,
       authenticated: false,
+      helloAnswered: false,
       authKind: null,
       authTimeout: null,
       metadata: null,
@@ -1750,6 +1793,10 @@ export function createBrainProjectActionsSyncHandler(
             // rejecting machine so clients never drop a saved pairing over a
             // rejection they cannot attribute to the paired machine.
             const rejectingHost = brainMetadata();
+            reportHelloRejected(
+              { logger: args.logger, hello, transportOrigin, hostDeviceId: () => rejectingHost.deviceId },
+              authFailure.code,
+            );
             send(ws, "hello_error", {
               code: authFailure.code,
               // A named cause when a branch supplied one; the generic wording
@@ -1861,10 +1908,25 @@ export function createBrainProjectActionsSyncHandler(
             ? send(ws, "hello_ok", sealAdoptHelloOk(sealedAdoption, helloOkPayload), envelope.requestId)
             : send(ws, "hello_ok", helloOkPayload, envelope.requestId);
           if (helloOkSent) {
+            reportPeerAccepted({ logger: args.logger, hello, transportOrigin, hostDeviceId: () => brainMetadata().deviceId });
             if (negotiatedCompression) {
               brainPeerCompressionBySocket.set(ws, negotiatedCompression);
             } else {
               brainPeerCompressionBySocket.delete(ws);
+            }
+            peer.helloAnswered = true;
+            if (waitsForProjectHost(hello.peer)) {
+              if (args.projectHostAttached?.()) {
+                // A host attached while this hello was being checked.
+                handOverToProjectHost(peer);
+              } else {
+                // Handed over when the host attaches (onProjectHostAttached).
+                void args.activateProjectHost?.().catch((error) => {
+                  args.logger.warn("sync_brain.project_host_activation_failed", {
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                });
+              }
             }
           }
           return;

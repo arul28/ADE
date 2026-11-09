@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DeeplinkTarget } from "../../../shared/deeplinks";
+import { parseDeeplink, type DeeplinkTarget } from "../../../shared/deeplinks";
 import type { WebClientEnvironmentRecord, WebRelayAccess, AdeSyncClient } from "../sync";
 import { WebClientEnvStore } from "../sync";
 import {
@@ -40,6 +40,7 @@ async function loadFederatedAdapter(
   accountClient: BrowserAccountClient,
   accountKey: string,
   fallbackClient: AdeSyncClient,
+  openOwnedDeeplink: (url: string) => Promise<boolean>,
 ): Promise<FederatedWebAdapter> {
   const module = await import("../adapter/federated");
   return module.createFederatedWebAdapter({
@@ -47,6 +48,7 @@ async function loadFederatedAdapter(
     accountClient,
     accountKey,
     fallbackClient,
+    openOwnedDeeplink,
   });
 }
 
@@ -352,6 +354,9 @@ export function WebClientRoot({
     });
   }, [accountClient, connectMachineEntry, currentMachines, sessionManager]);
 
+  /** Filled once `retryOwnedLink` exists; the adapter is built before it is. */
+  const openOwnedDeeplinkRef = useRef<(url: string) => Promise<boolean>>(async () => false);
+
   const reconnectLastActiveMachine = useCallback(async () => {
     const machineKey = sessionManager.getLastActiveMachineKey();
     if (!machineKey) return;
@@ -395,6 +400,7 @@ export function WebClientRoot({
       accountClient,
       accountKey,
       client,
+      (url) => openOwnedDeeplinkRef.current(url),
     );
     if (federatedAdapterGenerationRef.current !== generation) {
       adapter.dispose();
@@ -698,6 +704,19 @@ export function WebClientRoot({
       });
     });
   }, [accountClient, resolveOwnedTarget, sessionManager, settleOwnedLink]);
+
+  // A link inside the app (a moved chat's "Open on …") takes the same route as
+  // one the visitor arrived with; progress and failure ride the app banner.
+  useEffect(() => {
+    openOwnedDeeplinkRef.current = async (url) => {
+      const parsed = parseDeeplink(url);
+      if (!parsed.ok || !ownershipOfTarget(parsed.target)) return false;
+      pendingTargetRef.current = parsed.target;
+      stashPendingTarget(parsed.target);
+      retryOwnedLink();
+      return true;
+    };
+  }, [retryOwnedLink]);
 
   const signIn = useCallback(() => {
     void accountClient.startSignIn().catch((error) => {

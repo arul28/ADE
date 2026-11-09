@@ -14,7 +14,9 @@ demand into the machine tools cache, never a CLI the user installed. See
 only when the pin moves. What a CLI can do is still read from the `initialize`
 handshake at runtime, not from a version number: unknown `session/update`
 kinds, content blocks, tool kinds/statuses, stop reasons, and agent-to-client
-methods are ignored or answered as unsupported. If an agent advertises an ACP
+methods are ignored or answered as unsupported. ACP stdout is decoded across
+byte chunks and its final unterminated line is processed on exit, preserving
+multibyte text and the last message. If an agent advertises an ACP
 protocol version this build of ADE does not speak, the launch fails at the
 handshake with a message naming the CLI and telling the user to update ADE.
 

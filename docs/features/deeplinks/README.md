@@ -168,6 +168,9 @@ Desktop main process — protocol handler:
   the URL, maps it to an `AppNavigationTarget`, and forwards through the
   caller-supplied dispatcher. `main.ts` wires the dispatcher to focus the
   most-suitable `BrowserWindow` and `webContents.send(IPC.appNavigate, …)`.
+  On Linux the claim names a desktop entry: the `.deb` installs one, and an
+  AppImage writes its own to the user's applications folder at launch
+  (`native/appImageDesktopEntry.ts`).
   `handleDeeplinkUrl` is also re-used by the iOS Send-to-Mac sync command
   (`syncRemoteCommandService.ts`'s `deeplinks.open`). Its `log` hook is wired
   to the machine logger (`~/.ade/runtime/desktop-main.jsonl`), not a project

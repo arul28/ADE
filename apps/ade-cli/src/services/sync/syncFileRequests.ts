@@ -18,6 +18,20 @@ import type {
 // another open project on the machine (a phone reading a lane of that
 // checkout, or the proof of a chat in it).
 
+/** A request that changes files: what a person saving in a browser or on a phone sends. */
+export function isSyncFileWriteRequest(payload: SyncFileRequest): boolean {
+  switch (payload.action) {
+    case "writeText":
+    case "createFile":
+    case "createDirectory":
+    case "rename":
+    case "deletePath":
+      return true;
+    default:
+      return false;
+  }
+}
+
 export function syncFileRequestWorkspaceId(payload: SyncFileRequest): string | null {
   switch (payload.action) {
     case "listTree":

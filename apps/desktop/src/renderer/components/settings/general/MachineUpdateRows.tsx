@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { ArrowClockwise, ArrowRight, CircleNotch } from "@phosphor-icons/react";
 import type { ProjectMachine } from "../../../state/projectMachines";
+import { openExternalUrl } from "../../../lib/openExternal";
 import { useAutoUpdateSnapshot } from "../../app/useAutoUpdateSnapshot";
 import { requestDownloadedUpdateInstall } from "../../app/autoUpdateInstallAction";
 import { updateRestartAction } from "../../app/updateRestartAction";
@@ -12,6 +13,7 @@ import {
   requestMachineUpdates,
   useKnownAdeVersions,
   useMachineUpdates,
+  machineUpdateIsManual,
 } from "../../remoteTargets/machineUpdates";
 import {
   describeMachineUpdateAttempt,
@@ -43,7 +45,7 @@ export function MachineUpdateRows() {
       return connected && machine.online ? [connected] : [];
     }),
     known,
-  );
+  ).filter((machine) => !machineUpdateIsManual(machine, updates.attempts[machine.id]));
   const anyBusy = connectedBehind.some((machine) => isMachineUpdateBusy(updates, machine, updates.nowMs));
 
   if (machines.length === 0) return null;
@@ -136,7 +138,10 @@ function MachineUpdateRow({
       // The ADE card's head carries this computer's restart; the list says
       // where it stands rather than offering the same button twice.
       target = snapshot.version;
-      action = <span className="kit-tag" data-tone="ok">Downloaded</span>;
+      action = <span className="kit-tag" data-tone="ok">{snapshot.installMode === "manual" ? "Available" : "Downloaded"}</span>;
+    } else if (ready && snapshot.installMode === "manual") {
+      target = snapshot.version;
+      action = <button type="button" className="ade-modern-btn" data-size="sm" disabled={!snapshot.downloadUrl} onClick={() => openExternalUrl(snapshot.downloadUrl)}>Download update</button>;
     } else if (ready) {
       target = snapshot.version;
       action = (
@@ -170,7 +175,10 @@ function MachineUpdateRow({
     const updating = updates.updatingIds.has(machine.machineId) || described?.inFlight === true;
     const checking = updates.checkingIds.has(machine.machineId);
     target = updating && attempt?.pendingVersion ? attempt.pendingVersion : machineUpdateTargetVersion(connected, known);
-    if (target && remoteUpdates) {
+    if (target && machineUpdateIsManual(connected, attempt)) {
+      const url = connected.downloadUrl ?? attempt?.downloadUrl;
+      action = <button type="button" className="ade-modern-btn" data-size="sm" disabled={!url} onClick={() => openExternalUrl(url)}>Download update</button>;
+    } else if (target && remoteUpdates) {
       action = (
         <button
           type="button"

@@ -25,6 +25,7 @@ import type { ChatErrorPresentation } from "../chatErrorPresentation";
 import type { ChatThreadComment } from "../threadComments";
 import type { ClaudePromptCache } from "../claudePromptCache";
 import type { ClaudePluginUiSnapshot } from "../claudePluginUi";
+import type { SessionActivePrWatch } from "../prWatch";
 import type { ModelId, UpdateChatContinueHold } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
@@ -625,6 +626,8 @@ export type AgentChatAutomationRunMetadata = {
   runId?: string;
   /** The automation's name when it ran. */
   name: string;
+  /** Someone is there to answer this run's cards: a Linear delegator. */
+  attended?: true;
 };
 
 export type AgentChatHostContinuationMetadata = {
@@ -1630,6 +1633,8 @@ export type AgentChatEvent =
         files?: number;
         lines?: number;
       };
+      /** Grep or Glob hit its time limit, so more matches may exist. */
+      searchTimedOut?: boolean;
       runtime?: AgentChatRuntime;
     }
   | {
@@ -2154,6 +2159,8 @@ export type AgentChatEvent =
       failReason?: ContextCompactFailReason;
       failDetail?: string;
       summary?: string;
+      /** No summary could be written, so the provider kept a shortened copy of the chat. */
+      fallback?: boolean;
       accountLabel?: string;
       turnId?: string;
     }
@@ -2482,6 +2489,8 @@ export type AgentChatEvent =
        * older generation must drop it.
        */
       historyGeneration?: number;
+      /** A PR watch on this chat started or stopped, so its row must re-read. Not chat activity. */
+      prWatchChanged?: true;
       // Permission/interaction mode fields — emitted when a client (e.g. iOS)
       // changes the mode via updateSession so other renderers patch their
       // composer state without waiting for a turn-lifecycle event. All optional
@@ -3537,6 +3546,11 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   asyncQuestion?: boolean;
   /** Earliest armed, unpaused schedule for this chat. */
   nextWakeAt: string | null;
+  /**
+   * The chat's live PR watches, from the machine that runs them. Absent when no
+   * watch is live, or from an older host; such a row reads as it did before.
+   */
+  activePrWatch?: SessionActivePrWatch;
   /**
    * When the turn-end check (Jev) read this chat's last reply as waiting on
    * its own work (subagents, CI, a watcher it started) rather than finished
@@ -5324,6 +5338,8 @@ export type AgentChatCrossMachineHandoffRecord = {
   reason: string | null;
   targetLaneId: string | null;
   targetSessionId: string | null;
+  /** The destination's project id, so a client can open the chat on that machine and project. */
+  targetProjectId?: string | null;
   /**
    * Where this chat last landed, kept across later move attempts: a second
    * move that is cancelled or fails must not erase that the work already
@@ -5354,6 +5370,8 @@ export type AgentChatCrossMachineContinuation = {
   targetMachineName: string;
   targetLaneId: string;
   targetSessionId: string;
+  /** Absent on a move made before ADE recorded it. */
+  targetProjectId?: string | null;
   continuedAt: string;
 };
 
@@ -5583,6 +5601,13 @@ export type AgentChatSendArgs = {
    * review the user has not sent.
    */
   includeThreadComments?: boolean;
+  /**
+   * Set once per send attempt by a client talking to another machine. A brain
+   * that froze or restarted mid-send may have already taken this message, so
+   * the client's retry after it wakes carries the same id and is dropped here
+   * rather than run twice.
+   */
+  clientSendId?: string;
 };
 
 export type AgentChatDispatchSteerMode = "inline" | "interrupt";
@@ -6840,3 +6865,25 @@ export type AgentChatGetTurnFileDiffArgs = {
 };
 
 export type AgentChatTurnFileDiff = FileDiff;
+
+/** One turning point of a chat, for a caller that polls (`ade chat events`, ADE MCP's `chat_events`). */
+export type ChatLifecycleEvent = {
+  sequence: number;
+  at: string;
+  kind: "turn_started" | "turn_completed" | "turn_failed" | "turn_interrupted" | "input_needed" | "input_resolved" | "error";
+  turnId?: string;
+  message?: string;
+};
+
+/** `chat.getChatEvents`: what happened since a cursor. */
+export type ChatEventsResult = {
+  sessionId: string;
+  /** Pass back as `since`. */
+  cursor: number;
+  phase: string;
+  events: ChatLifecycleEvent[];
+  /** More events follow: call again with `cursor`. */
+  truncated: boolean;
+  /** Events between `since` and the first one returned were too far back to read. */
+  gap?: true;
+};

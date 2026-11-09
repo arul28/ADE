@@ -1,4 +1,8 @@
-import { handleAgent37WakeRequest, isAgent37WakeRequest, runAgent37Wakes } from "./agent37Wake";
+import { runCloudWakes } from "./cloudWake";
+import { handleCloudRequest, isCloudRequest } from "./cloud/routes";
+import { runCloudMinuteCron } from "./cloud/cron";
+import { handleCloudBillingPublicRequest, isCloudBillingPublicRequest, reportExtraHours } from "./cloud/billing";
+import type { CloudEnv } from "./cloud/store";
 import * as Sentry from "@sentry/cloudflare";
 import { handleRequest } from "./directory";
 import { logScheduledCleanupFailure } from "./logging";
@@ -35,7 +39,7 @@ import {
 } from "./usageResearch";
 
 type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & JevBonusEnv
-  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv;
+  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv & CloudEnv;
 
 const WORKER_NAME = "ade-account-directory";
 
@@ -72,9 +76,12 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // The Jev bonus: account bearer, POST only, no CORS — the ADE brain is the
   // only caller. It forwards to TypeSafe with ADE's key under a daily cap.
   if (isJevBonusRequest(url)) return handleJevBonusRequest(request, env);
-  // Agent 37 timed wakes: account bearer, PUT and DELETE only, no CORS (a
-  // machine's ADE is the only caller). The minute cron below delivers them.
-  if (isAgent37WakeRequest(url)) return handleAgent37WakeRequest(request, env);
+  // ADE Cloud (src/cloud): account bearer, no CORS. Timed wakes ride the same
+  // gate. Everything under /cloud answers 404 for an account not on the list.
+  if (isCloudRequest(url)) return handleCloudRequest(request, env);
+  // Stripe's webhook (signed, so no bearer and no access list) and the page
+  // Stripe sends a person back to after Checkout or the billing portal.
+  if (isCloudBillingPublicRequest(url)) return handleCloudBillingPublicRequest(request, env);
   // Clerk's sign-up webhook: Svix-signed, POST only, no CORS (Clerk is the
   // only caller). It records one `ade_signed_up` per account.
   if (isSignupAnalyticsRequest(url)) return handleSignupAnalyticsRequest(request, env);
@@ -150,8 +157,15 @@ export default Sentry.withSentry(sentryOptions, {
         settle("model_registry", () => runModelRegistryCron(env)),
         // Jev bonus: per-account day counts past a week.
         settle("jev_bonus_days", () => cleanupJevBonusDays(env)),
-        // Agent 37 timed wakes: requests each due machine's wake URL.
-        settle("agent37_wakes", () => runAgent37Wakes(env)),
+        // the provider timed wakes: requests each due machine's wake URL.
+        settle("cloud_wakes", () => runCloudWakes(env)),
+        // ADE Cloud: reads the provider list once, meters hours, stops computers
+        // at 0 hours, and runs the daily and ten-minute checks. No computers, no
+        // provider calls.
+        settle("cloud_account", () => runCloudMinuteCron(env)),
+        // ADE Cloud extra hours: reports whole hours to the Stripe meter. One
+        // indexed read when no account has extra hours on.
+        settle("cloud_extra_hours", () => reportExtraHours(env)),
       ]);
     } catch (error) {
       status = "error";

@@ -3,8 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { buildDeeplink, type DeeplinkOwnership } from "../../../../desktop/src/shared/deeplinks";
 import { pathIsWithinRoot } from "../../../../desktop/src/shared/pathContainment";
+import { redactOutgoingChatText } from "../../../../desktop/src/main/utils/redaction";
+import { CHAT_SETTING_FIELDS } from "../../../../desktop/src/shared/chatTurnStatus";
 import type { RemoteMcpToolResult } from "./remoteMcpForward";
-import { MAX_OUTPUT_BYTES, type RemoteRunResult } from "./remoteMcpRunner";
+import { MAX_OUTPUT_BYTES, MAX_STDIN_BYTES, type RemoteRunResult } from "./remoteMcpRunner";
 
 /**
  * ADE MCP's typed tools: named inputs a client can check before calling. Each
@@ -65,7 +67,11 @@ export type TypedTool = {
   /** The next step for the model, from the shaped result; null when there is none to give. */
   next?: (result: unknown, input: TypedToolInput) => string | null;
   /** Fills inputs the call left out from the model the person last launched a chat with. */
-  launchDefaults?: (input: TypedToolInput, defaults: { provider: string; model: string }) => TypedToolInput;
+  launchDefaults?: (input: TypedToolInput, defaults: { provider: string; model: string; reasoningEffort?: string | null }) => TypedToolInput;
+  /** What the command reads on stdin, so large text never goes through an argument. */
+  stdin?: (input: TypedToolInput) => string | null;
+  /** It creates something, so it must name where: `project`, and `machine` on the account address. */
+  explicitTarget?: true;
   /** Exit codes that are answers, not failures (`chat status` exits 1 when idle). */
   okExitCodes?: readonly number[];
   /** How long to let the command run. */
@@ -89,6 +95,58 @@ const LIMIT = (max: number, fallback: number) => ({
 });
 
 const LARGE_OUTPUT_BYTES = 8 * 1024 * 1024;
+
+const REASONING_EFFORT = { type: "string", description: "e.g. low, medium, high, xhigh." };
+const PERMISSION_MODE = {
+  type: "string",
+  enum: ["full-auto", "bypass", "bypassPermissions", "auto", "edit", "plan", "default", "config-toml"],
+};
+
+/** The CLI's word for a permission mode; Claude's own name for its highest is accepted too. */
+function permissionWord(value: string): string {
+  return value === "bypass" || value === "bypassPermissions" ? "full-auto" : value;
+}
+
+
+const LANE_COMPACT_FIELDS = ["id", "name", "branchRef", "baseRef", "laneType", "archivedAt", "worktreePath"] as const;
+const LANE_STATUS_FIELDS = ["dirty", "ahead", "behind", "comparedTo", "remoteBehind", "changedFileCount", "rebaseInProgress"] as const;
+
+function compactLane(lane: Record<string, unknown>): Record<string, unknown> {
+  const status = isRecord(lane.status) ? pick(lane.status, LANE_STATUS_FIELDS) : undefined;
+  const primaryOffBase = lane.laneType === "primary" && nonEmptyString(lane.branchRef) !== nonEmptyString(lane.baseRef);
+  return { ...pick(lane, LANE_COMPACT_FIELDS), ...(status ? { status } : {}), ...(primaryOffBase ? { primaryOffBase: true } : {}) };
+}
+
+
+/**
+ * Commands whose output is text a shell or an agent wrote (chat reads,
+ * statuses and previews, terminal output, search previews): secrets in it are
+ * masked before it leaves through ADE MCP, typed tool or raw `ade` alike.
+ */
+const AGENT_OUTPUT_COMMANDS: Readonly<Record<string, ReadonlySet<string>>> = {
+  chat: new Set(["read", "messages", "transcript", "list", "status", "wait", "inbox", "events"]),
+  terminal: new Set(["read", "tail", "scrollback"]),
+  files: new Set(["search"]),
+};
+const COMMAND_SPELLINGS: Readonly<Record<string, string>> = { chats: "chat", terminals: "terminal", file: "files" };
+
+export function printsAgentOutput(argv: readonly string[]): boolean {
+  const [command, sub] = argv;
+  const canonical = command ? COMMAND_SPELLINGS[command] ?? command : "";
+  return Boolean(sub && AGENT_OUTPUT_COMMANDS[canonical]?.has(sub));
+}
+
+/**
+ * The refusal for a tool that creates something without naming its project,
+ * listing the projects so the model can pick in one more call.
+ */
+export function explicitTargetRefusal(toolName: string, projects: ReadonlyArray<{ displayName: string; projectId: string }>): string {
+  const choices = projects.length
+    ? `Projects here, last opened first: ${projects.map((project) => `${project.displayName} (${project.projectId})`).join(", ")}. `
+      + "Use the one the person named; if they named none, the first."
+    : "No project is open on this computer; projects_clone adds one.";
+  return `${toolName} needs \`project\`, because the default changes as the person works. ${choices}`;
+}
 
 /** A string with something in it, trimmed; null for anything else. */
 export function nonEmptyString(value: unknown): string | null {
@@ -206,7 +264,7 @@ const CHAT_WAIT_SUMMARY_FIELDS = [...CHAT_FIELDS, "awaitingInput", "pendingInput
 /** What a proof review tells a remote model; the local paths stay on the computer. */
 const PROOF_REVIEW_FIELDS = [
   "artifactId", "media", "title", "createdAt", "width", "height", "durationSeconds",
-  "columns", "frames", "findings", "sheetError",
+  "columns", "frames", "findings", "sheetError", "pages", "page", "yFrom", "yTo", "cropError",
 ] as const;
 const INBOX_FIELDS = [
   "sessionId", "title", "laneId", "lane", "model", "kind", "requestId", "text", "detail", "questions", "since", "link",
@@ -221,6 +279,8 @@ function isDecision(value: unknown): value is keyof typeof DECISIONS {
   return typeof value === "string" && Object.hasOwn(DECISIONS, value);
 }
 const MAX_WAIT_SECONDS = 300;
+/** Under the ~30 s many MCP clients allow one request. */
+const DEFAULT_WAIT_SECONDS = 25;
 /** How long chat_start waits for the new lane to be set up and the agent to start. */
 const START_WAIT_SECONDS = 90;
 
@@ -298,11 +358,49 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     view: true,
     properties: {
       include_archived: { type: "boolean", description: "Include archived lanes." },
+      full: { type: "boolean", description: "Whole lane records." },
     },
     build: (input) => ({
       argv: ["lanes", "list", "--json", "--no-visual", ...(input.include_archived === true ? ["--include-archived"] : [])],
     }),
-    shape: (value) => records(value, ["lanes"]),
+    shape: (value, input) => (input.full === true ? records(value, ["lanes"]) : records(value, ["lanes"]).map(compactLane)),
+  },
+  // result: the CLI's new lane (id, name, branchRef, baseRef, worktreePath, …)
+  {
+    name: "lanes_create",
+    title: "Create a lane",
+    description: "Creates a lane (a git worktree on a new branch), as `ade lanes create` does.",
+    write: true,
+    explicitTarget: true,
+    properties: {
+      name: { type: "string" },
+      from: { type: "string", description: "Branch to start from." },
+      on: { type: "string", enum: ["local", "remote"] },
+      branch_name: { type: "string" },
+      existing_branch: { type: "string", description: "Use this branch instead of making one." },
+    },
+    required: ["name"],
+    build: (input) => {
+      const name = text(input, "name");
+      if (!name) return { error: "Pass `name`." };
+      const argv = ["lanes", "create", freeText("--name", name)];
+      for (const [key, flag] of [["from", "--from"], ["on", "--on"], ["branch_name", "--branch-name"], ["existing_branch", "--existing-branch"]] as const) {
+        const value = optionalWord(input, key);
+        if ("error" in value) return value;
+        if (value.value) argv.push(freeText(flag, value.value));
+      }
+      return { argv: [...argv, "--json"] };
+    },
+    timeoutMs: () => 180_000,
+    shape: (value) => {
+      const unwrapped = unwrap(value);
+      const record = isRecord(unwrapped) && isRecord(unwrapped.lane) ? unwrapped.lane : unwrapped;
+      return isRecord(record) ? compactLane(record) : record;
+    },
+    next: (result) => {
+      const id = isRecord(result) ? nonEmptyString(result.id) : null;
+      return id ? `Pass lane "${id}" to chat_start to start an agent in it.` : null;
+    },
   },
   // result: the CLI's lane detail
   {
@@ -352,6 +450,35 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       const file = word(input, "path");
       if ("error" in file) return file;
       return { argv: ["files", "read", "--workspace", lane.value, file.value, "--json"] };
+    },
+  },
+  // result: { path, bytes, sha256 }
+  {
+    name: "files_write",
+    title: "Write a file in a lane",
+    description: `Writes a file in a lane, up to ${MAX_STDIN_BYTES / 1024} KB per call. Bigger: chunks with offset. Answers bytes and sha256.`,
+    write: true,
+    properties: {
+      lane: LANE,
+      path: RELATIVE_PATH,
+      text: { type: "string" },
+      base64: { type: "boolean", description: "`text` is base64." },
+      offset: { type: "integer", minimum: 0, description: "Bytes already written. 0 replaces the file." },
+    },
+    required: ["lane", "path", "text"],
+    build: (input) => {
+      const lane = word(input, "lane");
+      if ("error" in lane) return lane;
+      const file = word(input, "path");
+      if ("error" in file) return file;
+      if (typeof input.text !== "string") return { error: "Pass `text`." };
+      const offset = typeof input.offset === "number" && input.offset > 0 ? ["--offset", String(Math.floor(input.offset))] : [];
+      return { argv: ["files", "write", "--workspace", lane.value, file.value, "--stdin", ...(input.base64 === true ? ["--base64"] : []), ...offset, "--json"] };
+    },
+    stdin: (input) => (typeof input.text === "string" ? input.text : null),
+    shape: (value) => {
+      const record = unwrap(value);
+      return isRecord(record) ? pick(record, ["path", "bytes", "sha256"]) : record;
     },
   },
   // result: the CLI's matches (path, line, column, preview)
@@ -539,7 +666,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
   {
     name: "chat_status",
     title: "Chat status",
-    description: "Whether a chat is running, idle or blocked, and what it is doing now.",
+    description: "Whether a chat is running, idle or blocked, what it is doing now, and its model, effort, permissions and account.",
     properties: { session: SESSION },
     required: ["session"],
     build: (input) => {
@@ -549,6 +676,10 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     },
     // The CLI exits 1 for idle and 2 for blocked, for scripts; both are answers here.
     okExitCodes: [0, 1, 2],
+    shape: (value, _input, context) => {
+      if (!isRecord(value) || !nonEmptyString(value.sessionId)) return value;
+      return { ...value, link: chatLink(nonEmptyString(value.sessionId), nonEmptyString(value.laneId), context) };
+    },
     next: (result) => {
       const phase = isRecord(result) ? nonEmptyString(result.phase) : null;
       if (phase === "blocked") return WAITS_ON_PERSON;
@@ -561,27 +692,28 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
   {
     name: "chat_wait",
     title: "Wait for a chat",
-    description: `Waits until a chat reaches a state (default idle), up to ${MAX_WAIT_SECONDS} s. Use it instead of polling.`,
+    description: `Waits until a chat reaches a state (default idle). Answers within ${DEFAULT_WAIT_SECONDS} s by default, so a client's request limit can't cut it off; call again to keep waiting.`,
     properties: {
       session: SESSION,
       for: { type: "string", enum: [...WAIT_TARGETS], description: "Default idle: its turn is done." },
-      timeout_seconds: { type: "integer", minimum: 5, maximum: MAX_WAIT_SECONDS, description: "Default 120." },
+      timeout_seconds: { type: "integer", minimum: 5, maximum: MAX_WAIT_SECONDS, description: `Default ${DEFAULT_WAIT_SECONDS}.` },
     },
     required: ["session"],
     build: (input) => {
       const session = word(input, "session");
       if ("error" in session) return session;
       const target = WAIT_TARGETS.find((candidate) => candidate === input.for) ?? "idle";
-      const seconds = Math.max(5, integer(input, "timeout_seconds", 120, MAX_WAIT_SECONDS));
+      const seconds = Math.max(5, integer(input, "timeout_seconds", DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS));
       return { argv: ["chat", "wait", session.value, "--for", target, "--timeout-ms", String(seconds * 1000), "--json"] };
     },
     // Exit 1 is a wait that ended without the state (timed out, waits on the
     // person, no such chat yet): an answer with a next step, not a failure.
     okExitCodes: [0, 1],
-    shape: (value) => {
+    shape: (value, _input, context) => {
       if (!isRecord(value)) return value;
       const { summary, ...rest } = value;
-      return isRecord(summary) ? { ...rest, summary: pick(summary, CHAT_WAIT_SUMMARY_FIELDS) } : rest;
+      if (!isRecord(summary)) return rest;
+      return { ...rest, summary: pick(summary, CHAT_WAIT_SUMMARY_FIELDS), link: chatLink(nonEmptyString(rest.sessionId), nonEmptyString(summary.laneId), context) };
     },
     next: (result, input) => {
       if (!isRecord(result)) return null;
@@ -593,7 +725,27 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       return "Not there yet. Call chat_wait again to keep waiting.";
     },
     // Room for the CLI to answer after its own wait ends.
-    timeoutMs: (input) => (Math.max(5, integer(input, "timeout_seconds", 120, MAX_WAIT_SECONDS)) + 30) * 1000,
+    timeoutMs: (input) => (Math.max(5, integer(input, "timeout_seconds", DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS)) + 30) * 1000,
+  },
+  // result: { sessionId, cursor, phase, truncated,
+  //           events: [{ sequence, at, kind: turn_started|turn_completed|turn_failed|turn_interrupted|input_needed|input_resolved|error, turnId?, message? }] }
+  {
+    name: "chat_events",
+    title: "What happened in a chat",
+    description: "Turn starts and ends, input needed and errors since `since`, at once. Pass the returned `cursor` as `since` next time.",
+    properties: {
+      session: SESSION,
+      since: { type: "integer", minimum: 0, description: "The last `cursor`." },
+      limit: LIMIT(200, 50),
+    },
+    required: ["session"],
+    build: (input) => {
+      const session = word(input, "session");
+      if ("error" in session) return session;
+      const since = typeof input.since === "number" && input.since >= 0 ? ["--since", String(Math.floor(input.since))] : [];
+      return { argv: ["chat", "events", session.value, ...since, "--limit", String(integer(input, "limit", 50, 200)), "--json"] };
+    },
+    okExitCodes: [0, 1],
   },
   // result: { artifactId, media: "video"|"image", title, createdAt, width, height, durationSeconds,
   //           columns, frames: [{ t, why: "start"|"end"|"step"|"change"|"even", step }], findings,
@@ -609,6 +761,9 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       proof: { type: "string", description: "One proof id (otherProof) instead." },
       from: { type: "number", minimum: 0 },
       to: { type: "number", minimum: 0 },
+      page: { type: "integer", minimum: 1, description: "A tall picture's page; the result says how many." },
+      y_from: { type: "integer", minimum: 0, description: "A band of the picture, in pixels." },
+      y_to: { type: "integer", minimum: 1 },
     },
     build: (input) => {
       const proof = optionalWord(input, "proof");
@@ -620,11 +775,18 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
         const value = input[key];
         return typeof value === "number" && Number.isFinite(value) && value >= 0 ? [`--${key}`, String(value)] : [];
       };
+      const whole = (key: "y_from" | "y_to", flag: string) => {
+        const value = input[key];
+        return typeof value === "number" && Number.isInteger(value) && value >= 0 ? [flag, String(value)] : [];
+      };
+      const band = [...whole("y_from", "--y-from"), ...whole("y_to", "--y-to")];
+      // A tall picture comes a page at a time unless a band was asked for.
+      const page = band.length ? [] : ["--page", String(integer(input, "page", 1, 10_000))];
       return {
         argv: [
           "proof", "review",
           ...(proof.value ? [proof.value] : ["--chat", session.value!]),
-          ...seconds("from"), ...seconds("to"),
+          ...seconds("from"), ...seconds("to"), ...page, ...band,
           "--json",
         ],
       };
@@ -644,7 +806,12 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     next: (result) => {
       if (!isRecord(result)) return null;
       const watch = typeof result.link === "string" ? ` The person watches it in ADE: ${result.link}` : "";
-      if (result.media !== "video") return `To change it, chat_send the chat that made it.${watch}`;
+      if (result.media !== "video") {
+        const page = typeof result.page === "number" ? result.page : null;
+        const pages = typeof result.pages === "number" ? result.pages : null;
+        const more = page && pages && page < pages ? `This is page ${page} of ${pages}: page ${page + 1} shows the next part. ` : "";
+        return `${more}To change it, chat_send the chat that made it.${watch}`;
+      }
       if (typeof result.sheetError === "string") return `No frame sheet: ${result.sheetError}.${watch}`;
       return `Frames read left to right, ${String(result.columns)} a row (result.frames). To change the video, `
         + `chat_send its chat naming moments by time ("cut 0:12–0:18"), then chat_wait and look again. `
@@ -653,7 +820,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     image: (value) => {
       const record = unwrap(value);
       if (!isRecord(record)) return null;
-      return nonEmptyString(record.media === "video" ? record.sheetPath : record.path);
+      return nonEmptyString(record.media === "video" ? record.sheetPath : record.cropPath ?? record.path);
     },
     // Measuring the video decodes all of it once before the sheet is made.
     timeoutMs: () => 180_000,
@@ -806,62 +973,167 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
         sessionId,
         delivery: nonEmptyString(record.delivery),
         routedAction: nonEmptyString(record.routedAction),
-        link: chatLink(sessionId, null, context),
+        link: chatLink(sessionId, nonEmptyString(record.laneId), context),
       };
     },
     next: () => "Sent. chat_wait returns when the chat is done.",
   },
-  // result: { sessionId, laneId, lane, title, phase: "running"|"setting_up"|"failed"|"cancelled", error?, link }
+  // result: the CLI's stop answer
+  {
+    name: "chat_interrupt",
+    title: "Stop a chat",
+    description: "Stops a chat's current turn. Its messages stay.",
+    write: true,
+    properties: {
+      session: SESSION,
+      mode: {
+        type: "string",
+        enum: ["stop_only", "stop_and_clear", "stop_and_background", "stop_and_clear_and_background", "stop_and_clear_and_children", "stop_everything_and_children"],
+        description: "Default stop_and_clear.",
+      },
+    },
+    required: ["session"],
+    build: (input) => {
+      const session = word(input, "session");
+      if ("error" in session) return session;
+      const mode = optionalWord(input, "mode");
+      if ("error" in mode) return mode;
+      return { argv: ["chat", "interrupt", session.value, ...(mode.value ? [freeText("--mode", mode.value)] : []), "--json"] };
+    },
+  },
+  // result: the CLI's updated chat
+  {
+    name: "chat_update",
+    title: "Change a chat's settings",
+    description: "Changes a chat's model, effort, permissions or title in place; its id stays.",
+    write: true,
+    properties: {
+      session: SESSION,
+      model: { type: "string" },
+      reasoning_effort: REASONING_EFFORT,
+      permission_mode: PERMISSION_MODE,
+      fast: { type: "boolean" },
+      title: { type: "string" },
+    },
+    required: ["session"],
+    build: (input) => {
+      const session = word(input, "session");
+      if ("error" in session) return session;
+      const argv = ["chat", "update", session.value];
+      for (const [key, flag] of [["model", "--model"], ["reasoning_effort", "--reasoning-effort"]] as const) {
+        const value = optionalWord(input, key);
+        if ("error" in value) return value;
+        if (value.value) argv.push(freeText(flag, value.value));
+      }
+      const permission = optionalWord(input, "permission_mode");
+      if ("error" in permission) return permission;
+      if (permission.value) argv.push(freeText("--permissions", permissionWord(permission.value)));
+      if (typeof input.fast === "boolean") argv.push(input.fast ? "--fast" : "--no-fast");
+      const title = text(input, "title");
+      if (title) argv.push(freeText("--title", title));
+      if (argv.length === 3) return { error: "Pass what to change: `model`, `reasoning_effort`, `permission_mode`, `fast` or `title`." };
+      return { argv: [...argv, "--json"] };
+    },
+  },
+  // result: { sessionId, laneId, lane, title, phase: "running"|"setting_up"|"failed"|"cancelled", error?, link,
+  //           model?, modelId?, reasoningEffort?, permissionMode?, claudePermissionMode?, fastMode?, instanceId?, notify? }
   //   `phase` is the chat's, not the launch's: "running" means the agent started and works on the prompt.
   {
     name: "chat_start",
     title: "Start a chat",
-    description: "Starts an agent chat on a new lane with a prompt.",
+    description: "Starts an agent chat on a new lane (or `lane`). Permissions default to full-auto (bypass); the answer gives its real settings.",
     view: true,
     write: true,
+    explicitTarget: true,
     properties: {
       prompt: { type: "string", description: "What the agent should do." },
       provider: { type: "string", description: "e.g. claude, codex. Default: the person's last-used model." },
       model: { type: "string", description: "Model id. Default: the person's last-used model." },
-      base: { type: "string", description: "Branch to start from. Default the project's base." },
+      reasoning_effort: REASONING_EFFORT,
+      permission_mode: PERMISSION_MODE,
+      fast: { type: "boolean" },
+      instance: { type: "string", description: "Provider account id (usage_limits)." },
+      lane: LANE,
+      lane_name: { type: "string", description: "Name for a new lane." },
+      base: { type: "string", description: "Branch a new lane starts from." },
+      title: { type: "string" },
+      notify_url: { type: "string", description: "https URL to POST to when the chat goes idle, needs input or fails." },
+      notify_token: { type: "string", description: "Sent to notify_url as a bearer token." },
+      dry_run: { type: "boolean", description: "Show the launch; start nothing." },
     },
     required: ["prompt"],
     // Neither given: start on what the person last used, as a new chat in ADE does.
     launchDefaults: (input, defaults) => (text(input, "provider") || text(input, "model")
       ? input
-      : { ...input, provider: defaults.provider, model: defaults.model }),
+      : {
+        ...input,
+        provider: defaults.provider,
+        model: defaults.model,
+        ...(defaults.reasoningEffort && !text(input, "reasoning_effort") ? { reasoning_effort: defaults.reasoningEffort } : {}),
+      }),
     build: (input) => {
       const prompt = text(input, "prompt");
       if (!prompt) return { error: "Pass `prompt`." };
-      const argv = ["chat", "launch", freeText("--prompt", prompt)];
-      for (const [key, flag] of [["provider", "--provider"], ["model", "--model"], ["base", "--from"]] as const) {
+      const lane = optionalWord(input, "lane");
+      if ("error" in lane) return lane;
+      if (lane.value && (text(input, "lane_name") || text(input, "base"))) {
+        return { error: "`lane` runs in an existing lane; `lane_name` and `base` are for a new one." };
+      }
+      const argv = lane.value
+        ? ["chat", "create", "--lane", lane.value, freeText("--prompt", prompt)]
+        : ["chat", "launch", freeText("--prompt", prompt)];
+      // Words go where the CLI reads a word; names, titles and keys are free text.
+      const wordFlags = [
+        ["provider", "--provider"], ["model", "--model"], ["reasoning_effort", "--reasoning-effort"], ["instance", "--instance"],
+        ["base", "--from"], ["notify_url", "--notify-url"],
+      ] as const;
+      for (const [key, flag] of wordFlags) {
         const value = optionalWord(input, key);
         if ("error" in value) return value;
         if (value.value) argv.push(freeText(flag, value.value));
       }
-      return { argv: [...argv, "--wait", "--timeout-ms", String(START_WAIT_SECONDS * 1000), "--json"] };
+      for (const [key, flag] of [["lane_name", "--lane-name"], ["title", "--title"]] as const) {
+        const value = text(input, key);
+        if (value) argv.push(freeText(flag, value));
+      }
+      // On stdin, so the key is never in a process list.
+      if (text(input, "notify_token")) argv.push("--notify-token-stdin");
+      argv.push(freeText("--permissions", permissionWord(text(input, "permission_mode") ?? "full-auto")));
+      if (typeof input.fast === "boolean") argv.push(input.fast ? "--fast" : "--no-fast");
+      if (input.dry_run === true) return { argv: [...argv, "--print-config", "--json"] };
+      return { argv: lane.value ? [...argv, "--json"] : [...argv, "--wait", "--timeout-ms", String(START_WAIT_SECONDS * 1000), "--json"] };
     },
+    stdin: (input) => text(input, "notify_token"),
     // `--wait` exits 1 when the launch failed or is still setting up; the JSON says which.
     okExitCodes: [0, 1],
     timeoutMs: () => (START_WAIT_SECONDS + 30) * 1000,
-    shape: (value, _input, context) => {
+    shape: (value, input, context) => {
+      if (input.dry_run === true) return { dryRun: true, launch: value };
       const record = isRecord(value) ? value : {};
       const launch = isRecord(record.launch) ? record.launch : record;
-      const sessionId = nonEmptyString(launch.sessionId) ?? nonEmptyString(record.launchId);
-      const laneId = nonEmptyString(launch.laneId);
+      const session = isRecord(record.session) ? record.session : {};
+      const sessionId = nonEmptyString(launch.sessionId) ?? nonEmptyString(session.id) ?? nonEmptyString(session.sessionId) ?? nonEmptyString(record.launchId);
+      const laneId = nonEmptyString(launch.laneId) ?? nonEmptyString(session.laneId);
       const error = nonEmptyString(launch.error) ?? (record.ok === false && record.error !== "timed_out" ? nonEmptyString(record.error) : null);
+      // `chat create` has no launch to report on: the chat exists, and its prompt went.
+      const phase = isRecord(record.launch) || nonEmptyString(record.phase)
+        ? chatPhaseOfLaunch(nonEmptyString(record.phase) ?? nonEmptyString(launch.phase))
+        : sessionId ? "running" : null;
       return {
         sessionId,
         laneId,
         lane: nonEmptyString(launch.laneName),
-        title: nonEmptyString(launch.title),
-        phase: chatPhaseOfLaunch(nonEmptyString(record.phase) ?? nonEmptyString(launch.phase)),
+        title: nonEmptyString(launch.title) ?? nonEmptyString(session.title),
+        phase,
         ...(error ? { error } : {}),
+        ...pick(session, CHAT_SETTING_FIELDS),
+        ...(isRecord(record.notify) ? { notify: record.notify } : {}),
         link: chatLink(sessionId, laneId, context),
       };
     },
     next: (result) => {
       const record = isRecord(result) ? result : {};
+      if (record.dryRun === true) return "Nothing started. Call again without dry_run to start it.";
       if (record.phase === "running") return "The agent is working on it. chat_wait returns when it is done; give the person the link.";
       if (record.phase === "failed" || record.phase === "cancelled") return null;
       return "ADE is still setting up its lane; the agent starts after. Call chat_wait in a minute.";
@@ -918,7 +1190,9 @@ export function parseTypedRun(
   if (!answered) return null;
   try {
     const parsed: unknown = JSON.parse(run.stdout);
-    return { value: tool.shape ? tool.shape(parsed, input, context) : parsed, raw: parsed };
+    const shaped = tool.shape ? tool.shape(parsed, input, context) : parsed;
+    const built = tool.build(input);
+    return { value: "argv" in built && printsAgentOutput(built.argv) ? redactOutgoingChatText(shaped) : shaped, raw: parsed };
   } catch {
     return null;
   }
@@ -962,8 +1236,12 @@ export function buildTypedToolResult(
 ): { answer: RemoteMcpToolResult; raw: unknown } {
   const parsed = parseTypedRun(tool, input, run, frame.context);
   if (!parsed) {
+    const built = tool.build(input);
+    const shown = "argv" in built && printsAgentOutput(built.argv)
+      ? { ...run, stdout: redactOutgoingChatText(run.stdout), stderr: redactOutgoingChatText(run.stderr) }
+      : run;
     return {
-      answer: { content: [{ type: "text", text: `${frame.headLine}\n${toolText(run, tool.maxOutputBytes)}` }], isError: true },
+      answer: { content: [{ type: "text", text: `${frame.headLine}\n${toolText(shown, tool.maxOutputBytes)}` }], isError: true },
       raw: null,
     };
   }

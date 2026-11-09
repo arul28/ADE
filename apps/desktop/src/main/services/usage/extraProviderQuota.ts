@@ -16,6 +16,7 @@ import type {
   UsageProviderErrorKind,
   UsageWindow,
 } from "../../../shared/types";
+import { boundedAgentReason } from "../../../shared/chatErrorPresentation";
 import { getApiKey } from "../ai/apiKeyStore";
 import { readCopilotAccountQuota } from "../chat/copilotSdkPool";
 import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
@@ -73,6 +74,7 @@ export type ExtraQuotaIo = {
   readCursorSession?: (dbPath: string) => Promise<{ token: string | null; unreadable: boolean }>;
   readGhToken?: (force: boolean) => Promise<string | null>;
   readFactoryApiKey?: () => string | null;
+  readCursorApiKey?: () => string | null;
   readOpenCodeConsoleAccount?: (dbPath: string, nowMs: number) => Promise<OpenCodeConsoleAccount | null>;
 };
 
@@ -87,6 +89,7 @@ type ResolvedIo = {
   readGhToken: (force: boolean) => Promise<string | null>;
   readFactoryApiKey: () => string | null;
   readOpenCodeConsoleAccount: (dbPath: string, nowMs: number) => Promise<OpenCodeConsoleAccount | null>;
+  readCursorApiKey: () => string | null;
 };
 
 function resolveIo(io: ExtraQuotaIo = {}): ResolvedIo {
@@ -99,7 +102,8 @@ function resolveIo(io: ExtraQuotaIo = {}): ResolvedIo {
     readText: io.readText ?? readTextFile,
     readCursorSession: io.readCursorSession ?? readCursorSessionToken,
     readGhToken: io.readGhToken ?? readCachedGhAuthToken,
-    readFactoryApiKey: io.readFactoryApiKey ?? readStoredFactoryApiKey,
+    readFactoryApiKey: io.readFactoryApiKey ?? (() => readStoredApiKey("droid")),
+    readCursorApiKey: io.readCursorApiKey ?? (() => readStoredApiKey("cursor")),
     readOpenCodeConsoleAccount: io.readOpenCodeConsoleAccount ?? readOpenCodeConsoleAccountFromDisk,
   };
 }
@@ -411,9 +415,9 @@ export function readKimiAccessToken(auth: unknown, nowMs: number): string | null
   return token;
 }
 
-function readStoredFactoryApiKey(): string | null {
+function readStoredApiKey(provider: "droid" | "cursor"): string | null {
   try {
-    return getApiKey("droid")?.trim() || null;
+    return getApiKey(provider)?.trim() || null;
   } catch {
     return null;
   }
@@ -426,7 +430,21 @@ function factoryApiKey(io: ResolvedIo): string | null {
 
 type HttpJson =
   | { ok: true; body: unknown }
-  | { ok: false; errorKind: UsageProviderErrorKind; detail: string };
+  | { ok: false; errorKind: UsageProviderErrorKind; detail: string; message?: string };
+
+/** The reason a provider gave for refusing, when its 403 body names one. */
+async function refusalMessage(response: Response): Promise<string | undefined> {
+  try {
+    const body = asRecord(await response.json());
+    const message = toOptionalString(body?.message)
+      ?? toOptionalString(asRecord(body?.error)?.message)
+      ?? toOptionalString(body?.error)
+      ?? toOptionalString(body?.detail);
+    return message ? boundedAgentReason(message) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 async function fetchJson(
   fetchImpl: QuotaFetch,
@@ -439,8 +457,10 @@ async function fetchJson(
       credentials: "omit",
       signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
-    if (response.status === 401 || response.status === 403) {
-      return { ok: false, errorKind: "auth", detail: String(response.status) };
+    if (response.status === 401) return { ok: false, errorKind: "auth", detail: "401" };
+    if (response.status === 403) {
+      const message = await refusalMessage(response);
+      return { ok: false, errorKind: "auth", detail: "403", ...(message ? { message } : {}) };
     }
     if (response.status === 429) return { ok: false, errorKind: "rate_limited", detail: "429" };
     if (!response.ok) return { ok: false, errorKind: "unavailable", detail: String(response.status) };
@@ -457,12 +477,9 @@ async function fetchJson(
 }
 
 function httpFailure(provider: UsageProvider, failure: Extract<HttpJson, { ok: false }>): UsageProviderPollResult {
-  const detail = failure.detail === "network" || failure.detail === "timeout" || failure.detail === "unreadable"
-    ? failure.detail
-    : failure.detail;
   return {
     windows: [],
-    errors: [`${provider}: usage request failed (${detail})`],
+    errors: [`${provider}: usage request failed (${failure.detail})${failure.message ? `: ${failure.message}` : ""}`],
     errorKind: failure.errorKind,
     source: "http",
   };
@@ -505,6 +522,17 @@ export async function pollCursorQuota(
   }
   const token = usableSessionToken(session.token, resolved.nowMs);
   if (!token) {
+    if (!session.unreadable && resolved.readCursorApiKey()) {
+      // Signed in through ADE: chats work, but the limits endpoint only takes
+      // the Cursor app's session. "Not signed in" would be wrong.
+      return {
+        windows: [],
+        errors: ["cursor: limits are only readable after signing in to the Cursor app"],
+        errorKind: "auth",
+        authMessage: "Sign in to the Cursor app to see Cursor limits",
+        source: "http",
+      };
+    }
     if (!session.unreadable) return notSignedIn();
     const hadWindows = context.previousSnapshot?.windows.some((window) => window.provider === "cursor") ?? false;
     if (!hadWindows) return notSignedIn();

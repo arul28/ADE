@@ -47,7 +47,7 @@ struct WorkContextCompactDivider: View {
       return "Compacting context" + tokens + (elapsed >= 5 ? " · \(elapsed) s" : "")
     }
     let parsed = WorkContextCompactSummary.parse(summary)
-    return "Context compacted" + (parsed.tokensLabel.map { " · " + $0 } ?? "") + (parsed.durationLabel.map { " · " + $0 } ?? "")
+    return "Context compacted" + (field("fallback") != nil ? " · shortened, not summarized" : "") + (parsed.tokensLabel.map { " · " + $0 } ?? "") + (parsed.durationLabel.map { " · " + $0 } ?? "")
   }
   private var trigger: String {
     if header.contains("Manual") { return "you asked" }

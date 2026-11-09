@@ -3,12 +3,7 @@ import { FileX, ArrowSquareOut } from "@phosphor-icons/react";
 import { COLORS } from "../../../lanes/laneDesignTokens";
 import type { ViewerProps } from "./types";
 import { isWebClientMode } from "../../../../lib/webClientMode";
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
+import { formatBytes } from "../../../../../shared/formatting";
 
 /** Fallback for unpreviewable binary files — offers revealing in Finder. */
 export function BinaryViewer({ rootPath, tab, content }: ViewerProps) {

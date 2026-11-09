@@ -43,6 +43,9 @@ case, provider storage formats, the import policy, lane attribution, CLI/chat
 import paths, the preview, mobile routing, authorization model, and current
 open items.
 
+A terminal retries a failed PTY resize after the connection recovers, so its
+grid can catch up with the pane.
+
 ## Source file map
 
 Service files. Same sources back the ADE runtime and the limited
@@ -1699,6 +1702,10 @@ Renderer surfaces:
   rebinding still consults `isLivePin`. `useWorkSessions` owns the single
   instance and re-exports it as `machineRouter` / `resolveSessionRuntimePin`;
   nothing else in Work constructs one.
+- `apps/desktop/src/renderer/lib/firstLoadRetry.ts` — keeps a Work chat or
+  lane list's first load trying until it answers, at once when the tab's
+  machine reconnects, so a machine that was still restarting does not leave
+  an empty list. Nothing runs here unless a load fails.
 - `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` —
   hook that owns work view state (open items, active tab, draft kind,
   view mode, filters) and persists it to `localStorage` under
@@ -3215,3 +3222,20 @@ section; the Work row only carries a mark with their count and worst state.
 - Storage and recovery: [../storage-and-recovery/](../storage-and-recovery/) —
   the disk-pressure gate that refuses new CLI/process launches, and the lossless
   history compression that transcript reads transparently reinflate.
+
+### Lane identity in session lists
+
+Work's Status and Time organizations show each session's lane name and lane
+color using the same compact identity as a singleton in the Lane view.
+They include already-loaded sessions from other machines, with their owner
+binding, machine marker, offline state, and lane identity intact. Duplicate
+session ids are shown once, preferring the bound machine. Foreign attached
+shells follow the same filing rules as local ones; Status and Time keep
+subagents flat. Pending handoffs also name their lane.
+
+Bulk settling in these mixed lists is labelled **Settle local** and acts only
+on the bound machine; individual foreign rows keep their machine-scoped actions.
+Apple, Android, screen, and tool markers reuse the lane data already in the pane.
+Kanban already shows lane identity, and both State and Stack organizations in
+the Lanes sidebar keep the lane name and color. None of these labels adds a
+fetch, effect, or subscription per row.

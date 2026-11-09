@@ -119,6 +119,24 @@ export function createRouteAttemptRecorder(
   return recorder;
 }
 
+const TIMEOUT_MESSAGE = /timed? out|timeout/i;
+const NETWORK_ERRNOS = [
+  "ECONNREFUSED", "ECONNRESET", "ECONNABORTED", "EHOSTUNREACH", "EHOSTDOWN", "ENETUNREACH", "ENETDOWN",
+  "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EPIPE", "EPROTO", "EADDRNOTAVAIL",
+] as const;
+const NETWORK_ERRNO_IN_MESSAGE = new RegExp(`\\b(${NETWORK_ERRNOS.join("|")})\\b`);
+
+/** The first value `pick` finds on an error or the errors that caused it. */
+function findInErrorCauses<T>(error: unknown, pick: (candidate: object) => T | undefined): T | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
+    const found = pick(current);
+    if (found !== undefined) return found;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
 /** The relay's close when a newer link from the host took over (tunnel-relay `CLOSE_CONTROL_REPLACED`). */
 const RELAY_CLOSE_CONTROL_REPLACED = 4505;
 
@@ -128,15 +146,11 @@ const RELAY_CLOSE_CONTROL_REPLACED = 4505;
  * wakes, and the relay then closes every client that went to its old link.
  * The host is on the relay by then, so one more relay attempt at once
  * connects, where the next route (often a cloud box's private address) would
- * hold the connect for 10 s (2026-11-07, Agent 37 box after a sleep).
+ * hold the connect for 10 s (2026-11-07, cloud box after a sleep).
  */
 export function isRelayHostReplacedError(error: unknown): boolean {
-  let current: unknown = error;
-  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
-    if ((current as { closeCode?: unknown }).closeCode === RELAY_CLOSE_CONTROL_REPLACED) return true;
-    current = (current as { cause?: unknown }).cause;
-  }
-  return false;
+  return findInErrorCauses(error, (candidate) =>
+    (candidate as { closeCode?: unknown }).closeCode === RELAY_CLOSE_CONTROL_REPLACED || undefined) === true;
 }
 
 export function orderPairedCandidates(
@@ -372,7 +386,7 @@ export function classifyPairedRuntimeFailure(
     return mapped ?? "pairing";
   }
   const message = error instanceof Error ? error.message : String(error);
-  if (/timed? out|timeout/i.test(message)) return "timeout";
+  if (TIMEOUT_MESSAGE.test(message)) return "timeout";
   if (/ECONN|EHOST|ENET|\bunreach|\boffline\b|\bsocket (?:error|failed)|failed to connect/i.test(message)) {
     return "unreachable";
   }
@@ -390,6 +404,30 @@ export function classifyPairedRuntimeFailure(
   }
   if (/closed|socket|websocket/i.test(message)) return "unreachable";
   return "unknown";
+}
+
+/**
+ * The specific cause of a failed route as a token safe for telemetry. The
+ * error's own message can name the machine and the address it dialed, so only
+ * a known errno, a status or a close number is lifted out of it. Undefined when
+ * none of them is present.
+ */
+export function pairedRuntimeFailureCode(error: unknown): string | undefined {
+  const structured = findInErrorCauses(error, (candidate) => {
+    const { helloCode, closeCode, code } = candidate as { helloCode?: unknown; closeCode?: unknown; code?: unknown };
+    // Sent by the other machine, so only the codes this build knows are repeated.
+    if (typeof helloCode === "string" && Object.hasOwn(HELLO_CODE_FAILURES, helloCode)) return `hello_${helloCode}`;
+    if (typeof closeCode === "number") return `ws_close_${closeCode}`;
+    if (typeof code === "string" && NETWORK_ERRNOS.includes(code as (typeof NETWORK_ERRNOS)[number])) return code;
+    return undefined;
+  });
+  if (structured) return structured;
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const errno = message.match(NETWORK_ERRNO_IN_MESSAGE);
+  if (errno) return errno[1];
+  const status = message.match(/Unexpected server response: (\d{3})/);
+  if (status) return `http_${status[1]}`;
+  return TIMEOUT_MESSAGE.test(message) ? "timeout" : undefined;
 }
 
 /**

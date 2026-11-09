@@ -139,7 +139,7 @@ function trimChatEventHistoryFromStart(
 ): AgentChatEventEnvelope[] {
   const countEnd = Math.min(events.length, maxEvents);
   if (!Number.isFinite(maxBytes)) {
-    return countEnd < events.length ? events.slice(0, countEnd) : events;
+    return countEnd < events.length ? retainUnresolvedApprovalRequests(events, events.slice(0, countEnd)) : events;
   }
   let estimatedBytes = 0;
   let byteEnd = 0;
@@ -150,7 +150,7 @@ function trimChatEventHistoryFromStart(
     byteEnd = index + 1;
   }
   const end = Math.min(countEnd, byteEnd);
-  return end < events.length ? events.slice(0, end) : events;
+  return end < events.length ? retainUnresolvedApprovalRequests(events, events.slice(0, end)) : events;
 }
 
 export function chatEventDedupKey(entry: AgentChatEventEnvelope): string {

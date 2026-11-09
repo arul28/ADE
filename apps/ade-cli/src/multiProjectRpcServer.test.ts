@@ -26,6 +26,7 @@ import {
 } from "./services/sync/brainMachineSyncStores";
 import { createSyncCloudRelayStore } from "./services/sync/syncCloudRelayStore";
 import { createSyncPinStore } from "./services/sync/syncPinStore";
+const CLOUD_PROVIDER_VAULT_ITEM = "agent37";
 import { SyncHostSingletonConflictError } from "./services/sync/syncHostSingleton";
 import {
   createSyncAccountDirectoryHealth,
@@ -621,7 +622,7 @@ describe("multi-project RPC server", () => {
     }
   });
 
-  describe("Agent 37 and the account vault with no project", () => {
+  describe("ADE Cloud and the account vault with no project", () => {
     const desktop = { clientInfo: { name: "ade-desktop-local", version: "t" }, identity: { role: "cto" } };
     const terminal = { clientInfo: { name: "ade-cli:42", version: "t" }, identity: { role: "cto" } };
     const agent = { clientInfo: { name: "ade-cli:42", version: "t" }, identity: { role: "agent", chatSessionId: "chat-1" } };
@@ -652,17 +653,18 @@ describe("multi-project RPC server", () => {
     afterEach(() => restoreEnvVar("ADE_DEFAULT_ROLE", previousRole));
 
     it.each([
-      ["the desktop lists machines", desktop, null, "agent37.call", "list", null],
-      ["the desktop saves a cloud sign-in", desktop, null, "agent37.call", "cloud_sign_in_save_key", null],
-      ["a terminal lists machines", terminal, null, "agent37.call", "list", null],
-      ["an agent lists machines", agent, null, "agent37.call", "list", null],
-      ["a costly verb stays with a project", desktop, null, "agent37.call", "create", /runs in a project/],
-      ["a terminal saves a cloud sign-in", terminal, null, "agent37.call", "cloud_sign_in_save_key", /limited to the ADE desktop app on this computer/],
-      ["an agent saves a cloud sign-in", agent, null, "agent37.call", "cloud_sign_in_save_key", /Only the user can change this setting .*ade:\/\/settings\//],
+      ["the desktop lists machines", desktop, null, "cloud.call", "list", null],
+      ["the desktop saves a cloud sign-in", desktop, null, "cloud.call", "cloud_sign_in_save_key", null],
+      ["a terminal lists machines", terminal, null, "cloud.call", "list", null],
+      ["an agent lists machines", agent, null, "cloud.call", "list", null],
+      ["an account off the list lists machines", desktop, null, "cloud.call", "list", /unavailable in this runtime/],
+      ["a costly verb stays with a project", desktop, null, "cloud.call", "create", /runs in a project/],
+      ["a terminal saves a cloud sign-in", terminal, null, "cloud.call", "cloud_sign_in_save_key", /limited to the ADE desktop app on this computer/],
+      ["an agent saves a cloud sign-in", agent, null, "cloud.call", "cloud_sign_in_save_key", /Only the user can change this setting .*ade:\/\/settings\//],
       ["a terminal reads the vault", terminal, null, "accountVault.call", "get", /only for the ADE desktop app on this computer/],
       ["an agent reads the vault", agent, null, "accountVault.call", "get", /requires elevated role/],
       ["another machine's desktop reads the vault", remoteDesktop, null, "accountVault.call", "get", /only for the ADE desktop app on this computer/],
-      ["a paired device lists machines", desktop, "peer-device-1", "agent37.call", "list", /only this computer's own connections/],
+      ["a paired device lists machines", desktop, "peer-device-1", "cloud.call", "list", /only this computer's own connections/],
       ["a paired device reads the vault", desktop, "peer-device-1", "accountVault.call", "get", /only this computer's own connections/],
     ] as const)("%s", async (_label, init, peerDeviceId, method, action, refused) => {
       const service = {
@@ -670,14 +672,15 @@ describe("multi-project RPC server", () => {
         create: vi.fn(async () => ({ id: "made" })),
         cloud_sign_in_save_key: vi.fn(async () => ({ saved: true })),
         get: vi.fn(() => "the-key"),
+        access: vi.fn(async () => ({ enabled: !_label.includes("off the list") })),
       };
-      const { handler, projectRegistry } = await connect(init, { agent37: service, account_vault: service }, peerDeviceId);
-      const call = handler({ jsonrpc: "2.0", id: 2, method, params: { action, argsList: ["all", "integration", "agent37"] } });
+      const { handler, projectRegistry } = await connect(init, { cloud: service, account_vault: service }, peerDeviceId);
+      const call = handler({ jsonrpc: "2.0", id: 2, method, params: { action, argsList: ["all", "integration", CLOUD_PROVIDER_VAULT_ITEM] } });
       if (refused) {
         await expect(call).rejects.toThrow(refused);
         expect(service[action]).not.toHaveBeenCalled();
       } else {
-        await expect(call).resolves.toMatchObject({ domain: method === "agent37.call" ? "agent37" : "account_vault", action });
+        await expect(call).resolves.toMatchObject({ domain: method === "cloud.call" ? "cloud" : "account_vault", action });
         expect(service[action]).toHaveBeenCalledTimes(1);
       }
       // No call through these methods turns the caller's folder into a project.
@@ -686,21 +689,22 @@ describe("multi-project RPC server", () => {
     });
 
     it.each([
-      ["the workspace key", "get", ["all", "integration", "agent37"], null],
-      ["the spending cap", "set", ["all", "integration", "agent37-budget", "{\"capUsd\":5}"], null],
-      ["a saved cloud sign-in", "get", ["all", "integration", "agent37-claude-token"], null],
-      ["a write to a cloud sign-in", "set", ["all", "integration", "agent37-claude-token", "stolen"], /reaches only the Agent 37 items/],
-      ["another integration's secret", "get", ["all", "integration", "github"], /reaches only the Agent 37 items/],
-      ["the key in a project's scope", "get", ["project:abc", "integration", "agent37"], /reaches only the Agent 37 items/],
-      ["the key under another kind", "remove", ["all", "secret", "agent37"], /reaches only the Agent 37 items/],
+      // The server holds the provider's key now: no brain reaches that item any more.
+      ["the old provider credential", "get", ["all", "integration", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the ADE Cloud items/],
+      ["the agent limits", "set", ["all", "integration", "cloud-budget", "{\"capUsd\":5}"], null],
+      ["a saved cloud sign-in", "get", ["all", "integration", "cloud-claude-token"], null],
+      ["a write to a cloud sign-in", "set", ["all", "integration", "cloud-claude-token", "stolen"], /reaches only the ADE Cloud items/],
+      ["another integration's secret", "get", ["all", "integration", "github"], /reaches only the ADE Cloud items/],
+      ["the credential in a project's scope", "get", ["project:abc", "integration", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the ADE Cloud items/],
+      ["the credential under another kind", "remove", ["all", "secret", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the ADE Cloud items/],
       ["every row", "list", [], /runs in a project/],
-    ] as const)("the vault with no project opens only Agent 37's items: %s", async (_label, action, argsList, refused) => {
+    ] as const)("the vault with no project opens only ADE Cloud's items: %s", async (_label, action, argsList, refused) => {
       const rows = new Map<string, string>([
-        ["all|integration|agent37", "the-key"],
-        ["all|integration|agent37-claude-token", "claude-token"],
+        [`all|integration|${CLOUD_PROVIDER_VAULT_ITEM}`, "the-key"],
+        ["all|integration|cloud-claude-token", "claude-token"],
         ["all|integration|github", "github-token"],
-        ["project:abc|integration|agent37", "project-key"],
-        ["all|secret|agent37", "other-kind"],
+        [`project:abc|integration|${CLOUD_PROVIDER_VAULT_ITEM}`, "project-key"],
+        [`all|secret|${CLOUD_PROVIDER_VAULT_ITEM}`, "other-kind"],
       ]);
       const store = {
         get: vi.fn((scope: string, kind: string, key: string) => rows.get(`${scope}|${kind}|${key}`) ?? null),
@@ -726,7 +730,7 @@ describe("multi-project RPC server", () => {
         const answer = await call as { result: unknown };
         expect(store[action as "get" | "set"]).toHaveBeenCalledTimes(1);
         expect(answer.result).toBe(action === "get" ? before.get(argsList.slice(0, 3).join("|")) : true);
-        if (action === "set") expect(rows.get("all|integration|agent37-budget")).toBe("{\"capUsd\":5}");
+        if (action === "set") expect(rows.get("all|integration|cloud-budget")).toBe("{\"capUsd\":5}");
       }
       handler.dispose();
     });

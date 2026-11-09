@@ -125,6 +125,28 @@ export default [
     },
   },
   {
+    // ADE Cloud's provider sits behind one seam: everything else takes a
+    // `CloudProvider` from `getCloudProvider`.
+    files: ["src/main/**/*.ts"],
+    ignores: [
+      "src/main/services/adeCloud/cloudAccess.ts",
+      "src/main/**/*.test.ts",
+    ],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/adeCloud/cloudServerProvider", "**/cloudServerProvider"],
+              message: "Use `getCloudProvider` from adeCloud/cloudAccess.ts; only it may import a cloud provider.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // UI primitives: banners, toasts, confirm/prompt, modals and top-bar sheets
     // each have one shared primitive, and overlays stack on one Z_LAYERS scale.
     // Warnings only; `npm run lint:ci` (scripts/lint-ratchet.mjs) fails CI when

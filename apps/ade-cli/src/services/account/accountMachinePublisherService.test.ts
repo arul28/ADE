@@ -166,10 +166,6 @@ afterEach(async () => {
 });
 
 describe("account machine publisher health", () => {
-  it("defaults the account-directory heartbeat to 30 seconds", () => {
-    expect(ACCOUNT_MACHINE_HEARTBEAT_MS).toBe(30_000);
-  });
-
   it("records a successful publication with its endpoint count and timestamps", async () => {
     let clock = 100;
     const service = createAccountMachinePublisherService({

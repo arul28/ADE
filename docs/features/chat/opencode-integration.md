@@ -58,7 +58,9 @@ where this doc says so.
 - One `/api/event` subscription per server receives every session's events
   (all directories) and fans them out. 2.0 streams do not replay or reconnect,
   so the server loop resubscribes with backoff and tells listeners about the
-  gap; a chat then reconciles against `session.active` and `session.get`.
+  gap; a chat then reconciles against `session.active` and `session.get`. A
+  45-second silence watchdog reconnects a stalled stream; keepalives count as
+  activity.
 
 ## Data home
 

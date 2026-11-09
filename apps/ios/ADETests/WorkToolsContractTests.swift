@@ -799,8 +799,8 @@ final class WorkToolsContractTests: XCTestCase {
       XCTAssertEqual(service.hostCompatibilityMissingActions, ["mobileCompatibility"])
       XCTAssertFalse(service.supportsWorkToolsState)
       XCTAssertFalse(service.supportsWorkToolsObservationPreview)
-      XCTAssertFalse(service.supportsMacDesktopStream)
-      XCTAssertFalse(service.supportsMacDesktopControl)
+      XCTAssertFalse(service.supportsMacDesktopStream(laneId: "lane-1"))
+      XCTAssertFalse(service.supportsMacDesktopControl(laneId: "lane-1"))
       XCTAssertFalse(service.supportsMacDesktopStart)
     }
   }
@@ -826,7 +826,7 @@ final class WorkToolsContractTests: XCTestCase {
         XCTAssertEqual((error as NSError).userInfo["ADEErrorCode"] as? String, "unsupported_action")
       }
       do {
-        _ = try await service.readWorkToolsObservationPreview(path: "/tmp/a.png")
+        _ = try await service.readWorkToolsObservationPreview(path: "/tmp/a.png", laneId: "lane-1")
         XCTFail("An unadvertised workTools.readObservationPreview must not be attempted.")
       } catch {
         XCTAssertEqual((error as NSError).userInfo["ADEErrorCode"] as? String, "unsupported_action")

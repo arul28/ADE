@@ -2264,6 +2264,18 @@ function PromptSuggestionHint({ text }: { text: string }) {
   );
 }
 
+/** Scripts written without spaces between words. */
+const UNSPACED_SCRIPT = "[\\p{Script_Extensions=Han}\\p{Script_Extensions=Hiragana}\\p{Script_Extensions=Katakana}\\p{Script=Thai}\\p{Script=Lao}\\p{Script=Khmer}\\p{Script=Myanmar}]";
+const ENDS_UNSPACED = new RegExp(`${UNSPACED_SCRIPT}$`, "u");
+const STARTS_UNSPACED = new RegExp(`^${UNSPACED_SCRIPT}`, "u");
+
+/** Dictated text with the spaces its neighbors need: none beside whitespace, or between characters of an unspaced script. */
+function spaceDictatedText(before: string, insertion: string, after: string): string {
+  const leading = before.length > 0 && !/\s$/.test(before) && !(ENDS_UNSPACED.test(before) && STARTS_UNSPACED.test(insertion));
+  const trailing = after.length > 0 && !/^\s/.test(after) && !(ENDS_UNSPACED.test(insertion) && STARTS_UNSPACED.test(after));
+  return `${leading ? " " : ""}${insertion}${trailing ? " " : ""}`;
+}
+
 function AgentChatComposerImpl({
   surfaceMode = "standard",
   surfaceProfile = "standard",
@@ -2272,6 +2284,7 @@ function AgentChatComposerImpl({
   isActive = false,
   shouldAutofocus = isActive,
   caretToEndRequest = 0,
+  focusRequest = 0,
   browserTabInsertRequest = null,
   threadComments = EMPTY_THREAD_COMMENTS,
   threadCommentsSessionId = null,
@@ -2468,6 +2481,8 @@ function AgentChatComposerImpl({
    * editor with the caret at the very end, after the added chip.
    */
   caretToEndRequest?: number;
+  /** Each new value focuses the composer, leaving its draft and caret alone. */
+  focusRequest?: number;
   /**
    * A browser tab attached from the Browser panel ("Attach to chat"). Each new
    * `id` inserts the tab's `<ade-browser-tab>` token as a chip at the caret the
@@ -2533,11 +2548,11 @@ function AgentChatComposerImpl({
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
   usageViewModel?: ContextUsageViewModel | null;
   compactionPulse?: boolean;
-  /** Sends `/compact` without replacing the unsent draft. Claude/Codex/Pi only. */
+  /** Sends `/compact` without replacing the unsent draft. */
   onCompactContext?: () => void;
   /**
    * Provider of the open session. Compact must follow the live session, not the
-   * model picker, so a Cursor chat does not grow a compact control just because
+   * model picker, so a Droid chat does not grow a compact control just because
    * Claude is selected for the next turn.
    */
   compactSessionProvider?: string | null;
@@ -4327,6 +4342,12 @@ function AgentChatComposerImpl({
   // exists: a quote promotes the plain textarea to the rich editor one render
   // later, and focusing the textarea in between would put the caret in an
   // element that is about to unmount.
+  const appliedFocusRequestRef = useRef(focusRequest);
+  useEffect(() => {
+    if (focusRequest === appliedFocusRequestRef.current) return;
+    appliedFocusRequestRef.current = focusRequest;
+    focusComposerInput();
+  }, [focusComposerInput, focusRequest]);
   const appliedCaretToEndRequestRef = useRef(caretToEndRequest);
   useEffect(() => {
     if (caretToEndRequest === appliedCaretToEndRequestRef.current) return;
@@ -5402,17 +5423,20 @@ function AgentChatComposerImpl({
     setVoiceError(null);
     if (useRichComposer) {
       // Rich editor: insert at the saved selection range (or end), then sync draft.
-      insertTextIntoRichEditor(insertion);
+      const editor = richEditorRef.current;
+      const caret = richSelectionRef.current;
+      const text = editor ? serializeComposerDom(editor).text : "";
+      const atCaret = editor && caret && editor.contains(caret.commonAncestorContainer);
+      const before = atCaret ? text.slice(0, serializedComposerOffsetAt(editor, caret.startContainer, caret.startOffset, text)) : text;
+      const after = atCaret ? text.slice(serializedComposerOffsetAt(editor, caret.endContainer, caret.endOffset, text)) : "";
+      insertTextIntoRichEditor(spaceDictatedText(before, insertion, after));
     } else {
       const current = draft;
       const caret = lastPlainSelectionRef.current ?? current.length;
       const start = Math.max(0, Math.min(caret, current.length));
       const before = current.slice(0, start);
       const after = current.slice(start);
-      // Add a separating space when butting up against existing words.
-      const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
-      const needsTrailingSpace = after.length > 0 && !/^\s/.test(after);
-      const piece = `${needsLeadingSpace ? " " : ""}${insertion}${needsTrailingSpace ? " " : ""}`;
+      const piece = spaceDictatedText(before, insertion, after);
       const next = `${before}${piece}${after}`;
       onDraftChange(next);
       const nextCaret = before.length + piece.length;
@@ -5836,7 +5860,7 @@ function AgentChatComposerImpl({
       provider: compactSessionProvider === undefined ? sessionProvider : compactSessionProvider,
       state: usageViewModel?.state ?? "unknown",
       enabled: Boolean(onCompactContext && usageViewModel),
-      openCodeCompactAvailable: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
+      compactAvailableOnChat: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
       turnActive,
       busy,
       pendingInput: hasPendingInput,
@@ -9432,6 +9456,8 @@ function AgentChatComposerImpl({
               key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
               request={askQuestionRequest}
               responding={approvalResponding ?? false}
+              // Through the ref: the editor kind can change in the render that removes the card.
+              onFocusLost={() => focusComposerInputRef.current()}
               onSubmit={(answers) => {
                 // The draft WAS the answer; it must not survive into the next
                 // turn as a half-sent duplicate. Staged attachments deliberately

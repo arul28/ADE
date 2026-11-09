@@ -489,6 +489,12 @@ export function parseWindowsRunKeyValues(
   return values;
 }
 
+/** The launcher script a Run value's command starts, or null. */
+function windowsRunCommandLauncherPath(command: string): string | null {
+  const fileArg = /(?:^|\s)"?-file"?\s+(?:"([^"]+)"|(\S+))(?=\s|$)/i.exec(command);
+  return fileArg ? fileArg[1] ?? fileArg[2] ?? null : null;
+}
+
 /** True when a Run value's command launches this exact launcher script. */
 export function windowsRunCommandNamesLauncher(
   command: string,
@@ -496,8 +502,8 @@ export function windowsRunCommandNamesLauncher(
 ): boolean {
   const normalizedLauncher = normalizeWindowsPathText(launcherPath);
   if (!normalizedLauncher) return false;
-  const fileArg = /(?:^|\s)"?-file"?\s+(?:"([^"]+)"|(\S+))(?=\s|$)/i.exec(command);
-  return fileArg != null && normalizeWindowsPathText(fileArg[1] ?? fileArg[2] ?? "") === normalizedLauncher;
+  const fileArg = windowsRunCommandLauncherPath(command);
+  return fileArg != null && normalizeWindowsPathText(fileArg) === normalizedLauncher;
 }
 
 /**
@@ -937,6 +943,36 @@ function readLauncherBrainCommand(launcherPath: string): AdeServiceCommand | nul
   const command = fields.FileName?.trim();
   if (!command || fields.Arguments == null) return null;
   return { command, args: parseCommandLine(fields.Arguments, { platform: "win32" }) };
+}
+
+/**
+ * The ADE home the installed Windows service serves. The launcher sits under
+ * that home, so the shell's `ADE_HOME` cannot find it: the startup entry names
+ * it. Null when no launcher can be read, so an unreadable or absent one stays
+ * removable. A launcher that sets no `ADE_HOME` serves the default home.
+ */
+export function readWindowsServiceHome(
+  env: NodeJS.ProcessEnv = process.env,
+  run: ServiceManagerSpawnSync = spawnSync,
+): string | null {
+  const launcherEnv = { ...env, ADE_HOME: "" };
+  const query = run(windowsRegCommand(), buildWindowsRunKeyQueryArgs(resolveWindowsTaskName()), {
+    encoding: "utf8",
+    timeout: 5_000,
+    windowsHide: true,
+  });
+  const registered = query.status === 0
+    ? parseWindowsRunKeyValues(query.stdout).map((value) => windowsRunCommandLauncherPath(value.command)).find(Boolean)
+    : null;
+  let script: string;
+  try {
+    script = fs.readFileSync(registered ?? resolveWindowsServiceLauncherPath({ env: launcherEnv }), "utf8");
+  } catch {
+    return null;
+  }
+  const match = /SetEnvironmentVariable\('ADE_HOME',\s*'((?:[^']|'')*)'/.exec(script);
+  const value = match?.[1]?.replace(/''/g, "'").trim();
+  return value || resolveWindowsAdeDir(launcherEnv);
 }
 
 /** The brain command this channel's installed Windows service runs, or null when none is installed. */

@@ -1,7 +1,10 @@
+import { githubReminderKey, resetGithubReminders, migrateGithubReminder, useBannerDismissals } from "../../lib/bannerDismiss";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import React, { useEffect, useRef, useState } from "react";
 import { issueWriteSourceLabel } from "../../../shared/githubOperationCredential";
 import type { GitHubCredentialState, GitHubStatus } from "../../../shared/types";
 import {
+  Bell,
   CheckCircle,
   Warning,
   ArrowClockwise,
@@ -185,6 +188,8 @@ function credentialStateBadge(
 type StatusTone = "ok" | "warn" | "neutral";
 
 export function GitHubSection() {
+  const dismissals = useBannerDismissals();
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const issueTopBar = useIssueTopBarPreferences();
   const { repo: issueRepo } = useProjectGitHubRepo();
   const issueAccess = useGitHubIssueWriteAccess(issueRepo);
@@ -197,7 +202,7 @@ export function GitHubSection() {
   const [transcriptGistsEnabled, setTranscriptGistsEnabled] = useState(false);
   // Every read and write below goes to this page's machine: its credential
   // store, its gh login, its App authorization.
-  const { pin } = useSettingsMachineScope();
+  const { pin, machineId } = useSettingsMachineScope();
   // The App row in the ladder below reports why the App credential is idle, and
   // only this status can tell a paused renewal from a dead authorization. Shared
   // with the install panel on this same page, which is where it is disconnected.
@@ -431,6 +436,10 @@ export function GitHubSection() {
   // reports the honest "Unknown" rather than the false-negative "Not connected".
   // Name the writer only when its credential is really there: a gh login that
   // lost its token must not read as "GitHub CLI".
+  useEffect(() => {
+    if (repoName && projectRoot) migrateGithubReminder(repoName, projectRoot, machineId);
+  }, [repoName, projectRoot, machineId]);
+  const remindersDismissed = repoName ? dismissals.isDismissed(githubReminderKey(repoName), "setup") : false;
   const writeCredentialState = credentialStates.find((credential) => credential.source === effectiveWriteAuthSource) ?? null;
   const writeCredentialMissing = writeCredentialState != null && !writeCredentialState.available;
   const writesWith = outage && effectiveWriteAuthSource === "none"
@@ -689,6 +698,20 @@ export function GitHubSection() {
           />
         ) : null}
       </div>
+
+      {repoName ? (
+        <IntegrationCard anchor="github-reminders" icon={<Bell size={16} weight="duotone" />} title="Reminders"
+          hint={remindersDismissed
+            ? `Setup reminders are dismissed for ${repoName}, across its worktrees.`
+            : `Setup reminders are enabled for ${repoName}. Credential and Git transport failures are reported separately.`}
+          actions={(
+            <button type="button" className="ade-modern-btn" onClick={() => {
+              if (remindersDismissed) resetGithubReminders(repoName, projectRoot);
+              else dismissals.dismiss(githubReminderKey(repoName), "setup");
+            }}>{remindersDismissed ? "Show reminders again" : "Dismiss setup reminders"}</button>
+          )}
+        />
+      ) : null}
 
       <IntegrationColumns>
         <IntegrationCard

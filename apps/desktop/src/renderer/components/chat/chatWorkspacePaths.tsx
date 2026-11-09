@@ -23,6 +23,12 @@ export type WorkspacePathLocation = {
   path: string;
   startLine?: number;
   startColumn?: number;
+  /**
+   * The path as written, when it contains a backslash. On a POSIX workspace a
+   * backslash is an ordinary file name character; which it is depends on the
+   * workspace's machine, not this client's, so the choice waits for its root.
+   */
+  originalPath?: string;
 };
 
 export function isExternalHref(href: string): boolean {
@@ -114,7 +120,20 @@ export function parseWorkspacePathLocation(value: string): WorkspacePathLocation
     path: normalizedPath,
     startLine: fromFragment.startLine ?? fromSuffix.startLine,
     startColumn: fromFragment.startColumn ?? fromSuffix.startColumn,
+    ...(decodedPath.includes("\\") ? { originalPath: splitWorkspacePathLineSuffix(decodedPath).path } : {}),
   };
+}
+
+const BACKSLASH_PLACEHOLDER = "\u0000";
+
+/** The candidate as a path on the workspace's own machine, keeping a POSIX file name's backslashes. */
+function candidatePathForWorkspaces(
+  candidate: WorkspacePathLocation,
+  workspaces: readonly Pick<FilesWorkspace, "rootPath">[],
+): string {
+  const root = workspaces[0]?.rootPath ?? "";
+  if (!candidate.originalPath || !root.startsWith("/") || isWindowsAbsolutePath(root)) return normalizePath(candidate.path);
+  return normalizePath(candidate.originalPath.replaceAll("\\", BACKSLASH_PLACEHOLDER)).replaceAll(BACKSLASH_PLACEHOLDER, "\\");
 }
 
 /**
@@ -156,8 +175,30 @@ export function looksLikeWorkspacePath(value: string): boolean {
   return !singleSegmentLooksLikeProse(withoutLeadingSlash);
 }
 
+const EDITOR_FILE_LINK_PROTOCOLS = new Set(["cursor:", "vscode:", "vscode-insiders:"]);
+
+/**
+ * The absolute local path of an editor link an agent printed
+ * (`cursor://file/<path>:12`), or null. Only a local file open qualifies:
+ * anything naming another host, a port or credentials is not one.
+ */
+export function editorFileLinkPath(href: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+  if (!EDITOR_FILE_LINK_PROTOCOLS.has(url.protocol) || url.hostname !== "file") return null;
+  if (url.username || url.password || url.port || !url.pathname.startsWith("/")) return null;
+  return url.pathname;
+}
+
 export function resolveWorkspacePathFromHref(href: string | undefined): WorkspacePathLocation | null {
   if (!href) return null;
+  // Before the external check, which any `scheme://` link would satisfy.
+  const editorPath = editorFileLinkPath(href);
+  if (editorPath) return parseWorkspacePathLocation(editorPath);
   if (isExternalHref(href)) return null;
   const candidate = parseWorkspacePathLocation(href);
   if (!candidate) return null;
@@ -190,7 +231,7 @@ export function resolveFilesNavigationTarget<W extends Pick<FilesWorkspace, "roo
   const candidate = typeof args.path === "string" ? parseWorkspacePathLocation(args.path) : args.path;
   if (!candidate) return null;
 
-  const normalizedCandidate = normalizePath(candidate.path);
+  const normalizedCandidate = candidatePathForWorkspaces(candidate, args.workspaces);
   if (normalizedCandidate.startsWith("/") || isWindowsAbsolutePath(normalizedCandidate)) {
     const matches = args.workspaces
       .map((workspace) => ({

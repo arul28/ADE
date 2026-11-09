@@ -174,6 +174,7 @@ import {
 } from "../../../shared/deeplinks";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { useCrossMachineLaneSync } from "../../state/crossMachineLanes";
+import { runFirstLoadWithRetry } from "../../lib/firstLoadRetry";
 import { useHomeAppEffects } from "../home/useHomeAppEffects";
 import { BootSplashReveal, useBootSplashHold } from "./BootSplashReveal";
 import { findOnOtherMachines, readOtherMachines, type OtherMachines } from "../../lib/otherMachineNavigation";
@@ -689,6 +690,7 @@ const ProjectSurface = React.memo(function ProjectSurface({
   store: AppStoreApi;
 }) {
   const surfaceRef = React.useRef<HTMLDivElement | null>(null);
+  const remoteTargetId = projectBinding.kind === "remote" ? projectBinding.targetId : null;
 
   React.useEffect(() => {
     hydrateProjectAppStore(store, {
@@ -716,10 +718,14 @@ const ProjectSurface = React.memo(function ProjectSurface({
   React.useEffect(() => {
     if (!active) return;
     const state = store.getState();
-    if (
-      projectBinding.kind === "remote"
-      || (state.lanes.length === 0 && !state.lanesLoading)
-    ) {
+    let cancelLaneRetry: (() => void) | undefined;
+    if (state.lanes.length === 0) {
+      cancelLaneRetry = runFirstLoadWithRetry({
+        surface: "lanes",
+        targetId: remoteTargetId,
+        load: () => store.getState().refreshLanes({ includeStatus: false }),
+      });
+    } else if (projectBinding.kind === "remote") {
       void state.refreshLanes({ includeStatus: false }).catch(() => {});
     }
     // A surface seeded from the lane cache shows whatever status that cache
@@ -728,7 +734,8 @@ const ProjectSurface = React.memo(function ProjectSurface({
     // Cheap (a local read); keeps a surface created before a save in step.
     void state.refreshKeybindings().catch(() => {});
     void state.refreshProviderMode().catch(() => {});
-  }, [active, projectBinding.kind, store]);
+    return cancelLaneRetry;
+  }, [active, projectBinding.kind, remoteTargetId, store]);
 
   useParkedSurfaceFocus(surfaceRef, !active);
 

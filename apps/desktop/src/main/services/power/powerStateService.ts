@@ -15,8 +15,8 @@
  *    all, so it covers anything the events above miss.
  *
  * Battery readings come from the ade-cli reader rather than a second
- * implementation here, because Linux ships no ADE desktop app (`linux: false`)
- * and the brain must be able to answer the same question alone.
+ * implementation here, because a brain with no desktop app must be able to
+ * answer the same question alone.
  */
 
 import { powerMonitor } from "electron";

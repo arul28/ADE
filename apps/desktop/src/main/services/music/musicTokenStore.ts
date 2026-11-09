@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { safeStorage } from "electron";
+import { isSecureStorageAvailable } from "../shared/secureStorage";
 
 /**
  * Where a music provider's sign-in lives: one small file per provider in this
@@ -32,7 +33,7 @@ export function createMusicTokenStore(args: {
     if (loaded) return;
     loaded = true;
     try {
-      if (!fs.existsSync(file) || !safeStorage.isEncryptionAvailable()) return;
+      if (!fs.existsSync(file) || !isSecureStorageAvailable(safeStorage)) return;
       const parsed = JSON.parse(safeStorage.decryptString(fs.readFileSync(file))) as Record<string, unknown>;
       for (const [key, value] of Object.entries(parsed)) {
         if (typeof value === "string") values.set(key, value);
@@ -46,13 +47,18 @@ export function createMusicTokenStore(args: {
   };
 
   const save = () => {
-    if (!safeStorage.isEncryptionAvailable()) {
+    if (!isSecureStorageAvailable(safeStorage)) {
       throw new Error(`This computer's secure storage is unavailable, so ADE can't remember your ${args.serviceName ?? "Apple Music"} sign-in.`);
     }
     fs.mkdirSync(args.dir, { recursive: true });
     const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, safeStorage.encryptString(JSON.stringify(Object.fromEntries(values))));
-    fs.renameSync(tmp, file);
+    try {
+      fs.writeFileSync(tmp, safeStorage.encryptString(JSON.stringify(Object.fromEntries(values))));
+      fs.renameSync(tmp, file);
+    } catch (error) {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+      throw error;
+    }
   };
 
   return {

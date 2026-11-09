@@ -35,6 +35,18 @@ const MENU_VIEW_WIDTH: Record<MenuView, number | undefined> = { main: undefined,
 /** The account settings that only a Claude account has. */
 export type ClaudeAccountSettingPatch = Pick<ProviderInstanceSettingsPatch, "mainPromptCacheTtl" | "subagentPromptCacheTtl" | "onExtraUsage">;
 
+/**
+ * Only ever "around": the date can be a 30-day estimate and the login can end
+ * up to 3 days sooner, and a past date means it has probably ended, not that it
+ * has.
+ */
+function claudeLoginEndText(endsAt: string | undefined, nowMs: number): string | null {
+  const ms = endsAt ? Date.parse(endsAt) : Number.NaN;
+  if (!Number.isFinite(ms)) return null;
+  const day = new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return ms > nowMs ? `Sign-in ends around ${day}` : `Sign-in may have ended around ${day}`;
+}
+
 export function AccountCard({
   instance,
   limitRow,
@@ -93,6 +105,7 @@ export function AccountCard({
   // The usage row carries its own "Signed out" pill when the poller saw the
   // broken login; the header says it only when the row cannot.
   const rowSaysSignedOut = limitRow?.account?.login === "signed_out";
+  const loginEnd = !signedOut && providerInstanceHasAccount(instance) ? claudeLoginEndText(instance.claudeLoginEndsAt, nowMs) : null;
   const longPromptCache = instance.subagentPromptCacheTtl === "1h";
   const mainPromptCache = instance.mainPromptCacheTtl ?? null;
   const stopsOnExtraUsage = instance.onExtraUsage === "stop";
@@ -400,6 +413,8 @@ export function AccountCard({
           ) : null}
         </span>
       )}
+
+      {loginEnd ? <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>{loginEnd}</span> : null}
 
       {replacedNote}
     </div>

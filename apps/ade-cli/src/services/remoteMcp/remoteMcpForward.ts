@@ -82,7 +82,7 @@ export type RemoteMcpMachineRouter = {
   ): Promise<RemoteMcpToolResult>;
 };
 
-export type RemoteMcpDirectoryMachine = { machineKey: string; name: string | null; online: boolean };
+export type RemoteMcpDirectoryMachine = { machineKey: string; name: string | null; online: boolean; lastSeenAt?: number | null };
 
 /** How long a directory read is reused; Settings and machines_list both read it. */
 const DIRECTORY_TTL_MS = 15_000;
@@ -270,6 +270,7 @@ export function createRemoteMcpMachineRouter(deps: {
         isThisMachine,
         endpointKey: entry?.endpointKey || null,
         version: entry?.version || null,
+        lastSeenAt: directoryRow?.lastSeenAt ?? null,
         serving: state.serving,
         notServingReason: state.serving ? null : state.reason,
         // This computer's state is live; another's is as of its last report,
@@ -278,10 +279,16 @@ export function createRemoteMcpMachineRouter(deps: {
       });
     };
     for (const row of listed ?? []) add(row.machineKey, row);
-    for (const machineKey of entries.keys()) if (!byKey.has(machineKey)) add(machineKey, null);
+    // The directory says who is on the account. Settings entries outlive the
+    // machines that wrote them (old installs, test and cloud boxes), so they
+    // only fill in when the directory could not be read.
+    if (!listed) for (const machineKey of entries.keys()) if (!byKey.has(machineKey)) add(machineKey, null);
     if (self.key && !byKey.has(self.key)) add(self.key, null);
+    const onlineRank = (machine: RemoteMcpRosterMachine) => (machine.online === true ? 2 : machine.online === null ? 1 : 0);
     return [...byKey.values()].sort((left, right) =>
-      Number(right.isThisMachine) - Number(left.isThisMachine) || left.name.localeCompare(right.name));
+      Number(right.isThisMachine) - Number(left.isThisMachine)
+      || onlineRank(right) - onlineRank(left)
+      || left.name.localeCompare(right.name));
   };
 
   const resolve = async (selector: string): Promise<RemoteMcpResolvedMachine> => {
@@ -308,7 +315,10 @@ export function createRemoteMcpMachineRouter(deps: {
   const unavailableReason = (machine: RemoteMcpRosterMachine): string | null => {
     if (!machine.supported || !machine.endpointKey) return notServingSentence(machine.name, "older_ade");
     if (machine.serving) return null;
-    return notServingSentence(machine.name, machine.notServingReason ?? "relay_disconnected");
+    const lastSeen = machine.notServingReason === "offline" && machine.lastSeenAt
+      ? ` Last seen ${new Date(machine.lastSeenAt).toISOString()}.`
+      : "";
+    return `${notServingSentence(machine.name, machine.notServingReason ?? "relay_disconnected")}${lastSeen}`;
   };
 
   const forward: RemoteMcpMachineRouter["forward"] = async (machine, call, context, timeoutMs) => {

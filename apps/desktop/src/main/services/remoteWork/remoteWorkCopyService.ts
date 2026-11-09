@@ -110,6 +110,9 @@ const REMOTE_WORK_MIN_FREE_BYTES = 5 * 1024 ** 3;
 const SHA = /^[0-9a-f]{40}$/i;
 const REGISTRY_FILE = "copies.json";
 const GIT_TIMEOUT_MS = 120_000;
+/** Stops the project's checkout hooks running in a throwaway copy. Git finds no hook at this path. */
+const WORK_COPY_NO_HOOKS = ["-c", "core.hooksPath=/dev/null"] as const;
+const WORK_COPY_CLEAN_PASSES = 5;
 const FETCH_TIMEOUT_MS = 300_000;
 
 /**
@@ -425,7 +428,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
         // No index yet: git builds one from scratch.
       }
       const env = { ...process.env, GIT_INDEX_FILE: tempIndex };
-      await gitOrThrow(["add", "-A"], copyPath, "Could not read the work copy", { env });
+      await gitOrThrow(["-c", "core.sparseCheckout=false", "add", "-A"], copyPath, "Could not read the work copy", { env });
       return await gitOrThrow(["write-tree"], copyPath, "Could not read the work copy", { env });
     } finally {
       fs.rmSync(tempIndex, { force: true });
@@ -466,9 +469,14 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
   };
 
   const syncCopy = async (copyPath: string, source: RemoteWorkSource, patch: Buffer | null): Promise<string> => {
-    await gitOrThrow(["checkout", "--force", "--detach", source.head], copyPath, "Could not check out the chat's commit");
+    // A work copy is ADE's own throwaway: the project's checkout hooks are not for it.
+    await gitOrThrow([...WORK_COPY_NO_HOOKS, "checkout", "--force", "--detach", source.head], copyPath, "Could not check out the chat's commit");
     // No -x: ignored files (installed deps, build output) survive between runs.
-    await gitOrThrow(["clean", "-fd"], copyPath, "Could not clean the work copy");
+    // Removing a `.gitignore` can uncover files it was hiding, so go until clean.
+    for (let pass = 0; pass < WORK_COPY_CLEAN_PASSES; pass += 1) {
+      const removed = await gitOrThrow(["clean", "-fd"], copyPath, "Could not clean the work copy");
+      if (!removed.trim()) break;
+    }
     if (patch && patch.length > 0) {
       // A file, not a string on stdin: the patch is bytes, and a text file in
       // another encoding must arrive as it was.
@@ -652,7 +660,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
     if (fs.existsSync(copyPath)) await removeCopyFiles(copyPath);
     await git(["worktree", "prune"], projectRoot);
     fs.mkdirSync(root, { recursive: true });
-    await gitOrThrow(["worktree", "add", "--detach", copyPath, source.head], projectRoot, "Could not create the work copy");
+    await gitOrThrow([...WORK_COPY_NO_HOOKS, "worktree", "add", "--detach", copyPath, source.head], projectRoot, "Could not create the work copy");
     const syncedTree = await syncCopy(copyPath, source, patch);
     const copy: RemoteWorkCopy = {
       owner,

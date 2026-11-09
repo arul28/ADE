@@ -50,7 +50,8 @@
               "getting-started/connect-machine",
               "getting-started/connect-provider",
               "getting-started/open-project",
-              "getting-started/windows"
+              "getting-started/windows",
+              "getting-started/linux"
             ]
           },
           {
@@ -90,7 +91,8 @@
             "pages": [
               "tools/remote-machines",
               "tools/ios-companion",
-              "tools/ios-simulator"
+              "tools/ios-simulator",
+              "tools/android-development"
             ]
           },
           {

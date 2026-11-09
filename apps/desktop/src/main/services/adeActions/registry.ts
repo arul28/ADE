@@ -233,6 +233,7 @@ import { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import { buildLaneListSnapshots } from "../lanes/laneListSnapshotService";
 import { getErrorMessage, isRecord, nowIso, resolveWithinAllowedRoots } from "../shared/utils";
+import { redactOutgoingChatText } from "../../utils/redaction";
 import {
   createRemoteWorkCopyService,
   isRemoteWorkCopyInUse,
@@ -301,22 +302,19 @@ import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
-import { agent37VaultFromStore, buildAgent37ConnectAdapter, type Agent37CredentialDeps } from "../agent37/agent37Credential";
-import { agent37MachineEnv, type Agent37CloudSignInVaults } from "../agent37/agent37CloudSignInStore";
-import { buildAgent37CloudSignInActions } from "../agent37/agent37CloudSignInActions";
-import { agent37OnlyVaultService } from "../agent37/agent37VaultItems";
-import { buildAgent37ReadyActions } from "../agent37/agent37ReadyActions";
-import { buildAgent37AgentActions } from "../agent37/agent37AgentActions";
-import { createAgent37BrainMaker, type Agent37BrainMaker } from "../agent37/agent37BrainMaker";
-import { approveInHeadlessChromium, findHeadlessChromium } from "../agent37/agent37HeadlessApproval";
-import { AGENT37_DEFAULT_TEMPLATE } from "../../../shared/agent37";
-import { createAgent37Machines } from "../agent37/agent37Machines";
-import { AGENT37_BUDGET_VAULT_KEY, createAgent37BudgetStore } from "../agent37/agent37Sleep";
-import { readAgent37Key } from "../agent37/agent37Credential";
-import { createAgent37Client } from "../agent37/agent37Client";
+import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
+import { cloudMachineEnv, type CloudSignInVaults } from "../adeCloud/cloudSignInStore";
+import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
+import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
+import { buildCloudReadyActions } from "../adeCloud/cloudReadyActions";
+import { buildCloudAgentActions } from "../adeCloud/cloudAgentActions";
+import { createCloudBrainMaker, type CloudBrainMaker } from "../adeCloud/cloudBrainMaker";
+import { approveInHeadlessChromium, findHeadlessChromium } from "../adeCloud/cloudHeadlessApproval";
+import { createCloudMachines } from "../adeCloud/cloudMachines";
+import { CLOUD_AGENT_LIMITS_VAULT_KEY, createCloudAgentLimitsStore } from "../adeCloud/cloudSleep";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
 import { getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
-import { AGENT37_READY_VAULT_KEY, createAgent37ReadySettingsStore } from "../agent37/agent37ReadySettings";
+import { CLOUD_READY_VAULT_KEY, createCloudReadySettingsStore } from "../adeCloud/cloudReadySettings";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
@@ -616,7 +614,7 @@ type OpaqueService = Record<string, unknown>;
  * (buildMachineAccountDomainServices).
  */
 export type AccountDomainRuntime = Pick<AdeRuntime, "logger">
-  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "agentChatService" | "getAgent37Desktop" | "productAnalyticsService">>
+  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "agentChatService" | "getCloudDesktop" | "productAnalyticsService">>
   & { projectRoot?: string | null };
 
 function toService(value: unknown): OpaqueService | null {
@@ -1010,11 +1008,11 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         getChatTranscript?: (args: { sessionId: string; limit?: number; maxChars?: number }) => Promise<unknown> | unknown;
       };
       if (typeof chatService.getChatTranscript === "function") {
-        const transcript = await chatService.getChatTranscript({
+        const transcript = redactOutgoingChatText(await chatService.getChatTranscript({
           sessionId,
           ...(limit !== undefined ? { limit } : {}),
           maxChars,
-        });
+        }));
         const entries = Array.isArray(transcript)
           ? transcript
           : isRecord(transcript) && Array.isArray(transcript.entries)
@@ -1093,12 +1091,12 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       if (typeof chatService.getChatTranscriptPage !== "function") {
         throw new Error("Paged chat transcript reads are not available in this runtime.");
       }
-      return chatService.getChatTranscriptPage({
+      return redactOutgoingChatText(await chatService.getChatTranscriptPage({
         sessionId,
         ...(beforeOffset !== undefined ? { beforeOffset } : {}),
         ...(limit !== undefined ? { limit } : {}),
         ...(maxChars !== undefined ? { maxChars } : {}),
-      });
+      }));
     },
     sendMessage: async (args?: unknown) => {
       const { inputOrigin, ...record } = readObjectActionArg(args, "chat.sendMessage");
@@ -1315,6 +1313,14 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         ...(sessionActivity ? { activityStatus: sessionActivity.activityStatus ?? null } : {}),
       };
     };
+  }
+  // Every transcript read hands out what agents printed: secrets in it are
+  // masked on the way out, as `readTranscript` does above.
+  for (const action of ["getMainTranscript", "getSubagentTranscript"] as const) {
+    const read = base[action];
+    if (typeof read === "function") {
+      service[action] = async (...args: unknown[]) => redactOutgoingChatText(await (read as (...input: unknown[]) => unknown)(...args));
+    }
   }
   if (typeof base.getTurnStatus === "function") {
     service.getTurnStatus = (args?: unknown) =>
@@ -4065,27 +4071,27 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
   };
 }
 
-/** The machine's shared credential file, for an Agent37 key saved while signed out. One per process. */
-let agent37MachineCredentialStore: EncryptedFileCredentialStore | null = null;
-function agent37MachineStore(): EncryptedFileCredentialStore {
-  agent37MachineCredentialStore ??= new EncryptedFileCredentialStore({ secretsDir: resolveMachineAdeLayout().secretsDir });
-  return agent37MachineCredentialStore;
+/** The machine's shared credential file, for a provider key saved while signed out. One per process. */
+let cloudMachineCredentialStore: EncryptedFileCredentialStore | null = null;
+function cloudMachineStore(): EncryptedFileCredentialStore {
+  cloudMachineCredentialStore ??= new EncryptedFileCredentialStore({ secretsDir: resolveMachineAdeLayout().secretsDir });
+  return cloudMachineCredentialStore;
 }
 
-/** The account vault's cloud sign-in items, or null when signed out of ADE (agent37CloudSignInStore.ts). */
-function agent37CloudSignInVaults(runtime: AccountDomainRuntime): Agent37CloudSignInVaults | null {
+/** The account vault's cloud sign-in items, or null when signed out of ADE (cloudSignInStore.ts). */
+function cloudSignInVaults(runtime: AccountDomainRuntime): CloudSignInVaults | null {
   const store = runtime.accountVaultStore;
   if (!store || runtime.accountAuthService?.getStatus().signedIn !== true) return null;
-  return (vaultKey) => agent37VaultFromStore(store, vaultKey);
+  return (vaultKey) => cloudVaultFromStore(store, vaultKey);
 }
 
-function agent37CredentialDeps(runtime: AccountDomainRuntime): Agent37CredentialDeps {
-  return {
-    vault: () => (runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore) : null),
-    machineStore: () => agent37MachineStore(),
-    signedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
+function cloudAccessDeps(runtime: AccountDomainRuntime): CloudAccessDeps {
+  return cloudAccessDepsFor({
+    account: () => runtime.accountAuthService,
+    directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }),
+    deviceName: () => os.hostname(),
     logger: runtime.logger,
-  };
+  });
 }
 
 /**
@@ -4100,7 +4106,6 @@ function integrationConnectAdapters(runtime: AdeRuntime) {
     linearCredentialService: runtime.linearCredentialService ?? null,
     linearStatus: runtime.linearCredentialService ? () => buildRuntimeLinearConnectionStatus(runtime) : null,
     jiraService: runtime.jiraService ?? null,
-    agent37: buildAgent37ConnectAdapter(agent37CredentialDeps(runtime)),
   });
 }
 
@@ -4108,16 +4113,16 @@ function integrationConnectAdapters(runtime: AdeRuntime) {
  * One maker per runtime: the domain services are rebuilt per call, and a
  * background make (the phone's) is read back by a later `make_status`.
  */
-const agent37BrainMakers = new WeakMap<AccountDomainRuntime, Agent37BrainMaker | null>();
+const cloudBrainMakers = new WeakMap<AccountDomainRuntime, CloudBrainMaker | null>();
 
-function agent37BrainMakerFor(runtime: AccountDomainRuntime, machines: ReturnType<typeof createAgent37Machines>): Agent37BrainMaker | null {
-  if (agent37BrainMakers.has(runtime)) return agent37BrainMakers.get(runtime) ?? null;
+function cloudBrainMakerFor(runtime: AccountDomainRuntime, machines: ReturnType<typeof createCloudMachines>): CloudBrainMaker | null {
+  if (cloudBrainMakers.has(runtime)) return cloudBrainMakers.get(runtime) ?? null;
   const account = runtime.accountAuthService ?? null;
   if (!account) {
-    agent37BrainMakers.set(runtime, null);
+    cloudBrainMakers.set(runtime, null);
     return null;
   }
-  const credentials = agent37CredentialDeps(runtime);
+  const credentials = cloudAccessDeps(runtime);
   const directoryBaseUrl = () => {
     try {
       return getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }) || null;
@@ -4129,27 +4134,22 @@ function agent37BrainMakerFor(runtime: AccountDomainRuntime, machines: ReturnTyp
     appVersion: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
     directoryBaseUrl: () => directoryBaseUrl() ?? "",
   });
-  // Only a brain on an Agent 37 machine approves the machines it makes; anywhere
+  // Only a brain on a cloud machine approves the machines it makes; anywhere
   // else a person has a browser, and the sign-in link goes to them.
-  const chromium = process.env.AGENT37_INSTANCE_ID?.trim() ? findHeadlessChromium() : null;
-  const maker = createAgent37BrainMaker({
+  const chromium = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ? findHeadlessChromium() : null;
+  const maker = createCloudBrainMaker({
     base: {
-      client: async () => {
-        const saved = await readAgent37Key(credentials);
-        if (!saved) throw new Error("Connect Agent 37 first: Settings › Integrations › Agent 37.");
-        return createAgent37Client({ apiKey: saved.key });
-      },
+      client: () => requireCloudProvider(credentials),
       getAccountToken: async () => (account.getStatus().signedIn ? await account.getAccessToken().catch(() => null) : null),
       directoryBaseUrl,
       listAccountMachines: () => directory().listMachines(),
       renameMachine: (machineKey, name) => directory().renameMachine(machineKey, name),
-      templateName: () => process.env.ADE_AGENT37_TEMPLATE?.trim() || AGENT37_DEFAULT_TEMPLATE,
-      // The person's provider sign-ins, so they are signed in on the new machine (agent37CloudSignInStore.ts).
-      machineEnv: () => agent37MachineEnv(agent37CloudSignInVaults(runtime), runtime.logger),
+      // The person's provider sign-ins, so they are signed in on the new machine (cloudSignInStore.ts).
+      machineEnv: () => cloudMachineEnv(cloudSignInVaults(runtime), runtime.logger),
       // This brain's release: a machine made from an older template installs it on boot.
       // Only a released build: a development build's version may not be published.
       minAdeVersion: () => stampedAdeVersion(),
-      spending: () => machines.spending(),
+      account: () => machines.account(),
       removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
       // No window here: the sign-in of a machine this brain made with an
       // unattended yes opens in a headless Chromium (the template ships one).
@@ -4159,36 +4159,34 @@ function agent37BrainMakerFor(runtime: AccountDomainRuntime, machines: ReturnTyp
     },
     logger: runtime.logger,
   });
-  agent37BrainMakers.set(runtime, maker);
+  cloudBrainMakers.set(runtime, maker);
   return maker;
 }
 
 /**
- * The `agent37` domain for the CLI and agents: ready machines (read through
+ * The `cloud` domain for the CLI and agents: ready machines (read through
  * the same store the desktop writes) and the machine verbs. The key, the cap
  * and the choice are the account's, so every brain answers the same; making a
  * machine goes to the desktop attached to this brain.
  */
-function buildAgent37DomainService(runtime: AccountDomainRuntime): OpaqueService {
+function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
   const signedIn = () => runtime.accountAuthService?.getStatus().signedIn === true;
-  const settings = createAgent37ReadySettingsStore({
+  const settings = createCloudReadySettingsStore({
     vault: () => (signedIn() && runtime.accountVaultStore
-      ? agent37VaultFromStore(runtime.accountVaultStore, AGENT37_READY_VAULT_KEY)
+      ? cloudVaultFromStore(runtime.accountVaultStore, CLOUD_READY_VAULT_KEY)
       : null),
-    machineStore: () => agent37MachineStore(),
+    machineStore: () => cloudMachineStore(),
     logger: runtime.logger,
   });
-  const credentials = agent37CredentialDeps(runtime);
-  const budget = createAgent37BudgetStore({
-    vault: () => (signedIn() && runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore, AGENT37_BUDGET_VAULT_KEY) : null),
-    machineStore: () => agent37MachineStore(),
+  const credentials = cloudAccessDeps(runtime);
+  const agentLimits = createCloudAgentLimitsStore({
+    vault: () => (signedIn() && runtime.accountVaultStore ? cloudVaultFromStore(runtime.accountVaultStore, CLOUD_AGENT_LIMITS_VAULT_KEY) : null),
+    machineStore: () => cloudMachineStore(),
     logger: runtime.logger,
   });
-  const machines = createAgent37Machines({
-    client: async () => {
-      const saved = await readAgent37Key(credentials);
-      return saved ? createAgent37Client({ apiKey: saved.key }) : null;
-    },
+  const machines = createCloudMachines({
+    client: () => getCloudProvider(credentials),
+    whyNoClient: () => cloudNoProviderSentence(credentials),
     removeAccountMachine: async (machineKey) => {
       if (!runtime.accountAuthService) throw new Error("This ADE isn't signed in to your account.");
       return await new AccountMachineDirectoryService(runtime.accountAuthService, {
@@ -4196,31 +4194,29 @@ function buildAgent37DomainService(runtime: AccountDomainRuntime): OpaqueService
         directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }),
       }).deleteMachine(machineKey);
     },
-    readBudget: () => budget.read(),
     logger: runtime.logger,
   });
   const agentChatService = runtime.agentChatService ?? null;
-  const maker = agent37BrainMakerFor(runtime, machines);
-  const ready = buildAgent37ReadyActions({
+  const maker = cloudBrainMakerFor(runtime, machines);
+  const ready = buildCloudReadyActions({
     credentials,
     readSettings: async () => (await settings.read()).projects,
-    spending: () => machines.spending(),
     // A six-hour dedupe, as on the desktop: claims are frequent in a benchmark loop.
     onClaimed: () => runtime.productAnalyticsService?.capture({
       event: "ade_feature_used",
       surface: "api",
-      properties: { feature: "connections", action: "agent37_ready", outcome: "ready_cli" },
+      properties: { feature: "connections", action: "cloud_ready", outcome: "ready_cli" },
       projectId: null,
-      dedupeKey: "agent37_ready:ready_cli",
+      dedupeKey: "cloud_ready:ready_cli",
       minimumIntervalMs: 6 * 60 * 60 * 1_000,
     }),
     logger: runtime.logger,
   });
-  const verbs = buildAgent37AgentActions({
+  const verbs = buildCloudAgentActions({
     machines,
-    budget,
+    limits: agentLimits,
     readySettings: settings,
-    desktop: () => runtime.getAgent37Desktop?.() ?? null,
+    desktop: () => runtime.getCloudDesktop?.() ?? null,
     maker,
     // A runtime with no chat service of its own (the CLI's in-process
     // fallback) has no chat to ask in; costly actions are then refused.
@@ -4233,45 +4229,51 @@ function buildAgent37DomainService(runtime: AccountDomainRuntime): OpaqueService
             try {
               agentChatService.recordSystemNotice({ sessionId: chatSessionId, message });
             } catch (error) {
-              runtime.logger.warn("agent37.approval_notice_failed", { error: error instanceof Error ? error.message : String(error) });
+              runtime.logger.warn("cloud.approval_notice_failed", { error: error instanceof Error ? error.message : String(error) });
             }
           },
         }
       : null,
     logger: runtime.logger,
   });
-  const cloudSignIns = buildAgent37CloudSignInActions({
-    vaults: () => agent37CloudSignInVaults(runtime),
+  const cloudSignIns = buildCloudSignInActions({
+    vaults: () => cloudSignInVaults(runtime),
     accountId: () => runtime.accountAuthService?.getStatus().userId ?? null,
     // Which providers people sign in for cloud machines. A six-hour dedupe per
     // provider: at most 36 accepted events a day.
     onSaved: (id) => runtime.productAnalyticsService?.capture({
       event: "ade_feature_used",
       surface: "api",
-      properties: { feature: "connections", action: "agent37_cloud_sign_in", outcome: `signin_${id}` },
+      properties: { feature: "connections", action: "cloud_sign_in", outcome: `signin_${id}` },
       projectId: null,
-      dedupeKey: `agent37_cloud_sign_in:${id}`,
+      dedupeKey: `cloud_sign_in:${id}`,
       minimumIntervalMs: 6 * 60 * 60 * 1_000,
     }),
     logger: runtime.logger,
   });
-  return { ...ready, ...verbs, ...cloudSignIns };
+  return {
+    ...ready,
+    ...verbs,
+    ...cloudSignIns,
+    /** Whether ADE Cloud exists for this account; the only `cloud` action served when it doesn't. */
+    access: async () => ({ enabled: await cloudAccessEnabled(credentials) }),
+  };
 }
 
 /**
  * The account-level domains a brain serves with no project open, over the
- * machine's account stores (`agent37.call` and `accountVault.call` in
+ * machine's account stores (`cloud.call` and `accountVault.call` in
  * multiProjectRpcServer). The same services a project runtime builds, so
  * every scope answers the same; which actions are served this way is
- * `ADE_ACTION_MACHINE_SCOPED`. The vault opens only Agent 37's items.
+ * `ADE_ACTION_MACHINE_SCOPED`. The vault opens only the provider's items.
  */
 export function buildMachineAccountDomainServices(runtime: AccountDomainRuntime): {
-  agent37: OpaqueService;
+  cloud: OpaqueService;
   account_vault: OpaqueService | null;
 } {
   return {
-    agent37: buildAgent37DomainService(runtime),
-    account_vault: agent37OnlyVaultService(buildAccountVaultDomainService(runtime)),
+    cloud: buildCloudDomainService(runtime),
+    account_vault: cloudOnlyVaultService(buildAccountVaultDomainService(runtime)),
   };
 }
 
@@ -4492,7 +4494,7 @@ export function getAdeActionDomainServices(
     project_config: toService(runtime.projectConfigService),
     project_secret: toService(buildProjectSecretDomainService(runtime)),
     integration_connect: buildIntegrationConnectDomainService(runtime),
-    agent37: buildAgent37DomainService(runtime),
+    cloud: buildCloudDomainService(runtime),
     mcp_registry: buildMcpRegistryDomainService(runtime),
     account_settings: buildAccountSettingsDomainService(runtime),
     account_vault: buildAccountVaultDomainService(runtime),

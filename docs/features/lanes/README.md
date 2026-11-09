@@ -25,7 +25,7 @@ Choose **Start from**: the project default branch, the primary lane's branch, or
 
 ### Branch names
 
-Settings → Lanes → New lanes → **Branch names** holds the pattern every new branch follows, `ade/{slug}` unless changed. `{slug}` is the lane name (lower-case, words joined by `-`) and must come last; `{user}` is git `user.name` on the lane's machine, slugged (`Arul Sharma` → `arul-sharma`). `{slug}` alone means no prefix. Settings saved before patterns existed read as `ade/{slug}`. Names are capped near 100 characters and stripped of what git or Windows refuse (`< > " |`, device names such as `con`, trailing dots and spaces). Saving refuses a prefix that clashes with an existing branch (`arul/` while `arul` exists). `shared/laneBranchName.ts` holds the render, sanitize and clash rules for every surface.
+Settings → Lanes → New lanes → **Branch names** holds the pattern every new branch follows, `ade/{slug}` unless changed. `{slug}` is the lane name (lower-case, words joined by `-`) and must come last; `{user}` is git `user.name` on the lane's machine, slugged (`Arul Sharma` → `arul-sharma`). `{slug}` alone means no prefix. Settings saved before patterns existed read as `ade/{slug}`. Names are capped near 100 characters and stripped of what git or Windows refuse (`< > " |`, device names such as `con`, trailing dots and spaces). Saving refuses a prefix that clashes with an existing branch (`arul/` while `arul` exists). `shared/laneBranchName.ts` holds the render, sanitize and clash rules for every surface. The styled menu matches **Start from** and previews the branch each preset produces. **Custom…** keeps the editable pattern field.
 
 Auto-create lanes start on a placeholder `<prefix><8 hex>` chosen by the lane's machine (clients send `autoNamedBranch: true`), marked with the git config flag `branch.<name>.adeautolane` so a bare `1a2b3c4d` under an empty prefix is never taken for a user's branch. The AI rename then gives it `<prefix><title slug>`. The legacy `ade/<8 hex>` is still recognised.
 
@@ -35,7 +35,7 @@ Auto-create lanes start on a placeholder `<prefix><8 hex>` chosen by the lane's 
 
 Settings → Lanes → New lanes saves where new lanes start (one **New lanes start from** dropdown: the default branch from the remote or your local copy, the primary lane's branch, or **Another branch…** from that machine's branch list), the branch pattern, and the template, per account and repository. A saved start the list doesn't offer shows as its own entry; a saved `uncommitted` from an older version reads as local. If a saved branch is deleted, new lanes start from the default branch with a note. If the repository has no remote, defaults are saved on this computer. Auto-create lane, `ade lanes create` without flags, the New lane dialog's first choice, and phone use these defaults. Run `ade lanes defaults --text` to inspect them, and `ade lanes defaults set --from <branch>` or `--branch-pattern "{user}/{slug}"` to change them.
 
-A lane compares against its open PR's base branch, or the project's default branch when there is no open PR, just as GitHub does. The primary lane compares to its upstream. The Lanes tab shows a quiet notice when work is behind or built on work now in the base: **N behind <base>** or **Built on work now in <base>**.
+A lane compares against its open PR's base branch, or the project's default branch when there is no open PR, just as GitHub does. When the local copy of that branch only trails `origin/<base>`, the counts use the remote one and `status.comparedTo` says so, so commits merged since the last pull don't read as the lane's own. The primary lane compares to its upstream. The Lanes tab shows a quiet notice when work is behind or built on work now in the base: **N behind <base>** or **Built on work now in <base>**.
 
 ### Catch up
 
@@ -132,6 +132,14 @@ The gate is `evaluateDefaultBranchAutoPull` in
 `apps/desktop/src/main/services/lanes/defaultBranchAutoPull.ts`; it is pure and
 unit-tested independently of git.
 
+A lane built on a recently squash-merged lane rebases only its own commits onto
+the target base when ADE knows the merged PR head and finds that PR's merge
+commit in the base. Prediction uses the same
+replay. Rollback checks every affected lane before resetting: it refuses if a
+lane moved or has uncommitted work, and is unavailable after a push. A merged
+lane whose remote branch is gone shows that it merged rather than offering to
+recreate the branch.
+
 ## Source file map
 
 Core services. The canonical lane lifecycle now runs in the **ADE
@@ -140,6 +148,9 @@ either fallback targets or thin desktop-side helpers.
 
 Runtime services (`apps/ade-cli/src/services/lanes/` and friends):
 
+- `apps/desktop/src/main/services/lanes/deletedLaneSnapshots.ts` keeps what a
+  lane delete or a discard would lose as git refs for 30 days, and restores it;
+  see Saved work in [worktree-isolation.md](./worktree-isolation.md).
 - `apps/ade-cli/src/services/projects/projectRuntime.ts` exposes the
   `lane` action domain (CRUD, runtime isolation, branch switching,
   templates, diagnostics) over JSON-RPC; remote runtimes are reached
@@ -155,6 +166,7 @@ Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 
 | File | Responsibility |
 |------|---------------|
+| `laneBuiltOnMerged.ts` | Finds known merged PR heads from the last 30 days and selects the rebase replay boundary. |
 | `laneService.ts` | Lane CRUD, worktree lifecycle, status, rebase runs, branch switching, issue links, and deletion. |
 | `laneBranchDrift.ts` | Pure helpers for lane branch drift (HEAD no longer on `lanes.branch_ref`). `parseWorktreeStatusPorcelainV2(stdout)` returns `{ dirty, changedFileCount, staged, unstaged, untracked, headBranchRef }` from the NUL-delimited `git status --porcelain=v2 --branch --untracked-files=normal -z` output that `computeLaneStatus` already collects — headers start with `# `, entry records never do, rename/copy records carry a second path that is consumed, tracked entries count once even when they have both index and worktree changes, and a detached HEAD (reported by git as the literal `(detached)`) parses to `null`. `detectLaneBranchDrift({ expectedBranchRef, headBranchRef, kind? })` returns a `LaneBranchDrift` or `null`; either side being unknown counts as no drift, and a `kind` of `renamed`/`missing` is carried while `switched` stays implicit. `classifyMissingLaneBranchDriftKind({ expectedBranchRef, headBranchRef, reflogSubjects })` reads the `Branch: renamed refs/heads/<old> to refs/heads/<new>` subjects git writes on `git branch -m` and walks rename chains (a→b→c) to tell a `renamed` drift from a branch that was simply deleted (`missing`); it never returns `switched`. |
 | `laneUsageTombstone.ts` | The one row a deleted lane leaves behind so ADE's lifetime stats are not survivor stats. See [What a deleted lane leaves behind](#what-a-deleted-lane-leaves-behind). `writeLaneUsageTombstone` is called from inside `cleanupLaneDatabaseRows` *before* the cascade, while the rows it counts still exist, and rides the caller's `begin immediate` so the tombstone and the deletes commit together. `encodeActiveDayBits` / `decodeActiveDayKeys` pack the lane's active local days into a hex bitmap (capped at a 4,096-day span) so `activeDays` and streaks stay reconstructible without a per-day breakdown. |

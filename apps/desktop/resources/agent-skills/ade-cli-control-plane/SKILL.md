@@ -52,8 +52,6 @@ something) are the **ade-webhooks** skill. Full detail:
 
 GitHub, Linear and Jira are ADE integrations: ADE holds the credential, and
 you use them through `ade prs`, `ade github`, `ade linear` and `ade jira`.
-Agent 37 (cloud Linux machines) is one too: once connected, the person makes
-machines from Add a computer in ADE; there are no `ade` verbs for it yet.
 Never ask for a key in chat. Check, then ask with the connect card:
 
 ```
@@ -233,6 +231,11 @@ Never poll and never block on a long wait. Match the thing you wait on:
 | A PR the user asked you to watch or land | `ade prs watch <pr>` (or `ade prs ship <pr>` to land it) |
 | A dev server, build or log | `ade terminal watch <terminal-id> [--match "ready"]` |
 | A peer (it does not report back) | `ade chat wait <id> --async [--for idle]` |
+| A chat, from a script or outside ADE | `ade chat events <id> --since <cursor> --json` answers at once; `ade chat notify <id> --url https://…` POSTs when it goes idle, needs input or fails |
+
+Scratch files belong in the lane's `.ade/tmp` (git-ignored). Apps connected
+to ADE over MCP can read a chat, so never print a secret or a `.env` file into
+one.
 | Anything else, later | `ade chat scheduled-work create --in 20m --prompt "<what to check>"` (see Scheduled work) |
 
 Claude's own `ScheduleWakeup`, `CronCreate` and `/loop` are mirrored into the
@@ -428,7 +431,7 @@ agent, under that machine's own policy.
 ade machines list --projects --text              # who is online, what projects each has
 ade chat list --all-machines --text              # every machine in one table
 ade chat create --machine "Mac mini" --lane <lane there> \
-  --provider claude --model anthropic/claude-opus-5 --prompt "…"   # your subagent there
+  --provider claude --model anthropic/claude-opus-5 --prompt "…"   # your subagent there (no --lane: the primary lane there)
 ade chat read <id> --machine "Mac mini" --text
 ade shell start --machine "Windows PC" --wait -- npm test   # one command there, in this chat's work copy
 ade files push --machine "Windows PC" ./fixture.bin test/   # one file into that work copy (pull copies back)

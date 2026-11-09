@@ -3,9 +3,12 @@ import type {
   AgentChatEventEnvelope,
   AgentChatTranscriptEntry,
   AgentChatTranscriptTurnFailure,
+  ChatEventsResult,
+  ChatLifecycleEvent,
 } from "../../../shared/types/chat";
 import { canonicalSteerRows } from "../../../shared/chatTranscript";
 import { canCoalesceBufferedAssistantText, type BufferedAssistantText } from "./chatTextBatching";
+import { redactOutgoingChatText } from "../../utils/redaction";
 
 /**
  * Flatten a transcript envelope stream into role-tagged entries.
@@ -367,4 +370,63 @@ export function transcriptTurnFailuresFromEnvelopes(
     failures.push(failure);
   }
   return failures;
+}
+
+const TURN_END_KIND = { completed: "turn_completed", failed: "turn_failed", interrupted: "turn_interrupted" } as const;
+
+/** The turning points of a chat, oldest first; a turn's end appears once even when a runtime reports it twice. */
+export function chatLifecycleEvents(envelopes: readonly AgentChatEventEnvelope[]): ChatLifecycleEvent[] {
+  const events: ChatLifecycleEvent[] = [];
+  const endedTurns = new Set<string>();
+  const add = (entry: AgentChatEventEnvelope, kind: ChatLifecycleEvent["kind"], extra: { turnId?: string; message?: string } = {}) => {
+    events.push({ sequence: entry.sequence ?? -1, at: entry.timestamp, kind, ...extra });
+  };
+  const addTurnEnd = (entry: AgentChatEventEnvelope, status: keyof typeof TURN_END_KIND, turnId: string | undefined) => {
+    if (turnId && endedTurns.has(turnId)) return;
+    if (turnId) endedTurns.add(turnId);
+    add(entry, TURN_END_KIND[status], turnId ? { turnId } : {});
+  };
+  for (const entry of envelopes) {
+    const event = entry.event;
+    if (event.type === "status") {
+      if (event.turnStatus === "started") add(entry, "turn_started", event.turnId ? { turnId: event.turnId } : {});
+      else addTurnEnd(entry, event.turnStatus, event.turnId);
+    } else if (event.type === "done") {
+      addTurnEnd(entry, event.status, event.turnId);
+    } else if (event.type === "approval_request") {
+      add(entry, "input_needed", event.turnId ? { turnId: event.turnId } : {});
+    } else if (event.type === "pending_input_resolved") {
+      add(entry, "input_resolved", event.turnId ? { turnId: event.turnId } : {});
+    } else if (event.type === "error") {
+      add(entry, "error", { ...(event.turnId ? { turnId: event.turnId } : {}), message: redactOutgoingChatText(event.message).slice(0, 500) });
+    }
+  }
+  return events;
+}
+
+/**
+ * One `getChatEvents` answer from the envelopes read: oldest first after a
+ * cursor, the newest `limit` without one. When it stops short, the next call
+ * starts after the last event returned.
+ */
+export function chatEventsPage(
+  envelopes: readonly AgentChatEventEnvelope[],
+  since: number | null,
+  limit: number,
+  reachedSince: boolean,
+): Pick<ChatEventsResult, "cursor" | "events" | "truncated" | "gap"> {
+  const newer = since === null ? envelopes : envelopes.filter((entry) => (entry.sequence ?? -1) > since);
+  // Read from everything on hand, then cut at the cursor: a turn's end reported
+  // twice (its status, then its done) straddling the cursor is still one event.
+  const events = chatLifecycleEvents(envelopes).filter((event) => since === null || event.sequence > since);
+  const returned = since === null ? events.slice(-limit) : events.slice(0, limit);
+  // Without a cursor the newest events come back and older ones are not "more to read".
+  const truncated = since !== null && returned.length < events.length;
+  const newest = newer.reduce((max, entry) => Math.max(max, entry.sequence ?? -1), since ?? -1);
+  return {
+    cursor: truncated && since !== null ? returned[returned.length - 1]!.sequence : newest,
+    events: returned,
+    truncated,
+    ...(reachedSince ? {} : { gap: true as const }),
+  };
 }

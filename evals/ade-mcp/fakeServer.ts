@@ -14,6 +14,7 @@ import { createRemoteMcpProtocol } from "../../apps/ade-cli/src/services/remoteM
 import type { RemoteRunResult } from "../../apps/ade-cli/src/services/remoteMcp/remoteMcpRunner";
 import {
   buildTypedToolResult,
+  explicitTargetRefusal,
   findTypedTool,
   MACHINES_TOOL_NAME,
 } from "../../apps/ade-cli/src/services/remoteMcp/remoteMcpTools";
@@ -109,6 +110,10 @@ function callTool(name: string, rawInput: Input): Record<string, unknown> {
   if (typed?.write && scope !== "write") {
     return errorResult(`${projectLine}\nThis connection is read-only, so it can't run ${typed.name}. The person can give this app full access in ADE Settings → ADE MCP.`);
   }
+  // As the real protocol refuses it: a tool that creates something must name its project.
+  if (typed?.explicitTarget && !(typeof input.project === "string" && input.project.trim())) {
+    return errorResult(explicitTargetRefusal(typed.name, PROJECTS));
+  }
   let words: unknown = input.args;
   if (typed) {
     const built = typed.build(input);
@@ -117,7 +122,9 @@ function callTool(name: string, rawInput: Input): Record<string, unknown> {
   } else if (words === undefined && typeof input.command === "string") {
     words = splitCommandLine(input.command);
   }
-  const verdict = checkRemoteAdeCommand(words, scope, { hasStdin: typeof input.stdin === "string" });
+  // A typed tool can send its own stdin (files_write), as the real protocol pipes it.
+  const hasStdin = typeof input.stdin === "string" || (typed?.stdin?.(input) ?? null) !== null;
+  const verdict = checkRemoteAdeCommand(words, scope, { hasStdin });
   if (!verdict.ok) return errorResult(`${projectLine}\n${verdict.reason}`);
   if (!typed) {
     const line = verdict.args.join(" ");

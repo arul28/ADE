@@ -5,6 +5,7 @@ import { updateTrackLabel } from "../../../../shared/updateTrack";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
 import { useAppStore } from "../../../state/appStore";
 import { accountSessionShortLabel, accountSessionState, useAccountStatus } from "../../../lib/account";
+import { openExternalUrl } from "../../../lib/openExternal";
 import { formatTokens } from "../../../lib/format";
 import { formatStorageBytes } from "../../../../shared/formatting";
 import { AccountAvatar } from "../../account/AccountAvatar";
@@ -196,6 +197,7 @@ function AdeCard({ info, onOpenAdvanced }: { info: AppInfo | null; onOpenAdvance
   const action = updateRestartAction(snapshot);
   const ready = snapshot.status === "ready" && Boolean(snapshot.version) && snapshot.version !== running;
   const runningTrack = snapshot.track?.running ?? null;
+  const manual = snapshot.installMode === "manual";
 
   useEffect(() => {
     if (snapshot.status !== "ready") setRestartRequested(false);
@@ -213,6 +215,7 @@ function AdeCard({ info, onOpenAdvanced }: { info: AppInfo | null; onOpenAdvance
 
   let state: React.ReactNode;
   if (isDev) state = "Dev build — updates are off";
+  else if (ready && manual) state = `${snapshot.version} is available to download`;
   else if (ready) {
     state = action.switchTo
       ? `${updateTrackLabel(action.switchTo)} ${snapshot.version} is downloaded`
@@ -240,7 +243,11 @@ function AdeCard({ info, onOpenAdvanced }: { info: AppInfo | null; onOpenAdvance
             <div className="ade-gen-hero-state">{state}</div>
           </div>
           <div className="ade-gen-hero-action">
-            {isDev ? null : ready ? (
+            {isDev ? null : ready && manual ? (
+              <button type="button" className="ade-gen-hero-btn" data-tone="primary" disabled={!snapshot.downloadUrl} onClick={() => openExternalUrl(snapshot.downloadUrl)}>
+                Download update
+              </button>
+            ) : ready ? (
               <button type="button" className="ade-gen-hero-btn" data-tone="primary" disabled={restartRequested} onClick={restart}>
                 {restartRequested ? <CircleNotch size={13} className="animate-spin" /> : <ArrowClockwise size={13} weight="bold" />}
                 {restartRequested ? "Restarting…" : action.label}

@@ -123,9 +123,12 @@ async function tryRipgrep(
   const args = ["--line-number", "--no-heading", "--color=never"];
   if (context > 0) args.push(`-C`, String(context));
   if (fileGlob) args.push("--glob", fileGlob);
-  args.push(pattern, target);
+  // `--` ends the options: the pattern comes from the model, and a pattern like
+  // `--pre=<program>` would otherwise make rg run that program.
+  args.push("--", pattern, target);
 
   const { stdout } = await execFileAsync("rg", args, {
+    cwd: root,
     maxBuffer: 10 * 1024 * 1024,
     timeout: 30_000,
   });

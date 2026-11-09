@@ -108,10 +108,10 @@ describe("Cursor SDK run telemetry", () => {
       model: "claude-4.6-sonnet",
     });
     // A status frame is not proof generation resumed.
-    expect(telemetry.beforeStreamEvent({ type: "status", status: "RUNNING" }).completion).toBeNull();
+    expect(telemetry.beforeStreamEvent({ type: "status", status: "RUNNING" }).compaction).toBeNull();
     time.advance(4_200);
-    const summary = telemetry.beforeStreamEvent({ type: "task", text: "Summary of the conversation so far" });
-    expect(summary.completion).toEqual({
+    const summary = telemetry.beforeStreamEvent({ type: "summary", status: "completed" });
+    expect(summary.compaction).toEqual({
       type: "ade_cursor_compaction",
       phase: "completed",
       seq: 1,
@@ -120,15 +120,50 @@ describe("Cursor SDK run telemetry", () => {
       durationMs: 4_200,
       closedBy: "summary",
     });
-    expect(telemetry.beforeStreamEvent({ type: "assistant" }).completion).toBeNull();
+    expect(telemetry.beforeStreamEvent({ type: "assistant" }).compaction).toBeNull();
     expect(telemetry.endRun("finished")).toBeNull();
+  });
+
+  it("counts the summary message and the hook as one compaction, whichever lands first", () => {
+    const hookFirst = createCursorSdkRunTelemetry(clock().now);
+    hookFirst.beginRun("composer-2");
+    hookFirst.preCompactStarted(payload);
+    expect(hookFirst.beforeStreamEvent({ type: "summary", status: "running" })).toEqual({ compaction: null, event: null });
+    expect(hookFirst.beforeStreamEvent({ type: "summary", status: "completed" }).compaction).toMatchObject({ phase: "completed", seq: 1 });
+
+    const summaryFirst = createCursorSdkRunTelemetry(clock().now);
+    summaryFirst.beginRun("composer-2", "manual");
+    expect(summaryFirst.beforeStreamEvent({ type: "summary", status: "running" }).compaction)
+      .toEqual({ type: "ade_cursor_compaction", phase: "started", seq: 1, trigger: "manual" });
+    expect(summaryFirst.preCompactStarted(payload)).toMatchObject({ phase: "started", seq: 1, trigger: "manual", contextTokens: 183_000 });
+    expect(summaryFirst.beforeStreamEvent({ type: "summary", status: "completed" }).compaction).toMatchObject({ phase: "completed", seq: 1, contextTokens: 183_000 });
+    expect(summaryFirst.endRun("finished")).toBeNull();
+  });
+
+  it.each([
+    ["error", { phase: "failed", failReason: "provider_error", closedBy: "summary" }],
+    ["completed", { phase: "completed", closedBy: "summary" }],
+  ])("ends on a %s summary message and not on generation events before it", (status, expected) => {
+    const telemetry = createCursorSdkRunTelemetry(clock().now);
+    telemetry.beginRun("composer-2");
+    telemetry.beforeStreamEvent({ type: "summary", status: "running" });
+    expect(telemetry.beforeStreamEvent({ type: "thinking", text: "..." }).compaction).toBeNull();
+    expect(telemetry.beforeStreamEvent({ type: "summary", status }).compaction).toMatchObject(expected);
+  });
+
+  it("reports a compaction that kept a shortened copy instead of a summary", () => {
+    const telemetry = createCursorSdkRunTelemetry(clock().now);
+    telemetry.beginRun("composer-2");
+    telemetry.beforeStreamEvent({ type: "summary", status: "running" });
+    expect(telemetry.beforeStreamEvent({ type: "summary", status: "completed", fallback: true }).compaction)
+      .toMatchObject({ phase: "completed", fallback: true });
   });
 
   it("falls back to the next generation event, then to the run end", () => {
     const telemetry = createCursorSdkRunTelemetry(clock().now);
     telemetry.beginRun("composer-2");
     telemetry.preCompactStarted(payload);
-    expect(telemetry.beforeStreamEvent({ type: "thinking", text: "..." }).completion)
+    expect(telemetry.beforeStreamEvent({ type: "thinking", text: "..." }).compaction)
       .toMatchObject({ phase: "completed", closedBy: "next_event", seq: 1 });
 
     telemetry.preCompactStarted(payload);

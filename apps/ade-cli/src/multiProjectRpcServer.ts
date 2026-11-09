@@ -1,6 +1,7 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
+import { readDeletedChatOnDisk } from "../../desktop/src/main/services/chat/deletedChats";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
-import { isPathInside } from "../../desktop/src/main/services/shared/pathCompare";
+import { isInsideTempFolder } from "../../desktop/src/main/services/shared/pathCompare";
 import { checkHostReachability } from "./services/sync/hostReachabilityCheck";
 import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
@@ -75,7 +76,8 @@ import {
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import type { AdeRuntime } from "./bootstrap";
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
-import { summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "./services/runtime/runtimeWorkSummary";
+import { readRuntimeBusyFacts, summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "./services/runtime/runtimeWorkSummary";
+import type { CloudBusyFacts } from "./services/power/cloudKeepAwake";
 import { readSessionToolTypeFromDisk } from "./services/sync/rosterBuilder";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import { querySearchIndexReadOnly } from "../../desktop/src/main/services/search/searchIndexQuery";
@@ -163,6 +165,7 @@ import {
 import { gitRemoteIdentity, peerGitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { readPermissionLevel } from "../../desktop/src/shared/permissionLadder";
 import { readInstalledDesktopAppVersion } from "../../desktop/src/main/services/native/nativeHelperPaths";
+import { readDesktopUpdateInstallMode } from "../../desktop/src/main/services/native/desktopUpdateInstallMode";
 
 type HandlerEntry = {
   handler: JsonRpcHandler & { dispose?: () => void };
@@ -370,13 +373,17 @@ export type MultiProjectRpcHandlerOptions = {
    * Settings reaches it with no project open. Absent on embedded runtimes,
    * which never own the machine's power settings.
    */
+  /** On a cloud computer: interrupts work and writes the saved chat copy before a stop (`ade cloud prepare-stop`). */
+  prepareCloudStop?: ((args: { timeoutMs: number }) => Promise<unknown>) | null;
+  /** On a cloud computer: commits and pushes every lane's work (`ade cloud push-work`). */
+  pushCloudWork?: (() => Promise<unknown>) | null;
   keepAwakeService?: Pick<
     BrainKeepAwakeService,
     "getSnapshot" | "setLevel" | "migrateLegacyPreference" | "fixSystemSleep"
   > | null;
   /**
    * The account-level action domains, over the machine's account stores
-   * (`buildMachineAccountDomainServices`), for `agent37.call` and
+   * (`buildMachineAccountDomainServices`), for `cloud.call` and
    * `accountVault.call`. Without it, those methods answer unavailable.
    */
   machineAccountDomains?: MachineAccountDomains;
@@ -501,6 +508,19 @@ export async function readMachineRuntimeActivitySummary(args: BootedRuntimeSourc
   };
 }
 
+/** What the cloud busy list reads, across every project this brain booted and its personal chats. */
+export async function readMachineBusyFacts(args: BootedRuntimeSources & {
+  personalChatScope: Partial<Pick<PersonalChatScope, "busyFacts">>;
+}): Promise<Pick<CloudBusyFacts, "chats" | "terminals">> {
+  const parts = [
+    ...await mapBootedProjectRuntimes(args, (runtime) => readRuntimeBusyFacts(runtime)),
+    typeof args.personalChatScope.busyFacts === "function"
+      ? await args.personalChatScope.busyFacts()
+      : { chats: [], terminals: [] },
+  ];
+  return { chats: parts.flatMap((part) => part.chats), terminals: parts.flatMap((part) => part.terminals) };
+}
+
 /**
  * The soonest scheduled wake-up of any chat in a project this brain has
  * booted, in epoch ms, or null. A project that is not booted has none due:
@@ -574,7 +594,9 @@ const RUNTIME_METHODS = new Set([
   "account.call",
   "remoteMcp.call",
   "keepAwake.call",
-  "agent37.call",
+  "cloud.prepareStop",
+  "cloud.pushWork",
+  "cloud.call",
   "accountVault.call",
   "attention.call",
   "notify.send",
@@ -658,6 +680,10 @@ const SIGN_IN_SOURCE_BY_ACTION: Readonly<Record<string, "browser" | "device_code
 const MACHINE_GITHUB_VAULT_MAX_AGE_MS = 60_000;
 /** The account whose GitHub token a clone with no project open last read; see createMultiProjectRpcRequestHandler. */
 let machineGithubTokenUserId: string | null = null;
+
+/** Chat ids Recently deleted did not have, and when: see `findDeletedChatOnThisMachine`. */
+const deletedChatMisses = new Map<string, number>();
+const DELETED_CHAT_MISS_TTL_MS = 60_000;
 
 const machineProjectLogger: Logger = {
   debug: () => {},
@@ -1139,10 +1165,6 @@ export async function decorateProjectListWithIcons<T extends { rootPath: string;
  * keeps deleted test projects there), else `~/Projects`.
  */
 async function defaultParentDir(projectRegistry: ProjectRegistry): Promise<string> {
-  const temps = [
-    os.tmpdir(),
-    ...(process.platform === "win32" ? [] : ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"]),
-  ];
   const recent = [...projectRegistry.list()].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
   // Only a project whose own folder is there (so its parent is too): a
   // deleted project's parent may be a folder nobody uses any more. Checked
@@ -1151,7 +1173,7 @@ async function defaultParentDir(projectRegistry: ProjectRegistry): Promise<strin
   const beside = recent
     .filter((_record, index) => states[index] === "present")
     .map((record) => path.dirname(record.rootPath))
-    .find((parent) => !temps.some((temp) => isPathInside(parent, temp)));
+    .find((parent) => !isInsideTempFolder(parent));
   return beside ?? path.join(os.homedir(), "Projects");
 }
 
@@ -1363,9 +1385,17 @@ async function cloneRepositoryForRemoteAgent(
       "Only GitHub repositories can be set up automatically on another machine. Clone it there by hand.",
     );
   }
+  // A person's agent asked for this repository here, so it is listed with the
+  // machine's projects (the web and phone catalogs show only those), as a clone
+  // from the desktop is. An earlier agent clone was registered hidden.
+  const asked: ProjectRegistrationIntent = { catalogVisibility: "recent", registrationSource: "cli-explicit" };
   const existing = projectRegistry.list()
     .find((record) => gitRemoteIdentity(record.gitOriginUrl ?? null) === identity);
-  if (existing) return existing;
+  if (existing) {
+    return existing.catalogVisibility === "recent"
+      ? existing
+      : projectRegistry.setCatalogVisibilityByRootPath(existing.rootPath, asked.catalogVisibility, asked.registrationSource) ?? existing;
+  }
   const repoName = match[2]!;
   const parentDir = await defaultParentDir(projectRegistry);
   fs.mkdirSync(parentDir, { recursive: true });
@@ -1378,7 +1408,7 @@ async function cloneRepositoryForRemoteAgent(
     parentDir,
     name: repoName,
   });
-  return projectRegistry.add(result.rootPath);
+  return projectRegistry.add(result.rootPath, asked);
 }
 
 function readEventCategory(value: unknown): RuntimeEventCategory | null {
@@ -2388,6 +2418,7 @@ export function createMultiProjectRpcRequestHandler(
       // `ade brain update` they differ, and another device must not read the
       // brain's version as the app's. Null on a machine with no app.
       desktopAppVersion: readInstalledDesktopAppVersion(),
+      ...readDesktopUpdateInstallMode(),
     };
   };
 
@@ -2448,6 +2479,9 @@ export function createMultiProjectRpcRequestHandler(
           // the user") as a notice, not as a finished turn. A sender skips
           // notices to a runtime without this.
           externalWakeNotices: true,
+          // `chat.sendMessage` drops a repeat of a `clientSendId` it has seen.
+          // A client retries a send of unknown outcome only against this.
+          clientSendDedupe: true,
           machineProjects: {
             browseDirectories: true,
             getDetail: true,
@@ -2937,7 +2971,7 @@ export function createMultiProjectRpcRequestHandler(
       return remoteMcpActionHandlers(getSharedRemoteMcpService(), surface)[action](isRecord(params.args) ? params.args : {});
     }
 
-    // The Agent 37 account and the account vault with no project open, for
+    // The provider account and the account vault with no project open, for
     // this computer's own connections (machineAccountActions.ts).
     if (isMachineAccountMethod(method)) {
       return await runMachineAccountAction(method, params, {
@@ -2946,6 +2980,25 @@ export function createMultiProjectRpcRequestHandler(
         clientName: callerClientName(),
         peerDeviceId: options.peerDeviceId ?? null,
       }, options.machineAccountDomains);
+    }
+
+    // The server runs this over exec before stopping a computer at 0 hours. Not
+    // a `cloud.call`: this machine may not have the account access `cloud` needs.
+    if (method === "cloud.prepareStop" || method === "cloud.pushWork") {
+      if (callerIdentityIsAgent(callerIdentity())) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "An agent can't run this on the computer.");
+      }
+    }
+    if (method === "cloud.prepareStop") {
+      const prepare = options.prepareCloudStop;
+      if (!prepare) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't prepare a computer to stop.");
+      return await prepare({ timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : 40_000 });
+    }
+
+    // "Push all work to GitHub", run over exec on a computer that may be out of hours.
+    if (method === "cloud.pushWork") {
+      if (!options.pushCloudWork) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't push this computer's work.");
+      return await options.pushCloudWork();
     }
 
     if (method === "keepAwake.call") {
@@ -3436,11 +3489,39 @@ export function createMultiProjectRpcRequestHandler(
     // "Do you have this chat?" from this machine's CLI or another machine's,
     // for a chat id given without a machine. Read-only, and it names only the
     // project (which `projects.list` already shows that caller).
+    /**
+     * A chat id in this machine's Recently deleted. A running project answers
+     * itself (it can also tell whether the conversation can still be
+     * reopened); any other is read from its database on disk, never booted.
+     * A miss is remembered a minute: a chat that is not here yet (a lane still
+     * being set up) is asked about on every poll.
+     */
+    const findDeletedChatOnThisMachine = async (sessionId: string): Promise<Record<string, unknown> | null> => {
+      const missedAt = deletedChatMisses.get(sessionId);
+      if (missedAt !== undefined && Date.now() - missedAt < DELETED_CHAT_MISS_TTL_MS) return null;
+      for (const record of projectRegistry.list()) {
+        // One project at a time, yielding between them, so a long registry never holds the brain's loop.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const running = await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
+        const deleted = running
+          ? await running.runtime?.agentChatService?.findDeletedChat?.(sessionId).catch(() => null)
+          : readDeletedChatOnDisk(record.rootPath, sessionId, (error) => {
+            machineProjectLogger.warn("chats.locate_deleted_read_failed", { projectId: record.projectId, error: error instanceof Error ? error.message : String(error) });
+          });
+        if (deleted) return { ...deleted, projectId: record.projectId, projectName: record.displayName };
+      }
+      deletedChatMisses.set(sessionId, Date.now());
+      if (deletedChatMisses.size > 500) deletedChatMisses.delete(deletedChatMisses.keys().next().value!);
+      return null;
+    };
     if (method === "chats.locate") {
       const sessionId = typeof params.sessionId === "string" ? params.sessionId.trim() : "";
       if (!sessionId) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "chats.locate requires sessionId.");
       const scope = await options.crossScopeChats?.findChat?.(sessionId).catch(() => null) ?? null;
-      if (!scope) return { found: false };
+      if (!scope) {
+        const deleted = await findDeletedChatOnThisMachine(sessionId);
+        return deleted ? { found: false, deleted } : { found: false };
+      }
       if (scope.kind === "personal") return { found: true, scope: { kind: "personal" } };
       const record = projectRegistry.list().find((entry) => entry.projectId === scope.projectId);
       // Archived only when the project is already running here: never a boot.

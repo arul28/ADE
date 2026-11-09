@@ -154,7 +154,7 @@ The most common defect class in this repo is a change that works on the path you
 - **Contracts.** Anything crossing a boundary is typed once: main-process handler, `src/shared` types, preload exposure, renderer caller, daemon action domain, tests/mocks. Change the contract and all of them move together.
 - **Reverse states.** If you add a way in, add the way out and the way to see it. Snooze needs unsnooze; settle needs unsettle; a link needs unlink. A one-way door is a bug.
 - **Connection modes.** Local runtime, remote runtime, and relay behave differently. Multi-device and offline cases are real; the phone can be newer than the host. Anything that acts on a chat, session or lane must reach the machine that owns it; see **Built for remote machines**.
-- **Windows.** Parity is part of "done" for all new code, never a follow-up.
+- **Windows and Linux.** Desktop parity is part of "done" for all new code, never a follow-up. Use the Linux evidence guidance in `docs/development/linux-support.md`.
 - **Docs.** User-visible behavior changes update the matching `docs/features/` doc in present tense.
 
 ## Working norms
@@ -370,7 +370,7 @@ iOS signing gotchas (don't repeat these):
 
 Desktop release:
 
-- Tag a commit on `main` with `vX.Y.Z` and push the tag. `.github/workflows/release.yml` triggers, runs the `release-core.yml` job, and publishes a draft GitHub Release. The workflow requires the tagged commit to be an ancestor of `origin/main`. Assets are the macOS `.dmg` and `.zip` plus `latest-mac.yml`, and the standalone runtime set (`install.sh`, `SHA256SUMS`, and the `ade-darwin-*`/`ade-linux-*` binaries with their `.native.tar.gz` archives). When the repository variable `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` is `1`, Windows builds fresh on the same tag and adds `ADE-<VERSION>-win-x64.exe`, its `.blockmap`, `latest.yml`, `install.ps1`, and `ade-win32-x64.exe` with its `.native.tar.gz`. That variable is the only Windows switch; with it off the Windows jobs skip cleanly and do not block the macOS release.
+- Tag a commit on `main` with `vX.Y.Z` and push the tag. `.github/workflows/release.yml` triggers, runs the `release-core.yml` job, and publishes a draft GitHub Release. The workflow requires the tagged commit to be an ancestor of `origin/main`. Assets are the macOS `.dmg` and `.zip` plus `latest-mac.yml`, the Linux AppImage and `.deb` for x64 and arm64 plus `latest-linux.yml` and `latest-linux-arm64.yml`, and the standalone runtime set (`install.sh`, `SHA256SUMS`, and the `ade-darwin-*`/`ade-linux-*` binaries with their `.native.tar.gz` archives). When the repository variable `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` is `1`, Windows builds fresh on the same tag and adds `ADE-<VERSION>-win-x64.exe`, its `.blockmap`, `latest.yml`, `install.ps1`, and `ade-win32-x64.exe` with its `.native.tar.gz`. That variable is the only Windows switch; with it off the Windows jobs skip cleanly and do not block the macOS release.
 - Draft releases stay unpublished until you flip them (`gh release edit vX.Y.Z --draft=false` or the UI). Don't publish silently.
 - Main is protected by a ruleset: admin bypass is required for direct pushes, and the "strict required status checks" rule makes GitHub's "Merge pull request" button reject merges that use a non-linear history (even when the branch already contains `main`). `gh pr merge --admin` hits the same block; merging locally and pushing (admin bypass) is the fallback.
 
@@ -423,18 +423,7 @@ If your environment is not Cursor Cloud, use the general **Validation** section 
 
 ### Running the Electron desktop app on Linux
 
-Cursor’s own desktop IDE does not ship for Linux; Cloud Agents run on Linux VMs, so agents exercise ADE through the **headless `ade` CLI** or the **Electron dev app** built from this repo (there is still no published Linux `.deb`/AppImage — `electron-builder` only packages macOS and, when enabled, Windows).
-
-- **Canonical Cloud Agent / Linux VM flow:** after `npm run setup`, run `ADE_PROJECT_ROOT=<project> npm run dev:desktop -- --skip-runtime-build`. That rebuilds the lane CLI when needed, points desktop at `/tmp/ade-runtime-dev.sock`, and launches Electron against Vite. Do not start Electron with bare `npx electron .` — without `ADE_RUNTIME_SOCKET_PATH` the app tries `~/.ade/sock/ade.sock`, refuses to spawn a brain there, and project open fails. Renderer-only work can use `cd apps/desktop && npm run dev:vite` (mock `window.ade`).
-- **Repository-managed Cloud Agent bootstrap:** `.cursor/environment.json` runs `.cursor/scripts/cloud-agent-install.sh` (deps + CLI build + native rebuild + desktop prebuild) and starts the `ade-dev-desktop` terminal with the command above.
-- Set `ADE_DISABLE_HARDWARE_ACCEL=1` — the VM has no real GPU, and without this the app crashes on `WebGL1 blocklisted`.
-- `node-pty` ships only macOS/Windows prebuilds. After `npm install`, run `npm --prefix apps/desktop run rebuild:native` to compile `pty.node` for Electron on Linux. Then manually compile the spawn-helper: `cd apps/desktop/node_modules/node-pty && g++ -o build/Release/spawn-helper src/unix/spawn-helper.cc`.
-- The `npm run dev` script has a race condition: `predev` clears `dist/`, then tsup + Electron start in parallel, so the first Electron launch fails with "Cannot find module main.cjs" and auto-restarts. To avoid this, pre-build first (`npm run build`) then run the dev launcher directly: `node scripts/normalize-runtime-binaries.cjs && node scripts/ensure-electron.cjs && node scripts/dev.cjs`.
-- Alternatively, start Vite and Electron separately for more control: `npx vite --port 5173 --strictPort --force &` then `VITE_DEV_SERVER_URL=http://localhost:5173 npx electron . --no-sandbox`.
-- `cr-sqlite` ships for macOS, Windows x64, and Linux x64/arm64 (`vendor/crsqlite/<platform>-<arch>/`). On Linux the brain loads `crsqlite.so` and hosts CRDT sync like any other peer. If the extension is missing, the app logs `db.crsqlite_unavailable` and continues without CRR — that is a packaging defect, not expected Linux behavior.
-- The `ADE_PROJECT_ROOT=/workspace` env var tells the main process to auto-open a project at startup. However, there is a timing race: the renderer's initial `getProject()` call may return null before the async project switch completes, causing the welcome screen to appear even though the backend loaded the project. A workaround is to open the project manually via the "Open a project" button in the top bar.
-- Computer-use features (screenshot, video capture, GUI automation) are macOS-only (`screencapture`, `osascript`). On Linux these gracefully degrade — the app returns `blocked_by_capability`.
-- `electron-builder` config only defines a `mac` target. Distributable Linux builds (deb/AppImage) are not configured, but dev mode works fine.
-- The pinned Vitest 0.34.6 does not support `--project`. Use `npx vitest run <specific-test-file>` in `apps/desktop` for targeted tests, `npx vitest run --shard=<n>/8` for a CI-style shard, or `npm run test:desktop:sharded` from the repo root for the full desktop unit workspace.
-- In the Cursor Cloud VM the active X display is `:1`, not `:99`. When launching Electron set `DISPLAY=:1`.
-- To launch the desktop dev app quickly when the CLI is already built: `npm run dev:desktop -- --skip-runtime-build`.
+Linux supports the ADE desktop and a standalone headless brain. Follow
+`docs/development/linux-support.md` for isolated development, packaging,
+network discovery and release verification. A lane screen uses Xvfb even when
+the desktop session uses Wayland. Do not disable Chromium's sandbox globally.

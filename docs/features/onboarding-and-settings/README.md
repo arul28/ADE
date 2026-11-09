@@ -2499,7 +2499,7 @@ runtime is still downloading (`runtimeDownloadPending` on its connection), or
 one that runs with a side note such as a Codex token too old for usage
 polling. "Background service calls failed" counts a call once after its last
 retry, skips refusals the brain marks expected, and lists the calls that
-failed most (`RuntimeHealthSnapshot.failedActionsTop`). An unreachable Agent 37
+failed most (`RuntimeHealthSnapshot.failedActionsTop`). An unreachable ADE Cloud
 box that is asleep, stopped, or on its way to or from that is dropped once the
 box list answers. The problems are gathered in the renderer
 (`settings/overview/useNeedsAttention.ts`); the project part is
@@ -2565,7 +2565,7 @@ The new-project screen has a **Settings** button. It sets the app-store flag
 screen and the top bar shows a "Settings" tab. Only settings that need no
 project are shown. The manifest's standalone resolver hides `account-repo` and
 `machine-repo` entries, and a tab whose sections all need a project binding is
-left out. Integrations shows only the account's pages (Agent 37 and the MCP
+left out. Integrations shows only the account's pages (ADE Cloud and the MCP
 servers); GitHub, Linear and Jira live in a project's machine, so their tiles
 and status reads are left out. A page that mixes this computer's settings with ones saved in a
 project (Chat, Notifications) reads `isStandaloneSettings()` and shows one
@@ -2641,7 +2641,7 @@ value only after the brain confirms the migration:
 | Level | What it does | Where it works |
 |---|---|---|
 | `never` (default) | ADE holds nothing. Turns pause when the machine sleeps, and the chat says so. | everywhere |
-| `while-away` | The brain holds one OS wake lock **only while work is running**. macOS runs `caffeinate -i -w <brain pid>`; Windows runs a helper using `SetThreadExecutionState` that exits with the brain. Stops idle sleep. Not the lid. | macOS, Windows |
+| `while-away` | The brain holds one OS wake lock **only while work is running**. macOS runs `caffeinate -i -w <brain pid>`; Windows runs a helper using `SetThreadExecutionState` that exits with the brain; Linux runs `systemd-inhibit --what=idle:sleep` around a `tail --pid=<brain pid>`. Stops idle sleep. Not the lid. | macOS, Windows, Linux with systemd |
 | `lid-closed` | `pmset -a disablesleep 1` through the system authorization dialog. Machine-wide, and it outlives ADE. | macOS only |
 
 The distinction between the middle and top levels is the whole point of the
@@ -2819,6 +2819,11 @@ file, so they have exactly one identity per machine.
   `compaction` on that account
   record; it overrides the provider value field by field. See
   [Compaction per provider](../chat/agent-routing.md#compaction-per-provider).
+- **Claude sign-in end date.** A Claude account card shows one dim line, "Sign-in
+  ends around Nov 17", once a chat on that account has reported the date
+  (`credential_expires_at`, kept as `claudeLoginEndsAt` on the account record).
+  It says "around" because the date can be an estimate, and it goes away when
+  the account is replaced by a different login. It appears only on this page.
 - **Subagent prompt cache (Claude).** The actions menu of each Claude account
   card has a **Subagent cache** page (`AccountCard.tsx`) that explains the two
   choices: 5 minutes, the Claude Code default, or 1 hour. With 1 hour, the card

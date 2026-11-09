@@ -482,7 +482,7 @@ function createMockStorageSnapshot(now: string) {
         cleanBuildOutputAfterDays: 7,
       },
       archivedAutomatically: 1,
-      freeUpDueCount: 0,
+      freeUpDueCount: 2,
       buildOutput: {
         lastCheckAt: daysAgo(0.2),
         totalFreedBytes: 4.1 * GB,
@@ -3216,6 +3216,139 @@ function listMockAgentChatSummaries(args: any = {}): any[] {
     rows = rows.filter((session) => (session.surface ?? "work") === "work");
   }
   return rows;
+}
+
+/**
+ * Settings → Storage & cleanup → Recently deleted in the preview: a few chats
+ * deleted on their own or with their lane, newest first. Reopen and Remove
+ * take them off the list, like the brain does.
+ */
+const mockDeletedChatHoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
+let MOCK_DELETED_CHATS: Array<{
+  id: string;
+  title: string | null;
+  provider: string;
+  sourceProvider: "claude" | "codex" | "opencode";
+  modelId: string | null;
+  laneId: string | null;
+  laneName: string | null;
+  laneColor: string | null;
+  laneExists: boolean;
+  createdAt: string | null;
+  lastActiveAt: string | null;
+  deletedAt: string;
+}> = [
+  {
+    id: "deleted-chat-onboarding",
+    title: "Tighten the onboarding copy",
+    provider: "claude",
+    sourceProvider: "claude",
+    modelId: DEFAULT_BROWSER_MOCK_CLAUDE_MODEL,
+    laneId: "lane-auth",
+    laneName: "feature/auth-flow",
+    laneColor: "#60a5fa",
+    laneExists: true,
+    createdAt: mockDeletedChatHoursAgo(30),
+    lastActiveAt: mockDeletedChatHoursAgo(26),
+    deletedAt: mockDeletedChatHoursAgo(3),
+  },
+  {
+    id: "deleted-chat-flaky-test",
+    title: "Why is the sync test flaky?",
+    provider: "codex",
+    sourceProvider: "codex",
+    modelId: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
+    laneId: "lane-dashboard",
+    laneName: "feature/dashboard-v2",
+    laneColor: "#f59e0b",
+    laneExists: true,
+    createdAt: mockDeletedChatHoursAgo(80),
+    lastActiveAt: mockDeletedChatHoursAgo(75),
+    deletedAt: mockDeletedChatHoursAgo(28),
+  },
+  {
+    id: "deleted-chat-old-spike",
+    title: "Spike: stream diffs over the relay",
+    provider: "claude",
+    sourceProvider: "claude",
+    modelId: DEFAULT_BROWSER_MOCK_CLAUDE_MODEL,
+    laneId: "lane-old-spike",
+    laneName: "old-spike",
+    laneColor: "#f472b6",
+    laneExists: false,
+    createdAt: mockDeletedChatHoursAgo(24 * 12),
+    lastActiveAt: mockDeletedChatHoursAgo(24 * 11),
+    deletedAt: mockDeletedChatHoursAgo(24 * 4),
+  },
+  {
+    id: "deleted-chat-untitled",
+    title: null,
+    provider: "opencode",
+    sourceProvider: "opencode",
+    modelId: "opencode/mock",
+    laneId: null,
+    laneName: null,
+    laneColor: null,
+    laneExists: false,
+    createdAt: mockDeletedChatHoursAgo(24 * 9),
+    lastActiveAt: mockDeletedChatHoursAgo(24 * 9),
+    deletedAt: mockDeletedChatHoursAgo(24 * 8),
+  },
+];
+
+function listMockDeletedChats(args: { query?: string | null } = {}) {
+  const query = (args?.query ?? "").trim().toLowerCase();
+  const chats = query
+    ? MOCK_DELETED_CHATS.filter((chat) => `${chat.title ?? ""} ${chat.laneName ?? ""}`.toLowerCase().includes(query))
+    : MOCK_DELETED_CHATS;
+  return { chats: chats.map((chat) => ({ ...chat })) };
+}
+
+function mockDeletedChatDetail(args: { id: string }) {
+  const chat = MOCK_DELETED_CHATS.find((entry) => entry.id === args?.id);
+  if (!chat) throw new Error("That chat is no longer in Recently deleted.");
+  const at = (offsetMinutes: number) => Date.parse(chat.lastActiveAt ?? chat.deletedAt) - offsetMinutes * 60_000;
+  return {
+    provider: chat.sourceProvider,
+    id: chat.id,
+    cwd: null,
+    title: chat.title,
+    model: chat.modelId,
+    createdAt: chat.createdAt ? Date.parse(chat.createdAt) : null,
+    updatedAt: chat.lastActiveAt ? Date.parse(chat.lastActiveAt) : null,
+    messageCount: 2,
+    messages: [
+      { role: "user" as const, text: chat.title ?? "Pick up where we left off.", at: at(4) },
+      { role: "assistant" as const, text: "Here is what I found, and the change I would make next.", at: at(2) },
+    ],
+    sourcePath: null,
+    watchable: false,
+    events: null,
+    hasOlder: false,
+    olderCursor: null,
+  };
+}
+
+function reopenMockDeletedChat(args: { id: string; laneId?: string | null }) {
+  const chat = MOCK_DELETED_CHATS.find((entry) => entry.id === args?.id);
+  if (!chat) throw new Error("That chat is no longer in Recently deleted.");
+  const laneId = args.laneId ?? (chat.laneExists ? chat.laneId : null);
+  if (!laneId) throw new Error("Pick a lane to reopen this chat in.");
+  MOCK_DELETED_CHATS = MOCK_DELETED_CHATS.filter((entry) => entry.id !== chat.id);
+  const template = listMockAgentChatSummaries()[0] ?? {};
+  return {
+    chatSessionId: chat.id,
+    laneId,
+    mode: laneId === chat.laneId ? ("continue" as const) : ("copy" as const),
+    chatSummary: { ...template, sessionId: chat.id, laneId, title: chat.title, provider: chat.provider, modelId: chat.modelId },
+  };
+}
+
+function removeMockDeletedChats(args: { ids: string[] }) {
+  const ids = new Set(args?.ids ?? []);
+  const before = MOCK_DELETED_CHATS.length;
+  MOCK_DELETED_CHATS = MOCK_DELETED_CHATS.filter((entry) => !ids.has(entry.id));
+  return { removed: before - MOCK_DELETED_CHATS.length };
 }
 
 /**
@@ -7135,6 +7268,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       listRegistry: resolved([]),
     },
     lanes: {
+      // Deleted lanes whose work ADE kept (Recently deleted › Lanes).
+      listDeleted: async () => {
+        const iso = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+        return [
+          { id: "1794120000000-lane-tsl", laneId: "lane-tsl", laneName: "Thread Sharing Links", branchName: "ade/thread-sharing-links", commit: "c0ffee1", baseCommit: "decade1", uncommitted: true, kind: "deleted" as const, deletedAt: iso(0.01), expiresAt: iso(-29.99) },
+          { id: "1794000000000-lane-docs", laneId: "lane-docs", laneName: "docs refresh", branchName: "ade/docs-refresh-91aa", commit: "c0ffee2", baseCommit: "decade2", uncommitted: true, kind: "freed" as const, deletedAt: iso(9), expiresAt: iso(-21) },
+        ];
+      },
+      restoreDeleted: async () => { throw new Error("Not available in the browser preview."); },
+      removeDeleted: async () => ({ removed: true }),
       // `?mockLaneTemplate` previews the lane template suggestion: a repo with
       // packages and no default template. Without it the call fails, as it
       // does on a runtime that predates the action, and nothing shows.
@@ -7746,6 +7889,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
     agentChat: {
       list: async (args: any = {}) => listMockAgentChatSummaries(args),
+      listDeleted: async (args: any = {}) => listMockDeletedChats(args),
+      getDeletedDetail: async (args: any) => mockDeletedChatDetail(args),
+      reopenDeleted: async (args: any) => reopenMockDeletedChat(args),
+      removeDeleted: async (args: any) => removeMockDeletedChats(args),
       getSummary: async (args: any = {}) => {
         const sessionId = String(args?.sessionId ?? "").trim();
         const session = MOCK_SESSIONS.find((row) => row.id === sessionId);
@@ -10163,7 +10310,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     projectConfig: {
       get: resolved(BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT),
       validate: resolvedArg({ ok: true, issues: [] as any[] }),
-      save: resolvedArg(BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT),
+      // Keeps the lane cleanup rules a save writes, so Settings → Storage &
+      // cleanup → Rules shows them after its reload in the preview.
+      save: async (args: any) => {
+        if (args?.local && "laneCleanup" in args.local) {
+          const laneCleanup = args.local.laneCleanup ?? {};
+          BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT.local = { ...BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT.local, laneCleanup };
+          BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT.effective = { ...BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT.effective, laneCleanup };
+        }
+        return BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT;
+      },
       diffAgainstDisk: resolved({ changed: false } as any),
     },
     adeCli: {

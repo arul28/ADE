@@ -645,6 +645,10 @@ struct ADENoticeCard: View {
   let tint: Color
   let actionTitle: String?
   let action: (() -> Void)?
+  /// The action is running: its button shows progress and takes no taps.
+  var isBusy = false
+  /// Adds a close button, for a notice the person may just dismiss.
+  var onDismiss: (() -> Void)?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
@@ -666,15 +670,30 @@ struct ADENoticeCard: View {
         }
 
         Spacer(minLength: 0)
+
+        if let onDismiss {
+          Button(action: onDismiss) {
+            Image(systemName: "xmark")
+              .font(.system(size: 12, weight: .semibold))
+              .foregroundStyle(ADEColor.textMuted)
+              .frame(width: 28, height: 28)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Dismiss")
+        }
       }
 
       if let actionTitle, let action {
-        Button(actionTitle, action: action)
-          .buttonStyle(ADEKitButtonStyle(prominent: true))
+        Button(action: action) {
+          if isBusy { ProgressView().controlSize(.small) } else { Text(actionTitle) }
+        }
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
+        .disabled(isBusy)
       }
     }
     .adeKitCard()
-    .accessibilityElement(children: .combine)
+    // A close button beside the action needs its own element.
+    .accessibilityElement(children: onDismiss == nil ? .combine : .contain)
     .accessibilityLabel("\(title). \(message)")
   }
 }

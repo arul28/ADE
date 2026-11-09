@@ -170,6 +170,7 @@ import {
 } from "./syncChatWire";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
+import { reportHelloRejected, reportPeerAccepted } from "./syncHelloTelemetry";
 import type { AccountAuthService } from "../account/accountAuthService";
 import type { AccountSettingsStore } from "../account/accountSettingsStore";
 import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
@@ -205,6 +206,7 @@ import {
   assertFileRequestWorkspaceVisibleToPeer,
   createSyncArtifactReads,
   fileContentToBlob,
+  isSyncFileWriteRequest,
   runSyncFileServiceRequest,
   syncFileRequestWorkspaceId,
   visibleFileWorkspacesForPeer,
@@ -618,6 +620,12 @@ const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
 // state a wake trigger fails to observe.
 const DEFAULT_SYNC_POLL_IDLE_INTERVAL_MS = 2_000;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
+// A peer on the relay gets the periodic status at most this often. Every frame
+// through the tunnel relay wakes its Durable Object from hibernation, and the
+// periodic status was most of an idle peer's traffic (docs/perf/cloudflare-costs.md).
+// Changes still go out at once: broadcastBrainStatus is called with no options
+// for those. Kept under half of the web client's 75 s inbound-silence limit.
+const RELAY_PEER_BRAIN_STATUS_INTERVAL_MS = 30_000;
 const NATIVE_LAN_DISCOVERY_RECOVERY_DELAY_MS = 1_000;
 const NATIVE_LAN_DISCOVERY_FALLBACK_MS = 30_000;
 const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
@@ -945,6 +953,8 @@ type PeerState = {
    * the same weight as a peer that tried to authenticate and was rejected.
    */
   framesReceived: number;
+  /** When this peer was last sent a brain_status. */
+  lastBrainStatusAtMs: number;
   transportOrigin: SyncTransportOrigin;
   relayAuthorization: RelayAuthorizationLifecycle | null;
   reportedIncompatibleAdoptCipher: boolean;
@@ -1200,8 +1210,8 @@ type SyncHostServiceArgs = {
   agentChatService?: ReturnType<typeof createAgentChatService>;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
-  /** The `agent37` action domain (the phone's Agent 37 page); null with no project runtime yet. */
-  agent37Actions?: () => Record<string, unknown> | null;
+  /** The `cloud` action domain (the phone's ADE Cloud page); null with no project runtime yet. */
+  cloudActions?: () => Record<string, unknown> | null;
   cloudAgentsService?: CloudAgentsService | null;
   personalChatScope?: Pick<
     PersonalChatScopeContract,
@@ -1324,6 +1334,8 @@ type SyncHostServiceArgs = {
   remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
   /** Booted project scopes only; routed file requests must never start a runtime. */
   projectScopes?: { getIfBooted(projectId: string): Promise<unknown> | null };
+  /** A connected client just changed a file here (a save from the web or the phone). */
+  onRemoteFileWrite?: () => void;
   productAnalyticsService?: ProductAnalyticsService | null;
   /**
    * When true, paired hellos from devices WITHOUT a registered DPoP key are
@@ -2485,7 +2497,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     agentChatService: args.agentChatService,
     chatLaunchService: args.chatLaunchService,
     cursorCloudFleetService: args.cursorCloudFleetService,
-    agent37Actions: args.agent37Actions,
+    cloudActions: args.cloudActions,
     cloudAgentsService: args.cloudAgentsService,
     personalChatScope: args.personalChatScope,
     aiIntegrationService: args.aiIntegrationService,
@@ -3605,7 +3617,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (dbVersionError) throw dbVersionError;
   }
   const brainStatusTimer = setInterval(() => {
-    broadcastBrainStatus();
+    broadcastBrainStatus({ periodic: true });
   }, brainStatusIntervalMs);
   const accountLeaseTimer = setInterval(() => {
     void refreshAccountLease();
@@ -3932,6 +3944,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       changesetRecoveryNotBeforeMs: 0,
       remoteAddress,
       remotePort,
+      lastBrainStatusAtMs: 0,
       transportOrigin,
       relayAuthorization: null,
       reportedIncompatibleAdoptCipher: false,
@@ -4685,7 +4698,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       `--tcp=${port}`,
       target,
     ];
-    void execFileAsync(cli, cliArgs, { timeout: 10_000, windowsHide: true })
+    void execFileAsync(cli, cliArgs, { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" })
       .then(({ stdout, stderr }) => {
         if (tailnetServeActivePublishToken !== publishToken) return;
         tailnetServeLastFailureSignature = null;
@@ -4784,7 +4797,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const { stdout } = await execFileAsync(
         cli,
         ["serve", "status", "--json"],
-        { timeout: 10_000, windowsHide: true },
+        { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
       );
       stale = staleAdeTailnetServePorts(stdout, currentPort);
       // The same read answers for ADE's stale HTTPS entries.
@@ -4817,7 +4830,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         await execFileAsync(
           cli,
           ["serve", `--tcp=${port}`, "off"],
-          { timeout: 10_000, windowsHide: true },
+          { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
         );
         reclaimed += 1;
       } catch {
@@ -4884,7 +4897,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       await execFileAsync(
         cli,
         ["serve", `--tcp=${servePort}`, "off"],
-        { timeout: 10_000, windowsHide: true },
+        { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
       );
       updateTailnetDiscoveryStatus({
         state: "disabled",
@@ -5856,22 +5869,36 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   });
 
-  function broadcastBrainStatus(): void {
+  /**
+   * `periodic` is the 5 s timer. It paces relay peers: a frame through the
+   * relay is not free, and a change reaches them through the other callers.
+   */
+  function broadcastBrainStatus(options: { periodic?: boolean } = {}): void {
     if (disposed) return;
     // Building the status is not free: it reads the local device row (a
     // replicating CRR write), the database version and the running-session
     // list. With nothing connected there is nobody to publish to, and a peer
     // that connects is sent a fresh status by its own handshake, so an idle
     // host should not pay for the build every five seconds.
+    const sentAtMs = Date.now();
     const recipients = [...peers].filter(
-      (peer) => peer.authenticated && peer.ws.readyState === WebSocket.OPEN,
+      (peer) => peer.authenticated
+        && peer.ws.readyState === WebSocket.OPEN
+        && !(
+          options.periodic
+          && peer.transportOrigin === "relay-bridge"
+          && sentAtMs - peer.lastBrainStatusAtMs < RELAY_PEER_BRAIN_STATUS_INTERVAL_MS
+        ),
     );
     if (recipients.length === 0) return;
     // Runs from timers and event handlers alike; a failed build (the device
     // row write hit a disk I/O error) skips this status, never the process.
     try {
       const payload = buildBrainStatus();
-      for (const peer of recipients) send(peer.ws, "brain_status", payload);
+      for (const peer of recipients) {
+        peer.lastBrainStatusAtMs = sentAtMs;
+        send(peer.ws, "brain_status", payload);
+      }
       timerTickFailures.clear("brain_status");
     } catch (error) {
       reportTimerTickFailure("brain_status", error);
@@ -6979,6 +7006,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             artifacts: artifactReads,
           }) as typeof result;
       }
+      if (isSyncFileWriteRequest(payload)) args.onRemoteFileWrite?.();
 
       respond({
         ok: true,
@@ -7015,6 +7043,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     };
     try {
       const result = await executeFileRequest(projectId, payload, { isMobile: isMobilePeer(peer) });
+      if (isSyncFileWriteRequest(payload)) args.onRemoteFileWrite?.();
       respond({ ok: true, action: payload.action, result: result as SyncFileResponsePayload["result"] });
     } catch (error) {
       respond({
@@ -7281,6 +7310,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               ...(macDesktopStreamSink ? { macDesktopStream: macDesktopStreamSink } : {}),
               ...(appControlStreamSink ? { appControlStream: appControlStreamSink } : {}),
             });
+        if (payload.action === "files.writeTextAtomic") args.onRemoteFileWrite?.();
       } finally {
         stopTrackingCommand();
         const durationMs = Math.max(0, Date.now() - executionStartedAtMs);
@@ -8352,6 +8382,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // rejecting machine's identity matches the client's saved pairing may
         // the client safely drop its credentials.
         const rejectingHost = readBrainMetadata();
+        reportHelloRejected(
+          { logger: args.logger, hello, transportOrigin: peer.transportOrigin, hostDeviceId: () => rejectingHost.deviceId },
+          authFailureCode,
+        );
         send(peer.ws, "hello_error", {
           code: authFailureCode,
           message: authFailureMessage,
@@ -8519,8 +8553,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         pipelinedHelloAccepted: sealedAdoption ? 0 : (hello.pipelined?.length ?? 0),
         knownProjectCatalogDigest: hello.projectCatalogDigest ?? null,
       });
+      let helloOkSent: boolean;
       if (sealedAdoption) {
-        send(peer.ws, "hello_ok", sealAdoptHelloOk(sealedAdoption, helloOkPayload), envelope.requestId);
+        helloOkSent = send(peer.ws, "hello_ok", sealAdoptHelloOk(sealedAdoption, helloOkPayload), envelope.requestId);
         if (!sealedAdoption.aeadBoundToSignature) {
           args.logger.warn("sync_host.legacy_adoption_aead_unbound", {
             deviceId: hello.peer.deviceId,
@@ -8530,7 +8565,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           });
         }
       } else {
-        send(peer.ws, "hello_ok", helloOkPayload, envelope.requestId);
+        helloOkSent = send(peer.ws, "hello_ok", helloOkPayload, envelope.requestId);
+      }
+      if (helloOkSent) {
+        reportPeerAccepted({
+          logger: args.logger,
+          hello,
+          transportOrigin: peer.transportOrigin,
+          hostDeviceId: () => readBrainMetadata().deviceId,
+        });
       }
       // hello_ok itself uses the legacy encoder so the selected codec is never
       // required before the client has observed the negotiation result.

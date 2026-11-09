@@ -215,7 +215,7 @@ import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
 import { CompactFirstChip } from "./CompactFirstChip";
 import { McpRefreshChip } from "./McpRefreshChip";
-import { resolveContextCompactControl } from "../../../shared/contextCompaction";
+import { manualCompactDependsOnChat, resolveContextCompactControl } from "../../../shared/contextCompaction";
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
 } from "../shared/ModelPicker/runtimeCatalogCache";
@@ -238,6 +238,7 @@ import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import { noteFastModeAllowedFromHost, useFastModeEnabled } from "../../lib/fastModePolicy";
 import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
+import { savedChatAwareAgentChatApi } from "../../state/cloudSavedChatsSync";
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
@@ -399,9 +400,9 @@ import {
 import { peekNewLaneDefaultsCached, useNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { describeAutoCreateStart } from "../lanes/laneStartOptions";
 import { autoLaneMachine, originUrlForBinding } from "../lanes/laneMachines";
-import { AGENT37_CONNECT_ID, AGENT37_NEW_MACHINE_ID, AGENT37_READY_MACHINE_ID, useAgent37ReadyDraftMachine } from "./useAgent37ReadyDraftMachine";
+import { CLOUD_NEW_MACHINE_ID, CLOUD_READY_MACHINE_ID, useCloudReadyDraftMachine } from "./useCloudReadyDraftMachine";
 import { useDraftMachineSetup } from "./useDraftMachineSetup";
-import { NewAgent37MachineDialog } from "../remoteTargets/NewAgent37MachineDialog";
+import { NewCloudMachineDialog } from "../remoteTargets/NewCloudMachineDialog";
 import { autoPickSummary } from "../lanes/machineLoadText";
 import { useMachinePlacement } from "../lanes/useMachinePlacement";
 import { chatLaunchLaneStart } from "../../../shared/chatLaunch";
@@ -835,6 +836,7 @@ function claudeToolResultText(content: unknown): string {
       .map((block) => {
         if (typeof block === "string") return block;
         const record = subagentRecord(block);
+        if (record?.type === "image") return "[image]";
         return record && typeof record.text === "string" ? record.text : "";
       })
       .filter((value) => value.length > 0)
@@ -4267,8 +4269,8 @@ export function AgentChatPane({
   // The chat API this pane talks to. A ref so every callback below reads the
   // current one without joining its dependency list; the scope a pane is given
   // does not change over its life.
-  const agentChatApiRef = useRef<AgentChatApi>(chatScope?.agentChat ?? window.ade?.agentChat);
-  agentChatApiRef.current = chatScope?.agentChat ?? window.ade?.agentChat;
+  const agentChatApiRef = useRef<AgentChatApi>(chatScope?.agentChat ?? savedChatAwareAgentChatApi(window.ade?.agentChat));
+  agentChatApiRef.current = chatScope?.agentChat ?? savedChatAwareAgentChatApi(window.ade?.agentChat);
   const personalScope = chatScope?.kind === "personal" ? chatScope : null;
   // The boolean the pane's hooks gate on: stable for the pane's life, so it
   // joins a dependency list without re-running anything.
@@ -5768,6 +5770,7 @@ export function AgentChatPane({
       : { ...current, [token]: label });
   }, []);
   const [composerCaretToEndRequest, setComposerCaretToEndRequest] = useState(0);
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   // A browser tab attached from the Browser panel, for the composer to insert
   // at its caret (the pane cannot see the caret, only the draft).
   const [browserTabInsertRequest, setBrowserTabInsertRequest] = useState<{ id: number; token: string } | null>(null);
@@ -14481,7 +14484,7 @@ export function AgentChatPane({
           copied = false;
         }
       }
-      openChatOnOtherMachine(continuation.targetSessionId);
+      openChatOnOtherMachine(continuation.targetSessionId, continuation);
       const stays = attachments.length && contextCount
         ? "Attachments and attached context stay on this machine."
         : attachments.length
@@ -14523,7 +14526,7 @@ export function AgentChatPane({
         setDraft("");
         if (sentFromSessionId) draftsPerSessionRef.current.delete(sentFromSessionId);
       }
-      openChatOnOtherMachine(continuation.targetSessionId);
+      openChatOnOtherMachine(continuation.targetSessionId, continuation);
       showToast({ tone: "success", title: `Sent to the chat on ${where}` });
       return true;
     } catch (routeError) {
@@ -15658,7 +15661,7 @@ export function AgentChatPane({
       provider: liveProvider,
       state: selectedUsageViewModel?.state ?? "unknown",
       enabled: Boolean(selectedUsageViewModel),
-      openCodeCompactAvailable: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
+      compactAvailableOnChat: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
       turnActive,
       busy: busy || parallelLaunchBusy || projectTransitionBlocksChat || submitInFlightRef.current,
       pendingInput: Boolean(pendingInput),
@@ -16462,7 +16465,7 @@ export function AgentChatPane({
     handleDraftMachineChange(machineId);
   }, [handleDraftMachineChange, keepLaneOnMachine]);
   // Machines one step away: one without this repository (clone it there), or
-  // an Agent 37 machine that is asleep or not connected (wake and connect it).
+  // a cloud machine that is asleep or not connected (wake and connect it).
   const draftMachineSetup = useDraftMachineSetup({
     enabled: showDraftLaunchControls,
     originUrl: originUrlForBinding(projectBinding),
@@ -16481,9 +16484,9 @@ export function AgentChatPane({
     busyRowId: draftSetupBusyRowId,
     prepare: prepareDraftMachine,
   } = draftMachineSetup;
-  // A new Agent 37 machine never has the repository: it counts as ready once
+  // A new cloud machine never has the repository: it counts as ready once
   // connected, and is cloned there before it is selected.
-  const agent37ReachableMachineIds = useMemo(
+  const cloudReachableMachineIds = useMemo(
     () => [...laneMachineOptionIds, ...draftCloneMachineOptions.flatMap((option) => (option.targetId ? [option.targetId] : []))],
     [draftCloneMachineOptions, laneMachineOptionIds],
   );
@@ -16495,20 +16498,20 @@ export function AgentChatPane({
     const candidate = draftCloneMachineOptions.find((option) => option.targetId === machineId);
     void prepareDraftMachine(machineId, candidate?.name ?? machineId);
   }, [draftCloneMachineOptions, laneMachineOptionIds, prepareDraftMachine, selectReadyMachine]);
-  // This project's ready Agent 37 machine (prepared and asleep): picking it
+  // This project's ready cloud machine (prepared and asleep): picking it
   // wakes it while the person types, then selects it like any machine.
   const {
-    option: agent37ReadyOption,
-    choose: chooseAgent37ReadyMachine,
-    chooseNew: chooseNewAgent37Machine,
-    abandon: abandonAgent37ReadyMachine,
-    waking: agent37ReadyWaking,
-    create: agent37CreateDialog,
-  } = useAgent37ReadyDraftMachine({
+    option: cloudReadyOption,
+    choose: chooseCloudReadyMachine,
+    chooseNew: chooseNewCloudMachine,
+    abandon: abandonCloudReadyMachine,
+    waking: cloudReadyWaking,
+    create: cloudCreateDialog,
+  } = useCloudReadyDraftMachine({
     enabled: showDraftLaunchControls,
     originUrl: originUrlForBinding(projectBinding),
     pickerOpened: draftMachinePickerOpened,
-    connectedMachineIds: agent37ReachableMachineIds,
+    connectedMachineIds: cloudReachableMachineIds,
     onMachineReady: selectOrPrepareMachine,
     onNotice: setError,
   });
@@ -16526,10 +16529,10 @@ export function AgentChatPane({
           unavailableReason: "This machine is disconnected. Choose This computer to continue.",
         }
       : null;
-    const readyOption = agent37ReadyOption
+    const readyOption = cloudReadyOption
       ? {
-          ...agent37ReadyOption,
-          unavailableReason: parallelChatMode ? "Parallel models runs locally." : agent37ReadyOption.unavailableReason,
+          ...cloudReadyOption,
+          unavailableReason: parallelChatMode ? "Parallel models runs locally." : cloudReadyOption.unavailableReason,
         }
       : null;
     const machines: DraftMachineOption[] = [
@@ -16579,7 +16582,7 @@ export function AgentChatPane({
         : []),
     ];
   }, [
-    agent37ReadyOption,
+    cloudReadyOption,
     boundLaneMachineId,
     cursorCloudCanLaunch,
     cursorCloudUnavailableReason,
@@ -16596,8 +16599,8 @@ export function AgentChatPane({
     const machine = autoLaneMachine(placedDraftMachines);
     return machine ? { machineId: machine.id, summary: autoPickSummary(machine) } : null;
   }, [placedDraftMachines]);
-  const draftShelfMachineValue = agent37ReadyWaking
-    ? (agent37ReadyOption?.id ?? AGENT37_READY_MACHINE_ID)
+  const draftShelfMachineValue = cloudReadyWaking
+    ? (cloudReadyOption?.id ?? CLOUD_READY_MACHINE_ID)
     : draftSetupBusyRowId
       ? draftSetupBusyRowId
     : cursorCloudMode
@@ -16610,22 +16613,18 @@ export function AgentChatPane({
     // A setup row starts its own attempt; any other pick ends the last one,
     // so a clone or wake that finishes later can't replace this choice.
     if (!draftSetupOwnsRow(nextMachineId)) abandonDraftMachineSetup();
-    if (nextMachineId === AGENT37_READY_MACHINE_ID) {
+    if (nextMachineId === CLOUD_READY_MACHINE_ID) {
       setCursorCloudMode(false);
       setDevinCloudMode(false);
-      void chooseAgent37ReadyMachine();
+      void chooseCloudReadyMachine();
       return;
     }
-    if (nextMachineId === AGENT37_NEW_MACHINE_ID) {
+    if (nextMachineId === CLOUD_NEW_MACHINE_ID) {
       // Opens the create form; the chat keeps its machine until the new one is connected.
-      chooseNewAgent37Machine();
+      chooseNewCloudMachine();
       return;
     }
-    if (nextMachineId === AGENT37_CONNECT_ID) {
-      navigate(settingsRouteFor("integrations.agent37"));
-      return;
-    }
-    abandonAgent37ReadyMachine();
+    abandonCloudReadyMachine();
     if (draftSetupOwnsRow(nextMachineId)) {
       // Waking, cloning, then selecting; the chat keeps its machine until then.
       setCursorCloudMode(false);
@@ -16651,7 +16650,7 @@ export function AgentChatPane({
     setDevinCloudMode(false);
     keepLaneOnMachine(null);
     handleDraftMachineChange(nextMachineId);
-  }, [abandonAgent37ReadyMachine, abandonDraftMachineSetup, chooseAgent37ReadyMachine, chooseDraftSetupRow, chooseNewAgent37Machine, draftSetupOwnsRow, handleDraftMachineChange, keepLaneOnMachine, navigate, setCursorCloudMode, workDraftProjectStateKey]);
+  }, [abandonCloudReadyMachine, abandonDraftMachineSetup, chooseCloudReadyMachine, chooseDraftSetupRow, chooseNewCloudMachine, draftSetupOwnsRow, handleDraftMachineChange, keepLaneOnMachine, setCursorCloudMode, workDraftProjectStateKey]);
   // A draft opened in a cloud lane (from the sidebar, a deeplink) is on that
   // cloud: the lane has no other machine.
   useEffect(() => {
@@ -18359,10 +18358,10 @@ export function AgentChatPane({
 
   const compactionIdleMode = selectedSession?.compactionIdleMode;
   const selectedProvider = selectedSession?.provider ?? "";
-  // OpenCode only offers `/compact` when its server lists the command, so a
-  // chat without it has nothing the offer could run.
+  // OpenCode only offers `/compact` when its server lists the command, and
+  // Cursor only on local chats, so a chat without it has nothing to run.
   const compactionOfferable = compactionIdleMode != null
-    && (selectedProvider !== "opencode" || selectedSession?.manualCompactAvailable === true);
+    && (!manualCompactDependsOnChat(selectedProvider) || selectedSession?.manualCompactAvailable === true);
   const measuredContextTokens = selectedUsageViewModel?.state === "measured" ? selectedUsageViewModel.usedTokens : null;
   // Below the early return, so no hook here. The idle check keeps the event scan off hot renders:
   // it only runs once a chat has sat its cache window out, when no deltas stream.
@@ -18541,6 +18540,7 @@ export function AgentChatPane({
             draftStore={draftStore}
             scheduledSendContext={scheduledSendContext}
             caretToEndRequest={composerCaretToEndRequest}
+            focusRequest={composerFocusRequest}
             browserTabInsertRequest={browserTabInsertRequest}
             threadComments={threadComments}
             threadCommentsSessionId={threadCommentsSessionId}
@@ -19184,6 +19184,7 @@ export function AgentChatPane({
             key={steeringPendingInput.itemId}
             request={steeringPendingInput.request}
             responding={respondingApprovalIds.has(steeringPendingInput.itemId)}
+            onFocusLost={() => setComposerFocusRequest((current) => current + 1)}
             onSubmit={(answers) => {
               void handleApproval(steeringPendingInput.itemId, "accept", null, answers);
             }}
@@ -19753,11 +19754,10 @@ export function AgentChatPane({
                                 onOpen={handleDraftMachinePickerOpen}
                                 autoPick={draftAutoMachine}
                               />
-                              {agent37CreateDialog ? (
-                                <NewAgent37MachineDialog
-                                  status={agent37CreateDialog.status}
-                                  onCreated={(result) => void agent37CreateDialog.onCreated(result)}
-                                  onClose={agent37CreateDialog.onClose}
+                              {cloudCreateDialog ? (
+                                <NewCloudMachineDialog
+                                  onCreated={(result) => void cloudCreateDialog.onCreated(result)}
+                                  onClose={cloudCreateDialog.onClose}
                                 />
                               ) : null}
                               <LaneCombobox

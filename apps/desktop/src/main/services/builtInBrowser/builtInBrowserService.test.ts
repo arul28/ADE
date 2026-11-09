@@ -249,6 +249,11 @@ const fakes = vi.hoisted(() => {
   const webContentsViewInstances: FakeWebContentsView[] = [];
   const partitionCalls: string[] = [];
   const beforeSendHeadersHandlers: BeforeSendHeadersHandler[] = [];
+  type FilteredBeforeSendHeaders = (
+    details: { requestHeaders: Record<string, string> },
+    callback: (response: { requestHeaders?: Record<string, string> }) => void,
+  ) => void;
+  const filteredBeforeSendHeaders: Array<{ urls: string[]; listener: FilteredBeforeSendHeaders }> = [];
   const beforeRequestHandlers: BeforeRequestHandler[] = [];
   const requestCompletedHandlers: RequestFinishedHandler[] = [];
   const requestErrorHandlers: RequestFinishedHandler[] = [];
@@ -268,7 +273,7 @@ const fakes = vi.hoisted(() => {
     clearCache: () => Promise<void>;
     getCacheSize: () => Promise<number>;
     webRequest: {
-      onBeforeSendHeaders: (handler: unknown) => void;
+      onBeforeSendHeaders: (filterOrHandler: unknown, listener?: unknown) => void;
       onBeforeRequest: (handler: unknown) => void;
       onCompleted: (handler: unknown) => void;
       onErrorOccurred: (handler: unknown) => void;
@@ -299,8 +304,12 @@ const fakes = vi.hoisted(() => {
       clearCache: async () => undefined,
       getCacheSize,
       webRequest: {
-        onBeforeSendHeaders: (handler: unknown) => {
-          beforeSendHeadersHandlers.push(handler as Parameters<typeof beforeSendHeadersHandlers.push>[0]);
+        onBeforeSendHeaders: (filterOrHandler: unknown, listener?: unknown) => {
+          if (listener) {
+            filteredBeforeSendHeaders.push({ urls: (filterOrHandler as { urls: string[] }).urls, listener: listener as FilteredBeforeSendHeaders });
+            return;
+          }
+          beforeSendHeadersHandlers.push(filterOrHandler as Parameters<typeof beforeSendHeadersHandlers.push>[0]);
         },
         onBeforeRequest: (handler: unknown) => {
           beforeRequestHandlers.push(handler as Parameters<typeof beforeRequestHandlers.push>[0]);
@@ -387,6 +396,7 @@ const fakes = vi.hoisted(() => {
     openExternal: vi.fn(async (_url: string) => undefined),
     screen: fakeScreen,
     beforeSendHeadersHandlers,
+    filteredBeforeSendHeaders,
     beforeRequestHandlers,
     requestCompletedHandlers,
     requestErrorHandlers,
@@ -431,6 +441,7 @@ const fakes = vi.hoisted(() => {
     },
     clearBeforeSendHeadersHandlers: () => {
       beforeSendHeadersHandlers.length = 0;
+      filteredBeforeSendHeaders.length = 0;
       beforeRequestHandlers.length = 0;
       requestCompletedHandlers.length = 0;
       requestErrorHandlers.length = 0;
@@ -2913,6 +2924,20 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       exitCode: 133,
       url: "https://linear.app",
     }));
+  });
+
+  it("drops the Electron token only for Teams, which refuses it", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://example.test", activate: true });
+
+    const [teams] = fakes.filteredBeforeSendHeaders;
+    expect(teams?.urls).toEqual(["https://teams.cloud.microsoft/*", "https://teams.microsoft.com/*"]);
+    let rewritten: Record<string, string> | undefined;
+    teams?.listener(
+      { requestHeaders: { "User-Agent": "Mozilla/5.0 Chrome/140.0 Electron/41.0 Safari/537.36" } },
+      (response) => { rewritten = response.requestHeaders; },
+    );
+    expect(rewritten?.["User-Agent"]).toBe("Mozilla/5.0 Chrome/140.0 Safari/537.36");
   });
 
   it("does not impersonate Chrome or rewrite browser request headers", async () => {

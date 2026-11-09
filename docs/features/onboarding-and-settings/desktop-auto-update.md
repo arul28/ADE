@@ -218,7 +218,8 @@ version, as a command only. Anything that cannot be done safely changes
 nothing and says why: an unwritable bundle (with the `chown` to run), a failed
 check, `--no-restart`, or a feed with no such version. An Alpha app has
 no feed; its app is left alone and the status says it is behind. With no app
-installed (servers, Linux) only the brain is updated, as before.
+installed (servers) only the brain is updated, as before. On Linux the desktop
+app is updated by the app itself or by the package manager, never by this command.
 
 `brain update --dry-run` names the app it would update (`desktopApp`).
 "Update & restart" counts the app's version too (`installedApp`), on every

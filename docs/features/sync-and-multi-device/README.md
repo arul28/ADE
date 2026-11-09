@@ -2032,6 +2032,9 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   token churn against a grant already known dead), and only a deliberate
   `signed_out` drops it. See
   [remote runtime → Account state and reachability](../remote-runtime/README.md#account-state-and-reachability).
+- `syncHelloTelemetry.ts` — the dialed machine's report of each hello it
+  accepted or rejected, from both the project host and the brain's fallback.
+  Bounds what an unauthenticated peer can put in a log line.
 - `syncHostService.ts` — the per-project WebSocket host. Owns
   connection acceptance, hello/pairing handshakes (an `auth_failed`
   rejection is attributed with the rejecting machine's

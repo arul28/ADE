@@ -119,12 +119,18 @@ function workRowFocus(args: {
   nowMs?: number;
 }): WorkRowFocus | null {
   if (args.filingBucket === "snoozed" || args.filingBucket === "settled") return null;
-  const phase = sessionCanonicalUiState(canonicalInputFromSummary(args.session)).phase;
+  const state = sessionCanonicalUiState(canonicalInputFromSummary(args.session));
+  const phase = state.phase;
   switch (phase) {
     case "needs_you":
       return { status: "needs_you", holdsOut: true };
     case "starting":
     case "running":
+      // A PR watch must not hide a wake that came due and never ran: the rest
+      // state it replaced would have held the lane out for exactly this.
+      if (state.liveness === "pr_watch" && scheduledWakeState(args.session.nextWakeAt, args.nowMs) === "overdue") {
+        return { status: "working", holdsOut: true, missedWake: true };
+      }
       // A live turn that went silent with no open work may be stuck. It stays
       // filed as running, but like a stale run it holds its lane out of the
       // fold, so the user sees it instead of trusting a dead "Working".

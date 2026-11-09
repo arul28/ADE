@@ -6,10 +6,13 @@ import "./lib/nodeWarnings";
 // Second on purpose: hands this run to $ADE_CLI_PATH when a shell rc put an
 // older `ade` first on PATH, before the rest of the bundle loads.
 import { pendingCliDelegation } from "./lib/cliDelegationEntry";
+// Third: bootstrap is loaded only on demand, and this flag must not wait for it.
+import "./lib/packagedRuntimeFlag";
 import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
-import type { Agent37ReadyPool } from "../../desktop/src/shared/agent37Ready";
+import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
+import type { CloudReadyPool } from "../../desktop/src/shared/cloudReady";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
   setSharedAccountLiveQuotaFetcher,
@@ -35,6 +38,7 @@ import {
 } from "./cliMachineTargeting";
 import {
   chatIdForLookup,
+  chatDeletedSentence,
   chatLocateValue,
   describeUnasked,
   formatChatLocate,
@@ -117,9 +121,12 @@ import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { quoteShellArg } from "../../desktop/src/shared/shell";
 import type { MachineWorkCopy } from "./cliRemoteWork";
 import { machineVersionsDrift } from "../../desktop/src/shared/machineVersions";
+import { readDesktopUpdateInstallMode } from "../../desktop/src/main/services/native/desktopUpdateInstallMode";
+import { readInstalledDesktopApp } from "../../desktop/src/main/services/native/nativeHelperPaths";
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
-import { findSettingsEntries, settingsEntryLabel } from "../../desktop/src/shared/settingsManifest";
+import { findSettingsEntries, isAdeCloudSettingEntry, settingsEntryLabel } from "../../desktop/src/shared/settingsManifest";
 import { settingAgentAccess } from "../../desktop/src/shared/settingsAgentAccess";
+import { setAdeCloudSkillVisible } from "../../desktop/src/shared/agentSkillRoots";
 import { OPEN_PLACES } from "../../desktop/src/shared/openPlaces";
 import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
 import { canonicalGitOriginUrl } from "../../desktop/src/main/services/github/githubSshAlias";
@@ -262,7 +269,7 @@ import {
   resolvePendingInputResponse,
   type PendingInputResponse,
 } from "../../desktop/src/shared/pendingInputCommand";
-import { adeActionAccess } from "../../desktop/src/shared/adeActionAccess";
+import { adeActionAccess, isBackgroundAdeWrite } from "../../desktop/src/shared/adeActionAccess";
 import {
   isAgentChatStopMode,
   type AgentChatStopMode,
@@ -275,6 +282,8 @@ import {
   type ChatTurnStatusSnapshot,
 } from "../../desktop/src/shared/chatTurnStatus";
 import { chatWaitsOnUser, chatWaitTargetMatches } from "../../desktop/src/shared/chatWait";
+import { CHAT_SETTING_FIELDS } from "../../desktop/src/shared/chatTurnStatus";
+import { chatWebhookUrlProblem } from "../../desktop/src/main/services/chat/chatWebhookRegistry";
 import type { SessionActivitySource, TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import { SESSION_ACTIVITY_VALUES } from "../../desktop/src/shared/types/sessions";
 import {
@@ -612,7 +621,6 @@ import {
 } from "./sessionSnoozeDuration";
 import { snoozeWakeLabel } from "../../desktop/src/renderer/lib/sessionSnooze";
 import type { AdeRuntime } from "./bootstrap";
-import { cleanupLegacyBundledAdeSkillsForCli } from "./bootstrap";
 import {
   EncryptedFileCredentialStore,
   inspectCredentialStoreHealth,
@@ -783,7 +791,7 @@ const REPAIR_SYNC_HOST_START_TIMEOUT_MS = 20_000;
 // start on a slow or busy machine takes longer than the 5 seconds an
 // already-running brain gets to answer.
 const SPAWNED_RUNTIME_CONNECT_WINDOW_MS = 20_000;
-// How long the first no-project Agent 37 or vault call waits for the account
+// How long the first no-project the provider or vault call waits for the account
 // vault's first pull before it answers from the local copy (the desktop gives
 // a vault call 8 seconds).
 const MACHINE_VAULT_FIRST_PULL_WAIT_MS = 3_000;
@@ -944,9 +952,10 @@ export type FormatterId =
   | "terminal-read"
   | "project-secrets"
   | "integrations"
-  | "agent37-ready"
-  | "agent37-list"
-  | "agent37-result"
+  | "cloud-ready"
+  | "cloud-list"
+  | "cloud-hours"
+  | "cloud-result"
   | "mcp-servers"
   | "mcp-servers-remove"
   | "history-list"
@@ -975,6 +984,7 @@ export type FormatterId =
   | "harness-test"
   | "archive-list"
   | "deleted-chats"
+  | "deleted-lanes"
   | "archive-summary"
   | "archive-action"
   | "storage-snapshot"
@@ -1199,6 +1209,7 @@ export type CliPlan =
       kind: "chat-launch";
       launchArgs: JsonObject;
       startOverrides?: { from?: string; on?: string };
+      notify?: { url: string; token: string | null };
       wait: boolean;
       timeoutMs: number;
       pollIntervalMs: number;
@@ -1551,7 +1562,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
+    $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -1621,6 +1632,30 @@ function remoteMcpHelpScope(): "read" | "write" | undefined {
   return scope === "read" || scope === "write" ? scope : undefined;
 }
 
+/** Whether this account has ADE Cloud, answered by this machine's brain; false until it does. */
+let cliCloudEnabled = false;
+
+const CHAT_CLOUD_READY_HELP = `    $ ade chat create --machine cloud:ready --prompt "…"
+                                                    Start on this project's ready ADE Cloud machine (prepared and
+                                                    asleep): ADE wakes it, waits until it is online, then sends.
+                                                    No --lane needed; --json adds readyMachine. See ade cloud ready.
+`;
+
+/**
+ * The `cloud` commands exist only for an account on the access list, so its
+ * help does too. Off the list `ade cloud` and its topic are simply absent.
+ */
+function withoutHiddenCloudHelp(text: string): string;
+function withoutHiddenCloudHelp(text: string | undefined): string | undefined;
+function withoutHiddenCloudHelp(text: string | undefined): string | undefined {
+  return text && !cliCloudEnabled ? text.replace(CHAT_CLOUD_READY_HELP, "") : text;
+}
+
+function helpPagesWithoutCloud(): Record<string, string> {
+  const { cloud: _cloud, ...pages } = HELP_BY_COMMAND;
+  return Object.fromEntries(Object.entries(pages).map(([key, text]) => [key, withoutHiddenCloudHelp(text)]));
+}
+
 function commandHelpText(key: string): string | undefined {
   if (key === "automations" && !automationsCliEnabled()) {
     return internalFeatureUnavailableHelp(
@@ -1628,6 +1663,9 @@ function commandHelpText(key: string): string | undefined {
       AUTOMATIONS_COMING_SOON_MESSAGE,
       "ADE_ENABLE_AUTOMATIONS",
     );
+  }
+  if (key === "cloud" || key.startsWith("cloud ")) {
+    return cliCloudEnabled ? HELP_BY_COMMAND[key] : undefined;
   }
   if (
     key === "screen" || key === "windows-desktop" || key === "windows-desk"
@@ -1639,7 +1677,7 @@ function commandHelpText(key: string): string | undefined {
     // Mac-only name keeps its own.
     return HELP_BY_COMMAND["screen"];
   }
-  return HELP_BY_COMMAND[key];
+  return withoutHiddenCloudHelp(HELP_BY_COMMAND[key]);
 }
 
 function helpCatalogTopic(key: string): string {
@@ -2345,6 +2383,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard  Disable fast service tier explicitly.
     --prompt <text>        First chat message or CLI initial input.
+    --prompt-file <path|->  The same, from a file or stdin (-). Alias --text-file.
+                           Use it for long or multi-line text: on Windows,
+                           ade.cmd cuts an argument at its first line break.
+                           Not with --prompt.
 
   Spawn lineage:
     From an agent, the new session is a subagent of that agent's chat and
@@ -2365,6 +2407,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode chat --lane auto --lane-name fix-login --prompt "Fix login"
+    $ ade new chat --mode chat --lane <lane> --prompt-file brief.md
+    $ ade new chat --mode chat --lane <lane> --prompt-file - <<'EOF'
+
+  The first message is --prompt <text>, text after --, or --prompt-file <path|->.
 
   The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
   --auto-create-lane or --lane auto to create a lane before launching.
@@ -2389,7 +2435,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   ade lanes defaults [--text|--json]
   ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
                          [--branch-pattern <pattern>]   (e.g. "ade/{slug}", "{user}/{slug}", "{slug}")
-  ade lanes list | show | archive | unarchive | delete | appearance | templates | actions
+  ade lanes list | show | archive | unarchive | delete | deleted | appearance | templates | actions
 
   The project is the shell's project (ADE_PROJECT_ROOT, else the checkout you
   stand in). --project-root <dir>, before or after the subcommand, names
@@ -2429,7 +2475,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     env init before returning, a plain unarchive returns immediately
                                                     and restarts Docker in the background (watch lane env init events).
                                                     Run "ade lanes action initEnv --arg laneId=<lane>" for the full sequence
-    $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree
+    $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree. Uncommitted files and
+                                                    commits no other branch or remote holds are kept for ${DELETED_LANE_KEEP_DAYS} days
+    $ ade lanes deleted list --text                 Deleted lanes whose work ADE kept
+    $ ade lanes deleted restore <id>                Bring one back, uncommitted files included: as a new lane, or into its lane if space was freed
     $ ade lanes rename <lane> --name "<name>"       Rename a lane (its branch keeps its name)
     $ ade lanes appearance <lane> --emoji 🐛        Set a lane emoji (use --emoji "" to clear)
     $ ade lanes actions --text                      List callable lane service methods
@@ -2667,6 +2716,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade files read --workspace <lane> <path> --text Read a file
     $ ade files write --workspace <lane> <path> --stdin
     $ ade files write --workspace <lane> <path> --text "new content"
+    $ ade files write --workspace <lane> <path> --stdin --base64 --offset 262144  Add a chunk at that byte; answers path, bytes, sha256
     $ ade files create --workspace <lane> <path> --text "content"
     $ ade files mkdir --workspace <lane> src/new
     $ ade files search --workspace <lane> -q <text> Search text in a workspace
@@ -2737,13 +2787,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat list --all-machines --text           Every machine in one table, with a machine column
     $ ade chat create --machine "Mac mini" --lane <lane there> --type subagent --prompt "…"
                                                     Start a child on another machine; it wakes you when done.
+                                                    Without --lane it starts in the project's primary lane there.
                                                     --project <name|path|id> picks the project there, --clone
                                                     sets a missing GitHub repo up, "a,b" starts one per machine.
-    $ ade chat create --machine agent37:ready --prompt "…"
-                                                    Start on this project's ready Agent 37 machine (prepared and
-                                                    asleep): ADE wakes it, waits until it is online, then sends.
-                                                    No --lane needed; --json adds readyMachine. See ade agent37 ready.
-    $ ade chat actions --personal --text            List machine personal-chat actions
+${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --text
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
@@ -2849,6 +2896,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     reject the flag outright and nothing is sent; omit
                                                     --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
+    $ ade chat events <session> --since <cursor> --json   Turn starts and ends, input needed, errors since a cursor; answers at once
+    $ ade chat notify <session> --url https://… --token-stdin   POST there each time it goes idle, needs input or fails (7 days)
+    $ ade chat notify <session> --list | --cancel
                                                     Wait for idle, active, awaiting-input, or terminal.
                                                     Stops early with waiting_on_user when only the user
                                                     can answer the chat's card
@@ -3185,6 +3235,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof review artifact-id --text           A sheet of a video's key moments (or a picture's path) to check before publishing
     $ ade proof review artifact-id --from 12 --to 18 --text  A closer look at seconds 12–18
     $ ade proof review --chat <session-id> --text   The newest video (else proof) a chat filed
+    $ ade proof review artifact-id --page 2 --text  Page 2 of a tall picture, cut out as a readable image (or --y-from/--y-to)
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
     $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
@@ -4621,7 +4672,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   integrations: `${ADE_BANNER}
   ADE integrations
 
-  GitHub, Linear, Jira and Agent 37 (cloud machines). Status never shows a key or token.
+  GitHub, Linear and Jira. Status never shows a key or token.
 
     $ ade integrations status --text                 Which are connected here, and as whom
 
@@ -4641,36 +4692,36 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   card at once. If it was your own idea, ask in words first and raise the
   card only after they say yes.
 `,
-  agent37: `${ADE_BANNER}
-  Agent 37 cloud machines
+  cloud: `${ADE_BANNER}
+  ADE Cloud machines
 
-  Machines on the account's Agent 37 workspace: boxes (sandboxed Linux) and
-  VMs (their own kernel: Docker, Android). They sleep on their own after a few
-  idle minutes and bill only their disk; a --machine call or opening a lane
-  wakes one in about a second. <machine> is its name or Agent 37 id.
+  Computers on your ADE Cloud account. They sleep on their own after a few
+  idle minutes and use no hours while asleep; a --machine call or opening a
+  lane wakes one in about a second. <machine> is its name or id. Sizes: small,
+  medium, large, x-large (or 2x4, 4x8, 4x16, 4x32). --kind vm is a full
+  computer: Android (medium or bigger) and Docker.
 
-    $ ade agent37 list --text                       Machines, state, size, price, spend, saved asleep
-    $ ade agent37 spending --text                   This month against the cap, wallet, saved asleep
-    $ ade agent37 create --kind vm --shape 4x8 --name "android vm"
-    $ ade agent37 sleep <machine>                   Sleep now (free)
-    $ ade agent37 wake <machine>                    Wake (bounded by the monthly cap)
-    $ ade agent37 resize <machine> --shape 4x16     Same type, new size; it restarts
-    $ ade agent37 copy <machine> --name "lane box"  A new machine with the same files (a warm copy)
-    $ ade agent37 move <machine> --to vm|box        Change type, keeping every repo, lane and chat
-    $ ade agent37 delete <machine>                  Gone for good, files and all
-    $ ade agent37 sleep-after <machine> 10|never    Minutes idle before it sleeps
-    $ ade agent37 cap 50|off                        The account's optional monthly cap
-    $ ade agent37 limits [ask|balanced|hands-off]   What unattended agents may spend (--per-day N, --max-shape 4x16, --unattended on|off)
-    $ ade agent37 ready [status|on|off|retry]       Keep a cloud machine ready for this project
+    $ ade cloud list --text                       Computers, state, size, how fast each uses hours
+    $ ade cloud hours --text                      Plan, hours left, reset date
+    $ ade cloud create --kind vm --shape medium --name "android vm"
+    $ ade cloud sleep <machine>                   Sleep now (uses no hours)
+    $ ade cloud wake <machine>                    Wake (the server refuses it at 0 hours)
+    $ ade cloud resize <machine> --shape large    Same kind, new size; it restarts
+    $ ade cloud update <machine>                  Restart on the current ADE; files stay
+    $ ade cloud copy <machine> --name "lane box"  A new computer with the same files (a warm copy)
+    $ ade cloud move <machine> --to vm|box        Change kind, keeping every repo, lane and chat
+    $ ade cloud delete <machine>                  Gone for good, files and all
+    $ ade cloud limits [ask|balanced|hands-off]   What unattended agents may do (--per-day N, --max-shape large, --unattended on|off)
+    $ ade cloud ready [status|on|off|retry]       Keep a cloud machine ready for this project
                                                     on takes --kind, --shape, --setup "npm ci"
-    $ ade chat create --machine agent37:ready --prompt "…"
+    $ ade chat create --machine cloud:ready --prompt "…"
                                                     Start the chat on this project's ready machine
 
-  list, spending, limits (reading them), sleep and wake are the account's and
+  list, hours, limits (reading them), sleep and wake are the account's and
   work from any folder; the rest run in this folder's project.
 
-  Asks first: create, resize, copy, move, delete, sleep-after never, raising
-  the cap or the limits, ready on. The card shows in your chat and gives up
+  Asks first: create, resize, update, copy, move, delete,
+  raising the limits, ready on. The card shows in your chat and gives up
   after 5 minutes. In a full-auto chat or an automation ADE answers it with
   the person's limits (balanced: 3 new machines a day, up to 4x16), and says
   no to deleting a machine that chat didn't make. create, copy and move work
@@ -6603,12 +6654,12 @@ function readGlobalValueFlag(
 }
 
 /**
- * `path.resolve` for a folder the user typed. A quoted `"~/My App"`, or
+ * `path.resolve` for a path the user typed. A quoted `"~/My App"`, or
  * `--project-root=~/app` in zsh, reaches ADE with the `~` unexpanded, and
  * `path.resolve` alone turns it into `<cwd>/~/app`: a folder that does not
  * exist, or a project under the current directory picked by mistake.
  */
-function resolveCliFolderArg(value: string): string {
+function resolveCliPathArg(value: string): string {
   // The home the shell means by `~`: Git Bash on Windows sets HOME, which can
   // differ from the profile folder Node reads.
   const home = process.platform === "win32" ? process.env.HOME?.trim() || os.homedir() : os.homedir();
@@ -6620,10 +6671,10 @@ function resolveCliFolderArg(value: string): string {
 
 const GLOBAL_VALUE_FLAG_HANDLERS: Record<CliGlobalValueFlag, (options: GlobalOptions, value: string) => void> = {
   "--project-root": (options, value) => {
-    options.projectRoot = resolveCliFolderArg(value);
+    options.projectRoot = resolveCliPathArg(value);
   },
   "--workspace-root": (options, value) => {
-    options.workspaceRoot = resolveCliFolderArg(value);
+    options.workspaceRoot = resolveCliPathArg(value);
   },
   "--role": (options, value) => {
     options.role = parseRole(value);
@@ -7513,6 +7564,37 @@ function buildLanePlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "deleted") {
+    // Lanes whose unsaved work a delete kept (Settings › Storage › Recently deleted).
+    const verb = firstPositional(args) ?? "list";
+    if (verb === "list" || verb === "ls") {
+      return {
+        kind: "execute",
+        label: "lanes deleted list",
+        formatter: "deleted-lanes",
+        steps: [actionStep("result", "lane", "listDeletedLanes", {})],
+      };
+    }
+    if (verb === "restore" || verb === "undo" || verb === "reopen") {
+      const id = requireValue(firstPositional(args), "deleted lane id (see `ade lanes deleted list`)");
+      return {
+        kind: "execute",
+        label: "lanes deleted restore",
+        steps: [actionStep("result", "lane", "restoreDeletedLane", { id })],
+        // Lane back, files not: a script chaining on this must not carry on.
+        exitCodeFromResult: (result) => {
+          const restored = unwrapActionEnvelope(result);
+          return isRecord(restored) && restored.restoredUncommitted === false ? 1 : 0;
+        },
+      };
+    }
+    if (verb === "remove" || verb === "rm" || verb === "delete") {
+      throw new CliUsageError(
+        "Drop a deleted lane's saved work in ADE: Settings › Storage › Recently deleted. The command line can list and restore them.",
+      );
+    }
+    throw new CliUsageError("lanes deleted supports list or restore <id>.");
+  }
   if (sub === "delete" || sub === "rm") {
     const laneId = requireValue(
       readLaneId(args) ?? firstPositional(args),
@@ -7816,8 +7898,37 @@ function autoLaneGenericSuffix(date = new Date()): string {
   ].join("");
 }
 
+/**
+ * Flags that carry a chat's text on the other chat commands. Taken here they
+ * would be parsed and dropped, so the session would start without the message
+ * the caller meant to send and still report ok.
+ */
+const NEW_CHAT_STRANDED_TEXT_FLAGS = ["--note", "--question", "--objective", "--goal", "--steer", "--answer", "--option", "--response"] as const;
+
+function refuseStrandedNewChatTextFlags(args: string[]): void {
+  // A prompt's value can look like a flag (`--prompt "--question"`).
+  const options = args.filter((_, index) => !["--prompt", "--message", "--initial-input"].includes(args[index - 1] ?? ""));
+  const stranded = findFlagName(options, NEW_CHAT_STRANDED_TEXT_FLAGS);
+  // Bare `--text` is the output format. Only `--text <value>` carries a message.
+  const textIndex = options.indexOf("--text");
+  const textValue = textIndex >= 0 ? options[textIndex + 1] : undefined;
+  const textCarriesMessage = options.some((token) => token.startsWith("--text="))
+    || Boolean(textValue && !textValue.startsWith("-") && textValue !== "chat" && textValue !== "cli");
+  const flag = stranded ?? (textCarriesMessage ? "--text" : null);
+  if (flag) {
+    throw new CliUsageError(`ade new does not take ${flag}. Put the first message in --prompt or --prompt-file.`);
+  }
+}
+
 function readNewChatPrompt(args: string[]): string | null {
   const promptArgs = takeArgsAfterTerminator(args);
+  refuseStrandedNewChatTextFlags(args);
+  // Checked first: `--prompt-file -` would otherwise block on stdin.
+  if (promptArgs && findFlagName(args, ["--prompt-file", "--text-file"])) {
+    throw new CliUsageError("Use --prompt-file or text after --, not both.");
+  }
+  const fileText = readChatTextFile(args, ["--prompt-file", "--text-file"], ["--prompt", "--message", "--initial-input"]);
+  if (fileText !== null) return fileText.trimEnd();
   const prompt = promptArgs
     ? promptArgs.join(" ").trim()
     : readValue(args, ["--prompt", "--message", "--initial-input"]);
@@ -10061,7 +10172,7 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
   return refuseUnknownSubcommand("prs", "pr", sub);
 }
 
-function buildShellPlan(args: string[], inWorkCopy = false): CliPlan {
+function buildShellPlan(args: string[], inWorkCopy = false, remote: ShellRemoteTarget | null = null): CliPlan {
   const sub = firstPositional(args) ?? "start";
   if (sub === "actions")
     return {
@@ -10139,7 +10250,10 @@ function buildShellPlan(args: string[], inWorkCopy = false): CliPlan {
             return typeof code === "number" ? (code < 0 ? 1 : Math.min(code, 255)) : 1;
           },
         }
-      : {};
+      : remote
+        // The shell is on that machine, so reading it needs --machine too.
+        ? { formatText: (result: unknown) => formatPtyCreate(result, remote) }
+        : {};
     const shellStart = { kind: "execute", label: "shell start", formatter: "pty-create", ...followPlan } as const;
     if (ownLane) {
       return { ...shellStart, steps: [actionStep("result", "pty", "create", { ...input, laneId: ownLane })] };
@@ -10913,6 +11027,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   if (findFlagName(args, ["--base", "--base-branch"])) throw new CliUsageError("Unsupported lane creation flag.");
   const launchIdFlag = readValue(args, ["--launch-id"]);
   const laneIdFlag = readValue(args, ["--lane-id"]);
+  const notify = readChatNotifyFlags(args);
   const foreground = readFlag(args, ["--foreground"]);
   const wait = readFlag(args, ["--wait"]);
   const printConfig = readFlag(args, ["--print-config"]);
@@ -11004,7 +11119,45 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
       value: { ok: true, dryRun: true, action: "chat.startLaunch", input: launchArgs, ...(needsDefaults && !("laneConfig" in input) ? { startOverrides, note: "The missing start choice is filled from project defaults at launch." } : {}) },
     };
   }
-  return { kind: "chat-launch", launchArgs, ...(needsDefaults && !("laneConfig" in input) ? { startOverrides } : {}), wait, timeoutMs, pollIntervalMs };
+  return { kind: "chat-launch", launchArgs, ...(needsDefaults && !("laneConfig" in input) ? { startOverrides } : {}), ...(notify ? { notify } : {}), wait, timeoutMs, pollIntervalMs };
+}
+
+/** The settings a chat really runs with, for a caller to check what it started. */
+function pickChatSettings(summary: Record<string, unknown>): JsonObject {
+  const out: JsonObject = {};
+  for (const key of CHAT_SETTING_FIELDS) {
+    const value = summary[key];
+    if (value !== undefined && value !== null) out[key] = value as JsonObject[string];
+  }
+  return out;
+}
+
+function assertChatWebhookUrl(url: string): void {
+  const problem = chatWebhookUrlProblem(url);
+  if (problem) throw new CliUsageError(problem);
+}
+
+/**
+ * `--notify-url <https> [--notify-token <key> | --notify-token-stdin]` on
+ * `chat launch` and `chat create`. Stdin keeps the key out of the process list.
+ */
+function readChatNotifyFlags(args: string[]): { url: string; token: string | null } | null {
+  const url = readValue(args, ["--notify-url"]);
+  if (url?.startsWith("-")) throw new CliUsageError("--notify-url needs an https URL.");
+  const tokenFromStdin = readFlag(args, ["--notify-token-stdin"]);
+  if (tokenFromStdin && args.some((word, index) => /^--(?:prompt|text)-file(?:=-)?$/.test(word) && (word.endsWith("=-") || args[index + 1] === "-"))) {
+    throw new CliUsageError("Stdin can carry the prompt or the notify token, not both: pass the prompt with --prompt.");
+  }
+  const inlineToken = readValue(args, ["--notify-token"]);
+  if (inlineToken?.startsWith("--")) throw new CliUsageError("--notify-token needs a value; for one that starts with -- use --notify-token-stdin.");
+  const token = tokenFromStdin ? readAllStdinSync().trim() : inlineToken;
+  if (tokenFromStdin && !token) throw new CliUsageError("--notify-token-stdin got no token on stdin.");
+  if (!url) {
+    if (token) throw new CliUsageError("--notify-token needs --notify-url.");
+    return null;
+  }
+  assertChatWebhookUrl(url);
+  return { url, token: token ?? null };
 }
 
 function requireCliUuid(value: string, flag: string): string {
@@ -11056,8 +11209,17 @@ async function runChatLaunchCommand(
     if (!isRecord(started) || typeof started.launchId !== "string") {
       throw new CliExecutionError("chat.startLaunch returned an unexpected result.", { result: started });
     }
+    // A chat's id is its launch's, so the webhook is armed before the chat exists.
+    const notifyResult = plan.notify
+      ? await callChat("armWebhook", { sessionId: started.launchId, url: plan.notify.url, ...(plan.notify.token ? { token: plan.notify.token } : {}) })
+        .then(() => ({ notify: { armed: true } }), (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          process.stderr.write(`ade: the chat starts, but its notify webhook was not armed: ${message}\n`);
+          return { notify: { armed: false, error: message } };
+        })
+      : {};
     if (!plan.wait) {
-      return { output: formatOutput(started, options, "chat-launch"), exitCode: 0 };
+      return { output: formatOutput({ ...started, ...notifyResult }, options, "chat-launch"), exitCode: 0 };
     }
     const launchId = started.launchId;
     const startedAt = Date.now();
@@ -11074,7 +11236,11 @@ async function runChatLaunchCommand(
       const phase = asString(launch.phase) ?? "running";
       const elapsedMs = Date.now() - startedAt;
       if (CHAT_LAUNCH_TERMINAL_PHASES.has(phase)) {
-        const result = { ok: phase === "completed", launchId, phase, elapsedMs, launch };
+        // What the chat really runs with, which the caller may have left to defaults.
+        const session = phase === "completed"
+          ? await callChat("getSessionSummary", { sessionId: asString(launch.sessionId) ?? launchId }).catch(() => null)
+          : null;
+        const result = { ok: phase === "completed", launchId, phase, elapsedMs, launch, ...notifyResult, ...(isRecord(session) ? { session: pickChatSettings(session) } : {}) };
         return { output: formatOutput(result, options, "chat-launch"), exitCode: phase === "completed" ? 0 : 1 };
       }
       if (elapsedMs >= plan.timeoutMs) {
@@ -11881,6 +12047,7 @@ function buildChatPlan(args: string[]): CliPlan {
       linearIssue = issues[0]!;
     }
     const noKickoff = readFlag(args, ["--no-kickoff"]);
+    const notify = readChatNotifyFlags(args);
     const explicitKickoff =
       readChatTextFile(args, ["--prompt-file"], ["--prompt"])
       ?? readValue(args, ["--prompt"]);
@@ -11959,6 +12126,25 @@ function buildChatPlan(args: string[]): CliPlan {
         },
       }]
       : [];
+    // Armed before the kickoff, so the first turn's end is reported.
+    // Optional: a webhook that can't be armed (an older host, the cap) must not
+    // strand a made chat without its prompt. The answer says it wasn't armed.
+    const notifySteps = (createKey: string): InvocationStep[] => notify
+      ? [{
+        key: "notify",
+        method: "ade/actions/call",
+        unwrapToolResult: true,
+        optional: true,
+        params: (values) => ({
+          name: "run_ade_action",
+          arguments: {
+            domain: "chat",
+            action: "armWebhook",
+            args: { sessionId: sessionIdFromCreateChatValue(values[createKey]), url: notify.url, ...(notify.token ? { token: notify.token } : {}) },
+          },
+        }),
+      }]
+      : [];
     const chatCreateCheck = {
       laneId: explicitLane,
       permissionMode: asString(actionArgs.permissionMode),
@@ -11988,6 +12174,7 @@ function buildChatPlan(args: string[]): CliPlan {
           chatCreateCheck,
           steps: [
             { ...createStep, key: "session" },
+            ...notifySteps("session"),
             ...laneChatsSteps("session"),
             {
               key: "result",
@@ -12015,12 +12202,16 @@ function buildChatPlan(args: string[]): CliPlan {
           ],
         };
       }
+      if (notify) {
+        return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, steps: [{ ...createStep, key: "session" }, ...notifySteps("session"), ...laneChatsSteps("session")] };
+      }
       return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, steps: [createStep, ...laneChatsSteps("result")] };
     }
     const issueForKickoff = linearIssue;
     const steps: InvocationStep[] = [
       // First step keyed "session" so attach/kickoff can read the new id.
       { ...createStep, key: "session" },
+      ...notifySteps("session"),
       ...laneChatsSteps("session"),
       {
         key: "attach",
@@ -12122,6 +12313,8 @@ function buildChatPlan(args: string[]): CliPlan {
       label: "chat send",
       steps: [
         actionStep("result", "chat", "messageSession", messageArgs),
+        // For the link in the answer. Optional: the message already went.
+        { ...actionArgsListStep("summary", "chat", "getSessionSummary", [targetSession]), optional: true },
       ],
     };
   }
@@ -12232,6 +12425,46 @@ function buildChatPlan(args: string[]): CliPlan {
     const input: JsonObject = {};
     maybePut(input, "sessionId", sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID) ?? undefined);
     return { kind: "execute", label: "chat waits", steps: [actionStep("result", "chat", "listWaits", input)] };
+  }
+  if (sub === "events") {
+    const since = readNumberOption(args, ["--since", "--cursor"]);
+    const limit = readIntOption(args, ["--limit"], undefined);
+    return {
+      kind: "execute",
+      label: "chat events",
+      steps: [actionStep("result", "chat", "getChatEvents", {
+        sessionId: requireValue(sessionId, "sessionId"),
+        ...(since != null ? { since } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      })],
+    };
+  }
+  if (sub === "notify") {
+    if (readFlag(args, ["--list"])) {
+      return { kind: "execute", label: "chat notify list", steps: [actionStep("result", "chat", "listWebhooks", sessionId ? { sessionId } : {})] };
+    }
+    if (readFlag(args, ["--cancel"])) {
+      return { kind: "execute", label: "chat notify cancel", steps: [actionStep("result", "chat", "cancelWebhook", { sessionId: requireValue(sessionId, "sessionId") })] };
+    }
+    const url = requireValue(readValue(args, ["--url"]), "--url");
+    assertChatWebhookUrl(url);
+    const tokenFromStdin = readFlag(args, ["--token-stdin"]);
+    const token = tokenFromStdin ? readAllStdinSync().trim() : readValue(args, ["--token"]);
+    if (tokenFromStdin && !token) throw new CliUsageError("--token-stdin got no token on stdin.");
+    const target = requireValue(sessionId, "sessionId");
+    return {
+      kind: "execute",
+      label: "chat notify",
+      steps: [
+        // Only the chat's own project can report on it: a miss here goes
+        // looking on the account's other machines, like `chat status`.
+        actionArgsListStep("summary", "chat", "getSessionSummary", [target]),
+        {
+          ...actionStep("result", "chat", "armWebhook", { sessionId: target, url, ...(token ? { token } : {}) }),
+          skipWhen: (values) => unwrapActionEnvelope(values.summary) == null,
+        },
+      ],
+    };
   }
   if (sub === "wait" && readFlag(args, ["--background"])) {
     // Wake me when my background jobs end: every running job, or the ones
@@ -12994,7 +13227,7 @@ function readDraftPrompt(args: string[], opts: { fromStdinWhenOmitted: boolean }
 /** Repeatable `--image <path>`, as the local image refs the draft store keeps. */
 function readDraftImages(args: string[]): JsonObject[] {
   return readRepeatedValues(args, ["--image"]).map((value) => ({
-    path: path.resolve(value),
+    path: resolveCliPathArg(value),
     type: "image",
   }));
 }
@@ -14111,7 +14344,7 @@ function readChatTextFile(args: string[], fileFlags: readonly string[], inlineFl
   if (!source?.trim()) throw new CliUsageError(`${fileFlag} needs a file path, or - to read stdin.`);
   let text: string;
   try {
-    text = source === "-" ? readAllStdinSync() : fs.readFileSync(path.resolve(source), "utf8");
+    text = source === "-" ? readAllStdinSync() : fs.readFileSync(resolveCliPathArg(source), "utf8");
   } catch (error) {
     throw new CliUsageError(`${fileFlag} could not read ${source === "-" ? "stdin" : source}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -14160,21 +14393,38 @@ function warnInlineChatTextThroughCmd(args: string[], inlineFlags: readonly stri
 let stdinTextRead: string | null = null;
 
 function readAllStdinSync(): string {
-  stdinTextRead ??= fs.readFileSync(0, "utf8");
+  stdinTextRead ??= readStdinSync();
   return stdinTextRead;
 }
 
-function readBoundedStdinSync(maxBytes: number, label: string): string {
+/**
+ * Stdin to its end, refused past `bound.maxBytes`. `readFileSync(0)` failed
+ * with EAGAIN when stdin was a non-blocking pipe whose writer had not caught
+ * up (a large `stdin` from ADE MCP did it at ~230 KB), so this reads in a
+ * loop, pausing briefly while the pipe is empty.
+ */
+function readStdinSync(bound?: { maxBytes: number; label: string }): string {
   const chunks: Buffer[] = [];
+  const pause = new Int32Array(new SharedArrayBuffer(4));
   let total = 0;
   while (true) {
-    const chunk = Buffer.alloc(Math.min(8_192, maxBytes + 1 - total));
-    const bytes = fs.readSync(0, chunk, 0, chunk.length, null);
+    const chunk = Buffer.allocUnsafe(bound ? Math.min(64 * 1024, bound.maxBytes + 1 - total) : 64 * 1024);
+    let bytes = 0;
+    try {
+      bytes = fs.readSync(0, chunk, 0, chunk.length, null);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EAGAIN" || code === "EINTR") {
+        Atomics.wait(pause, 0, 0, 5);
+        continue;
+      }
+      // Windows reports a closed pipe as EOF instead of a zero-length read.
+      if (code === "EOF") break;
+      throw error;
+    }
     if (bytes === 0) break;
     total += bytes;
-    if (total > maxBytes) {
-      throw new CliUsageError(`${label} must be ${maxBytes} bytes or fewer.`);
-    }
+    if (bound && total > bound.maxBytes) throw new CliUsageError(`${bound.label} must be ${bound.maxBytes} bytes or fewer.`);
     chunks.push(chunk.subarray(0, bytes));
   }
   return Buffer.concat(chunks).toString("utf8");
@@ -14346,6 +14596,8 @@ function buildFilesPlan(args: string[], machine: string | null = null): CliPlan 
     };
   }
   if (sub === "write") {
+    const base64 = readFlag(args, ["--base64"]);
+    const offset = readIntOption(args, ["--offset"], undefined);
     const text = readFileTextInput(args);
     if (text == null)
       throw new CliUsageError(
@@ -14365,6 +14617,8 @@ function buildFilesPlan(args: string[], machine: string | null = null): CliPlan 
               "path",
             ),
             text,
+            ...(base64 ? { encoding: "base64" } : {}),
+            ...(offset ? { offset } : {}),
           }),
         ),
       ],
@@ -14660,6 +14914,9 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     const from = readNumberOption(args, ["--from"]);
     const to = readNumberOption(args, ["--to"]);
     const frames = readNumberOption(args, ["--frames"]);
+    const page = readNumberOption(args, ["--page"]);
+    const yFrom = readNumberOption(args, ["--y-from"]);
+    const yTo = readNumberOption(args, ["--y-to"]);
     const artifactId = readValue(args, ["--id", "--artifact-id"]) ?? args.find((value) => !value.startsWith("-"));
     if (!artifactId && !chatSessionId) {
       throw new CliUsageError("ade proof review needs a proof id: ade proof review <id>, or a chat: ade proof review --chat <session-id>. Copy the id from a cite: line or the `id` field of `ade proof list --json`.");
@@ -14673,6 +14930,9 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
         ...(from != null ? { from } : {}),
         ...(to != null ? { to } : {}),
         ...(frames != null ? { frames } : {}),
+        ...(page != null ? { page } : {}),
+        ...(yFrom != null ? { yFrom } : {}),
+        ...(yTo != null ? { yTo } : {}),
       })],
     };
   }
@@ -14814,7 +15074,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     // The agent runs in its lane worktree; the runtime that stores the artifact
     // runs at the project root. Resolve here, where the caller's cwd is known,
     // so a relative path never has to be guessed at on the other side.
-    const attachedPath = path.resolve(process.cwd(), rawPath);
+    const attachedPath = resolveCliPathArg(rawPath);
     const title =
       readValue(args, ["--title", "--name"]) ??
       caption ??
@@ -15080,7 +15340,7 @@ function iosSimulatorRootArgs(
   const explicitRoot =
     readValue(args, ["--project-root", "--root"]) ?? globalProjectRoot;
   if (explicitRoot) {
-    return { projectRoot: resolveCliFolderArg(explicitRoot), ...(laneId ? { laneId } : {}) };
+    return { projectRoot: resolveCliPathArg(explicitRoot), ...(laneId ? { laneId } : {}) };
   }
   if (laneId) return { laneId };
   return { projectRoot: callerWorkspaceRoot() };
@@ -15188,6 +15448,7 @@ async function runChatHereThenElsewhere(
     }
   }
   if (!match) chatLookupMiss = report;
+  if (!match && report.deleted) process.stderr.write(`${chatDeletedSentence(sessionId, report.deleted)}\n`);
   if (failure) throw failure;
   const hint = chatOtherMachineHint(process.argv.slice(2));
   if (hint) process.stderr.write(`${hint}\n`);
@@ -15204,7 +15465,8 @@ async function runChatLocate(
   if (parsed.options.machine || parsed.options.allMachines) {
     throw new CliUsageError("chat locate asks every machine itself; drop --machine/--all-machines.");
   }
-  const value = chatLocateValue(await locateChatOnAccount(parsed.options, sessionId.trim()));
+  const onlyThisMachine = readFlag(args, ["--this-machine"]);
+  const value = chatLocateValue(await locateChatOnAccount(parsed.options, sessionId.trim(), { onlyThisMachine }));
   return {
     output: parsed.options.text ? formatChatLocate(value) : `${JSON.stringify(value, null, 2)}\n`,
     exitCode: value.found === true ? 0 : 1,
@@ -16077,7 +16339,7 @@ function buildIosSimulatorPlan(
     const project = readValue(args, ["--project"]);
     return {
       deviceUdid: device,
-      ...(project ? { projectRoot: resolveCliFolderArg(project) } : rootArgs()),
+      ...(project ? { projectRoot: resolveCliPathArg(project) } : rootArgs()),
       query: readIosSimulatorElementQuery(args),
     };
   };
@@ -16438,7 +16700,7 @@ function buildIosSimulatorPlan(
     const logRowLimit = readNumberOption(args, ["--log-rows", "--log-row-limit"]);
     return iosAction("iOS simulator proof bundle", "captureProofBundle", {
       deviceUdid: device,
-      ...(project ? { projectRoot: resolveCliFolderArg(project) } : rootArgs()),
+      ...(project ? { projectRoot: resolveCliPathArg(project) } : rootArgs()),
       ...(outDir ? { outDir } : {}),
       ...(caption ? { caption } : {}),
       ...(noElements ? { includeElements: false } : {}),
@@ -19591,7 +19853,7 @@ type SettingsFindRow = {
  * it needs no brain and costs one short line per hit.
  */
 function findSettings(query: string): { query: string; results: SettingsFindRow[] } {
-  const rows: SettingsFindRow[] = findSettingsEntries(query, 3).map((entry) => {
+  const rows: SettingsFindRow[] = findSettingsEntries(query, 3, cliCloudEnabled ? undefined : isAdeCloudSettingEntry).map((entry) => {
     const access = settingAgentAccess(entry.id);
     return {
       path: settingsEntryLabel(entry),
@@ -20414,28 +20676,59 @@ function buildIntegrationsPlan(args: string[]): CliPlan {
 }
 
 /**
- * One `agent37` action, run once; costly ones wait for the person's answer in
+ * One `cloud` action, run once; costly ones wait for the person's answer in
  * the chat (5 minutes at most). An account-level one (the list, spending,
  * sleep, wake) goes to the machine's brain with no project, so it works from
  * any folder; the rest run in this folder's project.
  */
-function agent37Step(label: string, action: string, input: JsonObject, formatter: FormatterId = "agent37-result", waitsForPerson = false): CliPlan {
-  const machineScoped = isMachineScopedAdeAction("agent37", action);
+function cloudStep(label: string, action: string, input: JsonObject, formatter: FormatterId = "cloud-result", waitsForPerson = false): CliPlan {
+  const machineScoped = isMachineScopedAdeAction("cloud", action);
   return {
     kind: "execute",
-    label: `agent37 ${label}`,
+    label: `cloud ${label}`,
     formatter,
     steps: [machineScoped
-      ? { key: "result", method: "agent37.call", params: { action, args: input } }
-      : actionStep("result", "agent37", action, input)],
+      ? { key: "result", method: "cloud.call", params: { action, args: input } }
+      : actionStep("result", "cloud", action, input)],
     ...(machineScoped ? { machineOnly: true, machineAutoStart: true } : {}),
     ...(waitsForPerson ? { minTimeoutMs: 75 * 60_000 } : {}),
   };
 }
 
-function buildAgent37Plan(args: string[]): CliPlan {
+/** `ade cloud push-work --json`: every lane's work committed and pushed. With ADE's 25 s to answer first, this fits inside the 3-minute exec that runs it. */
+function buildCloudPushWorkPlan(): CliPlan {
+  return {
+    kind: "execute",
+    label: "cloud push-work",
+    steps: [{ key: "result", method: "cloud.pushWork", params: {} }],
+    machineOnly: true,
+    minTimeoutMs: 150_000,
+  };
+}
+
+/** `ade cloud prepare-stop --timeout 40`: exit 0 when done or at the timeout, non-zero only when it could do nothing. */
+function buildCloudPrepareStopPlan(args: string[]): CliPlan {
+  const raw = readValue(args, ["--timeout"]);
+  const seconds = raw == null ? 40 : Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) throw new CliUsageError("ade cloud prepare-stop --timeout <seconds>");
+  return {
+    kind: "execute",
+    label: "cloud prepare-stop",
+    steps: [{ key: "result", method: "cloud.prepareStop", params: { timeoutMs: Math.round(seconds * 1000) } }],
+    machineOnly: true,
+    minTimeoutMs: Math.round(seconds * 1000) + 15_000,
+  };
+}
+
+/** What the server runs on a computer, whatever the access answer. */
+const CLOUD_ON_COMPUTER_PLANS = new Map<string, (args: string[]) => CliPlan>([
+  ["prepare-stop", buildCloudPrepareStopPlan],
+  ["push-work", buildCloudPushWorkPlan],
+]);
+
+function buildCloudPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
-    return { kind: "help", text: HELP_BY_COMMAND.agent37 ?? topLevelHelpText() };
+    return { kind: "help", text: HELP_BY_COMMAND.cloud ?? topLevelHelpText() };
   }
   // Every value flag first: positionals are what is left.
   const kind = readValue(args, ["--kind", "--type"]);
@@ -20447,7 +20740,7 @@ function buildAgent37Plan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   const target = () => {
     const machine = firstPositional(args);
-    if (!machine) throw new CliUsageError(`ade agent37 ${sub} needs the machine: its name or Agent 37 id (ade agent37 list).`);
+    if (!machine) throw new CliUsageError(`ade cloud ${sub} needs the machine: its name or id (ade cloud list).`);
     return machine;
   };
   const originUrl = () => origin ?? getGitRemote(process.cwd());
@@ -20455,111 +20748,105 @@ function buildAgent37Plan(args: string[]): CliPlan {
     case "list":
     case "ls":
     case "machines":
-      return agent37Step("list", "list", {}, "agent37-list");
-    case "spending":
-    case "spend":
-    case "cost":
-      return agent37Step("spending", "spending", {});
+      return cloudStep("list", "list", {}, "cloud-list");
+    case "hours":
+      return cloudStep("hours", "hours", {}, "cloud-hours");
     case "create":
     case "new":
-      return agent37Step("create", "create", { ...(kind ? { kind } : {}), ...(shape ? { shape } : {}), ...(name ? { name } : {}) }, "agent37-result", true);
+      return cloudStep("create", "create", { ...(kind ? { kind } : {}), ...(shape ? { shape } : {}), ...(name ? { name } : {}) }, "cloud-result", true);
     case "sleep":
-      return agent37Step("sleep", "sleep", { machine: target() });
+      return cloudStep("sleep", "sleep", { machine: target() });
     case "wake":
     case "start":
-      return agent37Step("wake", "wake", { machine: target() });
+      return cloudStep("wake", "wake", { machine: target() });
     case "resize": {
       const machine = target();
       const size = shape ?? firstPositional(args);
-      if (!size) throw new CliUsageError("ade agent37 resize <machine> --shape 4x8");
-      return agent37Step("resize", "resize", { machine, shape: size }, "agent37-result", true);
+      if (!size) throw new CliUsageError("ade cloud resize <machine> --shape 4x8");
+      return cloudStep("resize", "resize", { machine, shape: size }, "cloud-result", true);
     }
     case "copy":
     case "fork":
-      return agent37Step("copy", "copy", { machine: target(), ...(name ? { name } : {}), ...(shape ? { shape } : {}) }, "agent37-result", true);
+      return cloudStep("copy", "copy", { machine: target(), ...(name ? { name } : {}), ...(shape ? { shape } : {}) }, "cloud-result", true);
     case "move": {
       const machine = target();
       const destination = to ?? firstPositional(args);
-      if (destination !== "vm" && destination !== "box") throw new CliUsageError("ade agent37 move <machine> --to vm|box");
-      return agent37Step("move", "move", { machine, to: destination, ...(shape ? { shape } : {}) }, "agent37-result", true);
+      if (destination !== "vm" && destination !== "box") throw new CliUsageError("ade cloud move <machine> --to vm|box");
+      return cloudStep("move", "move", { machine, to: destination, ...(shape ? { shape } : {}) }, "cloud-result", true);
     }
     case "delete":
     case "rm":
-      return agent37Step("delete", "delete", { machine: target() }, "agent37-result", true);
-    case "sleep-after": {
-      const machine = target();
-      const raw = firstPositional(args);
-      if (!raw) throw new CliUsageError("ade agent37 sleep-after <machine> <minutes|never>");
-      const minutes = raw === "never" ? "never" : Number(raw.replace(/m(in)?$/, ""));
-      return agent37Step("sleep-after", "set_sleep", { machine, minutes }, "agent37-result", minutes === "never");
-    }
-    case "cap": {
-      const raw = firstPositional(args);
-      if (!raw) return agent37Step("spending", "spending", {});
-      const cap = raw === "off" ? "off" : Number(raw.replace(/^\$/, ""));
-      return agent37Step("cap", "set_cap", { monthlyCapUsd: cap }, "agent37-result", true);
-    }
+      return cloudStep("delete", "delete", { machine: target() }, "cloud-result", true);
+    case "update":
+      return cloudStep("update", "update", { machine: target() }, "cloud-result", true);
     case "limits": {
       const preset = firstPositional(args);
       const perDay = readValue(args, ["--per-day"]);
       const maxShape = readValue(args, ["--max-shape"]);
       const unattended = readValue(args, ["--unattended"]);
-      if (!preset && perDay == null && maxShape == null && unattended == null) return agent37Step("limits", "limits", {});
-      return agent37Step("limits", "set_limits", {
+      if (!preset && perDay == null && maxShape == null && unattended == null) return cloudStep("limits", "limits", {});
+      return cloudStep("limits", "set_limits", {
         ...(preset ? { preset } : {}),
         ...(perDay != null ? { machinesPerDay: Number(perDay) } : {}),
         ...(maxShape != null ? { maxShape } : {}),
         ...(unattended != null ? { unattendedSpend: unattended === "on" || unattended === "yes" || unattended === "true" } : {}),
-      }, "agent37-result", true);
+      }, "cloud-result", true);
     }
     case "ready": {
       const verb = firstPositional(args) ?? "status";
       if (verb === "status" || verb === "list") {
-        return agent37Step("ready", "ready_status", {}, "agent37-ready");
+        return cloudStep("ready", "ready_status", {}, "cloud-ready");
       }
       const url = originUrl();
       if (!url) throw new CliUsageError("This directory has no git origin. Pass --origin <url>.");
       if (verb === "on" || verb === "set") {
-        return agent37Step("ready on", "ready_set", {
+        return cloudStep("ready on", "ready_set", {
           originUrl: url,
           ...(kind ? { kind } : {}),
           ...(shape ? { shape } : {}),
           ...(setup != null ? { setup } : {}),
           ...(name ? { projectName: name } : {}),
-        }, "agent37-result", true);
+        }, "cloud-result", true);
       }
-      if (verb === "off") return agent37Step("ready off", "ready_off", { originUrl: url });
-      if (verb === "retry") return agent37Step("ready retry", "ready_retry", { originUrl: url }, "agent37-result", true);
-      throw new CliUsageError(`Unknown agent37 ready command "${verb}". Use: status, on, off, retry.`);
+      if (verb === "off") return cloudStep("ready off", "ready_off", { originUrl: url });
+      if (verb === "retry") return cloudStep("ready retry", "ready_retry", { originUrl: url }, "cloud-result", true);
+      throw new CliUsageError(`Unknown cloud ready command "${verb}". Use: status, on, off, retry.`);
     }
     case "status":
-      return agent37Step("ready", "ready_status", {}, "agent37-ready");
+      return cloudStep("ready", "ready_status", {}, "cloud-ready");
     default:
-      throw new CliUsageError(`Unknown agent37 command "${sub}". Use: list, create, sleep, wake, resize, copy, move, delete, sleep-after, cap, limits, spending, ready.`);
+      throw new CliUsageError(`Unknown cloud command "${sub}". Use: list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, ready, prepare-stop, push-work.`);
   }
 }
 
-function formatAgent37List(value: unknown): string {
+function formatCloudList(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const machines = isRecord(raw) && Array.isArray(raw.machines) ? raw.machines.filter(isRecord) : [];
-  const usd = (amount: unknown) => (typeof amount === "number" ? `$${amount.toFixed(2)}` : "—");
-  const cents = (amount: unknown) => (typeof amount === "number" ? `${(amount * 100).toFixed(1)}¢/h` : "—");
   const lines: string[] = [];
-  if (!machines.length) lines.push("No Agent 37 machines. ade agent37 create makes one.");
+  if (!machines.length) lines.push("No ADE Cloud computers. ade cloud create makes one.");
   for (const box of machines) {
-    const sleep = isRecord(box.sleep)
-      ? box.sleep.state === "auto" ? `sleeps after ${box.sleep.afterMinutes} min` : box.sleep.state === "never" ? "never sleeps" : "sleep pending"
-      : "";
-    lines.push(`${String(box.name ?? box.instanceId)}  ${String(box.state)}  ${String(box.size ?? "")}  ${cents(box.state === "asleep" ? box.idleHourlyUsd : box.runningHourlyUsd)}  spent ${usd(box.spentUsd)}  saved ${usd(box.savedUsd)}  ${sleep}  (${String(box.instanceId)})`);
+    const sleep = isRecord(box.sleep) && box.sleep.state !== "auto" ? "sleep pending" : "";
+    const rate = typeof box.hoursRate === "number" ? `${box.hoursRate}× hours` : "—";
+    lines.push(`${String(box.name ?? box.instanceId)}  ${String(box.state)}  ${String(box.size ?? "")}  ${rate}  ${sleep}  (${String(box.instanceId)})`);
   }
-  const spending = isRecord(raw) && isRecord(raw.spending) ? raw.spending : null;
-  if (spending) {
-    lines.push(`This month ${usd(spending.monthSpentUsd)} of ${spending.monthlyCapUsd == null ? "no cap" : usd(spending.monthlyCapUsd)}${spending.capReached ? " (cap reached)" : ""} · wallet ${usd(isRecord(raw) ? raw.balanceUsd : null)}`);
-  }
+  const account = isRecord(raw) && isRecord(raw.account) ? raw.account : null;
+  if (account) lines.push(formatCloudHours(account));
   return lines.join("\n");
 }
 
-function formatAgent37Result(value: unknown): string {
+function formatCloudHours(value: unknown): string {
+  const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
+  const account = isRecord(raw) ? raw : {};
+  const hours = isRecord(account.hours) ? account.hours : {};
+  const hoursOf = (milli: unknown) => (typeof milli === "number" ? `${(milli / 1000).toFixed(1).replace(/\.0$/, "")}` : "—");
+  const billing = isRecord(account.billing) ? account.billing : {};
+  const resets = typeof billing.periodEnd === "number" ? new Date(billing.periodEnd).toISOString().slice(0, 10) : "—";
+  const plan = account.plan === "paid" ? "Paid plan" : "Free plan";
+  const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left, resets ${resets}`;
+  return hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`;
+}
+
+function formatCloudResult(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   if (isRecord(raw) && typeof raw.message === "string") return raw.message;
   if (isRecord(raw) && typeof raw.name === "string" && typeof raw.instanceId === "string") {
@@ -20568,11 +20855,11 @@ function formatAgent37Result(value: unknown): string {
   return JSON.stringify(raw, null, 2);
 }
 
-function formatAgent37Ready(value: unknown): string {
+function formatCloudReady(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
-  const pool = isRecord(raw) && Array.isArray(raw.projects) ? raw as unknown as Agent37ReadyPool : { projects: [] };
+  const pool = isRecord(raw) && Array.isArray(raw.projects) ? raw as unknown as CloudReadyPool : { projects: [] };
   if (!pool.projects.length) {
-    return "No project keeps an Agent 37 machine ready. Turn it on in Settings › Integrations › Agent 37.";
+    return "No project keeps an ADE Cloud machine ready. Turn it on in Settings › Integrations › ADE Cloud.";
   }
   const lines: string[] = [];
   for (const project of pool.projects) {
@@ -22913,7 +23200,7 @@ function hasHelpFlag(
 
 function buildCliPlan(
   command: string[],
-  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json" | "machine" | "machineWorkCopy">> = {
+  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json" | "machine" | "machineProject" | "machineWorkCopy">> = {
     socketPath: null,
     projectRoot: null,
   },
@@ -23275,7 +23562,9 @@ function buildCliPlan(
   if (primary === "files" || primary === "file") return buildFilesPlan(args, options.machine ?? null);
   if (primary === "search") return buildSearchPlan(args);
   if (primary === "prs" || primary === "pr") return buildPrPlan(args, options.projectRoot ?? null);
-  if (primary === "shell" || primary === "pty") return buildShellPlan(args, options.machineWorkCopy != null);
+  if (primary === "shell" || primary === "pty") return buildShellPlan(args, options.machineWorkCopy != null, options.machine?.trim()
+    ? { machine: options.machine.trim(), project: options.machineProject?.trim() || null }
+    : null);
   if (primary === "terminal" || primary === "term")
     return buildTerminalPlan(args);
   if (primary === "history") return buildHistoryPlan(args);
@@ -23357,7 +23646,13 @@ function buildCliPlan(
     return buildSecretsPlan(args);
   if (primary === "integrations" || primary === "integration")
     return buildIntegrationsPlan(args);
-  if (primary === "agent37") return buildAgent37Plan(args);
+  if (primary === "cloud") {
+    // The server runs this before a stop; it's for this computer's own brain.
+    if (!cliCloudEnabled) throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
+    const buildOnComputerPlan = CLOUD_ON_COMPUTER_PLANS.get(firstPositional([...args]) ?? "");
+    if (buildOnComputerPlan) return buildOnComputerPlan(args);
+    return buildCloudPlan(args);
+  }
   if (primary === "proxy") return buildProxyPlan(args);
   if (primary === "harness" || primary === "harnesses") return buildHarnessPlan(args);
   if (primary === "providers" || primary === "provider")
@@ -25071,7 +25366,9 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method.startsWith("account.") ||
     method === "remoteMcp.call" ||
     method === "keepAwake.call" ||
-    method === "agent37.call" ||
+    method === "cloud.call" ||
+    method === "cloud.prepareStop" ||
+    method === "cloud.pushWork" ||
     method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
@@ -25089,11 +25386,14 @@ export function automaticProjectRegistrationParams(rootPath: string): {
   rootPath: string;
   catalogVisibility: "system";
   registrationSource: "runtime-auto";
+  withoutIcon: true;
 } {
   return {
     rootPath,
     catalogVisibility: "system",
     registrationSource: "runtime-auto",
+    // The CLI only wants the id; an icon costs the brain a worker process.
+    withoutIcon: true,
   };
 }
 
@@ -25369,7 +25669,7 @@ Usage:
       );
     }
     const request = parseObjectJson(
-      readBoundedStdinSync(64 * 1024, "SSH pairing request"),
+      readStdinSync({ maxBytes: 64 * 1024, label: "SSH pairing request" }),
       "SSH pairing request",
     );
     return {
@@ -25538,7 +25838,7 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
         method: "projects.clone",
         params: {
           url: githubCloneUrl(repo),
-          ...(parentDir ? { parentDir: target.remote ? parentDir : path.resolve(parentDir) } : {}),
+          ...(parentDir ? { parentDir: target.remote ? parentDir : resolveCliPathArg(parentDir) } : {}),
           ...(name ? { name } : {}),
           catalogVisibility: "recent",
           registrationSource: "cli-explicit",
@@ -27692,6 +27992,12 @@ async function runBrainCommand(
     };
   }
 
+  if (sub === "start" || sub === "stop" || sub === "restart") {
+    const { serviceHomeMismatch } = await import("./serviceManager");
+    const refused = serviceHomeMismatch(sub);
+    if (refused) return refused;
+  }
+
   if (sub === "start") {
     const { installRuntimeService } = await import("./serviceManager");
     return withAdeDefaultRole("cto", () => installRuntimeService());
@@ -27823,7 +28129,7 @@ export function resolveWindowsDesktopExecutable(args: {
   return null;
 }
 
-async function launchWindowsDesktopApp(
+async function launchDetachedDesktopApp(
   executablePath: string,
   appName: string,
 ): Promise<Record<string, unknown>> {
@@ -27831,6 +28137,11 @@ async function launchWindowsDesktopApp(
   // the child would launch another CLI process instead of the desktop UI.
   // The other host-only keys (the brain's compile cache included) stay behind too.
   const env = stripHostRuntimeEnv({ ...process.env });
+  // An AppImage CLI's own markers: the first would start another CLI, not the
+  // window, and the others would make a .deb app believe it is that AppImage.
+  delete env.ADE_APPIMAGE_CLI;
+  delete env.APPIMAGE;
+  delete env.APPDIR;
   // Electron reads this to decide whether to attach to the caller's console;
   // the launched app keeps the caller's choice, as it did before the strip.
   if (process.env.ELECTRON_NO_ATTACH_CONSOLE !== undefined) {
@@ -27883,9 +28194,9 @@ async function launchWindowsDesktopApp(
 
 async function runDesktopCommand(rest: string[]): Promise<unknown> {
   const args = [...rest];
+  const defaultAppName = resolveDefaultDesktopAppName();
+  const appName = readValue(args, ["--app-name"]) ?? defaultAppName;
   const sub = firstPositional(args) ?? "open";
-  const appName =
-    readValue(args, ["--app-name"]) ?? resolveDefaultDesktopAppName();
   if (sub !== "open" && sub !== "launch" && sub !== "start") {
     throw new CliUsageError("desktop supports open.");
   }
@@ -27917,15 +28228,35 @@ async function runDesktopCommand(rest: string[]): Promise<unknown> {
           `Unable to find the installed ${appName} executable. Reinstall ADE or set ADE_DESKTOP_APP_PATH.`,
       };
     }
-    return await launchWindowsDesktopApp(executablePath, appName);
+    return await launchDetachedDesktopApp(executablePath, appName);
+  }
+
+  if (process.platform === "linux") {
+    if (appName !== defaultAppName) {
+      return {
+        ok: false,
+        platform: process.platform,
+        appName,
+        message: `On Linux, ade desktop opens this install's own app (${defaultAppName}) and can't pick another by name.`,
+      };
+    }
+    const installed = readInstalledDesktopApp();
+    if (!installed) {
+      return {
+        ok: false,
+        platform: process.platform,
+        appName,
+        message: `Unable to find the installed ${appName} app. Open it once, or set ADE_DESKTOP_APP_PATH.`,
+      };
+    }
+    return await launchDetachedDesktopApp(installed.path, appName);
   }
 
   return {
     ok: false,
     platform: process.platform,
     appName,
-    message:
-      "Launching ADE desktop from the CLI is currently supported on macOS and Windows.",
+    message: "Launching ADE desktop from the CLI is supported on macOS, Windows and Linux.",
   };
 }
 
@@ -28238,10 +28569,10 @@ async function runServe(
           + `(signed out; the old identity is kept in ${hostGuard.movedTo}).\n`,
       );
     }
-    // An Agent 37 machine made with the person's sign-ins: Codex reads its
+    // a cloud machine made with the person's sign-ins: Codex reads its
     // key only from its auth file, so it is written before any chat starts.
-    const { applyAgent37CloudSignIns } = await import("../../desktop/src/main/services/agent37/agent37CloudSignInBoot");
-    if (applyAgent37CloudSignIns() === "failed") {
+    const { applyCloudSignIns } = await import("../../desktop/src/main/services/adeCloud/cloudSignInBoot");
+    if (applyCloudSignIns() === "failed") {
       process.stderr.write("ADE: couldn't write Codex's sign-in on this machine; Codex asks to sign in here instead.\n");
     }
   }
@@ -28255,6 +28586,7 @@ async function runServe(
       createPersonalChatScope,
       createProviderStatusService,
       readMachineRuntimeActivitySummary,
+      readMachineBusyFacts,
       readMachineNextScheduledWakeAt,
     },
     { createSharedSyncListener },
@@ -28538,36 +28870,65 @@ async function runServe(
         productAnalyticsService: brainProductAnalytics,
       })
     : null;
-  // On an Agent 37 machine: request the machine's own wake URL while work runs,
-  // so Agent 37's auto-sleep never puts it to sleep under a chat or a command.
-  const agent37KeepAwakeModule = !embedded && servesMachineEndpoint
-    ? await import("./services/power/agent37KeepAwake")
+  // On a cloud machine: request the machine's own wake URL while work runs,
+  // so the provider's auto-sleep never puts it to sleep under a chat or a command.
+  const cloudKeepAwakeModule = !embedded && servesMachineEndpoint
+    ? await import("./services/power/cloudKeepAwake")
     : null;
-  const agent37KeepAwake = agent37KeepAwakeModule?.isAgent37Machine()
-    ? agent37KeepAwakeModule.createAgent37KeepAwake({
+  // This brain's agents reaching the account's other machines. One per brain
+  // (it owns the agents' paired connections), built on first use; an embedded
+  // guest has no machine authority and gets none.
+  let cloudBrainAccess: Promise<import("../../desktop/src/main/services/adeCloud/cloudBrainAccess").CloudBrainAccess> | null = null;
+  const getCloudBrainAccess = () => {
+    cloudBrainAccess ??= Promise.all([
+      import("../../desktop/src/main/services/adeCloud/cloudBrainAccess"),
+      import("../../desktop/src/main/services/adeCloud/cloudAccess"),
+    ]).then(([{ createCloudBrainAccess }, { cloudAccessDepsFor }]) => createCloudBrainAccess(cloudAccessDepsFor({
+      account: () => brainAccountAuthService,
+      directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl(),
+      logger: headlessProjectLogger,
+    })));
+    return cloudBrainAccess;
+  };
+  const cloudDiskGrower = cloudKeepAwakeModule?.isCloudMachine()
+    ? (await import("./services/power/cloudDiskGrow")).createCloudDiskGrower({
+        instanceId: process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "",
+        client: async () => (await getCloudBrainAccess()).client(),
+        path: os.homedir(),
+        logger: headlessProjectLogger,
+      })
+    : null;
+  const cloudKeepAwake = cloudKeepAwakeModule?.isCloudMachine()
+    ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
         readBusy: async () => {
           const sources = { projectRegistry, scopeRegistry };
-          const [activity, nextWakeAt] = await Promise.all([
-            readMachineRuntimeActivitySummary({ ...sources, personalChatScope }),
+          const [facts, nextWakeAt] = await Promise.all([
+            readMachineBusyFacts({ ...sources, personalChatScope }),
             readMachineNextScheduledWakeAt(sources),
           ]);
-          const reasons: string[] = [];
-          if (activity.activeAgentTurns > 0) reasons.push("chat");
-          if ((activity.activeAgentCliSessions ?? 0) > 0) reasons.push("agent_cli");
-          if (activity.activeWorkSessions > (activity.activeAgentCliSessions ?? 0)) reasons.push("terminal");
-          if (agent37KeepAwakeModule.agent37ReadySetupRunning(layout.adeDir)) reasons.push("setup");
+          const { busy, reasons } = cloudKeepAwakeModule.decideCloudBusy({
+            ...facts,
+            setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
+            holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
+          }, Date.now());
           // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
           // one goes to the account server, which wakes the machine for it.
-          return { busy: reasons.length > 0, reasons, nextWakeAt };
+          return { busy, reasons, nextWakeAt };
         },
+        requestIdleSleep: async (instanceId) => {
+          const client = await (await getCloudBrainAccess()).client();
+          if (!client) throw new Error("no ADE Cloud access");
+          await client.requestIdleSleep(instanceId);
+        },
+        growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
         sendTimedWake: async (wake) => {
           const auth = brainAccountAuthService;
           if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");
           const base = getSharedAccountDirectoryBaseUrl();
           if (!base) throw new Error("no account directory");
           const token = await auth.getAccessToken();
-          const response = await fetch(`${base.replace(/\/+$/, "")}/agent37/wake`, {
+          const response = await fetch(`${base.replace(/\/+$/, "")}/cloud/wake`, {
             method: "clear" in wake ? "DELETE" : "PUT",
             headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
             body: JSON.stringify("clear" in wake ? { instanceId: wake.instanceId } : wake),
@@ -28583,10 +28944,24 @@ async function runServe(
       process.cwd(),
       headlessProjectLogger,
     );
-    return createProjectScaffoldService({
+    const service = createProjectScaffoldService({
       logger: headlessProjectLogger,
       githubService,
     });
+    if (!cloudKeepAwake || !cloudKeepAwakeModule) return service;
+    // A first clone can take many minutes; the machine stays awake for it.
+    const { holdCloudBusy } = cloudKeepAwakeModule;
+    return {
+      ...service,
+      cloneRepository: async (input: Parameters<typeof service.cloneRepository>[0]) => {
+        const release = holdCloudBusy(layout.adeDir, "first_clone", 30 * 60_000);
+        try {
+          return await service.cloneRepository(input);
+        } finally {
+          release();
+        }
+      },
+    };
   };
   const getHeadlessDefaultParentDir = (): string => {
     const firstProjectRoot = projectRegistry.list()[0]?.rootPath;
@@ -28904,9 +29279,10 @@ async function runServe(
       // `switchSyncHost` refuses a project that follows another machine before
       // it touches the current host, so this handoff cannot drop every client
       // for a target that never takes over.
-      await scopeRegistry.switchSyncHost(projectId, {
+      const hosted = await scopeRegistry.switchSyncHost(projectId, {
         deactivatePreviousHost: true,
       });
+      if (hosted) releaseProjectlessHostLease();
       await scopeRegistry.deactivateInactiveSyncHosts();
     },
     browseDirectories: async (input: ProjectBrowseInput) =>
@@ -28971,6 +29347,10 @@ async function runServe(
   // scope's sync service owns its own lease). Machine-exclusive subsystems
   // gate on holding one or the other.
   let brainSyncHostLease: SyncHostSingletonLease | null = null;
+  /** Set below; a project scope took sync hosting over from the projectless brain. */
+  let releaseProjectlessHostLease: () => void = () => {};
+  /** Set below; starts hosting the newest project, with no repair override. */
+  let startSyncHostOnDemand: () => Promise<unknown> = async () => null;
   // Relay tunnel for that same projectless case. `createAdeRuntime` builds one
   // per project scope; with no scope there is nobody to build it, which left a
   // projectless machine reachable only on the LAN.
@@ -29204,6 +29584,13 @@ async function runServe(
         buildSnapshot: () => activityRosterProvider.buildSnapshot(),
       },
       foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      // A project socket served here moves to the project host once one attaches.
+      projectHostAttached: () => sharedSyncListener?.hasConnectionHandler() ?? false,
+      onProjectHostAttached: (listener) => sharedSyncListener?.onConnectionHandlerAttached(listener) ?? (() => {}),
+      // The start-up path: it also hands the projectless lease and relay gate over.
+      activateProjectHost: async () => {
+        await startSyncHostOnDemand();
+      },
       projectCommandRouter: {
         resolveProjectId: ({ projectId, projectRootPath }) => {
           const byId = projectId?.trim() ? projectRegistry.get(projectId.trim()) : null;
@@ -29298,10 +29685,12 @@ async function runServe(
       // no runtime boot) — the counterpart to the roster feed above.
       foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
       personalChatScope,
+      // A save from the web or the phone is work, and keeps a cloud machine awake.
+      onRemoteFileWrite: () => { void cloudKeepAwake?.noteUse(); },
     },
   });
   keepAwakeService?.start();
-  agent37KeepAwake?.start();
+  cloudKeepAwake?.start();
   // What a brain report needs to explain a missing project or a lost scope
   // (`shared/sentry/diagnostics.ts`). Read when a report is sent; no-ops
   // when Sentry is off.
@@ -29387,27 +29776,14 @@ async function runServe(
     return routing;
   };
 
-  // This brain's agents reaching the account's other machines. One per brain
-  // (it owns the agents' paired connections), built on first use; an embedded
-  // guest has no machine authority and gets none.
-  let agent37BrainAccess: Promise<import("../../desktop/src/main/services/agent37/agent37BrainAccess").Agent37BrainAccess> | null = null;
-  const getAgent37BrainAccess = () => {
-    agent37BrainAccess ??= import("../../desktop/src/main/services/agent37/agent37BrainAccess").then(
-      ({ createAgent37BrainAccess }) => createAgent37BrainAccess({
-        // Any booted project's vault: the Agent 37 items are account-wide.
-        vaultStore: async () => {
-          for (const record of projectRegistry.list()) {
-            const scope = await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
-            if (scope?.runtime.accountVaultStore) return scope.runtime.accountVaultStore;
-          }
-          return null;
-        },
-        signedIn: () => brainAccountAuthService.getStatus().signedIn === true,
-        logger: headlessProjectLogger,
-      }),
-    );
-    return agent37BrainAccess;
-  };
+  // Ask once, off the boot path: agents and `ade cloud` read this answer, and a
+  // chat that launches later keeps it current (`watchCloudAccessForSkills`).
+  if (!embedded && servesMachineEndpoint) {
+    const firstCloudAccessRead = setTimeout(() => {
+      void getCloudBrainAccess().then((access) => access.client()).catch(() => undefined);
+    }, 3_000);
+    firstCloudAccessRead.unref?.();
+  }
   let agentMachineBridge: Promise<import("./services/account/agentMachineBridge").AgentMachineBridge> | null = null;
   const getAgentMachineBridge = () => {
     agentMachineBridge ??= import("./services/account/agentMachineBridge").then(
@@ -29415,8 +29791,8 @@ async function runServe(
         appVersion: VERSION,
         projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
         logger: headlessProjectLogger,
-        // A call to a sleeping Agent 37 box wakes it with the account's key.
-        wakeForUse: async (machine) => (await getAgent37BrainAccess()).wakeForUse(machine),
+        // A call to a sleeping cloud box wakes it with the account's key.
+        wakeForUse: async (machine) => (await getCloudBrainAccess()).wakeForUse(machine),
       }),
     );
     return agentMachineBridge;
@@ -29585,7 +29961,7 @@ async function runServe(
     setInterval(runWorkCopySweep, 60 * 60_000).unref?.();
   }
 
-  // Agent 37 and the account vault with no project open (`agent37.call`,
+  // the provider and the account vault with no project open (`cloud.call`,
   // `accountVault.call`), as a project runtime of this brain has them: the
   // machine's vault store only when sync is on, as `createAdeRuntime` does, so
   // a brain with sync off (a test brain) never opens the account's vault. One
@@ -29634,8 +30010,54 @@ async function runServe(
     return buildMachineAccountDomainServices(await machineAccountRuntime);
   };
 
+  // Work another machine does here (a command, a chat or CLI send, a file
+  // copied in) keeps a cloud machine awake (cloudKeepAwake). Reads, lists
+  // and status polls do not: an idle window polling one must not bill it all month.
+  const isRemoteWork = (params: unknown): boolean => {
+    if (!isRecord(params) || !isRecord(params.arguments)) return false;
+    if (params.name === "work_copy_file") return true;
+    if (params.name !== "run_ade_action") return false;
+    const domain = asString(params.arguments.domain);
+    const action = asString(params.arguments.action);
+    // A person watching a tool (Linux Desktop, a preview): a read, so it never
+    // wakes a sleeping computer, but it does keep an awake one awake.
+    if (domain === "work_tools" && action === "noteWatching") return true;
+    return Boolean(domain && action && adeActionAccess(domain, action) === "write" && !isBackgroundAdeWrite(domain, action));
+  };
+  const withRemoteUseNoted = <H extends JsonRpcHandler>(peerDeviceId: string | null, handler: H): H => {
+    if (!peerDeviceId || !cloudKeepAwake) return handler;
+    const keepAwake = cloudKeepAwake;
+    return Object.assign(async (request: Parameters<JsonRpcHandler>[0]) => {
+      if (request.method === "ade/actions/call" && isRemoteWork(request.params)) void keepAwake.noteUse();
+      return await handler(request);
+    }, handler);
+  };
   const createHandler = (context?: { peerDeviceId: string | null }) =>
-    createMultiProjectRpcRequestHandler({
+    withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
+      pushCloudWork: cloudKeepAwake && cloudKeepAwakeModule
+        ? async () => {
+            const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");
+            const release = cloudKeepAwakeModule.holdCloudBusy(layout.adeDir, "push_work", 10 * 60_000);
+            try {
+              return await pushCloudComputerWork({
+                projects: projectRegistry.list().map((record) => async () => (await scopeRegistry.get(record.projectId)).runtime),
+                logger: headlessProjectLogger,
+              });
+            } finally {
+              release();
+            }
+          }
+        : null,
+      prepareCloudStop: cloudKeepAwake
+        ? async ({ timeoutMs }) => {
+            const { prepareCloudComputerToStop } = await import("./services/power/cloudPrepareStop");
+            const booted = await Promise.all(projectRegistry.list().map(async (record) =>
+              (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null));
+            const personal = await personalChatScope.bootedRuntime().catch(() => null);
+            const runtimes = [...booted, personal].filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
+            return await prepareCloudComputerToStop({ runtimes, timeoutMs, logger: headlessProjectLogger });
+          }
+        : null,
       serverVersion: VERSION,
       peerDeviceId: context?.peerDeviceId ?? null,
       agentMachineBridge: agentMachineBridgeProxy,
@@ -29681,6 +30103,7 @@ async function runServe(
             logger: headlessProjectLogger,
             requestRestart: requestBrainServiceRestartFromServe,
             requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
+            updateInstallMode: () => readDesktopUpdateInstallMode(),
             // The app this brain reports as `desktopAppVersion`, on every platform.
             installedApp: async () => {
               const { readInstalledDesktopApp } = await import(
@@ -29707,7 +30130,7 @@ async function runServe(
       },
       disposeScopesOnDispose: false,
       onShutdown: finish,
-    });
+    }));
   clearSyncRuntimeRpcHandlerFactory = setSyncRuntimeRpcHandlerFactory(createHandler);
   // An embedded runtime belongs to the process that spawned it. On POSIX an
   // orphaned child is reparented to init and keeps running, so a host that dies
@@ -29808,6 +30231,19 @@ async function runServe(
     });
     return startSyncHostInFlight;
   };
+  releaseProjectlessHostLease = () => {
+    if (!brainSyncHostLease) return;
+    // A scope took over hosting and holds its own lease; drop the
+    // projectless one so the lock file describes the real owner.
+    brainSyncHostLease.dispose();
+    brainSyncHostLease = null;
+    // The scope's own runtime builds a gate over the SAME shared tunnel
+    // client, so hand ownership over instead of leaving two gates reacting to
+    // the same lease transitions. Disposing a gate never stops the tunnel.
+    brainRelayTunnelGate?.dispose();
+    brainRelayTunnelGate = null;
+    brainSyncTunnelClient = null;
+  };
   const startSyncHostOnce = async () => {
     let activeScope: Awaited<
       ReturnType<InstanceType<typeof ProjectScopeRegistry>["resolveActiveSyncHost"]>
@@ -29857,17 +30293,8 @@ async function runServe(
       );
       brainSyncHostLease.updatePort(listenerPort);
       await ensureProjectlessRelayTunnel();
-    } else if (activeScope && brainSyncHostLease) {
-      // A scope took over hosting and holds its own lease; drop the
-      // projectless one so the lock file describes the real owner.
-      brainSyncHostLease.dispose();
-      brainSyncHostLease = null;
-      // The scope's own runtime builds a gate over the SAME shared tunnel
-      // client, so hand ownership over instead of leaving two gates reacting to
-      // the same lease transitions. Disposing a gate never stops the tunnel.
-      brainRelayTunnelGate?.dispose();
-      brainRelayTunnelGate = null;
-      brainSyncTunnelClient = null;
+    } else if (activeScope) {
+      releaseProjectlessHostLease();
     }
     if (activeScope) {
       // Activating a scope is not the same as hosting. Its sync service makes
@@ -29902,11 +30329,12 @@ async function runServe(
     return activeScope ?? null;
   };
   startSyncHostForRepair = () => startSyncHost(true);
+  startSyncHostOnDemand = () => startSyncHost();
   const disposeServeResources = async () => {
     // A stopped brain must not describe itself in later reports from this process.
     for (const unregister of unregisterBrainDiagnostics) unregister();
     keepAwakeService?.dispose();
-    agent37KeepAwake?.dispose();
+    cloudKeepAwake?.dispose();
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
     stopSyncHostRehostWatch?.();
@@ -31159,7 +31587,7 @@ async function runInit(
   ]);
   const layout = resolveMachineAdeLayout();
   const registry = new ProjectRegistry(layout);
-  const project = registry.add(path.resolve(targetPath ?? process.cwd()), {
+  const project = registry.add(resolveCliPathArg(targetPath ?? process.cwd()), {
     catalogVisibility: "recent",
     registrationSource: "cli-explicit",
   });
@@ -32879,6 +33307,27 @@ function formatDeletedChats(value: unknown): string {
     ]),
     "No recently deleted chats.",
     // An id is pasted back into `ade chat deleted reopen`.
+    { fullColumns: ["ID"] },
+  );
+}
+
+function formatDeletedLanes(value: unknown): string {
+  const raw = unwrapActionEnvelope(value);
+  const lanes = Array.isArray(raw) ? raw.filter(isRecord) : [];
+  return renderTable(
+    ["ID", "LANE", "BRANCH", "SAVED", "WHEN", "AT", "KEPT UNTIL"],
+    lanes.map((lane) => [
+      asString(lane.id) ?? "?",
+      cell(lane.laneName, 32),
+      cell(lane.branchName ?? "-", 32),
+      lane.uncommitted === true ? "files + commits" : "commits",
+      // A freed lane is still there (archived); restoring it puts the files back.
+      lane.kind === "freed" ? "space freed" : "deleted",
+      cell(lane.deletedAt, 24),
+      cell(lane.expiresAt, 24),
+    ]),
+    "No deleted lanes with saved work.",
+    // An id is pasted back into `ade lanes deleted restore`.
     { fullColumns: ["ID"] },
   );
 }
@@ -36045,17 +36494,24 @@ function formatTerminalList(value: unknown): string {
   );
 }
 
-function formatPtyCreate(value: unknown): string {
+/** Where `shell start --machine` ran, for the command that reads it back. */
+type ShellRemoteTarget = { machine: string; project: string | null };
+
+function formatPtyCreate(value: unknown, remote: ShellRemoteTarget | null = null): string {
   const result = isRecord(value) ? value : {};
   const sessionId = typeof result.sessionId === "string" ? result.sessionId : null;
   const ptyId = typeof result.ptyId === "string" ? result.ptyId : null;
-  const readCommand = sessionId ? `ade terminal read --terminal ${sessionId} --text` : null;
-  return renderKeyValues("ADE shell session", [
+  const onMachine = remote
+    ? ` --machine ${quoteShellArg(remote.machine)}${remote.project ? ` --machine-project ${quoteShellArg(remote.project)}` : ""}`
+    : "";
+  const readCommand = sessionId ? `ade terminal read --terminal ${sessionId}${onMachine} --text` : null;
+  const details = renderKeyValues("ADE shell session", [
     ["session", sessionId],
     ["pty", ptyId],
     ["pid", result.pid],
-    ["read with", readCommand],
   ]);
+  // Last and whole: the table clips a long value, and this one is to be copied.
+  return readCommand ? `${details}\nread with  ${readCommand}` : details;
 }
 
 function formatTerminalRead(value: unknown): string {
@@ -37197,12 +37653,14 @@ function formatTextOutput(
       return formatProjectSecrets(value);
     case "integrations":
       return formatIntegrations(value);
-    case "agent37-ready":
-      return formatAgent37Ready(value);
-    case "agent37-list":
-      return formatAgent37List(value);
-    case "agent37-result":
-      return formatAgent37Result(value);
+    case "cloud-ready":
+      return formatCloudReady(value);
+    case "cloud-list":
+      return formatCloudList(value);
+    case "cloud-hours":
+      return formatCloudHours(value);
+    case "cloud-result":
+      return formatCloudResult(value);
     case "mcp-servers":
       return formatMcpServers(value);
     case "mcp-servers-remove":
@@ -37263,6 +37721,8 @@ function formatTextOutput(
       return formatArchiveList(value);
     case "deleted-chats":
       return formatDeletedChats(value);
+    case "deleted-lanes":
+      return formatDeletedLanes(value);
     case "archive-summary":
       return formatArchiveSummary(value);
     case "archive-action":
@@ -37817,11 +38277,18 @@ function summarizeExecution(args: {
       plan.label === "chat create from Linear issue") &&
     values.session !== undefined
   ) {
+    const notified = values.notify === undefined ? null : unwrapActionEnvelope(values.notify);
+    if (isRecord(notified) && notified.ok === false) {
+      process.stderr.write(`ade: the chat started, but its notify webhook was not armed: ${String(notified.error ?? "unknown error")}\n`);
+    }
     return {
       ok: true,
       session: unwrapActionEnvelope(values.session),
       ...(values.attach !== undefined ? { attach: unwrapActionEnvelope(values.attach) } : {}),
       ...(values.result !== undefined ? { kickoff: unwrapActionEnvelope(values.result) } : {}),
+      ...(notified !== null
+        ? { notify: isRecord(notified) && notified.ok === false ? { armed: false, error: notified.error ?? null } : { armed: true } }
+        : {}),
     };
   }
 
@@ -37866,6 +38333,7 @@ function summarizeExecution(args: {
     const enrichment = isRecord(summary) ? summary : null;
     return {
       ...turnStatus,
+      ...(enrichment ? pickChatSettings(enrichment) : {}),
       ...(enrichment?.usageLimitResume !== undefined
         ? { usageLimitResume: enrichment.usageLimitResume }
         : {}),
@@ -37873,9 +38341,25 @@ function summarizeExecution(args: {
     };
   }
 
+  if (plan.label === "chat notify") {
+    if (unwrapActionEnvelope(values.summary) == null) {
+      chatMissedHere = true;
+      return { result: null };
+    }
+    return unwrapActionEnvelope(values.result);
+  }
+
+  if (plan.label === "chat events") {
+    const events = unwrapActionEnvelope(values.result);
+    if (events == null) chatMissedHere = true;
+    return events;
+  }
+
   if (plan.label === "chat send" || plan.label === "chat steer" || plan.label === "chat message") {
     const raw = unwrapActionEnvelope(values.result);
-    if (isRecord(raw)) return raw;
+    const chatSummary = values.summary !== undefined ? unwrapActionEnvelope(values.summary) : null;
+    const chatLaneId = isRecord(chatSummary) ? asString(chatSummary.laneId) : null;
+    if (isRecord(raw)) return chatLaneId ? { ...raw, laneId: chatLaneId } : raw;
     return {
       ok: true,
       accepted: true,
@@ -39547,6 +40031,65 @@ async function runOnMachine(
   }
 }
 
+/**
+ * Asks this machine's brain whether the account has ADE Cloud, for the few
+ * commands that change with the answer. An `ade cloud` starts the brain like
+ * any account command would; help and skills use one only when it's running.
+ */
+async function resolveCliCloudEnabled(parsed: ReturnType<typeof extractMachineTargeting>): Promise<void> {
+  const primary = parsed.command[0]?.toLowerCase();
+  const isCloud = primary === "cloud";
+  // What the server runs on a cloud computer never depends on the answer.
+  if (isCloud && CLOUD_ON_COMPUTER_PLANS.has(parsed.command[1]?.toLowerCase() ?? "")) {
+    const { isCloudMachine } = await import("./services/power/cloudKeepAwake");
+    if (isCloudMachine()) {
+      cliCloudEnabled = true;
+      setAdeCloudSkillVisible(true);
+      return;
+    }
+  }
+  const skipped = !isCloud && primary !== "skill" && primary !== "skills" && primary !== "help" && primary !== "settings" && primary !== "setting";
+  if (skipped && !hasHelpFlag(parsed.command)) return;
+  let client: Pick<CliConnection, "request" | "close"> | null = null;
+  try {
+    if (isCloud) {
+      client = await createConnection(
+        { ...parsed.options, machine: null, machineProject: null, requireSocket: false },
+        { autoRegisterProject: false, machineRuntimeOnly: true },
+      );
+    } else {
+      const { connectMachineBrainForRefresh } = await import("./services/account/cliRefreshBroker");
+      const brain = await connectMachineBrainForRefresh({
+        clientName: "ade-cli-cloud-access",
+        version: VERSION,
+        protocolVersion: PROTOCOL_VERSION,
+        socketPath: parsed.options.socketPath ?? null,
+      });
+      if (brain) {
+        client = {
+          request: (method, params) => brain.request(method, params),
+          close: () => brain.close(),
+        };
+      }
+    }
+    if (client) {
+      const asked = client.request("cloud.call", { action: "access", args: {} });
+      const answer = await Promise.race([
+        asked,
+        new Promise<null>((resolve) => { setTimeout(() => resolve(null), 5_000).unref?.(); }),
+      ]);
+      const result = isRecord(answer) && isRecord(answer.result) ? answer.result : isRecord(answer) ? answer : null;
+      cliCloudEnabled = result?.enabled === true;
+    }
+  } catch {
+    // Old brain, no brain: not known, so ADE Cloud isn't here for this command.
+    cliCloudEnabled = false;
+  } finally {
+    await client?.close();
+  }
+  setAdeCloudSkillVisible(cliCloudEnabled);
+}
+
 async function runParsedCli(
   parsed: ReturnType<typeof extractMachineTargeting>,
 ): Promise<{ output: string; exitCode: number }> {
@@ -39554,6 +40097,7 @@ async function runParsedCli(
   if (primary && IOS_SIM_DEPRECATED_PRIMARIES.has(primary)) {
     warnDeprecatedIosSimAlias();
   }
+  await resolveCliCloudEnabled(parsed);
   const plan = buildCliPlan(parsed.command, parsed.options);
   if (plan.kind === "help") {
     let output: string;
@@ -39561,7 +40105,7 @@ async function runParsedCli(
       const scope = remoteMcpHelpScope();
       const catalog = createHelpCatalog({
         version: VERSION,
-        pages: HELP_BY_COMMAND,
+        pages: cliCloudEnabled ? HELP_BY_COMMAND : helpPagesWithoutCloud(),
         aliases: CLI_COMMAND_ALIASES,
         topic: plan.catalogTopic,
         scope,
@@ -39620,15 +40164,24 @@ async function runParsedCli(
   // cheap commands like `ade help` and `ade --version` must not pay the scan/hash
   // cost (cheap no-op when already current).
   if (
-    plan.kind === "skill" ||
-    plan.kind === "account-machine-connect" ||
-    plan.kind === "brain" ||
-    plan.kind === "runtime" ||
-    plan.kind === "serve" ||
-    (plan.kind === "execute" &&
-      /^(chat create|personal chat create|new chat|shell start cli)\b/.test(plan.label))
+    process.env.ADE_DISABLE_SKILL_CLEANUP !== "1" && !process.env.VITEST && (
+      plan.kind === "skill" ||
+      plan.kind === "account-machine-connect" ||
+      plan.kind === "brain" ||
+      plan.kind === "runtime" ||
+      plan.kind === "serve" ||
+      (plan.kind === "execute" &&
+        /^(chat create|personal chat create|new chat|shell start cli)\b/.test(plan.label))
+    )
   ) {
-    cleanupLegacyBundledAdeSkillsForCli();
+    try {
+      // Only here and on demand: evaluating bootstrap took more than half of
+      // every `ade` command's startup, and cheap commands never need it.
+      const { cleanupLegacyBundledAdeSkillsForCli } = await import("./bootstrap");
+      cleanupLegacyBundledAdeSkillsForCli();
+    } catch (error) {
+      process.stderr.write(`ade: skipped legacy skill cleanup: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
   }
 
   // Exactly one process per machine may exchange the rotating refresh token,

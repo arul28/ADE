@@ -137,11 +137,14 @@ export function createFederatedWebAdapter({
   accountClient,
   accountKey,
   fallbackClient,
+  openOwnedDeeplink,
 }: {
   manager: WebMachineSessionManager;
   accountClient: BrowserAccountClient;
   accountKey: string;
   fallbackClient: AdeSyncClient;
+  /** Open a link that names its machine and project on them; false when it names none. */
+  openOwnedDeeplink?: (url: string) => Promise<boolean>;
 }): FederatedWebAdapter {
   let workspace = readWorkspaceState(accountKey);
   const fallbackAdapter = createAdeWebAdapter(fallbackClient, [], accountClient);
@@ -423,6 +426,7 @@ export function createFederatedWebAdapter({
   };
 
   const appOverrides = {
+    ...(openOwnedDeeplink ? { openOwnedDeeplink } : {}),
     async getProject() {
       return activeBinding
         ? {

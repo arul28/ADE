@@ -220,7 +220,10 @@ export function ChatUserMinimap({
   return (
     <div
       className={cn(
-        "pointer-events-none absolute left-0 z-20 hidden w-18 [@media(pointer:fine)]:block",
+        "pointer-events-none absolute left-0 z-20 w-18",
+        // Hover reveals the rail for a mouse. A touch screen needs the room to
+        // keep it on screen.
+        hasPersistentGutter ? "block" : "hidden [@media(pointer:fine)]:block",
         hasPersistentGutter || resolvedKeyboardIndex !== null
           ? "opacity-100"
           : "opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100",

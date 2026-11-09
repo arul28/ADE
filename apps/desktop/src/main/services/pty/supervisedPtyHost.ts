@@ -132,7 +132,7 @@ function resolvePtyHostWorkerNodePath(): string | undefined {
  * executable: `fork()` of a script from it re-enters the CLI, which rejects the
  * path as an unknown command and exits 2. So a brain on that runtime runs its
  * own hidden command, whatever install started it (install script, systemd,
- * launchd, a Windows service, an Agent 37 image).
+ * launchd, a Windows service, a provider image).
  */
 function resolvePtyHostWorkerCommand(workerNodePath: string | undefined): string | undefined {
   const configured = process.env.ADE_PTY_HOST_WORKER_COMMAND?.trim();
@@ -151,6 +151,9 @@ function appendWorkerLogTail(previous: string, chunk: unknown): string {
   return next.length > 8_000 ? next.slice(-8_000) : next;
 }
 
+/** The host reports a signal by name or number; node-pty's callers read it as given. */
+type PtyExitEvent = { exitCode: number; signal?: number | string };
+
 class RemotePty implements HostedPty {
   private readonly emitter = new EventEmitter();
   private readonly pendingRequests: QueuedRequest[] = [];
@@ -160,6 +163,17 @@ class RemotePty implements HostedPty {
   private spawned = false;
   private exited = false;
   private unackedChars = 0;
+  /**
+   * Output and exit the host reported before anyone listened. The caller
+   * attaches its listeners only once `__adePtyHostReady` settles, a microtask
+   * after the host's `spawned` message; IPC messages read in one chunk are all
+   * emitted before that, so a quick command's output and exit came with it and
+   * reached nobody (a blank terminal that stayed "running"). An in-process
+   * node-pty never emits before its caller listens; this keeps that promise.
+   */
+  private earlyData: string[] = [];
+  private earlyExit: PtyExitEvent | null = null;
+  private replayScheduled = false;
 
   readonly __adePtyHostReady: Promise<void>;
   readonly __adePtyHostId: string;
@@ -201,18 +215,32 @@ class RemotePty implements HostedPty {
 
   emitData(data: string): void {
     if (this.exited) return;
+    // Held output is not acknowledged, so the host stops reading this PTY
+    // (PTY_HOST_UNACKED_HIGH_CHARS) if nobody ever listens. Held only until
+    // the caller attaches its first listener, so a caller that wants the exit
+    // alone never stalls a chatty PTY.
+    if (this.earlyData.length > 0 || !this.hasListeners()) {
+      this.earlyData.push(data);
+      return;
+    }
+    this.deliverData(data);
+  }
+
+  private deliverData(data: string): void {
     try {
       this.emitter.emit("data", data);
     } finally {
       // Acknowledged after the listeners ran, so the host reads no faster than
       // this process works through the output (PTY_HOST_UNACKED_* in the
       // worker). Even a throwing listener acknowledges, or the host would stay
-      // paused for good.
-      this.unackedChars += data.length;
-      if (this.unackedChars >= PTY_HOST_ACK_BATCH_CHARS) {
-        const chars = this.unackedChars;
-        this.unackedChars = 0;
-        this.sendOrQueue({ type: "ack", ptyId: this.__adePtyHostId, chars });
+      // paused for good. Output replayed after the exit has no host to tell.
+      if (!this.exited) {
+        this.unackedChars += data.length;
+        if (this.unackedChars >= PTY_HOST_ACK_BATCH_CHARS) {
+          const chars = this.unackedChars;
+          this.unackedChars = 0;
+          this.sendOrQueue({ type: "ack", ptyId: this.__adePtyHostId, chars });
+        }
       }
     }
   }
@@ -221,8 +249,52 @@ class RemotePty implements HostedPty {
     if (this.exited) return;
     this.exited = true;
     this.resolveReady();
-    this.emitter.emit("exit", { exitCode: exitCode ?? 1, signal: signal ?? undefined });
+    const event: PtyExitEvent = { exitCode: exitCode ?? 1, signal: signal ?? undefined };
+    // After the output it follows, and only to someone listening.
+    if (this.earlyData.length > 0 || this.emitter.listenerCount("exit") === 0) {
+      this.earlyExit = event;
+      return;
+    }
+    this.deliverExit(event);
+  }
+
+  private deliverExit(event: PtyExitEvent): void {
+    this.emitter.emit("exit", event);
     this.emitter.removeAllListeners();
+  }
+
+  private hasListeners(): boolean {
+    return this.emitter.listenerCount("data") > 0 || this.emitter.listenerCount("exit") > 0;
+  }
+
+  /**
+   * Hands what the host reported early to the listeners attached since. A
+   * microtask later, so a caller that attaches onData and then onExit gets
+   * the output before the exit. A listener that throws is logged as on the
+   * live path, never left to end the process from a microtask.
+   */
+  private scheduleReplay(): void {
+    if (this.replayScheduled || (this.earlyData.length === 0 && !this.earlyExit)) return;
+    this.replayScheduled = true;
+    queueMicrotask(() => {
+      this.replayScheduled = false;
+      for (const data of this.earlyData.splice(0)) {
+        try {
+          this.deliverData(data);
+        } catch (error) {
+          this.host.reportListenerError(error);
+        }
+      }
+      const exit = this.earlyExit;
+      if (exit && this.emitter.listenerCount("exit") > 0) {
+        this.earlyExit = null;
+        try {
+          this.deliverExit(exit);
+        } catch (error) {
+          this.host.reportListenerError(error);
+        }
+      }
+    });
   }
 
   markHostExited(exitCode: number | null): void {
@@ -235,11 +307,13 @@ class RemotePty implements HostedPty {
 
   onData(callback: (data: string) => void): { dispose: () => void } {
     this.emitter.on("data", callback);
+    this.scheduleReplay();
     return { dispose: () => this.emitter.removeListener("data", callback) };
   }
 
   onExit(callback: (event: { exitCode: number; signal?: number }) => void): { dispose: () => void } {
     this.emitter.on("exit", callback);
+    this.scheduleReplay();
     return { dispose: () => this.emitter.removeListener("exit", callback) };
   }
 
@@ -360,6 +434,13 @@ class SupervisedPtyHost {
       options,
     });
     return remote;
+  }
+
+  /** A PTY's own listener threw on output or exit the host reported. */
+  reportListenerError(error: unknown): void {
+    this.logger.warn("pty.host_message_handler_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   send(request: ChildRequest): void {
@@ -527,9 +608,7 @@ class SupervisedPtyHost {
       try {
         this.handleMessage(childState, message as HostMessage);
       } catch (error) {
-        this.logger.warn("pty.host_message_handler_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        this.reportListenerError(error);
       }
     });
     child.once("exit", (code, signal) => this.handleExit(childState, code, signal));

@@ -853,8 +853,13 @@ struct WorkSessionListRow: View {
   /// reads `ready`/`idle` here and Settle is already offered. The two agree on
   /// behaviour by different routes; if iOS ever gains the promotion, it must
   /// gain the `liveness == .turn` clause with it.
+  ///
+  /// A chat resting on a PR watch IS promoted here, so it carries that clause:
+  /// settling stops nothing, and the watch keeps running.
   fileprivate var isActivelyRunning: Bool {
-    canonicalPhase == .starting || canonicalPhase == .running || canonicalPhase == .stale
+    let state = workCanonicalSessionState(session: session, summary: chatSummary)
+    if state.restingOnPrWatch { return false }
+    return state.phase == .starting || state.phase == .running || state.phase == .stale
   }
 
   /// Whether a needs-you ask can be DISMISSED as part of settling. A chat
@@ -1845,7 +1850,7 @@ struct WorkRootHeaderActions {
   var onOpenActivity: () -> Void = {}
   var onOpenLinear: () -> Void = {}
   var onOpenCursorCloud: () -> Void = {}
-  var onOpenAgent37: () -> Void = {}
+  var onOpenCloud: () -> Void = {}
   var onOpenGitHubIssues: () -> Void = {}
   var onOpenSettings: () -> Void = {}
 }
@@ -1867,7 +1872,7 @@ struct WorkRootHeader: View {
   let showsLinear: Bool
   let showsCursorCloud: Bool
   var showsGitHubIssues = false
-  var showsAgent37 = false
+  var showsCloud = false
   /// Non-nil while multi-select is on; the row becomes "N selected · Cancel".
   let selectionCount: Int?
   let actions: WorkRootHeaderActions
@@ -1913,7 +1918,7 @@ struct WorkRootHeader: View {
         showsLinear: showsLinear,
         showsCursorCloud: showsCursorCloud,
         showsGitHubIssues: showsGitHubIssues,
-        showsAgent37: showsAgent37,
+        showsCloud: showsCloud,
         actions: actions
       )
     }
@@ -2123,8 +2128,8 @@ struct WorkHeaderOverflowMenu: View {
   let showsLinear: Bool
   let showsCursorCloud: Bool
   var showsGitHubIssues = false
-  /// Agent 37 is set up on the account and this machine can run the page.
-  var showsAgent37 = false
+  /// the provider is set up on the account and this machine can run the page.
+  var showsCloud = false
   let actions: WorkRootHeaderActions
   /// In a system toolbar: a plain symbol label (with the unread count as the
   /// item's badge), which the toolbar styles and lays out itself.
@@ -2187,12 +2192,12 @@ struct WorkHeaderOverflowMenu: View {
           Label { Text("Cursor Cloud") } icon: { Image("CursorCloudLogo") }
         }
       }
-      if showsAgent37 {
+      if showsCloud {
         Button {
           ADEHaptics.light()
-          actions.onOpenAgent37()
+          actions.onOpenCloud()
         } label: {
-          Label("Agent 37", systemImage: "cloud")
+          Label("ADE Cloud", systemImage: "cloud")
         }
       }
       Divider()
@@ -2208,7 +2213,7 @@ struct WorkHeaderOverflowMenu: View {
     }
     .animation(.snappy(duration: 0.2), value: unread > 0)
     .accessibilityLabel(unread > 0 ? "More, \(unread) activity \(unread == 1 ? "item needs" : "items need") you" : "More")
-    .accessibilityHint("Activity, Linear, GitHub Issues, Cursor Cloud, Agent 37 and Settings")
+    .accessibilityHint("Activity, Linear, GitHub Issues, Cursor Cloud, ADE Cloud and Settings")
   }
 
   private var phoneLabel: some View {

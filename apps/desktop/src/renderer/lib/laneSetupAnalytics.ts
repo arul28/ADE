@@ -23,7 +23,7 @@ export type LaneSetupAnalyticsFact =
   | { action: "start_default_changed"; outcome: "start_default" | "start_primary" | "start_branch" }
   | { action: "branch_renamed"; outcome: "completed" | "failed" }
   | { action: "auto_archive_changed" | "auto_free_up_changed" | "auto_delete_changed"; outcome: "enabled" | "disabled" }
-  | { action: "space_freed"; outcome: "completed" | "failed" };
+  | { action: "space_freed" | "deleted_lane_restored"; outcome: "completed" | "failed" };
 
 /** Emit one allowlisted lane setup fact without letting analytics affect UI. */
 export function captureLaneSetupAnalytics(fact: LaneSetupAnalyticsFact): void {

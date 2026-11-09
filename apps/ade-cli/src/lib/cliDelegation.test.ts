@@ -189,6 +189,7 @@ describe("runDelegatedCli", () => {
         ADE_CLI_DELEGATED: "1",
         ADE_HOME: "C:\\Users\\a\\.ade-alpha",
         ADE_RUNTIME_SOCKET_PATH: "\\\\.\\pipe\\ade-alpha-100%",
+        NODE_COMPILE_CACHE: "C:\\Users\\a\\.ade-alpha\\cache\\node-compile",
         ELECTRON_RUN_AS_NODE: "1",
       },
     }));
@@ -205,7 +206,7 @@ describe("parseAdeCmdShim", () => {
       brain: { socketPath: null, adeHome: null },
       platform: "win32",
     });
-    expect(parseAdeCmdShim(text)).toEqual({ execPath: "C:\\ade\\ADE.exe", entryPath: "C:\\ade\\cli.cjs", defaults: [] });
+    expect(parseAdeCmdShim(text)).toEqual({ execPath: "C:\\ade\\ADE.exe", entryPath: "C:\\ade\\cli.cjs", defaults: [], compileCache: true });
   });
 
   it("refuses a shim it did not write, or one for a native binary", () => {

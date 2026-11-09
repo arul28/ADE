@@ -47,6 +47,17 @@ export function isDirectChildFolder(
   return sameFolder(path.dirname(child), parent, platform);
 }
 
+/**
+ * Whether `candidate` sits anywhere below `parent`, compared by real path
+ * because git prints real paths. `parent` is not inside itself.
+ */
+export function isFolderInside(parent: string | null | undefined, candidate: string | null | undefined): boolean {
+  if (!parent || !candidate) return false;
+  const real = (target: string) => realPathOrNull(path.resolve(target)) ?? path.resolve(target);
+  const relative = path.relative(real(parent), real(candidate));
+  return relative.length > 0 && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
 function realPathOrNull(target: string): string | null {
   try {
     // Unpatched fs: under Electron a lane path through an `.asar` reads as a folder.

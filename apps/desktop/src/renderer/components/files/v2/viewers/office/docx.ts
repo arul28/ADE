@@ -21,6 +21,8 @@ const MAX_TABLE_COLS = 100;
 const MAX_TABLE_CELLS = 20_000;
 /** Nested tables are useful content, but recursion must stay shallow. */
 const MAX_NESTING = 4;
+/** Elements that hold runs without adding anything of their own. */
+const RUN_WRAPPERS = new Set(["smartTag", "sdt", "sdtContent", "fldSimple", "ins", "moveTo"]);
 /** Yield while scanning long bodies and tables so rendering can continue. */
 const BLOCKS_PER_YIELD = 250;
 const DOC_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
@@ -96,7 +98,6 @@ export type WordHeading = {
 };
 export type WordNotices = {
   charts: number;
-  textBoxes: number;
   shapes: number;
   footnotes: number;
   endnotes: number;
@@ -217,6 +218,38 @@ function cellAtGridColumn(tr: Element, column: number): Element | null {
   }
   return null;
 }
+/**
+ * The text of the text boxes in a drawing. `AlternateContent` repeats one box
+ * as `Choice` and `Fallback`, so only the first that has any is read.
+ */
+function textBoxText(node: Element): string | null {
+  const scopes = node.localName === "AlternateContent"
+    ? Array.from(node.children).filter((item) => item.localName === "Choice" || item.localName === "Fallback")
+    : [node];
+  for (const scope of scopes) {
+    // Each box reads only its own paragraphs, and a Fallback inside the scope
+    // repeats a box the Choice beside it already has.
+    const lines = Array.from(scope.getElementsByTagNameNS(DOC_NS, "txbxContent"))
+      .filter((box) => {
+        const fallback = nearestAncestor(box, "Fallback");
+        return fallback === null || fallback === scope;
+      })
+      .flatMap((box) => Array.from(box.getElementsByTagNameNS(DOC_NS, "p"))
+        .filter((paragraph) => nearestAncestor(paragraph, "txbxContent") === box)
+        .map((paragraph) => Array.from(paragraph.getElementsByTagNameNS(DOC_NS, "*"))
+          .filter((item) => nearestAncestor(item, "txbxContent") === box)
+          .map((item) => {
+            if (item.localName === "t") return item.textContent ?? "";
+            if (item.localName === "tab") return "\t";
+            return item.localName === "br" || item.localName === "cr" ? "\n" : "";
+          })
+          .join("")))
+      .filter(Boolean);
+    if (lines.length) return lines.join("\n");
+  }
+  return null;
+}
+
 function nearestAncestor(el: Element, name: string): Element | null {
   for (let node = el.parentElement; node; node = node.parentElement)
     if (node.localName === name) return node;
@@ -445,7 +478,6 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
   };
   const notices: WordNotices = {
     charts: 0,
-    textBoxes: 0,
     shapes: 0,
     footnotes: 0,
     endnotes: 0,
@@ -456,7 +488,6 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
     trimmedTables: 0,
   };
   notices.charts = elementsNS(doc, "chart").length;
-  notices.textBoxes = elementsNS(doc, "txbxContent").length;
   notices.shapes = elementsNS(doc, "sp").length;
   // A part that is missing or not valid XML counts as nothing to show. Word
   // also writes separator and continuation-separator entries into the
@@ -508,8 +539,11 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
       if (!(node instanceof Element)) continue;
       const name = node.localName;
       let text: string | null = null;
-      if (name === "t" || name === "delText" || name === "instrText")
+      // `instrText` is a field's code (`PAGEREF _Toc1 \\h`), not its result.
+      if (name === "t" || name === "delText")
         text = node.textContent ?? "";
+      else if (name === "AlternateContent" || name === "drawing" || name === "pict")
+        text = textBoxText(node);
       else if (name === "tab" || name === "ptab") text = "\t";
       else if (name === "br" || name === "cr")
         text = val(node, "type") === "page" ? "\u000c" : "\n";
@@ -618,25 +652,21 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
             item,
             target ?? (anchor ? `#${encodeURIComponent(anchor)}` : href),
           );
-        } else if (
-          item.localName === "r" ||
-          item.localName === "smartTag" ||
-          item.localName === "sdt"
-        ) {
-          if (item.localName === "r")
-            runs.push(
-              ...runModel(
-                item,
-                href,
-                child(item, "rPr") ??
-                  chain
-                    .map((s) => s.rPr)
-                    .filter(Boolean)
-                    .at(-1) ??
-                  null,
-              ),
-            );
-          else collect(item, href);
+        } else if (item.localName === "r") {
+          runs.push(
+            ...runModel(
+              item,
+              href,
+              child(item, "rPr") ??
+                chain
+                  .map((s) => s.rPr)
+                  .filter(Boolean)
+                  .at(-1) ??
+                null,
+            ),
+          );
+        } else if (RUN_WRAPPERS.has(item.localName)) {
+          collect(item, href);
         }
       }
     };

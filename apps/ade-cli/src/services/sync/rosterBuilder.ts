@@ -21,6 +21,7 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AgentChatSpawnKind } from "../../../../desktop/src/shared/types/chat";
+import type { SessionActivePrWatch } from "../../../../desktop/src/shared/prWatch";
 import { isTrackedAgentCliToolType, type TerminalToolType } from "../../../../desktop/src/shared/types/sessions";
 import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
 import {
@@ -81,6 +82,8 @@ export type RosterLiveSession = {
   activeBackgroundTaskCount?: number | null;
   /** The chat's next scheduled wake, if one is parked. */
   nextWakeAt?: string | null;
+  /** The chat's live PR watches: it reads running between wakes, like the Work row. */
+  activePrWatch?: SessionActivePrWatch | null;
   /**
    * Set on CTO/identity chats. Identity sessions are deliberately omitted from
    * the normal project roster, but this marker remains available as a
@@ -863,7 +866,11 @@ async function buildRosterProject(
           ? "running"
           : rosterFailureIsCurrent(row)
             ? "failed"
-            : liveStatus ?? diskChatStatus(row, Boolean(sidecar?.awaitingInput));
+            // After the settled and failed tiers, as on the Work row: a settled
+            // chat stays settled while its watch runs, and a raised hand still wins.
+            : live?.activePrWatch && liveStatus !== "awaiting" && row.status !== "disposed"
+              ? "running"
+              : liveStatus ?? diskChatStatus(row, Boolean(sidecar?.awaitingInput));
     const awaitingInput = status === "awaiting";
     const snoozed = isSessionSnoozed({
       snoozedUntil: row.snoozed_until,

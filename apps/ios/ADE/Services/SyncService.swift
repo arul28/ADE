@@ -887,7 +887,8 @@ enum SyncRequestTimeout {
 
   static func commandTimeoutNanoseconds(for action: String) -> UInt64 {
     switch action {
-    case "lanes.delete":
+    case "lanes.delete", "lanes.restoreDeleted":
+      // A restore checks the branch out into a new worktree on the host.
       return laneDeleteTimeoutNanoseconds
     case "chat.cancelLaunch":
       // Waits out an in-flight checkout, then deletes the lane (worktree,
@@ -916,6 +917,17 @@ private struct LaneDeletionFailure: Equatable {
   let projectId: String
   let projectRootPath: String?
   let message: String
+}
+
+/// A lane delete that kept work, for the Lanes tab's "Kept … Restore" notice.
+struct LaneDeletionKept: Equatable, Identifiable {
+  /// The project on screen when the delete started: where the notice shows.
+  let shownInProjectId: String?
+  /// Where the save lives, which is another machine's project for its lanes.
+  let projectId: String?
+  let projectRootPath: String?
+  let snapshot: DeletedLaneSnapshot
+  var id: String { snapshot.id }
 }
 
 private let syncTerminalSubscriptionMaxBytes = 240_000
@@ -4346,6 +4358,7 @@ final class SyncService: ObservableObject {
   /// `macDesktop.streamEnded`, keyed by the subscription id the phone minted.
   /// Main-actor because every consumer is a view; the receive path decodes the
   /// record's bytes off the main actor before landing here.
+  private var macDesktopStreamMachineKeys: [String: String] = [:]
   private var macDesktopStreamRecordHandlers: [String: (MacDesktopStreamRecord) -> Void] = [:]
   private var macDesktopStreamEndedHandlers: [String: (MacDesktopStreamEnded) -> Void] = [:]
   /// Serializes each subscription's record decodes so delivery stays in the
@@ -4366,6 +4379,7 @@ final class SyncService: ObservableObject {
   /// the pending ids so lane-bound UI can stop presenting stale controls.
   @Published private(set) var pendingLaneDeletionIds: Set<String> = []
   @Published private var laneDeletionFailure: LaneDeletionFailure?
+  @Published private(set) var laneDeletionsKept: [LaneDeletionKept] = []
   @Published private(set) var laneDetailProjectionRevision = 0
   /// Per-lane detail revisions bumped only for local `lane_detail_snapshots`
   /// writes with a known lane id, so an open lane detail stops reloading when an
@@ -4468,9 +4482,9 @@ final class SyncService: ObservableObject {
   @Published var linearPanePresented = false
   @Published var cursorCloudPanePresented = false
   @Published var githubIssuesPanePresented = false
-  /// The Agent 37 page (Work ⋯ menu), and whether the account has Agent 37 set up.
-  @Published var agent37PanePresented = false
-  @Published var agent37Available = false
+  /// The provider page (Work ⋯ menu), and whether the account has the provider set up.
+  @Published var cloudPanePresented = false
+  @Published var cloudAvailable = false
   /// Projects whose Work ⋯ menu offers GitHub Issues (see `GitHubIssuesMenuAvailability`).
   @Published var githubIssuesMenuProjectIds: Set<String> = []
   /// When set, the Linear pane attaches the chosen issue to this chat session
@@ -5207,7 +5221,7 @@ final class SyncService: ObservableObject {
 
   /// A pane is up over the Hub. A Hub notice waits until it closes.
   var hubIsCoveredBySheet: Bool {
-    linearPanePresented || cursorCloudPanePresented || githubIssuesPanePresented || agent37PanePresented
+    linearPanePresented || cursorCloudPanePresented || githubIssuesPanePresented || cloudPanePresented
   }
 
   /// Starts (or stops) the timer for the current session request. Only an
@@ -9191,9 +9205,9 @@ final class SyncService: ObservableObject {
         stage: stage
       )
       guard wake else { return false }
-      // An Agent 37 box asleep is woken through the machine the phone is on;
+      // a cloud box asleep is woken through the machine the phone is on;
       // its ADE answers a few seconds later, which the pairing waits out.
-      _ = await wakeAgent37MachineIfNeeded(machineKey: machine.machineKey)
+      _ = await wakeCloudMachineIfNeeded(machineKey: machine.machineKey)
       if await pairWithAccountMachine(machine, authorization: authorization) {
         pendingMachineWake = nil
         return true
@@ -14644,6 +14658,8 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "lanes.unarchive", args: ["laneId": laneId])
   }
 
+  /// Work the host kept (Recently deleted) goes to `laneDeletionsKept`, which
+  /// the Lanes tab offers to restore.
   func deleteLane(
     _ laneId: String,
     deleteBranch: Bool = true,
@@ -14653,13 +14669,86 @@ final class SyncService: ObservableObject {
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil
   ) async throws {
-    _ = try await sendCommand(action: "lanes.delete", args: [
+    // Deletes run in the background; the project may change before this answers.
+    let shownInProjectId = activeProjectId
+    var keptProjectId = targetProjectId ?? activeProjectId
+    var keptRootPath = targetProjectRootPath ?? (targetProjectId == nil ? activeProjectRootPath : nil)
+    if let laneTarget = try? syncRemoteLaneTarget(args: ["laneId": laneId]),
+       laneTarget.machineKey != focusedMachineKey,
+       let repo = try? requireRemoteLaneRepo(machineKey: laneTarget.machineKey) {
+      keptProjectId = repo.markedProjectId
+      keptRootPath = repo.rootPath
+    }
+    let response = try await sendCommand(action: "lanes.delete", args: [
       "laneId": laneId,
       "deleteBranch": deleteBranch,
       "deleteRemoteBranch": deleteRemoteBranch,
       "remoteName": remoteName,
       "force": force,
     ], targetProjectId: targetProjectId, targetProjectRootPath: targetProjectRootPath)
+    // A queued delete or an older host answers without it.
+    guard let payload = response as? [String: Any], let savedWork = payload["savedWork"], !(savedWork is NSNull) else { return }
+    let snapshot: DeletedLaneSnapshot
+    do {
+      snapshot = try decode(savedWork, as: DeletedLaneSnapshot.self)
+    } catch {
+      // The work is still in Recently deleted; only the notice is lost.
+      CrashReporting.capture(error, context: ["area": "sync.lane_delete_saved_work"])
+      return
+    }
+    laneDeletionsKept.removeAll { $0.id == snapshot.id }
+    laneDeletionsKept.append(LaneDeletionKept(
+      shownInProjectId: shownInProjectId,
+      projectId: keptProjectId,
+      projectRootPath: keptRootPath,
+      snapshot: snapshot
+    ))
+  }
+
+  /// Deleted lanes whose work the machine kept, newest first.
+  func listDeletedLanes(targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws -> [DeletedLaneSnapshot] {
+    try await sendDecodableCommand(
+      action: "lanes.listDeleted",
+      args: [:],
+      disconnectOnTimeout: false,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: [DeletedLaneSnapshot].self
+    )
+  }
+
+  /// Brings a deleted lane back (or puts a freed lane's files back) from its
+  /// saved work. Never pushes.
+  func restoreDeletedLane(_ id: String, targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws -> RestoreDeletedLaneResult {
+    let result = try await sendDecodableCommand(
+      action: "lanes.restoreDeleted",
+      args: ["id": id],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: RestoreDeletedLaneResult.self
+    )
+    if result.restoredUncommitted { laneDeletionsKept.removeAll { $0.id == id } }
+    return result
+  }
+
+  /// Drops a deleted lane's saved work for good.
+  func removeDeletedLane(_ id: String, targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws {
+    _ = try await sendCommand(
+      action: "lanes.removeDeleted",
+      args: ["id": id],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    )
+    laneDeletionsKept.removeAll { $0.id == id }
+  }
+
+  /// Kept-work notices for the project on screen.
+  var activeLaneDeletionsKept: [LaneDeletionKept] {
+    laneDeletionsKept.filter { $0.shownInProjectId == activeProjectId }
+  }
+
+  func dismissLaneDeletionKept(_ id: String) {
+    laneDeletionsKept.removeAll { $0.id == id }
   }
 
   /// Starts a destructive lane cleanup without keeping the caller's sheet or
@@ -16983,7 +17072,9 @@ final class SyncService: ObservableObject {
   /// read-only disclosure drop the user's whole sync connection on one slow
   /// cellular round trip.
   func fetchWorkToolsLaneState(laneId: String) async throws -> WorkToolsLaneState {
-    try requireWorkToolsAction("workTools.getLaneState")
+    guard supportsWorkToolsState(laneId: laneId) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "The Work tools pane is not available on this machine version.", "ADEErrorCode": "unsupported_action"])
+    }
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     // Project-scoped, resolved from the active project binding: a lane only
     // exists inside the project the phone is already looking at.
@@ -16998,34 +17089,24 @@ final class SyncService: ObservableObject {
     )
   }
 
-  /// Refuses a Work-tools read the connected host never advertised, rather than
-  /// putting an unknown action on the wire every poll. Older brains and
-  /// chat-only runtimes simply omit these commands.
-  private func requireWorkToolsAction(_ action: String) throws {
-    guard supportsRemoteAction(action) else {
-      throw NSError(
-        domain: "ADE",
-        code: 17,
-        userInfo: [
-          NSLocalizedDescriptionKey: "The Work tools pane is not available on this machine version.",
-          "ADEErrorCode": "unsupported_action",
-        ]
-      )
-    }
-  }
-
   /// Bytes for one observation, fetched by the path the state handed us.
   ///
   /// Frames are never pushed with the state: a tools-pane refresh that carried
   /// a screenshot would put a megabyte on the wire every few seconds for a
   /// picture nobody may be looking at.
-  func readWorkToolsObservationPreview(path: String) async throws -> WorkToolsObservationPreview? {
-    try requireWorkToolsAction("workTools.readObservationPreview")
+  func supportsWorkToolsObservationPreview(laneId: String) -> Bool {
+    laneCommandDescriptor("workTools.readObservationPreview", laneId: laneId)?.policy.allowsPhone == true
+  }
+
+  func readWorkToolsObservationPreview(path: String, laneId: String) async throws -> WorkToolsObservationPreview? {
+    guard supportsWorkToolsObservationPreview(laneId: laneId) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "The Work tools preview is not available on this machine version.", "ADEErrorCode": "unsupported_action"])
+    }
     let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
     let result = try await sendCommand(
       action: "workTools.readObservationPreview",
-      args: ["path": trimmed],
+      args: ["path": trimmed, "laneId": laneId],
       disconnectOnTimeout: false,
       timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds
     )
@@ -17089,15 +17170,30 @@ final class SyncService: ObservableObject {
   /// advertisement would mount a live view whose first RPC the host answers
   /// with an error. Either half missing falls back to today's still image,
   /// which is the safe direction.
-  var supportsMacDesktopStream: Bool {
-    advertisesMacDesktopStream && supportsRemoteAction("macDesktop.streamSubscribe")
+  func supportsMacDesktopStream(laneId: String) -> Bool {
+    if let remote = workParseRemoteLaneId(laneId), remote.machineKey != focusedMachineKey {
+      guard let connection = machineFleet?.connection(for: remote.machineKey), connection.isLive else { return false }
+      return connection.supportsMacDesktopStream && connection.commandDescriptor(for: "macDesktop.streamSubscribe")?.policy.allowsPhone == true
+    }
+    return advertisesMacDesktopStream && supportsRemoteAction("macDesktop.streamSubscribe")
+  }
+
+  func isLaneMachineConnected(laneId: String) -> Bool {
+    if let remote = workParseRemoteLaneId(laneId), remote.machineKey != focusedMachineKey {
+      return machineFleet?.connection(for: remote.machineKey)?.isLive == true
+    }
+    return connectionState == .connected
+  }
+
+  func supportsWorkToolsState(laneId: String) -> Bool {
+    laneCommandDescriptor("workTools.getLaneState", laneId: laneId)?.policy.allowsPhone == true
   }
 
   /// The lane's redacted Mac Desktop status, over the same view-only read the
   /// desktop calls. Never carries the stream token: only `startStream` does,
   /// and the phone does not call it.
   func macDesktopGetStatus(laneId: String) async throws -> MacDesktopStatus {
-    try requireMacDesktopStreamAction("macDesktop.getStatus")
+    try requireMacDesktopStreamAction("macDesktop.getStatus", laneId: laneId)
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     return try decode(
       try await sendCommand(
@@ -17124,12 +17220,12 @@ final class SyncService: ObservableObject {
   /// this: watching never starts a display. The host is idempotent per lane and
   /// finds the lane's name itself, so a second press is safe.
   func macDesktopStart(laneId: String, hostIsWindows: Bool = false) async throws {
-    guard supportsMacDesktopStart else {
+    guard laneCommandDescriptor("macDesktop.start", laneId: laneId)?.policy.allowsPhone == true else {
       throw NSError(
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "Start the macOS desktop in ADE on your Mac. This machine version can't start it from here.",
+          NSLocalizedDescriptionKey: "This machine version cannot start the lane screen from here.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
@@ -17139,7 +17235,7 @@ final class SyncService: ObservableObject {
       action: "macDesktop.start",
       args: ["laneId": trimmed],
       disconnectOnTimeout: false,
-      timeoutMessage: hostIsWindows ? "Windows sign-in is taking too long." : "The macOS desktop is taking too long to start.",
+      timeoutMessage: hostIsWindows ? "Windows sign-in is taking too long." : "The lane screen is taking too long to start.",
       timeoutNanoseconds: hostIsWindows ? 160_000_000_000 : Self.macDesktopStartTimeoutNanoseconds,
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
@@ -17149,17 +17245,22 @@ final class SyncService: ObservableObject {
   /// this separately from controller-only desktop actions: `stopSeat` stops
   /// either seat (private, or the user's main desktop); an older host has only
   /// `stopPrivate`, for the private screen. A Mac lane is never a viewer's to stop.
-  func canStopWindowsDesktop(seat: String?) -> Bool {
+  func canStopWindowsDesktop(seat: String?, laneId: String) -> Bool {
+    let stopSeat = laneAllowsViewer("macDesktop.stopSeat", laneId: laneId)
     switch seat {
-    case "shared": return supportsViewerRemoteAction("macDesktop.stopSeat")
-    case "private":
-      return supportsViewerRemoteAction("macDesktop.stopSeat") || supportsViewerRemoteAction("macDesktop.stopPrivate")
+    case "shared": return stopSeat
+    case "private": return stopSeat || laneAllowsViewer("macDesktop.stopPrivate", laneId: laneId)
     default: return false
     }
   }
 
+  /// Asked of the machine that owns the lane, which may not be the focused one.
+  private func laneAllowsViewer(_ action: String, laneId: String) -> Bool {
+    laneCommandDescriptor(action, laneId: laneId)?.policy.allowsPhone == true
+  }
+
   func windowsDesktopStop(laneId: String, seat: String?) async throws {
-    guard canStopWindowsDesktop(seat: seat) else {
+    guard canStopWindowsDesktop(seat: seat, laneId: laneId) else {
       throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This host cannot stop the Windows screen from here."])
     }
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -17167,12 +17268,35 @@ final class SyncService: ObservableObject {
       throw NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: "No lane was selected."])
     }
     _ = try await sendCommand(
-      action: supportsViewerRemoteAction("macDesktop.stopSeat") ? "macDesktop.stopSeat" : "macDesktop.stopPrivate",
+      action: laneAllowsViewer("macDesktop.stopSeat", laneId: trimmed) ? "macDesktop.stopSeat" : "macDesktop.stopPrivate",
       args: ["laneId": trimmed],
       disconnectOnTimeout: false,
       timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
+  }
+
+  /// Linux screen actions are negotiated with the lane's owning machine.
+  func canManageLinuxDesktop(_ action: String, laneId: String) -> Bool {
+    laneCommandDescriptor(action, laneId: laneId)?.policy.allowsPhone == true
+  }
+
+  func linuxDesktopStop(laneId: String) async throws {
+    guard canManageLinuxDesktop("macDesktop.stopSeat", laneId: laneId) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This machine cannot stop the Linux screen from here.", "ADEErrorCode": "unsupported_action"])
+    }
+    _ = try await sendCommand(action: "macDesktop.stopSeat", args: ["laneId": laneId],
+      disconnectOnTimeout: false, timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry)
+  }
+
+  func linuxDesktopCloseWindow(laneId: String, windowId: Int) async throws {
+    guard canManageLinuxDesktop("macDesktop.closeWindow", laneId: laneId) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "This machine cannot close the window from here.", "ADEErrorCode": "unsupported_action"])
+    }
+    _ = try await sendCommand(action: "macDesktop.closeWindow", args: ["laneId": laneId, "windowId": windowId],
+      disconnectOnTimeout: false, timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry)
   }
 
   /// Asks the host to attach this viewer to the lane's stream.
@@ -17186,7 +17310,7 @@ final class SyncService: ObservableObject {
     subscriptionId: String,
     viewerLabel: String? = nil
   ) async throws -> MacDesktopStreamSubscribeResult {
-    try requireMacDesktopStreamAction("macDesktop.streamSubscribe")
+    try requireMacDesktopStreamAction("macDesktop.streamSubscribe", laneId: laneId)
     let trimmedLane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     let trimmedSubscription = subscriptionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedLane.isEmpty, !trimmedSubscription.isEmpty else {
@@ -17213,13 +17337,15 @@ final class SyncService: ObservableObject {
 
   /// Drops this viewer's subscription. Best-effort: a dead socket has already
   /// released it on the host, so a failure needs no retry.
-  func macDesktopStreamUnsubscribe(subscriptionId: String) async throws {
-    try requireMacDesktopStreamAction("macDesktop.streamUnsubscribe")
+  func macDesktopStreamUnsubscribe(laneId: String, subscriptionId: String) async throws {
+    // Best effort: with the lane's machine gone there is no one to tell, and
+    // its socket closing ends the subscription.
+    guard laneCommandDescriptor("macDesktop.streamUnsubscribe", laneId: laneId) != nil else { return }
     let trimmed = subscriptionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
     _ = try await sendCommand(
       action: "macDesktop.streamUnsubscribe",
-      args: ["subscriptionId": trimmed],
+      args: ["laneId": laneId, "subscriptionId": trimmed],
       disconnectOnTimeout: false,
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
@@ -17229,40 +17355,69 @@ final class SyncService: ObservableObject {
   /// registration for the same id replaces the first, so a rebuilt view cannot
   /// leave a stale closure receiving frames for a subscription it abandoned.
   func registerMacDesktopStream(
+    laneId: String,
     subscriptionId: String,
     onRecord: @escaping (MacDesktopStreamRecord) -> Void,
     onEnded: @escaping (MacDesktopStreamEnded) -> Void
   ) {
+    if let remote = workParseRemoteLaneId(laneId), remote.machineKey != focusedMachineKey {
+      macDesktopStreamMachineKeys[subscriptionId] = remote.machineKey
+    } else {
+      macDesktopStreamMachineKeys.removeValue(forKey: subscriptionId)
+    }
     macDesktopStreamRecordHandlers[subscriptionId] = onRecord
     macDesktopStreamEndedHandlers[subscriptionId] = onEnded
   }
 
   func unregisterMacDesktopStream(subscriptionId: String) {
+    macDesktopStreamMachineKeys.removeValue(forKey: subscriptionId)
     macDesktopStreamRecordHandlers.removeValue(forKey: subscriptionId)
     macDesktopStreamEndedHandlers.removeValue(forKey: subscriptionId)
     macDesktopStreamDecodeQueue.forget(subscriptionId: subscriptionId)
   }
 
   private func resetMacDesktopStreamHandlers() {
-    macDesktopStreamRecordHandlers.removeAll()
-    macDesktopStreamEndedHandlers.removeAll()
-    macDesktopStreamDecodeQueue.removeAll()
+    // A stream on another machine rides that machine's own socket, so it
+    // outlives this one. Without its key, its records would be dropped.
+    for subscriptionId in macDesktopStreamRecordHandlers.keys
+    where macDesktopStreamMachineKeys[subscriptionId] == nil {
+      unregisterMacDesktopStream(subscriptionId: subscriptionId)
+    }
   }
 
   /// Refuses a live-stream call the connected host never advertised, rather
   /// than putting an unknown action on the wire. Older brains and chat-only
   /// runtimes simply omit these commands.
-  private func requireMacDesktopStreamAction(_ action: String) throws {
-    guard supportsMacDesktopStream, supportsViewerRemoteAction(action) else {
+  private func requireMacDesktopStreamAction(_ action: String, laneId: String) throws {
+    guard supportsMacDesktopStream(laneId: laneId),
+          laneCommandDescriptor(action, laneId: laneId)?.policy.allowsPhone == true else {
       throw NSError(
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "Live macOS desktop video is not available on this machine version.",
+          NSLocalizedDescriptionKey: "Live desktop video is not available on this machine version.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
     }
+  }
+
+  /// Records on a roster socket belong only to subscriptions on that machine.
+  func receiveRemoteMacDesktopRecord(_ payload: Any, machineKey: String, isCurrent: () -> Bool) async {
+    guard let dict = payload as? [String: Any], let envelope = MacDesktopStreamRecordEnvelope(dict),
+          macDesktopStreamMachineKeys[envelope.subscriptionId] == machineKey else { return }
+    let task = macDesktopStreamDecodeQueue.decode(subscriptionId: envelope.subscriptionId) {
+      Data(base64Encoded: envelope.base64Data).map { MacDesktopStreamRecord(envelope: envelope, data: $0) }
+    }
+    guard let record = await task.value, isCurrent(),
+          macDesktopStreamMachineKeys[record.subscriptionId] == machineKey else { return }
+    macDesktopStreamRecordHandlers[record.subscriptionId]?(record)
+  }
+
+  func receiveRemoteMacDesktopEnded(_ payload: Any, machineKey: String) {
+    guard let dict = payload as? [String: Any], let ended = MacDesktopStreamEnded(dict),
+          macDesktopStreamMachineKeys[ended.subscriptionId] == machineKey else { return }
+    macDesktopStreamEndedHandlers[ended.subscriptionId]?(ended)
   }
 
   // MARK: - App Control live view
@@ -17381,10 +17536,16 @@ final class SyncService: ObservableObject {
   /// the phone cannot use, and take without return leaves the Mac held until
   /// the TTL. The feature bit is the contract's support signal; a bit without
   /// the commands would show a button whose first RPC the host rejects.
-  var supportsMacDesktopControl: Bool {
-    guard advertisesMacDesktopControl else { return false }
-    return ["macDesktop.takeControl", "macDesktop.returnControl", "macDesktop.renewLease", "macDesktop.input"]
-      .allSatisfy(supportsViewerRemoteAction)
+  func supportsMacDesktopControl(laneId: String) -> Bool {
+    let advertised: Bool
+    if let remote = workParseRemoteLaneId(laneId), remote.machineKey != focusedMachineKey {
+      guard let connection = machineFleet?.connection(for: remote.machineKey), connection.isLive else { return false }
+      advertised = connection.supportsMacDesktopControl
+    } else {
+      advertised = advertisesMacDesktopControl
+    }
+    return advertised && ["macDesktop.takeControl", "macDesktop.returnControl", "macDesktop.renewLease", "macDesktop.input"]
+      .allSatisfy { laneCommandDescriptor($0, laneId: laneId)?.policy.allowsPhone == true }
   }
 
   func macDesktopTakeControl(
@@ -17392,7 +17553,7 @@ final class SyncService: ObservableObject {
     controllerId: String,
     controllerLabel: String
   ) async throws -> MacDesktopControlLease {
-    try requireMacDesktopControlAction("macDesktop.takeControl")
+    try requireMacDesktopControlAction("macDesktop.takeControl", laneId: laneId)
     return try decode(
       try await sendMacDesktopControl(
         action: "macDesktop.takeControl",
@@ -17410,7 +17571,7 @@ final class SyncService: ObservableObject {
   /// is a refusal, and the caller still drops its local "I have control" line
   /// because the TTL is the backstop.
   func macDesktopReturnControl(laneId: String, controllerId: String) async throws -> MacDesktopControlLease? {
-    try requireMacDesktopControlAction("macDesktop.returnControl")
+    try requireMacDesktopControlAction("macDesktop.returnControl", laneId: laneId)
     return try decodeMacDesktopControlLease(
       try await sendMacDesktopControl(
         action: "macDesktop.returnControl",
@@ -17420,7 +17581,7 @@ final class SyncService: ObservableObject {
   }
 
   func macDesktopRenewLease(laneId: String, controllerId: String) async throws -> MacDesktopControlLease? {
-    try requireMacDesktopControlAction("macDesktop.renewLease")
+    try requireMacDesktopControlAction("macDesktop.renewLease", laneId: laneId)
     return try decodeMacDesktopControlLease(
       try await sendMacDesktopControl(
         action: "macDesktop.renewLease",
@@ -17430,7 +17591,7 @@ final class SyncService: ObservableObject {
   }
 
   func macDesktopInput(laneId: String, call: [String: Any]) async throws {
-    try requireMacDesktopControlAction("macDesktop.input")
+    try requireMacDesktopControlAction("macDesktop.input", laneId: laneId)
     _ = try await sendMacDesktopControl(
       action: "macDesktop.input",
       args: ["laneId": laneId, "call": call]
@@ -17453,13 +17614,14 @@ final class SyncService: ObservableObject {
     return try decode(result, as: MacDesktopControlLease.self)
   }
 
-  private func requireMacDesktopControlAction(_ action: String) throws {
-    guard supportsMacDesktopControl, supportsViewerRemoteAction(action) else {
+  private func requireMacDesktopControlAction(_ action: String, laneId: String) throws {
+    guard supportsMacDesktopControl(laneId: laneId),
+          laneCommandDescriptor(action, laneId: laneId)?.policy.allowsPhone == true else {
       throw NSError(
         domain: "ADE",
         code: 17,
         userInfo: [
-          NSLocalizedDescriptionKey: "Controlling this macOS desktop is not available on this machine version.",
+          NSLocalizedDescriptionKey: "Controlling this lane screen is not available on this machine version.",
           "ADEErrorCode": "unsupported_action",
         ]
       )
@@ -22467,10 +22629,12 @@ final class SyncService: ObservableObject {
       }
       let record = await decodeTask.value
       guard isCurrentConnectionGeneration(generation), let record else { break }
+      guard macDesktopStreamMachineKeys[record.subscriptionId] == nil else { break }
       macDesktopStreamRecordHandlers[record.subscriptionId]?(record)
     case "macDesktop.streamEnded":
       guard let dict = payload as? [String: Any],
             let ended = MacDesktopStreamEnded(dict) else { break }
+      guard macDesktopStreamMachineKeys[ended.subscriptionId] == nil else { break }
       macDesktopStreamEndedHandlers[ended.subscriptionId]?(ended)
     case "appControl.streamFrame":
       // A JPEG, not a video stream: each frame stands alone. The decode runs
@@ -25294,11 +25458,14 @@ extension SyncService {
 
       let runtime = session.runtimeState.lowercased()
       let isRunningRuntime = runtime == "running"
+      // A chat resting on a PR watch is working, so Activity must not file it as
+      // Done, but its turn is over, so it stays out of the streaming-only list.
+      let isWorking = isRunningRuntime || canonical.restingOnPrWatch
       let isIdleRuntime = canonical.phase == .ready || canonical.phase == .idle
       let isEndedRuntime = runtime == "exited" || runtime == "killed" || runtime == "stopped"
 
       if isEndedRuntime && !isFailedStatus && !isAwaiting { continue }
-      if isRunningRuntime && !isFailedStatus && !isAwaiting { runningChatCount += 1 }
+      if isWorking && !isFailedStatus && !isAwaiting { runningChatCount += 1 }
 
       let started = parseIso8601(session.startedAt) ?? now
       // For active sessions there is no `endedAt`. Use the chat summary's
@@ -25334,7 +25501,7 @@ extension SyncService {
         title: session.title.isEmpty ? session.goal : session.title,
         status: isFailedStatus
           ? "failed"
-          : (isAwaiting ? "awaiting-input" : (isRunningRuntime ? "running" : (isIdleRuntime ? "idle" : status))),
+          : (isAwaiting ? "awaiting-input" : (isWorking ? "running" : (isIdleRuntime ? "idle" : status))),
         awaitingInput: isAwaiting,
         lastActivityAt: lastActivity,
         elapsedSeconds: elapsed,

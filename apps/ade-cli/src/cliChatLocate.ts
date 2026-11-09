@@ -41,7 +41,7 @@ import {
 const CHAT_ID_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "read", "transcript", "messages", "show", "status", "wait", "watch",
   "send", "message", "tell", "steer", "interrupt", "stop", "respond", "answer",
-  "pending", "pending-inputs", "resume", "resume-now", "subagents", "list-subagents",
+  "pending", "pending-inputs", "resume", "resume-now", "subagents", "list-subagents", "events", "notify",
 ]);
 
 /** How long one machine gets to answer "do you have it?". */
@@ -70,6 +70,18 @@ export type ChatLocateReport = {
   unreachable: Array<{ machine: string; error: string }>;
   /** Why other machines were not asked at all (signed out, no brain). */
   note: string | null;
+  /** In Recently deleted on a machine that answered, when no machine has it live. */
+  deleted: ChatDeletedInfo | null;
+};
+
+export type ChatDeletedInfo = {
+  deletedAt: string;
+  title: string | null;
+  /** Null when its project isn't open here, so ADE hasn't checked. */
+  reopenable: boolean | null;
+  machineName: string;
+  projectId: string | null;
+  projectName: string | null;
 };
 
 /** The chat id a command names, when it is one that a lookup can route. */
@@ -128,6 +140,20 @@ function readScope(value: unknown): ChatLocationScope | null {
   return { kind: "project", projectId, name: asString(scope.name), rootPath: asString(scope.rootPath) };
 }
 
+function readDeleted(value: unknown, machineName: string): ChatDeletedInfo | null {
+  const deleted = isRecord(value) && isRecord(value.deleted) ? value.deleted : null;
+  const deletedAt = deleted ? asString(deleted.deletedAt) : null;
+  if (!deleted || !deletedAt) return null;
+  return {
+    deletedAt,
+    title: asString(deleted.title),
+    reopenable: typeof deleted.reopenable === "boolean" ? deleted.reopenable : null,
+    machineName,
+    projectId: asString(deleted.projectId),
+    projectName: asString(deleted.projectName),
+  };
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
@@ -149,7 +175,8 @@ async function askMachine(client: SocketJsonRpcClient, machineKey: string, name:
     request: { method: "chats.locate", params: { sessionId } },
     timeoutMs: LOCATE_TIMEOUT_MS,
   }), LOCATE_TIMEOUT_MS + 1_000, name);
-  return readScope(isRecord(answer) && "result" in answer ? answer.result : answer);
+  const value = isRecord(answer) && "result" in answer ? answer.result : answer;
+  return { scope: readScope(value), deleted: readDeleted(value, name) };
 }
 
 /**
@@ -160,9 +187,9 @@ async function askMachine(client: SocketJsonRpcClient, machineKey: string, name:
 export async function locateChatOnAccount(
   options: GlobalOptions,
   sessionId: string,
-  settings: { includeThisMachine?: boolean } = {},
+  settings: { includeThisMachine?: boolean; onlyThisMachine?: boolean } = {},
 ): Promise<ChatLocateReport> {
-  const report: ChatLocateReport = { sessionId, matches: [], offline: [], unreachable: [], note: null };
+  const report: ChatLocateReport = { sessionId, matches: [], offline: [], unreachable: [], note: null, deleted: null };
   let client: SocketJsonRpcClient;
   try {
     client = await connectMachineRuntimeDaemon(options, options.socketPath?.trim() || null, { allowSpawn: false });
@@ -172,12 +199,15 @@ export async function locateChatOnAccount(
   }
   try {
     if (settings.includeThisMachine !== false) {
-      const here = readScope(await client.request("chats.locate", { sessionId }).catch(() => null));
+      const answer = await client.request("chats.locate", { sessionId }).catch(() => null);
+      const here = readScope(answer);
       if (here) {
         report.matches.push({ machineKey: null, machineName: "this machine", isThisMachine: true, scope: here });
         return report;
       }
+      report.deleted = readDeleted(answer, "this machine");
     }
+    if (settings.onlyThisMachine) return report;
     const roster = await client.request("machines.list", {}).catch((error: unknown) => ({ state: "unavailable", message: errorText(error) }));
     if (!isRecord(roster) || roster.state !== "ok") {
       report.note = asString(isRecord(roster) ? roster.message : null) ?? "Other machines are unavailable.";
@@ -201,7 +231,9 @@ export async function locateChatOnAccount(
     if (remembered) {
       let scope: ChatLocationScope | null = null;
       try {
-        scope = await askMachine(client, remembered.key, remembered.name, sessionId);
+        const answer = await askMachine(client, remembered.key, remembered.name, sessionId);
+        scope = answer.scope;
+        report.deleted ??= answer.deleted;
       } catch (error) {
         // No answer is not "not there": say so, and do not wait on it twice.
         report.unreachable.push({ machine: remembered.name, error: errorText(error) });
@@ -218,12 +250,13 @@ export async function locateChatOnAccount(
 
     const answers = await Promise.all(online.filter((machine) => machine.key !== asked).map(async (machine) => {
       try {
-        return { machine, scope: await askMachine(client, machine.key, machine.name, sessionId), error: null };
+        return { machine, ...await askMachine(client, machine.key, machine.name, sessionId), error: null };
       } catch (error) {
-        return { machine, scope: null, error: errorText(error) };
+        return { machine, scope: null, deleted: null, error: errorText(error) };
       }
     }));
     for (const answer of answers) {
+      report.deleted ??= answer.deleted;
       if (answer.scope) {
         report.matches.push({ machineKey: answer.machine.key, machineName: answer.machine.name, isThisMachine: false, scope: answer.scope });
       } else if (answer.error) {
@@ -302,6 +335,7 @@ export function chatLocateValue(report: ChatLocateReport): JsonObject {
     found: report.matches.length > 0,
     machine: only ? { key: only.machineKey, name: only.machineName, isThisMachine: only.isThisMachine } : null,
     project: only?.scope.kind === "project" ? { projectId: only.scope.projectId, name: only.scope.name } : null,
+    deleted: report.matches.length ? null : report.deleted,
     personal: only?.scope.kind === "personal",
     matches: report.matches.map((match) => ({
       machine: match.machineName,
@@ -315,6 +349,14 @@ export function chatLocateValue(report: ChatLocateReport): JsonObject {
   };
 }
 
+/** What to tell someone who named a chat that was deleted. */
+export function chatDeletedSentence(sessionId: string, deleted: { deletedAt?: unknown; reopenable?: unknown }): string {
+  return `Chat ${sessionId} was deleted at ${String(deleted.deletedAt)}. `
+    + (deleted.reopenable === false
+      ? "Its conversation is gone, so it can't be reopened."
+      : `Reopen it with \`ade chat deleted reopen ${sessionId}\`${deleted.reopenable === true ? "" : " (in its project)"}.`);
+}
+
 export function formatChatLocate(value: unknown): string {
   const record = isRecord(value) ? value : {};
   const matches = Array.isArray(record.matches) ? record.matches.filter(isRecord) : [];
@@ -325,6 +367,10 @@ export function formatChatLocate(value: unknown): string {
       ? `no answer from: ${record.unreachable.filter(isRecord).map((entry) => entry.machine).join(", ")}`
       : null,
   ].filter(Boolean).join("\n");
+  const deleted = isRecord(record.deleted) ? record.deleted : null;
+  if (!matches.length && deleted) {
+    return `${chatDeletedSentence(String(record.sessionId ?? ""), deleted)}\n`;
+  }
   if (!matches.length) {
     return `Chat ${String(record.sessionId ?? "")} was not found on any machine that answered.${unasked ? `\n${unasked}` : ""}\n`;
   }

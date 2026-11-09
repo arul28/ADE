@@ -118,9 +118,10 @@ export type CursorSdkWorkerInit = {
 };
 
 /**
- * `sdk_event` type the worker posts for a Cursor compaction seen through the
- * `preCompact` hook. It rides the SDK message channel so the main process maps
- * it next to the stream it interleaves with.
+ * `sdk_event` type the worker posts for a Cursor compaction, seen through the
+ * stream's `summary` messages or the `preCompact` hook. It rides the SDK
+ * message channel so the main process maps it next to the stream it interleaves
+ * with.
  */
 export const CURSOR_SDK_COMPACTION_EVENT = "ade_cursor_compaction";
 
@@ -136,16 +137,31 @@ export type CursorSdkCompactionWireEvent = {
   contextUsagePercent?: number;
   model?: string;
   durationMs?: number;
-  failReason?: "interrupted";
+  failReason?: "interrupted" | "provider_error";
+  /** The model could not write a summary, so Cursor saved a shortened copy of the chat instead. */
+  fallback?: boolean;
   /** What closed it: Cursor's summary message, the next stream event, or the run ending. */
   closedBy?: "summary" | "next_event" | "run_end";
 };
 
 /**
- * Set on a forwarded local `status` event once the `preCompact` hook fired in
- * the run, so the text-matching compaction fallback stays quiet.
+ * Set on a forwarded `status` event once a `summary` message or the
+ * `preCompact` hook reported a compaction in the run, so the text-matching
+ * compaction fallback stays quiet.
  */
-export const CURSOR_SDK_PRECOMPACT_HOOK_MARK = "adePreCompactHook";
+export const CURSOR_SDK_COMPACTION_SIGNAL_MARK = "adePreCompactHook";
+
+/** Set on the result of a `/compact` that did not run, with the reason. */
+export const CURSOR_SDK_COMPACT_SKIPPED_KEY = "adeCompactSkipped";
+
+export type CursorSdkCompactSkipped = "empty" | "cut_off_run";
+
+export function readCursorSdkCompactSkipped(result: unknown): CursorSdkCompactSkipped | null {
+  const value = result && typeof result === "object"
+    ? (result as Record<string, unknown>)[CURSOR_SDK_COMPACT_SKIPPED_KEY]
+    : null;
+  return value === "empty" || value === "cut_off_run" ? value : null;
+}
 
 /** Key of the per-turn telemetry the worker attaches to a local run result. */
 export const CURSOR_SDK_TURN_TELEMETRY_KEY = "adeTurnTelemetry";
@@ -201,6 +217,8 @@ export type CursorSdkSendPrompt = {
   forceExpireActiveRun?: boolean;
   idempotencyKey?: string | null;
   mode?: CursorSdkAgentMode;
+  /** Run `agent.summarize()` instead of sending `promptText` (ADE's `/compact`). */
+  summarize?: boolean;
   /**
    * Start this prompt on a brand-new local agent instead of continuing the
    * worker's current conversation.
@@ -590,20 +608,28 @@ export function readCursorSdkStaleTokenFailure(
   };
 }
 
+/** `agent.summarize()` on an agent with no saved conversation yet. */
+export function isCursorSdkNothingToSummarizeText(text: string | null | undefined): boolean {
+  return /no saved conversation to summarize/i.test(text ?? "");
+}
+
+export function isCursorSdkBusyErrorText(text: string | null | undefined): boolean {
+  const lower = text?.toLowerCase() ?? "";
+  return lower.includes("agent_busy")
+    || lower.includes("agent busy")
+    || lower.includes("already has an active run")
+    // The local store's wording, which has no "an".
+    || lower.includes("already has active run")
+    || lower.includes("active run in progress")
+    || lower.includes("already running another task");
+}
+
 export function classifyCursorSdkErrorText(
   ...texts: Array<string | null | undefined>
 ): CursorSdkErrorKind {
   const joined = texts.filter(Boolean).join("\n").toLowerCase();
   if (!joined) return "unknown";
-  if (
-    joined.includes("agent_busy")
-    || joined.includes("agent busy")
-    || joined.includes("already has an active run")
-    || joined.includes("active run in progress")
-    || joined.includes("already running another task")
-  ) {
-    return "busy";
-  }
+  if (isCursorSdkBusyErrorText(joined)) return "busy";
   if (isCursorSdkBackoffErrorText(joined) || isCursorSdkUsageExhaustedText(joined)) return "rate_limit";
   if (isCursorSdkTransportErrorText(joined)) return "network";
   if (

@@ -80,7 +80,7 @@ de-authorized machine's agents on every surface of the account. The handler:
 1. records a `revoked_machines` row (before dropping the machine row, so a
    half-completed removal fails closed) — `POST /account/machines/register` is
    refused with `403 machine_revoked` while it stands, which is what stops the
-   removed machine's 30-second heartbeat from re-registering itself;
+   removed machine's 60-second heartbeat from re-registering itself;
 2. deletes the machine row;
 3. forwards the removal to `DELETE /attention/account/machines/:machineKey` on
    the relay (`PUSH_RELAY_URL`, or the optional `ACTIVITY_RELAY` service
@@ -768,24 +768,116 @@ logged or stored. Failures that are ADE's to fix (no key, a refused key, the
 spend cap, the fleet cap, TypeSafe failing or throttling) are also Sentry
 issues, one per reason.
 
-## Agent 37 timed wakes
+## ADE Cloud timed wakes
 
-A sleeping Agent 37 machine is frozen, so the timers ADE keeps on it (a chat's
+A sleeping ADE Cloud machine is frozen, so the timers ADE keeps on it (a chat's
 scheduled wake-up, an automation's cron) can't fire there. Before its ADE lets
 it sleep, it sends its next time here, and the minute cron wakes it two
-minutes early (`src/agent37Wake.ts`, table `agent37_wakes`):
+minutes early (`src/cloudWake.ts`, table `cloud_wakes`):
 
-- `PUT /agent37/wake` `{instanceId, url, at}` with the account bearer records
+- `PUT /cloud/wake` `{instanceId, url, at}` with the account bearer records
   or replaces the account's one row for that machine. `url` must be an
   `https://<slug>.agent37.app` origin, the machine's own public address; `at`
   is a time within the next 32 days. Fifty machines per account at most.
-- `DELETE /agent37/wake` `{instanceId}` forgets it (nothing scheduled any more).
+- `DELETE /cloud/wake` `{instanceId}` forgets it (nothing scheduled any more).
 - The cron requests `url` with a plain GET. Any answer, a 502 included,
-  reaches the machine and wakes it, so this Worker never holds an Agent 37
+  reaches the machine and wakes it, so this Worker never holds an ADE Cloud
   key. A woken row is deleted; one that didn't answer is retried each minute
   and dropped 30 minutes after its time.
 
 Nothing else about the machine is stored, and no request body is logged.
+
+## ADE Cloud account
+
+The server holds the provider key and owns every ADE Cloud computer
+(`src/cloud/`, migration `0018_cloud_account.sql`, secrets `AGENT37_API_KEY`
+and optional `RESEND_API_KEY`). `src/cloud/contract.ts` lists the routes and
+their shapes for a client to mirror. Every route takes the account bearer.
+
+- `CLOUD_ACCESS_ACCOUNTS` is a comma list of Clerk user ids, or `*`. Unset means
+  nobody. `GET /cloud/access` answers `{ enabled }` for the bearer; every other
+  `/cloud/*` route, including `/cloud/wake`, answers 404 `not_found` to a caller
+  not on the list.
+- `cloud_computers` records each computer's owner. Every call by instance id
+  checks it, and not yours or unknown is 404. Provider errors become one plain
+  sentence.
+- A create ignores any template from the client and uses `template_version` in
+  `cloud_settings` (an exact `ade@N`; unset refuses with a log line). Sizes are
+  the eight in `src/cloud/plans.ts`. Disk is 4 GB on create. Limits on create and
+  copy: free 3 computers, paid 10. Free computers stay at 4 GB; paid accounts
+  share 40 GB and grow in 4 GB steps, while the computer is idle.
+- Every delete, automatic ones included, writes `cloud_delete_log`, with the
+  provider's start and sleep history read first. Every power change writes
+  `cloud_power_log`.
+- `POST /cloud/instances/:id/idle` is the computer asking to be slept.
+
+The minute cron reads the provider's list once, and only when a computer
+exists. It writes only on change: hours settle when a stretch of awake time
+ends, and live hours are the settled figure plus the open stretches. Hours
+are integer thousandths of a Small-hour. Free accounts reset on the 1st UTC;
+paid accounts wait for Stripe to move `period_end`
+(`applyCloudPlanChange` in `store.ts` is the one place a plan changes).
+
+At 0 hours with extra hours off, the cron runs
+`ade cloud prepare-stop --timeout 40` on each awake computer, treating a failure
+as "stop anyway", then stops it, because a sleeping computer wakes on any
+request. A stop answering 409 retries; a stop answering 400 is cold storage and
+is left alone until something wakes it. Starts and creates are refused, except
+`POST .../start` with `{ "reason": "push_work" }`: a free 15-minute wake, once a
+day per computer. Timed wakes are dropped while an account is at 0 hours.
+
+An awake computer with no check-in for 10 minutes (`machines.last_seen_at`) is
+slept. Daily after 02:00 UTC, the cron compares each computer-day with the
+provider's `awake_minutes`, corrects the account to the provider's number, and
+alerts the owner to minutes the power log can't explain. Every 10 minutes it
+checks the wallet (`$15` floor, automatic top-up) and awake computers against
+the provider's limit (80%). A computer not awake for 30 days is deleted after
+7-day and 1-day warnings; the clock waits for an hours reset.
+
+### Payments
+
+`src/cloud/billing.ts` sells the plan through Stripe Managed Payments (secrets
+`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`; vars `STRIPE_PLAN_PRICE_ID`,
+`STRIPE_EXTRA_PRICE_ID`, `STRIPE_METER_EVENT`, from
+`scripts/stripe-setup.mjs`). `POST /cloud/billing/checkout` and `/portal` answer
+a URL for the person's browser, which comes back to `/billing/return`.
+`POST /cloud/billing/extra-hours` takes `{ enabled }`, paid plan only.
+
+`POST /webhooks/stripe` is outside the access list and is checked with the
+signature instead. `cloud_stripe_events` makes each event run once. A handler
+uses its event only to find the subscription and re-reads it from Stripe, so
+late or reordered events land in the same place. Checkout completing sets the
+plan, then adds the $5 threshold, which Stripe refuses at Checkout. `invoice.paid`
+for a renewal starts fresh hours; a subscription that is `active` again restores
+from `past_due`. A failure moves the account to free rules and turns extra hours
+off, with an email each way and `billing.notice` for the banner.
+
+Each tick reports every whole extra Small-hour as one meter event (the rest
+waits). The identifier is the hour's place in the billing period, so a retry
+can't count one twice. Only accounts with extra hours on and past their plan's
+hours are reported.
+
+## Saved chats
+
+ADE Cloud computers can't serve their chats while asleep, stopped, out of hours
+or deleted, so after each chat turn the computer saves the new part of the chat
+here (`src/cloud/chats.ts`, routes in `contract.ts`).
+
+- Parts live in R2 (`CLOUD_CHATS`), one object per part, AES-GCM with one random
+  key per user. That key is sealed with `CLOUD_CHAT_MASTER_KEY` and kept in D1,
+  apart from the chats. Platform encryption, not end-to-end.
+- The list row's text (title, lane name, status, model) is sealed the same way;
+  only ids the list filters on are plain.
+- Parts append by sequence and every upload can be replayed: the same part
+  answers 200, the newest part may be resent with more text, anything else is
+  `409 sequence_conflict` and the computer starts that chat over. A part over
+  8 MiB is refused; an account past 2 GiB is refused and logged
+  (`cloud.chat_account_full`).
+- Every read checks the owner: another account's chat answers 404.
+- Deleting a computer keeps its chats. Deleting a chat, a lane, or the account
+  (Clerk `user.deleted`) removes them; deleting the account also removes the key.
+- Rollout: `wrangler r2 bucket create ade-cloud-chats` (and `-production`),
+  `wrangler secret put CLOUD_CHAT_MASTER_KEY` on both environments.
 
 ## Sign-up analytics
 
@@ -888,4 +980,4 @@ deployment:
    `ADE_ACCOUNT_DIRECTORY_URL=https://<worker-host>` only for a trusted
    self-hosted override.
 
-`ONLINE_WINDOW_MS` defaults to 90 seconds and can be adjusted as a Worker var.
+`ONLINE_WINDOW_MS` defaults to 150 seconds and can be adjusted as a Worker var.

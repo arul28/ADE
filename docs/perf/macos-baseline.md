@@ -187,8 +187,10 @@ Run without the app (`scripts/perf/service/`).
 
 | Metric | Bench | Before #1560 | Baseline | Ceiling |
 |---|---|---|---|---|
+| `ade` command startup, agent shim path (Electron-as-node, `cli.cjs` 27 MB, one brain round trip): `--version`, `lanes list`, `chat list`, `chat note` (a rejected note, same round trips). Before: no compile cache on the shim, and every command evaluated all of `bootstrap.ts` | one-off spawn loop (11 alternated rounds per bundle), a throwaway project on a dev brain with its own socket (no bench file yet). Mac Studio M4 Max, 2026-11-09 on `d41ee85de` + this branch, load average 5-8, not the baseline machine | `--version` 346 ms, `lanes list` 375 ms, `chat list` 385 ms, `chat note` 377 ms (min 339-369); the shim set no compile cache | 100 ms, 132 ms, 123 ms, 124 ms (min 97-122, slowest round 139 ms). The same commands with `NODE_COMPILE_CACHE` set before and after (the launcher in `bin/ade`): 206 -> 100, 234 -> 132, 243 -> 123, 234 -> 124 ms. A warm compile cache alone: 346 -> 206 ms (-40%). The first call after a brain start also stops waiting on the brain's icon worker (350-480 ms, 128 ms with no worker). `bootstrap.ts` still loads on the commands that start an agent or a runtime | proposed, needs approval: 150 ms |
 | `machine_stats.get` (CPU over a 200 ms sample, memory, disk; `ps`, `pmset`, `vm_stat` at most every 15 s; CLIs, Xcode, simulators at most every 3 min, in the background) | one-off `tsx` call of `createMachineStatsReader` (no bench file yet) | — | cold 206 ms (the CPU sample), cached 0 ms; 0 runs while nobody asks (Mac Studio M4 Max, 2026-10-30, not the baseline machine) | not set yet; needs approval |
 | Android emulator sweep (each brain with an Android service, every 5 min: the owner file, the discovery folders, and one `ps` for start times only when there are records) and the memory guard before each emulator start (`sysctl`, two `vm_stat`s 2 s apart, `ps` + `footprint` for the running emulators) | one-off `tsx` loop over `createAndroidEmulatorLifecycle().sweep()` against this machine's real discovery folders (no bench file yet) | — (no sweep, no guard read) | sweep: 0.06 ms wall / 0.08 ms CPU with no records and 0 processes started; 2.4 ms wall / 2.0 ms CPU and 1 `ps` with a record; at most 12 sweeps per hour, so ≤ 1 extra process per 5 min (spawn row above: 293 → ≤ 294). Guard: 2.0 s wall (the paging sample), 0.1 s for the emulators' memory, once per start only. "Last used" writes the owner file at most once a minute per emulator; a touch costs < 1 µs (Mac Studio M4 Max dev build, 2026-11-06, branch `ade/unreleased-issues-triage-before-stable`, not the baseline machine) | not set yet; needs approval |
+| Lane status: comparing against `origin/<base>` when the local base only trails it (`resolveCompareBase` in `laneService.ts`) | one-off `git` timing in this repo, 20 runs (no bench file yet) | — | per lane-list refresh at most 1 extra `rev-parse` of `origin/<base>` for all lanes on that base (11.8 ms median, shared through the volatile git cache), plus 1 `rev-list --count` per new pair of base commits (12.6 ms, then memoized); 0 per lane (Mac Studio M4 Max, 2026-11-09, `ade/ade-mcp-client-fixes`, not the baseline machine) | not set yet; needs approval |
 | Files quick-open index build (this repo) | `file-index.bench.mts` | 17.5 s, ~540 git processes | 120–183 ms, 1 git process | 500 ms |
 | Quick-open lookup | `file-index.bench.mts` | — | 2–13 ms | 50 ms |
 | Project registry: one read per project (35) | `registry-read.bench.mts` | 360 ms | 0.3 ms | 5 ms |
@@ -2758,3 +2760,48 @@ Two method notes:
   `qemu-system-*` subtree out of ADE's count, the same as a simulator. The
   `ps` output grows to about 160 KB for 1,100 processes, far under its 2 MB
   limit.
+
+
+### Work lane identity in Status and Time (2026-11-08)
+
+Base `2bc519666`, uncommitted renderer change, Mac13,1 (M1 Max, 64 GB),
+Node 26.7.0. One detached dev window, 1460×880 capture / 1327×800 CSS pixels,
+sync off, no DevTools and no `ADE_PERF_RUN_ID`. Nine active local rows and a
+collapsed four-session Settled shelf; new-chat surface and the activity skyline
+visible. Other agents were running (load average 12–17); the same top-bar activity
+pulse ran in both arms (~2.7 style recalculations/s).
+
+`route-sweep.mjs <id> /work,/work 20`, with each organization already warm,
+measured two visits per arm. `render-count.mjs 30 reload` measured Status
+separately. Only `SessionListPane.tsx` switched between HEAD and the candidate;
+the GitHub reminder port and the coordinator's separate Settings edits were
+held fixed. Earlier measurements that overlapped a coordinator hot reload were
+discarded. These numbers supersede the old-base measurements for this change.
+
+| Row | Before | After | Existing ceiling |
+| --- | --- | --- | --- |
+| Status: main-thread work, initial two warm visits | 2.8, 2.5 ms/s | 4.8, 4.4 ms/s | 30 ms/s |
+| Status: follow-up adjacent baseline/candidate, 20 s each | 3.6 ms/s | 3.8 ms/s | 30 ms/s |
+| Time: main-thread work, two warm visits | 3.3, 1.7 ms/s (median 2.5) | 1.9, 3.1 ms/s (median 2.5) | 30 ms/s |
+| Status: renderer heap / page elements, follow-up | 129 MB / 850 | 125 MB / 888 | 220 MB / 3k |
+| Time: renderer heap / page elements, second visit | 127 MB / 862 | 123 MB / 896 | 220 MB / 3k |
+| Navigation long tasks | 0 ms | 0 ms | 100 ms |
+| Status: React commits in 30 s | 16 | 16 | no list churn |
+| Status: SessionCard renders / callback-wrapper renders in 30 s | 2 / 9 | 1 / 9 | no list churn |
+
+The initial Status increase exceeded the relative budget, so it was investigated
+before accepting the result. A 10 s `cdp.mjs profile` sampled the preload, shell,
+activity skyline and stepped animation clock, with no Work row hot loop. The
+render counter showed no increase in commits or row renders (the actual card
+renders had changed session props). A settled candidate `cdp.mjs metrics 20`
+read 4.2 ms/s, then returning to HEAD's Work component reproduced 3.6 ms/s and
+restoring the candidate read 3.8 ms/s with `route-sweep.mjs /work 20`: a 6%
+difference, below the 25% limit. Layout stayed at 0/s in that pair. The initial
+higher readings are retained above rather than treated as a proven row cost.
+
+The added identity uses existing roster and lane/device data, with no new row
+fetch, effect, timer or subscription. A temporary offline renderer roster was
+checked separately for foreign Status and Time rows: correct lane and runtime
+pin, offline guard, attached-shell filing, and **Settle local**. It was removed
+before proof. No paired machine was connected; this is not a live remote,
+Windows, GPU or process-footprint measurement.

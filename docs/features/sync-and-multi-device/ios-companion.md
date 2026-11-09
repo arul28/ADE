@@ -839,13 +839,13 @@ apps/ios/
 │   │   │                            #   (github.* remote commands, menu shown only
 │   │   │                            #   when the repo has open issues; see
 │   │   │                            #   docs/features/issues).
-│   │   ├── Agent37/                  # Agent 37 page (Work ⋯ menu, shown once the
-│   │   │                            #   account has Agent 37): machines and their
+│   │   ├── Cloud/                    # ADE Cloud page (Work ⋯ menu, shown once the
+│   │   │                            #   account has ADE Cloud): machines and their
 │   │   │                            #   actions, spending, ready machines, a new
 │   │   │                            #   machine approved here, what agents may
 │   │   │                            #   spend; Duo book and laptop layouts. Over
-│   │   │                            #   agent37.read / agent37.write (see
-│   │   │                            #   docs/features/remote-runtime/agent37.md).
+│   │   │                            #   cloud.read / cloud.write (see
+│   │   │                            #   docs/features/ade-cloud/README.md).
 │   │   ├── CursorCloud/              # Cursor Cloud fleet pane: CursorCloudPaneSheet
 │   │   │                            #   (full-screen sheet mirroring the Linear
 │   │   │                            #   pane's presentation) +
@@ -4071,8 +4071,11 @@ bar, so `.searchable` never rendered), quick-filter chips with counts
 (`LaneQuickFilter`: Active, Running, Needs you, Changes, Archived), then the
 focused machine's lanes in stack order and each other machine's lanes under its
 name. Rows swipe to pin and to archive or restore; a machine without a live
-link shows its last roster dimmed, with no swipe actions. Opening a lane pushes
-`LaneRoute` on the tab's navigation path. Lane detail reads the cache and the
+link shows its last roster dimmed, with no swipe actions. The Archived filter
+also lists Recently deleted lanes for each live machine (`LaneRecentlyDeleted.swift`),
+each with Restore or Put back and a swipe to Drop; a delete that kept work shows
+a notice with Restore. Opening a lane pushes `LaneRoute` on the tab's navigation
+path. Lane detail reads the cache and the
 host once on open, and reads the cache again if a local revision landed during
 that host read.
 

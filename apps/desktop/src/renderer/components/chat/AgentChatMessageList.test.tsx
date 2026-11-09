@@ -6698,7 +6698,7 @@ describe("AgentChatMessageList turn fold", () => {
     // A /compact steered into a running turn belongs to that turn: its tools, proof and turn-end line stay.
     { name: "a /compact steered into a running turn", provider: "claude", message: { steerId: "steer-1", deliveryState: "inline" }, chip: false, turnEndLine: true },
     // On a provider with no compact action the text is an ordinary prompt.
-    { name: "a /compact sent to a provider with no compact action", provider: "cursor", chip: false, turnEndLine: true },
+    { name: "a /compact sent to a provider with no compact action", provider: "droid", chip: false, turnEndLine: true },
     {
       name: "a /compact that carries an attachment",
       provider: "claude",

@@ -52,8 +52,12 @@ export type SessionBadge = {
  * would have forced a matching split into iOS's `AgentRunPhase`, the roster
  * status, and `canonicalStatusBucket` for a distinction only the label cares
  * about.
+ *
+ * `pr_watch` is a turn that ended on a pull request ADE is still watching: the
+ * reactor wakes the chat on the next change, so the chat is in play even though
+ * nothing is running this second.
  */
-export type SessionLiveness = "turn" | "background" | "monitoring";
+export type SessionLiveness = "turn" | "background" | "monitoring" | "pr_watch";
 
 export type CanonicalSessionState = {
   phase: CanonicalSessionPhase;
@@ -222,6 +226,12 @@ export type CanonicalSessionInputs = {
    * whose process died with the app is worse than no pill at all.
    */
   backgroundWork?: SessionBackgroundWork | null;
+  /**
+   * A PR watch is live on this chat (`AgentChatSessionSummary.activePrWatch`).
+   * Unlike background work it is durable and polled by the host every minute,
+   * so it survives a restart and is never Stale for being quiet.
+   */
+  prWatchActive?: boolean;
   nowMs?: number;
   /** Chat sessions idle between turns are "ready", not running/ended. */
   isChatTool?: (toolType: TerminalToolType | null | undefined) => boolean;
@@ -286,8 +296,9 @@ export function isPersistedTurnFailureCurrent(args: {
  *      silent ≥ SESSION_STALE_AFTER_MS; otherwise a resting session is not stale,
  *   6. running,
  *   7. resting states — ready (idle chat, quiet "your move"), idle, ended,
- *      EXCEPT when the session still owns live background work, which promotes
- *      the row back to `running` (see `restingPhaseWithBackgroundWork`).
+ *      EXCEPT when the session still owns live background work or a PR watch,
+ *      which promotes the row back to `running` (see
+ *      `restingPhaseWithLiveWork`).
  *
  * Note where the background-work promotion sits: below failure, below stale.
  * A stale "Working" pill must never mask a failed session — so a chat whose
@@ -337,24 +348,26 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
   const chatTurnLive = chat && args.runtimeState === "running";
 
   /**
-   * A resting session that still owns live background work is not resting.
-   * Returns the promoted `running` state, or the caller's resting state when
-   * nothing is live.
+   * What is still live on a session whose turn is over, or null when nothing
+   * is. The honest summary of a session is its loudest live commitment: one
+   * real job alongside monitors is still "background", and a PR watch outranks
+   * a monitor because it names what the chat is waiting for.
    */
-  const restingPhaseWithBackgroundWork = (
+  const restingLiveness: SessionLiveness | null = (args.backgroundWork?.workingCount ?? 0) > 0
+    ? "background"
+    : args.prWatchActive
+      ? "pr_watch"
+      : totalBackgroundWork(args.backgroundWork) > 0 ? "monitoring" : null;
+
+  /**
+   * A resting session that still owns live work is not resting. Returns the
+   * promoted `running` state, or the caller's resting state when nothing is
+   * live.
+   */
+  const restingPhaseWithLiveWork = (
     resting: CanonicalSessionState,
-  ): CanonicalSessionState => {
-    const work = args.backgroundWork;
-    if (totalBackgroundWork(work) <= 0) return resting;
-    return {
-      phase: "running",
-      badge: null,
-      // Monitoring only when watch loops are the SOLE live work. One real job
-      // alongside three monitors is still "Working" — the honest summary of a
-      // session is its loudest live commitment, not its quietest.
-      liveness: (work?.workingCount ?? 0) > 0 ? "background" : "monitoring",
-    };
-  };
+  ): CanonicalSessionState =>
+    restingLiveness ? { phase: "running", badge: null, liveness: restingLiveness } : resting;
 
   // 1. Deterministic attention beats everything — including the failure and
   // stale checks below (an agent explicitly asking is actionable regardless).
@@ -383,14 +396,7 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     // nothing, so background shells, subagents and monitors run on after it.
     // A surface that wants to show "settled, but something is still running"
     // must be able to.
-    const settledWork = args.backgroundWork;
-    return {
-      phase: "settled",
-      badge: null,
-      liveness: totalBackgroundWork(settledWork) <= 0
-        ? null
-        : (settledWork?.workingCount ?? 0) > 0 ? "background" : "monitoring",
-    };
+    return { phase: "settled", badge: null, liveness: restingLiveness };
   }
 
   // A live chat turn is not "ended", even when the row still carries a status
@@ -420,15 +426,17 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     // on a runtime/API error is a real failure the row must carry (chats have
     // no exit code); otherwise the chat is ready — the quiet "your move" tier.
     // Exception: a DETACHED chat (backing runtime gone, e.g. closed/imported)
-    // is genuinely over — ended, not perpetually "your move".
+    // is genuinely over — ended, not perpetually "your move". Unless a PR watch
+    // is live: a brain restart detaches every resting chat, the watch survives
+    // it, and its next wake brings the chat back.
     if (chat) {
       if (args.lastTurnFailedAt && !chatTurnLive) {
         return { phase: "failed", badge: BADGE_BY_KIND.failed, liveness: null };
       }
-      if (args.status === "detached") {
+      if (args.status === "detached" && !args.prWatchActive) {
         return { phase: "ended", badge: null, liveness: null };
       }
-      return restingPhaseWithBackgroundWork({ phase: "ready", badge: null, liveness: null });
+      return restingPhaseWithLiveWork({ phase: "ready", badge: null, liveness: null });
     }
     // A clean process exit only says the CLI ended. Settlement is a lifecycle
     // declaration made by the user (or the lane PR-merge policy), never
@@ -457,14 +465,17 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
   // hours into "Stale": the reply still waited on the user, but every surface
   // filed it as busy, and a finished subagent held its lane out of the Working
   // fold for good. Age is not activity.
+  //
+  // A PR watch is exempt: ADE itself polls the PR every minute, so a quiet
+  // chat waiting on a human review is not a claim that has gone silent.
   if (args.runtimeState === "idle") {
     const resting: CanonicalSessionState = chat
       ? { phase: "ready", badge: null, liveness: null }
       : { phase: "idle", badge: null, liveness: null };
-    if (totalBackgroundWork(args.backgroundWork) > 0 && silentPastStale) {
+    if (restingLiveness && restingLiveness !== "pr_watch" && silentPastStale) {
       return { phase: "stale", badge: BADGE_BY_KIND.stale, liveness: null };
     }
-    return restingPhaseWithBackgroundWork(resting);
+    return restingPhaseWithLiveWork(resting);
   }
 
   // 6. Stale: running but silent past the threshold.

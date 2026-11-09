@@ -103,3 +103,11 @@ also loads `docs/ARCHITECTURE.md` (IPC + data plane sections). Keep IPC
 contracts, preload types, shared types, and renderer usage in sync — see the
 `runtime-backed null services` rule in the `/quality` skill's
 `references/ade-review-rules.md` for the bug class this guards against.
+
+## Linux desktop parity
+
+For packaging, release, native dependencies, credentials, process and socket
+lifecycle, display, sync/discovery, platform gates, or a Linux dev run, load
+`docs/development/linux-support.md` and
+`.agents/skills/quality/references/linux-quirks.md`. Use the normal focused tests
+and CI; the support doc identifies which scenarios require a real Linux host.

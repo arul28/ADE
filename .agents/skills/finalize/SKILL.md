@@ -5,6 +5,14 @@ description: 'Final gate: simplify code, validate docs, and run local CI checks 
 
 # /finalize — Pre-push Local-CI Gate
 
+## Linux desktop parity
+
+Review host-sensitive changes against `../quality/references/linux-quirks.md`
+and `docs/development/linux-support.md`. Reuse the normal focused checks and CI;
+a real Linux host is needed for the native scenarios listed there. Record any
+missing proof rather than calling a simulated run Linux validation.
+
+
 This skill is the final local gate before pushing and opening a PR.
 
 > In the dev loop, deep bug-finding and code cleanup are `/quality`'s job (the

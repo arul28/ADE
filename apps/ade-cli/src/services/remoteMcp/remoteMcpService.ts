@@ -127,7 +127,7 @@ export function createRemoteMcpService(args: {
   machineName: () => string;
   listProjects: () => RemoteMcpProject[];
   /** The provider and model this computer last launched a chat with. */
-  launchDefaults?: () => { provider: string; model: string } | null;
+  launchDefaults?: () => { provider: string; model: string; reasoningEffort?: string | null } | null;
   logger?: {
     info?: (event: string, data?: Record<string, unknown>) => void;
     warn?: (event: string, data?: Record<string, unknown>) => void;

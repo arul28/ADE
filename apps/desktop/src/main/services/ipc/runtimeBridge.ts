@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, powerMonitor, type WebContents } from "electron";
-import { agent37UpdateBlocker, agent37WakeForUse } from "../agent37/agent37WakeHook";
+import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
+import { cloudUpdateBlocker, cloudWakeForUse } from "../adeCloud/cloudWakeHook";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import { localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
@@ -99,6 +100,7 @@ import {
 } from "./runtimeEventSubscriptionRegistry";
 
 type RuntimeBridgeArgs = {
+  productAnalyticsService?: Pick<ProductAnalyticsService, "capture">;
   appVersion: string;
   /**
    * Retained for callers; the bridge itself no longer reads global state — the
@@ -552,6 +554,7 @@ export type RuntimeBridgeRegistration = {
 export { getOrCreateLocalAccountMachineIdentity };
 
 export function registerRuntimeBridge({
+  productAnalyticsService,
   appVersion,
   authorizeLocalRuntimeRoot,
   bindRemoteProject,
@@ -596,14 +599,29 @@ export function registerRuntimeBridge({
     remoteConnectionPool,
     {
       appVersion,
+      logger: getMachineMainLogger(),
+      onDialOutcome: (outcome) => {
+        productAnalyticsService?.capture({
+          event: "ade_feature_used",
+          surface: "desktop",
+          properties: {
+            feature: "connections",
+            action: "remote_connect",
+            outcome: outcome === "failed" ? "failed" : "completed",
+          },
+          projectId: null,
+          dedupeKey: `remote_connect:${outcome}`,
+          minimumIntervalMs: 60 * 60 * 1_000,
+        });
+      },
       getAccountRelayProof,
       getAuthorizedAccountOwnerId,
       // A dev desktop shares this computer's machine pairing with the installed
       // ADE; reconnecting saved machines on its own would take them away from it.
       // ADE_DEV_REMOTE_AUTOCONNECT=1 opts a dev app in on purpose.
       explicitConnectOnly: !app.isPackaged && process.env.ADE_DEV_REMOTE_AUTOCONNECT !== "1",
-      // A sleeping Agent 37 box wakes when the person uses it (registerAgent37Ipc).
-      wakeForUse: agent37WakeForUse,
+      // A sleeping cloud box wakes when the person uses it (registerCloudIpc).
+      wakeForUse: cloudWakeForUse,
     },
     pairedMachineStore,
   );
@@ -1671,9 +1689,9 @@ export function registerRuntimeBridge({
       // then abort, so it gets its updater run in a terminal instead.
       const status = remoteConnectionService.snapshot().connections
         .find((connection) => connection.target.id === target.id);
-      // An Agent 37 box from an older template would install the update and
+      // a cloud box from an older template would install the update and
       // keep running the old ADE, so it says why before anything is sent.
-      const blocked = await agent37UpdateBlocker(target);
+      const blocked = await cloudUpdateBlocker(target);
       if (blocked) {
         return {
           ok: false,

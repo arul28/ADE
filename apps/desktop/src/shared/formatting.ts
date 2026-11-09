@@ -13,12 +13,13 @@ export function formatBytes(bytes: number, base: 1000 | 1024 = 1024): string {
   const units = ["B", "KB", "MB", "GB", "TB", "PB"];
   let value = bytes;
   let unit = 0;
-  while (value >= base && unit < units.length - 1) {
+  // Round first, then pick the unit: just under 1 MB is "1.0 MB", never "1024 KB".
+  const digitsFor = (amount: number, index: number) => (index === 0 || amount >= 100 ? 0 : 1);
+  while (unit < units.length - 1 && Number(value.toFixed(digitsFor(value, unit))) >= base) {
     value /= base;
     unit += 1;
   }
-  const digits = unit === 0 || value >= 100 ? 0 : 1;
-  return `${value.toFixed(digits)} ${units[unit]}`;
+  return `${value.toFixed(digitsFor(value, unit))} ${units[unit]}`;
 }
 
 /**

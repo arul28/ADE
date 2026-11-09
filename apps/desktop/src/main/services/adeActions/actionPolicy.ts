@@ -38,8 +38,8 @@ export type CtoOnlyRule =
   | { only: readonly string[] }
   | { allExcept: readonly string[] };
 
-/** Saving a key, Claude's sign-in, and forgetting one: Settings › Integrations › Agent 37 only. */
-const AGENT37_CLOUD_SIGN_IN_WRITES = [
+/** Saving a key, Claude's sign-in, and forgetting one: Settings › Integrations › the provider only. */
+const CLOUD_SIGN_IN_WRITES = [
   "cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_save_key", "cloud_sign_in_remove",
 ] as const;
 
@@ -69,7 +69,7 @@ const USER_SETTING_WRITES = {
   analytics: { actions: ["setEnabled"], entryId: null },
   // A provider sign-in kept for new cloud machines is the person's; no agent
   // saves a key or signs a provider in for them.
-  agent37: { actions: AGENT37_CLOUD_SIGN_IN_WRITES, entryId: "integrations.agent37-sign-ins" },
+  cloud: { actions: CLOUD_SIGN_IN_WRITES, entryId: "integrations.ade-cloud-sign-ins" },
   remote_mcp: {
     actions: ["setEnabled", "setMachineIncluded", "createToken", "updateConnection", "removeConnection"],
     entryId: "ade-mcp.server",
@@ -130,7 +130,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   pty: { only: [...USER_SETTING_WRITES.pty.actions] },
   // A provider sign-in kept for new cloud machines is the person's; agents
   // read which are kept (never a value) and change none.
-  agent37: { only: [...USER_SETTING_WRITES.agent37.actions] },
+  cloud: { only: [...USER_SETTING_WRITES.cloud.actions] },
   // ADE MCP grants an outside app this machine. Every action is also user-only
   // (below), so only the desktop reaches it through the action bus.
   remote_mcp: { allExcept: [] },
@@ -373,8 +373,10 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // ADE never deletes from the archive on its own, and no agent or automation
   // deletes for the person: a delete can take a lane's uncommitted work.
   archive: ["delete"],
+  // Dropping a deleted lane's saved work means it can no longer be restored.
+  lane: ["removeDeletedLane"],
   // Only the person's desktop saves a key or runs Claude's sign-in for new machines.
-  agent37: AGENT37_CLOUD_SIGN_IN_WRITES,
+  cloud: CLOUD_SIGN_IN_WRITES,
   // An agent asking to move a chat or batch must not approve its own request.
   // Only a person's client hosts an MCP App, so only it may pass an app's call on.
   chat: [
@@ -405,16 +407,16 @@ export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): bo
 /**
  * Actions about the account or this machine, never one project, that a brain
  * also serves with no project open, to this computer's own connections only:
- * `agent37.call` and `accountVault.call` (multiProjectRpcServer). Every rule
+ * `cloud.call` and `accountVault.call` (multiProjectRpcServer). Every rule
  * above still applies to them.
  *
- * The other `agent37` actions stay with a project: a ready machine is a
+ * The other `cloud` actions stay with a project: a ready machine is a
  * project's, and what spends money or deletes asks in the caller's own chat.
- * The vault actions are for this computer's desktop and reach only Agent 37's
- * items (agent37VaultItems.ts).
+ * The vault actions are for this computer's desktop and reach only the provider's
+ * items (cloudVaultItems.ts).
  */
 export const ADE_ACTION_MACHINE_SCOPED = {
-  agent37: ["list", "spending", "limits", "sleep", "wake", "cloud_sign_in_status", ...AGENT37_CLOUD_SIGN_IN_WRITES],
+  cloud: ["access", "list", "hours", "limits", "sleep", "wake", "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES],
   account_vault: ["get", "set", "remove"],
 } as const satisfies Partial<Record<AdeActionDomain, readonly string[]>>;
 
@@ -481,7 +483,7 @@ export function callerHasRoleAtLeast(role: AdeActionRole | undefined | null, min
  * The first caller rule that refuses `domain.action`, or null: a setting only
  * the user changes, an action that needs the operator role, a secret asked for
  * by another machine's brain. Every route that runs ADE actions asks this
- * (`run_ade_action`, `agent37.call`), so the routes cannot drift apart.
+ * (`run_ade_action`, `cloud.call`), so the routes cannot drift apart.
  *
  * `userClient`: the person's own client, not an agent and not another brain.
  * `remoteBrain`: a caller from another machine's brain.
@@ -587,6 +589,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "initEnv",
     "list",
     "listDeleteProgress",
+    "listDeletedLanes",
     "listSnapshots",
     "listTemplates",
     "listLinearIssuesForLaneSessions",
@@ -616,6 +619,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "proxyStart",
     "proxyStop",
     "refreshSnapshots",
+    "removeDeletedLane",
+    "restoreDeletedLane",
     "rebaseAbort",
     "rebasePush",
     "rebaseRollback",
@@ -851,6 +856,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "armWait",
     "listWaits",
     "cancelWait",
+    "getChatEvents",
+    "armWebhook",
+    "listWebhooks",
+    "cancelWebhook",
     "holdBackgroundWork",
     "recoverTurn",
     "recoverCodexTurn",
@@ -1117,15 +1126,15 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // types the key, and the host saves it. `status` reports connected or not,
   // never a credential. Neither is secret-bearing.
   integration_connect: ["request", "status"],
-  // Agent 37: ready machines (read the pool, take a project's ready machine,
+  // the provider: ready machines (read the pool, take a project's ready machine,
   // give an unused claim back) and the machine verbs. What spends money or
   // deletes asks the person first (the RPC server stamps who asks). Never the key.
-  agent37: [
-    "ready_status", "claim_ready", "release_ready", "list", "spending", "create", "sleep", "wake", "resize",
-    "copy", "move", "delete", "set_sleep", "set_cap", "ready_set", "ready_off", "ready_retry", "make_status", "limits", "set_limits",
+  cloud: [
+    "access", "ready_status", "claim_ready", "release_ready", "list", "hours", "create", "sleep", "wake", "resize", "update",
+    "copy", "move", "delete", "ready_set", "ready_off", "ready_retry", "make_status", "limits", "set_limits",
     // Sign-ins for new machines: which are kept (never a value), and the
     // person's own saves and Claude sign-in (user-only, below).
-    "cloud_sign_in_status", ...AGENT37_CLOUD_SIGN_IN_WRITES,
+    "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES,
   ],
   // `list` reads the MCP setup (names and set/not-set, never a value).
   // `request` raises the MCP server card in the caller's own chat; the person
@@ -1344,6 +1353,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listDevServers",
     "probePort",
     "stopDevServer",
+    "noteWatching",
   ],
   // `ingest` is intentionally absent. Proof-drawer entries are created only by
   // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands

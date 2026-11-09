@@ -24,6 +24,16 @@ describe("claude permission dialog options", () => {
     expect(claudeToolApprovalFlags([])).toEqual({ defaultToNo: false, suppressAlwaysAllowRule: false });
   });
 
+  it.each([
+    { name: "a rule decided it", options: { decisionReasonType: "rule" } },
+    { name: "the ask names its rule", options: { matchedAskRule: "Bash(rm:*)" } },
+  ])("offers no session-wide answer when the user's own ask rule raised it: $name", ({ options }) => {
+    const flags = claudeToolApprovalFlags(options);
+    expect(flags.askRuleForced).toBe(true);
+    expect(buildClaudeToolApprovalOptions(flags).map((option) => option.value)).toEqual(["allow", "deny"]);
+    expect(claudeToolApprovalFlags({ decisionReasonType: "mode" }).askRuleForced).toBeUndefined();
+  });
+
   it("omits a recommended Allow and the session override on elevated-risk asks", () => {
     expect(buildClaudeToolApprovalOptions({ defaultToNo: true, suppressAlwaysAllowRule: false })).toEqual([
       { label: "Allow", value: "allow" },

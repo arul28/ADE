@@ -65,6 +65,7 @@ import {
   PairedRuntimeTransportUnavailableError,
   RemoteActionOutcomeUnknownError,
   RemoteConnectBackoffError,
+  type PairedRuntimeRouteDiagnostic,
 } from "./pairedRuntimeErrors";
 import {
   DesktopPairedMachineStore,
@@ -246,6 +247,7 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   // above it (localRuntimeActionIpcTimeoutMs).
   ["lane.create", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.importBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  ["lane.restoreDeletedLane", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.switchBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["git.checkoutBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   // A pull fetches and then writes the tree; see GIT_PULL_TIMEOUT_MS.
@@ -568,6 +570,8 @@ export class RemoteConnectionPool {
     (targetId: string) => void
   >();
 
+  private readonly dialFailedListeners = new Set<(targetId: string, error: unknown) => void>();
+
   constructor(
     private readonly registry: RemoteTargetRegistry,
     private readonly appVersion: string,
@@ -585,6 +589,14 @@ export class RemoteConnectionPool {
     options: RemoteConnectionPoolConnectOptions = {},
   ): Promise<RemoteRuntimeConnectResult> {
     return (await this.connectEntry(target, options)).result;
+  }
+
+  /** Every dial that failed, whoever started it: a Connect press or a call that found the link gone. */
+  onDialFailed(listener: (targetId: string, error: unknown) => void): () => void {
+    this.dialFailedListeners.add(listener);
+    return () => {
+      this.dialFailedListeners.delete(listener);
+    };
   }
 
   /**
@@ -719,12 +731,21 @@ export class RemoteConnectionPool {
       this.resolvedEntryPromises.delete(entryPromise);
       this.relayAccountOwnerByTargetId.delete(target.id);
       this.noteConnectFailure(target.id, error, isUserActionConnectFailure(target, error));
+      for (const listener of [...this.dialFailedListeners]) {
+        try {
+          listener(target.id, error);
+        } catch (listenerError) {
+          // Reporting a failed dial must not replace the failure the caller gets.
+          captureError(listenerError, { fingerprint: ["remote-connection-pool", "dial-failed-listener"] });
+        }
+      }
       throw error;
     }
   }
 
   private async bootstrapTarget(target: RemoteRuntimeTarget): Promise<PoolEntry> {
     let sshTarget = target;
+    let pairedDiagnostic: PairedRuntimeRouteDiagnostic | undefined;
     if (target.transport === "paired") {
       try {
         const paired = await bootstrapPairedRuntime({
@@ -768,6 +789,7 @@ export class RemoteConnectionPool {
           throw error;
         }
         sshTarget = fallbackTarget;
+        pairedDiagnostic = (error as { diagnostic?: PairedRuntimeRouteDiagnostic }).diagnostic;
         const trustStatus = await getSshHostKeyTrustForTarget(sshTarget);
         if (trustStatus.state !== "trusted") {
           throw new PairedRuntimeSshTrustRequiredError(trustStatus);
@@ -781,6 +803,10 @@ export class RemoteConnectionPool {
       resourcesPath: process.resourcesPath ?? app.getAppPath(),
       appVersion: this.appVersion,
       pairedStore: this.pairedStore,
+    }).catch((sshError: unknown) => {
+      // The failed dial's report still lists the routes tried before SSH.
+      if (pairedDiagnostic && sshError instanceof Error) Object.assign(sshError, { diagnostic: pairedDiagnostic });
+      throw sshError;
     });
     return {
       client: ssh.client,
