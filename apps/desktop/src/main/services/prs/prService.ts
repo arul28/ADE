@@ -7158,7 +7158,10 @@ export function createPrService({
             const slug = asString(node?.slug).trim();
             return slug ? [{ slug, name: asString(node?.name).trim() || slug }] : [];
           });
-        } catch {
+        } catch (error) {
+          // A personal account has no organization to ask; anything else is news.
+          const message = error instanceof Error ? error.message : String(error);
+          if (!/resolve to an Organization/i.test(message)) logger.warn("prs.reviewer_team_search_failed", { error: message });
           teams = [];
         }
       }

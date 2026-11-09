@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PrMentionableUser, PrRepoReference } from "../../../../shared/types/prs";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { logRendererDebugEvent } from "../../../lib/debugLog";
 import { isImeComposing } from "../../../lib/imeComposition";
 import { ViewportOverlayPortal } from "../../ui/ViewportOverlayHost";
 import { PrWritingScopeContext } from "./prMarkdownContext";
@@ -106,7 +107,8 @@ export const PrWritingTextarea = React.forwardRef<HTMLTextAreaElement, PrWriting
           setSuggestions(next);
           setActiveIndex(0);
         })
-        .catch(() => {
+        .catch((error: unknown) => {
+          logRendererDebugEvent("prs.writing_suggestions_failed", { kind: trigger.kind, error: error instanceof Error ? error.message : String(error) });
           if (generation === requestRef.current) setSuggestions([]);
         });
     }, SEARCH_DEBOUNCE_MS);
@@ -158,7 +160,7 @@ export const PrWritingTextarea = React.forwardRef<HTMLTextAreaElement, PrWriting
         setActiveIndex((index) => (index - 1 + suggestions.length) % suggestions.length);
         return;
       }
-      if ((event.key === "Enter" && !event.metaKey && !event.ctrlKey) || event.key === "Tab") {
+      if ((event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.shiftKey) || event.key === "Tab") {
         event.preventDefault();
         const picked = suggestions[activeIndex];
         if (picked) apply(picked);

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { useNavigate } from "react-router-dom";
 import type { OpenProjectBinding } from "../../../shared/types/core";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 import { useLatestCallback } from "../../lib/stableIdentity";
 import { useWorkspacePathOpener, type ChatWorkspacePathOpener } from "../chat/chatWorkspacePaths";
 import type { TerminalPathLinkContext } from "./terminalPathLinks";
@@ -45,7 +46,8 @@ export function TerminalPathLinkBridge({
           ? await window.ade.sessions.get(sessionId, runtimePin)
           : await window.ade.sessions.get(sessionId);
         return detail?.laneId ?? null;
-      } catch {
+      } catch (error) {
+        logRendererDebugEvent("terminal.path_link_lane_read_failed", { error: error instanceof Error ? error.message : String(error) });
         return null;
       }
     })();

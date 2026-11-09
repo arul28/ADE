@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { PrSummary, SessionLifecycleSettings } from "../../../shared/types";
+import { captureError } from "../../../shared/sentry/capture";
 import { adeHomeDir } from "../skills/cursorAgentSkillShim";
 import { writeFileAtomic } from "../state/durableFile";
 import type { AdeDb } from "../state/kvDb";
@@ -27,8 +28,9 @@ function readReleaseLaneResources(): boolean {
   try {
     const stored = JSON.parse(fs.readFileSync(machineSettingsPath(), "utf8")) as { releaseLaneResourcesOnSettle?: unknown };
     return stored?.releaseLaneResourcesOnSettle === true;
-  } catch {
-    // Off unless the owner turned it on: this stops things.
+  } catch (error) {
+    // Off unless the owner turned it on: this stops things. No file is the usual case.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") captureError(error, { tags: { area: "session-lifecycle-settings" } });
     return false;
   }
 }

@@ -33,6 +33,7 @@ import { notePrChangeFiles, prChangeSplitKey } from "../shared/prChangeSplitStor
 import type { PrSwitcher } from "../shared/PrSwitcher";
 import { formatChatOutputContextBlock } from "../../../../shared/chatOutputContext";
 import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
+import { logRendererDebugEvent } from "../../../lib/debugLog";
 import { showToast } from "../../app/toast/toastStore";
 import { useChatRuntimeScope } from "../../chat/ChatRuntimeScope";
 import { PrWritingScopeContext, type PrChatQuote } from "../shared/prMarkdownContext";
@@ -1381,7 +1382,8 @@ export function PrDetailPane({
       .then((result) => {
         if (!cancelled) setCanEditDescription(["WRITE", "MAINTAIN", "ADMIN"].includes(result.viewerPermission ?? ""));
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        logRendererDebugEvent("prs.description_permission_read_failed", { error: error instanceof Error ? error.message : String(error) });
         if (!cancelled) setCanEditDescription(false);
       });
     return () => { cancelled = true; };

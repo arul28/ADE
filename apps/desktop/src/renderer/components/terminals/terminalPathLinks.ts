@@ -1,5 +1,6 @@
 import type { ILink, ILinkProvider, Terminal } from "@xterm/xterm";
 import type { OpenProjectBinding } from "../../../shared/types/core";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 import {
   looksLikeWorkspacePath,
   parseWorkspacePathLocation,
@@ -271,7 +272,10 @@ export function createTerminalPathLinkProvider(term: Terminal, context: Terminal
             });
             callback(links.length ? links : undefined);
           })
-          .catch(() => callback(undefined));
+          .catch((error: unknown) => {
+            logRendererDebugEvent("terminal.path_link_probe_failed", { error: error instanceof Error ? error.message : String(error) });
+            callback(undefined);
+          });
       }, HOVER_PROBE_DELAY_MS);
     },
   };

@@ -1,6 +1,9 @@
+import os from "node:os";
 import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import type { DevServerRecord, TerminalSessionSummary } from "../../../shared/types";
 import { stopChatDevServer } from "../devServers/devServerStop";
+import { readAndroidAvd } from "../android/androidAvds";
+import { androidAvdHome } from "../android/androidSdk";
 import { AndroidEmulatorOwnersStore, machineAndroidEmulatorOwnersPath } from "../android/androidEmulatorOwners";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
@@ -179,7 +182,7 @@ export type SettledLaneReleaseHosts = {
   } | null;
   androidEmulatorService?: {
     powerOffEmulators: (args: { laneId: string; avdNames: ReadonlySet<string> }) => Promise<{
-      poweredOff: Array<{ avdName: string; displayName?: string | null }>;
+      poweredOff: Array<{ avdName: string }>;
     }>;
   } | null;
   macDesktopService?: {
@@ -221,7 +224,8 @@ export function createSettledLaneReleaseActions(hosts: SettledLaneReleaseHosts):
       );
       if (avdNames.size === 0) return [];
       const result = await hosts.androidEmulatorService.powerOffEmulators({ laneId, avdNames });
-      return result.poweredOff.map((device) => device.displayName ?? device.avdName);
+      const avdHome = androidAvdHome(process.env, os.homedir());
+      return result.poweredOff.map((device) => readAndroidAvd(avdHome, device.avdName)?.displayName ?? device.avdName);
     },
     releaseMacDesktop: async (chatSessionIds) => {
       if (!hosts.macDesktopService) return 0;
