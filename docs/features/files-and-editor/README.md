@@ -36,6 +36,11 @@ A window is not limited to the machine it is bound to. Every
 (`OpenProjectBinding | null`) that addresses one machine explicitly —
 see [Which machine answers a file call](#which-machine-answers-a-file-call).
 
+Git ignore lookups split paths at submodules and query within each submodule,
+so one nested path does not discard the rest of a batch. Failed lookups are
+not cached. Chat editor links using `cursor://` or `vscode://` open the target
+file in ADE.
+
 ## Source file map
 
 Runtime services back the canonical implementation. The desktop

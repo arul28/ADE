@@ -77284,8 +77284,16 @@ export function createAgentChatService(args: {
       if (schedule.provider === "claude") return true;
       const row = sessionService.get(schedule.sessionId);
       if (!row || !isChatToolType(row.toolType)) return true;
-      const { envelopes, truncated } = await readTranscriptEnvelopesForSessionIdAsync(schedule.sessionId);
-      if (truncated) return true;
+      const transcript = await readTranscriptEnvelopesForSessionIdAsync(schedule.sessionId).catch((error: unknown) => {
+        logger.warn("agent_chat.scheduled_work_transcript_unreadable", {
+          scheduleId: schedule.id,
+          sessionId: schedule.sessionId,
+          error: getErrorMessage(error),
+        });
+        return null;
+      });
+      if (!transcript || transcript.truncated) return true;
+      const { envelopes } = transcript;
       return envelopes.some((envelope) =>
         envelope.event.type === "user_message"
         && envelope.event.metadata?.scheduledWake?.scheduleId === schedule.id);

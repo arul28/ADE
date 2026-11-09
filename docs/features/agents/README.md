@@ -233,6 +233,9 @@ session an agent starts records the agent as `launchedBySessionId`: no
 nesting, wake or permission ceiling, only the Focus rule that keeps a finished
 helper from holding its busy launcher's lane open.
 
+Automatic subagent resumption is gated by its parent: once the parent is settled,
+archived, or deleted, the child does not resume its unattended work.
+
 Subagent chat turns return their child turn id and latest bounded assistant
 summary, steering an active parent or waking an idle parent. A subagent always
 wakes its parent; a peer never does. The policy lives in

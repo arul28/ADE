@@ -174,6 +174,14 @@ describe("evaluatePrWatch", () => {
       nowMs: pushedAt + 240_000,
     });
     expect(kinds(conflict)).toContain("conflicting");
+
+    // A new head that still conflicts is new work for the agent.
+    const pushedStillConflicting = step("ship", conflict.next, {
+      pr: { headSha: "head-after-conflict", mergeConflicts: true },
+      checks: [check("e2e", "in_progress")],
+      nowMs: pushedAt + 300_000,
+    });
+    expect(kinds(pushedStillConflicting)).toContain("conflicting");
   });
 
   it("Ship does not read an empty check list right after a push as finished CI", () => {

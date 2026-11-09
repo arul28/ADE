@@ -23,10 +23,20 @@ scope while that machine's catalog loads. Project binding changes replace lane
 state immediately, and late runtime action or sync responses are rejected after
 switching projects so they cannot populate the new project's panes.
 
+Provider and title text limits cut at Unicode code-point boundaries so a
+surrogate pair is not split. `apps/desktop/src/shared/codePointText.ts` holds
+the shared helpers.
+
+An auto-resume interrupted by a brain restart is retried only when its wake
+message is definitely absent and no turn started. After a 60-second settling
+window, a delivered message, started turn, or unreadable transcript keeps the
+fire closed to avoid duplicate delivery.
+
 ## Source file map
 
 | Path | Role |
 |---|---|
+| `apps/desktop/src/shared/codePointText.ts` | Code-point-safe text cuts for provider limits and titles. |
 | `apps/desktop/src/renderer/components/chat/ChipText.tsx`, `ChipHoverCard.tsx`, `chipMenu.ts`, `chipActions.ts`, `chipCardBodies.tsx`, `MachineChipCard.tsx`, `McpMentionCardBody.tsx`, `useMachineFacts.ts` | Transcript and composer chip display, held-hover and right-click actions, per-kind information cards, chat-machine-pinned navigation, focused Connections/MCP Settings routes, and the model chip's new-chat draft action. See [Chips](composer-and-ui.md#chips). |
 | `apps/desktop/src/shared/chips.ts`, `apps/desktop/src/shared/types/chatMentions.ts` | Canonical chip and chat mention contracts. `@mcp:<server>` is part of the same parser and token formatter used by desktop, hosted web, and iOS's Swift mirror. |
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserHitTest.ts` | Shared hit-testing for the browser element picker, drag-to-capture, and `ade browser select`. Converts viewport points to CDP document coordinates, falls back to the page's `elementFromPoint`, and reaches same-renderer and cross-site iframe content. |

@@ -483,6 +483,49 @@ describe("createChatScheduledWorkScheduler", () => {
     restarted.dispose();
   });
 
+  it.each([
+    { name: "no wake message reached the chat", recorded: false, fires: 1, status: "fired" },
+    { name: "the wake message is in the transcript", recorded: true, fires: 0, status: "done" },
+    { name: "the transcript cannot be read", recorded: new Error("unreadable"), fires: 0, status: "done" },
+    { name: "the user cancels during the read", recorded: false, cancelDuringRead: true, fires: 0, status: "cancelled" },
+    { name: "the fire was only just claimed, by a brain that may still deliver it", recorded: false, firedAgoMs: 1_000, fires: 1, status: "fired", settleMs: 60_000 },
+  ])("after a restart, a fired one-shot with no turn: $name", async ({ recorded, cancelDuringRead, firedAgoMs, fires, status, settleMs }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([
+      { ...wakeup({ fireAt: START - 300_000 }), status: "fired", lastFiredAt: START - (firedAgoMs ?? 120_000) },
+    ]);
+    const fire = createFireMock();
+    const reads: number[] = [];
+    let scheduler: ReturnType<typeof createChatScheduledWorkScheduler> | null = null;
+    scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire,
+      wakeMessageRecorded: async (schedule) => {
+        reads.push(Date.now());
+        if (cancelDuringRead) await scheduler!.cancel(schedule.id);
+        if (recorded instanceof Error) throw recorded;
+        return recorded;
+      },
+    });
+    await scheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+    if (settleMs) {
+      expect(reads).toHaveLength(0);
+      expect(fire).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(settleMs);
+    }
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(reads).toHaveLength(1);
+    expect(fire).toHaveBeenCalledTimes(fires);
+    expect(requireState(state).schedules[0]?.status).toBe(status);
+    scheduler.dispose();
+  });
+
   it("recomputes and re-arms a persisted fired cron without re-firing it", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);

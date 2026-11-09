@@ -5237,7 +5237,7 @@ export function createPrService({
     // Hidden items stay hidden. The verdict does not carry over: reviews may have
     // moved since it was read.
     const lastKnown = (): PrVisibility => ({ ...(lastPrVisibility.get(lastKey) ?? NO_PR_VISIBILITY), reviewDecision: null, verdictKnown: false });
-    if (mergeStateGraphqlBrake.cooldown(brakeRepoKey)) return lastKnown();
+    if (mergeStateGraphqlBrake.isCooling(brakeRepoKey)) return lastKnown();
     try {
       const pull = await fetchPr(repo, prNumber);
       const what = `visibility:${prNumber}`;
@@ -5247,9 +5247,20 @@ export function createPrService({
       return visibility;
     } catch (error) {
       if (isGithubRateLimitFailure(error)) {
-        mergeStateGraphqlBrake.armRateLimitCooldown(brakeRepoKey, githubRateLimitResetAtMsOf(error));
+        // Concurrent reads land here together; one line per incident.
+        const alreadyCooling = mergeStateGraphqlBrake.isCooling(brakeRepoKey);
+        const untilMs = mergeStateGraphqlBrake.armRateLimitCooldown(brakeRepoKey, githubRateLimitResetAtMsOf(error));
+        if (!alreadyCooling) {
+          logger.warn("prs.computeStatus.graphql_rate_limited", {
+            repo: `${repo.owner}/${repo.name}`,
+            prNumber,
+            retryAt: new Date(untilMs).toISOString(),
+            error: getErrorMessage(error),
+          });
+        }
+        return lastKnown();
       }
-      logger.debug("prs.visibility_read_failed", {
+      logger.warn("prs.visibility_read_failed", {
         repo: `${repo.owner}/${repo.name}`,
         prNumber,
         error: getErrorMessage(error),

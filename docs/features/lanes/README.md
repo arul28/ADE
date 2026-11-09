@@ -132,6 +132,13 @@ The gate is `evaluateDefaultBranchAutoPull` in
 `apps/desktop/src/main/services/lanes/defaultBranchAutoPull.ts`; it is pure and
 unit-tested independently of git.
 
+A lane built on a recently squash-merged lane rebases only its own commits onto
+the target base when ADE knows the merged PR head. Prediction uses the same
+replay. Rollback checks every affected lane before resetting: it refuses if a
+lane moved or has uncommitted work, and is unavailable after a push. A merged
+lane whose remote branch is gone shows that it merged rather than offering to
+recreate the branch.
+
 ## Source file map
 
 Core services. The canonical lane lifecycle now runs in the **ADE
@@ -158,6 +165,7 @@ Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 
 | File | Responsibility |
 |------|---------------|
+| `laneBuiltOnMerged.ts` | Finds known merged PR heads from the last 30 days and selects the rebase replay boundary. |
 | `laneService.ts` | Lane CRUD, worktree lifecycle, status, rebase runs, branch switching, issue links, and deletion. |
 | `laneBranchDrift.ts` | Pure helpers for lane branch drift (HEAD no longer on `lanes.branch_ref`). `parseWorktreeStatusPorcelainV2(stdout)` returns `{ dirty, changedFileCount, staged, unstaged, untracked, headBranchRef }` from the NUL-delimited `git status --porcelain=v2 --branch --untracked-files=normal -z` output that `computeLaneStatus` already collects — headers start with `# `, entry records never do, rename/copy records carry a second path that is consumed, tracked entries count once even when they have both index and worktree changes, and a detached HEAD (reported by git as the literal `(detached)`) parses to `null`. `detectLaneBranchDrift({ expectedBranchRef, headBranchRef, kind? })` returns a `LaneBranchDrift` or `null`; either side being unknown counts as no drift, and a `kind` of `renamed`/`missing` is carried while `switched` stays implicit. `classifyMissingLaneBranchDriftKind({ expectedBranchRef, headBranchRef, reflogSubjects })` reads the `Branch: renamed refs/heads/<old> to refs/heads/<new>` subjects git writes on `git branch -m` and walks rename chains (a→b→c) to tell a `renamed` drift from a branch that was simply deleted (`missing`); it never returns `switched`. |
 | `laneUsageTombstone.ts` | The one row a deleted lane leaves behind so ADE's lifetime stats are not survivor stats. See [What a deleted lane leaves behind](#what-a-deleted-lane-leaves-behind). `writeLaneUsageTombstone` is called from inside `cleanupLaneDatabaseRows` *before* the cascade, while the rows it counts still exist, and rides the caller's `begin immediate` so the tombstone and the deletes commit together. `encodeActiveDayBits` / `decodeActiveDayKeys` pack the lane's active local days into a hex bitmap (capped at a 4,096-day span) so `activeDays` and streaks stay reconstructible without a per-day breakdown. |

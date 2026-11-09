@@ -43,6 +43,9 @@ case, provider storage formats, the import policy, lane attribution, CLI/chat
 import paths, the preview, mobile routing, authorization model, and current
 open items.
 
+A terminal retries a failed PTY resize after the connection recovers, so its
+grid can catch up with the pane.
+
 ## Source file map
 
 Service files. Same sources back the ADE runtime and the limited

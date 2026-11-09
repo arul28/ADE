@@ -195,7 +195,8 @@ the comparison ref for rebase predictions:
 This resolver is used by both `scanRebaseNeeds` (batch) and
 `getRebaseNeed` (single). `rebaseLane` (AI-assisted) applies the
 same logic so the prediction and the actual rebase target stay in
-sync.
+sync. For a lane built on a known recently merged PR, prediction replays only
+the commits after that PR’s head, matching the `rebase --onto` operation.
 
 ## Tables
 

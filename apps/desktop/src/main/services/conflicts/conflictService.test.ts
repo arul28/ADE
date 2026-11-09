@@ -384,6 +384,71 @@ describe("conflictService conflict context integrity", () => {
     expect(proposal.explanation).toContain("Insufficient context");
   });
 
+  it("rebases a lane built on a squash-merged lane without replaying the merged commits", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-built-on-merged-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = randomUUID();
+    const now = "2026-03-24T12:00:00.000Z";
+    const commitFile = (name: string, content: string, message: string) => {
+      fs.writeFileSync(path.join(repoRoot, name), content, "utf8");
+      git(repoRoot, ["add", name]);
+      git(repoRoot, ["commit", "-m", message]);
+    };
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        [projectId, repoRoot, "demo", "main", now, now],
+      );
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.email", "ade@test.local"]);
+      git(repoRoot, ["config", "user.name", "ADE Test"]);
+      fs.writeFileSync(path.join(repoRoot, ".gitignore"), "kv.sqlite*\nsecrets/\n", "utf8");
+      git(repoRoot, ["add", ".gitignore"]);
+      commitFile("shared.txt", "base\n", "base");
+      git(repoRoot, ["checkout", "-b", "feature/parent"]);
+      commitFile("shared.txt", "first\n", "parent 1");
+      commitFile("shared.txt", "second\n", "parent 2");
+      const mergedHeadSha = git(repoRoot, ["rev-parse", "HEAD"]).trim();
+      git(repoRoot, ["checkout", "-b", "feature/child"]);
+      commitFile("child.txt", "child\n", "child work");
+      git(repoRoot, ["checkout", "main"]);
+      git(repoRoot, ["merge", "--squash", "feature/parent"]);
+      git(repoRoot, ["commit", "-m", "squash parent"]);
+      git(repoRoot, ["checkout", "feature/child"]);
+      db.run(
+        `insert into pull_requests(id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, title, state,
+          base_branch, head_branch, merged_head_sha, merged_at, created_at, updated_at)
+         values (?, ?, ?, 'o', 'r', 7, 'https://github.com/o/r/pull/7', 'Parent', 'merged', 'main', 'feature/parent', ?, ?, ?, ?)`,
+        ["pr-parent", projectId, "lane-parent", mergedHeadSha, new Date().toISOString(), now, now],
+      );
+      const child = createLaneSummary(repoRoot, { id: "lane-child", name: "Child", branchRef: "feature/child", baseRef: "main", parentLaneId: null });
+      const service = createConflictService({
+        db,
+        logger: createLogger(),
+        projectId,
+        projectRoot: repoRoot,
+        laneService: {
+          getCompareBase: () => "main",
+          list: async () => [child],
+          getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/child" }),
+        } as any,
+        projectConfigService: { get: () => ({ effective: { providerMode: "guest" }, local: {} }) } as any,
+      });
+
+      const [need] = await service.scanRebaseNeeds();
+      expect(need).toMatchObject({ kind: "built_on_merged", conflictPredicted: false, mergedPr: { number: 7 } });
+
+      const result = await service.rebaseLane({ laneId: "lane-child" });
+
+      expect(result).toMatchObject({ success: true, conflictingFiles: [] });
+      expect(git(repoRoot, ["log", "--format=%s", "main..HEAD"]).trim()).toBe("child work");
+      expect(fs.readFileSync(path.join(repoRoot, "shared.txt"), "utf8")).toBe("second\n");
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("prefers origin/<baseRef> for unparented lanes when the remote has advanced", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-root-base-remote-"));
     const remoteRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-root-base-remote-origin-"));
