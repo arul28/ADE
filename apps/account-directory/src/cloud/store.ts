@@ -118,8 +118,20 @@ export async function listComputers(env: CloudEnv, userId: string): Promise<Comp
   return rows.results ?? [];
 }
 
+/**
+ * Holds a statement back unless the row still reads what the caller read, so two
+ * requests racing a status change (the idle call and a tick or read) charge once.
+ */
+type StatusGuard = { sql: string; binds: Array<string | number> };
+
+function statusGuard(computer: Pick<ComputerRow, "instance_id" | "status" | "awake_since">): StatusGuard {
+  return computer.awake_since == null
+    ? { sql: "exists (select 1 from cloud_computers where instance_id = ? and status = ? and awake_since is null)", binds: [computer.instance_id, computer.status] }
+    : { sql: "exists (select 1 from cloud_computers where instance_id = ? and status = ? and awake_since = ?)", binds: [computer.instance_id, computer.status, computer.awake_since] };
+}
+
 /** Closes the part of the open stretch up to `upTo` and charges it. Empty when nothing is open. */
-export function settleStatements(env: CloudEnv, computer: ComputerRow, upTo: number): D1PreparedStatement[] {
+export function settleStatements(env: CloudEnv, computer: ComputerRow, upTo: number, guard?: StatusGuard): D1PreparedStatement[] {
   const start = computer.awake_since;
   if (start == null) return [];
   const statements: D1PreparedStatement[] = [];
@@ -129,30 +141,32 @@ export function settleStatements(env: CloudEnv, computer: ComputerRow, upTo: num
     chargedMilli += milli;
     statements.push(env.DB.prepare(`
       insert into cloud_computer_days (instance_id, day, user_id, metered_ms, metered_milli, multiplier_milli)
-      values (?, ?, ?, ?, ?, ?)
+      select ?, ?, ?, ?, ?, ?
+      where ${guard ? guard.sql : "1"}
       on conflict (instance_id, day) do update set
         metered_ms = metered_ms + excluded.metered_ms,
         metered_milli = metered_milli + excluded.metered_milli,
         multiplier_milli = excluded.multiplier_milli
-    `).bind(computer.instance_id, day, computer.user_id, ms, milli, computer.multiplier_milli));
+    `).bind(computer.instance_id, day, computer.user_id, ms, milli, computer.multiplier_milli, ...(guard?.binds ?? [])));
   }
   if (chargedMilli > 0) {
-    statements.push(env.DB.prepare("update cloud_accounts set used_milli = used_milli + ?, updated_at = ? where user_id = ?")
-      .bind(chargedMilli, upTo, computer.user_id));
+    statements.push(env.DB.prepare(`update cloud_accounts set used_milli = used_milli + ?, updated_at = ? where user_id = ?${guard ? ` and ${guard.sql}` : ""}`)
+      .bind(chargedMilli, upTo, computer.user_id, ...(guard?.binds ?? [])));
   }
   return statements;
 }
 
 /** The free push-work time of a closing stretch, so the daily reconcile doesn't charge it. */
-function freeWakeStatements(env: CloudEnv, computer: ComputerRow, closedAt: number): D1PreparedStatement[] {
+function freeWakeStatements(env: CloudEnv, computer: ComputerRow, closedAt: number, guard: StatusGuard): D1PreparedStatement[] {
   if (computer.free_wake_started_at == null || computer.free_wake_until == null) return [];
   const freeEnd = Math.min(closedAt, computer.free_wake_until);
   return splitByUtcDay(computer.free_wake_started_at, freeEnd).map(({ day, ms }) =>
     env.DB.prepare(`
       insert into cloud_computer_days (instance_id, day, user_id, free_ms, multiplier_milli)
-      values (?, ?, ?, ?, ?)
+      select ?, ?, ?, ?, ?
+      where ${guard.sql}
       on conflict (instance_id, day) do update set free_ms = free_ms + excluded.free_ms
-    `).bind(computer.instance_id, day, computer.user_id, ms, computer.multiplier_milli));
+    `).bind(computer.instance_id, day, computer.user_id, ms, computer.multiplier_milli, ...guard.binds));
 }
 
 function liveMilli(computer: Pick<ComputerRow, "awake_since" | "multiplier_milli">, now: number): number {
@@ -183,10 +197,12 @@ export function statusChangeStatements(env: CloudEnv, computer: ComputerRow, sta
   if (computer.status === status) return [];
   const statements: D1PreparedStatement[] = [];
   const previous = computer.status;
+  // Read before the row changes below: every statement here needs the row as it was read.
+  const guard = statusGuard(computer);
   const wasMetered = computer.awake_since != null;
   const nextMetered = isMeteredStatus(status);
   if (wasMetered && !nextMetered) {
-    statements.push(...settleStatements(env, computer, now), ...freeWakeStatements(env, computer, now));
+    statements.push(...settleStatements(env, computer, now, guard), ...freeWakeStatements(env, computer, now, guard));
     computer.awake_since = null;
     computer.free_wake_started_at = null;
     computer.free_wake_until = null;
@@ -200,17 +216,21 @@ export function statusChangeStatements(env: CloudEnv, computer: ComputerRow, sta
   computer.status = status;
   computer.status_changed_at = now;
   computer.cold_storage = 0;
+  const action = powerAction(previous, status);
+  if (action) {
+    statements.push(env.DB.prepare(`insert into cloud_power_log (instance_id, user_id, action, reason, created_at) select ?, ?, ?, ?, ? where ${guard.sql}`)
+      .bind(computer.instance_id, computer.user_id, action, reason, now, ...guard.binds));
+  }
+  // Last: the writes above read this row through the guard.
   statements.push(env.DB.prepare(`
     update cloud_computers set status = ?, status_changed_at = ?, awake_since = ?, last_awake_at = ?,
       cold_storage = 0, free_wake_started_at = ?, free_wake_until = ?, delete_warned_7d_at = ?, delete_warned_1d_at = ?
-    where instance_id = ?
+    where instance_id = ? and status = ?
   `).bind(
     status, now, computer.awake_since, computer.last_awake_at,
     computer.free_wake_started_at, computer.free_wake_until, computer.delete_warned_7d_at, computer.delete_warned_1d_at,
-    computer.instance_id,
+    computer.instance_id, previous,
   ));
-  const action = powerAction(previous, status);
-  if (action) statements.push(powerLogStatement(env, computer, action, reason, now));
   return statements;
 }
 

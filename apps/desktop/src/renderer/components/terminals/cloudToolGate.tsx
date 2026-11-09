@@ -42,11 +42,32 @@ export function useCloudComputer(pin: OpenProjectBinding | null | undefined): {
   const binding = effectiveRuntimeBinding(pin, bound);
   const { result, refresh } = useCloudMachines(cloudEnabled && binding?.kind === "remote");
   const hostname = binding?.kind === "remote" ? binding.hostname ?? null : null;
+  const machineKey = useTargetMachineKey(cloudEnabled && binding?.kind === "remote" ? binding.targetId : null);
   const box = useMemo(
-    () => (result && hostname ? cloudBoxForMachine(result.machines, { hostname }) : null),
-    [hostname, result],
+    () => (result && (machineKey || hostname) ? cloudBoxForMachine(result.machines, { machineKey, hostname }) : null),
+    [hostname, machineKey, result],
   );
   return { box, account: result?.account ?? null, refresh };
+}
+
+/** The computer's account key behind a paired machine: a relay connection's hostname is the relay's, not the computer's. */
+function useTargetMachineKey(targetId: string | null): string | null {
+  const [machineKey, setMachineKey] = useState<string | null>(null);
+  useEffect(() => {
+    setMachineKey(null);
+    if (!targetId) return;
+    let cancelled = false;
+    void window.ade.remoteRuntime?.listTargets?.().then(
+      (targets) => {
+        if (!cancelled) setMachineKey(targets.find((target) => target.id === targetId)?.pairedMachine?.machineKey?.trim() ?? null);
+      },
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [targetId]);
+  return machineKey;
 }
 
 function computerIsDown(box: CloudMachine | null): boolean {

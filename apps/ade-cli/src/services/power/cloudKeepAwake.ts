@@ -43,8 +43,6 @@ export const CLOUD_IDLE_SLEEP_AFTER_MS = 3 * 60_000;
 export const CLOUD_UNTOUCHED_IDLE_MS = 60 * 60_000;
 /** A gap this many intervals long between checks means the machine was asleep. */
 const SLEEP_GAP_INTERVALS = 2.5;
-/** Asked to sleep and still awake after this: ask again. */
-const SLEEP_ASK_RETRY_MS = 5 * 60_000;
 
 /** What the busy list reads, per runtime on this brain. */
 export type CloudBusyTerminal = {
@@ -201,7 +199,8 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   /** The last moment the machine had work. Starts at boot: a fresh machine gets the full three minutes. */
   let lastBusyAt = now();
   let lastTickAt: number | null = null;
-  let sleepAskedAt: number | null = null;
+  /** Asked the server to sleep this machine; the next check runs after a wake, or a failed ask. */
+  let askedToSleep = false;
 
   /** Sends the next timer when it changed; true when the server holds it. */
   const syncTimedWake = async (url: string | null, nextWakeAt: number | null): Promise<boolean> => {
@@ -261,13 +260,12 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   const sleepIfIdleLongEnough = async (at: number): Promise<void> => {
     // Checks land a few milliseconds around each minute; that shouldn't cost a whole extra minute.
     if (!options.requestIdleSleep || at - lastBusyAt < CLOUD_IDLE_SLEEP_AFTER_MS - 5_000) return;
-    if (sleepAskedAt != null && at - sleepAskedAt < SLEEP_ASK_RETRY_MS) return;
-    sleepAskedAt = at;
+    askedToSleep = true;
     try {
       if (await options.growDiskIfNeeded?.()) return;
       // Work noted while the disk check ran wins: sleep waits for the next idle stretch.
       if (usedSinceTick) {
-        sleepAskedAt = null;
+        askedToSleep = false;
         return;
       }
       await options.requestIdleSleep(instanceId);
@@ -275,7 +273,6 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
     } catch (error) {
       // The provider's own timer still sleeps it a couple of minutes later.
       options.logger?.warn("cloud.idle_sleep_failed", { error: error instanceof Error ? error.message : String(error) });
-      sleepAskedAt = null;
     }
   };
 
@@ -314,10 +311,11 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
         lastPingAt = now();
       }
       const at = now();
-      // Time spent asleep doesn't count: woken, the machine gets its full three minutes.
-      if (lastTickAt != null && at - lastTickAt > intervalMs * SLEEP_GAP_INTERVALS) {
+      // Time spent asleep doesn't count: woken, the machine gets its full three
+      // minutes. A short sleep leaves no gap, so a check after an ask counts too.
+      if (askedToSleep || (lastTickAt != null && at - lastTickAt > intervalMs * SLEEP_GAP_INTERVALS)) {
         lastBusyAt = at;
-        sleepAskedAt = null;
+        askedToSleep = false;
       }
       lastTickAt = at;
       if (state.busy) lastBusyAt = at;

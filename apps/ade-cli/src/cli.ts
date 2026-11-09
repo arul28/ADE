@@ -264,7 +264,7 @@ import {
   resolvePendingInputResponse,
   type PendingInputResponse,
 } from "../../desktop/src/shared/pendingInputCommand";
-import { adeActionAccess } from "../../desktop/src/shared/adeActionAccess";
+import { adeActionAccess, isBackgroundAdeWrite } from "../../desktop/src/shared/adeActionAccess";
 import {
   isAgentChatStopMode,
   type AgentChatStopMode,
@@ -29790,7 +29790,7 @@ async function runServe(
     // A person watching a tool (Linux Desktop, a preview): a read, so it never
     // wakes a sleeping computer, but it does keep an awake one awake.
     if (domain === "work_tools" && action === "noteWatching") return true;
-    return Boolean(domain && action && adeActionAccess(domain, action) === "write");
+    return Boolean(domain && action && adeActionAccess(domain, action) === "write" && !isBackgroundAdeWrite(domain, action));
   };
   const withRemoteUseNoted = <H extends JsonRpcHandler>(peerDeviceId: string | null, handler: H): H => {
     if (!peerDeviceId || !cloudKeepAwake) return handler;

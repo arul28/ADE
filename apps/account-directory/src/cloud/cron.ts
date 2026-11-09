@@ -35,7 +35,8 @@ const PENDING_TIMEOUT_MS = 15 * 60_000;
 const NO_CHECK_IN_MS = 10 * 60_000;
 /** Exec gets this long; the command gives itself 40 s. */
 const PREPARE_STOP_TIMEOUT_MS = 45_000;
-const PREPARE_STOP_COMMAND = "ade cloud prepare-stop --timeout 40";
+/** `ade brain update` puts the newer ADE on the disk (`$ADE_HOME/bin`), which the image's PATH doesn't reach. */
+const PREPARE_STOP_COMMAND = 'PATH="$ADE_HOME/bin:$PATH" ade cloud prepare-stop --timeout 40';
 const ZERO_STOP_RETRY_GUARD_MS = 2 * 60_000;
 const STOP_RETRIES = 3;
 const STOP_RETRY_DELAY_MS = 3_000;

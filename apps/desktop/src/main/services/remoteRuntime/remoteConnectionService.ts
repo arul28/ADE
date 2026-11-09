@@ -99,7 +99,7 @@ import {
   describeLinkHeldByOtherAdeApp,
   type HostWentAwayRecovery,
 } from "../../../shared/connectionDiagnosis";
-import { adeActionAccess, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
+import { adeActionAccess, isBackgroundAdeWrite, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
@@ -1483,8 +1483,10 @@ export class RemoteConnectionService {
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
     // Sending to a chat or changing anything on a sleeping cloud machine wakes
-    // it first, and waits for it to come back.
-    if (!this.pool.hasEntry(targetId) && adeActionAccess(request.domain, request.action) === "write") {
+    // it first, and waits for it to come back. The app's own background writes don't.
+    const wakes = adeActionAccess(request.domain, request.action) === "write"
+      && !isBackgroundAdeWrite(request.domain, request.action);
+    if (!this.pool.hasEntry(targetId) && wakes) {
       const sleeping = this.registry.get(targetId);
       // The same guards as any implicit use, but for the reconnect backoff a
       // sleeping box has run up: nothing is woken that the call may not reach.
@@ -1510,7 +1512,7 @@ export class RemoteConnectionService {
         // call is sent once more only when sending it twice is safe, or when
         // it never went out; otherwise its unknown outcome stands, and the
         // person's retry reaches the woken machine.
-        if (adeActionAccess(request.domain, request.action) !== "write" || !(await this.wakeForUse(target))) throw error;
+        if (!wakes || !(await this.wakeForUse(target))) throw error;
         this.clearAutomaticReconnectState(targetId);
         await this.connectWokenMachine(target);
         if (error instanceof RemoteActionOutcomeUnknownError && !isRetriableAfterSleep(request)) throw error;

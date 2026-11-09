@@ -807,6 +807,22 @@ const UNREPLAYED_READS = new Set<string>([
 ]);
 
 /**
+ * Writes the app sends on its own (opening a view, window focus), never because
+ * a person asked: they don't wake a sleeping cloud computer or keep one awake.
+ */
+const BACKGROUND_WRITES = new Set<string>([
+  "pr.reconcileOnFocus",
+  "session.backfillDeltas",
+  "session.clearWokeMarker",
+  "work_tools.acknowledgeShow",
+  "work_tools.setActiveTool",
+]);
+
+export function isBackgroundAdeWrite(domain: string, action: string): boolean {
+  return BACKGROUND_WRITES.has(`${domain}.${action}`);
+}
+
+/**
  * May a runtime call whose connection dropped before it answered run again?
  * Declared reads may, except the costly ones above; writes may not, except the
  * idempotent ones named above. Never a `start`: a replayed start whose first

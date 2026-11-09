@@ -133,7 +133,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     }
     if (!response.ok) {
       const { code, message } = readError(body);
-      const refused = response.status === 401 || code === "unauthorized";
+      // Off the access list, the server answers every route 404. On the list route
+      // that means this account, not one computer.
+      const refused = response.status === 401 || code === "unauthorized"
+        || (response.status === 404 && method === "GET" && path === INSTANCES);
       throw new CloudProviderError(
         message ?? (response.status >= 500 ? "ADE Cloud is having trouble right now. Try again in a moment." : `ADE Cloud answered with an error (${response.status}).`),
         refused ? CLOUD_ACCESS_REFUSED : code ?? `http_${response.status}`,

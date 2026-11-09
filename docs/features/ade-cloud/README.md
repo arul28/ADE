@@ -139,7 +139,10 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   tpgid on a normal kernel, the shell's children on gVisor, whose `/proc` carries no
   tty fields. Output-based `runtimeState` reads `idle` under a quiet command, so it isn't used for plain shells.
 - Three minutes after the last work, the brain calls `POST /cloud/instances/:id/idle`
-  with its account token. The provider's own 5-minute timer stays on as the backstop.
+  with its account token, and any check after that counts as a fresh wake. The provider's
+  own 5-minute timer stays on as the backstop.
+- The app's own writes (opening a view, window focus: `isBackgroundAdeWrite`) neither wake
+  a sleeping computer nor keep one awake.
 - `ade cloud prepare-stop --timeout 40` (the server runs it before a stop at 0 hours)
   interrupts running chat turns and agent CLIs and writes the saved chat copy.
 - Disk (`cloudDiskGrow.ts`): when idle and at 85% used, a paid computer grows 4 GB
