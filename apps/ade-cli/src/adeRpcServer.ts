@@ -178,7 +178,7 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
-import { assertActionModelNames, assertFullModelName } from "./modelNameGuard";
+import { assertActionModelNames, assertFullModelName, savedRuleModelNames } from "./modelNameGuard";
 import { captureError } from "../../desktop/src/shared/sentry/capture";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
@@ -1787,6 +1787,21 @@ function nowIso(): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** The model names the rule an `automations.saveRule` edit replaces already holds. */
+function savedModelNamesKeptBy(domain: string, action: string, input: unknown, service: Record<string, unknown>): Set<string> {
+  if (domain !== "automations" || action !== "saveRule" || !isRecord(input) || !isRecord(input.draft)) return new Set();
+  const id = typeof input.draft.id === "string" ? input.draft.id.trim() : "";
+  if (!id || typeof service.get !== "function") return new Set();
+  try {
+    return savedRuleModelNames((service.get as (args: { id: string }) => unknown)({ id }));
+  } catch (error) {
+    // The save itself reports a missing or unreadable rule; without the saved
+    // names an unchanged old name is refused, which the caller can correct.
+    captureError(error, { tags: { area: "rpc.model_name_guard" }, fingerprint: ["rpc", "model_name_guard", "saved_rule_read"] });
+    return new Set();
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -6464,7 +6479,8 @@ async function runTool(args: {
     if (!mayUseUserOnlyActions(session)) {
       // The input the action receives: the first positional argument, a scalar
       // `arg` (an object there reaches the action too), or `args`.
-      assertActionModelNames(domain, action, argsList ? argsList[0] : hasScalarArg ? toolArgs.arg : toolArgs.args);
+      const actionInput = argsList ? argsList[0] : hasScalarArg ? toolArgs.arg : toolArgs.args;
+      assertActionModelNames(domain, action, actionInput, savedModelNamesKeptBy(domain, action, actionInput, service));
     }
     if (
       domain === "cto_state"

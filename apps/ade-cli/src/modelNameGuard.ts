@@ -100,9 +100,32 @@ function throwIfRefused(refusal: string | null): void {
   if (refusal) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, refusal);
 }
 
-/** Refuses a model-picking action whose input names a model by shorthand. */
-export function assertActionModelNames(domain: string, action: string, input: unknown): void {
+/**
+ * Every model name a saved automation rule holds, so an edit that leaves one
+ * as it was (a rule saved before full names, renamed by an agent) still saves.
+ */
+export function savedRuleModelNames(rule: unknown, depth = 0): Set<string> {
+  const names = new Set<string>();
+  if (depth > 6 || rule === null || typeof rule !== "object") return names;
+  for (const [key, value] of Object.entries(rule)) {
+    if ((key === "modelId" || key === "targetModelId") && typeof value === "string") names.add(value.trim());
+    else for (const name of savedRuleModelNames(value, depth + 1)) names.add(name);
+  }
+  return names;
+}
+
+/**
+ * Refuses a model-picking action whose input names a model by shorthand.
+ * `unchanged` holds names the request keeps from what it edits; those pass.
+ */
+export function assertActionModelNames(
+  domain: string,
+  action: string,
+  input: unknown,
+  unchanged: ReadonlySet<string> = new Set(),
+): void {
   for (const picked of modelRefsPickedBy(domain, action, input)) {
+    if (typeof picked.ref === "string" && unchanged.has(picked.ref.trim())) continue;
     throwIfRefused(modelNameRefusal(picked.ref, picked.provider));
   }
 }
