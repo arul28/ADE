@@ -52,11 +52,41 @@ type SystemdServiceManagerDeps = {
 };
 
 /** See `launchAgentPath` for why `serviceName` is a parameter. */
+/**
+ * Where this user's systemd manager reads unit files. Normally
+ * `~/.config/systemd/user`, but a relocated `XDG_CONFIG_HOME` moves it, and a
+ * unit written anywhere else is never seen. The answer comes from the manager
+ * itself; an unusable manager or another home keeps the default.
+ */
+let cachedUserUnitDirectory: string | null = null;
+
+function userUnitDirectory(homeDir: string): string {
+  const fallback = path.join(homeDir, ".config", "systemd", "user");
+  if (process.platform !== "linux" || homeDir !== os.homedir()) return fallback;
+  if (cachedUserUnitDirectory) return cachedUserUnitDirectory;
+  try {
+    const result = spawnSync("systemctl", ["--user", "show", "--property=UnitPath", "--value"], { encoding: "utf8", timeout: 2_000 });
+    if (result.status === 0) {
+      const userConfigDir = String(result.stdout ?? "")
+        .trim()
+        .split(/\s+/)
+        .find((dir) => dir.endsWith("/systemd/user") && !/^\/(?:run|usr|etc|var)\//.test(dir));
+      if (userConfigDir) {
+        cachedUserUnitDirectory = userConfigDir;
+        return userConfigDir;
+      }
+    }
+  } catch {
+    // No systemd here: the default location is as good as any.
+  }
+  return fallback;
+}
+
 export function servicePath(
   homeDir = os.homedir(),
   serviceName: string = ADE_RUNTIME_SERVICE_NAME,
 ): string {
-  return path.join(homeDir, ".config", "systemd", "user", `${serviceName}.service`);
+  return path.join(userUnitDirectory(homeDir), `${serviceName}.service`);
 }
 
 function serviceUnitName(): string {

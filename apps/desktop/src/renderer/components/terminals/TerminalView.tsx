@@ -216,6 +216,9 @@ type CachedRuntime = {
   replayLoadedBytes: number | null;
 };
 
+const PTY_RESIZE_RETRY_MIN_MS = 1_000;
+const PTY_RESIZE_RETRY_MAX_MS = 15_000;
+const PTY_RESIZE_MAX_RETRIES = 8;
 const HYDRATE_TAIL_BYTES = 2_000_000;
 // Maximum transcript bytes loaded when replaying a disposed chat-CLI session.
 // Keep this small enough that reopening a noisy terminal cannot balloon the
@@ -839,6 +842,26 @@ function reportTerminalDimsMismatch(
   logTerminalDiag("warn", describeTerminalDims(runtime, extra));
 }
 
+/**
+ * A resize lost to a dropped connection is sent again until it lands, or the
+ * pane is resized to something else, so the PTY does not stay at the old width
+ * until the next focus.
+ */
+function retryFailedPtyResize(runtime: CachedRuntime, dims: TerminalDims, attempt = 0): void {
+  if (runtime.disposed || attempt >= PTY_RESIZE_MAX_RETRIES) return;
+  const delayMs = Math.min(PTY_RESIZE_RETRY_MAX_MS, PTY_RESIZE_RETRY_MIN_MS * 2 ** attempt);
+  window.setTimeout(() => {
+    if (runtime.disposed || !sameDims(runtime.lastDims, dims) || sameDims(runtime.lastPtyResizeDims, dims)) return;
+    const resize = runtime.runtimePin
+      ? window.ade.pty.resize({ ptyId: runtime.ptyId, cols: dims.cols, rows: dims.rows }, runtime.runtimePin)
+      : window.ade.pty.resize({ ptyId: runtime.ptyId, cols: dims.cols, rows: dims.rows });
+    resize.then(
+      () => { runtime.lastPtyResizeDims = dims; },
+      () => retryFailedPtyResize(runtime, dims, attempt + 1),
+    );
+  }, delayMs);
+}
+
 function sendPtyResize(runtime: CachedRuntime, dims: TerminalDims): void {
   if (runtime.disposed) return;
   runtime.ptyResizeInFlight = true;
@@ -866,6 +889,7 @@ function sendPtyResize(runtime: CachedRuntime, dims: TerminalDims): void {
           runtime.lastPtyResizeDims = null;
         }
         logTerminalDiag("warn", describeTerminalDims(runtime, { reason: "pty-resize-failed", sentResize: dims }));
+        retryFailedPtyResize(runtime, dims);
       },
     )
     .finally(() => {
@@ -3653,6 +3677,8 @@ export function TerminalView({
     };
     const onWheel = (ev: WheelEvent) => {
       if (runtime.disposed) return;
+      // A sideways swipe is not a scroll: taking it here moved the buffer a line.
+      if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY)) return;
       if (!(ev.target instanceof Node)) return;
       if (!runtime.term.element || !runtime.term.element.contains(ev.target)) return;
       const viewport = runtime.term.element.querySelector<HTMLElement>(".xterm-viewport");
@@ -3671,9 +3697,9 @@ export function TerminalView({
         return;
       }
 
-      const viewportScrollable = viewport.scrollHeight > viewport.clientHeight + 1;
-      const hasScrollback = runtime.term.buffer.active.baseY > 0;
-      if (!hasScrollback || viewportScrollable) return;
+      // xterm 6 scrolls its own viewport, so the DOM element never reports
+      // overflow and the buffer is the only source of truth.
+      if (runtime.term.buffer.active.baseY <= 0) return;
       scrollLocally(ev);
     };
     el.addEventListener("wheel", onWheel, { passive: false, capture: true });

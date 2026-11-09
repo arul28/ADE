@@ -18,6 +18,7 @@ import {
   isExternalHref,
   resolveWorkspacePathFromHref,
   useChatWorkspacePathOpener,
+  editorFileLinkPath,
 } from "./chatWorkspacePaths";
 
 /**
@@ -45,7 +46,7 @@ export const SAFE_PREVIEW_SCHEMA = {
   // path — it renders a button that routes through the Files tab.
   protocols: {
     ...defaultSchema.protocols,
-    href: [...(defaultSchema.protocols?.href ?? []), "file", ...WINDOWS_DRIVE_LETTER_SCHEMES],
+    href: [...(defaultSchema.protocols?.href ?? []), "file", ...WINDOWS_DRIVE_LETTER_SCHEMES, "cursor", "vscode", "vscode-insiders"],
   },
   tagNames: [
     "p",
@@ -95,6 +96,8 @@ export function chatMarkdownUrlTransform(value: string): string {
   // An `ade://` link is a typed pointer the renderers draw as a chip; the
   // default transform blanks the unknown scheme. Only a link that parses passes.
   if (/^ade:\/\//i.test(value) && parseDeeplink(value).ok) return value;
+  // A local editor link becomes a Files button in the anchor; never a live href.
+  if (editorFileLinkPath(value) || editorFileLinkPath(decoded)) return value;
   return defaultUrlTransform(value);
 }
 

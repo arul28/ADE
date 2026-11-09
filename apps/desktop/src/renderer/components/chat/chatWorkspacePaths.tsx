@@ -175,9 +175,30 @@ export function looksLikeWorkspacePath(value: string): boolean {
   return !singleSegmentLooksLikeProse(withoutLeadingSlash);
 }
 
+const EDITOR_FILE_LINK_PROTOCOLS = new Set(["cursor:", "vscode:", "vscode-insiders:"]);
+
+/**
+ * The absolute local path of an editor link an agent printed
+ * (`cursor://file/<path>:12`), or null. Only a local file open qualifies:
+ * anything naming another host, a port or credentials is not one.
+ */
+export function editorFileLinkPath(href: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+  if (!EDITOR_FILE_LINK_PROTOCOLS.has(url.protocol) || url.hostname !== "file") return null;
+  if (url.username || url.password || url.port || !url.pathname.startsWith("/")) return null;
+  return url.pathname;
+}
+
 export function resolveWorkspacePathFromHref(href: string | undefined): WorkspacePathLocation | null {
   if (!href) return null;
   if (isExternalHref(href)) return null;
+  const editorPath = editorFileLinkPath(href);
+  if (editorPath) return parseWorkspacePathLocation(editorPath);
   const candidate = parseWorkspacePathLocation(href);
   if (!candidate) return null;
   return looksLikeWorkspacePath(href) ? candidate : null;

@@ -3668,6 +3668,10 @@ final class WorkComposerPillEngine {
   func publishNow() {
     pendingPublish = nil
     let serialized = serialize()
+    // A send cleared the draft, and the view still holds the old text until
+    // SwiftUI applies that. A native change from before the clear (a late
+    // autocorrect) must not write the sent words back.
+    if readDraft().isEmpty, !syncedText.isEmpty, !serialized.isEmpty { return }
     syncedText = serialized
     if readDraft() != serialized { writeDraft(serialized) }
   }

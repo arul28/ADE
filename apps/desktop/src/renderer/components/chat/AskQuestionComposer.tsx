@@ -231,9 +231,12 @@ export function AskQuestionComposer({
   onDismiss,
   attachDisabled = false,
   attachBlockedReason,
+  onFocusLost,
 }: {
   request: PendingInputRequest;
   responding?: boolean;
+  /** Answering disables or removes the focused control; this puts focus somewhere useful. */
+  onFocusLost?: () => void;
   onSubmit: (answers: Record<string, string | string[]>) => void;
   onDecline: () => void;
   /**
@@ -268,6 +271,14 @@ export function AskQuestionComposer({
   attachDisabled?: boolean;
   attachBlockedReason?: string | null;
 }) {
+  const onFocusLostRef = useRef(onFocusLost);
+  onFocusLostRef.current = onFocusLost;
+  useEffect(() => {
+    if (responding) onFocusLostRef.current?.();
+  }, [responding]);
+  useEffect(() => () => {
+    requestAnimationFrame(() => onFocusLostRef.current?.());
+  }, []);
   const questions = request.questions;
   const [page, setPage] = useState(0);
   const [picksById, setPicks] = useState<Record<string, string[]>>({});

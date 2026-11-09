@@ -3496,6 +3496,9 @@ private struct WorkChatComposerDraftInput: View {
   @MainActor
   private func performSend(mode: WorkActiveSendMode) {
     guard sendEnabled else { return }
+    // The keyboard can hold an autocorrect it has not applied. Ending editing
+    // applies it and publishes the text, so the send reads the final words.
+    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     if let sendGate {
       let text = draftState.text
       Task { @MainActor in

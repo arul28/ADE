@@ -5768,6 +5768,14 @@ export function AgentChatPane({
       : { ...current, [token]: label });
   }, []);
   const [composerCaretToEndRequest, setComposerCaretToEndRequest] = useState(0);
+  // Answering a question card disables or removes the focused control, and the
+  // page's number and Enter shortcuts stop working until something has focus.
+  const focusComposerIfFocusLost = useCallback(() => {
+    const active = document.activeElement;
+    if (!active || active === document.body || (active as HTMLButtonElement).disabled) {
+      setComposerCaretToEndRequest((current) => current + 1);
+    }
+  }, []);
   // A browser tab attached from the Browser panel, for the composer to insert
   // at its caret (the pane cannot see the caret, only the draft).
   const [browserTabInsertRequest, setBrowserTabInsertRequest] = useState<{ id: number; token: string } | null>(null);
@@ -19180,6 +19188,7 @@ export function AgentChatPane({
             key={steeringPendingInput.itemId}
             request={steeringPendingInput.request}
             responding={respondingApprovalIds.has(steeringPendingInput.itemId)}
+            onFocusLost={focusComposerIfFocusLost}
             onSubmit={(answers) => {
               void handleApproval(steeringPendingInput.itemId, "accept", null, answers);
             }}
