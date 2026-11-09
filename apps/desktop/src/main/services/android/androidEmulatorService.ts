@@ -97,7 +97,7 @@ export { stopHandedOffAndroidEmulators } from "./androidHandedOffEmulators";
 /** The service, plus the lane streams as the brain's stream relay drives them (phone and web viewers). */
 export type AndroidEmulatorService = AndroidEmulatorServiceApi & {
   /** These emulators of the lane, when idle and not pinned. Not an agent action: the settled-lane release calls it. */
-  powerOffEmulators(args: { laneId: string; avdNames: ReadonlySet<string> }): Promise<{ poweredOff: Array<{ avdName: string }> }>;
+  powerOffEmulators(args: { laneId: string; avdNames: ReadonlySet<string> }): Promise<{ poweredOff: Array<{ avdName: string; displayName: string | null }> }>;
   streamRelaySource: AppleStreamOwningService;
   /** The machine's remote viewer cap in kbit/s: the relay's ceiling for pacing. */
   streamRemoteBitrateKbpsCap: () => number;
@@ -866,8 +866,15 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     selectPoint: inspect.selectPoint,
 
     deviceCleanup: (args) => maintenance.runCleanup(args ?? {}),
-    powerOffEmulators: (args) =>
-      maintenance.powerOffNow({ onlyLaneId: args.laneId, onlyAvdNames: args.avdNames }),
+    powerOffEmulators: async (args) => {
+      const { poweredOff } = await maintenance.powerOffNow({ onlyLaneId: args.laneId, onlyAvdNames: args.avdNames });
+      return {
+        poweredOff: poweredOff.map((device) => ({
+          avdName: device.avdName,
+          displayName: readAndroidAvd(androidAvdHome(env, home), device.avdName)?.displayName ?? null,
+        })),
+      };
+    },
     ...deviceSettings.verbs,
     ...posture,
     ...composePreviews,

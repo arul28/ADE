@@ -8,8 +8,9 @@ import { getSessionLifecycleSettings } from "./sessionLifecycleSettings";
 
 /**
  * Releases what a lane's chats were using once they have all settled: its
- * simulators, emulators, the dev servers those chats started, and Mac Desktop
- * screens. Off unless the owner turns it on (`releaseLaneResourcesOnSettle`).
+ * simulators, emulators, the dev servers those chats started, and any Mac
+ * Desktop control they held. The screen itself is left to its idle close: a
+ * stop would force-quit whatever the lane has open on it. Off unless the owner turns it on (`releaseLaneResourcesOnSettle`).
  *
  * The clock is the chats' own `settled_at` column, read on a slow sweep, not a
  * timer armed when something settles. That is the whole reason it survives a
@@ -82,7 +83,7 @@ export function createSettledLaneReleaseService(deps: SettledLaneReleaseDeps) {
     const emulators = await attempt("android_emulators", () => deps.stopAndroidEmulators(laneId, chatIds));
     if (emulators?.length) parts.push(`${emulators.join(", ")} emulator${emulators.length === 1 ? "" : "s"}`);
     const screens = await attempt("mac_desktop", () => deps.releaseMacDesktop(chatIds));
-    if (screens) parts.push(screens === 1 ? "a Mac Desktop screen" : `${screens} Mac Desktop screens`);
+    if (screens) parts.push("Mac Desktop control");
 
     deps.logger?.info("settled_lane_release.done", { laneId, chats: chats.length, released: parts.length });
     if (parts.length === 0) return;
@@ -178,7 +179,7 @@ export type SettledLaneReleaseHosts = {
   } | null;
   androidEmulatorService?: {
     powerOffEmulators: (args: { laneId: string; avdNames: ReadonlySet<string> }) => Promise<{
-      poweredOff: Array<{ avdName: string }>;
+      poweredOff: Array<{ avdName: string; displayName?: string | null }>;
     }>;
   } | null;
   macDesktopService?: {
@@ -190,7 +191,7 @@ export type SettledLaneReleaseHosts = {
 /**
  * Each step reaches only what one of the lane's chats started: the chat a dev
  * server's process names, the chat an agent's boot recorded on a simulator, the
- * chat on an emulator's owner record, the chat holding a Mac Desktop screen. A
+ * chat on an emulator's owner record, the chat holding Mac Desktop control. A
  * Keep-running pin and a device in use are checked by the power-off paths.
  */
 export function createSettledLaneReleaseActions(hosts: SettledLaneReleaseHosts): SettledLaneReleaseActions {
@@ -220,7 +221,7 @@ export function createSettledLaneReleaseActions(hosts: SettledLaneReleaseHosts):
       );
       if (avdNames.size === 0) return [];
       const result = await hosts.androidEmulatorService.powerOffEmulators({ laneId, avdNames });
-      return result.poweredOff.map((device) => device.avdName);
+      return result.poweredOff.map((device) => device.displayName ?? device.avdName);
     },
     releaseMacDesktop: async (chatSessionIds) => {
       if (!hosts.macDesktopService) return 0;

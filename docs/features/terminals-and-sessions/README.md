@@ -3242,8 +3242,9 @@ fetch, effect, or subscription per row.
 Settings › Lanes › "Release what settled chats were using" (off by default, per
 machine). Once every live chat in a lane has been settled for five minutes
 (`settledLaneReleaseService.ts`), ADE powers off the simulators and emulators
-those chats' agents booted, stops the dev servers they started, and releases the
-Mac Desktop screens they hold. Nothing a person started is touched: an agent's boot
+those chats' agents booted, stops the dev servers they started, and gives up any
+Mac Desktop control they held (the screen itself closes on its own idle timer).
+Nothing a person started is touched: an agent's boot
 writes `ade-booted-by-chat` in the simulator's folder (cleared when it goes off),
 and an emulator's owner record names its chat. A device already on when an agent
 reached it stays unattributed. A chat waking cancels the release, "Keep running"
