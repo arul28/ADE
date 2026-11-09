@@ -147,7 +147,8 @@ export function CloudBoxStrip({
   const tone = cloudStateTone(box);
   const stateLabel = box.pastDue ? "Suspended" : CLOUD_STATE_LABELS[box.state];
   const rate = describeCloudRate(box);
-  const canWake = (box.state === "asleep" || box.state === "stopped") && !box.pastDue;
+  const atRest = box.state === "asleep" || box.state === "stopped";
+  const canWake = atRest && !box.pastDue;
   const laneNames = work.lanes.map((lane) => (lane.projectName ? `${lane.name} (${lane.projectName})` : lane.name));
   // A refusal shows under the card, which can sit at the panel's bottom edge:
   // bring it into view so the answer to the click is never off screen.
@@ -187,7 +188,7 @@ export function CloudBoxStrip({
               <span>{laneNames.length === 1 ? laneNames[0] : `${laneNames.length} lanes`}</span>
             </span>
           ) : null}
-          {work.runningChats > 0 ? (
+          {work.runningChats > 0 && !atRest ? (
             <span className="ade-cx-cloud-fact">{work.runningChats === 1 ? "1 chat running" : `${work.runningChats} chats running`}</span>
           ) : null}
           {canWake && onWake && !pending ? (

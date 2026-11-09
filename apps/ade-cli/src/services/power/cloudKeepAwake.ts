@@ -199,6 +199,8 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   /** The last moment the machine had work. Starts at boot: a fresh machine gets the full three minutes. */
   let lastBusyAt = now();
   let lastTickAt: number | null = null;
+  /** The last check found work. */
+  let wasBusy = false;
   /** Asked the server to sleep this machine; the next check runs after a wake, or a failed ask. */
   let askedToSleep = false;
 
@@ -318,8 +320,11 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
         askedToSleep = false;
       }
       lastTickAt = at;
-      if (state.busy) lastBusyAt = at;
-      else await sleepIfIdleLongEnough(at);
+      // Work ends between checks. The first idle check still counts it, so a
+      // machine sleeps at least three minutes after its last work, never less.
+      if (state.busy || wasBusy) lastBusyAt = at;
+      wasBusy = state.busy;
+      if (!state.busy) await sleepIfIdleLongEnough(at);
       if (!url && state.busy && !warnedNoUrl) {
         warnedNoUrl = true;
         options.logger?.info("cloud.keep_awake_no_wake_url", {});

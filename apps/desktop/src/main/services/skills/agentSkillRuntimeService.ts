@@ -130,7 +130,10 @@ export function withoutAgentSkills(
       filteredSkillRootMirrors.set(key, mirror);
       return mirror;
     } catch (error) {
-      console.warn("[skills] filtered skill mirror failed", error instanceof Error ? error.message : String(error));
+      // Most candidate roots don't exist; only a real copy failure is worth a line.
+      if (target || (error as NodeJS.ErrnoException | null)?.code !== "ENOENT") {
+        console.warn("[skills] filtered skill mirror failed", error instanceof Error ? error.message : String(error));
+      }
       if (staging) {
         try { fs.rmSync(staging, { recursive: true, force: true }); } catch { /* best effort */ }
       }

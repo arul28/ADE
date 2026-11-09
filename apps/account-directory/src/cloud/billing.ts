@@ -269,8 +269,13 @@ const periodChange = (subscription: SubscriptionFacts): Pick<CloudPlanChange, "p
     ? { periodStart: subscription.periodStart * 1000, periodEnd: subscription.periodEnd * 1000 }
     : {};
 
+/** An existing account only: a webhook naming an id with no account must not create one. */
 async function userForSubscription(env: CloudEnv, subscription: SubscriptionFacts): Promise<string | null> {
-  if (subscription.userId) return subscription.userId;
+  if (subscription.userId) {
+    const named = await env.DB.prepare("select user_id from cloud_accounts where user_id = ?")
+      .bind(subscription.userId).first<{ user_id: string }>();
+    if (named) return named.user_id;
+  }
   if (!subscription.customer) return null;
   const row = await env.DB.prepare("select user_id from cloud_accounts where stripe_customer_id = ?")
     .bind(subscription.customer).first<{ user_id: string }>();

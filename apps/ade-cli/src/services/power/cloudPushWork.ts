@@ -29,6 +29,8 @@ export async function pushCloudComputerWork(args: {
   for (const load of args.projects) {
     try {
       const runtime = await load();
+      // The list keeps lane statuses for 10 s. "Everything is pushed" has to be true now.
+      runtime.laneService.invalidateListCache();
       for (const lane of await runtime.laneService.list({ includeArchived: false, includeStatus: true })) {
         if (!lane.status.dirty && lane.status.ahead === 0) continue;
         if (lane.laneType === "primary") {

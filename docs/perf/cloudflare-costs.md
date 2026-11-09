@@ -45,7 +45,7 @@ logs for one hour on 2026-11-08 (about 53 to 57 computers online).
 | Cut | Before | After | Reaches the user how |
 | --- | --- | --- | --- |
 | Directory "I'm online" heartbeat 30 s to 60 s, online window 90 s to 150 s (both environments) | 6,369 registers an hour | about 3,200 an hour once clients update | A computer that stops reads offline up to 60 s later. Old clients on 30 s keep working: the window only grew. Deploy the server before the client. |
-| Settings and vault change marks fixed | 11,413 GETs an hour (every brain, every 30 s) | about 1,300 an hour (one per store per 5 minutes, plus real changes) | No slower, measured below |
+| Settings and vault change marks fixed | 11,413 GETs an hour (every brain, every 30 s) | about 1,300 an hour (one per store per 5 minutes, plus real changes). A brain with no project open gets no change marks and still pulls every 30 s, so the real number is higher by however many of those are running | No slower, measured below |
 | Relay peers get the periodic brain status every 30 s instead of 5 s | 37 status frames in 185 s per peer | 6 in 185 s | Latency and sync-lag numbers on a relay connection refresh every 30 s. Changes go out at once, and direct connections keep 5 s. |
 
 ### The settings and vault bug
