@@ -2246,6 +2246,26 @@ transcript; iOS `WorkPrWatchWakeLine`).
   links the chat to the PR, even over an earlier unlink; unlinking it stops
   the watch. Every change emits the PR event `pr-chat-watch-changed`, with
   `watch: null` once it has stopped.
+- **On the Work row.** Between wakes no turn is running, so a chat with a live
+  watch would otherwise read Done. The chat summary carries `activePrWatch`
+  (`SessionActivePrWatch`), built by the machine that runs the watch from one
+  query per chat listing (`prChatWatchStore.activeBySession`) and projected onto
+  the session row, so a row listed from another machine reads the same and an
+  older host simply sends nothing. `canonicalSessionState` promotes such a
+  resting chat to `running` with liveness `pr_watch`: blue **Shipping** (for
+  Watch and Ship alike) with the time since the watch began and the PR number
+  on hover, filed under Working on the board and the running section of the
+  list, its lane folding in Focus with no tile. Needs you, snooze, woke, a live
+  turn's own activity, a failed turn, a usage limit, and running background jobs
+  all outrank it, and a missed scheduled wake still holds the lane out. Unlike
+  background work it is never Stale, because the reactor polls the PR every
+  minute, and a chat a brain restart detached still reads Shipping, because the
+  watch survives and its next wake brings the chat back. Settling is the user's call and stops nothing, so a settled chat stays
+  settled while its watch runs until a wake's turn brings it back. A chat moved
+  to another machine claims no watch here. `pr-chat-watch-changed` nudges the
+  session list through a `session_meta_updated` event marked `prWatchChanged`,
+  which refreshes the row without moving the chat up the list. iOS mirrors the
+  rule in `WorkSessionCanonicalState.swift`.
 - **What wakes the agent.** Each check as soon as it fails (failure, cancelled,
   timed out, action required); the required checks passing (`checksStatus`
   turning `passing`); new comments, inline comments, and submitted reviews from

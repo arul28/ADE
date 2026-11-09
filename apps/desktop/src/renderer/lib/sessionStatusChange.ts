@@ -70,15 +70,21 @@ export function sessionStatusChangeModel(args: {
 }): SessionStatusChangeModel {
   const { session } = args;
   const nowMs = args.nowMs ?? Date.now();
-  const phase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
+  const state = sessionCanonicalUiState(canonicalInputFromSummary(session));
+  const phase = state.phase;
   const snoozed = isSessionFiledAsSnoozed(session, phase, nowMs);
+  /** A chat waiting on its PR: live even with no turn, and even detached by a restart. */
+  const prWatchLive = phase === "running" && state.liveness === "pr_watch";
   /** The live projection is the honest "is anything happening" signal. */
   const live = session.runtimeState === "running"
-    || totalBackgroundWork(backgroundWorkFromSummary(session)) > 0;
-  const ended = session.status === "detached"
+    || totalBackgroundWork(backgroundWorkFromSummary(session)) > 0
+    || prWatchLive;
+  const ended = !prWatchLive && (
+    session.status === "detached"
     || session.status === "disposed"
     || phase === "ended"
-    || phase === "stopped";
+    || phase === "stopped"
+  );
   const failed = phase === "failed";
   /** A live provider card outranks every status write: it can only be answered. */
   const pendingCard = Boolean(session.pendingInputItemId)

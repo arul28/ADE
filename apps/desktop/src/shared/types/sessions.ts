@@ -21,6 +21,7 @@ import type {
   AgentChatRemoteWorkUse,
 } from "./chat";
 import type { ClaudePromptCache } from "../claudePromptCache";
+import type { SessionActivePrWatch } from "../prWatch";
 import type { ModelId } from "./core";
 import type { LaneLinearIssue } from "./lanes";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
@@ -451,6 +452,8 @@ export type TerminalSessionSummary = {
   chatPromptCache?: ClaudePromptCache | null;
   /** Earliest armed, unpaused scheduled wake for chat-backed sessions. */
   nextWakeAt?: string | null;
+  /** The chat's live PR watches, projected from the chat summary. Absent when none. */
+  activePrWatch?: SessionActivePrWatch;
   /** The chat's `awaitingOwnWorkAt`: its last reply said it waits on its own work. */
   awaitingOwnWorkAt?: string | null;
   /**

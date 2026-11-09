@@ -1284,7 +1284,8 @@ extension WorkRootListScreen {
     case .remote:
       let subject = handoffSubject(for: session)
       let summary = chatSummaries[session.id]
-      let canonical = workCanonicalSessionState(session: session, summary: summary).phase
+      let canonicalState = workCanonicalSessionState(session: session, summary: summary)
+      let canonical = canonicalState.restingOnPrWatch ? CanonicalSessionPhase.ready : canonicalState.phase
       crossMachineHandoffTarget = WorkCrossMachineHandoffTarget(
         sessionId: subject.sessionId,
         laneId: subject.laneId,

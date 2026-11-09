@@ -25,6 +25,7 @@ import type { ChatErrorPresentation } from "../chatErrorPresentation";
 import type { ChatThreadComment } from "../threadComments";
 import type { ClaudePromptCache } from "../claudePromptCache";
 import type { ClaudePluginUiSnapshot } from "../claudePluginUi";
+import type { SessionActivePrWatch } from "../prWatch";
 import type { ModelId, UpdateChatContinueHold } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
@@ -2483,6 +2484,8 @@ export type AgentChatEvent =
        * older generation must drop it.
        */
       historyGeneration?: number;
+      /** A PR watch on this chat started or stopped, so its row must re-read. Not chat activity. */
+      prWatchChanged?: true;
       // Permission/interaction mode fields — emitted when a client (e.g. iOS)
       // changes the mode via updateSession so other renderers patch their
       // composer state without waiting for a turn-lifecycle event. All optional
@@ -3538,6 +3541,11 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   asyncQuestion?: boolean;
   /** Earliest armed, unpaused schedule for this chat. */
   nextWakeAt: string | null;
+  /**
+   * The chat's live PR watches, from the machine that runs them. Absent when no
+   * watch is live, or from an older host; such a row reads as it did before.
+   */
+  activePrWatch?: SessionActivePrWatch;
   /**
    * When the turn-end check (Jev) read this chat's last reply as waiting on
    * its own work (subagents, CI, a watcher it started) rather than finished

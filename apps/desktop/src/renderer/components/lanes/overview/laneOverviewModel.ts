@@ -110,15 +110,18 @@ function rowFromTerminal(row: TerminalSessionSummary, nowMs: number, subagentBus
 
 /** A chat with no terminal row of its own (older chats): read its state from the chat summary. */
 function rowFromChat(chat: AgentChatSessionSummary, nowMs: number): LaneChatRow {
+  // An ended chat reads "Stopped", as its closed terminal row would in Work,
+  // unless a PR watch will still wake it.
+  const stopped = chat.status === "ended" && !chat.activePrWatch;
   const input: SessionCanonicalUiInput = {
-    // An ended chat reads "Stopped", as its closed terminal row would in Work.
-    status: chat.status === "ended" ? "disposed" : "running",
-    runtimeState: chat.status === "ended"
+    status: stopped ? "disposed" : "running",
+    runtimeState: stopped
       ? "exited"
       : chat.awaitingInput ? "waiting-input" : chat.status === "active" ? "running" : "idle",
     toolType: chatToolTypeForProvider(chat.provider),
     lastActivityAt: chat.lastActivityAt ?? null,
     lastOutputPreview: chat.lastOutputPreview ?? null,
+    activePrWatch: chat.activePrWatch,
     nowMs,
   };
   const state = sessionCanonicalUiState(input);
@@ -131,7 +134,7 @@ function rowFromChat(chat: AgentChatSessionSummary, nowMs: number): LaneChatRow 
     title,
     preview: preview && preview !== title ? preview : null,
     presentation: sessionStatusDisplay(input),
-    elapsedSince: activityAt,
+    elapsedSince: state.liveness === "pr_watch" ? chat.activePrWatch?.startedAt ?? activityAt : activityAt,
     activityAt,
     rank: phaseRank(state.phase),
   };

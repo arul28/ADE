@@ -853,8 +853,13 @@ struct WorkSessionListRow: View {
   /// reads `ready`/`idle` here and Settle is already offered. The two agree on
   /// behaviour by different routes; if iOS ever gains the promotion, it must
   /// gain the `liveness == .turn` clause with it.
+  ///
+  /// A chat resting on a PR watch IS promoted here, so it carries that clause:
+  /// settling stops nothing, and the watch keeps running.
   fileprivate var isActivelyRunning: Bool {
-    canonicalPhase == .starting || canonicalPhase == .running || canonicalPhase == .stale
+    let state = workCanonicalSessionState(session: session, summary: chatSummary)
+    if state.restingOnPrWatch { return false }
+    return state.phase == .starting || state.phase == .running || state.phase == .stale
   }
 
   /// Whether a needs-you ask can be DISMISSED as part of settling. A chat

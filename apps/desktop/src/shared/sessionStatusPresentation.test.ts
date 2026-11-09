@@ -153,6 +153,17 @@ describe("sessionStatusPresentation usage-limit resume", () => {
     expect(armed?.label.startsWith("Resumes ")).toBe(true);
   });
 
+  it("lets a live limit, not a PR watch it cannot act on, own the row", () => {
+    const nowMs = Date.parse("2026-08-17T12:00:00.000Z");
+    const activePrWatch = { startedAt: "2026-08-17T11:00:00.000Z", githubPrNumber: 7, count: 1 };
+    const watching = { liveness: "pr_watch" as const, activePrWatch, nowMs };
+
+    expect(sessionStatusPresentation("running", {}, watching)).toMatchObject({ tone: "blue", glyph: "shipping" });
+    expect(
+      sessionStatusPresentation("running", {}, { ...watching, usageLimitResume: resume("armed", "2026-08-17T12:47:00.000Z") }),
+    ).toMatchObject({ glyph: "waiting" });
+  });
+
   it("reads Resuming — not a past clock — once the row is due", () => {
     const nowMs = Date.parse("2026-08-17T13:00:00.000Z");
     const resuming = sessionStatusPresentation("idle", {}, {

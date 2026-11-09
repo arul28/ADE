@@ -385,6 +385,31 @@ describe("background work liveness", () => {
   });
 });
 
+describe("a live PR watch on a chat between turns", () => {
+  const quietPast = new Date(NOW - SESSION_STALE_AFTER_MS - 1000).toISOString();
+  const chat = { toolType: "claude-chat", runtimeState: "idle", prWatchActive: true } as const;
+  const job = { workingCount: 1, monitoringCount: 0 };
+  const monitor = { workingCount: 0, monitoringCount: 1 };
+
+  it.each<[string, Partial<CanonicalSessionInputs>, string, string | null]>([
+    ["promotes a resting chat", {}, "running", "pr_watch"],
+    ["survives the detach a brain restart writes", { status: "detached", runtimeState: null }, "running", "pr_watch"],
+    ["is never Stale for being quiet", { lastActivityAt: quietPast }, "running", "pr_watch"],
+    ["outranks a monitor, which is quieter", { backgroundWork: monitor }, "running", "pr_watch"],
+    ["keeps a monitor and a watch out of Stale", { backgroundWork: monitor, lastActivityAt: quietPast }, "running", "pr_watch"],
+    ["yields to a real background job", { backgroundWork: job }, "running", "background"],
+    ["lets a quiet real job go Stale", { backgroundWork: job, lastActivityAt: quietPast }, "stale", null],
+    ["yields to a live turn", { runtimeState: "running" }, "running", "turn"],
+    ["yields to a raised hand", { attentionRequestedAt: "2026-07-06T11:00:00.000Z" }, "needs_you", null],
+    ["yields to a failed turn", { lastTurnFailedAt: "2026-07-06T11:00:00.000Z" }, "failed", null],
+    ["leaves a disposed chat Stopped", { status: "disposed", runtimeState: "exited" }, "stopped", null],
+    ["leaves a settled chat settled, still reporting the watch", { settledAt: "2026-07-06T11:00:00.000Z" }, "settled", "pr_watch"],
+    ["reads as before when the host sends no watch", { prWatchActive: undefined }, "ready", null],
+  ])("%s", (_name, overrides, phase, liveness) => {
+    expect(state({ ...chat, ...overrides })).toMatchObject({ phase, liveness });
+  });
+});
+
 describe("classifyBackgroundWorkKind", () => {
   it("treats every unrecognised task type as working", () => {
     // The load-bearing property: an allowlist would silently drop a real
