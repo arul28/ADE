@@ -301,6 +301,8 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   let nextRequestId = 1;
   let disposed = false;
   let exited: AcpConnectionExit | null = null;
+  /** The process has exited, but its last stdout may still be arriving. */
+  let exitAwaitingStdout: AcpConnectionExit | null = null;
   let killTimer: NodeJS.Timeout | null = null;
   let stderrTail = "";
   let initializeResult: AcpInitializeResponse | null = null;
@@ -311,7 +313,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   };
 
   const writeFrame = (frame: Record<string, unknown>): boolean => {
-    if (exited || !child.stdin || child.stdin.destroyed) return false;
+    if (exited || exitAwaitingStdout || !child.stdin || child.stdin.destroyed || child.stdin.writableEnded) return false;
     try {
       child.stdin.write(`${JSON.stringify(frame)}\n`);
       return true;
@@ -446,9 +448,12 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
       logEvent("debug", "agent_chat.acp_response_without_request", { id: String(id) });
       return;
     }
+    const errorPayload = normalizeAcpRpcError(frame.error);
+    // After the process has died, how it died says more than an error reply;
+    // leave the request to the exit, which reports stderr with it.
+    if (errorPayload && exitAwaitingStdout) return;
     pending.delete(id);
     if (waiter.timer) clearTimeout(waiter.timer);
-    const errorPayload = normalizeAcpRpcError(frame.error);
     if (errorPayload) {
       waiter.reject(new AcpRpcError(waiter.method, errorPayload));
       return;
@@ -482,7 +487,6 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   // end keeps a final message that has no newline; the bound covers a child
   // that left a grandchild holding the pipe.
   let stdoutDone = child.stdout == null;
-  let exitAwaitingStdout: AcpConnectionExit | null = null;
   let stdoutGraceTimer: ReturnType<typeof setTimeout> | null = null;
   const finishStdout = () => {
     if (stdoutDone) return;
