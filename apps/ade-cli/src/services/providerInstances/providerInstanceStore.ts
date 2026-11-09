@@ -207,6 +207,7 @@ function decodeStoredInstance(value: unknown): StoredInstance | null {
   const replaced = isRecord(value.replacedAccount) ? value.replacedAccount : null;
   const replacedEmail = trimmedString(replaced?.email);
   const replacedPlan = trimmedString(replaced?.plan);
+  const claudeLoginEndsAt = provider === "claude" ? trimmedString(value.claudeLoginEndsAt) : undefined;
   const replacedAccount: ProviderInstanceReplacedAccount | undefined = replaced && replacedEmail
     ? {
       email: replacedEmail,
@@ -227,7 +228,7 @@ function decodeStoredInstance(value: unknown): StoredInstance | null {
     createdAt: createdAt ?? DEFAULT_INSTANCE_CREATED_AT,
     ...(account && (account.email || account.plan) ? { account } : {}),
     ...(replacedAccount ? { replacedAccount } : {}),
-    ...(provider === "claude" && trimmedString(value.claudeLoginEndsAt) ? { claudeLoginEndsAt: trimmedString(value.claudeLoginEndsAt)! } : {}),
+    ...(claudeLoginEndsAt ? { claudeLoginEndsAt } : {}),
   };
 }
 
@@ -392,13 +393,6 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
    * poller last read them. In memory only: the poller reads every account
    * again on its next pass, so a restart re-learns it within one poll.
    */
-  const brokenLogins = new Set<string>();
-
-  /**
-   * Records whether one account's saved login works. The config home keeps the
-   * account's email after the provider CLI clears a broken login, so the email
-   * alone said "signed in" for an account that could not run a chat.
-   */
   /** Writes only on a change: every Claude turn reports this date. */
   function noteClaudeLoginEnd(id: string, endsAt: string): void {
     const iso = Date.parse(endsAt);
@@ -409,6 +403,13 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     mutateRecord(id, "refresh", (current) => ({ ...current, claudeLoginEndsAt: normalized }));
   }
 
+  const brokenLogins = new Set<string>();
+
+  /**
+   * Records whether one account's saved login works. The config home keeps the
+   * account's email after the provider CLI clears a broken login, so the email
+   * alone said "signed in" for an account that could not run a chat.
+   */
   function setLoginBroken(id: string, broken: boolean): void {
     if (brokenLogins.has(id) === broken) return;
     if (broken) brokenLogins.add(id);

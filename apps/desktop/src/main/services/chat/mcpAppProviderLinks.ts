@@ -90,7 +90,7 @@ export function claudeMcpAppLink(args: {
   /** The chat's runtime. Read again on every call: a query comes and goes between turns. */
   runtime: { query: ClaudeQuery | null; queryStartPromise: Promise<ClaudeQuery> | null };
   /** The chat is planning right now. Read on every call. */
-  isPlanMode?: () => boolean;
+  isPlanMode: () => boolean;
   /** A bounded caller cache of provider-reported tools and failures. */
   onServerStatus?: (status: McpServerObservation) => void;
 }): McpAppProviderLink | null {
@@ -141,7 +141,7 @@ export function claudeMcpAppLink(args: {
       // `check_permissions` (Claude Code 2.1.319+) applies the user's rules
       // and hooks to an app's call. The CLI refuses everything in plan mode,
       // and a page only reading its own data must still load while planning.
-      const checkPermissions = !(options?.readOnly === true && args.isPlanMode?.() === true);
+      const checkPermissions = !(options?.readOnly === true && args.isPlanMode());
       const clearance = checkPermissions ? beginAppClearance(runtime, toolName, toolArgs) : null;
       // `result_not_for_model` (Claude Code 2.1.301+; older CLIs ignore it):
       // the app gets the server's own content blocks, as Codex hands them,

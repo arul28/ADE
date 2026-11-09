@@ -2745,6 +2745,88 @@ describe("automationService integration", () => {
     }
   });
 
+  it.each([
+    {
+      name: "a Claude step with no mode runs full-auto",
+      modelId: "anthropic/claude-sonnet-5",
+      expected: { permissionMode: "full-auto" },
+    },
+    {
+      name: "a Codex step with no mode gets full-auto and full access",
+      modelId: "openai/gpt-5.5",
+      expected: { permissionMode: "full-auto", codexSandbox: "danger-full-access" },
+    },
+    {
+      name: "a rule held for review before publishing keeps its narrower default",
+      modelId: "openai/gpt-5.5",
+      gated: true,
+      expected: { permissionMode: "default", codexSandbox: "workspace-write" },
+    },
+    {
+      name: "a picked mode stays as picked",
+      modelId: "anthropic/claude-sonnet-5",
+      permissionConfig: { providers: { claude: "edit" as const } },
+      expected: { permissionMode: "edit" },
+    },
+    {
+      name: "picking Codex full-auto without a sandbox does not widen the sandbox",
+      modelId: "openai/gpt-5.5",
+      permissionConfig: { providers: { codex: "full-auto" as const } },
+      expected: { permissionMode: "full-auto", codexSandbox: "workspace-write" },
+    },
+  ])("agent step permissions: $name", async ({ modelId, gated, permissionConfig, expected }) => {
+    const { db } = createInMemoryAdeDb();
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-default-mode-"));
+    const createSession = vi.fn(async () => ({ id: "session-default-mode" }));
+    const runSessionTurn = vi.fn(async () => ({ outputText: "ok" }));
+    const rule = {
+      id: "default-mode",
+      name: "Default mode",
+      enabled: true,
+      mode: "review",
+      reviewProfile: "quick",
+      trigger: { type: "manual" as const },
+      triggers: [{ type: "manual" as const }],
+      executor: { mode: "automation-bot", targetId: null },
+      modelConfig: { modelId },
+      ...(permissionConfig ? { permissionConfig } : {}),
+      toolPalette: gated ? ["github"] : [],
+      contextSources: [],
+      guardrails: {},
+      outputs: { disposition: "comment-only" as const, createArtifact: true },
+      verification: { verifyBeforePublish: Boolean(gated), mode: "intervention" as const },
+      billingCode: "auto:test",
+      execution: {
+        kind: "built-in" as const,
+        builtIn: { actions: [{ type: "agent-session" as const, prompt: "Summarize", sessionTitle: "Summary" }] },
+      },
+      actions: [],
+    };
+    const service = createAutomationService({
+      db: db as any,
+      logger: createLogger(),
+      projectId: "proj",
+      projectRoot,
+      laneService: {
+        list: async () => [{ id: "lane-primary", laneType: "primary" }],
+        getLaneWorktreePath: () => projectRoot,
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot }),
+      } as any,
+      projectConfigService: {
+        get: () => ({ trust: { sharedHash: "", localHash: "" }, effective: { automations: [rule], providerMode: "guest" } }),
+      } as any,
+      agentChatService: { createSession, runSessionTurn } as any,
+    });
+
+    try {
+      await service.triggerManually({ id: "default-mode" });
+      expect(createSession).toHaveBeenCalledTimes(1);
+      expect(createSession).toHaveBeenCalledWith(expect.objectContaining(expected));
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("launches a Cursor SDK model in full-auto when Full Auto was saved on the opencode slot", async () => {
     const { db } = createInMemoryAdeDb();
     const logger = createLogger();

@@ -1124,6 +1124,7 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { buildDeeplink, type DeeplinkTarget } from "../../../shared/deeplinks";
 import {
   MCP_APP_RESOURCE_MIME_TYPE,
+  MCP_APP_TOOL_CALL_METADATA_KEY,
   type McpAppGrantsArgs,
   type McpAppGrantsResult,
   type McpAppRevokeGrantArgs,
@@ -2113,7 +2114,7 @@ function claudeStructuredToolResultFields(toolName: string, structured: unknown)
   timedOutAfterMs?: number;
   backgroundCwdHint?: string;
   grepTotals?: { files?: number; lines?: number };
-  searchTimedOut?: true;
+  searchTimedOut?: boolean;
 } {
   const record = asRecord(structured);
   if (!record) return {};
@@ -2132,7 +2133,7 @@ function claudeStructuredToolResultFields(toolName: string, structured: unknown)
       ...(files != null || lines != null
         ? { grepTotals: { ...(files != null ? { files } : {}), ...(lines != null ? { lines } : {}) } }
         : {}),
-      ...(record.timedOut === true ? { searchTimedOut: true as const } : {}),
+      ...(record.timedOut === true ? { searchTimedOut: true } : {}),
     };
   }
   if (toolName === "Glob") return record.timedOut === true ? { searchTimedOut: true } : {};
@@ -4490,6 +4491,20 @@ const NO_BACKGROUND_WORK: SessionBackgroundWork = Object.freeze({
  *     exhaustive over `ChatRuntime["kind"]`, so a newly landed harness fails to
  *     compile until someone decides which column it belongs in.
  */
+/**
+ * An automation's run ends with its turn, but work the turn moved to the
+ * background reports later, in a turn nothing collects. Say so in the output,
+ * or the run reads as finished when its answer has not arrived.
+ */
+function withBackgroundWorkNote(
+  collector: Pick<SessionTurnCollector, "unattended">,
+  runtime: ChatRuntime | null,
+  output: string,
+): string {
+  if (!collector.unattended || runtimeBackgroundWork(runtime).workingCount === 0) return output;
+  return `${output}\n\nStill running in the background when this turn ended. The result will arrive in the chat.`.trim();
+}
+
 function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWork {
   if (!runtime) return NO_BACKGROUND_WORK;
   switch (runtime.kind) {
@@ -14590,7 +14605,7 @@ export function createAgentChatService(args: {
       const response = parked.response;
 
       // Emit tool_result so derivePendingInputRequests clears this entry.
-      const approved = !parked.unattended && (response.decision === "accept" || response.decision === "accept_for_session");
+      const approved = response.decision === "accept" || response.decision === "accept_for_session";
       emitChatEvent(managed, {
         type: "tool_result",
         tool: "ExitPlanMode",
@@ -14759,9 +14774,6 @@ export function createAgentChatService(args: {
     if (isAskUserToolName(toolName) && isAutoAllowAskUserEnabled()) {
       return { behavior: "allow", updatedInput: input };
     }
-    // Reaching here under a policy means the policy said "ask": allow and deny
-    // both returned above. So the policy decides, and `claudeToolNeedsApproval`
-    // is not consulted at all — with no policy its behavior is unchanged.
     // `suppressAlwaysAllowRule` says the persistent rule this approval would
     // write is broader than the ask itself; `askRuleForced` says the user's
     // own ask rule wants a person. Read them before anything answers this ask:
@@ -14775,7 +14787,15 @@ export function createAgentChatService(args: {
     // gets a card.
     const appCallClearance = takeClaudeMcpAppClearance(runtime, toolName, input, sdkOptions?.toolUseID);
     if (appCallClearance && !approvalFlags.askRuleForced) return { behavior: "allow", updatedInput: input };
-    // Full-auto keeps meaning no cards, whatever rules the user's settings hold.
+    // Only an MCP App's call has this id, and its clearance lasts while the app
+    // waits. With none, the app has already given up, so the call must not run.
+    if (!appCallClearance && sdkOptions?.toolUseID?.startsWith("toolu_mcp_call_")) {
+      return { behavior: "deny", message: CLAUDE_REQUEST_WITHDRAWN_MESSAGE };
+    }
+    // Reaching here under a policy means the policy said "ask": allow and deny
+    // both returned above. So the policy decides, unless the user's own ask rule
+    // wants a person. Full-auto keeps meaning no cards, whatever rules the
+    // user's settings hold.
     const needsApproval = (approvalFlags.askRuleForced === true && effectivePermMode !== "bypassPermissions")
       || (policyDecision !== null
         ? policyDecision === "ask"
@@ -14829,9 +14849,8 @@ export function createAgentChatService(args: {
       // Claude withdraws a request it no longer needs (a PermissionRequest
       // hook allowed it, say) by aborting the signal; the card then closes.
       // An app that stopped waiting withdraws the card with it.
-      const cardSignal = appCallClearance
-        ? (sdkOptions?.signal ? AbortSignal.any([sdkOptions.signal, appCallClearance.signal]) : appCallClearance.signal)
-        : sdkOptions?.signal;
+      const cardSignals = [sdkOptions?.signal, appCallClearance?.signal].filter((signal): signal is AbortSignal => Boolean(signal));
+      const cardSignal = cardSignals.length > 1 ? AbortSignal.any(cardSignals) : cardSignals[0];
       const parked = await parkClaudeCard(managed, runtime, request, cardSignal, {
         kind: normalizedToolName.includes("bash") ? "command" : "file_change",
         description,
@@ -24226,7 +24245,11 @@ export function createAgentChatService(args: {
       provider: managed.session.provider,
       model: managed.session.model,
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-      outputText: collector.outputText.trim() || managed.preview?.trim() || "",
+      outputText: withBackgroundWorkNote(
+        collector,
+        managed.runtime,
+        collector.outputText.trim() || managed.preview?.trim() || "",
+      ),
       // The turn's own verdict, not a guess made from its text. On a failed
       // turn `outputText` above falls through to the session preview, which is
       // the provider's error sentence — a caller must be able to tell that
@@ -28073,6 +28096,8 @@ export function createAgentChatService(args: {
       kind?: "command" | "file_change" | "tool_call";
       description?: string;
       detail?: Record<string, unknown>;
+      /** Answered by a new turn later, so nothing is waiting on this card. */
+      answeredByNewTurn?: boolean;
     },
   ): void => {
     const firstQuestion = request.questions[0] ?? null;
@@ -28097,9 +28122,7 @@ export function createAgentChatService(args: {
       turnId: request.turnId ?? undefined,
     });
     persistChatState(managed);
-    // A Cursor planning card comes out of the reply's text and is answered by
-    // a new turn, so nothing is waiting on it.
-    if (args?.detail?.control === undefined) refuseCardNobodyCanAnswer(managed, request);
+    if (!args?.answeredByNewTurn) refuseCardNobodyCanAnswer(managed, request);
   };
 
   const noteCardRefusedUnattended = (
@@ -28119,20 +28142,16 @@ export function createAgentChatService(args: {
     });
   };
 
-  /** True when a provider cannot go on until this card gets an answer. */
-  const isProviderWaitingOnCard = (managed: ManagedChatSession, itemId: string): boolean => {
-    if (managed.localPendingInputs.has(itemId)) return true;
-    const runtime = managed.runtime;
-    if (runtime?.kind === "codex") {
-      // A Codex plan is offered once its turn is over. The person reviews it
-      // later; refusing it would start a new turn to revise the plan.
-      const pending = runtime.approvals.get(itemId);
-      return pending !== undefined && pending.kind !== "plan_approval";
-    }
-    if (runtime?.kind === "opencode") return runtime.pendingApprovals.has(itemId);
-    if (runtime?.kind === "cursor" || runtime?.kind === "droid") return runtime.permissionWaiters.has(itemId);
-    return false;
-  };
+  /**
+   * True when a provider cannot go on until this card gets an answer. A Codex
+   * plan is offered once its turn is over, for the person to review later;
+   * refusing it would start a new turn to revise the plan.
+   */
+  const isProviderWaitingOnCard = (managed: ManagedChatSession, itemId: string): boolean =>
+    managed.localPendingInputs.has(itemId)
+    || collectPendingInputRequests(managed).some(
+      (request) => (request.itemId ?? request.requestId) === itemId && request.kind !== "plan_approval",
+    );
 
   /**
    * An automation's own turn has nobody behind it, so a card the provider is
@@ -28147,6 +28166,8 @@ export function createAgentChatService(args: {
   const refuseCardNobodyCanAnswer = (managed: ManagedChatSession, request: PendingInputRequest): void => {
     if (!sessionTurnCollectors.get(managed.session.id)?.unattended) return;
     if (request.blocking === false) return;
+    // Raised by a person's own click in the app, so that person is right there.
+    if (request.providerMetadata?.[MCP_APP_TOOL_CALL_METADATA_KEY] === true) return;
     const itemId = request.itemId ?? request.requestId;
     queueMicrotask(() => {
       if (!isProviderWaitingOnCard(managed, itemId)) return;
@@ -47276,8 +47297,9 @@ export function createAgentChatService(args: {
       // ask.
       CLAUDE_CODE_MCP_APPS_HOST: "1",
       // A long MCP call or subagent moves to the chat's Background list after
-      // two minutes, and the agent is told when it finishes. Not for an
-      // automation: its run ends at the first result and would miss the answer.
+      // two minutes, and the agent is told when it finishes. Not for a chat an
+      // automation created: its run ends at the first result and would miss the
+      // answer. A run in a person's own bound chat says what is still going.
       // Read in the CLI (2.1.319), not documented: recheck on a bump.
       ...(!lightweight && !managed.session.automationRunId ? { CLAUDE_AUTO_BACKGROUND_TASKS: "1" } : {}),
     };
@@ -57168,6 +57190,7 @@ export function createAgentChatService(args: {
       kind: "tool_call",
       description: request.description ?? body,
       detail: { cursorSdk: true, control: "request_user_input" },
+      answeredByNewTurn: true,
     });
   };
 
@@ -57277,6 +57300,7 @@ export function createAgentChatService(args: {
       kind: "tool_call",
       description: "Plan ready for approval",
       detail: { cursorSdk: true, control: "plan_approval", planContent: summary },
+      answeredByNewTurn: true,
     });
   };
 
@@ -76547,7 +76571,7 @@ export function createAgentChatService(args: {
       : null;
     return await new Promise<AgentChatBackgroundTurnResult>((resolve, reject) => {
       const collector: SessionTurnCollector = {
-        ...(metadata?.automationRun ? { unattended: true } : {}),
+        ...(metadata?.automationRun && !metadata.automationRun.attended ? { unattended: true } : {}),
         resolve,
         reject,
         outputText: "",

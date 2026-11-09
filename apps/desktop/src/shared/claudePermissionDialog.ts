@@ -32,8 +32,8 @@ export function claudeApprovalOptionsOfferSession(
  * `askRuleForced` says the user's own `permissions.ask` rule raised this ask:
  * `decisionReasonType: "rule"`, or `matchedAskRule` when the ask keeps the
  * tool's own reason (measured on 2.1.319). The SDK tells hosts to treat that as
- * a request for a human answer, so nothing may answer it automatically and no
- * session-wide choice is offered. Present only when true.
+ * a request for a human answer, so outside full-auto nothing answers it
+ * automatically, and no session-wide choice is offered. Present only when true.
  */
 export type ClaudeToolApprovalFlags = {
   defaultToNo: boolean;
