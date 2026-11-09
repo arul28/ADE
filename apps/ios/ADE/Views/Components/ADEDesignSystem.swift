@@ -161,6 +161,9 @@ enum ADEColor {
     "anthropic/claude-opus-5-5-api": 0xD97706,
     "claude-opus-5-5": 0xD97706,
     "opus": 0xD97706,
+    "anthropic/claude-fable-5-2": 0xD97706,
+    "anthropic/claude-fable-5-2-api": 0xD97706,
+    "claude-fable-5-2": 0xD97706,
     "anthropic/claude-fable-5-1": 0xD97706,
     "anthropic/claude-fable-5-1-api": 0xD97706,
     "claude-fable-5-1": 0xD97706,
@@ -274,6 +277,12 @@ enum ADEColor {
       append("claude-opus-5-5")
       append("opencode/anthropic/claude-opus-5-5")
       append("opus")
+    case "anthropic/claude-fable-5-2", "anthropic/claude-fable-5-2-api",
+         "claude-fable-5-2", "opencode/anthropic/claude-fable-5-2":
+      append("anthropic/claude-fable-5-2")
+      append("anthropic/claude-fable-5-2-api")
+      append("claude-fable-5-2")
+      append("opencode/anthropic/claude-fable-5-2")
     case "fable", "fable-5.1", "fable-5-1", "fable-5", "fable-5.0",
          "anthropic/claude-fable-5-1", "anthropic/claude-fable-5-1-api",
          "claude-fable-5-1", "opencode/anthropic/claude-fable-5-1",
@@ -377,6 +386,9 @@ enum ADEColor {
     "anthropic/claude-opus-5-5-api": ["low", "medium", "high", "xhigh", "max"],
     "claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
     "opus": ["low", "medium", "high", "xhigh", "max"],
+    "anthropic/claude-fable-5-2": ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    "anthropic/claude-fable-5-2-api": ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    "claude-fable-5-2": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "anthropic/claude-fable-5-1": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "anthropic/claude-fable-5-1-api": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "claude-fable-5-1": ["low", "medium", "high", "xhigh", "max", "ultracode"],

@@ -320,6 +320,7 @@ private func workModelRefsLookFastCapable(_ rawRefs: [String?]) -> Bool {
     "opencode/openai/gpt-5.4",
     "opus-5.5", "opus-5-5", "claude-opus-5-5", "anthropic/claude-opus-5-5",
     "anthropic/claude-opus-5-5-api", "opencode/anthropic/claude-opus-5-5",
+    "claude-fable-5-2", "anthropic/claude-fable-5-2", "opencode/anthropic/claude-fable-5-2",
     "fable", "fable-5.1", "fable-5-1", "claude-fable-5-1", "anthropic/claude-fable-5-1",
     "opencode/anthropic/claude-fable-5-1",
     "claude-fable-5", "anthropic/claude-fable-5", "opencode/anthropic/claude-fable-5",

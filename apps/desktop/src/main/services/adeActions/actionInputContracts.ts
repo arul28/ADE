@@ -441,7 +441,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
         "Show which route the model router would pick for one task, given the model that would run it, without running anything. Uses live plan windows and burn rates.",
       input:
         "object { description: string, provider: string, model: string, reasoningEffort?: string, agentType?: string, kind?: \"read_only\" | \"review\" | \"test_run\" | \"light_edit\" | \"heavy_edit\" | \"lead\" | \"unknown\" }",
-      example: "ade router pick \"summarize how sync works\" --provider claude --model opus --text",
+      example: "ade router pick \"summarize how sync works\" --provider claude --model claude-opus-5-5 --text",
     },
     getRouterShadowSummary: {
       description:

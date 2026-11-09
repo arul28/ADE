@@ -530,13 +530,13 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             serviceTiers: ["fast"]
           ),
           WorkModelOption(
-            id: "claude-fable-5-1",
-            displayName: "Claude Fable 5.1",
+            id: "claude-fable-5-2",
+            displayName: "Claude Fable 5.2",
             tier: .flagship,
             tagline: "Flagship · 1M context",
             provider: "claude",
             reasoningEfforts: workClaudeFableReasoningEfforts(),
-            defaultReasoningEffort: "high",
+            defaultReasoningEffort: "medium",
             serviceTiers: ["fast"]
           ),
           WorkModelOption(
@@ -557,6 +557,16 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             provider: "claude",
             reasoningEfforts: workClaudeCodeReasoningEfforts(),
             defaultReasoningEffort: "medium"
+          ),
+          WorkModelOption(
+            id: "claude-fable-5-1",
+            displayName: "Claude Fable 5.1",
+            tier: .flagship,
+            tagline: "Previous Fable · 1M context",
+            provider: "claude",
+            reasoningEfforts: workClaudeFableReasoningEfforts(),
+            defaultReasoningEffort: "high",
+            serviceTiers: ["fast"]
           ),
           WorkModelOption(
             id: "claude-opus-5",
@@ -1214,6 +1224,9 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
        "claude-opus-5-5", "anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5-api",
        "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5-5":
     return "anthropic/claude-opus-5-5"
+  case "claude-fable-5-2", "anthropic/claude-fable-5-2", "anthropic/claude-fable-5-2-api",
+       "opencode/anthropic/claude-fable-5-2":
+    return "anthropic/claude-fable-5-2"
   case "fable", "fable-5.1", "fable-5-1", "claude-fable-5-1", "anthropic/claude-fable-5-1",
        "anthropic/claude-fable-5-1-api", "fable-5", "fable-5.0",
        "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api",
@@ -1261,6 +1274,9 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
        "claude-opus-5-5", "anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5-api",
        "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5-5":
     return "claude-opus-5-5"
+  case "claude-fable-5-2", "anthropic/claude-fable-5-2", "anthropic/claude-fable-5-2-api",
+       "opencode/anthropic/claude-fable-5-2":
+    return "claude-fable-5-2"
   case "fable", "fable-5.1", "fable-5-1", "claude-fable-5-1", "anthropic/claude-fable-5-1",
        "anthropic/claude-fable-5-1-api", "fable-5", "fable-5.0",
        "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api",
@@ -1433,6 +1449,9 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
        "anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5-api", "claude-opus-5-5",
        "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5-5":
     return "Claude Opus 5.5"
+  case "claude-fable-5-2", "anthropic/claude-fable-5-2", "anthropic/claude-fable-5-2-api",
+       "opencode/anthropic/claude-fable-5-2":
+    return "Claude Fable 5.2"
   case "fable", "fable-5.1", "fable-5-1", "fable-5", "fable-5.0",
        "anthropic/claude-fable-5-1", "anthropic/claude-fable-5-1-api", "claude-fable-5-1",
        "opencode/anthropic/claude-fable-5-1", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api",

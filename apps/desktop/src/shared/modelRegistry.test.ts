@@ -708,14 +708,23 @@ describe("modelRegistry", () => {
 
   describe("Claude descriptors", () => {
     it("orders the Claude model registry for picker display", () => {
-      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 6).map((model) => model.id)).toEqual([
-        "anthropic/claude-fable-5-1",
+      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 7).map((model) => model.id)).toEqual([
+        "anthropic/claude-fable-5-2",
         "anthropic/claude-opus-5-5",
         "anthropic/claude-sonnet-5-5",
         "anthropic/claude-haiku-5-5",
+        "anthropic/claude-fable-5-1",
         "anthropic/claude-sonnet-5",
         "anthropic/claude-opus-5",
       ]);
+      expect(getModelById("anthropic/claude-fable-5-2")).toMatchObject({
+        displayName: "Claude Fable 5.2",
+        providerRoute: "claude-cli",
+        providerModelId: "claude-fable-5-2",
+        inputPricePer1M: 8,
+        outputPricePer1M: 40,
+        defaultReasoningEffort: "medium",
+      });
       const fable = getModelById("anthropic/claude-fable-5-1");
       expect(fable).toBeTruthy();
       expect(fable).toMatchObject({

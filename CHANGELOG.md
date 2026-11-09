@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Models
+
+- Claude Fable 5.2 leads the Claude list (Medium effort by default, $8 / $40 per million tokens); Fable 5.1 moves below Haiku 5.5. Claude Agent SDK 0.3.321 (Claude Code 2.1.321), the first to know Fable 5.2.
+- Requests from the CLI, MCP and agents name a model by its full name (`claude-fable-5-2` or `anthropic/claude-fable-5-2`). Short names such as `opus` or `fable` are refused with the full name to use; saved chats and settings keep working.
+
 ### SDK 0.7
 
 - `@ade-dev/sdk` and `@ade-dev/chat-ui` are 0.7.0, with provider accounts and API credentials, isolated logins, queued messages, usage-limit events, and the single-turn `client.run()` helper.

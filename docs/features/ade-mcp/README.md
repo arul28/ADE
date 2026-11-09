@@ -220,7 +220,9 @@ Reads: `projects_list`, `lanes_list`, `lanes_show`, `files_tree`, `files_read`,
 the attention loop. Without `project`, `inbox` reads each project opened on the computer in
 the last 30 days (at most six, two at a time, in one run slot) and tags every
 item with its project; `chat_start` without `provider` or `model` starts on the
-model the computer last launched a chat with (`chat-launch-defaults.json`).
+model the computer last launched a chat with (`chat-launch-defaults.json`). A model
+is named in full (`claude-opus-5-5`, `anthropic/claude-opus-5-5`); a short
+name like `opus` or a retired id is refused with the full names it could mean.
 
 Writes, which are listed only for full-access connections: `chat_respond`
 answers a question or approval, `chat_send` messages or steers a chat,

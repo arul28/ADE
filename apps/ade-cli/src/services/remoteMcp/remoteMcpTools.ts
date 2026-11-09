@@ -1009,7 +1009,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     write: true,
     properties: {
       session: SESSION,
-      model: { type: "string" },
+      model: { type: "string", description: "Full model id, not a short name." },
       reasoning_effort: REASONING_EFFORT,
       permission_mode: PERMISSION_MODE,
       fast: { type: "boolean" },
@@ -1048,7 +1048,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     properties: {
       prompt: { type: "string", description: "What the agent should do." },
       provider: { type: "string", description: "e.g. claude, codex. Default: the person's last-used model." },
-      model: { type: "string", description: "Model id. Default: the person's last-used model." },
+      model: { type: "string", description: "Full model id (claude-opus-5-5), not a short name. Default: last-used." },
       reasoning_effort: REASONING_EFFORT,
       permission_mode: PERMISSION_MODE,
       fast: { type: "boolean" },

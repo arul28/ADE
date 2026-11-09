@@ -178,6 +178,7 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
+import { assertActionModelNames, assertFullModelName, savedRuleModelNames } from "./modelNameGuard";
 import { captureError } from "../../desktop/src/shared/sentry/capture";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
@@ -1786,6 +1787,21 @@ function nowIso(): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** The model names the rule an `automations.saveRule` edit replaces already holds. */
+function savedModelNamesKeptBy(domain: string, action: string, input: unknown, service: Record<string, unknown>): Set<string> {
+  if (domain !== "automations" || action !== "saveRule" || !isRecord(input) || !isRecord(input.draft)) return new Set();
+  const id = typeof input.draft.id === "string" ? input.draft.id.trim() : "";
+  if (!id || typeof service.get !== "function") return new Set();
+  try {
+    return savedRuleModelNames((service.get as (args: { id: string }) => unknown)({ id }));
+  } catch (error) {
+    // The save itself reports a missing or unreadable rule; without the saved
+    // names an unchanged old name is refused, which the caller can correct.
+    captureError(error, { tags: { area: "rpc.model_name_guard" }, fingerprint: ["rpc", "model_name_guard", "saved_rule_read"] });
+    return new Set();
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -6457,6 +6473,15 @@ async function runTool(args: {
     }
     const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;
     const hasScalarArg = Object.prototype.hasOwnProperty.call(toolArgs, "arg");
+    // A name typed now must be a full model name. The desktop app is left out:
+    // it sends names from its own picker, or saved ones (a preset, a rule, a
+    // last-used model) that may predate this rule and must keep working.
+    if (!mayUseUserOnlyActions(session)) {
+      // The input the action receives: the first positional argument, a scalar
+      // `arg` (an object there reaches the action too), or `args`.
+      const actionInput = argsList ? argsList[0] : hasScalarArg ? toolArgs.arg : toolArgs.args;
+      assertActionModelNames(domain, action, actionInput, savedModelNamesKeptBy(domain, action, actionInput, service));
+    }
     if (
       domain === "cto_state"
       && action === "updateIdentity"
@@ -7430,6 +7455,7 @@ async function runTool(args: {
     const rows = clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 200);
     const initialInput = asOptionalTrimmedString(toolArgs.initialInput)?.slice(0, 20_000) ?? null;
     const model = asOptionalTrimmedString(toolArgs.model) ?? asOptionalTrimmedString(toolArgs.modelId);
+    if (!mayUseUserOnlyActions(session)) assertFullModelName(model, provider);
     const reasoningEffort = asOptionalTrimmedString(toolArgs.reasoningEffort);
     const fastMode = asOptionalBoolean(toolArgs.fastMode) ?? asOptionalBoolean(toolArgs.codexFastMode);
     const initialInputMeta = deriveTrackedCliInitialInputSessionMeta({
@@ -9173,6 +9199,7 @@ async function runTool(args: {
     }
     const provider = asTrimmedString(toolArgs.provider) === "claude" ? "claude" : "codex";
     const model = asOptionalTrimmedString(toolArgs.model);
+    if (!mayUseUserOnlyActions(session)) assertFullModelName(model, provider);
     const requestedSpawnPermissionMode = parseSpawnPermissionMode(toolArgs.permissionMode);
     const spawnCeiling = await agentCliPermissionCeiling(runtime, session, null);
     const permissionMode = spawnCeiling

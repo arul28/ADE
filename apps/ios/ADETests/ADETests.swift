@@ -20732,7 +20732,7 @@ final class ADETests: XCTestCase {
     let groups = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
     let claudeGroup = groups.first(where: { $0.key == "claude" })
     let anthropicProvider = claudeGroup?.providers.first(where: { $0.key == "anthropic" })
-    let fable = anthropicProvider?.models.first(where: { $0.id == "claude-fable-5-1" })
+    let fable = anthropicProvider?.models.first(where: { $0.id == "claude-fable-5-2" })
     let opus55 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-5-5" })
     let sonnet55 = anthropicProvider?.models.first(where: { $0.id == "claude-sonnet-5-5" })
     let haiku55 = anthropicProvider?.models.first(where: { $0.id == "claude-haiku-5-5" })
@@ -20752,10 +20752,11 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(anthropicProvider?.models.map(\.id), [
       "claude-opus-5-5",
-      "claude-fable-5-1",
+      "claude-fable-5-2",
       "claude-sonnet-5-5",
       "claude-sonnet-5",
       "claude-haiku-5-5",
+      "claude-fable-5-1",
       "claude-opus-5",
     ])
     XCTAssertEqual(openCodeAnthropic?.models.map(\.id), [
@@ -20767,10 +20768,10 @@ final class ADETests: XCTestCase {
       "opencode/anthropic/claude-opus-5",
     ])
     XCTAssertEqual(workDefaultCatalogModelId(provider: "claude"), "claude-opus-5-5")
-    XCTAssertEqual(fable?.displayName, "Claude Fable 5.1")
+    XCTAssertEqual(fable?.displayName, "Claude Fable 5.2")
     XCTAssertEqual(fable?.tier, .flagship)
     XCTAssertEqual(fable?.tagline, "Flagship · 1M context")
-    XCTAssertEqual(fable?.defaultReasoningEffort, "high")
+    XCTAssertEqual(fable?.defaultReasoningEffort, "medium")
     XCTAssertNotNil(ADEColor.modelBrand(for: "claude-fable-5-1"))
     XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/claude-fable-5-1", "claude-fable-5-1"))
     XCTAssertTrue(workModelIdsEquivalent("fable-5", "claude-fable-5-1"))

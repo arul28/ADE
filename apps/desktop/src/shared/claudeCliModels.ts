@@ -1,6 +1,7 @@
 import { getModelById } from "./modelRegistry";
 
 export type ClaudeCliModelAlias =
+  | "claude-fable-5-2"
   | "claude-fable-5-1"
   | "claude-opus-5-5"
   | "claude-opus-5"
@@ -9,6 +10,9 @@ export type ClaudeCliModelAlias =
   | "claude-haiku-5-5";
 
 export const CLAUDE_CLI_MODEL_ALIAS_MAP: Readonly<Record<string, ClaudeCliModelAlias>> = {
+  "claude-fable-5-2": "claude-fable-5-2",
+  "anthropic/claude-fable-5-2": "claude-fable-5-2",
+  "anthropic/claude-fable-5-2-api": "claude-fable-5-2",
   fable: "claude-fable-5-1",
   "fable-5.1": "claude-fable-5-1",
   "fable-5-1": "claude-fable-5-1",
@@ -101,6 +105,7 @@ export function resolveClaudeCliModelAlias(
   const known = getModelById(raw);
   if (known?.providerRoute === "claude-cli") return known.providerModelId;
 
+  if (/fable[\s._-]*5[._-]2/.test(normalized)) return "claude-fable-5-2";
   if (normalized.includes("fable")) return "claude-fable-5-1";
   // A generation-qualified Sonnet id resolves to the generation it names: only
   // the unqualified `sonnet` and explicit 5.5 spellings take the newest row.
