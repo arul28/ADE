@@ -90,6 +90,7 @@ export type AccountRow = {
   warned_zero_at: number | null;
   hours_restored_at: number | null;
   billing_restored_at: number | null;
+  deleted_at: number | null;
   created_at: number;
   updated_at: number;
 };
@@ -430,7 +431,7 @@ export async function loadAccount(env: CloudEnv, userId: string, now: number): P
 type FreshPeriod = { plan: "free" | "paid"; start: number; end: number; included: number };
 
 /** Settles what's open into the period that's ending, then starts `next`, resetting warnings. */
-async function startFreshPeriod(env: CloudEnv, account: AccountRow, next: FreshPeriod, now: number): Promise<AccountRow> {
+async function startFreshPeriod(env: CloudEnv, account: AccountRow, next: FreshPeriod, now: number, alongside: D1PreparedStatement[] = []): Promise<AccountRow> {
   const computers = await listComputers(env, account.user_id);
   const statements: D1PreparedStatement[] = [];
   for (const computer of computers) statements.push(...settleStatements(env, computer, now));
@@ -444,7 +445,8 @@ async function startFreshPeriod(env: CloudEnv, account: AccountRow, next: FreshP
       warned_80_at = null, warned_95_at = null, warned_zero_at = null, hours_restored_at = ?, updated_at = ?
     where user_id = ?
   `).bind(next.plan, next.included, next.start, next.end, restored, now, account.user_id));
-  await env.DB.batch(statements);
+  // One batch: a retry decides from these columns, so half of a change could never be finished.
+  await env.DB.batch([...statements, ...alongside]);
   return {
     ...account,
     plan: next.plan,
@@ -471,14 +473,10 @@ export async function rollPeriodIfDue(env: CloudEnv, account: AccountRow, now: n
   const period = freePeriodFor(now);
   // `past_due` stays a paid account underneath: only a cancel ends the plan here.
   const nextPlan = cancelled ? "free" : account.plan === "paid" ? "paid" : "free";
-  const rolled = await startFreshPeriod(env, account, { plan: nextPlan, start: period.start, end: period.end, included: FREE_INCLUDED_MILLI }, now);
-  if (cancelled) {
-    await env.DB.prepare(`
-      update cloud_accounts set cancel_at_period_end = 0, extra_enabled = 0, stripe_status = null, updated_at = ? where user_id = ?
-    `).bind(now, account.user_id).run();
-    return { ...rolled, cancel_at_period_end: 0, extra_enabled: 0, stripe_status: null };
-  }
-  return rolled;
+  const rolled = await startFreshPeriod(env, account, { plan: nextPlan, start: period.start, end: period.end, included: FREE_INCLUDED_MILLI }, now, cancelled ? [
+    env.DB.prepare("update cloud_accounts set cancel_at_period_end = 0, extra_enabled = 0, stripe_status = null, updated_at = ? where user_id = ?").bind(now, account.user_id),
+  ] : []);
+  return cancelled ? { ...rolled, cancel_at_period_end: 0, extra_enabled: 0, stripe_status: null } : rolled;
 }
 
 export type CloudPlanChange = {
@@ -535,7 +533,7 @@ function planTransition(
  * restores what the account had used if the same period is still running.
  */
 export async function applyCloudPlanChange(env: CloudEnv, userId: string, change: CloudPlanChange, now = Date.now()): Promise<AccountRow> {
-  let account = await loadAccount(env, userId, now);
+  const account = await loadAccount(env, userId, now);
   const nextPlan = change.plan ?? account.plan;
   const nextStripeStatus = change.stripeStatus === undefined ? account.stripe_status : change.stripeStatus;
   const wasPastDue = account.stripe_status === "past_due";
@@ -558,15 +556,14 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
     const owed = extraActive(account) ? extraOwedMilli(account, stashUsed) : account.extra_owed_milli;
     extras.push(["past_due_used_milli", stashUsed], ["past_due_period_end", stashPeriodEnd], ["extra_enabled", 0], ["extra_owed_milli", owed]);
   }
-  if (transition) account = await startFreshPeriod(env, account, transition.next, now);
+  const updates: D1PreparedStatement[] = [];
   switch (transition?.kind) {
     case "restored_same_period":
-      await env.DB.prepare("update cloud_accounts set used_milli = ? where user_id = ?").bind(account.past_due_used_milli ?? 0, userId).run();
-      account.used_milli = account.past_due_used_milli ?? 0;
-      extras.push(["past_due_used_milli", null], ["past_due_period_end", null]);
+      updates.push(env.DB.prepare("update cloud_accounts set used_milli = ? where user_id = ?").bind(account.past_due_used_milli ?? 0, userId));
+      extras.push(["past_due_used_milli", null], ["past_due_period_end", null], ["billing_restored_at", now]);
       break;
     case "restored_new_period":
-      extras.push(...clearExtraReports, ["past_due_used_milli", null], ["past_due_period_end", null]);
+      extras.push(...clearExtraReports, ["past_due_used_milli", null], ["past_due_period_end", null], ["billing_restored_at", now]);
       break;
     case "to_paid":
     case "renewal":
@@ -580,9 +577,11 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
   if (change.extraEnabled !== undefined && nextPlan === "paid" && !isPastDue) extras.push(["extra_enabled", change.extraEnabled ? 1 : 0]);
   if (extras.length) {
     const sets = extras.map(([column]) => `${column} = ?`).join(", ");
-    await env.DB.prepare(`update cloud_accounts set ${sets}, updated_at = ? where user_id = ?`)
-      .bind(...extras.map(([, value]) => value), now, userId).run();
+    updates.push(env.DB.prepare(`update cloud_accounts set ${sets}, updated_at = ? where user_id = ?`)
+      .bind(...extras.map(([, value]) => value), now, userId));
   }
+  if (transition) await startFreshPeriod(env, account, transition.next, now, updates);
+  else if (updates.length) await env.DB.batch(updates);
   return (await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>()) ?? account;
 }
 

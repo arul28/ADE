@@ -183,10 +183,11 @@ export async function setExtraHours(env: CloudEnv, userId: string, enabled: bool
   const owed = !enabled && extraActive(account)
     ? extraOwedMilli(account, liveUsedMilli(account, await listComputers(env, userId), now))
     : 0;
+  const recordOwed = () => env.DB.prepare("update cloud_accounts set extra_owed_milli = ?, updated_at = ? where user_id = ?").bind(owed, now, userId).run();
+  // Before the switch moves: read after a failure, the switch being off would forget what's owed.
+  if (owed > 0) await recordOwed();
   await applyCloudPlanChange(env, userId, { extraEnabled: enabled }, now);
-  if (enabled || owed > 0) {
-    await env.DB.prepare("update cloud_accounts set extra_owed_milli = ?, updated_at = ? where user_id = ?").bind(owed, now, userId).run();
-  }
+  if (enabled) await recordOwed();
 }
 
 /** Ends the account's subscription now, for a deleted account. Already gone counts as done. */
@@ -277,7 +278,7 @@ async function userForSubscription(env: CloudEnv, subscription: SubscriptionFact
 }
 
 /** Banner and email, once, when a payment fails or a paid invoice brings the plan back. */
-async function announceChange(env: CloudEnv, before: AccountRow, after: AccountRow, now: number): Promise<void> {
+async function announceChange(env: CloudEnv, before: AccountRow, after: AccountRow): Promise<void> {
   const wasPastDue = before.stripe_status === "past_due";
   const isPastDue = after.stripe_status === "past_due";
   if (!wasPastDue && isPastDue && after.plan === "paid") {
@@ -290,7 +291,6 @@ async function announceChange(env: CloudEnv, before: AccountRow, after: AccountR
     return;
   }
   if (wasPastDue && !isPastDue && after.plan === "paid") {
-    await env.DB.prepare("update cloud_accounts set billing_restored_at = ?, updated_at = ? where user_id = ?").bind(now, now, after.user_id).run();
     logCloud("cloud.billing_restored", { userId: after.user_id });
     await sendCloudEmail(env, {
       userId: after.user_id,
@@ -302,7 +302,7 @@ async function announceChange(env: CloudEnv, before: AccountRow, after: AccountR
 
 async function applyAndAnnounce(env: CloudEnv, before: AccountRow, change: CloudPlanChange, now: number): Promise<void> {
   const after = await applyCloudPlanChange(env, before.user_id, change, now);
-  await announceChange(env, before, after, now);
+  await announceChange(env, before, after);
 }
 
 /** Matches the account to what Stripe says about its subscription right now. */
@@ -319,12 +319,6 @@ async function syncSubscription(env: CloudEnv, subscriptionId: string | null, no
   if (account.stripe_subscription_id !== subscription.id) return;
 
   const { status, cancelAtPeriodEnd } = subscription;
-  // A Checkout whose payment was still pending, now paid: the plan starts here.
-  if ((status === "active" || status === "trialing") && account.plan !== "paid" && account.stripe_status === "incomplete") {
-    await applyAndAnnounce(env, account, { plan: "paid", ...periodChange(subscription), stripeStatus: status, cancelAtPeriodEnd }, now);
-    await ensureThreshold(env, subscription);
-    return;
-  }
   if (status === "canceled" || status === "incomplete_expired") {
     await applyAndAnnounce(env, account, { plan: "free", stripeSubscriptionId: null, stripeStatus: null, cancelAtPeriodEnd: false }, now);
     return;
@@ -337,12 +331,17 @@ async function syncSubscription(env: CloudEnv, subscriptionId: string | null, no
 
   // A renewal's invoice covers the period that just ended, so it ends where the current one starts.
   const isRenewal = paidInvoice?.billing_reason === "subscription_cycle" && paidInvoice.period_end === subscription.periodStart;
-  const movesPeriod = isRenewal || account.stripe_status === "past_due";
+  // A Checkout whose payment was still pending, now paid: the plan starts here.
+  const starting = account.plan !== "paid" && account.stripe_status === "incomplete";
+  const movesPeriod = starting || isRenewal || account.stripe_status === "past_due";
   await applyAndAnnounce(env, account, {
+    ...(starting ? { plan: "paid" as const } : {}),
     stripeStatus: status,
     cancelAtPeriodEnd,
     ...(movesPeriod ? periodChange(subscription) : {}),
   }, now);
+  // On every active event, so a threshold that failed after the plan was saved still gets set.
+  if (starting || account.plan === "paid") await ensureThreshold(env, subscription);
 }
 
 /** Stripe refuses a threshold at Checkout on these subscriptions; it accepts one afterward. */

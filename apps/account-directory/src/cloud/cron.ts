@@ -112,6 +112,12 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
       computer.machine_key = instance.metadata.ade_machine_key;
       statements.push(env.DB.prepare("update cloud_computers set machine_key = ? where instance_id = ?").bind(computer.machine_key, computer.instance_id));
     }
+    // At rest the provider's disk is the truth: a grow whose answer was lost leaves this row ahead, holding room in the shared limit.
+    const disk = instance.resources?.disk;
+    if (disk && disk !== computer.disk_gb && isRestingStatus(instance.status)) {
+      statements.push(env.DB.prepare("update cloud_computers set disk_gb = ? where instance_id = ? and disk_gb = ?").bind(disk, computer.instance_id, computer.disk_gb));
+      computer.disk_gb = disk;
+    }
   }
   if (statements.length) await env.DB.batch(statements);
 
@@ -183,8 +189,15 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
   const outOfHoursUsers: string[] = [];
   await Promise.all(accounts.map(async (row) => {
     // Most accounts roll at once on the 1st: a tick does its share and leaves the rest due.
-    if (row.period_end <= now && ++rolls > PERIOD_ROLLS_PER_TICK) return;
+    if (row.deleted_at == null && row.period_end <= now && ++rolls > PERIOD_ROLLS_PER_TICK) return;
     try {
+      if (row.deleted_at != null) {
+        // A create that was still running when the account was deleted lands here once adopted.
+        for (const computer of byUser.get(row.user_id) ?? []) {
+          await deleteComputer(env, provider, computer, { who: "system", reason: "account_deleted" }, now);
+        }
+        return;
+      }
       const account = await rollPeriodIfDue(env, row, now);
       const owned = byUser.get(account.user_id) ?? [];
       // A roll restarted the open stretches at this instant (see startFreshPeriod).
@@ -430,6 +443,7 @@ async function sweepInactive(env: CloudEnv, provider: CloudProvider, computers: 
   const accounts = await accountsOf(env, byUser);
   let deletions = 0;
   for (const account of accounts) {
+    if (account.deleted_at != null) continue;
     const owned = byUser.get(account.user_id) ?? [];
     const used = liveUsedMilli(account, owned, now);
     if (isOutOfHours(account, used)) continue;

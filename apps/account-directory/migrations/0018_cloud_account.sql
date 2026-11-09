@@ -101,6 +101,9 @@ create table if not exists cloud_accounts (
   hours_restored_at integer,
   -- When a paid invoice last brought the plan back from `past_due` (the banner).
   billing_restored_at integer,
+  -- Set when the ADE account is deleted. Anything of this account that shows up
+  -- later (a create that was still running) is deleted by the minute cron.
+  deleted_at integer,
   created_at integer not null,
   updated_at integer not null
 );

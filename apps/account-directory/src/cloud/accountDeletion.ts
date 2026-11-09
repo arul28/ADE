@@ -12,19 +12,20 @@ import {
 /**
  * Everything ADE Cloud holds for an account being deleted (Clerk `user.deleted`):
  * the plan, its computers, its timed wakes and its saved chats. A throw means
- * Clerk delivers again, and each step is safe to repeat.
+ * Clerk delivers again, and each step is safe to repeat. A create still running
+ * keeps its reservation: the computer it makes is adopted, then the minute cron
+ * deletes it because `deleted_at` is set.
  */
 export async function deleteCloudAccount(env: Pick<CloudEnv, "DB" | "CLOUD_CHATS" | "AGENT37_API_KEY" | "STRIPE_SECRET_KEY">, userId: string): Promise<void> {
   const now = Date.now();
   const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>();
-  if (account) await cancelAccountSubscription(env, account, now);
-
-  const computers = await listComputers(env, userId);
-  const pending = computers.filter((computer) => isPendingId(computer.instance_id));
-  const real = computers.filter((computer) => !isPendingId(computer.instance_id));
-  if (pending.length) {
-    await env.DB.batch(pending.map((computer) => env.DB.prepare("delete from cloud_computers where instance_id = ?").bind(computer.instance_id)));
+  if (account) {
+    // First, so anything that lands while the rest runs is cleaned up too.
+    await env.DB.prepare("update cloud_accounts set deleted_at = coalesce(deleted_at, ?) where user_id = ?").bind(now, userId).run();
+    await cancelAccountSubscription(env, account, now);
   }
+
+  const real = (await listComputers(env, userId)).filter((computer) => !isPendingId(computer.instance_id));
   if (real.length) {
     const key = env.AGENT37_API_KEY?.trim();
     if (!key) throw new Error("no_provider_key");

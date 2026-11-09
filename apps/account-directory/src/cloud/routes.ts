@@ -323,13 +323,15 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
   const size = cloudSizeFor(computer.type, body.cpu ?? computer.cpu, body.memory ?? computer.memory_gb);
   if (!size) return badRequest("That size isn't one ADE Cloud offers.");
 
-  let nextDisk = computer.disk_gb;
-  if (body.disk !== undefined) {
-    if (typeof body.disk !== "number" || !Number.isInteger(body.disk)) return badRequest("That disk size isn't valid.");
-    if (body.disk < computer.disk_gb) return badRequest("A computer's disk can only grow.");
+  if (body.disk !== undefined && (typeof body.disk !== "number" || !Number.isInteger(body.disk))) return badRequest("That disk size isn't valid.");
+  // The provider's size, not the row's: a grow whose answer was lost leaves the row ahead, and a retry must still ask for it.
+  const currentDisk = body.disk === undefined ? computer.disk_gb : (await provider.getInstance(computer.instance_id)).resources?.disk ?? computer.disk_gb;
+  let nextDisk = currentDisk;
+  if (typeof body.disk === "number") {
+    if (body.disk < currentDisk) return badRequest("A computer's disk can only grow.");
     nextDisk = body.disk;
   }
-  if (nextDisk !== computer.disk_gb) {
+  if (nextDisk !== currentDisk) {
     if (accountRules(account) === "free") return diskNeedsPaid();
     if (nextDisk % DISK_STEP_GB !== 0) return badDiskStep();
     // A disk grow restarts the computer, so only the computer can say it's safe.
@@ -337,25 +339,26 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
       return fail("computer_busy", "A disk can only grow while the computer is idle.", 409);
     }
     // Reserved in one write, so two grows at once can't pass the shared limit together.
-    const reserved = await env.DB.prepare(`
-      update cloud_computers set disk_gb = ?
-      where instance_id = ? and disk_gb = ?
-        and (select coalesce(sum(disk_gb), 0) from cloud_computers where user_id = ? and deleted_at is null) - ? + ? <= ?
-    `).bind(nextDisk, computer.instance_id, computer.disk_gb, computer.user_id, computer.disk_gb, nextDisk, PAID_DISK_POOL_GB).run();
-    if (reserved.meta.changes !== 1) {
-      return diskLimit();
+    // Already this size on the row: a retry, and its room is already held.
+    if (nextDisk !== computer.disk_gb) {
+      const reserved = await env.DB.prepare(`
+        update cloud_computers set disk_gb = ?
+        where instance_id = ? and disk_gb = ?
+          and (select coalesce(sum(disk_gb), 0) from cloud_computers where user_id = ? and deleted_at is null) - ? + ? <= ?
+      `).bind(nextDisk, computer.instance_id, computer.disk_gb, computer.user_id, computer.disk_gb, nextDisk, PAID_DISK_POOL_GB).run();
+      if (reserved.meta.changes !== 1) return diskLimit();
     }
   }
 
   const resize: { cpu: number; memory: number; disk?: number } = { cpu: size.cpu, memory: size.memoryGb };
-  if (nextDisk !== computer.disk_gb) resize.disk = nextDisk;
+  if (nextDisk !== currentDisk) resize.disk = nextDisk;
   let status: string;
   try {
     status = await provider.resizeInstance(computer.instance_id, resize);
   } catch (error) {
-    if (nextDisk !== computer.disk_gb && providerMadeNothing(error)) {
+    if (nextDisk !== currentDisk && providerMadeNothing(error)) {
       await env.DB.prepare("update cloud_computers set disk_gb = ? where instance_id = ? and disk_gb = ?")
-        .bind(computer.disk_gb, computer.instance_id, nextDisk).run();
+        .bind(currentDisk, computer.instance_id, nextDisk).run();
     }
     throw error;
   }

@@ -431,6 +431,28 @@ describe("ADE Cloud account", () => {
       expect(harness.row("select plan, included_milli, stripe_status from cloud_accounts where user_id = ?", OWNER))
         .toEqual(expect.objectContaining({ plan: "paid", included_milli: 500_000, stripe_status: "active" }));
     }],
+    ["a failed threshold on a plan that just activated is retried", async () => {
+      harness.exec("update cloud_accounts set plan = 'free', included_milli = 50000, used_milli = 0, stripe_status = 'incomplete' where user_id = ?", OWNER);
+      const { billing_thresholds: _none, ...withoutThreshold } = activeSubscription;
+      harness.net.subscriptions.set("sub_1", withoutThreshold);
+      const activated = { id: "evt_active", type: "customer.subscription.updated", data: { object: { id: "sub_1" } } };
+      harness.net.once.push({ match: /POST .*\/subscriptions\/sub_1$/, reply: harness.net.reply({ error: { message: "boom" } }, 500) });
+
+      expect((await webhook(activated)).status).toBe(500);
+      expect((await webhook(activated)).status).toBe(200);
+
+      expect(providerCalls(harness, /POST .*\/subscriptions\/sub_1$/)).toHaveLength(2);
+    }],
+    ["a renewal that fails halfway changes nothing, so its retry resets the extra-hours count", async () => {
+      harness.exec("update cloud_accounts set extra_reported_milli = 3000 where user_id = ?", OWNER);
+      harness.injectFault((sql) => /extra_reported_milli = \?/.test(sql) && /^\s*update cloud_accounts/.test(sql));
+      expect((await webhook(renewalInvoice)).status).toBe(500);
+      expect(usedMilli(harness)).toBe(120_000);
+
+      harness.injectFault(null);
+      expect((await webhook(renewalInvoice)).status).toBe(200);
+      expect(harness.row("select used_milli, extra_reported_milli from cloud_accounts where user_id = ?", OWNER)).toEqual(expect.objectContaining({ used_milli: 0, extra_reported_milli: 0 }));
+    }],
   ])("Stripe: %s", async (_label, run) => {
     seedAccount(harness, OWNER, paidAccount);
     harness.net.subscriptions.set("sub_1", activeSubscription);
@@ -540,16 +562,7 @@ describe("ADE Cloud account", () => {
       provide(harness);
       harness.insert("cloud_user_keys", { user_id: OWNER, sealed_key: "v1.x.y", created_at: NOW });
       harness.net.subscriptions.set("sub_1", activeSubscription);
-      const secret = Buffer.from("clerk-webhook-secret-for-this-test");
-      const body = JSON.stringify({ type: "user.deleted", timestamp: NOW, data: { id: OWNER, deleted: true } });
-      const timestamp = String(Math.floor(NOW / 1000));
-      const signature = createHmac("sha256", secret).update(`msg_del.${timestamp}.${body}`).digest("base64");
-
-      const response = await handleSignupAnalyticsRequest(new Request("https://directory.test/webhooks/clerk", {
-        method: "POST",
-        headers: { "svix-id": "msg_del", "svix-timestamp": timestamp, "svix-signature": `v1,${signature}` },
-        body,
-      }), { DB: harness.DB, CLERK_WEBHOOK_SIGNING_SECRET: `whsec_${secret.toString("base64")}`, AGENT37_API_KEY: "provider-key", STRIPE_SECRET_KEY: "stripe-key" });
+      const response = await deleteAccountOverClerk();
 
       expect(response.status).toBe(200);
       expect(providerCalls(harness, /DELETE .*\/subscriptions\/sub_1$/)).toHaveLength(1);
@@ -557,6 +570,39 @@ describe("ADE Cloud account", () => {
       expect(harness.row("select plan, stripe_subscription_id from cloud_accounts where user_id = ?", OWNER)).toEqual(expect.objectContaining({ plan: "free", stripe_subscription_id: null }));
       expect(computer(harness).deleted_at).toBe(NOW);
       expect(harness.rows("select user_id from cloud_user_keys where user_id = ?", OWNER)).toEqual([]);
+    }],
+    ["an account deleted while its create runs still loses the computer it was making", async () => {
+      harness.net.after.push({ match: /POST .*\/instances$/, run: async () => { expect((await deleteAccountOverClerk()).status).toBe(200); } });
+      expect((await harness.send(OWNER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, metadata: { ade_request_id: "req-gone" } })).status).toBe(201);
+
+      await harness.tick();
+
+      expect(providerCalls(harness, /DELETE .*\/instances\/madenew12345$/)).toHaveLength(1);
+      expect(harness.row("select reason from cloud_delete_log where instance_id = 'madenew12345'").reason).toBe("account_deleted");
+    }],
+    ["a grow whose answer was lost goes to the provider again on retry", async () => {
+      harness.exec("update cloud_accounts set plan = 'paid', included_milli = 500000 where user_id = ?", OWNER);
+      seedComputer(harness, { status: "sleeping", awake_since: null });
+      provide(harness, INSTANCE, "sleeping");
+      harness.net.once.push({ match: /POST .*\/resize$/, reply: harness.net.reply({ error: { code: "upstream_timeout" } }, 504) });
+      expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 2, memory: 4, disk: 8 })).status).toBe(504);
+
+      expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 2, memory: 4, disk: 8 })).status).toBe(200);
+
+      expect(providerCalls(harness, /POST .*\/resize$/).map((call) => call.body?.disk)).toEqual([8, 8]);
+      expect(computer(harness).disk_gb).toBe(8);
+    }],
+    ["a grow that never happened gives its room in the shared disk back", async () => {
+      harness.exec("update cloud_accounts set plan = 'paid', included_milli = 500000 where user_id = ?", OWNER);
+      seedComputer(harness, { status: "sleeping", awake_since: null });
+      provide(harness, INSTANCE, "sleeping");
+      harness.net.once.push({ match: /POST .*\/resize$/, reply: new Error("connection reset") });
+      expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 2, memory: 4, disk: 8 })).status).toBe(502);
+      expect(computer(harness).disk_gb).toBe(8);
+
+      await harness.tick();
+
+      expect(computer(harness).disk_gb).toBe(4);
     }],
     ["one account's failure doesn't cost another account its stop at 0 hours", async () => {
       seedAccount(harness, OTHER, { used_milli: 50_000 });
@@ -577,6 +623,18 @@ describe("ADE Cloud account", () => {
     harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
     await run();
   });
+
+  function deleteAccountOverClerk(): Promise<Response> {
+    const secret = Buffer.from("clerk-webhook-secret-for-this-test");
+    const body = JSON.stringify({ type: "user.deleted", timestamp: NOW, data: { id: OWNER, deleted: true } });
+    const timestamp = String(Math.floor(NOW / 1000));
+    const signature = createHmac("sha256", secret).update(`msg_del.${timestamp}.${body}`).digest("base64");
+    return handleSignupAnalyticsRequest(new Request("https://directory.test/webhooks/clerk", {
+      method: "POST",
+      headers: { "svix-id": "msg_del", "svix-timestamp": timestamp, "svix-signature": `v1,${signature}` },
+      body,
+    }), { DB: harness.DB, CLERK_WEBHOOK_SIGNING_SECRET: `whsec_${secret.toString("base64")}`, AGENT37_API_KEY: "provider-key", STRIPE_SECRET_KEY: "stripe-key" });
+  }
 
   function seedRestingComputer(): void {
     seedComputer(harness, {
