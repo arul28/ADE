@@ -22,6 +22,7 @@
  * entry cleared in `finally`.
  */
 
+import { boundedAgentReason } from "../../../shared/chatErrorPresentation";
 import type { AcpChatProvider } from "../../../shared/types/chat";
 import {
   AcpRequestTimeoutError,
@@ -335,7 +336,11 @@ export async function probeAcpProviderAuth(
         // login the user has to do (Grok's), and session/new already failed
         // as sign-in: still not signed in, not a broken agent.
         if (isAcpAuthError(error) || error instanceof AcpRequestTimeoutError) {
-          return { state: "auth-failed", message: loginBlocker(provider) };
+          // The agent's own reason (not entitled, key expired) beats a generic hint.
+          const reason = !(error instanceof AcpRequestTimeoutError) && error instanceof Error
+            ? boundedAgentReason(error.message)
+            : "";
+          return { state: "auth-failed", message: reason ? `${loginBlocker(provider)} The agent said: ${reason}` : loginBlocker(provider) };
         }
         return {
           state: "runtime-failed",

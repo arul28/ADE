@@ -19,7 +19,7 @@ async function readTailscale(): Promise<HostReachabilityFacts["tailscale"]> {
     execFile(
       resolveTailscaleCliPath(),
       ["status", "--json"],
-      { timeout: TAILSCALE_STATUS_TIMEOUT_MS, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+      { timeout: TAILSCALE_STATUS_TIMEOUT_MS, windowsHide: true, killSignal: "SIGKILL", maxBuffer: 8 * 1024 * 1024 },
       (error, stdout) => {
         if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
           resolve({ installed: false, backendState: null, exitNodeName: null });

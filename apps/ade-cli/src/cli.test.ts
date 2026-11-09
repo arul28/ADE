@@ -2129,6 +2129,7 @@ describe("ADE CLI", () => {
       rootPath: "/tmp/project",
       catalogVisibility: "system",
       registrationSource: "runtime-auto",
+      withoutIcon: true,
     });
   });
 

@@ -2264,6 +2264,18 @@ function PromptSuggestionHint({ text }: { text: string }) {
   );
 }
 
+/** Scripts written without spaces between words. */
+const UNSPACED_SCRIPT = "[\\p{Script_Extensions=Han}\\p{Script_Extensions=Hiragana}\\p{Script_Extensions=Katakana}\\p{Script=Thai}\\p{Script=Lao}\\p{Script=Khmer}\\p{Script=Myanmar}]";
+const ENDS_UNSPACED = new RegExp(`${UNSPACED_SCRIPT}$`, "u");
+const STARTS_UNSPACED = new RegExp(`^${UNSPACED_SCRIPT}`, "u");
+
+/** Dictated text with the spaces its neighbors need: none beside whitespace, or between characters of an unspaced script. */
+function spaceDictatedText(before: string, insertion: string, after: string): string {
+  const leading = before.length > 0 && !/\s$/.test(before) && !(ENDS_UNSPACED.test(before) && STARTS_UNSPACED.test(insertion));
+  const trailing = after.length > 0 && !/^\s/.test(after) && !(ENDS_UNSPACED.test(insertion) && STARTS_UNSPACED.test(after));
+  return `${leading ? " " : ""}${insertion}${trailing ? " " : ""}`;
+}
+
 function AgentChatComposerImpl({
   surfaceMode = "standard",
   surfaceProfile = "standard",
@@ -5411,17 +5423,20 @@ function AgentChatComposerImpl({
     setVoiceError(null);
     if (useRichComposer) {
       // Rich editor: insert at the saved selection range (or end), then sync draft.
-      insertTextIntoRichEditor(insertion);
+      const editor = richEditorRef.current;
+      const caret = richSelectionRef.current;
+      const text = editor ? serializeComposerDom(editor).text : "";
+      const atCaret = editor && caret && editor.contains(caret.commonAncestorContainer);
+      const before = atCaret ? text.slice(0, serializedComposerOffsetAt(editor, caret.startContainer, caret.startOffset, text)) : text;
+      const after = atCaret ? text.slice(serializedComposerOffsetAt(editor, caret.endContainer, caret.endOffset, text)) : "";
+      insertTextIntoRichEditor(spaceDictatedText(before, insertion, after));
     } else {
       const current = draft;
       const caret = lastPlainSelectionRef.current ?? current.length;
       const start = Math.max(0, Math.min(caret, current.length));
       const before = current.slice(0, start);
       const after = current.slice(start);
-      // Add a separating space when butting up against existing words.
-      const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
-      const needsTrailingSpace = after.length > 0 && !/^\s/.test(after);
-      const piece = `${needsLeadingSpace ? " " : ""}${insertion}${needsTrailingSpace ? " " : ""}`;
+      const piece = spaceDictatedText(before, insertion, after);
       const next = `${before}${piece}${after}`;
       onDraftChange(next);
       const nextCaret = before.length + piece.length;

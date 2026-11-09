@@ -62,7 +62,8 @@ import { createLaneSizeMeasurer, type LaneSizeRecord } from "./laneSizes";
 import { createLinkedFileTally, pnpmSharedStoreDir } from "./diskUsage";
 import { createLaneBuildOutputSweeper } from "./laneBuildOutput";
 import { createLaneLifecycleScan, type LaneLifecycleBackend, type LifecycleLaneRow } from "./laneLifecycleScan";
-import { isDirectChildFolder, sameFolder } from "../shared/sameFolder";
+import { parseGitWorktreePorcelain } from "../lanes/gitWorktreePorcelain";
+import { isDirectChildFolder, isFolderInside, sameFolder } from "../shared/sameFolder";
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60_000;
 const DEFAULT_SCAN_ENTRY_LIMIT = 200_000;
@@ -374,6 +375,16 @@ async function readdirOrEmpty(dirPath: string): Promise<string[]> {
     if (isEnoentError(error)) return [];
     throw error;
   }
+}
+
+function worktreeFolderState(row: LaneRow | null, nestedLane: LaneRow | null): {
+  laneStatus: StorageItem["laneStatus"];
+  detail?: string;
+} {
+  if (nestedLane) return { laneStatus: "active", detail: `Holds the lane ${nestedLane.name}` };
+  if (!row) return { laneStatus: "orphaned", detail: "Left over from a deleted lane" };
+  if (row.archived_at) return { laneStatus: "archived", detail: "Archived lane — its files are kept until you remove them" };
+  return { laneStatus: "active" };
 }
 
 export function createStorageInsightsService(options: StorageInsightsServiceOptions) {
@@ -1012,7 +1023,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     // taken before ADE removed the lane's build output no longer holds.
     const measuredLanes = laneSizes.read(lanes);
     const worktreeNames = await readdirOrEmpty(layout.worktreesDir);
-    const worktreeEntries: Array<{ name: string; path: string; stat: fs.Stats; row: LaneRow | null; measured: LaneSizeRecord | null }> = [];
+    const worktreeEntries: Array<{ name: string; path: string; stat: fs.Stats; row: LaneRow | null; nestedLane: LaneRow | null; measured: LaneSizeRecord | null }> = [];
     for (const name of worktreeNames) {
       const worktreePath = path.join(layout.worktreesDir, name);
       const stat = await lstatOrNull(worktreePath);
@@ -1020,14 +1031,17 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       // "left over lane" offered a cleanup that made no sense.
       if (!stat || !stat.isDirectory()) continue;
       const row = laneForPath(worktreePath, undefined, lanes);
+      // A plain folder can hold a lane further down (`.ade/worktrees/team/foo`).
+      // It is not left over: removing it would remove that lane.
+      const nestedLane = row ? null : lanes.find((lane) => isFolderInside(worktreePath, lane.worktree_path)) ?? null;
       const record = row ? measuredLanes.get(row.id) ?? null : null;
       const removedAt = row ? buildOutputRead?.removedByLane.get(row.id)?.at : undefined;
       const measured = record && !(removedAt && Date.parse(removedAt) > Date.parse(record.measuredAt)) ? record : null;
-      worktreeEntries.push({ name, path: worktreePath, stat, row, measured });
+      worktreeEntries.push({ name, path: worktreePath, stat, row, nestedLane, measured });
     }
     let walkedLanesLeft = worktreeEntries.filter((entry) => !entry.measured).length;
-    for (const { name, path: worktreePath, stat, row, measured } of worktreeEntries) {
-      const laneStatus: StorageItem["laneStatus"] = !row ? "orphaned" : row.archived_at ? "archived" : "active";
+    for (const { name, path: worktreePath, stat, row, nestedLane, measured } of worktreeEntries) {
+      const { laneStatus, detail } = worktreeFolderState(row, nestedLane);
       const itemArgs = {
         category: "lanes_worktrees" as const,
         base: layout.worktreesDir,
@@ -1035,11 +1049,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         label: row?.name ?? name,
         safety: (laneStatus === "active" ? "protected" : "review_first") as StorageSafety,
         laneStatus,
-        ...(laneStatus === "archived"
-          ? { detail: "Archived lane — its files are kept until you remove them" }
-          : laneStatus === "orphaned"
-            ? { detail: "Left over from a deleted lane" }
-            : {}),
+        ...(detail ? { detail } : {}),
       };
       const entry = await makeItem({
         ...itemArgs,
@@ -1373,10 +1383,22 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
 
   /**
    * Why a leftover lane folder must not be removed, or null when nothing in
-   * it would be lost. A folder with no `.git` is plain leftover files. A
-   * checkout git cannot read is kept: ADE cannot tell what is in it.
+   * it would be lost. A folder holding a worktree further down is kept with
+   * it. Otherwise a folder with no `.git` is plain leftover files. A checkout
+   * git cannot read is kept: ADE cannot tell what is in it.
    */
   const orphanedWorktreeWorkAtRisk = async (worktreePath: string): Promise<string | null> => {
+    if (listLaneRows().some((row) => isFolderInside(worktreePath, row.worktree_path))) {
+      return "This folder holds a lane further down, so it is kept.";
+    }
+    const worktrees = await runGit(["worktree", "list", "--porcelain"], { cwd: projectRoot, timeoutMs: 15_000 });
+    if (worktrees.exitCode !== 0 && await lstatOrNull(path.join(projectRoot, ".git"))) {
+      return "ADE couldn't list this project's worktrees, so this folder is kept.";
+    }
+    const holdsWorktree = parseGitWorktreePorcelain(worktrees.stdout).some(({ path: listed }) => (
+      isFolderInside(worktreePath, listed) && fs.existsSync(path.join(listed, ".git"))
+    ));
+    if (holdsWorktree) return "This folder holds a git worktree further down, so it is kept.";
     if (!(await lstatOrNull(path.join(worktreePath, ".git")))) return null;
     const status = await runGit(["status", "--porcelain", "--untracked-files=normal"], { cwd: worktreePath, timeoutMs: 15_000 });
     if (status.exitCode !== 0) {

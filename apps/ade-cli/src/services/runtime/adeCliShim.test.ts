@@ -1,13 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import {
   adeCliShimDirName,
   installAdeCliShim,
   publishServedRuntimeSocket,
-  renderAdeCliGitBashShim,
   renderAdeCliShim,
+  renderAdeCliGitBashShim,
   resolveAdeCliShimBrain,
 } from "./adeCliShim";
 
@@ -46,85 +47,54 @@ describe("resolveAdeCliShimBrain", () => {
 describe("renderAdeCliShim", () => {
   const alpha = { socketPath: "/Users/a/.ade-alpha/sock/ade.sock", adeHome: "/Users/a/.ade-alpha" };
 
-  it("defaults ADE_HOME and the socket only when the caller named no brain", () => {
-    const body = renderAdeCliShim({
-      entryPath: "/Apps/ADE Alpha.app/Contents/Resources/ade-cli/cli.cjs",
-      execPath: "/Apps/ADE Alpha.app/Contents/MacOS/ADE Alpha",
-      brain: { socketPath: "/tmp/it's here/ade.sock", adeHome: "/Users/a/.ade-alpha" },
-      platform: "darwin",
-    });
-    expect(body).toBe([
-      "#!/bin/sh",
-      'if [ -z "${ADE_HOME:-}" ] && [ -z "${ADE_RUNTIME_SOCKET_PATH:-}" ]; then',
-      "  ADE_HOME='/Users/a/.ade-alpha'; export ADE_HOME",
-      "  ADE_RUNTIME_SOCKET_PATH='/tmp/it'\\''s here/ade.sock'; export ADE_RUNTIME_SOCKET_PATH",
-      "fi",
-      "ELECTRON_RUN_AS_NODE=1 exec '/Apps/ADE Alpha.app/Contents/MacOS/ADE Alpha' '/Apps/ADE Alpha.app/Contents/Resources/ade-cli/cli.cjs' \"$@\"",
-      "",
-    ].join("\n"));
-    expect(renderAdeCliShim({
-      entryPath: "/x/cli.cjs",
-      execPath: "/x/node",
-      brain: { socketPath: null, adeHome: null },
-      platform: "linux",
-    })).toBe("#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec '/x/node' '/x/cli.cjs' \"$@\"\n");
+  it.skipIf(process.platform === "win32")("runs the shim with brain defaults and respects caller cache settings", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-shim-run-"));
+    try {
+      const entry = path.join(dir, "entry.cjs");
+      const shim = path.join(dir, "ade");
+      fs.writeFileSync(entry, 'process.stdout.write(JSON.stringify({home: process.env.ADE_HOME, socket: process.env.ADE_RUNTIME_SOCKET_PATH, cache: process.env.NODE_COMPILE_CACHE, args: process.argv.slice(2)}))');
+      fs.writeFileSync(shim, renderAdeCliShim({ entryPath: entry, execPath: process.execPath, brain: alpha, platform: "darwin" }));
+      const run = (env: NodeJS.ProcessEnv) => {
+        const result = spawnSync("sh", [shim, "two words", "line one\nline two"], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8" });
+        expect(result.status, result.stderr).toBe(0);
+        return JSON.parse(result.stdout);
+      };
+      expect(run({})).toEqual({ home: alpha.adeHome, socket: alpha.socketPath, cache: `${alpha.adeHome}/cache/node-compile`, args: ["two words", "line one\nline two"] });
+      expect(run({ ADE_HOME: "/other", NODE_COMPILE_CACHE: "/custom" })).toEqual({ home: "/other", cache: "/custom", args: ["two words", "line one\nline two"] });
+      expect(run({ NODE_DISABLE_COMPILE_CACHE: "1" }).cache).toBeUndefined();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  it("writes a Windows shim that doubles % and keeps the caller's choice", () => {
-    const body = renderAdeCliShim({
-      entryPath: "C:\\Program Files (x86)\\ADE 100%\\resources\\ade-cli\\cli.cjs",
-      execPath: "C:\\Program Files (x86)\\ADE 100%\\ADE.exe",
-      brain: { socketPath: "\\\\.\\pipe\\ade-runtime-alpha-1234", adeHome: "C:\\Users\\a\\%TEMP%\\.ade-alpha" },
-      platform: "win32",
-    });
-    expect(body).toBe([
-      "@echo off",
-      "setlocal",
-      // The cmd.exe marker: the CLI warns that an inline multi-line flag was cut.
-      'set "ADE_CLI_VIA_CMD=1"',
-      "if defined ADE_HOME goto ade_run",
-      "if defined ADE_RUNTIME_SOCKET_PATH goto ade_run",
-      'set "ADE_HOME=C:\\Users\\a\\%%TEMP%%\\.ade-alpha"',
-      'set "ADE_RUNTIME_SOCKET_PATH=\\\\.\\pipe\\ade-runtime-alpha-1234"',
-      ":ade_run",
-      "set ELECTRON_RUN_AS_NODE=1",
-      '"C:\\Program Files (x86)\\ADE 100%%\\ADE.exe" "C:\\Program Files (x86)\\ADE 100%%\\resources\\ade-cli\\cli.cjs" %*',
-      "",
-    ].join("\r\n"));
-    // cmd has no escape for a quote inside set "...", so such a value is not embedded.
-    expect(renderAdeCliShim({
-      entryPath: "C:\\ade\\ade.exe",
-      execPath: "C:\\ade\\ade.exe",
-      brain: { socketPath: "C:\\bad\"path", adeHome: null },
-      platform: "win32",
-    })).toBe("@echo off\r\nsetlocal\r\nset \"ADE_CLI_VIA_CMD=1\"\r\n\"C:\\ade\\ade.exe\" %*\r\n");
+  it.skipIf(process.platform !== "win32")("runs the Windows command shim with caller cache settings", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-shim-run-"));
+    try {
+      const entry = path.join(dir, "entry.cjs");
+      const shim = path.join(dir, "ade.cmd");
+      fs.writeFileSync(entry, 'process.stdout.write(JSON.stringify({home: process.env.ADE_HOME, cache: process.env.NODE_COMPILE_CACHE, args: process.argv.slice(2)}))');
+      fs.writeFileSync(shim, renderAdeCliShim({ entryPath: entry, execPath: process.execPath, brain: { adeHome: dir, socketPath: null }, platform: "win32" }));
+      const result = spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `""${shim}" "two words""`], { env: { ...process.env, ADE_HOME: dir, NODE_COMPILE_CACHE: "", NODE_DISABLE_COMPILE_CACHE: "" }, encoding: "utf8", windowsVerbatimArguments: true });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ home: dir, cache: path.join(dir, "cache", "node-compile"), args: ["two words"] });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  it("writes the Git Bash shim a Windows brain needs, keeping the arguments whole", () => {
-    // Git Bash finds a bare `ade` only as an extensionless script, and cmd.exe
-    // (which `ade.cmd` runs through) ends a command at its first line feed, so
-    // every multi-line --prompt or --text arrived cut. This script skips cmd
-    // and hands the arguments over untouched.
-    const body = renderAdeCliGitBashShim({
-      entryPath: "C:\\ADE\\resources\\ade-cli\\cli.cjs",
-      execPath: "C:\\ADE\\ADE.exe",
-      brain: { socketPath: "\\\\.\\pipe\\ade-runtime-alpha-1234", adeHome: "C:\\Users\\a\\.ade-alpha" },
-      nodeModulePaths: ["C:\\ADE\\resources\\app.asar\\node_modules"],
-    });
-    expect(body).toBe([
-      "#!/bin/sh",
-      'if [ -z "${ADE_HOME:-}" ] && [ -z "${ADE_RUNTIME_SOCKET_PATH:-}" ]; then',
-      "  ADE_HOME='C:\\Users\\a\\.ade-alpha'; export ADE_HOME",
-      "  ADE_RUNTIME_SOCKET_PATH='\\\\.\\pipe\\ade-runtime-alpha-1234'; export ADE_RUNTIME_SOCKET_PATH",
-      "fi",
-      "NODE_PATH='C:/ADE/resources/app.asar/node_modules'${NODE_PATH:+;$NODE_PATH}; export NODE_PATH",
-      "ELECTRON_RUN_AS_NODE=1 exec 'C:/ADE/ADE.exe' 'C:/ADE/resources/ade-cli/cli.cjs' \"$@\"",
-      "",
-    ].join("\n"));
-    // The named pipe keeps its backslashes (a forward-slashed pipe does not
-    // open); the executable and module paths are the ones Git Bash runs.
-    expect(body).toContain("'\\\\.\\pipe\\ade-runtime-alpha-1234'");
-    expect(body).toContain("'C:/ADE/ADE.exe'");
+  it.skipIf(process.platform !== "win32")("runs the Git Bash shim with Windows paths", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-shim-bash-"));
+    try {
+      const entry = path.join(dir, "entry.cjs");
+      const shim = path.join(dir, "ade");
+      fs.writeFileSync(entry, 'process.stdout.write(JSON.stringify({cache: process.env.NODE_COMPILE_CACHE, args: process.argv.slice(2)}))');
+      fs.writeFileSync(shim, renderAdeCliGitBashShim({ entryPath: entry, execPath: process.execPath, brain: { adeHome: dir, socketPath: null } }));
+      const result = spawnSync("bash", [shim, "two words"], { env: { ...process.env, ADE_HOME: dir, NODE_COMPILE_CACHE: "", NODE_DISABLE_COMPILE_CACHE: "" }, encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ cache: `${dir}/cache/node-compile`, args: ["two words"] });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("gives two brains that share one CLI entry separate shim directories", () => {

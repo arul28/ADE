@@ -206,6 +206,7 @@ export type AdeCmdShimLaunch = {
   defaults: Array<[string, string]>;
   /** Module dirs the shim puts in front of the caller's NODE_PATH. */
   nodePath?: string;
+  compileCache?: boolean;
 };
 
 const SHIM_NODE_PATH_SUFFIX = ";%NODE_PATH%";
@@ -222,12 +223,17 @@ export function parseAdeCmdShim(text: string): AdeCmdShimLaunch | null {
   const defaults: Array<[string, string]> = [];
   let nodePath: string | undefined;
   let runtimeFlag = false;
+  let cacheLines = 0;
   for (const line of lines.slice(2, -1)) {
     const set = /^set "([A-Z_]+)=([^"]*)"$/.exec(line);
     if (set && SHIM_DEFAULT_NAMES.has(set[1]!)) {
       defaults.push([set[1]!, unbatch(set[2]!)]);
     } else if (set && set[1] === "NODE_PATH" && set[2]!.endsWith(SHIM_NODE_PATH_SUFFIX)) {
       nodePath = unbatch(set[2]!.slice(0, -SHIM_NODE_PATH_SUFFIX.length));
+    } else if (line === 'if not defined NODE_COMPILE_CACHE if not defined NODE_DISABLE_COMPILE_CACHE if defined ADE_HOME set "NODE_COMPILE_CACHE=%ADE_HOME%\\cache\\node-compile"') {
+      cacheLines |= 1;
+    } else if (line === 'if not defined NODE_COMPILE_CACHE if not defined NODE_DISABLE_COMPILE_CACHE set "NODE_COMPILE_CACHE=%USERPROFILE%\\.ade\\cache\\node-compile"') {
+      cacheLines |= 2;
     } else if (line === "set ELECTRON_RUN_AS_NODE=1") {
       runtimeFlag = true;
     } else if (set && set[1] === "ADE_CLI_VIA_CMD") {
@@ -241,12 +247,13 @@ export function parseAdeCmdShim(text: string): AdeCmdShimLaunch | null {
     }
   }
   const exec = /^"([^"]+)" "([^"]+)" %\*$/.exec(lines[lines.length - 1] ?? "");
-  if (!runtimeFlag || !exec) return null;
+  if (!runtimeFlag || !exec || (cacheLines !== 0 && cacheLines !== 3)) return null;
   return {
     execPath: unbatch(exec[1]!),
     entryPath: unbatch(exec[2]!),
     defaults,
     ...(nodePath ? { nodePath } : {}),
+    ...(cacheLines === 3 ? { compileCache: true } : {}),
   };
 }
 
@@ -278,12 +285,18 @@ function resolveDelegatedInvocation(args: {
     const shim = parseAdeCmdShim(args.fsLike.readHead(args.command, SHIM_SCAN_BYTES) ?? "");
     if (shim) {
       const callerPicked = Boolean(args.env.ADE_HOME || args.env.ADE_RUNTIME_SOCKET_PATH);
+      const defaults = callerPicked ? {} : Object.fromEntries(shim.defaults);
+      const home = args.env.ADE_HOME || defaults.ADE_HOME;
+      const compileCache = shim.compileCache && !args.env.NODE_COMPILE_CACHE && !args.env.NODE_DISABLE_COMPILE_CACHE
+        ? { NODE_COMPILE_CACHE: home ? path.win32.join(home, "cache", "node-compile") : `${args.env.USERPROFILE ?? ""}\\.ade\\cache\\node-compile` }
+        : {};
       return {
         command: shim.execPath,
         args: [shim.entryPath, ...args.argv],
         env: {
           ...args.env,
-          ...(callerPicked ? {} : Object.fromEntries(shim.defaults)),
+          ...defaults,
+          ...compileCache,
           ...(shim.nodePath
             ? { NODE_PATH: args.env.NODE_PATH ? `${shim.nodePath};${args.env.NODE_PATH}` : shim.nodePath }
             : {}),

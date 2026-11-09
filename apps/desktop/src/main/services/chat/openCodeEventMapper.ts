@@ -229,19 +229,13 @@ export function createOpenCodeTurnMapper(args: {
         const tool = toolNames.get(data.id) ?? "tool";
         const output = textFromContent(data.content);
         const sources = openCodeWebToolSourceRefs(tool, toolInputs.get(data.id), output, null);
-        // An image a tool returns is a view (the `read` tool on a screenshot);
-        // only an image-generation tool's output keeps the generation card.
-        const generated = isOpenCodeImageGenerationToolName(tool);
-        const images: OpenCodeMappedEvent[] = [];
-        (Array.isArray(data.content) ? data.content : []).forEach((item, index) => {
-          if (!item || typeof item !== "object" || (item as { type?: unknown }).type !== "file") return;
-          const file = item as { uri?: unknown; mime?: unknown; name?: unknown };
-          const part = { type: "file", id: `${data.id}:${index}`, url: file.uri, mime: file.mime, filename: file.name };
-          const mapped = generated
-            ? mapOpenCodeImagePart({ part, turnId, emittedPartIds: emittedImageIds })
-            : mapOpenCodeImageAttachment({ part, turnId, emittedPartIds: emittedImageIds });
-          if (mapped) images.push({ event: mapped });
-        });
+        const images: OpenCodeMappedEvent[] = openCodeToolImageEvents({
+          tool,
+          toolPartId: data.id,
+          content: data.content,
+          turnId,
+          emittedPartIds: emittedImageIds,
+        }).map((event) => ({ event }));
         return [...images, {
           event: {
             type: "tool_result",
@@ -374,6 +368,31 @@ function toIso(ms: number | undefined): string | undefined {
 }
 
 /**
+ * The images in a tool's output. An image a tool returns is a view (the `read`
+ * tool on a screenshot); only an image-generation tool keeps the generation card.
+ */
+function openCodeToolImageEvents(args: {
+  tool: string;
+  toolPartId: string;
+  content: unknown;
+  turnId: string;
+  emittedPartIds: Set<string>;
+}): AgentChatEvent[] {
+  const generated = isOpenCodeImageGenerationToolName(args.tool);
+  const events: AgentChatEvent[] = [];
+  (Array.isArray(args.content) ? args.content : []).forEach((item, index) => {
+    if (!item || typeof item !== "object" || (item as { type?: unknown }).type !== "file") return;
+    const file = item as { uri?: unknown; mime?: unknown; name?: unknown };
+    const part = { type: "file", id: `${args.toolPartId}:${index}`, url: file.uri, mime: file.mime, filename: file.name };
+    const mapped = generated
+      ? mapOpenCodeImagePart({ part, turnId: args.turnId, emittedPartIds: args.emittedPartIds })
+      : mapOpenCodeImageAttachment({ part, turnId: args.turnId, emittedPartIds: args.emittedPartIds });
+    if (mapped) events.push(mapped);
+  });
+  return events;
+}
+
+/**
  * A child session's stored messages as drill-in transcript rows. Each row
  * carries one formed chat event, the shape the renderer shows as-is.
  */
@@ -413,6 +432,15 @@ export function mapOpenCodeMessagesToTranscript(
         push(`${part.id}:call`, "assistant", { type: "tool_call", tool: part.name, args: input, itemId: part.id }, undefined, part.time.created);
         if (part.state.status === "completed" || part.state.status === "error") {
           const output = textFromContent(part.state.content ?? []);
+          openCodeToolImageEvents({
+            tool: part.name,
+            toolPartId: part.id,
+            content: part.state.content,
+            turnId: message.id,
+            emittedPartIds: new Set<string>(),
+          }).forEach((event, index) => {
+            push(`${part.id}:image:${index}`, "assistant", event, undefined, part.time.completed ?? part.time.created);
+          });
           push(`${part.id}:result`, "assistant", {
             type: "tool_result",
             tool: part.name,

@@ -6,6 +6,8 @@ import "./lib/nodeWarnings";
 // Second on purpose: hands this run to $ADE_CLI_PATH when a shell rc put an
 // older `ade` first on PATH, before the rest of the bundle loads.
 import { pendingCliDelegation } from "./lib/cliDelegationEntry";
+// Third: bootstrap is loaded only on demand, and this flag must not wait for it.
+import "./lib/packagedRuntimeFlag";
 import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
@@ -616,7 +618,6 @@ import {
 } from "./sessionSnoozeDuration";
 import { snoozeWakeLabel } from "../../desktop/src/renderer/lib/sessionSnooze";
 import type { AdeRuntime } from "./bootstrap";
-import { cleanupLegacyBundledAdeSkillsForCli } from "./bootstrap";
 import {
   EncryptedFileCredentialStore,
   inspectCredentialStoreHealth,
@@ -2405,10 +2406,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade new chat --mode chat --lane <lane> --prompt-file brief.md
     $ ade new chat --mode chat --lane <lane> --prompt-file - <<'EOF'
 
-  The first message is --prompt <text>, text after --, or --prompt-file <path|->
-  (alias --text-file) for a file or stdin. Use the file form for long or
-  multi-line text: on Windows, ade.cmd cuts an argument at its first line
-  break. Not together with --prompt.
+  The first message is --prompt <text>, text after --, or --prompt-file <path|->.
 
   The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
   --auto-create-lane or --lane auto to create a lane before launching.
@@ -6647,12 +6645,12 @@ function readGlobalValueFlag(
 }
 
 /**
- * `path.resolve` for a folder the user typed. A quoted `"~/My App"`, or
+ * `path.resolve` for a path the user typed. A quoted `"~/My App"`, or
  * `--project-root=~/app` in zsh, reaches ADE with the `~` unexpanded, and
  * `path.resolve` alone turns it into `<cwd>/~/app`: a folder that does not
  * exist, or a project under the current directory picked by mistake.
  */
-function resolveCliFolderArg(value: string): string {
+function resolveCliPathArg(value: string): string {
   // The home the shell means by `~`: Git Bash on Windows sets HOME, which can
   // differ from the profile folder Node reads.
   const home = process.platform === "win32" ? process.env.HOME?.trim() || os.homedir() : os.homedir();
@@ -6664,10 +6662,10 @@ function resolveCliFolderArg(value: string): string {
 
 const GLOBAL_VALUE_FLAG_HANDLERS: Record<CliGlobalValueFlag, (options: GlobalOptions, value: string) => void> = {
   "--project-root": (options, value) => {
-    options.projectRoot = resolveCliFolderArg(value);
+    options.projectRoot = resolveCliPathArg(value);
   },
   "--workspace-root": (options, value) => {
-    options.workspaceRoot = resolveCliFolderArg(value);
+    options.workspaceRoot = resolveCliPathArg(value);
   },
   "--role": (options, value) => {
     options.role = parseRole(value);
@@ -7899,11 +7897,13 @@ function autoLaneGenericSuffix(date = new Date()): string {
 const NEW_CHAT_STRANDED_TEXT_FLAGS = ["--note", "--question", "--objective", "--goal", "--steer", "--answer", "--option", "--response"] as const;
 
 function refuseStrandedNewChatTextFlags(args: string[]): void {
-  const stranded = findFlagName(args, NEW_CHAT_STRANDED_TEXT_FLAGS);
+  // A prompt's value can look like a flag (`--prompt "--question"`).
+  const options = args.filter((_, index) => !["--prompt", "--message", "--initial-input"].includes(args[index - 1] ?? ""));
+  const stranded = findFlagName(options, NEW_CHAT_STRANDED_TEXT_FLAGS);
   // Bare `--text` is the output format. Only `--text <value>` carries a message.
-  const textIndex = args.indexOf("--text");
-  const textValue = textIndex >= 0 ? args[textIndex + 1] : undefined;
-  const textCarriesMessage = args.some((token) => token.startsWith("--text="))
+  const textIndex = options.indexOf("--text");
+  const textValue = textIndex >= 0 ? options[textIndex + 1] : undefined;
+  const textCarriesMessage = options.some((token) => token.startsWith("--text="))
     || Boolean(textValue && !textValue.startsWith("-") && textValue !== "chat" && textValue !== "cli");
   const flag = stranded ?? (textCarriesMessage ? "--text" : null);
   if (flag) {
@@ -7914,11 +7914,12 @@ function refuseStrandedNewChatTextFlags(args: string[]): void {
 function readNewChatPrompt(args: string[]): string | null {
   const promptArgs = takeArgsAfterTerminator(args);
   refuseStrandedNewChatTextFlags(args);
-  const fileText = readChatTextFile(args, ["--prompt-file", "--text-file"], ["--prompt", "--message", "--initial-input"]);
-  if (fileText !== null) {
-    if (promptArgs) throw new CliUsageError("Use --prompt-file or text after --, not both.");
-    return fileText.trim();
+  // Checked first: `--prompt-file -` would otherwise block on stdin.
+  if (promptArgs && findFlagName(args, ["--prompt-file", "--text-file"])) {
+    throw new CliUsageError("Use --prompt-file or text after --, not both.");
   }
+  const fileText = readChatTextFile(args, ["--prompt-file", "--text-file"], ["--prompt", "--message", "--initial-input"]);
+  if (fileText !== null) return fileText.trimEnd();
   const prompt = promptArgs
     ? promptArgs.join(" ").trim()
     : readValue(args, ["--prompt", "--message", "--initial-input"]);
@@ -13098,7 +13099,7 @@ function readDraftPrompt(args: string[], opts: { fromStdinWhenOmitted: boolean }
 /** Repeatable `--image <path>`, as the local image refs the draft store keeps. */
 function readDraftImages(args: string[]): JsonObject[] {
   return readRepeatedValues(args, ["--image"]).map((value) => ({
-    path: path.resolve(value),
+    path: resolveCliPathArg(value),
     type: "image",
   }));
 }
@@ -14215,7 +14216,7 @@ function readChatTextFile(args: string[], fileFlags: readonly string[], inlineFl
   if (!source?.trim()) throw new CliUsageError(`${fileFlag} needs a file path, or - to read stdin.`);
   let text: string;
   try {
-    text = source === "-" ? readAllStdinSync() : fs.readFileSync(path.resolve(source), "utf8");
+    text = source === "-" ? readAllStdinSync() : fs.readFileSync(resolveCliPathArg(source), "utf8");
   } catch (error) {
     throw new CliUsageError(`${fileFlag} could not read ${source === "-" ? "stdin" : source}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -14918,7 +14919,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     // The agent runs in its lane worktree; the runtime that stores the artifact
     // runs at the project root. Resolve here, where the caller's cwd is known,
     // so a relative path never has to be guessed at on the other side.
-    const attachedPath = path.resolve(process.cwd(), rawPath);
+    const attachedPath = resolveCliPathArg(rawPath);
     const title =
       readValue(args, ["--title", "--name"]) ??
       caption ??
@@ -15184,7 +15185,7 @@ function iosSimulatorRootArgs(
   const explicitRoot =
     readValue(args, ["--project-root", "--root"]) ?? globalProjectRoot;
   if (explicitRoot) {
-    return { projectRoot: resolveCliFolderArg(explicitRoot), ...(laneId ? { laneId } : {}) };
+    return { projectRoot: resolveCliPathArg(explicitRoot), ...(laneId ? { laneId } : {}) };
   }
   if (laneId) return { laneId };
   return { projectRoot: callerWorkspaceRoot() };
@@ -16181,7 +16182,7 @@ function buildIosSimulatorPlan(
     const project = readValue(args, ["--project"]);
     return {
       deviceUdid: device,
-      ...(project ? { projectRoot: resolveCliFolderArg(project) } : rootArgs()),
+      ...(project ? { projectRoot: resolveCliPathArg(project) } : rootArgs()),
       query: readIosSimulatorElementQuery(args),
     };
   };
@@ -16542,7 +16543,7 @@ function buildIosSimulatorPlan(
     const logRowLimit = readNumberOption(args, ["--log-rows", "--log-row-limit"]);
     return iosAction("iOS simulator proof bundle", "captureProofBundle", {
       deviceUdid: device,
-      ...(project ? { projectRoot: resolveCliFolderArg(project) } : rootArgs()),
+      ...(project ? { projectRoot: resolveCliPathArg(project) } : rootArgs()),
       ...(outDir ? { outDir } : {}),
       ...(caption ? { caption } : {}),
       ...(noElements ? { includeElements: false } : {}),
@@ -25228,11 +25229,14 @@ export function automaticProjectRegistrationParams(rootPath: string): {
   rootPath: string;
   catalogVisibility: "system";
   registrationSource: "runtime-auto";
+  withoutIcon: true;
 } {
   return {
     rootPath,
     catalogVisibility: "system",
     registrationSource: "runtime-auto",
+    // The CLI only wants the id; an icon costs the brain a worker process.
+    withoutIcon: true,
   };
 }
 
@@ -25677,7 +25681,7 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
         method: "projects.clone",
         params: {
           url: githubCloneUrl(repo),
-          ...(parentDir ? { parentDir: target.remote ? parentDir : path.resolve(parentDir) } : {}),
+          ...(parentDir ? { parentDir: target.remote ? parentDir : resolveCliPathArg(parentDir) } : {}),
           ...(name ? { name } : {}),
           catalogVisibility: "recent",
           registrationSource: "cli-explicit",
@@ -31426,7 +31430,7 @@ async function runInit(
   ]);
   const layout = resolveMachineAdeLayout();
   const registry = new ProjectRegistry(layout);
-  const project = registry.add(path.resolve(targetPath ?? process.cwd()), {
+  const project = registry.add(resolveCliPathArg(targetPath ?? process.cwd()), {
     catalogVisibility: "recent",
     registrationSource: "cli-explicit",
   });
@@ -39979,15 +39983,24 @@ async function runParsedCli(
   // cheap commands like `ade help` and `ade --version` must not pay the scan/hash
   // cost (cheap no-op when already current).
   if (
-    plan.kind === "skill" ||
-    plan.kind === "account-machine-connect" ||
-    plan.kind === "brain" ||
-    plan.kind === "runtime" ||
-    plan.kind === "serve" ||
-    (plan.kind === "execute" &&
-      /^(chat create|personal chat create|new chat|shell start cli)\b/.test(plan.label))
+    process.env.ADE_DISABLE_SKILL_CLEANUP !== "1" && !process.env.VITEST && (
+      plan.kind === "skill" ||
+      plan.kind === "account-machine-connect" ||
+      plan.kind === "brain" ||
+      plan.kind === "runtime" ||
+      plan.kind === "serve" ||
+      (plan.kind === "execute" &&
+        /^(chat create|personal chat create|new chat|shell start cli)\b/.test(plan.label))
+    )
   ) {
-    cleanupLegacyBundledAdeSkillsForCli();
+    try {
+      // Only here and on demand: evaluating bootstrap took more than half of
+      // every `ade` command's startup, and cheap commands never need it.
+      const { cleanupLegacyBundledAdeSkillsForCli } = await import("./bootstrap");
+      cleanupLegacyBundledAdeSkillsForCli();
+    } catch (error) {
+      process.stderr.write(`ade: skipped legacy skill cleanup: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
   }
 
   // Exactly one process per machine may exchange the rotating refresh token,

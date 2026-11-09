@@ -503,6 +503,126 @@ describe("Pi follows the chat's effort and names another provider's route", () =
     } as any);
   };
 
+  it("holds a Pi message sent during compaction until the compaction ends", async () => {
+    const pooled = installFakePiWorker();
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await createPiSession(service);
+    await service.resumeSession({ sessionId: session.id });
+
+    pooled.bridge.onEvent({ type: "compaction_start" });
+    await service.sendMessage({ sessionId: session.id, text: "after compaction" }, { awaitDispatch: true });
+
+    // Pi refuses a prompt here, and the message used to be lost with the failed turn.
+    expect(pooled.sendPrompt).not.toHaveBeenCalled();
+    expect(events.some(({ event }) => event.type === "user_message"
+      && event.text === "after compaction" && event.deliveryState === "queued")).toBe(true);
+
+    pooled.bridge.onEvent({ type: "compaction_end" });
+    await vi.waitFor(() => expect(pooled.sendPrompt).toHaveBeenCalledTimes(1));
+    // The queued row becomes the delivered one; a second copy would stay queued beside it.
+    const rows = events.flatMap(({ event }) => (event.type === "user_message" && event.text === "after compaction" ? [event] : []));
+    expect(new Set(rows.map((row) => row.steerId)).size).toBe(1);
+    expect(rows.at(-1)?.deliveryState).toBe("delivered");
+    service.forceDisposeAll();
+  });
+
+  it("does not start a Pi message held for compaction after Stop", async () => {
+    const pooled = installFakePiWorker();
+    const { service } = createService();
+    const session = await createPiSession(service);
+    await service.resumeSession({ sessionId: session.id });
+
+    pooled.bridge.onEvent({ type: "compaction_start" });
+    await service.sendMessage({ sessionId: session.id, text: "after compaction" }, { awaitDispatch: true });
+    await service.interrupt({ sessionId: session.id });
+    pooled.bridge.onEvent({ type: "compaction_end" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(pooled.sendPrompt).not.toHaveBeenCalled();
+    service.forceDisposeAll();
+  });
+
+  it("keeps a queued subagent result when the user replaces the running turn", async () => {
+    const pooled = installFakePiWorker();
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await createPiSession(service);
+    await service.resumeSession({ sessionId: session.id });
+
+    pooled.bridge.onEvent({ type: "compaction_start" });
+    await service.messageSession({
+      sessionId: session.id,
+      text: "Your subagent finished.",
+      kind: "wake",
+      metadata: {
+        spawnCompletion: {
+          childSessionId: "child-1",
+          childTitle: "Review agent",
+          spawnKind: "subagent",
+          status: "completed",
+          summary: "Review complete.",
+        },
+      },
+    }, { trustedSpawnCompletion: true });
+    await service.sendMessage({ sessionId: session.id, text: "an older note" }, { awaitDispatch: true });
+    await service.messageSession({ sessionId: session.id, text: "do this instead", kind: "interrupt-replace" });
+
+    const noticesFor = (text: string) => {
+      const row = events.find(({ event }) => event.type === "user_message" && event.text === text)?.event as { steerId?: string } | undefined;
+      return events.filter(({ event }) => event.type === "system_notice" && event.steerId === row?.steerId && /cancelled/i.test(event.message));
+    };
+    expect(noticesFor("an older note")).toHaveLength(1);
+    expect(noticesFor("Your subagent finished.")).toHaveLength(0);
+
+    pooled.bridge.onEvent({ type: "compaction_end" });
+    await vi.waitFor(() => expect(pooled.sendPrompt).toHaveBeenCalled());
+    const sent = JSON.stringify(pooled.sendPrompt.mock.calls);
+    expect(sent).toContain("do this instead");
+    expect(sent).toContain("Your subagent finished.");
+    service.forceDisposeAll();
+  });
+
+  it("keeps a queued subagent result when the replacement is refused", async () => {
+    const pooled = installFakePiWorker();
+    const events: AgentChatEventEnvelope[] = [];
+    let allowed = true;
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      diskPressureMonitor: {
+        canPerform: () => (allowed ? { allowed: true } : { allowed: false, state: "critical", message: "Disk is full." }),
+      },
+    });
+    const session = await createPiSession(service);
+    await service.resumeSession({ sessionId: session.id });
+
+    pooled.bridge.onEvent({ type: "compaction_start" });
+    await service.messageSession({
+      sessionId: session.id,
+      text: "Your subagent finished.",
+      kind: "wake",
+      metadata: {
+        spawnCompletion: {
+          childSessionId: "child-1",
+          childTitle: "Review agent",
+          spawnKind: "subagent",
+          status: "completed",
+          summary: "Review complete.",
+        },
+      },
+    }, { trustedSpawnCompletion: true });
+    allowed = false;
+    await service.messageSession({ sessionId: session.id, text: "do this instead", kind: "interrupt-replace" });
+    allowed = true;
+
+    const rows = events.flatMap(({ event }) => (event.type === "user_message" && event.text === "Your subagent finished." ? [event] : []));
+    expect(rows.at(-1)?.deliveryState).toBe("queued");
+
+    pooled.bridge.onEvent({ type: "compaction_end" });
+    await vi.waitFor(() => expect(JSON.stringify(pooled.sendPrompt.mock.calls)).toContain("Your subagent finished."));
+    service.forceDisposeAll();
+  });
+
   it("clears a live Pi session's thinking level when the chat clears its effort", async () => {
     const pooled = installFakePiWorker();
     const { service } = createService();

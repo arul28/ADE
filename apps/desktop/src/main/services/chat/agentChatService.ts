@@ -1677,6 +1677,7 @@ import {
   isSandboxUnsupportedFailureText,
   presentChatFailure,
   presentExternalProcessStop,
+  sanitizeAgentFailureText,
 } from "../../../shared/chatErrorPresentation";
 import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentation";
 import { resolveCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
@@ -5548,6 +5549,8 @@ type ManagedChatSession = {
    * which is where it becomes the durable `lastTurnFailure`.
    */
   liveTurnErrorText: string | null;
+  /** Why Claude says this turn's compaction failed; cleared when the turn ends. */
+  claudeCompactError: string | null;
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
@@ -19532,7 +19535,10 @@ export function createAgentChatService(args: {
       }
       // No context read here: Pi has no reading right after a compaction.
       // The turn's own sample, when it ends, carries the post-compaction size.
-      if (eventRecord?.type === "compaction_end") runtime.activeCompactionId = null;
+      if (eventRecord?.type === "compaction_end") {
+        runtime.activeCompactionId = null;
+        void deliverPiQueuedSteers(managed, runtime);
+      }
       if (eventRecord?.type === "session_info_changed") adoptRuntimeSessionTitle(managed, eventRecord, "pi_session_info");
       if (eventRecord?.type === "message_end") settlePiSessionLease();
     };
@@ -25136,14 +25142,19 @@ export function createAgentChatService(args: {
         // its own failure paths (refused, abandoned on teardown).
         if (compact.type === "context_compact" && compact.trigger === "ade_fallback") continue;
         openNativeCompactions.get(managed.session.id)?.delete(key);
-        const detail = (event.status !== "completed" ? managed.liveTurnErrorText : null)
+        const compactError = managed.claudeCompactError;
+        const detail = compactError
+          ?? (event.status !== "completed" ? managed.liveTurnErrorText : null)
           ?? "The turn ended before compaction completed.";
-        emitChatEvent(managed, { ...compact, state: "failed", failReason: event.status === "interrupted" ? "interrupted" : /quota|weekly limit|usage limit/i.test(detail) ? "quota" : "provider_error", failDetail: detail });
+        // A steer aborts the summary request: the user moved on, nothing broke.
+        const aborted = event.status !== "failed" && /request was aborted/i.test(compactError ?? "");
+        emitChatEvent(managed, { ...compact, state: "failed", failReason: event.status === "interrupted" || aborted ? "interrupted" : /quota|weekly limit|usage limit/i.test(detail) ? "quota" : "provider_error", failDetail: detail });
       }
     }
     managed.lastActivityTimestamp = Date.now();
     chatWaits?.signal(managed.session.id);
     if (event.type === "done") {
+      managed.claudeCompactError = null;
       if (event.turnId) managed.lastFinishedTurnId = event.turnId;
       settleClaudeGoalOnTurnEnd(managed, event.status);
       if (event.status === "completed") maybeStartAutoTitleRefine(managed);
@@ -29823,6 +29834,7 @@ export function createAgentChatService(args: {
       turnFailureMarked: Boolean(row.lastTurnFailedAt),
       contextHealth: null,
       liveTurnErrorText: null,
+      claudeCompactError: null,
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
@@ -32212,6 +32224,7 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (msg.type === "system" && record.subtype === "status") noteClaudeCompactFailure(managed, record);
     if (msg.type === "system" && record.subtype === "status" && record.status === "compacting") {
       const turnId = startClaudeIdleTurn(managed, runtime, state, "Claude is compacting context");
       observeClaudeCompaction(managed, runtime, { completed: false });
@@ -33742,6 +33755,7 @@ export function createAgentChatService(args: {
               });
             }
           }
+          noteClaudeCompactFailure(managed, statusMsg);
           if (statusMsg.status === "compacting") {
             observeClaudeCompaction(managed, runtime, { completed: false });
             emitClaudeContextUsageState(managed, runtime, "compacting", "compact", turnId);
@@ -37640,7 +37654,11 @@ export function createAgentChatService(args: {
     if (runtime.hostStartedTurnIds.delete(turnId)) {
       const status = museTerminalStatus(ended.terminal);
       if (status === "failed" && ended.error && typeof ended.error.message === "string") {
-        emitChatEvent(managed, { type: "error", message: ended.error.message, turnId });
+        emitChatEvent(managed, {
+          type: "error",
+          message: sanitizeAgentFailureText(ended.error.message) || "The turn failed.",
+          turnId,
+        });
       }
       const usage = museDoneUsage(runtime, ended.usage);
       emitChatEvent(managed, { type: "status", turnStatus: status, turnId });
@@ -38734,6 +38752,17 @@ export function createAgentChatService(args: {
     return true;
   };
 
+  /** Starts the next queued message once nothing holds Pi back. */
+  const deliverPiQueuedSteers = async (managed: ManagedChatSession, runtime: PiRuntime): Promise<void> => {
+    if (managed.closed || managed.runtime !== runtime || runtime.busy || runtime.activeCompactionId || !runtime.pendingSteers.length) return;
+    await deliverNextQueuedSteer(managed, runtime).catch((error) => {
+      logger.warn("agent_chat.pi_deliver_queued_steer_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
   const runPiTurn = async (
     managed: ManagedChatSession,
     args: {
@@ -38745,16 +38774,20 @@ export function createAgentChatService(args: {
       resolvedAttachments?: ResolvedAgentChatFileRef[];
       metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
+      /** The queued row this turn delivers, so it does not get a second row. */
+      steerId?: string;
       onDispatched?: () => void;
       onBackendDispatched?: () => void;
     },
-  ): Promise<void> => {
+  ): Promise<"queued" | void> => {
     const setupTurnId = randomUUID();
     let runtime: PiRuntime;
     try {
       runtime = await startPiRuntime(managed);
-      const validation = validateSessionReadyForTurn(managed);
-      if (!validation.ready) throw new Error(validation.reason);
+      if (!runtime.activeCompactionId) {
+        const validation = validateSessionReadyForTurn(managed);
+        if (!validation.ready) throw new Error(validation.reason);
+      }
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
       const message = error instanceof Error ? error.message : String(error);
@@ -38771,6 +38804,28 @@ export function createAgentChatService(args: {
       });
       persistChatState(managed);
       return;
+    }
+    if (runtime.activeCompactionId) {
+      // Pi refuses a prompt during compaction, and a steer sent then sits
+      // unread. Queued, the message shows as waiting, Stop can clear it, and
+      // it runs when the compaction ends.
+      const queued = enqueueSteerOrDrop(
+        managed,
+        runtime,
+        managed.session.id,
+        randomUUID(),
+        args.userText?.trim() || args.promptText,
+        args.attachments ?? [],
+        args.contextAttachments ?? [],
+        args.resolvedAttachments ?? [],
+        args.metadata,
+        args.displayText !== undefined ? { displayText: args.displayText } : undefined,
+      );
+      if (!queued) throw new Error("A compaction is running and the message queue is full. Wait for it to finish.");
+      args.onDispatched?.();
+      args.onBackendDispatched?.();
+      persistChatState(managed);
+      return "queued";
     }
     const turnId = setupTurnId;
     runtime.busy = true;
@@ -38789,6 +38844,7 @@ export function createAgentChatService(args: {
       contextAttachments: args.contextAttachments ?? [],
       metadata: args.metadata,
       turnId,
+      ...(args.steerId ? { steerId: args.steerId } : {}),
       laneDirectiveKey: args.laneDirectiveKey,
       onDispatched: args.onDispatched,
     });
@@ -38858,14 +38914,7 @@ export function createAgentChatService(args: {
         runtime.interrupted = false;
       }
     }
-    if (!managed.closed && managed.runtime === runtime && runtime.pendingSteers.length) {
-      await deliverNextQueuedSteer(managed, runtime).catch((error) => {
-        logger.warn("agent_chat.pi_deliver_queued_steer_failed", {
-          sessionId: managed.session.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }
+    await deliverPiQueuedSteers(managed, runtime);
   };
 
   // ── OpenCode 2.0 runtime ──
@@ -39707,7 +39756,8 @@ export function createAgentChatService(args: {
       return runClaudeTurn(managed, args);
     }
     if (runtimeKind === "pi" || managed.session.provider === "pi") {
-      return runPiTurn(managed, args);
+      await runPiTurn(managed, args);
+      return;
     }
     if (runtimeKind === "acp" || isAcpChatProvider(managed.session.provider)) {
       await runAcpTurn(managed, args);
@@ -47902,6 +47952,13 @@ export function createAgentChatService(args: {
     }
   };
 
+  const noteClaudeCompactFailure = (managed: ManagedChatSession, status: Record<string, unknown>): void => {
+    if (status.status === "compacting" || status.compact_result === "success") managed.claudeCompactError = null;
+    if (status.compact_result === "failed") {
+      managed.claudeCompactError = typeof status.compact_error === "string" && status.compact_error ? status.compact_error : null;
+    }
+  };
+
   const cancelQueuedSteers = (
     managed: ManagedChatSession,
     runtime: Pick<ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime, "pendingSteers" | "activeTurnId">
@@ -48542,6 +48599,7 @@ export function createAgentChatService(args: {
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
         metadata: nextSteer.metadata,
+        steerId: nextSteer.steerId,
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
     } else {
@@ -49228,6 +49286,7 @@ export function createAgentChatService(args: {
       turnFailureMarked: false,
       contextHealth: null,
       liveTurnErrorText: null,
+      claudeCompactError: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -51597,6 +51656,7 @@ export function createAgentChatService(args: {
       turnFailureMarked: false,
       contextHealth: null,
       liveTurnErrorText: null,
+      claudeCompactError: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -62764,6 +62824,8 @@ export function createAgentChatService(args: {
         const validation = validateSessionReadyForTurn(managed);
         if (!validation.ready) throw new Error(validation.reason);
         runtime.busy = true;
+        // Set before Pi reports it, so a send right after /compact waits too.
+        runtime.activeCompactionId = randomUUID();
         runtime.interrupted = false;
         onDispatched?.();
         try {
@@ -62773,11 +62835,15 @@ export function createAgentChatService(args: {
           onBackendDispatched?.();
           persistChatState(managed);
         } finally {
-          if (managed.runtime === runtime) runtime.busy = false;
+          if (managed.runtime === runtime) {
+            runtime.busy = false;
+            runtime.activeCompactionId = null;
+          }
+          void deliverPiQueuedSteers(managed, runtime);
         }
         return;
       }
-      await runPiTurn(managed, {
+      const outcome = await runPiTurn(managed, {
         promptText,
         userText: submittedText,
         displayText: visibleText,
@@ -62789,7 +62855,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markEpochDirectivesDelivered();
+      if (outcome !== "queued") markEpochDirectivesDelivered();
       return;
     }
 
@@ -64169,6 +64235,35 @@ export function createAgentChatService(args: {
     }
 
     if (managed.session.provider === "pi") {
+      if (managed.runtime?.kind === "pi" && managed.runtime.activeCompactionId) {
+        const preparedSteer = prepareSendMessage({
+          sessionId,
+          text: trimmed,
+          displayText: displayText ?? trimmed,
+          attachments,
+          contextAttachments,
+          metadata,
+          allowPendingInput: options?.allowPendingInput,
+          allowActiveSession: true,
+        });
+        if (!preparedSteer) return { steerId, queued: false };
+        const queued = enqueueSteerOrDrop(
+          managed,
+          managed.runtime,
+          sessionId,
+          steerId,
+          preparedSteer.submittedText,
+          preparedSteer.attachments,
+          preparedSteer.contextAttachments,
+          preparedSteer.resolvedAttachments,
+          preparedSteer.metadata,
+          { displayText: preparedSteer.visibleText },
+        );
+        if (!queued) return { steerId, queued: false, reason: "queue_full" };
+        preparedSteer.onDispatched?.();
+        options?.onAcceptedDispatch?.();
+        return { steerId, queued: true };
+      }
       if (managed.runtime?.kind === "pi" && (managed.runtime.busy || managed.session.status === "active")) {
         const runtime = managed.runtime;
         const preparedSteer = prepareSendMessage({
@@ -65035,7 +65130,7 @@ export function createAgentChatService(args: {
    * provider keeps the pre-existing `stop_and_clear` contract for
    * `interrupt-replace`, which clears the queue.
    */
-  const interruptAndContinueTurn = async (
+  const replaceRunningTurn = async (
     managed: ManagedChatSession,
     args: {
       sessionId: string;
@@ -65056,6 +65151,8 @@ export function createAgentChatService(args: {
       mentionsAlreadyExpanded?: boolean;
       /** Set only when this caller has already expanded pasted-file contents. */
       pastedPromptAlreadyMaterialized?: boolean;
+      /** Makes the send wait until the provider took the message, and reports it. */
+      onRedirectAccepted?: () => void;
     },
   ): Promise<void> => {
     const runtime = managed.runtime;
@@ -65103,10 +65200,70 @@ export function createAgentChatService(args: {
     await sendMessage(
       args.mentionsAlreadyExpanded ? markChatMentionsExpanded(sendArgs) : sendArgs,
         {
-          awaitDispatch: false,
+          awaitDispatch: Boolean(args.onRedirectAccepted),
+          ...(args.onRedirectAccepted ? { onBackendDispatched: args.onRedirectAccepted } : {}),
           ...(args.pastedPromptAlreadyMaterialized ? { pastedPromptAlreadyMaterialized: true } : {}),
         },
     );
+  };
+
+  /**
+   * A subagent's result waiting in the queue is not what the user is replacing,
+   * and nothing resends it once the stop cancels the queue. It goes out with
+   * the redirect instead. OpenCode's inbox owns its own rows and takes a child
+   * result inline; Cursor's redirect already keeps the queue.
+   */
+  const interruptAndContinueTurn = async (
+    managed: ManagedChatSession,
+    args: Parameters<typeof replaceRunningTurn>[1],
+  ): Promise<void> => {
+    const runtime = managed.runtime;
+    if (!runtime || managed.session.provider === "cursor" || runtime.kind === "opencode" || !("pendingSteers" in runtime)) {
+      await replaceRunningTurn(managed, args);
+      return;
+    }
+    const childResults: QueuedSteer[] = [];
+    for (let index = runtime.pendingSteers.length - 1; index >= 0; index -= 1) {
+      if (runtime.pendingSteers[index]?.metadata?.spawnCompletion) childResults.unshift(...runtime.pendingSteers.splice(index, 1));
+    }
+    if (!childResults.length) {
+      await replaceRunningTurn(managed, args);
+      return;
+    }
+    let accepted = false;
+    // A refused send (low disk, a blocked route) can return without throwing.
+    // The results then wait in the queue, visibly, for the next turn to end.
+    const requeueChildResults = () => {
+      const live = managed.runtime;
+      if (live && live.kind !== "opencode" && "pendingSteers" in live) {
+        live.pendingSteers.unshift(...childResults);
+      } else {
+        logger.warn("agent_chat.replaced_turn_child_results_dropped", {
+          sessionId: managed.session.id,
+          count: childResults.length,
+        });
+      }
+    };
+    try {
+      await replaceRunningTurn(managed, {
+        ...args,
+        displayText: args.displayText ?? args.text,
+        text: [args.text, ...childResults.map((steer) => steer.text)].join("\n\n"),
+        onRedirectAccepted: () => {
+          accepted = true;
+        },
+      });
+    } catch (error) {
+      requeueChildResults();
+      throw error;
+    }
+    if (!accepted) {
+      requeueChildResults();
+      return;
+    }
+    for (const steer of childResults) {
+      if (claimSteerSettlement(managed, steer.steerId)) emitSteerUserRow(managed, steer, "inline", undefined);
+    }
   };
 
   const normalizeMessageSessionKind = (
@@ -66470,13 +66627,13 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "pi") {
       const rt = managed.runtime;
       rt.interrupted = true;
-      rt.pendingSteers.length = 0;
+      // Before the abort, or the stopped turn's tail starts the next row.
+      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
       try {
         await rt.sdk.abort();
       } catch {
         // ignore
       }
-      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
       cancelPendingInputsFrom(managed, "pi", "ade");
       persistChatState(managed);
       return result;
@@ -77420,12 +77577,20 @@ export function createAgentChatService(args: {
       });
       if (!transcript || transcript.truncated) return true;
       const { envelopes } = transcript;
+      // An auto-resume reuses its id across usage limits, so an earlier resume
+      // says nothing about this occurrence.
+      const firedAt = schedule.lastFiredAt == null ? null : new Date(schedule.lastFiredAt).toISOString();
       return envelopes.some((envelope) =>
         envelope.event.type === "user_message"
-        && envelope.event.metadata?.scheduledWake?.scheduleId === schedule.id);
+        && envelope.event.metadata?.scheduledWake?.scheduleId === schedule.id
+        && (firedAt == null || envelope.event.metadata.scheduledWake.firedAt === firedAt));
     },
     fire: async (schedule, context) => {
       if (getCrossMachineMoveLock(schedule.sessionId, "scheduled_work")) return { retry: true };
+      // Armed while the parent still wanted it; it may have been put away since.
+      if (isAutoResumeScheduledWork(schedule) && !subagentParentStillWants(schedule.sessionId)) {
+        return { complete: true, outcomeSummary: "Not resumed: the chat that started this one was put away." };
+      }
       const firedAt = new Date(schedule.lastFiredAt ?? Date.now()).toISOString();
       const row = sessionService.get(schedule.sessionId);
       if (row?.tracked && isTrackedAgentCliToolType(row.toolType)) {

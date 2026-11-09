@@ -20,7 +20,12 @@ export type MergedPrHead = {
   baseBranch: string;
   laneId: string | null;
   mergedHeadSha: string;
+  /** When the PR merged, in ms; 0 when GitHub gave no time. */
+  mergedAtMs: number;
 };
+
+/** GitHub stamps a squash and its PR's merge time separately, moments apart. */
+const MERGE_STAMP_TOLERANCE_MS = 5_000;
 
 /** PRs merged in the last 30 days whose head commit is known. */
 export function listRecentMergedPrHeads(args: { db: AdeDb; projectId: string; logger: Logger }): MergedPrHead[] {
@@ -33,9 +38,10 @@ export function listRecentMergedPrHeads(args: { db: AdeDb; projectId: string; lo
       base_branch: string | null;
       lane_id: string | null;
       merged_head_sha: string | null;
+      merged_at: string | null;
     }>(
       `
-        select github_pr_number, title, head_branch, base_branch, lane_id, merged_head_sha
+        select github_pr_number, title, head_branch, base_branch, lane_id, merged_head_sha, merged_at
           from pull_requests
          where project_id = ?
            and state = 'merged'
@@ -55,6 +61,7 @@ export function listRecentMergedPrHeads(args: { db: AdeDb; projectId: string; lo
         baseBranch: branchNameFromLaneRef(row.base_branch),
         laneId: row.lane_id ?? null,
         mergedHeadSha: sha,
+        mergedAtMs: Number.isFinite(Date.parse(row.merged_at ?? "")) ? Date.parse(row.merged_at ?? "") : 0,
       }];
     });
   } catch (err) {
@@ -68,6 +75,10 @@ export function listRecentMergedPrHeads(args: { db: AdeDb; projectId: string; lo
  * not in the base) is the head of a PR that merged into this base. Listing the
  * lane's own commits once is the same answer as asking
  * `merge-base --is-ancestor` per merged PR, for one git call per lane.
+ *
+ * Only when the base is new enough to hold that merge. GitHub can report it
+ * before the local base is fetched, and replaying past the PR's head then would
+ * drop its work from the lane with nothing in the base to replace it.
  */
 export async function findBuiltOnMergedPr(args: {
   cwd: string;
@@ -89,7 +100,12 @@ export async function findBuiltOnMergedPr(args: {
   );
   if (own.exitCode !== 0) return null;
   const ownCommits = new Set(own.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
-  return candidates.find((pr) => ownCommits.has(pr.mergedHeadSha)) ?? null;
+  const hit = candidates.find((pr) => ownCommits.has(pr.mergedHeadSha));
+  if (!hit || hit.mergedAtMs <= 0) return null;
+  const baseTime = await runGit(["log", "-1", "--format=%ct", args.baseHead], { cwd: args.cwd, timeoutMs: 10_000 });
+  const baseCommittedAtMs = Number(baseTime.stdout.trim()) * 1000;
+  if (baseTime.exitCode !== 0 || !Number.isFinite(baseCommittedAtMs)) return null;
+  return baseCommittedAtMs + MERGE_STAMP_TOLERANCE_MS >= hit.mergedAtMs ? hit : null;
 }
 
 /** The arguments for rebasing onto `target`, replaying only the lane's own work when it has a merged PR under it. */

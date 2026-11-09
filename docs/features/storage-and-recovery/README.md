@@ -722,7 +722,7 @@ compressed transcript before reopening it for append.
 | Category | Contents | Default safety |
 |---|---|---|
 | Chats and history | Chat/terminal JSONL, logs, terminal snapshots | `compressible` |
-| Lanes and worktrees | Active, archived, reclaimed, and orphaned managed worktrees | Active `protected`; archived lanes use Archive & Reclaim; orphans `review_first` |
+| Lanes and worktrees | Active, archived, reclaimed, and orphaned managed worktrees | Active `protected`, including a plain folder that holds a worktree further down; archived lanes use Archive & Reclaim; orphans `review_first` |
 | Build and release | ADE temp staging, build output, and iOS DerivedData | `review_first` |
 | Caches | Rebuildable cache and update staging | `safe_to_remove`; chat session records `protected` |
 | Proof and attachments | Artifacts, recordings, attachments | `review_first` |

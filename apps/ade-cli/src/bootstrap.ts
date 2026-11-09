@@ -1,3 +1,4 @@
+import "./lib/packagedRuntimeFlag";
 import { assertLocalProjectDataAvailable, recordLocalProjectDatabaseIdentity } from "./services/projects/projectRegistry";
 import { assertProjectRootReadable } from "./services/projects/projectRootAccess";
 import {
@@ -656,13 +657,6 @@ function sharedAndroidEmulatorLifecycle(machineId: () => string | null, logger: 
     machineId,
   });
   return androidEmulatorLifecycle;
-}
-
-if (
-  !isSourceCheckoutRuntimeModule(currentModulePath)
-  && process.env.ADE_RUNTIME_PACKAGED === undefined
-) {
-  process.env.ADE_RUNTIME_PACKAGED = "1";
 }
 
 function automationsEnabledForHeadlessRuntime(): boolean {
