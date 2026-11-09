@@ -183,7 +183,7 @@ export function createBrainKeepAwakeService(
   /** Activity reads that failed in a row; a held lock survives a short run of them. */
   let failedActivityReads = 0;
   let blockerError: string | null = stateReadError;
-  const supportsWakeLock = platform === "darwin" || platform === "win32";
+  const supportsWakeLock = platform === "darwin" || platform === "win32" || platform === "linux";
 
   const persist = (next: StoredKeepAwakeState): void => {
     fs.mkdirSync(path.dirname(options.statePath), { recursive: true });
@@ -249,6 +249,19 @@ export function createBrainKeepAwakeService(
         spawned = offThreadSpawnEnabled()
           ? spawnOffThread(powershell, args)
           : spawn(powershell, args, { stdio: "ignore", windowsHide: true });
+      } else if (platform === "linux") {
+        // logind drops the lock when systemd-inhibit ends, and `tail --pid`
+        // ends it with the brain, as `caffeinate -w` does on macOS.
+        spawned = spawn("systemd-inhibit", [
+          "--what=idle:sleep",
+          "--who=ADE",
+          "--why=Agents are working",
+          "--mode=block",
+          "tail",
+          `--pid=${process.pid}`,
+          "-f",
+          "/dev/null",
+        ], { stdio: "ignore" });
       } else {
         attemptedThisActivePeriod = false;
         return;
@@ -347,7 +360,7 @@ export function createBrainKeepAwakeService(
     ]);
     return {
       preferences: { ...state.preferences },
-      platform: platform === "darwin" ? "mac" : platform === "win32" ? "windows" : "other",
+      platform: platform === "darwin" ? "mac" : platform === "win32" ? "windows" : platform === "linux" ? "linux" : "other",
       lidClosedSupported: platform === "darwin",
       lidClosedActive: lidClosedActive === true,
       levelError: blockerError ?? levelUnsupportedError(),
@@ -411,7 +424,7 @@ export function createBrainKeepAwakeService(
       if (!isKeepAwakeLevel(level)) level = "never";
       const nextLevel = level as KeepAwakeLevel;
       const currentLevel = state.preferences.level;
-      if (nextLevel !== "never" && platform !== "darwin" && platform !== "win32") {
+      if (nextLevel !== "never" && !supportsWakeLock) {
         blockerError = "This machine doesn't support a keep-awake lock.";
         return snapshot();
       }

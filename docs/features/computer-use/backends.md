@@ -58,10 +58,12 @@ itself is owned by `macDesktopDriverLifecycle.ts`. No external CLI, no
 code-signature negotiation with another vendor — the binary is built and bundled
 by ADE (`apps/desktop/scripts/build-mac-desktop-driver.mjs`).
 
-**Platform:** macOS and Windows runtime hosts. On Windows the same service and
-action domain drive `ade-desktop-driver.exe` (a private RDP child session per
+**Platform:** macOS, Windows and Linux runtime hosts. On Windows the same service
+and action domain drive `ade-desktop-driver.exe` (a private RDP child session per
 PC, plus the consent-gated shared seat); see
-[`../windows-desktop/README.md`](../windows-desktop/README.md). Elsewhere the
+[`../windows-desktop/README.md`](../windows-desktop/README.md). On Linux they
+drive a private X display per lane; see
+[`../linux-desktop/README.md`](../linux-desktop/README.md). Elsewhere the
 service reports `supported: false` and every method rejects with
 `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
 

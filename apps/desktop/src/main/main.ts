@@ -385,6 +385,7 @@ import {
   getSharedAccountDirectoryBaseUrl,
   registerAccountConfigProjectRoot,
 } from "../../../ade-cli/src/services/account/sharedAccountAuthService";
+import { registerAppImageDesktopEntry } from "./services/native/appImageDesktopEntry";
 import { runningAppImagePath } from "./services/native/runningAppImage";
 import { checkRuntimeServiceRemovable, installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
 import {
@@ -1646,6 +1647,11 @@ function exitDevAppSharingUserData(): void {
   process.stderr.write(`[ade] ${message}\n`);
   app.exit(1);
 }
+
+// Before the handler claims the scheme: the claim names this desktop entry.
+registerAppImageDesktopEntry({
+  log: (level, event, fields) => logMachineEvent(level, event, fields),
+});
 
 registerAdeProtocolHandler({
   claimAsDefault: deeplinkClaimAsDefault,

@@ -40,7 +40,7 @@ ADE runs on Linux as the same app, brain, and CLI as on macOS and Windows: lanes
     ./ADE-*.AppImage
     ```
 
-    The first launch sets up ADE's background brain under `~/.ade`, so the brain keeps running after you close the app and comes back when you log in.
+    The first launch adds ADE to your applications menu, makes `ade://` links open it, and sets up ADE's background brain under `~/.ade`, so the brain keeps running after you close the app and comes back when you log in. If you move the file, open it once from its new place to update the menu entry.
   </Tab>
   <Tab title=".deb">
     Download for [x64](https://ade-app.dev/download/linux-x64-deb) or [arm64](https://ade-app.dev/download/linux-arm64-deb), then:
@@ -77,8 +77,9 @@ ADE uses your desktop's keyring, such as GNOME Keyring or KWallet, when it has o
 | --- | --- |
 | iOS simulator | Runs on a Mac. A Linux window can still use the one on a paired Mac. |
 | Global capture gesture | Not available. |
-| Apple Music | Not available. |
-| Keeping the machine awake | ADE can't hold the machine awake, so turns pause if it sleeps. Turn off automatic suspend for long runs. |
+| Apple Music and Spotify playback | Not available. |
+| HEIC and HEIF photos | Not converted, so ADE won't attach them. Convert them to JPEG first. |
+| Keeping the machine awake | "While I'm away" stops idle sleep on systemd distributions. ADE can't keep it awake with the lid closed. |
 
 Each lane can still have its own [Linux screen](/computer-use/overview) for agents to drive.
 

@@ -81,7 +81,7 @@ function levelLimit(
   }
   if (level !== "never") return LEVEL_COPY[level].limit;
   if (machine.platform === "windows") return WINDOWS_NEVER_LIMIT;
-  if (machine.platform === "other") return "Turns pause when this computer sleeps";
+  if (machine.platform === "other" || machine.platform === "linux") return "Turns pause when this computer sleeps";
   return machine.mac ? "Turns pause when this Mac sleeps" : WINDOWS_NEVER_LIMIT;
 }
 
@@ -251,7 +251,7 @@ export function KeepAwakeControls() {
         aria-label={isThisMachine && mac
           ? "Keep this Mac awake while agents work"
           : isThisMachine
-            ? (current.platform === "other" ? "Keep this computer awake while agents work" : "Keep this PC awake while agents work")
+            ? (current.platform === "other" || current.platform === "linux" ? "Keep this computer awake while agents work" : "Keep this PC awake while agents work")
             : `Keep ${machineName} awake while agents work`}
         className="ade-ap-grid3"
         style={levels.length === 2 ? { gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } : undefined}

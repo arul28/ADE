@@ -20,7 +20,7 @@ irm https://ade-app.dev/install.ps1 | iex
 
 This installs the **brain** — ADE's always-on engine. The script downloads a self-contained runtime binary, verifies it against the published `SHA256SUMS`, and stages it under `~/.ade`, rolling back if anything fails. There is no Node, npm, or other prerequisite.
 
-It then registers the brain as a per-user background service, offers to sign you in with [`ade connect`](/getting-started/connect-machine), and — on macOS and Windows — offers to install the desktop app too.
+It then registers the brain as a per-user background service, offers to sign you in with [`ade connect`](/getting-started/connect-machine), and — on macOS and Windows — offers to install the desktop app too. On Linux, [download the app](/getting-started/linux) if the machine has a screen.
 
 | Platform | Background service |
 | --- | --- |
