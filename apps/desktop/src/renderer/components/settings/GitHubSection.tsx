@@ -202,7 +202,7 @@ export function GitHubSection() {
   const [transcriptGistsEnabled, setTranscriptGistsEnabled] = useState(false);
   // Every read and write below goes to this page's machine: its credential
   // store, its gh login, its App authorization.
-  const { pin } = useSettingsMachineScope();
+  const { pin, machineId } = useSettingsMachineScope();
   // The App row in the ladder below reports why the App credential is idle, and
   // only this status can tell a paused renewal from a dead authorization. Shared
   // with the install panel on this same page, which is where it is disconnected.
@@ -437,8 +437,8 @@ export function GitHubSection() {
   // Name the writer only when its credential is really there: a gh login that
   // lost its token must not read as "GitHub CLI".
   useEffect(() => {
-    if (repoName && projectRoot) migrateGithubReminder(repoName, projectRoot);
-  }, [repoName, projectRoot]);
+    if (repoName && projectRoot) migrateGithubReminder(repoName, projectRoot, machineId);
+  }, [repoName, projectRoot, machineId]);
   const remindersDismissed = repoName ? dismissals.isDismissed(githubReminderKey(repoName), "setup") : false;
   const writeCredentialState = credentialStates.find((credential) => credential.source === effectiveWriteAuthSource) ?? null;
   const writeCredentialMissing = writeCredentialState != null && !writeCredentialState.available;

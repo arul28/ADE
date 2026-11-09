@@ -6,6 +6,7 @@ import { IssueCreateHost } from "../issues/IssueCreateHost";
 import { IssueLaunchHost } from "./IssueLaunchHost";
 import { CommandPalette, type CommandPaletteIntent } from "./CommandPalette";
 import { QuickSlotsHost } from "../../quickSlots/QuickSlotsHost";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { IntegrationBanners } from "./IntegrationBanners";
 import { isCssZoomedBrowserSurface } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
@@ -42,13 +43,14 @@ import {
   hasConfiguredAiProvider,
   shouldRefreshAiStatusForChatEvent,
 } from "../../lib/aiProviderStatus";
-import { hasRecentBannerDismissal } from "../../lib/bannerDismiss";
+import { hasDismissedGithubReminder } from "../../lib/bannerDismiss";
 import {
   getStoredZoomLevel,
   displayZoomToLevel,
   applyShellHeaderInset,
 } from "../../lib/zoom";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
+import { captureError } from "../../../shared/sentry/capture";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { readLocalSyncStatus } from "../../lib/localSyncStatusReader";
 import { cn } from "../ui/cn";
@@ -837,7 +839,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       githubStatusScopeRef.current = githubStatusScope;
       setGithubStatus(null);
     }
-    const delayMs = currentProjectRoot && hasRecentBannerDismissal(`github-cli:${currentProjectRoot}`)
+    const delayMs = currentProjectRoot && hasDismissedGithubReminder(currentProjectRoot)
       ? GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS
       : GITHUB_STATUS_STARTUP_DELAY_MS;
     const githubTimer = window.setTimeout(() => {
@@ -911,7 +913,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       }
       void window.ade.github.getStatus().then((boundStatus) => {
         if (!cancelled) setGithubStatus(boundStatus);
-      }).catch(() => {});
+      }).catch((error: unknown) => {
+        if (!cancelled) captureError(error, { fingerprint: ["github", "bound-status-refresh"] });
+      });
     });
     return () => { cancelled = true; off?.(); };
   }, [currentProjectRoot, projectBinding?.key, isRemoteProject, location.pathname]);
@@ -1132,6 +1136,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {!showWelcome && project?.rootPath ? (
         <IntegrationBanners
           key={projectBinding?.key ?? currentProjectRoot}
+          machineId={machineIdForBinding(projectBinding)}
           currentProjectRoot={currentProjectRoot}
           githubStatus={githubStatusScopeRef.current === githubStatusScope ? githubStatus : null}
           hasAnyAiProvider={hasAnyAiProvider}

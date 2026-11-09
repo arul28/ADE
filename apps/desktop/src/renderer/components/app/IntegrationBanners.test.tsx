@@ -111,6 +111,7 @@ function setAdeMock(github: Record<string, unknown> | undefined): void {
 
 function baseProps(overrides: Partial<IntegrationBannersProps> = {}): IntegrationBannersProps {
   return {
+    machineId: "local",
     currentProjectRoot: "/project/a",
     githubStatus: null,
     hasAnyAiProvider: true,

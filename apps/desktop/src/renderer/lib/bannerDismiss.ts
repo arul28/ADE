@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 const DISMISSALS_CHANGED = "ade:banner-dismissals-changed";
-const persistentGithubKey = (key: string) => key.startsWith("github-reminder:") || key.startsWith("github-alarm:") || key.startsWith("github-working:");
+const persistentGithubKey = (key: string) => key.startsWith("github-reminder:") || key.startsWith("github-alarm:") || key.startsWith("github-working:") || key.startsWith("github-repo:");
 export const githubReminderKey = (repo: string) => `github-reminder:${repo.toLowerCase()}`;
 
 const STORAGE_KEY = "ade.bannerDismiss.v1";
@@ -133,31 +133,57 @@ export function hasRecentBannerDismissal(
   return persistentGithubKey(trimmed) || nowMs - entry.dismissedAt < graceMs;
 }
 
-/** Carry older repo/path snoozes forward without reviving them after a healthy read. */
-export function migrateGithubReminder(repo: string, projectRoot: string): void {
+/** Use the last discovered identity without fetching GitHub during shell startup. */
+export function hasDismissedGithubReminder(projectRoot: string): boolean {
   const map = readMap();
-  const key = githubReminderKey(repo);
-  if (map[key]) return;
+  const repo = map[`github-repo:${projectRoot}`]?.fingerprint;
+  return repo ? map[githubReminderKey(repo)]?.fingerprint === "setup"
+    : hasRecentBannerDismissal(`github-cli:${projectRoot}`);
+}
+
+/** Carry older repo/path snoozes forward without reviving them after a healthy read. */
+export function migrateGithubReminder(repo: string, projectRoot: string, machineId: string): void {
+  const map = readMap();
   const normalized = repo.toLowerCase();
-  const issueReminder = map["github-app-issues-permission"];
-  const legacy = Object.entries(map).find(([key]) => key.toLowerCase() === `github-app-repo:${normalized}`)?.[1]
-    ?? map[`github-cli:${projectRoot}`] ?? map["github-app-account"]
-    ?? (issueReminder?.fingerprint.toLowerCase().startsWith(`${normalized}:`) ? issueReminder : undefined);
-  if (legacy) { map[key] = { fingerprint: "setup", dismissedAt: legacy.dismissedAt }; writeMap(map); }
+  const key = githubReminderKey(normalized);
+  const identityKey = `github-repo:${projectRoot}`;
+  let changed = map[identityKey]?.fingerprint !== normalized;
+  if (changed) map[identityKey] = { fingerprint: normalized, dismissedAt: Date.now() };
+  // An alarm can precede repo discovery. Move it, preserving the dismissal,
+  // so recovery clears it and discovery alone does not show it a second time.
+  const pathPrefix = `github-alarm:${machineId}:${projectRoot}:`;
+  for (const oldKey of Object.keys(map)) {
+    if (!oldKey.startsWith(pathPrefix)) continue;
+    const repoKey = `github-alarm:${machineId}:${normalized}:${oldKey.slice(pathPrefix.length)}`;
+    map[repoKey] ??= map[oldKey];
+    delete map[oldKey];
+    changed = true;
+  }
+  if (!map[key]) {
+    const issueReminder = map["github-app-issues-permission"];
+    const legacy = Object.entries(map).find(([oldKey]) => oldKey.toLowerCase() === `github-app-repo:${normalized}`)?.[1]
+      ?? map[`github-cli:${projectRoot}`] ?? map["github-app-account"]
+      ?? (issueReminder?.fingerprint.toLowerCase().startsWith(`${normalized}:`) ? issueReminder : undefined);
+    if (legacy) {
+      map[key] = { fingerprint: "setup", dismissedAt: legacy.dismissedAt };
+      changed = true;
+    }
+  }
+  if (changed) writeMap(map);
 }
 
-export function githubAccessWasWorking(repo: string): boolean {
-  return Boolean(readMap()[`github-working:${repo.toLowerCase()}`]);
+export function githubAccessWasWorking(scope: string): boolean {
+  return Boolean(readMap()[`github-working:${scope}`]);
 }
 
-export function rememberGithubWorkingAccess(repo: string): void {
-  if (!githubAccessWasWorking(repo)) dismissBanner(`github-working:${repo.toLowerCase()}`, "working");
+export function rememberGithubWorkingAccess(scope: string): void {
+  if (!githubAccessWasWorking(scope)) dismissBanner(`github-working:${scope}`, "working");
 }
 
 /** Access recovered: a later credential failure is new information, not setup. */
-export function clearGithubAlarms(repo: string, bannerId?: string): void {
+export function clearGithubAlarms(scope: string, bannerId?: string): void {
   const map = readMap();
-  const prefix = `github-alarm:${repo.toLowerCase()}:${bannerId ? `${bannerId}:` : ""}`;
+  const prefix = `github-alarm:${scope}:${bannerId ? `${bannerId}:` : ""}`;
   let changed = false;
   for (const key of Object.keys(map)) {
     if (!key.startsWith(prefix)) continue;
