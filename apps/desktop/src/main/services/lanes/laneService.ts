@@ -43,6 +43,7 @@ import {
   saveDeletedLaneSnapshot,
 } from "./deletedLaneSnapshots";
 import { runGitPushOrThrow } from "../git/gitPushFailure";
+import { findBuiltOnMergedPr, listRecentMergedPrHeads, rebaseArgsFor } from "./laneBuiltOnMerged";
 import { GIT_ENGLISH_MESSAGES_ENV } from "../git/gitReadEnv";
 import { detachPullRequestRowsForLane, deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, parseDiffNameOnly, resolvePathWithinRoot } from "../shared/utils";
@@ -7296,7 +7297,23 @@ export function createLaneService({
           metadata: operationMetadata,
         });
 
-        const rebaseRes = await runGit(["rebase", parentHead], { cwd: lane.worktree_path, timeoutMs: 120_000 });
+        const builtOn = await findBuiltOnMergedPr({
+          cwd: lane.worktree_path,
+          laneId: lane.id,
+          laneBranch: branchNameFromLaneRef(lane.branch_ref),
+          baseBranch: branchNameFromLaneRef(rebaseOnto),
+          baseHead: parentHead,
+          laneHead: laneItem.preHeadSha,
+          mergedPrs: listRecentMergedPrHeads({ db, projectId, logger }),
+        });
+        if (builtOn) {
+          emitRunLog({
+            runId,
+            laneId: lane.id,
+            message: `${lane.name} was built on merged PR #${builtOn.number}; replaying only its own commits.`,
+          });
+        }
+        const rebaseRes = await runGit(rebaseArgsFor(parentHead, builtOn), { cwd: lane.worktree_path, timeoutMs: 120_000 });
         if (rebaseRes.exitCode === 0) {
           laneItem.status = "succeeded";
           laneItem.postHeadSha = await getHeadSha(lane.worktree_path);
