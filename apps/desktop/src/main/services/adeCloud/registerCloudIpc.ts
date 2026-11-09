@@ -66,6 +66,7 @@ import {
 } from "./cloudSleep";
 import { CLOUD_READY_VAULT_KEY, createCloudReadySettingsStore } from "./cloudReadySettings";
 import { openExternalUrl } from "../shared/externalLinks";
+import { getErrorMessage } from "../shared/utils";
 import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { createCloudPendingCreateStore, sweepCloudPendingCreates } from "./cloudPendingCreates";
@@ -132,7 +133,7 @@ export function registerCloudIpc(args: {
     directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl(),
     deviceName: () => hostname(),
     logger,
-    onDirectoryUnavailable: (error) => logger.warn("cloud.account_directory_unavailable", { error: error instanceof Error ? error.message : String(error) }),
+    onDirectoryUnavailable: (error) => logger.warn("cloud.account_directory_unavailable", { error: getErrorMessage(error) }),
   });
   const directoryBaseUrl = credentials.directoryBaseUrl;
 
@@ -142,7 +143,7 @@ export function registerCloudIpc(args: {
   let lastAccess: boolean | null = null;
   const readAccess = async (): Promise<boolean> => {
     const enabled = await cloudAccessEnabled(credentials).catch((error: unknown) => {
-      logger.warn("cloud.access_read_failed", { error: error instanceof Error ? error.message : String(error) });
+      logger.warn("cloud.access_read_failed", { error: getErrorMessage(error) });
       return false;
     });
     if (lastAccess !== null && lastAccess !== enabled) sendToAllWindows(IPC.cloudStatusChanged);
@@ -161,7 +162,7 @@ export function registerCloudIpc(args: {
       if (!leftoverCreates.length) return;
       const provider = await getCloudProvider(credentials);
       if (provider) await sweepCloudPendingCreates(provider, leftoverCreates, pendingCreates, logger);
-    })().catch((error: unknown) => logger.warn("cloud.startup_check_failed", { error: error instanceof Error ? error.message : String(error) }));
+    })().catch((error: unknown) => logger.warn("cloud.startup_check_failed", { error: getErrorMessage(error) }));
   }, STARTUP_CHECK_DELAY_MS);
   startupTimer.unref?.();
 
@@ -256,7 +257,7 @@ export function registerCloudIpc(args: {
     const client = await savedClient().catch(() => null);
     if (!client) return false;
     const result = await wakeCloudMachineForUse(client, { machineKey, hostname: target.hostname }, { logger }).catch((error: unknown) => {
-      logger.warn("cloud.wake_for_use_failed", { error: error instanceof Error ? error.message : String(error) });
+      logger.warn("cloud.wake_for_use_failed", { error: getErrorMessage(error) });
       return null;
     });
     if (!result) return false;
@@ -282,7 +283,7 @@ export function registerCloudIpc(args: {
     } catch (error) {
       // Unknown is not "blocked": the update goes out, and the computer's own
       // ADE refuses it there if it can't take it.
-      logger.warn("cloud.update_blocker_check_failed", { error: error instanceof Error ? error.message : String(error) });
+      logger.warn("cloud.update_blocker_check_failed", { error: getErrorMessage(error) });
       return null;
     }
     if (probe.exitCode !== 1) return null;
@@ -336,7 +337,7 @@ export function registerCloudIpc(args: {
     try {
       return await run();
     } catch (error) {
-      throw new Error(error instanceof Error ? error.message : String(error));
+      throw new Error(getErrorMessage(error));
     }
   };
 
@@ -494,7 +495,7 @@ export function registerCloudIpc(args: {
     void run(controller.signal, send).then(
       (done) => send({ requestId, stage: "done", message: done.message, ...(done.result ? { result: done.result } : {}) }),
       (error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = getErrorMessage(error);
         logger.warn("cloud.long_action_failed", { error: message });
         send({ requestId, stage: "failed", message, error: message });
       },
@@ -616,7 +617,7 @@ export function registerCloudIpc(args: {
           });
         },
         (error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = getErrorMessage(error);
           args.recordMachineCreate?.(controller.signal.aborted ? "cancelled" : "failed");
           logger.warn("cloud.create_machine_failed", { error: message });
           send({ requestId, stage: "failed", message, error: message });
@@ -659,7 +660,7 @@ function readyPreparerId(logger: Logger): string {
   try {
     fs.writeFileSync(file, id, { mode: 0o600 });
   } catch (error) {
-    logger.warn("cloud.ready_preparer_id_not_saved", { error: error instanceof Error ? error.message : String(error) });
+    logger.warn("cloud.ready_preparer_id_not_saved", { error: getErrorMessage(error) });
   }
   return id;
 }

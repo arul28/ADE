@@ -108,18 +108,16 @@ export function withoutAgentSkills(
   const withheldKey = [...withheldSet].sort().join(",");
   return roots.map((root) => {
     let staging: string | null = null;
-    let cacheKey: string | null = null;
-    let mirrorPath: string | null = null;
+    let target: { key: string; mirror: string } | null = null;
     try {
       const entries = fs.readdirSync(root, { withFileTypes: true });
       if (!entries.some((entry) => withheldSet.has(entry.name))) return root;
       const canonical = fs.realpathSync(root);
       const key = `${canonical}\0${withheldKey}`;
-      cacheKey = key;
       const cached = filteredSkillRootMirrors.get(key);
       if (cached && agentSkillRootExists(cached)) return cached;
       const mirror = path.join(mirrorParent, createHash("sha256").update(key).digest("hex").slice(0, 16));
-      mirrorPath = mirror;
+      target = { key, mirror };
       staging = `${mirror}.${process.pid}.${Date.now()}.tmp`;
       ensurePrivateMirrorParent(mirrorParent);
       fs.cpSync(canonical, staging, {
@@ -137,9 +135,9 @@ export function withoutAgentSkills(
         try { fs.rmSync(staging, { recursive: true, force: true }); } catch { /* best effort */ }
       }
       // A mirror held open (Windows) or rebuilt by another ADE process is still a good one.
-      const usable = mirrorPath && agentSkillRootExists(mirrorPath) ? mirrorPath : root;
+      const usable = target && agentSkillRootExists(target.mirror) ? target.mirror : root;
       // Remembered either way: copying again on every prompt can't help.
-      if (cacheKey) filteredSkillRootMirrors.set(cacheKey, usable);
+      if (target) filteredSkillRootMirrors.set(target.key, usable);
       return usable;
     }
   });
@@ -168,10 +166,7 @@ export function withoutAgentSkillsEnv(
  * for an account not on the access list). Installed here because the shared
  * root helpers are bundled into the renderer and cannot touch the disk.
  */
-function installWithheldSkillRootFilter(): void {
-  setAgentSkillRootFilter((roots) => withoutAgentSkills(roots, adeWithheldAgentSkills()));
-}
-installWithheldSkillRootFilter();
+setAgentSkillRootFilter((roots) => withoutAgentSkills(roots, adeWithheldAgentSkills()));
 
 /** {@link withoutAgentSkillsEnv} for the skills no agent may see right now. */
 export function withoutWithheldAgentSkillsEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

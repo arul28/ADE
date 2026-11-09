@@ -209,6 +209,11 @@ export function checkRemoteAdeCommand(
   if (isServiceSignInCommand(command, words)) {
     return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
   }
+  // Only ADE's server runs these, over exec on a cloud computer: one interrupts
+  // all its work, the other commits and pushes every lane.
+  if (command === "cloud" && (words[0] === "prepare-stop" || words[0] === "push-work")) {
+    return { ok: false, reason: `\`ade cloud ${words[0]}\` is not available remotely. ADE's server runs it on a computer it is about to stop or free-wake.` };
+  }
   // Renaming, removing or re-pairing account machines outlives revoking the
   // connection, like account tokens; reading the roster is fine.
   if (command === "machines" && !MACHINE_READ_SUBCOMMANDS.has(words[0] ?? "list")) {

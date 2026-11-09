@@ -5,6 +5,7 @@ import {
   applyCloudPlanChange,
   groupByUser,
   extraActive,
+  extraOwedMilli,
   listComputers,
   liveUsedMilli,
   loadAccount,
@@ -59,7 +60,7 @@ class StripeRequestError extends Error {
 type StripeObject = Record<string, unknown>;
 
 async function stripeRequest(
-  env: CloudEnv,
+  env: Pick<CloudEnv, "STRIPE_SECRET_KEY">,
   method: "GET" | "POST" | "DELETE",
   path: string,
   params?: Record<string, string>,
@@ -179,7 +180,7 @@ export async function setExtraHours(env: CloudEnv, userId: string, enabled: bool
   if (accountRules(account) !== "paid") throw new CloudBillingError("needs_paid_plan", "Extra hours need a paid plan.", 403);
   // Turning them off stops new use; what was already used is still reported.
   const owed = !enabled && extraActive(account)
-    ? Math.max(account.extra_owed_milli, liveUsedMilli(account, await listComputers(env, userId), now) - account.included_milli, 0)
+    ? extraOwedMilli(account, liveUsedMilli(account, await listComputers(env, userId), now))
     : 0;
   await applyCloudPlanChange(env, userId, { extraEnabled: enabled }, now);
   if (enabled || owed > 0) {
@@ -188,7 +189,7 @@ export async function setExtraHours(env: CloudEnv, userId: string, enabled: bool
 }
 
 /** Ends the account's subscription now, for a deleted account. Already gone counts as done. */
-export async function cancelAccountSubscription(env: CloudEnv, account: Pick<AccountRow, "user_id" | "stripe_subscription_id">, now: number): Promise<void> {
+export async function cancelAccountSubscription(env: Pick<CloudEnv, "DB" | "STRIPE_SECRET_KEY">, account: Pick<AccountRow, "user_id" | "stripe_subscription_id">, now: number): Promise<void> {
   if (!account.stripe_subscription_id) return;
   try {
     await stripeRequest(env, "DELETE", `/subscriptions/${encodeURIComponent(account.stripe_subscription_id)}`);
@@ -403,6 +404,20 @@ async function applyStripeEvent(env: CloudEnv, type: string, object: StripeObjec
   if (type === "invoice.payment_failed") return syncSubscription(env, invoiceSubscriptionId(object), now);
 }
 
+/** Takes this event for one delivery: a first delivery, or one whose earlier claim was lost mid-work. */
+async function claimStripeEvent(env: CloudEnv, eventId: string, type: string, now: number): Promise<"claimed" | "duplicate" | "in_progress"> {
+  const claim = await env.DB.prepare("insert or ignore into cloud_stripe_events (event_id, type, received_at) values (?, ?, ?)")
+    .bind(eventId, type, now).run();
+  if (claim.meta.changes !== 0) return "claimed";
+  const earlier = await env.DB.prepare("select received_at, applied_at from cloud_stripe_events where event_id = ?")
+    .bind(eventId).first<{ received_at: number; applied_at: number | null }>();
+  if (earlier?.applied_at != null) return "duplicate";
+  if (earlier && now - earlier.received_at < EVENT_CLAIM_STALE_MS) return "in_progress";
+  const retaken = await env.DB.prepare("update cloud_stripe_events set received_at = ? where event_id = ? and received_at = ? and applied_at is null")
+    .bind(now, eventId, earlier?.received_at ?? 0).run();
+  return retaken.meta.changes === 1 ? "claimed" : "in_progress";
+}
+
 async function handleStripeWebhook(request: Request, env: CloudEnv): Promise<Response> {
   if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
   const secret = env.STRIPE_WEBHOOK_SECRET?.trim();
@@ -426,18 +441,10 @@ async function handleStripeWebhook(request: Request, env: CloudEnv): Promise<Res
   const object = objectOf(objectOf(event.data)?.object);
   if (!eventId || !type || !object) return json({ error: "invalid event" }, 400);
 
-  const claim = await env.DB.prepare("insert or ignore into cloud_stripe_events (event_id, type, received_at) values (?, ?, ?)")
-    .bind(eventId, type, now).run();
-  if (claim.meta.changes === 0) {
-    const earlier = await env.DB.prepare("select received_at, applied_at from cloud_stripe_events where event_id = ?")
-      .bind(eventId).first<{ received_at: number; applied_at: number | null }>();
-    if (earlier?.applied_at != null) return json({ received: true, duplicate: true });
-    // Another delivery is working on it: not done, so Stripe asks again later.
-    if (earlier && now - earlier.received_at < EVENT_CLAIM_STALE_MS) return json({ error: "in progress" }, 409);
-    const retaken = await env.DB.prepare("update cloud_stripe_events set received_at = ? where event_id = ? and received_at = ? and applied_at is null")
-      .bind(now, eventId, earlier?.received_at ?? 0).run();
-    if (retaken.meta.changes !== 1) return json({ error: "in progress" }, 409);
-  }
+  const claim = await claimStripeEvent(env, eventId, type, now);
+  if (claim === "duplicate") return json({ received: true, duplicate: true });
+  // Not done, so Stripe asks again later.
+  if (claim === "in_progress") return json({ error: "in progress" }, 409);
   try {
     await applyStripeEvent(env, type, object, now);
     await env.DB.prepare("update cloud_stripe_events set applied_at = ? where event_id = ?").bind(Date.now(), eventId).run();

@@ -41,6 +41,7 @@ export type CloudServerProviderDeps = {
   /** Names this computer in the server's delete log. */
   deviceName?: () => string | null;
   fetch?: FetchLike;
+  logger?: { warn(event: string, meta?: Record<string, unknown>): void };
 };
 
 export type CloudDeleteContext = { who?: string | null; reason?: string };
@@ -297,7 +298,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       try {
         return await request("GET", `${cloudSavedChatUrl("", args.machineKey, args.chatId)}${suffix ? `?${suffix}` : ""}`) as CloudSavedChatPage;
       } catch (error) {
-        if (error instanceof CloudProviderError && error.status > 0) return null;
+        if (error instanceof CloudProviderError && error.status > 0) {
+          deps.logger?.warn("cloud.saved_chat_read_failed", { status: error.status });
+          return null;
+        }
         throw error;
       }
     },

@@ -10,7 +10,6 @@ import {
   formatCloudHoursRate,
   type CloudMachineKind,
   type CloudShapeId,
-  type CloudStatus,
 } from "../../../shared/adeCloud";
 import {
   CLOUD_READY_DEFAULT_SHAPE,

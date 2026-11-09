@@ -160,8 +160,6 @@ export type CloudCreateInput = {
 };
 
 export type CloudUsageWindow = {
-  from: string | null;
-  to: string | null;
   /** Awake minutes per instance, for the whole workspace. */
   instances: Array<{ id: string; awakeMinutes: number }>;
 };
@@ -343,7 +341,7 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
         if (!id) continue;
         instances.push({ id, awakeMinutes: num(record?.awake_minutes) ?? 0 });
       }
-      return { from: str(body?.from), to: str(body?.to), instances };
+      return { instances };
     },
 
     /** Oldest first. Read this before a delete: the history goes with the instance. */

@@ -5,7 +5,7 @@ import { showToast } from "../app/toast/toastStore";
  * The Push all work to GitHub button. Used on the 0-hours states and the 30-day
  * warnings. Account-level: it names the computer.
  */
-export function PushAllWorkButton({ instanceId, className }: { instanceId: string; className?: string }) {
+export function PushAllWorkButton({ instanceId }: { instanceId: string }) {
   const [pushing, setPushing] = useState(false);
   const run = useCallback(() => {
     const push = window.ade.cloud?.pushAllWork;
@@ -17,10 +17,8 @@ export function PushAllWorkButton({ instanceId, className }: { instanceId: strin
     ).finally(() => setPushing(false));
   }, [instanceId]);
   return (
-    <span className={className}>
-      <button type="button" className="ade-modern-btn" data-size="sm" disabled={pushing} onClick={run}>
-        {pushing ? "Pushing all work…" : "Push all work to GitHub"}
-      </button>
-    </span>
+    <button type="button" className="ade-modern-btn" data-size="sm" disabled={pushing} onClick={run}>
+      {pushing ? "Pushing all work…" : "Push all work to GitHub"}
+    </button>
   );
 }

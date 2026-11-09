@@ -64,7 +64,11 @@ export function createCloudDiskGrower(deps: {
       if (!client) return false;
       const instance = await client.getInstance(deps.instanceId);
       if (!instance.resources) return false;
-      const { diskStepGb } = cloudCatalogOf(await client.getAccount().catch(() => null));
+      const account = await client.getAccount().catch((error: unknown) => {
+        deps.logger?.warn("cloud.disk_catalog_read_failed", { error: error instanceof Error ? error.message : String(error) });
+        return null;
+      });
+      const { diskStepGb } = cloudCatalogOf(account);
       try {
         const { cpu, memory, disk } = instance.resources;
         await client.resizeInstance(deps.instanceId, { cpu, memory, disk: disk + diskStepGb }, { computerIdle: true });

@@ -14,7 +14,7 @@ import {
  * the plan, its computers, its timed wakes and its saved chats. A throw means
  * Clerk delivers again, and each step is safe to repeat.
  */
-export async function deleteCloudAccount(env: CloudEnv, userId: string): Promise<void> {
+export async function deleteCloudAccount(env: Pick<CloudEnv, "DB" | "CLOUD_CHATS" | "AGENT37_API_KEY" | "STRIPE_SECRET_KEY">, userId: string): Promise<void> {
   const now = Date.now();
   const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>();
   if (account) await cancelAccountSubscription(env, account, now);

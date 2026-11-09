@@ -17,10 +17,10 @@ import {
   logCloud,
   percentUsed,
   readSetting,
+  readTimeSetting,
+  restartStretchStatements,
   rollPeriodIfDue,
-  settleStatements,
   statusChangeStatements,
-  statusGuard,
   writeSetting,
   type AccountRow,
   type CloudEnv,
@@ -291,7 +291,7 @@ async function sleepUnseen(env: CloudEnv, provider: CloudProvider, computers: Ti
 }
 
 async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances: CloudInstance[], now: number): Promise<void> {
-  const last = Number(await readSetting(env, "owner_check_at") ?? 0);
+  const last = await readTimeSetting(env, "owner_check_at");
   if (now - last < OWNER_CHECK_INTERVAL_MS) return;
   await writeSetting(env, "owner_check_at", String(now), now);
   let billing;
@@ -311,7 +311,7 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
     alerts.push(`${awake} computers are awake, against a limit of ${billing.instanceLimit}.`);
   }
   if (alerts.length === 0) return;
-  const lastAlert = Number(await readSetting(env, "owner_alert_at") ?? 0);
+  const lastAlert = await readTimeSetting(env, "owner_alert_at");
   logCloud("cloud.owner_alert", { alerts });
   if (now - lastAlert < OWNER_ALERT_REPEAT_MS) return;
   await writeSetting(env, "owner_alert_at", String(now), now);
@@ -324,7 +324,7 @@ async function runDaily(env: CloudEnv, provider: CloudProvider, computers: TickC
   const last = await readSetting(env, "last_daily_day");
   if (last === today) return;
   // The day is only marked done at the end, so a run that dies is tried again.
-  const claimedAt = Number(await readSetting(env, "daily_claim_at") ?? 0);
+  const claimedAt = await readTimeSetting(env, "daily_claim_at");
   if (now - claimedAt < DAILY_CLAIM_MS) return;
   await writeSetting(env, "daily_claim_at", String(now), now);
 
@@ -344,11 +344,7 @@ async function settleOpenStretches(env: CloudEnv, computers: TickComputer[], now
   for (const computer of computers) {
     if (computer.awake_since == null || computer.awake_since > now) continue;
     // Guarded: a sleep since this tick read the row has already charged this stretch.
-    const guard = statusGuard(computer);
-    statements.push(...settleStatements(env, computer, now, guard));
-    statements.push(env.DB.prepare(`update cloud_computers set awake_since = ? where instance_id = ? and ${guard.sql}`)
-      .bind(now, computer.instance_id, ...guard.binds));
-    computer.awake_since = now;
+    statements.push(...restartStretchStatements(env, computer, now));
   }
   if (statements.length) await env.DB.batch(statements);
 }

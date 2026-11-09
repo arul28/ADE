@@ -149,6 +149,8 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   /** The ADE machines the last good list showed as cloud boxes: only those are worth a wake lookup. */
   let knownMachineKeys = new Set<string>();
+  /** From the last account read that worked, so a failed read doesn't bring deleted computers' rows back. */
+  let lastDeletedInstanceIds: string[] = [];
 
   /** Every computer on the account (the server lists only the account's own). */
   async function list(): Promise<CloudMachinesResult> {
@@ -163,6 +165,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       return emptyResult(refused ? "access_refused" : "unreachable", getErrorMessage(error));
     }
     const account = await readAccount(client);
+    if (account) lastDeletedInstanceIds = account.deletedInstanceIds;
     const catalog = cloudCatalogOf(account);
     const live = instances.filter((instance) => instance.status !== "deleted");
     knownMachineKeys = new Set(live.map((instance) => instance.metadata[CLOUD_MACHINE_KEY_METADATA]).filter((key): key is string => Boolean(key)));
@@ -173,7 +176,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       instanceCount: live.filter((instance) => instance.status !== "failed").length,
       runningCount: live.filter((instance) => cloudStatusAwake(instance.status)).length,
       account,
-      deletedInstanceIds: account?.deletedInstanceIds ?? [],
+      deletedInstanceIds: lastDeletedInstanceIds,
       message: null,
     };
   }

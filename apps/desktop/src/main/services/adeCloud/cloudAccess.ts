@@ -206,6 +206,7 @@ function serverProviderFor(deps: CloudAccessDeps): CloudProvider {
     baseUrl: deps.directoryBaseUrl,
     deviceName: deps.deviceName,
     fetch: deps.fetch,
+    logger: deps.logger,
   });
 }
 

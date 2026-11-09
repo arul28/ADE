@@ -6,6 +6,7 @@
  * `run_ade_action`, for the actions in `ADE_ACTION_MACHINE_SCOPED`.
  */
 import { JsonRpcError, JsonRpcErrorCode } from "../../jsonrpc";
+import { cloudDomainEnabled } from "../../../../desktop/src/shared/adeCloud";
 import { callerIdentityIsAgent, type AdeRuntimeRole } from "../../runtimeRoles";
 import {
   adeActionCallerRefusal,
@@ -38,17 +39,6 @@ export type MachineAccountCaller = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-async function readCloudEnabled(service: Record<string, unknown> | null): Promise<boolean> {
-  const access = service?.access;
-  if (typeof access !== "function") return false;
-  try {
-    return ((await (access as () => Promise<unknown>).call(service)) as { enabled?: unknown } | null)?.enabled === true;
-  } catch (error) {
-    console.warn("[cloud] access read failed", error instanceof Error ? error.message : String(error));
-    return false;
-  }
 }
 
 export function isMachineAccountMethod(method: string): method is MachineAccountMethod {
@@ -94,7 +84,7 @@ export async function runMachineAccountAction(
   const callable = service?.[action];
   // No ADE Cloud for this account: `cloud` answers as if it weren't here, like
   // a missing action below. `access` itself stays, it is the answer.
-  const hiddenCloud = domain === "cloud" && action !== "access" && !(await readCloudEnabled(service));
+  const hiddenCloud = domain === "cloud" && action !== "access" && !(await cloudDomainEnabled(service, (error) => console.warn("[cloud] access read failed", error instanceof Error ? error.message : String(error))));
   if (typeof callable !== "function" || hiddenCloud) {
     throw new JsonRpcError(
       JsonRpcErrorCode.methodNotFound,

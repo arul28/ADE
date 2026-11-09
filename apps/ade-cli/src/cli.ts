@@ -20498,14 +20498,14 @@ function cloudStep(label: string, action: string, input: JsonObject, formatter: 
   };
 }
 
-/** `ade cloud push-work --json`: every lane's work committed and pushed. Bounded by the free short wake it runs in. */
+/** `ade cloud push-work --json`: every lane's work committed and pushed. With ADE's 25 s to answer first, this fits inside the 3-minute exec that runs it. */
 function buildCloudPushWorkPlan(): CliPlan {
   return {
     kind: "execute",
     label: "cloud push-work",
     steps: [{ key: "result", method: "cloud.pushWork", params: {} }],
     machineOnly: true,
-    minTimeoutMs: 170_000,
+    minTimeoutMs: 150_000,
   };
 }
 
@@ -20522,6 +20522,12 @@ function buildCloudPrepareStopPlan(args: string[]): CliPlan {
     minTimeoutMs: Math.round(seconds * 1000) + 15_000,
   };
 }
+
+/** What the server runs on a computer, whatever the access answer. */
+const CLOUD_ON_COMPUTER_PLANS = new Map<string, (args: string[]) => CliPlan>([
+  ["prepare-stop", buildCloudPrepareStopPlan],
+  ["push-work", buildCloudPushWorkPlan],
+]);
 
 function buildCloudPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
@@ -23446,8 +23452,8 @@ function buildCliPlan(
   if (primary === "cloud") {
     // The server runs this before a stop; it's for this computer's own brain.
     if (!cliCloudEnabled) throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
-    if (firstPositional([...args]) === "prepare-stop") return buildCloudPrepareStopPlan(args);
-    if (firstPositional([...args]) === "push-work") return buildCloudPushWorkPlan();
+    const buildOnComputerPlan = CLOUD_ON_COMPUTER_PLANS.get(firstPositional([...args]) ?? "");
+    if (buildOnComputerPlan) return buildOnComputerPlan(args);
     return buildCloudPlan(args);
   }
   if (primary === "proxy") return buildProxyPlan(args);
@@ -39778,7 +39784,7 @@ async function resolveCliCloudEnabled(parsed: ReturnType<typeof extractMachineTa
   const primary = parsed.command[0]?.toLowerCase();
   const isCloud = primary === "cloud";
   // What the server runs on a cloud computer never depends on the answer.
-  if (isCloud && ["prepare-stop", "push-work"].includes(parsed.command[1]?.toLowerCase() ?? "")) {
+  if (isCloud && CLOUD_ON_COMPUTER_PLANS.has(parsed.command[1]?.toLowerCase() ?? "")) {
     const { isCloudMachine } = await import("./services/power/cloudKeepAwake");
     if (isCloudMachine()) {
       cliCloudEnabled = true;

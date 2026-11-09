@@ -38,6 +38,9 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   CLOUD_CHAT_MASTER_KEY?: string;
 };
 
+/** What a function needs that only touches the tables. */
+export type CloudDb = Pick<CloudEnv, "DB">;
+
 export type ComputerRow = {
   instance_id: string;
   user_id: string;
@@ -105,6 +108,11 @@ export async function readSetting(env: CloudEnv, key: string): Promise<string | 
   return row?.value ?? null;
 }
 
+/** A stored time in ms; 0 when it was never written. */
+export async function readTimeSetting(env: CloudEnv, key: string): Promise<number> {
+  return Number(await readSetting(env, key) ?? 0);
+}
+
 export async function writeSetting(env: CloudEnv, key: string, value: string, now: number): Promise<void> {
   await env.DB.prepare(`
     insert into cloud_settings (key, value, updated_at) values (?, ?, ?)
@@ -119,7 +127,7 @@ export async function ownedComputer(env: CloudEnv, userId: string, instanceId: s
     .bind(instanceId, userId).first<ComputerRow>();
 }
 
-export async function listComputers(env: CloudEnv, userId: string): Promise<ComputerRow[]> {
+export async function listComputers(env: CloudDb, userId: string): Promise<ComputerRow[]> {
   const rows = await env.DB.prepare("select * from cloud_computers where user_id = ? and deleted_at is null")
     .bind(userId).all<ComputerRow>();
   return rows.results ?? [];
@@ -138,7 +146,7 @@ export function statusGuard(computer: Pick<ComputerRow, "instance_id" | "status"
 }
 
 /** Closes the part of the open stretch up to `upTo` and charges it. Empty when nothing is open. */
-export function settleStatements(env: CloudEnv, computer: ComputerRow, upTo: number, guard?: StatusGuard): D1PreparedStatement[] {
+export function settleStatements(env: CloudDb, computer: ComputerRow, upTo: number, guard?: StatusGuard): D1PreparedStatement[] {
   const start = computer.awake_since;
   if (start == null) return [];
   const statements: D1PreparedStatement[] = [];
@@ -160,6 +168,17 @@ export function settleStatements(env: CloudEnv, computer: ComputerRow, upTo: num
     statements.push(env.DB.prepare(`update cloud_accounts set used_milli = used_milli + ?, updated_at = ? where user_id = ?${guard ? ` and ${guard.sql}` : ""}`)
       .bind(chargedMilli, upTo, computer.user_id, ...(guard?.binds ?? [])));
   }
+  return statements;
+}
+
+/** Charges the open stretch up to `now` and starts a new one there, guarded against a status change since this row was read. */
+export function restartStretchStatements(env: CloudEnv, computer: ComputerRow, now: number): D1PreparedStatement[] {
+  const guard = statusGuard(computer);
+  const statements = [
+    ...settleStatements(env, computer, now, guard),
+    env.DB.prepare(`update cloud_computers set awake_since = ? where instance_id = ? and ${guard.sql}`).bind(now, computer.instance_id, ...guard.binds),
+  ];
+  computer.awake_since = now;
   return statements;
 }
 
@@ -242,7 +261,7 @@ export function statusChangeStatements(env: CloudEnv, computer: ComputerRow, sta
 }
 
 export function deleteLogStatement(
-  env: CloudEnv,
+  env: CloudDb,
   computer: Pick<ComputerRow, "instance_id" | "user_id">,
   args: { who: string | null; reason: string; events: unknown[] | null },
   now: number,
@@ -253,7 +272,7 @@ export function deleteLogStatement(
 }
 
 /** Settles an open stretch and marks the computer deleted, for after the provider's delete. */
-export function markDeletedStatements(env: CloudEnv, computer: ComputerRow, now: number): D1PreparedStatement[] {
+export function markDeletedStatements(env: CloudDb, computer: ComputerRow, now: number): D1PreparedStatement[] {
   // Guarded: two deletes of one computer charge its last stretch once.
   const statements = settleStatements(env, computer, now, statusGuard(computer));
   computer.awake_since = null;
@@ -265,7 +284,7 @@ export function markDeletedStatements(env: CloudEnv, computer: ComputerRow, now:
 
 /** The log entry and the closed row for a computer that's gone. */
 export function closedComputerStatements(
-  env: CloudEnv,
+  env: CloudDb,
   computer: ComputerRow,
   args: { who: string | null; reason: string; events: unknown[] | null },
   now: number,
@@ -284,7 +303,7 @@ export function goneFromProviderStatements(env: CloudEnv, computer: ComputerRow,
  * provider failure throws, with the row left open.
  */
 export async function deleteComputer(
-  env: CloudEnv,
+  env: CloudDb,
   provider: Pick<CloudProvider, "instanceEvents" | "deleteInstance">,
   computer: ComputerRow,
   args: { who: string | null; reason: string },
@@ -344,6 +363,11 @@ export function accountRules(account: Pick<AccountRow, "plan" | "stripe_status">
 
 export function computerLimit(account: AccountRow): number {
   return accountRules(account) === "paid" ? PAID_COMPUTER_LIMIT : FREE_COMPUTER_LIMIT;
+}
+
+/** Extra hours already used: what is still billed once the switch goes off. */
+export function extraOwedMilli(account: AccountRow, liveUsed: number): number {
+  return Math.max(account.extra_owed_milli, liveUsed - account.included_milli, 0);
 }
 
 export function extraActive(account: AccountRow): boolean {
@@ -502,9 +526,9 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
   const wasPastDue = account.stripe_status === "past_due";
   const isPastDue = nextStripeStatus === "past_due";
   /** A new billing period: nothing is reported or owed in it yet. */
-  const clearExtraReports: Array<[string, unknown]> = [["extra_reported_milli", 0], ["extra_owed_milli", 0]];
+  const clearExtraReports: Array<[keyof AccountRow, unknown]> = [["extra_reported_milli", 0], ["extra_owed_milli", 0]];
 
-  const extras: Array<[string, unknown]> = [];
+  const extras: Array<[keyof AccountRow, unknown]> = [];
   if (change.stripeCustomerId !== undefined) extras.push(["stripe_customer_id", change.stripeCustomerId]);
   if (change.stripeSubscriptionId !== undefined) extras.push(["stripe_subscription_id", change.stripeSubscriptionId]);
   if (change.stripeStatus !== undefined) extras.push(["stripe_status", change.stripeStatus]);
@@ -516,7 +540,7 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
     const stashUsed = liveUsedMilli(account, await listComputers(env, userId), now);
     const stashPeriodEnd = change.periodEnd ?? account.period_end;
     // Extra hours go off here, but what was already used is still owed.
-    const owed = extraActive(account) ? Math.max(account.extra_owed_milli, stashUsed - account.included_milli, 0) : account.extra_owed_milli;
+    const owed = extraActive(account) ? extraOwedMilli(account, stashUsed) : account.extra_owed_milli;
     extras.push(["past_due_used_milli", stashUsed], ["past_due_period_end", stashPeriodEnd], ["extra_enabled", 0], ["extra_owed_milli", owed]);
   }
   if (transition) account = await startFreshPeriod(env, account, transition.next, now);
@@ -577,7 +601,6 @@ async function recentlyDeletedInstanceIds(env: CloudEnv, userId: string, now: nu
   const rows = await env.DB.prepare(`
     select c.instance_id from cloud_computers c
     where c.user_id = ? and c.deleted_at is not null and c.deleted_at >= ?
-      and exists (select 1 from cloud_computer_days d where d.instance_id = c.instance_id)
   `).bind(userId, now - DELETED_REPORTED_MS).all<{ instance_id: string }>();
   return (rows.results ?? []).map((row) => row.instance_id);
 }

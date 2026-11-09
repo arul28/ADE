@@ -2981,10 +2981,12 @@ export function createMultiProjectRpcRequestHandler(
 
     // The server runs this over exec before stopping a computer at 0 hours. Not
     // a `cloud.call`: this machine may not have the account access `cloud` needs.
-    if (method === "cloud.prepareStop") {
+    if (method === "cloud.prepareStop" || method === "cloud.pushWork") {
       if (callerIdentityIsAgent(callerIdentity())) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "An agent can't stop this computer's work.");
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "An agent can't run this on the computer.");
       }
+    }
+    if (method === "cloud.prepareStop") {
       const prepare = options.prepareCloudStop;
       if (!prepare) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't prepare a computer to stop.");
       return await prepare({ timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : 40_000 });
@@ -2992,9 +2994,6 @@ export function createMultiProjectRpcRequestHandler(
 
     // "Push all work to GitHub", run over exec on a computer that may be out of hours.
     if (method === "cloud.pushWork") {
-      if (callerIdentityIsAgent(callerIdentity())) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "An agent can't push this computer's work.");
-      }
       if (!options.pushCloudWork) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't push this computer's work.");
       return await options.pushCloudWork();
     }

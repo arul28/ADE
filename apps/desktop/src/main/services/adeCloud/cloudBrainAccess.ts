@@ -5,7 +5,7 @@
  */
 
 import type { AdeAccountMachine } from "../../../shared/types/account";
-import type { CloudLogger, CloudProvider } from "./cloudProvider";
+import type { CloudProvider } from "./cloudProvider";
 import { getCloudProvider, watchCloudAccessForSkills, type CloudAccessDeps } from "./cloudAccess";
 import { wakeCloudMachineForUse } from "./cloudSleep";
 

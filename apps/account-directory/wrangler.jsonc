@@ -58,7 +58,7 @@
   // `/webhooks/clerk` records one `ade_signed_up` PostHog event per new account
   // (src/signupAnalytics.ts). Create a Clerk webhook for `user.created` and `user.deleted` pointing
   // at https://<this worker>/webhooks/clerk, then set its `whsec_…` signing
-  // secret and the public `phc_…` project token. Unset, the route answers 503.
+  // secret and the public `phc_…` project token. Unset, the route answers 503 (a `user.deleted` needs only the signing secret).
   "vars": {
     "ONLINE_WINDOW_MS": "150000",
     // Public Sentry DSN of the ade-workers project. Not a secret (it only lets

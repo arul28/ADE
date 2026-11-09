@@ -44,6 +44,8 @@ export async function pushCloudComputerWork(args: {
         }
       }
     } catch (error) {
+      // A project that couldn't be read wasn't saved; the tally must not say it was.
+      tally.failed += 1;
       args.logger?.warn("cloud.push_work_project_failed", { error: error instanceof Error ? error.message : String(error) });
     }
   }
