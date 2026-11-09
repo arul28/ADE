@@ -18,6 +18,7 @@ import {
 
 const safeStorageMock = vi.hoisted(() => ({
   isEncryptionAvailable: vi.fn(() => true),
+  getSelectedStorageBackend: vi.fn(() => "gnome_libsecret"),
   encryptString: vi.fn((value: string) => Buffer.from(`enc:${value}`, "utf8")),
   decryptString: vi.fn((value: Buffer) => {
     const raw = value.toString("utf8");
@@ -107,6 +108,7 @@ describe("linearCredentialService", () => {
     safeStorageMock.encryptString.mockReset();
     safeStorageMock.decryptString.mockReset();
     safeStorageMock.isEncryptionAvailable.mockReturnValue(true);
+    safeStorageMock.getSelectedStorageBackend.mockReturnValue("gnome_libsecret");
     safeStorageMock.encryptString.mockImplementation((value: string) => Buffer.from(`enc:${value}`, "utf8"));
     safeStorageMock.decryptString.mockImplementation((value: Buffer) => {
       const raw = value.toString("utf8");
@@ -261,6 +263,40 @@ describe("linearCredentialService", () => {
       else process.env.ADE_LINEAR_TOKEN = previousAdeLinearToken;
       if (previousLinearToken === undefined) delete process.env.LINEAR_TOKEN;
       else process.env.LINEAR_TOKEN = previousLinearToken;
+    }
+  });
+
+  it("keeps tokens it cannot read while Linux has no keyring, and migrates them once it does", () => {
+    const realPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-no-keyring-"));
+    try {
+      const adeDir = path.join(root, ".ade");
+      const secrets = path.join(adeDir, "secrets");
+      fs.mkdirSync(secrets, { recursive: true });
+      const tokenPath = path.join(secrets, "linear-token.v1.bin");
+      const oauthClientPath = path.join(secrets, "linear-oauth-client.v1.bin");
+      const stored = 'enc:{"token":"lin_newer","authMode":"oauth","refreshToken":"refresh-newer"}';
+      fs.writeFileSync(tokenPath, stored);
+      fs.writeFileSync(oauthClientPath, 'enc:{"clientId":"client-newer"}');
+      fs.writeFileSync(path.join(adeDir, "local.secret.yaml"), "linear:\n  token: lin_older\n");
+      const credentialStore = new MemoryCredentialStore();
+      safeStorageMock.getSelectedStorageBackend.mockReturnValue("basic_text");
+
+      createLinearCredentialService({ adeDir, logger: createLogger(), credentialStore: credentialStore as any }).getToken();
+
+      expect(fs.readFileSync(tokenPath, "utf8")).toBe(stored);
+      expect(fs.existsSync(oauthClientPath)).toBe(true);
+      expect(credentialStore.values.has("linear.token.v1")).toBe(false);
+
+      safeStorageMock.getSelectedStorageBackend.mockReturnValue("gnome_libsecret");
+      const recovered = createLinearCredentialService({ adeDir, logger: createLogger(), credentialStore: credentialStore as any });
+
+      expect(recovered.getToken()).toBe("lin_newer");
+      expect(credentialStore.values.get("linear.refreshToken.v1")).toBe("refresh-newer");
+    } finally {
+      Object.defineProperty(process, "platform", { value: realPlatform });
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
