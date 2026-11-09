@@ -600,6 +600,11 @@ describe("ADE Cloud account", () => {
       expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 2, memory: 4, disk: 8 })).status).toBe(502);
       expect(computer(harness).disk_gb).toBe(8);
 
+      // The provider's size can lag a grow that is still landing, so nothing is released yet.
+      await harness.tick();
+      expect(computer(harness).disk_gb).toBe(8);
+
+      harness.exec("update cloud_computers set disk_reserved_at = ? where instance_id = ?", NOW - 11 * 60_000, INSTANCE);
       await harness.tick();
 
       expect(computer(harness).disk_gb).toBe(4);
