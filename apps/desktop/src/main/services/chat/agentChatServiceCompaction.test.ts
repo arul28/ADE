@@ -435,6 +435,37 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it("sends a Cursor message at once when Compact first's compaction is skipped, instead of waiting for a divider", async () => {
+      installRealTranscriptParser();
+      const previousIdleMs = process.env.ADE_COMPACT_FIRST_IDLE_MS;
+      process.env.ADE_COMPACT_FIRST_IDLE_MS = "1";
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      try {
+        mockState.cursorSendPromptResult = { status: "finished", adeCompactSkipped: "cut_off_run" };
+        const onEvent = vi.fn();
+        const { service, projectConfigService } = createService({ onEvent });
+        projectConfigService.get.mockReturnValue({ effective: { ai: { compaction: { cursor: { idleMode: "ask" } } } } });
+        const session = await service.createSession({ laneId: "lane-1", provider: "cursor", model: "composer-2", modelId: "cursor/composer-2" });
+        writeTestTranscriptEnvelopes(session.id, [
+          { sessionId: session.id, timestamp: "2026-07-25T05:20:00.000Z", sequence: 1, event: { type: "status", turnStatus: "started", turnId: "turn-old" } },
+          { sessionId: session.id, timestamp: "2026-07-25T05:21:00.000Z", sequence: 2, event: { type: "done", turnId: "turn-old", status: "completed", usage: { contextTokens: 250_000 } } },
+        ] as AgentChatEventEnvelope[]);
+
+        await service.sendMessage({ sessionId: session.id, text: "hello again", compactFirst: true });
+        await vi.waitFor(() => expect(mockState.cursorSdkSendCalls).toHaveLength(2), { timeout: 10_000, interval: 25 });
+
+        expect(mockState.cursorSdkSendCalls[0]?.summarize).toBe(true);
+        expect(mockState.cursorSdkSendCalls[1]?.summarize).toBeUndefined();
+        expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? "")).toContain("hello again");
+        const events = onEvent.mock.calls.map((call) => call[0]?.event);
+        expect(events.some((event: any) => event?.type === "system_notice" && /did not finish/i.test(event.message ?? ""))).toBe(true);
+      } finally {
+        mockState.cursorSendPromptResult = null;
+        if (previousIdleMs === undefined) delete process.env.ADE_COMPACT_FIRST_IDLE_MS;
+        else process.env.ADE_COMPACT_FIRST_IDLE_MS = previousIdleMs;
+      }
+    });
+
     it("emits a rate-limit notice when the Claude SDK reports usage pressure", async () => {
       vi.useFakeTimers();
       const send = vi.fn().mockResolvedValue(undefined);

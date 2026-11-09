@@ -1,7 +1,7 @@
 /**
  * Cursor names its per-workspace directory under `~/.cursor/projects/` by
  * slugging the absolute workspace path. This is a byte-for-byte reimplementation
- * of the slug function Cursor ships in `@cursor/sdk` (verified 1.0.31,
+ * of the slug function Cursor ships in `@cursor/sdk` (verified 1.3.1,
  * `../utils/dist/workspace-paths.js`):
  *
  *   function slug(p) {

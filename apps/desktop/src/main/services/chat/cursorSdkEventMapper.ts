@@ -2,7 +2,7 @@ import type { AgentChatCloudRunStatus, AgentChatEvent, AgentChatRuntime } from "
 import { detectCompactionSignalText } from "../../../shared/contextCompaction";
 import {
   CURSOR_SDK_COMPACTION_EVENT,
-  CURSOR_SDK_PRECOMPACT_HOOK_MARK,
+  CURSOR_SDK_COMPACTION_SIGNAL_MARK,
   CURSOR_SDK_TURN_TELEMETRY_KEY,
   classifyCursorSdkErrorText,
   type CursorSdkErrorKind,
@@ -260,11 +260,11 @@ function compactionEventsFromSignal(
 }
 
 /**
- * A compaction the worker saw through Cursor's `preCompact` hook. The first
+ * A compaction the worker saw through Cursor's `summary` messages or `preCompact` hook. The first
  * compaction in a turn shares the text fallback's id (the turn id), so the two
  * paths merge into one divider if both fire.
  */
-function compactionEventsFromHook(record: SdkMessageRecord, turnId: string): AgentChatEvent[] {
+function compactionEventsFromWorker(record: SdkMessageRecord, turnId: string): AgentChatEvent[] {
   const phase = readString(record.phase);
   if (phase !== "started" && phase !== "completed" && phase !== "failed") return [];
   const seq = readNumber(record.seq) ?? 1;
@@ -283,7 +283,8 @@ function compactionEventsFromHook(record: SdkMessageRecord, turnId: string): Age
     detection: "provider",
     ...(preTokens != null ? { preTokens } : {}),
     ...(durationMs != null ? { durationMs } : {}),
-    ...(phase === "failed" ? { failReason: "interrupted" as const } : {}),
+    ...(phase === "failed" ? { failReason: record.failReason === "provider_error" ? "provider_error" as const : "interrupted" as const } : {}),
+    ...(phase === "completed" && record.fallback === true ? { fallback: true } : {}),
   };
   if (phase !== "started") return [compact];
   const windowSize = readNumber(record.contextWindowSize);
@@ -585,9 +586,9 @@ export function mapCursorSdkMessageToChatEvents(
     case "status": {
       const statusText = readString(record.status);
       const detail = readStatusDetail(record);
-      // Text matching is only the fallback for runs the `preCompact` hook did
-      // not report on; the worker marks status events once it has.
-      const compactionSignal = record[CURSOR_SDK_PRECOMPACT_HOOK_MARK] === true
+      // Text matching is only the fallback for runs with no `summary` message
+      // or `preCompact` hook; the worker marks status events once it saw one.
+      const compactionSignal = record[CURSOR_SDK_COMPACTION_SIGNAL_MARK] === true
         ? null
         : [statusText, detail].filter(Boolean).join(" · ");
       const compactionEvents = compactionEventsFromSignal(meta, compactionSignal, turnId);
@@ -717,7 +718,7 @@ export function mapCursorSdkMessageToChatEvents(
     case "user":
       return [];
     case CURSOR_SDK_COMPACTION_EVENT:
-      return compactionEventsFromHook(record, turnId);
+      return compactionEventsFromWorker(record, turnId);
     default:
       return [];
   }
