@@ -37,11 +37,14 @@ export function ComposerPopover({
   trigger,
   children,
   fit,
+  restoreFocus = false,
 }: ComposerPopoverState & {
   trigger: React.ReactNode;
   children: React.ReactNode;
   /** "content" sizes the popover to its content instead of the trigger's width. */
   fit?: "content";
+  /** Return keyboard focus to the trigger after choosing or dismissing. */
+  restoreFocus?: boolean;
 }) {
   // Inside the dialog, portal into it: a modal dialog blocks pointer events
   // and focus everywhere outside its own content.
@@ -62,7 +65,7 @@ export function ComposerPopover({
           data-fit={fit}
           data-mode={mode}
           style={{ zIndex: Z_LAYERS.dialogPopover }}
-          onCloseAutoFocus={(event) => event.preventDefault()}
+          onCloseAutoFocus={(event) => { if (!restoreFocus) event.preventDefault(); }}
           // React events bubble through the portal: keep a popover's Enter from
           // reaching the composer's ⌘/Ctrl+Enter create shortcut.
           onKeyDown={(event) => {
@@ -76,7 +79,8 @@ export function ComposerPopover({
   );
 }
 
-function PopItem({
+/** One row of a composer popover menu; Settings › New lanes reuses it so its menus match the dialog's. */
+export function PopItem({
   icon,
   title,
   sub,
@@ -86,12 +90,15 @@ function PopItem({
   muted,
   hint,
   onSelect,
+  radio = false,
 }: {
   icon?: React.ReactNode;
   title: React.ReactNode;
   sub?: React.ReactNode;
   subTone?: "warn";
   selected?: boolean;
+  /** A mutually exclusive choice rather than an independent toggle. */
+  radio?: boolean;
   disabled?: boolean;
   muted?: boolean;
   hint?: string;
@@ -102,7 +109,10 @@ function PopItem({
       type="button"
       className="cl-item"
       // Action rows ("Connect another machine…") pass no `selected`: not a toggle.
-      aria-pressed={selected}
+      role={radio ? "radio" : undefined}
+      aria-checked={radio ? selected : undefined}
+      aria-pressed={radio ? undefined : selected}
+      tabIndex={radio && !selected ? -1 : undefined}
       disabled={disabled}
       title={hint}
       data-muted={muted ? "true" : undefined}

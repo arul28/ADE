@@ -2758,3 +2758,48 @@ Two method notes:
   `qemu-system-*` subtree out of ADE's count, the same as a simulator. The
   `ps` output grows to about 160 KB for 1,100 processes, far under its 2 MB
   limit.
+
+
+### Work lane identity in Status and Time (2026-11-08)
+
+Base `2bc519666`, uncommitted renderer change, Mac13,1 (M1 Max, 64 GB),
+Node 26.7.0. One detached dev window, 1460×880 capture / 1327×800 CSS pixels,
+sync off, no DevTools and no `ADE_PERF_RUN_ID`. Nine active local rows and a
+collapsed four-session Settled shelf; new-chat surface and the activity skyline
+visible. Other agents were running (load average 12–17); the same top-bar activity
+pulse ran in both arms (~2.7 style recalculations/s).
+
+`route-sweep.mjs <id> /work,/work 20`, with each organization already warm,
+measured two visits per arm. `render-count.mjs 30 reload` measured Status
+separately. Only `SessionListPane.tsx` switched between HEAD and the candidate;
+the GitHub reminder port and the coordinator's separate Settings edits were
+held fixed. Earlier measurements that overlapped a coordinator hot reload were
+discarded. These numbers supersede the old-base measurements for this change.
+
+| Row | Before | After | Existing ceiling |
+| --- | --- | --- | --- |
+| Status: main-thread work, initial two warm visits | 2.8, 2.5 ms/s | 4.8, 4.4 ms/s | 30 ms/s |
+| Status: follow-up adjacent baseline/candidate, 20 s each | 3.6 ms/s | 3.8 ms/s | 30 ms/s |
+| Time: main-thread work, two warm visits | 3.3, 1.7 ms/s (median 2.5) | 1.9, 3.1 ms/s (median 2.5) | 30 ms/s |
+| Status: renderer heap / page elements, follow-up | 129 MB / 850 | 125 MB / 888 | 220 MB / 3k |
+| Time: renderer heap / page elements, second visit | 127 MB / 862 | 123 MB / 896 | 220 MB / 3k |
+| Navigation long tasks | 0 ms | 0 ms | 100 ms |
+| Status: React commits in 30 s | 16 | 16 | no list churn |
+| Status: SessionCard renders / callback-wrapper renders in 30 s | 2 / 9 | 1 / 9 | no list churn |
+
+The initial Status increase exceeded the relative budget, so it was investigated
+before accepting the result. A 10 s `cdp.mjs profile` sampled the preload, shell,
+activity skyline and stepped animation clock, with no Work row hot loop. The
+render counter showed no increase in commits or row renders (the actual card
+renders had changed session props). A settled candidate `cdp.mjs metrics 20`
+read 4.2 ms/s, then returning to HEAD's Work component reproduced 3.6 ms/s and
+restoring the candidate read 3.8 ms/s with `route-sweep.mjs /work 20`: a 6%
+difference, below the 25% limit. Layout stayed at 0/s in that pair. The initial
+higher readings are retained above rather than treated as a proven row cost.
+
+The added identity uses existing roster and lane/device data, with no new row
+fetch, effect, timer or subscription. A temporary offline renderer roster was
+checked separately for foreign Status and Time rows: correct lane and runtime
+pin, offline guard, attached-shell filing, and **Settle local**. It was removed
+before proof. No paired machine was connected; this is not a live remote,
+Windows, GPU or process-footprint measurement.

@@ -149,7 +149,7 @@ Built-in shell actions must stay within the allowed workdirs:
 - `validateAutomationCwd(baseCwd, cwdRaw)` resolves the requested cwd against the base and rejects anything outside.
 - Paths are resolved with `resolvePathWithinRoot` which handles symlink-resolution and rejects traversal.
 
-Agent-session rules run inside the ADE chat service's permission model (per-session allowed tools). Built-in shell actions use the cwd and lane allowlists above.
+Agent-session rules run inside the ADE chat service's permission model (per-session allowed tools). They run full-auto unless the rule or step picks a mode. On any other mode, a card raised during the automation's own turn is refused on the spot, because nobody can answer it: the agent is told, the run carries on, and the chat keeps the card, its receipt and a notice. Linear agent runs are the exception, since the delegator answers from Linear. Built-in shell actions use the cwd and lane allowlists above.
 
 ## Budget caps
 

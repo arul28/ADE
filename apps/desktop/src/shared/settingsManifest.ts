@@ -1525,6 +1525,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
 
   // ── Integrations ─────────────────────────────────────────────────────────
   {
+    id: "integrations.github-reminders",
+    label: "GitHub reminders",
+    keywords: ["snooze", "dismiss", "reminders", "github", "show again"],
+    tab: "integrations",
+    anchor: "github-reminders",
+    scope: "machine-repo",
+    web: "hidden",
+    group: "GitHub",
+  },
+  {
     id: "integrations.github",
     label: "GitHub",
     keywords: ["git", "pr", "pull request", "token", "pat", "app", "auth", "webhook"],

@@ -95,6 +95,9 @@ import { CROSS_MACHINE_CALLER_FIELDS } from "../../../shared/crossMachineHandoff
 
 const execFileAsync = promisify(execFile);
 
+/** What an agent step runs with when neither it nor its rule picks a mode. */
+const AUTOMATION_DEFAULT_PERMISSION_MODE = "full-auto" as const;
+
 type CronTask = {
   cronExpression: string;
   stop: () => void;
@@ -2143,7 +2146,6 @@ export function createAutomationService({
 
   const buildPermissionConfig = (rule: AutomationRule, options: { publishPhase: boolean }, action?: AutomationAction | null) => {
     const allowedTools = computeAllowedToolList(rule, options, action);
-    const cli = action?.permissionConfig?.cli ?? rule.permissionConfig?.cli;
     const inProcess = action?.permissionConfig?.inProcess ?? rule.permissionConfig?.inProcess;
     const ruleProviders = rule.permissionConfig?.providers;
     const actionProviders = action?.permissionConfig?.providers;
@@ -2156,35 +2158,29 @@ export function createAutomationService({
     const actionClearedCursor = actionCursorRaw === "inherit";
     const actionCursor = actionClearedCursor ? undefined : actionProviders?.cursor;
     const ruleCursor = ruleCursorRaw === "inherit" ? undefined : ruleProviders?.cursor;
-    const cursorMode = rule.verification.mode === "dry-run"
+    const dryRun = rule.verification.mode === "dry-run";
+    // A rule held for review before it publishes keeps its narrower default.
+    const defaultMode = <T extends string>(gatedMode: T) =>
+      requiresPublishGate(rule) ? gatedMode : AUTOMATION_DEFAULT_PERMISSION_MODE;
+    const cursorMode = dryRun
       ? "plan"
       : (actionCursor
         ?? (actionClearedCursor ? undefined : cursorPermissionFromMisfiledOpenCode(actionProviders?.opencode))
         ?? ruleCursor
         ?? cursorPermissionFromMisfiledOpenCode(ruleProviders?.opencode)
-        ?? "edit");
+        ?? defaultMode("edit" as const));
+    const codexMode = dryRun ? "plan" : (providers.codex ?? defaultMode("default" as const));
     return {
-      ...(cli
-        ? {
-            cli: {
-              ...cli,
-              allowedTools,
-            },
-          }
-        : {
-            cli: {
-              mode: "edit" as const,
-              sandboxPermissions: "workspace-write" as const,
-              allowedTools,
-            },
-          }),
       ...(inProcess ? { inProcess } : {}),
       providers: {
-        claude: rule.verification.mode === "dry-run" ? "plan" : (providers.claude ?? "edit"),
-        codex: rule.verification.mode === "dry-run" ? "plan" : (providers.codex ?? "default"),
+        claude: dryRun ? "plan" : (providers.claude ?? defaultMode("edit" as const)),
+        codex: codexMode,
         cursor: cursorMode,
-        opencode: rule.verification.mode === "dry-run" ? "plan" : (providers.opencode ?? "edit"),
-        codexSandbox: providers.codexSandbox ?? "workspace-write",
+        opencode: dryRun ? "plan" : (providers.opencode ?? defaultMode("edit" as const)),
+        // Only the default widens the sandbox. A rule that picked full-auto
+        // without naming a sandbox keeps the one it has always had.
+        codexSandbox: providers.codexSandbox
+          ?? (providers.codex === undefined && codexMode === "full-auto" ? "danger-full-access" : "workspace-write"),
         ...(providers.writablePaths?.length ? { writablePaths: providers.writablePaths } : {}),
         allowedTools,
       },
@@ -2195,10 +2191,10 @@ export function createAutomationService({
     providerGroup: string,
     permissionConfig: ReturnType<typeof buildPermissionConfig>,
   ) => {
-    if (providerGroup === "claude") return permissionConfig.providers?.claude ?? "edit";
-    if (providerGroup === "codex") return permissionConfig.providers?.codex ?? "default";
-    if (providerGroup === "cursor") return permissionConfig.providers?.cursor ?? "edit";
-    return permissionConfig.providers?.opencode ?? "edit";
+    if (providerGroup === "claude") return permissionConfig.providers.claude;
+    if (providerGroup === "codex") return permissionConfig.providers.codex;
+    if (providerGroup === "cursor") return permissionConfig.providers.cursor;
+    return permissionConfig.providers.opencode;
   };
 
   const cursorModeIdForPermissionMode = (mode: string | null | undefined): string => {
@@ -4300,7 +4296,14 @@ export function createAutomationService({
         sessionId: session.id,
         text: prompt,
         displayText: args.rule.prompt?.trim() || args.rule.name,
-        metadata: { automationRun: { automationId: args.rule.id, runId: run.id, name: args.rule.name } },
+        metadata: {
+          automationRun: {
+            automationId: args.rule.id,
+            runId: run.id,
+            name: args.rule.name,
+            ...(args.trigger.linearAgent ? { attended: true as const } : {}),
+          },
+        },
         reasoningEffort,
         ...agentTurnLimits(args.rule.execution?.session),
       });
