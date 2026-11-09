@@ -429,6 +429,24 @@ function ensureLinger(run: ServiceManagerSpawnSync): string {
   return ` To keep ADE running after logout and reboot, run once: sudo loginctl enable-linger ${user || "$USER"}`;
 }
 
+/**
+ * The ADE home the installed systemd unit serves. Null when no unit can be
+ * read, so an unreadable or absent unit stays removable. A unit with no
+ * `ADE_HOME` was installed from the machine's default home.
+ */
+export function readSystemdServiceHome(homeDir = os.homedir()): string | null {
+  let unit: string;
+  try {
+    unit = fs.readFileSync(servicePath(homeDir), "utf8");
+  } catch {
+    return null;
+  }
+  const match = /^Environment="ADE_HOME=((?:[^"\\]|\\.)*)"$/m.exec(unit);
+  if (!match) return path.join(homeDir, ".ade");
+  const value = match[1]!.replace(/%%/g, "%").replace(/\\(.)/g, "$1").trim();
+  return value || path.join(homeDir, ".ade");
+}
+
 export async function uninstallSystemdService(): Promise<ServiceManagerResult> {
   if (!isSystemdUserManagerUsable()) {
     // `stopUnsupervised` always yields a result.

@@ -99,12 +99,13 @@ export function createPrGithubReadCache(now: () => number = Date.now) {
       pull: unknown,
       load: () => Promise<T>,
       settled: (value: T) => boolean = () => true,
+      maxAgeMs: number = QUIET_REUSE_MAX_AGE_MS,
     ): Promise<T> {
       const repoKey = githubRepoKey(repo);
       const key = `${repoKey}|${what}`;
       const fingerprint = quietFingerprint(pull);
       const known = quietReuse.get(key);
-      if (fingerprint && known && known.fingerprint === fingerprint && now() - known.at < QUIET_REUSE_MAX_AGE_MS) {
+      if (fingerprint && known && known.fingerprint === fingerprint && now() - known.at < maxAgeMs) {
         return structuredClone(known.value) as T;
       }
       const startedAt = generationOf(repoKey);

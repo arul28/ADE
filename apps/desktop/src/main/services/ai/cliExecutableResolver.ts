@@ -749,10 +749,10 @@ function refreshShellPathInBackground(
     const child = execFile(
       shellPath,
       shellPathProbeArgs(shellFlag),
-      { encoding: "utf-8", env, timeout: timeoutMs, windowsHide: true },
-      (error, stdout) => {
+      { encoding: "utf-8", env, timeout: timeoutMs, killSignal: "SIGKILL", windowsHide: true },
+      (_error, stdout) => {
         shellPathRefreshesInFlight.delete(key);
-        const resolved = error ? null : parseShellPathProbeOutput(stdout);
+        const resolved = parseShellPathProbeOutput(stdout);
         const entry = shellPathCache.get(key);
         // A failed refresh keeps the last answer; it is tried again after
         // another TTL rather than on every call.
@@ -810,12 +810,17 @@ function readShellPathUncached(
         env,
         stdio: ["ignore", "pipe", "pipe"],
         timeout: timeoutMs,
+        // SIGTERM can be ignored, and this synchronous call then waits for as
+        // long as the shell likes. Only SIGKILL holds the timeout.
+        killSignal: "SIGKILL",
         windowsHide: true,
       },
     );
     return parseShellPathProbeOutput(raw);
-  } catch {
-    return null;
+  } catch (error) {
+    // A slow rc file that had already printed PATH still answered.
+    const stdout = (error as { stdout?: unknown } | null)?.stdout;
+    return typeof stdout === "string" ? parseShellPathProbeOutput(stdout) : null;
   }
 }
 

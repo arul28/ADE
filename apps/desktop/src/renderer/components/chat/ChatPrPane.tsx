@@ -677,6 +677,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
           <div className="min-h-0 min-w-0 flex-1">
             <PrsProvider active={false}>
               <PrDetailPane
+                key={pr.id}
                 pr={{ ...pr, conflictAnalysis: null }}
                 status={status}
                 checks={checks ?? []}

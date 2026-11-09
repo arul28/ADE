@@ -651,6 +651,7 @@ ade terminal resume --terminal session-id --text
 ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode cli --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode chat --lane auto --lane-name fix-checkout-flow --prompt "fix failing tests"
+ade new chat --mode chat --lane lane-id --prompt-file brief.md   # a long or multi-line first message from a file, or stdin with -
 ade new chat --mode chat --lane lane-id --prompt "repro the flake"   # from an agent: a subagent that reports back (the default); --type peer for no report
 ade new chat --mode cli --lane lane-id --provider codex --type peer --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals and show in the parent as a subagent card that closes when the CLI exits (use --mode chat for per-turn reports); shell sessions do not record lineage
 ade chat list --lane lane-id --include-automation --no-archived --text

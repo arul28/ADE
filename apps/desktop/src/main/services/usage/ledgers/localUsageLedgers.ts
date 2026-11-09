@@ -79,6 +79,21 @@ const CURSOR_CHARS_PER_TOKEN = 4;
 type CodexLogScanInFlight = { promise: Promise<TokenEntry[]>; state: LedgerScanCompleteness };
 let codexLogScanInFlight: CodexLogScanInFlight | null = null;
 
+/** One response's usage, held until a cumulative snapshot shows whether it covers it. */
+type PendingCodexUsageRecord = {
+  responseId: string;
+  totalTokens: number;
+  rawInputTokens: number;
+  cachedTokens: number;
+  outputTokens: number;
+  timestamp: number;
+  model: string;
+  speed: UsageSpeed;
+};
+
+/** A rollout quiet for this long is finished: no snapshot is still on its way. */
+const CODEX_LIVE_ROLLOUT_QUIET_MS = 5 * 60_000;
+
 type CodexLogScanOptions = {
   maxJsonlLineBytes?: number;
   maxEntries?: number;
@@ -446,6 +461,52 @@ async function scanCodexLogsOnce(
       // Tracked separately from `previousTotals` because it must advance even on
       // events that carry no `total_token_usage` at all (compact boundaries).
       let previousCumulativeTotal: number | null = null;
+      // Codex writes one `token_usage_record` per model response. The cumulative
+      // snapshots normally cover them; a response from a turn that was cut off,
+      // or a compaction, never reaches a snapshot and is billed from here.
+      let pendingUsageRecords: PendingCodexUsageRecord[] = [];
+      const billUncoveredUsageRecords = (coverage: { lastResponseTokens: number } | { coveredTokens: number }): void => {
+        let records = pendingUsageRecords;
+        let remaining = "coveredTokens" in coverage ? coverage.coveredTokens : 0;
+        if ("lastResponseTokens" in coverage) {
+          // The snapshot bills the newest response that matches it. One that
+          // matches nothing is a different response, so every record stands.
+          let newest = -1;
+          for (let index = records.length - 1; index >= 0 && newest < 0; index -= 1) {
+            if (records[index]!.totalTokens === coverage.lastResponseTokens) newest = index;
+          }
+          records = records.filter((_, index) => index !== newest);
+        }
+        for (const pending of records) {
+          if (pending.totalTokens <= remaining) {
+            remaining -= pending.totalTokens;
+            continue;
+          }
+          const dedupeKey = `codex-record:${forkedFromId || sessionId}:${pending.responseId}`;
+          if (seen.has(dedupeKey)) continue;
+          seen.add(dedupeKey);
+          const inputTokens = Math.max(0, pending.rawInputTokens - pending.cachedTokens);
+          entries.push({
+            messageId: dedupeKey,
+            model: pending.model,
+            originator: sessionOriginator,
+            ...(sessionProjectPath ? { projectPath: sessionProjectPath } : {}),
+            adeOriginated: sessionOriginator.trim().toLowerCase().startsWith("ade"),
+            ...(pending.rawInputTokens > 0 ? { requestContextTokens: pending.rawInputTokens } : {}),
+            inputTokens,
+            billableInputTokens: inputTokens,
+            outputTokens: pending.outputTokens,
+            billableOutputTokens: pending.outputTokens,
+            cachedTokens: pending.cachedTokens,
+            billableCachedTokens: pending.cachedTokens,
+            cacheWriteTokens: 0,
+            ...(pending.speed !== "standard" ? { speed: pending.speed } : {}),
+            requests: 1,
+            timestamp: pending.timestamp,
+          });
+        }
+        pendingUsageRecords = [];
+      };
 
       for await (const line of readJsonlLines(filePath, options.maxJsonlLineBytes)) {
         const trimmed = line.trim();
@@ -492,6 +553,25 @@ async function scanCodexLogsOnce(
           continue;
         }
 
+        if (record.type === "token_usage_record" && payload) {
+          const usage = isRecord(payload.usage) ? payload.usage : undefined;
+          const responseId = typeof payload.response_id === "string" ? payload.response_id : "";
+          const totalTokens = numberFromRecord(usage, "total_tokens");
+          if (usage && responseId && totalTokens > 0) {
+            pendingUsageRecords.push({
+              responseId,
+              totalTokens,
+              rawInputTokens: numberFromRecord(usage, "input_tokens"),
+              cachedTokens: numberFromRecord(usage, "cached_input_tokens", "cache_read_input_tokens"),
+              outputTokens: numberFromRecord(usage, "output_tokens"),
+              timestamp: timestampMsFromValue(record.timestamp),
+              model: sessionModel,
+              speed: sessionSpeed,
+            });
+          }
+          continue;
+        }
+
         if (record.type === "event_msg" && payload?.type === "token_count") {
           const info = isRecord(payload.info) ? payload.info : undefined;
           if (!info) continue;
@@ -499,6 +579,17 @@ async function scanCodexLogsOnce(
           const totalUsage = isRecord(info.total_token_usage) ? info.total_token_usage : undefined;
           const lastUsage = isRecord(info.last_token_usage) ? info.last_token_usage : undefined;
           const cumulativeTotal = numberFromRecord(totalUsage, "total_tokens");
+          // What this snapshot bills below: the single response it reports, else
+          // its cumulative step. A repeat of the last snapshot bills nothing.
+          const repeatsLastSnapshot = previousCumulativeTotal !== null && cumulativeTotal === previousCumulativeTotal;
+          if (pendingUsageRecords.length > 0) {
+            billUncoveredUsageRecords(repeatsLastSnapshot
+              ? { coveredTokens: 0 }
+              : lastUsage
+                ? { lastResponseTokens: numberFromRecord(lastUsage, "total_tokens") }
+                : { coveredTokens: cumulativeTotal - (previousCumulativeTotal ?? 0) });
+            if (entries.length >= maxJsonlEntries) return entries;
+          }
           // Consecutive-duplicate guard. The null sentinel on `previousCumulativeTotal`
           // (not a 0-initialized baseline) makes the FIRST event always pass, so
           // a session that never reports a cumulative total does not lose its
@@ -506,7 +597,7 @@ async function scanCodexLogsOnce(
           // the total is zero: a compact-boundary event carries only
           // `last_token_usage`, so it reports cumulativeTotal=0 on every event
           // and a `> 0` guard would double-count every compaction.
-          if (previousCumulativeTotal !== null && cumulativeTotal === previousCumulativeTotal) continue;
+          if (repeatsLastSnapshot) continue;
           previousCumulativeTotal = cumulativeTotal;
 
           let rawInputTokens = 0;
@@ -666,6 +757,16 @@ async function scanCodexLogsOnce(
         });
         if (entries.length >= maxJsonlEntries) {
           return entries;
+        }
+      }
+
+      // A turn cut off at the end of the file has no snapshot left to wait for.
+      // A file that is still being written may yet get one.
+      if (pendingUsageRecords.length > 0) {
+        const modifiedAtMs = (await fs.promises.stat(filePath)).mtimeMs;
+        if (Date.now() - modifiedAtMs >= CODEX_LIVE_ROLLOUT_QUIET_MS) {
+          billUncoveredUsageRecords({ coveredTokens: 0 });
+          if (entries.length >= maxJsonlEntries) return entries;
         }
       }
     } catch {

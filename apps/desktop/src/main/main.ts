@@ -8892,6 +8892,7 @@ app.whenReady().then(async () => {
         reason: args.reason,
         forceAfterMs,
       });
+      localRuntimePool.killOwnedRuntimeNow();
       runImmediateProcessCleanup(`forced:${args.reason}`);
       finalizeAppExit(exitCode);
     }, forceAfterMs);

@@ -44,6 +44,7 @@ import {
   saveDeletedLaneSnapshot,
 } from "./deletedLaneSnapshots";
 import { runGitPushOrThrow } from "../git/gitPushFailure";
+import { findBuiltOnMergedPr, listRecentMergedPrHeads, rebaseArgsFor } from "./laneBuiltOnMerged";
 import { GIT_ENGLISH_MESSAGES_ENV } from "../git/gitReadEnv";
 import { detachPullRequestRowsForLane, deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, parseDiffNameOnly, resolvePathWithinRoot } from "../shared/utils";
@@ -7253,7 +7254,23 @@ export function createLaneService({
           metadata: operationMetadata,
         });
 
-        const rebaseRes = await runGit(["rebase", parentHead], { cwd: lane.worktree_path, timeoutMs: 120_000 });
+        const builtOn = await findBuiltOnMergedPr({
+          cwd: lane.worktree_path,
+          laneId: lane.id,
+          laneBranch: branchNameFromLaneRef(lane.branch_ref),
+          baseBranch: branchNameFromLaneRef(rebaseOnto),
+          baseHead: parentHead,
+          laneHead: laneItem.preHeadSha,
+          mergedPrs: listRecentMergedPrHeads({ db, projectId, logger }),
+        });
+        if (builtOn) {
+          emitRunLog({
+            runId,
+            laneId: lane.id,
+            message: `${lane.name} was built on merged PR #${builtOn.number}; replaying only its own commits.`,
+          });
+        }
+        const rebaseRes = await runGit(rebaseArgsFor(parentHead, builtOn), { cwd: lane.worktree_path, timeoutMs: 120_000 });
         if (rebaseRes.exitCode === 0) {
           laneItem.status = "succeeded";
           laneItem.postHeadSha = await getHeadSha(lane.worktree_path);
@@ -7379,6 +7396,22 @@ export function createLaneService({
       const run = getStoredRebaseRun(args.runId);
       if (run.pushedLaneIds.length > 0) {
         throw new Error("Cannot rollback after pushing lanes to remote.");
+      }
+
+      // Rollback is a hard reset, so every lane is checked before any is touched:
+      // work done on a lane since the rebase must not be thrown away.
+      for (const laneItem of run.lanes) {
+        if (laneItem.status !== "succeeded" || !laneItem.preHeadSha) continue;
+        const lane = getLaneRow(laneItem.laneId);
+        if (!lane) continue;
+        const head = await getHeadSha(lane.worktree_path);
+        if (head !== laneItem.postHeadSha) {
+          throw new Error(`Can't roll back ${laneItem.laneName}: its branch has moved since the rebase.`);
+        }
+        const dirty = await runGit(["status", "--porcelain=v1"], { cwd: lane.worktree_path, timeoutMs: 8_000 });
+        if (dirty.exitCode !== 0 || dirty.stdout.trim().length > 0) {
+          throw new Error(`Can't roll back ${laneItem.laneName}: it has uncommitted changes. Commit or stash them first.`);
+        }
       }
 
       for (const laneItem of run.lanes) {

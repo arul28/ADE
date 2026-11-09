@@ -436,7 +436,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
       </blockquote>
     ),
     table: ({ children }) => (
-      <div className="my-4 overflow-x-auto rounded-xl border border-(color:--chat-ink)/[0.06] bg-(color:--chat-table-bg) shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
+      <div className="chat-table-scroll my-4 overflow-x-auto rounded-xl border border-(color:--chat-ink)/[0.06] bg-(color:--chat-table-bg) shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
         <table className={`${RTL_TABLE_FOLLOWS_FIRST_CELL_CLASS} min-w-full border-separate border-spacing-0 text-[length:calc(var(--chat-font-size)*12/14)]`}>{children}</table>
       </div>
     ),

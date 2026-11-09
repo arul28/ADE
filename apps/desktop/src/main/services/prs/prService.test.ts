@@ -25,6 +25,9 @@ vi.mock("../git/git", async (importOriginal) => ({
   runGitMergeTree: (...args: unknown[]) => mockGit.runGitMergeTree(...args),
 }));
 
+// The worktree check runs git in a real folder; these lanes have none.
+vi.mock("../git/gitWorktreeRoot", () => ({ isGitWorktreeRoot: vi.fn(async () => true) }));
+
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
   spawn: (...args: unknown[]) => mockChildProcess.spawn(...args),
@@ -519,6 +522,10 @@ function installPullRequestRowStore(db: ReturnType<typeof makeMockDb>, initialRo
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+const VISIBILITY_NOTHING_HIDDEN = {
+  data: { data: { repository: { pullRequest: { reviewDecision: null, comments: { nodes: [] }, reviews: { nodes: [] } } } } },
+};
 
 describe("prService.getForLane", () => {
   beforeEach(() => {
@@ -3950,6 +3957,7 @@ describe("prService.getStatus", () => {
         }
         if (args.method === "POST" && args.path === "/graphql") {
           const query = String((args.body as { query?: unknown } | undefined)?.query ?? "");
+          if (query.includes("AdePullRequestVisibility")) return VISIBILITY_NOTHING_HIDDEN;
           graphqlQueries.push(query);
           if (query.includes("stack { baseRefName }")) {
             throw new Error("Field 'stack' doesn't exist on type 'PullRequest'");
@@ -4023,6 +4031,9 @@ describe("prService.getStatus", () => {
           return { data: { behind_by: 0 } };
         }
         if (args.method === "POST" && args.path === "/graphql") {
+          if (String((args.body as { query?: unknown } | undefined)?.query ?? "").includes("AdePullRequestVisibility")) {
+            return VISIBILITY_NOTHING_HIDDEN;
+          }
           graphqlCalls += 1;
           if (graphqlCalls === 1) {
             return {
@@ -8388,7 +8399,12 @@ describe("computeStatus merge-box GraphQL brake", () => {
     return null;
   }
 
+  /** The merge box's own requests; the review-visibility read has its own count. */
   function graphqlCalls(githubService: any): Array<{ query: string }> {
+    return allGraphqlCalls(githubService).filter((call) => !call.query.includes("AdePullRequestVisibility"));
+  }
+
+  function allGraphqlCalls(githubService: any): Array<{ query: string }> {
     return githubService.apiRequest.mock.calls
       .filter(([args]: [{ method?: string; path: string }]) =>
         args.method === "POST" && args.path === "/graphql")
@@ -8419,7 +8435,9 @@ describe("computeStatus merge-box GraphQL brake", () => {
 
     // One attempt total: the first arms the cooldown, the other 24 never reach
     // GitHub. Without the brake this is 25 attempts (50 with the old fallback).
-    expect(graphqlCalls(githubService)).toHaveLength(1);
+    // The merge box and the visibility read share the brake, so the first
+    // poll's concurrent reads are the only ones that ever reach GitHub.
+    expect(allGraphqlCalls(githubService).length).toBeLessThanOrEqual(2);
     const warnEvents: string[] = logger.warn.mock.calls.map(([event]: [string]) => event);
     expect(warnEvents.filter((event) => event === "prs.computeStatus.graphql_rate_limited"))
       .toHaveLength(1);

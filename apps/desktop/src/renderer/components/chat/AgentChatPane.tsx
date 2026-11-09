@@ -5770,6 +5770,7 @@ export function AgentChatPane({
       : { ...current, [token]: label });
   }, []);
   const [composerCaretToEndRequest, setComposerCaretToEndRequest] = useState(0);
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   // A browser tab attached from the Browser panel, for the composer to insert
   // at its caret (the pane cannot see the caret, only the draft).
   const [browserTabInsertRequest, setBrowserTabInsertRequest] = useState<{ id: number; token: string } | null>(null);
@@ -18539,6 +18540,7 @@ export function AgentChatPane({
             draftStore={draftStore}
             scheduledSendContext={scheduledSendContext}
             caretToEndRequest={composerCaretToEndRequest}
+            focusRequest={composerFocusRequest}
             browserTabInsertRequest={browserTabInsertRequest}
             threadComments={threadComments}
             threadCommentsSessionId={threadCommentsSessionId}
@@ -19182,6 +19184,7 @@ export function AgentChatPane({
             key={steeringPendingInput.itemId}
             request={steeringPendingInput.request}
             responding={respondingApprovalIds.has(steeringPendingInput.itemId)}
+            onFocusLost={() => setComposerFocusRequest((current) => current + 1)}
             onSubmit={(answers) => {
               void handleApproval(steeringPendingInput.itemId, "accept", null, answers);
             }}

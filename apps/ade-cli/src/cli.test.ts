@@ -3735,6 +3735,34 @@ describe("ADE CLI", () => {
     });
   });
 
+  it.each([
+    { name: "a multi-line file", content: "line one\nline two\n", extra: [] as string[], sent: "line one\nline two" },
+    { name: "a BOM-prefixed file", content: "\uFEFFfrom powershell", extra: [] as string[], sent: "from powershell" },
+    { name: "an empty file", content: "  \n", extra: [] as string[], error: /is empty/ },
+    { name: "--prompt beside the file", content: "text", extra: ["--prompt", "other"], error: /not both/ },
+    { name: "a text flag this command does not use", content: "text", extra: ["--note", "other"], error: /does not take --note/ },
+  ])("ade new takes the first message from --prompt-file: $name", ({ content, extra, sent, error }) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-new-prompt-file-"));
+    try {
+      const file = path.join(dir, "brief.md");
+      fs.writeFileSync(file, content, "utf8");
+      const argv = ["new", "chat", "--mode", "chat", "--lane", "lane-1", "--provider", "codex", "--prompt-file", file, ...extra];
+      if (error) {
+        expect(() => buildCliPlan(argv)).toThrow(error);
+        return;
+      }
+      const steps = expectExecutePlan(buildCliPlan(argv)).steps;
+      const sendParams = (steps[steps.length - 1]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+        session: { domain: "chat", action: "createSession", result: { sessionId: "chat-new" } },
+      });
+      expect(sendParams).toMatchObject({
+        arguments: { domain: "chat", action: "messageSession", args: { sessionId: "chat-new", text: sent } },
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("builds new chat mode with auto-created lane and kickoff prompt", () => {
     const plan = buildCliPlan([
       "new",

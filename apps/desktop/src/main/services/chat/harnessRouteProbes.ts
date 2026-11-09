@@ -86,13 +86,14 @@ export function recordRouteProbe(
     version: 1,
     entries: { ...file.entries, [key]: { verdict: { ...previous, [protocol]: ok }, checkedAt: now } },
   };
+  const tmp = `${filePath}.${process.pid}.tmp`;
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const tmp = `${filePath}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(next), "utf8");
     fs.renameSync(tmp, filePath);
     memo.delete(filePath);
   } catch {
     // A probe that cannot be persisted still answered this one request.
+    try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
   }
 }

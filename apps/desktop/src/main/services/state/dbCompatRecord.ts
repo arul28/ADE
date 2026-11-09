@@ -166,6 +166,34 @@ const SNAPSHOT_HEADROOM_BYTES = 256 * 1024 * 1024;
 /** Pages copied per step; small steps keep the event loop free on big files. */
 const SNAPSHOT_PAGES_PER_STEP = 256;
 
+/**
+ * Removes half-written snapshots left by a process that was killed mid-copy.
+ * Each is as big as the database, so left in place one eats the room the next
+ * snapshot needs and the space check below skips it for good. Best effort.
+ */
+function sweepAbandonedSnapshotTemps(dbPath: string): void {
+  const directory = path.dirname(dbPath);
+  const prefix = snapshotPrefix(dbPath);
+  let names: string[];
+  try {
+    names = fs.readdirSync(directory);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const pid = Number(/\.(\d+)\.tmp$/.exec(name)?.[1]);
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    try {
+      process.kill(pid, 0);
+      continue; // Still copying.
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "EPERM") continue;
+    }
+    try { fs.rmSync(path.join(directory, name), { force: true }); } catch { /* best effort */ }
+  }
+}
+
 function snapshotPrefix(dbPath: string): string {
   return `${path.basename(dbPath)}.pre-`;
 }
@@ -222,6 +250,7 @@ export async function snapshotDatabaseBeforeVersionChange(args: {
     logger.info("db.snapshot_skipped", { dbPath, reason: "backup_unavailable" });
     return null;
   }
+  sweepAbandonedSnapshotTemps(dbPath);
   const freeBytes = readVolumeSpace(path.dirname(dbPath))?.freeBytes ?? null;
   if (freeBytes != null && freeBytes < size + SNAPSHOT_HEADROOM_BYTES) {
     logger.warn("db.snapshot_skipped", { dbPath, reason: "low_disk", freeBytes, size });

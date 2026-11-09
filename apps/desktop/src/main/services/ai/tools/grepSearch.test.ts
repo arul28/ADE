@@ -339,6 +339,24 @@ describe("createGrepSearchTool", () => {
   // --------------------------------------------------------------------------
 
   describe("ripgrep path (integration)", () => {
+    it("never lets a search pattern reach ripgrep as an option", async () => {
+      const cwd = makeTmpDir("grep-option-");
+      writeFixtureFile(cwd, "notes.txt", "--pre=/tmp/tool\n");
+      const calls: Array<{ args: readonly string[]; options: { cwd?: unknown } }> = [];
+      __testSetRipgrepExecFile(((_file: string, args: readonly string[], options: { cwd?: unknown }, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+        calls.push({ args, options });
+        callback(null, "", "");
+      }) as unknown as typeof execFile);
+
+      await createGrepSearchTool(cwd).execute({ pattern: "--pre=/tmp/tool", context: 0 });
+
+      expect(calls).toHaveLength(1);
+      const { args, options } = calls[0]!;
+      expect(args.indexOf("--")).toBeGreaterThanOrEqual(0);
+      expect(args.indexOf("--")).toBeLessThan(args.indexOf("--pre=/tmp/tool"));
+      expect(fs.realpathSync(String(options.cwd))).toBe(fs.realpathSync(cwd));
+    });
+
     it("finds matches using ripgrep when available", async () => {
       const cwd = makeTmpDir("grep-rg-");
       writeFixtureFile(cwd, "hello.ts", "const greeting = 'hello world';");

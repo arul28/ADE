@@ -1,6 +1,6 @@
 import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LaneDiffMode } from "../../../shared/types";
-import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, CheckCircle, DotsThree, Folder, GitBranch, GitCommit, Minus, Stack, Trash } from "@phosphor-icons/react";
+import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, CheckCircle, DotsThree, Folder, GitBranch, GitCommit, GitMerge, Minus, Stack, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
   projectStateKeyForBinding,
@@ -1203,6 +1203,33 @@ export function LaneGitActionsPane({
 
   const upstreamMissing = syncStatus?.upstreamState === "missing";
 
+  // The remote branch went away. If the lane's PR merged, that was the normal
+  // end of the lane and there is nothing to push. Asked of the lane's machine.
+  const [mergedPrNumber, setMergedPrNumber] = useState<number | null>(null);
+  const pinKey = pin?.key ?? null;
+  useEffect(() => {
+    setMergedPrNumber(null);
+    if (!laneId || !upstreamMissing) return;
+    let cancelled = false;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    const read = (attempt: number): void => {
+      window.ade.prs.getForLane(laneId, pin).then((pr) => {
+        if (!cancelled && pr?.state === "merged") setMergedPrNumber(pr.githubPrNumber);
+      }).catch((error) => {
+        console.warn("git_pane.lane_pr_read_failed", error);
+        if (!cancelled && attempt < 3) retry = setTimeout(() => read(attempt + 1), 3_000 * (attempt + 1));
+      });
+    };
+    read(0);
+    return () => {
+      cancelled = true;
+      if (retry) clearTimeout(retry);
+    };
+    // Keyed on the stable pin key: a rebuilt pin is the same machine.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneId, pinKey, upstreamMissing]);
+  const laneMerged = upstreamMissing && mergedPrNumber != null;
+
   const nextActionHint = useMemo<NextActionHint | null>(() => {
     if (!laneId) return null;
     if (conflictState?.inProgress) {
@@ -1857,28 +1884,39 @@ export function LaneGitActionsPane({
         >
           <ArrowDown size={16} />
         </WorkToolChromeButton>
-        <WorkToolChromeButton
-          label={upstreamMissing
-            ? "Recreate remote branch"
-            : syncStatus?.hasUpstream === false
-              ? "Publish branch"
-              : nextActionHint?.action === "force_push_lease"
-                ? "Force push (lease)"
-                : "Push"}
-          onClick={async () => {
-            if (nextActionHint?.action === "force_push_lease") {
-              const ok = await confirmForcePushWithLease();
-              if (!ok) return;
-              runPush(true);
-              return;
-            }
-            runPush(false);
-          }}
-          disabled={!laneId || busyAction != null}
-          testId="git-pane-push"
-        >
-          <ArrowUp size={16} />
-        </WorkToolChromeButton>
+        {laneMerged ? (
+          <span
+            className="inline-flex h-6 items-center gap-1 whitespace-nowrap rounded-full border border-(color:--pr-merged)/30 px-2 text-[11px] font-medium text-fg/75"
+            data-testid="git-pane-merged-note"
+            title="This lane's pull request was merged and its remote branch is gone. There is nothing left to push."
+          >
+            <GitMerge size={12} weight="bold" style={{ color: "var(--pr-merged)" }} aria-hidden />
+            #{mergedPrNumber} merged
+          </span>
+        ) : (
+          <WorkToolChromeButton
+            label={upstreamMissing
+              ? "Recreate remote branch"
+              : syncStatus?.hasUpstream === false
+                ? "Publish branch"
+                : nextActionHint?.action === "force_push_lease"
+                  ? "Force push (lease)"
+                  : "Push"}
+            onClick={async () => {
+              if (nextActionHint?.action === "force_push_lease") {
+                const ok = await confirmForcePushWithLease();
+                if (!ok) return;
+                runPush(true);
+                return;
+              }
+              runPush(false);
+            }}
+            disabled={!laneId || busyAction != null}
+            testId="git-pane-push"
+          >
+            <ArrowUp size={16} />
+          </WorkToolChromeButton>
+        )}
         {catchUpLine && lane && laneId ? (
           <LaneCatchUpMenu
             lane={lane}

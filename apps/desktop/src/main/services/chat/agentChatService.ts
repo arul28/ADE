@@ -1,3 +1,5 @@
+import { cutTextAtCodePoint, tailTextAtCodePoint } from "../../../shared/codePointText";
+import { StringDecoder } from "node:string_decoder";
 import { githubExtraHeaderGitEnv, runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, compactFirstSupportedProvider, warmIdleCompactAtMs } from "../../../shared/compactFirst";
 import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
@@ -2842,6 +2844,8 @@ type CodexRuntime = {
   activeTurnId: string | null;
   startedTurnId: string | null;
   awaitingTurnStart: boolean;
+  /** Stop arrived while `turn/start` was in flight, with no turn yet to interrupt. */
+  stopRequestedDuringTurnStart: boolean;
   /**
    * Held from the turn-start admission check until `turn/start` returns or
    * fails. Only that check reads it: a send that awaits attachment staging
@@ -5272,6 +5276,7 @@ async function sendClaudeDaemonRequest(
     const socket = net.createConnection(socketPath);
     let settled = false;
     let buffer = "";
+    const decoder = new StringDecoder("utf8");
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
@@ -5290,7 +5295,7 @@ async function sendClaudeDaemonRequest(
         finish(() => reject(new Error("Claude daemon response exceeded the 1MB limit.")));
         return;
       }
-      buffer += chunk.toString("utf8");
+      buffer += decoder.write(chunk);
       const newline = buffer.indexOf("\n");
       const raw = (newline >= 0 ? buffer.slice(0, newline) : buffer).trim();
       if (!raw) return;
@@ -5302,7 +5307,7 @@ async function sendClaudeDaemonRequest(
       }
     });
     socket.on("end", () => {
-      const raw = buffer.trim();
+      const raw = (buffer + decoder.end()).trim();
       if (!raw) {
         finish(() => reject(new Error("Claude daemon closed without a response.")));
         return;
@@ -6289,24 +6294,42 @@ function isCodexThreadArchivedMessage(message: string): boolean {
  * finds its own thread archived. An unarchive that fails keeps the original
  * refusal, which is what the caller classifies.
  */
-async function resumeCodexThread<T>(
+async function retryAfterCodexUnarchive<T>(
   runtime: Pick<CodexRuntime, "request">,
-  params: { threadId: string } & Record<string, unknown>,
-  options?: CodexRequestOptions,
+  threadId: unknown,
+  send: () => Promise<T>,
 ): Promise<T> {
   try {
-    return await runtime.request<T>("thread/resume", params, options);
+    return await send();
   } catch (error) {
     if (!isCodexThreadArchivedMessage(error instanceof Error ? error.message : String(error))) throw error;
     try {
-      await runtime.request("thread/unarchive", { threadId: params.threadId }, {
+      await runtime.request("thread/unarchive", { threadId }, {
         timeoutMs: CODEX_ARCHIVE_REQUEST_TIMEOUT_MS,
       });
     } catch {
       throw error;
     }
-    return await runtime.request<T>("thread/resume", params, options);
+    return await send();
   }
+}
+
+async function resumeCodexThread<T>(
+  runtime: Pick<CodexRuntime, "request">,
+  params: { threadId: string } & Record<string, unknown>,
+  options?: CodexRequestOptions,
+): Promise<T> {
+  return await retryAfterCodexUnarchive(runtime, params.threadId, () =>
+    runtime.request<T>("thread/resume", params, options));
+}
+
+/** `thread/fork` that unarchives a thread Codex archived, then forks it. */
+async function forkCodexThread(
+  runtime: Pick<CodexRuntime, "request">,
+  params: { threadId: string; excludeTurns: boolean } & Record<string, unknown>,
+): Promise<CodexThreadLifecycleResponse> {
+  return await retryAfterCodexUnarchive(runtime, params.threadId, () =>
+    runtime.request<CodexThreadLifecycleResponse>("thread/fork", params));
 }
 
 type PendingTranscriptWrite = {
@@ -8088,7 +8111,7 @@ function forkTitleContext(
   const requests = envelopes.flatMap(({ event }) => {
     if (event.type !== "user_message") return [];
     const text = (event.displayText ?? event.text).replace(/\s+/g, " ").trim();
-    return text.length ? [text.slice(0, FORK_TITLE_CONTEXT_MAX_CHARS)] : [];
+    return text.length ? [cutTextAtCodePoint(text, FORK_TITLE_CONTEXT_MAX_CHARS)] : [];
   });
   const first = requests[0];
   const last = requests.length > 1 ? requests[requests.length - 1] : undefined;
@@ -14010,6 +14033,21 @@ export function createAgentChatService(args: {
       emitTransientChatEnvelope(sessionId, { type: "prompt_suggestion", suggestion, turnId });
     },
   });
+  /**
+   * A subagent works for its parent. Once the parent is archived, settled or
+   * deleted nobody is waiting on the result, so a resume would only spend quota.
+   * A parent on another machine or in another project has no row here; the
+   * record of it is what says it still exists.
+   */
+  const subagentParentStillWants = (sessionId: string): boolean => {
+    const parentId = (managedSessions.get(sessionId)?.session ?? readPersistedState(sessionId))
+      ?.orchestrationParentSessionId?.trim();
+    if (!parentId) return true;
+    if (managedSessions.get(parentId)?.deleted) return false;
+    const parent = sessionService.get(parentId);
+    if (parent) return !parent.archivedAt && !isSettleTupleSettled(parent);
+    return externalChatContext(parentId) !== null;
+  };
   // Declared here rather than next to its only caller further down the file:
   // `notifyChatSessionEnded` (immediately below) calls `autoResume.forgetSession`,
   // and a `const` declared thousands of lines later is in its temporal dead zone
@@ -14020,7 +14058,7 @@ export function createAgentChatService(args: {
     whenSchedulerReady: () => scheduledWorkReady,
     isSessionSchedulable: (sessionId) => {
       const row = sessionService.get(sessionId);
-      return Boolean(row && !row.archivedAt && isSchedulableAgentSession(row));
+      return Boolean(row && !row.archivedAt && isSchedulableAgentSession(row) && subagentParentStillWants(sessionId));
     },
     emitNotice: (sessionId, notice) => {
       const managed = managedSessions.get(sessionId);
@@ -20055,7 +20093,7 @@ export function createAgentChatService(args: {
                 cwd,
                 modelId: descriptor.id,
                 systemPrompt: LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
-                prompt: `Opening request:\n${prompt.slice(0, 2000)}`,
+                prompt: `Opening request:\n${cutTextAtCodePoint(prompt, 2000)}`,
                 imagePaths,
                 jsonSchema: AUTO_LANE_IDENTITY_JSON_SCHEMA,
                 taskType: "session_title",
@@ -20146,7 +20184,7 @@ export function createAgentChatService(args: {
             cwd: projectRoot,
             modelId: descriptor.id,
             systemPrompt: LEGACY_LANE_NAME_SYSTEM_PROMPT,
-            prompt: `User message for the new lane:\n${prompt.slice(0, 2000)}`,
+            prompt: `User message for the new lane:\n${cutTextAtCodePoint(prompt, 2000)}`,
             taskType: "session_title",
             providerAccount: namingAccount,
           });
@@ -21000,8 +21038,8 @@ export function createAgentChatService(args: {
         : {}),
       ...(claudeResultCostTotalUsd != null ? { claudeResultCostTotalUsd } : {}),
       ...(managed.session.provider === "claude" && managed.claudeBackgroundLogText
-        ? { claudeBackgroundLogText: managed.claudeBackgroundLogText.slice(-64_000) }
-        : managed.session.provider === "claude" && prevPersisted?.claudeBackgroundLogText ? { claudeBackgroundLogText: prevPersisted.claudeBackgroundLogText.slice(-64_000) } : {}),
+        ? { claudeBackgroundLogText: tailTextAtCodePoint(managed.claudeBackgroundLogText, 64_000) }
+        : managed.session.provider === "claude" && prevPersisted?.claudeBackgroundLogText ? { claudeBackgroundLogText: tailTextAtCodePoint(prevPersisted.claudeBackgroundLogText, 64_000) } : {}),
       ...(managed.runtime?.kind === "cursor" && managed.runtime.sdkAgentId
         ? {
             cursorSdkAgentProtocolVersion: CURSOR_SDK_AGENT_PROTOCOL_VERSION,
@@ -21440,7 +21478,7 @@ export function createAgentChatService(args: {
           )
         : undefined;
       const claudeBackgroundLogText = provider === "claude" && typeof record.claudeBackgroundLogText === "string"
-        ? record.claudeBackgroundLogText.slice(-64_000)
+        ? tailTextAtCodePoint(record.claudeBackgroundLogText, 64_000)
         : undefined;
       const cursorSdkAgentProtocolVersion = typeof record.cursorSdkAgentProtocolVersion === "number"
         ? record.cursorSdkAgentProtocolVersion
@@ -23550,7 +23588,7 @@ export function createAgentChatService(args: {
         model: managed.session.model,
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         ...(managed.autoTitleSeed?.trim()
-          ? { title: managed.autoTitleSeed.trim().slice(0, 80) }
+          ? { title: cutTextAtCodePoint(managed.autoTitleSeed.trim(), 80) }
           : {}),
         instanceId: alternate.instanceId,
         ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
@@ -30862,6 +30900,7 @@ export function createAgentChatService(args: {
     const planningApprovalGuarded = managed.session.permissionMode === "plan";
     let result: { turn?: { id?: string } };
     runtime.turnStartReserved = true;
+    runtime.stopRequestedDuringTurnStart = false;
     try {
       const reconstructionContext = suppressTurnContext
         ? ""
@@ -30959,6 +30998,10 @@ export function createAgentChatService(args: {
     }
     runtime.turnStartReserved = false;
     runtime.turnStartContextConsumed = false;
+    // Read once here: a turn that already ended, or an answer with no id, has
+    // nothing to stop, and the request must not carry over to the next turn.
+    const stopRequestedDuringStart = runtime.stopRequestedDuringTurnStart;
+    runtime.stopRequestedDuringTurnStart = false;
     markDispatched();
     persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
@@ -30987,6 +31030,17 @@ export function createAgentChatService(args: {
           type: "activity",
           ...initialTurnActivity(managed.session),
           turnId,
+        });
+      }
+      // A Stop that arrived before the turn existed had nothing to stop; the
+      // turn has an id now, so carry it out.
+      if (stopRequestedDuringStart) {
+        void interrupt({ sessionId: managed.session.id, mode: DEFAULT_AGENT_CHAT_STOP_MODE }).catch((error) => {
+          logger.warn("agent_chat.codex_stop_after_turn_start_failed", {
+            sessionId: managed.session.id,
+            turnId,
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
       }
     }
@@ -43520,13 +43574,13 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, {
           type: "activity",
           activity: "spawning_agent",
-          detail: prompt.slice(0, 80) || "Spawning parallel agent",
+          detail: cutTextAtCodePoint(prompt, 80) || "Spawning parallel agent",
           turnId,
         });
         for (const taskId of taskIds) {
           runtime.activeSubagents.set(taskId, {
             taskId,
-            description: prompt.slice(0, 120) || "Parallel agent",
+            description: cutTextAtCodePoint(prompt, 120) || "Parallel agent",
             background,
             parentToolUseId: itemId,
           });
@@ -43537,7 +43591,7 @@ export function createAgentChatService(args: {
             threadId: taskId,
             parentToolUseId: itemId,
             parentTurnId: turnId,
-            prompt: prompt.slice(0, 120) || "Parallel agent",
+            prompt: cutTextAtCodePoint(prompt, 120) || "Parallel agent",
             background,
             label: agentType ?? "Parallel agent",
             model: collabModel,
@@ -43553,7 +43607,7 @@ export function createAgentChatService(args: {
             model: threadState.model,
             reasoningEffort: threadState.reasoningEffort,
             parentToolUseId: itemId,
-            description: prompt.slice(0, 120) || "Parallel agent",
+            description: cutTextAtCodePoint(prompt, 120) || "Parallel agent",
             background,
             turnId,
           });
@@ -45980,6 +46034,7 @@ export function createAgentChatService(args: {
       activeTurnId: null,
       startedTurnId: null,
       awaitingTurnStart: false,
+      stopRequestedDuringTurnStart: false,
       turnStartReserved: false,
       turnStartContextConsumed: false,
       threadResumed: false,
@@ -53159,19 +53214,19 @@ export function createAgentChatService(args: {
       .slice(0, 12)
       .map((link) => ({
         identifier: link.issue.identifier.slice(0, 100),
-        title: link.issue.title.slice(0, 300),
+        title: cutTextAtCodePoint(link.issue.title, 300),
         url: link.issue.url,
       }));
     const linearIssues = rawLinearIssues.map((issue) => ({
       identifier: portableText(issue.identifier).slice(0, 100),
-      title: portableText(issue.title).slice(0, 300),
+      title: cutTextAtCodePoint(portableText(issue.title), 300),
       url: sanitizePortableReferenceUrl(issue.url),
     }));
     const rawSourceMachineName = await localCrossMachineName();
     const sourceMachineName = portableText(rawSourceMachineName).slice(0, 200);
     const sourceModel = portableText(managed.session.model).slice(0, 300);
     const sourceTitle = sourceSession.title?.trim()
-      ? portableText(sourceSession.title.trim()).slice(0, 300)
+      ? cutTextAtCodePoint(portableText(sourceSession.title.trim()), 300)
       : null;
     // The destination creates a NEW worktree lane from this name. "Primary"
     // there would read as that machine's own checkout, so a primary source
@@ -53327,7 +53382,7 @@ export function createAgentChatService(args: {
         // runtime configuration. The destination resolves its own settings.
       },
       ...(route ? { route } : {}),
-      brief: portableText(generatedBrief.brief.trim()).slice(0, 16_000),
+      brief: cutTextAtCodePoint(portableText(generatedBrief.brief.trim()), 16_000),
       artifacts: {
         fileChanges: artifacts.fileChanges.map((entry) => portableText(entry).slice(0, 1_000)),
         commands: artifacts.commands.map((entry) => portableText(entry).slice(0, 1_000)),
@@ -53345,7 +53400,7 @@ export function createAgentChatService(args: {
       ...(gitBundle ? { gitBundle } : {}),
     };
     const sanitizedSensitiveContext = (mode === "brief"
-      && capsule.brief !== generatedBrief.brief.trim().slice(0, 16_000))
+      && capsule.brief !== cutTextAtCodePoint(generatedBrief.brief.trim(), 16_000))
       || continuationPrompt !== rawContinuationPrompt
       || originUrl !== rawOriginUrl
       || sourceMachineName !== rawSourceMachineName
@@ -54005,7 +54060,7 @@ export function createAgentChatService(args: {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
       const runtime = await ensureCodexSessionRuntime(args.managed);
-      const forkResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
+      const forkResponse = await forkCodexThread(runtime, {
         threadId: transport.nativeSessionId,
         excludeTurns: true,
         ...codexThreadIdentityConfig(args.managed),
@@ -55560,7 +55615,7 @@ export function createAgentChatService(args: {
             `External Codex thread '${externalThreadId}' was not found by thread/read.`,
           );
         }
-        const forkResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
+        const forkResponse = await forkCodexThread(runtime, {
           threadId: sourceThread.responseThreadId,
           excludeTurns: true,
           ...codexThreadIdentityConfig(managed),
@@ -66790,6 +66845,7 @@ export function createAgentChatService(args: {
         return result;
       }
       if (!runtime.activeTurnId) {
+        if (runtime.awaitingTurnStart || runtime.turnStartReserved) runtime.stopRequestedDuringTurnStart = true;
         settleCardsIfClearing();
         await clearCodexQueueIfAsked();
         await interruptActiveCodexSubagentTurns(managed, runtime);
@@ -68842,7 +68898,7 @@ export function createAgentChatService(args: {
       const title = summary?.title?.trim() || row?.title?.trim() || sessionId;
       const status = summary?.status ?? "gone";
       const tail = row?.statusNote?.trim() || summary?.summary?.trim() || "";
-      return `- "${title}" (${sessionId}): ${status}${tail ? ` — ${tail.replace(/\s+/g, " ").slice(0, 240)}` : ""}`;
+      return `- "${title}" (${sessionId}): ${status}${tail ? ` — ${cutTextAtCodePoint(tail.replace(/\s+/g, " "), 240)}` : ""}`;
     },
     sessionExists: (sessionId) => Boolean(sessionService.get(sessionId)),
     // A tracked agent CLI takes its wake typed at its prompt (see
@@ -77505,8 +77561,36 @@ export function createAgentChatService(args: {
     releaseFire: (schedule) => {
       db?.run?.("delete from kv where key = ?", [scheduledWorkClaimKey(schedule)]);
     },
+    wakeMessageRecorded: async (schedule) => {
+      // A provider's native schedule and a tracked CLI leave no marked message
+      // here, so they cannot be told apart from a delivery that happened.
+      if (schedule.provider === "claude") return true;
+      const row = sessionService.get(schedule.sessionId);
+      if (!row || !isChatToolType(row.toolType)) return true;
+      const transcript = await readTranscriptEnvelopesForSessionIdAsync(schedule.sessionId).catch((error: unknown) => {
+        logger.warn("agent_chat.scheduled_work_transcript_unreadable", {
+          scheduleId: schedule.id,
+          sessionId: schedule.sessionId,
+          error: getErrorMessage(error),
+        });
+        return null;
+      });
+      if (!transcript || transcript.truncated) return true;
+      const { envelopes } = transcript;
+      // An auto-resume reuses its id across usage limits, so an earlier resume
+      // says nothing about this occurrence.
+      const firedAt = schedule.lastFiredAt == null ? null : new Date(schedule.lastFiredAt).toISOString();
+      return envelopes.some((envelope) =>
+        envelope.event.type === "user_message"
+        && envelope.event.metadata?.scheduledWake?.scheduleId === schedule.id
+        && (firedAt == null || envelope.event.metadata.scheduledWake.firedAt === firedAt));
+    },
     fire: async (schedule, context) => {
       if (getCrossMachineMoveLock(schedule.sessionId, "scheduled_work")) return { retry: true };
+      // Armed while the parent still wanted it; it may have been put away since.
+      if (isAutoResumeScheduledWork(schedule) && !subagentParentStillWants(schedule.sessionId)) {
+        return { complete: true, outcomeSummary: "Not resumed: the chat that started this one was put away." };
+      }
       const firedAt = new Date(schedule.lastFiredAt ?? Date.now()).toISOString();
       const row = sessionService.get(schedule.sessionId);
       if (row?.tracked && isTrackedAgentCliToolType(row.toolType)) {

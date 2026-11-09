@@ -222,6 +222,8 @@ class LocalRuntimePoolClosedError extends Error {}
  * round-4 Windows fixes. See `stopOwnedRuntimeCooperatively`.
  */
 const LOCAL_RUNTIME_QUIT_BRAIN_BUDGET_MS = 3_000;
+/** Runs beside quit's 2 s telemetry flush, so a brain that exits on SIGTERM costs nothing extra. */
+const LOCAL_RUNTIME_QUIT_POSIX_BRAIN_BUDGET_MS = 2_000;
 const LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS = 2_000;
 // The Windows service probe itself costs ~2.1s (two PowerShell spawns), so the
 // off-thread child needs generous headroom before it is treated as unanswerable.
@@ -2947,8 +2949,33 @@ export class LocalRuntimeConnectionPool {
    * `closeAdmission` defaults to true for app quit. An updater handoff passes
    * false because the app may remain open if the installer does not take over.
    */
+  /**
+   * The last act of a forced quit. The kill `dispose()` schedules is a timer,
+   * and that timer dies with this process, so a brain ignoring SIGTERM would
+   * outlive the app.
+   */
+  killOwnedRuntimeNow(): void {
+    const child = this.ownedRuntimeChild;
+    if (child && !hasChildExited(child)) signalRuntimeChildProcess(child, "SIGKILL");
+  }
+
   async stopOwnedRuntimeCooperatively(options: { closeAdmission?: boolean } = {}): Promise<void> {
-    if (process.platform !== "win32") return;
+    if (process.platform !== "win32") {
+      // The kill timer `dispose()` leaves behind dies with this process, so a
+      // brain ignoring SIGTERM would outlive quit. An updater handoff keeps its
+      // brain; it may yet stay open.
+      if (options.closeAdmission === false) return;
+      const owned = this.ownedRuntimeChild;
+      if (!owned || owned.pid == null || hasChildExited(owned)) return;
+      this.stopping = true;
+      this.clearIsolatedRecoveryTimer();
+      signalRuntimeChildProcess(owned, "SIGTERM");
+      if (!(await waitForChildExit(owned, LOCAL_RUNTIME_QUIT_POSIX_BRAIN_BUDGET_MS))) {
+        this.logger.warn("local_runtime.quit_brain_force_stopped", { pid: owned.pid, acknowledged: false });
+        signalRuntimeChildProcess(owned, "SIGKILL");
+      }
+      return;
+    }
     const child = this.ownedRuntimeChild;
     if (!child || child.pid == null || hasChildExited(child)) return;
     // Normal quit closes admission synchronously, before waiting on the shutdown

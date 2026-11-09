@@ -40,6 +40,14 @@ export const GIT_CONFIG_OVERRIDE_ARGS = [
   // into the output, so a signed commit's first file path or message picks up
   // a "Good signature" line. `%G?`-style format fields still work.
   "-c", "log.showSignature=false",
+  // These reshape diff text that ADE parses. A blank context line must keep its
+  // leading space, submodules must stay a one-line entry, paths must stay
+  // relative to the repo root, and no escape codes. An explicit `--relative` or
+  // `--color` on the command still wins.
+  "-c", "diff.suppressBlankEmpty=false",
+  "-c", "diff.submodule=short",
+  "-c", "diff.relative=false",
+  "-c", "color.ui=false",
   // Windows git stops at 260-character paths unless this is on, and it is off
   // by default. A lane folder plus a deep repo path passes that easily: a
   // checkout fails with "Filename too long" and leaves its new branch behind,

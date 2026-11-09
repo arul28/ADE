@@ -392,30 +392,62 @@ function omittedFileContent(args: {
   };
 }
 
+/** A batch stops at each submodule it meets, so this is how many it can get past. */
+const CHECK_IGNORE_MAX_SUBMODULES = 16;
+
 /**
- * The paths git ignores, or null when git could not answer for a reason that
- * may clear up — the folder is one git refuses to use until the user trusts it
- * (safe.directory). Null is not cached, so the tree is right once they do.
- * Other failures (timeout, not a repository) keep the old answer: nothing is
- * ignored.
+ * The paths git ignores, or null when git could not answer. Null is not cached,
+ * so the tree is right once it can (a folder git refuses to use until the user
+ * trusts it, a timeout). A folder that is not a repository has a real answer:
+ * nothing is ignored.
+ *
+ * `check-ignore` dies at the first path inside a submodule and drops the rest
+ * of the batch, so paths in a submodule are asked of the submodule itself.
  */
-async function runGitCheckIgnoreBatch(args: { cwd: string; paths: string[]; timeoutMs?: number }): Promise<Set<string> | null> {
+async function runGitCheckIgnoreBatch(args: {
+  cwd: string;
+  paths: string[];
+  timeoutMs?: number;
+  submodulesLeft?: number;
+}): Promise<Set<string> | null> {
   if (args.paths.length === 0) return new Set<string>();
   const result = await runGit(["check-ignore", "--stdin"], {
     cwd: args.cwd,
     timeoutMs: args.timeoutMs ?? 7_000,
     stdin: `${args.paths.join("\n")}\n`,
   });
-  // check-ignore exits 1 when nothing matched.
-  if (result.exitCode !== 0 && result.exitCode !== 1) {
-    return parseGitOwnershipError(result.stderr) ? null : new Set<string>();
-  }
-  return new Set(
+  const ignored = new Set(
     result.stdout
       .split(/\r?\n/)
       .map((line) => normalizeRelative(line.trim()))
       .filter(Boolean)
   );
+  // check-ignore exits 1 when nothing matched.
+  if (result.exitCode === 0 || result.exitCode === 1) return ignored;
+  if (/not a git repository/i.test(result.stderr)) return ignored;
+  const submodule = /is in submodule '(.+)'\s*$/m.exec(result.stderr)?.[1]?.replace(/\/+$/, "");
+  const submodulesLeft = args.submodulesLeft ?? CHECK_IGNORE_MAX_SUBMODULES;
+  if (!submodule || submodulesLeft <= 0) return null;
+  const prefix = `${submodule}/`;
+  const nested = args.paths.filter((entry) => entry.startsWith(prefix));
+  if (nested.length === 0) return null;
+  const [rest, inSubmodule] = await Promise.all([
+    runGitCheckIgnoreBatch({
+      ...args,
+      paths: args.paths.filter((entry) => !entry.startsWith(prefix) && !ignored.has(entry)),
+      submodulesLeft: submodulesLeft - 1,
+    }),
+    runGitCheckIgnoreBatch({
+      ...args,
+      cwd: path.join(args.cwd, submodule),
+      paths: nested.map((entry) => entry.slice(prefix.length)),
+      submodulesLeft: submodulesLeft - 1,
+    }),
+  ]);
+  if (!rest || !inSubmodule) return null;
+  for (const entry of rest) ignored.add(entry);
+  for (const entry of inSubmodule) ignored.add(`${prefix}${entry}`);
+  return ignored;
 }
 
 function ensureSafePath(

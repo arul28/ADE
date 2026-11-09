@@ -1462,7 +1462,22 @@ function scheduleExitAfterUnhandled(): void {
   setTimeout(() => exitWorker(1), 20).unref();
 }
 
+/**
+ * The SDK's connection wrote after its stream had ended. The run behind it has
+ * already finished or failed on its own terms, so it is no reason to take the
+ * worker and every other run with it.
+ */
+function isBenignSdkStreamWriteAfterEnd(error: unknown): boolean {
+  const name = (error as { name?: unknown } | null)?.name;
+  const cause = (error as { cause?: { code?: unknown } } | null)?.cause;
+  return name === "ConnectError" && cause?.code === "ERR_STREAM_WRITE_AFTER_END";
+}
+
 function handleUnhandledWorkerError(error: unknown, origin: "unhandledRejection" | "uncaughtException"): void {
+  if (isBenignSdkStreamWriteAfterEnd(error)) {
+    post({ type: "log", level: "warn", message: "Cursor SDK wrote after its stream ended.", detail: { origin, error: errorMessage(error) } });
+    return;
+  }
   // Not re-entrant. The first failure already reports and schedules the exit,
   // and a failure raised while handling one must not start the loop again.
   if (unhandledExitScheduled) return;

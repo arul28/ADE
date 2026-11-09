@@ -135,6 +135,10 @@ pin through `assertWebRuntimePinRoutable`. A pin naming the host and project
 this adapter is already bound to is a no-op and proceeds unpinned; anything
 else throws rather than silently answering from the only host they have.
 
+Review status uses GitHub’s review decision, including its required-review rules.
+Moderator-hidden comments and reviews are excluded from the timeline and counts
+within the newest 100 of each; older items can still appear.
+
 ## Source file map
 
 Services. The canonical implementations run inside the runtime
@@ -2248,7 +2252,7 @@ transcript; iOS `WorkPrWatchWakeLine`).
   people and agent reviewers (deploy, CI, and dependency bots are ignored); a
   review bot's edit of its old comment, which is how such a bot reports a new
   review of a push (a person's edit does not wake the agent); the
-  branch starting to conflict; the PR merging or closing. A head that no CI
+  branch starting to conflict or a new head that remains conflicted; the PR merging or closing. A head that no CI
   check reported on for 10 minutes (`PR_WATCH_NO_CHECKS_GRACE_MS`; a docs-only
   push whose workflows skip it), told once per head and never as a pass —
   review bots and deploy previews do not count as CI, and a head where CI
@@ -2291,10 +2295,10 @@ transcript; iOS `WorkPrWatchWakeLine`).
   the agent got. It is never a user bubble.
 - **Stopping.** The PR merging or closing (one last wake, which still carries
   remarks left on the way out), the user or agent
-  turning it off, the chat being archived or deleted, 10 comment-only wakes in
-  a row (a bot loop), or 15 minutes of GitHub being unreadable (one last wake
-  with the reason). A settled chat keeps its watch and is still woken (settle stops
-  nothing); the wake's turn takes it out of settled. GitHub rate-limit pauses pause the reactor too.
+  turning it off, the chat being archived or deleted, or GitHub confirming the PR
+  or repository is gone or access is lost. Transient failures, rate limits,
+  expired sign-in and offline periods leave the watch armed for recovery. A settled
+  chat keeps its watch and is still woken; the wake takes it out of settled.
 - **Machine-local.** Both tables are excluded from CRR sync: the watch wakes
   the chat on the machine that runs it, and a synced row would let a second
   machine wake its own copy of the chat as well.

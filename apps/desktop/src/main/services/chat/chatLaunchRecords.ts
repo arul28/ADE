@@ -78,13 +78,14 @@ export function createChatLaunchRecordStore(args: { launchesDir: string; logger:
   const recordPath = (launchId: string) => path.join(launchesDir, `${launchId}.json`);
 
   const persist = (record: ChatLaunchRecord): void => {
+    const target = recordPath(record.snapshot.launchId);
+    const tmp = `${target}.${process.pid}.tmp`;
     try {
       fs.mkdirSync(launchesDir, { recursive: true });
-      const target = recordPath(record.snapshot.launchId);
-      const tmp = `${target}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(record));
       fs.renameSync(tmp, target);
     } catch (error) {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
       logger.warn("chat_launch.persist_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
     }
   };

@@ -27835,6 +27835,12 @@ async function runBrainCommand(
     };
   }
 
+  if (sub === "start" || sub === "stop" || sub === "restart") {
+    const { serviceHomeMismatch } = await import("./serviceManager");
+    const refused = serviceHomeMismatch(sub);
+    if (refused) return refused;
+  }
+
   if (sub === "start") {
     const { installRuntimeService } = await import("./serviceManager");
     return withAdeDefaultRole("cto", () => installRuntimeService());
