@@ -43,6 +43,8 @@ function requirementsAboveCeiling(file) {
   for (const [, library, version] of result.stdout.matchAll(/Name: (GLIBC|GLIBCXX|CXXABI)_(\d+(?:\.\d+)*)/g)) {
     if (isAbove(version.split(".").map(Number), CEILINGS[library])) above.add(`${library}_${version}`);
   }
+  // Named instead of numbered, and every one of them arrived after glibc 2.35.
+  for (const [requirement] of result.stdout.matchAll(/GLIBC_ABI_\w+/g)) above.add(requirement);
   return [...above];
 }
 
