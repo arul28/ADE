@@ -381,6 +381,11 @@ async function buildTranscribeCli(srcDir, buildDir, arch) {
     await fs.writeFile(manifestPath, WINDOWS_UTF8_MANIFEST);
     configureArgs.push(`-DCMAKE_EXE_LINKER_FLAGS=/MANIFEST:EMBED "/MANIFESTINPUT:${manifestPath}"`);
   }
+  if (process.platform === "linux") {
+    // Fully static: a dynamic build needs the glibc of the image that built
+    // it, which breaks dictation on every older distro.
+    configureArgs.push("-DCMAKE_EXE_LINKER_FLAGS=-static");
+  }
   await spawnStep("cmake", configureArgs);
   await spawnStep("cmake", [
     "--build",

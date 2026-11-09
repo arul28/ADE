@@ -1,9 +1,10 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveWindowsPackageIdentity } from "./windows-package-identity.mjs";
 import { ensureIcnsPng } from "./extract-icns-png.mjs";
+import { retryTransient } from "./release-retry.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const identity = resolveWindowsPackageIdentity(process.env.ADE_PACKAGE_CHANNEL);
@@ -29,15 +30,39 @@ const args = ["--publish", "never", `--config.appId=${identity.appId}`,
   ...(process.env.ADE_DESKTOP_VERSION ? [`--config.extraMetadata.version=${process.env.ADE_DESKTOP_VERSION}`] : []),
 ];
 const outputDir = path.join(root, channel === "stable" ? "release" : `release-${channel}`);
+// electron-builder downloads its packaging tools mid-build and gives up on one
+// bad response, which used to fail the whole release for a GitHub hiccup.
+const DOWNLOAD_FAILURE = /Response code (?:429|5\d\d)|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|socket hang up|Premature close/;
+
+function runElectronBuilder(target) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join(root, "node_modules/electron-builder/out/cli/cli.js"), "--linux", target, ...args], {
+      cwd: root,
+      env: { ...process.env, ADE_LINUX_APPIMAGE_BUILD: target === "AppImage" ? "1" : "0" },
+      stdio: ["inherit", "pipe", "pipe"],
+    });
+    let outputTail = "";
+    const forward = (stream, sink) => stream.on("data", (chunk) => {
+      sink.write(chunk);
+      outputTail = `${outputTail}${chunk}`.slice(-8192);
+    });
+    forward(child.stdout, process.stdout);
+    forward(child.stderr, process.stderr);
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(Object.assign(new Error(`electron-builder ${target} exited with ${code ?? signal}`), { stderr: outputTail }));
+    });
+  });
+}
+
 let appImageManifests = new Map();
 for (const target of ["AppImage", "deb"]) {
-  const result = spawnSync(process.execPath, [path.join(root, "node_modules/electron-builder/out/cli/cli.js"), "--linux", target, ...args], {
-    cwd: root,
-    env: { ...process.env, ADE_LINUX_APPIMAGE_BUILD: target === "AppImage" ? "1" : "0" },
-    stdio: "inherit",
+  await retryTransient(`electron-builder ${target}`, () => runElectronBuilder(target), {
+    attempts: 4,
+    delayMs: 20_000,
+    isTransient: DOWNLOAD_FAILURE,
   });
-  if (result.error) throw result.error;
-  if (result.status !== 0) { process.exitCode = result.status ?? 1; break; }
   if (target === "AppImage") {
     appImageManifests = new Map(fs.readdirSync(outputDir)
       .filter((name) => /-linux(?:-[a-z0-9]+)?\.yml$/.test(name))

@@ -3,6 +3,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
+import { assertSystemLibraryCeiling } from "./linux-system-library-ceiling.mjs";
 import { createPackagedTreeAssertions, findNodePtyAddon } from "./validate-packaged-tree.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -38,6 +39,15 @@ if (!await findNodePtyAddon(pty, { prebuildDirNames: [`linux-${arch}`] })) throw
 // Linux uses forkpty, but ship an executable helper for node-pty payload parity.
 await assertions.assertPathExists(path.join(pty, "build/Release/spawn-helper"), "node-pty spawn helper");
 fs.accessSync(path.join(pty, "build/Release/spawn-helper"), fs.constants.X_OK);
+// The brain unpacks this archive at runtime, so the check has to look inside it.
+const runtimeNative = fs.mkdtempSync(path.join(release, ".validate-runtime-native-"));
+try {
+  const unpack = spawnSync("tar", ["-xzf", path.join(resources, "runtime", `ade-linux-${arch}.native.tar.gz`), "-C", runtimeNative], { encoding: "utf8" });
+  if (unpack.error || unpack.status !== 0) throw new Error(`[validate-linux-artifacts] Cannot unpack the runtime native archive: ${unpack.error?.message || unpack.stderr}`);
+  assertSystemLibraryCeiling([unpacked, runtimeNative]);
+} finally {
+  fs.rmSync(runtimeNative, { recursive: true, force: true });
+}
 for (const extension of ["AppImage", "deb"]) {
   if (!fs.readdirSync(release).some((name) => name.endsWith(`-linux-${arch}.${extension}`))) throw new Error(`[validate-linux-artifacts] Missing ${extension} artifact for ${arch}`);
 }

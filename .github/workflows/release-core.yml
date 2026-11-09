@@ -503,8 +503,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # A fixed Ubuntu, not ubuntu-latest: native modules need the glibc of
+          # whichever image built them, so a moved image drops every older
+          # distro. validate-linux-artifacts.mjs fails the build if one slips.
           - arch: x64
-            os: ubuntu-latest
+            os: ubuntu-24.04
             rust: x86_64-unknown-linux-musl
           - arch: arm64
             os: ubuntu-24.04-arm
@@ -983,8 +986,9 @@ jobs:
           - target: darwin-x64
             os: macos-15-intel
             binary: ade-darwin-x64
+          # Fixed for the same reason as build-linux-release.
           - target: linux-x64
-            os: ubuntu-latest
+            os: ubuntu-24.04
             binary: ade-linux-x64
           - target: linux-arm64
             os: ubuntu-24.04-arm
