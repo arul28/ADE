@@ -235,7 +235,7 @@ export function AskQuestionComposer({
 }: {
   request: PendingInputRequest;
   responding?: boolean;
-  /** Answering disables or removes the focused control; this puts focus somewhere useful. */
+  /** Answering disables or removes the focused control; this returns focus to the composer. */
   onFocusLost?: () => void;
   onSubmit: (answers: Record<string, string | string[]>) => void;
   onDecline: () => void;
@@ -273,12 +273,17 @@ export function AskQuestionComposer({
 }) {
   const onFocusLostRef = useRef(onFocusLost);
   onFocusLostRef.current = onFocusLost;
-  useEffect(() => {
-    if (responding) onFocusLostRef.current?.();
-  }, [responding]);
-  useEffect(() => () => {
-    requestAnimationFrame(() => onFocusLostRef.current?.());
+  const reclaimLostFocus = useCallback(() => {
+    const active = document.activeElement;
+    if (!active || active === document.body || (active as HTMLButtonElement).disabled) onFocusLostRef.current?.();
   }, []);
+  useEffect(() => {
+    if (responding) reclaimLostFocus();
+  }, [reclaimLostFocus, responding]);
+  // After the commit that removed this card, so the composer it gave way to is mounted.
+  useEffect(() => () => {
+    requestAnimationFrame(reclaimLostFocus);
+  }, [reclaimLostFocus]);
   const questions = request.questions;
   const [page, setPage] = useState(0);
   const [picksById, setPicks] = useState<Record<string, string[]>>({});

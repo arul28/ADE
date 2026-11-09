@@ -9432,6 +9432,8 @@ function AgentChatComposerImpl({
               key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
               request={askQuestionRequest}
               responding={approvalResponding ?? false}
+              // Through the ref: the editor kind can change in the render that removes the card.
+              onFocusLost={() => focusComposerInputRef.current()}
               onSubmit={(answers) => {
                 // The draft WAS the answer; it must not survive into the next
                 // turn as a half-sent duplicate. Staged attachments deliberately

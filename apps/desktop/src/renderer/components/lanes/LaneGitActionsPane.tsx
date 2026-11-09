@@ -1,6 +1,6 @@
 import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LaneDiffMode } from "../../../shared/types";
-import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, CheckCircle, DotsThree, Folder, GitBranch, GitCommit, Minus, Stack, Trash } from "@phosphor-icons/react";
+import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, CheckCircle, DotsThree, Folder, GitBranch, GitCommit, GitMerge, Minus, Stack, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
   projectStateKeyForBinding,
@@ -1878,12 +1878,12 @@ export function LaneGitActionsPane({
         </WorkToolChromeButton>
         {laneMerged ? (
           <span
-            className="inline-flex items-center gap-1 whitespace-nowrap px-1 text-[11px] text-fg/55"
+            className="inline-flex h-6 items-center gap-1 whitespace-nowrap rounded-full border border-(color:--pr-merged)/30 px-2 text-[11px] font-medium text-fg/75"
             data-testid="git-pane-merged-note"
             title="This lane's pull request was merged and its remote branch is gone. There is nothing left to push."
           >
-            <CheckCircle size={12} />
-            PR #{mergedPrNumber} merged
+            <GitMerge size={12} weight="bold" style={{ color: "var(--pr-merged)" }} aria-hidden />
+            #{mergedPrNumber} merged
           </span>
         ) : (
           <WorkToolChromeButton

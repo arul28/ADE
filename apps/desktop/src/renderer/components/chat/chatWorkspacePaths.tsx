@@ -196,9 +196,10 @@ export function editorFileLinkPath(href: string): string | null {
 
 export function resolveWorkspacePathFromHref(href: string | undefined): WorkspacePathLocation | null {
   if (!href) return null;
-  if (isExternalHref(href)) return null;
+  // Before the external check, which any `scheme://` link would satisfy.
   const editorPath = editorFileLinkPath(href);
   if (editorPath) return parseWorkspacePathLocation(editorPath);
+  if (isExternalHref(href)) return null;
   const candidate = parseWorkspacePathLocation(href);
   if (!candidate) return null;
   return looksLikeWorkspacePath(href) ? candidate : null;
