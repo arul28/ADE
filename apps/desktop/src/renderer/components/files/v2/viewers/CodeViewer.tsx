@@ -160,9 +160,10 @@ export function CodeViewer({
 
   // The same file clicked again: its model is already bound, so no bind will
   // pick the reveal up.
-  useEffect(() => subscribePendingReveals((path) => {
+  useEffect(() => subscribePendingReveals((path, targetWorkspaceId) => {
     const editor = editorRef.current;
     if (!editor || path !== ctxRef.current.tab.path) return;
+    if (targetWorkspaceId && targetWorkspaceId !== ctxRef.current.workspaceId) return;
     consumePendingReveal(path, editor);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), []);

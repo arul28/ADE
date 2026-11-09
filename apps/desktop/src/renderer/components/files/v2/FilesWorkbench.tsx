@@ -1051,7 +1051,7 @@ export function FilesWorkbench({
       setSelectedNodePath(path);
       setEmbeddedSurface("editor");
       if (opts.line && opts.line > 0) {
-        setPendingReveal(path, { line: opts.line, column: opts.column });
+        setPendingReveal(path, { line: opts.line, column: opts.column }, workspaceId);
       }
       try {
         // The viewer reads the same LRU through useFileContent, so a cached

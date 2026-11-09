@@ -89,7 +89,8 @@ function readPosition(text: string, at: number): { end: number; suffix: string }
 function isRejectedToken(token: string): boolean {
   // Network paths never become links: resolving one can make Windows hand the
   // user's credentials to that server.
-  if (token.startsWith("//") || token.startsWith("\\\\")) return true;
+  // Either slash counts: Windows reads `/\host` as one too.
+  if (/^[\\/]{2}/.test(token)) return true;
   if (/^[-@$+~]/.test(token)) return true;
   // Dates and fractions (`2026/11/09`, `1/2`), not files.
   return /^[\d/\\.]+$/.test(token);

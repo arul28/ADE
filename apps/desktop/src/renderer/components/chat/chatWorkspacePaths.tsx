@@ -430,6 +430,7 @@ export async function probeWorkspacePath(args: {
   workspaceId: string;
   path: string;
   pin: OpenProjectBinding | null | undefined;
+  refreshIndex?: boolean;
 }): Promise<WorkspacePathProbe> {
   const quickOpen = typeof window !== "undefined" ? window.ade?.files?.quickOpen : undefined;
   if (typeof quickOpen !== "function") return { kind: "file", path: args.path };
@@ -447,6 +448,7 @@ export async function probeWorkspacePath(args: {
       query,
       limit: PATH_PROBE_LIMIT,
       includeIgnored: false,
+      ...(args.refreshIndex ? { refreshIndex: true } : {}),
     }, args.pin);
   } catch {
     // A failed probe must not swallow the click: fall back to the old
@@ -617,9 +619,14 @@ export function useWorkspacePathOpener(args: {
     const workspace = target.laneId
       ? resolvedWorkspaces.find((candidate) => candidate.laneId === target.laneId) ?? null
       : null;
-    const probe = workspace
+    let probe: WorkspacePathProbe = workspace
       ? await probeWorkspacePath({ workspaceId: workspace.id, path: target.openFilePath, pin: runtimePin })
-      : ({ kind: "file", path: target.openFilePath } as const);
+      : { kind: "file", path: target.openFilePath };
+    // A bare name has nothing else to read, so a file an agent just created is
+    // only found by walking the workspace again, once, on this click.
+    if (probe.kind === "missing" && workspace && !target.openFilePath.includes("/")) {
+      probe = await probeWorkspacePath({ workspaceId: workspace.id, path: target.openFilePath, pin: runtimePin, refreshIndex: true });
+    }
 
     if (probe.kind === "missing") {
       // A miss is only authoritative for a BARE name, where the index is the
