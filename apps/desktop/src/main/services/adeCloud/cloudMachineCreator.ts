@@ -283,6 +283,8 @@ export async function createCloudMachine(
     signal?: AbortSignal;
     /** More tags for the box (a ready machine's project and state); ADE's own tags win. */
     metadata?: Record<string, string>;
+    /** The computer this one replaces in a move: its disk size carries over. */
+    moveFromInstanceId?: string;
   } = {},
 ): Promise<CloudCreateMachineResult> {
   const { signal } = options;
@@ -339,6 +341,7 @@ export async function createCloudMachine(
       name,
       type: cloudInstanceType(rawArgs.kind),
       resources: { cpu: shape.cpu, memory: shape.memoryGb },
+      ...(options.moveFromInstanceId ? { moveFromInstanceId: options.moveFromInstanceId } : {}),
       metadata: { ...options.metadata, created_by: "ade", ade_request_id: requestId },
       ...(Object.keys(machineEnv).length ? { env: machineEnv } : {}),
       // The box's wake URL: its brain requests it while it works, which keeps

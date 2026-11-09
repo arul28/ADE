@@ -45,7 +45,8 @@ async function readCloudEnabled(service: Record<string, unknown> | null): Promis
   if (typeof access !== "function") return false;
   try {
     return ((await (access as () => Promise<unknown>).call(service)) as { enabled?: unknown } | null)?.enabled === true;
-  } catch {
+  } catch (error) {
+    console.warn("[cloud] access read failed", error instanceof Error ? error.message : String(error));
     return false;
   }
 }

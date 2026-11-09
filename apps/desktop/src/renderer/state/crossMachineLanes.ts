@@ -2137,11 +2137,12 @@ function connectionsReadSignature(connections: readonly RemoteRuntimeConnectionS
 
 /** What the saved-chats read needs to know, at the moment it runs. */
 function savedChatsContext(): SavedChatsContext {
-  const scope = runtime.scope;
+  const projectKeyOf = () => normalizeGitRemoteIdentity(runtime.scope.repoOriginUrl ?? resolveBoundRepoOriginUrl(runtime.scope));
+  const projectKey = projectKeyOf();
   return {
     connections: runtime.connections,
-    projectKey: normalizeGitRemoteIdentity(scope.repoOriginUrl ?? resolveBoundRepoOriginUrl(scope)),
-    isActive: () => runtime.refCount > 0 && isDocumentVisible(),
+    projectKey,
+    isActive: () => runtime.refCount > 0 && isDocumentVisible() && projectKeyOf() === projectKey,
   };
 }
 

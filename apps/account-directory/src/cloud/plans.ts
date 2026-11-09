@@ -47,6 +47,12 @@ export function isMeteredStatus(status: string): boolean {
   return METERED_STATUSES.has(status);
 }
 
+/** Not awake and not on its way there: the only states the 30-day delete may touch. */
+const RESTING_STATUSES = new Set(["sleeping", "stopped", "failed"]);
+export function isRestingStatus(status: string): boolean {
+  return RESTING_STATUSES.has(status);
+}
+
 /** Thousandths of a Small-hour for `ms` of awake time at this size. */
 export function hoursMilliFor(ms: number, multiplierMilli: number): number {
   if (ms <= 0) return 0;

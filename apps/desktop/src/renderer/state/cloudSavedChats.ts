@@ -145,6 +145,12 @@ export function savedChatSummary(location: SavedChatLocation): AgentChatSessionS
   } as unknown as AgentChatSessionSummary;
 }
 
+/** The chat shows as unavailable; this says why. */
+function logSavedChatReadFailure(error: unknown): null {
+  console.warn("[cloud] saved chat read failed", error instanceof Error ? error.message : String(error));
+  return null;
+}
+
 type SavedChatsBridge = NonNullable<NonNullable<Window["ade"]["cloud"]>["savedChats"]>;
 
 /**
@@ -172,7 +178,7 @@ export function withSavedChatReads(
         return async (args: Parameters<AgentChatApi["getEventHistory"]>[0], pin?: OpenProjectBinding | null) => {
           const location = locate(args.sessionId, pin);
           if (!location) return target.getEventHistory(args, pin);
-          const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId }).catch(() => null);
+          const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId }).catch(logSavedChatReadFailure);
           if (!page) return { sessionId: args.sessionId, events: [], truncated: false, sessionFound: true, hasOlderHistory: false, unavailable: true } satisfies AgentChatEventHistorySnapshot;
           return savedChatSnapshot(page, args.sessionId);
         };
@@ -181,7 +187,7 @@ export function withSavedChatReads(
         return async (args: Parameters<AgentChatApi["getEventHistoryPage"]>[0], pin?: OpenProjectBinding | null) => {
           const location = locate(args.sessionId, pin);
           if (!location) return target.getEventHistoryPage(args, pin);
-          const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId, before: args.beforeOffset }).catch(() => null);
+          const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId, before: args.beforeOffset }).catch(logSavedChatReadFailure);
           if (!page) return { sessionId: args.sessionId, events: [], startOffset: args.beforeOffset, hasMore: false, sessionFound: true, unavailable: true } satisfies AgentChatEventHistoryPage;
           return savedChatHistoryPage(page, args.sessionId);
         };

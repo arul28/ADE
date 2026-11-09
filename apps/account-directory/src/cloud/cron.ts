@@ -1,6 +1,6 @@
 import { sendCloudEmail } from "./email";
 import type { CloudInstance } from "./contract";
-import { hoursMilliFor, isMeteredStatus, utcDay } from "./plans";
+import { hoursMilliFor, isMeteredStatus, isRestingStatus, utcDay } from "./plans";
 import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudProvider } from "./provider";
 import {
   DELETION_WARNING_LATE_MS,
@@ -18,6 +18,7 @@ import {
   rollPeriodIfDue,
   settleStatements,
   statusChangeStatements,
+  statusGuard,
   writeSetting,
   type AccountRow,
   type CloudEnv,
@@ -45,6 +46,10 @@ const GONE_CHECKS_PER_TICK = 5;
 const DAILY_AFTER_HOUR_UTC = 2;
 const RECONCILE_DAYS_BEHIND = 3;
 const DELETION_BATCH = 25;
+/** Most accounts one tick starts a new period for; the rest wait for the next minute. */
+const PERIOD_ROLLS_PER_TICK = 200;
+/** How long a daily run holds its claim, so overlapping ticks don't both run it. */
+const DAILY_CLAIM_MS = 15 * 60_000;
 const OWNER_CHECK_INTERVAL_MS = 10 * 60_000;
 const OWNER_ALERT_REPEAT_MS = 24 * 60 * 60_000;
 const WALLET_ALERT_USD = 15;
@@ -79,9 +84,10 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   const pendingStatements: D1PreparedStatement[] = [];
   const pendingDeletes: string[] = [];
   const live: TickComputer[] = [];
+  const taken = new Set(computers.filter((computer) => !isPendingId(computer.instance_id)).map((computer) => computer.instance_id));
   for (const computer of computers) {
     if (isPendingId(computer.instance_id)) {
-      adoptPending(env, computer, instances, now, pendingStatements, pendingDeletes, live);
+      adoptPending(env, computer, instances, taken, now, pendingStatements, pendingDeletes, live);
     } else {
       live.push(computer);
     }
@@ -119,20 +125,25 @@ function adoptPending(
   env: CloudEnv,
   computer: TickComputer,
   instances: CloudInstance[],
+  taken: Set<string>,
   now: number,
   statements: D1PreparedStatement[],
   deletes: string[],
   live: TickComputer[],
 ): void {
+  // The tag comes from the client: one that matches a computer already in a row
+  // adopts nothing, and that reservation times out like any other.
   const instance = computer.request_id
-    ? instances.find((entry) => entry.metadata.ade_request_id === computer.request_id)
+    ? instances.find((entry) => entry.metadata.ade_request_id === computer.request_id && !taken.has(entry.id))
     : undefined;
   if (instance) {
+    taken.add(instance.id);
     const awake = isMeteredStatus(instance.status);
+    // `not exists`: a deleted row keeps its id, and a clash here must not sink the tick's batch.
     statements.push(env.DB.prepare(`
       update cloud_computers set instance_id = ?, status = ?, status_changed_at = ?, awake_since = ?, last_awake_at = ?
-      where instance_id = ?
-    `).bind(instance.id, instance.status, now, awake ? now : null, now, computer.instance_id));
+      where instance_id = ? and not exists (select 1 from cloud_computers where instance_id = ?)
+    `).bind(instance.id, instance.status, now, awake ? now : null, now, computer.instance_id, instance.id));
     statements.push(powerLogStatement(env, { instance_id: instance.id, user_id: computer.user_id }, "start", "adopted_by_tick", now));
     computer.instance_id = instance.id;
     computer.status = instance.status;
@@ -178,22 +189,34 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
   if (byUser.size === 0) return;
   const accounts = await env.DB.prepare("select * from cloud_accounts where user_id in (select value from json_each(?))")
     .bind(JSON.stringify([...byUser.keys()])).all<AccountRow>();
+  let rolls = 0;
+  const outOfHoursUsers: string[] = [];
   await Promise.all((accounts.results ?? []).map(async (row) => {
-    const account = await rollPeriodIfDue(env, row, now);
-    const owned = byUser.get(account.user_id) ?? [];
-    // A roll restarted the open stretches at this instant (see startFreshPeriod).
-    if (account !== row) {
-      for (const computer of owned) if (computer.awake_since != null && computer.awake_since <= now) computer.awake_since = now;
-    }
-    const used = liveUsedMilli(account, owned, now);
-    const state = hoursState(account, used);
-    await warnHours(env, account, state, used, now);
-    if (state === "zero") {
-      // Scheduled work is refused at 0 hours: a timed wake wouldn't come back anyway.
-      await env.DB.prepare("delete from cloud_wakes where user_id = ?").bind(account.user_id).run();
-      await stopAtZero(env, provider, owned, now);
+    // Most accounts roll at once on the 1st: a tick does its share and leaves the rest due.
+    if (row.period_end <= now && ++rolls > PERIOD_ROLLS_PER_TICK) return;
+    try {
+      const account = await rollPeriodIfDue(env, row, now);
+      const owned = byUser.get(account.user_id) ?? [];
+      // A roll restarted the open stretches at this instant (see startFreshPeriod).
+      if (account !== row) {
+        for (const computer of owned) if (computer.awake_since != null && computer.awake_since <= now) computer.awake_since = now;
+      }
+      const used = liveUsedMilli(account, owned, now);
+      const state = hoursState(account, used);
+      await warnHours(env, account, state, used, now);
+      if (state === "zero") {
+        outOfHoursUsers.push(account.user_id);
+        await stopAtZero(env, provider, owned, now);
+      }
+    } catch (error) {
+      // One account's failure must not cost every other account its tick.
+      logCloud("cloud.tick_account_failed", { userId: row.user_id, message: error instanceof Error ? error.message : "unknown" });
     }
   }));
+  // One query however many accounts are out. Scheduled work is refused at 0 hours: a timed wake wouldn't come back anyway.
+  if (outOfHoursUsers.length) {
+    await env.DB.prepare("delete from cloud_wakes where user_id in (select value from json_each(?))").bind(JSON.stringify(outOfHoursUsers)).run();
+  }
 }
 
 async function warnHours(env: CloudEnv, account: AccountRow, state: string, used: number, now: number): Promise<void> {
@@ -309,7 +332,10 @@ async function runDaily(env: CloudEnv, provider: CloudProvider, computers: TickC
   const today = utcDay(now);
   const last = await readSetting(env, "last_daily_day");
   if (last === today) return;
-  await writeSetting(env, "last_daily_day", today, now);
+  // The day is only marked done at the end, so a run that dies is tried again.
+  const claimedAt = Number(await readSetting(env, "daily_claim_at") ?? 0);
+  if (now - claimedAt < DAILY_CLAIM_MS) return;
+  await writeSetting(env, "daily_claim_at", String(now), now);
 
   await settleOpenStretches(env, computers, now);
   const unexplained = await reconcileDays(env, provider, last, today, now);
@@ -319,14 +345,18 @@ async function runDaily(env: CloudEnv, provider: CloudProvider, computers: TickC
     await sendCloudEmail(env, { owner: true, subject: "ADE Cloud minutes the power log can't explain", text: lines.join("\n") });
   }
   await sweepInactive(env, provider, computers, now);
+  await writeSetting(env, "last_daily_day", today, now);
 }
 
 async function settleOpenStretches(env: CloudEnv, computers: TickComputer[], now: number): Promise<void> {
   const statements: D1PreparedStatement[] = [];
   for (const computer of computers) {
     if (computer.awake_since == null || computer.awake_since > now) continue;
-    statements.push(...settleStatements(env, computer, now));
-    statements.push(env.DB.prepare("update cloud_computers set awake_since = ? where instance_id = ?").bind(now, computer.instance_id));
+    // Guarded: a sleep since this tick read the row has already charged this stretch.
+    const guard = statusGuard(computer);
+    statements.push(...settleStatements(env, computer, now, guard));
+    statements.push(env.DB.prepare(`update cloud_computers set awake_since = ? where instance_id = ? and ${guard.sql}`)
+      .bind(now, computer.instance_id, ...guard.binds));
     computer.awake_since = now;
   }
   if (statements.length) await env.DB.batch(statements);
@@ -378,19 +408,25 @@ async function reconcileDays(env: CloudEnv, provider: CloudProvider, last: strin
       const multiplier = row.multiplier_milli ?? row.computer_mult;
       const freeMs = row.free_ms ?? 0;
       const providerBillableMs = Math.max(0, entry.awakeMinutes * 60_000 - freeMs);
-      const providerMilli = hoursMilliFor(providerBillableMs, multiplier);
+      // A resize changes the rate mid-day, so correct at the rate the day really ran at.
+      const providerMilli = meteredMs > 0 && meteredMilli > 0
+        ? Math.round((providerBillableMs * meteredMilli) / meteredMs)
+        : hoursMilliFor(providerBillableMs, multiplier);
       const delta = providerMilli - meteredMilli;
       const inPeriod = row.period_start != null && Date.parse(`${day}T00:00:00Z`) >= row.period_start - 86_400_000;
+      // First: it reads the mark the next statement sets, so a repeat of this day charges once.
+      if (inPeriod && delta !== 0) {
+        statements.push(env.DB.prepare(`
+          update cloud_accounts set used_milli = max(0, used_milli + ?), updated_at = ?
+          where user_id = ? and not exists (select 1 from cloud_computer_days where instance_id = ? and day = ? and reconciled_at is not null)
+        `).bind(delta, now, row.user_id, entry.id, day));
+      }
       statements.push(env.DB.prepare(`
         insert into cloud_computer_days (instance_id, day, user_id, multiplier_milli, provider_minutes, corrected_milli, reconciled_at)
         values (?, ?, ?, ?, ?, ?, ?)
         on conflict (instance_id, day) do update set provider_minutes = excluded.provider_minutes,
           corrected_milli = excluded.corrected_milli, reconciled_at = excluded.reconciled_at
       `).bind(entry.id, day, row.user_id, multiplier, entry.awakeMinutes, inPeriod ? delta : 0, now));
-      if (inPeriod && delta !== 0) {
-        statements.push(env.DB.prepare("update cloud_accounts set used_milli = max(0, used_milli + ?), updated_at = ? where user_id = ?")
-          .bind(delta, now, row.user_id));
-      }
       const minutes = entry.awakeMinutes - Math.ceil((meteredMs + freeMs) / 60_000);
       if (minutes > UNEXPLAINED_MINUTES) unexplained.push({ instanceId: entry.id, day, minutes });
     }
@@ -447,7 +483,23 @@ async function warnDeletion(env: CloudEnv, computer: TickComputer, column: "dele
 }
 
 async function deleteInactive(env: CloudEnv, provider: CloudProvider, computer: TickComputer, now: number): Promise<void> {
-  const events = await provider.instanceEvents(computer.instance_id).catch(() => null);
+  // The list and row are from the start of the tick: someone may have opened it since.
+  try {
+    const current = await provider.getInstance(computer.instance_id);
+    if (!isRestingStatus(current.status)) return;
+  } catch (error) {
+    if (!(error instanceof CloudProviderError && error.status === 404)) {
+      logCloud("cloud.delete_inactive_check_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+      return;
+    }
+  }
+  const fresh = await env.DB.prepare("select awake_since, last_awake_at, deleted_at from cloud_computers where instance_id = ?")
+    .bind(computer.instance_id).first<Pick<ComputerRow, "awake_since" | "last_awake_at" | "deleted_at">>();
+  if (!fresh || fresh.deleted_at != null || fresh.awake_since != null || fresh.last_awake_at !== computer.last_awake_at) return;
+  const events = await provider.instanceEvents(computer.instance_id).catch((error: unknown) => {
+    logCloud("cloud.delete_events_read_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+    return null;
+  });
   try {
     await provider.deleteInstance(computer.instance_id);
   } catch (error) {

@@ -40,6 +40,7 @@ import {
   cloudNoProviderSentence,
   cloudVaultFromBridge,
   getCloudProvider,
+  knownCloudProvider,
   readCloudStatus,
   requireCloudProvider,
   watchCloudAccessForSkills,
@@ -146,7 +147,10 @@ export function registerCloudIpc(args: {
   // its cache keeps that to the server at most every 10 minutes.
   let lastAccess: boolean | null = null;
   const readAccess = async (): Promise<boolean> => {
-    const enabled = await cloudAccessEnabled(credentials).catch(() => false);
+    const enabled = await cloudAccessEnabled(credentials).catch((error: unknown) => {
+      logger.warn("cloud.access_read_failed", { error: error instanceof Error ? error.message : String(error) });
+      return false;
+    });
     if (lastAccess !== null && lastAccess !== enabled) sendToAllWindows(IPC.cloudStatusChanged);
     lastAccess = enabled;
     return enabled;
@@ -247,7 +251,8 @@ export function registerCloudIpc(args: {
     removeAccountMachine: args.removeAccountMachine,
     logger,
   });
-  startCloudSleepWatch({ client: savedClient, logger, firstPassDelayMs: STARTUP_CHECK_DELAY_MS + 30_000 });
+  // Off the list this asks nothing: access is read at sign-in and on focus only.
+  startCloudSleepWatch({ client: async () => knownCloudProvider(credentials), logger, firstPassDelayMs: STARTUP_CHECK_DELAY_MS + 30_000 });
   // Remote connections wake a sleeping box the person is about to use. Only a
   // machine the machine list showed as a cloud box is looked up, so a
   // Connect to a laptop never waits on the provider.

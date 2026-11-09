@@ -10,6 +10,7 @@ import {
   freePeriodFor,
   hoursMilliFor,
   isMeteredStatus,
+  isRestingStatus,
   splitByUtcDay,
 } from "./plans";
 
@@ -74,6 +75,7 @@ export type AccountRow = {
   cancel_at_period_end: number;
   extra_enabled: number;
   extra_reported_milli: number;
+  extra_owed_milli: number;
   past_due_used_milli: number | null;
   past_due_period_end: number | null;
   warned_80_at: number | null;
@@ -122,9 +124,9 @@ export async function listComputers(env: CloudEnv, userId: string): Promise<Comp
  * Holds a statement back unless the row still reads what the caller read, so two
  * requests racing a status change (the idle call and a tick or read) charge once.
  */
-type StatusGuard = { sql: string; binds: Array<string | number> };
+export type StatusGuard = { sql: string; binds: Array<string | number> };
 
-function statusGuard(computer: Pick<ComputerRow, "instance_id" | "status" | "awake_since">): StatusGuard {
+export function statusGuard(computer: Pick<ComputerRow, "instance_id" | "status" | "awake_since">): StatusGuard {
   return computer.awake_since == null
     ? { sql: "exists (select 1 from cloud_computers where instance_id = ? and status = ? and awake_since is null)", binds: [computer.instance_id, computer.status] }
     : { sql: "exists (select 1 from cloud_computers where instance_id = ? and status = ? and awake_since = ?)", binds: [computer.instance_id, computer.status, computer.awake_since] };
@@ -247,7 +249,8 @@ export function deleteLogStatement(
 
 /** Settles an open stretch and marks the computer deleted, for after the provider's delete. */
 export function markDeletedStatements(env: CloudEnv, computer: ComputerRow, now: number): D1PreparedStatement[] {
-  const statements = settleStatements(env, computer, now);
+  // Guarded: two deletes of one computer charge its last stretch once.
+  const statements = settleStatements(env, computer, now, statusGuard(computer));
   computer.awake_since = null;
   computer.deleted_at = now;
   statements.push(env.DB.prepare("update cloud_computers set deleted_at = ?, awake_since = null, status = 'deleted', status_changed_at = ? where instance_id = ?")
@@ -387,6 +390,8 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
   const wasPastDue = account.stripe_status === "past_due";
   const isPastDue = nextStripeStatus === "past_due";
   const period = freePeriodFor(now);
+  /** A new billing period: nothing is reported or owed in it yet. */
+  const clearExtraReports: Array<[string, unknown]> = [["extra_reported_milli", 0], ["extra_owed_milli", 0]];
 
   const extras: Array<[string, unknown]> = [];
   if (change.stripeCustomerId !== undefined) extras.push(["stripe_customer_id", change.stripeCustomerId]);
@@ -398,8 +403,10 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
     // Read before the fresh start replaces them: a later paid invoice restores these.
     const stashUsed = liveUsedMilli(account, await listComputers(env, userId), now);
     const stashPeriodEnd = change.periodEnd ?? account.period_end;
+    // Extra hours go off here, but what was already used is still owed.
+    const owed = extraActive(account) ? Math.max(account.extra_owed_milli, stashUsed - account.included_milli, 0) : account.extra_owed_milli;
     account = await startFreshPeriod(env, account, { plan: "paid", start: period.start, end: period.end, included: FREE_INCLUDED_MILLI }, now);
-    extras.push(["past_due_used_milli", stashUsed], ["past_due_period_end", stashPeriodEnd], ["extra_enabled", 0]);
+    extras.push(["past_due_used_milli", stashUsed], ["past_due_period_end", stashPeriodEnd], ["extra_enabled", 0], ["extra_owed_milli", owed]);
   } else if (wasPastDue && !isPastDue && nextPlan === "paid") {
     const stashEnd = account.past_due_period_end;
     const paidEnd = change.periodEnd ?? stashEnd ?? period.end;
@@ -414,14 +421,14 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
       account = await startFreshPeriod(env, account, {
         plan: "paid", start: change.periodStart ?? now, end: paidEnd, included: PAID_INCLUDED_MILLI,
       }, now);
-      extras.push(["extra_reported_milli", 0]);
+      extras.push(...clearExtraReports);
     }
     extras.push(["past_due_used_milli", null], ["past_due_period_end", null]);
   } else if (account.plan === "free" && nextPlan === "paid") {
     account = await startFreshPeriod(env, account, {
       plan: "paid", start: change.periodStart ?? now, end: change.periodEnd ?? period.end, included: PAID_INCLUDED_MILLI,
     }, now);
-    extras.push(["extra_reported_milli", 0]);
+    extras.push(...clearExtraReports);
   } else if (account.plan === "paid" && nextPlan === "free") {
     account = await startFreshPeriod(env, account, { plan: "free", start: period.start, end: period.end, included: FREE_INCLUDED_MILLI }, now);
     extras.push(["extra_enabled", 0]);
@@ -429,7 +436,7 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
     account = await startFreshPeriod(env, account, {
       plan: "paid", start: change.periodStart, end: change.periodEnd ?? account.period_end, included: PAID_INCLUDED_MILLI,
     }, now);
-    extras.push(["extra_reported_milli", 0]);
+    extras.push(...clearExtraReports);
   }
 
   if (change.extraEnabled !== undefined && nextPlan === "paid" && !isPastDue) extras.push(["extra_enabled", change.extraEnabled ? 1 : 0]);
@@ -447,11 +454,11 @@ export const DELETION_WARNING_LATE_MS = 7 * 24 * 60 * 60_000;
 
 /**
  * When an inactive computer is deleted: 30 days after it was last awake or
- * after hours came back, or null while it's awake or the account is out of
- * hours, because nobody loses a computer just for running out.
+ * after hours came back, or null while it's awake or on its way there, or the
+ * account is out of hours, because nobody loses a computer just for running out.
  */
 export function deletionDueAt(computer: ComputerRow, account: AccountRow, liveUsed: number): number | null {
-  if (computer.awake_since != null || computer.status === "provisioning" || isOutOfHours(account, liveUsed)) return null;
+  if (computer.awake_since != null || !isRestingStatus(computer.status) || isOutOfHours(account, liveUsed)) return null;
   const lastAwake = computer.last_awake_at ?? computer.created_at;
   const since = Math.max(lastAwake, account.hours_restored_at ?? 0);
   return since + DELETION_AFTER_INACTIVE_MS;

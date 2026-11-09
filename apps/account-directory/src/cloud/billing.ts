@@ -2,6 +2,8 @@ import { sendCloudEmail } from "./email";
 import {
   accountRules,
   applyCloudPlanChange,
+  extraActive,
+  listComputers,
   liveUsedMilli,
   loadAccount,
   logCloud,
@@ -26,6 +28,8 @@ const REQUEST_TIMEOUT_MS = 15_000;
 /** The extra-hours tab is charged each time it reaches this many cents. */
 const EXTRA_THRESHOLD_CENTS = "500";
 const SIGNATURE_TOLERANCE_SECONDS = 300;
+/** A claimed event with no finish after this long was lost mid-work, so Stripe's retry takes it. */
+const EVENT_CLAIM_STALE_MS = 2 * 60_000;
 const MILLI_PER_HOUR = 1000;
 /** A long outage catches up over several ticks instead of one huge one. */
 const MAX_REPORTS_PER_ACCOUNT_TICK = 60;
@@ -171,7 +175,27 @@ export async function createPortalUrl(env: CloudEnv, userId: string, origin: str
 export async function setExtraHours(env: CloudEnv, userId: string, enabled: boolean, now: number): Promise<void> {
   const account = await loadAccount(env, userId, now);
   if (accountRules(account) !== "paid") throw new CloudBillingError("needs_paid_plan", "Extra hours need a paid plan.", 403);
+  // Turning them off stops new use; what was already used is still reported.
+  const owed = !enabled && extraActive(account)
+    ? Math.max(account.extra_owed_milli, liveUsedMilli(account, await listComputers(env, userId), now) - account.included_milli, 0)
+    : 0;
   await applyCloudPlanChange(env, userId, { extraEnabled: enabled }, now);
+  if (enabled || owed > 0) {
+    await env.DB.prepare("update cloud_accounts set extra_owed_milli = ?, updated_at = ? where user_id = ?").bind(owed, now, userId).run();
+  }
+}
+
+/** Ends the account's subscription now, for a deleted account. Already gone counts as done. */
+export async function cancelAccountSubscription(env: CloudEnv, account: Pick<AccountRow, "user_id" | "stripe_subscription_id">, now: number): Promise<void> {
+  if (!account.stripe_subscription_id) return;
+  try {
+    await stripeRequest(env, "DELETE", `/subscriptions/${encodeURIComponent(account.stripe_subscription_id)}`);
+  } catch (error) {
+    if (!(error instanceof StripeRequestError && error.status === 404)) throw error;
+  }
+  await env.DB.prepare("update cloud_accounts set plan = 'free', stripe_subscription_id = null, stripe_status = null, extra_enabled = 0, extra_owed_milli = 0, cancel_at_period_end = 0, updated_at = ? where user_id = ?")
+    .bind(now, account.user_id).run();
+  logCloud("cloud.subscription_cancelled_for_deleted_account", { userId: account.user_id });
 }
 
 /* ---- Webhook ---- */
@@ -291,6 +315,12 @@ async function syncSubscription(env: CloudEnv, subscriptionId: string | null, no
   if (account.stripe_subscription_id !== subscription.id) return;
 
   const { status, cancelAtPeriodEnd } = subscription;
+  // A Checkout whose payment was still pending, now paid: the plan starts here.
+  if ((status === "active" || status === "trialing") && account.plan !== "paid" && account.stripe_status === "incomplete") {
+    await applyAndAnnounce(env, account, { plan: "paid", ...periodChange(subscription), stripeStatus: status, cancelAtPeriodEnd }, now);
+    await ensureThreshold(env, subscription);
+    return;
+  }
   if (status === "canceled" || status === "incomplete_expired") {
     await applyAndAnnounce(env, account, { plan: "free", stripeSubscriptionId: null, stripeStatus: null, cancelAtPeriodEnd: false }, now);
     return;
@@ -311,12 +341,33 @@ async function syncSubscription(env: CloudEnv, subscriptionId: string | null, no
   }, now);
 }
 
+/** Stripe refuses a threshold at Checkout on these subscriptions; it accepts one afterward. */
+async function ensureThreshold(env: CloudEnv, subscription: SubscriptionFacts): Promise<void> {
+  if (subscription.hasThreshold) return;
+  await stripeRequest(env, "POST", `/subscriptions/${encodeURIComponent(subscription.id)}`, {
+    "billing_thresholds[amount_gte]": EXTRA_THRESHOLD_CENTS,
+    "billing_thresholds[reset_billing_cycle_anchor]": "false",
+  });
+}
+
 async function onCheckoutCompleted(env: CloudEnv, session: StripeObject, now: number): Promise<void> {
   const subscriptionId = idOf(session.subscription);
   const metadata = objectOf(session.metadata);
   const userId = textOf(session.client_reference_id) ?? textOf(metadata?.ade_user_id);
   if (session.mode !== "subscription" || !subscriptionId || !userId) return;
   const subscription = await readSubscription(env, subscriptionId);
+  if (subscription.status === "incomplete") {
+    // Payment still pending: remember the subscription so its `active` event starts the plan.
+    const pending = await loadAccount(env, userId, now);
+    if (pending.plan !== "paid") {
+      await applyAndAnnounce(env, pending, {
+        stripeCustomerId: subscription.customer ?? idOf(session.customer),
+        stripeSubscriptionId: subscription.id,
+        stripeStatus: "incomplete",
+      }, now);
+    }
+    return;
+  }
   if (subscription.status !== "active" && subscription.status !== "trialing") return;
   const account = await loadAccount(env, userId, now);
 
@@ -337,13 +388,7 @@ async function onCheckoutCompleted(env: CloudEnv, session: StripeObject, now: nu
       cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
     }, now);
   }
-  // Stripe refuses a threshold at Checkout on these subscriptions; it accepts one afterward.
-  if (!subscription.hasThreshold) {
-    await stripeRequest(env, "POST", `/subscriptions/${encodeURIComponent(subscription.id)}`, {
-      "billing_thresholds[amount_gte]": EXTRA_THRESHOLD_CENTS,
-      "billing_thresholds[reset_billing_cycle_anchor]": "false",
-    });
-  }
+  await ensureThreshold(env, subscription);
 }
 
 const invoiceSubscriptionId = (invoice: StripeObject): string | null =>
@@ -384,13 +429,25 @@ async function handleStripeWebhook(request: Request, env: CloudEnv): Promise<Res
 
   const claim = await env.DB.prepare("insert or ignore into cloud_stripe_events (event_id, type, received_at) values (?, ?, ?)")
     .bind(eventId, type, now).run();
-  if (claim.meta.changes === 0) return webhookJson({ received: true, duplicate: true });
+  if (claim.meta.changes === 0) {
+    const earlier = await env.DB.prepare("select received_at, applied_at from cloud_stripe_events where event_id = ?")
+      .bind(eventId).first<{ received_at: number; applied_at: number | null }>();
+    if (earlier?.applied_at != null) return webhookJson({ received: true, duplicate: true });
+    // Another delivery is working on it: not done, so Stripe asks again later.
+    if (earlier && now - earlier.received_at < EVENT_CLAIM_STALE_MS) return webhookJson({ error: "in progress" }, 409);
+    const retaken = await env.DB.prepare("update cloud_stripe_events set received_at = ? where event_id = ? and received_at = ? and applied_at is null")
+      .bind(now, eventId, earlier?.received_at ?? 0).run();
+    if (retaken.meta.changes !== 1) return webhookJson({ error: "in progress" }, 409);
+  }
   try {
     await applyStripeEvent(env, type, object, now);
+    await env.DB.prepare("update cloud_stripe_events set applied_at = ? where event_id = ?").bind(Date.now(), eventId).run();
   } catch (error) {
-    // Give the claim back so Stripe's retry runs it again.
-    await env.DB.prepare("delete from cloud_stripe_events where event_id = ?").bind(eventId).run();
     logCloud("cloud.stripe_webhook_failed", { type, eventId, status: error instanceof StripeRequestError ? error.status : null });
+    // Give the claim back so Stripe's retry runs it again. If this fails too, the stale claim is retaken.
+    await env.DB.prepare("delete from cloud_stripe_events where event_id = ?").bind(eventId).run().catch((deleteError: unknown) => {
+      logCloud("cloud.stripe_claim_release_failed", { eventId, message: deleteError instanceof Error ? deleteError.message : "unknown" });
+    });
     return webhookJson({ error: "try again" }, 500);
   }
   return webhookJson({ received: true });
@@ -440,10 +497,10 @@ export async function reportExtraHours(env: CloudEnv, now = Date.now()): Promise
   if (!eventName || !env.STRIPE_SECRET_KEY?.trim()) return;
   const rows = await env.DB.prepare(`
     select * from cloud_accounts
-    where extra_enabled = 1 and plan = 'paid' and coalesce(stripe_status, '') <> 'past_due'
-      and stripe_customer_id is not null and stripe_subscription_id is not null
+    where (extra_enabled = 1 or extra_owed_milli > 0) and plan = 'paid' and coalesce(stripe_status, '') <> 'past_due'
   `).all<AccountRow>();
-  const accounts = rows.results ?? [];
+  // Filtered here, not in the query: a `stripe_customer_id` term makes SQLite pick that index and read every customer each minute.
+  const accounts = (rows.results ?? []).filter((account) => account.stripe_customer_id && account.stripe_subscription_id);
   if (accounts.length === 0) return;
 
   const awake = await env.DB.prepare("select * from cloud_computers where deleted_at is null and awake_since is not null and user_id in (select value from json_each(?))")
@@ -455,7 +512,9 @@ export async function reportExtraHours(env: CloudEnv, now = Date.now()): Promise
 
   for (const account of accounts) {
     const live = liveUsedMilli(account, awakeByUser.get(account.user_id) ?? [], now);
-    const owedHours = Math.floor((live - account.included_milli - account.extra_reported_milli) / MILLI_PER_HOUR);
+    // With the switch off, only what was used before it went off is billed.
+    const billable = account.extra_enabled === 1 ? live - account.included_milli : account.extra_owed_milli;
+    const owedHours = Math.floor((billable - account.extra_reported_milli) / MILLI_PER_HOUR);
     let reported = account.extra_reported_milli;
     for (let sent = 0; sent < Math.min(owedHours, MAX_REPORTS_PER_ACCOUNT_TICK); sent += 1) {
       const place = Math.floor(reported / MILLI_PER_HOUR) + 1;
@@ -478,6 +537,11 @@ export async function reportExtraHours(env: CloudEnv, now = Date.now()): Promise
         .bind(next, now, account.user_id, reported).run();
       if (saved.meta.changes !== 1) break;
       reported = next;
+    }
+    // Under a whole hour left: nothing more to report, and the row stops being read each tick.
+    if (account.extra_enabled !== 1 && account.extra_owed_milli > 0 && account.extra_owed_milli - reported < MILLI_PER_HOUR) {
+      await env.DB.prepare("update cloud_accounts set extra_owed_milli = 0, updated_at = ? where user_id = ? and extra_enabled = 0 and extra_owed_milli = ?")
+        .bind(now, account.user_id, account.extra_owed_milli).run();
     }
   }
 }

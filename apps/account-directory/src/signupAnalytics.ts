@@ -25,13 +25,14 @@
  * without either the route answers 503 and Clerk keeps retrying for a while.
  */
 
-import { deleteAllAccountChats } from "./cloud/chats";
+import { deleteCloudAccount } from "./cloud/accountDeletion";
+import { logCloud, type CloudEnv } from "./cloud/store";
 
 export type SignupAnalyticsEnv = {
   CLERK_WEBHOOK_SIGNING_SECRET?: string;
   POSTHOG_PROJECT_TOKEN?: string;
   POSTHOG_HOST?: string;
-  /** For `user.deleted`: the account's ADE Cloud saved chats go with it. */
+  /** For `user.deleted`: the account's ADE Cloud computers, plan and saved chats go with it. */
   DB?: D1Database;
   CLOUD_CHATS?: R2Bucket;
 };
@@ -207,7 +208,9 @@ export async function handleSignupAnalyticsRequest(
   if (request.method !== "POST") return json(405, { error: "method_not_allowed" });
   const secret = env.CLERK_WEBHOOK_SIGNING_SECRET?.trim();
   const token = env.POSTHOG_PROJECT_TOKEN?.trim();
-  if (!secret || !token || !/^phc_[A-Za-z0-9_-]{8,}$/.test(token)) return json(503, { error: "not_configured" });
+  const analyticsReady = Boolean(token && /^phc_[A-Za-z0-9_-]{8,}$/.test(token));
+  // Without analytics a deleted account must still lose its ADE Cloud data.
+  if (!secret || (!analyticsReady && !env.DB)) return json(503, { error: "not_configured" });
 
   const id = request.headers.get("svix-id") ?? "";
   const timestamp = request.headers.get("svix-timestamp") ?? "";
@@ -238,11 +241,14 @@ export async function handleSignupAnalyticsRequest(
   if (payload.type === "user.deleted" && env.DB) {
     // Before the capture, so a failure here asks Clerk to deliver again.
     try {
-      await deleteAllAccountChats({ DB: env.DB, CLOUD_CHATS: env.CLOUD_CHATS }, userId);
-    } catch {
+      // This route's env type names only its own slice; the Worker's env holds all of it.
+      await deleteCloudAccount(env as unknown as CloudEnv, userId);
+    } catch (error) {
+      logCloud("cloud.account_delete_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
       return json(502, { error: "cloud_chats_delete_failed" });
     }
   }
+  if (!analyticsReady || !token) return json(payload.type === "user.deleted" ? 200 : 503, payload.type === "user.deleted" ? { deleted: true } : { error: "not_configured" });
 
   const distinctId = await accountDistinctId(userId);
   let capture: Record<string, unknown>;

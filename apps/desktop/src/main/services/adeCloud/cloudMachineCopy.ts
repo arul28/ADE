@@ -273,6 +273,7 @@ export async function moveCloudMachine(
     name: normalizeCloudMachineName(`${sourceName} (${args.to === "vm" ? "VM" : "box"})`),
   }, onProgress, {
     signal: options.signal,
+    moveFromInstanceId: source.id,
     metadata: { ade_moved_from: source.id, ...(args.madeByChat ? { [CLOUD_MADE_BY_CHAT_METADATA]: args.madeByChat } : {}) },
   });
 

@@ -406,11 +406,15 @@ function rowToJson(row: CopyRow, summary: Record<string, unknown> | null): Cloud
 async function openSummary(keys: UserKeys, row: CopyRow): Promise<Record<string, unknown> | null> {
   if (!row.summary_sealed) return null;
   const opened = await openText(keys.aes, summaryAad(row.user_id, row.machine_key, row.chat_id), row.summary_sealed);
-  if (!opened) return null;
+  if (!opened) {
+    logCloud("cloud.chat_summary_unreadable", { userId: row.user_id, machineKey: row.machine_key, chatId: row.chat_id });
+    return null;
+  }
   try {
     const value = JSON.parse(decoder.decode(opened)) as unknown;
     return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
   } catch {
+    logCloud("cloud.chat_summary_unreadable", { userId: row.user_id, machineKey: row.machine_key, chatId: row.chat_id });
     return null;
   }
 }

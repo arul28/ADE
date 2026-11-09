@@ -10,6 +10,7 @@ import type { OpenProjectBinding } from "../../shared/types/core";
 import type { RemoteRuntimeConnectionStatus } from "../../shared/types/remoteRuntime";
 import type { AgentChatApi } from "../components/chat/agentChatApi";
 import { rootAppStoreApi } from "./appStore";
+import { adeCloudEnabled } from "./cloudAccess";
 import {
   SAVED_CHATS_MACHINE_PREFIX,
   isSavedChatsMachineId,
@@ -27,12 +28,15 @@ export type SavedChatsContext = {
   connections: readonly RemoteRuntimeConnectionStatus[];
   /** The tab's repo identity; null means no way to tell which chats belong here. */
   projectKey: string | null;
+  /** False once the window hid, or moved to another project: an answer for this read is then dropped. */
   isActive: () => boolean;
 };
 
 let timer: ReturnType<typeof setTimeout> | null = null;
 let lastReadAtMs = 0;
 let inFlight = false;
+/** A read asked for while one was running (a project switch); it runs next. */
+let queuedContext: SavedChatsContext | null = null;
 
 /** Reads the list soon, unless it was read in the last 30 seconds. `force` skips that wait. */
 export function scheduleCloudSavedChatsRefresh(context: () => SavedChatsContext, options?: { force?: boolean }): void {
@@ -41,6 +45,8 @@ export function scheduleCloudSavedChatsRefresh(context: () => SavedChatsContext,
   const force = options?.force === true;
   timer = setTimeout(() => {
     timer = null;
+    // Inside the debounce, so a window just opened has its access answer by now.
+    if (!adeCloudEnabled()) return;
     if (!force && Date.now() - lastReadAtMs < MIN_REFRESH_INTERVAL_MS) return;
     void refreshCloudSavedChats(context());
   }, REFRESH_DEBOUNCE_MS);
@@ -91,7 +97,11 @@ const realBinding = (
 
 export async function refreshCloudSavedChats(context: SavedChatsContext): Promise<void> {
   const bridge = window.ade?.cloud?.savedChats;
-  if (!bridge || inFlight || !context.isActive() || !context.projectKey) return;
+  if (inFlight) {
+    queuedContext = context;
+    return;
+  }
+  if (!bridge || !context.isActive() || !context.projectKey) return;
   inFlight = true;
   lastReadAtMs = Date.now();
   try {
@@ -151,10 +161,14 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     const staleSynthetic = Object.keys(store.crossMachineLanesByMachineId)
       .filter((machineId) => isSavedChatsMachineId(machineId) && !keptSyntheticIds.has(machineId));
     if (staleSynthetic.length) store.dropCrossMachineLanes(staleSynthetic);
-  } catch {
+  } catch (error) {
     // Keep what the list last showed; the next focus or connection change reads again.
+    console.warn("[cloud] saved chats list failed", error instanceof Error ? error.message : String(error));
   } finally {
     inFlight = false;
+    const next = queuedContext;
+    queuedContext = null;
+    if (next) void refreshCloudSavedChats(next);
   }
 }
 

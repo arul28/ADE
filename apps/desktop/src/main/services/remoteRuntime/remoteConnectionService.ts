@@ -334,12 +334,12 @@ function sameStatusValue(a: unknown, b: unknown): boolean {
 
 /**
  * After a wake, may this call go out again? Replay-safe actions may. A chat send
- * may when it carries a client id: the brain recognizes a retry of one it already
- * took, so a message caught by a sleep is delivered, and never twice.
+ * may when it carries a client id and the brain says it recognizes a retry of one
+ * it already took, so a message caught by a sleep is delivered, and never twice.
  */
-function isRetriableAfterSleep(request: RemoteRuntimeActionRequest): boolean {
+function isRetriableAfterSleep(request: RemoteRuntimeActionRequest, brainDedupesSends: boolean): boolean {
   if (isReplaySafeAdeAction(request.domain, request.action)) return true;
-  if (request.domain !== "chat" || request.action !== "sendMessage") return false;
+  if (!brainDedupesSends || request.domain !== "chat" || request.action !== "sendMessage") return false;
   const args = request.args as { clientSendId?: unknown } | undefined;
   return typeof args?.clientSendId === "string" && args.clientSendId.length > 0;
 }
@@ -1515,7 +1515,8 @@ export class RemoteConnectionService {
         if (!wakes || !(await this.wakeForUse(target))) throw error;
         this.clearAutomaticReconnectState(targetId);
         await this.connectWokenMachine(target);
-        if (error instanceof RemoteActionOutcomeUnknownError && !isRetriableAfterSleep(request)) throw error;
+        if (error instanceof RemoteActionOutcomeUnknownError
+          && !isRetriableAfterSleep(request, this.statusById.get(targetId)?.capabilities?.clientSendDedupe === true)) throw error;
         result = await this.pool.callActionForTarget(target, projectId, request);
       }
       this.mergeStatus(targetId, {

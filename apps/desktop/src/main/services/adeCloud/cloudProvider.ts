@@ -67,6 +67,8 @@ export type CloudCreateInstanceInput = {
   metadata?: Record<string, string>;
   /** Unauthenticated URLs to make with the machine (ADE's wake URL). */
   publicPorts?: Array<{ port: number; label: string }>;
+  /** The computer this one replaces in a move: the server gives this one the same disk. */
+  moveFromInstanceId?: string;
 };
 
 /** `code` on a `CloudProviderError` when the provider refused this computer's access. */

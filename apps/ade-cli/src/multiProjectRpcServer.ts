@@ -2473,6 +2473,9 @@ export function createMultiProjectRpcRequestHandler(
           // the user") as a notice, not as a finished turn. A sender skips
           // notices to a runtime without this.
           externalWakeNotices: true,
+          // `chat.sendMessage` drops a repeat of a `clientSendId` it has seen.
+          // A client retries a send of unknown outcome only against this.
+          clientSendDedupe: true,
           machineProjects: {
             browseDirectories: true,
             getDetail: true,

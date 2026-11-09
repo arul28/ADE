@@ -30,7 +30,9 @@ import {
   ownedComputer,
   powerLogStatement,
   readSetting,
+  settleStatements,
   statusChangeStatements,
+  statusGuard,
   type AccountRow,
   type CloudEnv,
   type ComputerRow,
@@ -77,7 +79,7 @@ export function isCloudRequest(url: URL): boolean {
   return url.pathname === PREFIX || url.pathname.startsWith(`${PREFIX}/`);
 }
 
-async function readJson(request: Request): Promise<Record<string, unknown> | null> {
+async function readJson(request: { text(): Promise<string> }): Promise<Record<string, unknown> | null> {
   const text = await request.text();
   if (!text) return {};
   if (text.length > MAX_BODY_BYTES) return null;
@@ -119,7 +121,9 @@ async function providerCall(run: () => Promise<Response>): Promise<Response> {
     return await run();
   } catch (error) {
     if (error instanceof CloudProviderError) {
-      const status = error.status >= 400 && error.status < 600 ? error.status : 502;
+      // The provider refusing ADE's own key is ours to fix, not the person's sign-in.
+      const providerAuth = error.status === 401 || error.status === 403;
+      const status = !providerAuth && error.status >= 400 && error.status < 600 ? error.status : 502;
       return fail(error.code, error.message, status);
     }
     throw error;
@@ -187,16 +191,18 @@ async function releasePending(env: CloudEnv, pendingId: string): Promise<void> {
   await env.DB.prepare("delete from cloud_computers where instance_id = ?").bind(pendingId).run();
 }
 
-/** The reservation becomes the real row, unless a tick already adopted it. */
+/** Only a provider's clear no means nothing was made. Timeouts and 5xx can leave a running computer, so its reservation stays for adoption. */
+const providerMadeNothing = (error: unknown): boolean =>
+  error instanceof CloudProviderError && error.status >= 400 && error.status < 500;
+
+/** The reservation becomes the real row, unless a tick already adopted it or the id is already someone's. */
 async function adoptReservation(env: CloudEnv, pendingId: string, instance: CloudInstance, machineKey: string | null, now: number, reason: string): Promise<void> {
-  const statements = [
-    env.DB.prepare(`
-      update cloud_computers set instance_id = ?, machine_key = coalesce(?, machine_key), status = ?, status_changed_at = ?,
-        awake_since = ?, last_awake_at = ?
-      where instance_id = ?
-    `).bind(instance.id, machineKey, instance.status, now, isMeteredStatus(instance.status) ? now : null, now, pendingId),
-  ];
-  await env.DB.batch(statements);
+  const adopted = await env.DB.prepare(`
+    update cloud_computers set instance_id = ?, machine_key = coalesce(?, machine_key), status = ?, status_changed_at = ?,
+      awake_since = ?, last_awake_at = ?
+    where instance_id = ? and not exists (select 1 from cloud_computers where instance_id = ?)
+  `).bind(instance.id, machineKey, instance.status, now, isMeteredStatus(instance.status) ? now : null, now, pendingId, instance.id).run();
+  if (adopted.meta.changes !== 1) return;
   await env.DB.prepare("insert into cloud_power_log (instance_id, user_id, action, reason, created_at) select ?, user_id, 'start', ?, ? from cloud_computers where instance_id = ?")
     .bind(instance.id, reason, now, instance.id).run();
 }
@@ -238,8 +244,19 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
   const { account, outOfHours: empty } = await getAccountContext(env, userId, now);
   if (empty) return outOfHours();
 
+  // A move carries the old computer's disk; a plain create always starts at the smallest.
+  let diskGb = DISK_ON_CREATE_GB;
+  if (body.moveFromInstanceId !== undefined) {
+    const source = typeof body.moveFromInstanceId === "string" ? await ownedComputer(env, userId, body.moveFromInstanceId) : null;
+    if (!source) return notFound();
+    diskGb = source.disk_gb;
+    if (accountRules(account) === "free" && diskGb > FREE_DISK_GB) {
+      return fail("needs_paid_plan", `This computer's disk is bigger than the free plan's ${FREE_DISK_GB} GB, so moving it needs a paid plan.`, 403);
+    }
+  }
+
   const { metadata, requestId } = withRequestId(clientMetadata);
-  const reservation = await reserveComputer(env, account, { size, diskGb: DISK_ON_CREATE_GB, name, requestId, templateVersion, now });
+  const reservation = await reserveComputer(env, account, { size, diskGb, name, requestId, templateVersion, now });
   if (!reservation.ok) return reservation.response;
 
   try {
@@ -247,7 +264,7 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
       template: templateVersion,
       name,
       type: size.type,
-      resources: { cpu: size.cpu, memory: size.memoryGb, disk: DISK_ON_CREATE_GB },
+      resources: { cpu: size.cpu, memory: size.memoryGb, disk: diskGb },
       ...(Object.keys(clientEnv).length ? { env: clientEnv } : {}),
       metadata,
       ...(publicPorts.length ? { publicPorts } : {}),
@@ -255,7 +272,7 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
     await adoptReservation(env, reservation.pendingId, instance, metadata.ade_machine_key ?? null, Date.now(), "create");
     return json(instance, 201);
   } catch (error) {
-    await releasePending(env, reservation.pendingId);
+    if (providerMadeNothing(error)) await releasePending(env, reservation.pendingId);
     if (error instanceof CloudProviderError && (error.code === "not_found" || error.code === "invalid_request")) {
       logCloud("cloud.create_refused_template", { userId, templateVersion, code: error.code });
       return fail("template_unavailable", CANT_MAKE_COMPUTER_MESSAGE, 503);
@@ -276,7 +293,9 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
     : cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
   if (!size) return badRequest("That size isn't one ADE Cloud offers.");
   const requestedDisk = typeof resources?.disk === "number" ? resources.disk : computer.disk_gb;
+  if (!Number.isInteger(requestedDisk)) return badRequest("That disk size isn't valid.");
   if (requestedDisk < computer.disk_gb) return badRequest("A copy's disk can't be smaller than the original's.");
+  if (requestedDisk !== computer.disk_gb && requestedDisk % DISK_STEP_GB !== 0) return badRequest(`Disk grows in steps of ${DISK_STEP_GB} GB.`);
   if (accountRules(account) === "free" && requestedDisk > FREE_DISK_GB) return diskNeedsPaid();
 
   const metadataIn = stringMap(body.metadata, MAX_METADATA_ENTRIES);
@@ -301,7 +320,7 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
     await adoptReservation(env, reservation.pendingId, instance, metadata.ade_machine_key ?? null, Date.now(), "copy");
     return json(instance, 201);
   } catch (error) {
-    await releasePending(env, reservation.pendingId);
+    if (providerMadeNothing(error)) await releasePending(env, reservation.pendingId);
     throw error;
   }
 }
@@ -315,7 +334,7 @@ const diskNeedsPaid = () => fail(
 async function handleResize(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, now: number): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest("That request could not be read.");
-  const { account, computers, outOfHours: empty } = await getAccountContext(env, computer.user_id, now);
+  const { account, outOfHours: empty } = await getAccountContext(env, computer.user_id, now);
   if (empty) return outOfHours();
 
   const size = cloudSizeFor(computer.type, body.cpu ?? computer.cpu, body.memory ?? computer.memory_gb);
@@ -330,24 +349,50 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
   if (nextDisk !== computer.disk_gb) {
     if (accountRules(account) === "free") return diskNeedsPaid();
     if (nextDisk % DISK_STEP_GB !== 0) return badRequest(`Disk grows in steps of ${DISK_STEP_GB} GB.`);
-    const usedElsewhere = computers.filter((entry) => entry.instance_id !== computer.instance_id).reduce((sum, entry) => sum + entry.disk_gb, 0);
-    if (usedElsewhere + nextDisk > PAID_DISK_POOL_GB) {
-      return fail("disk_limit", `Your computers share ${PAID_DISK_POOL_GB} GB of disk, and this would go past it.`, 403);
-    }
     // A disk grow restarts the computer, so only the computer can say it's safe.
     if (isMeteredStatus(computer.status) && body.computerIdle !== true) {
       return fail("computer_busy", "A disk can only grow while the computer is idle.", 409);
+    }
+    // Reserved in one write, so two grows at once can't pass the shared limit together.
+    const reserved = await env.DB.prepare(`
+      update cloud_computers set disk_gb = ?
+      where instance_id = ? and disk_gb = ?
+        and (select coalesce(sum(disk_gb), 0) from cloud_computers where user_id = ? and deleted_at is null) - ? + ? <= ?
+    `).bind(nextDisk, computer.instance_id, computer.disk_gb, computer.user_id, computer.disk_gb, nextDisk, PAID_DISK_POOL_GB).run();
+    if (reserved.meta.changes !== 1) {
+      return fail("disk_limit", `Your computers share ${PAID_DISK_POOL_GB} GB of disk, and this would go past it.`, 403);
     }
   }
 
   const resize: { cpu: number; memory: number; disk?: number } = { cpu: size.cpu, memory: size.memoryGb };
   if (nextDisk !== computer.disk_gb) resize.disk = nextDisk;
-  const status = await provider.resizeInstance(computer.instance_id, resize);
-  const statements = [
+  let status: string;
+  try {
+    status = await provider.resizeInstance(computer.instance_id, resize);
+  } catch (error) {
+    if (nextDisk !== computer.disk_gb && providerMadeNothing(error)) {
+      await env.DB.prepare("update cloud_computers set disk_gb = ? where instance_id = ? and disk_gb = ?")
+        .bind(computer.disk_gb, computer.instance_id, nextDisk).run();
+    }
+    throw error;
+  }
+  const statements: D1PreparedStatement[] = [];
+  // The time so far is charged at the old size; the new size starts its own stretch here.
+  if (size.multiplierMilli !== computer.multiplier_milli && computer.awake_since != null && computer.awake_since <= now) {
+    const guard = statusGuard(computer);
+    statements.push(
+      ...settleStatements(env, computer, now, guard),
+      env.DB.prepare(`update cloud_computers set awake_since = ? where instance_id = ? and ${guard.sql}`)
+        .bind(now, computer.instance_id, ...guard.binds),
+    );
+    computer.awake_since = now;
+  }
+  computer.multiplier_milli = size.multiplierMilli;
+  statements.push(
     env.DB.prepare("update cloud_computers set cpu = ?, memory_gb = ?, disk_gb = ?, multiplier_milli = ? where instance_id = ?")
       .bind(size.cpu, size.memoryGb, nextDisk, size.multiplierMilli, computer.instance_id),
     ...statusChangeStatements(env, computer, status, now, "resize"),
-  ];
+  );
   await env.DB.batch(statements);
   return json({ status });
 }
@@ -377,13 +422,19 @@ async function handleStart(request: Request, env: CloudEnv, computer: ComputerRo
   }
   const status = await provider.startInstance(computer.instance_id);
   if (freeWake) {
+    // A stretch already open is charged up to here, then it starts over after the free window.
+    const closing = computer.awake_since != null && computer.awake_since <= now
+      ? settleStatements(env, computer, now, statusGuard(computer))
+      : [];
     // Metering starts when the free window ends; the stretch before it costs nothing.
     computer.awake_since = now + FREE_WAKE_MS;
     computer.free_wake_started_at = now;
     computer.free_wake_until = now + FREE_WAKE_MS;
     computer.free_wake_used_at = now;
     await env.DB.batch([
-      env.DB.prepare("update cloud_computers set status = ?, status_changed_at = ?, awake_since = ?, last_awake_at = ?, free_wake_started_at = ?, free_wake_until = ?, free_wake_used_at = ?, zero_stop_started_at = null where instance_id = ?")
+      ...closing,
+      // `cold_storage` clears too: it's awake now, so the stop at the end of the window has to apply.
+      env.DB.prepare("update cloud_computers set status = ?, status_changed_at = ?, awake_since = ?, last_awake_at = ?, free_wake_started_at = ?, free_wake_until = ?, free_wake_used_at = ?, zero_stop_started_at = null, cold_storage = 0 where instance_id = ?")
         .bind(status, now, computer.awake_since, now, now, computer.free_wake_until, now, computer.instance_id),
       powerLogStatement(env, computer, "start", "push_work", now),
     ]);
@@ -418,7 +469,10 @@ async function handleUpdate(env: CloudEnv, computer: ComputerRow, provider: Clou
 async function handleDelete(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, now: number): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest("That request could not be read.");
-  const events = await provider.instanceEvents(computer.instance_id).catch(() => null);
+  const events = await provider.instanceEvents(computer.instance_id).catch((error: unknown) => {
+    logCloud("cloud.delete_events_read_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+    return null;
+  });
   try {
     await provider.deleteInstance(computer.instance_id);
   } catch (error) {
@@ -481,7 +535,7 @@ async function handleList(env: CloudEnv, userId: string, provider: CloudProvider
   const now = Date.now();
   for (const instance of all) {
     const pendingId = pendingRequestIds.get(instance.metadata.ade_request_id ?? "");
-    if (pendingId) {
+    if (pendingId && !owned.has(instance.id)) {
       await adoptReservation(env, pendingId, instance, instance.metadata.ade_machine_key ?? null, now, "create_adopted");
       owned.add(instance.id);
     }
@@ -562,6 +616,26 @@ async function routeInstance(request: Request, env: CloudEnv, provider: CloudPro
   return handler ? handler(request, env, computer, provider, now) : notFound();
 }
 
+/** A timed wake must name the caller's own computer and that computer's own wake address. */
+async function refuseForeignWake(request: { text(): Promise<string> }, env: CloudEnv, userId: string): Promise<Response | null> {
+  const body = await readJson(request);
+  // A malformed body is the wake route's to answer.
+  if (typeof body?.instanceId !== "string" || typeof body.url !== "string") return null;
+  const instanceId = body.instanceId.trim();
+  if (!await ownedComputer(env, userId, instanceId)) return notFound();
+  const provider = providerFor(env);
+  if (!provider) return fail("unavailable", cloudErrorMessage("no_provider_key", 503), 503);
+  const expected = (url: string) => url.trim().replace(/\/+$/, "").toLowerCase();
+  let wakeUrl: string | null = null;
+  try {
+    wakeUrl = (await provider.getInstance(instanceId)).publicPorts.find((port) => port.port === WAKE_PORT)?.url ?? null;
+  } catch (error) {
+    if (error instanceof CloudProviderError) return fail(error.code, error.message, 502);
+    throw error;
+  }
+  return wakeUrl && expected(wakeUrl) === expected(body.url) ? null : badRequest("That isn't this computer's wake address.");
+}
+
 /** The billing routes, or null when `path` isn't one of them. */
 async function routeBilling(request: Request, url: URL, path: string, env: CloudEnv, userId: string, now: number): Promise<Response | null> {
   if (path !== CLOUD_PATHS.billingCheckout && path !== CLOUD_PATHS.billingPortal && path !== CLOUD_PATHS.billingExtraHours) return null;
@@ -599,6 +673,8 @@ export async function handleCloudRequest(request: Request, env: CloudEnv): Promi
     if (request.method === "PUT") {
       const { outOfHours: empty } = await getAccountContext(env, caller.userId, Date.now());
       if (empty) return outOfHours();
+      const refused = await refuseForeignWake(request.clone(), env, caller.userId);
+      if (refused) return refused;
     }
     return handleCloudWakeRequest(request, env);
   }

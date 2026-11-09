@@ -115,14 +115,18 @@ export function withoutAgentSkills(
   const withheldKey = [...withheldSet].sort().join(",");
   return roots.map((root) => {
     let staging: string | null = null;
+    let cacheKey: string | null = null;
+    let mirrorPath: string | null = null;
     try {
       const entries = fs.readdirSync(root, { withFileTypes: true });
       if (!entries.some((entry) => withheldSet.has(entry.name))) return root;
       const canonical = fs.realpathSync(root);
       const key = `${canonical}\0${withheldKey}`;
+      cacheKey = key;
       const cached = filteredSkillRootMirrors.get(key);
       if (cached && agentSkillRootExists(cached)) return cached;
       const mirror = path.join(mirrorParent, createHash("sha256").update(key).digest("hex").slice(0, 16));
+      mirrorPath = mirror;
       staging = `${mirror}.${process.pid}.${Date.now()}.tmp`;
       ensurePrivateMirrorParent(mirrorParent);
       fs.cpSync(canonical, staging, {
@@ -134,11 +138,16 @@ export function withoutAgentSkills(
       staging = null;
       filteredSkillRootMirrors.set(key, mirror);
       return mirror;
-    } catch {
+    } catch (error) {
+      console.warn("[skills] filtered skill mirror failed", error instanceof Error ? error.message : String(error));
       if (staging) {
         try { fs.rmSync(staging, { recursive: true, force: true }); } catch { /* best effort */ }
       }
-      return root;
+      // A mirror held open (Windows) or rebuilt by another ADE process is still a good one.
+      const usable = mirrorPath && agentSkillRootExists(mirrorPath) ? mirrorPath : root;
+      // Remembered either way: copying again on every prompt can't help.
+      if (cacheKey) filteredSkillRootMirrors.set(cacheKey, usable);
+      return usable;
     }
   });
 }

@@ -448,6 +448,8 @@ export type RemoteRuntimeProjectIconUpload = {
 export type RemoteRuntimeCapabilities = {
   projects: boolean;
   machineProjects: Partial<Record<RemoteRuntimeMachineProjectCapability, boolean>>;
+  /** `chat.sendMessage` recognizes a repeat of a `clientSendId`. Absent on an older brain. */
+  clientSendDedupe?: boolean;
 };
 
 export type RemoteRuntimeHandoffStoragePreflightArgs = {

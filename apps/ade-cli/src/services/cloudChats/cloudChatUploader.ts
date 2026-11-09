@@ -244,7 +244,10 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
   }
 
   const authHeaders = async (): Promise<Record<string, string> | null> => {
-    const token = await deps.getAccessToken().catch(() => null);
+    const token = await deps.getAccessToken().catch((error: unknown) => {
+      log?.warn("cloud.chat_upload_token_failed", { error: error instanceof Error ? error.name : "unknown" });
+      return null;
+    });
     return token ? { authorization: `Bearer ${token}` } : null;
   };
 
@@ -285,6 +288,18 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
     return deletesRunning;
   }
 
+  /** An upload already on the wire can land after the delete and bring the copy back, so delete once more when it's done. */
+  function deleteAgainAfterUploads(item: { chatId?: string; laneId?: string }, uploads: Array<Promise<void>>): void {
+    if (!uploads.length) return;
+    void Promise.allSettled(uploads).then(async () => {
+      state.deletes.push({ ...item });
+      persist();
+      // A delete pass in progress wouldn't see the new entry.
+      await Promise.allSettled([deletesRunning]);
+      await runDeletes();
+    });
+  }
+
   /** Sends what's new for one chat: one part on a turn, everything on a flush. True when anything was sent. */
   async function uploadChat(sessionId: string, mode: "turn" | "flush"): Promise<boolean> {
     const base = deps.directoryBaseUrl();
@@ -297,7 +312,10 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
     await runDeletes();
     let sent = false;
     for (;;) {
-      await deps.flushTranscript(sessionId).catch(() => {});
+      // A failed flush only means this part is shorter; the next turn sends the rest.
+      await deps.flushTranscript(sessionId).catch((error: unknown) => {
+        log?.warn("cloud.chat_upload_flush_failed", { sessionId, error: error instanceof Error ? error.name : "unknown" });
+      });
       const reader = openTranscript(deps.chatTranscriptsDir, sessionId);
       if (!reader) return sent;
       const entry = state.chats[sessionId] ?? { offset: 0, seq: 0, dirty: true, laneId: null };
@@ -325,7 +343,10 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
         if (delta.more) continue;
         return sent;
       }
-      const row = await deps.readChatRow(sessionId).catch(() => null);
+      const row = await deps.readChatRow(sessionId).catch((error: unknown) => {
+        log?.warn("cloud.chat_upload_row_failed", { sessionId, error: error instanceof Error ? error.name : "unknown" });
+        return null;
+      });
       if (!row) return sent;
       const seq = entry.seq + 1;
       let response: Response;
@@ -412,16 +433,25 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
     noteChatDeleted(sessionId) {
       if (!sessionId) return;
       delete state.chats[sessionId];
+      rerun.delete(sessionId);
       state.deletes.push({ chatId: sessionId });
       persist();
       void runDeletes();
+      const upload = running.get(sessionId);
+      deleteAgainAfterUploads({ chatId: sessionId }, upload ? [upload] : []);
     },
     noteLaneDeleted(laneId) {
       if (!laneId) return;
-      for (const [id, entry] of Object.entries(state.chats)) if (entry.laneId === laneId) delete state.chats[id];
+      for (const [id, entry] of Object.entries(state.chats)) {
+        if (entry.laneId !== laneId) continue;
+        delete state.chats[id];
+        rerun.delete(id);
+      }
       state.deletes.push({ laneId });
       persist();
       void runDeletes();
+      // Every upload: a chat's first one doesn't know its lane yet.
+      deleteAgainAfterUploads({ laneId }, [...running.values()]);
     },
     async uploadPending(timeoutMs = 45_000) {
       const started = Date.now();

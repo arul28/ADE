@@ -89,6 +89,8 @@ create table if not exists cloud_accounts (
   -- Extra hours: paid only, off by default; charged in thousandths reported to the meter.
   extra_enabled integer not null default 0,
   extra_reported_milli integer not null default 0,
+  -- Extra hours already used when the switch went off, still to be reported.
+  extra_owed_milli integer not null default 0,
   -- What the account had used when `past_due` began, restored by a later paid invoice.
   past_due_used_milli integer,
   past_due_period_end integer,
@@ -104,8 +106,8 @@ create table if not exists cloud_accounts (
 );
 create index if not exists idx_cloud_accounts_period on cloud_accounts (period_end);
 create index if not exists idx_cloud_accounts_stripe_customer on cloud_accounts (stripe_customer_id);
--- Keeps the minute's extra-hours read to the accounts that have them on.
-create index if not exists idx_cloud_accounts_extra on cloud_accounts (user_id) where extra_enabled = 1;
+-- Keeps the minute's extra-hours read to the accounts with hours to report.
+create index if not exists idx_cloud_accounts_extra on cloud_accounts (user_id) where extra_enabled = 1 or extra_owed_milli > 0;
 
 -- One row per computer and UTC day: what the meter charged and, after the
 -- daily reconcile, the provider's own `awake_minutes` for it. `free_ms` is the
@@ -125,11 +127,13 @@ create table if not exists cloud_computer_days (
 );
 create index if not exists idx_cloud_computer_days_day on cloud_computer_days (day);
 
--- Stripe event ids already applied, so a webhook delivered twice runs once.
+-- Stripe events, so a webhook delivered twice runs once. `applied_at` is null
+-- while one is being worked on; a claim left without it can be retaken.
 create table if not exists cloud_stripe_events (
   event_id text primary key,
   type text,
-  received_at integer not null
+  received_at integer not null,
+  applied_at integer
 );
 
 -- Operator settings, keyed: `template_version` (exact `ade@N`; never bare `ade`),

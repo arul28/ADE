@@ -46,7 +46,8 @@ export function registerCloudSavedChatsIpc(args: { logger: Logger }): void {
   const baseUrl = (): string | null => {
     try {
       return getSharedAccountDirectoryBaseUrl() || null;
-    } catch {
+    } catch (error) {
+      logger.warn("cloud.saved_chats_directory_unavailable", { error: error instanceof Error ? error.name : "unknown" });
       return null;
     }
   };

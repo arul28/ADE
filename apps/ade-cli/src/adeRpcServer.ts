@@ -3871,7 +3871,7 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
  * unless a person's own client is asking.
  */
 const CLOUD_APPROVED_ACTIONS = new Set([
-  "create", "resize", "copy", "move", "delete", "set_cap", "ready_set", "ready_retry", "set_limits",
+  "create", "resize", "update", "copy", "move", "delete", "ready_set", "ready_retry", "set_limits",
 ]);
 
 /**
@@ -5845,12 +5845,13 @@ function isLocalComputerUseAllowed(callerCtx: CallerContext): boolean {
 }
 
 /** The account's ADE Cloud answer, or false when it can't be read. Cached for 10 minutes behind it. */
-async function cloudDomainEnabled(services: ReturnType<typeof getAdeActionDomainServices>): Promise<boolean> {
+async function cloudDomainEnabled(runtime: AdeRuntime, services: ReturnType<typeof getAdeActionDomainServices>): Promise<boolean> {
   const access = services.cloud?.access;
   if (typeof access !== "function") return false;
   try {
     return ((await (access as () => Promise<unknown>).call(services.cloud)) as { enabled?: unknown } | null)?.enabled === true;
-  } catch {
+  } catch (error) {
+    runtime.logger.warn("cloud.domain_access_read_failed", { error: error instanceof Error ? error.message : String(error) });
     return false;
   }
 }
@@ -6362,7 +6363,7 @@ async function runTool(args: {
     const domains = domain === "all"
       ? (Object.keys(services) as AdeActionDomain[])
       : [domain as AdeActionDomain];
-    const cloudHidden = domains.includes("cloud") && !(await cloudDomainEnabled(services));
+    const cloudHidden = domains.includes("cloud") && !(await cloudDomainEnabled(runtime, services));
     const exposedDomains = domains.filter((entry) =>
       !DISABLED_ADE_ACTION_DOMAINS.has(entry) && !(cloudHidden && entry === "cloud"));
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
@@ -6404,7 +6405,7 @@ async function runTool(args: {
     const services = getAdeActionDomainServices(runtime);
     const service = services[domain];
     // No ADE Cloud for this account: the domain answers as if it weren't here.
-    if (!service || (domain === "cloud" && !(await cloudDomainEnabled(services)))) {
+    if (!service || (domain === "cloud" && !(await cloudDomainEnabled(runtime, services)))) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Domain '${domain}' is unavailable in this runtime.`);
     }
     let callable = service[action];

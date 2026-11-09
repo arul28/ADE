@@ -89,10 +89,13 @@ const NO_PROVIDER_SENTENCE: Record<Exclude<CloudAccess["state"], "ready">, strin
 
 /** `/cloud/access` is asked at most this often per account. */
 const ACCESS_TTL_MS = 10 * 60_000;
+/** After a failed ask, how long the next ones wait, so an unreachable server can't slow every caller. */
+const ACCESS_FAILURE_TTL_MS = 60_000;
 
 /** The last answer: per process, so every surface in it shares one check. */
 let accessCache: { key: string; enabled: boolean; at: number } | null = null;
 let accessAsking: { key: string; answer: Promise<boolean | null> } | null = null;
+let accessFailure: { key: string; at: number } | null = null;
 
 const accessKey = (deps: CloudAccessDeps): string => `${deps.directoryBaseUrl() ?? ""}|${deps.accountId() ?? ""}`;
 
@@ -114,7 +117,9 @@ export function watchCloudAccessForSkills(deps: CloudAccessDeps): void {
   setAgentSkillAccessRefresh(() => {
     const fresh = accessCache?.key === accessKey(deps) && Date.now() - accessCache.at < ACCESS_TTL_MS;
     if (fresh || accessAsking) return;
-    void cloudAccessEnabled(deps).catch(() => undefined);
+    void cloudAccessEnabled(deps).catch((error: unknown) => {
+      deps.logger?.warn("cloud.skill_access_read_failed", { error: getErrorMessage(error) });
+    });
   });
 }
 
@@ -122,15 +127,19 @@ export function watchCloudAccessForSkills(deps: CloudAccessDeps): void {
 async function readAccessFlag(key: string, provider: CloudProvider, deps: CloudAccessDeps): Promise<boolean | null> {
   const now = Date.now();
   if (accessCache?.key === key && now - accessCache.at < ACCESS_TTL_MS) return accessCache.enabled;
+  const cachedYes = () => (accessCache?.key === key && accessCache.enabled ? true : null);
+  if (accessFailure?.key === key && now - accessFailure.at < ACCESS_FAILURE_TTL_MS) return cachedYes();
   if (accessAsking?.key === key) return await accessAsking.answer;
   const answer = provider.accessEnabled().then(
     (enabled) => {
       accessCache = { key, enabled, at: Date.now() };
+      accessFailure = null;
       return enabled;
     },
     (error: unknown) => {
       deps.logger?.warn("cloud.access_read_failed", { error: getErrorMessage(error) });
-      return accessCache?.key === key && accessCache.enabled ? true : null;
+      accessFailure = { key, at: Date.now() };
+      return cachedYes();
     },
   );
   accessAsking = { key, answer };
@@ -151,6 +160,7 @@ async function askCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
   if (!deps.signedIn()) {
     // Not a fact about any account: the next sign-in asks again, even the same one.
     accessCache = null;
+    accessFailure = null;
     return { state: "signed_out" };
   }
   const baseUrl = deps.directoryBaseUrl();
@@ -170,6 +180,17 @@ async function askCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
 export async function getCloudProvider(deps: CloudAccessDeps): Promise<CloudProvider | null> {
   const access = await readCloudAccess(deps);
   return access.state === "ready" ? access.provider : null;
+}
+
+/** ADE Cloud if the last answer for this account was yes, without asking the server: for work on a timer. */
+export function knownCloudProvider(deps: CloudAccessDeps): CloudProvider | null {
+  if (!deps.signedIn() || accessCache?.key !== accessKey(deps) || !accessCache.enabled) return null;
+  return createCloudServerProvider({
+    accessToken: deps.accessToken,
+    baseUrl: deps.directoryBaseUrl,
+    deviceName: deps.deviceName,
+    fetch: deps.fetch,
+  });
 }
 
 /** Why this computer has no ADE Cloud right now, or null when it has it. */

@@ -8293,7 +8293,10 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     }
     const accessHandler = domain?.access;
     const accessOn = typeof accessHandler === "function"
-      ? ((await (accessHandler as () => Promise<unknown>).call(domain).catch(() => null)) as { enabled?: unknown } | null)?.enabled === true
+      ? ((await (accessHandler as () => Promise<unknown>).call(domain).catch((error: unknown) => {
+        args.logger.warn("cloud.remote_access_read_failed", { error: error instanceof Error ? error.message : String(error) });
+        return null;
+      })) as { enabled?: unknown } | null)?.enabled === true
       : false;
     if (typeof handler !== "function" || !accessOn) throw new Error(`cloud has no "${action}" here.`);
     const input = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args) ? payload.args as Record<string, unknown> : {};

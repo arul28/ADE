@@ -41,6 +41,8 @@
  * `POST /cloud/instances/:id/start` with `{ reason: "push_work" }` is the one
  * wake allowed at 0 hours: free, short, once a day per computer.
  * `DELETE /cloud/instances/:id` takes `{ who, reason }`, recorded in the log.
+ * `POST /cloud/instances` with `{ moveFromInstanceId }` gives the new computer
+ * that computer's disk (a move), under the same plan limits.
  * `POST /cloud/instances/:id/resize` needs `{ computerIdle: true }` to grow the
  * disk of a running computer (a disk grow restarts it).
  * `POST /cloud/billing/extra-hours` takes `{ enabled }`, on a paid plan only.

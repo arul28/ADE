@@ -61,7 +61,7 @@ function useTargetMachineKey(targetId: string | null): string | null {
       (targets) => {
         if (!cancelled) setMachineKey(targets.find((target) => target.id === targetId)?.pairedMachine?.machineKey?.trim() ?? null);
       },
-      () => {},
+      (error: unknown) => console.warn("[cloud] reading connection targets failed", error),
     );
     return () => {
       cancelled = true;
@@ -93,8 +93,15 @@ function useStillWatching(tool: string, pin: OpenProjectBinding | null | undefin
     if (!watching) return;
     const beat = () => {
       void (async () => {
-        const here = await window.ade.cloud?.personIsHere?.().catch(() => false);
-        if (here) await window.ade.workTools?.noteWatching?.(pinRef.current).catch(() => {});
+        const here = await window.ade.cloud?.personIsHere?.().catch((error: unknown) => {
+          console.warn("[cloud] still-watching check failed", error);
+          return false;
+        });
+        if (here) {
+          await window.ade.workTools?.noteWatching?.(pinRef.current).catch((error: unknown) => {
+            console.warn("[cloud] still-watching signal failed", error);
+          });
+        }
       })();
     };
     beat();

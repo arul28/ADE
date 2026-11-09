@@ -15,6 +15,7 @@ import { PrSwitcherMenu, PrSwitcherStepper, type PrSwitcher } from "../prs/share
 import { subscribeChatPrSelections, takeChatPrSelection } from "./chatPrPaneRequests";
 import { ChatPrInlineCreator, inputBase } from "./ChatPrInlineCreator";
 import { getGitHubSnapshotCoalesced, refreshLinkedPrCoalesced } from "../../lib/prReadCache";
+// eslint-disable-next-line no-restricted-imports -- `ChatPrPaneAsleep` reads through the window's own machine on purpose: the chat's machine is asleep.
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import type { CloudMachine } from "../../../shared/adeCloud";
 import { useCloudComputerAsleep } from "../terminals/cloudToolGate";
@@ -208,20 +209,31 @@ export const ChatPrPane = React.memo(function ChatPrPane(props: ChatPrPaneProps)
 
 function ChatPrPaneAsleep({ laneId, branchName, runtimePin, box }: ChatPrPaneProps & { box: CloudMachine }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  // eslint-disable-next-line no-restricted-syntax -- the window's own machine on purpose: the chat's machine is asleep.
   const bindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
   // A tab bound to this very computer has no other machine to ask.
+  // eslint-disable-next-line no-restricted-syntax -- as above.
   const windowIsAsleepToo = useAppStore((state) => state.projectBinding?.kind === "remote") && !runtimePin;
   const pinMachine = useMachineEntryForBinding(runtimePin ?? null);
   const scope = useChatRuntimeScopeForPin(runtimePin ?? null, laneId);
   const [github, setGithub] = useState<GitHubPrListItem[] | null>(null);
+  const [readFailed, setReadFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (windowIsAsleepToo) return;
     let cancelled = false;
     void getGitHubSnapshotCoalesced({}, { projectRoot, bindingKey })
-      .then((snapshot) => { if (!cancelled) setGithub(snapshot?.repoPullRequests ?? []); })
-      .catch(() => { if (!cancelled) setGithub([]); });
+      .then((snapshot) => {
+        if (cancelled) return;
+        setGithub(snapshot?.repoPullRequests ?? []);
+        setReadFailed(false);
+      })
+      .catch((error: unknown) => {
+        console.warn("[chat-pr] reading GitHub for a sleeping computer failed", error);
+        if (!cancelled) setReadFailed(true);
+      });
     return () => { cancelled = true; };
-  }, [bindingKey, projectRoot, windowIsAsleepToo]);
+  }, [attempt, bindingKey, projectRoot, windowIsAsleepToo]);
 
   const lane = useMemo(() => ({
     laneType: scope.lane?.laneType ?? "worktree",
@@ -242,7 +254,12 @@ function ChatPrPaneAsleep({ laneId, branchName, runtimePin, box }: ChatPrPanePro
         <a key={row.key} href={row.url ?? undefined} target="_blank" rel="noreferrer" className="truncate text-fg underline">
           #{row.number} {row.title} ({row.state})
         </a>
-      )) : <p className="text-muted-fg">No pull request found for this lane.</p>}
+      )) : readFailed ? (
+        <p className="text-muted-fg">
+          Couldn't read this lane's pull request.{" "}
+          <button type="button" className="underline" onClick={() => setAttempt((value) => value + 1)}>Try again</button>
+        </p>
+      ) : <p className="text-muted-fg">No pull request found for this lane.</p>}
     </div>
   );
 }
