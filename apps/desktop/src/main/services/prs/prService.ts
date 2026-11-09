@@ -140,7 +140,8 @@ import { resolvePrNextStepFromStatus } from "../../../shared/prNextStep";
 import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } from "../../../shared/prChecksRollup";
 import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
-import { branchNameFromHeadRef, formatGitExecutionError, GIT_REMOTE_FETCH_TIMEOUT_MS, isGitWorktreeRoot, runGit } from "../git/git";
+import { branchNameFromHeadRef, formatGitExecutionError, GIT_REMOTE_FETCH_TIMEOUT_MS, runGit } from "../git/git";
+import { isGitWorktreeRoot } from "../git/gitWorktreeRoot";
 import { classifyGitPushFailure } from "../git/gitPushFailure";
 import { runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import {
