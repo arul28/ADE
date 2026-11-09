@@ -217,6 +217,24 @@ function cellAtGridColumn(tr: Element, column: number): Element | null {
   }
   return null;
 }
+/**
+ * The text of the text boxes in a drawing. `AlternateContent` repeats one box
+ * as `Choice` and `Fallback`, so only the first that has any is read.
+ */
+function textBoxText(node: Element): string | null {
+  const scopes = node.localName === "AlternateContent"
+    ? Array.from(node.children).filter((item) => item.localName === "Choice" || item.localName === "Fallback")
+    : [node];
+  for (const scope of scopes) {
+    const lines = Array.from(scope.getElementsByTagNameNS(DOC_NS, "txbxContent"))
+      .flatMap((box) => Array.from(box.children).filter((item) => item.localName === "p"))
+      .map((paragraph) => Array.from(paragraph.getElementsByTagNameNS(DOC_NS, "t")).map((item) => item.textContent ?? "").join(""))
+      .filter(Boolean);
+    if (lines.length) return lines.join("\n");
+  }
+  return null;
+}
+
 function nearestAncestor(el: Element, name: string): Element | null {
   for (let node = el.parentElement; node; node = node.parentElement)
     if (node.localName === name) return node;
@@ -508,8 +526,11 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
       if (!(node instanceof Element)) continue;
       const name = node.localName;
       let text: string | null = null;
-      if (name === "t" || name === "delText" || name === "instrText")
+      // `instrText` is a field's code (`PAGEREF _Toc1 \\h`), not its result.
+      if (name === "t" || name === "delText")
         text = node.textContent ?? "";
+      else if (name === "AlternateContent" || name === "drawing" || name === "pict")
+        text = textBoxText(node);
       else if (name === "tab" || name === "ptab") text = "\t";
       else if (name === "br" || name === "cr")
         text = val(node, "type") === "page" ? "\u000c" : "\n";
@@ -621,7 +642,11 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
         } else if (
           item.localName === "r" ||
           item.localName === "smartTag" ||
-          item.localName === "sdt"
+          item.localName === "sdt" ||
+          item.localName === "sdtContent" ||
+          item.localName === "fldSimple" ||
+          item.localName === "ins" ||
+          item.localName === "moveTo"
         ) {
           if (item.localName === "r")
             runs.push(

@@ -142,7 +142,7 @@ export function createTailnetHttpsServe(args: {
       await execFileAsync(
         resolveTailscaleCliPath(),
         ["serve", "--bg", `--https=${httpsPort}`, `http://127.0.0.1:${syncPort}`],
-        { timeout: 15_000, windowsHide: true },
+        { timeout: 15_000, windowsHide: true, killSignal: "SIGKILL" },
       );
       if (!isCurrent()) {
         // Unpublished (or moved to another port) while this ran: take back the
@@ -184,6 +184,7 @@ export function createTailnetHttpsServe(args: {
       await execFileAsync(resolveTailscaleCliPath(), ["serve", `--https=${port}`, "off"], {
         timeout: 10_000,
         windowsHide: true,
+        killSignal: "SIGKILL",
       });
     } catch (error: unknown) {
       args.logger.warn("sync_host.tailnet_https_unpublish_failed", {
@@ -215,6 +216,7 @@ export function createTailnetHttpsServe(args: {
         await execFileAsync(resolveTailscaleCliPath(), ["serve", `--https=${httpsPort}`, "off"], {
           timeout: 10_000,
           windowsHide: true,
+          killSignal: "SIGKILL",
         });
         reclaimed += 1;
       } catch {

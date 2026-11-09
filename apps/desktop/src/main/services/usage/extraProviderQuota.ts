@@ -73,6 +73,7 @@ export type ExtraQuotaIo = {
   readCursorSession?: (dbPath: string) => Promise<{ token: string | null; unreadable: boolean }>;
   readGhToken?: (force: boolean) => Promise<string | null>;
   readFactoryApiKey?: () => string | null;
+  readCursorApiKey?: () => string | null;
   readOpenCodeConsoleAccount?: (dbPath: string, nowMs: number) => Promise<OpenCodeConsoleAccount | null>;
 };
 
@@ -87,6 +88,7 @@ type ResolvedIo = {
   readGhToken: (force: boolean) => Promise<string | null>;
   readFactoryApiKey: () => string | null;
   readOpenCodeConsoleAccount: (dbPath: string, nowMs: number) => Promise<OpenCodeConsoleAccount | null>;
+  readCursorApiKey: () => string | null;
 };
 
 function resolveIo(io: ExtraQuotaIo = {}): ResolvedIo {
@@ -100,6 +102,7 @@ function resolveIo(io: ExtraQuotaIo = {}): ResolvedIo {
     readCursorSession: io.readCursorSession ?? readCursorSessionToken,
     readGhToken: io.readGhToken ?? readCachedGhAuthToken,
     readFactoryApiKey: io.readFactoryApiKey ?? readStoredFactoryApiKey,
+    readCursorApiKey: io.readCursorApiKey ?? readStoredCursorApiKey,
     readOpenCodeConsoleAccount: io.readOpenCodeConsoleAccount ?? readOpenCodeConsoleAccountFromDisk,
   };
 }
@@ -419,6 +422,14 @@ function readStoredFactoryApiKey(): string | null {
   }
 }
 
+function readStoredCursorApiKey(): string | null {
+  try {
+    return getApiKey("cursor")?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 function factoryApiKey(io: ResolvedIo): string | null {
   const key = io.readFactoryApiKey()?.trim() || envToken(io.env, "FACTORY_API_KEY");
   return key?.startsWith("fk-") ? key : null;
@@ -426,7 +437,19 @@ function factoryApiKey(io: ResolvedIo): string | null {
 
 type HttpJson =
   | { ok: true; body: unknown }
-  | { ok: false; errorKind: UsageProviderErrorKind; detail: string };
+  | { ok: false; errorKind: UsageProviderErrorKind; detail: string; message?: string };
+
+/** The reason a provider gave for refusing, when its 403 body names one. */
+async function refusalMessage(response: Response): Promise<string | undefined> {
+  try {
+    const body = await response.json() as Record<string, unknown>;
+    const nested = body.error && typeof body.error === "object" ? (body.error as Record<string, unknown>).message : undefined;
+    const message = [body.message, nested, body.error, body.detail].find((value) => typeof value === "string" && value.trim());
+    return typeof message === "string" ? Array.from(message.trim()).slice(0, 200).join("") : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 async function fetchJson(
   fetchImpl: QuotaFetch,
@@ -439,8 +462,10 @@ async function fetchJson(
       credentials: "omit",
       signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
-    if (response.status === 401 || response.status === 403) {
-      return { ok: false, errorKind: "auth", detail: String(response.status) };
+    if (response.status === 401) return { ok: false, errorKind: "auth", detail: "401" };
+    if (response.status === 403) {
+      const message = await refusalMessage(response);
+      return { ok: false, errorKind: "auth", detail: "403", ...(message ? { message } : {}) };
     }
     if (response.status === 429) return { ok: false, errorKind: "rate_limited", detail: "429" };
     if (!response.ok) return { ok: false, errorKind: "unavailable", detail: String(response.status) };
@@ -462,7 +487,7 @@ function httpFailure(provider: UsageProvider, failure: Extract<HttpJson, { ok: f
     : failure.detail;
   return {
     windows: [],
-    errors: [`${provider}: usage request failed (${detail})`],
+    errors: [`${provider}: usage request failed (${detail})${failure.message ? `: ${failure.message}` : ""}`],
     errorKind: failure.errorKind,
     source: "http",
   };
@@ -505,6 +530,16 @@ export async function pollCursorQuota(
   }
   const token = usableSessionToken(session.token, resolved.nowMs);
   if (!token) {
+    if (!session.unreadable && resolved.readCursorApiKey()) {
+      // Signed in through ADE: chats work, but the limits endpoint only takes
+      // the Cursor app's session. "Not signed in" would be wrong.
+      return {
+        windows: [],
+        errors: ["cursor: limits are only readable after signing in to the Cursor app"],
+        errorKind: "auth",
+        source: "http",
+      };
+    }
     if (!session.unreadable) return notSignedIn();
     const hadWindows = context.previousSnapshot?.windows.some((window) => window.provider === "cursor") ?? false;
     if (!hadWindows) return notSignedIn();

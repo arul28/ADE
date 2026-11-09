@@ -13071,7 +13071,7 @@ function readDraftPrompt(args: string[], opts: { fromStdinWhenOmitted: boolean }
 /** Repeatable `--image <path>`, as the local image refs the draft store keeps. */
 function readDraftImages(args: string[]): JsonObject[] {
   return readRepeatedValues(args, ["--image"]).map((value) => ({
-    path: path.resolve(value),
+    path: resolveCliFolderArg(value),
     type: "image",
   }));
 }
@@ -14891,7 +14891,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     // The agent runs in its lane worktree; the runtime that stores the artifact
     // runs at the project root. Resolve here, where the caller's cwd is known,
     // so a relative path never has to be guessed at on the other side.
-    const attachedPath = path.resolve(process.cwd(), rawPath);
+    const attachedPath = resolveCliFolderArg(rawPath);
     const title =
       readValue(args, ["--title", "--name"]) ??
       caption ??
@@ -25617,7 +25617,7 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
         method: "projects.clone",
         params: {
           url: githubCloneUrl(repo),
-          ...(parentDir ? { parentDir: target.remote ? parentDir : path.resolve(parentDir) } : {}),
+          ...(parentDir ? { parentDir: target.remote ? parentDir : resolveCliFolderArg(parentDir) } : {}),
           ...(name ? { name } : {}),
           catalogVisibility: "recent",
           registrationSource: "cli-explicit",
@@ -31276,7 +31276,7 @@ async function runInit(
   ]);
   const layout = resolveMachineAdeLayout();
   const registry = new ProjectRegistry(layout);
-  const project = registry.add(path.resolve(targetPath ?? process.cwd()), {
+  const project = registry.add(resolveCliFolderArg(targetPath ?? process.cwd()), {
     catalogVisibility: "recent",
     registrationSource: "cli-explicit",
   });

@@ -9,6 +9,11 @@ case "$version" in
 esac
 install_dir="${ADE_INSTALL_DIR:-}"
 ade_home="${ADE_HOME:-$HOME/.ade}"
+# The env file is sourced from any directory, so the home must be absolute.
+case "$ade_home" in
+  /*) ;;
+  *) ade_home="$PWD/${ade_home#./}" ;;
+esac
 
 die() {
   printf '%s\n' "ade install: $*" >&2
