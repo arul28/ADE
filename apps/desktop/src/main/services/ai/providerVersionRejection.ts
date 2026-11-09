@@ -269,9 +269,9 @@ const CODEX_MODEL_FLOOR_TEXT =
  * Codex error kinds (`codexErrorInfo`) the floor can arrive under. A request
  * refusal is a bad request (or unclassified); a usage limit, an auth failure,
  * a connection failure or a full context is never this refusal, whatever its
- * words.
+ * words. Since 0.165 a provider's `model_not_found` arrives as its own kind.
  */
-const CODEX_FLOOR_ERROR_KINDS = new Set(["badrequest", "other"]);
+const CODEX_FLOOR_ERROR_KINDS = new Set(["badrequest", "other", "modelnotfound"]);
 
 function codexErrorKind(errorInfo: unknown): string | null {
   if (errorInfo == null) return null;

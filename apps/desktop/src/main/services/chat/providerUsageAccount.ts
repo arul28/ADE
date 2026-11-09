@@ -77,9 +77,9 @@ export function claudeUsageAccountKind(args: {
   return usageAccountKindResult(kind, route);
 }
 
-/** Codex auth modes that bill an AWS account through Amazon Bedrock. */
-function isCodexBedrockAuthMode(mode: string): boolean {
-  return mode === "amazonbedrock" || mode.startsWith("bedrock");
+/** Codex auth modes that bill a cloud account (Amazon Bedrock, Google Cloud Vertex AI). */
+function isCodexCloudAuthMode(mode: string): boolean {
+  return mode === "amazonbedrock" || mode.startsWith("bedrock") || mode === "gcp";
 }
 
 export function codexUsageAccountKind(args: {
@@ -93,7 +93,7 @@ export function codexUsageAccountKind(args: {
   instanceSignedIn: boolean;
 }): UsageAccountKindResult {
   const mode = args.authMode?.trim().toLowerCase() ?? "";
-  const route = usageRoute({ modelProvider: isCodexBedrockAuthMode(mode) ? "bedrock" : null, keyedPreset: args.keyedPreset });
+  const route = usageRoute({ modelProvider: isCodexCloudAuthMode(mode) ? mode : null, keyedPreset: args.keyedPreset });
   const kind: AgentChatUsageAccountKind = mode === "apikey" ? "api_key"
     : mode === "chatgpt" || mode === "chatgptauthtokens" ? "subscription"
     : mode || route ? "unknown"
@@ -122,6 +122,8 @@ export function codexAuthModeFromAccountRead(response: unknown): { authMode: str
       return { authMode: "chatgpt", planType };
     case "amazonBedrock":
       return { authMode: "amazonBedrock", planType: null };
+    case "gcp":
+      return { authMode: "gcp", planType: null };
     default:
       return null;
   }

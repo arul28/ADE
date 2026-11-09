@@ -21,7 +21,7 @@
 // this override; it loads the chat's real MCP config when it is resumed.
 // ---------------------------------------------------------------------------
 
-import { CODEX_NO_UPDATE_CHECK_ARGS } from "../../../shared/pinnedToolSpawnEnv";
+import { CODEX_NO_PLUGIN_PREFETCH_ARGS, CODEX_NO_UPDATE_CHECK_ARGS } from "../../../shared/pinnedToolSpawnEnv";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
@@ -48,7 +48,7 @@ export async function forkCodexThreadInEphemeralAppServer(args: {
   sessionId: string;
 }): Promise<string> {
   // `executable` is ADE's pinned Codex (resolveCodexExecutable); it never checks for its own update.
-  const invocation = resolveCliSpawnInvocation(args.executable, [...CODEX_NO_UPDATE_CHECK_ARGS, ...codexDisableConfiguredMcpArgs(args.env, args.cwd), "app-server"], args.env);
+  const invocation = resolveCliSpawnInvocation(args.executable, [...CODEX_NO_UPDATE_CHECK_ARGS, ...CODEX_NO_PLUGIN_PREFETCH_ARGS, ...codexDisableConfiguredMcpArgs(args.env, args.cwd), "app-server"], args.env);
   const proc = spawn(invocation.command, invocation.args, {
     cwd: args.cwd,
     env: args.env,

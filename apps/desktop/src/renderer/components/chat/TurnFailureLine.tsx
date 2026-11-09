@@ -34,7 +34,7 @@ export function TurnFailureLine({
   const [retryError, setRetryError] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const { copy, copied } = useCopyToClipboard();
-  const details = [presentation.body, presentation.technicalDetail]
+  const details = [presentation.body, presentation.nextAction, presentation.technicalDetail]
     .map((part) => part?.trim() ?? "")
     .filter((part, index, parts) => part && parts.indexOf(part) === index)
     .join("\n\n");

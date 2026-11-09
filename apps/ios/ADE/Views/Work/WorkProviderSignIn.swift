@@ -33,11 +33,13 @@ func workProviderSignInLabel(_ provider: String) -> String {
   }
 }
 
-/// Who the person signs in with: "Continue with ChatGPT".
-private func workProviderSignInVia(_ provider: String) -> String {
+/// Who the person signs in with: "Continue with Claude". Nil when the sign-in
+/// belongs to the agent itself: "Sign in to Codex" runs `codex login`, and
+/// "Continue with ChatGPT" is the label of OpenAI's separate app program.
+private func workProviderSignInVia(_ provider: String) -> String? {
   switch provider.lowercased() {
   case "claude": return "Claude"
-  case "codex": return "ChatGPT"
+  case "codex": return nil
   case "copilot": return "GitHub"
   case "grok": return "xAI"
   case "kimi": return "Kimi"
@@ -601,7 +603,9 @@ struct WorkProviderSignInCard: View {
     case .verifying, .done: return "Checking…"
     case .waiting: return linkHost.map { "Waiting for \($0)…" } ?? "Waiting for the browser…"
     case .failed: return "Try again"
-    case .idle: return "Continue with \(workProviderSignInVia(provider))"
+    case .idle:
+      return workProviderSignInVia(provider).map { "Continue with \($0)" }
+        ?? "Sign in to \(workProviderSignInLabel(provider))"
     }
   }
 

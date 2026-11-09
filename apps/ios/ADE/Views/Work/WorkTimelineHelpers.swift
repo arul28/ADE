@@ -5824,6 +5824,7 @@ func workFoldSelfHealedFailures(_ transcript: [WorkChatEnvelope]) -> WorkSelfHea
   if hasContinuity {
     var lastNoticeIndexByThread: [String: Int] = [:]
     for (index, envelope) in transcript.enumerated() {
+      if workIsUntaggedReconnectNotice(envelope) { lastNoticeIndexByThread.removeAll() }
       if let notice = envelope.continuityNotice { lastNoticeIndexByThread[notice.originalThreadId] = index }
     }
     let resolvedThreads = Set(lastNoticeIndexByThread.compactMap { thread, index in
@@ -5872,6 +5873,13 @@ func workFoldSelfHealedFailures(_ transcript: [WorkChatEnvelope]) -> WorkSelfHea
     transcript: transcript.enumerated().compactMap { hidden.contains($0.offset) ? nil : $0.element },
     hiddenIds: Set(hidden.map { transcript[$0].id })
   )
+}
+
+/// What "Try again" wrote before its receipt carried a continuity detail. It
+/// names no thread, so in those saved transcripts it settles every notice so far.
+private func workIsUntaggedReconnectNotice(_ envelope: WorkChatEnvelope) -> Bool {
+  guard envelope.continuityNotice == nil, case .systemNotice(_, let message, _, _, _) = envelope.event else { return false }
+  return message == "Reconnected to the original thread."
 }
 
 private func workIsKeychainRetryNotice(_ event: WorkChatEvent) -> Bool {

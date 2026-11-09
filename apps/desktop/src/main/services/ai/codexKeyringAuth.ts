@@ -10,7 +10,7 @@ import { windowsPowerShellCommand } from "../shared/processExecution";
  * (`cli_auth_credentials_store = "keyring"`, or `"auto"` with a keyring
  * present; the default is `"file"`).
  *
- * Mirrors codex-rs `login/src/auth/storage.rs` (rust-v0.164.0): service
+ * Mirrors codex-rs `login/src/auth/storage.rs` (rust-v0.167.0): service
  * `Codex Auth`, account `cli|` + the first 16 hex digits of the SHA-256 of the
  * canonical CODEX_HOME path, value the same JSON `auth.json` holds. The
  * `keyring` crate files it as a Secret Service item with `service`/`username`

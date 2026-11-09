@@ -69,8 +69,12 @@ type SignInKind = "account" | "cli" | "cursor" | "antigravity" | "settings";
 
 type ProviderSignInSpec = {
   label: string;
-  /** Who the person signs in with: "Continue with ChatGPT". */
-  via: string;
+  /**
+   * Who the person signs in with: "Continue with Claude". Left out when the
+   * sign-in belongs to the agent itself: "Sign in to Codex" runs `codex login`,
+   * and "Continue with ChatGPT" is the label of OpenAI's separate app program.
+   */
+  via?: string;
   kind: SignInKind;
   /** The `providerBrand` id, when it is not the provider id. */
   brandId?: string;
@@ -78,7 +82,7 @@ type ProviderSignInSpec = {
 
 const SPECS: Record<string, ProviderSignInSpec> = {
   claude: { label: "Claude Code", via: "Claude", kind: "account" },
-  codex: { label: "Codex", via: "ChatGPT", kind: "account" },
+  codex: { label: "Codex", kind: "account" },
   cursor: { label: "Cursor", via: "Cursor", kind: "cursor" },
   copilot: { label: "GitHub Copilot", via: "GitHub", kind: "cli" },
   grok: { label: "Grok", via: "xAI", kind: "cli" },
@@ -570,6 +574,7 @@ export function ProviderSignInComposer({
       </div>
 
       <div className="ade-icc-body">
+        <div className="ade-psc-main" data-wide={flow.phase === "waiting" && (flow.awaitingCode || flow.deviceCode) ? "true" : undefined}>
         <p className="ade-icc-reason">{reason}</p>
         <div className="ade-icc-row">
           {flow.phase === "waiting" && flow.awaitingCode ? (
@@ -665,7 +670,9 @@ export function ProviderSignInComposer({
                       ? host ? `Waiting for ${host}…` : "Waiting for the browser…"
                       : spec.kind === "settings"
                         ? `Set up ${spec.label} on ${machineName}`
-                        : flow.phase === "failed" ? "Try again" : `Continue with ${spec.via}`}
+                        : flow.phase === "failed"
+                          ? "Try again"
+                          : spec.via ? `Continue with ${spec.via}` : `Sign in to ${spec.label}`}
               </button>
               {flow.phase === "waiting" && flow.url ? (
                 <button type="button" className="ade-icc-link" onClick={() => openExternalUrl(flow.url)}>
@@ -678,6 +685,7 @@ export function ProviderSignInComposer({
               ) : null}
             </>
           )}
+        </div>
         </div>
         {shownError ? <CardError id="provider-sign-in-error" message={shownError} /> : null}
       </div>

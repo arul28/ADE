@@ -1,8 +1,8 @@
 // ---------------------------------------------------------------------------
 // Codex Daybreak: OpenAI's broader access for authorized cybersecurity work.
 //
-// Mirrors Codex 0.164's own client (codex-rs/tui/src/daybreak.rs and
-// protocol/src/openai_models/access_programs.rs at rust-v0.164.0):
+// Mirrors Codex 0.167's own client (codex-rs/tui/src/daybreak.rs and
+// protocol/src/openai_models/access_programs.rs at rust-v0.167.0):
 //
 // - `model/list` reports, per model and per signed-in account, the access
 //   programs that account may ask for: `availableAccessPrograms.cyber`.

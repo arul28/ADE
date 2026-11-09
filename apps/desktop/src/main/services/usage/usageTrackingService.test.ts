@@ -1784,7 +1784,7 @@ describe("pollCodexViaCliRpc", () => {
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
     expect(mockState.spawn).toHaveBeenCalledWith(
       "C:\\ade-test\\tools\\codex.exe",
-      ["-c", "check_for_update_on_startup=false", "-s", "read-only", "-a", "never", "app-server"],
+      ["-c", "check_for_update_on_startup=false", "-c", "features.plugin_discovery_prefetch=false", "-s", "read-only", "-a", "never", "app-server"],
       expect.objectContaining({ windowsVerbatimArguments: false }),
     );
     expect(fake.stdinEmitter.write).toHaveBeenCalledTimes(1);
@@ -1823,7 +1823,7 @@ describe("pollCodexViaCliRpc", () => {
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
     const [spawnFile, spawnArgs, spawnOptions] = mockState.spawn.mock.calls[0]!;
     expect(spawnFile).toBe("/ade-test/tools/codex");
-    expect(spawnArgs).toEqual(["-c", "check_for_update_on_startup=false", "-s", "read-only", "-a", "never", "app-server"]);
+    expect(spawnArgs).toEqual(["-c", "check_for_update_on_startup=false", "-c", "features.plugin_discovery_prefetch=false", "-s", "read-only", "-a", "never", "app-server"]);
     expect(spawnOptions).toEqual(expect.objectContaining({ windowsVerbatimArguments: false }));
     expect(fake.stdinEmitter.write).toHaveBeenCalledTimes(1);
     expect(fake.written[0]).toMatch(/\n$/);

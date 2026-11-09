@@ -31,6 +31,14 @@ function isHandOffMessage(event: ChatTranscriptRenderEvent): boolean {
   return event.type === "user_message" && event.metadata?.kind === "continuity_recovery";
 }
 
+/**
+ * What "Try again" wrote before its receipt carried a continuity detail. It
+ * names no thread, so in those saved transcripts it settles every notice so far.
+ */
+function isUntaggedReconnectNotice(event: ChatTranscriptRenderEvent): boolean {
+  return event.type === "system_notice" && !event.detail && event.message === "Reconnected to the original thread.";
+}
+
 function isKeychainRetryNotice(event: ChatTranscriptRenderEvent): boolean {
   return event.type === "system_notice" && event.status === "claude_keychain_retry";
 }
@@ -55,6 +63,7 @@ function isFailureRowOf(event: ChatTranscriptRenderEvent, turnIds: ReadonlySet<s
 function foldContinuityRecovery(rows: ChatTranscriptRenderEnvelope[]): ChatTranscriptRenderEnvelope[] {
   const lastNoticeIndexByThread = new Map<string, number>();
   rows.forEach((row, index) => {
+    if (isUntaggedReconnectNotice(row.event)) lastNoticeIndexByThread.clear();
     const detail = continuityDetail(row.event);
     if (detail) lastNoticeIndexByThread.set(detail.originalThreadId ?? "", index);
   });

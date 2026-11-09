@@ -363,6 +363,45 @@ describe("createAgentChatService", () => {
       });
     });
 
+    // Codex 0.164 and 0.167: `review/start`, the items and `turn/completed` use
+    // one id; `turn/started` and `turn/interrupt` use the inner task's id.
+    it.each([
+      ["finishes", false],
+      ["is interrupted", true],
+    ] as const)("keeps following a review that %s under the id review/start answered", async (_label, interrupt) => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.5" });
+      await service.sendMessage({ sessionId: session.id, text: "/review" }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { turn: { id: "review-task", status: "inProgress" } },
+      });
+
+      if (interrupt) {
+        mockState.codexResponseOverrides.set("turn/interrupt", (payload) =>
+          (payload.params as { turnId?: unknown }).turnId === "review-task"
+            ? {}
+            : { error: { code: -32000, message: "expected active turn id turn-1 but found review-task" } });
+        await service.interrupt({ sessionId: session.id });
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/interrupt")
+          .map((payload) => (payload.params as { turnId?: unknown }).turnId)).toEqual(["turn-1", "review-task"]);
+      }
+
+      const status = interrupt ? "interrupted" : "completed";
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status } },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === status && event.event.turnId === "turn-1",
+      );
+    });
+
     it("routes /review branch <name> to review/start with target type=baseBranch", async () => {
       const { service } = createService();
       const session = await service.createSession({
