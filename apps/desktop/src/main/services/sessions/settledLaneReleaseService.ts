@@ -176,14 +176,24 @@ export function createSettledLaneReleaseService(deps: SettledLaneReleaseDeps) {
           }
           continue;
         }
-        const times = chats.map(settledTime);
-        const lastSettledAt = times.reduce((latest, time) => (Date.parse(time) > Date.parse(latest) ? time : latest));
-        const lastMs = Date.parse(lastSettledAt);
-        if (!Number.isFinite(lastMs) || now() - lastMs < SETTLED_LANE_RELEASE_DELAY_MS) continue;
-        if (state[laneId] === lastSettledAt) continue;
-        // The page above is bounded; every step reads the whole lane first.
-        const lastChat = chats[times.indexOf(lastSettledAt)]!;
-        const outcome = await releaseLane(laneId, liveLaneChats(laneId), lastChat);
+        const newest = (rows: readonly TerminalSessionSummary[]) => {
+          const times = rows.map(settledTime);
+          const at = times.reduce((latest, time) => (Date.parse(time) > Date.parse(latest) ? time : latest));
+          return { at, chat: rows[times.indexOf(at)]! };
+        };
+        const waited = (at: string) => {
+          const ms = Date.parse(at);
+          return Number.isFinite(ms) && now() - ms >= SETTLED_LANE_RELEASE_DELAY_MS;
+        };
+        // The cheap read first. The page is bounded, so it only rules a lane
+        // out; the whole lane sets the clock and what gets released.
+        const fromPage = newest(chats);
+        if (!waited(fromPage.at) || state[laneId] === fromPage.at) continue;
+        const laneChats = liveLaneChats(laneId);
+        if (laneChats.length === 0 || !laneChats.every(isSettleTupleSettled)) continue;
+        const { at: lastSettledAt, chat: lastChat } = newest(laneChats);
+        if (!waited(lastSettledAt) || state[laneId] === lastSettledAt) continue;
+        const outcome = await releaseLane(laneId, laneChats, lastChat);
         if (outcome === "cancelled") continue;
         const passes = (passesByLane.get(laneId) ?? 0) + 1;
         if (outcome === "incomplete" && passes < MAX_RELEASE_PASSES) {

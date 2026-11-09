@@ -75,6 +75,13 @@ describe("settled lane release", () => {
       lane: [chat({ id: "a", settledAt: SETTLED_AT }), chat({ id: "old-active" })],
       at: AFTER_WAIT,
     },
+    {
+      name: "a chat past the listing page settled just now",
+      on: true,
+      page: [chat({ id: "a", settledAt: SETTLED_AT })],
+      lane: [chat({ id: "a", settledAt: SETTLED_AT }), chat({ id: "old", settledAt: new Date(AFTER_WAIT - 1_000).toISOString() })],
+      at: AFTER_WAIT,
+    },
   ])("stops nothing when $name", async ({ on, page, lane, at }) => {
     const { steps, notify, db, start } = setup(page, memoryDb(), () => lane ?? page);
     if (on) turnOn(db);
