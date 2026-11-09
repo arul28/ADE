@@ -47889,9 +47889,6 @@ export function createAgentChatService(args: {
     }
   };
 
-  /** Runtimes being replaced by a redirect: queued subagent results stay put until it is sent. */
-  const replacingTurnKeepsChildResults = new WeakSet<object>();
-
   const noteClaudeCompactFailure = (managed: ManagedChatSession, status: Record<string, unknown>): void => {
     if (status.status === "compacting" || status.compact_result === "success") managed.claudeCompactError = null;
     if (status.compact_result === "failed") {
@@ -47918,7 +47915,6 @@ export function createAgentChatService(args: {
     // unrelated Stop.
     const preserveQueuedSteers = runtime.preserveQueuedSteersOnInterrupt === true;
     runtime.preserveQueuedSteersOnInterrupt = false;
-    const keepChildResults = replacingTurnKeepsChildResults.has(runtime) && reason === "interrupted";
     if (reason === "interrupted" && preserveQueuedSteers) return;
     // A failed Compact first turn keeps the messages it was compacting for.
     if (managed.compactFirstHold === "holding") {
@@ -47928,11 +47924,7 @@ export function createAgentChatService(args: {
       }
       managed.compactFirstHold = undefined;
     }
-    const stays = (steer: { metadata?: AgentChatEventMetadata | null }) => keepChildResults && Boolean(steer.metadata?.spawnCompletion);
-    const cancelled = runtime.pendingSteers.filter((steer) => !stays(steer));
-    for (let index = runtime.pendingSteers.length - 1; index >= 0; index -= 1) {
-      if (!stays(runtime.pendingSteers[index]!)) runtime.pendingSteers.splice(index, 1);
-    }
+    const cancelled = runtime.pendingSteers.splice(0);
     if (!cancelled.length) return;
 
     const cancelReasons: Record<typeof reason, string> = {
@@ -48405,9 +48397,6 @@ export function createAgentChatService(args: {
     // turn boundary; the idle reader will consume the explicit dispatch, then
     // remaining staged rows can proceed in order.
     if ("dispatchingSteerIds" in runtime && runtime.dispatchingSteerIds.size > 0) return false;
-    // The interrupted turn's tail must not start a held child result ahead of
-    // the redirect it is being replaced by.
-    if (replacingTurnKeepsChildResults.has(runtime)) return false;
 
     const nextSteer = runtime.pendingSteers.shift();
     if (!nextSteer) return false;
@@ -62786,7 +62775,7 @@ export function createAgentChatService(args: {
             runtime.busy = false;
             runtime.activeCompactionId = null;
           }
-          await deliverPiQueuedSteers(managed, runtime);
+          void deliverPiQueuedSteers(managed, runtime);
         }
         return;
       }
@@ -65137,25 +65126,39 @@ export function createAgentChatService(args: {
 
   /**
    * A subagent's result waiting in the queue is not what the user is replacing,
-   * and nothing resends it once cancelled. It stays queued through the stop and
-   * is delivered after the redirect. OpenCode's inbox owns its own rows and
-   * takes a child result inline, so it is not held here.
+   * and nothing resends it once the stop cancels the queue. It goes out with
+   * the redirect instead. OpenCode's inbox owns its own rows and takes a child
+   * result inline; Cursor's redirect already keeps the queue.
    */
   const interruptAndContinueTurn = async (
     managed: ManagedChatSession,
     args: Parameters<typeof replaceRunningTurn>[1],
   ): Promise<void> => {
     const runtime = managed.runtime;
-    const holdsChildResults = managed.session.provider !== "cursor"
-      && runtime != null
-      && runtime.kind !== "opencode"
-      && "pendingSteers" in runtime
-      && runtime.pendingSteers.some((steer) => steer.metadata?.spawnCompletion);
-    if (holdsChildResults) replacingTurnKeepsChildResults.add(runtime);
-    try {
+    if (!runtime || managed.session.provider === "cursor" || runtime.kind === "opencode" || !("pendingSteers" in runtime)) {
       await replaceRunningTurn(managed, args);
-    } finally {
-      if (runtime) replacingTurnKeepsChildResults.delete(runtime);
+      return;
+    }
+    const childResults: QueuedSteer[] = [];
+    for (let index = runtime.pendingSteers.length - 1; index >= 0; index -= 1) {
+      if (runtime.pendingSteers[index]?.metadata?.spawnCompletion) childResults.unshift(...runtime.pendingSteers.splice(index, 1));
+    }
+    if (!childResults.length) {
+      await replaceRunningTurn(managed, args);
+      return;
+    }
+    try {
+      await replaceRunningTurn(managed, {
+        ...args,
+        displayText: args.displayText ?? args.text,
+        text: [args.text, ...childResults.map((steer) => steer.text)].join("\n\n"),
+      });
+    } catch (error) {
+      if (managed.runtime === runtime) runtime.pendingSteers.unshift(...childResults);
+      throw error;
+    }
+    for (const steer of childResults) {
+      if (claimSteerSettlement(managed, steer.steerId)) emitSteerUserRow(managed, steer, "inline", undefined);
     }
   };
 
@@ -66549,7 +66552,7 @@ export function createAgentChatService(args: {
       // cancel. A clearing Stop still clears the queue, as it always has.
       if (rt.session.turnAnswered) {
         if (stopModeClearsQueue(mode)) {
-          if (!replacingTurnKeepsChildResults.has(rt)) rt.pendingSteers.length = 0;
+          rt.pendingSteers.length = 0;
           cancelQueuedSteers(managed, rt, "interrupted");
           persistChatState(managed);
         }
@@ -66559,7 +66562,7 @@ export function createAgentChatService(args: {
       // agent's stopReason, which Copilot is known to report wrongly and which
       // Grok never sends at all because its cancel is a notification.
       rt.interrupted = true;
-      if (!replacingTurnKeepsChildResults.has(rt)) rt.pendingSteers.length = 0;
+      rt.pendingSteers.length = 0;
       // Answer the open permission cards before the cancel. `session.cancel`
       // does the same for the host's own bridge; this drains ADE's side so a
       // card cannot outlive the turn it belongs to.

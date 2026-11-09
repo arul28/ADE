@@ -572,7 +572,10 @@ describe("Pi follows the chat's effort and names another provider's route", () =
     expect(noticesFor("Your subagent finished.")).toHaveLength(0);
 
     pooled.bridge.onEvent({ type: "compaction_end" });
-    await vi.waitFor(() => expect(JSON.stringify(pooled.sendPrompt.mock.calls)).toContain("Your subagent finished."));
+    await vi.waitFor(() => expect(pooled.sendPrompt).toHaveBeenCalled());
+    const sent = JSON.stringify(pooled.sendPrompt.mock.calls);
+    expect(sent).toContain("do this instead");
+    expect(sent).toContain("Your subagent finished.");
     service.forceDisposeAll();
   });
 

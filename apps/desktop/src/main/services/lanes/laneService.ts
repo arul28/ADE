@@ -571,7 +571,6 @@ async function assertExpectedGitWorktreeRoot(worktreePath: string): Promise<void
   }
 }
 
-/** One entry of `git worktree list --porcelain`. Service-internal: no caller outside laneService sees a worktree that is not already a lane. */
 function worktreeStdout(value: unknown): string {
   if (typeof value === "string") return value;
   if (
