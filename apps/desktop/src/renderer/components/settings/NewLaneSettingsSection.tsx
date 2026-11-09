@@ -243,6 +243,7 @@ function BranchPatternRow({
         <div className="ade-nl-pattern">
           <ComposerPopover
             open={menuOpen}
+            restoreFocus
             mode="new"
             onOpenChange={(next) => setMenuOpen(next && !saving && supported)}
             trigger={(
@@ -260,10 +261,26 @@ function BranchPatternRow({
               </button>
             )}
           >
-            <div role="group" aria-label="Branch names">
+            <div role="radiogroup" aria-label="Branch names" onKeyDown={(event) => {
+              let direction = 0;
+              if (["ArrowDown", "ArrowRight"].includes(event.key)) direction = 1;
+              if (["ArrowUp", "ArrowLeft"].includes(event.key)) direction = -1;
+              if (!direction && event.key !== "Home" && event.key !== "End") return;
+              const options = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="radio"]:not(:disabled)'));
+              if (!(event.target instanceof HTMLButtonElement)) return;
+              const current = options.indexOf(event.target);
+              if (current < 0 || !options.length) return;
+              event.preventDefault();
+              let index = (current + direction + options.length) % options.length;
+              if (event.key === "Home") index = 0;
+              if (event.key === "End") index = options.length - 1;
+              options[index].focus();
+              options[index].click();
+            }}>
               {presets.map((preset) => (
                 <PopItem
                   key={preset.value}
+                  radio
                   title={preset.label}
                   sub={<span className="ade-nl-mono">{examplePatternBranch(preset.value, user)}</span>}
                   selected={!custom && preset.value === saved}
@@ -277,6 +294,7 @@ function BranchPatternRow({
               ))}
               <div className="cl-pop-rule" />
               <PopItem
+                radio
                 title="Custom…"
                 sub={savedCustomExample
                   ? <span className="ade-nl-mono">{savedCustomExample}</span>

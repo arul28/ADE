@@ -969,11 +969,12 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       <GitHubStackBadge key="github-stack" stack={githubStack} compact bare />,
     );
   }
-  if (showLaneIdentity && lane) {
+  const inlineLaneName = lane?.name ?? session.laneName;
+  if (showLaneIdentity && inlineLaneName) {
     whereParts.push(
       <span
         key="lane"
-        data-session-lane-identity={lane.name}
+        data-session-lane-identity={inlineLaneName}
         className="inline-flex min-w-0 shrink items-center gap-1.5 text-[12px] font-semibold"
         // Inline style, not a class: the accent is per-lane user data.
         style={{ color: laneAccent ? toneText(laneAccent) : undefined }}
@@ -985,16 +986,16 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
           <LaneIcon size={12} weight="regular" />
         </span>
         <span className={cn("min-w-0 truncate", laneAccent ? "" : "text-fg/85")}>
-          <LaneNamingLabel laneName={lane.name} naming={namingLane} />
+          <LaneNamingLabel laneName={inlineLaneName} naming={namingLane} />
         </span>
         {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
         {laneAndroidDevice ? <LaneAndroidDeviceMarker device={laneAndroidDevice} /> : null}
-        {laneDesktop ? <LaneMacDesktopMarker laneId={lane.id} kind={laneDesktop} /> : null}
+        {laneDesktop ? <LaneMacDesktopMarker laneId={session.laneId} kind={laneDesktop} /> : null}
         {laneAppControl ? (
-          <LaneWorkToolMarker tool="app-control" laneId={lane.id} label={LANE_APP_CONTROL_LABEL} />
+          <LaneWorkToolMarker tool="app-control" laneId={session.laneId} label={LANE_APP_CONTROL_LABEL} />
         ) : null}
         {laneBrowserTabs > 0 ? (
-          <LaneWorkToolMarker tool="browser" laneId={lane.id} label={laneBrowserLabel(laneBrowserTabs)} />
+          <LaneWorkToolMarker tool="browser" laneId={session.laneId} label={laneBrowserLabel(laneBrowserTabs)} />
         ) : null}
       </span>,
     );

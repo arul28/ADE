@@ -2824,7 +2824,8 @@ states and healthy reads. GitHub settings shows the reminder state and offers
 reminders migrate when that repository is opened.
 
 Credential failures, unreadable credential stores, and Git transport failures
-use separate alarm dismissals; setup snoozes never hide them. Each alarm can be
+use separate alarm dismissals scoped to the owning machine and repository (or
+project path before repository discovery); setup snoozes never hide them. Each alarm can be
 dismissed until its failing access recovers, at which point a later failure can
 warn again. API access, App authorization, and Git transport recover independently:
 a successful API read does not re-arm a still-broken push alarm. Missing App

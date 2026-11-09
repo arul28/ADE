@@ -309,6 +309,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const lastRouteSaveProjectRootRef = useRef<string | null | undefined>(undefined);
   const githubStatusScope = `${projectBinding?.key ?? "bound"}:${currentProjectRoot ?? ""}`;
   const githubStatusScopeRef = useRef<string | null>(null);
+  const githubStatusRequestRef = useRef(0);
   const githubConnectionStateRef = useRef<string | null>(null);
   const githubReconnectContextRef = useRef({
     currentProjectRoot,
@@ -843,13 +844,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       ? GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS
       : GITHUB_STATUS_STARTUP_DELAY_MS;
     const githubTimer = window.setTimeout(() => {
+      const request = ++githubStatusRequestRef.current;
       void window.ade.github.getStatus({
         forceRefresh: false,
       }).then((status) => {
-        if (cancelled) return;
+        if (cancelled || request !== githubStatusRequestRef.current) return;
         setGithubStatus(status);
       }).catch(() => {
-        if (cancelled) return;
+        if (cancelled || request !== githubStatusRequestRef.current) return;
         setGithubStatus(null);
       });
     }, delayMs);
@@ -887,11 +889,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
     const githubTimer = window.setTimeout(() => {
       if (!isCurrentContext()) return;
+      const request = ++githubStatusRequestRef.current;
       void window.ade.github.getStatus({ forceRefresh: true }).then((status) => {
-        if (!isCurrentContext()) return;
+        if (!isCurrentContext() || request !== githubStatusRequestRef.current) return;
         setGithubStatus(status);
       }).catch(() => {
-        if (isCurrentContext()) setGithubStatus(null);
+        if (isCurrentContext() && request === githubStatusRequestRef.current) setGithubStatus(null);
       });
     }, GITHUB_STATUS_RECONNECT_DELAY_MS);
     return () => {
@@ -907,14 +910,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     const off = window.ade.github?.onStatusChanged?.((status) => {
       if (!currentProjectRoot || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) return;
+      const request = ++githubStatusRequestRef.current;
       if (!isRemoteProject) {
         setGithubStatus(status);
         return;
       }
       void window.ade.github.getStatus().then((boundStatus) => {
-        if (!cancelled) setGithubStatus(boundStatus);
+        if (!cancelled && request === githubStatusRequestRef.current) setGithubStatus(boundStatus);
       }).catch((error: unknown) => {
-        if (!cancelled) captureError(error, { fingerprint: ["github", "bound-status-refresh"] });
+        if (!cancelled && request === githubStatusRequestRef.current) captureError(error, { fingerprint: ["github", "bound-status-refresh"] });
       });
     });
     return () => { cancelled = true; off?.(); };

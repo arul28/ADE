@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentChatEventEnvelope, AiSettingsStatus } from "../../../shared/types";
+import type { AgentChatEventEnvelope, AiSettingsStatus, GitHubStatus } from "../../../shared/types";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import {
   invalidateSessionListCache,
@@ -720,6 +720,9 @@ describe("AppShell AI provider status", () => {
       showWelcome: false,
     } as any);
 
+    vi.mocked(window.ade.app.getWindowSession).mockResolvedValue({
+      project, binding: useAppStore.getState().projectBinding,
+    });
     render(
       <MemoryRouter initialEntries={["/prs"]}>
         <AppShell>
@@ -734,6 +737,31 @@ describe("AppShell AI provider status", () => {
     });
 
     expect(githubGetStatusMock).toHaveBeenCalledTimes(1);
+
+    const listener = vi.mocked(window.ade.github.onStatusChanged).mock.calls.at(-1)?.[0];
+    expect(listener).toBeDefined();
+    if (!listener) throw new Error("GitHub subscription missing");
+    const status = (userLogin: string): GitHubStatus => ({
+      tokenStored: true, patTokenStored: false, tokenDecryptionFailed: false,
+      storageScope: "app", authSource: "gh", writeAuthSource: "gh", repo: null,
+      hasOrigin: false, userLogin, scopes: ["repo", "workflow"], ghCliPath: null,
+      ghAuthError: null, checkedAt: null, repoAccessOk: null, repoAccessError: null, connected: true,
+    });
+    let resolveOlder!: (value: GitHubStatus) => void;
+    let resolveNewer!: (value: GitHubStatus) => void;
+    githubGetStatusMock
+      .mockImplementationOnce(() => new Promise<GitHubStatus>((resolve) => { resolveOlder = resolve; }))
+      .mockImplementationOnce(() => new Promise<GitHubStatus>((resolve) => { resolveNewer = resolve; }));
+    await act(async () => {
+      listener(status("other-machine"));
+      listener(status("other-machine"));
+    });
+    expect(screen.getByTestId("github-status").textContent).not.toContain("other-machine");
+    await act(async () => { resolveNewer(status("latest-bound-result")); });
+    expect(screen.getByTestId("github-status").textContent).toContain("latest-bound-result");
+    await act(async () => { resolveOlder(status("stale-bound-result")); });
+    expect(screen.getByTestId("github-status").textContent).toContain("latest-bound-result");
+    expect(screen.getByTestId("github-status").textContent).not.toContain("stale-bound-result");
   });
 
   it("forces one fast GitHub refresh after reconnect without changing later route delays", async () => {
