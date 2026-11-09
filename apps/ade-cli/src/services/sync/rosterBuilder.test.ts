@@ -441,6 +441,29 @@ describe("buildRosterSnapshot", () => {
     expect(projects[0]!.runningCount).toBe(1);
   });
 
+  it("publishes a chat with a live PR watch as running, unless it is settled or disposed", async () => {
+    const scopeRegistry = bootedScopes([{
+      sessionId: "chat-run",
+      status: "idle",
+      activePrWatch: { startedAt: "2026-01-02T00:00:00Z", githubPrNumber: 7, count: 1 },
+    }]);
+    const publishedStatus = async () => {
+      const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry, hostProjectId: PROJECT_ID });
+      return projects[0]!.chats.find((chat) => chat.id === "chat-run")!.status;
+    };
+    const db = new DatabaseSync(path.join(projectRoot, ".ade", "ade.db"));
+    try {
+      // The seed settles this chat. A settle is the user's call and the watch does not undo it.
+      expect(await publishedStatus()).toBe("ended");
+      db.prepare("update terminal_sessions set settled_at = null where id = 'chat-run'").run();
+      expect(await publishedStatus()).toBe("running");
+      db.prepare("update terminal_sessions set status = 'disposed' where id = 'chat-run'").run();
+      expect(await publishedStatus()).not.toBe("running");
+    } finally {
+      db.close();
+    }
+  });
+
   it("lets newer output and a live turn supersede a persisted failure marker", async () => {
     const db = new DatabaseSync(path.join(projectRoot, ".ade", "ade.db"));
     const insertChat = db.prepare(

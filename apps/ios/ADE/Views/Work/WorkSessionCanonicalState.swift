@@ -295,10 +295,10 @@ func workCanonicalSessionState(
   // claims live background work and that claim has gone quiet: chat rows keep
   // status "running" between turns, so checking silence first filed every
   // reply older than three hours as busy.
-  // Mirrors desktop `canonicalSessionState`. A PR watch is exempt from stale:
-  // the host polls the PR every minute, so a quiet chat is not a silent claim.
+  // Mirrors desktop `canonicalSessionState`. A PR watch alone is never stale
+  // (the host polls the PR every minute), but background jobs still are.
   if runtimeLower == "idle" {
-    if backgroundTaskCount > 0 && silentPastStale && !prWatchActive {
+    if backgroundTaskCount > 0 && silentPastStale {
       return CanonicalSessionState(phase: .stale)
     }
     if chat && prWatchActive {
