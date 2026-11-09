@@ -76,7 +76,8 @@ export function ComposerPopover({
   );
 }
 
-function PopItem({
+/** One row of a composer popover menu; Settings › New lanes reuses it so its menus match the dialog's. */
+export function PopItem({
   icon,
   title,
   sub,

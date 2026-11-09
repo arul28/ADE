@@ -305,16 +305,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isRemoteProject = projectBinding?.kind === "remote";
   const [projectMissing, setProjectMissing] = useState(false);
   const lastRouteSaveProjectRootRef = useRef<string | null | undefined>(undefined);
-  const githubStatusProjectRootRef = useRef<string | null>(null);
+  const githubStatusScope = `${projectBinding?.key ?? "bound"}:${currentProjectRoot ?? ""}`;
+  const githubStatusScopeRef = useRef<string | null>(null);
   const githubConnectionStateRef = useRef<string | null>(null);
   const githubReconnectContextRef = useRef({
     currentProjectRoot,
     isRemoteProject,
+    bindingKey: projectBinding?.key,
     pathname: location.pathname,
   });
   githubReconnectContextRef.current = {
     currentProjectRoot,
     isRemoteProject,
+    bindingKey: projectBinding?.key,
     pathname: location.pathname,
   };
   const isPersonalChatsRoute =
@@ -826,12 +829,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     if (!currentProjectRoot || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) {
-      githubStatusProjectRootRef.current = null;
+      githubStatusScopeRef.current = null;
       setGithubStatus(null);
       return;
     }
-    if (githubStatusProjectRootRef.current !== currentProjectRoot) {
-      githubStatusProjectRootRef.current = currentProjectRoot;
+    if (githubStatusScopeRef.current !== githubStatusScope) {
+      githubStatusScopeRef.current = githubStatusScope;
       setGithubStatus(null);
     }
     const delayMs = currentProjectRoot && hasRecentBannerDismissal(`github-cli:${currentProjectRoot}`)
@@ -854,6 +857,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, [
     currentProjectRoot,
+    githubStatusScope,
+    projectBinding?.key,
     isRemoteProject,
     location.pathname,
   ]);
@@ -875,6 +880,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         && current.currentProjectRoot === context.currentProjectRoot
         && current.pathname === context.pathname
         && current.isRemoteProject === context.isRemoteProject
+        && current.bindingKey === context.bindingKey
       );
     };
     const githubTimer = window.setTimeout(() => {
@@ -892,19 +898,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, [githubConnectionGeneration]);
 
-  // Refresh the GitHub banner the moment Settings saves/clears a token, so the
-  // shell does not lag behind the Settings UI (the original "banner stays up
-  // even though Settings says CONNECTED" bug).
+  // Local events may arrive while this tab owns a remote project. Treat those
+  // as refresh signals and read through the bound route instead of accepting
+  // a status payload from a different machine.
   useEffect(() => {
-    return (
-      window.ade.github?.onStatusChanged?.((status) => {
-        if (!currentProjectRoot || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) {
-          return;
-        }
+    let cancelled = false;
+    const off = window.ade.github?.onStatusChanged?.((status) => {
+      if (!currentProjectRoot || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) return;
+      if (!isRemoteProject) {
         setGithubStatus(status);
-      }) ?? (() => {})
-    );
-  }, [currentProjectRoot, isRemoteProject, location.pathname]);
+        return;
+      }
+      void window.ade.github.getStatus().then((boundStatus) => {
+        if (!cancelled) setGithubStatus(boundStatus);
+      }).catch(() => {});
+    });
+    return () => { cancelled = true; off?.(); };
+  }, [currentProjectRoot, projectBinding?.key, isRemoteProject, location.pathname]);
 
   const relocateMissingProject = useCallback(() => {
     void openRepo()
@@ -1121,8 +1131,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <AppFallbackBanner />
       {!showWelcome && project?.rootPath ? (
         <IntegrationBanners
+          key={projectBinding?.key ?? currentProjectRoot}
           currentProjectRoot={currentProjectRoot}
-          githubStatus={githubStatus}
+          githubStatus={githubStatusScopeRef.current === githubStatusScope ? githubStatus : null}
           hasAnyAiProvider={hasAnyAiProvider}
           aiStatusLoaded={aiStatusLoaded && aiStatus !== null}
           relayHealth={syncRelayHealth}

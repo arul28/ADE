@@ -3219,3 +3219,20 @@ section; the Work row only carries a mark with their count and worst state.
 - Storage and recovery: [../storage-and-recovery/](../storage-and-recovery/) —
   the disk-pressure gate that refuses new CLI/process launches, and the lossless
   history compression that transcript reads transparently reinflate.
+
+### Lane identity in session lists
+
+Work's Status and Time organizations show each session's lane name and lane
+color using the same compact identity as a singleton in the Lane view.
+They include already-loaded sessions from other machines, with their owner
+binding, machine marker, offline state, and lane identity intact. Duplicate
+session ids are shown once, preferring the bound machine. Foreign attached
+shells follow the same filing rules as local ones; Status and Time keep
+subagents flat. Pending handoffs also name their lane.
+
+Bulk settling in these mixed lists is labelled **Settle local** and acts only
+on the bound machine; individual foreign rows keep their machine-scoped actions.
+Apple, Android, screen, and tool markers reuse the lane data already in the pane.
+Kanban already shows lane identity, and both State and Stack organizations in
+the Lanes sidebar keep the lane name and color. None of these labels adds a
+fetch, effect, or subscription per row.

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Desktop, UserCircle } from "@phosphor-icons/react";
+import { CaretUpDown, Desktop, GitBranch, UserCircle } from "@phosphor-icons/react";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
-import { ModernRow, ModernRows, ModernSection, SavedFlash, SettingsSelect, SettingsTextField, useSavedFlash } from "./primitives";
+import { ModernRow, ModernRows, ModernSection, SavedFlash, SettingsTextField, useSavedFlash } from "./primitives";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { saveNewLaneDefaults, useNewLaneDefaultsState } from "../../lib/newLaneDefaultsCache";
 import { Banner } from "../ui/notice";
@@ -15,6 +15,7 @@ import {
 import type { NewLaneDefaultsSnapshot, NewLaneSettingsScope } from "../../../shared/types";
 import { startSourceBranch } from "../lanes/laneStartOptions";
 import { LaneStartBranchField, LaneStartOnSwitch } from "../lanes/LaneStartPicker";
+import { ComposerPopover, PopItem } from "../lanes/createLaneComposerChips";
 import { useLaneStartMenuData } from "../lanes/useLaneStartMenuData";
 import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 import "./machineSettings.css";
@@ -28,14 +29,17 @@ function patternKind(pattern: string): "pattern_ade" | "pattern_user" | "pattern
 }
 
 /** The patterns most projects want; anything else is "Custom". `{user}` needs a git user name to show. */
-const CUSTOM_PATTERN = "__custom__";
 function patternPresets(user: string | null): Array<{ value: string; label: string }> {
   return [
     { value: DEFAULT_LANE_BRANCH_PATTERN, label: "ade/ prefix" },
-    ...(user ? [{ value: "{user}/{slug}", label: `Your name (${user}/)` }] : []),
+    ...(user ? [{ value: "{user}/{slug}", label: "Your name" }] : []),
     { value: "{slug}", label: "No prefix" },
-    { value: CUSTOM_PATTERN, label: "Custom…" },
   ];
+}
+
+/** The branch a pattern gives "Fix login bug", or null when the pattern can't be used. */
+function examplePatternBranch(pattern: string, user: string | null): string | null {
+  return laneBranchPatternProblem(pattern) ? null : renderLaneBranchName(renderLaneBranchPrefix(pattern, user), "Fix login bug");
 }
 
 /**
@@ -186,6 +190,7 @@ function BranchPatternRow({
   const [draft, setDraft] = useState(saved);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   // Enter saves, and the blur that follows would save again before `saving`
   // renders: one save at a time.
   const savingRef = useRef(false);
@@ -196,7 +201,9 @@ function BranchPatternRow({
 
   const shown = custom ? draft.trim() : saved;
   const problem = laneBranchPatternProblem(shown);
-  const example = problem ? null : renderLaneBranchName(renderLaneBranchPrefix(shown, user), "Fix login bug");
+  const example = problem ? null : examplePatternBranch(shown, user);
+  const selectedPreset = custom ? null : presets.find((preset) => preset.value === saved) ?? null;
+  const savedCustomExample = savedIsPreset ? null : examplePatternBranch(saved, user);
 
   const persist = async (pattern: string) => {
     if (!supported || pattern === saved || savingRef.current) return;
@@ -233,23 +240,58 @@ function BranchPatternRow({
         ? <span className="ade-nl-warn">{error ?? problem}</span>
         : <>“Fix login bug” becomes <code className="ade-nl-code">{example}</code></>}
       control={(
-        <SettingsSelect
-          ariaLabel="Branch names"
-          value={custom ? CUSTOM_PATTERN : saved}
-          options={presets}
-          disabled={saving || !supported}
-          style={{ width: 240 }}
-          onChange={(value) => {
-            setError(null);
-            if (value === CUSTOM_PATTERN) {
-              setDraft(saved);
-              setCustom(true);
-              return;
-            }
-            setCustom(false);
-            void persist(value);
-          }}
-        />
+        <div className="ade-nl-pattern">
+          <ComposerPopover
+            open={menuOpen}
+            mode="new"
+            onOpenChange={(next) => setMenuOpen(next && !saving && supported)}
+            trigger={(
+              <button
+                type="button"
+                className="cl-field"
+                data-mode="new"
+                disabled={saving || !supported}
+                aria-label="Branch names"
+              >
+                <span className="cl-tile" data-tone="mode"><GitBranch size={13} weight="bold" /></span>
+                <span className="cl-field-text">{selectedPreset?.label ?? "Custom"}</span>
+                <span className="cl-field-meta ade-nl-mono">{custom ? draft.trim() || saved : saved}</span>
+                <CaretUpDown size={12} className="cl-field-caret" />
+              </button>
+            )}
+          >
+            <div role="group" aria-label="Branch names">
+              {presets.map((preset) => (
+                <PopItem
+                  key={preset.value}
+                  title={preset.label}
+                  sub={<span className="ade-nl-mono">{examplePatternBranch(preset.value, user)}</span>}
+                  selected={!custom && preset.value === saved}
+                  onSelect={() => {
+                    setMenuOpen(false);
+                    setError(null);
+                    setCustom(false);
+                    void persist(preset.value);
+                  }}
+                />
+              ))}
+              <div className="cl-pop-rule" />
+              <PopItem
+                title="Custom…"
+                sub={savedCustomExample
+                  ? <span className="ade-nl-mono">{savedCustomExample}</span>
+                  : "Your own pattern, ending in {slug}"}
+                selected={custom}
+                onSelect={() => {
+                  setMenuOpen(false);
+                  setError(null);
+                  setDraft(saved);
+                  setCustom(true);
+                }}
+              />
+            </div>
+          </ComposerPopover>
+        </div>
       )}
     >
       {custom && supported ? (

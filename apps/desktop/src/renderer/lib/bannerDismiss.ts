@@ -7,19 +7,21 @@
  * (durable in the Electron renderer) so a dismissal survives restart, project
  * close/reopen, and app updates.
  *
- * A dismissal is scoped to a `fingerprint`: a short string describing the exact
- * state the user dismissed (e.g. the GitHub App block kind, or the gh-token
- * sub-state). When the underlying state regresses to something different — or the
- * same problem returns after being healthy — the fingerprint no longer matches
- * and the banner resurfaces. A dismissal also auto-expires after a grace window,
- * so a still-broken integration re-nudges the user roughly every two weeks.
+ * Ordinary banners expire after a grace window and track the exact state.
+ * GitHub setup reminders instead stay dismissed per repository until reset in
+ * Settings. Credential failures have separate durable keys per failure, so a
+ * new actionable problem can appear without re-arming an optional reminder.
  *
  * Modeled on `staleCliNoticeSnooze.ts` (see that file for the localStorage
  * pattern). All storage access is wrapped in try/catch so it is safe under the
  * browser-mock renderer and test environments that lack real storage.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+
+const DISMISSALS_CHANGED = "ade:banner-dismissals-changed";
+const persistentGithubKey = (key: string) => key.startsWith("github-reminder:") || key.startsWith("github-alarm:") || key.startsWith("github-working:");
+export const githubReminderKey = (repo: string) => `github-reminder:${repo.toLowerCase()}`;
 
 const STORAGE_KEY = "ade.bannerDismiss.v1";
 
@@ -54,6 +56,7 @@ function readMap(): DismissMap {
 function writeMap(map: DismissMap): void {
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
+    window.dispatchEvent(new Event(DISMISSALS_CHANGED));
   } catch {
     // best effort — storage may be unavailable
   }
@@ -69,7 +72,7 @@ export function dismissBanner(key: string, fingerprint: string, nowMs: number = 
   const map = readMap();
   map[trimmed] = { fingerprint, dismissedAt: nowMs };
   for (const [k, entry] of Object.entries(map)) {
-    if (k !== trimmed && nowMs - entry.dismissedAt >= BANNER_DISMISS_GRACE_MS) delete map[k];
+    if (k !== trimmed && !persistentGithubKey(k) && !k.startsWith("github-app-") && !k.startsWith("github-cli:") && nowMs - entry.dismissedAt >= BANNER_DISMISS_GRACE_MS) delete map[k];
   }
   writeMap(map);
 }
@@ -109,7 +112,7 @@ export function isBannerDismissed(
   const entry = readMap()[trimmed];
   if (!entry) return false;
   if (entry.fingerprint !== fingerprint) return false;
-  return nowMs - entry.dismissedAt < graceMs;
+  return persistentGithubKey(trimmed) || nowMs - entry.dismissedAt < graceMs;
 }
 
 /**
@@ -127,7 +130,54 @@ export function hasRecentBannerDismissal(
   if (!trimmed) return false;
   const entry = readMap()[trimmed];
   if (!entry) return false;
-  return nowMs - entry.dismissedAt < graceMs;
+  return persistentGithubKey(trimmed) || nowMs - entry.dismissedAt < graceMs;
+}
+
+/** Carry older repo/path snoozes forward without reviving them after a healthy read. */
+export function migrateGithubReminder(repo: string, projectRoot: string): void {
+  const map = readMap();
+  const key = githubReminderKey(repo);
+  if (map[key]) return;
+  const normalized = repo.toLowerCase();
+  const issueReminder = map["github-app-issues-permission"];
+  const legacy = Object.entries(map).find(([key]) => key.toLowerCase() === `github-app-repo:${normalized}`)?.[1]
+    ?? map[`github-cli:${projectRoot}`] ?? map["github-app-account"]
+    ?? (issueReminder?.fingerprint.toLowerCase().startsWith(`${normalized}:`) ? issueReminder : undefined);
+  if (legacy) { map[key] = { fingerprint: "setup", dismissedAt: legacy.dismissedAt }; writeMap(map); }
+}
+
+export function githubAccessWasWorking(repo: string): boolean {
+  return Boolean(readMap()[`github-working:${repo.toLowerCase()}`]);
+}
+
+export function rememberGithubWorkingAccess(repo: string): void {
+  if (!githubAccessWasWorking(repo)) dismissBanner(`github-working:${repo.toLowerCase()}`, "working");
+}
+
+/** Access recovered: a later credential failure is new information, not setup. */
+export function clearGithubAlarms(repo: string, bannerId?: string): void {
+  const map = readMap();
+  const prefix = `github-alarm:${repo.toLowerCase()}:${bannerId ? `${bannerId}:` : ""}`;
+  let changed = false;
+  for (const key of Object.keys(map)) {
+    if (!key.startsWith(prefix)) continue;
+    delete map[key];
+    changed = true;
+  }
+  if (changed) writeMap(map);
+}
+
+export function resetGithubReminders(repo: string, projectRoot?: string | null): void {
+  const map = readMap();
+  const normalized = repo.toLowerCase();
+  for (const key of Object.keys(map)) {
+    if (key === githubReminderKey(repo)
+      || key.toLowerCase() === `github-app-repo:${normalized}` || key === "github-app-account"
+      || (projectRoot && key === `github-cli:${projectRoot}`)) delete map[key];
+  }
+  // Keep a marker so legacy path snoozes from another worktree cannot re-migrate.
+  map[githubReminderKey(repo)] = { fingerprint: "enabled", dismissedAt: Date.now() };
+  writeMap(map);
 }
 
 export type BannerDismissals = {
@@ -143,6 +193,15 @@ export type BannerDismissals = {
  */
 export function useBannerDismissals(): BannerDismissals {
   const [, bump] = useState(0);
+  useEffect(() => {
+    const changed = () => bump((value) => value + 1);
+    window.addEventListener(DISMISSALS_CHANGED, changed);
+    window.addEventListener("storage", changed);
+    return () => {
+      window.removeEventListener(DISMISSALS_CHANGED, changed);
+      window.removeEventListener("storage", changed);
+    };
+  }, []);
   const isDismissed = useCallback(
     (key: string, fingerprint: string) => isBannerDismissed(key, fingerprint),
     [],
