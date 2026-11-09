@@ -12,6 +12,7 @@ import {
   totalBackgroundWork,
   type SessionBackgroundWork,
 } from "../../../shared/sessionCanonicalState";
+import { prWatchHint } from "../../../shared/prWatch";
 import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/terminalAttention";
 import { listSessionsCached } from "../../lib/sessionListCache";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
@@ -49,15 +50,17 @@ const SHELL_TOOL_TYPES = new Set<TerminalToolType>(["shell"]);
 /**
  * A session whose turn is over but whose background jobs are not is still a
  * live agent. Without this the Lanes list showed nothing at all while a
- * background fleet ran — the row read "idle" for the whole of it.
+ * background fleet ran — the row read "idle" for the whole of it. A live PR
+ * watch counts the same way: it wakes the chat on the next change.
  */
 function backgroundActivity(summary: {
   backgroundWork?: SessionBackgroundWork;
   activeBackgroundTaskCount?: number;
+  activePrWatch?: TerminalSessionSummary["activePrWatch"];
 }): LaneAgentActivity | null {
   const work = backgroundWorkFromSummary(summary);
-  if (totalBackgroundWork(work) <= 0) return null;
-  return (work?.workingCount ?? 0) > 0 ? "working" : "monitoring";
+  if ((work?.workingCount ?? 0) > 0) return "working";
+  return totalBackgroundWork(work) > 0 || summary.activePrWatch ? "monitoring" : null;
 }
 
 /**
@@ -86,10 +89,10 @@ function canonicalActivity(summary: TerminalSessionSummary): LaneAgentActivity {
 }
 
 function chatActivity(summary: AgentChatSessionSummary): LaneAgentActivity {
-  if (summary.status === "ended") return summary.activePrWatch ? "monitoring" : "ended";
+  if (summary.status === "ended") return "ended";
   if (summary.awaitingInput) return "awaiting-input";
   if (summary.status === "active") return "working";
-  return backgroundActivity(summary) ?? (summary.activePrWatch ? "monitoring" : "idle");
+  return backgroundActivity(summary) ?? "idle";
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -118,7 +121,7 @@ function chatAgentFrom(summary: AgentChatSessionSummary, row: TerminalSessionSum
     activity: row ? canonicalActivity(row) : chatActivity(summary),
     lastHint: summary.awaitingInput
       ? "Awaiting your input"
-      : backgroundHint(summary, summary.status === "active")
+      : liveWorkHint(summary, summary.status === "active")
         ?? summary.summary?.trim()
         ?? summary.lastOutputPreview?.trim()
         ?? null,
@@ -127,16 +130,16 @@ function chatAgentFrom(summary: AgentChatSessionSummary, row: TerminalSessionSum
 }
 
 /**
- * Background work is the more useful hint than a stale last-output preview:
- * the preview describes the turn that already ended, the count describes what
- * is still running.
+ * Live work (background jobs, a PR watch) is a more useful hint than a stale
+ * last-output preview: the preview describes the turn that already ended, this
+ * describes what is still going.
  *
  * Callers pass `turnActive` explicitly rather than having this re-read a status
  * field — chat and CLI summaries spell "a turn is running" differently
  * (`status: "active"` vs `runtimeState: "running"`), and a single stringly-typed
  * guard here would silently match neither for one of them.
  */
-function backgroundHint(
+function liveWorkHint(
   summary: {
     backgroundWork?: SessionBackgroundWork;
     activeBackgroundTaskCount?: number;
@@ -149,8 +152,9 @@ function backgroundHint(
   const work = backgroundWorkFromSummary(summary);
   const total = totalBackgroundWork(work);
   if (total <= 0) {
-    const prNumber = summary.activePrWatch?.githubPrNumber;
-    return summary.activePrWatch ? (prNumber != null ? `Shipping PR #${prNumber}` : "Shipping") : null;
+    if (!summary.activePrWatch) return null;
+    const hint = prWatchHint(summary.activePrWatch);
+    return hint ? `Shipping ${hint}` : "Shipping";
   }
   const noun = (work?.workingCount ?? 0) > 0 ? "background job" : "monitor";
   return `${total} ${noun}${total === 1 ? "" : "s"} still running`;
@@ -170,7 +174,7 @@ function cliAgentFrom(summary: TerminalSessionSummary): LaneAgent {
       || summary.attentionRequestedAt
       || summary.attentionSource === "provider_structured"
       ? "Awaiting your input"
-      : backgroundHint(summary, summary.runtimeState === "running")
+      : liveWorkHint(summary, summary.runtimeState === "running")
         ?? summary.summary?.trim()
         ?? summary.lastOutputPreview?.trim()
         ?? null,

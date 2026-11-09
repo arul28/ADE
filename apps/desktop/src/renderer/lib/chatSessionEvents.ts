@@ -1,7 +1,7 @@
 import type { AgentChatEventEnvelope, AgentChatSession, AgentChatSessionSummary } from "../../shared/types";
 import { isClaudePluginUiOnlyMetaEvent } from "../../shared/claudePluginUi";
 import { isThreadCommentsOnlyMetaEvent } from "../../shared/threadComments";
-import { isSessionMetaOnly } from "../../shared/sessionMetaEvents";
+import { isPrWatchChangedOnlyMetaEvent } from "../../shared/prWatch";
 import { invalidateAgentChatSessionListCache } from "./agentChatSessionListCache";
 import { invalidateSessionListCache } from "./sessionListCache";
 
@@ -89,10 +89,6 @@ export function compareChatSessionsByEffectiveRecency(
   if (startedDelta !== 0) return startedDelta;
 
   return left.sessionId.localeCompare(right.sessionId);
-}
-
-function isPrWatchChangedOnlyMetaEvent(event: { type: string }): boolean {
-  return isSessionMetaOnly(event, "prWatchChanged");
 }
 
 export function getChatSessionLocalTouchTimestampForEvent(

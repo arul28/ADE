@@ -16,6 +16,7 @@
 import type { AdeCardPayload, AdeCardProgress, AdeCardRow } from "./adeCard";
 import { classifyPrAuthor } from "./prBotIdentity";
 import { isCiProducerCheck } from "./prChecksRollup";
+import { isSessionMetaOnly } from "./sessionMetaEvents";
 import type { PrCheck, PrChecksStatus, PrState } from "./types/prs";
 
 export type PrWatchMode = "watch" | "ship";
@@ -737,6 +738,17 @@ export type SessionActivePrWatch = {
   /** How many PRs this chat is watching. Always at least 1. */
   count: number;
 };
+
+/** What the watch is about, e.g. "PR #2130". Null when its PR row is gone. */
+export function prWatchHint(watch: SessionActivePrWatch): string | null {
+  if (watch.count > 1) return `${watch.count} pull requests`;
+  return watch.githubPrNumber != null ? `PR #${watch.githubPrNumber}` : null;
+}
+
+/** A `session_meta_updated` that only says a PR watch started or stopped. */
+export function isPrWatchChangedOnlyMetaEvent(event: { type: string }): boolean {
+  return isSessionMetaOnly(event, "prWatchChanged");
+}
 
 export type SetPrChatWatchArgs = {
   prId: string;

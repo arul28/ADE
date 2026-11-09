@@ -298,7 +298,7 @@ export function isPersistedTurnFailureCurrent(args: {
  *   7. resting states — ready (idle chat, quiet "your move"), idle, ended,
  *      EXCEPT when the session still owns live background work or a PR watch,
  *      which promotes the row back to `running` (see
- *      `restingPhaseWithBackgroundWork`).
+ *      `restingPhaseWithLiveWork`).
  *
  * Note where the background-work promotion sits: below failure, below stale.
  * A stale "Working" pill must never mask a failed session — so a chat whose
@@ -353,24 +353,21 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
    * real job alongside monitors is still "background", and a PR watch outranks
    * a monitor because it names what the chat is waiting for.
    */
-  const restingLiveness = (): SessionLiveness | null => {
-    const work = args.backgroundWork;
-    if ((work?.workingCount ?? 0) > 0) return "background";
-    if (args.prWatchActive) return "pr_watch";
-    return totalBackgroundWork(work) > 0 ? "monitoring" : null;
-  };
+  const restingLiveness: SessionLiveness | null = (args.backgroundWork?.workingCount ?? 0) > 0
+    ? "background"
+    : args.prWatchActive
+      ? "pr_watch"
+      : totalBackgroundWork(args.backgroundWork) > 0 ? "monitoring" : null;
 
   /**
    * A resting session that still owns live work is not resting. Returns the
    * promoted `running` state, or the caller's resting state when nothing is
    * live.
    */
-  const restingPhaseWithBackgroundWork = (
+  const restingPhaseWithLiveWork = (
     resting: CanonicalSessionState,
-  ): CanonicalSessionState => {
-    const liveness = restingLiveness();
-    return liveness ? { phase: "running", badge: null, liveness } : resting;
-  };
+  ): CanonicalSessionState =>
+    restingLiveness ? { phase: "running", badge: null, liveness: restingLiveness } : resting;
 
   // 1. Deterministic attention beats everything — including the failure and
   // stale checks below (an agent explicitly asking is actionable regardless).
@@ -399,7 +396,7 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     // nothing, so background shells, subagents and monitors run on after it.
     // A surface that wants to show "settled, but something is still running"
     // must be able to.
-    return { phase: "settled", badge: null, liveness: restingLiveness() };
+    return { phase: "settled", badge: null, liveness: restingLiveness };
   }
 
   // A live chat turn is not "ended", even when the row still carries a status
@@ -439,7 +436,7 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
       if (args.status === "detached" && !args.prWatchActive) {
         return { phase: "ended", badge: null, liveness: null };
       }
-      return restingPhaseWithBackgroundWork({ phase: "ready", badge: null, liveness: null });
+      return restingPhaseWithLiveWork({ phase: "ready", badge: null, liveness: null });
     }
     // A clean process exit only says the CLI ended. Settlement is a lifecycle
     // declaration made by the user (or the lane PR-merge policy), never
@@ -475,11 +472,10 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     const resting: CanonicalSessionState = chat
       ? { phase: "ready", badge: null, liveness: null }
       : { phase: "idle", badge: null, liveness: null };
-    const claimsWork = totalBackgroundWork(args.backgroundWork) > 0 && restingLiveness() !== "pr_watch";
-    if (claimsWork && silentPastStale) {
+    if (restingLiveness && restingLiveness !== "pr_watch" && silentPastStale) {
       return { phase: "stale", badge: BADGE_BY_KIND.stale, liveness: null };
     }
-    return restingPhaseWithBackgroundWork(resting);
+    return restingPhaseWithLiveWork(resting);
   }
 
   // 6. Stale: running but silent past the threshold.
@@ -663,7 +659,6 @@ export function sessionStatusBucket(args: {
   attentionSource?: SessionAttentionSource | null;
   pendingInputWaiting?: boolean;
   lastTurnFailedAt?: string | null;
-  activePrWatch?: unknown;
 }): SessionStatusBucket {
   // `ade chat ask` escalation outranks everything; a declared settle maps to
   // the quiet bucket for lane rollups (badges/counters) but only AT REST so a
@@ -682,7 +677,7 @@ export function sessionStatusBucket(args: {
   // "running" between turns, so `runtimeState` is the live signal that says a
   // turn is actually in flight.
   if (args.lastTurnFailedAt && args.runtimeState !== "running") return "ended";
-  if (args.status === "running" || args.activePrWatch) return "running";
+  if (args.status === "running") return "running";
   return "ended";
 }
 

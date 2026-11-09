@@ -2,7 +2,7 @@ import { resolveUsageLimitResumeState } from "./usageLimitResumeState";
 import { usageLimitResumeRowStatus } from "./usageLimitResumePresentation";
 import type { AgentChatUsageLimitResume } from "./types/chat";
 import type { SessionActivityReport } from "./types/sessions";
-import type { SessionActivePrWatch } from "./prWatch";
+import { prWatchHint, type SessionActivePrWatch } from "./prWatch";
 import { isReportFromTurn } from "./sessionActivity";
 import type {
   CanonicalSessionPhase,
@@ -310,29 +310,7 @@ export function sessionStatusPresentation(
   // single job's runtime: a second job joining a live set counts from the
   // first one's start. `showsElapsed` also re-enables the breathing
   // animation, which is intended — background work genuinely is a live state.
-  //
-  // A usage limit is the one resting story that beats a PR watch: the wake
-  // cannot run until the limit lifts, so "Shipping" would promise work that is
-  // not coming. It falls through to the limit branch below.
-  const usageLimitHoldsPrWatch = prWatchAtRest
-    && usageLimitResumeRowStatus(
-      resolveUsageLimitResumeState(activity.usageLimitResume, activity.nowMs ?? Date.now()),
-      activity.nowMs ?? Date.now(),
-    ) !== null;
-  if (phase === "running" && liveness !== "turn" && !usageLimitHoldsPrWatch) {
-    if (liveness === "pr_watch") {
-      const watch = activity.activePrWatch;
-      const count = watch?.count ?? 0;
-      return {
-        label: `Shipping${countSuffix(count)}`,
-        tone: "blue",
-        glyph: "shipping",
-        showsElapsed: true,
-        prominent: false,
-        activityDetail: true,
-        ...(count > 1 ? { hint: `${count} pull requests` } : watch?.githubPrNumber != null ? { hint: `PR #${watch.githubPrNumber}` } : {}),
-      };
-    }
+  if (phase === "running" && liveness !== "turn" && liveness !== "pr_watch") {
     const work = activity.backgroundWork;
     // "Monitoring" earns its own word because it answers a different question.
     // Background work might finish on its own; a watch loop will not, so the
@@ -366,7 +344,10 @@ export function sessionStatusPresentation(
   //
   // `opted_out`/`no_reset` read "Usage limit" in amber: nothing will restart
   // the chat on its own, but it is stopped on a limit, not broken.
-  if (phase === "ready" || phase === "idle" || phase === "failed" || usageLimitHoldsPrWatch) {
+  //
+  // A chat waiting on its PR is here too: its wake cannot run until the limit
+  // lifts, so "Shipping" would promise work that is not coming.
+  if (phase === "ready" || phase === "idle" || phase === "failed" || prWatchAtRest) {
     const nowMs = activity.nowMs ?? Date.now();
     const resume = resolveUsageLimitResumeState(activity.usageLimitResume, nowMs);
     const rowStatus = usageLimitResumeRowStatus(resume, nowMs);
@@ -388,6 +369,16 @@ export function sessionStatusPresentation(
         prominent: rowStatus.tone === "attention",
       };
     }
+  }
+
+  if (prWatchAtRest) {
+    const watch = activity.activePrWatch;
+    const hint = watch ? prWatchHint(watch) : null;
+    return {
+      ...REPORTED_ACTIVITY_PRESENTATION.shipping,
+      label: `Shipping${countSuffix(watch?.count ?? 0)}`,
+      ...(hint ? { hint } : {}),
+    };
   }
 
   if (phase === "ready" || phase === "idle") {

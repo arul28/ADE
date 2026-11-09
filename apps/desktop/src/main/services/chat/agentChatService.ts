@@ -78058,8 +78058,13 @@ export function createAgentChatService(args: {
     /** A PR watch on this chat started or stopped: its row and summary must re-read. */
     notifyPrWatchChanged: (sessionId: string): void => {
       // The list channel for the Work row, the chat channel for its open pane.
-      sessionService.notifyChanged(sessionId);
-      emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", prWatchChanged: true });
+      // A failed nudge must not fail the watch change that caused it.
+      try {
+        sessionService.notifyChanged(sessionId);
+        emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", prWatchChanged: true });
+      } catch (error) {
+        logger.warn("agent_chat.pr_watch_notify_failed", { sessionId, error: getErrorMessage(error) });
+      }
     },
     /**
      * A chat's direct parent from its own lineage (the live session, else its

@@ -25381,7 +25381,7 @@ extension SyncService {
       }
 
       let runtime = session.runtimeState.lowercased()
-      let isRunningRuntime = runtime == "running"
+      let isRunningRuntime = runtime == "running" || canonical.restingOnPrWatch
       let isIdleRuntime = canonical.phase == .ready || canonical.phase == .idle
       let isEndedRuntime = runtime == "exited" || runtime == "killed" || runtime == "stopped"
 
