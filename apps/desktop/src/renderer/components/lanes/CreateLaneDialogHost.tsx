@@ -158,7 +158,8 @@ function showSetupFailureToast(params: DetachedSetupParams, detail: string): voi
   showToast({
     // Keyed by lane so a retry replaces the existing toast in place.
     id: setupFailureToastId(params.laneId),
-    title: params.laneName,
+    // The colon keeps the lane name out of the toast's log event name.
+    title: `Lane setup failed: ${params.laneName}`,
     message: detail,
     // The lane name is the person's own text, and an error can quote a path.
     replayMask: { title: true, message: true },
@@ -198,7 +199,8 @@ async function runLaneSetup(params: DetachedSetupParams): Promise<void> {
 function showCreateFailureToast(params: DetachedCreateParams, detail: string): void {
   showToast({
     id: laneCreateFailureToastId(params.scopeKey, params.name),
-    title: `Could not create ${params.name}`,
+    // The colon keeps the lane name out of the toast's log event name.
+    title: `Could not create lane: ${params.name}`,
     message: detail,
     // The lane name is the person's own text, and an error can quote a path.
     replayMask: { title: true, message: true },

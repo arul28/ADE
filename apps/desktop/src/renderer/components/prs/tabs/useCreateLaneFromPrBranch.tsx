@@ -179,7 +179,8 @@ export function useCreateLaneFromPrBranch({
         console.warn("create_lane_from_pr.failed", err);
         showToast({
           id: failureToastId,
-          title: `Could not create ${laneName}`,
+          // The colon keeps the lane name out of the toast's log event name.
+          title: `Could not create lane: ${laneName}`,
           message: formatActionError(err),
           // The lane name is the person's own text, and an error can quote a path.
           replayMask: { title: true, message: true },
