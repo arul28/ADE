@@ -99,7 +99,7 @@ export function SessionLifecycleSection() {
         </ModernRow>
         <ModernRow
           title="Release what settled chats were using"
-          hint="Five minutes after a lane's last chat settles, power off its simulators and emulators, stop the dev servers its chats started, and release its Mac Desktop screens. Keep-running pins are honored. A chat waking cancels it."
+          hint="Five minutes after a lane's last chat settles, power off the simulators and emulators its chats started, stop their dev servers, and release their Mac Desktop screens. Anything you started yourself, pinned to keep running, or are viewing stays on. A chat waking cancels it."
           control={
             settings ? (
               <SettingsToggle

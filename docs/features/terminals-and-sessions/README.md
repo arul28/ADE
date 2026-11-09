@@ -3241,11 +3241,14 @@ fetch, effect, or subscription per row.
 
 Settings › Lanes › "Release what settled chats were using" (off by default, per
 machine). Once every live chat in a lane has been settled for five minutes
-(`settledLaneReleaseService.ts`), the lane's simulators and emulators are powered
-off, dev servers its chats started are stopped, and Mac Desktop screens its chats
-hold are released. A chat waking cancels it, and "Keep running" pins and devices
-in use are honored by the same paths the agent cleanup commands use. The wait is
-read from the chats' `settled_at` columns on a slow sweep, so it survives a brain
+(`settledLaneReleaseService.ts`), ADE powers off the simulators and emulators
+those chats' agents booted, stops the dev servers they started, and releases the
+Mac Desktop screens they hold. Nothing a person started is touched: an agent's boot
+writes `ade-booted-by-chat` in the simulator's folder (cleared when it goes off),
+and an emulator's owner record names its chat. A device already on when an agent
+reached it stays unattributed. A chat waking cancels the release, "Keep running"
+pins are honored, and a device in use or a stream someone is viewing stays on. The
+wait is read from the chats' `settled_at` columns on a slow sweep, so it survives a brain
 restart and notices a chat settled from a phone. A quiet line in the last chat to
 settle says what was released. Built-in browser tabs are left alone: they belong
 to the project, not to a lane's chats.

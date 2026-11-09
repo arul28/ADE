@@ -26,7 +26,7 @@ type ReleasedState = Record<string, string>;
 
 export type SettledLaneReleaseActions = {
   stopDevServers: (laneId: string, chatSessionIds: ReadonlySet<string>) => Promise<string[]>;
-  powerOffAppleDevices: (laneId: string) => Promise<string[]>;
+  powerOffAppleDevices: (laneId: string, chatSessionIds: ReadonlySet<string>) => Promise<string[]>;
   stopAndroidEmulators: (laneId: string, chatSessionIds: ReadonlySet<string>) => Promise<string[]>;
   releaseMacDesktop: (chatSessionIds: ReadonlySet<string>) => Promise<number>;
 };
@@ -77,7 +77,7 @@ export function createSettledLaneReleaseService(deps: SettledLaneReleaseDeps) {
     };
     const servers = await attempt("dev_servers", () => deps.stopDevServers(laneId, chatIds));
     if (servers?.length) parts.push(servers.length === 1 ? `dev server on ${servers[0]}` : `dev servers on ${servers.join(", ")}`);
-    const appleDevices = await attempt("apple_devices", () => deps.powerOffAppleDevices(laneId));
+    const appleDevices = await attempt("apple_devices", () => deps.powerOffAppleDevices(laneId, chatIds));
     if (appleDevices?.length) parts.push(`${appleDevices.join(", ")} simulator${appleDevices.length === 1 ? "" : "s"}`);
     const emulators = await attempt("android_emulators", () => deps.stopAndroidEmulators(laneId, chatIds));
     if (emulators?.length) parts.push(`${emulators.join(", ")} emulator${emulators.length === 1 ? "" : "s"}`);
@@ -172,13 +172,13 @@ export type SettledLaneReleaseHosts = {
   /** Ports a chat started may not be in the memory-only registry yet after a restart. */
   scanDevServers?: (() => Promise<unknown>) | null;
   iosSimulatorService?: {
-    deviceCleanup: (args: { laneId: string; agentCaller: boolean; powerOffIdle: boolean }) => Promise<{
+    powerOffChatStartedDevices: (args: { laneId: string; chatSessionIds: ReadonlySet<string> }) => Promise<{
       poweredOff: Array<{ udid: string; name: string | null }>;
     }>;
   } | null;
   androidEmulatorService?: {
-    deviceCleanup: (args: { laneId: string; agentCaller: boolean; powerOffIdle: boolean }) => Promise<{
-      poweredOff: Array<{ avdName?: string; name?: string | null }>;
+    powerOffEmulators: (args: { laneId: string; avdNames: ReadonlySet<string> }) => Promise<{
+      poweredOff: Array<{ avdName: string }>;
     }>;
   } | null;
   macDesktopService?: {
@@ -188,10 +188,10 @@ export type SettledLaneReleaseHosts = {
 };
 
 /**
- * Each step only reaches what the lane's chats started. A Keep-running pin
- * and a device in use are enforced by the same paths an agent's own
- * `device-cleanup --power-off-idle` uses, and a Mac Desktop screen is released
- * only when a chat of this lane holds it.
+ * Each step reaches only what one of the lane's chats started: the chat a dev
+ * server's process names, the chat an agent's boot recorded on a simulator, the
+ * chat on an emulator's owner record, the chat holding a Mac Desktop screen. A
+ * Keep-running pin and a device in use are checked by the power-off paths.
  */
 export function createSettledLaneReleaseActions(hosts: SettledLaneReleaseHosts): SettledLaneReleaseActions {
   return {
@@ -206,20 +206,21 @@ export function createSettledLaneReleaseActions(hosts: SettledLaneReleaseHosts):
       }
       return stopped;
     },
-    powerOffAppleDevices: async (laneId) => {
+    powerOffAppleDevices: async (laneId, chatSessionIds) => {
       if (!hosts.iosSimulatorService) return [];
-      const result = await hosts.iosSimulatorService.deviceCleanup({ laneId, agentCaller: true, powerOffIdle: true });
+      const result = await hosts.iosSimulatorService.powerOffChatStartedDevices({ laneId, chatSessionIds });
       return result.poweredOff.map((device) => device.name ?? device.udid);
     },
     stopAndroidEmulators: async (laneId, chatSessionIds) => {
       if (!hosts.androidEmulatorService) return [];
-      // The emulator's record says which chat started it. The power-off path
-      // applies the pin and the in-use checks; this is what limits it to chats.
-      const records = new AndroidEmulatorOwnersStore(machineAndroidEmulatorOwnersPath()).read().emulators;
-      const startedByLaneChat = records.some((record) => record.laneId === laneId && record.chatSessionId != null && chatSessionIds.has(record.chatSessionId));
-      if (!startedByLaneChat) return [];
-      const result = await hosts.androidEmulatorService.deviceCleanup({ laneId, agentCaller: true, powerOffIdle: true });
-      return result.poweredOff.map((device) => device.name ?? device.avdName ?? "Android");
+      const avdNames = new Set(
+        new AndroidEmulatorOwnersStore(machineAndroidEmulatorOwnersPath()).read().emulators
+          .filter((record) => record.laneId === laneId && record.chatSessionId != null && chatSessionIds.has(record.chatSessionId))
+          .map((record) => record.avdName.toLowerCase()),
+      );
+      if (avdNames.size === 0) return [];
+      const result = await hosts.androidEmulatorService.powerOffEmulators({ laneId, avdNames });
+      return result.poweredOff.map((device) => device.avdName);
     },
     releaseMacDesktop: async (chatSessionIds) => {
       if (!hosts.macDesktopService) return 0;
