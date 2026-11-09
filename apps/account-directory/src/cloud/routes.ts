@@ -342,11 +342,14 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
     // Already this size on the row: a retry, and its room is already held.
     if (nextDisk !== computer.disk_gb) {
       const reserved = await env.DB.prepare(`
-        update cloud_computers set disk_gb = ?
+        update cloud_computers set disk_gb = ?, disk_reserved_at = ?
         where instance_id = ? and disk_gb = ?
           and (select coalesce(sum(disk_gb), 0) from cloud_computers where user_id = ? and deleted_at is null) - ? + ? <= ?
-      `).bind(nextDisk, computer.instance_id, computer.disk_gb, computer.user_id, computer.disk_gb, nextDisk, PAID_DISK_POOL_GB).run();
+      `).bind(nextDisk, now, computer.instance_id, computer.disk_gb, computer.user_id, computer.disk_gb, nextDisk, PAID_DISK_POOL_GB).run();
       if (reserved.meta.changes !== 1) return diskLimit();
+    } else if (nextDisk !== currentDisk) {
+      // A retry: its room is held, so only the clock needs renewing.
+      await env.DB.prepare("update cloud_computers set disk_reserved_at = ? where instance_id = ?").bind(now, computer.instance_id).run();
     }
   }
 

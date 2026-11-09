@@ -50,6 +50,7 @@ export type ComputerRow = {
   cpu: number;
   memory_gb: number;
   disk_gb: number;
+  disk_reserved_at: number | null;
   multiplier_milli: number;
   template_version: string | null;
   machine_key: string | null;

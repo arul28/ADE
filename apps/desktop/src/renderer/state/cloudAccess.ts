@@ -28,7 +28,7 @@ function read(): void {
   }
   reading = true;
   void bridge.read().then(
-    (answer) => answer.enabled === true,
+    (answer) => answer?.enabled === true,
     () => false,
   ).then((next) => {
     reading = false;

@@ -18,6 +18,8 @@ create table if not exists cloud_computers (
   cpu integer not null,
   memory_gb integer not null,
   disk_gb integer not null,
+  -- When a grow last took room in the shared limit; the tick leaves the size alone until it has had time to land.
+  disk_reserved_at integer,
   multiplier_milli integer not null,
   template_version text,
   machine_key text,

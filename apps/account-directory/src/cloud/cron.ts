@@ -36,6 +36,8 @@ import {
  */
 
 const NO_CHECK_IN_MS = 10 * 60_000;
+/** A grow the provider hasn't reported yet is left alone this long, so the tick can't give its room away. */
+const DISK_GROW_SETTLE_MS = 10 * 60_000;
 /** Exec gets this long; the command gives itself 40 s. */
 const PREPARE_STOP_TIMEOUT_MS = 45_000;
 /** `ade brain update` puts the newer ADE on the disk (`$ADE_HOME/bin`), which the image's PATH doesn't reach. */
@@ -114,7 +116,8 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
     }
     // At rest the provider's disk is the truth: a grow whose answer was lost leaves this row ahead, holding room in the shared limit.
     const disk = instance.resources?.disk;
-    if (disk && disk !== computer.disk_gb && isRestingStatus(instance.status)) {
+    const growLanding = computer.disk_reserved_at != null && now - computer.disk_reserved_at < DISK_GROW_SETTLE_MS;
+    if (disk && disk !== computer.disk_gb && isRestingStatus(instance.status) && !growLanding) {
       statements.push(env.DB.prepare("update cloud_computers set disk_gb = ? where instance_id = ? and disk_gb = ?").bind(disk, computer.instance_id, computer.disk_gb));
       computer.disk_gb = disk;
     }
