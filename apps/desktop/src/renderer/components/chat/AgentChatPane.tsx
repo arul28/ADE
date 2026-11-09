@@ -836,6 +836,7 @@ function claudeToolResultText(content: unknown): string {
       .map((block) => {
         if (typeof block === "string") return block;
         const record = subagentRecord(block);
+        if (record?.type === "image") return "[image]";
         return record && typeof record.text === "string" ? record.text : "";
       })
       .filter((value) => value.length > 0)

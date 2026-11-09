@@ -4698,7 +4698,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       `--tcp=${port}`,
       target,
     ];
-    void execFileAsync(cli, cliArgs, { timeout: 10_000, windowsHide: true })
+    void execFileAsync(cli, cliArgs, { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" })
       .then(({ stdout, stderr }) => {
         if (tailnetServeActivePublishToken !== publishToken) return;
         tailnetServeLastFailureSignature = null;
@@ -4797,7 +4797,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const { stdout } = await execFileAsync(
         cli,
         ["serve", "status", "--json"],
-        { timeout: 10_000, windowsHide: true },
+        { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
       );
       stale = staleAdeTailnetServePorts(stdout, currentPort);
       // The same read answers for ADE's stale HTTPS entries.
@@ -4830,7 +4830,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         await execFileAsync(
           cli,
           ["serve", `--tcp=${port}`, "off"],
-          { timeout: 10_000, windowsHide: true },
+          { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
         );
         reclaimed += 1;
       } catch {
@@ -4897,7 +4897,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       await execFileAsync(
         cli,
         ["serve", `--tcp=${servePort}`, "off"],
-        { timeout: 10_000, windowsHide: true },
+        { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
       );
       updateTailnetDiscoveryStatus({
         state: "disabled",

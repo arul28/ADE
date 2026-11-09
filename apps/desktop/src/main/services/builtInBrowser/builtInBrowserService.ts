@@ -617,6 +617,9 @@ type BrowserNetworkObserver = {
   onRequestFinished: (details: Record<string, unknown>, error: string | null) => void;
 };
 
+/** Teams sends an Electron User-Agent to its error page before sign-in. */
+const ELECTRON_UA_REFUSING_URLS = ["https://teams.cloud.microsoft/*", "https://teams.microsoft.com/*"];
+
 function createBrowserNetworkRouter() {
   const configuredSessions = new WeakSet<Electron.Session>();
   const observers = new Set<BrowserNetworkObserver>();
@@ -626,10 +629,25 @@ function createBrowserNetworkRouter() {
       if (configuredSessions.has(browserSession)) return;
       configuredSessions.add(browserSession);
       const webRequest = browserSession.webRequest as unknown as {
+        onBeforeSendHeaders?: (
+          filter: { urls: string[] },
+          listener: (
+            details: { requestHeaders: Record<string, string> },
+            callback: (response: { requestHeaders?: Record<string, string> }) => void,
+          ) => void,
+        ) => void;
         onBeforeRequest?: (listener: (details: Record<string, unknown>, callback?: (response: { cancel?: boolean }) => void) => void) => void;
         onCompleted?: (listener: (details: Record<string, unknown>) => void) => void;
         onErrorOccurred?: (listener: (details: Record<string, unknown>) => void) => void;
       };
+      webRequest.onBeforeSendHeaders?.({ urls: ELECTRON_UA_REFUSING_URLS }, ({ requestHeaders }, callback) => {
+        const name = Object.keys(requestHeaders).find((key) => key.toLowerCase() === "user-agent");
+        if (!name) {
+          callback({});
+          return;
+        }
+        callback({ requestHeaders: { ...requestHeaders, [name]: requestHeaders[name]!.replace(/ Electron\/\S+/, "") } });
+      });
       webRequest.onBeforeRequest?.((details, callback) => {
         for (const observer of observers) observer.onRequestStarted(details);
         callback?.({});

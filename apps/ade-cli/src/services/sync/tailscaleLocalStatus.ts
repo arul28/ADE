@@ -47,6 +47,9 @@ async function runTailscaleStatus(): Promise<{ stdout: string; missing: boolean 
       timeout: STATUS_TIMEOUT_MS,
       windowsHide: true,
       maxBuffer: options.maxBuffer,
+      // A stuck `tailscale` can ignore SIGTERM, and this read would then never
+      // settle, holding back every later status read and shutdown.
+      killSignal: "SIGKILL",
     });
     return { stdout, missing: false };
   } catch (error) {

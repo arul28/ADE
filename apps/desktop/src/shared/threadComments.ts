@@ -6,6 +6,7 @@
  * renderer (which shows the sent card) and the tests share one format.
  */
 
+import { cut } from "./cutText";
 import { isSessionMetaOnly } from "./sessionMetaEvents";
 
 /** The comment actions, in every list that must name them (policy, access table, RPC guard, mobile). */
@@ -108,15 +109,6 @@ export type ChatThreadCommentsChangedEvent = {
 
 export function collapseWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
-}
-
-/** Cuts to `max` chars without splitting a surrogate pair. No ellipsis: a cut quote must still be found in the reply. */
-function cut(value: string, max: number): string {
-  if (value.length <= max) return value;
-  let end = max;
-  const last = value.charCodeAt(end - 1);
-  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
-  return value.slice(0, end);
 }
 
 function clip(value: string, max: number): string {

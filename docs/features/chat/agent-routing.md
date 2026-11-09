@@ -1489,6 +1489,9 @@ send". Because that stop exists only to resend, it runs in `stop_only` mode with
 interrupted turn's own tail consumes it, so messages the user had already staged
 ride through the redirect instead of being cleared. `interrupt-replace` on
 OpenCode, Pi and Droid keeps its `stop_and_clear` contract.
+A subagent result waiting in the cleared queue goes out inside the redirect
+message on Pi, Droid and ACP providers, so the replacement cannot lose it. A
+plain Stop still clears it.
 
 Inline is a *local*-run capability. A Cursor **Cloud** run implements
 `Run.steer` but refuses every call, so an inline send there would always degrade

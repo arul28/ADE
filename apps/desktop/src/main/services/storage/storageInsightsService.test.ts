@@ -601,6 +601,35 @@ describe("storageInsightsService", () => {
     expect(fs.existsSync(path.join(dirty, "unsaved.txt"))).toBe(true);
   });
 
+  it("never offers a plain folder that holds a live worktree further down", async () => {
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", args, {
+      cwd,
+      stdio: "pipe",
+      env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
+    });
+    git(projectRoot, "init", "-q", "-b", "main");
+    git(projectRoot, "commit", "-q", "--allow-empty", "-m", "base");
+    const holder = path.join(projectRoot, ".ade", "worktrees", "team");
+    const nested = path.join(holder, "foo");
+    fs.mkdirSync(holder, { recursive: true });
+    git(projectRoot, "worktree", "add", "-q", "-b", "foo", nested);
+    writeSized(path.join(nested, "unsaved.txt"), 2);
+
+    const service = createStorageInsightsService({ projectRoot, adeHome, db, logger });
+    const target = { kind: "orphaned_worktree" as const, path: holder };
+    const preview = await service.cleanupPreview([target]);
+    expect(preview.items).toEqual([]);
+    expect(preview.blocked[0]?.reason).toContain("worktree");
+
+    const forged: StorageCleanupPreview = {
+      items: [{ path: holder, bytes: 1, label: "Forged", identity: "x" }],
+      totalBytes: 1,
+      blocked: [],
+    };
+    await service.cleanup([target], { preview: forged });
+    expect(fs.existsSync(path.join(nested, "unsaved.txt"))).toBe(true);
+  });
+
   it("measures every category and lane when one folder alone exceeds the scan budget", async () => {
     // One huge history folder used to spend the shared budget and leave every
     // lane reading 0 B.

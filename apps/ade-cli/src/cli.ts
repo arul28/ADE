@@ -2379,6 +2379,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard  Disable fast service tier explicitly.
     --prompt <text>        First chat message or CLI initial input.
+    --prompt-file <path|->  The same, from a file or stdin (-). Alias --text-file.
+                           Use it for long or multi-line text: on Windows,
+                           ade.cmd cuts an argument at its first line break.
+                           Not with --prompt.
 
   Spawn lineage:
     From an agent, the new session is a subagent of that agent's chat and
@@ -2399,6 +2403,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode chat --lane auto --lane-name fix-login --prompt "Fix login"
+    $ ade new chat --mode chat --lane <lane> --prompt-file brief.md
+    $ ade new chat --mode chat --lane <lane> --prompt-file - <<'EOF'
+
+  The first message is --prompt <text>, text after --, or --prompt-file <path|->.
 
   The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
   --auto-create-lane or --lane auto to create a lane before launching.
@@ -6637,12 +6645,12 @@ function readGlobalValueFlag(
 }
 
 /**
- * `path.resolve` for a folder the user typed. A quoted `"~/My App"`, or
+ * `path.resolve` for a path the user typed. A quoted `"~/My App"`, or
  * `--project-root=~/app` in zsh, reaches ADE with the `~` unexpanded, and
  * `path.resolve` alone turns it into `<cwd>/~/app`: a folder that does not
  * exist, or a project under the current directory picked by mistake.
  */
-function resolveCliFolderArg(value: string): string {
+function resolveCliPathArg(value: string): string {
   // The home the shell means by `~`: Git Bash on Windows sets HOME, which can
   // differ from the profile folder Node reads.
   const home = process.platform === "win32" ? process.env.HOME?.trim() || os.homedir() : os.homedir();
@@ -6654,10 +6662,10 @@ function resolveCliFolderArg(value: string): string {
 
 const GLOBAL_VALUE_FLAG_HANDLERS: Record<CliGlobalValueFlag, (options: GlobalOptions, value: string) => void> = {
   "--project-root": (options, value) => {
-    options.projectRoot = resolveCliFolderArg(value);
+    options.projectRoot = resolveCliPathArg(value);
   },
   "--workspace-root": (options, value) => {
-    options.workspaceRoot = resolveCliFolderArg(value);
+    options.workspaceRoot = resolveCliPathArg(value);
   },
   "--role": (options, value) => {
     options.role = parseRole(value);
@@ -7881,8 +7889,37 @@ function autoLaneGenericSuffix(date = new Date()): string {
   ].join("");
 }
 
+/**
+ * Flags that carry a chat's text on the other chat commands. Taken here they
+ * would be parsed and dropped, so the session would start without the message
+ * the caller meant to send and still report ok.
+ */
+const NEW_CHAT_STRANDED_TEXT_FLAGS = ["--note", "--question", "--objective", "--goal", "--steer", "--answer", "--option", "--response"] as const;
+
+function refuseStrandedNewChatTextFlags(args: string[]): void {
+  // A prompt's value can look like a flag (`--prompt "--question"`).
+  const options = args.filter((_, index) => !["--prompt", "--message", "--initial-input"].includes(args[index - 1] ?? ""));
+  const stranded = findFlagName(options, NEW_CHAT_STRANDED_TEXT_FLAGS);
+  // Bare `--text` is the output format. Only `--text <value>` carries a message.
+  const textIndex = options.indexOf("--text");
+  const textValue = textIndex >= 0 ? options[textIndex + 1] : undefined;
+  const textCarriesMessage = options.some((token) => token.startsWith("--text="))
+    || Boolean(textValue && !textValue.startsWith("-") && textValue !== "chat" && textValue !== "cli");
+  const flag = stranded ?? (textCarriesMessage ? "--text" : null);
+  if (flag) {
+    throw new CliUsageError(`ade new does not take ${flag}. Put the first message in --prompt or --prompt-file.`);
+  }
+}
+
 function readNewChatPrompt(args: string[]): string | null {
   const promptArgs = takeArgsAfterTerminator(args);
+  refuseStrandedNewChatTextFlags(args);
+  // Checked first: `--prompt-file -` would otherwise block on stdin.
+  if (promptArgs && findFlagName(args, ["--prompt-file", "--text-file"])) {
+    throw new CliUsageError("Use --prompt-file or text after --, not both.");
+  }
+  const fileText = readChatTextFile(args, ["--prompt-file", "--text-file"], ["--prompt", "--message", "--initial-input"]);
+  if (fileText !== null) return fileText.trimEnd();
   const prompt = promptArgs
     ? promptArgs.join(" ").trim()
     : readValue(args, ["--prompt", "--message", "--initial-input"]);
@@ -13062,7 +13099,7 @@ function readDraftPrompt(args: string[], opts: { fromStdinWhenOmitted: boolean }
 /** Repeatable `--image <path>`, as the local image refs the draft store keeps. */
 function readDraftImages(args: string[]): JsonObject[] {
   return readRepeatedValues(args, ["--image"]).map((value) => ({
-    path: path.resolve(value),
+    path: resolveCliPathArg(value),
     type: "image",
   }));
 }
@@ -14179,7 +14216,7 @@ function readChatTextFile(args: string[], fileFlags: readonly string[], inlineFl
   if (!source?.trim()) throw new CliUsageError(`${fileFlag} needs a file path, or - to read stdin.`);
   let text: string;
   try {
-    text = source === "-" ? readAllStdinSync() : fs.readFileSync(path.resolve(source), "utf8");
+    text = source === "-" ? readAllStdinSync() : fs.readFileSync(resolveCliPathArg(source), "utf8");
   } catch (error) {
     throw new CliUsageError(`${fileFlag} could not read ${source === "-" ? "stdin" : source}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -14882,7 +14919,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     // The agent runs in its lane worktree; the runtime that stores the artifact
     // runs at the project root. Resolve here, where the caller's cwd is known,
     // so a relative path never has to be guessed at on the other side.
-    const attachedPath = path.resolve(process.cwd(), rawPath);
+    const attachedPath = resolveCliPathArg(rawPath);
     const title =
       readValue(args, ["--title", "--name"]) ??
       caption ??
@@ -15148,7 +15185,7 @@ function iosSimulatorRootArgs(
   const explicitRoot =
     readValue(args, ["--project-root", "--root"]) ?? globalProjectRoot;
   if (explicitRoot) {
-    return { projectRoot: resolveCliFolderArg(explicitRoot), ...(laneId ? { laneId } : {}) };
+    return { projectRoot: resolveCliPathArg(explicitRoot), ...(laneId ? { laneId } : {}) };
   }
   if (laneId) return { laneId };
   return { projectRoot: callerWorkspaceRoot() };
@@ -16145,7 +16182,7 @@ function buildIosSimulatorPlan(
     const project = readValue(args, ["--project"]);
     return {
       deviceUdid: device,
-      ...(project ? { projectRoot: resolveCliFolderArg(project) } : rootArgs()),
+      ...(project ? { projectRoot: resolveCliPathArg(project) } : rootArgs()),
       query: readIosSimulatorElementQuery(args),
     };
   };
@@ -16506,7 +16543,7 @@ function buildIosSimulatorPlan(
     const logRowLimit = readNumberOption(args, ["--log-rows", "--log-row-limit"]);
     return iosAction("iOS simulator proof bundle", "captureProofBundle", {
       deviceUdid: device,
-      ...(project ? { projectRoot: resolveCliFolderArg(project) } : rootArgs()),
+      ...(project ? { projectRoot: resolveCliPathArg(project) } : rootArgs()),
       ...(outDir ? { outDir } : {}),
       ...(caption ? { caption } : {}),
       ...(noElements ? { includeElements: false } : {}),
@@ -25644,7 +25681,7 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
         method: "projects.clone",
         params: {
           url: githubCloneUrl(repo),
-          ...(parentDir ? { parentDir: target.remote ? parentDir : path.resolve(parentDir) } : {}),
+          ...(parentDir ? { parentDir: target.remote ? parentDir : resolveCliPathArg(parentDir) } : {}),
           ...(name ? { name } : {}),
           catalogVisibility: "recent",
           registrationSource: "cli-explicit",
@@ -31387,7 +31424,7 @@ async function runInit(
   ]);
   const layout = resolveMachineAdeLayout();
   const registry = new ProjectRegistry(layout);
-  const project = registry.add(path.resolve(targetPath ?? process.cwd()), {
+  const project = registry.add(resolveCliPathArg(targetPath ?? process.cwd()), {
     catalogVisibility: "recent",
     registrationSource: "cli-explicit",
   });

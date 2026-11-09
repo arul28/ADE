@@ -3833,9 +3833,10 @@ function buildProviderWindows(
      * `freshWindows.length`, which is what it always meant.
      */
     freshWindowCount?: number;
+    authMessage?: string;
   } = {},
 ): { windows: UsageWindow[]; status: UsageProviderStatus; lastSuccessAt: string | null } {
-  const { source, errorKind, nextRetryAt, freshWindowCount } = options;
+  const { source, errorKind, nextRetryAt, freshWindowCount, authMessage } = options;
   const normalizedPrevStatus: UsageProviderStatus | null = typeof prevStatus === "string"
     ? { state: "stale", lastSuccessAt: prevStatus, updatedAt: prevStatus }
     : prevStatus;
@@ -3874,7 +3875,7 @@ function buildProviderWindows(
         errorKind: errorKind ?? "auth",
         ...(resolvedSource ? { source: resolvedSource } : {}),
         ...(nextRetryAt ? { nextRetryAt } : {}),
-        message: `${name} sign-in required — reconnect to refresh`,
+        message: authMessage ?? `${name} sign-in required — reconnect to refresh`,
       },
       lastSuccessAt: prevLastSuccessAt,
     };
@@ -5741,6 +5742,7 @@ export function createUsageTrackingService({
               errorKind: result.errorKind,
               nextRetryAt: nextRetryMs > Date.now() ? new Date(nextRetryMs).toISOString() : null,
               freshWindowCount: result.freshWindowCount,
+              authMessage: result.authMessage,
             },
           );
           if (merged.lastSuccessAt) providerLastSuccess[provider] = merged.lastSuccessAt;
