@@ -259,12 +259,19 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
   type IdlePassResult = {
     poweredOff: AppleDeviceCleanupResult["poweredOff"];
     skipped: AppleDeviceCleanupResult["powerOffSkipped"];
+    /** ADE could not read the devices, or a power-off failed. */
+    failed?: true;
   };
   const runIdlePass = async (
     options: { force?: boolean; onlyUdids?: ReadonlySet<string> | null; onlyBootedBy?: ReadonlySet<string> | null } = {},
   ): Promise<IdlePassResult> => {
     const poweredOff: AppleDeviceCleanupResult["poweredOff"] = [];
-    const done = (skipped: IdlePassResult["skipped"] = null): IdlePassResult => ({ poweredOff, skipped });
+    let failed = false;
+    const done = (skipped: IdlePassResult["skipped"] = null): IdlePassResult => ({
+      poweredOff,
+      skipped,
+      ...(failed || skipped === "process-list-unavailable" ? { failed: true as const } : {}),
+    });
     if (!options.force && idleMs <= 0) return done();
     const devices = deps.laneDevices.list().filter((device) => (
       isAdeOwnedLaneDevice(device.origin) && (!options.onlyUdids || options.onlyUdids.has(device.udid))
@@ -275,6 +282,7 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
       const { stdout } = await deps.run("xcrun", ["simctl", "list", "devices", "--json"], { timeoutMs: 30_000 });
       states = parseSimctlDevices(stdout);
     } catch {
+      failed = true;
       return done();
     }
     let psOutput: string | null = null;
@@ -343,6 +351,7 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
           idleMinutes,
         });
       } catch (error) {
+        failed = true;
         deps.logger.warn("apple.lane_device_idle_power_off_failed", {
           laneId: device.laneId,
           udid: device.udid,

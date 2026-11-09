@@ -7525,17 +7525,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const powerOffChatStartedDevices = async (powerArgs: {
     laneId: string;
     chatSessionIds: ReadonlySet<string>;
-  }): Promise<{ poweredOff: Array<{ udid: string; name: string | null }> }> => {
+  }): Promise<{ poweredOff: Array<{ udid: string; name: string | null }>; incomplete?: boolean }> => {
     if (process.platform !== "darwin") return { poweredOff: [] };
     const own = laneDevices.get(powerArgs.laneId);
     const onlyUdids = new Set([...(own ? [own.udid] : []), ...laneDevices.extras(powerArgs.laneId).map((device) => device.udid)]);
     if (onlyUdids.size === 0) return { poweredOff: [] };
-    const { poweredOff } = await laneMaintenance().runIdlePass({ force: true, onlyUdids, onlyBootedBy: powerArgs.chatSessionIds });
+    const { poweredOff, failed } = await laneMaintenance().runIdlePass({ force: true, onlyUdids, onlyBootedBy: powerArgs.chatSessionIds });
     if (poweredOff.length > 0) {
       invalidateDeviceList();
       for (const runtime of runtimes.values()) invalidateStatus(runtime);
     }
-    return { poweredOff };
+    return { poweredOff, incomplete: Boolean(failed) };
   };
 
   /**

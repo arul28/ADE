@@ -15,7 +15,7 @@ export function PrReviewerPicker({
   authorLogin,
   onRequestReviewers,
 }: {
-  entries: readonly { login: string }[];
+  entries: readonly { login: string; requested?: boolean; team?: boolean }[];
   /** GitHub refuses a review request to the PR's own author. */
   authorLogin: string | null;
   onRequestReviewers: (request: ReviewerRequest) => void;
@@ -30,7 +30,8 @@ export function PrReviewerPicker({
   const repoOwner = scope?.repoOwner ?? null;
   const repoName = scope?.repoName ?? null;
   const known = React.useMemo(() => {
-    const logins = new Set(entries.map((entry) => entry.login.toLowerCase()));
+    // Someone who already reviewed can be asked again after a push.
+    const logins = new Set(entries.filter((entry) => entry.requested && !entry.team).map((entry) => entry.login.toLowerCase()));
     if (authorLogin) logins.add(authorLogin.toLowerCase());
     return logins;
   }, [authorLogin, entries]);

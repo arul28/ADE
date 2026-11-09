@@ -176,14 +176,33 @@ function readLogicalLine(term: Terminal, lineIndex: number): LogicalLine | null 
   return rows.length ? { text, rows } : null;
 }
 
-/** 1-based terminal cell for a text offset. */
-function cellForOffset(line: LogicalLine, offset: number): { x: number; y: number } {
+/**
+ * 1-based terminal cell for a text offset. A row's string and its columns part
+ * at any wide character or combining mark, so this walks the row's cells, which
+ * `translateToString` produced the string from. `lastColumn` is the cell's
+ * right edge, for the end of a link on a double-width character.
+ */
+function cellForOffset(term: Terminal, line: LogicalLine, offset: number): { x: number; y: number; lastColumn: number } {
   let row = line.rows[0]!;
   for (const candidate of line.rows) {
     if (candidate.offset > offset) break;
     row = candidate;
   }
-  return { x: offset - row.offset + 1, y: row.y + 1 };
+  const buffer = term.buffer.active;
+  const cells = buffer.getLine(row.y);
+  const reuse = buffer.getNullCell();
+  let consumed = row.offset;
+  for (let column = 0; cells && column < cells.length; column += 1) {
+    const cell = cells.getCell(column, reuse);
+    if (!cell || cell.getWidth() === 0) continue;
+    const units = cell.getChars().length || 1;
+    if (offset < consumed + units) {
+      return { x: column + 1, y: row.y + 1, lastColumn: column + cell.getWidth() };
+    }
+    consumed += units;
+  }
+  const fallback = offset - row.offset + 1;
+  return { x: fallback, y: row.y + 1, lastColumn: fallback };
 }
 
 export type TerminalPathLinkContext = {
@@ -258,11 +277,12 @@ export function createTerminalPathLinkProvider(term: Terminal, context: Terminal
             tokens.forEach((token, index) => {
               const result = results[index];
               if (!result?.openable) return;
-              const start = cellForOffset(line, token.start);
-              const end = cellForOffset(line, token.end - 1);
+              const start = cellForOffset(term, line, token.start);
+              const last = cellForOffset(term, line, token.end - 1);
+              const end = { x: last.lastColumn, y: last.y };
               links.push({
                 text: line.text.slice(token.start, token.end),
-                range: { start, end },
+                range: { start: { x: start.x, y: start.y }, end },
                 decorations: { underline: true, pointerCursor: true },
                 activate(event: MouseEvent) {
                   event.preventDefault();

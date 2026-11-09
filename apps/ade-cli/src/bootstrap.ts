@@ -3507,6 +3507,7 @@ export async function createAdeRuntime(args: {
       db,
       logger,
       listSessions: () => sessionService.list({ limit: 2000 }),
+      listLaneSessions: (laneId) => sessionService.list({ laneId, limit: null, includeArchived: false }),
       notify: (notice) => chatForSettledRelease?.recordSystemNotice?.(notice),
       ...createSettledLaneReleaseActions({
         devServers: devServerRegistry,

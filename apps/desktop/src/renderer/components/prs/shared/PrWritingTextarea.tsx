@@ -37,6 +37,16 @@ function filterRefs(refs: PrRepoReference[], query: string): PrRepoReference[] {
   return [...exact, ...matches.filter((ref) => !exact.includes(ref))].slice(0, MAX_SUGGESTIONS);
 }
 
+/** A result set still shown while the next search runs must match what is typed now. */
+function matchesTrigger(suggestion: Suggestion, trigger: Trigger): boolean {
+  const needle = trigger.query.toLowerCase();
+  if (suggestion.kind === "user") {
+    return trigger.kind === "mention"
+      && (suggestion.user.login.toLowerCase().includes(needle) || Boolean(suggestion.user.name?.toLowerCase().includes(needle)));
+  }
+  return trigger.kind === "ref" && filterRefs([suggestion.ref], trigger.query).length > 0;
+}
+
 export type PrWritingTextareaProps = React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
   /** Overrides the surrounding scope; the markdown editor passes its own repo. */
   repoOwner?: string;
@@ -58,7 +68,14 @@ export const PrWritingTextarea = React.forwardRef<HTMLTextAreaElement, PrWriting
   const pinKey = pin?.key ?? null;
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [trigger, setTrigger] = useState<Trigger | null>(null);
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [foundSuggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [foundFor, setFoundFor] = useState<Trigger | null>(null);
+  // The host's answer for exactly this text stands as it is; an older answer
+  // stays up only for what still fits, so Enter cannot insert a stale row.
+  const suggestions = useMemo(() => {
+    if (!trigger) return [];
+    return foundFor === trigger ? foundSuggestions : foundSuggestions.filter((suggestion) => matchesTrigger(suggestion, trigger));
+  }, [foundFor, foundSuggestions, trigger]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [anchor, setAnchor] = useState<{ left: number; bottom: number; width: number } | null>(null);
   const requestRef = useRef(0);
@@ -105,6 +122,7 @@ export const PrWritingTextarea = React.forwardRef<HTMLTextAreaElement, PrWriting
         .then((next) => {
           if (generation !== requestRef.current) return;
           setSuggestions(next);
+          setFoundFor(trigger);
           setActiveIndex(0);
         })
         .catch((error: unknown) => {
@@ -147,6 +165,7 @@ export const PrWritingTextarea = React.forwardRef<HTMLTextAreaElement, PrWriting
   }, [close, trigger]);
 
   const open = trigger != null && suggestions.length > 0 && anchor != null;
+  const highlighted = Math.min(activeIndex, Math.max(0, suggestions.length - 1));
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (open && !isImeComposing(event)) {
@@ -162,7 +181,7 @@ export const PrWritingTextarea = React.forwardRef<HTMLTextAreaElement, PrWriting
       }
       if ((event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.shiftKey) || event.key === "Tab") {
         event.preventDefault();
-        const picked = suggestions[activeIndex];
+        const picked = suggestions[highlighted];
         if (picked) apply(picked);
         return;
       }
@@ -192,12 +211,12 @@ export const PrWritingTextarea = React.forwardRef<HTMLTextAreaElement, PrWriting
               key={suggestion.kind === "user" ? `u:${suggestion.user.login}` : `r:${suggestion.ref.kind}:${suggestion.ref.number}`}
               type="button"
               role="option"
-              aria-selected={index === activeIndex}
+              aria-selected={index === highlighted}
               onMouseDown={(event) => event.preventDefault()}
               onMouseEnter={() => setActiveIndex(index)}
               onClick={() => apply(suggestion)}
               className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
-              style={{ background: index === activeIndex ? COLORS.hoverBg : "transparent", border: "none", cursor: "pointer", color: "inherit" }}
+              style={{ background: index === highlighted ? COLORS.hoverBg : "transparent", border: "none", cursor: "pointer", color: "inherit" }}
             >
               {suggestion.kind === "user" ? (
                 <>
@@ -219,7 +238,7 @@ export const PrWritingTextarea = React.forwardRef<HTMLTextAreaElement, PrWriting
         </div>
       </ViewportOverlayPortal>
     );
-  }, [activeIndex, anchor, apply, open, suggestions, trigger?.kind]);
+  }, [anchor, apply, highlighted, open, suggestions, trigger?.kind]);
 
   return (
     <>
