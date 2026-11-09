@@ -70,6 +70,13 @@ describe("compactFirstOffer", () => {
   it("reads measured context from the done event when the caller has no reading", () => {
     expect(compactFirstOffer({ provider: "claude", now: NOW, events: [done(90, 230_000)] })?.contextTokens).toBe(230_000);
   });
+
+  it("does not offer on a chat whose last compaction reported no size", () => {
+    const sizeless = env({ type: "context_compact", trigger: "manual", state: "completed" } as AgentChatEvent, minutesAgo(89));
+    expect(compactFirstOffer({ provider: "claude", now: NOW, events: [done(90, 230_000), sizeless] })).toBeNull();
+    expect(compactFirstOffer({ provider: "claude", now: NOW, events: [done(90, 230_000), compacted(89, 200_000)] })?.contextTokens).toBe(200_000);
+    expect(compactFirstOffer({ provider: "claude", now: NOW, events: [done(90, 230_000), sizeless, done(80, 210_000)] })?.contextTokens).toBe(210_000);
+  });
 });
 
 describe("warmIdleCompactAtMs", () => {

@@ -1471,12 +1471,14 @@ chat pane mount, which happens either way.
   behind it like any message sent during a turn, so the send returns at once
   and the thread shows the message as queued, not sent. It is delivered when
   the compaction ends. For Codex, Pi and OpenCode, `/compact` is an action
-  rather than a turn, and Cursor's summarize run cannot take a steer, so there is no queue to put the message behind: the brain
-  runs the same `/compact` the meter's **Compact now** sends, waits for the
+  rather than a turn, so there is no queue to put the message behind. Those
+  providers and Cursor, whose compaction is a short turn, take the same path:
+  the brain runs the `/compact` the meter's **Compact now** sends, waits for the
   compaction to end (up to `COMPACT_FIRST_INLINE_WAIT_MS`, 90 seconds), and then
   sends the message. A failure, or a wait that runs long, sends the message with
   the full chat and shows the notice below; the compaction keeps running either
-  way. If the compaction fails or does not shrink the chat, the
+  way. A Cursor compaction still running at the deadline is a live turn, so the
+  message queues behind it instead and needs no notice. If the compaction fails or does not shrink the chat, the
   messages queued behind it are kept and sent with the full chat, with the notice "Compaction did
   not finish, so your message was sent with the full chat." Stop during the
   compaction cancels it like any queued message. There is no ADE time limit;

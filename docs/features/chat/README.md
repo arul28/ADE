@@ -3339,6 +3339,17 @@ brain are separate processes and each keeps its own. Project/window close probes
 workload probe throws, ADE keeps the project alive instead of closing
 over a possibly running agent.
 
+### A Cursor worker that died mid-run
+
+The SDK records each run in its local store and marks it finished when the run
+ends. A worker that dies mid-run never marks it, so every later send on that
+agent, in any worker and after any restart, is refused with `Agent <id> already
+has active run`. Each chat has one worker, so a worker running nothing that gets
+that refusal knows the run is dead: `sendExpiringDeadRun` (`cursorSdkWorker.ts`)
+expires it with `local.force` and sends again, keeping the agent and its history.
+`summarize()` has no `force` option, so a `/compact` in that state reports
+`cut_off_run` and asks for a message first.
+
 ### Cursor thread recycling and the first-event watchdog
 
 A Cursor transport failure — an `NGHTTP2` stream reset, an `[internal] write
@@ -3372,7 +3383,7 @@ first-event watchdog and one automatic recovery attempt.
   dead thread. Logged as `agent_chat.cursor_sdk_worker_poisoned`,
   `agent_chat.cursor_sdk_thread_recycling`, and
   `agent_chat.cursor_sdk_agent_recreated_after_forced_rotation`.
-- **One re-send, one set of terminal events.** `runCursorSdkTurn` runs the
+- **One re-send, one set of terminal events.** `runCursorSdkTurnWithRecovery` runs the
   attempt through `runCursorSdkTurnOnce`, which returns a recovery *sentinel*
   instead of recursing — produced before any error/status/done emission — so a
   turn is reported exactly once no matter which attempt settles it. The

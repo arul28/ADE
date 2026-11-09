@@ -163,7 +163,7 @@ describe("ContextUsageDial", () => {
     fireEvent.click(getByRole("button", { name: /^Context usage/ }));
     expect(getByRole("link", { name: "Provider compaction setting" })).toBeTruthy();
     unmount();
-    const other = render(<ContextUsageDial usage={vm({ provider: "cursor" })} />);
+    const other = render(<ContextUsageDial usage={vm({ provider: "droid" })} />);
     fireEvent.click(other.getByRole("button", { name: /^Context usage/ }));
     expect(queryByText("Provider compaction setting")).toBeNull();
   });

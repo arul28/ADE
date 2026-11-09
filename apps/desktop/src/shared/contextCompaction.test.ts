@@ -61,6 +61,7 @@ describe("contextCompaction", () => {
       durationMs: 4_500,
       provider: "claude",
       sessionCompactionCount: 2,
+      fallback: true,
     })!;
     const merged = mergeNormalizedContextCompact(started, completed);
     expect(toContextCompactChatEvent(merged)).toMatchObject({
@@ -69,6 +70,7 @@ describe("contextCompaction", () => {
       preTokens: 120_000,
       postTokens: 40_000,
       sessionCompactionCount: 2,
+      fallback: true,
     });
   });
 
