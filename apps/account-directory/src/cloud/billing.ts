@@ -10,6 +10,7 @@ import {
   liveUsedMilli,
   loadAccount,
   logCloud,
+  reportCloudFailure,
   type AccountRow,
   type CloudEnv,
   type CloudPlanChange,
@@ -449,10 +450,10 @@ async function handleStripeWebhook(request: Request, env: CloudEnv): Promise<Res
     await applyStripeEvent(env, type, object, now);
     await env.DB.prepare("update cloud_stripe_events set applied_at = ? where event_id = ?").bind(Date.now(), eventId).run();
   } catch (error) {
-    logCloud("cloud.stripe_webhook_failed", { type, eventId, status: error instanceof StripeRequestError ? error.status : null });
+    reportCloudFailure("cloud.stripe_webhook_failed", { type, eventId, status: error instanceof StripeRequestError ? error.status : null });
     // Give the claim back so Stripe's retry runs it again. If this fails too, the stale claim is retaken.
     await env.DB.prepare("delete from cloud_stripe_events where event_id = ?").bind(eventId).run().catch((deleteError: unknown) => {
-      logCloud("cloud.stripe_claim_release_failed", { eventId, message: deleteError instanceof Error ? deleteError.message : "unknown" });
+      reportCloudFailure("cloud.stripe_claim_release_failed", { eventId, message: deleteError instanceof Error ? deleteError.message : "unknown" });
     });
     return json({ error: "try again" }, 500);
   }
@@ -530,7 +531,7 @@ export async function reportExtraHours(env: CloudEnv, now = Date.now()): Promise
         });
       } catch (error) {
         if (!isDuplicateReport(error)) {
-          logCloud("cloud.meter_report_failed", { userId: account.user_id, status: error instanceof StripeRequestError ? error.status : null });
+          reportCloudFailure("cloud.meter_report_failed", { userId: account.user_id, status: error instanceof StripeRequestError ? error.status : null });
           break;
         }
       }

@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/cloudflare";
 import type { CallerTokenEnv } from "../callerToken";
 import type { CloudAccountState, CloudHoursState, CloudInstance } from "./contract";
 import type { CloudEmailEnv } from "./email";
@@ -95,6 +96,20 @@ export type AccountRow = {
 
 export function logCloud(event: string, meta: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "ade-account-directory", kind: event, ...meta }));
+}
+
+/** One Sentry issue per failure kind and isolate an hour: these repeat each tick while the cause lasts. */
+const FAILURE_REPORT_INTERVAL_MS = 60 * 60_000;
+const lastFailureReport = new Map<string, number>();
+
+/** {@link logCloud} for a failure that's ADE's to fix: the line stays local, the event name reaches Sentry. */
+export function reportCloudFailure(event: string, meta: Record<string, unknown> = {}): void {
+  logCloud(event, meta);
+  const now = Date.now();
+  if (now - (lastFailureReport.get(event) ?? 0) < FAILURE_REPORT_INTERVAL_MS) return;
+  lastFailureReport.set(event, now);
+  // Only the event name: `meta` carries account and instance ids.
+  Sentry.captureMessage(event, { level: "warning", fingerprint: [event], tags: { area: "cloud" } });
 }
 
 /** A reservation with no computer behind it after this long is given up on. */

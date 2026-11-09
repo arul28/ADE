@@ -17,7 +17,6 @@ function box(instanceId: string, machineKey: string | null): CloudMachine {
     pastDue: false,
     failure: null,
     machineKey,
-    madeByAde: true,
     createdAtMs: null,
     ready: null,
     sleep: { state: "auto" },

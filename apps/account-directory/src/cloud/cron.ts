@@ -16,6 +16,7 @@ import {
   liveUsedMilli,
   logCloud,
   percentUsed,
+  reportCloudFailure,
   readSetting,
   readTimeSetting,
   restartStretchStatements,
@@ -199,7 +200,7 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
       }
     } catch (error) {
       // One account's failure must not cost every other account its tick.
-      logCloud("cloud.tick_account_failed", { userId: row.user_id, message: error instanceof Error ? error.message : "unknown" });
+      reportCloudFailure("cloud.tick_account_failed", { userId: row.user_id, message: error instanceof Error ? error.message : "unknown" });
     }
   }));
   // One query however many accounts are out. Scheduled work is refused at 0 hours: a timed wake wouldn't come back anyway.
@@ -263,7 +264,7 @@ async function stopWithRetry(env: CloudEnv, provider: CloudProvider, computer: T
         return;
       }
       if (!(error instanceof CloudProviderError && error.code === TRY_AGAIN_CODE)) {
-        logCloud("cloud.stop_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+        reportCloudFailure("cloud.stop_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
         return;
       }
       if (attempt < STOP_RETRIES - 1) await new Promise((resolve) => setTimeout(resolve, STOP_RETRY_DELAY_MS));
@@ -285,7 +286,7 @@ async function sleepUnseen(env: CloudEnv, provider: CloudProvider, computers: Ti
       if (statements.length) await env.DB.batch(statements);
       logCloud("cloud.slept_no_check_in", { instanceId: computer.instance_id });
     } catch (error) {
-      logCloud("cloud.backstop_sleep_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+      reportCloudFailure("cloud.backstop_sleep_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
     }
   }));
 }
@@ -486,7 +487,7 @@ async function deleteInactive(env: CloudEnv, provider: CloudProvider, computer: 
     await deleteComputer(env, provider, computer, { who: "system", reason: "inactive_30_days" }, now);
   } catch (error) {
     if (!(error instanceof CloudProviderError)) throw error;
-    logCloud("cloud.delete_inactive_failed", { instanceId: computer.instance_id });
+    reportCloudFailure("cloud.delete_inactive_failed", { instanceId: computer.instance_id });
     return;
   }
   logCloud("cloud.deleted_inactive", { instanceId: computer.instance_id });

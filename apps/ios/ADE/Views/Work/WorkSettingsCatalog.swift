@@ -201,7 +201,7 @@ enum WorkSettingsCatalog {
     "integrations.ade-cloud": Setting(path: "App › Integrations › ADE Cloud", locked: true),
     "integrations.ade-cloud-sign-ins": Setting(path: "App › Integrations › Sign-ins for your cloud machines", locked: true),
     "integrations.ade-cloud-ready": Setting(path: "App › Integrations › ADE Cloud ready machine", locked: true),
-    "integrations.ade-cloud-spending": Setting(path: "App › Integrations › ADE Cloud machines and spending", locked: true),
+    "integrations.ade-cloud-spending": Setting(path: "App › Integrations › ADE Cloud computers and hours", locked: true),
     "integrations.ade-cloud-agent-limits": Setting(path: "App › Integrations › What agents may spend on ADE Cloud", locked: true),
     "integrations.jira-projects": Setting(path: "App › Integrations › Jira projects for this project", locked: false),
     "integrations.jira-top-bar": Setting(path: "App › Integrations › Show Jira in the top bar", locked: false),

@@ -1603,8 +1603,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "integrations.ade-cloud-spending",
-    label: "ADE Cloud machines and spending",
-    keywords: ["machines", "new machine", "spending cap", "monthly cap", "budget", "limit spend", "saved", "sleep", "auto-sleep", "idle", "cost"],
+    label: "ADE Cloud computers and hours",
+    keywords: ["machines", "new machine", "hours", "plan", "extra hours", "saved", "sleep", "auto-sleep", "idle", "cost"],
     tab: "integrations",
     anchor: "cloud-machines",
     // Every machine with this month's spend and what sleeping saved; read from the provider.
@@ -1615,7 +1615,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "integrations.ade-cloud-agent-limits",
     label: "What agents may spend on ADE Cloud",
-    keywords: ["agent limits", "unattended", "full-auto", "automation", "machines a day", "largest size", "monthly cap", "spending cap", "budget", "ask me", "balanced", "hands-off"],
+    keywords: ["agent limits", "unattended", "full-auto", "automation", "machines a day", "largest size", "budget", "ask me", "balanced", "hands-off"],
     tab: "integrations",
     anchor: "cloud-agent-limits",
     // What unattended agents may spend alone, and the optional cap, in the account vault.

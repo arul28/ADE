@@ -2389,7 +2389,7 @@ describe("product analytics producers", () => {
   });
 
   it("keeps the ADE Cloud box actions, ready-machine outcomes and cloud sign-in providers through the sanitizer and nothing else", () => {
-    for (const outcome of ["box_sleep", "box_wake", "box_resize", "box_backup", "box_delete", "box_set_sleep", "box_copy", "box_move", "box_reconnect"]) {
+    for (const outcome of ["box_sleep", "box_wake", "box_resize", "box_backup", "box_delete", "box_set_sleep", "box_copy", "box_move", "box_reconnect", "box_push_all_work"]) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
         feature: "connections",
         action: "cloud_machine_action",
@@ -2397,6 +2397,14 @@ describe("product analytics producers", () => {
         instance_id: "zodqsue74s",
         price: "0.8¢ an hour",
       })).toEqual({ feature: "connections", action: "cloud_machine_action", outcome });
+    }
+    for (const outcome of ["plan_checkout", "plan_portal", "extra_on", "extra_off"]) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "connections",
+        action: "cloud_plan",
+        outcome,
+        amount: "$5",
+      })).toEqual({ feature: "connections", action: "cloud_plan", outcome });
     }
     for (const outcome of ["enabled", "disabled", "completed", "failed", "ready_picker", "ready_cli"]) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {

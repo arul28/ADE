@@ -27,7 +27,7 @@
  */
 
 import { deleteCloudAccount } from "./cloud/accountDeletion";
-import { logCloud } from "./cloud/store";
+import { reportCloudFailure } from "./cloud/store";
 
 export type SignupAnalyticsEnv = {
   CLERK_WEBHOOK_SIGNING_SECRET?: string;
@@ -246,7 +246,7 @@ export async function handleSignupAnalyticsRequest(
     try {
       await deleteCloudAccount({ ...env, DB: env.DB }, userId);
     } catch (error) {
-      logCloud("cloud.account_delete_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+      reportCloudFailure("cloud.account_delete_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
       return json(502, { error: "cloud_delete_failed" });
     }
   }

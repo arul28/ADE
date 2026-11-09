@@ -115,7 +115,9 @@ export function registerCloudIpc(args: {
   /** One coarse product fact per finished create (analytics; never the box or the error). */
   recordMachineCreate?: (outcome: "completed" | "partial" | "cancelled" | "failed") => void;
   /** One coarse product fact per box action that worked (analytics; never the box). */
-  recordMachineAction?: (action: CloudMachineActionKind | "copy" | "move" | "reconnect") => void;
+  recordMachineAction?: (action: CloudMachineActionKind | "copy" | "move" | "reconnect" | "push_all_work") => void;
+  /** One coarse fact per plan decision (analytics; never an amount). */
+  recordPlan?: (outcome: "plan_checkout" | "plan_portal" | "extra_on" | "extra_off") => void;
   /**
    * A `cloud` action on this computer's brain. Sign-ins for cloud machines
    * run there: a PTY can't start from this process in a packaged app.
@@ -346,6 +348,7 @@ export function registerCloudIpc(args: {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetExtraHours)) return null;
     const account = await billingCall(async () => (await requireCloudProvider(credentials)).setExtraHours(arg?.enabled === true));
     logger.info("cloud.extra_hours_set", { enabled: arg?.enabled === true });
+    if (account) args.recordPlan?.(arg?.enabled === true ? "extra_on" : "extra_off");
     sendToAllWindows(IPC.cloudStatusChanged);
     return account;
   });
@@ -355,6 +358,7 @@ export function registerCloudIpc(args: {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudOpenCheckout)) return { opened: false };
     const { url } = await billingCall(async () => (await requireCloudProvider(credentials)).billingCheckout());
     await openExternalUrl(url);
+    args.recordPlan?.("plan_checkout");
     return { opened: true };
   });
 
@@ -372,6 +376,7 @@ export function registerCloudIpc(args: {
     const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
     if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
     const result = await machines.pushAllWork(instanceId);
+    if (result.ok) args.recordMachineAction?.("push_all_work");
     sendToAllWindows(IPC.cloudStatusChanged);
     return result;
   });
@@ -380,6 +385,7 @@ export function registerCloudIpc(args: {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudOpenBillingPortal)) return { opened: false };
     const { url } = await billingCall(async () => (await requireCloudProvider(credentials)).billingPortal());
     await openExternalUrl(url);
+    args.recordPlan?.("plan_portal");
     return { opened: true };
   });
 

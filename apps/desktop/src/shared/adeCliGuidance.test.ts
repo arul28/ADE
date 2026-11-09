@@ -1,8 +1,9 @@
 import { MAX_STATUS_NOTE_CHARACTERS, STATUS_NOTE_GUIDELINE_WORDS } from "./sessionStatusNote";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SESSION_ACTIVITY_VALUES } from "./types/sessions";
+import { setAdeCloudSkillVisible } from "./agentSkillRoots";
 import {
   adeBundledAgentSkills,
   adeDeprecatedAgentSkillAliases,
@@ -13,6 +14,10 @@ import {
   buildAdeSessionActivityGuidance,
   buildAdeWindowsTrackedCliActivityGuidance,
 } from "./adeCliGuidance";
+
+// `ade-cloud` shows only for an account on ADE Cloud's list; these cases are about the rest of the list.
+beforeEach(() => setAdeCloudSkillVisible(true));
+afterEach(() => setAdeCloudSkillVisible(false));
 
 describe("ADE CLI guidance", () => {
   it("now aliases the minimal bootstrap (the verbose always-on blob was removed)", () => {
@@ -73,6 +78,9 @@ describe("ADE bootstrap guidance", () => {
       if (adeDeprecatedAgentSkillAliases.has(skillName)) continue;
       expect(bootstrap).toContain(`\`${skillName}\``);
     }
+    // An account off ADE Cloud's list isn't told it exists.
+    setAdeCloudSkillVisible(false);
+    expect(buildAdeBootstrapGuidance(roots)).not.toContain("`ade-cloud`");
   });
 
   it("stays within a small budget — the always-on socket/browser/proof tax is gone", () => {

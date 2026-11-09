@@ -657,6 +657,7 @@ describe("multi-project RPC server", () => {
       ["the desktop saves a cloud sign-in", desktop, null, "cloud.call", "cloud_sign_in_save_key", null],
       ["a terminal lists machines", terminal, null, "cloud.call", "list", null],
       ["an agent lists machines", agent, null, "cloud.call", "list", null],
+      ["an account off the list lists machines", desktop, null, "cloud.call", "list", /unavailable in this runtime/],
       ["a costly verb stays with a project", desktop, null, "cloud.call", "create", /runs in a project/],
       ["a terminal saves a cloud sign-in", terminal, null, "cloud.call", "cloud_sign_in_save_key", /limited to the ADE desktop app on this computer/],
       ["an agent saves a cloud sign-in", agent, null, "cloud.call", "cloud_sign_in_save_key", /Only the user can change this setting .*ade:\/\/settings\//],
@@ -671,6 +672,7 @@ describe("multi-project RPC server", () => {
         create: vi.fn(async () => ({ id: "made" })),
         cloud_sign_in_save_key: vi.fn(async () => ({ saved: true })),
         get: vi.fn(() => "the-key"),
+        access: vi.fn(async () => ({ enabled: !_label.includes("off the list") })),
       };
       const { handler, projectRegistry } = await connect(init, { cloud: service, account_vault: service }, peerDeviceId);
       const call = handler({ jsonrpc: "2.0", id: 2, method, params: { action, argsList: ["all", "integration", CLOUD_PROVIDER_VAULT_ITEM] } });
@@ -687,8 +689,9 @@ describe("multi-project RPC server", () => {
     });
 
     it.each([
-      ["the provider credential", "get", ["all", "integration", CLOUD_PROVIDER_VAULT_ITEM], null],
-      ["the spending cap", "set", ["all", "integration", "cloud-budget", "{\"capUsd\":5}"], null],
+      // The server holds the provider's key now: no brain reaches that item any more.
+      ["the old provider credential", "get", ["all", "integration", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the ADE Cloud items/],
+      ["the agent limits", "set", ["all", "integration", "cloud-budget", "{\"capUsd\":5}"], null],
       ["a saved cloud sign-in", "get", ["all", "integration", "cloud-claude-token"], null],
       ["a write to a cloud sign-in", "set", ["all", "integration", "cloud-claude-token", "stolen"], /reaches only the ADE Cloud items/],
       ["another integration's secret", "get", ["all", "integration", "github"], /reaches only the ADE Cloud items/],
