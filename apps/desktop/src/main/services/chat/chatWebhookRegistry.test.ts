@@ -71,6 +71,15 @@ describe("chat webhooks", () => {
     });
     // The bearer key never leaves the registry through a listing.
     expect(JSON.stringify(await registry.list())).not.toContain("key-1");
+
+    // A turn that fails leaves the chat idle; only its end event says it failed.
+    summaries.set("chat-1", { status: "active", laneId: "lane-1" });
+    registry.signal("chat-1", { type: "status", turnStatus: "started" });
+    await vi.advanceTimersByTimeAsync(300);
+    summaries.set("chat-1", { status: "idle", laneId: "lane-1" });
+    registry.signal("chat-1", { type: "done", status: "failed" });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(posts.map((post) => post.body.event)).toEqual(["chat.idle", "chat.failed"]);
     registry.dispose();
   });
 

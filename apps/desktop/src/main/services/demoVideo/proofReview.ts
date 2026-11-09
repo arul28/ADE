@@ -156,18 +156,20 @@ function shrinkPng(image: PNG, factor: number): PNG {
   const width = Math.max(1, Math.floor(image.width / factor));
   const height = Math.max(1, Math.floor(image.height / factor));
   const out = new PNG({ width, height });
-  const area = factor * factor;
   for (let y = 0; y < height; y += 1) {
+    // A band shorter (or narrower) than the factor averages only the pixels it has.
+    const rows = Math.min(factor, image.height - y * factor);
     for (let x = 0; x < width; x += 1) {
+      const cols = Math.min(factor, image.width - x * factor);
       const sums = [0, 0, 0, 0];
-      for (let dy = 0; dy < factor; dy += 1) {
+      for (let dy = 0; dy < rows; dy += 1) {
         const row = ((y * factor + dy) * image.width + x * factor) * 4;
-        for (let dx = 0; dx < factor; dx += 1) {
+        for (let dx = 0; dx < cols; dx += 1) {
           for (let channel = 0; channel < 4; channel += 1) sums[channel]! += image.data[row + dx * 4 + channel]!;
         }
       }
       const at = (y * width + x) * 4;
-      for (let channel = 0; channel < 4; channel += 1) out.data[at + channel] = Math.round(sums[channel]! / area);
+      for (let channel = 0; channel < 4; channel += 1) out.data[at + channel] = Math.round(sums[channel]! / (rows * cols));
     }
   }
   return out;

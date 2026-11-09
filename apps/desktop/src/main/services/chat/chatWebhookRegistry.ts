@@ -53,6 +53,8 @@ type StoredChatWebhook = {
   expiresAt: string;
   lastState: ChatWebhookState | null;
   seenRunning: boolean;
+  /** The last turn ended failed. A chat's own status never says it: it goes idle, and only the turn's end event carries the failure. */
+  lastTurnFailed?: boolean;
   deliveries: Delivery[];
 };
 
@@ -79,10 +81,11 @@ export function chatWebhookUrlProblem(value: string): string | null {
   return null;
 }
 
-function stateOfChat(summary: Record<string, unknown>): ChatWebhookState | null {
+function stateOfChat(summary: Record<string, unknown>, lastTurnFailed: boolean): ChatWebhookState | null {
   if (chatWaitTargetMatches(summary, "awaiting-input")) return "needs_input";
-  if (summary.status === "failed") return "failed";
-  return chatWaitTargetMatches(summary, "idle") || chatWaitTargetMatches(summary, "terminal") ? "idle" : null;
+  const settled = chatWaitTargetMatches(summary, "idle") || chatWaitTargetMatches(summary, "terminal");
+  if (summary.status === "failed" || (settled && lastTurnFailed)) return "failed";
+  return settled ? "idle" : null;
 }
 
 const EVENT_OF_STATE: Record<ChatWebhookState, ChatWebhookEvent> = {
@@ -273,7 +276,7 @@ export function createChatWebhookRegistry(deps: {
         return null;
       });
       if (summary) {
-        const state = stateOfChat(summary);
+        const state = stateOfChat(summary, hook.lastTurnFailed === true);
         if (state === null) {
           if (!hook.seenRunning || hook.lastState !== null) changed = true;
           hook.seenRunning = true;
@@ -292,7 +295,7 @@ export function createChatWebhookRegistry(deps: {
             nextAt: now(),
           });
           hook.lastState = state;
-          if (state === "idle") hook.seenRunning = false;
+          if (state === "idle" || state === "failed") hook.seenRunning = false;
           changed = true;
         }
       }
@@ -365,7 +368,7 @@ export function createChatWebhookRegistry(deps: {
      * that starts and ends between two checks would otherwise read as idle
      * all along, and its end would never be reported.
      */
-    signal(sessionId: string, event?: { type: string; turnStatus?: string }): void {
+    signal(sessionId: string, event?: { type: string; turnStatus?: string; status?: string }): void {
       // A webhook another brain armed for a chat this one runs arrives through the file.
       // This runs inside chat event handling, so it never throws.
       try {
@@ -383,6 +386,14 @@ export function createChatWebhookRegistry(deps: {
         for (const hook of mine) {
           hook.seenRunning = true;
           hook.lastState = null;
+          hook.lastTurnFailed = false;
+          changedHere.add(hook.id);
+        }
+      }
+      const failedEnd = (event?.type === "done" && event.status === "failed") || (event?.type === "status" && event.turnStatus === "failed");
+      if (failedEnd) {
+        for (const hook of mine) {
+          hook.lastTurnFailed = true;
           changedHere.add(hook.id);
         }
       }
