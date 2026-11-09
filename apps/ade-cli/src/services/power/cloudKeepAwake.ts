@@ -292,7 +292,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
         options.logger?.warn("cloud.keep_awake_read_failed", { error: error instanceof Error ? error.message : String(error) });
         state = { busy: true, reasons: ["unknown"] };
       }
-      // Used since the last check: the machine sleeps its sleep-after time after the last use.
+      // Used since the last check: the machine sleeps three minutes after the last use.
       if (usedSinceTick && !state.reasons.includes("in_use")) {
         state = { ...state, busy: true, reasons: [...state.reasons, "in_use"] };
       }

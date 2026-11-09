@@ -50,7 +50,7 @@ export function CloudSection() {
    */
   const [creating, setCreating] = useState(false);
   const [accountChangedAt, setAccountChangedAt] = useState(0);
-  // One read of the account's machines for the hero's month, the warnings and the machines card.
+  // One read of the account's machines for the hero, the warnings and the machines card.
   const machines = useCloudMachines(live);
 
   const load = useCallback(async () => {
@@ -167,7 +167,7 @@ export function CloudSection() {
           <>
             {account ? <CloudPlanCard account={account} onChanged={machines.refresh} /> : null}
             <CloudSignInsCard signIns={cloudSignIns} />
-            <CloudReadyMachinesCard status={status} cloudSignIns={cloudSignIns.status} />
+            <CloudReadyMachinesCard cloudSignIns={cloudSignIns.status} />
             <CloudMachinesCard status={status} machines={machines} onNewMachine={() => setCreating(true)} accountChangedAt={accountChangedAt} />
             <CloudAgentLimitsCard />
           </>

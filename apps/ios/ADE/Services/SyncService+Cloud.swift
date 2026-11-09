@@ -39,7 +39,6 @@ struct CloudPhoneMachine: Decodable, Identifiable, Equatable, Hashable {
   /// How fast this size uses hours, compared with a Small computer.
   let hoursRate: Double?
   let sleep: CloudPhoneSleep?
-  let madeByAde: Bool?
   let ready: CloudPhoneReadyTag?
   let pastDue: Bool?
 

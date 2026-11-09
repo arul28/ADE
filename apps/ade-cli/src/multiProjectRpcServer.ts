@@ -373,6 +373,8 @@ export type MultiProjectRpcHandlerOptions = {
    */
   /** On a cloud computer: interrupts work and writes the saved chat copy before a stop (`ade cloud prepare-stop`). */
   prepareCloudStop?: ((args: { timeoutMs: number }) => Promise<unknown>) | null;
+  /** On a cloud computer: commits and pushes every lane's work (`ade cloud push-work`). */
+  pushCloudWork?: (() => Promise<unknown>) | null;
   keepAwakeService?: Pick<
     BrainKeepAwakeService,
     "getSnapshot" | "setLevel" | "migrateLegacyPreference" | "fixSystemSleep"
@@ -591,6 +593,7 @@ const RUNTIME_METHODS = new Set([
   "remoteMcp.call",
   "keepAwake.call",
   "cloud.prepareStop",
+  "cloud.pushWork",
   "cloud.call",
   "accountVault.call",
   "attention.call",
@@ -2985,6 +2988,15 @@ export function createMultiProjectRpcRequestHandler(
       const prepare = options.prepareCloudStop;
       if (!prepare) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't prepare a computer to stop.");
       return await prepare({ timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : 40_000 });
+    }
+
+    // "Push all work to GitHub", run over exec on a computer that may be out of hours.
+    if (method === "cloud.pushWork") {
+      if (callerIdentityIsAgent(callerIdentity())) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "An agent can't push this computer's work.");
+      }
+      if (!options.pushCloudWork) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't push this computer's work.");
+      return await options.pushCloudWork();
     }
 
     if (method === "keepAwake.call") {

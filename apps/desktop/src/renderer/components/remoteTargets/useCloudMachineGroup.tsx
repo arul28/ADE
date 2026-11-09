@@ -204,8 +204,8 @@ export function useCloudMachineGroup(args: {
     }
   }
   // Boxes ADE made that no row stands for: joining, removed from ADE, or
-  // never signed in. They still bill, so they stay visible.
-  const looseBoxes = cloudBoxes.filter((box) => box.madeByAde && !matchedBoxIds.has(box.instanceId));
+  // never signed in. They still use hours, so they stay visible.
+  const looseBoxes = cloudBoxes.filter((box) => !matchedBoxIds.has(box.instanceId));
   const cloudGroupBoxes = [...cloudRows.map(({ box }) => box), ...looseBoxes];
   const showCloudGroup = cloudResult != null && cloudResult.state !== "not_connected"
     && (cloudGroupBoxes.length > 0 || cloudResult.state !== "ok");

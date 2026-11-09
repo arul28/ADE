@@ -1,11 +1,11 @@
 /**
  * Sleep for cloud machines: turning the provider's own idle sleep on for a box
- * once its brain keeps it awake while it works, the person's sleep setting per
- * box, waking a box for use, and what unattended agents may do.
+ * once its brain keeps it awake while it works, waking a box for use, and what
+ * unattended agents may do.
  *
  * Why the provider's sleep and not ADE's: the provider sleeps a box once nothing has
  * reached its URLs for the idle timeout, and does it whether or not any ADE
- * window is open, so a laptop that closes never leaves a box billing. Its
+ * window is open, so a laptop that closes never leaves a box awake. Its
  * timer alone would sleep a working brain (the relay is outbound traffic it
  * doesn't count), so the box's brain requests the box's own wake URL while a
  * chat, a command or a setup runs (cloudKeepAwake.ts). ADE turns the sleep
@@ -87,7 +87,7 @@ export async function enableCloudSleep(
       ?? (await client.addPublicPort(instanceId, { port: CLOUD_WAKE_PORT, label: CLOUD_WAKE_PORT_LABEL })).url;
     // Exec wakes a sleeping box, which is what `wakeIfNeeded` asks for.
     const handed = await client.exec(instanceId, handOverWakeUrlCommand(instanceId, wakeUrl), { timeoutMs: 60_000 });
-    if (handed.exitCode !== 0) return { state: "failed", error: `the box answered with exit ${handed.exitCode}.` };
+    if (handed.exitCode !== 0) return { state: "failed", error: `the computer answered with exit ${handed.exitCode}.` };
     let keepsAwake = false;
     try {
       keepsAwake = (JSON.parse(handed.stdout.trim() || "null") as { v?: unknown } | null)?.v === 1;
@@ -149,7 +149,7 @@ export async function wakeCloudMachineForUse(
   options: { logger?: CloudLogger; now?: () => number } = {},
 ): Promise<CloudWakeForUseResult> {
   const now = options.now ?? (() => Date.now());
-  // Bounded: this sits in front of a connect, which must not wait on a slow the provider.
+  // Bounded: this sits in front of a connect, which must not wait on a slow provider.
   const instances = await Promise.race([
     client.listInstances(),
     new Promise<null>((resolve) => setTimeout(() => resolve(null), WAKE_LOOKUP_TIMEOUT_MS).unref?.()),

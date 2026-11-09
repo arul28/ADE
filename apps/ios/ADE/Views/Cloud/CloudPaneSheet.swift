@@ -402,7 +402,7 @@ struct CloudMachineRow: View {
       CloudStateDot(machine: machine)
       VStack(alignment: .leading, spacing: 2) {
         Text(machine.displayName).font(.subheadline.weight(.semibold)).foregroundStyle(ADEColor.textPrimary).lineLimit(1)
-        Text([machine.isVM ? "VM" : "Box", machine.shape.map(cloudShapeLabel), machine.stateLabel.lowercased()]
+        Text([machine.isVM ? "Full computer" : "Computer", machine.shape.map(cloudShapeLabel), machine.stateLabel.lowercased()]
           .compactMap { $0 }.joined(separator: " · "))
           .font(.caption).foregroundStyle(ADEColor.textSecondary).lineLimit(1)
       }
@@ -533,7 +533,7 @@ struct CloudMachineFacts: View {
         }
       }
       Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-        fact("Size", machine.size ?? (machine.isVM ? "VM" : "Box"))
+        fact("Size", machine.size ?? (machine.isVM ? "Full computer" : "Computer"))
         if let rate = machine.hoursRate { fact("Uses", cloudHoursRate(rate)) }
         if let sleep = machine.sleep { fact("Sleeps", sleep.label) }
         if machine.pastDue == true { fact("State", "Suspended") }
@@ -584,7 +584,7 @@ struct CloudMachineControls: View {
         }
         CloudActionButton("Resize…", symbol: "arrow.up.left.and.arrow.down.right", disabled: busy) { resizing = true }
         CloudActionButton("Copy…", symbol: "plus.square.on.square", disabled: busy) { copying = true }
-        CloudActionButton(machine.isVM ? "Move to a box…" : "Move to a VM…", symbol: "arrow.left.arrow.right", disabled: busy) { moving = true }
+        CloudActionButton(machine.isVM ? "Move to a standard computer…" : "Move to a full computer…", symbol: "arrow.left.arrow.right", disabled: busy) { moving = true }
         CloudActionButton("Delete…", symbol: "trash", destructive: true, disabled: busy) { confirmDelete = true }
       }
     }
@@ -605,7 +605,7 @@ struct CloudMachineControls: View {
     } message: {
       Text("A new machine with the same files (repos, lanes, installed dependencies). You approve it joining your account.")
     }
-    .confirmationDialog("Move \(machine.displayName) to a \(machine.isVM ? "box" : "VM")", isPresented: $moving, titleVisibility: .visible) {
+    .confirmationDialog("Move \(machine.displayName) to a \(machine.isVM ? "standard computer" : "full computer")", isPresented: $moving, titleVisibility: .visible) {
       Button("Move it") { Task { await store.startMake("move", args: ["machine": machine.instanceId, "to": machine.isVM ? "box" : "vm"]) } }
     } message: {
       Text("ADE makes the new machine, copies every repo, lane and chat into it, then deletes this one.\(machine.isVM ? " Docker images stay behind." : "")")
@@ -669,11 +669,11 @@ struct CloudNewMachineSheet: View {
       Form {
         Section("Type") {
           Picker("Type", selection: $kind) {
-            Text("Box").tag("box")
-            Text("VM").tag("vm")
+            Text("Standard").tag("box")
+            Text("Full computer").tag("vm")
           }
           .pickerStyle(.segmented)
-          Text(kind == "vm" ? "Its own kernel: Docker and the Android emulator run. About 2.5x a box." : "Lanes, chats, terminals and a Linux desktop. The cheapest.")
+          Text(kind == "vm" ? "Its own kernel: Docker and the Android emulator run. Uses hours faster." : "Lanes, chats, terminals and a Linux desktop. The cheapest.")
             .font(.caption).foregroundStyle(ADEColor.textSecondary)
         }
         Section("Size") {
@@ -684,7 +684,7 @@ struct CloudNewMachineSheet: View {
           .labelsHidden()
         }
         Section("Name") {
-          TextField(kind == "vm" ? "ADE Cloud VM" : "ADE Cloud box", text: $name)
+          TextField("ADE Cloud computer", text: $name)
             .textInputAutocapitalization(.never)
         }
         Section {
@@ -963,9 +963,9 @@ enum CloudPreviews {
     guard name == "duo-cloud" || name == "duo-cloud-limits" || name == "duo-cloud-making" else { return nil }
     let json = """
     {"machines":[
-      {"instanceId":"zodqsue74s","name":"supabase-stack","machineKey":"mk1","state":"running","type":"vm","size":"VM · 4 vCPU · 8 GB","shape":"4x8","hoursRate":5,"sleep":{"state":"auto"},"madeByAde":true,"ready":null,"pastDue":false},
-      {"instanceId":"k2p8a1b2c3","name":"lane box","machineKey":"mk2","state":"asleep","type":"box","size":"Box · 2 vCPU · 4 GB","shape":"2x4","hoursRate":1,"sleep":{"state":"auto"},"madeByAde":true,"ready":null,"pastDue":false},
-      {"instanceId":"a9x7c6v5b4","name":"android vm","machineKey":"mk3","state":"starting","type":"vm","size":"VM · 4 vCPU · 8 GB","shape":"4x8","hoursRate":5,"sleep":{"state":"auto"},"madeByAde":true,"ready":{"projectName":"acme/app","state":"claimed"},"pastDue":false}
+      {"instanceId":"zodqsue74s","name":"supabase-stack","machineKey":"mk1","state":"running","type":"vm","size":"Full computer · Medium · 4 CPU · 8 GB","shape":"4x8","hoursRate":5,"sleep":{"state":"auto"},"ready":null,"pastDue":false},
+      {"instanceId":"k2p8a1b2c3","name":"lane box","machineKey":"mk2","state":"asleep","type":"box","size":"Small · 2 CPU · 4 GB","shape":"2x4","hoursRate":1,"sleep":{"state":"auto"},"ready":null,"pastDue":false},
+      {"instanceId":"a9x7c6v5b4","name":"android vm","machineKey":"mk3","state":"starting","type":"vm","size":"Full computer · Medium · 4 CPU · 8 GB","shape":"4x8","hoursRate":5,"sleep":{"state":"auto"},"ready":{"projectName":"acme/app","state":"claimed"},"pastDue":false}
     ],"runningCount":2,
     "account":{"plan":"paid","hours":{"includedMilli":500000,"leftMilli":382500,"state":"none"}}}
     """

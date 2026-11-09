@@ -1,12 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Moon } from "@phosphor-icons/react";
-import type { CloudAccountState, CloudMachine } from "../../../shared/adeCloud";
+import { cloudOutOfHours, type CloudMachine } from "../../../shared/adeCloud";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { useAppStore } from "../../state/appStore";
-import { useAdeCloudEnabled } from "../../state/cloudAccess";
-import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
-import { useCloudMachines } from "../remoteTargets/useCloudMachines";
-import { cloudBoxForMachine } from "../remoteTargets/cloudMachineModel";
+import { PushAllWorkButton } from "../remoteTargets/PushAllWorkButton";
+import { computerIsDown, useCloudComputer } from "../remoteTargets/useCloudComputer";
+import { Banner } from "../ui/notice";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
 
 /**
@@ -30,55 +28,6 @@ const OPENED_BY_PERSON_WINDOW_MS = 4_000;
 const STILL_WATCHING_MS = 60_000;
 
 export type WorkToolOpen = { tool: string; at: number };
-
-/** The cloud computer behind the machine a surface works on, with the account's hours. */
-export function useCloudComputer(pin: OpenProjectBinding | null | undefined): {
-  box: CloudMachine | null;
-  account: CloudAccountState | null;
-  refresh: () => void;
-} {
-  const cloudEnabled = useAdeCloudEnabled();
-  const bound = useAppStore((state) => state.projectBinding ?? null);
-  const binding = effectiveRuntimeBinding(pin, bound);
-  const { result, refresh } = useCloudMachines(cloudEnabled && binding?.kind === "remote");
-  const hostname = binding?.kind === "remote" ? binding.hostname ?? null : null;
-  const machineKey = useTargetMachineKey(cloudEnabled && binding?.kind === "remote" ? binding.targetId : null);
-  const box = useMemo(
-    () => (result && (machineKey || hostname) ? cloudBoxForMachine(result.machines, { machineKey, hostname }) : null),
-    [hostname, machineKey, result],
-  );
-  return { box, account: result?.account ?? null, refresh };
-}
-
-/** The computer's account key behind a paired machine: a relay connection's hostname is the relay's, not the computer's. */
-function useTargetMachineKey(targetId: string | null): string | null {
-  const [machineKey, setMachineKey] = useState<string | null>(null);
-  useEffect(() => {
-    setMachineKey(null);
-    if (!targetId) return;
-    let cancelled = false;
-    void window.ade.remoteRuntime?.listTargets?.().then(
-      (targets) => {
-        if (!cancelled) setMachineKey(targets.find((target) => target.id === targetId)?.pairedMachine?.machineKey?.trim() ?? null);
-      },
-      (error: unknown) => console.warn("[cloud] reading connection targets failed", error),
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [targetId]);
-  return machineKey;
-}
-
-function computerIsDown(box: CloudMachine | null): boolean {
-  return box?.state === "asleep" || box?.state === "stopped";
-}
-
-/** Whether the computer is out of reach for now; PR and Jira read around it. */
-export function useCloudComputerAsleep(pin: OpenProjectBinding | null | undefined): CloudMachine | null {
-  const { box } = useCloudComputer(pin);
-  return box && (computerIsDown(box) || box.state === "starting" || box.state === "stopping") ? box : null;
-}
 
 /** "Still watching": a real signal the computer's keep-awake counts as use. */
 function useStillWatching(tool: string, pin: OpenProjectBinding | null | undefined, box: CloudMachine | null): void {
@@ -122,31 +71,6 @@ function isLocalPreviewUrl(url: string | null): boolean {
   }
 }
 
-/**
- * The Push all work to GitHub button, with its own outcome line. Used on the
- * 0-hours states and the 30-day warnings. Account-level: it names the computer.
- */
-export function PushAllWorkButton({ instanceId, className }: { instanceId: string; className?: string }) {
-  const [state, setState] = useState<"idle" | "pushing" | string>("idle");
-  const run = useCallback(() => {
-    setState("pushing");
-    const push = window.ade.cloud?.pushAllWork;
-    if (!push) return;
-    void push(instanceId).then(
-      (result) => setState(result.message),
-      (error: unknown) => setState(error instanceof Error ? error.message : "ADE couldn't push the work. Try again."),
-    );
-  }, [instanceId]);
-  return (
-    <span className={className}>
-      <button type="button" className="ade-modern-btn" data-size="sm" disabled={state === "pushing"} onClick={run}>
-        {state === "pushing" ? "Pushing all work…" : "Push all work to GitHub"}
-      </button>
-      {state !== "idle" && state !== "pushing" ? <span className="ml-2 text-[12px] text-muted-fg">{state}</span> : null}
-    </span>
-  );
-}
-
 /** Wraps one Work tool panel. Renders the tool itself when the computer can answer. */
 export function CloudToolGate({
   tool,
@@ -161,11 +85,11 @@ export function CloudToolGate({
   children: ReactNode;
 }) {
   const needsComputer = TOOLS_NEEDING_COMPUTER.has(tool);
-  const { box, account, refresh } = useCloudComputer(needsComputer ? pin : null);
+  const { box, account, refresh } = useCloudComputer(pin, needsComputer);
   useStillWatching(tool, pin, box);
 
   const down = computerIsDown(box);
-  const outOfHours = account?.hours.state === "zero";
+  const outOfHours = cloudOutOfHours(account);
   const instanceId = box?.instanceId ?? null;
   const openedByPerson = opened != null && opened.tool === tool && Date.now() - opened.at < OPENED_BY_PERSON_WINDOW_MS;
   const [waking, setWaking] = useState(false);
@@ -173,11 +97,10 @@ export function CloudToolGate({
   const wakeTriedFor = useRef<string | null>(null);
 
   const wake = useCallback(() => {
-    if (!instanceId) return;
+    const machineAction = window.ade.cloud?.machineAction;
+    if (!instanceId || !machineAction) return;
     setWaking(true);
     setWakeError(null);
-    const machineAction = window.ade.cloud?.machineAction;
-    if (!machineAction) return;
     void machineAction({ instanceId, action: "wake" }).then(
       (result) => {
         setWaking(false);
@@ -202,23 +125,27 @@ export function CloudToolGate({
   const name = box.name ?? "This computer";
   if (outOfHours && down) {
     return (
-      <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 px-4 text-center">
-        <p className="text-[13px] text-fg/80">Out of hours</p>
-        <p className="text-[12px] text-muted-fg">{`${name} needs ADE Cloud hours to wake. They come back when your hours reset.`}</p>
+      <div className="flex h-full min-h-0 flex-col justify-center gap-3 px-4">
+        <Banner layout="inline" model={{ id: "cloud-tool-out-of-hours", tone: "warning", title: "Out of hours", detail: `${name} needs ADE Cloud hours to wake. They come back when your hours reset.`, report: false }} />
         <PushAllWorkButton instanceId={box.instanceId} />
       </div>
     );
   }
+  const comingUp = waking || box.state === "starting";
   return (
-    <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 px-4 text-center">
-      <Moon size={20} className="text-muted-fg" />
-      <p className="text-[13px] text-fg/80">{waking || box.state === "starting" ? `Waking ${name}…` : `${name} is asleep`}</p>
-      {!waking && box.state !== "starting" ? (
-        <button type="button" className="ade-modern-btn" data-size="sm" data-tone="primary" onClick={wake}>
-          Wake
-        </button>
-      ) : null}
-      {wakeError ? <p className="text-[12px] text-error">{wakeError}</p> : null}
+    <div className="flex h-full min-h-0 flex-col justify-center gap-3 px-4">
+      <Banner
+        layout="inline"
+        model={{
+          id: "cloud-tool-asleep",
+          tone: "info",
+          icon: <Moon size={15} />,
+          busy: comingUp,
+          title: comingUp ? `Waking ${name}…` : `${name} is asleep`,
+          actions: comingUp ? undefined : [{ label: "Wake", variant: "solid", onClick: wake }],
+        }}
+      />
+      {wakeError ? <Banner layout="inline" model={{ id: "cloud-tool-wake-failed", tone: "error", title: "ADE couldn't wake this computer", detail: wakeError, report: { surface: "cloud_tool_wake" } }} /> : null}
     </div>
   );
 }

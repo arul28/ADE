@@ -44,7 +44,7 @@ export async function reconnectCloudMachine(
   } catch (error) {
     // The shared steps word a cancel for a create.
     if (error instanceof CloudCreateCancelled) {
-      throw new CloudCreateCancelled("You stopped the reconnect. If the box had already signed in, it shows under Your computers when it's ready.");
+      throw new CloudCreateCancelled("You stopped the reconnect. If the computer had already signed in, it shows under Your computers when it's ready.");
     }
     throw error;
   }

@@ -211,7 +211,7 @@ export async function releaseCloudReadyMachine(
   try {
     await client.sleepInstance(instanceId);
   } catch (error) {
-    // Ready but awake: it bills until the next prepare pass sleeps it.
+    // Ready but awake: it uses hours until the next prepare pass sleeps it.
     options.logger?.warn?.("cloud.ready_release_sleep_failed", { instanceId, error: getErrorMessage(error) });
   }
   options.logger?.info?.("cloud.ready_released", { instanceId });

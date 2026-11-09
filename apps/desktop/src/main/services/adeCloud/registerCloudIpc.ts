@@ -4,6 +4,7 @@ import path from "node:path";
 import { hostname } from "node:os";
 import { app, BrowserWindow, ipcMain, powerMonitor } from "electron";
 import {
+  cloudKindLabel,
   cloudStillStartingMessage,
   CLOUD_MADE_BY_CHAT_METADATA,
   type CloudAccountState,
@@ -36,6 +37,7 @@ import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/service
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import {
+  cloudAccessDepsFor,
   cloudAccessEnabled,
   cloudNoProviderSentence,
   cloudVaultFromBridge,
@@ -74,7 +76,7 @@ type Logger = {
 };
 
 /**
- * the provider in Settings and the machine picker.
+ * ADE Cloud in Settings and the machine picker.
  *
  * No pin anywhere: cloud access is account-wide (the account vault answers the same
  * on every computer), and making a box acts on the account's cloud machines and the
@@ -114,7 +116,7 @@ export function registerCloudIpc(args: {
   /** One coarse product fact per box action that worked (analytics; never the box). */
   recordMachineAction?: (action: CloudMachineActionKind | "copy" | "move" | "reconnect") => void;
   /**
-   * An `cloud` action on this computer's brain. Sign-ins for cloud machines
+   * A `cloud` action on this computer's brain. Sign-ins for cloud machines
    * run there: a PTY can't start from this process in a packaged app.
    */
   brainAction: (action: string, actionArgs?: Record<string, unknown>) => Promise<unknown>;
@@ -125,22 +127,14 @@ export function registerCloudIpc(args: {
   let machineStore: EncryptedFileCredentialStore | null = null;
   const getMachineStore = () => (machineStore ??= new EncryptedFileCredentialStore({ secretsDir: resolveMachineAdeLayout().secretsDir }));
   const getAccountToken = () => getSignedInAccountAccessToken(account());
-  const directoryBaseUrl = () => {
-    try {
-      return getSharedAccountDirectoryBaseUrl() || null;
-    } catch (error) {
-      logger.warn("cloud.account_directory_unavailable", { error: error instanceof Error ? error.message : String(error) });
-      return null;
-    }
-  };
-  const credentials: CloudAccessDeps = {
-    signedIn: () => account().getStatus().signedIn === true,
-    accountId: () => account().getStatus().userId ?? null,
-    accessToken: getAccountToken,
-    directoryBaseUrl,
+  const credentials: CloudAccessDeps = cloudAccessDepsFor({
+    account,
+    directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl(),
     deviceName: () => hostname(),
     logger,
-  };
+    onDirectoryUnavailable: (error) => logger.warn("cloud.account_directory_unavailable", { error: error instanceof Error ? error.message : String(error) }),
+  });
+  const directoryBaseUrl = credentials.directoryBaseUrl;
 
   // The one answer that decides whether ADE Cloud exists in this app. No poll:
   // asked when a window opens or takes focus, and on a sign-in or sign-out;
@@ -515,7 +509,7 @@ export function registerCloudIpc(args: {
   ipcMain.handle(IPC.cloudCopyMachine, async (event, arg: { requestId?: unknown; instanceId?: unknown; name?: unknown; shape?: unknown }) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudCopyMachine)) return { started: false };
     const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
-    if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that box.");
+    if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that computer.");
     const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
     return startLongAction(event, requestId, async (signal, send) => {
       const result = await copyCloudMachine(copyDeps, {
@@ -532,8 +526,8 @@ export function registerCloudIpc(args: {
   ipcMain.handle(IPC.cloudMoveMachine, async (event, arg: { requestId?: unknown; instanceId?: unknown; machineKey?: unknown; to?: unknown; shape?: unknown }) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudMoveMachine)) return { started: false };
     const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
-    if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that box.");
-    if (arg?.to !== "vm" && arg?.to !== "box") throw new Error("Move it to a box or a VM.");
+    if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that computer.");
+    if (arg?.to !== "vm" && arg?.to !== "box") throw new Error("Move it to a standard or a full computer.");
     const to = arg.to;
     const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
     return startLongAction(event, requestId, async (signal, send) => {
@@ -547,8 +541,8 @@ export function registerCloudIpc(args: {
       args.recordMachineAction?.("move");
       return {
         message: result.sourceDeleted
-          ? `${result.name} is now a ${to === "vm" ? "VM" : "box"}, with all its files.`
-          : `${result.name} has all its files on the new ${to === "vm" ? "VM" : "box"}. ADE couldn't delete the old one; delete it from its card.`,
+          ? `${result.name} is now a ${cloudKindLabel(to)}, with all its files.`
+          : `${result.name} has all its files on the new ${cloudKindLabel(to)}. ADE couldn't delete the old one; delete it from its card.`,
         result,
       };
     });
@@ -557,7 +551,7 @@ export function registerCloudIpc(args: {
   ipcMain.handle(IPC.cloudReconnectMachine, async (event, arg: { requestId?: unknown; instanceId?: unknown }) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudReconnectMachine)) return { started: false };
     const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
-    if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that box.");
+    if (!isCloudInstanceId(instanceId)) throw new Error("ADE doesn't know that computer.");
     const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
     return startLongAction(event, requestId, async (signal, send) => {
       const result = await reconnectCloudMachine(machineCreatorDeps, { instanceId, requestId }, send, { signal });
@@ -587,7 +581,7 @@ export function registerCloudIpc(args: {
       const controller = new AbortController();
       creates.set(requestId, controller);
       // The window that asked went away (closed, reloaded): nobody is waiting
-      // for this box, so stop and delete it rather than leave it billing.
+      // for this box, so stop and delete it rather than leave it using hours.
       const onSenderGone = () => controller.abort();
       sender.once("destroyed", onSenderGone);
       const send = (progress: CloudCreateProgress) => {

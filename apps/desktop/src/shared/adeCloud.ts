@@ -1,3 +1,4 @@
+import type { CloudAccountState, CloudCatalog, CloudHoursState } from "../../../account-directory/src/cloud/contract";
 import type { CloudReadyMachineState } from "./cloudReady";
 
 /**
@@ -62,18 +63,46 @@ export function cloudInstanceType(kind: CloudMachineKind): "default" | "vm" {
 
 export const CLOUD_FULL_COMPUTER_LABEL = "Full computer (Android, Docker)";
 
+/** "full computer" or "standard computer": what a person calls each kind. */
+export function cloudKindLabel(kind: CloudMachineKind): string {
+  return kind === "vm" ? "full computer" : "standard computer";
+}
+
 /**
- * How fast each size uses hours, as multiples of a Small computer. The eight
- * sizes are the server's (`apps/account-directory/src/cloud/plans.ts`).
+ * The server's sizes and plans (`GET /cloud/account`) for a surface that has
+ * no account yet. The only copy on a client; everything else reads the answer.
  */
-const CLOUD_HOURS_RATE: Record<CloudMachineKind, Record<CloudShapeId, number>> = {
-  box: { "2x4": 1, "4x8": 2, "4x16": 3.3, "4x32": 5.8 },
-  vm: { "2x4": 2.5, "4x8": 5, "4x16": 8.2, "4x32": 14.5 },
+const CLOUD_CATALOG_FALLBACK: CloudCatalog = {
+  sizes: [
+    { type: "default", cpu: 2, memoryGb: 4, multiplierMilli: 1000 },
+    { type: "default", cpu: 4, memoryGb: 8, multiplierMilli: 2000 },
+    { type: "default", cpu: 4, memoryGb: 16, multiplierMilli: 3300 },
+    { type: "default", cpu: 4, memoryGb: 32, multiplierMilli: 5800 },
+    { type: "vm", cpu: 2, memoryGb: 4, multiplierMilli: 2500 },
+    { type: "vm", cpu: 4, memoryGb: 8, multiplierMilli: 5000 },
+    { type: "vm", cpu: 4, memoryGb: 16, multiplierMilli: 8200 },
+    { type: "vm", cpu: 4, memoryGb: 32, multiplierMilli: 14500 },
+  ],
+  plans: {
+    free: { includedMilli: 50_000, computerLimit: 3, diskGb: 4 },
+    paid: { includedMilli: 500_000, computerLimit: 10, diskGb: 40 },
+  },
+  diskStepGb: 4,
+  paidPriceUsd: 5,
+  extraHourCents: 1,
 };
 
+/** The sizes and plans the server answers with, or the fallback until the account has loaded. */
+export function cloudCatalogOf(account: Pick<CloudAccountState, "catalog"> | null | undefined): CloudCatalog {
+  return account?.catalog ?? CLOUD_CATALOG_FALLBACK;
+}
+
 /** Hours of a Small computer this size uses per hour awake. */
-export function cloudHoursRate(kind: CloudMachineKind, shape: CloudShapeId): number {
-  return CLOUD_HOURS_RATE[kind][shape];
+export function cloudHoursRate(kind: CloudMachineKind, shape: CloudShapeId, catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK): number {
+  const { cpu, memoryGb } = cloudShapeById(shape);
+  const type = cloudInstanceType(kind);
+  const size = catalog.sizes.find((entry) => entry.type === type && entry.cpu === cpu && entry.memoryGb === memoryGb);
+  return (size?.multiplierMilli ?? 1000) / 1000;
 }
 
 /** "2× hours". */
@@ -82,8 +111,8 @@ export function formatCloudHoursRate(rate: number): string {
 }
 
 /** "about 3.3 hours" per hour awake, for approval cards. */
-export function describeCloudHoursUse(kind: CloudMachineKind, shape: CloudShapeId): string {
-  return `about ${cloudHoursRate(kind, shape)} hours of your plan for each hour it's awake`;
+export function describeCloudHoursUse(kind: CloudMachineKind, shape: CloudShapeId, catalog?: CloudCatalog): string {
+  return `about ${cloudHoursRate(kind, shape, catalog)} hours of your plan for each hour it's awake`;
 }
 
 /** Android needs a full computer of Medium or bigger. */
@@ -275,7 +304,6 @@ export type CloudMachine = {
    * ADE made it (its create tags, or a recorded machine key). The list shows
    * these, and any other box only when an account row matches it.
    */
-  madeByAde: boolean;
   createdAtMs: number | null;
   /**
    * Set when this is a project's ready machine (prepared and kept asleep for
@@ -309,9 +337,9 @@ export const CLOUD_DISK_FULL_METADATA = "ade_disk_full";
 export type CloudDiskFullReason = "free_limit" | "account_limit";
 
 /** What a person reads on a computer whose disk is full and can't grow, or null. */
-export function cloudDiskFullMessage(reason: string | null | undefined): string | null {
-  if (reason === "free_limit") return "This computer's disk is full. Free computers stay at 4 GB; a paid plan lets it grow.";
-  if (reason === "account_limit") return "This computer's disk is full, and your computers have reached the 40 GB they share.";
+export function cloudDiskFullMessage(reason: string | null | undefined, catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK): string | null {
+  if (reason === "free_limit") return `This computer's disk is full. Free computers stay at ${catalog.plans.free.diskGb} GB; a paid plan lets it grow.`;
+  if (reason === "account_limit") return `This computer's disk is full, and your computers have reached the ${catalog.plans.paid.diskGb} GB they share.`;
   return null;
 }
 
@@ -374,39 +402,7 @@ export function cloudShapeWithin(shape: CloudShapeId, max: CloudShapeId): boolea
   return order.indexOf(shape) <= order.indexOf(max);
 }
 
-/** The warning state of an account's hours (the server's `CloudHoursState`). `zero` is out with extra hours off. */
-export type CloudHoursState = "none" | "warn80" | "warn95" | "zero";
-
-/**
- * Plan, hours and billing, read from `GET /cloud/account`. Mirrors
- * `apps/account-directory/src/cloud/contract.ts`. Hours are integer
- * thousandths of a Small-hour.
- */
-export type CloudAccountState = {
-  plan: "free" | "paid";
-  /** The rules in force: `past_due` is `free` until a paid invoice. */
-  rules: "free" | "paid";
-  hours: {
-    includedMilli: number;
-    usedMilli: number;
-    leftMilli: number;
-    percentUsed: number;
-    state: CloudHoursState;
-  };
-  extraHours: { available: boolean; enabled: boolean; usedMilli: number };
-  disk: { usedGb: number; limitGb: number | null };
-  computers: { total: number; awake: number; limit: number };
-  /** Inactive computers, soonest first; each is deleted at `deletesAt` unless used. */
-  dueForDeletion: Array<{ instanceId: string; name: string | null; deletesAt: number }>;
-  billing: {
-    periodStart: number;
-    periodEnd: number;
-    stripeStatus: string | null;
-    cancelAtPeriodEnd: boolean;
-    /** `past_due` while a payment failed; `restored` for a few days after a paid invoice brings the plan back. */
-    notice?: "past_due" | "restored" | null;
-  };
-};
+export type { CloudAccountState, CloudCatalog, CloudHoursState };
 
 /** The server's sentence for what needs hours at 0. The server enforces it; these two only stop a request that can't work. */
 export const CLOUD_OUT_OF_HOURS_MESSAGE = "You're out of ADE Cloud hours for this period.";
@@ -431,6 +427,21 @@ export function cloudUnattendedHoursBlock(
   return cloudOutOfHours(account) ? "out_of_hours" : null;
 }
 
+/** Whether a `cloud` action domain says this account has ADE Cloud; false when it can't say. */
+export async function cloudDomainEnabled(
+  domain: Record<string, unknown> | null | undefined,
+  onError?: (error: unknown) => void,
+): Promise<boolean> {
+  const access = domain?.access;
+  if (typeof access !== "function") return false;
+  try {
+    return ((await access.call(domain)) as { enabled?: unknown } | null)?.enabled === true;
+  } catch (error) {
+    onError?.(error);
+    return false;
+  }
+}
+
 /** "412" or "49.5" hours from thousandths. */
 export function formatCloudHours(milli: number): string {
   const hours = Math.max(0, milli) / 1000;
@@ -445,7 +456,7 @@ export type CloudAccountBanner = {
   detail: string;
 };
 
-function formatCloudDate(ms: number): string {
+export function formatCloudDate(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
@@ -453,6 +464,7 @@ function formatCloudDate(ms: number): string {
 export function cloudAccountBanner(account: CloudAccountState): CloudAccountBanner | null {
   const resetDate = formatCloudDate(account.billing.periodEnd);
   const left = formatCloudHours(account.hours.leftMilli);
+  const catalog = cloudCatalogOf(account);
   if (account.billing.notice === "past_due") {
     return {
       id: "cloud-hours-past-due",
@@ -468,7 +480,7 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
       title: "You're out of ADE Cloud hours",
       detail: account.extraHours.available
         ? `Your computers are stopped until ${resetDate}. Turn on extra hours to keep going sooner.`
-        : `Your computers are stopped until ${resetDate}. The paid plan has 500 hours a month.`,
+        : `Your computers are stopped until ${resetDate}. The paid plan has ${formatCloudHours(catalog.plans.paid.includedMilli)} hours a month.`,
     };
   }
   if (account.hours.state === "warn95" || account.hours.state === "warn80") {
@@ -551,8 +563,6 @@ export function cloudShapeFor(resources: Pick<CloudResources, "cpu" | "memoryGb"
   if (!resources) return null;
   return CLOUD_SHAPES.find((shape) => shape.cpu === resources.cpu && shape.memoryGb === resources.memoryGb) ?? null;
 }
-
-
 
 /** a provider instance id, as ADE accepts one from a caller. */
 export function isCloudInstanceId(value: unknown): value is string {

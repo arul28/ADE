@@ -1,5 +1,5 @@
 import type { CallerTokenEnv } from "../callerToken";
-import type { CloudAccountState, CloudHoursState } from "./contract";
+import type { CloudAccountState, CloudHoursState, CloudInstance } from "./contract";
 import type { CloudEmailEnv } from "./email";
 import {
   FREE_COMPUTER_LIMIT,
@@ -7,12 +7,15 @@ import {
   PAID_COMPUTER_LIMIT,
   PAID_DISK_POOL_GB,
   PAID_INCLUDED_MILLI,
+  cloudCatalog,
   freePeriodFor,
   hoursMilliFor,
   isMeteredStatus,
   isRestingStatus,
   splitByUtcDay,
+  type CloudComputerType,
 } from "./plans";
+import { CloudProviderError, type CloudProvider } from "./provider";
 
 /**
  * The computers and accounts in D1, and the one place that moves hours. Live
@@ -39,7 +42,7 @@ export type ComputerRow = {
   instance_id: string;
   user_id: string;
   request_id: string | null;
-  type: string;
+  type: CloudComputerType;
   cpu: number;
   memory_gb: number;
   disk_gb: number;
@@ -64,7 +67,7 @@ export type ComputerRow = {
 
 export type AccountRow = {
   user_id: string;
-  plan: string;
+  plan: "free" | "paid";
   included_milli: number;
   used_milli: number;
   period_start: number;
@@ -91,6 +94,8 @@ export function logCloud(event: string, meta: Record<string, unknown> = {}): voi
   console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "ade-account-directory", kind: event, ...meta }));
 }
 
+/** A reservation with no computer behind it after this long is given up on. */
+export const PENDING_TIMEOUT_MS = 15 * 60_000;
 const PENDING_PREFIX = "pending:";
 export const isPendingId = (id: string): boolean => id.startsWith(PENDING_PREFIX);
 export const newPendingId = (): string => `${PENDING_PREFIX}${crypto.randomUUID()}`;
@@ -258,6 +263,78 @@ export function markDeletedStatements(env: CloudEnv, computer: ComputerRow, now:
   return statements;
 }
 
+/** The log entry and the closed row for a computer that's gone. */
+export function closedComputerStatements(
+  env: CloudEnv,
+  computer: ComputerRow,
+  args: { who: string | null; reason: string; events: unknown[] | null },
+  now: number,
+): D1PreparedStatement[] {
+  return [deleteLogStatement(env, computer, args, now), ...markDeletedStatements(env, computer, now)];
+}
+
+/** A computer the provider no longer has, though nobody here deleted it. */
+export function goneFromProviderStatements(env: CloudEnv, computer: ComputerRow, now: number): D1PreparedStatement[] {
+  return closedComputerStatements(env, computer, { who: null, reason: "gone_from_provider", events: null }, now);
+}
+
+/**
+ * Deletes a computer on the provider, then logs it and closes its row. Its events
+ * go with it, so they're read first. Already gone counts as deleted; any other
+ * provider failure throws, with the row left open.
+ */
+export async function deleteComputer(
+  env: CloudEnv,
+  provider: Pick<CloudProvider, "instanceEvents" | "deleteInstance">,
+  computer: ComputerRow,
+  args: { who: string | null; reason: string },
+  now: number,
+): Promise<void> {
+  const events = await provider.instanceEvents(computer.instance_id).catch((error: unknown) => {
+    logCloud("cloud.delete_events_read_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+    return null;
+  });
+  try {
+    await provider.deleteInstance(computer.instance_id);
+  } catch (error) {
+    if (!(error instanceof CloudProviderError && error.status === 404)) throw error;
+  }
+  await env.DB.batch(closedComputerStatements(env, computer, { ...args, events }, now));
+}
+
+/**
+ * A reservation becoming the real row. `not exists`: a deleted row keeps its id,
+ * and a clash here must adopt nothing. The log line needs the row this update
+ * just wrote, so a reservation another path already adopted logs once.
+ */
+export function adoptionStatements(
+  env: CloudEnv,
+  args: { pendingId: string; instance: CloudInstance; machineKey: string | null; now: number; reason: string },
+): D1PreparedStatement[] {
+  const { pendingId, instance, machineKey, now, reason } = args;
+  return [
+    env.DB.prepare(`
+      update cloud_computers set instance_id = ?, machine_key = coalesce(?, machine_key), status = ?, status_changed_at = ?,
+        awake_since = ?, last_awake_at = ?
+      where instance_id = ? and not exists (select 1 from cloud_computers where instance_id = ?)
+    `).bind(instance.id, machineKey, instance.status, now, isMeteredStatus(instance.status) ? now : null, now, pendingId, instance.id),
+    env.DB.prepare(`
+      insert into cloud_power_log (instance_id, user_id, action, reason, created_at)
+      select ?, user_id, 'start', ?, ? from cloud_computers where instance_id = ? and status_changed_at = ?
+    `).bind(instance.id, reason, now, instance.id, now),
+  ];
+}
+
+export function groupByUser<T extends { user_id: string }>(rows: T[]): Map<string, T[]> {
+  const out = new Map<string, T[]>();
+  for (const row of rows) {
+    const list = out.get(row.user_id);
+    if (list) list.push(row);
+    else out.set(row.user_id, [row]);
+  }
+  return out;
+}
+
 /* ---- Accounts ---- */
 
 /** `past_due` puts a paid account on free-plan rules until a paid invoice. */
@@ -376,6 +453,41 @@ export type CloudPlanChange = {
   extraEnabled?: boolean;
 };
 
+type PlanTransition = {
+  kind: "past_due" | "restored_same_period" | "restored_new_period" | "to_paid" | "to_free" | "renewal";
+  next: FreshPeriod;
+};
+
+/** Which fresh period a plan change starts, or null when it starts none. */
+function planTransition(
+  account: AccountRow,
+  change: CloudPlanChange,
+  state: { nextPlan: "free" | "paid"; wasPastDue: boolean; isPastDue: boolean; now: number },
+): PlanTransition | null {
+  const { nextPlan, wasPastDue, isPastDue, now } = state;
+  const free = freePeriodFor(now);
+  if (!wasPastDue && isPastDue && account.plan === "paid") {
+    return { kind: "past_due", next: { plan: "paid", start: free.start, end: free.end, included: FREE_INCLUDED_MILLI } };
+  }
+  if (wasPastDue && !isPastDue && nextPlan === "paid") {
+    const stashEnd = account.past_due_period_end;
+    const end = change.periodEnd ?? stashEnd ?? free.end;
+    return stashEnd != null && stashEnd > now && end === stashEnd
+      ? { kind: "restored_same_period", next: { plan: "paid", start: change.periodStart ?? account.period_start, end, included: PAID_INCLUDED_MILLI } }
+      : { kind: "restored_new_period", next: { plan: "paid", start: change.periodStart ?? now, end, included: PAID_INCLUDED_MILLI } };
+  }
+  if (account.plan === "free" && nextPlan === "paid") {
+    return { kind: "to_paid", next: { plan: "paid", start: change.periodStart ?? now, end: change.periodEnd ?? free.end, included: PAID_INCLUDED_MILLI } };
+  }
+  if (account.plan === "paid" && nextPlan === "free") {
+    return { kind: "to_free", next: { plan: "free", start: free.start, end: free.end, included: FREE_INCLUDED_MILLI } };
+  }
+  if (nextPlan === "paid" && change.periodStart !== undefined && change.periodStart !== account.period_start && !isPastDue) {
+    return { kind: "renewal", next: { plan: "paid", start: change.periodStart, end: change.periodEnd ?? account.period_end, included: PAID_INCLUDED_MILLI } };
+  }
+  return null;
+}
+
 /**
  * The one place a plan changes; the Stripe webhook calls this. Fields left out
  * keep their value. Free to paid and paid to free each start fresh hours, a
@@ -385,11 +497,10 @@ export type CloudPlanChange = {
  */
 export async function applyCloudPlanChange(env: CloudEnv, userId: string, change: CloudPlanChange, now = Date.now()): Promise<AccountRow> {
   let account = await loadAccount(env, userId, now);
-  const nextPlan = change.plan ?? (account.plan as "free" | "paid");
+  const nextPlan = change.plan ?? account.plan;
   const nextStripeStatus = change.stripeStatus === undefined ? account.stripe_status : change.stripeStatus;
   const wasPastDue = account.stripe_status === "past_due";
   const isPastDue = nextStripeStatus === "past_due";
-  const period = freePeriodFor(now);
   /** A new billing period: nothing is reported or owed in it yet. */
   const clearExtraReports: Array<[string, unknown]> = [["extra_reported_milli", 0], ["extra_owed_milli", 0]];
 
@@ -399,44 +510,32 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
   if (change.stripeStatus !== undefined) extras.push(["stripe_status", change.stripeStatus]);
   if (change.cancelAtPeriodEnd !== undefined) extras.push(["cancel_at_period_end", change.cancelAtPeriodEnd ? 1 : 0]);
 
-  if (!wasPastDue && isPastDue && account.plan === "paid") {
+  const transition = planTransition(account, change, { nextPlan, wasPastDue, isPastDue, now });
+  if (transition?.kind === "past_due") {
     // Read before the fresh start replaces them: a later paid invoice restores these.
     const stashUsed = liveUsedMilli(account, await listComputers(env, userId), now);
     const stashPeriodEnd = change.periodEnd ?? account.period_end;
     // Extra hours go off here, but what was already used is still owed.
     const owed = extraActive(account) ? Math.max(account.extra_owed_milli, stashUsed - account.included_milli, 0) : account.extra_owed_milli;
-    account = await startFreshPeriod(env, account, { plan: "paid", start: period.start, end: period.end, included: FREE_INCLUDED_MILLI }, now);
     extras.push(["past_due_used_milli", stashUsed], ["past_due_period_end", stashPeriodEnd], ["extra_enabled", 0], ["extra_owed_milli", owed]);
-  } else if (wasPastDue && !isPastDue && nextPlan === "paid") {
-    const stashEnd = account.past_due_period_end;
-    const paidEnd = change.periodEnd ?? stashEnd ?? period.end;
-    const stillSamePeriod = stashEnd != null && stashEnd > now && paidEnd === stashEnd;
-    if (stillSamePeriod) {
-      account = await startFreshPeriod(env, account, {
-        plan: "paid", start: change.periodStart ?? account.period_start, end: paidEnd, included: PAID_INCLUDED_MILLI,
-      }, now);
+  }
+  if (transition) account = await startFreshPeriod(env, account, transition.next, now);
+  switch (transition?.kind) {
+    case "restored_same_period":
       await env.DB.prepare("update cloud_accounts set used_milli = ? where user_id = ?").bind(account.past_due_used_milli ?? 0, userId).run();
       account.used_milli = account.past_due_used_milli ?? 0;
-    } else {
-      account = await startFreshPeriod(env, account, {
-        plan: "paid", start: change.periodStart ?? now, end: paidEnd, included: PAID_INCLUDED_MILLI,
-      }, now);
+      extras.push(["past_due_used_milli", null], ["past_due_period_end", null]);
+      break;
+    case "restored_new_period":
+      extras.push(...clearExtraReports, ["past_due_used_milli", null], ["past_due_period_end", null]);
+      break;
+    case "to_paid":
+    case "renewal":
       extras.push(...clearExtraReports);
-    }
-    extras.push(["past_due_used_milli", null], ["past_due_period_end", null]);
-  } else if (account.plan === "free" && nextPlan === "paid") {
-    account = await startFreshPeriod(env, account, {
-      plan: "paid", start: change.periodStart ?? now, end: change.periodEnd ?? period.end, included: PAID_INCLUDED_MILLI,
-    }, now);
-    extras.push(...clearExtraReports);
-  } else if (account.plan === "paid" && nextPlan === "free") {
-    account = await startFreshPeriod(env, account, { plan: "free", start: period.start, end: period.end, included: FREE_INCLUDED_MILLI }, now);
-    extras.push(["extra_enabled", 0]);
-  } else if (nextPlan === "paid" && change.periodStart !== undefined && change.periodStart !== account.period_start && !isPastDue) {
-    account = await startFreshPeriod(env, account, {
-      plan: "paid", start: change.periodStart, end: change.periodEnd ?? account.period_end, included: PAID_INCLUDED_MILLI,
-    }, now);
-    extras.push(...clearExtraReports);
+      break;
+    case "to_free":
+      extras.push(["extra_enabled", 0]);
+      break;
   }
 
   if (change.extraEnabled !== undefined && nextPlan === "paid" && !isPastDue) extras.push(["extra_enabled", change.extraEnabled ? 1 : 0]);
@@ -471,9 +570,21 @@ function billingNotice(account: AccountRow, now: number): "past_due" | "restored
   return account.billing_restored_at != null && now - account.billing_restored_at < BILLING_RESTORED_NOTICE_MS ? "restored" : null;
 }
 
+/** How long a deleted computer's id is still reported, so its leftover ADE row can be explained. */
+const DELETED_REPORTED_MS = 90 * 24 * 60 * 60_000;
+
+async function recentlyDeletedInstanceIds(env: CloudEnv, userId: string, now: number): Promise<string[]> {
+  const rows = await env.DB.prepare(`
+    select c.instance_id from cloud_computers c
+    where c.user_id = ? and c.deleted_at is not null and c.deleted_at >= ?
+      and exists (select 1 from cloud_computer_days d where d.instance_id = c.instance_id)
+  `).bind(userId, now - DELETED_REPORTED_MS).all<{ instance_id: string }>();
+  return (rows.results ?? []).map((row) => row.instance_id);
+}
+
 export async function buildAccountState(env: CloudEnv, userId: string, now: number): Promise<CloudAccountState> {
   const account = await loadAccount(env, userId, now);
-  const computers = await listComputers(env, userId);
+  const [computers, deletedInstanceIds] = await Promise.all([listComputers(env, userId), recentlyDeletedInstanceIds(env, userId, now)]);
   const live = liveUsedMilli(account, computers, now);
   const rules = accountRules(account);
   const due = computers
@@ -483,7 +594,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     .sort((a, b) => a.deletesAt - b.deletesAt)
     .map(({ computer, deletesAt }) => ({ instanceId: computer.instance_id, name: computer.name, deletesAt }));
   return {
-    plan: account.plan === "paid" ? "paid" : "free",
+    plan: account.plan,
     rules,
     hours: {
       includedMilli: account.included_milli,
@@ -507,6 +618,8 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
       limit: computerLimit(account),
     },
     dueForDeletion: due,
+    deletedInstanceIds,
+    catalog: cloudCatalog(),
     billing: {
       periodStart: account.period_start,
       periodEnd: account.period_end,

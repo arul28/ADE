@@ -5,8 +5,10 @@ import {
   type CloudChatPartResponse,
   type CloudChatRow,
   type CloudChatRowInput,
+  CLOUD_PATHS,
   type CloudChatTranscriptPage,
 } from "./contract";
+import { UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
 import { logCloud, ownedComputer, type CloudEnv } from "./store";
 
 /**
@@ -26,9 +28,8 @@ import { logCloud, ownedComputer, type CloudEnv } from "./store";
  * reaches a log line, an error message, or Sentry: a part is opaque bytes here.
  */
 
-const CHAT_ID = /^[A-Za-z0-9._:-]{1,160}$/;
-const MACHINE_KEY = /^[A-Za-z0-9._:-]{1,160}$/;
-const LANE_ID = /^[A-Za-z0-9._:-]{1,160}$/;
+/** A chat, machine or lane id in a path. */
+const ROW_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 const SEQ = /^[1-9][0-9]{0,8}$/;
 /** Room for the JSON around a part in the request body. */
 const PUT_BODY_OVERHEAD_BYTES = 64 * 1024;
@@ -41,9 +42,6 @@ const PAGE_TARGET_BYTES = 8 * 1024 * 1024;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-const json = (body: unknown, status = 200): Response =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
-const fail = (code: string, message: string, status: number): Response => json({ error: { code, message } }, status);
 const notFound = () => fail("not_found", "That saved chat doesn't exist.", 404);
 const unavailable = () => fail("unavailable", "Saved chats aren't available right now. Try again soon.", 503);
 
@@ -227,7 +225,7 @@ function readRowInput(value: unknown): CloudChatRowInput | null {
     return trimmed ? trimmed.slice(0, SUMMARY_LIMITS[key]) : null;
   };
   const laneId = pick("laneId");
-  if (laneId && !LANE_ID.test(laneId)) return null;
+  if (laneId && !ROW_ID.test(laneId)) return null;
   const lastActivity = pick("lastActivityAt");
   if (lastActivity && Number.isNaN(Date.parse(lastActivity))) return null;
   return {
@@ -283,14 +281,14 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
       logCloud("cloud.chat_part_too_large", { userId, machineKey, chatId, seq });
       return fail("part_too_large", "That part of the chat is too large to save.", 413);
     }
-    return fail("bad_request", "That request could not be read.", 400);
+    return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   }
   const record = body.value && typeof body.value === "object" && !Array.isArray(body.value) ? body.value as Record<string, unknown> : null;
   const text = typeof record?.text === "string" ? record.text : null;
   const instanceId = typeof record?.instanceId === "string" ? record.instanceId.trim() : "";
-  if (text == null || !instanceId) return fail("bad_request", "That request could not be read.", 400);
+  if (text == null || !instanceId) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   const rowInput = readRowInput(record?.row);
-  if (!rowInput) return fail("bad_request", "That request could not be read.", 400);
+  if (!rowInput) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   const plain = encoder.encode(text);
   if (plain.byteLength > CLOUD_CHAT_MAX_PART_BYTES) {
     logCloud("cloud.chat_part_too_large", { userId, machineKey, chatId, seq, bytes: plain.byteLength });
@@ -427,7 +425,7 @@ function clampedInt(raw: string | null, fallback: number, max: number): number {
 /** `GET /cloud/chats?machine&project&limit&cursor`: newest activity first. */
 async function handleList(url: URL, env: CloudEnv, userId: string, now: number): Promise<Response> {
   const machine = url.searchParams.get("machine")?.trim() || null;
-  if (machine && !MACHINE_KEY.test(machine)) return json({ chats: [], nextCursor: null });
+  if (machine && !ROW_ID.test(machine)) return json({ chats: [], nextCursor: null });
   const project = url.searchParams.get("project")?.trim() || null;
   const limit = clampedInt(url.searchParams.get("limit"), DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
   // `updatedAt:chatId` of the last row of the previous page.
@@ -558,7 +556,7 @@ export async function deleteAllAccountChats(env: Pick<CloudEnv, "DB" | "CLOUD_CH
 
 /** The saved-chat routes under `/cloud/chats`. The caller already passed the access gate. */
 export async function routeSavedChats(request: Request, url: URL, path: string, env: CloudEnv, userId: string, now: number): Promise<Response> {
-  const segments = path.slice("/cloud/chats".length).split("/").filter(Boolean).map((segment) => {
+  const segments = path.slice(CLOUD_PATHS.chats.length).split("/").filter(Boolean).map((segment) => {
     try {
       return decodeURIComponent(segment);
     } catch {
@@ -569,8 +567,8 @@ export async function routeSavedChats(request: Request, url: URL, path: string, 
     return request.method === "GET" ? handleList(url, env, userId, now) : notFound();
   }
   const [machineKey, second, third, fourth] = segments;
-  if (!machineKey || !MACHINE_KEY.test(machineKey) || segments.length > 4) return notFound();
-  if (segments.length === 2 && second && CHAT_ID.test(second)) {
+  if (!machineKey || !ROW_ID.test(machineKey) || segments.length > 4) return notFound();
+  if (segments.length === 2 && second && ROW_ID.test(second)) {
     if (request.method === "GET") return handleGetChat(url, env, userId, machineKey, second, now);
     if (request.method === "DELETE") {
       if (!bucketFor(env)) return unavailable();
@@ -578,11 +576,11 @@ export async function routeSavedChats(request: Request, url: URL, path: string, 
     }
     return notFound();
   }
-  if (segments.length === 3 && second === "lanes" && third && LANE_ID.test(third) && request.method === "DELETE") {
+  if (segments.length === 3 && second === "lanes" && third && ROW_ID.test(third) && request.method === "DELETE") {
     if (!bucketFor(env)) return unavailable();
     return json({ deleted: await deleteSavedChatsForLane(env, userId, machineKey, third) });
   }
-  if (segments.length === 4 && second && CHAT_ID.test(second) && third === "parts" && fourth && SEQ.test(fourth) && request.method === "PUT") {
+  if (segments.length === 4 && second && ROW_ID.test(second) && third === "parts" && fourth && SEQ.test(fourth) && request.method === "PUT") {
     return handlePutPart(request, env, userId, machineKey, second, Number(fourth), now);
   }
   return notFound();

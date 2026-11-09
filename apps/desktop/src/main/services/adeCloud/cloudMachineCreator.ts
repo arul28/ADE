@@ -262,7 +262,7 @@ function approvalErrorMessage(status: number, code: string | null): string {
 
 export function normalizeCloudMachineName(raw: string): string {
   const cleaned = raw.replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
-  return cleaned || "ADE Cloud box";
+  return cleaned || "ADE Cloud computer";
 }
 
 /** A published release a machine can install (`ade brain update --version`), or null. */
@@ -289,7 +289,7 @@ export async function createCloudMachine(
 ): Promise<CloudCreateMachineResult> {
   const { signal } = options;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  if (!isCloudMachineKind(rawArgs?.kind)) throw new Error("Pick a box or a VM.");
+  if (!isCloudMachineKind(rawArgs?.kind)) throw new Error("Pick a standard or a full computer.");
   const shape = cloudShape(rawArgs?.shape);
   if (!shape) throw new Error("Pick a size.");
   const name = normalizeCloudMachineName(rawArgs?.name ?? "");
@@ -366,7 +366,7 @@ export async function createCloudMachine(
     let cleanup = await reconcileOnce();
     // A cancel stops ADE waiting, not the provider making the box: it can still
     // appear a few seconds later. Look for it for a while so a cancelled box
-    // doesn't bill until the next app start (which would still catch it).
+    // doesn't use hours until the next app start (which would still catch it).
     if (signal?.aborted) {
       const lookUntil = Date.now() + CANCELLED_CREATE_LOOK_MS;
       while (cleanup && !cleanup.resolved && Date.now() < lookUntil) {
@@ -396,7 +396,7 @@ export async function createCloudMachine(
         : "ADE stopped making the machine. If ADE Cloud still makes it, ADE deletes it as soon as it appears.");
     }
     if (cleanup && cleanup.unresolved.length) {
-      throw new Error(`${errorText(error).replace(/\.$/, "")}. ADE Cloud may have made the box anyway and ADE couldn't delete it yet; it tries again when ADE next starts.`);
+      throw new Error(`${errorText(error).replace(/\.$/, "")}. ADE Cloud may have made the computer anyway and ADE couldn't delete it yet; it tries again when ADE next starts.`);
     }
     throw error;
   }
@@ -737,7 +737,7 @@ export async function bringCloudBoxIntoAde(
     logger.warn?.("cloud.machine_setup_failed", { instanceId: instance.id, error: errorText(error) });
     const reasonFor = () => (signal?.aborted ? new CloudCreateCancelled().message : errorText(error));
     // A cancel or failure after approval may come after the box signed in: then
-    // it is a real machine on the account, not a bill, and is kept. Asked
+    // it is a real machine on the account, not waste, and is kept. Asked
     // without the create's signal, which a cancel has already aborted.
     if (approvalSent) {
       const signedIn = await readCloudBoxSignedIn(client, instance.id, logger);
@@ -763,7 +763,7 @@ export async function bringCloudBoxIntoAde(
     const reason = reasonFor();
     throw new Error(deleted
       ? `${reason} ADE deleted the computer it made.`
-      : `${reason} ADE couldn't confirm it deleted the box it made ("${name}", ${instance.id}). Delete it from its row under Your computers; ADE also tries again when it next starts.`);
+      : `${reason} ADE couldn't confirm it deleted the computer it made ("${name}", ${instance.id}). Delete it from its row under Your computers; ADE also tries again when it next starts.`);
   }
 
   progress("joining", `${name} is signed in. Adding it to your computers…`, instance.id);

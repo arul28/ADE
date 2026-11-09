@@ -1,17 +1,17 @@
 /**
- * cloud boxes in the machine list: what each one is and how fast it uses
+ * Cloud computers in the machine list: what each one is and how fast it uses
  * hours, and the lifecycle actions on it (sleep, wake, resize, back up, delete).
  *
  * Account-level, like the rest of the integration: every call goes to the
- * the account's cloud machines, from the desktop the person is
+ * account's cloud machines, from the desktop the person is
  * using, never to the box's own brain. So none of it takes a pin, and an
  * action works the same whichever machine a project tab is bound to.
  */
 
 import {
   CLOUD_MADE_BY_CHAT_METADATA,
-  CLOUD_OUT_OF_HOURS_MESSAGE,
   isCloudInstanceId,
+  cloudCatalogOf,
   cloudHoursRate,
   cloudMachineKindOf,
   cloudMachineState,
@@ -24,12 +24,13 @@ import {
   type CloudAccountState,
   type CloudMachine,
   type CloudMachineActionArgs,
+  type CloudCatalog,
   type CloudMachineActionResult,
   type CloudMachinesResult,
   type CloudResources,
 } from "../../../shared/adeCloud";
 import { CLOUD_READY_METADATA, readCloudReadyMachineState } from "../../../shared/cloudReady";
-import { CLOUD_ACCESS_REFUSED, cloudUsageDay, CloudProviderError, type CloudProvider, type CloudInstance, type CloudUsage } from "./cloudProvider";
+import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider, type CloudInstance } from "./cloudProvider";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
 import { cloudSleepPolicyOf } from "./cloudSleep";
 import { wakeThroughTransition } from "./cloudReadyClaim";
@@ -39,12 +40,6 @@ type Logger = {
   info?(event: string, meta?: Record<string, unknown>): void;
   warn?(event: string, meta?: Record<string, unknown>): void;
 };
-
-/** the provider's usage window reaches back 90 days at most. */
-const USAGE_WINDOW_DAYS = 90;
-const DAY_MS = 24 * 60 * 60_000;
-/** Which deleted machines the usage still lists changes slowly. */
-const USAGE_CACHE_MS = 5 * 60_000;
 
 /** The metadata key ADE writes once a box joins the account: its ADE machine key. */
 export const CLOUD_MACHINE_KEY_METADATA = "ade_machine_key";
@@ -61,22 +56,13 @@ export type CloudMachinesDeps = {
   sleep?: (ms: number) => Promise<void>;
 };
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function resourcesOf(instance: CloudInstance): CloudResources | null {
   const raw = instance.resources;
   if (!raw || !raw.cpu || !raw.memory) return null;
   return { cpu: raw.cpu, memoryGb: raw.memory, diskGb: raw.disk };
 }
 
-/** Whether ADE made this box (its create tags) or recorded its machine on it. */
-function cloudInstanceMadeByAde(instance: Pick<CloudInstance, "metadata">): boolean {
-  return instance.metadata.created_by === "ade" || Boolean(instance.metadata[CLOUD_MACHINE_KEY_METADATA]);
-}
-
-function toCloudMachine(instance: CloudInstance): CloudMachine {
+function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudMachine {
   const resources = resourcesOf(instance);
   const type = cloudMachineType(instance.type);
   const shape = cloudShapeFor(resources);
@@ -89,15 +75,14 @@ function toCloudMachine(instance: CloudInstance): CloudMachine {
     resources,
     shapeId: shape?.id ?? null,
     region: instance.region,
-    hoursRate: shape ? cloudHoursRate(cloudMachineKindOf(type), shape.id) : null,
+    hoursRate: shape ? cloudHoursRate(cloudMachineKindOf(type), shape.id, catalog) : null,
     pastDue: instance.pastDue,
     failure: instance.status === "failed" ? instance.statusReason?.message ?? null : null,
     machineKey: instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null,
     createdAtMs: instance.created != null ? instance.created * 1000 : null,
-    madeByAde: cloudInstanceMadeByAde(instance),
     ready: readyOf(instance),
     sleep: cloudSleepPolicyOf(instance),
-    diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA]),
+    diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA], catalog),
   };
 }
 
@@ -127,60 +112,21 @@ function emptyResult(state: CloudMachinesResult["state"], message: string | null
 const PUSH_ALL_WORK_TIMEOUT_MS = 3 * 60_000;
 
 /**
- * Commits and pushes every project's lanes on the computer: uncommitted work is
- * committed as it stands; the primary lane is only reported, since its branch
- * is usually the default one. Prints one JSON tally line.
+ * Commits and pushes every project's lanes on the computer (`ade cloud
+ * push-work`). The new ADE sits on the disk (`$ADE_HOME/bin`), and ADE on the
+ * computer answers a few seconds after a start.
  */
 const PUSH_ALL_WORK_COMMAND = [
-  'd="$ADE_HOME/cloud/holds"; mkdir -p "$d"; printf \'{"reason":"push_work","until":%s}\' "$(( $(date +%s%3N) + 600000 ))" > "$d/push_work.json"',
-  // ADE on the computer answers a few seconds after a start.
+  'export PATH="$ADE_HOME/bin:$PATH"',
   'i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done',
-  "python3 - <<'PY'",
-  "import json, subprocess",
-  "def ade(*args, cwd=None):",
-  "    r = subprocess.run(['ade', *args], capture_output=True, text=True, cwd=cwd, timeout=150)",
-  "    return r.returncode, r.stdout",
-  "tally = {'pushed': 0, 'failed': 0, 'skipped': 0}",
-  "rc, out = ade('projects', 'list', '--json')",
-  "try:",
-  "    payload = json.loads(out)",
-  "    projects = payload if isinstance(payload, list) else (payload.get('projects') or [])",
-  "except Exception: projects = []",
-  "for project in projects:",
-  "    root = project.get('rootPath') or project.get('path')",
-  "    if not root: continue",
-  "    rc, out = ade('lanes', 'list', '--json', cwd=root)",
-  "    try: lanes = json.loads(out).get('lanes') or []",
-  "    except Exception: continue",
-  "    for lane in lanes:",
-  "        if lane.get('archivedAt'): continue",
-  "        status = lane.get('status') or {}",
-  "        dirty = bool(status.get('dirty'))",
-  "        ahead = int(status.get('ahead') or 0)",
-  "        if not dirty and ahead == 0: continue",
-  "        if lane.get('laneType') == 'primary':",
-  "            tally['skipped'] += 1; continue",
-  "        lane_id = lane.get('id')",
-  "        if dirty:",
-  "            rc, _ = ade('git', 'stage-all', '--lane', lane_id, cwd=root)",
-  // A push after a failed commit would report work as saved that isn't.
-  "            if rc != 0:",
-  "                tally['failed'] += 1; continue",
-  "            rc, _ = ade('git', 'commit', '--lane', lane_id, '-m', 'Work saved from ADE Cloud', cwd=root)",
-  "            if rc != 0:",
-  "                tally['failed'] += 1; continue",
-  "        rc, _ = ade('git', 'push', '--lane', lane_id, '--set-upstream', cwd=root)",
-  "        tally['pushed' if rc == 0 else 'failed'] += 1",
-  "print(json.dumps(tally))",
-  "PY",
-  'code=$?; rm -f "$d/push_work.json"; exit $code',
+  "ade cloud push-work --json",
 ].join("\n");
 
 function readPushAllTally(stdout: string): { pushed: number; failed: number; skipped: number } | null {
-  const line = stdout.trim().split("\n").pop() ?? "";
   try {
-    const parsed = JSON.parse(line) as { pushed?: unknown; failed?: unknown; skipped?: unknown };
-    return { pushed: Number(parsed.pushed) || 0, failed: Number(parsed.failed) || 0, skipped: Number(parsed.skipped) || 0 };
+    const parsed = JSON.parse(stdout.trim()) as { result?: Record<string, unknown> } & Record<string, unknown>;
+    const tally = parsed.result ?? parsed;
+    return { pushed: Number(tally.pushed) || 0, failed: Number(tally.failed) || 0, skipped: Number(tally.skipped) || 0 };
   } catch {
     return null;
   }
@@ -201,28 +147,10 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
   const logger = deps.logger ?? {};
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  let usageCache: { at: number; usage: CloudUsage } | null = null;
   /** The ADE machines the last good list showed as cloud boxes: only those are worth a wake lookup. */
   let knownMachineKeys = new Set<string>();
 
-  async function readUsage(client: CloudProvider): Promise<CloudUsage | null> {
-    const at = now();
-    if (usageCache && at - usageCache.at < USAGE_CACHE_MS) return usageCache.usage;
-    try {
-      const usage = await client.usage({ from: cloudUsageDay(at - (USAGE_WINDOW_DAYS - 1) * DAY_MS) });
-      usageCache = { at, usage };
-      return usage;
-    } catch (error) {
-      // The boxes still show without it.
-      logger.warn?.("cloud.usage_read_failed", { error: errorText(error) });
-      return usageCache?.usage ?? null;
-    }
-  }
-
-  /**
-   * Every box on the account, ADE's own and the rest: the list shows a box
-   * ADE made, and any other one whose ADE row it matches (signed in by hand).
-   */
+  /** Every computer on the account (the server lists only the account's own). */
   async function list(): Promise<CloudMachinesResult> {
     const client = await deps.client();
     if (!client) return emptyResult("not_connected", (await deps.whyNoClient?.()) ?? null);
@@ -231,20 +159,21 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       instances = await client.listInstances();
     } catch (error) {
       const refused = error instanceof CloudProviderError && error.code === CLOUD_ACCESS_REFUSED;
-      logger.warn?.("cloud.machines_read_failed", { error: errorText(error), refused });
-      return emptyResult(refused ? "access_refused" : "unreachable", errorText(error));
+      logger.warn?.("cloud.machines_read_failed", { error: getErrorMessage(error), refused });
+      return emptyResult(refused ? "access_refused" : "unreachable", getErrorMessage(error));
     }
-    const [usage, account] = await Promise.all([readUsage(client), readAccount(client)]);
+    const account = await readAccount(client);
+    const catalog = cloudCatalogOf(account);
     const live = instances.filter((instance) => instance.status !== "deleted");
     knownMachineKeys = new Set(live.map((instance) => instance.metadata[CLOUD_MACHINE_KEY_METADATA]).filter((key): key is string => Boolean(key)));
-    const machines = live.map((instance) => toCloudMachine(instance));
+    const machines = live.map((instance) => toCloudMachine(instance, catalog));
     return {
       state: "ok",
       machines,
       instanceCount: live.filter((instance) => instance.status !== "failed").length,
       runningCount: live.filter((instance) => cloudStatusAwake(instance.status)).length,
       account,
-      deletedInstanceIds: usage ? Object.keys(usage.byInstance).filter((id) => !live.some((instance) => instance.id === id)) : [],
+      deletedInstanceIds: account?.deletedInstanceIds ?? [],
       message: null,
     };
   }
@@ -252,7 +181,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
   /** Plan and hours, or null when they can't be read. Unknown is not "out". */
   async function readAccount(client: CloudProvider): Promise<CloudAccountState | null> {
     return await client.getAccount().catch((error: unknown) => {
-      logger.warn?.("cloud.account_read_failed", { error: errorText(error) });
+      logger.warn?.("cloud.account_read_failed", { error: getErrorMessage(error) });
       return null;
     });
   }
@@ -267,23 +196,20 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       return {
         ok: false,
         blocker: "rate_limited",
-        message: "ADE Cloud takes one backup of a box every 15 minutes. Try again in a few minutes. It also keeps the last seven nights on its own.",
+        message: "ADE Cloud takes one backup of a computer every 15 minutes. Try again in a few minutes. It also keeps the last seven nights on its own.",
       };
     }
     if (code === "out_of_hours") {
-      return { ok: false, blocker: "out_of_hours", message: error instanceof Error ? error.message : CLOUD_OUT_OF_HOURS_MESSAGE };
+      return { ok: false, blocker: "out_of_hours", message: getErrorMessage(error) };
     }
-    if (code === "try_again") {
-      return { ok: false, blocker: null, message: "The box is busy changing state. Try again in a moment." };
-    }
-    return { ok: false, blocker: null, message: errorText(error) };
+    return { ok: false, blocker: null, message: getErrorMessage(error) };
   }
 
   async function run(args: CloudMachineActionArgs): Promise<CloudMachineActionResult> {
     const client = await deps.client();
     if (!client) return { ok: false, blocker: null, message: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };
     const instanceId = typeof args?.instanceId === "string" ? args.instanceId.trim() : "";
-    if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that box." };
+    if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
     const action = args.action;
     logger.info?.("cloud.machine_action", { instanceId, action, shape: args.shape ?? null });
     try {
@@ -305,7 +231,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
           if (!shape) return { ok: false, blocker: null, message: "Pick a size." };
           const instance = await client.getInstance(instanceId);
           const current = resourcesOf(instance);
-          if (!current) return { ok: false, blocker: null, message: "ADE Cloud didn't say how big this box is, so ADE can't resize it." };
+          if (!current) return { ok: false, blocker: null, message: "ADE Cloud didn't say how big this computer is, so ADE can't resize it." };
           if (current.cpu === shape.cpu && current.memoryGb === shape.memoryGb) {
             return { ok: true, blocker: null, message: "It's already that size." };
           }
@@ -338,7 +264,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
             return {
               ok: false,
               blocker: null,
-              message: "ADE Cloud took the delete but hasn't finished it yet. Check again in a minute; if the box is still there, delete it again.",
+              message: "ADE Cloud took the delete but hasn't finished it yet. Check again in a minute; if the computer is still there, delete it again.",
             };
           }
           logger.info?.("cloud.machine_deleted", { instanceId });
@@ -347,23 +273,23 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
             try {
               await deps.removeAccountMachine(machineKey);
             } catch (error) {
-              logger.warn?.("cloud.deleted_box_account_row_left", { instanceId, error: errorText(error) });
+              logger.warn?.("cloud.deleted_box_account_row_left", { instanceId, error: getErrorMessage(error) });
               return {
                 ok: true,
                 blocker: null,
                 accountRowLeft: true,
-                message: `Deleted on ADE Cloud. ADE couldn't take it off your computers (${errorText(error).replace(/\.$/, "")}); use Remove from ADE on its row.`,
+                message: `Deleted on ADE Cloud. ADE couldn't take it off your computers (${getErrorMessage(error).replace(/\.$/, "")}); use Remove from ADE on its row.`,
               };
             }
           }
           return { ok: true, blocker: null, message: "Deleted on ADE Cloud and removed from ADE." };
         }
         default:
-          return { ok: false, blocker: null, message: "ADE can't do that to a box." };
+          return { ok: false, blocker: null, message: "ADE can't do that to a computer." };
       }
     } catch (error) {
-      logger.warn?.("cloud.machine_action_failed", { instanceId, action, error: errorText(error) });
-      return await refusal(action, error);
+      logger.warn?.("cloud.machine_action_failed", { instanceId, action, error: getErrorMessage(error) });
+      return refusal(action, error);
     }
   }
 
@@ -433,6 +359,6 @@ export async function recordCloudMachineKey(
     await client.setInstanceMetadata(instanceId, { ...instance.metadata, [CLOUD_MACHINE_KEY_METADATA]: machineKey });
   } catch (error) {
     // The hostname still matches the box to its row; this only makes it sure.
-    logger?.warn?.("cloud.machine_key_record_failed", { instanceId, error: errorText(error) });
+    logger?.warn?.("cloud.machine_key_record_failed", { instanceId, error: getErrorMessage(error) });
   }
 }

@@ -275,7 +275,7 @@ export async function reconcileCloudPendingCreate(
 
 /**
  * Creates a quit (or a lost answer) left unresolved: a box that never signed
- * in is only a bill, so it is deleted; one that signed in is a real machine
+ * in is only waste, so it is deleted; one that signed in is a real machine
  * and is kept. Records stay until the provider confirms, so a failure here is
  * retried at the next start.
  */

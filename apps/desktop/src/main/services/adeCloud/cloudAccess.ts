@@ -8,6 +8,7 @@ import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { cloudStatusAwake, type CloudStatus } from "../../../shared/adeCloud";
 import { setAdeCloudSkillVisible, setAgentSkillAccessRefresh } from "../../../shared/agentSkillRoots";
 import type { AccountVaultResult } from "../../../shared/types/accountVault";
+import { getSignedInAccountAccessToken, type AccountAuthService } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import { getErrorMessage } from "../shared/utils";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider } from "./cloudProvider";
 import { createCloudServerProvider } from "./cloudServerProvider";
@@ -35,6 +36,34 @@ export type CloudAccessDeps = {
   fetch?: FetchLike;
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
 };
+
+/** The access deps every process builds from its account service and its directory URL. */
+export function cloudAccessDepsFor(args: {
+  account: () => Pick<AccountAuthService, "getStatus" | "getAccessToken"> | null | undefined;
+  directoryBaseUrl: () => string;
+  deviceName?: () => string | null;
+  logger?: CloudAccessDeps["logger"];
+  onDirectoryUnavailable?: (error: unknown) => void;
+}): CloudAccessDeps {
+  return {
+    signedIn: () => args.account()?.getStatus().signedIn === true,
+    accountId: () => args.account()?.getStatus().userId ?? null,
+    accessToken: async () => {
+      const account = args.account();
+      return account ? await getSignedInAccountAccessToken(account) : null;
+    },
+    directoryBaseUrl: () => {
+      try {
+        return args.directoryBaseUrl() || null;
+      } catch (error) {
+        args.onDirectoryUnavailable?.(error);
+        return null;
+      }
+    },
+    deviceName: args.deviceName,
+    logger: args.logger,
+  };
+}
 
 type CloudVaultBridge = {
   get(scope: string, kind: string, key: string): Promise<AccountVaultResult<string | null>>;
@@ -165,15 +194,19 @@ async function askCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
   }
   const baseUrl = deps.directoryBaseUrl();
   if (!baseUrl) return { state: "unreadable" };
-  const provider = createCloudServerProvider({
+  const provider = serverProviderFor(deps);
+  const enabled = await readAccessFlag(accessKey(deps), provider, deps);
+  if (enabled == null) return { state: "unreadable" };
+  return enabled ? { state: "ready", provider } : { state: "no_access" };
+}
+
+function serverProviderFor(deps: CloudAccessDeps): CloudProvider {
+  return createCloudServerProvider({
     accessToken: deps.accessToken,
     baseUrl: deps.directoryBaseUrl,
     deviceName: deps.deviceName,
     fetch: deps.fetch,
   });
-  const enabled = await readAccessFlag(`${baseUrl}|${deps.accountId() ?? ""}`, provider, deps);
-  if (enabled == null) return { state: "unreadable" };
-  return enabled ? { state: "ready", provider } : { state: "no_access" };
 }
 
 /** ADE Cloud for this account, or null when it can't be used from here right now. */
@@ -185,12 +218,12 @@ export async function getCloudProvider(deps: CloudAccessDeps): Promise<CloudProv
 /** ADE Cloud if the last answer for this account was yes, without asking the server: for work on a timer. */
 export function knownCloudProvider(deps: CloudAccessDeps): CloudProvider | null {
   if (!deps.signedIn() || accessCache?.key !== accessKey(deps) || !accessCache.enabled) return null;
-  return createCloudServerProvider({
-    accessToken: deps.accessToken,
-    baseUrl: deps.directoryBaseUrl,
-    deviceName: deps.deviceName,
-    fetch: deps.fetch,
-  });
+  return serverProviderFor(deps);
+}
+
+/** ADE's server for this account whatever its access answer, for routes that say so themselves. Null when signed out. */
+export function cloudServerFor(deps: CloudAccessDeps): CloudProvider | null {
+  return deps.signedIn() && deps.directoryBaseUrl() ? serverProviderFor(deps) : null;
 }
 
 /** Why this computer has no ADE Cloud right now, or null when it has it. */

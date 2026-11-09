@@ -2774,11 +2774,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Without --lane it starts in the project's primary lane there.
                                                     --project <name|path|id> picks the project there, --clone
                                                     sets a missing GitHub repo up, "a,b" starts one per machine.
-    $ ade chat create --machine cloud:ready --prompt "…"
-                                                    Start on this project's ready ADE Cloud machine (prepared and
-                                                    asleep): ADE wakes it, waits until it is online, then sends.
-                                                    No --lane needed; --json adds readyMachine. See ade cloud ready.
-    $ ade chat actions --personal --text            List machine personal-chat actions
+${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --text
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
@@ -20502,6 +20498,17 @@ function cloudStep(label: string, action: string, input: JsonObject, formatter: 
   };
 }
 
+/** `ade cloud push-work --json`: every lane's work committed and pushed. Bounded by the free short wake it runs in. */
+function buildCloudPushWorkPlan(): CliPlan {
+  return {
+    kind: "execute",
+    label: "cloud push-work",
+    steps: [{ key: "result", method: "cloud.pushWork", params: {} }],
+    machineOnly: true,
+    minTimeoutMs: 170_000,
+  };
+}
+
 /** `ade cloud prepare-stop --timeout 40`: exit 0 when done or at the timeout, non-zero only when it could do nothing. */
 function buildCloudPrepareStopPlan(args: string[]): CliPlan {
   const raw = readValue(args, ["--timeout"]);
@@ -20540,8 +20547,6 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "machines":
       return cloudStep("list", "list", {}, "cloud-list");
     case "hours":
-    case "spending":
-    case "cost":
       return cloudStep("hours", "hours", {}, "cloud-hours");
     case "create":
     case "new":
@@ -20607,7 +20612,7 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "status":
       return cloudStep("ready", "ready_status", {}, "cloud-ready");
     default:
-      throw new CliUsageError(`Unknown cloud command "${sub}". Use: list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, ready, prepare-stop.`);
+      throw new CliUsageError(`Unknown cloud command "${sub}". Use: list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, ready, prepare-stop, push-work.`);
   }
 }
 
@@ -23442,6 +23447,7 @@ function buildCliPlan(
     // The server runs this before a stop; it's for this computer's own brain.
     if (!cliCloudEnabled) throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
     if (firstPositional([...args]) === "prepare-stop") return buildCloudPrepareStopPlan(args);
+    if (firstPositional([...args]) === "push-work") return buildCloudPushWorkPlan();
     return buildCloudPlan(args);
   }
   if (primary === "proxy") return buildProxyPlan(args);
@@ -25159,6 +25165,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "keepAwake.call" ||
     method === "cloud.call" ||
     method === "cloud.prepareStop" ||
+    method === "cloud.pushWork" ||
     method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
@@ -28631,18 +28638,29 @@ async function runServe(
   const cloudKeepAwakeModule = !embedded && servesMachineEndpoint
     ? await import("./services/power/cloudKeepAwake")
     : null;
-  const cloudDiskGrowModule = cloudKeepAwakeModule?.isCloudMachine()
-    ? await import("./services/power/cloudDiskGrow")
+  // This brain's agents reaching the account's other machines. One per brain
+  // (it owns the agents' paired connections), built on first use; an embedded
+  // guest has no machine authority and gets none.
+  let cloudBrainAccess: Promise<import("../../desktop/src/main/services/adeCloud/cloudBrainAccess").CloudBrainAccess> | null = null;
+  const getCloudBrainAccess = () => {
+    cloudBrainAccess ??= Promise.all([
+      import("../../desktop/src/main/services/adeCloud/cloudBrainAccess"),
+      import("../../desktop/src/main/services/adeCloud/cloudAccess"),
+    ]).then(([{ createCloudBrainAccess }, { cloudAccessDepsFor }]) => createCloudBrainAccess(cloudAccessDepsFor({
+      account: () => brainAccountAuthService,
+      directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl(),
+      logger: headlessProjectLogger,
+    })));
+    return cloudBrainAccess;
+  };
+  const cloudDiskGrower = cloudKeepAwakeModule?.isCloudMachine()
+    ? (await import("./services/power/cloudDiskGrow")).createCloudDiskGrower({
+        instanceId: process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "",
+        client: async () => (await getCloudBrainAccess()).client(),
+        path: os.homedir(),
+        logger: headlessProjectLogger,
+      })
     : null;
-  let diskGrower: ReturnType<typeof import("./services/power/cloudDiskGrow")["createCloudDiskGrower"]> | null = null;
-  const cloudDiskGrower = () => diskGrower ??= (cloudDiskGrowModule as typeof import("./services/power/cloudDiskGrow")).createCloudDiskGrower({
-    instanceId: process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "",
-    client: async () => (await cloudAccessForBusy?.().then((access) => access.client())) ?? null,
-    path: os.homedir(),
-    logger: headlessProjectLogger,
-  });
-  // Filled in below, once ADE Cloud access for this brain exists.
-  let cloudAccessForBusy: (() => Promise<import("../../desktop/src/main/services/adeCloud/cloudBrainAccess").CloudBrainAccess>) | null = null;
   const cloudKeepAwake = cloudKeepAwakeModule?.isCloudMachine()
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
@@ -28662,11 +28680,11 @@ async function runServe(
           return { busy, reasons, nextWakeAt };
         },
         requestIdleSleep: async (instanceId) => {
-          const client = await cloudAccessForBusy?.().then((access) => access.client());
+          const client = await (await getCloudBrainAccess()).client();
           if (!client) throw new Error("no ADE Cloud access");
           await client.requestIdleSleep(instanceId);
         },
-        growDiskIfNeeded: () => cloudDiskGrower().growIfNeeded(),
+        growDiskIfNeeded: async () => await cloudDiskGrower?.growIfNeeded() ?? false,
         sendTimedWake: async (wake) => {
           const auth = brainAccountAuthService;
           if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");
@@ -29521,29 +29539,6 @@ async function runServe(
     return routing;
   };
 
-  // This brain's agents reaching the account's other machines. One per brain
-  // (it owns the agents' paired connections), built on first use; an embedded
-  // guest has no machine authority and gets none.
-  let cloudBrainAccess: Promise<import("../../desktop/src/main/services/adeCloud/cloudBrainAccess").CloudBrainAccess> | null = null;
-  const getCloudBrainAccess = () => {
-    cloudBrainAccess ??= import("../../desktop/src/main/services/adeCloud/cloudBrainAccess").then(
-      ({ createCloudBrainAccess }) => createCloudBrainAccess({
-        signedIn: () => brainAccountAuthService.getStatus().signedIn === true,
-        accountId: () => brainAccountAuthService.getStatus().userId ?? null,
-        accessToken: async () => (brainAccountAuthService.getStatus().signedIn ? await brainAccountAuthService.getAccessToken().catch(() => null) : null),
-        directoryBaseUrl: () => {
-          try {
-            return getSharedAccountDirectoryBaseUrl() || null;
-          } catch {
-            return null;
-          }
-        },
-        logger: headlessProjectLogger,
-      }),
-    );
-    return cloudBrainAccess;
-  };
-  cloudAccessForBusy = getCloudBrainAccess;
   // Ask once, off the boot path: agents and `ade cloud` read this answer, and a
   // chat that launches later keeps it current (`watchCloudAccessForSkills`).
   if (!embedded && servesMachineEndpoint) {
@@ -29802,6 +29797,20 @@ async function runServe(
   };
   const createHandler = (context?: { peerDeviceId: string | null }) =>
     withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
+      pushCloudWork: cloudKeepAwake && cloudKeepAwakeModule
+        ? async () => {
+            const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");
+            const release = cloudKeepAwakeModule.holdCloudBusy(layout.adeDir, "push_work", 10 * 60_000);
+            try {
+              return await pushCloudComputerWork({
+                projects: projectRegistry.list().map((record) => async () => (await scopeRegistry.get(record.projectId)).runtime),
+                logger: headlessProjectLogger,
+              });
+            } finally {
+              release();
+            }
+          }
+        : null,
       prepareCloudStop: cloudKeepAwake
         ? async ({ timeoutMs }) => {
             const { prepareCloudComputerToStop } = await import("./services/power/cloudPrepareStop");
@@ -39768,8 +39777,8 @@ async function runOnMachine(
 async function resolveCliCloudEnabled(parsed: ReturnType<typeof extractMachineTargeting>): Promise<void> {
   const primary = parsed.command[0]?.toLowerCase();
   const isCloud = primary === "cloud";
-  // The server's `ade cloud prepare-stop` on a cloud computer never depends on the answer.
-  if (isCloud && parsed.command[1]?.toLowerCase() === "prepare-stop") {
+  // What the server runs on a cloud computer never depends on the answer.
+  if (isCloud && ["prepare-stop", "push-work"].includes(parsed.command[1]?.toLowerCase() ?? "")) {
     const { isCloudMachine } = await import("./services/power/cloudKeepAwake");
     if (isCloudMachine()) {
       cliCloudEnabled = true;

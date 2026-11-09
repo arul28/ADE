@@ -3,6 +3,7 @@ import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { CloudBillingError, createCheckoutUrl, createPortalUrl, setExtraHours } from "./billing";
 import { routeSavedChats } from "./chats";
 import { CLOUD_PATHS, type CloudInstance } from "./contract";
+import { UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
 import {
   DISK_ON_CREATE_GB,
   DISK_STEP_GB,
@@ -16,16 +17,18 @@ import {
 import { CloudProviderError, cloudErrorMessage, createCloudProvider, type CloudProvider } from "./provider";
 import {
   accountRules,
+  PENDING_TIMEOUT_MS,
+  adoptionStatements,
   buildAccountState,
   computerLimit,
-  deleteLogStatement,
+  deleteComputer,
+  goneFromProviderStatements,
   isOutOfHours,
   isPendingId,
   listComputers,
   liveUsedMilli,
   loadAccount,
   logCloud,
-  markDeletedStatements,
   newPendingId,
   ownedComputer,
   powerLogStatement,
@@ -55,19 +58,14 @@ const MAX_EXEC_TIMEOUT_MS = 15 * 60_000;
 /** A push-work wake runs this long, once a day per computer. */
 const FREE_WAKE_MS = 15 * 60_000;
 const FREE_WAKE_COOLDOWN_MS = 24 * 60 * 60_000;
-const PENDING_TIMEOUT_MS = 15 * 60_000;
-
-const json = (body: unknown, status = 200): Response =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
-
-const fail = (code: string, message: string, status: number): Response => json({ error: { code, message } }, status);
 
 const NOT_FOUND_MESSAGE = "ADE Cloud has no such computer.";
 const notFound = () => fail("not_found", NOT_FOUND_MESSAGE, 404);
 const badRequest = (message: string) => fail("bad_request", message, 400);
 const outOfHours = () => fail("out_of_hours", "You're out of ADE Cloud hours for this period.", 402);
+const diskLimit = () => fail("disk_limit", `Your computers share ${PAID_DISK_POOL_GB} GB of disk, and this would go past it.`, 403);
 
-export const CANT_MAKE_COMPUTER_MESSAGE = "ADE Cloud can't make a computer right now. Try again soon.";
+const CANT_MAKE_COMPUTER_MESSAGE = "ADE Cloud can't make a computer right now. Try again soon.";
 
 /** `CLOUD_ACCESS_ACCOUNTS`: comma list of Clerk ids, or `*`. Unset is nobody. */
 export function cloudAccessAllows(env: Pick<CloudEnv, "CLOUD_ACCESS_ACCOUNTS">, userId: string): boolean {
@@ -143,10 +141,7 @@ async function recordStatus(env: CloudEnv, computer: ComputerRow, status: string
 }
 
 async function markGone(env: CloudEnv, computer: ComputerRow, now: number): Promise<void> {
-  await env.DB.batch([
-    ...markDeletedStatements(env, computer, now),
-    deleteLogStatement(env, computer, { who: null, reason: "gone_from_provider", events: null }, now),
-  ]);
+  await env.DB.batch(goneFromProviderStatements(env, computer, now));
 }
 
 /** A reservation that makes the limit and disk checks hold under concurrent creates. */
@@ -181,10 +176,7 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
       : `The free plan allows ${limit} computers. Delete one to make another, or move to a paid plan.`;
     return { ok: false, response: fail("computer_limit", message, 403) };
   }
-  return {
-    ok: false,
-    response: fail("disk_limit", `Your computers share ${PAID_DISK_POOL_GB} GB of disk, and this would go past it.`, 403),
-  };
+  return { ok: false, response: diskLimit() };
 }
 
 async function releasePending(env: CloudEnv, pendingId: string): Promise<void> {
@@ -197,14 +189,7 @@ const providerMadeNothing = (error: unknown): boolean =>
 
 /** The reservation becomes the real row, unless a tick already adopted it or the id is already someone's. */
 async function adoptReservation(env: CloudEnv, pendingId: string, instance: CloudInstance, machineKey: string | null, now: number, reason: string): Promise<void> {
-  const adopted = await env.DB.prepare(`
-    update cloud_computers set instance_id = ?, machine_key = coalesce(?, machine_key), status = ?, status_changed_at = ?,
-      awake_since = ?, last_awake_at = ?
-    where instance_id = ? and not exists (select 1 from cloud_computers where instance_id = ?)
-  `).bind(instance.id, machineKey, instance.status, now, isMeteredStatus(instance.status) ? now : null, now, pendingId, instance.id).run();
-  if (adopted.meta.changes !== 1) return;
-  await env.DB.prepare("insert into cloud_power_log (instance_id, user_id, action, reason, created_at) select ?, user_id, 'start', ?, ? from cloud_computers where instance_id = ?")
-    .bind(instance.id, reason, now, instance.id).run();
+  await env.DB.batch(adoptionStatements(env, { pendingId, instance, machineKey, now, reason }));
 }
 
 const withRequestId = (metadata: Record<string, string>): { metadata: Record<string, string>; requestId: string } => {
@@ -226,7 +211,7 @@ const onlyWakePorts = (ports: unknown): Array<{ port: number; label: string }> |
 
 async function handleCreate(request: Request, env: CloudEnv, userId: string, provider: CloudProvider, now: number): Promise<Response> {
   const body = await readJson(request);
-  if (!body) return badRequest("That request could not be read.");
+  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const resources = body.resources && typeof body.resources === "object" ? body.resources as Record<string, unknown> : null;
   const size = cloudSizeFor(body.type, resources?.cpu, resources?.memory);
   if (!size) return badRequest("That size isn't one ADE Cloud offers.");
@@ -234,7 +219,7 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
   const clientMetadata = stringMap(body.metadata, MAX_METADATA_ENTRIES);
   const clientEnv = stringMap(body.env, MAX_ENV_ENTRIES);
   const publicPorts = onlyWakePorts(body.publicPorts);
-  if (!clientMetadata || !clientEnv || !publicPorts) return badRequest("That request could not be read.");
+  if (!clientMetadata || !clientEnv || !publicPorts) return badRequest(UNREADABLE_REQUEST_MESSAGE);
 
   const templateVersion = await readSetting(env, "template_version");
   if (!templateVersion) {
@@ -283,7 +268,7 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
 
 async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, now: number): Promise<Response> {
   const body = await readJson(request);
-  if (!body) return badRequest("That request could not be read.");
+  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const { account, outOfHours: empty } = await getAccountContext(env, computer.user_id, now);
   if (empty) return outOfHours();
 
@@ -299,7 +284,7 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
   if (accountRules(account) === "free" && requestedDisk > FREE_DISK_GB) return diskNeedsPaid();
 
   const metadataIn = stringMap(body.metadata, MAX_METADATA_ENTRIES);
-  if (!metadataIn) return badRequest("That request could not be read.");
+  if (!metadataIn) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const { metadata, requestId } = withRequestId(metadataIn);
   const name = shortText(body.name, 60);
   const reservation = await reserveComputer(env, account, {
@@ -333,7 +318,7 @@ const diskNeedsPaid = () => fail(
 
 async function handleResize(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, now: number): Promise<Response> {
   const body = await readJson(request);
-  if (!body) return badRequest("That request could not be read.");
+  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const { account, outOfHours: empty } = await getAccountContext(env, computer.user_id, now);
   if (empty) return outOfHours();
 
@@ -360,7 +345,7 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
         and (select coalesce(sum(disk_gb), 0) from cloud_computers where user_id = ? and deleted_at is null) - ? + ? <= ?
     `).bind(nextDisk, computer.instance_id, computer.disk_gb, computer.user_id, computer.disk_gb, nextDisk, PAID_DISK_POOL_GB).run();
     if (reserved.meta.changes !== 1) {
-      return fail("disk_limit", `Your computers share ${PAID_DISK_POOL_GB} GB of disk, and this would go past it.`, 403);
+      return diskLimit();
     }
   }
 
@@ -412,7 +397,7 @@ async function handleSleepLike(env: CloudEnv, computer: ComputerRow, provider: C
 
 async function handleStart(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, now: number): Promise<Response> {
   const body = await readJson(request);
-  if (!body) return badRequest("That request could not be read.");
+  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const { outOfHours: empty } = await getAccountContext(env, computer.user_id, now);
   let freeWake = false;
   if (empty) {
@@ -468,26 +453,14 @@ async function handleUpdate(env: CloudEnv, computer: ComputerRow, provider: Clou
 
 async function handleDelete(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, now: number): Promise<Response> {
   const body = await readJson(request);
-  if (!body) return badRequest("That request could not be read.");
-  const events = await provider.instanceEvents(computer.instance_id).catch((error: unknown) => {
-    logCloud("cloud.delete_events_read_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
-    return null;
-  });
-  try {
-    await provider.deleteInstance(computer.instance_id);
-  } catch (error) {
-    if (!(error instanceof CloudProviderError && error.status === 404)) throw error;
-  }
-  await env.DB.batch([
-    deleteLogStatement(env, computer, { who: shortText(body.who, 200), reason: shortText(body.reason, 200) ?? "user", events }, now),
-    ...markDeletedStatements(env, computer, now),
-  ]);
+  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  await deleteComputer(env, provider, computer, { who: shortText(body.who, 200), reason: shortText(body.reason, 200) ?? "user" }, now);
   return json({ deleted: true });
 }
 
 async function handleExec(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, now: number): Promise<Response> {
   const body = await readJson(request);
-  if (!body) return badRequest("That request could not be read.");
+  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const command = typeof body.command === "string" ? body.command : "";
   if (!command || command.length > MAX_COMMAND) return badRequest("That command can't be run.");
   const timeoutMs = typeof body.timeoutMs === "number" && Number.isFinite(body.timeoutMs)
@@ -498,18 +471,6 @@ async function handleExec(request: Request, env: CloudEnv, computer: ComputerRow
     if (empty) return outOfHours();
   }
   return json(await provider.exec(computer.instance_id, command, timeoutMs));
-}
-
-async function handleUsage(url: URL, env: CloudEnv, userId: string, provider: CloudProvider): Promise<Response> {
-  const from = url.searchParams.get("from") ?? "";
-  const to = url.searchParams.get("to") ?? undefined;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || (to !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(to))) return badRequest("That date range isn't valid.");
-  const owned = await env.DB.prepare("select instance_id from cloud_computers where user_id = ?").bind(userId).all<{ instance_id: string }>();
-  const mine = new Set((owned.results ?? []).map((row) => row.instance_id));
-  const usage = await provider.usage({ from, ...(to ? { to } : {}) });
-  const byInstance: Record<string, number> = {};
-  for (const instance of usage.instances) if (mine.has(instance.id)) byInstance[instance.id] = instance.usd;
-  return json({ from: usage.from, to: usage.to, byInstance, byDay: {} });
 }
 
 async function handleTemplate(env: CloudEnv, provider: CloudProvider): Promise<Response> {
@@ -567,7 +528,7 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   },
   "PUT auto-sleep": async (request, _env, computer, provider) => {
     const body = await readJson(request);
-    if (typeof body?.autoSleep !== "boolean") return badRequest("That request could not be read.");
+    if (typeof body?.autoSleep !== "boolean") return badRequest(UNREADABLE_REQUEST_MESSAGE);
     const seconds = typeof body.idleTimeoutSeconds === "number" ? Math.round(body.idleTimeoutSeconds) : undefined;
     if (seconds !== undefined && (seconds < 300 || seconds > 86_400)) return badRequest("That sleep time isn't valid.");
     await provider.setAutoSleep(computer.instance_id, { autoSleep: body.autoSleep, ...(seconds !== undefined ? { idleTimeoutSeconds: seconds } : {}) });
@@ -584,7 +545,7 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   "PUT metadata": async (request, env, computer, provider) => {
     const body = await readJson(request);
     const metadata = body ? stringMap(body.metadata, MAX_METADATA_ENTRIES) : null;
-    if (!metadata) return badRequest("That request could not be read.");
+    if (!metadata) return badRequest(UNREADABLE_REQUEST_MESSAGE);
     await provider.setInstanceMetadata(computer.instance_id, metadata);
     const machineKey = metadata.ade_machine_key ?? null;
     if (machineKey !== computer.machine_key) {
@@ -644,7 +605,7 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
     if (path === CLOUD_PATHS.billingCheckout) return json(await createCheckoutUrl(env, userId, url.origin, now));
     if (path === CLOUD_PATHS.billingPortal) return json(await createPortalUrl(env, userId, url.origin, now));
     const body = await readJson(request);
-    if (typeof body?.enabled !== "boolean") return badRequest("That request could not be read.");
+    if (typeof body?.enabled !== "boolean") return badRequest(UNREADABLE_REQUEST_MESSAGE);
     await setExtraHours(env, userId, body.enabled, now);
     return json(await buildAccountState(env, userId, now));
   } catch (error) {
@@ -695,7 +656,6 @@ export async function handleCloudRequest(request: Request, env: CloudEnv): Promi
     return fail("unavailable", cloudErrorMessage("no_provider_key", 503), 503);
   }
   return providerCall(async () => {
-    if (path === CLOUD_PATHS.usage && request.method === "GET") return handleUsage(url, env, caller.userId, provider);
     if (path === CLOUD_PATHS.instances) {
       if (request.method === "GET") return handleList(env, caller.userId, provider);
       if (request.method === "POST") return handleCreate(request, env, caller.userId, provider, now);

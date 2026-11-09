@@ -79,7 +79,7 @@ skips with a warning. Rerun it by hand from the Actions tab (it takes a tag).
 ## Testing a build and moving the version
 
 `infra/ade-cloud/promote-template.mjs` tests one build on a real computer: it
-creates one from `ade@N` (tagged `created_by: c2-test`), checks ADE is there and
+creates one from `ade@N` (tagged `created_by: ade-template-check`), checks ADE is there and
 its version, that a command runs and that ADE's brain answers, that a file in
 `/home/node` survives sleep and wake and then stop and start, and deletes the
 computer in a `finally` (Ctrl-C included). It prints first-start timings.

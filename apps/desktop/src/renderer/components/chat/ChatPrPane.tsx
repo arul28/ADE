@@ -8,17 +8,16 @@ import {
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import type { GitHubPrListItem, OpenProjectBinding, PrCheck, PrReview, PrStatus, PrSummary, StackLinkOffer } from "../../../shared/types";
+import type { OpenProjectBinding, PrCheck, PrReview, PrStatus, PrSummary, StackLinkOffer } from "../../../shared/types";
 import { PrDetailPane, type PrDetailRuntime } from "../prs/detail/PrDetailPane";
 import { PrsProvider } from "../prs/state/PrsContext";
 import { PrSwitcherMenu, PrSwitcherStepper, type PrSwitcher } from "../prs/shared/PrSwitcher";
 import { subscribeChatPrSelections, takeChatPrSelection } from "./chatPrPaneRequests";
 import { ChatPrInlineCreator, inputBase } from "./ChatPrInlineCreator";
-import { getGitHubSnapshotCoalesced, refreshLinkedPrCoalesced } from "../../lib/prReadCache";
-// eslint-disable-next-line no-restricted-imports -- `ChatPrPaneAsleep` reads through the window's own machine on purpose: the chat's machine is asleep.
-import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
+import { useWindowMachineGithubPrs } from "../../lib/useWindowMachineGithubPrs";
 import type { CloudMachine } from "../../../shared/adeCloud";
-import { useCloudComputerAsleep } from "../terminals/cloudToolGate";
+import { useCloudComputerAsleep } from "../remoteTargets/useCloudComputer";
 import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
@@ -208,32 +207,9 @@ export const ChatPrPane = React.memo(function ChatPrPane(props: ChatPrPaneProps)
 });
 
 function ChatPrPaneAsleep({ laneId, branchName, runtimePin, box }: ChatPrPaneProps & { box: CloudMachine }) {
-  const projectRoot = useAppStore(selectActiveProjectRoot);
-  // eslint-disable-next-line no-restricted-syntax -- the window's own machine on purpose: the chat's machine is asleep.
-  const bindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
-  // A tab bound to this very computer has no other machine to ask.
-  // eslint-disable-next-line no-restricted-syntax -- as above.
-  const windowIsAsleepToo = useAppStore((state) => state.projectBinding?.kind === "remote") && !runtimePin;
   const pinMachine = useMachineEntryForBinding(runtimePin ?? null);
   const scope = useChatRuntimeScopeForPin(runtimePin ?? null, laneId);
-  const [github, setGithub] = useState<GitHubPrListItem[] | null>(null);
-  const [readFailed, setReadFailed] = useState(false);
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    if (windowIsAsleepToo) return;
-    let cancelled = false;
-    void getGitHubSnapshotCoalesced({}, { projectRoot, bindingKey })
-      .then((snapshot) => {
-        if (cancelled) return;
-        setGithub(snapshot?.repoPullRequests ?? []);
-        setReadFailed(false);
-      })
-      .catch((error: unknown) => {
-        console.warn("[chat-pr] reading GitHub for a sleeping computer failed", error);
-        if (!cancelled) setReadFailed(true);
-      });
-    return () => { cancelled = true; };
-  }, [attempt, bindingKey, projectRoot, windowIsAsleepToo]);
+  const { pullRequests: github, readFailed, retry } = useWindowMachineGithubPrs(Boolean(runtimePin));
 
   const lane = useMemo(() => ({
     laneType: scope.lane?.laneType ?? "worktree",
@@ -249,17 +225,16 @@ function ChatPrPaneAsleep({ laneId, branchName, runtimePin, box }: ChatPrPanePro
     : saved.map((pr) => ({ key: pr.githubUrl ?? pr.id, title: pr.title, number: pr.githubPrNumber, url: pr.githubUrl, state: pr.state }));
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 px-3 py-3 text-[13px]">
-      <p className="text-fg/80">{box.name ?? "This computer"} is asleep. Actions on its branch need it awake.</p>
-      {rows.length ? rows.map((row) => (
+      <Banner layout="inline" model={{ id: "chat-pr-asleep", tone: "info", title: `${box.name ?? "This computer"} is asleep`, detail: "Actions on its branch need it awake." }} />
+      {rows.map((row) => (
         <a key={row.key} href={row.url ?? undefined} target="_blank" rel="noreferrer" className="truncate text-fg underline">
           #{row.number} {row.title} ({row.state})
         </a>
-      )) : readFailed ? (
-        <p className="text-muted-fg">
-          Couldn't read this lane's pull request.{" "}
-          <button type="button" className="underline" onClick={() => setAttempt((value) => value + 1)}>Try again</button>
-        </p>
-      ) : <p className="text-muted-fg">No pull request found for this lane.</p>}
+      ))}
+      {!rows.length && readFailed ? (
+        <Banner layout="inline" model={{ id: "chat-pr-asleep-read", tone: "error", title: "Couldn't read this lane's pull request", report: false, actions: [{ label: "Try again", onClick: retry }] }} />
+      ) : null}
+      {!rows.length && !readFailed ? <p className="text-muted-fg">No pull request found for this lane.</p> : null}
     </div>
   );
 }

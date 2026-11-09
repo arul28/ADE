@@ -301,7 +301,7 @@ import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
-import { cloudAccessEnabled, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
+import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
 import { cloudMachineEnv, type CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
 import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
@@ -4077,24 +4077,12 @@ function cloudSignInVaults(runtime: AccountDomainRuntime): CloudSignInVaults | n
 }
 
 function cloudAccessDeps(runtime: AccountDomainRuntime): CloudAccessDeps {
-  return {
-    signedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
-    accountId: () => runtime.accountAuthService?.getStatus().userId ?? null,
-    accessToken: async () => {
-      const account = runtime.accountAuthService;
-      if (!account?.getStatus().signedIn) return null;
-      return await account.getAccessToken().catch(() => null);
-    },
-    directoryBaseUrl: () => {
-      try {
-        return getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }) || null;
-      } catch {
-        return null;
-      }
-    },
+  return cloudAccessDepsFor({
+    account: () => runtime.accountAuthService,
+    directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }),
     deviceName: () => os.hostname(),
     logger: runtime.logger,
-  };
+  });
 }
 
 /**

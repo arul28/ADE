@@ -1,5 +1,5 @@
-import { useCloudComputerAsleep } from "../terminals/cloudToolGate";
 import React, { useCallback, useEffect } from "react";
+import { useCloudComputerAsleep } from "../remoteTargets/useCloudComputer";
 import { X } from "@phosphor-icons/react";
 import type { AgentChatContextAttachment, OpenProjectBinding } from "../../../shared/types";
 import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";

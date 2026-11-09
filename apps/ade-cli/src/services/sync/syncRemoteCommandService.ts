@@ -2,6 +2,7 @@ import type { ChatLaunchService } from "../../../../desktop/src/main/services/ch
 import { fallbackUnprojectedChatSession } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
 import { readGithubContributionCalendar } from "../../../../desktop/src/main/services/usage/githubActivityStats";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
+import { cloudDomainEnabled } from "../../../../desktop/src/shared/adeCloud";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
 import { normalizeGitHubPrListFilters } from "../../../../desktop/src/shared/githubPrSearch";
 import type { JiraIssueListState, LaneJiraIssue } from "../../../../desktop/src/shared/types/jira";
@@ -8291,13 +8292,9 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       if (typeof handler !== "function") return { enabled: false };
       return await (handler as () => Promise<unknown>).call(domain);
     }
-    const accessHandler = domain?.access;
-    const accessOn = typeof accessHandler === "function"
-      ? ((await (accessHandler as () => Promise<unknown>).call(domain).catch((error: unknown) => {
-        args.logger.warn("cloud.remote_access_read_failed", { error: error instanceof Error ? error.message : String(error) });
-        return null;
-      })) as { enabled?: unknown } | null)?.enabled === true
-      : false;
+    const accessOn = await cloudDomainEnabled(domain, (error) => {
+      args.logger.warn("cloud.remote_access_read_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
     if (typeof handler !== "function" || !accessOn) throw new Error(`cloud has no "${action}" here.`);
     const input = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args) ? payload.args as Record<string, unknown> : {};
     const { approval: _ignored, ...rest } = input;

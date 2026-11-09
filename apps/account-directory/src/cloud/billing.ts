@@ -1,7 +1,9 @@
 import { sendCloudEmail } from "./email";
+import { json } from "./http";
 import {
   accountRules,
   applyCloudPlanChange,
+  groupByUser,
   extraActive,
   listComputers,
   liveUsedMilli,
@@ -401,43 +403,40 @@ async function applyStripeEvent(env: CloudEnv, type: string, object: StripeObjec
   if (type === "invoice.payment_failed") return syncSubscription(env, invoiceSubscriptionId(object), now);
 }
 
-const webhookJson = (body: unknown, status = 200): Response =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
-
 async function handleStripeWebhook(request: Request, env: CloudEnv): Promise<Response> {
-  if (request.method !== "POST") return webhookJson({ error: "method not allowed" }, 405);
+  if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
   const secret = env.STRIPE_WEBHOOK_SECRET?.trim();
   if (!secret) {
     logCloud("cloud.stripe_webhook_not_configured");
-    return webhookJson({ error: "not configured" }, 503);
+    return json({ error: "not configured" }, 503);
   }
   const now = Date.now();
   const rawBody = await request.text();
   if (!await verifyStripeSignature(rawBody, request.headers.get("stripe-signature"), secret, now)) {
-    return webhookJson({ error: "invalid signature" }, 400);
+    return json({ error: "invalid signature" }, 400);
   }
   let event: StripeObject;
   try {
     event = JSON.parse(rawBody) as StripeObject;
   } catch {
-    return webhookJson({ error: "invalid body" }, 400);
+    return json({ error: "invalid body" }, 400);
   }
   const eventId = textOf(event.id);
   const type = textOf(event.type);
   const object = objectOf(objectOf(event.data)?.object);
-  if (!eventId || !type || !object) return webhookJson({ error: "invalid event" }, 400);
+  if (!eventId || !type || !object) return json({ error: "invalid event" }, 400);
 
   const claim = await env.DB.prepare("insert or ignore into cloud_stripe_events (event_id, type, received_at) values (?, ?, ?)")
     .bind(eventId, type, now).run();
   if (claim.meta.changes === 0) {
     const earlier = await env.DB.prepare("select received_at, applied_at from cloud_stripe_events where event_id = ?")
       .bind(eventId).first<{ received_at: number; applied_at: number | null }>();
-    if (earlier?.applied_at != null) return webhookJson({ received: true, duplicate: true });
+    if (earlier?.applied_at != null) return json({ received: true, duplicate: true });
     // Another delivery is working on it: not done, so Stripe asks again later.
-    if (earlier && now - earlier.received_at < EVENT_CLAIM_STALE_MS) return webhookJson({ error: "in progress" }, 409);
+    if (earlier && now - earlier.received_at < EVENT_CLAIM_STALE_MS) return json({ error: "in progress" }, 409);
     const retaken = await env.DB.prepare("update cloud_stripe_events set received_at = ? where event_id = ? and received_at = ? and applied_at is null")
       .bind(now, eventId, earlier?.received_at ?? 0).run();
-    if (retaken.meta.changes !== 1) return webhookJson({ error: "in progress" }, 409);
+    if (retaken.meta.changes !== 1) return json({ error: "in progress" }, 409);
   }
   try {
     await applyStripeEvent(env, type, object, now);
@@ -448,9 +447,9 @@ async function handleStripeWebhook(request: Request, env: CloudEnv): Promise<Res
     await env.DB.prepare("delete from cloud_stripe_events where event_id = ?").bind(eventId).run().catch((deleteError: unknown) => {
       logCloud("cloud.stripe_claim_release_failed", { eventId, message: deleteError instanceof Error ? deleteError.message : "unknown" });
     });
-    return webhookJson({ error: "try again" }, 500);
+    return json({ error: "try again" }, 500);
   }
-  return webhookJson({ received: true });
+  return json({ received: true });
 }
 
 /* ---- Public routes ---- */
@@ -462,7 +461,7 @@ const RETURN_MESSAGES: Record<string, string> = {
 };
 
 function returnPage(url: URL, method: string): Response {
-  if (method !== "GET") return webhookJson({ error: "method not allowed" }, 405);
+  if (method !== "GET") return json({ error: "method not allowed" }, 405);
   const message = RETURN_MESSAGES[url.searchParams.get("to") ?? ""] ?? RETURN_MESSAGES.portal;
   const html = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ADE</title><style>body{font:16px/1.5 system-ui,sans-serif;margin:0;min-height:100vh;display:grid;place-items:center;background:#111;color:#eee;text-align:center;padding:24px}p{margin:.25em 0}.dim{color:#999}</style><main><p>${message}</p><p class="dim">You can close this tab and go back to ADE.</p></main></html>`;
   return new Response(html, {
@@ -505,10 +504,7 @@ export async function reportExtraHours(env: CloudEnv, now = Date.now()): Promise
 
   const awake = await env.DB.prepare("select * from cloud_computers where deleted_at is null and awake_since is not null and user_id in (select value from json_each(?))")
     .bind(JSON.stringify(accounts.map((account) => account.user_id))).all<ComputerRow>();
-  const awakeByUser = new Map<string, ComputerRow[]>();
-  for (const computer of awake.results ?? []) {
-    awakeByUser.set(computer.user_id, [...(awakeByUser.get(computer.user_id) ?? []), computer]);
-  }
+  const awakeByUser = groupByUser(awake.results ?? []);
 
   for (const account of accounts) {
     const live = liveUsedMilli(account, awakeByUser.get(account.user_id) ?? [], now);

@@ -1,7 +1,6 @@
 /**
- * The ADE Cloud routes this Worker serves, as a client mirrors them. Paths and
- * response shapes only: nothing here imports the Worker, so the desktop can
- * copy it.
+ * The ADE Cloud routes this Worker serves. Paths and response shapes only:
+ * nothing here imports the Worker, so the desktop can `import type` it.
  *
  * Every route takes the account token as a bearer. A caller not on the access
  * list gets 404 `not_found` from everything except `GET /cloud/access`. Errors
@@ -9,7 +8,6 @@
  *
  *   GET    /cloud/access                       { enabled }
  *   GET    /cloud/account                      CloudAccountState
- *   GET    /cloud/usage?from&to                CloudUsage
  *   GET    /cloud/templates/:name              { exists }
  *   GET    /cloud/instances                    { data: CloudInstance[] }
  *   POST   /cloud/instances                    CloudInstance (create)
@@ -53,7 +51,6 @@
 export const CLOUD_PATHS = {
   access: "/cloud/access",
   account: "/cloud/account",
-  usage: "/cloud/usage",
   templates: "/cloud/templates",
   instances: "/cloud/instances",
   billingCheckout: "/cloud/billing/checkout",
@@ -62,24 +59,6 @@ export const CLOUD_PATHS = {
   chats: "/cloud/chats",
 } as const;
 
-/** `/cloud/instances/:id` and its actions. */
-export function cloudInstancePath(id: string, action?: string): string {
-  const base = `${CLOUD_PATHS.instances}/${encodeURIComponent(id)}`;
-  return action ? `${base}/${action}` : base;
-}
-
-/** `/cloud/chats/:machine/:chat`, plus `/parts/:seq` for an upload. */
-export function cloudChatPath(machineKey: string, chatId: string, seq?: number): string {
-  const base = `${CLOUD_PATHS.chats}/${encodeURIComponent(machineKey)}/${encodeURIComponent(chatId)}`;
-  return seq === undefined ? base : `${base}/parts/${seq}`;
-}
-
-/** `/cloud/chats/:machine/lanes/:lane`. */
-export function cloudChatLanePath(machineKey: string, laneId: string): string {
-  return `${CLOUD_PATHS.chats}/${encodeURIComponent(machineKey)}/lanes/${encodeURIComponent(laneId)}`;
-}
-
-/** Same shape as `CloudInstance` in `apps/desktop/.../cloudProvider.ts`. */
 export type CloudInstance = {
   id: string;
   name: string | null;
@@ -91,21 +70,15 @@ export type CloudInstance = {
   url: string | null;
   pastDue: boolean;
   created: number | null;
+  /** Why the last lifecycle action failed; null when nothing failed. */
   statusReason: { code: string | null; message: string | null } | null;
+  /** What ADE set at create: tagged with `ade_request_id`, and with `ade_machine_key` once the machine joins. */
   metadata: Record<string, string>;
+  /** The provider's own idle sleep: on, and after how many seconds with no traffic through the machine's URLs. */
   autoSleep: boolean;
   idleTimeoutSeconds: number | null;
+  /** The machine's public ports (unauthenticated URLs); ADE's wake URL is one of them. */
   publicPorts: Array<{ port: number; url: string; label: string | null }>;
-};
-
-export type CloudAccessResponse = { enabled: boolean };
-
-/** `byDay` is always `{}`: the provider reports days only for the whole workspace. */
-export type CloudUsage = {
-  from: string | null;
-  to: string | null;
-  byInstance: Record<string, number>;
-  byDay: Record<string, number>;
 };
 
 export type CloudExecResult = { exitCode: number; stdout: string; stderr: string };
@@ -115,6 +88,19 @@ export type CloudExecResult = { exitCode: number; stdout: string; stderr: string
  * with extra hours off). Banners read this.
  */
 export type CloudHoursState = "none" | "warn80" | "warn95" | "zero";
+
+/** What a plan includes. `diskGb` is per computer on free, shared across computers on paid. */
+export type CloudPlanFacts = { includedMilli: number; computerLimit: number; diskGb: number };
+
+/** The sizes and plans, so no client carries its own copy. A rate is `multiplierMilli / 1000` of a Small computer. */
+export type CloudCatalog = {
+  sizes: Array<{ type: "default" | "vm"; cpu: number; memoryGb: number; multiplierMilli: number }>;
+  plans: { free: CloudPlanFacts; paid: CloudPlanFacts };
+  diskStepGb: number;
+  paidPriceUsd: number;
+  /** What one extra Small-hour costs, before the volume price. */
+  extraHourCents: number;
+};
 
 export type CloudAccountState = {
   /** What the person pays for. A `past_due` paid account still says `paid` here. */
@@ -134,6 +120,9 @@ export type CloudAccountState = {
   computers: { total: number; awake: number; limit: number };
   /** Inactive computers, soonest first; each is deleted at `deletesAt` unless used. */
   dueForDeletion: Array<{ instanceId: string; name: string | null; deletesAt: number }>;
+  /** Computers deleted in the last 90 days that had any use, whose ADE rows may still be on the account. */
+  deletedInstanceIds: string[];
+  catalog: CloudCatalog;
   billing: {
     periodStart: number;
     periodEnd: number;

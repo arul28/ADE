@@ -1,12 +1,10 @@
 import { cancelAccountSubscription } from "./billing";
 import { deleteAllAccountChats } from "./chats";
-import { CloudProviderError, createCloudProvider } from "./provider";
+import { createCloudProvider } from "./provider";
 import {
-  deleteLogStatement,
+  deleteComputer,
   isPendingId,
   listComputers,
-  logCloud,
-  markDeletedStatements,
   type AccountRow,
   type CloudEnv,
 } from "./store";
@@ -32,19 +30,7 @@ export async function deleteCloudAccount(env: CloudEnv, userId: string): Promise
     if (!key) throw new Error("no_provider_key");
     const provider = createCloudProvider(key);
     for (const computer of real) {
-      const events = await provider.instanceEvents(computer.instance_id).catch((error: unknown) => {
-        logCloud("cloud.delete_events_read_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
-        return null;
-      });
-      try {
-        await provider.deleteInstance(computer.instance_id);
-      } catch (error) {
-        if (!(error instanceof CloudProviderError && error.status === 404)) throw error;
-      }
-      await env.DB.batch([
-        deleteLogStatement(env, computer, { who: "system", reason: "account_deleted", events }, now),
-        ...markDeletedStatements(env, computer, now),
-      ]);
+      await deleteComputer(env, provider, computer, { who: "system", reason: "account_deleted" }, now);
     }
   }
 

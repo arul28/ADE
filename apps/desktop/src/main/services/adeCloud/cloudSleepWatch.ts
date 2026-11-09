@@ -2,7 +2,7 @@
 
 import { app } from "electron";
 import type { CloudProvider } from "./cloudProvider";
-import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
+import { getErrorMessage } from "../shared/utils";
 import { enableCloudSleepWherePending } from "./cloudSleep";
 
 const SLEEP_WATCH_MS = 10 * 60_000;
@@ -25,15 +25,14 @@ export function startCloudSleepWatch(deps: {
     if (!client) return;
     const now = Date.now();
     const instances = await client.listInstances().catch((error: unknown) => {
-      deps.logger.warn("cloud.sleep_watch_list_failed", { error: error instanceof Error ? error.message : String(error) });
+      deps.logger.warn("cloud.sleep_watch_list_failed", { error: getErrorMessage(error) });
       return [];
     });
-    const enabled = await enableCloudSleepWherePending(client, instances.filter((instance) =>
-      instance.metadata.created_by === "ade" || Boolean(instance.metadata[CLOUD_MACHINE_KEY_METADATA])), {
+    const enabled = await enableCloudSleepWherePending(client, instances, {
       logger: deps.logger,
       skip: (instance) => (tooOldUntil.get(instance.id) ?? 0) > now,
     }).catch((error: unknown) => {
-      deps.logger.warn("cloud.sleep_pass_failed", { error: error instanceof Error ? error.message : String(error) });
+      deps.logger.warn("cloud.sleep_pass_failed", { error: getErrorMessage(error) });
       return [];
     });
     for (const { instanceId, result: outcome } of enabled) {
@@ -41,7 +40,7 @@ export function startCloudSleepWatch(deps: {
     }
   };
   const run = () => {
-    void pass().catch((error: unknown) => deps.logger.warn("cloud.sleep_watch_failed", { error: error instanceof Error ? error.message : String(error) }));
+    void pass().catch((error: unknown) => deps.logger.warn("cloud.sleep_watch_failed", { error: getErrorMessage(error) }));
   };
   const first = setTimeout(run, deps.firstPassDelayMs);
   first.unref?.();

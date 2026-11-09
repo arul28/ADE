@@ -3,8 +3,7 @@ import type { CloudExecResult, CloudInstance } from "./contract";
 /**
  * Agent 37's API (`api.agent37.com`) and exec (`sandbox.agent37.app`), for the
  * one workspace key this Worker holds. The only code on the server that knows
- * its URLs, field names or error codes. Moved from the desktop's
- * `provider/agent37/agent37Client.ts`.
+ * its URLs, field names or error codes.
  *
  * The key is only ever a header value: never logged, never put in an error,
  * never returned.
@@ -163,8 +162,8 @@ export type CloudCreateInput = {
 export type CloudUsageWindow = {
   from: string | null;
   to: string | null;
-  /** US dollars and awake minutes per instance, for the whole workspace. */
-  instances: Array<{ id: string; usd: number; awakeMinutes: number }>;
+  /** Awake minutes per instance, for the whole workspace. */
+  instances: Array<{ id: string; awakeMinutes: number }>;
 };
 
 export type CloudBilling = {
@@ -333,7 +332,7 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
       await api("PATCH", instancePath(id), { metadata });
     },
 
-    /** What each instance spent and how long it was awake over a window; deleted instances stay in it. */
+    /** How long each instance was awake over a window; deleted instances stay in it. */
     async usage(window: { from: string; to?: string }): Promise<CloudUsageWindow> {
       const query = new URLSearchParams({ from: window.from, ...(window.to ? { to: window.to } : {}) });
       const body = await api("GET", `/usage?${query.toString()}`) as Record<string, unknown> | null;
@@ -342,7 +341,7 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
         const record = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
         const id = str(record?.id);
         if (!id) continue;
-        instances.push({ id, usd: (num(record?.total_micros) ?? 0) / 1_000_000, awakeMinutes: num(record?.awake_minutes) ?? 0 });
+        instances.push({ id, awakeMinutes: num(record?.awake_minutes) ?? 0 });
       }
       return { from: str(body?.from), to: str(body?.to), instances };
     },

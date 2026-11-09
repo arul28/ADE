@@ -3,6 +3,7 @@ import { Check, CircleNotch } from "@phosphor-icons/react";
 import {
   CLOUD_FULL_COMPUTER_LABEL,
   CLOUD_SHAPES,
+  cloudCatalogOf,
   cloudHoursRate,
   cloudShapeById,
   cloudShapeRunsAndroid,
@@ -17,6 +18,7 @@ import { Banner } from "../ui/notice";
 import { captureError } from "../../../shared/sentry/capture";
 import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
 import { SettingsToggle } from "../settings/primitives/SettingsControls";
+import { useCloudMachines } from "./useCloudMachines";
 
 function newRequestId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -30,7 +32,7 @@ function newRequestId(): string {
  * It signs in to this account on its own; the caller connects to it when
  * `onCreated` hands back its machine key.
  *
- * Account-level: the box is made on the account's ADE Cloud and joins
+ * Account-level: the computer is made on the account's ADE Cloud and joins
  * the ADE account, so nothing here takes a pin.
  */
 export function NewCloudMachineForm({
@@ -53,6 +55,7 @@ export function NewCloudMachineForm({
   const running = progress != null && progress.stage !== "done" && progress.stage !== "failed";
   runningRef.current = running;
   const shape = cloudShapeById(shapeId);
+  const catalog = cloudCatalogOf(useCloudMachines(true).result?.account);
   // Closing the dialog mid-create cancels it, and main deletes the computer it
   // made, so nothing is left running. One that already signed in is kept.
   useEffect(() => () => {
@@ -130,7 +133,7 @@ export function NewCloudMachineForm({
             >
               <span className="ade-cx-way-label">{candidate.label}</span>
               <span className="ade-cx-way-detail">{candidate.cpu} CPU · {candidate.memoryGb} GB</span>
-              <span className="ade-cx-way-detail">{formatCloudHoursRate(cloudHoursRate(kind, candidate.id))}</span>
+              <span className="ade-cx-way-detail">{formatCloudHoursRate(cloudHoursRate(kind, candidate.id, catalog))}</span>
             </button>
           );
         })}
@@ -177,7 +180,7 @@ export function NewCloudMachineForm({
       </label>
 
       <div style={{ fontSize: 12, opacity: 0.8 }}>
-        {shape.label}: {shape.cpu} CPUs, {shape.memoryGb} GB memory. Uses {formatCloudHoursRate(cloudHoursRate(kind, shape.id))} while it runs, none while it sleeps.
+        {shape.label}: {shape.cpu} CPUs, {shape.memoryGb} GB memory. Uses {formatCloudHoursRate(cloudHoursRate(kind, shape.id, catalog))} while it runs, none while it sleeps.
       </div>
 
       {progress && progress.stage !== "failed" ? (

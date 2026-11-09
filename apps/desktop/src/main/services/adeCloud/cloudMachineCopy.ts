@@ -25,6 +25,7 @@
 import { randomUUID } from "node:crypto";
 import {
   cloudInstanceType,
+  cloudKindLabel,
   cloudShape,
   cloudShapeById,
   cloudShapeFor,
@@ -114,7 +115,7 @@ export async function copyCloudMachine(
   if (!(await deps.getAccountToken())) throw new Error("Sign in to ADE on this computer first. The copy joins your account.");
   const source = await client.getInstance(args.instanceId);
   if (!["running", "sleeping", "stopped"].includes(source.status)) {
-    throw new Error(`The box is ${source.status}; ADE Cloud copies a box that is running, asleep or stopped.`);
+    throw new Error(`The computer is ${source.status}; ADE Cloud copies a computer that is running, asleep or stopped.`);
   }
   const shape = args.shape ? cloudShape(args.shape) : null;
   if (args.shape && !shape) throw new Error("Pick a size.");
@@ -243,7 +244,7 @@ export async function moveCloudMachine(
   onProgress: (progress: CloudCreateProgress) => void,
   options: { signal?: AbortSignal } = {},
 ): Promise<CloudMoveResult> {
-  if (!isCloudMachineKind(args.to)) throw new Error("Move it to a box or a VM.");
+  if (!isCloudMachineKind(args.to)) throw new Error("Move it to a standard or a full computer.");
   const requestId = args.requestId ?? randomUUID();
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const logger: CloudLogger = deps.logger ?? {};
@@ -253,7 +254,7 @@ export async function moveCloudMachine(
   const source = await client.getInstance(args.instanceId);
   const targetType = cloudInstanceType(args.to);
   if ((source.type ?? "default") === targetType) {
-    throw new Error(`It's already a ${args.to === "vm" ? "VM" : "box"}. Use Resize to change its size.`);
+    throw new Error(`It's already a ${cloudKindLabel(args.to)}. Use Resize to change its size.`);
   }
   const sourceResources = source.resources ? { cpu: source.resources.cpu, memoryGb: source.resources.memory } : null;
   const shape = (args.shape ? cloudShape(args.shape) : null) ?? cloudShapeFor(sourceResources) ?? cloudShapeById("2x4");
@@ -270,7 +271,7 @@ export async function moveCloudMachine(
   const target = await createCloudMachine(deps, requestId, {
     kind: args.to,
     shape: shape.id,
-    name: normalizeCloudMachineName(`${sourceName} (${args.to === "vm" ? "VM" : "box"})`),
+    name: normalizeCloudMachineName(`${sourceName} (${cloudKindLabel(args.to)})`),
   }, onProgress, {
     signal: options.signal,
     moveFromInstanceId: source.id,
@@ -281,7 +282,7 @@ export async function moveCloudMachine(
   try {
     // 2. Quiet the old machine's ADE so its databases are copied whole: the
     //    entrypoint holds the brain while `brain.paused` exists.
-    progress("joining", `Copying ${sourceName}'s files to the new ${args.to === "vm" ? "VM" : "box"}…`, target.instanceId);
+    progress("joining", `Copying ${sourceName}'s files to the new ${cloudKindLabel(args.to)}…`, target.instanceId);
     const paused = await client.exec(source.id, [
       'touch "$ADE_HOME/brain.paused"',
       'pkill -f "serve --socket $ADE_HOME/sock/ade.sock" || true',

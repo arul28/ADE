@@ -48,14 +48,7 @@ export function adePromptAgentSkillRoots(options: {
   /** The env builder: the variable keeps every root, and each launch filters what it passes on. */
   includeWithheld?: boolean;
 } = {}): string[] {
-  const { includeWithheld = false, ...rest } = options;
-  if (!includeWithheld) return getAdeAgentSkillRootsForPrompt({ ...rest, exists: agentSkillRootExists });
-  setAgentSkillRootFilter(null);
-  try {
-    return getAdeAgentSkillRootsForPrompt({ ...rest, exists: agentSkillRootExists });
-  } finally {
-    installWithheldSkillRootFilter();
-  }
+  return getAdeAgentSkillRootsForPrompt({ ...options, exists: agentSkillRootExists });
 }
 
 /**

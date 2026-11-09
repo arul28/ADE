@@ -1,3 +1,5 @@
+import type { CloudCatalog } from "./contract";
+
 /** Sizes, plans and the arithmetic of hours. Hours are integer thousandths of a Small-hour. */
 
 export type CloudComputerType = "default" | "vm";
@@ -10,7 +12,7 @@ export type CloudSize = {
   multiplierMilli: number;
 };
 
-export const CLOUD_SIZES: readonly CloudSize[] = [
+const CLOUD_SIZES: readonly CloudSize[] = [
   { id: "small", type: "default", cpu: 2, memoryGb: 4, multiplierMilli: 1000 },
   { id: "medium", type: "default", cpu: 4, memoryGb: 8, multiplierMilli: 2000 },
   { id: "large", type: "default", cpu: 4, memoryGb: 16, multiplierMilli: 3300 },
@@ -37,6 +39,24 @@ export const PAID_COMPUTER_LIMIT = 10;
 
 export const FREE_INCLUDED_MILLI = 50_000;
 export const PAID_INCLUDED_MILLI = 500_000;
+
+/** What Stripe charges (`scripts/stripe-setup.mjs` makes the prices). */
+const PAID_PRICE_USD = 5;
+const EXTRA_HOUR_CENTS = 1;
+
+/** What `GET /cloud/account` tells a client about sizes and plans. */
+export function cloudCatalog(): CloudCatalog {
+  return {
+    sizes: CLOUD_SIZES.map(({ type, cpu, memoryGb, multiplierMilli }) => ({ type, cpu, memoryGb, multiplierMilli })),
+    plans: {
+      free: { includedMilli: FREE_INCLUDED_MILLI, computerLimit: FREE_COMPUTER_LIMIT, diskGb: FREE_DISK_GB },
+      paid: { includedMilli: PAID_INCLUDED_MILLI, computerLimit: PAID_COMPUTER_LIMIT, diskGb: PAID_DISK_POOL_GB },
+    },
+    diskStepGb: DISK_STEP_GB,
+    paidPriceUsd: PAID_PRICE_USD,
+    extraHourCents: EXTRA_HOUR_CENTS,
+  };
+}
 
 /** ADE's wake URL (`CLOUD_WAKE_PORT` on the desktop): the only public port allowed. */
 export const WAKE_PORT = 7337;

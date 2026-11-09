@@ -22,7 +22,9 @@ import {
   CLOUD_MADE_BY_CHAT_METADATA,
   CLOUD_OUT_OF_HOURS_MESSAGE,
   CLOUD_SHAPES,
-  cloudHoursRate,
+  cloudCatalogOf,
+  cloudMachineKindOf,
+  cloudKindLabel,
   cloudOutOfHours,
   cloudShape,
   cloudShapeById,
@@ -186,8 +188,10 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
   });
 
   /** Refuses before a card goes up for something the server would only refuse. */
-  const hoursCheck = async (): Promise<void> => {
-    if (cloudOutOfHours(await readAccount())) throw new Error(CLOUD_OUT_OF_HOURS_MESSAGE);
+  const hoursCheck = async (): Promise<CloudAccountState | null> => {
+    const account = await readAccount();
+    if (cloudOutOfHours(account)) throw new Error(CLOUD_OUT_OF_HOURS_MESSAGE);
+    return account;
   };
 
   /**
@@ -202,11 +206,11 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     approval: CloudApproval,
     card: {
       /**
-       * `uncapped`: what unattended agents may not decide alone (keeping a
+       * `person_only`: what unattended agents may not decide alone (keeping a
        * machine awake for good, loosening what they may do); only a person
        * answers it.
        */
-      action: "spend" | "delete" | "uncapped";
+      action: "spend" | "delete" | "person_only";
       title: string;
       body: string;
       confirm: string;
@@ -232,7 +236,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     }
     if (automation || level === "full-auto") {
       const where = automation ? "this automation run" : "this full-auto chat";
-      if (card.action === "uncapped") {
+      if (card.action === "person_only") {
         approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: only you can decide it.`);
         throw new CloudDeclined(`${card.title}: declined. Only the person can decide it (Settings › Integrations › ADE Cloud).`);
       }
@@ -353,7 +357,6 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     shape: box.shapeId,
     hoursRate: box.hoursRate,
     sleep: box.sleep,
-    madeByAde: box.madeByAde,
     ready: box.ready,
     pastDue: box.pastDue,
   });
@@ -380,17 +383,17 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     async create(rawArgs?: unknown) {
       const args = record(rawArgs);
       const kind = (text(args, "kind") ?? "box") as CloudMachineKind;
-      if (!isCloudMachineKind(kind)) throw new Error("Make a box or a VM (--kind box|vm).");
+      if (!isCloudMachineKind(kind)) throw new Error("Make a standard or a full computer (--kind box|vm).");
       const shapeId = shapeArg(args) ?? "2x4";
       const shape = cloudShapeById(shapeId);
-      const name = text(args, "name") ?? ("ADE Cloud computer");
-      await hoursCheck();
+      const name = text(args, "name") ?? "ADE Cloud computer";
+      const account = await hoursCheck();
       if (cannotMake()) throw new Error(NO_DESKTOP);
       const approval = readApproval(args);
       const yes = await approve(approval, {
         action: "spend",
         title: `Make "${name}" on ADE Cloud`,
-        body: `A ${shape.label}${kind === "vm" ? " full computer" : " computer"} (${shape.cpu} CPU, ${shape.memoryGb} GB). It uses ${describeCloudHoursUse(kind, shape.id)}, and none while it sleeps.`,
+        body: `A ${shape.label}${kind === "vm" ? " full computer" : " computer"} (${shape.cpu} CPU, ${shape.memoryGb} GB). It uses ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account))}, and none while it sleeps.`,
         confirm: "Make it",
         newMachine: true,
         shape: shapeId,
@@ -421,11 +424,11 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const shapeId = shapeArg(args);
       if (!shapeId) throw new Error("Pass the new size (--shape 4x8).");
       const shape = cloudShapeById(shapeId);
-      await hoursCheck();
+      const account = await hoursCheck();
       await approve(readApproval(args), {
         action: "spend",
         title: `Resize "${box.name ?? box.instanceId}" to ${shape.label}`,
-        body: `It restarts to change size: files stay, running chats, terminals and processes stop. It then uses ${describeCloudHoursUse(box.type === "vm" ? "vm" : "box", shape.id)}.`,
+        body: `It restarts to change size: files stay, running chats, terminals and processes stop. It then uses ${describeCloudHoursUse(cloudMachineKindOf(box.type), shape.id, cloudCatalogOf(account))}.`,
         confirm: "Resize",
         shape: shapeId,
       });
@@ -462,9 +465,9 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const args = record(rawArgs);
       const { box } = await resolveMachine(text(args, "machine"));
       const to = text(args, "to") as CloudMachineKind | null;
-      if (!to || !isCloudMachineKind(to)) throw new Error("Move it to a box or a VM (--to box|vm).");
+      if (!to || !isCloudMachineKind(to)) throw new Error("Move it to a standard or a full computer (--to box|vm).");
       // A move deletes the machine it runs from: the chat asking for it, and
-      // this brain, would stop halfway, with the new machine billing.
+      // this brain, would stop halfway, with the new machine awake and using hours.
       if (box.instanceId === process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
         throw new Error(`"${box.name ?? box.instanceId}" is the machine this runs on, so it can't move itself. Make the new machine (ade cloud create --kind ${to}), then hand this chat to it: ade chat handoff "$ADE_CHAT_SESSION_ID" --machine <new machine> --fork --include-changes --clone --when-turn-ends --note "<the task>". This machine stays and sleeps when idle; offer to delete it from the new chat.`);
       }
@@ -475,8 +478,8 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const approval = readApproval(args);
       const yes = await approve(approval, {
         action: "delete",
-        title: `Move "${name}" to a ${to === "vm" ? "VM" : "box"}`,
-        body: `ADE makes a new ${to === "vm" ? "VM" : "box"}, copies every repo, lane and chat on "${name}" into it, then deletes "${name}". Running processes stop${box.type === "vm" ? ", and Docker images and volumes stay behind" : ""}.`,
+        title: `Move "${name}" to a ${cloudKindLabel(to)}`,
+        body: `ADE makes a new ${cloudKindLabel(to)}, copies every repo, lane and chat on "${name}" into it, then deletes "${name}". Running processes stop${box.type === "vm" ? ", and Docker images and volumes stay behind" : ""}.`,
         confirm: "Move it",
         newMachine: true,
         shape: shapeId ?? box.shapeId,
@@ -573,7 +576,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       if (looser) {
         const max = cloudShapeById(next.maxShape);
         await approve(readApproval(args), {
-          action: "uncapped",
+          action: "person_only",
           title: "Let agents use more on ADE Cloud",
           body: `Unattended agents could then ${next.unattendedSpend ? `start ${next.machinesPerDay} new computer${next.machinesPerDay === 1 ? "" : "s"} a day, up to ${max.label}` : "use nothing"}.`,
           confirm: "Allow it",
@@ -602,7 +605,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       if (!next) throw new Error("That isn't a project ADE can keep a machine ready for.");
       // Turning it on, or a bigger or other kind of machine, asks (and is held to the agent limits).
       if (!existing || existing.shape !== next.shape || existing.kind !== next.kind) {
-        await hoursCheck();
+        const account = await hoursCheck();
         const shape = cloudShapeById(next.shape);
         // The keeper makes the machine later; this only asks, so it holds no slot.
         (await approve(readApproval(args), {
@@ -610,7 +613,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
           newMachine: true,
           shape: next.shape,
           title: `Keep a cloud machine ready for ${next.projectName}`,
-          body: `ADE prepares a ${shape.label}${next.kind === "vm" ? " full computer" : " computer"} with the repository cloned and setup run, then keeps it asleep. A chat on it uses ${describeCloudHoursUse(next.kind, shape.id)}.`,
+          body: `ADE prepares a ${shape.label}${next.kind === "vm" ? " full computer" : " computer"} with the repository cloned and setup run, then keeps it asleep. A chat on it uses ${describeCloudHoursUse(next.kind, shape.id, cloudCatalogOf(account))}.`,
           confirm: "Keep one ready",
         })).release();
       }

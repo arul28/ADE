@@ -17,9 +17,9 @@
  *      the box's ADE, run the person's setup commands. The template's
  *      entrypoint runs it (`$ADE_HOME/ready/job.sh`), so what it starts is part
  *      of the entrypoint's process tree and survives sleep.
- *   3. Tag it `ready` and put it to sleep. Asleep it bills only its disk.
+ *   3. Tag it `ready` and put it to sleep. Asleep it uses no hours.
  *
- * A failure deletes the machine (a half-prepared machine is only a bill) and
+ * A failure deletes the machine (a half-prepared machine is only waste) and
  * waits for Retry: ADE never loops on something that uses hours. Turning
  * the project off deletes its unclaimed machine. A claimed machine is the
  * person's and is never touched here.
@@ -78,7 +78,7 @@ export type CloudReadyKeeperDeps = {
   /**
    * This copy of ADE, stable across restarts and distinct from another copy
    * on the same computer. A machine it was preparing when it quit is its own
-   * leftover, deleted on the next pass instead of billing until it goes stale.
+   * leftover, deleted on the next pass instead of using hours until it goes stale.
    */
   preparerId: string;
   /**
@@ -110,7 +110,7 @@ const LOG_TAIL_LINES = 6;
 /**
  * Used ready machines (claimed, now asleep) a project may hold before ADE
  * stops preparing new ones. Each ready chat claims a machine and the next pass
- * prepares another, so without a limit they pile up, each billing its disk.
+ * prepares another, so without a limit they pile up, each holding its disk.
  * They are the person's, so ADE never deletes them; it waits until one goes.
  */
 const CLOUD_READY_USED_ASLEEP_LIMIT = 3;
@@ -451,7 +451,7 @@ export function createCloudReadyKeeper(deps: CloudReadyKeeperDeps) {
       try {
         await client.sleepInstance(created.instanceId);
       } catch (error) {
-        // Ready, but awake and billing; the next pass tries the sleep again.
+        // Ready, but awake and using hours; the next pass tries the sleep again.
         logger.warn?.("cloud.ready_sleep_failed", { instanceId: created.instanceId, error: getErrorMessage(error) });
       }
       logger.info?.("cloud.ready_prepared", { instanceId: created.instanceId, ms: now() - entry.startedAt });
@@ -471,7 +471,7 @@ export function createCloudReadyKeeper(deps: CloudReadyKeeperDeps) {
         cancelled,
         ...(error instanceof CloudReadySetupFailed ? { setupExitCode: error.exitCode } : { error: reason }),
       });
-      // A machine made for the pool that isn't ready is only a bill.
+      // A machine made for the pool that isn't ready is only waste.
       // createCloudMachine already deleted one that never signed in.
       let left = false;
       if (entry.instanceId) {
@@ -479,7 +479,7 @@ export function createCloudReadyKeeper(deps: CloudReadyKeeperDeps) {
       }
       if (!cancelled) {
         // Bounded: ADE tries a couple more times on its own (a flaky setup
-        // step, a busy host), never when a machine may still be billing or the
+        // step, a busy host), never when a machine may still be using hours or the
         // template can't run a setup, then waits for Retry.
         const attempts = (failureOf(settings)?.attempts ?? 0) + 1;
         const at = now();

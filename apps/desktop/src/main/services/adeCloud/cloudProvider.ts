@@ -9,53 +9,21 @@
  */
 
 import type { CloudAccountState } from "../../../shared/adeCloud";
+import type {
+  CloudSavedChatDeleteArgs,
+  CloudSavedChatList,
+  CloudSavedChatPage,
+  CloudSavedChatReadArgs,
+  CloudSavedChatsListArgs,
+} from "../../../shared/cloudSavedChats";
+import type { CloudExecResult, CloudInstance } from "../../../../../account-directory/src/cloud/contract";
+
+export type { CloudExecResult, CloudInstance };
 
 /** What the ADE Cloud services log through: a `cloud.*` event and its fields, never a credential. */
 export type CloudLogger = {
   info?(event: string, meta?: Record<string, unknown>): void;
   warn?(event: string, meta?: Record<string, unknown>): void;
-};
-
-export type CloudInstance = {
-  id: string;
-  name: string | null;
-  status: string;
-  template: string | null;
-  type: string | null;
-  region: string | null;
-  resources: { cpu: number; memory: number; disk: number } | null;
-  url: string | null;
-  pastDue: boolean;
-  created: number | null;
-  /** Why the last lifecycle action failed; null when nothing failed. */
-  statusReason: { code: string | null; message: string | null } | null;
-  /**
-   * What ADE set at create: tagged with `ade_request_id`, and with
-   * `ade_machine_key` once the machine joins.
-   */
-  metadata: Record<string, string>;
-  /** The provider's own idle sleep: on, and after how many seconds with no traffic through the machine's URLs. */
-  autoSleep: boolean;
-  idleTimeoutSeconds: number | null;
-  /** The machine's public ports (unauthenticated URLs); ADE's wake URL is one of them. */
-  publicPorts: Array<{ port: number; url: string; label: string | null }>;
-};
-
-/** What each computer used over a window; the server keeps ids of deleted ones. */
-export type CloudUsage = {
-  /** First and last UTC day covered, `YYYY-MM-DD`. */
-  from: string | null;
-  to: string | null;
-  /** US dollars per instance id. Instances that spent nothing are absent. */
-  byInstance: Record<string, number>;
-  /** US dollars per UTC day (`YYYY-MM-DD`), the whole account. */
-  byDay: Record<string, number>;
-};
-
-export type CloudExecResult = {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
 };
 
 export type CloudCreateInstanceInput = {
@@ -122,8 +90,6 @@ export type CloudProvider = {
   setInstanceName(id: string, name: string): Promise<void>;
   /** Replaces the metadata (it is not merged). */
   setInstanceMetadata(id: string, metadata: Record<string, string>): Promise<void>;
-  /** Per-instance use in the window (at most 90 days). */
-  usage(window: { from: string; to?: string }): Promise<CloudUsage>;
   /** Whether the server can make a computer right now (its pinned image exists). */
   hasTemplate(): Promise<boolean>;
   /** Runs `sh -c command` on the machine. A non-zero exit is a result, not an error. Wakes a sleeping machine. */
@@ -134,9 +100,9 @@ export type CloudProvider = {
   billingPortal(): Promise<{ url: string }>;
   /** Paid accounts only; extra hours are off by default. */
   setExtraHours(enabled: boolean): Promise<CloudAccountState>;
+  /** The account's saved chats. An account off the access list has none. */
+  listSavedChats(args: CloudSavedChatsListArgs): Promise<CloudSavedChatList>;
+  /** One page of a saved chat, or null when it can't be read. */
+  readSavedChat(args: CloudSavedChatReadArgs): Promise<CloudSavedChatPage | null>;
+  deleteSavedChat(args: CloudSavedChatDeleteArgs): Promise<void>;
 };
-
-/** `YYYY-MM-DD` in UTC, the form the usage window takes. */
-export function cloudUsageDay(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10);
-}

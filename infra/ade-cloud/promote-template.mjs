@@ -8,7 +8,7 @@
 //
 // --env is production, development or local (the `wrangler dev` database).
 // --min-version vX.Y.Z creates the test computer with ADE_MIN_VERSION set, to
-// time the first-start install. The computer is tagged created_by: c2-test and
+// time the first-start install. The computer is tagged created_by: ade-template-check and
 // is always deleted, including on Ctrl-C.
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -104,7 +104,7 @@ async function test(build, minVersion) {
   const timings = {};
   const lap = (name, since) => { timings[name] = Date.now() - since; };
   const run = randomBytes(4).toString("hex");
-  const tagged = (instance) => instance.metadata?.created_by === "c2-test" && instance.metadata?.c2_run === run;
+  const tagged = (instance) => instance.metadata?.created_by === "ade-template-check" && instance.metadata?.template_check_run === run;
 
   async function cleanup() {
     // By tag, not by id: a create that timed out may still have made a computer.
@@ -126,11 +126,11 @@ async function test(build, minVersion) {
     const start = Date.now();
     const instance = await api("POST", "/instances", {
       template: `${TEMPLATE}@${build}`,
-      name: `c2-test-${run}`,
+      name: `ade-template-check-${run}`,
       type: "default",
       resources: { cpu: 2, memory: 4, disk: 4 },
       auto_sleep: false,
-      metadata: { created_by: "c2-test", c2_run: run },
+      metadata: { created_by: "ade-template-check", template_check_run: run },
       ...(minVersion ? { env: { ADE_MIN_VERSION: minVersion } } : {}),
     }, 360_000);
     lap("create_answered", start);
@@ -159,7 +159,7 @@ async function test(build, minVersion) {
     console.log(`terminal: ${terminal.stdout.trim().replace(/\n/g, " ")}`);
 
     const token = randomBytes(8).toString("hex");
-    const path = "/home/node/c2-test-file";
+    const path = "/home/node/ade-template-check-file";
     await exec(id, `printf %s ${token} > ${path}`);
 
     let mark = Date.now();

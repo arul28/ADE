@@ -1,19 +1,21 @@
 import { sendCloudEmail } from "./email";
-import type { CloudInstance } from "./contract";
+import type { CloudHoursState, CloudInstance } from "./contract";
 import { hoursMilliFor, isMeteredStatus, isRestingStatus, utcDay } from "./plans";
 import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudProvider } from "./provider";
 import {
   DELETION_WARNING_LATE_MS,
-  deleteLogStatement,
+  PENDING_TIMEOUT_MS,
+  adoptionStatements,
+  deleteComputer,
   deletionDueAt,
+  goneFromProviderStatements,
+  groupByUser,
   hoursState,
   isOutOfHours,
   isPendingId,
   liveUsedMilli,
   logCloud,
-  markDeletedStatements,
   percentUsed,
-  powerLogStatement,
   readSetting,
   rollPeriodIfDue,
   settleStatements,
@@ -32,7 +34,6 @@ import {
  * stored time.
  */
 
-const PENDING_TIMEOUT_MS = 15 * 60_000;
 const NO_CHECK_IN_MS = 10 * 60_000;
 /** Exec gets this long; the command gives itself 40 s. */
 const PREPARE_STOP_TIMEOUT_MS = 45_000;
@@ -138,17 +139,13 @@ function adoptPending(
     : undefined;
   if (instance) {
     taken.add(instance.id);
-    const awake = isMeteredStatus(instance.status);
-    // `not exists`: a deleted row keeps its id, and a clash here must not sink the tick's batch.
-    statements.push(env.DB.prepare(`
-      update cloud_computers set instance_id = ?, status = ?, status_changed_at = ?, awake_since = ?, last_awake_at = ?
-      where instance_id = ? and not exists (select 1 from cloud_computers where instance_id = ?)
-    `).bind(instance.id, instance.status, now, awake ? now : null, now, computer.instance_id, instance.id));
-    statements.push(powerLogStatement(env, { instance_id: instance.id, user_id: computer.user_id }, "start", "adopted_by_tick", now));
+    const machineKey = instance.metadata.ade_machine_key ?? null;
+    statements.push(...adoptionStatements(env, { pendingId: computer.instance_id, instance, machineKey, now, reason: "adopted_by_tick" }));
     computer.instance_id = instance.id;
+    computer.machine_key = machineKey ?? computer.machine_key;
     computer.status = instance.status;
     computer.status_changed_at = now;
-    computer.awake_since = awake ? now : null;
+    computer.awake_since = isMeteredStatus(instance.status) ? now : null;
     computer.last_awake_at = now;
     live.push(computer);
     return;
@@ -163,35 +160,27 @@ async function confirmGone(env: CloudEnv, provider: CloudProvider, gone: TickCom
       await provider.getInstance(computer.instance_id);
     } catch (error) {
       if (!(error instanceof CloudProviderError && error.status === 404)) continue;
-      await env.DB.batch([
-        deleteLogStatement(env, computer, { who: null, reason: "gone_from_provider", events: null }, now),
-        ...markDeletedStatements(env, computer, now),
-      ]);
+      await env.DB.batch(goneFromProviderStatements(env, computer, now));
       live.splice(live.indexOf(computer), 1);
       logCloud("cloud.computer_gone", { instanceId: computer.instance_id });
     }
   }
 }
 
-function groupByUser<T extends { user_id: string }>(rows: T[]): Map<string, T[]> {
-  const out = new Map<string, T[]>();
-  for (const row of rows) {
-    const list = out.get(row.user_id);
-    if (list) list.push(row);
-    else out.set(row.user_id, [row]);
-  }
-  return out;
+async function accountsOf(env: CloudEnv, byUser: Map<string, unknown>): Promise<AccountRow[]> {
+  const accounts = await env.DB.prepare("select * from cloud_accounts where user_id in (select value from json_each(?))")
+    .bind(JSON.stringify([...byUser.keys()])).all<AccountRow>();
+  return accounts.results ?? [];
 }
 
 /** Period rolls, the 80/95/zero warnings, and the 0-hours stop. */
 async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number): Promise<void> {
   const byUser = groupByUser(computers);
   if (byUser.size === 0) return;
-  const accounts = await env.DB.prepare("select * from cloud_accounts where user_id in (select value from json_each(?))")
-    .bind(JSON.stringify([...byUser.keys()])).all<AccountRow>();
+  const accounts = await accountsOf(env, byUser);
   let rolls = 0;
   const outOfHoursUsers: string[] = [];
-  await Promise.all((accounts.results ?? []).map(async (row) => {
+  await Promise.all(accounts.map(async (row) => {
     // Most accounts roll at once on the 1st: a tick does its share and leaves the rest due.
     if (row.period_end <= now && ++rolls > PERIOD_ROLLS_PER_TICK) return;
     try {
@@ -219,20 +208,22 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
   }
 }
 
-async function warnHours(env: CloudEnv, account: AccountRow, state: string, used: number, now: number): Promise<void> {
-  const percent = percentUsed(account, used);
-  const message = state === "zero"
-    ? { column: "warned_zero_at", subject: "You're out of ADE Cloud hours", text: "Your ADE Cloud computers have stopped. You can add hours, or wait for your hours to reset." }
-    : state === "warn95"
-      ? { column: "warned_95_at", subject: "You've used 95% of your ADE Cloud hours", text: "You've used 95% of this period's ADE Cloud hours. When they run out, your computers stop." }
-      : state === "warn80"
-        ? { column: "warned_80_at", subject: "You've used 80% of your ADE Cloud hours", text: `You've used ${percent}% of this period's ADE Cloud hours.` }
-        : null;
-  if (!message) return;
-  const flag = message.column === "warned_zero_at" ? account.warned_zero_at : message.column === "warned_95_at" ? account.warned_95_at : account.warned_80_at;
-  if (flag != null) return;
-  await env.DB.prepare(`update cloud_accounts set ${message.column} = ?, updated_at = ? where user_id = ?`).bind(now, now, account.user_id).run();
-  await sendCloudEmail(env, { userId: account.user_id, subject: message.subject, text: message.text });
+const HOURS_WARNINGS: Record<Exclude<CloudHoursState, "none">, {
+  column: "warned_zero_at" | "warned_95_at" | "warned_80_at";
+  subject: string;
+  text: (percent: number) => string;
+}> = {
+  zero: { column: "warned_zero_at", subject: "You're out of ADE Cloud hours", text: () => "Your ADE Cloud computers have stopped. You can add hours, or wait for your hours to reset." },
+  warn95: { column: "warned_95_at", subject: "You've used 95% of your ADE Cloud hours", text: () => "You've used 95% of this period's ADE Cloud hours. When they run out, your computers stop." },
+  warn80: { column: "warned_80_at", subject: "You've used 80% of your ADE Cloud hours", text: (percent) => `You've used ${percent}% of this period's ADE Cloud hours.` },
+};
+
+async function warnHours(env: CloudEnv, account: AccountRow, state: CloudHoursState, used: number, now: number): Promise<void> {
+  if (state === "none") return;
+  const warning = HOURS_WARNINGS[state];
+  if (account[warning.column] != null) return;
+  await env.DB.prepare(`update cloud_accounts set ${warning.column} = ?, updated_at = ? where user_id = ?`).bind(now, now, account.user_id).run();
+  await sendCloudEmail(env, { userId: account.user_id, subject: warning.subject, text: warning.text(percentUsed(account, used)) });
 }
 
 /** Asks each awake computer to save and interrupt its work, then stops it; a sleeper just stops. */
@@ -439,10 +430,9 @@ async function reconcileDays(env: CloudEnv, provider: CloudProvider, last: strin
 async function sweepInactive(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number): Promise<void> {
   const byUser = groupByUser(computers);
   if (byUser.size === 0) return;
-  const accounts = await env.DB.prepare("select * from cloud_accounts where user_id in (select value from json_each(?))")
-    .bind(JSON.stringify([...byUser.keys()])).all<AccountRow>();
+  const accounts = await accountsOf(env, byUser);
   let deletions = 0;
-  for (const account of accounts.results ?? []) {
+  for (const account of accounts) {
     const owned = byUser.get(account.user_id) ?? [];
     const used = liveUsedMilli(account, owned, now);
     if (isOutOfHours(account, used)) continue;
@@ -496,21 +486,12 @@ async function deleteInactive(env: CloudEnv, provider: CloudProvider, computer: 
   const fresh = await env.DB.prepare("select awake_since, last_awake_at, deleted_at from cloud_computers where instance_id = ?")
     .bind(computer.instance_id).first<Pick<ComputerRow, "awake_since" | "last_awake_at" | "deleted_at">>();
   if (!fresh || fresh.deleted_at != null || fresh.awake_since != null || fresh.last_awake_at !== computer.last_awake_at) return;
-  const events = await provider.instanceEvents(computer.instance_id).catch((error: unknown) => {
-    logCloud("cloud.delete_events_read_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
-    return null;
-  });
   try {
-    await provider.deleteInstance(computer.instance_id);
+    await deleteComputer(env, provider, computer, { who: "system", reason: "inactive_30_days" }, now);
   } catch (error) {
-    if (!(error instanceof CloudProviderError && error.status === 404)) {
-      logCloud("cloud.delete_inactive_failed", { instanceId: computer.instance_id });
-      return;
-    }
+    if (!(error instanceof CloudProviderError)) throw error;
+    logCloud("cloud.delete_inactive_failed", { instanceId: computer.instance_id });
+    return;
   }
-  await env.DB.batch([
-    deleteLogStatement(env, computer, { who: "system", reason: "inactive_30_days", events }, now),
-    ...markDeletedStatements(env, computer, now),
-  ]);
   logCloud("cloud.deleted_inactive", { instanceId: computer.instance_id });
 }

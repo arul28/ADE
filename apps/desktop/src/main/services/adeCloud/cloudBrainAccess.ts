@@ -9,22 +9,7 @@ import type { CloudLogger, CloudProvider } from "./cloudProvider";
 import { getCloudProvider, watchCloudAccessForSkills, type CloudAccessDeps } from "./cloudAccess";
 import { wakeCloudMachineForUse } from "./cloudSleep";
 
-export function createCloudBrainAccess(deps: {
-  signedIn: () => boolean;
-  accountId: () => string | null;
-  accessToken: () => Promise<string | null>;
-  directoryBaseUrl: () => string | null;
-  deviceName?: () => string | null;
-  logger?: CloudLogger & { warn(event: string, meta?: Record<string, unknown>): void };
-}) {
-  const credentials: CloudAccessDeps = {
-    signedIn: deps.signedIn,
-    accountId: deps.accountId,
-    accessToken: deps.accessToken,
-    directoryBaseUrl: deps.directoryBaseUrl,
-    deviceName: deps.deviceName,
-    ...(deps.logger ? { logger: deps.logger } : {}),
-  };
+export function createCloudBrainAccess(credentials: CloudAccessDeps) {
   // The brain owns this account here, so its chats' skill listings follow it.
   watchCloudAccessForSkills(credentials);
   const client = (): Promise<CloudProvider | null> => getCloudProvider(credentials);
@@ -38,7 +23,7 @@ export function createCloudBrainAccess(deps: {
     async wakeForUse(machine: Pick<AdeAccountMachine, "machineKey" | "name">): Promise<boolean> {
       const cloud = await client().catch(() => null);
       if (!cloud) return false;
-      const result = await wakeCloudMachineForUse(cloud, { machineKey: machine.machineKey, hostname: machine.name }, { logger: deps.logger });
+      const result = await wakeCloudMachineForUse(cloud, { machineKey: machine.machineKey, hostname: machine.name }, { logger: credentials.logger });
       if (result.state === "refused") throw new Error(result.message);
       return result.state === "woken";
     },

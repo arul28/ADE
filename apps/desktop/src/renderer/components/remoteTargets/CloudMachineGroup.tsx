@@ -2,6 +2,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { ArrowClockwise, CircleNotch, GitBranch, Sun, UserMinus } from "@phosphor-icons/react";
 import {
   cloudAccountBanner,
+  cloudOutOfHours,
   describeCloudMachineSize,
   describeCloudSleepPolicy,
   formatCloudHoursRate,
@@ -9,7 +10,7 @@ import {
   type CloudMachinesResult,
 } from "../../../shared/adeCloud";
 import { Banner } from "../ui/notice";
-import { PushAllWorkButton } from "../terminals/cloudToolGate";
+import { PushAllWorkButton } from "./PushAllWorkButton";
 import type { NoticeAction } from "../ui/notice/NoticeParts";
 import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
 import {
@@ -39,16 +40,15 @@ export function CloudGroupHead({
   loading: boolean;
 }) {
   const totals = cloudGroupTotals(boxes);
-  const facts = totals.hoursRate > 0 ? [`${formatCloudHoursRate(totals.hoursRate)} now`] : [];
   return (
     <div className="ade-cx-section-head ade-cx-cloud-head">
       <CloudMark size={12} bold />
       {ADE_CLOUD_NAME}
       <span className="ade-cx-count">{boxes.length}</span>
       {loading ? <CircleNotch size={11} className="animate-spin" aria-label="Checking ADE Cloud" /> : null}
-      {facts.length ? (
+      {totals.hoursRate > 0 ? (
         <span className="ade-cx-cloud-head-facts kit-num" title="How fast the computers awake now use your hours, as multiples of a Small computer.">
-          {facts.join(" · ")}
+          {formatCloudHoursRate(totals.hoursRate)} now
         </span>
       ) : null}
     </div>
@@ -88,7 +88,7 @@ export function CloudGroupBanners({
   }
   const accountBanner = result?.state === "ok" && result.account ? cloudAccountBanner(result.account) : null;
   if (accountBanner) {
-    if (accountBanner.id === "cloud-hours-zero" && result?.machines.length) {
+    if (cloudOutOfHours(result?.account) && result?.machines.length) {
       banners.push(
         <div key="push-work" className="ade-ig-mini-rows">
           {result.machines.map((box) => (
@@ -118,12 +118,7 @@ export function CloudGroupBanners({
 
 /** What a failed action blocks on, as the buttons that clear it. */
 function errorActions(error: CloudBoxActionError, onOpenSettings?: (() => void) | null): NoticeAction[] | undefined {
-  switch (error.blocker) {
-    case "out_of_hours":
-      return onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined;
-    default:
-      return undefined;
-  }
+  return error.blocker === "out_of_hours" && onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined;
 }
 
 /**
@@ -178,10 +173,10 @@ export function CloudBoxStrip({
           ) : null}
           <span className="ade-cx-cloud-fact">{describeCloudMachineSize(box)}</span>
           {rate ? <span className="ade-cx-cloud-fact kit-num">{rate}</span> : null}
-          {box.madeByAde && box.sleep.state !== "auto" ? (
+          {box.sleep.state !== "auto" ? (
             <span
               className="ade-cx-cloud-fact"
-              title="The ADE on this box is older than sleeping on its own. It sleeps when idle once ADE on it updates."
+              title="The ADE on this computer is older than sleeping on its own. It sleeps when idle once ADE on it updates."
             >
               {describeCloudSleepPolicy(box.sleep)}
             </span>
@@ -212,7 +207,7 @@ export function CloudBoxStrip({
       {box.failure ? (
         <div className="ade-cx-cloud-note">{ADE_CLOUD_NAME} couldn't run it: {box.failure}</div>
       ) : null}
-      {box.diskFull ? <div className="ade-cx-cloud-note">{box.diskFull}</div> : null}
+      {box.diskFull ? <Banner layout="inline" model={{ id: `cloud-disk-full-${box.instanceId}`, tone: "warning", title: box.diskFull, report: false }} /> : null}
       {error ? (
         <div ref={errorRef}>
           <Banner
@@ -234,8 +229,8 @@ export function CloudBoxStrip({
 
 /**
  * A box with no ADE row: one that is still joining, was removed from ADE, or
- * never signed in. It still uses hours when awake, so it stays in the list with its price and
- * Delete box.
+ * never signed in. It still uses hours when awake, so it stays in the list with its rate and
+ * Delete computer.
  */
 export function CloudBoxOnlyRow({
   box,

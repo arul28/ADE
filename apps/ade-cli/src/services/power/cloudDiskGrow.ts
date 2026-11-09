@@ -6,7 +6,7 @@
  */
 
 import fs from "node:fs";
-import { CLOUD_DISK_FULL_METADATA, type CloudDiskFullReason } from "../../../../desktop/src/shared/adeCloud";
+import { CLOUD_DISK_FULL_METADATA, cloudCatalogOf, type CloudDiskFullReason } from "../../../../desktop/src/shared/adeCloud";
 import type { CloudProvider } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
 import { CloudProviderError } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
 import { patchCloudMetadata } from "../../../../desktop/src/main/services/adeCloud/cloudReadyClaim";
@@ -15,7 +15,6 @@ import { patchCloudMetadata } from "../../../../desktop/src/main/services/adeClo
 const NEAR_FULL = 0.85;
 /** Full: at this much used and refused a grow, the computer's card says so. */
 const FULL = 0.95;
-const DISK_STEP_GB = 4;
 /** A refused grow is asked again only this often: a plan or the account's disk changes rarely. */
 const REFUSED_RETRY_MS = 60 * 60_000;
 
@@ -65,10 +64,11 @@ export function createCloudDiskGrower(deps: {
       if (!client) return false;
       const instance = await client.getInstance(deps.instanceId);
       if (!instance.resources) return false;
+      const { diskStepGb } = cloudCatalogOf(await client.getAccount().catch(() => null));
       try {
         const { cpu, memory, disk } = instance.resources;
-        await client.resizeInstance(deps.instanceId, { cpu, memory, disk: disk + DISK_STEP_GB }, { computerIdle: true });
-        deps.logger?.info("cloud.disk_grown", { instanceId: deps.instanceId, toGb: disk + DISK_STEP_GB });
+        await client.resizeInstance(deps.instanceId, { cpu, memory, disk: disk + diskStepGb }, { computerIdle: true });
+        deps.logger?.info("cloud.disk_grown", { instanceId: deps.instanceId, toGb: disk + diskStepGb });
         await setNotice(client, null);
         return true;
       } catch (error) {

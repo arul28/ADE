@@ -16,8 +16,8 @@ import {
   type CloudExecResult,
   type CloudInstance,
   type CloudProvider,
-  type CloudUsage,
 } from "./cloudProvider";
+import { cloudSavedChatUrl, cloudSavedChatsUrl, type CloudSavedChatList, type CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -241,17 +241,6 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       await request("PUT", instancePath(id, "metadata"), { body: { metadata } });
     },
 
-    async usage(window): Promise<CloudUsage> {
-      const query = new URLSearchParams({ from: window.from, ...(window.to ? { to: window.to } : {}) });
-      const body = record(await request("GET", `/cloud/usage?${query.toString()}`));
-      return {
-        from: typeof body?.from === "string" ? body.from : null,
-        to: typeof body?.to === "string" ? body.to : null,
-        byInstance: record(body?.byInstance) as Record<string, number> ?? {},
-        byDay: record(body?.byDay) as Record<string, number> ?? {},
-      };
-    },
-
     async hasTemplate(): Promise<boolean> {
       return record(await request("GET", "/cloud/templates/current"))?.exists === true;
     },
@@ -283,6 +272,38 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async setExtraHours(enabled: boolean): Promise<CloudAccountState> {
       return await request("POST", "/cloud/billing/extra-hours", { body: { enabled } }) as CloudAccountState;
+    },
+
+    async listSavedChats(args): Promise<CloudSavedChatList> {
+      const query = new URLSearchParams();
+      if (args.machineKey) query.set("machine", args.machineKey);
+      if (args.projectKey) query.set("project", args.projectKey);
+      if (args.limit) query.set("limit", String(args.limit));
+      if (args.cursor) query.set("cursor", args.cursor);
+      try {
+        return await request("GET", `${cloudSavedChatsUrl("")}?${query.toString()}`) as CloudSavedChatList;
+      } catch (error) {
+        // 404 is this account being off the access list: no chats, not a failure.
+        if (error instanceof CloudProviderError && error.status === 404) return { chats: [], nextCursor: null };
+        throw error;
+      }
+    },
+
+    async readSavedChat(args): Promise<CloudSavedChatPage | null> {
+      const query = new URLSearchParams();
+      if (args.before != null) query.set("before", String(args.before));
+      if (args.limit) query.set("limit", String(args.limit));
+      const suffix = query.toString();
+      try {
+        return await request("GET", `${cloudSavedChatUrl("", args.machineKey, args.chatId)}${suffix ? `?${suffix}` : ""}`) as CloudSavedChatPage;
+      } catch (error) {
+        if (error instanceof CloudProviderError && error.status > 0) return null;
+        throw error;
+      }
+    },
+
+    async deleteSavedChat(args): Promise<void> {
+      await request("DELETE", cloudSavedChatUrl("", args.machineKey, args.chatId));
     },
   };
 }

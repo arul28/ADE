@@ -1,8 +1,10 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
-import { ArrowClockwise, ArrowsOutSimple, ArrowsLeftRight, CloudArrowUp, Copy, Moon, MoonStars, PlugsConnected, Sun, Trash, UserMinus } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowsOutSimple, ArrowsLeftRight, CloudArrowUp, Copy, Moon, PlugsConnected, Sun, Trash, UserMinus } from "@phosphor-icons/react";
 import {
   CLOUD_SHAPES,
+  cloudCatalogOf,
   cloudHoursRate,
+  cloudMachineKindOf,
   formatCloudHoursRate,
   type CloudMachine,
   type CloudMachineActionKind,
@@ -19,6 +21,7 @@ import { Banner } from "../ui/notice";
 import { extractError } from "../../lib/format";
 import { cloudBoxWork, type CloudBoxWork } from "./cloudMachineModel";
 import type { MachineAction } from "./MachineActionsMenu";
+import { useCloudMachines } from "./useCloudMachines";
 
 /** What one box is doing in the list right now, shown on its card. */
 export type CloudBoxPending = CloudMachineActionKind | "remove" | "copy" | "move" | "reconnect";
@@ -68,7 +71,7 @@ export function cloudBoxContext(args: {
 const PENDING_LABELS: Record<CloudBoxPending, string> = {
   sleep: "Putting it to sleep…",
   wake: "Waking it…",
-  resize: "Resizing. The box restarts…",
+  resize: "Resizing. The computer restarts…",
   backup: "Backing up. On a big disk this takes a few minutes…",
   delete: "Deleting the computer…",
   update: "Updating. It restarts…",
@@ -87,7 +90,7 @@ function chatsLine(count: number, name: string): string {
 }
 
 /**
- * Sleep, wake, resize, back up, Remove from ADE and Delete box for the
+ * Sleep, wake, resize, back up, Remove from ADE and Delete computer for
  * the ADE Cloud group, with the confirmations each one needs.
  *
  * The box actions go to ADE Cloud through this desktop's main
@@ -95,7 +98,7 @@ function chatsLine(count: number, name: string): string {
  * level, so nothing here takes a pin.
  */
 export function useCloudBoxActions(args: {
-  /** Read the boxes again (state, spend). */
+  /** Read the boxes again. */
   refresh: () => void;
   /** Read the account's machines again. */
   onAccountChanged?: () => void;
@@ -321,7 +324,7 @@ export function useCloudBoxActions(args: {
     const ok = await confirmDialog({
       title: to === "vm" ? `Move ${ctx.name} to a full computer?` : `Move ${ctx.name} to a standard computer?`,
       message: to === "vm"
-        ? `ADE makes a full computer (Android and Docker, about 2.5× the hours), copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Running processes stop.`
+        ? `ADE makes a full computer (Android and Docker; it uses hours faster), copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Running processes stop.`
         : `ADE makes a standard computer, copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Docker images and volumes stay behind, and running processes stop.`,
       confirmLabel: "Move",
       destructive: true,
@@ -369,7 +372,7 @@ export function useCloudBoxActions(args: {
     if (box.state === "running" && box.resources) {
       items.push({ key: "cloud-resize", label: "Resize…", icon: <ArrowsOutSimple size={14} />, disabled: busy, onSelect: () => setResizing(ctx) });
     }
-    if (box.madeByAde && box.machineKey && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
+    if (box.machineKey && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
       items.push({ key: "cloud-copy", label: "Copy…", icon: <Copy size={14} />, disabled: busy, onSelect: () => void copyBox(ctx) });
       items.push({
         key: "cloud-move",
@@ -379,7 +382,7 @@ export function useCloudBoxActions(args: {
         onSelect: () => void moveBox(ctx),
       });
     }
-    if (box.madeByAde && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
+    if (box.state === "running" || box.state === "asleep" || box.state === "stopped") {
       items.push({ key: "cloud-update", label: "Update this computer", icon: <ArrowClockwise size={14} />, disabled: busy, onSelect: () => void updateBox(ctx) });
     }
     if (box.state === "running" || box.state === "asleep" || box.state === "stopped") {
@@ -471,7 +474,8 @@ function CloudResizeDialog({
   const current = box.shapeId;
   const [picked, setPicked] = useState<CloudShapeId | null>(null);
   const choice = picked ?? CLOUD_SHAPES.find((shape) => shape.id !== current)?.id ?? null;
-  const kind = box.type === "vm" ? "vm" : "box";
+  const kind = cloudMachineKindOf(box.type);
+  const catalog = cloudCatalogOf(useCloudMachines(true).result?.account);
   const running = work.runningChats > 0;
   return (
     <Dialog
@@ -496,7 +500,7 @@ function CloudResizeDialog({
         ) : null}
         <div role="radiogroup" aria-label="Size" className="ade-cx-cloud-shapes">
           {CLOUD_SHAPES.map((shape) => {
-            const rate = formatCloudHoursRate(cloudHoursRate(kind, shape.id));
+            const rate = formatCloudHoursRate(cloudHoursRate(kind, shape.id, catalog));
             const isCurrent = shape.id === current;
             return (
               <button

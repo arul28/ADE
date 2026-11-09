@@ -1,42 +1,14 @@
 /**
  * Saved chats (ADE Cloud): the server's chat copy of a computer, read while the
- * computer can't answer. Mirrors the `/cloud/chats` routes in
- * `apps/account-directory/src/cloud/contract.ts`.
+ * computer can't answer. The shapes are the `/cloud/chats` routes' own.
  */
 
-export type CloudSavedChatRowInput = {
-  title: string | null;
-  laneId: string | null;
-  laneName: string | null;
-  status: string | null;
-  toolType: string | null;
-  provider: string | null;
-  model: string | null;
-  /** `normalizeGitRemoteIdentity` of the chat's project, so a window lists its own project's chats. */
-  projectKey: string | null;
-  /** The computer's own id and folder for that project, to address a send to it. */
-  projectId: string | null;
-  projectRoot: string | null;
-  lastActivityAt: string | null;
-};
+import type { CloudChatRow, CloudChatRowInput, CloudChatTranscriptPage } from "../../../account-directory/src/cloud/contract";
 
-export type CloudSavedChatRow = CloudSavedChatRowInput & {
-  machineKey: string;
-  chatId: string;
-  instanceId: string | null;
-  lastSeq: number;
-  updatedAt: number;
-};
-
+export type CloudSavedChatRowInput = CloudChatRowInput;
+export type CloudSavedChatRow = CloudChatRow;
 export type CloudSavedChatList = { chats: CloudSavedChatRow[]; nextCursor: string | null };
-
-export type CloudSavedChatPage = {
-  chat: CloudSavedChatRow;
-  /** Newest part first. Each `text` is JSON lines of chat events. */
-  parts: Array<{ seq: number; text: string }>;
-  hasMore: boolean;
-  nextBefore: number | null;
-};
+export type CloudSavedChatPage = CloudChatTranscriptPage;
 
 export type CloudSavedChatsListArgs = { machineKey?: string | null; projectKey?: string | null; limit?: number; cursor?: string | null };
 export type CloudSavedChatReadArgs = { machineKey: string; chatId: string; before?: number | null; limit?: number };

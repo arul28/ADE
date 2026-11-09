@@ -79,7 +79,7 @@ export function savedChatSession(row: CloudSavedChatRow): TerminalSessionSummary
     resumeCommand: null,
     runtimeState: "idle",
     cloudSavedCopy: true,
-  } as TerminalSessionSummary;
+  };
 }
 
 /** The lane row for a lane only known from saved chats. */
@@ -97,7 +97,7 @@ export function savedChatLane(row: CloudSavedChatRow): LaneSummary {
     icon: null,
     tags: [],
     createdAt: row.lastActivityAt ?? new Date(row.updatedAt).toISOString(),
-  } as unknown as LaneSummary;
+  };
 }
 
 function eventsFromPage(page: CloudSavedChatPage, sessionId: string): AgentChatEventEnvelope[] {
@@ -142,7 +142,10 @@ export function savedChatSummary(location: SavedChatLocation): AgentChatSessionS
     startedAt: row.lastActivityAt ?? "",
     lastActivityAt: row.lastActivityAt ?? "",
     endedAt: null,
-  } as unknown as AgentChatSessionSummary;
+    lastOutputPreview: null,
+    summary: null,
+    nextWakeAt: null,
+  };
 }
 
 /** The chat shows as unavailable; this says why. */
@@ -162,61 +165,41 @@ export function withSavedChatReads(
   api: AgentChatApi,
   bridge: SavedChatsBridge | null | undefined,
   machineOnline: (machineId: string) => boolean,
-  onSavedChatDeleted?: (machineKey: string, chatId: string) => void,
 ): AgentChatApi {
   if (!bridge) return api;
   const locate = (sessionId: string, pin?: OpenProjectBinding | null) => savedChatLocation(pin, sessionId, machineOnline);
-  const target = api;
-  // The target is a copy: the real API is a frozen contextBridge object, and a
-  // Proxy may not answer differently for a non-configurable property of its target.
-  return new Proxy({ ...api }, {
-    get(_copy, prop) {
-      const value = Reflect.get(api, prop);
-      // Not a method, or one this API doesn't have: nothing to answer from a saved copy.
-      if (typeof value !== "function") return value;
-      if (prop === "getEventHistory") {
-        return async (args: Parameters<AgentChatApi["getEventHistory"]>[0], pin?: OpenProjectBinding | null) => {
-          const location = locate(args.sessionId, pin);
-          if (!location) return target.getEventHistory(args, pin);
-          const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId }).catch(logSavedChatReadFailure);
-          if (!page) return { sessionId: args.sessionId, events: [], truncated: false, sessionFound: true, hasOlderHistory: false, unavailable: true } satisfies AgentChatEventHistorySnapshot;
-          return savedChatSnapshot(page, args.sessionId);
-        };
-      }
-      if (prop === "getEventHistoryPage") {
-        return async (args: Parameters<AgentChatApi["getEventHistoryPage"]>[0], pin?: OpenProjectBinding | null) => {
-          const location = locate(args.sessionId, pin);
-          if (!location) return target.getEventHistoryPage(args, pin);
-          const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId, before: args.beforeOffset }).catch(logSavedChatReadFailure);
-          if (!page) return { sessionId: args.sessionId, events: [], startOffset: args.beforeOffset, hasMore: false, sessionFound: true, unavailable: true } satisfies AgentChatEventHistoryPage;
-          return savedChatHistoryPage(page, args.sessionId);
-        };
-      }
-      if (prop === "getSummary") {
-        return async (args: Parameters<AgentChatApi["getSummary"]>[0], pin?: OpenProjectBinding | null) => {
-          const location = locate(args.sessionId, pin);
-          return location ? savedChatSummary(location) : target.getSummary(args, pin);
-        };
-      }
-      if (prop === "send") {
-        return async (args: Parameters<AgentChatApi["send"]>[0], pin?: OpenProjectBinding | null) => {
-          const location = locate(args.sessionId, pin);
-          if (location?.computerGone) throw new Error("This computer was deleted. Its chats are saved here, but it can't answer anymore.");
-          return target.send(args, pin);
-        };
-      }
-      if (prop === "delete") {
-        return async (args: Parameters<AgentChatApi["delete"]>[0], pin?: OpenProjectBinding | null) => {
-          const location = locate(args.sessionId, pin);
-          if (location?.computerGone) {
-            await bridge.delete({ machineKey: location.machineKey, chatId: location.chatId });
-            onSavedChatDeleted?.(location.machineKey, location.chatId);
-            return null;
-          }
-          return target.delete(args, pin);
-        };
-      }
-      return value.bind(api);
+  return {
+    ...api,
+    getEventHistory: async (args, pin) => {
+      const location = locate(args.sessionId, pin);
+      if (!location) return api.getEventHistory(args, pin);
+      const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId }).catch(logSavedChatReadFailure);
+      if (!page) return { sessionId: args.sessionId, events: [], truncated: false, sessionFound: true, hasOlderHistory: false, unavailable: true } satisfies AgentChatEventHistorySnapshot;
+      return savedChatSnapshot(page, args.sessionId);
     },
-  });
+    getEventHistoryPage: async (args, pin) => {
+      const location = locate(args.sessionId, pin);
+      if (!location) return api.getEventHistoryPage(args, pin);
+      const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId, before: args.beforeOffset }).catch(logSavedChatReadFailure);
+      if (!page) return { sessionId: args.sessionId, events: [], startOffset: args.beforeOffset, hasMore: false, sessionFound: true, unavailable: true } satisfies AgentChatEventHistoryPage;
+      return savedChatHistoryPage(page, args.sessionId);
+    },
+    getSummary: async (args, pin) => {
+      const location = locate(args.sessionId, pin);
+      return location ? savedChatSummary(location) : api.getSummary(args, pin);
+    },
+    send: async (args, pin) => {
+      const location = locate(args.sessionId, pin);
+      if (location?.computerGone) throw new Error("This computer was deleted. Its chats are saved here, but it can't answer anymore.");
+      return api.send(args, pin);
+    },
+    delete: async (args, pin) => {
+      const location = locate(args.sessionId, pin);
+      if (location?.computerGone) {
+        await bridge.delete({ machineKey: location.machineKey, chatId: location.chatId });
+        return null;
+      }
+      return api.delete(args, pin);
+    },
+  };
 }

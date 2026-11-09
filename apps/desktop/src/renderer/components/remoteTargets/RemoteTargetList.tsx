@@ -1533,7 +1533,7 @@ export function RemoteTargetList({
           key: "cloud" as const,
           icon: <CloudMark size={18} bold />,
           label: `New ${ADE_CLOUD_NAME} machine`,
-          detail: "A cloud Linux box or VM, signed in to your account for you",
+          detail: "A cloud Linux computer, signed in to your account for you",
         }]
       : []),
     {

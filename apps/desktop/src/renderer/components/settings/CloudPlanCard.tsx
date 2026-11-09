@@ -1,15 +1,11 @@
 import { useState } from "react";
 import { CalendarBlank, ClockCountdown } from "@phosphor-icons/react";
-import { formatCloudHours, type CloudAccountState } from "../../../shared/adeCloud";
+import { cloudCatalogOf, formatCloudDate, formatCloudHours, type CloudAccountState } from "../../../shared/adeCloud";
 import { ipcErrorMessage } from "../../lib/format";
 import { Banner } from "../ui/notice";
 import { IntegrationCard } from "./integrations/IntegrationChrome";
-import { PushAllWorkButton } from "../terminals/cloudToolGate";
+import { PushAllWorkButton } from "../remoteTargets/PushAllWorkButton";
 import { SettingsToggle } from "./primitives/SettingsControls";
-
-function shortDate(ms: number): string {
-  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
-}
 
 /**
  * Settings › ADE Cloud › Plan and hours: hours left, the plan, its reset date,
@@ -43,9 +39,11 @@ export function CloudPlanCard({ account, onChanged }: {
   const paid = account.plan === "paid";
   const pastDue = account.billing.notice === "past_due";
   const { hours, billing, extraHours } = account;
+  const catalog = cloudCatalogOf(account);
+  const planHours = formatCloudHours(catalog.plans[account.plan].includedMilli);
   const resetLabel = billing.cancelAtPeriodEnd
-    ? `Plan ends ${shortDate(billing.periodEnd)}`
-    : `Hours reset ${shortDate(billing.periodEnd)}`;
+    ? `Plan ends ${formatCloudDate(billing.periodEnd)}`
+    : `Hours reset ${formatCloudDate(billing.periodEnd)}`;
 
   return (
     <IntegrationCard
@@ -59,7 +57,7 @@ export function CloudPlanCard({ account, onChanged }: {
         </button>
       ) : (
         <button type="button" className="ade-modern-btn" data-size="sm" data-tone="primary" disabled={busy} onClick={() => void run(bridge?.openCheckout)}>
-          Buy, $5 a month
+          Buy, ${catalog.paidPriceUsd} a month
         </button>
       )}
     >
@@ -70,7 +68,7 @@ export function CloudPlanCard({ account, onChanged }: {
         </div>
         <div className="ade-ig-figure">
           <span className="kit-eyebrow">Plan</span>
-          <b>{paid ? "$5 plan" : "Free"}<small>{paid ? "500 hours a month" : "50 hours a month"}</small></b>
+          <b>{paid ? `$${catalog.paidPriceUsd} plan` : "Free"}<small>{planHours} hours a month</small></b>
         </div>
         <div className="ade-ig-figure">
           <span className="kit-eyebrow">Computers</span>
@@ -85,7 +83,7 @@ export function CloudPlanCard({ account, onChanged }: {
             <div>
               <b>Extra hours</b>
               <small>
-                Keep going past your plan at 1¢ a Small-hour, charged after use.
+                Keep going past your plan at {catalog.extraHourCents}¢ a Small-hour, charged after use.
                 {extraHours.usedMilli > 0 ? ` ${formatCloudHours(extraHours.usedMilli)} used this period.` : ""}
               </small>
             </div>
@@ -104,7 +102,7 @@ export function CloudPlanCard({ account, onChanged }: {
           {account.dueForDeletion.map((computer) => (
             <div key={computer.instanceId} className="ade-ig-mini-row">
               <span className="ade-ig-mini-title">{computer.name ?? computer.instanceId}</span>
-              <span className="ade-ig-mini-detail">Deleted {shortDate(computer.deletesAt)} unless it's used</span>
+              <span className="ade-ig-mini-detail">Deleted {formatCloudDate(computer.deletesAt)} unless it's used</span>
               <PushAllWorkButton instanceId={computer.instanceId} />
             </div>
           ))}
@@ -112,7 +110,7 @@ export function CloudPlanCard({ account, onChanged }: {
       ) : null}
 
       {error ? (
-        <Banner layout="inline" model={{ id: "cloud-plan-error", tone: "error", title: "ADE Cloud", detail: error, actions: [{ label: "Dismiss", onClick: () => setError(null) }] }} />
+        <Banner layout="inline" model={{ id: "cloud-plan-error", tone: "error", title: "ADE Cloud couldn't change your plan", detail: error, dismiss: { onDismiss: () => setError(null) } }} />
       ) : null}
     </IntegrationCard>
   );

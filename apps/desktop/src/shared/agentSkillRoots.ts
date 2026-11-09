@@ -315,10 +315,13 @@ export function getAdeAgentSkillRootsForPrompt(options: {
   dirname?: string | null;
   includeDeepSourceFallbacks?: boolean;
   exists?: (candidate: string) => boolean;
+  /** The env builder: the variable keeps every root, and each launch filters what it passes on. */
+  includeWithheld?: boolean;
 } = {}): string[] {
   const candidates = getAdeAgentSkillRootCandidates(options);
   const usable = options.exists ? candidates.filter((root) => options.exists?.(root)) : candidates;
-  return filterAdeAgentSkillRoots(usable.slice(0, promptAgentSkillRootLimit));
+  const roots = usable.slice(0, promptAgentSkillRootLimit);
+  return options.includeWithheld ? roots : filterAdeAgentSkillRoots(roots);
 }
 
 export function formatAdeAgentSkillRootsForPrompt(roots: readonly string[]): string {
