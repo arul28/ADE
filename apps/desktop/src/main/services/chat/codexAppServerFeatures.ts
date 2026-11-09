@@ -1,5 +1,5 @@
 export const CODEX_COMPACTION_STALL_MS = 180_000;
-export const PINNED_CODEX_APP_SERVER_VERSION = "0.164.0";
+export const PINNED_CODEX_APP_SERVER_VERSION = "0.167.0";
 
 export type CodexAppServerVersion = {
   major: number;

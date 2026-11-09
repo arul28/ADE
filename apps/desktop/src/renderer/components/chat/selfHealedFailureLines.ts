@@ -31,6 +31,15 @@ function isHandOffMessage(event: ChatTranscriptRenderEvent): boolean {
   return event.type === "user_message" && event.metadata?.kind === "continuity_recovery";
 }
 
+/**
+ * What "Try again" wrote before its receipt carried a continuity detail. It
+ * names no thread, so in those saved transcripts it settles every unresolved
+ * notice so far.
+ */
+function isUntaggedReconnectNotice(event: ChatTranscriptRenderEvent): boolean {
+  return event.type === "system_notice" && !event.detail && event.message === "Reconnected to the original thread.";
+}
+
 function isKeychainRetryNotice(event: ChatTranscriptRenderEvent): boolean {
   return event.type === "system_notice" && event.status === "claude_keychain_retry";
 }
@@ -49,19 +58,26 @@ function isFailureRowOf(event: ChatTranscriptRenderEvent, turnIds: ReadonlySet<s
  * - an earlier recovery's hand-off message (ADE's, not the user's) never draws;
  * - only the newest notice about one lost thread draws, so "Reconnecting…",
  *   repeats and "Reconnected" do not stack;
- * - once the thread is reconnected (or moved to a new chat), the failed turns
- *   that ran into the missing thread draw nothing.
+ * - once the thread is rebuilt (or moved to a new chat), the failed turns that
+ *   ran into the missing thread draw nothing. "Try again" getting the same
+ *   thread back answers nothing, so those turns keep their Retry.
  */
 function foldContinuityRecovery(rows: ChatTranscriptRenderEnvelope[]): ChatTranscriptRenderEnvelope[] {
   const lastNoticeIndexByThread = new Map<string, number>();
+  const isResolved = (detail: AgentChatNoticeDetail) => detail.state === "reconstructed" || Boolean(detail.supersededBySessionId);
   rows.forEach((row, index) => {
+    if (isUntaggedReconnectNotice(row.event)) {
+      for (const [thread, noticeIndex] of lastNoticeIndexByThread) {
+        if (!isResolved(continuityDetail(rows[noticeIndex]!.event)!)) lastNoticeIndexByThread.delete(thread);
+      }
+    }
     const detail = continuityDetail(row.event);
     if (detail) lastNoticeIndexByThread.set(detail.originalThreadId ?? "", index);
   });
   const resolvedThreads = new Set<string>();
   for (const [thread, index] of lastNoticeIndexByThread) {
     const detail = continuityDetail(rows[index]!.event)!;
-    if (detail.state === "reconstructed" || detail.supersededBySessionId) resolvedThreads.add(thread);
+    if (isResolved(detail) && !detail.originalThreadResumed) resolvedThreads.add(thread);
   }
   // Turns that failed because the thread was gone, for threads that came back.
   // A "not found" error belongs to the next notice after it: a thread lost

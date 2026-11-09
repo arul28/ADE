@@ -238,7 +238,10 @@ kept). Only when that fails (a second notice with `autoRecovery: "failed"`), or
 the chat already recovered by itself in the last 10 minutes, does the chat wait
 for one explicit action:
 
-- `retry_original` retries the preserved pointer.
+- `retry_original` retries the preserved pointer. Success writes a notice with
+  `state: "reconstructed"` and `originalThreadResumed: true`, so a reopened
+  transcript draws "Reconnected" instead of the failure. Nothing resends the
+  failed message, so that turn keeps its Retry.
 - `recover_from_history` creates a new provider thread in the same chat with the
   hidden conversation hand-off and records old/new pointer lineage.
 - `start_new_chat` creates a distinct chat and records the relationship.

@@ -931,7 +931,12 @@ describe("explicit provider-thread continuity recovery", () => {
     await expect(service.recoverContinuity({ sessionId: session.id, mode: "retry_original" }))
       .resolves.toEqual(expect.objectContaining({ ok: true, mode: "retry_original", threadId: "thread-1" }));
     expect(readPersistedChatState(session.id).continuityRecovery).toBeUndefined();
-    expect(events.some((entry) => entry.event.type === "system_notice" && entry.event.message === "Reconnected to the original thread.")).toBe(true);
+    // Tagged so a reopened transcript settles the failure notice for this thread,
+    // and keeps the failed turn's Retry because nothing resent that message.
+    const receipt = events.find((entry) => entry.event.type === "system_notice" && entry.event.message === "Reconnected to the original thread.")?.event;
+    expect(receipt).toMatchObject({
+      detail: { kind: "continuity_recovery", state: "reconstructed", originalThreadId: "thread-1", originalThreadResumed: true },
+    });
   });
 
   it("rejects a concurrent continuity recovery for the same session", async () => {

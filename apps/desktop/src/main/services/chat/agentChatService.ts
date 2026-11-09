@@ -270,6 +270,10 @@ import {
 } from "./providerResumeClassifier";
 import { probeCodexRolloutFile } from "../externalSessions/discoverCodex";
 import {
+  presentCodexModelProviderError,
+  presentCodexTurnError,
+} from "./codexErrorPresentation";
+import {
   codexMcpToolApproval,
   mcpElicitationContent,
   mcpElicitationDefaultAnswers,
@@ -500,7 +504,7 @@ import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveCodexExecutable, type CodexExecutableResolution } from "../ai/codexExecutable";
 import { codexFallForwardNotice, handleCodexVersionRejection } from "../ai/codexFallForward";
-import { CODEX_NO_UPDATE_CHECK_ARGS, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
+import { CODEX_APP_SERVER_STARTUP_ARGS, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { embeddedProviderLoginEnv } from "../../../shared/providerLoginIsolation";
 import {
   pinnedToolForProvider,
@@ -1924,11 +1928,14 @@ const CLAUDE_AGENT_SDK_TELEMETRY_TAGS = {
 type CodexResumeFailureError = Error & {
   code: "provider_thread_resume_failed";
   resumeFailureClassification: ResumeFailureClassification;
+  /** The app-server's structured error `data`, carried past the rewrite of its message. */
+  data?: unknown;
 };
 
 function isCodexResumeFailureError(error: unknown): error is CodexResumeFailureError {
   return error instanceof Error && "resumeFailureClassification" in error;
 }
+
 
 function partitionClaudeResultErrors(value: unknown): {
   all: string[];
@@ -7016,6 +7023,29 @@ function isCodexCompactionActive(runtime: CodexRuntime): boolean {
 function isCodexReviewTurnActive(runtime: CodexRuntime): boolean {
   const turnId = runtime.activeTurnId ?? runtime.startedTurnId;
   return Boolean(turnId && runtime.reviewTurnIds.has(turnId));
+}
+
+/**
+ * A review's `turn/started` names the task inside it, while `review/start`'s
+ * answer, the review's items and its `turn/completed` all carry the review's
+ * own id (measured on Codex 0.164 and 0.167). Read as the review's start, so
+ * ADE keeps following the id the rest of the review arrives under.
+ */
+function codexReviewStartWithReviewTurnId(
+  runtime: CodexRuntime,
+  sessionThreadId: string | null | undefined,
+  payload: JsonRpcEnvelope,
+): JsonRpcEnvelope {
+  if (payload.method !== "turn/started") return payload;
+  const reviewTurnId = runtime.activeTurnId;
+  if (!reviewTurnId || !runtime.reviewTurnIds.has(reviewTurnId)) return payload;
+  const params = asRecord(payload.params);
+  const turn = asRecord(params?.turn);
+  if (!params || !turn || turn.id === reviewTurnId || !isCodexInProgressTurnStatus(turn.status)) return payload;
+  // A subagent's own turn can start during the review; it is not the review's.
+  const threadId = extractCodexThreadId(params);
+  if (threadId && threadId !== sessionThreadId) return payload;
+  return { ...payload, params: { ...params, turnId: reviewTurnId, turn: { ...turn, id: reviewTurnId } } };
 }
 
 function codexTurnRejectsSteer(runtime: CodexRuntime): boolean {
@@ -44374,10 +44404,24 @@ export function createAgentChatService(args: {
       ? input.turnId.trim()
       : null;
     const message = String(input.message ?? "Codex app-server error.");
-    const errorInfo = formatCodexErrorInfo(input.errorInfo);
     const detail = typeof input.detail === "string" && input.detail.trim().length
       ? input.detail.trim()
       : undefined;
+    // OpenAI's exact per-model "needs a newer Codex" refusal (only errors, never
+    // assistant text). Mid-turn: a notice, never a resend.
+    const versionRejection = detectCodexVersionRejection({
+      message,
+      errorInfo: input.errorInfo,
+      detail,
+      requestedModel: managed.session.model,
+    });
+    // A refusal fall-forward can answer keeps its own notice, not "model not available".
+    const presentation = versionRejection
+      ? null
+      : presentCodexTurnError({ errorInfo: input.errorInfo, message, detail, model: managed.session.model });
+    const errorInfo = presentation
+      ? { category: "unknown" as const, provider: "Codex", ...(managed.session.model ? { model: managed.session.model } : {}), presentation }
+      : formatCodexErrorInfo(input.errorInfo);
     if (turnId) {
       const semanticKey = JSON.stringify([turnId, message.trim(), errorInfo ?? null, detail ?? null]);
       if (runtime.emittedErrorKeys.has(semanticKey)) return;
@@ -44389,14 +44433,6 @@ export function createAgentChatService(args: {
       ...(turnId ? { turnId } : {}),
       ...(errorInfo ? { errorInfo } : {}),
       ...(detail ? { detail } : {}),
-    });
-    // OpenAI's exact per-model "needs a newer Codex" refusal (only errors, never
-    // assistant text). Mid-turn: a notice, never a resend.
-    const versionRejection = detectCodexVersionRejection({
-      message,
-      errorInfo: input.errorInfo,
-      detail,
-      requestedModel: managed.session.model,
     });
     if (versionRejection) void handleCodexChatVersionRejection(managed, runtime, versionRejection, turnId);
   }
@@ -44724,7 +44760,8 @@ export function createAgentChatService(args: {
     };
   };
 
-  const handleCodexNotification = async (managed: ManagedChatSession, runtime: CodexRuntime, payload: JsonRpcEnvelope): Promise<void> => {
+  const handleCodexNotification = async (managed: ManagedChatSession, runtime: CodexRuntime, envelope: JsonRpcEnvelope): Promise<void> => {
+    const payload = codexReviewStartWithReviewTurnId(runtime, managed.session.threadId, envelope);
     const method = typeof payload.method === "string" ? payload.method : "";
     const params = (payload.params as Record<string, unknown> | null) ?? {};
     const turnIdFromParams = extractCodexTurnId(params);
@@ -45986,7 +46023,7 @@ export function createAgentChatService(args: {
     const appServerArgs = [
       "app-server",
       // ADE's pinned Codex never checks for (or offers) its own update.
-      ...CODEX_NO_UPDATE_CHECK_ARGS,
+      ...CODEX_APP_SERVER_STARTUP_ARGS,
       // A chat that leaves a shared process unsubscribes its thread; unload it
       // (its MCP servers, its writer lock) at once, as stopping a private
       // process did.
@@ -46200,8 +46237,9 @@ export function createAgentChatService(args: {
       pending.delete(key);
 
       if (payload.error) {
-        const error = new Error(payload.error.message || "Codex request failed.") as Error & { code?: number };
+        const error = new Error(payload.error.message || "Codex request failed.") as Error & { code?: number; data?: unknown };
         if (typeof payload.error.code === "number") error.code = payload.error.code;
+        if (payload.error.data !== undefined) error.data = payload.error.data;
         request.reject(error);
         return;
       }
@@ -56554,16 +56592,20 @@ export function createAgentChatService(args: {
     const resumeFailure = isCodexResumeFailureError(error)
       ? error.resumeFailureClassification
       : undefined;
+    const presentation = managed.session.provider === "codex"
+      ? presentCodexModelProviderError(asRecord(error)?.data, message) ?? undefined
+      : undefined;
     emitChatEvent(managed, {
       type: "error",
       message,
-      ...(resumeFailure
+      ...(resumeFailure || presentation
         ? {
             errorInfo: {
-              category: resumeFailure.kind === "transient" ? "network" as const : "unknown" as const,
+              category: resumeFailure?.kind === "transient" ? "network" as const : "unknown" as const,
               provider: managed.session.provider,
               model: managed.session.model,
-              resumeFailure,
+              ...(resumeFailure ? { resumeFailure } : {}),
+              ...(presentation ? { presentation } : {}),
             },
           }
         : {}),
@@ -56614,6 +56656,29 @@ export function createAgentChatService(args: {
         ...(autoRecovery === "pending" ? { autoRecoveryStartedAt: nowIso() } : {}),
       },
       ...(turnId ? { turnId } : {}),
+    });
+  };
+
+  /**
+   * "Try again" got the original thread back. Tagged as this thread's newest
+   * continuity notice, so a reopened transcript draws "Reconnected" and not the
+   * failure it answered.
+   */
+  const emitReconnectedToOriginalThread = (
+    managed: ManagedChatSession,
+    recovery: AgentChatContinuityRecovery,
+  ): void => {
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: "Reconnected to the original thread.",
+      detail: {
+        kind: "continuity_recovery",
+        state: "reconstructed",
+        reason: recovery.reason,
+        originalThreadId: recovery.originalThreadId,
+        originalThreadResumed: true,
+      },
     });
   };
 
@@ -56763,6 +56828,7 @@ export function createAgentChatService(args: {
       {
         code: "provider_thread_resume_failed" as const,
         resumeFailureClassification: classification,
+        data: asRecord(error)?.data,
       },
     );
   };
@@ -66898,13 +66964,17 @@ export function createAgentChatService(args: {
           teardownRuntime(managed, "handle_close");
           return result;
         }
-        adoptCodexActiveTurnId(
-          managed,
-          runtime,
-          logger,
-          mismatch.foundTurnId,
-          "turn_interrupt_mismatch",
-        );
+        // A review is stopped through the task inside it, but stays known by its own id.
+        const reviewTurnId = runtime.reviewTurnIds.has(interruptedTurnId) ? interruptedTurnId : null;
+        if (!reviewTurnId) {
+          adoptCodexActiveTurnId(
+            managed,
+            runtime,
+            logger,
+            mismatch.foundTurnId,
+            "turn_interrupt_mismatch",
+          );
+        }
         persistChatState(managed);
         interruptedTurnId = mismatch.foundTurnId;
         try {
@@ -66918,7 +66988,7 @@ export function createAgentChatService(args: {
           finishCodexTurnInterruptedLocally(
             managed,
             runtime,
-            interruptedTurnId,
+            reviewTurnId ?? interruptedTurnId,
             "Interrupted by user before Codex app-server acknowledged the interrupt",
           );
           teardownRuntime(managed, "handle_close");
@@ -67514,7 +67584,7 @@ export function createAgentChatService(args: {
           runtime.canAttachResumedTurnStart = true;
           sessionService.setResumeCommand(sessionId, `chat:codex:${resumedThreadId}`);
           persistChatState(managed);
-          emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: "Reconnected to the original thread." });
+          emitReconnectedToOriginalThread(managed, recovery);
           return { ok: true, mode: args.mode, threadId: resumedThreadId };
         } catch (error) {
           const classifiedError = codexResumeFailureError(managed, originalThreadId, error);
@@ -67543,7 +67613,7 @@ export function createAgentChatService(args: {
         try {
           await ensureClaudeQuery(managed, runtime);
           persistChatState(managed);
-          emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: "Reconnected to the original thread." });
+          emitReconnectedToOriginalThread(managed, recovery);
           return { ok: true, mode: args.mode, threadId: originalThreadId };
         } catch (error) {
           managed.session.continuityRecovery = {

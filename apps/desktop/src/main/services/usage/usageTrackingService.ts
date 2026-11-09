@@ -114,7 +114,7 @@ import { listLinkedLaneWorktreeRoots } from "../projects/worktreeParent";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { requirePinnedProviderExecutable } from "../ai/pinnedProviderTools";
-import { CODEX_NO_UPDATE_CHECK_ARGS, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
+import { CODEX_APP_SERVER_STARTUP_ARGS, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 import { offThreadSpawnEnabled, OffThreadChild, spawnOffThread, terminateOffThreadChildTree } from "../shared/offThreadSpawn";
 import { stripAnsi } from "../../../shared/ansiStrip";
@@ -1682,7 +1682,7 @@ async function runCodexAppServerJsonRpc(args: {
   };
   const invocation = resolveCliSpawnInvocation(
     codexPath,
-    [...CODEX_NO_UPDATE_CHECK_ARGS, "-s", "read-only", "-a", "never", "app-server"],
+    [...CODEX_APP_SERVER_STARTUP_ARGS, "-s", "read-only", "-a", "never", "app-server"],
     env,
   );
 

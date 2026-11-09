@@ -1,7 +1,7 @@
 /*
  * The sign-in card wears the provider's Settings banner. The connect card's
  * styles (`integrationConnectCard.css`, `ade-icc-*`) do the layout; these are
- * the two places a provider's banner differs from an integration's.
+ * the places a provider's card differs from an integration's.
  */
 
 /* A provider's art is a piece, not a backdrop: it sits at the banner's right. */
@@ -15,6 +15,37 @@
   transform: translateY(-50%);
   object-fit: contain;
   object-position: center;
+}
+
+/*
+ * The reason on the left, the action on the right, on one line. A code field
+ * needs the width, so it takes its own line; so does a narrow pane, by wrapping.
+ */
+.ade-psc-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  min-width: 0;
+}
+.ade-psc-main .ade-icc-reason {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.ade-psc-main .ade-icc-row {
+  flex: 0 1 auto;
+  margin-left: auto;
+  max-width: 100%;
+}
+.ade-psc-main[data-wide] .ade-icc-reason,
+.ade-psc-main[data-wide] .ade-icc-row {
+  flex: 1 1 100%;
+  margin-left: 0;
+}
+.ade-psc-main:not([data-wide]) .ade-icc-primary {
+  height: 28px;
+  padding: 0 11px;
+  font-size: 12px;
 }
 
 /* A square logo keeps its tile, the logo's own shape. */

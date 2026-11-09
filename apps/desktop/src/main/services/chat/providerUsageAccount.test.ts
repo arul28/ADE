@@ -69,6 +69,7 @@ describe("Codex usage account kind", () => {
     [{ authMode: "amazonBedrock", instanceSignedIn: true }, "unknown", "cloud"],
     [{ authMode: "bedrockApiKey", instanceSignedIn: true }, "unknown", "cloud"],
     [{ authMode: "bedrockAccessKeys", instanceSignedIn: true }, "unknown", "cloud"],
+    [{ authMode: "gcp", instanceSignedIn: true }, "unknown", "cloud"],
     // No auth mode arrived: fall back to the instance login.
     [{ authMode: null, instanceSignedIn: true }, "subscription", null],
     [{ authMode: null, keyedPreset: true, instanceSignedIn: true }, "unknown", "preset"],
@@ -88,6 +89,8 @@ describe("Codex usage account kind", () => {
       .toEqual({ authMode: "apikey", planType: null });
     expect(codexAuthModeFromAccountRead({ account: { type: "amazonBedrock", usesCodexManagedCredentials: false } }))
       .toEqual({ authMode: "amazonBedrock", planType: null });
+    expect(codexAuthModeFromAccountRead({ account: { type: "gcp" } }))
+      .toEqual({ authMode: "gcp", planType: null });
     expect(codexAuthModeFromAccountRead({ account: null, requiresOpenaiAuth: true })).toBeNull();
     expect(codexAuthModeFromAccountRead({})).toBeNull();
     expect(codexAuthModeFromAccountRead({ account: { type: "somethingNew" } })).toBeNull();

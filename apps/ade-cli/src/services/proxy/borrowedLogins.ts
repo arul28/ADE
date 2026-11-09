@@ -51,7 +51,7 @@ import {
   type OffThreadChild,
 } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
 import { terminateProcessTree } from "../../../../desktop/src/main/services/shared/processExecution";
-import { providerSelfUpdateEnv } from "../../../../desktop/src/shared/pinnedToolSpawnEnv";
+import { CODEX_APP_SERVER_STARTUP_ARGS, providerSelfUpdateEnv } from "../../../../desktop/src/shared/pinnedToolSpawnEnv";
 import {
   HARNESS_PRESET_SUBSCRIPTION_PROVIDERS,
   type HarnessPresetSubscriptionProvider,
@@ -409,7 +409,7 @@ function renewCodexLogin(account: BorrowableAccount, env: NodeJS.ProcessEnv): Pr
   if (!executable.path) return Promise.resolve(false);
   return exchange({
     command: executable.path,
-    argv: ["app-server"],
+    argv: [...CODEX_APP_SERVER_STARTUP_ARGS, "app-server"],
     env: { ...env, ...providerSelfUpdateEnv("codex"), CODEX_HOME: codexHomeFor(account, env) },
     writes: [
       JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "ade-login-lender", version: "1" }, capabilities: {} } }),

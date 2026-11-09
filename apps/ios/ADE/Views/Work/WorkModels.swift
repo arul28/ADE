@@ -2302,9 +2302,13 @@ struct WorkContinuityNotice: Equatable {
   /// `pending` or `failed`, once ADE has tried on its own.
   let autoRecovery: String?
   let autoRecoveryStartedAt: String?
+  /// "Try again" got the same thread back; the failed message was not resent.
+  var originalThreadResumed = false
 
-  /// Reconnected, or moved to a new chat: the thread's failed turns are noise.
+  /// Reconnected, or moved to a new chat: the notice needs no action.
   var isResolved: Bool { state == "reconstructed" || supersededBySessionId != nil }
+  /// Rebuilt or moved on: the thread's failed turns are noise.
+  var hidesFailedTurns: Bool { isResolved && !originalThreadResumed }
 }
 
 struct WorkChatEnvelope: Identifiable, Equatable {

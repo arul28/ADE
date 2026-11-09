@@ -5179,7 +5179,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(screen.queryByText("Error")).toBeNull();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
-    expect(screen.getByText("Selected model is at capacity. Please try a different model.")).toBeTruthy();
+    expect(screen.getByText(/Selected model is at capacity\. Please try a different model\./)).toBeTruthy();
     expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
     expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
 
