@@ -37,9 +37,11 @@ function modelRefsPickedBy(domain: string, action: string, input: unknown): Pick
   const fields = record(input);
   if (!fields) return [];
   switch (`${domain}.${action}`) {
+    case "chat.launchCli":
+      // The CLI launcher runs `model` and reads no `modelId`.
+      return [{ ref: fields.model, provider: fields.provider }];
     case "chat.createSession":
     case "chat.updateSession":
-    case "chat.launchCli":
     case "chat.launchHeadless":
     case "chat.startSideChat":
       return [{ ref: chatModelRef(fields), provider: fields.provider }];
@@ -70,8 +72,11 @@ function modelRefsPickedBy(domain: string, action: string, input: unknown): Pick
 function automationDraftModelRefs(draft: Fields | null): PickedModel[] {
   if (!draft) return [];
   const refs: PickedModel[] = [{ ref: record(draft.modelConfig)?.modelId }];
-  const actions = record(record(draft.execution)?.builtIn)?.actions;
-  for (const step of Array.isArray(actions) ? actions : []) {
+  // Steps live in `actions` (and the older `legacyActions`), and a built-in
+  // execution carries its own list; the rule runs whichever it has.
+  const steps = [draft.actions, draft.legacyActions, record(record(draft.execution)?.builtIn)?.actions]
+    .flatMap((list) => (Array.isArray(list) ? list : []));
+  for (const step of steps) {
     const fields = record(step);
     if (fields?.type === "agent-session") refs.push({ ref: record(fields.modelConfig)?.modelId });
     if (fields?.type === "handoff") refs.push({ ref: fields.targetModelId });
