@@ -252,7 +252,8 @@ function BranchPatternRow({
                 type="button"
                 className="cl-field"
                 data-mode="new"
-                disabled={saving || !supported}
+                disabled={!supported}
+                aria-disabled={saving || !supported}
                 aria-label="Branch names"
               >
                 <span className="cl-tile" data-tone="mode"><GitBranch size={13} weight="bold" /></span>
