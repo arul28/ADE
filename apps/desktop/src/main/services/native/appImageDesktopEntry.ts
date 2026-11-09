@@ -24,6 +24,11 @@ function readTextIfPresent(filePath: string): string | null {
   }
 }
 
+function refreshHandlerCache(applications: string): void {
+  // Only refreshes the handler cache, and not every desktop ships the tool.
+  execFile("update-desktop-database", [applications], () => undefined);
+}
+
 function copyIcons(appDir: string, dataHome: string, iconName: string): void {
   const source = path.join(appDir, "usr/share/icons/hicolor");
   const fileName = `${iconName}.png`;
@@ -42,29 +47,39 @@ function copyIcons(appDir: string, dataHome: string, iconName: string): void {
  * puts it in the applications menu and gives `ade://` a handler to open, from
  * the entry the package already carries, pointed at where the file is now.
  * Rewritten when the file moves or an update renames it; a file ADE did not
- * write is left alone.
+ * write is left alone. A packaged install started any other way removes the
+ * entry, which would otherwise shadow the one its own package installed.
  */
 export function registerAppImageDesktopEntry(args: {
+  isPackaged: boolean;
   log: Log;
   env?: NodeJS.ProcessEnv;
 }): void {
   const env = args.env ?? process.env;
-  const appImage = runningAppImagePath(env);
-  const appDir = env.APPDIR?.trim();
   // Electron publishes the name here, and claims `ade://` for the same one.
   const desktopName = env.CHROME_DESKTOP?.trim();
-  if (!appImage || !appDir || !desktopName) return;
+  if (process.platform !== "linux" || !args.isPackaged || !desktopName) return;
+  const appImage = runningAppImagePath(env);
+  const appDir = env.APPDIR?.trim();
   try {
-    const packaged = fs.readFileSync(path.join(appDir, desktopName), "utf8");
-    const exec = `Exec=${quoteExecArgument(appImage)} %U`;
-    const entry = `${packaged
-      .replace(/^Exec=.*$/m, () => exec)
-      .replace(/^TryExec=.*\n/m, "")
-      .trimEnd()}\n${MANAGED_MARKER}\n`;
     const dataHome = env.XDG_DATA_HOME?.trim() || path.join(os.homedir(), ".local/share");
     const applications = path.join(dataHome, "applications");
     const target = path.join(applications, desktopName);
     const existing = readTextIfPresent(target);
+    if (!appImage || !appDir) {
+      if (!existing?.includes(MANAGED_MARKER)) return;
+      fs.rmSync(target, { force: true });
+      refreshHandlerCache(applications);
+      args.log("info", "appimage.desktop_entry_removed", { target });
+      return;
+    }
+    const packaged = fs.readFileSync(path.join(appDir, desktopName), "utf8");
+    const exec = `Exec=${quoteExecArgument(appImage)} %U`;
+    const entry = `${packaged
+      .replace(/^TryExec=.*\n/m, "")
+      // TryExec hides the entry from menus once the file is gone.
+      .replace(/^Exec=.*$/m, () => `${exec}\nTryExec=${appImage.replace(/\\/g, "\\\\")}`)
+      .trimEnd()}\n${MANAGED_MARKER}\n`;
     if (existing === entry) return;
     if (existing != null && !existing.includes(MANAGED_MARKER)) {
       args.log("info", "appimage.desktop_entry_kept_existing", { target });
@@ -74,8 +89,7 @@ export function registerAppImageDesktopEntry(args: {
     const iconName = /^Icon=(.+)$/m.exec(entry)?.[1]?.trim();
     if (iconName) copyIcons(appDir, dataHome, iconName);
     writeFileAtomic(target, entry, { mode: 0o644 });
-    // Only refreshes the handler cache, and not every desktop ships the tool.
-    execFile("update-desktop-database", [applications], () => undefined);
+    refreshHandlerCache(applications);
     args.log("info", "appimage.desktop_entry_written", { target });
   } catch (error) {
     args.log("warn", "appimage.desktop_entry_failed", {

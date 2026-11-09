@@ -1650,6 +1650,7 @@ function exitDevAppSharingUserData(): void {
 
 // Before the handler claims the scheme: the claim names this desktop entry.
 registerAppImageDesktopEntry({
+  isPackaged: app.isPackaged,
   log: (level, event, fields) => logMachineEvent(level, event, fields),
 });
 

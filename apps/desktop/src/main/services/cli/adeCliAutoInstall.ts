@@ -94,8 +94,14 @@ async function attemptAdeCliAutoInstall(
 
   const repairRequested = args.repairRequestPath != null && fs.existsSync(args.repairRequestPath);
   const appImage = runningAppImagePath(env);
-  const repair = repairRequested || (appImage != null
-    && appImageShimNamesAnotherFile((await args.adeCli.getStatus()).installTargetPath, appImage));
+  let staleAppImageShim = false;
+  if (appImage != null) {
+    const { terminalCommandPath, installTargetPath } = await args.adeCli.getStatus();
+    // Another `ade` first on PATH is the user's choice; installing would reorder it.
+    staleAppImageShim = (terminalCommandPath == null || terminalCommandPath === installTargetPath)
+      && appImageShimNamesAnotherFile(installTargetPath, appImage);
+  }
+  const repair = repairRequested || staleAppImageShim;
   const state = args.readState();
   if (state.adeCliAutoInstall && !repair) return "already-settled";
 

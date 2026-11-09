@@ -432,6 +432,16 @@ export function createBrainKeepAwakeService(
         blockerError = "This machine can't stay awake with the lid closed.";
         return snapshot();
       }
+      if (platform === "linux" && nextLevel !== "never" && nextLevel !== currentLevel) {
+        // polkit can refuse the lock and the tool can be absent. Settings only
+        // reads on save, so a failure at the first turn would go unseen.
+        const probe = await execSystemText("systemd-inhibit", ["--what=idle:sleep", "--who=ADE", "--why=Checking the lock", "--mode=block", "true"], 5_000);
+        if (!probe.ok) {
+          blockerError = "This machine wouldn't let ADE stay awake.";
+          options.logger?.warn("keepAwake.lock_probe_failed", { stderr: probe.stderr.slice(0, 200) });
+          return snapshot();
+        }
+      }
       if (platform === "darwin" && nextLevel !== currentLevel) {
         const lidClosedActive = await readLidClosedActive(platform);
         if (nextLevel === "lid-closed" && lidClosedActive !== true) {
