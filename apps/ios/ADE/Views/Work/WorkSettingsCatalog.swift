@@ -194,6 +194,7 @@ enum WorkSettingsCatalog {
     "lanes-git.new-lane-branch-pattern": Setting(path: "Project › Lanes › Branch names", locked: false),
     "lanes-git.lane-templates": Setting(path: "Project › Lanes › Lane templates", locked: false),
     "lanes-git.pr-chat-transcripts": Setting(path: "Project › Agents › PR chat transcripts", locked: true),
+    "integrations.github-reminders": Setting(path: "App › Integrations › GitHub reminders", locked: false),
     "integrations.github": Setting(path: "App › Integrations › GitHub", locked: true),
     "integrations.linear": Setting(path: "App › Integrations › Linear", locked: true),
     "integrations.jira": Setting(path: "App › Integrations › Jira", locked: true),

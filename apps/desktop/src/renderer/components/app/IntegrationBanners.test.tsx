@@ -111,6 +111,7 @@ function setAdeMock(github: Record<string, unknown> | undefined): void {
 
 function baseProps(overrides: Partial<IntegrationBannersProps> = {}): IntegrationBannersProps {
   return {
+    machineId: "local",
     currentProjectRoot: "/project/a",
     githubStatus: null,
     hasAnyAiProvider: true,
@@ -212,6 +213,31 @@ describe("IntegrationBanners", () => {
     const stored = window.localStorage.getItem("ade.bannerDismiss.v1");
     expect(stored).toContain("ai-provider:/project/a");
   });
+
+  it.each([null, { owner: "o", name: "r" }])(
+    "keeps a dismissed credential alarm on its machine until that machine recovers (repo %j)",
+    async (repo) => {
+      setAdeMock(undefined);
+      const broken = makeGithubStatus({ repo, credentialStoreUnreadable: true });
+      const healthy = makeGithubStatus({ repo, connected: true, tokenStored: true, authSource: "gh", writeAuthSource: "gh" });
+      const props = (machineId: string, githubStatus: GitHubStatus) => baseProps({ machineId, githubStatus });
+      const view = render(<Harness {...props("machine-a", broken)} />);
+      const warning = () => screen.queryByRole("button", { name: /^Dismiss:/ });
+      expect(warning()).not.toBeNull();
+      await act(async () => { warning()!.click(); });
+      expect(warning()).toBeNull();
+
+      // Recovery elsewhere must not clear A's dismissal.
+      await act(async () => { view.rerender(<Harness {...props("machine-b", healthy)} />); });
+      await act(async () => { view.rerender(<Harness {...props("machine-a", broken)} />); });
+      expect(warning()).toBeNull();
+
+      // A recovers; a recurrence on A is actionable new information.
+      await act(async () => { view.rerender(<Harness {...props("machine-a", healthy)} />); });
+      await act(async () => { view.rerender(<Harness {...props("machine-a", broken)} />); });
+      expect(warning()).not.toBeNull();
+    },
+  );
 
   it("shows the write-access banner for a connected read-only GitHub App", async () => {
     setAdeMock(undefined);

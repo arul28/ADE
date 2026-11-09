@@ -2809,3 +2809,26 @@ markdown layout cost for offscreen or folded content.
   `Accept: application/vnd.github.merge-info-preview+json`; without it
   GitHub errors with "field requires preview header" and the merge box
   silently falls back to the REST heuristic (logged at `warn`).
+
+### GitHub access and reminders
+
+A working GitHub CLI login supplies ADE's GitHub access without a personal
+access token. [GitHub settings](ade://settings/integrations.github) identifies
+the active read and write credentials, including the CLI login.
+The ADE GitHub App adds optional real-time updates independently of that access.
+
+Dismissing setup reminders applies to the lower-cased repository (`owner/name`)
+across worktrees. The dismissal has no expiry and survives equivalent setup
+states and healthy reads. GitHub settings shows the reminder state and offers
+**Dismiss setup reminders** and **Show reminders again**. Older repo/path
+reminders migrate when that repository is opened.
+
+Credential failures, unreadable credential stores, and Git transport failures
+use separate alarm dismissals scoped to the owning machine and repository (or
+project path before repository discovery); setup snoozes never hide them. Each alarm can be
+dismissed until its failing access recovers, at which point a later failure can
+warn again. API access, App authorization, and Git transport recover independently:
+a successful API read does not re-arm a still-broken push alarm. Missing App
+issue-write permission is a setup reminder when another credential covers issue
+edits, and an alarm when none does. Recovery never clears the setup snooze.
+GitHub outage notices retain their existing incident handling.
