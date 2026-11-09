@@ -59290,7 +59290,10 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, { ...doneEvent, status: "interrupted" });
       } else if (resultStatus === "error" || doneEvent.status === "failed") {
         markSessionIdleWithFreshCache(managed);
-        cancelQueuedSteers(managed, runtime, "failed");
+        // A failed compaction says nothing about the messages queued behind it,
+        // so they still go, with the full chat.
+        if (compactOnly) shouldDeliverQueuedSteer = runtime.pendingSteers.length > 0;
+        else cancelQueuedSteers(managed, runtime, "failed");
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, doneEvent);
       } else {
