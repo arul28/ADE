@@ -935,11 +935,13 @@ export function createGitOperationsService({
 
         let pushed = false;
         const upstreamRes = await runGit(
-          ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+          ["rev-parse", "--symbolic-full-name", "@{upstream}"],
           { cwd: lane.worktreePath, timeoutMs: 10_000 },
         );
         if (upstreamRes.exitCode === 0) {
-          const upstream = upstreamRes.stdout.trim();
+          // The full name, stripped by hand: `--abbrev-ref` renames the upstream
+          // when a local branch shares its short name, and `branch -r` then misses it.
+          const upstream = upstreamRes.stdout.trim().replace(/^refs\/remotes\//, "");
           if (upstream.length) {
             const containsRes = await runGit(
               ["branch", "-r", "--contains", sha, upstream],

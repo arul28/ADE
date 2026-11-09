@@ -1203,6 +1203,25 @@ export function LaneGitActionsPane({
 
   const upstreamMissing = syncStatus?.upstreamState === "missing";
 
+  // The remote branch went away. If the lane's PR merged, that was the normal
+  // end of the lane and there is nothing to push. Asked of the lane's machine.
+  const [mergedPrNumber, setMergedPrNumber] = useState<number | null>(null);
+  const pinKey = pin?.key ?? null;
+  useEffect(() => {
+    setMergedPrNumber(null);
+    if (!laneId || !upstreamMissing) return;
+    let cancelled = false;
+    window.ade.prs.getForLane(laneId, pin).then((pr) => {
+      if (!cancelled && pr?.state === "merged") setMergedPrNumber(pr.githubPrNumber);
+    }).catch((error) => console.warn("git_pane.lane_pr_read_failed", error));
+    return () => {
+      cancelled = true;
+    };
+    // Keyed on the stable pin key: a rebuilt pin is the same machine.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneId, pinKey, upstreamMissing]);
+  const laneMerged = upstreamMissing && mergedPrNumber != null;
+
   const nextActionHint = useMemo<NextActionHint | null>(() => {
     if (!laneId) return null;
     if (conflictState?.inProgress) {
@@ -1857,28 +1876,39 @@ export function LaneGitActionsPane({
         >
           <ArrowDown size={16} />
         </WorkToolChromeButton>
-        <WorkToolChromeButton
-          label={upstreamMissing
-            ? "Recreate remote branch"
-            : syncStatus?.hasUpstream === false
-              ? "Publish branch"
-              : nextActionHint?.action === "force_push_lease"
-                ? "Force push (lease)"
-                : "Push"}
-          onClick={async () => {
-            if (nextActionHint?.action === "force_push_lease") {
-              const ok = await confirmForcePushWithLease();
-              if (!ok) return;
-              runPush(true);
-              return;
-            }
-            runPush(false);
-          }}
-          disabled={!laneId || busyAction != null}
-          testId="git-pane-push"
-        >
-          <ArrowUp size={16} />
-        </WorkToolChromeButton>
+        {laneMerged ? (
+          <span
+            className="inline-flex items-center gap-1 whitespace-nowrap px-1 text-[11px] text-fg/55"
+            data-testid="git-pane-merged-note"
+            title="This lane's pull request was merged and its remote branch is gone. There is nothing left to push."
+          >
+            <CheckCircle size={12} />
+            PR #{mergedPrNumber} merged
+          </span>
+        ) : (
+          <WorkToolChromeButton
+            label={upstreamMissing
+              ? "Recreate remote branch"
+              : syncStatus?.hasUpstream === false
+                ? "Publish branch"
+                : nextActionHint?.action === "force_push_lease"
+                  ? "Force push (lease)"
+                  : "Push"}
+            onClick={async () => {
+              if (nextActionHint?.action === "force_push_lease") {
+                const ok = await confirmForcePushWithLease();
+                if (!ok) return;
+                runPush(true);
+                return;
+              }
+              runPush(false);
+            }}
+            disabled={!laneId || busyAction != null}
+            testId="git-pane-push"
+          >
+            <ArrowUp size={16} />
+          </WorkToolChromeButton>
+        )}
         {catchUpLine && lane && laneId ? (
           <LaneCatchUpMenu
             lane={lane}

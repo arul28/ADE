@@ -18,6 +18,7 @@
 import type { AgentChatEvent } from "../../../shared/types";
 import type { CodexVoiceUpdateLevel } from "../../../shared/codexVoice";
 import type { Logger } from "../logging/logger";
+import { cutTextAtCodePoint } from "../../../shared/codePointText";
 
 /**
  * Narration. Voice is metered by the minute, not by the word, so the throttle
@@ -472,7 +473,7 @@ export function createVoiceNarration(options: {
       speakResult(`${name} ${outcome}.`);
       const summary = (event.finalSummary ?? event.summary ?? "").trim();
       if (summary) {
-        sink.tell(`[ADE] Subagent "${name}" ${outcome}. Its report (shown in the chat): ${summary.slice(0, 1_500)}`);
+        sink.tell(`[ADE] Subagent "${name}" ${outcome}. Its report (shown in the chat): ${cutTextAtCodePoint(summary, 1_500)}`);
       }
       return;
     }

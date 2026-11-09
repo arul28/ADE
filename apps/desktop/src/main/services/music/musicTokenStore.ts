@@ -51,8 +51,13 @@ export function createMusicTokenStore(args: {
     }
     fs.mkdirSync(args.dir, { recursive: true });
     const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, safeStorage.encryptString(JSON.stringify(Object.fromEntries(values))));
-    fs.renameSync(tmp, file);
+    try {
+      fs.writeFileSync(tmp, safeStorage.encryptString(JSON.stringify(Object.fromEntries(values))));
+      fs.renameSync(tmp, file);
+    } catch (error) {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+      throw error;
+    }
   };
 
   return {

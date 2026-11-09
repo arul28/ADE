@@ -43,6 +43,7 @@ import { colorsInUse, getLaneAccent, laneColorName } from "./laneColorPalette";
 import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
 import { LaneEmojiPicker } from "./LaneEmojiPicker";
 import { isImeComposing } from "../../lib/imeComposition";
+import { formatBytes } from "../../../shared/formatting";
 
 /** Independent delete targets shown as a checklist. */
 export type LaneDeleteSelection = {
@@ -59,19 +60,6 @@ export const EMPTY_LANE_DELETE_SELECTION: LaneDeleteSelection = {
 
 function laneDeleteSelectionHasAny(selection: LaneDeleteSelection): boolean {
   return selection.worktree || selection.localBranch || selection.remoteBranch;
-}
-
-function formatBytesCompact(bytes: number): string {
-  const safe = Math.max(0, bytes);
-  if (safe < 1024) return `${safe} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let value = safe / 1024;
-  let unit = units[0];
-  for (let index = 1; index < units.length && value >= 1024; index += 1) {
-    value /= 1024;
-    unit = units[index];
-  }
-  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${unit}`;
 }
 
 const STEP_LABELS: Record<LaneDeleteStepName, string> = {
@@ -815,7 +803,7 @@ export function ManageLaneDialog({
                         Archive &amp; reclaim
                       </div>
                       <span className="text-xs font-semibold tabular-nums text-muted-fg">
-                        {reclaimRisk ? formatBytesCompact(reclaimRisk.reclaimableBytes) : "Measuring…"}
+                        {reclaimRisk ? formatBytes(reclaimRisk.reclaimableBytes) : "Measuring…"}
                       </span>
                     </div>
                     <p className="mt-1.5 text-xs leading-relaxed text-muted-fg/70">
@@ -880,7 +868,7 @@ export function ManageLaneDialog({
                               ? "Cannot reclaim this folder"
                               : reclaimRisk.dirty && !discardDirtyConfirmed
                                 ? "Confirm discarded changes"
-                                : `Reclaim ${formatBytesCompact(reclaimRisk.reclaimableBytes)}`}
+                                : `Reclaim ${formatBytes(reclaimRisk.reclaimableBytes)}`}
                       </Button>
                     </div>
                   </div>
@@ -894,7 +882,7 @@ export function ManageLaneDialog({
               <p className="text-xs text-red-200/70">
                 Stops lane activity and removes what you pick. Work that only this lane holds is kept for {DELETED_LANE_KEEP_DAYS} days in Recently deleted.
                 {!isBatch && reclaimRisk && reclaimRisk.reclaimableBytes > 0 ? (
-                  <span className="text-muted-fg/70"> Frees about <strong className="text-fg">{formatBytesCompact(reclaimRisk.reclaimableBytes)}</strong>.</span>
+                  <span className="text-muted-fg/70"> Frees about <strong className="text-fg">{formatBytes(reclaimRisk.reclaimableBytes)}</strong>.</span>
                 ) : null}
               </p>
 

@@ -12,6 +12,7 @@ import type { AgentChatMessageSessionArgs } from "../../../shared/types/chat";
 import { isMovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 import type { PrActionRun, PrCheck, PrComment, PrEventPayload, PrReview, PrSummary } from "../../../shared/types/prs";
 import { isChatToolType } from "../../../shared/sessionSpawnNesting";
+import { githubAuthFailureKindOf } from "../github/githubRateLimit";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage, nowIso } from "../shared/utils";
 import { prChatWatchSummary, type PrChatWatchRecord, type PrChatWatchStore } from "./prChatWatchStore";
@@ -64,6 +65,18 @@ type WatchMemory = {
   lastHeadSha: string | null;
   deliveryFailures: number;
 };
+
+/**
+ * GitHub answered and the answer will not change by waiting: the PR or repo is
+ * gone, or the account lost access. Rate limits, 5xx, network errors and an
+ * expired sign-in all clear up on their own or after a reconnect, so a watch
+ * carries on through them.
+ */
+function isPermanentPrReadFailure(error: unknown): boolean {
+  if (githubAuthFailureKindOf(error) === "permission_denied") return true;
+  const status = (error as { status?: unknown } | null)?.status;
+  return status === 404 || status === 410;
+}
 
 function toRemarks(comments: PrComment[] | null, reviews: PrReview[] | null, ignored: Set<string>): {
   remarks: PrWatchRemark[] | null;
@@ -194,11 +207,17 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
     let reviews: PrReview[] | null = null;
     // `undefined` = not read this pass. A draft cannot be queued, so it is not asked.
     let mergeQueueRemoval: PrMergeQueueRemoval | null | undefined;
+    let permanentlyUnreadable = false;
     if (!terminal) {
+      const refusals: unknown[] = [];
+      const noteRefusal = (error: unknown): null => {
+        refusals.push(error);
+        return null;
+      };
       [checks, comments, reviews, mergeQueueRemoval] = await Promise.all([
-        prService.getChecks(pr.id).catch(() => null),
+        prService.getChecks(pr.id).catch(noteRefusal),
         prService.getComments(pr.id).catch(() => null),
-        prService.getReviews(pr.id).catch(() => null),
+        prService.getReviews(pr.id).catch(noteRefusal),
         pr.state === "open" && prService.getMergeQueueRemoval
           ? prService.getMergeQueueRemoval(pr.id).catch((error: unknown) => {
             logger.debug("prs.watch_merge_queue_read_failed", { prId: pr!.id, error: getErrorMessage(error) });
@@ -206,6 +225,8 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
           })
           : Promise.resolve(undefined),
       ]);
+      // The comment read swallows its own failures, so checks and reviews decide.
+      permanentlyUnreadable = checks === null && reviews === null && refusals.every(isPermanentPrReadFailure);
     } else {
       // The last word before a merge or close still counts.
       [comments, reviews] = await Promise.all([
@@ -226,7 +247,8 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
         (latest, run) => (!latest || run.createdAt > latest.createdAt ? run : latest),
         null,
       );
-      if (newest?.headSha && newest.headSha !== pr.headSha) pr = { ...pr, headSha: newest.headSha };
+      // The row's conflict answer is about the older head, so it says nothing here.
+      if (newest?.headSha && newest.headSha !== pr.headSha) pr = { ...pr, headSha: newest.headSha, mergeConflicts: null };
     }
 
     const { remarks, ignored } = toRemarks(comments, reviews, store.adeCommentIds(pr.id));
@@ -239,6 +261,7 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
       ignoredRemarkIds: ignored,
       mergeQueueRemoval,
       watchStartedAt: record.startedAt,
+      permanentlyUnreadable,
       nowMs,
     });
 

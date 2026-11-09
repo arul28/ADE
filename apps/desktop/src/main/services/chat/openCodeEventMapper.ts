@@ -26,6 +26,23 @@ import {
 
 type ActivityKind = Extract<AgentChatEvent, { type: "activity" }>["activity"];
 
+/** Stop cuts running tools off this way. That is not the tool failing. */
+function isOpenCodeToolInterrupted(error: { type?: unknown; message?: unknown } | null | undefined, metadata: unknown): boolean {
+  if ((metadata as { interrupted?: unknown } | null | undefined)?.interrupted === true) return true;
+  return String(error?.type ?? "").toLowerCase() === "aborted" || error?.message === "Tool execution aborted";
+}
+
+/** The shell tool returns normally when its command exits non-zero. */
+function openCodeExitedNonZero(metadata: unknown): boolean {
+  const exit = (metadata as { exit?: unknown } | null | undefined)?.exit;
+  return typeof exit === "number" && exit !== 0;
+}
+
+function historyToolStatus(state: { status: string; error?: { type?: unknown; message?: unknown }; metadata?: unknown }): "completed" | "failed" | "interrupted" {
+  if (state.status === "error") return isOpenCodeToolInterrupted(state.error, state.metadata) ? "interrupted" : "failed";
+  return openCodeExitedNonZero(state.metadata) ? "failed" : "completed";
+}
+
 export type OpenCodeMapperDeps = {
   activityForToolName(tool: string): { activity: ActivityKind; detail: string };
   reasoningDetail: string;
@@ -234,7 +251,7 @@ export function createOpenCodeTurnMapper(args: {
             itemId: data.id,
             logicalItemId: data.id,
             turnId,
-            status: "completed",
+            status: openCodeExitedNonZero(data.metadata) ? "failed" : "completed",
           },
         }];
       }
@@ -257,7 +274,7 @@ export function createOpenCodeTurnMapper(args: {
               itemId: data.id,
               logicalItemId: data.id,
               turnId,
-              status: "failed",
+              status: isOpenCodeToolInterrupted(data.error, (data as { metadata?: unknown }).metadata) ? "interrupted" : "failed",
             },
           },
         ];
@@ -401,7 +418,7 @@ export function mapOpenCodeMessagesToTranscript(
             tool: part.name,
             result: part.state.status === "error" ? { error: part.state.error.message, output } : { output },
             itemId: part.id,
-            status: part.state.status === "error" ? "failed" : "completed",
+            status: historyToolStatus(part.state),
           }, undefined, part.time.completed ?? part.time.created);
         }
       }

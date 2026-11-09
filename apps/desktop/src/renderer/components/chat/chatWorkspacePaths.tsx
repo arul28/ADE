@@ -23,6 +23,12 @@ export type WorkspacePathLocation = {
   path: string;
   startLine?: number;
   startColumn?: number;
+  /**
+   * The path as written, when it contains a backslash. On a POSIX workspace a
+   * backslash is an ordinary file name character; which it is depends on the
+   * workspace's machine, not this client's, so the choice waits for its root.
+   */
+  originalPath?: string;
 };
 
 export function isExternalHref(href: string): boolean {
@@ -114,7 +120,20 @@ export function parseWorkspacePathLocation(value: string): WorkspacePathLocation
     path: normalizedPath,
     startLine: fromFragment.startLine ?? fromSuffix.startLine,
     startColumn: fromFragment.startColumn ?? fromSuffix.startColumn,
+    ...(decodedPath.includes("\\") ? { originalPath: splitWorkspacePathLineSuffix(decodedPath).path } : {}),
   };
+}
+
+const BACKSLASH_PLACEHOLDER = "\u0000";
+
+/** The candidate as a path on the workspace's own machine, keeping a POSIX file name's backslashes. */
+function candidatePathForWorkspaces(
+  candidate: WorkspacePathLocation,
+  workspaces: readonly Pick<FilesWorkspace, "rootPath">[],
+): string {
+  const root = workspaces[0]?.rootPath ?? "";
+  if (!candidate.originalPath || !root.startsWith("/") || isWindowsAbsolutePath(root)) return normalizePath(candidate.path);
+  return normalizePath(candidate.originalPath.replaceAll("\\", BACKSLASH_PLACEHOLDER)).replaceAll(BACKSLASH_PLACEHOLDER, "\\");
 }
 
 /**
@@ -190,7 +209,7 @@ export function resolveFilesNavigationTarget<W extends Pick<FilesWorkspace, "roo
   const candidate = typeof args.path === "string" ? parseWorkspacePathLocation(args.path) : args.path;
   if (!candidate) return null;
 
-  const normalizedCandidate = normalizePath(candidate.path);
+  const normalizedCandidate = candidatePathForWorkspaces(candidate, args.workspaces);
   if (normalizedCandidate.startsWith("/") || isWindowsAbsolutePath(normalizedCandidate)) {
     const matches = args.workspaces
       .map((workspace) => ({

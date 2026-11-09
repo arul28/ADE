@@ -119,7 +119,8 @@ export async function readHandoffWorkingTreeSha(args: { worktreePath: string }):
     const env: NodeJS.ProcessEnv = { GIT_INDEX_FILE: indexPath };
     if (fs.existsSync(realIndex)) fs.copyFileSync(realIndex, indexPath);
     else await gitOut(topLevel, ["read-tree", "HEAD"], env);
-    await gitOut(topLevel, ["add", "--all", "--", "."], env);
+    // A personal `core.safecrlf` must not refuse a file ADE only snapshots.
+    await gitOut(topLevel, ["-c", "core.safecrlf=false", "add", "--all", "--", "."], env);
     return await gitOut(topLevel, ["write-tree"], env);
   } finally {
     removeTempDir(tempDir);
@@ -134,6 +135,8 @@ async function precheckUntrackedSize(cwd: string): Promise<void> {
     maxOutputBytes: 16 * 1024 * 1024,
   });
   if (listed.exitCode !== 0) return; // The real pack reports a git failure.
+  // A list too long to read back is already more than a handoff can carry.
+  if (listed.stdoutTruncated) throw new Error(HANDOFF_GIT_BUNDLE_TOO_LARGE_MESSAGE);
   let total = 0;
   for (const relative of listed.stdout.split("\0")) {
     if (!relative) continue;

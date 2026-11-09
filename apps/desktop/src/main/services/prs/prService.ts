@@ -845,20 +845,46 @@ function commitAgeMs(timestamp: string | null | undefined, nowMs: number): numbe
   return Number.isFinite(parsed) ? Math.max(0, nowMs - parsed) : null;
 }
 
+/** Each reviewer's standing opinion: their latest verdict, unless it was dismissed. */
+function latestReviewStatesByUser(reviews: readonly PrReview[]): Map<string, string> {
+  const latest = new Map<string, string>();
+  for (const review of reviews) {
+    if (review.state === "approved") latest.set(review.reviewer, "APPROVED");
+    else if (review.state === "changes_requested") latest.set(review.reviewer, "CHANGES_REQUESTED");
+    else if (review.state === "dismissed") latest.delete(review.reviewer);
+  }
+  return latest;
+}
+
+/**
+ * GitHub's own verdict wins: one approval on a branch that needs two is not
+ * approved. `reviewStatesByUser` decides only when GitHub has none, as on a
+ * repo with no required reviews. Hidden reviews are already out of the map, so
+ * a changes-requested verdict that rests on one alone does not count.
+ */
 function computeReviewStatus(args: {
+  reviewDecision?: PrReviewDecision;
   requestedReviewers: string[];
   requestedTeams?: string[];
   reviewStatesByUser: Map<string, string>;
 }): PrReviewStatus {
-  for (const state of args.reviewStatesByUser.values()) {
-    if (state === "CHANGES_REQUESTED") return "changes_requested";
-  }
+  const visibleChangesRequested = Array.from(args.reviewStatesByUser.values()).includes("CHANGES_REQUESTED");
+  if (args.reviewDecision === "approved") return "approved";
+  if (args.reviewDecision === "review_required") return visibleChangesRequested ? "changes_requested" : "requested";
+  if (visibleChangesRequested) return "changes_requested";
   for (const state of args.reviewStatesByUser.values()) {
     if (state === "APPROVED") return "approved";
   }
   if (args.requestedReviewers.length > 0 || (args.requestedTeams?.length ?? 0) > 0) return "requested";
   return "none";
 }
+
+type PrVisibility = { reviewDecision: PrReviewDecision; hiddenNodeIds: string[] };
+
+const NO_PR_VISIBILITY: PrVisibility = { reviewDecision: null, hiddenNodeIds: [] };
+
+/** A PR's review verdict and hidden items, reused while the PR is quiet. */
+const PR_VISIBILITY_REUSE_MS = 10 * 60_000;
 
 function rowToSummary(row: PullRequestRow): PrSummary {
   const creationStrategy = normalizePrCreationStrategy(row.creation_strategy);
@@ -1247,6 +1273,7 @@ function toDeploymentState(raw: unknown): PrDeploymentState {
 type GraphqlReviewThreadCommentNode = {
   id?: unknown;
   databaseId?: unknown;
+  isMinimized?: unknown;
   body?: unknown;
   url?: unknown;
   diffHunk?: unknown;
@@ -5179,12 +5206,74 @@ export function createPrService({
     return reviews.map((review) => ({ ...review }));
   };
 
-  const fetchReviewsUncached = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReview[]> => {
-    const data = await fetchAllPages<any>({
-      path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/reviews`
-    });
+  /**
+   * What REST cannot say about a PR: GitHub's review verdict and which comments
+   * and reviews a moderator hid. Reuse follows `whileQuiet`, for longer than the
+   * merge box: this is read for every open PR on every poll, and hiding a
+   * comment is rare. A failed read means "no verdict, nothing hidden".
+   */
+  const fetchPrVisibility = async (repo: GitHubRepoRef, prNumber: number): Promise<PrVisibility> => {
+    const brakeRepoKey = `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}`;
+    if (mergeStateGraphqlBrake.cooldown(brakeRepoKey)) return NO_PR_VISIBILITY;
+    try {
+      const pull = await fetchPr(repo, prNumber);
+      const what = `visibility:${prNumber}`;
+      return await readCache.shared(repo, what, () =>
+        readCache.whileQuiet(repo, what, pull, () => fetchPrVisibilityUncached(repo, prNumber), undefined, PR_VISIBILITY_REUSE_MS));
+    } catch (error) {
+      if (isGithubRateLimitFailure(error)) {
+        mergeStateGraphqlBrake.armRateLimitCooldown(brakeRepoKey, githubRateLimitResetAtMsOf(error));
+      }
+      logger.debug("prs.visibility_read_failed", {
+        repo: `${repo.owner}/${repo.name}`,
+        prNumber,
+        error: getErrorMessage(error),
+      });
+      return NO_PR_VISIBILITY;
+    }
+  };
 
-    return data.map((entry: any) => {
+  const fetchPrVisibilityUncached = async (repo: GitHubRepoRef, prNumber: number): Promise<PrVisibility> => {
+    type MinimizableNode = { id?: unknown; isMinimized?: unknown } | null;
+    const data = await graphqlRequest<{
+      repository?: {
+        pullRequest?: {
+          reviewDecision?: unknown;
+          comments?: { nodes?: MinimizableNode[] | null } | null;
+          reviews?: {
+            nodes?: Array<(NonNullable<MinimizableNode> & { comments?: { nodes?: MinimizableNode[] | null } | null }) | null> | null;
+          } | null;
+        } | null;
+      } | null;
+    }>(`query AdePullRequestVisibility($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewDecision
+      comments(last: 100) { nodes { id isMinimized } }
+      reviews(last: 100) { nodes { id isMinimized comments(first: 50) { nodes { id isMinimized } } } }
+    }
+  }
+}`, { owner: repo.owner, name: repo.name, number: prNumber });
+    const pull = data?.repository?.pullRequest ?? null;
+    const reviewNodes = pull?.reviews?.nodes ?? [];
+    const hiddenNodeIds = [
+      ...(pull?.comments?.nodes ?? []),
+      ...reviewNodes,
+      ...reviewNodes.flatMap((review) => review?.comments?.nodes ?? []),
+    ].flatMap((node) => (node?.isMinimized === true && asString(node.id) ? [asString(node.id)] : []));
+    return { reviewDecision: normalizeReviewDecision(pull?.reviewDecision), hiddenNodeIds };
+  };
+
+  const fetchReviewsUncached = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReview[]> => {
+    const [data, visibility] = await Promise.all([
+      fetchAllPages<any>({
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/reviews`
+      }),
+      fetchPrVisibility(repo, prNumber),
+    ]);
+    const hidden = new Set(visibility.hiddenNodeIds);
+
+    return data.filter((entry: any) => !hidden.has(asString(entry?.node_id))).map((entry: any) => {
       const rawState = asString(entry?.state).toLowerCase();
       let state: PrReview["state"];
       if (rawState === "approved") state = "approved";
@@ -5203,11 +5292,15 @@ export function createPrService({
   };
 
   const fetchIssueComments = async (repo: GitHubRepoRef, prNumber: number): Promise<PrComment[]> => {
-    const data = await fetchAllPages<Record<string, unknown>>({
-      path: `/repos/${repo.owner}/${repo.name}/issues/${prNumber}/comments`
-    });
+    const [data, visibility] = await Promise.all([
+      fetchAllPages<Record<string, unknown>>({
+        path: `/repos/${repo.owner}/${repo.name}/issues/${prNumber}/comments`
+      }),
+      fetchPrVisibility(repo, prNumber),
+    ]);
+    const hidden = new Set(visibility.hiddenNodeIds);
 
-    return data.map((entry) => toPrComment(
+    return data.filter((entry) => !hidden.has(asString(entry.node_id))).map((entry) => toPrComment(
       "issue",
       entry,
       `issue:${asString(entry.node_id) || asString(entry.id) || randomUUID()}`,
@@ -5215,11 +5308,15 @@ export function createPrService({
   };
 
   const fetchReviewComments = async (repo: GitHubRepoRef, prNumber: number): Promise<PrComment[]> => {
-    const data = await fetchAllPages<Record<string, unknown>>({
-      path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/comments`
-    });
+    const [data, visibility] = await Promise.all([
+      fetchAllPages<Record<string, unknown>>({
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/comments`
+      }),
+      fetchPrVisibility(repo, prNumber),
+    ]);
+    const hidden = new Set(visibility.hiddenNodeIds);
 
-    return data.map((entry) => toPrComment(
+    return data.filter((entry) => !hidden.has(asString(entry.node_id))).map((entry) => toPrComment(
       "review",
       entry,
       `review:${asString(entry.node_id) || asString(entry.id) || randomUUID()}`,
@@ -5269,6 +5366,7 @@ export function createPrService({
                    nodes {
                      id
                      databaseId
+                     isMinimized
                      body
                      url
                     diffHunk
@@ -5321,7 +5419,7 @@ export function createPrService({
       const nodes = Array.isArray(reviewThreads?.nodes) ? reviewThreads.nodes : [];
       for (const node of nodes) {
         const comments: PrReviewThreadComment[] = Array.isArray(node?.comments?.nodes)
-          ? node.comments.nodes.map((entry: GraphqlReviewThreadCommentNode) => ({
+          ? node.comments.nodes.filter((entry: GraphqlReviewThreadCommentNode) => entry?.isMinimized !== true).map((entry: GraphqlReviewThreadCommentNode) => ({
               id: asString(entry?.id) || String(randomUUID()),
               githubId: Number.isSafeInteger(Number(entry?.databaseId)) ? Number(entry.databaseId) : null,
               author: asString(entry?.author?.login) || "unknown",
@@ -5335,6 +5433,8 @@ export function createPrService({
               updatedAt: asString(entry?.updatedAt) || null,
             }))
           : [];
+        // A thread whose every comment was hidden has nothing left to show.
+        if (comments.length === 0 && (node?.comments?.nodes?.length ?? 0) > 0) continue;
         const latestComment = comments[comments.length - 1] ?? comments[0] ?? null;
         const diffSideRaw = asString(node?.diffSide).trim().toUpperCase();
         threads.push({
@@ -5504,25 +5604,22 @@ export function createPrService({
     const requestedTeams = Array.isArray(pr?.requested_teams) ? pr.requested_teams.map((team: any) => asString(team?.slug)).filter(Boolean) : [];
 
     let checkRunsFetchFailed = false;
-    const [combinedStatus, checkRuns, reviews, compare] = shouldFetchLiveStatus
+    const [combinedStatus, checkRuns, reviews, compare, visibility] = shouldFetchLiveStatus
       ? await Promise.all([
           headSha ? bestEffort("refreshOne.fetchCombinedStatus", fetchCombinedStatus(repo, headSha), { state: "", statuses: [] }, () => { checkRunsFetchFailed = true; }) : Promise.resolve({ state: "", statuses: [] }),
           headSha ? bestEffort("refreshOne.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
           bestEffort("refreshOne.fetchReviews", fetchReviews(repo, Number(row.github_pr_number)), []),
-          baseSha && headSha ? bestEffort("refreshOne.fetchCompare", fetchCompare(repo, baseSha, headSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null })
+          baseSha && headSha ? bestEffort("refreshOne.fetchCompare", fetchCompare(repo, baseSha, headSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null }),
+          fetchPrVisibility(repo, Number(row.github_pr_number)),
         ])
       : [
           { state: "", statuses: [] },
           [] as any[],
           [] as Awaited<ReturnType<typeof fetchReviews>>,
           { behindBy: null as number | null },
+          NO_PR_VISIBILITY,
         ];
-    const reviewStatesByUser = new Map<string, string>();
-    for (const review of reviews) {
-      // Only treat these as gating states.
-      if (review.state === "approved") reviewStatesByUser.set(review.reviewer, "APPROVED");
-      if (review.state === "changes_requested") reviewStatesByUser.set(review.reviewer, "CHANGES_REQUESTED");
-    }
+    const reviewStatesByUser = latestReviewStatesByUser(reviews);
 
     const checksRollup = shouldFetchLiveStatus
       ? await deriveChecksRollup({
@@ -5548,7 +5645,7 @@ export function createPrService({
         };
     const checksStatus = checksRollup.status;
     const reviewStatus = shouldFetchLiveStatus
-      ? computeReviewStatus({ requestedReviewers, requestedTeams, reviewStatesByUser })
+      ? computeReviewStatus({ reviewDecision: visibility.reviewDecision, requestedReviewers, requestedTeams, reviewStatesByUser })
       : (row.review_status as PrReviewStatus | null) ?? "none";
     const additions = Number(pr?.additions ?? 0);
     const deletions = Number(pr?.deletions ?? 0);
@@ -5915,11 +6012,7 @@ export function createPrService({
 
     const requestedReviewers = Array.isArray(pr?.requested_reviewers) ? pr.requested_reviewers.map((u: any) => asString(u?.login)).filter(Boolean) : [];
     const requestedTeams = Array.isArray(pr?.requested_teams) ? pr.requested_teams.map((team: any) => asString(team?.slug)).filter(Boolean) : [];
-    const reviewStatesByUser = new Map<string, string>();
-    for (const review of reviews) {
-      if (review.state === "approved") reviewStatesByUser.set(review.reviewer, "APPROVED");
-      if (review.state === "changes_requested") reviewStatesByUser.set(review.reviewer, "CHANGES_REQUESTED");
-    }
+    const reviewStatesByUser = latestReviewStatesByUser(reviews);
 
     const nextState = toPrState({
       state: asString(pr?.state) || "open",
@@ -5937,7 +6030,8 @@ export function createPrService({
       previous: previousChecksRollup(prId),
     });
     const checksStatus = checksRollup.status;
-    const reviewStatus = computeReviewStatus({ requestedReviewers, requestedTeams, reviewStatesByUser });
+    const reviewDecision = mergeState ? mergeState.reviewDecision : (await fetchPrVisibility(repo, prNumber)).reviewDecision;
+    const reviewStatus = computeReviewStatus({ reviewDecision, requestedReviewers, requestedTeams, reviewStatesByUser });
     const behindBaseBy = compare.behindBy;
 
     const mergeStateStatus = mergeState?.mergeStateStatus ?? null;

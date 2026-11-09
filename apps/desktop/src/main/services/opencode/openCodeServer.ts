@@ -166,6 +166,11 @@ const SHARED_SERVER_IDLE_MS = 10 * 60_000;
 const PROFILE_SERVER_IDLE_MS = 60_000;
 const EVENT_STREAM_RETRY_MIN_MS = 250;
 const EVENT_STREAM_RETRY_MAX_MS = 5_000;
+/** The server accepts a subscription at once, so this long with no bytes is a hung connect. */
+const EVENT_STREAM_FIRST_ACTIVITY_MS = 10_000;
+/** The stream carries a keepalive comment every 15 s even on an idle server. */
+const EVENT_STREAM_SILENCE_MS = 45_000;
+const EVENT_STREAM_WATCHDOG_TICK_MS = 2_000;
 const OPENCODE_BASIC_AUTH_USER = "opencode";
 
 const serverEntries = new Map<string, OpenCodeServerEntry>();
@@ -701,8 +706,22 @@ function ensureEventStream(entry: OpenCodeServerEntry, logger?: Logger | null): 
     while (!entry.closed) {
       const abort = new AbortController();
       entry.streamAbort = abort;
+      let lastActivityAt = Date.now();
+      let sawActivity = false;
+      let stalled = false;
+      const watchdog = setInterval(() => {
+        if (Date.now() - lastActivityAt < (sawActivity ? EVENT_STREAM_SILENCE_MS : EVENT_STREAM_FIRST_ACTIVITY_MS)) return;
+        stalled = true;
+        logger?.warn("opencode.event_stream_stalled", { profile: entry.key, sawActivity });
+        abort.abort();
+      }, EVENT_STREAM_WATCHDOG_TICK_MS);
+      watchdog.unref?.();
+      const onActivity = () => {
+        sawActivity = true;
+        lastActivityAt = Date.now();
+      };
       try {
-        for await (const event of entry.client.event.subscribe({ signal: abort.signal })) {
+        for await (const event of entry.client.event.subscribe({ signal: abort.signal, onActivity })) {
           if (event.type === "server.connected") {
             backoffMs = EVENT_STREAM_RETRY_MIN_MS;
             if (hadGap) {
@@ -729,11 +748,13 @@ function ensureEventStream(entry: OpenCodeServerEntry, logger?: Logger | null): 
           }
         }
       } catch (error) {
-        if (entry.closed || abort.signal.aborted) break;
+        if (entry.closed || (abort.signal.aborted && !stalled)) break;
         logger?.warn("opencode.event_stream_error", {
           profile: entry.key,
           error: error instanceof Error ? error.message : String(error),
         });
+      } finally {
+        clearInterval(watchdog);
       }
       if (entry.closed) break;
       hadGap = true;

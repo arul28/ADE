@@ -1,16 +1,19 @@
 import { spawnSync } from "node:child_process";
 import type { ServiceManagerResult, ServiceManagerSpawnSync, ServiceManagerStatusResult } from "./common";
 import { ADE_RUNTIME_SERVICE_NAME, isPidAlive } from "./common";
-import { getLaunchdServiceMainPid, getLaunchdServiceStatus, installLaunchdService, uninstallLaunchdService } from "./installLaunchd";
-import { getSystemdServiceStatus, installSystemdService, uninstallSystemdService } from "./installSystemd";
+import { getLaunchdServiceMainPid, getLaunchdServiceStatus, installLaunchdService, readLaunchdServiceHome, uninstallLaunchdService } from "./installLaunchd";
+import { getSystemdServiceStatus, installSystemdService, readSystemdServiceHome, uninstallSystemdService } from "./installSystemd";
 import { readDetachedSupervisedBrainPid } from "./detachedSupervisor";
 import {
   getWindowsServiceStatus,
   installWindowsService,
   checkWindowsServiceRemovable,
+  readWindowsServiceHome,
   readWindowsServicePidRecord,
   uninstallWindowsService,
 } from "./installWindows";
+import { pathsEqual } from "../../../desktop/src/main/services/shared/pathCompare";
+import { resolveMachineAdeDir } from "../services/projects/machineLayout";
 
 export type { ServiceManagerResult, ServiceManagerStatusResult } from "./common";
 
@@ -18,6 +21,44 @@ export type { ServiceManagerResult, ServiceManagerStatusResult } from "./common"
 const SERVICE_LOOKUP_TIMEOUT_MS = 2_000;
 const boundedSpawnSync: ServiceManagerSpawnSync = (command, args, options) =>
   spawnSync(command, args, { ...options, timeout: SERVICE_LOOKUP_TIMEOUT_MS });
+
+function readInstalledServiceHome(): string | null {
+  switch (process.platform) {
+    case "darwin":
+      return readLaunchdServiceHome();
+    case "linux":
+      return readSystemdServiceHome();
+    case "win32":
+      return readWindowsServiceHome();
+    default:
+      return null;
+  }
+}
+
+function rerunWithHome(home: string, sub: string): string {
+  return process.platform === "win32"
+    ? `$env:ADE_HOME='${home.replace(/'/g, "''")}'; ade service ${sub}`
+    : `ADE_HOME=${JSON.stringify(home)} ade service ${sub}`;
+}
+
+/**
+ * A refusal when this shell's ADE home is not the one the installed service
+ * serves, else null. The service is the machine's, not the shell's: a test
+ * shell's `ADE_HOME` must not boot out the real brain or replace its unit.
+ */
+export function serviceHomeMismatch(sub: "start" | "stop" | "restart"): ServiceManagerResult | null {
+  const installedHome = readInstalledServiceHome();
+  if (!installedHome) return null;
+  const shellHome = resolveMachineAdeDir(process.env);
+  if (pathsEqual(installedHome, shellHome)) return null;
+  return {
+    ok: false,
+    serviceName: ADE_RUNTIME_SERVICE_NAME,
+    action: sub === "stop" ? "uninstall" : "install",
+    path: null,
+    message: `This shell uses ADE home ${shellHome}, but the installed ADE service serves ${installedHome}. Nothing was changed. To manage that service, run: ${rerunWithHome(installedHome, sub)}`,
+  };
+}
 
 // Main pid of the channel's installed runtime service, or null when the
 // platform/service does not expose one, or its manager did not answer in time. Used by the brain to decide whether

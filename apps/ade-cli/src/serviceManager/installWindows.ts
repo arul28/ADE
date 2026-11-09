@@ -939,6 +939,25 @@ function readLauncherBrainCommand(launcherPath: string): AdeServiceCommand | nul
   return { command, args: parseCommandLine(fields.Arguments, { platform: "win32" }) };
 }
 
+/**
+ * The ADE home the installed Windows service serves. The launcher lives under
+ * the machine's default home, so it is found without the shell's `ADE_HOME`.
+ * Null when no launcher can be read, so an unreadable or absent one stays
+ * removable. A launcher that sets no `ADE_HOME` serves the default home.
+ */
+export function readWindowsServiceHome(env: NodeJS.ProcessEnv = process.env): string | null {
+  const launcherEnv = { ...env, ADE_HOME: "" };
+  let script: string;
+  try {
+    script = fs.readFileSync(resolveWindowsServiceLauncherPath({ env: launcherEnv }), "utf8");
+  } catch {
+    return null;
+  }
+  const match = /SetEnvironmentVariable\('ADE_HOME',\s*'((?:[^']|'')*)'/.exec(script);
+  const value = match?.[1]?.replace(/''/g, "'").trim();
+  return value || resolveWindowsAdeDir(launcherEnv);
+}
+
 /** The brain command this channel's installed Windows service runs, or null when none is installed. */
 export function readWindowsServiceBrainCommand(env: NodeJS.ProcessEnv = process.env): AdeServiceCommand | null {
   return readLauncherBrainCommand(resolveWindowsServiceLauncherPath({ env }));
