@@ -4,8 +4,10 @@ import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, 
 import { useNavigate } from "react-router-dom";
 import {
   projectStateKeyForBinding,
+  selectActiveProjectRoot,
   useAppStore,
 } from "../../state/appStore";
+import { trackPendingLaneCreate } from "../../lib/pendingLaneCreates";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { selectOtherMachineBranchStates, useLanesForPin } from "../../state/crossMachineLanes";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
@@ -1027,9 +1029,13 @@ export function LaneGitActionsPane({
     });
     try {
       // Made on this lane's machine: the copy reads this lane's folder.
-      const created = await window.ade.lanes.create(
-        { name: name.trim(), start: { from: "branch", branch, on: "uncommitted" } },
-        pin,
+      // The lane lists show a "Creating…" row while this runs.
+      const created = await trackPendingLaneCreate(
+        { name: name.trim(), projectRoot: selectActiveProjectRoot(useAppStore.getState()) },
+        () => window.ade.lanes.create(
+          { name: name.trim(), start: { from: "branch", branch, on: "uncommitted" } },
+          pin,
+        ),
       );
       // The lane is made even when the copy did not apply (or a fallback was
       // taken); say so instead of claiming the changes came along.

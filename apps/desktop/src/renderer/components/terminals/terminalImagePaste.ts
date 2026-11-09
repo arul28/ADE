@@ -3,12 +3,25 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { TERMINAL_BRACKETED_PASTE_END, TERMINAL_BRACKETED_PASTE_START } from "./terminalBracketedPaste";
 
 /**
- * Clipboard-image paste for tracked agent CLI terminals.
+ * Clipboard-image paste for terminals whose program cannot read this
+ * computer's clipboard itself.
  *
  * The image is saved as a chat temp attachment on the session's machine, and
- * a short path/type stub goes into the PTY as a bracketed paste. The terminal
- * runtime lives in `TerminalView`; this module sees only the fields it needs.
+ * a reference to that file goes into the PTY as a bracketed paste: a short
+ * path/type stub for a tracked agent CLI, or the bare path for a plain shell
+ * on another machine. The terminal runtime lives in `TerminalView`; this
+ * module sees only the fields it needs.
  */
+
+/**
+ * What goes into the PTY for a saved image.
+ *
+ * - `agent-stub`: a few lines an agent CLI reads as a message.
+ * - `path`: the file's path alone, quoted for a shell. A plain shell can run
+ *   anything; a path is useful at a prompt and agent CLIs attach an image
+ *   whose path is pasted.
+ */
+export type TerminalImagePasteForm = "agent-stub" | "path";
 
 /** How long a failed image paste stays visible in the pane. */
 export const IMAGE_PASTE_NOTICE_MS = 8_000;
@@ -26,6 +39,8 @@ export type TerminalImagePasteRuntime = {
 export type TerminalImagePasteIo = {
   notify: () => void;
   writeInput: (data: string) => void;
+  /** Paste text the way the terminal pastes typed text (bracketed only when the program asked). */
+  pasteText: (text: string) => void;
 };
 
 type TerminalClipboardImage = { data: string; filename: string; mimeType: string };
@@ -33,6 +48,18 @@ type TerminalClipboardImage = { data: string; filename: string; mimeType: string
 function bracketedPaste(text: string): string {
   return `${TERMINAL_BRACKETED_PASTE_START}${text.trimEnd()}\n${TERMINAL_BRACKETED_PASTE_END}`;
 }
+
+/**
+ * A path as one shell word. The path comes from the session's machine, which
+ * can be Windows: a drive or UNC path takes double quotes there, and every
+ * other path takes POSIX single quotes. A plain path stays bare.
+ */
+function quotePathForShell(path: string): string {
+  if (/^[A-Za-z0-9_\-./:\\~@+]+$/.test(path)) return path;
+  if (/^[A-Za-z]:[\\/]|^\\\\/.test(path)) return `"${path}"`;
+  return `'${path.replaceAll("'", "'\\''")}'`;
+}
+
 
 function formatClipboardImageForPty(path: string, mimeType: string): string {
   return [
@@ -97,6 +124,7 @@ export async function attachClipboardImageToRuntime(
   runtime: TerminalImagePasteRuntime,
   io: TerminalImagePasteIo,
   image: TerminalClipboardImage,
+  form: TerminalImagePasteForm = "agent-stub",
 ): Promise<boolean> {
   if (runtime.disposed) return false;
   const data = base64FromImageData(image.data);
@@ -113,7 +141,12 @@ export async function attachClipboardImageToRuntime(
   }
   if (runtime.disposed) return false;
   clearImagePasteNotice(runtime, io);
-  io.writeInput(bracketedPaste(formatClipboardImageForPty(saved.path, image.mimeType)));
+  if (form === "path") {
+    // No newline: at a shell prompt a newline in a paste can run the line.
+    io.pasteText(`${quotePathForShell(saved.path)} `);
+  } else {
+    io.writeInput(bracketedPaste(formatClipboardImageForPty(saved.path, image.mimeType)));
+  }
   return true;
 }
 
@@ -121,6 +154,7 @@ export async function attachClipboardImageToRuntime(
 export async function pasteRuntimeClipboardImageAttachment(
   runtime: TerminalImagePasteRuntime,
   io: TerminalImagePasteIo,
+  form: TerminalImagePasteForm = "agent-stub",
 ): Promise<boolean> {
   if (runtime.disposed) return false;
   let image: TerminalClipboardImage | null = null;
@@ -132,7 +166,7 @@ export async function pasteRuntimeClipboardImageAttachment(
     return true;
   }
   if (!image || runtime.disposed) return false;
-  return await attachClipboardImageToRuntime(runtime, io, image);
+  return await attachClipboardImageToRuntime(runtime, io, image, form);
 }
 
 // A paste event carries the image bytes of the device the user is actually
@@ -178,6 +212,7 @@ export async function pasteClipboardImageBlob(
   runtime: TerminalImagePasteRuntime,
   io: TerminalImagePasteIo,
   blob: Blob,
+  form: TerminalImagePasteForm = "agent-stub",
 ): Promise<boolean> {
   if (runtime.disposed) return false;
   const mimeType = blob.type?.toLowerCase() || "image/png";
@@ -194,7 +229,7 @@ export async function pasteClipboardImageBlob(
     data: dataUrl,
     filename: `clipboard-image${extension}`,
     mimeType,
-  });
+  }, form);
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {

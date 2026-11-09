@@ -155,14 +155,12 @@ export function LaneMachineChip({
   selectedMachineId,
   onSelectMachine,
   onConnectMachine,
-  disabled,
 }: {
   popover: ComposerPopoverState;
   machines: LaneMachineOption[];
   selectedMachineId: string;
   onSelectMachine: (machineId: string) => void;
   onConnectMachine?: () => void;
-  disabled: boolean;
 }) {
   const close = () => popover.onOpenChange(false);
   // Only machines automatic placement may choose: a Manual only one is not balanced across.
@@ -176,7 +174,6 @@ export function LaneMachineChip({
         <button
           type="button"
           className="cl-field"
-          disabled={disabled}
           data-tone={selectedMachine ? undefined : "warn"}
           data-empty={selectedMachine ? undefined : "true"}
           data-tour="lanes.createDialog.machine"
@@ -254,14 +251,12 @@ export function LaneTemplateChip({
   selectedTemplateId,
   onSelectTemplate,
   onManageTemplates,
-  disabled,
 }: {
   popover: ComposerPopoverState;
   templates: LaneTemplate[];
   selectedTemplateId: string;
   onSelectTemplate: (templateId: string) => void;
   onManageTemplates?: () => void;
-  disabled: boolean;
 }) {
   const close = () => popover.onOpenChange(false);
   const selectedTemplate = templates.find((template) => template.id === selectedTemplateId) ?? null;
@@ -273,7 +268,6 @@ export function LaneTemplateChip({
           type="button"
           className="cl-extra"
           data-set={selectedTemplate ? "true" : undefined}
-          disabled={disabled}
           aria-label="Template"
           title={selectedTemplate?.description ?? "Set up env files, installs and services in the new lane"}
         >

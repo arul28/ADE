@@ -4,6 +4,7 @@ import type { LaneDeleteProgress, LaneListSnapshot } from "../../../../shared/ty
 import type { LaneRebaseLine } from "../laneRebaseNeeds";
 import type { LaneCatchUpTarget } from "../LaneCatchUpMenu";
 import type { CreatingIssuePlaceholder } from "../../../lib/launchedLanesHighlight";
+import type { PendingLaneCreate } from "../../../lib/pendingLaneCreates";
 import { getLaneDeleteStatusLabel, isLaneDeleteProgressActive } from "../../../lib/laneDeleteProgress";
 import { COLORS } from "../laneDesignTokens";
 import type { LaneAgent } from "../laneAgents";
@@ -29,6 +30,8 @@ const GROUP_BY_OPTIONS: Array<{ value: LaneSidebarGroupBy; label: string; descri
 const EMPTY_AGENTS: LaneAgent[] = [];
 
 export const LANES_FILTER_INPUT_ID = "lanes-filter-input";
+
+const NO_PENDING_CREATING_LANES: PendingLaneCreate[] = [];
 
 export type LaneSidebarListProps = {
   layout: LaneSidebarLayout;
@@ -62,6 +65,10 @@ export type LaneSidebarListProps = {
   onStopDelete?: (laneId: string) => void;
   creatingLaneIds: ReadonlySet<string>;
   pendingCreatingIssues: CreatingIssuePlaceholder[];
+  /** Lanes a background create has not made yet. */
+  pendingCreatingLanes?: PendingLaneCreate[];
+  /** Stops a running create, by its pending id. */
+  onStopCreate?: (pendingId: string) => void;
   pulsingLaneId: string | null;
   onSelectRow: (laneId: string, event: React.MouseEvent) => void;
   onStepSelection: (direction: -1 | 1) => void;
@@ -115,6 +122,8 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     onStopDelete,
     creatingLaneIds,
     pendingCreatingIssues,
+    pendingCreatingLanes = NO_PENDING_CREATING_LANES,
+    onStopCreate,
     pulsingLaneId,
     onSelectRow,
     onStepSelection,
@@ -191,11 +200,21 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
       />
     );
   };
-  // Lanes a batch launch is still creating. By State they sit right under
-  // Primary, where a new lane is about to appear; as a List, at the end.
-  const creatingRows = pendingCreatingIssues.map((placeholder) => (
-    <LaneSidebarCreatingRow key={`creating:${placeholder.issueId}`} name={placeholder.name} />
-  ));
+  // Lanes still being created, by a batch launch or a background create. By
+  // State they sit right under Primary, where a new lane is about to appear;
+  // as a List, at the end.
+  const creatingRows = [
+    ...pendingCreatingIssues.map((placeholder) => (
+      <LaneSidebarCreatingRow key={`creating:${placeholder.issueId}`} name={placeholder.name} />
+    )),
+    ...pendingCreatingLanes.map((entry) => (
+      <LaneSidebarCreatingRow
+        key={`creating-lane:${entry.id}`}
+        name={entry.name}
+        onStop={entry.canStop && onStopCreate ? () => onStopCreate(entry.id) : undefined}
+      />
+    )),
+  ];
   const rowCount = layout.groupBy === "list"
     ? layout.rows.length
     : layout.pinned.length + layout.groups.reduce((sum, group) => sum + group.rows.length, 0);
@@ -318,7 +337,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
             })}
           </div>
         )}
-        {rowCount === 0 && pendingCreatingIssues.length === 0 ? (
+        {rowCount === 0 && creatingRows.length === 0 ? (
           <div className="px-2 py-6 text-center text-[12px]" style={{ color: COLORS.textMuted }}>
             {loading && totalLaneCount === 0
               ? "Loading lanes…"
@@ -326,7 +345,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
                 ? (loadError ? `Couldn't load lanes. ${loadError}` : "No lanes yet")
                 : "No lanes match"}
           </div>
-        ) : filter.trim().length === 0 && totalLaneCount === 1 && pendingCreatingIssues.length === 0 ? (
+        ) : filter.trim().length === 0 && totalLaneCount === 1 && creatingRows.length === 0 ? (
           // Only the primary lane: the next step is a lane to work in.
           <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-[12px]" style={{ color: COLORS.textMuted }}>
             <span>Lanes keep each task on its own branch</span>

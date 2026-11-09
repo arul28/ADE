@@ -22,6 +22,7 @@ import {
   clipboardImageBlobFromEvent,
   pasteClipboardImageBlob,
   pasteRuntimeClipboardImageAttachment,
+  type TerminalImagePasteForm,
   type TerminalImagePasteIo,
 } from "./terminalImagePaste";
 import { TerminalImagePasteNotice } from "./TerminalImagePasteNotice";
@@ -1529,12 +1530,38 @@ function imagePasteIo(runtime: CachedRuntime): TerminalImagePasteIo {
   return {
     notify: () => notifyRuntime(runtime),
     writeInput: (data) => writePtyInput(runtime, data),
+    pasteText: (text) => void writeTextPasteForTerminal(runtime, text),
   };
 }
 
-function pasteClipboardImageShortcut(runtime: CachedRuntime, mode: TerminalImagePasteMode): Promise<boolean> {
-  return mode === "runtime-attachment"
-    ? pasteRuntimeClipboardImageAttachment(runtime, imagePasteIo(runtime))
+/**
+ * Does the terminal's program run on the computer whose clipboard this is?
+ *
+ * Only then can `^V` work: the program reads the clipboard of its own machine.
+ * A session pinned to another machine, a tab bound to a remote machine, and
+ * the web client all type here and run there.
+ */
+function terminalRunsOnThisComputer(runtime: CachedRuntime): boolean {
+  if (isWebClientMode()) return false;
+  const binding = runtime.runtimePin ?? useAppStore.getState().projectBinding;
+  return binding?.kind !== "remote";
+}
+
+/**
+ * How this terminal takes a clipboard image, or null to hand `^V` to its
+ * program. A tracked agent CLI always gets the saved file as a stub. A plain
+ * shell gets `^V` on this computer; on another machine `^V` would read that
+ * machine's clipboard and find nothing, so it gets the saved file's path.
+ */
+function imagePasteForm(runtime: CachedRuntime): TerminalImagePasteForm | null {
+  if (runtime.imagePasteMode === "runtime-attachment") return "agent-stub";
+  return terminalRunsOnThisComputer(runtime) ? null : "path";
+}
+
+function pasteClipboardImageShortcut(runtime: CachedRuntime): Promise<boolean> {
+  const form = imagePasteForm(runtime);
+  return form
+    ? pasteRuntimeClipboardImageAttachment(runtime, imagePasteIo(runtime), form)
     : pasteNativeClipboardImageShortcut(runtime);
 }
 
@@ -3267,23 +3294,22 @@ function createRuntime(args: {
       void writeTextPasteForTerminal(runtime, text);
       return;
     }
-    // native-shortcut mode deliberately hands ^V to the CLI so it reads the
-    // machine's own clipboard; only the attachment mode uploads bytes.
-    const imageBlob = runtime.imagePasteMode === "runtime-attachment" && !runtime.disposed
-      ? clipboardImageBlobFromEvent(ev.clipboardData)
-      : null;
+    // A plain shell on this computer deliberately gets ^V so its program reads
+    // this machine's own clipboard; every other terminal uploads the bytes.
+    const form = runtime.disposed ? null : imagePasteForm(runtime);
+    const imageBlob = form ? clipboardImageBlobFromEvent(ev.clipboardData) : null;
     if (imageBlob) {
       // A blob whose mime is not in the extension table (or that fails to read)
       // answers false, and dropping the paste there is silent — the user sees a
       // paste that did nothing at all. Fall through to the shortcut path, which
       // reads the clipboard itself and can still handle it.
-      void pasteClipboardImageBlob(runtime, imagePasteIo(runtime), imageBlob).then((handled) => {
+      void pasteClipboardImageBlob(runtime, imagePasteIo(runtime), imageBlob, form ?? undefined).then((handled) => {
         if (handled || runtime.disposed) return;
-        void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
+        void pasteClipboardImageShortcut(runtime);
       });
       return;
     }
-    void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
+    void pasteClipboardImageShortcut(runtime);
   }, true);
   runtime.macShiftSelectionCleanup = installMacShiftSelectionBridge({
     host,
@@ -3317,7 +3343,7 @@ function createRuntime(args: {
         if (lastPasteEventAt !== before || runtime.disposed) return;
         const readText = navigator.clipboard?.readText;
         if (typeof readText !== "function") {
-          void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
+          void pasteClipboardImageShortcut(runtime);
           return;
         }
         readText.call(navigator.clipboard).then((text) => {
@@ -3325,9 +3351,9 @@ function createRuntime(args: {
             void writeTextPasteForTerminal(runtime, text);
             return;
           }
-          void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
+          void pasteClipboardImageShortcut(runtime);
         }).catch(() => {
-          void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
+          void pasteClipboardImageShortcut(runtime);
         });
       }, 120);
       return false;

@@ -8,6 +8,8 @@ import type {
 import { openLaneOnMachinePath } from "../../../lib/laneNavigation";
 import { selectActiveProjectRoot, useAppStore, useAppStoreApi } from "../../../state/appStore";
 import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineLanes";
+import { trackPendingLaneCreate } from "../../../lib/pendingLaneCreates";
+import { showToast } from "../../app/toast/toastStore";
 import type { LaneMachine } from "../../../state/laneMachineRouting";
 import { withMachineTimeout } from "../../../state/projectMachines";
 import { useProjectMachinePicker } from "../../lanes/ProjectMachinePicker";
@@ -38,13 +40,21 @@ const CREATE_LANE_MACHINE_COPY = {
  */
 export function useCreateLaneFromPrBranch({
   machineIndex,
+  active,
   onCreatedOnTabMachine,
 }: {
   machineIndex: PrMachineIndex;
+  /** Whether the page that holds this hook is the one on screen. */
+  active: boolean;
+  /**
+   * `follow` is false when the user left the page before the lane was made:
+   * do the bookkeeping, but do not change a selection or the route.
+   */
   onCreatedOnTabMachine: (
     result: CreateLaneFromPrBranchResult,
     item: GitHubPrListItem,
     createProjectRoot: string | null,
+    options: { follow: boolean },
   ) => Promise<void>;
 }): { open: (item: GitHubPrListItem) => Promise<void>; element: React.ReactNode } {
   const navigate = useNavigate();
@@ -58,7 +68,6 @@ export function useCreateLaneFromPrBranch({
   const [machineName, setMachineName] = React.useState<string | null>(null);
   const [preflight, setPreflight] = React.useState<CreateLaneFromPrBranchPreflightResult | null>(null);
   const [loading, setLoading] = React.useState(false);
-  const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const requestIdRef = React.useRef(0);
   const requestRef = React.useRef<{ id: number; itemKey: string } | null>(null);
@@ -111,25 +120,38 @@ export function useCreateLaneFromPrBranch({
       });
   }, [askForMachine, machineIndex.lanesByMachineId, machineIndex.machines]);
 
-  const cancel = React.useCallback(() => {
-    if (!busy) close();
-  }, [busy, close]);
+  // The dialog closes on confirm and the create runs in the background; the
+  // lane lists show a "Creating…" row until the lane exists. This hook's page
+  // can be gone by then, so what follows a create is decided from the page the
+  // user is on at that time.
+  const stillHereRef = React.useRef(false);
+  React.useEffect(() => {
+    stillHereRef.current = active;
+    return () => {
+      stillHereRef.current = false;
+    };
+  }, [active]);
 
-  const confirm = React.useCallback(async (laneName: string) => {
+  const confirm = React.useCallback((laneName: string) => {
     if (!item) return;
-    setBusy(true);
-    setError(null);
+    const createItem = item;
     const createProjectRoot = projectRoot;
     const createTarget = target;
-    try {
-      const api = createLaneFromPrBranchApi();
-      const createArgs = createLaneFromPrBranchArgs(item, laneName);
-      const result = createTarget?.pin
-        ? await api.createLaneFromPrBranch(createArgs, createTarget.pin)
-        : await api.createLaneFromPrBranch(createArgs);
-      close();
+    close();
+    const api = createLaneFromPrBranchApi();
+    const createArgs = createLaneFromPrBranchArgs(createItem, laneName);
+    void trackPendingLaneCreate(
+      {
+        name: laneName,
+        projectRoot: createProjectRoot,
+        machineId: createTarget?.pin ? createTarget.machineId : null,
+      },
+      () => (createTarget?.pin
+        ? api.createLaneFromPrBranch(createArgs, createTarget.pin)
+        : api.createLaneFromPrBranch(createArgs)),
+    ).then(async (result) => {
       if (!createTarget?.pin) {
-        await onCreatedRef.current(result, item, createProjectRoot);
+        await onCreatedRef.current(result, createItem, createProjectRoot, { follow: stillHereRef.current });
         return;
       }
       // The lane and its PR row now live on that machine. Nothing here may
@@ -138,14 +160,19 @@ export function useCreateLaneFromPrBranch({
       requestCrossMachineLanesForMachine(createTarget.machineId);
       const createdLaneId = result.lane?.id ?? null;
       const currentProjectRoot = selectActiveProjectRoot(appStore.getState());
-      if (createdLaneId && (!createProjectRoot || currentProjectRoot === createProjectRoot)) {
+      // Only while the user is still on this page; a lane that finishes later
+      // must not pull them away from where they went.
+      if (stillHereRef.current && createdLaneId && (!createProjectRoot || currentProjectRoot === createProjectRoot)) {
         navigate(openLaneOnMachinePath(createdLaneId, createTarget.machineId));
       }
-    } catch (err) {
-      setError(formatActionError(err));
-    } finally {
-      setBusy(false);
-    }
+    }).catch((err: unknown) => {
+      showToast({
+        title: `Could not create ${laneName}`,
+        message: formatActionError(err),
+        tone: "error",
+        durationMs: 0,
+      });
+    });
   }, [appStore, close, item, navigate, projectRoot, target]);
 
   const element = (
@@ -155,9 +182,8 @@ export function useCreateLaneFromPrBranch({
           item={item}
           preflight={preflight?.preflight ?? null}
           loading={loading}
-          busy={busy}
           error={error}
-          onCancel={cancel}
+          onCancel={close}
           onConfirm={confirm}
           machineName={machineName}
         />

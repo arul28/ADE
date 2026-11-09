@@ -396,8 +396,8 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
   );
 });
 
-/** Placeholder for a lane a batch launch is still creating. */
-export function LaneSidebarCreatingRow({ name }: { name: string }) {
+/** Placeholder for a lane that is still being created. `onStop` adds a Stop button. */
+export function LaneSidebarCreatingRow({ name, onStop }: { name: string; onStop?: () => void }) {
   return (
     <div
       aria-disabled
@@ -410,7 +410,23 @@ export function LaneSidebarCreatingRow({ name }: { name: string }) {
         <CircleNotch size={12} className="shrink-0 animate-spin" style={{ color: COLORS.accent }} />
         <span className="min-w-0 flex-1 truncate">{name}</span>
       </div>
-      <div className="h-4 text-[11px] leading-4 text-muted-fg/70">Creating…</div>
+      <div className="flex h-4 min-w-0 items-center gap-1.5 text-[11px] leading-4 text-muted-fg/70">
+        <span className="truncate">Creating…</span>
+        {onStop ? (
+          <button
+            type="button"
+            className="pointer-events-auto ml-auto shrink-0 rounded px-1 text-fg/85 hover:bg-fg/[0.08]"
+            title="Stop creating this lane."
+            data-testid="lane-sidebar-stop-create"
+            onClick={(event) => {
+              event.stopPropagation();
+              onStop();
+            }}
+          >
+            Stop
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
