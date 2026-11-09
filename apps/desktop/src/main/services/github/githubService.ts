@@ -594,7 +594,8 @@ function repoIdentityFromGitHubResponse(
 
 function readOriginUrlFromConfig(configPath: string): string | null {
   try {
-    if (!fs.existsSync(configPath)) return null;
+    // Reading a FIFO here would freeze the whole process.
+    if (!fs.statSync(configPath, { throwIfNoEntry: false })?.isFile()) return null;
     const raw = fs.readFileSync(configPath, "utf8");
     let inOriginSection = false;
     for (const line of raw.split(/\r?\n/)) {

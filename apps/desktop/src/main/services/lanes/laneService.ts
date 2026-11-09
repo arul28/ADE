@@ -7441,6 +7441,22 @@ export function createLaneService({
         throw new Error("Cannot rollback after pushing lanes to remote.");
       }
 
+      // Rollback is a hard reset, so every lane is checked before any is touched:
+      // work done on a lane since the rebase must not be thrown away.
+      for (const laneItem of run.lanes) {
+        if (laneItem.status !== "succeeded" || !laneItem.preHeadSha) continue;
+        const lane = getLaneRow(laneItem.laneId);
+        if (!lane) continue;
+        const head = await getHeadSha(lane.worktree_path);
+        if (head !== laneItem.postHeadSha) {
+          throw new Error(`Can't roll back ${laneItem.laneName}: its branch has moved since the rebase.`);
+        }
+        const dirty = await runGit(["status", "--porcelain=v1"], { cwd: lane.worktree_path, timeoutMs: 8_000 });
+        if (dirty.exitCode !== 0 || dirty.stdout.trim().length > 0) {
+          throw new Error(`Can't roll back ${laneItem.laneName}: it has uncommitted changes. Commit or stash them first.`);
+        }
+      }
+
       for (const laneItem of run.lanes) {
         if (laneItem.status !== "succeeded") continue;
         if (!laneItem.preHeadSha) continue;

@@ -140,7 +140,7 @@ import { resolvePrNextStepFromStatus } from "../../../shared/prNextStep";
 import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } from "../../../shared/prChecksRollup";
 import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
-import { branchNameFromHeadRef, formatGitExecutionError, GIT_REMOTE_FETCH_TIMEOUT_MS, runGit } from "../git/git";
+import { branchNameFromHeadRef, formatGitExecutionError, GIT_REMOTE_FETCH_TIMEOUT_MS, isGitWorktreeRoot, runGit } from "../git/git";
 import { classifyGitPushFailure } from "../git/gitPushFailure";
 import { runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import {
@@ -1176,6 +1176,9 @@ function parsePrLocator(raw: string): { owner?: string; repo?: string; number: n
   }
   try {
     const url = new URL(trimmed);
+    // Otherwise a link to some other host would resolve to the same-named repo
+    // on github.com.
+    if (url.hostname.toLowerCase() !== "github.com") throw new Error("Invalid PR URL format");
     const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/([0-9]+)(?:\/|$)/);
     if (!match) throw new Error("Invalid PR URL format");
     return { owner: match[1], repo: match[2], number: Number(match[3]) };
@@ -7262,6 +7265,11 @@ export function createPrService({
    * is actually on before using the record.
    */
   const adoptWorktreeBranch = async (lane: LaneSummary): Promise<LaneSummary> => {
+    // A lane folder that lost its `.git` answers for the repository above it,
+    // and the lane would adopt that branch and open a PR for it.
+    if (!(await isGitWorktreeRoot(lane.worktreePath))) {
+      throw new Error(`Lane "${lane.name}" has no git worktree at ${lane.worktreePath}. Restore or recreate the lane before creating a PR.`);
+    }
     const head = await runGit(["rev-parse", "--symbolic-full-name", "HEAD"], { cwd: lane.worktreePath, timeoutMs: 8_000 });
     const checkedOut = head.exitCode === 0 ? branchNameFromHeadRef(head.stdout) : "";
     if (!checkedOut || checkedOut === "HEAD" || checkedOut === branchNameFromRef(lane.branchRef)) return lane;

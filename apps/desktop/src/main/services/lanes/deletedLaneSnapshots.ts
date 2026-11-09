@@ -149,7 +149,7 @@ async function writeWorkingTree(worktreePath: string): Promise<string> {
       }
     }
     const env = { GIT_INDEX_FILE: tempIndex };
-    await runGitOrThrow(["add", "-A", "--", "."], { cwd: worktreePath, timeoutMs: SNAPSHOT_TIMEOUT_MS, env });
+    await runGitOrThrow(["-c", "core.sparseCheckout=false", "add", "-A", "--", "."], { cwd: worktreePath, timeoutMs: SNAPSHOT_TIMEOUT_MS, env });
     await refuseUnsavedNestedRepos(worktreePath, env);
     return (await runGitOrThrow(["write-tree"], { cwd: worktreePath, timeoutMs: SNAPSHOT_TIMEOUT_MS, env })).trim();
   });

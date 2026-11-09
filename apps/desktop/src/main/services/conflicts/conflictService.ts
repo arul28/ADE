@@ -2494,7 +2494,7 @@ export function createConflictService({
           await runGitOrThrow(["add", "--", ...touchedFiles], { cwd: lane.worktreePath, timeoutMs: 60_000 });
         } else {
           // Fall back to staging all changes; diff parsing missed something.
-          await runGitOrThrow(["add", "-A"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+          await runGitOrThrow(["-c", "core.sparseCheckout=false", "add", "-A"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
         }
       }
 

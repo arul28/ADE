@@ -2,7 +2,7 @@ import path from "node:path";
 import { lookupOpenPrForBranch } from "./ghOpenPrLookup";
 import { resolveGithubSshAliasUrl } from "../github/githubSshAlias";
 import { runGitPushOrThrow } from "./gitPushFailure";
-import { branchNameFromHeadRef, getHeadSha, gitBranchRefsIdentity, gitStdoutOrThrow, gitWorktreeRootCached, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
+import { branchNameFromHeadRef, getHeadSha, gitBranchRefsIdentity, gitStdoutOrThrow, isGitWorktreeRoot, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
 import { detectConflictKind } from "./gitConflictState";
 import { runGitWithGithubAuthFallbackOrThrow } from "./gitTransportAuth";
 import { GIT_PULL_TIMEOUT_MS, GIT_REMOTE_FETCH_TIMEOUT_MS } from "./gitTimeouts";
@@ -66,10 +66,6 @@ type LaneInfo = {
 type BranchStashSummary = GitStashSummary & {
   oid: string;
 };
-
-function normAbs(p: string): string {
-  return path.resolve(p);
-}
 
 type CachedReadEntry<T> = {
   expiresAt: number;
@@ -406,31 +402,45 @@ export function createGitOperationsService({
     return /git working directory not found:|Lane worktree is missing\./i.test(message);
   }
 
+  /**
+   * What is staged as a rename: new path to old path. Restoring only the new
+   * path leaves the old path's staged deletion, and the next commit deletes it.
+   */
+  async function stagedRenameSources(worktreePath: string): Promise<Map<string, string>> {
+    const renames = new Map<string, string>();
+    const res = await runGit(["diff", "--cached", "--name-status", "-M", "-z"], { cwd: worktreePath, timeoutMs: 15_000 });
+    if (res.exitCode !== 0) return renames;
+    const fields = res.stdout.split("\0");
+    for (let index = 0; index < fields.length - 1;) {
+      const status = fields[index] ?? "";
+      if (status.startsWith("R")) {
+        const oldPath = fields[index + 1];
+        const newPath = fields[index + 2];
+        if (oldPath && newPath) renames.set(newPath, oldPath);
+        index += 3;
+      } else {
+        index += status.startsWith("C") ? 3 : 2;
+      }
+    }
+    return renames;
+  }
+
+  function withStagedRenameSources(paths: readonly string[], renames: ReadonlyMap<string, string>): string[] {
+    return [...new Set(paths.flatMap((entry) => {
+      const oldPath = renames.get(entry);
+      return oldPath ? [entry, oldPath] : [entry];
+    }))];
+  }
+
   function laneWorktreeMissingError(lane: LaneInfo): Error {
     return new Error(
       `Lane worktree is missing. Restore or recreate the lane worktree at ${lane.worktreePath} before viewing history.`,
     );
   }
 
-  // Every git operation checks its lane folder first. The answer is kept while
-  // the folder and its `.git` entry are the same (gitWorktreeRootCached), so
-  // the check stops starting a git process per call (~30 ms on Windows).
+  // Every git operation checks its lane folder first.
   async function assertLaneWorktreeRoot(lane: LaneInfo): Promise<void> {
-    const isRoot = await gitWorktreeRootCached(lane.worktreePath, async () => {
-      try {
-        const topLevelRes = await runGit(
-          ["rev-parse", "--path-format=absolute", "--show-toplevel"],
-          { cwd: lane.worktreePath, timeoutMs: 8_000 },
-        );
-        if (!topLevelRes || typeof topLevelRes.exitCode !== "number") return true;
-        if (topLevelRes.exitCode !== 0) return false;
-        const topLevel = topLevelRes.stdout.trim();
-        return !topLevel || normAbs(topLevel) === normAbs(lane.worktreePath);
-      } catch {
-        return false;
-      }
-    });
-    if (!isRoot) throw laneWorktreeMissingError(lane);
+    if (!(await isGitWorktreeRoot(lane.worktreePath))) throw laneWorktreeMissingError(lane);
   }
 
   const runLaneOperation = async <T>({
@@ -669,7 +679,7 @@ export function createGitOperationsService({
         metadata: { count: fileCount },
         fn: async (lane) => {
           // Stage against current worktree state to avoid stale or partial path lists.
-          await runGitOrThrow(["add", "-A", "--", "."], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          await runGitOrThrow(["-c", "core.sparseCheckout=false", "add", "-A", "--", "."], { cwd: lane.worktreePath, timeoutMs: 30_000 });
         }
       });
       return action;
@@ -684,7 +694,8 @@ export function createGitOperationsService({
         metadata: { count: filePaths.length },
         fn: async (lane) => {
           if (filePaths.length === 0) return;
-          await runGitOrThrow(["restore", "--staged", "--", ...filePaths], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          const renames = await stagedRenameSources(lane.worktreePath);
+          await runGitOrThrow(["restore", "--staged", "--", ...withStagedRenameSources(filePaths, renames)], { cwd: lane.worktreePath, timeoutMs: 30_000 });
         }
       });
       return action;
@@ -698,7 +709,8 @@ export function createGitOperationsService({
         reason: "unstage_file",
         metadata: { path: filePath },
         fn: async (lane) => {
-          await runGitOrThrow(["restore", "--staged", "--", filePath], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+          const renames = await stagedRenameSources(lane.worktreePath);
+          await runGitOrThrow(["restore", "--staged", "--", ...withStagedRenameSources([filePath], renames)], { cwd: lane.worktreePath, timeoutMs: 15_000 });
         }
       });
       return action;

@@ -166,7 +166,7 @@ export async function copyUncommittedChanges(args: {
     }
     const env = { GIT_INDEX_FILE: tmpIndex };
     // A personal `core.safecrlf` must not refuse a file ADE only snapshots.
-    const add = await runGit(["-c", "core.safecrlf=false", "add", "-A"], { cwd: args.fromPath, timeoutMs: 120_000, env });
+    const add = await runGit(["-c", "core.safecrlf=false", "-c", "core.sparseCheckout=false", "add", "-A"], { cwd: args.fromPath, timeoutMs: 120_000, env });
     if (add.exitCode !== 0) throw new Error(add.stderr.trim() || "Couldn't read the uncommitted changes.");
     const tree = await runGit(["write-tree"], { cwd: args.fromPath, timeoutMs: 60_000, env });
     const treeSha = tree.exitCode === 0 ? tree.stdout.trim() : "";

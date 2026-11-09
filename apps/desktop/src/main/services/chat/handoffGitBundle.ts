@@ -120,7 +120,7 @@ export async function readHandoffWorkingTreeSha(args: { worktreePath: string }):
     if (fs.existsSync(realIndex)) fs.copyFileSync(realIndex, indexPath);
     else await gitOut(topLevel, ["read-tree", "HEAD"], env);
     // A personal `core.safecrlf` must not refuse a file ADE only snapshots.
-    await gitOut(topLevel, ["-c", "core.safecrlf=false", "add", "--all", "--", "."], env);
+    await gitOut(topLevel, ["-c", "core.safecrlf=false", "-c", "core.sparseCheckout=false", "add", "--all", "--", "."], env);
     return await gitOut(topLevel, ["write-tree"], env);
   } finally {
     removeTempDir(tempDir);
