@@ -74,7 +74,7 @@ describe("renderAdeCliShim", () => {
       const shim = path.join(dir, "ade.cmd");
       fs.writeFileSync(entry, 'process.stdout.write(JSON.stringify({home: process.env.ADE_HOME, cache: process.env.NODE_COMPILE_CACHE, args: process.argv.slice(2)}))');
       fs.writeFileSync(shim, renderAdeCliShim({ entryPath: entry, execPath: process.execPath, brain: { adeHome: dir, socketPath: null }, platform: "win32" }));
-      const result = spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `""${shim}" "two words""`], { env: { ...process.env, ADE_HOME: dir, NODE_COMPILE_CACHE: "", NODE_DISABLE_COMPILE_CACHE: "" }, encoding: "utf8" });
+      const result = spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `""${shim}" "two words""`], { env: { ...process.env, ADE_HOME: dir, NODE_COMPILE_CACHE: "", NODE_DISABLE_COMPILE_CACHE: "" }, encoding: "utf8", windowsVerbatimArguments: true });
       expect(result.status, result.stderr).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual({ home: dir, cache: path.join(dir, "cache", "node-compile"), args: ["two words"] });
     } finally {

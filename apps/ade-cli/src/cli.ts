@@ -39734,13 +39734,15 @@ async function runParsedCli(
   // cheap commands like `ade help` and `ade --version` must not pay the scan/hash
   // cost (cheap no-op when already current).
   if (
-    plan.kind === "skill" ||
-    plan.kind === "account-machine-connect" ||
-    plan.kind === "brain" ||
-    plan.kind === "runtime" ||
-    plan.kind === "serve" ||
-    (plan.kind === "execute" &&
-      /^(chat create|personal chat create|new chat|shell start cli)\b/.test(plan.label))
+    process.env.ADE_DISABLE_SKILL_CLEANUP !== "1" && !process.env.VITEST && (
+      plan.kind === "skill" ||
+      plan.kind === "account-machine-connect" ||
+      plan.kind === "brain" ||
+      plan.kind === "runtime" ||
+      plan.kind === "serve" ||
+      (plan.kind === "execute" &&
+        /^(chat create|personal chat create|new chat|shell start cli)\b/.test(plan.label))
+    )
   ) {
     try {
       // Only here and on demand: evaluating bootstrap took more than half of
