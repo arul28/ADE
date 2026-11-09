@@ -328,7 +328,11 @@ export function createChatWebhookRegistry(deps: {
           warn("agent_chat.webhook_check_failed", error, { webhookId: hook.id, sessionId: hook.sessionId });
           return false;
         });
-        if (hookChanged) changed = true;
+        // Again after: a write during the check cleared the mark, and this copy is still the newest.
+        if (hookChanged) {
+          changed = true;
+          changedHere.add(hook.id);
+        }
       }
       const at = now();
       const kept = hooks.filter((hook) => hook.deliveries.length > 0 || Date.parse(hook.expiresAt) > at);
