@@ -151,7 +151,7 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   a sleeping computer nor keep one awake.
 - A sleeping computer's relay tunnel looks open until a call times out. When a call
   to a cloud computer fails that way, the desktop asks once whether it is asleep
-  (`asleepForUse` in `remoteConnectionService.ts`, filled by `registerCloudIpc`). If
+  (`asleepForUse` in `remoteConnectionService.ts`, filled by `registerCloudIpc`; the questions and the list of resting computers are in `remoteCloudAsleepChecks.ts`). If
   so the link closes and the status goes to idle with no error, so the lists show
   its saved chats and send it no reads. The same question follows a dropped link
   and a failed redial, and is asked again 45 s and 90 s later: a computer closes

@@ -1803,7 +1803,9 @@ describe("RemoteConnectionService", () => {
     } as unknown as RemoteConnectionPool;
     let asleep = false;
     const asleepForUse = vi.fn(() => Promise.resolve(asleep));
+    let wokenElsewhere = false;
     const wakeForUse = vi.fn(async () => {
+      if (wokenElsewhere) return false;
       frozen = false;
       return true;
     });
@@ -1834,6 +1836,68 @@ describe("RemoteConnectionService", () => {
     expect(wakeForUse).toHaveBeenCalledTimes(1);
     expect(service.snapshot().connections[0]?.state).toBe("connected");
     await read();
+
+    // Asleep again, then woken by another device: the write still goes through.
+    frozen = true;
+    await expect(read()).rejects.toThrow(/timed out/i);
+    await vi.waitFor(() => expect(service.snapshot().connections[0]?.state).toBe("idle"));
+    frozen = false;
+    asleep = false;
+    wokenElsewhere = true;
+    await service.callAction(computer.id, "project-1", { domain: "lane", action: "create" });
+    expect(service.snapshot().connections[0]?.state).toBe("connected");
+  });
+
+  it("rests a cloud computer whose link drops before its status says asleep, and stops the redials", async () => {
+    const computer = target("cloud-computer", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [computer]),
+      get: vi.fn((id: string) => (id === computer.id ? computer : null)),
+    } as unknown as RemoteTargetRegistry;
+    let evicted: ((targetId: string, error: Error) => void) | null = null;
+    let reachable = true;
+    const closed = () => new Error("Remote ADE service connection closed.");
+    const pool = {
+      connect: vi.fn(async (target: RemoteRuntimeTarget) => {
+        if (!reachable) throw closed();
+        return connectResult(target);
+      }),
+      disconnect: vi.fn(),
+      onHostStorageWait: vi.fn(() => () => {}),
+      onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
+      onEntryEvicted: vi.fn((listener: (targetId: string, error: Error) => void) => {
+        evicted = listener;
+        return () => {};
+      }),
+      ...poolConnectStateStubs(),
+    } as unknown as RemoteConnectionPool;
+    let asleep = false;
+    const asleepForUse = vi.fn(() => Promise.resolve(asleep));
+    const service = new RemoteConnectionService(registry, pool, { asleepForUse });
+    await service.connect(computer.id, { explicit: true });
+    vi.useFakeTimers();
+    try {
+      // The link closes while the provider still says "running": an error, with redials.
+      reachable = false;
+      evicted!(computer.id, closed());
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(asleepForUse).toHaveBeenCalled();
+      expect(service.snapshot().connections[0]?.state).toBe("error");
+
+      // The status catches up: the error goes, and nothing dials the computer again.
+      asleep = true;
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      expect(service.snapshot().connections[0]?.state).toBe("idle");
+      expect(service.snapshot().connections[0]?.lastError).toBeNull();
+      const dials = vi.mocked(pool.connect).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+      expect(vi.mocked(pool.connect).mock.calls.length).toBe(dials);
+      expect(service.snapshot().connections[0]?.state).toBe("idle");
+    } finally {
+      vi.useRealTimers();
+      service.stopHostReturnWatches();
+    }
   });
 
   it("does not disconnect a healthy client when a resume probe request times out", async () => {

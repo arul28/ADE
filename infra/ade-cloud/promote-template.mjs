@@ -124,8 +124,11 @@ async function realUse(id) {
   if (lanes.exit_code !== 0 || !lanesBody) throw new Error(`opening the project failed: ${(lanes.stderr || lanes.stdout).trim()}`);
   console.log(`project opened, ${valuesOf(lanesBody, "branchRef").length} lane(s)`);
 
-  const marker = `pty-${randomBytes(6).toString("hex")}`;
-  const started = await exec(id, `cd ${dir} && timeout 60 ade --role cto shell start --json -c 'echo ${marker}'`, 90_000);
+  // The output differs from the typed text (the quotes go), so the echo of
+  // the input alone can't pass.
+  const [head, tail] = [`pty-${randomBytes(4).toString("hex")}`, randomBytes(4).toString("hex")];
+  const marker = `${head}-${tail}`;
+  const started = await exec(id, `cd ${dir} && timeout 60 ade --role cto shell start --json -c 'echo ${head}"-"${tail}'`, 90_000);
   let startedBody = null;
   try { startedBody = JSON.parse(started.stdout); } catch { /* not JSON */ }
   const ptyId = startedBody ? valuesOf(startedBody, "ptyId")[0] : null;

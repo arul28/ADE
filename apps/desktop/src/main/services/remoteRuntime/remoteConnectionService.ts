@@ -1541,6 +1541,10 @@ export class RemoteConnectionService {
       if (sleeping && await this.wakeForUse(sleeping)) {
         this.clearAutomaticReconnectState(targetId);
         await this.connectWokenMachine(sleeping);
+      } else if (this.asleepChecks.isResting(targetId)) {
+        // Not woken by this app: another device woke it already. The rest
+        // ends, and the dial below finds out (a failed one asks again).
+        this.clearAutomaticReconnectState(targetId);
       }
     }
     const target = await this.requireTargetForImplicitUse(targetId);
@@ -2080,8 +2084,14 @@ export class RemoteConnectionService {
     // for the answer, and takes the failure only if the machine is awake and
     // nothing has reached it since.
     const stamp = this.asleepChecks.aliveStamp(targetId);
+    const disconnectGeneration = this.getDisconnectGeneration(targetId);
     void asleep.then((isAsleep) => {
-      if (!isAsleep && this.asleepChecks.aliveStamp(targetId) === stamp) this.recordCallFailure(targetId, error);
+      // A Disconnect pressed while the question was out stays a disconnect.
+      if (
+        !isAsleep
+        && this.asleepChecks.aliveStamp(targetId) === stamp
+        && this.isDisconnectGenerationCurrent(targetId, disconnectGeneration)
+      ) this.recordCallFailure(targetId, error);
     });
   }
 
