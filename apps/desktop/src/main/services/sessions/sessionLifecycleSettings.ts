@@ -1,4 +1,8 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { PrSummary, SessionLifecycleSettings } from "../../../shared/types";
+import { adeHomeDir } from "../skills/cursorAgentSkillShim";
+import { writeFileAtomic } from "../state/durableFile";
 import type { AdeDb } from "../state/kvDb";
 
 const SETTINGS_KEY = "session:lifecycle-settings:v1";
@@ -14,6 +18,21 @@ export type PrMergeAutoSettlementState = {
   handledPrIds: string[];
 };
 
+/** The one lifecycle setting that spans projects: a file in this machine's ADE home. */
+function machineSettingsPath(): string {
+  return path.join(adeHomeDir(), "session-lifecycle.json");
+}
+
+function readReleaseLaneResources(): boolean {
+  try {
+    const stored = JSON.parse(fs.readFileSync(machineSettingsPath(), "utf8")) as { releaseLaneResourcesOnSettle?: unknown };
+    return stored?.releaseLaneResourcesOnSettle === true;
+  } catch {
+    // Off unless the owner turned it on: this stops things.
+    return false;
+  }
+}
+
 function mergedPrIds(prs: readonly PrSummary[]): string[] {
   return prs.filter((pr) => pr.state === "merged").map((pr) => pr.id);
 }
@@ -23,8 +42,7 @@ export function getSessionLifecycleSettings(db: Pick<AdeDb, "getJson">): Session
   return {
     autoSettleLaneSessionsOnPrMerge:
       stored?.autoSettleLaneSessionsOnPrMerge !== false,
-    // Off unless the owner turned it on: this stops things.
-    releaseLaneResourcesOnSettle: stored?.releaseLaneResourcesOnSettle === true,
+    releaseLaneResourcesOnSettle: readReleaseLaneResources(),
   };
 }
 
@@ -41,7 +59,12 @@ export function setSessionLifecycleSettings(args: {
       args.settings.autoSettleLaneSessionsOnPrMerge === true,
     releaseLaneResourcesOnSettle: args.settings.releaseLaneResourcesOnSettle === true,
   };
-  args.db.setJson(SETTINGS_KEY, settings);
+  args.db.setJson(SETTINGS_KEY, { autoSettleLaneSessionsOnPrMerge: settings.autoSettleLaneSessionsOnPrMerge });
+  if (settings.releaseLaneResourcesOnSettle !== previousSettings.releaseLaneResourcesOnSettle) {
+    const file = machineSettingsPath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    writeFileAtomic(file, `${JSON.stringify({ releaseLaneResourcesOnSettle: settings.releaseLaneResourcesOnSettle })}\n`);
+  }
   if (
     previousState
     && previousSettings.autoSettleLaneSessionsOnPrMerge === settings.autoSettleLaneSessionsOnPrMerge

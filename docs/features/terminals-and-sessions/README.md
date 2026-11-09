@@ -3239,8 +3239,8 @@ fetch, effect, or subscription per row.
 
 ## Releasing what settled chats were using
 
-Settings › Lanes › "Release what settled chats were using" (off by default, per
-machine). Once every live chat in a lane has been settled for five minutes
+Settings › Lanes › "Release what settled chats were using" (off by default, one
+setting for every project on the machine, kept in `<ADE home>/session-lifecycle.json`). Once every live chat in a lane has been settled for five minutes
 (`settledLaneReleaseService.ts`), ADE powers off the simulators and emulators
 those chats' agents booted, stops the dev servers they started, and gives up any
 Mac Desktop control they held (the screen itself closes on its own idle timer).
