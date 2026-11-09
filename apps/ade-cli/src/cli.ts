@@ -7873,9 +7873,9 @@ function refuseStrandedNewChatTextFlags(args: string[]): void {
   const options = args.filter((_, index) => !["--prompt", "--message", "--initial-input"].includes(args[index - 1] ?? ""));
   const stranded = findFlagName(options, NEW_CHAT_STRANDED_TEXT_FLAGS);
   // Bare `--text` is the output format. Only `--text <value>` carries a message.
-  const textIndex = args.indexOf("--text");
-  const textValue = textIndex >= 0 ? args[textIndex + 1] : undefined;
-  const textCarriesMessage = args.some((token) => token.startsWith("--text="))
+  const textIndex = options.indexOf("--text");
+  const textValue = textIndex >= 0 ? options[textIndex + 1] : undefined;
+  const textCarriesMessage = options.some((token) => token.startsWith("--text="))
     || Boolean(textValue && !textValue.startsWith("-") && textValue !== "chat" && textValue !== "cli");
   const flag = stranded ?? (textCarriesMessage ? "--text" : null);
   if (flag) {
@@ -7891,7 +7891,7 @@ function readNewChatPrompt(args: string[]): string | null {
     throw new CliUsageError("Use --prompt-file or text after --, not both.");
   }
   const fileText = readChatTextFile(args, ["--prompt-file", "--text-file"], ["--prompt", "--message", "--initial-input"]);
-  if (fileText !== null) return fileText;
+  if (fileText !== null) return fileText.trimEnd();
   const prompt = promptArgs
     ? promptArgs.join(" ").trim()
     : readValue(args, ["--prompt", "--message", "--initial-input"]);

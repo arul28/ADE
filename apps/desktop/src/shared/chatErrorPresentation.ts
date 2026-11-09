@@ -1,4 +1,4 @@
-import { cut } from "./threadComments";
+import { cut } from "./cutText";
 import { providerDisplayLabel } from "./pendingInputLabels";
 
 /**
@@ -80,17 +80,17 @@ function redactOpaqueTokens(text: string): string {
   });
 }
 
-/**
- * Last-line-of-defence cleaning for an agent process's captured stderr. ANSI
- * escapes and control characters come out, secret-shaped values are redacted,
- * the whole thing stays inside the host's 4 KB cap, and no single line is
- * allowed to grow without bound. Returns `""` for input with nothing usable.
- */
 /** A provider's own reason, safe to show and short enough for one line of UI. */
 export function boundedAgentReason(text: string): string {
   return cut(sanitizeAgentFailureText(text), 200);
 }
 
+/**
+ * Last-line-of-defence cleaning for an agent's failure text or captured stderr. ANSI
+ * escapes and control characters come out, secret-shaped values are redacted,
+ * the whole thing stays inside the host's 4 KB cap, and no single line is
+ * allowed to grow without bound. Returns `""` for input with nothing usable.
+ */
 export function sanitizeAgentFailureText(tail: string | null | undefined): string {
   if (typeof tail !== "string" || !tail) return "";
   let text = tail

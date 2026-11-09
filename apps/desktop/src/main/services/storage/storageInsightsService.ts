@@ -62,7 +62,7 @@ import { createLaneSizeMeasurer, type LaneSizeRecord } from "./laneSizes";
 import { createLinkedFileTally, pnpmSharedStoreDir } from "./diskUsage";
 import { createLaneBuildOutputSweeper } from "./laneBuildOutput";
 import { createLaneLifecycleScan, type LaneLifecycleBackend, type LifecycleLaneRow } from "./laneLifecycleScan";
-import { parseGitWorktreePorcelain } from "../lanes/laneService";
+import { parseGitWorktreePorcelain } from "../lanes/gitWorktreePorcelain";
 import { isDirectChildFolder, isFolderInside, sameFolder } from "../shared/sameFolder";
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60_000;

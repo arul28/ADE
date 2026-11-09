@@ -227,13 +227,23 @@ function textBoxText(node: Element): string | null {
     ? Array.from(node.children).filter((item) => item.localName === "Choice" || item.localName === "Fallback")
     : [node];
   for (const scope of scopes) {
+    // Each box reads only its own paragraphs, and a Fallback inside the scope
+    // repeats a box the Choice beside it already has.
     const lines = Array.from(scope.getElementsByTagNameNS(DOC_NS, "txbxContent"))
-      .flatMap((box) => Array.from(box.getElementsByTagNameNS(DOC_NS, "p")))
-      .map((paragraph) => Array.from(paragraph.getElementsByTagNameNS(DOC_NS, "*")).map((item) => {
-        if (item.localName === "t") return item.textContent ?? "";
-        if (item.localName === "tab") return "\t";
-        return item.localName === "br" || item.localName === "cr" ? "\n" : "";
-      }).join(""))
+      .filter((box) => {
+        const fallback = nearestAncestor(box, "Fallback");
+        return fallback === null || fallback === scope;
+      })
+      .flatMap((box) => Array.from(box.getElementsByTagNameNS(DOC_NS, "p"))
+        .filter((paragraph) => nearestAncestor(paragraph, "txbxContent") === box)
+        .map((paragraph) => Array.from(paragraph.getElementsByTagNameNS(DOC_NS, "*"))
+          .filter((item) => nearestAncestor(item, "txbxContent") === box)
+          .map((item) => {
+            if (item.localName === "t") return item.textContent ?? "";
+            if (item.localName === "tab") return "\t";
+            return item.localName === "br" || item.localName === "cr" ? "\n" : "";
+          })
+          .join("")))
       .filter(Boolean);
     if (lines.length) return lines.join("\n");
   }
