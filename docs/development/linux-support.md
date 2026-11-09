@@ -42,6 +42,8 @@ The marketing site's Linux install dialog still offers only the brain. Add the f
 
 `release-core.yml` builds each architecture in `build-linux-release`, and `release-publish.yml` refuses to publish without all four packages and both manifests. Beta and stable use the same job. On a beta, `scripts/beta/feed.mjs` publishes the two Linux manifests to `beta-feed` with absolute URLs, as for macOS and Windows.
 
+Linux packages build on a fixed Ubuntu, never `ubuntu-latest`: a native module needs the glibc of the image that built it, and a moved image once broke every system older than itself. `validate-linux-artifacts.mjs` holds each packaged binary, and the brain's native archive, to what Ubuntu 22.04 provides (`linux-system-library-ceiling.mjs`), so moving the image means re-checking that. `transcribe-cli` is linked statically on Linux for the same reason. electron-builder fetches its own tools during the build, so `run-linux-electron-builder.mjs` retries a target when one of those downloads fails.
+
 To try a release without reaching any machine's update feed, dispatch `beta.yml` from the branch with `preview_ref` set. It publishes a prerelease that is installed by hand.
 
 Testing a build at a new version: delete `apps/desktop/resources/runtime/ade-linux-*` first, or the stale brain binary fails the AppImage's version check. `ADE_UPDATE_FEED_URL` is honored only by unpacked builds, so an update test against a local feed needs a throwaway build with that guard lifted.
