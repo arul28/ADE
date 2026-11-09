@@ -77240,6 +77240,18 @@ export function createAgentChatService(args: {
     releaseFire: (schedule) => {
       db?.run?.("delete from kv where key = ?", [scheduledWorkClaimKey(schedule)]);
     },
+    wakeMessageRecorded: async (schedule) => {
+      // A provider's native schedule and a tracked CLI leave no marked message
+      // here, so they cannot be told apart from a delivery that happened.
+      if (schedule.provider === "claude") return true;
+      const row = sessionService.get(schedule.sessionId);
+      if (!row || !isChatToolType(row.toolType)) return true;
+      const { envelopes, truncated } = await readTranscriptEnvelopesForSessionIdAsync(schedule.sessionId);
+      if (truncated) return true;
+      return envelopes.some((envelope) =>
+        envelope.event.type === "user_message"
+        && envelope.event.metadata?.scheduledWake?.scheduleId === schedule.id);
+    },
     fire: async (schedule, context) => {
       if (getCrossMachineMoveLock(schedule.sessionId, "scheduled_work")) return { retry: true };
       const firedAt = new Date(schedule.lastFiredAt ?? Date.now()).toISOString();

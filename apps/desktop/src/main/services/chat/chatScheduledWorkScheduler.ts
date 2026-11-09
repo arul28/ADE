@@ -116,6 +116,12 @@ export type ChatScheduledWorkSchedulerOptions = {
   /** Gives up a claim whose delivery is being retried at a later boundary. */
   releaseFire?(schedule: ChatScheduledWorkRecord): void;
   /**
+   * Whether this one-shot's wake message reached the chat's transcript. After a
+   * restart a fired one-shot with no turn is handed back only on a definite
+   * "no"; leave this unset, or throw, and it is treated as delivered.
+   */
+  wakeMessageRecorded?(schedule: ChatScheduledWorkRecord): MaybePromise<boolean>;
+  /**
    * `complete` settles the occurrence now; `outcomeSummary` says how (a wake
    * the chat refused before any turn started has no turn to settle it later).
    */
@@ -244,6 +250,9 @@ function normalizeSchedule(value: unknown): ChatScheduledWorkRecord | null {
       : {}),
   };
 }
+
+/** A fired one-shot that has not started a turn by then never will. */
+const UNSTARTED_FIRE_SETTLE_MS = 60_000;
 
 function normalizeState(value: unknown): ChatScheduledWorkState {
   const record = asRecord(value);
@@ -576,6 +585,32 @@ export function createChatScheduledWorkScheduler(
     timerHandles.set(schedule.id, handle);
   };
 
+  /**
+   * After a restart: whether a one-shot that was claimed never reached its
+   * chat. A turn starts within moments of the fire, so one claimed just now may
+   * still be another brain's delivery in progress; it is looked at again once
+   * that window has passed. A delivery that may have happened is never redone.
+   */
+  const unstartedFireToGiveBack = async (
+    schedule: ChatScheduledWorkRecord,
+  ): Promise<"give_back" | "keep" | "wait"> => {
+    if (schedule.activeTurnId || !options.wakeMessageRecorded) return "keep";
+    const remainingMs = (schedule.lastFiredAt ?? 0) + UNSTARTED_FIRE_SETTLE_MS - now();
+    if (remainingMs > 0) {
+      clearTimer(schedule.id);
+      timerHandles.set(schedule.id, timers.setTimeout(() => {
+        timerHandles.delete(schedule.id);
+        void reconcileSchedule(schedule).catch(() => undefined);
+      }, remainingMs));
+      return "wait";
+    }
+    try {
+      return (await options.wakeMessageRecorded(cloneSchedule(schedule))) ? "keep" : "give_back";
+    } catch {
+      return "keep";
+    }
+  };
+
   const reconcileSchedule = async (schedule: ChatScheduledWorkRecord): Promise<void> => {
     if (schedule.status === "done" || schedule.status === "cancelled") return;
     if (isExpired(schedule)) {
@@ -601,8 +636,20 @@ export function createChatScheduledWorkScheduler(
         schedule.status = isEffectivelyPaused(schedule) ? "paused" : "scheduled";
       } else {
         // A persisted fired one-shot was already claimed before the previous
-        // process exited. Complete it without delivery so restore preserves
-        // at-most-once semantics.
+        // process exited. Hand back one whose turn never started; complete the
+        // rest without delivery so restore preserves at-most-once semantics.
+        const giveBack = await unstartedFireToGiveBack(schedule);
+        if (giveBack === "wait") return;
+        if (giveBack === "give_back") {
+          options.releaseFire?.(cloneSchedule(schedule));
+          schedule.status = isEffectivelyPaused(schedule) ? "paused" : "scheduled";
+          delete schedule.lastFiredAt;
+          delete schedule.activeTurnId;
+          await persist();
+          await emitTransition(schedule, schedule.status);
+          arm(schedule);
+          return;
+        }
         markTerminal(schedule, "done");
         pruneTerminalHistory();
       }
