@@ -7,6 +7,13 @@ import { readTailscaleLocalStatus } from "./tailscaleLocalStatus";
 
 const execFileAsync = promisify(execFile);
 
+/** A stuck `tailscale` can ignore SIGTERM, so a timeout kills it outright. */
+const runServe = (serveArgs: string[], timeoutMs: number) => execFileAsync(
+  resolveTailscaleCliPath(),
+  ["serve", ...serveArgs],
+  { timeout: timeoutMs, windowsHide: true, killSignal: "SIGKILL" },
+);
+
 /**
  * The secure Tailscale route sits this far above the sync port, so each ADE
  * channel on a machine (each with its own sync port) gets its own HTTPS port,
@@ -139,11 +146,7 @@ export function createTailnetHttpsServe(args: {
     setRoute({ state: "publishing", url: null, error: null });
     wantedPort = httpsPort;
     try {
-      await execFileAsync(
-        resolveTailscaleCliPath(),
-        ["serve", "--bg", `--https=${httpsPort}`, `http://127.0.0.1:${syncPort}`],
-        { timeout: 15_000, windowsHide: true, killSignal: "SIGKILL" },
-      );
+      await runServe(["--bg", `--https=${httpsPort}`, `http://127.0.0.1:${syncPort}`], 15_000);
       if (!isCurrent()) {
         // Unpublished (or moved to another port) while this ran: take back the
         // entry it just added, so the computer isn't left reachable on it.
@@ -181,11 +184,7 @@ export function createTailnetHttpsServe(args: {
 
   const turnOff = async (port: number): Promise<void> => {
     try {
-      await execFileAsync(resolveTailscaleCliPath(), ["serve", `--https=${port}`, "off"], {
-        timeout: 10_000,
-        windowsHide: true,
-        killSignal: "SIGKILL",
-      });
+      await runServe([`--https=${port}`, "off"], 10_000);
     } catch (error: unknown) {
       args.logger.warn("sync_host.tailnet_https_unpublish_failed", {
         httpsPort: port,
@@ -213,11 +212,7 @@ export function createTailnetHttpsServe(args: {
       if (args.isDisposed() || httpsPort === servedPort) continue;
       if (await args.isLocalPortServing(httpsPort - SYNC_TAILNET_HTTPS_PORT_OFFSET)) continue;
       try {
-        await execFileAsync(resolveTailscaleCliPath(), ["serve", `--https=${httpsPort}`, "off"], {
-          timeout: 10_000,
-          windowsHide: true,
-          killSignal: "SIGKILL",
-        });
+        await runServe([`--https=${httpsPort}`, "off"], 10_000);
         reclaimed += 1;
       } catch {
         // One stubborn entry must not stop the rest; the count below says so.

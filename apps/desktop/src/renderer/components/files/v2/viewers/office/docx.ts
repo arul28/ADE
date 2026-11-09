@@ -21,6 +21,8 @@ const MAX_TABLE_COLS = 100;
 const MAX_TABLE_CELLS = 20_000;
 /** Nested tables are useful content, but recursion must stay shallow. */
 const MAX_NESTING = 4;
+/** Elements that hold runs without adding anything of their own. */
+const RUN_WRAPPERS = new Set(["smartTag", "sdt", "sdtContent", "fldSimple", "ins", "moveTo"]);
 /** Yield while scanning long bodies and tables so rendering can continue. */
 const BLOCKS_PER_YIELD = 250;
 const DOC_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
@@ -96,7 +98,6 @@ export type WordHeading = {
 };
 export type WordNotices = {
   charts: number;
-  textBoxes: number;
   shapes: number;
   footnotes: number;
   endnotes: number;
@@ -227,8 +228,12 @@ function textBoxText(node: Element): string | null {
     : [node];
   for (const scope of scopes) {
     const lines = Array.from(scope.getElementsByTagNameNS(DOC_NS, "txbxContent"))
-      .flatMap((box) => Array.from(box.children).filter((item) => item.localName === "p"))
-      .map((paragraph) => Array.from(paragraph.getElementsByTagNameNS(DOC_NS, "t")).map((item) => item.textContent ?? "").join(""))
+      .flatMap((box) => Array.from(box.getElementsByTagNameNS(DOC_NS, "p")))
+      .map((paragraph) => Array.from(paragraph.getElementsByTagNameNS(DOC_NS, "*")).map((item) => {
+        if (item.localName === "t") return item.textContent ?? "";
+        if (item.localName === "tab") return "\t";
+        return item.localName === "br" || item.localName === "cr" ? "\n" : "";
+      }).join(""))
       .filter(Boolean);
     if (lines.length) return lines.join("\n");
   }
@@ -463,7 +468,6 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
   };
   const notices: WordNotices = {
     charts: 0,
-    textBoxes: 0,
     shapes: 0,
     footnotes: 0,
     endnotes: 0,
@@ -474,7 +478,6 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
     trimmedTables: 0,
   };
   notices.charts = elementsNS(doc, "chart").length;
-  notices.textBoxes = elementsNS(doc, "txbxContent").length;
   notices.shapes = elementsNS(doc, "sp").length;
   // A part that is missing or not valid XML counts as nothing to show. Word
   // also writes separator and continuation-separator entries into the
@@ -639,29 +642,21 @@ export async function openDocx(bytes: Uint8Array): Promise<WordDocument> {
             item,
             target ?? (anchor ? `#${encodeURIComponent(anchor)}` : href),
           );
-        } else if (
-          item.localName === "r" ||
-          item.localName === "smartTag" ||
-          item.localName === "sdt" ||
-          item.localName === "sdtContent" ||
-          item.localName === "fldSimple" ||
-          item.localName === "ins" ||
-          item.localName === "moveTo"
-        ) {
-          if (item.localName === "r")
-            runs.push(
-              ...runModel(
-                item,
-                href,
-                child(item, "rPr") ??
-                  chain
-                    .map((s) => s.rPr)
-                    .filter(Boolean)
-                    .at(-1) ??
-                  null,
-              ),
-            );
-          else collect(item, href);
+        } else if (item.localName === "r") {
+          runs.push(
+            ...runModel(
+              item,
+              href,
+              child(item, "rPr") ??
+                chain
+                  .map((s) => s.rPr)
+                  .filter(Boolean)
+                  .at(-1) ??
+                null,
+            ),
+          );
+        } else if (RUN_WRAPPERS.has(item.localName)) {
+          collect(item, href);
         }
       }
     };

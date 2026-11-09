@@ -671,13 +671,14 @@ function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
   }
   if (entry.entryKind === "tool") {
     const command = computerUseEntryCommand(entry);
+    const result = entry.result === undefined
+      ? null
+      : toolEntryFailureText(entry) ?? formatStructuredValue(maskInlineImages(entry.result));
     if (command?.trim()) {
-      const out = entry.result === undefined ? "" : (toolEntryFailureText(entry) ?? formatStructuredValue(maskInlineImages(entry.result)));
+      const out = result ?? "";
       return out.trim() ? `$ ${command}\n${out}` : `$ ${command}`;
     }
-    if (entry.result !== undefined) {
-      return toolEntryFailureText(entry) ?? formatStructuredValue(maskInlineImages(entry.result));
-    }
+    if (result !== null) return result;
     const args = readRecord(entry.args);
     if (args && Object.keys(args).length > 0) return formatStructuredValue(maskShellCommandArgs(entry.toolName, args));
   }

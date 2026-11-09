@@ -1,3 +1,4 @@
+import { cut } from "./threadComments";
 import { providerDisplayLabel } from "./pendingInputLabels";
 
 /**
@@ -85,7 +86,12 @@ function redactOpaqueTokens(text: string): string {
  * the whole thing stays inside the host's 4 KB cap, and no single line is
  * allowed to grow without bound. Returns `""` for input with nothing usable.
  */
-export function sanitizeAcpStderrTail(tail: string | null | undefined): string {
+/** A provider's own reason, safe to show and short enough for one line of UI. */
+export function boundedAgentReason(text: string): string {
+  return cut(sanitizeAgentFailureText(text), 200);
+}
+
+export function sanitizeAgentFailureText(tail: string | null | undefined): string {
   if (typeof tail !== "string" || !tail) return "";
   let text = tail
     .replace(/\r\n?/g, "\n")
@@ -133,7 +139,7 @@ export type AcpStderrSummary = {
  * card in place instead of inventing text from nothing.
  */
 export function summarizeAcpStderrTail(tail: string | null | undefined): AcpStderrSummary {
-  const cleaned = sanitizeAcpStderrTail(tail);
+  const cleaned = sanitizeAgentFailureText(tail);
   if (!cleaned) return { headline: null, technicalDetail: null };
   const lines = cleaned.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
   // Decoration is dropped outright. If nothing but stack frames is left, a

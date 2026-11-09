@@ -48,22 +48,14 @@ export function isDirectChildFolder(
 }
 
 /**
- * Whether `candidate` sits anywhere below `parent`, with each level compared by
- * {@link sameFolder}. `parent` is not inside itself.
+ * Whether `candidate` sits anywhere below `parent`, compared by real path
+ * because git prints real paths. `parent` is not inside itself.
  */
-export function isFolderInside(
-  parent: string | null | undefined,
-  candidate: string | null | undefined,
-  platform: NodeJS.Platform = process.platform,
-): boolean {
+export function isFolderInside(parent: string | null | undefined, candidate: string | null | undefined): boolean {
   if (!parent || !candidate) return false;
-  let current = path.resolve(candidate);
-  for (;;) {
-    const up = path.dirname(current);
-    if (up === current) return false;
-    if (sameFolder(up, parent, platform)) return true;
-    current = up;
-  }
+  const real = (target: string) => realPathOrNull(path.resolve(target)) ?? path.resolve(target);
+  const relative = path.relative(real(parent), real(candidate));
+  return relative.length > 0 && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
 function realPathOrNull(target: string): string | null {

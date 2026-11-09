@@ -326,10 +326,8 @@ final class SpeechDictationService: ObservableObject {
     let box = self.box
     box.finalizedTranscript = ""
 
-    let locale = await Self.preferredLocale()
-    try checkStartStillCurrent(generation)
     let transcriber = SpeechTranscriber(
-      locale: locale,
+      locale: Self.preferredLocale,
       transcriptionOptions: [],
       reportingOptions: [.volatileResults],
       attributeOptions: []
@@ -343,7 +341,7 @@ final class SpeechDictationService: ObservableObject {
     // here surface as `transcriptionUnavailable` so the UI can degrade.
     do {
       isPreparing = true
-      try await ensureModel(transcriber: transcriber, locale: locale)
+      try await ensureModel(transcriber: transcriber, locale: Self.preferredLocale)
       isPreparing = false
       try checkStartStillCurrent(generation)
     } catch is CancellationError {
@@ -466,14 +464,11 @@ final class SpeechDictationService: ObservableObject {
 
   // MARK: - Locale / asset management
 
-  /// Preferred dictation locale: US English on an English device, because the
-  /// ADE glossary is tuned for it. Any other device language uses its own
-  /// locale when the transcriber supports it.
+  /// Preferred dictation locale — US English, the locale the ADE glossary is
+  /// tuned for. The current device locale is tried as a fallback.
   @available(iOS 26.0, *)
-  private static func preferredLocale() async -> Locale {
-    let english = Locale(identifier: "en-US")
-    guard Locale.current.language.languageCode != .english else { return english }
-    return await SpeechTranscriber.supportedLocale(equivalentTo: Locale.current) ?? english
+  private static var preferredLocale: Locale {
+    Locale(identifier: "en-US")
   }
 
   /// Ensure the transcriber's locale assets are installed, downloading and

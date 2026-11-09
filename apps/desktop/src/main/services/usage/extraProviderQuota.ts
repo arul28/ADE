@@ -16,6 +16,7 @@ import type {
   UsageProviderErrorKind,
   UsageWindow,
 } from "../../../shared/types";
+import { boundedAgentReason } from "../../../shared/chatErrorPresentation";
 import { getApiKey } from "../ai/apiKeyStore";
 import { readCopilotAccountQuota } from "../chat/copilotSdkPool";
 import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
@@ -101,8 +102,8 @@ function resolveIo(io: ExtraQuotaIo = {}): ResolvedIo {
     readText: io.readText ?? readTextFile,
     readCursorSession: io.readCursorSession ?? readCursorSessionToken,
     readGhToken: io.readGhToken ?? readCachedGhAuthToken,
-    readFactoryApiKey: io.readFactoryApiKey ?? readStoredFactoryApiKey,
-    readCursorApiKey: io.readCursorApiKey ?? readStoredCursorApiKey,
+    readFactoryApiKey: io.readFactoryApiKey ?? (() => readStoredApiKey("droid")),
+    readCursorApiKey: io.readCursorApiKey ?? (() => readStoredApiKey("cursor")),
     readOpenCodeConsoleAccount: io.readOpenCodeConsoleAccount ?? readOpenCodeConsoleAccountFromDisk,
   };
 }
@@ -414,17 +415,9 @@ export function readKimiAccessToken(auth: unknown, nowMs: number): string | null
   return token;
 }
 
-function readStoredFactoryApiKey(): string | null {
+function readStoredApiKey(provider: "droid" | "cursor"): string | null {
   try {
-    return getApiKey("droid")?.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-function readStoredCursorApiKey(): string | null {
-  try {
-    return getApiKey("cursor")?.trim() || null;
+    return getApiKey(provider)?.trim() || null;
   } catch {
     return null;
   }
@@ -442,10 +435,12 @@ type HttpJson =
 /** The reason a provider gave for refusing, when its 403 body names one. */
 async function refusalMessage(response: Response): Promise<string | undefined> {
   try {
-    const body = await response.json() as Record<string, unknown>;
-    const nested = body.error && typeof body.error === "object" ? (body.error as Record<string, unknown>).message : undefined;
-    const message = [body.message, nested, body.error, body.detail].find((value) => typeof value === "string" && value.trim());
-    return typeof message === "string" ? Array.from(message.trim()).slice(0, 200).join("") : undefined;
+    const body = asRecord(await response.json());
+    const message = toOptionalString(body?.message)
+      ?? toOptionalString(asRecord(body?.error)?.message)
+      ?? toOptionalString(body?.error)
+      ?? toOptionalString(body?.detail);
+    return message ? boundedAgentReason(message) : undefined;
   } catch {
     return undefined;
   }
@@ -482,12 +477,9 @@ async function fetchJson(
 }
 
 function httpFailure(provider: UsageProvider, failure: Extract<HttpJson, { ok: false }>): UsageProviderPollResult {
-  const detail = failure.detail === "network" || failure.detail === "timeout" || failure.detail === "unreadable"
-    ? failure.detail
-    : failure.detail;
   return {
     windows: [],
-    errors: [`${provider}: usage request failed (${detail})${failure.message ? `: ${failure.message}` : ""}`],
+    errors: [`${provider}: usage request failed (${failure.detail})${failure.message ? `: ${failure.message}` : ""}`],
     errorKind: failure.errorKind,
     source: "http",
   };
@@ -536,7 +528,7 @@ export async function pollCursorQuota(
       return {
         windows: [],
         errors: ["cursor: limits are only readable after signing in to the Cursor app"],
-        errorKind: "auth",
+        errorKind: "unavailable",
         source: "http",
       };
     }

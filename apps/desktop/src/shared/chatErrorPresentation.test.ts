@@ -4,7 +4,7 @@ import {
   isSandboxUnsupportedFailureText,
   presentChatFailure,
   readChatErrorPresentation,
-  sanitizeAcpStderrTail,
+  sanitizeAgentFailureText,
   summarizeAcpStderrTail,
   externalStopSignal,
 } from "./chatErrorPresentation";
@@ -173,7 +173,7 @@ describe("summarizeAcpStderrTail", () => {
 
   it("bounds a very long line and the whole tail", () => {
     const longLine = `error: ${"x".repeat(5_000)}`;
-    const bounded = sanitizeAcpStderrTail(longLine);
+    const bounded = sanitizeAgentFailureText(longLine);
     expect(bounded.length).toBeLessThanOrEqual(ACP_STDERR_TAIL_LIMIT);
     const headline = summarizeAcpStderrTail(longLine).headline ?? "";
     expect(headline.length).toBeLessThanOrEqual(401);
@@ -188,7 +188,7 @@ describe("summarizeAcpStderrTail", () => {
     // for the CI scanner to flag.
     const opaqueLower = ("0123456789" + "abcdef").repeat(4);
     const uuid = ["550e8400", "e29b", "41d4", "a716", "446655440000"].join("-");
-    const shown = sanitizeAcpStderrTail(`agent error\nkey=${opaqueLower}\nrequest ${uuid}`);
+    const shown = sanitizeAgentFailureText(`agent error\nkey=${opaqueLower}\nrequest ${uuid}`);
     expect(shown).not.toContain(opaqueLower);
     expect(shown).toContain("[redacted]");
     expect(shown).toContain(uuid);
@@ -215,14 +215,14 @@ describe("summarizeAcpStderrTail", () => {
     // Redacting `token=a` to `token=[redacted]` can grow the text, so the cap
     // must be re-applied after redaction, not only before it.
     const tail = "token=a ".repeat(2_000);
-    const cleaned = sanitizeAcpStderrTail(tail);
+    const cleaned = sanitizeAgentFailureText(tail);
     expect(cleaned.length).toBeLessThanOrEqual(ACP_STDERR_TAIL_LIMIT);
     expect(cleaned).toContain("[redacted]");
   });
 
   it("keeps the newest bytes when the tail exceeds the capture cap", () => {
     const tail = `oldest-line\n${"y".repeat(5_000)}\nnewest-line`;
-    const cleaned = sanitizeAcpStderrTail(tail);
+    const cleaned = sanitizeAgentFailureText(tail);
     expect(cleaned).toContain("newest-line");
     expect(cleaned).not.toContain("oldest-line");
   });

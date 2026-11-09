@@ -111,7 +111,8 @@ export function collapseWhitespace(value: string): string {
 }
 
 /** Cuts to `max` chars without splitting a surrogate pair. No ellipsis: a cut quote must still be found in the reply. */
-function cut(value: string, max: number): string {
+/** The first `max` UTF-16 units, never ending inside a surrogate pair. */
+export function cut(value: string, max: number): string {
   if (value.length <= max) return value;
   let end = max;
   const last = value.charCodeAt(end - 1);

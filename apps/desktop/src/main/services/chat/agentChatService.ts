@@ -1675,7 +1675,7 @@ import {
   isSandboxUnsupportedFailureText,
   presentChatFailure,
   presentExternalProcessStop,
-  sanitizeAcpStderrTail,
+  sanitizeAgentFailureText,
 } from "../../../shared/chatErrorPresentation";
 import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentation";
 import { resolveCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
@@ -3902,9 +3902,6 @@ type CopilotRuntime = {
   slashCommands: CopilotSlashCommandInfo[] | null;
 };
 
-/** A compaction that outlives this is stuck; the send then gets Pi's own refusal. */
-const PI_COMPACTION_WAIT_MS = 10 * 60_000;
-
 type PiRuntime = {
   kind: "pi";
   poolKey: string;
@@ -5548,7 +5545,7 @@ type ManagedChatSession = {
    */
   liveTurnErrorText: string | null;
   /** Why Claude says this turn's compaction failed; cleared when the turn ends. */
-  claudeCompactError?: string | null;
+  claudeCompactError: string | null;
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
@@ -19495,7 +19492,10 @@ export function createAgentChatService(args: {
       }
       // No context read here: Pi has no reading right after a compaction.
       // The turn's own sample, when it ends, carries the post-compaction size.
-      if (eventRecord?.type === "compaction_end") runtime.activeCompactionId = null;
+      if (eventRecord?.type === "compaction_end") {
+        runtime.activeCompactionId = null;
+        void deliverPiQueuedSteers(managed, runtime);
+      }
       if (eventRecord?.type === "session_info_changed") adoptRuntimeSessionTitle(managed, eventRecord, "pi_session_info");
       if (eventRecord?.type === "message_end") settlePiSessionLease();
     };
@@ -25099,12 +25099,12 @@ export function createAgentChatService(args: {
         // its own failure paths (refused, abandoned on teardown).
         if (compact.type === "context_compact" && compact.trigger === "ade_fallback") continue;
         openNativeCompactions.get(managed.session.id)?.delete(key);
-        const compactError = managed.claudeCompactError || null;
+        const compactError = managed.claudeCompactError;
         const detail = compactError
           ?? (event.status !== "completed" ? managed.liveTurnErrorText : null)
           ?? "The turn ended before compaction completed.";
         // A steer aborts the summary request: the user moved on, nothing broke.
-        const aborted = /request was aborted/i.test(compactError ?? "");
+        const aborted = event.status !== "failed" && /request was aborted/i.test(compactError ?? "");
         emitChatEvent(managed, { ...compact, state: "failed", failReason: event.status === "interrupted" || aborted ? "interrupted" : /quota|weekly limit|usage limit/i.test(detail) ? "quota" : "provider_error", failDetail: detail });
       }
     }
@@ -29791,6 +29791,7 @@ export function createAgentChatService(args: {
       turnFailureMarked: Boolean(row.lastTurnFailedAt),
       contextHealth: null,
       liveTurnErrorText: null,
+      claudeCompactError: null,
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
@@ -37596,7 +37597,7 @@ export function createAgentChatService(args: {
       if (status === "failed" && ended.error && typeof ended.error.message === "string") {
         emitChatEvent(managed, {
           type: "error",
-          message: sanitizeAcpStderrTail(ended.error.message) || "The turn failed.",
+          message: sanitizeAgentFailureText(ended.error.message) || "The turn failed.",
           turnId,
         });
       }
@@ -38692,15 +38693,15 @@ export function createAgentChatService(args: {
     return true;
   };
 
-  /**
-   * Pi refuses a prompt during compaction, and a steer sent then sits unread
-   * until some later turn, so a send waits the compaction out first.
-   */
-  const waitForPiCompaction = async (managed: ManagedChatSession, runtime: PiRuntime): Promise<void> => {
-    const deadline = Date.now() + PI_COMPACTION_WAIT_MS;
-    while (managed.runtime === runtime && runtime.activeCompactionId && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
+  /** Starts the next queued message once nothing holds Pi back. */
+  const deliverPiQueuedSteers = async (managed: ManagedChatSession, runtime: PiRuntime): Promise<void> => {
+    if (managed.closed || managed.runtime !== runtime || runtime.busy || !runtime.pendingSteers.length) return;
+    await deliverNextQueuedSteer(managed, runtime).catch((error) => {
+      logger.warn("agent_chat.pi_deliver_queued_steer_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   const runPiTurn = async (
@@ -38722,9 +38723,10 @@ export function createAgentChatService(args: {
     let runtime: PiRuntime;
     try {
       runtime = await startPiRuntime(managed);
-      await waitForPiCompaction(managed, runtime);
-      const validation = validateSessionReadyForTurn(managed);
-      if (!validation.ready) throw new Error(validation.reason);
+      if (!runtime.activeCompactionId) {
+        const validation = validateSessionReadyForTurn(managed);
+        if (!validation.ready) throw new Error(validation.reason);
+      }
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
       const message = error instanceof Error ? error.message : String(error);
@@ -38739,6 +38741,26 @@ export function createAgentChatService(args: {
         model: managed.session.model,
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       });
+      persistChatState(managed);
+      return;
+    }
+    if (runtime.activeCompactionId) {
+      // Pi refuses a prompt during compaction, and a steer sent then sits
+      // unread. Queued, the message shows as waiting, Stop can clear it, and
+      // it runs when the compaction ends.
+      const queued = enqueueSteerOrDrop(
+        managed,
+        runtime,
+        managed.session.id,
+        randomUUID(),
+        args.userText?.trim() || args.promptText,
+        args.attachments ?? [],
+        args.contextAttachments ?? [],
+        args.resolvedAttachments ?? [],
+        args.metadata,
+        args.displayText !== undefined ? { displayText: args.displayText } : undefined,
+      );
+      if (queued) args.onDispatched?.();
       persistChatState(managed);
       return;
     }
@@ -38828,14 +38850,7 @@ export function createAgentChatService(args: {
         runtime.interrupted = false;
       }
     }
-    if (!managed.closed && managed.runtime === runtime && runtime.pendingSteers.length) {
-      await deliverNextQueuedSteer(managed, runtime).catch((error) => {
-        logger.warn("agent_chat.pi_deliver_queued_steer_failed", {
-          sessionId: managed.session.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }
+    await deliverPiQueuedSteers(managed, runtime);
   };
 
   // ── OpenCode 2.0 runtime ──
@@ -47871,9 +47886,14 @@ export function createAgentChatService(args: {
     }
   };
 
+  /** Runtimes whose next interrupt cancel leaves queued subagent results alone. */
+  const keepChildResultsOnNextCancel = new WeakSet<object>();
+
   const noteClaudeCompactFailure = (managed: ManagedChatSession, status: Record<string, unknown>): void => {
-    if (status.compact_result !== "failed") return;
-    managed.claudeCompactError = typeof status.compact_error === "string" ? status.compact_error : null;
+    if (status.status === "compacting" || status.compact_result === "success") managed.claudeCompactError = null;
+    if (status.compact_result === "failed") {
+      managed.claudeCompactError = typeof status.compact_error === "string" && status.compact_error ? status.compact_error : null;
+    }
   };
 
   const cancelQueuedSteers = (
@@ -47895,6 +47915,7 @@ export function createAgentChatService(args: {
     // unrelated Stop.
     const preserveQueuedSteers = runtime.preserveQueuedSteersOnInterrupt === true;
     runtime.preserveQueuedSteersOnInterrupt = false;
+    const keepChildResults = keepChildResultsOnNextCancel.delete(runtime) && reason === "interrupted";
     if (reason === "interrupted" && preserveQueuedSteers) return;
     // A failed Compact first turn keeps the messages it was compacting for.
     if (managed.compactFirstHold === "holding") {
@@ -47904,7 +47925,11 @@ export function createAgentChatService(args: {
       }
       managed.compactFirstHold = undefined;
     }
-    const cancelled = runtime.pendingSteers.splice(0);
+    const stays = (steer: { metadata?: AgentChatEventMetadata | null }) => keepChildResults && Boolean(steer.metadata?.spawnCompletion);
+    const cancelled = runtime.pendingSteers.filter((steer) => !stays(steer));
+    for (let index = runtime.pendingSteers.length - 1; index >= 0; index -= 1) {
+      if (!stays(runtime.pendingSteers[index]!)) runtime.pendingSteers.splice(index, 1);
+    }
     if (!cancelled.length) return;
 
     const cancelReasons: Record<typeof reason, string> = {
@@ -49202,6 +49227,7 @@ export function createAgentChatService(args: {
       turnFailureMarked: false,
       contextHealth: null,
       liveTurnErrorText: null,
+      claudeCompactError: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -51571,6 +51597,7 @@ export function createAgentChatService(args: {
       turnFailureMarked: false,
       contextHealth: null,
       liveTurnErrorText: null,
+      claudeCompactError: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -62754,6 +62781,7 @@ export function createAgentChatService(args: {
             runtime.activeCompactionId = null;
           }
         }
+        await deliverPiQueuedSteers(managed, runtime);
         return;
       }
       await runPiTurn(managed, {
@@ -64132,8 +64160,8 @@ export function createAgentChatService(args: {
     }
 
     if (managed.session.provider === "pi") {
-      if (managed.runtime?.kind === "pi") await waitForPiCompaction(managed, managed.runtime);
-      if (managed.runtime?.kind === "pi" && (managed.runtime.busy || managed.session.status === "active")) {
+      const piCompacting = managed.runtime?.kind === "pi" && Boolean(managed.runtime.activeCompactionId);
+      if (managed.runtime?.kind === "pi" && !piCompacting && (managed.runtime.busy || managed.session.status === "active")) {
         const runtime = managed.runtime;
         const preparedSteer = prepareSendMessage({
           sessionId,
@@ -64182,6 +64210,7 @@ export function createAgentChatService(args: {
         contextAttachments,
         metadata,
         allowPendingInput: options?.allowPendingInput,
+        allowActiveSession: piCompacting,
       });
       if (!preparedSteer) return { steerId, queued: false };
       preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
@@ -65035,18 +65064,16 @@ export function createAgentChatService(args: {
     const armedHere = Boolean(queueOwner && !queueOwner.preserveQueuedSteersOnInterrupt);
     if (armedHere && queueOwner) queueOwner.preserveQueuedSteersOnInterrupt = true;
     // A subagent's result waiting in the queue is not what the user is
-    // replacing, and nothing resends it once cancelled. It sits out the stop
-    // and is delivered after the redirect turn.
-    const queue = !preserveQueuedSteers && runtime && "pendingSteers" in runtime ? runtime.pendingSteers : null;
-    const heldChildResults: QueuedSteer[] = [];
-    if (queue) {
-      for (let index = queue.length - 1; index >= 0; index -= 1) {
-        if (queue[index]?.metadata?.spawnCompletion) heldChildResults.unshift(...queue.splice(index, 1));
-      }
+    // replacing, and nothing resends it once cancelled, so that cancel keeps it.
+    if (
+      !preserveQueuedSteers
+      && runtime
+      && runtime.kind !== "opencode"
+      && "pendingSteers" in runtime
+      && runtime.pendingSteers.some((steer) => steer.metadata?.spawnCompletion)
+    ) {
+      keepChildResultsOnNextCancel.add(runtime);
     }
-    const restoreChildResults = () => {
-      if (queue && managed.runtime === runtime) queue.push(...heldChildResults);
-    };
     try {
       await interrupt({ sessionId: args.sessionId, mode: preserveQueuedSteers ? "stop_only" : "stop_and_clear" });
     } catch (error) {
@@ -65054,11 +65081,10 @@ export function createAgentChatService(args: {
       // Disarm rather than leaving the flag to swallow an unrelated interrupt's
       // cancel later.
       if (armedHere && queueOwner) queueOwner.preserveQueuedSteersOnInterrupt = false;
-      restoreChildResults();
+      if (runtime) keepChildResultsOnNextCancel.delete(runtime);
       throw error;
     }
     await waitForHostedTurnToSettleAfterInterrupt(managed, args.sessionId);
-    restoreChildResults();
     // Settled, so the turn's tail has already run `cancelQueuedSteers` and
     // consumed the flag; this is the no-op that closes the case where it did
     // not (nothing queued, or a runtime that never reached its tail).
@@ -66449,13 +66475,13 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "pi") {
       const rt = managed.runtime;
       rt.interrupted = true;
-      rt.pendingSteers.length = 0;
+      // Before the abort, or the stopped turn's tail starts the next row.
+      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
       try {
         await rt.sdk.abort();
       } catch {
         // ignore
       }
-      if (stopModeClearsQueue(mode)) cancelQueuedSteers(managed, rt, "interrupted");
       cancelPendingInputsFrom(managed, "pi", "ade");
       persistChatState(managed);
       return result;

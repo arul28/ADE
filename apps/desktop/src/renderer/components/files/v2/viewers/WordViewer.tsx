@@ -605,7 +605,6 @@ function describeNotices(document: WordDocument): string | null {
   const { notices } = document;
   const entries: Array<[number, string]> = [
     [notices.charts, "chart"],
-    [notices.textBoxes, "text box"],
     [notices.shapes, "shape"],
     [notices.footnotes, "footnote"],
     [notices.endnotes, "endnote"],

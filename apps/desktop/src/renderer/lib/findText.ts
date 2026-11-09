@@ -11,6 +11,10 @@ import { createHighlightGroup } from "./highlightRegistry";
 import { FIND_INCLUDE_ATTRIBUTE, FIND_SKIP_ATTRIBUTE } from "./findScope";
 import { cssZoomOf } from "./webZoom";
 
+function foldLowered(text: string): string {
+  return text.toLowerCase().replace(/ς/g, "σ").replace(/[\u2018\u2019]/g, "'");
+}
+
 /**
  * Lower-cases for comparison without changing the string's length, so an
  * offset in the folded text is an offset in the original. Characters whose
@@ -18,10 +22,6 @@ import { cssZoomOf } from "./webZoom";
  * folds to sigma so "ΟΔΟΣ" finds "οδος", and a curly apostrophe folds to a
  * straight one so "don't" finds "don’t".
  */
-function foldLowered(text: string): string {
-  return text.toLowerCase().replace(/ς/g, "σ").replace(/[\u2018\u2019]/g, "'");
-}
-
 export function foldFindCase(text: string): string {
   const lowered = foldLowered(text);
   if (lowered.length === text.length) return lowered;

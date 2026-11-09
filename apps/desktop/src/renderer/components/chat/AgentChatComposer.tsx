@@ -2265,7 +2265,7 @@ function PromptSuggestionHint({ text }: { text: string }) {
 }
 
 /** Scripts written without spaces between words. */
-const UNSPACED_SCRIPT = "[\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}\\p{Script=Thai}\\p{Script=Lao}\\p{Script=Khmer}\\p{Script=Myanmar}]";
+const UNSPACED_SCRIPT = "[\\p{Script_Extensions=Han}\\p{Script_Extensions=Hiragana}\\p{Script_Extensions=Katakana}\\p{Script=Thai}\\p{Script=Lao}\\p{Script=Khmer}\\p{Script=Myanmar}]";
 const ENDS_UNSPACED = new RegExp(`${UNSPACED_SCRIPT}$`, "u");
 const STARTS_UNSPACED = new RegExp(`^${UNSPACED_SCRIPT}`, "u");
 
@@ -5416,19 +5416,10 @@ function AgentChatComposerImpl({
       // Rich editor: insert at the saved selection range (or end), then sync draft.
       const editor = richEditorRef.current;
       const caret = richSelectionRef.current;
-      let before = "";
-      let after = "";
-      if (editor && caret && editor.contains(caret.commonAncestorContainer)) {
-        const head = document.createRange();
-        head.selectNodeContents(editor);
-        const tail = head.cloneRange();
-        head.setEnd(caret.startContainer, caret.startOffset);
-        tail.setStart(caret.endContainer, caret.endOffset);
-        before = head.toString();
-        after = tail.toString();
-      } else if (editor) {
-        before = editor.textContent ?? "";
-      }
+      const text = editor ? serializeComposerDom(editor).text : "";
+      const atCaret = editor && caret && editor.contains(caret.commonAncestorContainer);
+      const before = atCaret ? text.slice(0, serializedComposerOffsetAt(editor, caret.startContainer, caret.startOffset, text)) : text;
+      const after = atCaret ? text.slice(serializedComposerOffsetAt(editor, caret.endContainer, caret.endOffset, text)) : "";
       insertTextIntoRichEditor(spaceDictatedText(before, insertion, after));
     } else {
       const current = draft;
