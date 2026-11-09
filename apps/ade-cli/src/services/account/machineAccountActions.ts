@@ -40,6 +40,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+async function readCloudEnabled(service: Record<string, unknown> | null): Promise<boolean> {
+  const access = service?.access;
+  if (typeof access !== "function") return false;
+  try {
+    return ((await (access as () => Promise<unknown>).call(service)) as { enabled?: unknown } | null)?.enabled === true;
+  } catch {
+    return false;
+  }
+}
+
 export function isMachineAccountMethod(method: string): method is MachineAccountMethod {
   return Object.prototype.hasOwnProperty.call(MACHINE_ACCOUNT_METHODS, method);
 }
@@ -81,7 +91,10 @@ export async function runMachineAccountAction(
   }
   const service = (await domains?.())?.[domain] ?? null;
   const callable = service?.[action];
-  if (typeof callable !== "function") {
+  // No ADE Cloud for this account: `cloud` answers as if it weren't here, like
+  // a missing action below. `access` itself stays, it is the answer.
+  const hiddenCloud = domain === "cloud" && action !== "access" && !(await readCloudEnabled(service));
+  if (typeof callable !== "function" || hiddenCloud) {
     throw new JsonRpcError(
       JsonRpcErrorCode.methodNotFound,
       encodeCodedErrorMessage(ACTION_NOT_CALLABLE_CODE, `${domain}.${action} is unavailable in this runtime.`),

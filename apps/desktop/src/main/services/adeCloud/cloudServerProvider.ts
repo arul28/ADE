@@ -175,6 +175,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       return statusOf(await request("POST", instancePath(id, "sleep"), { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "sleeping");
     },
 
+    async requestIdleSleep(id: string): Promise<string> {
+      return statusOf(await request("POST", instancePath(id, "idle"), { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "sleeping");
+    },
+
     async startInstance(id: string, options?: { reason?: "push_work" }): Promise<string> {
       return statusOf(await request("POST", instancePath(id, "start"), {
         body: options?.reason ? { reason: options.reason } : {},

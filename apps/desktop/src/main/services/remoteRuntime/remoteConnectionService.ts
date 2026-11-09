@@ -332,6 +332,18 @@ function sameStatusValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/**
+ * After a wake, may this call go out again? Replay-safe actions may. A chat send
+ * may when it carries a client id: the brain recognizes a retry of one it already
+ * took, so a message caught by a sleep is delivered, and never twice.
+ */
+function isRetriableAfterSleep(request: RemoteRuntimeActionRequest): boolean {
+  if (isReplaySafeAdeAction(request.domain, request.action)) return true;
+  if (request.domain !== "chat" || request.action !== "sendMessage") return false;
+  const args = request.args as { clientSendId?: unknown } | undefined;
+  return typeof args?.clientSendId === "string" && args.clientSendId.length > 0;
+}
+
 export class RemoteConnectionService {
   private readonly statusById = new Map<string, StatusPatch>();
   private readonly manuallyDisconnectedTargetIds = new Set<string>();
@@ -1501,7 +1513,7 @@ export class RemoteConnectionService {
         if (adeActionAccess(request.domain, request.action) !== "write" || !(await this.wakeForUse(target))) throw error;
         this.clearAutomaticReconnectState(targetId);
         await this.connectWokenMachine(target);
-        if (error instanceof RemoteActionOutcomeUnknownError && !isReplaySafeAdeAction(request.domain, request.action)) throw error;
+        if (error instanceof RemoteActionOutcomeUnknownError && !isRetriableAfterSleep(request)) throw error;
         result = await this.pool.callActionForTarget(target, projectId, request);
       }
       this.mergeStatus(targetId, {

@@ -39,7 +39,7 @@ struct SettingsIntegrationsPage: View {
         githubSection
         linearSection
         jiraSection
-        cloudSection
+        if syncService.cloudAvailable { cloudSection }
         webhooksSection
       }
     }
@@ -51,7 +51,7 @@ struct SettingsIntegrationsPage: View {
     .task(id: connected) { if connected { await loadGitHub() } }
     .task(id: connected) { if connected { await loadLinear() } }
     .task(id: connected) { if connected { await loadJira() } }
-    .task(id: connected) { if connected { await loadCloud() } }
+    .task(id: connected) { if connected { await syncService.refreshCloudAvailability(); await loadCloud() } }
   }
 
   // MARK: - GitHub
@@ -142,17 +142,12 @@ struct SettingsIntegrationsPage: View {
     SettingsIntegrationCard(
       name: "ADE Cloud",
       tagline: "Make cloud Linux machines for your lanes, signed in to your account with no code to type.",
-      status: syncService.cloudSupported ? cloud : nil
+      status: cloud
     ) {
       ADEBrandTile(brand: .cloud, size: 42)
     } rows: {
-      if !syncService.cloudSupported {
-        ADESettingsNotice(message: SettingsPageCopy.updateADE(on: machine))
-          .padding(ADEKit.inset)
-      } else {
-        ADESettingsActionRow(title: "Open ADE Cloud", symbol: "server.rack") {
-          cloudPresented = true
-        }
+      ADESettingsActionRow(title: "Open ADE Cloud", symbol: "server.rack") {
+        cloudPresented = true
       }
     }
   }
@@ -223,7 +218,7 @@ struct SettingsIntegrationsPage: View {
   }
 
   private func loadCloud() async {
-    guard syncService.cloudSupported else { return }
+    guard syncService.cloudAvailable else { return }
     do {
       let list = try await syncService.cloudRead("list", as: CloudPhoneList.self)
       cloud = IntegrationSummary(
@@ -231,13 +226,8 @@ struct SettingsIntegrationsPage: View {
         tone: .ok
       )
     } catch {
-      // The same test the cloud pane uses for an account with no ADE Cloud.
-      if error.localizedDescription.localizedCaseInsensitiveContains("isn't available on this account") {
-        cloud = IntegrationSummary(label: "Not available yet", tone: .neutral)
-      } else {
-        settingsIntegrationsLog.warning("ADE Cloud status read failed: \(error.localizedDescription, privacy: .public)")
-        cloud = IntegrationSummary(label: "Couldn't reach ADE Cloud", tone: .warn)
-      }
+      settingsIntegrationsLog.warning("ADE Cloud status read failed: \(error.localizedDescription, privacy: .public)")
+      cloud = IntegrationSummary(label: "Couldn't reach ADE Cloud", tone: .warn)
     }
   }
 }

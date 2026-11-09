@@ -4,8 +4,10 @@ import path from "node:path";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
+  adeWithheldAgentSkills,
   getAdeAgentSkillRootsForPrompt,
   joinAdeAgentSkillRoots,
+  setAgentSkillRootFilter,
   splitAdeAgentSkillRoots,
 } from "../../../shared/agentSkillRoots";
 import { adeHomeDir } from "./cursorAgentSkillShim";
@@ -43,8 +45,17 @@ export function adePromptAgentSkillRoots(options: {
   env?: NodeJS.ProcessEnv;
   resourcesPath?: string | null;
   cwd?: string | null;
+  /** The env builder: the variable keeps every root, and each launch filters what it passes on. */
+  includeWithheld?: boolean;
 } = {}): string[] {
-  return getAdeAgentSkillRootsForPrompt({ ...options, exists: agentSkillRootExists });
+  const { includeWithheld = false, ...rest } = options;
+  if (!includeWithheld) return getAdeAgentSkillRootsForPrompt({ ...rest, exists: agentSkillRootExists });
+  setAgentSkillRootFilter(null);
+  try {
+    return getAdeAgentSkillRootsForPrompt({ ...rest, exists: agentSkillRootExists });
+  } finally {
+    installWithheldSkillRootFilter();
+  }
 }
 
 /**
@@ -148,6 +159,21 @@ export function withoutAgentSkillsEnv(
   if (roots.length) next[ADE_AGENT_SKILLS_DIRS_ENV] = joinAdeAgentSkillRoots(withoutAgentSkills(roots, withheld));
   if (bundled) next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV] = withoutAgentSkills([bundled], withheld)[0];
   return next;
+}
+
+/**
+ * The roots minus the skills held back from every agent right now (`ade-cloud`
+ * for an account not on the access list). Installed here because the shared
+ * root helpers are bundled into the renderer and cannot touch the disk.
+ */
+function installWithheldSkillRootFilter(): void {
+  setAgentSkillRootFilter((roots) => withoutAgentSkills(roots, adeWithheldAgentSkills()));
+}
+installWithheldSkillRootFilter();
+
+/** {@link withoutAgentSkillsEnv} for the skills no agent may see right now. */
+export function withoutWithheldAgentSkillsEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return withoutAgentSkillsEnv(env, adeWithheldAgentSkills());
 }
 
 export function claudeAgentSkillPluginRoots(env: NodeJS.ProcessEnv): string[] {

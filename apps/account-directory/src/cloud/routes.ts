@@ -1,6 +1,7 @@
 import { authenticate } from "../callerToken";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { CloudBillingError, createCheckoutUrl, createPortalUrl, setExtraHours } from "./billing";
+import { routeSavedChats } from "./chats";
 import { CLOUD_PATHS, type CloudInstance } from "./contract";
 import {
   DISK_ON_CREATE_GB,
@@ -609,6 +610,10 @@ export async function handleCloudRequest(request: Request, env: CloudEnv): Promi
   }
   const billing = await routeBilling(request, url, path, env, caller.userId, now);
   if (billing) return billing;
+  // Saved chats need no provider: they stay readable when the computer can't be.
+  if (path === CLOUD_PATHS.chats || path.startsWith(`${CLOUD_PATHS.chats}/`)) {
+    return routeSavedChats(request, url, path, env, caller.userId, now);
+  }
   if (!provider) {
     logCloud("cloud.no_provider_key");
     return fail("unavailable", cloudErrorMessage("no_provider_key", 503), 503);

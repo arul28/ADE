@@ -48,6 +48,7 @@ import {
 import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
 import { wakeThroughTransition } from "./cloudReadyClaim";
+import { cloudHoldCommand, cloudReleaseHoldCommand } from "./cloudSleep";
 
 export type CloudCopyDeps = CloudMachineCreatorDeps & {
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
@@ -60,6 +61,9 @@ const POLL_MS = 3_000;
 const MOVE_TRANSFER_TIMEOUT_MS = 40 * 60_000;
 /** The port the old machine serves its home folder on, once, behind a short-lived signed URL. */
 const MOVE_SERVE_PORT = 7338;
+/** Holds on sleep (`cloudHoldCommand`); each expires on its own if ADE quits mid-way. */
+const COPY_HOLD_MS = 20 * 60_000;
+const MOVE_HOLD_MS = 45 * 60_000;
 
 /** Metadata a copy must not carry: it is a new machine, not the source's ready machine or row. */
 const NOT_COPIED_METADATA = new Set<string>([
@@ -122,6 +126,11 @@ export async function copyCloudMachine(
     throw new Error("ADE couldn't save a note of the copy it's about to make, so it didn't make one. Check that ADE can write to its folder, then try again.");
   }
   progress("creating", `Copying ${source.name ?? source.id} on ADE Cloud…`);
+  // A running source must not fall asleep mid-copy.
+  if (source.status === "running") {
+    await client.exec(source.id, cloudHoldCommand("copy", COPY_HOLD_MS), { timeoutMs: 30_000 })
+      .catch((error: unknown) => logger.warn?.("cloud.machine_copy_hold_failed", { error: getErrorMessage(error) }));
+  }
   const forkStarted = Date.now();
   let fork: CloudInstance;
   try {
@@ -153,8 +162,12 @@ export async function copyCloudMachine(
   const forkMs = Date.now() - forkStarted;
   logger.info?.("cloud.machine_copied", { sourceId: source.id, instanceId: fork.id, forkMs });
   // The source's sign-in files came with the disk; the copy signs in fresh.
-  await client.exec(fork.id, 'rm -f "$ADE_HOME/logs/cloud-sign-in.log" "$ADE_HOME/logs/cloud-sign-in.pid"', { timeoutMs: 60_000 })
+  await client.exec(fork.id, `rm -f "$ADE_HOME/logs/cloud-sign-in.log" "$ADE_HOME/logs/cloud-sign-in.pid"; ${cloudReleaseHoldCommand("copy")}`, { timeoutMs: 60_000 })
     .catch((error: unknown) => logger.warn?.("cloud.machine_copy_cleanup_failed", { instanceId: fork.id, error: getErrorMessage(error) }));
+  if (source.status === "running") {
+    await client.exec(source.id, cloudReleaseHoldCommand("copy"), { timeoutMs: 30_000 })
+      .catch((error: unknown) => logger.warn?.("cloud.machine_copy_release_failed", { error: getErrorMessage(error) }));
+  }
   // The copy came up signed out (the copied-home guard): sign it in like a new box.
   const result = await bringCloudBoxIntoAde(deps, { client, instance: fork, name, requestId, signal: options.signal, progress, directory });
   return { ...result, copiedFrom: source.id, forkMs };
@@ -278,7 +291,8 @@ export async function moveCloudMachine(
     const signed = await client.signedUrl(source.id, { port: MOVE_SERVE_PORT, ttlSeconds: 3_600 });
     const url = `${signed.url.split("?")[0]?.replace(/\/$/, "")}/home.tar.gz?${signed.url.split("?")[1] ?? ""}`;
     const started = Date.now();
-    await client.exec(target.instanceId, receiveHomeCommand(url), { timeoutMs: 60_000 });
+    // The new machine's brain, idle during the copy, must not sleep it.
+    await client.exec(target.instanceId, `${cloudHoldCommand("move", MOVE_HOLD_MS)}\n${receiveHomeCommand(url)}`, { timeoutMs: 60_000 });
     let exit: number | null = null;
     while (exit == null) {
       if (Date.now() - started > MOVE_TRANSFER_TIMEOUT_MS) throw new Error("Copying the files took too long.");

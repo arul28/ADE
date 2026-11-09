@@ -48,6 +48,12 @@
   // A comma list of Clerk user ids, or `*`. Unset means nobody: every /cloud
   // route answers 404. The owner's id is set at rollout, out of band.
   //
+  // SECRET — CLOUD_CHAT_MASTER_KEY (ADE Cloud, saved chats)
+  // 32 random bytes, base64 (`openssl rand -base64 32`). Seals the per-user key
+  // that encrypts saved chats. Set out of band. Rotating it makes existing saved
+  // chats unreadable, so it is never rotated in place. Unset, the chat routes
+  // answer 503.
+  //
   // OPTIONAL SECRETS — CLERK_WEBHOOK_SIGNING_SECRET, POSTHOG_PROJECT_TOKEN
   // `/webhooks/clerk` records one `ade_signed_up` PostHog event per new account
   // (src/signupAnalytics.ts). Create a Clerk webhook for `user.created` pointing
@@ -135,6 +141,13 @@
     {
       "binding": "DIAGNOSTICS",
       "bucket_name": "ade-diagnostics"
+    },
+    // ADE Cloud saved chats (src/cloud/chats.ts). The bucket is NOT created by
+    // deploying: run `wrangler r2 bucket create ade-cloud-chats` at rollout. A
+    // missing binding is handled: the chat routes answer 503.
+    {
+      "binding": "CLOUD_CHATS",
+      "bucket_name": "ade-cloud-chats"
     }
   ],
   "env": {
@@ -189,6 +202,11 @@
         {
           "binding": "DIAGNOSTICS",
           "bucket_name": "ade-diagnostics-production"
+        },
+        // Saved chats: created at rollout (`wrangler r2 bucket create ade-cloud-chats-production`).
+        {
+          "binding": "CLOUD_CHATS",
+          "bucket_name": "ade-cloud-chats-production"
         }
       ]
     }

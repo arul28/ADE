@@ -161,6 +161,7 @@ export function createAdeWebAdapter(
     modelPicker: misc.modelPicker,
     agentTools: misc.agentTools,
     cloudAgents: misc.cloudAgents,
+    cloudAccess: misc.cloudAccess,
     adeCli: misc.adeCli,
     devTools: misc.devTools,
     onboarding: misc.onboarding,

@@ -9,6 +9,7 @@ import {
   type CloudMachinesResult,
 } from "../../../shared/adeCloud";
 import { Banner } from "../ui/notice";
+import { PushAllWorkButton } from "../terminals/cloudToolGate";
 import type { NoticeAction } from "../ui/notice/NoticeParts";
 import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
 import {
@@ -87,6 +88,18 @@ export function CloudGroupBanners({
   }
   const accountBanner = result?.state === "ok" && result.account ? cloudAccountBanner(result.account) : null;
   if (accountBanner) {
+    if (accountBanner.id === "cloud-hours-zero" && result?.machines.length) {
+      banners.push(
+        <div key="push-work" className="ade-ig-mini-rows">
+          {result.machines.map((box) => (
+            <div key={box.instanceId} className="ade-ig-mini-row">
+              <span className="ade-ig-mini-title">{box.name ?? box.instanceId}</span>
+              <PushAllWorkButton instanceId={box.instanceId} />
+            </div>
+          ))}
+        </div>,
+      );
+    }
     banners.push(
       <Banner
         key="hours"
@@ -168,9 +181,7 @@ export function CloudBoxStrip({
           {box.madeByAde && box.sleep.state !== "auto" ? (
             <span
               className="ade-cx-cloud-fact"
-              title={box.sleep.state === "never"
-                ? "You turned sleep off for this box. Sleep when idle… in its menu turns it back on."
-                : "The ADE on this box is older than sleeping on its own. It sleeps when idle once ADE on it updates."}
+              title="The ADE on this box is older than sleeping on its own. It sleeps when idle once ADE on it updates."
             >
               {describeCloudSleepPolicy(box.sleep)}
             </span>
@@ -201,6 +212,7 @@ export function CloudBoxStrip({
       {box.failure ? (
         <div className="ade-cx-cloud-note">{ADE_CLOUD_NAME} couldn't run it: {box.failure}</div>
       ) : null}
+      {box.diskFull ? <div className="ade-cx-cloud-note">{box.diskFull}</div> : null}
       {error ? (
         <div ref={errorRef}>
           <Banner

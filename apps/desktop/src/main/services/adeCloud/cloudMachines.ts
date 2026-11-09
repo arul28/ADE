@@ -17,6 +17,8 @@ import {
   cloudMachineState,
   cloudMachineType,
   cloudShape,
+  cloudDiskFullMessage,
+  CLOUD_DISK_FULL_METADATA,
   cloudShapeFor,
   cloudStatusAwake,
   type CloudAccountState,
@@ -29,7 +31,9 @@ import {
 import { CLOUD_READY_METADATA, readCloudReadyMachineState } from "../../../shared/cloudReady";
 import { CLOUD_ACCESS_REFUSED, cloudUsageDay, CloudProviderError, type CloudProvider, type CloudInstance, type CloudUsage } from "./cloudProvider";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
-import { cloudSleepPolicyOf, setCloudSleepAfter } from "./cloudSleep";
+import { cloudSleepPolicyOf } from "./cloudSleep";
+import { wakeThroughTransition } from "./cloudReadyClaim";
+import { getErrorMessage } from "../shared/utils";
 
 type Logger = {
   info?(event: string, meta?: Record<string, unknown>): void;
@@ -93,6 +97,7 @@ function toCloudMachine(instance: CloudInstance): CloudMachine {
     madeByAde: cloudInstanceMadeByAde(instance),
     ready: readyOf(instance),
     sleep: cloudSleepPolicyOf(instance),
+    diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA]),
   };
 }
 
@@ -116,6 +121,75 @@ function emptyResult(state: CloudMachinesResult["state"], message: string | null
     account: null,
     message,
   };
+}
+
+/** Bounded so a frozen push can't outlast the free short wake it runs in. */
+const PUSH_ALL_WORK_TIMEOUT_MS = 3 * 60_000;
+
+/**
+ * Commits and pushes every project's lanes on the computer: uncommitted work is
+ * committed as it stands; the primary lane is only reported, since its branch
+ * is usually the default one. Prints one JSON tally line.
+ */
+const PUSH_ALL_WORK_COMMAND = [
+  'd="$ADE_HOME/cloud/holds"; mkdir -p "$d"; printf \'{"reason":"push_work","until":%s}\' "$(( $(date +%s%3N) + 600000 ))" > "$d/push_work.json"',
+  // ADE on the computer answers a few seconds after a start.
+  'i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done',
+  "python3 - <<'PY'",
+  "import json, subprocess",
+  "def ade(*args, cwd=None):",
+  "    r = subprocess.run(['ade', *args], capture_output=True, text=True, cwd=cwd, timeout=150)",
+  "    return r.returncode, r.stdout",
+  "tally = {'pushed': 0, 'failed': 0, 'skipped': 0}",
+  "rc, out = ade('projects', 'list', '--json')",
+  "try:",
+  "    payload = json.loads(out)",
+  "    projects = payload if isinstance(payload, list) else (payload.get('projects') or [])",
+  "except Exception: projects = []",
+  "for project in projects:",
+  "    root = project.get('rootPath') or project.get('path')",
+  "    if not root: continue",
+  "    rc, out = ade('lanes', 'list', '--json', cwd=root)",
+  "    try: lanes = json.loads(out).get('lanes') or []",
+  "    except Exception: continue",
+  "    for lane in lanes:",
+  "        if lane.get('archivedAt'): continue",
+  "        status = lane.get('status') or {}",
+  "        dirty = bool(status.get('dirty'))",
+  "        ahead = int(status.get('ahead') or 0)",
+  "        if not dirty and ahead == 0: continue",
+  "        if lane.get('laneType') == 'primary':",
+  "            tally['skipped'] += 1; continue",
+  "        lane_id = lane.get('id')",
+  "        if dirty:",
+  "            ade('git', 'stage-all', '--lane', lane_id, cwd=root)",
+  "            ade('git', 'commit', '--lane', lane_id, '-m', 'Work saved from ADE Cloud', cwd=root)",
+  "        rc, _ = ade('git', 'push', '--lane', lane_id, '--set-upstream', cwd=root)",
+  "        tally['pushed' if rc == 0 else 'failed'] += 1",
+  "print(json.dumps(tally))",
+  "PY",
+  'code=$?; rm -f "$d/push_work.json"; exit $code',
+].join("\n");
+
+function readPushAllTally(stdout: string): { pushed: number; failed: number; skipped: number } | null {
+  const line = stdout.trim().split("\n").pop() ?? "";
+  try {
+    const parsed = JSON.parse(line) as { pushed?: unknown; failed?: unknown; skipped?: unknown };
+    return { pushed: Number(parsed.pushed) || 0, failed: Number(parsed.failed) || 0, skipped: Number(parsed.skipped) || 0 };
+  } catch {
+    return null;
+  }
+}
+
+function pushAllWorkResult(exitCode: number, tally: { pushed: number; failed: number; skipped: number } | null): CloudMachineActionResult {
+  if (exitCode !== 0 || !tally) return { ok: false, blocker: null, message: "ADE couldn't push this computer's work. Try again." };
+  const { pushed, failed, skipped } = tally;
+  if (pushed === 0 && failed === 0) {
+    return { ok: true, blocker: null, message: skipped ? `Nothing new to push. ${skipped === 1 ? "One primary lane has" : `${skipped} primary lanes have`} local work left on the computer.` : "All work is already on GitHub." };
+  }
+  const moved = `${pushed} ${pushed === 1 ? "lane" : "lanes"}`;
+  const left = failed ? ` ${failed} couldn't be pushed; open the computer to see why.` : "";
+  return { ok: failed === 0, blocker: null, message: `Pushed ${moved} to GitHub.${left}` };
 }
 
 export function createCloudMachines(deps: CloudMachinesDeps) {
@@ -279,25 +353,6 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
           }
           return { ok: true, blocker: null, message: "Deleted on ADE Cloud and removed from ADE." };
         }
-        case "set_sleep": {
-          const minutes = args.sleepAfterMinutes ?? null;
-          if (minutes != null && !(Number.isInteger(minutes) && minutes >= 5 && minutes <= 24 * 60)) {
-            return { ok: false, blocker: null, message: "Pick 5 minutes to a day, or never." };
-          }
-          const result = await setCloudSleepAfter(client, instanceId, minutes, logger);
-          switch (result.state) {
-            case "never":
-              return { ok: true, blocker: null, message: "It won't sleep on its own. It uses hours until you sleep it." };
-            case "on":
-              return { ok: true, blocker: null, message: `It sleeps after ${result.afterMinutes} minutes with nothing running on it.` };
-            case "brain_too_old":
-              return { ok: false, blocker: null, message: "The ADE on this box is too old to keep it awake while it works, so it can't sleep on its own yet. Update ADE on it, then try again." };
-            case "not_running":
-              return { ok: false, blocker: null, message: "Wake the box first." };
-            default:
-              return { ok: false, blocker: null, message: `ADE couldn't change how it sleeps: ${result.error}` };
-          }
-        }
         default:
           return { ok: false, blocker: null, message: "ADE can't do that to a box." };
       }
@@ -310,6 +365,24 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
   return {
     list,
     run,
+    /**
+     * "Push all work to GitHub": a free short wake at 0 hours, then every lane's
+     * work (committed as it stands, then pushed) over exec, so it needs no pairing.
+     */
+    pushAllWork: async (instanceId: string): Promise<CloudMachineActionResult> => {
+      const client = await deps.client();
+      if (!client) return { ok: false, blocker: null, message: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };
+      try {
+        await wakeThroughTransition(client, instanceId, now, { reason: "push_work" });
+        const ran = await client.exec(instanceId, PUSH_ALL_WORK_COMMAND, { timeoutMs: PUSH_ALL_WORK_TIMEOUT_MS });
+        const tally = readPushAllTally(ran.stdout);
+        logger.info?.("cloud.push_all_work", { instanceId, exitCode: ran.exitCode, ...(tally ?? {}) });
+        return pushAllWorkResult(ran.exitCode, tally);
+      } catch (error) {
+        logger.warn?.("cloud.push_all_work_failed", { instanceId, error: getErrorMessage(error) });
+        return { ok: false, blocker: null, message: getErrorMessage(error) };
+      }
+    },
     /** Whether the last list showed this ADE machine as a cloud box. */
     isKnownBox: (machineKey: string): boolean => knownMachineKeys.has(machineKey),
     /** One box's metadata, read fresh. */

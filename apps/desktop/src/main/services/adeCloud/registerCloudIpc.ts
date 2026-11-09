@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { hostname } from "node:os";
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, powerMonitor } from "electron";
 import {
   cloudStillStartingMessage,
   CLOUD_MADE_BY_CHAT_METADATA,
@@ -36,11 +36,13 @@ import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/service
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import {
+  cloudAccessEnabled,
   cloudNoProviderSentence,
   cloudVaultFromBridge,
   getCloudProvider,
   readCloudStatus,
   requireCloudProvider,
+  watchCloudAccessForSkills,
   type CloudAccessDeps,
 } from "./cloudAccess";
 import { createCloudMachine } from "./cloudMachineCreator";
@@ -90,6 +92,14 @@ function sendToAllWindows(channel: string, payload?: unknown): void {
   }
 }
 
+/** Set while the app is up: re-asks ADE Cloud's access after a sign-in or sign-out. */
+let recheckCloudAccess: (() => void) | null = null;
+
+/** The ADE account on this computer changed: ask the server again, and tell every window if the answer moved. */
+export function cloudAccountChanged(): void {
+  recheckCloudAccess?.();
+}
+
 export function registerCloudIpc(args: {
   vaultBridge: Parameters<typeof cloudVaultFromBridge>[0];
   listAccountMachines: () => Promise<AdeAccountMachinesResult>;
@@ -130,6 +140,19 @@ export function registerCloudIpc(args: {
     deviceName: () => hostname(),
     logger,
   };
+
+  // The one answer that decides whether ADE Cloud exists in this app. No poll:
+  // asked when a window opens or takes focus, and on a sign-in or sign-out;
+  // its cache keeps that to the server at most every 10 minutes.
+  let lastAccess: boolean | null = null;
+  const readAccess = async (): Promise<boolean> => {
+    const enabled = await cloudAccessEnabled(credentials).catch(() => false);
+    if (lastAccess !== null && lastAccess !== enabled) sendToAllWindows(IPC.cloudStatusChanged);
+    lastAccess = enabled;
+    return enabled;
+  };
+  recheckCloudAccess = () => void readAccess();
+  watchCloudAccessForSkills(credentials);
 
   const pendingCreates = createCloudPendingCreateStore(getMachineStore, logger);
   // Read now, before any create of this session can add to it.
@@ -268,6 +291,12 @@ export function registerCloudIpc(args: {
     return "This computer needs updating before ADE can update it. Choose Update this computer in its menu.";
   });
 
+  // Account-level, so no pin: every computer answers the same for this account.
+  ipcMain.handle(IPC.cloudGetAccess, async (event): Promise<{ enabled: boolean }> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGetAccess)) return { enabled: false };
+    return { enabled: await readAccess() };
+  });
+
   ipcMain.handle(IPC.cloudGetStatus, async (event): Promise<CloudStatus | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGetStatus)) return null;
     return await readCloudStatus(credentials);
@@ -327,6 +356,24 @@ export function registerCloudIpc(args: {
     const { url } = await billingCall(async () => (await requireCloudProvider(credentials)).billingCheckout());
     await openExternalUrl(url);
     return { opened: true };
+  });
+
+  // "Still watching": the window is in front and the person moved or typed
+  // lately. The system's idle time covers what the renderer can't see (a
+  // browser view, a remote desktop); a window in front keeps it about this app.
+  ipcMain.handle(IPC.cloudPersonIsHere, (event): boolean => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudPersonIsHere)) return false;
+    const window = BrowserWindow.fromWebContents(event.sender);
+    return Boolean(window?.isFocused()) && powerMonitor.getSystemIdleTime() < PERSON_ACTIVE_WITHIN_S;
+  });
+
+  ipcMain.handle(IPC.cloudPushAllWork, async (event, arg: { instanceId?: unknown }): Promise<CloudMachineActionResult> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudPushAllWork)) return { ok: false, blocker: null, message: "ADE can't do that from here." };
+    const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
+    if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
+    const result = await machines.pushAllWork(instanceId);
+    sendToAllWindows(IPC.cloudStatusChanged);
+    return result;
   });
 
   ipcMain.handle(IPC.cloudOpenBillingPortal, async (event): Promise<{ opened: boolean }> => {
@@ -619,6 +666,9 @@ function readyPreparerId(logger: Logger): string {
 }
 
 /** Long enough that the boot path, the brain and the vault are settled first. */
+/** Moved or typed within this long counts as here, for "still watching". */
+const PERSON_ACTIVE_WITHIN_S = 3 * 60;
+
 const STARTUP_CHECK_DELAY_MS = 20_000;
 
 /**

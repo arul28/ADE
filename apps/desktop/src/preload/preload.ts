@@ -82,6 +82,7 @@ import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
+import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import {
   loopbackOriginLabel,
@@ -8359,7 +8360,8 @@ const adeBridge = {
       ),
     send: async (args: AgentChatSendArgs, pin?: OpenProjectBinding | null): Promise<void> => {
       agentChatSummaryCache.clear();
-      const stamped = { ...args, inputOrigin: await sessionInputOriginFor(pin) };
+      // `clientSendId`: a send retried after the machine slept mid-call is recognized there, not run twice.
+      const stamped = { ...args, inputOrigin: await sessionInputOriginFor(pin), clientSendId: args.clientSendId ?? randomClientId() };
       if (pin) {
         await callPinnedRuntimeAction<void>(pin, "chat", "sendMessage", { args: stamped });
       } else {
@@ -13034,6 +13036,15 @@ const adeBridge = {
   },
   // Account-wide: the key lives in the account vault and a new box joins the
   // account, so none of these take a pin.
+  /** Whether ADE Cloud exists for this account (`renderer/state/cloudAccess.ts`). */
+  cloudAccess: {
+    read: (): Promise<{ enabled: boolean }> => ipcRenderer.invoke(IPC.cloudGetAccess),
+    onChanged: (cb: () => void): (() => void) => {
+      const listener = () => cb();
+      ipcRenderer.on(IPC.cloudStatusChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.cloudStatusChanged, listener);
+    },
+  },
   cloud: {
     getStatus: (): Promise<CloudStatus | null> => ipcRenderer.invoke(IPC.cloudGetStatus),
     createMachine: (requestId: string, machine: CloudCreateMachineArgs): Promise<{ started: boolean }> =>
@@ -13046,6 +13057,11 @@ const adeBridge = {
     cancelCreate: (requestId: string): Promise<{ cancelled: boolean }> =>
       ipcRenderer.invoke(IPC.cloudCancelCreate, { requestId }),
     listMachines: (): Promise<CloudMachinesResult | null> => ipcRenderer.invoke(IPC.cloudListMachines),
+    /** True while this window is in front and the person moved or typed in the last few minutes. */
+    personIsHere: (): Promise<boolean> => ipcRenderer.invoke(IPC.cloudPersonIsHere),
+    /** Wakes a computer (free once a day at 0 hours) and pushes its lanes' work to GitHub. */
+    pushAllWork: (instanceId: string): Promise<CloudMachineActionResult> =>
+      ipcRenderer.invoke(IPC.cloudPushAllWork, { instanceId }),
     machineAction: (args: CloudMachineActionArgs): Promise<CloudMachineActionResult | null> =>
       ipcRenderer.invoke(IPC.cloudMachineAction, args),
     getAgentLimits: (): Promise<CloudAgentLimits | null> => ipcRenderer.invoke(IPC.cloudGetAgentLimits),
@@ -13065,6 +13081,12 @@ const adeBridge = {
       const listener = () => cb();
       ipcRenderer.on(IPC.cloudStatusChanged, listener);
       return () => ipcRenderer.removeListener(IPC.cloudStatusChanged, listener);
+    },
+    /** Saved chats: account-level, so no pin. Reads a computer's copy while it can't answer. */
+    savedChats: {
+      list: (args: CloudSavedChatsListArgs): Promise<CloudSavedChatList | null> => ipcRenderer.invoke(IPC.cloudSavedChatsList, args),
+      read: (args: CloudSavedChatReadArgs): Promise<CloudSavedChatPage | null> => ipcRenderer.invoke(IPC.cloudSavedChatsRead, args),
+      delete: (args: CloudSavedChatDeleteArgs): Promise<void> => ipcRenderer.invoke(IPC.cloudSavedChatsDelete, args),
     },
     cloudSignInStatus: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInStatus),
     cloudSignInClaudeStart: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInClaudeStart),
@@ -13803,6 +13825,9 @@ const adeBridge = {
       );
       return runtime.handled ? runtime.result : null;
     },
+    /** "Still watching" on a cloud computer, to the machine the tool is on. */
+    noteWatching: (pin?: OpenProjectBinding | null): Promise<void> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "work_tools", "noteWatching", {}, async () => undefined),
     setActiveTool: async (
       laneId: string,
       tool: WorkToolId | null,

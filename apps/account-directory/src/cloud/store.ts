@@ -28,6 +28,10 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   STRIPE_PLAN_PRICE_ID?: string;
   STRIPE_EXTRA_PRICE_ID?: string;
   STRIPE_METER_EVENT?: string;
+  /** Saved chats: sealed transcript parts. Created at rollout; missing answers 503. */
+  CLOUD_CHATS?: R2Bucket;
+  /** 32 random bytes, base64. Seals each user's chat key. Required for saved chats. */
+  CLOUD_CHAT_MASTER_KEY?: string;
 };
 
 export type ComputerRow = {

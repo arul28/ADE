@@ -141,20 +141,29 @@ create table if not exists cloud_settings (
 );
 
 -- The saved copy of each chat, one row per chat. The transcript itself lives
--- in R2 under `r2_key`; this index is what the chat list reads, so nothing has
--- to wake to list a sleeping computer's chats.
+-- in R2 under `r2_key` (its prefix); this index is what the chat list reads, so
+-- nothing has to wake to list a sleeping computer's chats. Anything that came
+-- from the chat (title, lane name, status, model) is in `summary_sealed`, sealed
+-- with the user's key; the rest are ids the list filters by. `last_seq` is the
+-- newest part; `bytes` the sealed size, for the account cap.
 create table if not exists cloud_chat_copies (
   user_id text not null,
   machine_key text not null,
   chat_id text not null,
-  title text,
-  status text,
+  instance_id text,
+  project_key text,
+  lane_id text,
+  summary_sealed text,
   r2_key text not null,
+  last_activity_at integer,
+  last_seq integer not null default 0,
   updated_at integer not null,
   bytes integer not null default 0,
   primary key (user_id, machine_key, chat_id)
 );
 create index if not exists idx_cloud_chat_copies_user on cloud_chat_copies (user_id, updated_at desc);
+create index if not exists idx_cloud_chat_copies_project on cloud_chat_copies (user_id, project_key, updated_at desc);
+create index if not exists idx_cloud_chat_copies_lane on cloud_chat_copies (user_id, machine_key, lane_id);
 
 -- One key per user for the saved chats, sealed with CLOUD_CHAT_MASTER_KEY
 -- and kept apart from the chats themselves.

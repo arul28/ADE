@@ -75,7 +75,8 @@ import {
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import type { AdeRuntime } from "./bootstrap";
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
-import { summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "./services/runtime/runtimeWorkSummary";
+import { readRuntimeBusyFacts, summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "./services/runtime/runtimeWorkSummary";
+import type { CloudBusyFacts } from "./services/power/cloudKeepAwake";
 import { readSessionToolTypeFromDisk } from "./services/sync/rosterBuilder";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import { querySearchIndexReadOnly } from "../../desktop/src/main/services/search/searchIndexQuery";
@@ -370,6 +371,8 @@ export type MultiProjectRpcHandlerOptions = {
    * Settings reaches it with no project open. Absent on embedded runtimes,
    * which never own the machine's power settings.
    */
+  /** On a cloud computer: interrupts work and writes the saved chat copy before a stop (`ade cloud prepare-stop`). */
+  prepareCloudStop?: ((args: { timeoutMs: number }) => Promise<unknown>) | null;
   keepAwakeService?: Pick<
     BrainKeepAwakeService,
     "getSnapshot" | "setLevel" | "migrateLegacyPreference" | "fixSystemSleep"
@@ -501,6 +504,19 @@ export async function readMachineRuntimeActivitySummary(args: BootedRuntimeSourc
   };
 }
 
+/** What the cloud busy list reads, across every project this brain booted and its personal chats. */
+export async function readMachineBusyFacts(args: BootedRuntimeSources & {
+  personalChatScope: Partial<Pick<PersonalChatScope, "busyFacts">>;
+}): Promise<Pick<CloudBusyFacts, "chats" | "terminals">> {
+  const parts = [
+    ...await mapBootedProjectRuntimes(args, (runtime) => readRuntimeBusyFacts(runtime)),
+    typeof args.personalChatScope.busyFacts === "function"
+      ? await args.personalChatScope.busyFacts()
+      : { chats: [], terminals: [] },
+  ];
+  return { chats: parts.flatMap((part) => part.chats), terminals: parts.flatMap((part) => part.terminals) };
+}
+
 /**
  * The soonest scheduled wake-up of any chat in a project this brain has
  * booted, in epoch ms, or null. A project that is not booted has none due:
@@ -574,6 +590,7 @@ const RUNTIME_METHODS = new Set([
   "account.call",
   "remoteMcp.call",
   "keepAwake.call",
+  "cloud.prepareStop",
   "cloud.call",
   "accountVault.call",
   "attention.call",
@@ -2954,6 +2971,17 @@ export function createMultiProjectRpcRequestHandler(
         clientName: callerClientName(),
         peerDeviceId: options.peerDeviceId ?? null,
       }, options.machineAccountDomains);
+    }
+
+    // The server runs this over exec before stopping a computer at 0 hours. Not
+    // a `cloud.call`: this machine may not have the account access `cloud` needs.
+    if (method === "cloud.prepareStop") {
+      if (callerIdentityIsAgent(callerIdentity())) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "An agent can't stop this computer's work.");
+      }
+      const prepare = options.prepareCloudStop;
+      if (!prepare) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't prepare a computer to stop.");
+      return await prepare({ timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : 40_000 });
     }
 
     if (method === "keepAwake.call") {

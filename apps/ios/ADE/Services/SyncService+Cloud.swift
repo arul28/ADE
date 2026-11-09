@@ -3,7 +3,7 @@ import Foundation
 // The phone's ADE Cloud page talks to whichever ADE machine it is connected to,
 // through `cloud.read` and `cloud.write`: the same actions as
 // `ade cloud` (apps/desktop/src/main/services/adeCloud/cloudAgentActions.ts).
-// ADE Cloud access, the cap and the limits are the account's, so every machine answers
+// ADE Cloud access, the hours and the limits are the account's, so every machine answers
 // the same. The phone is the person's own client, so nothing raises a card.
 
 struct CloudPhoneSleep: Decodable, Equatable {
@@ -24,6 +24,10 @@ struct CloudPhoneReadyTag: Decodable, Equatable {
   let state: String
 }
 
+struct CloudPhoneAccess: Decodable {
+  let enabled: Bool
+}
+
 struct CloudPhoneMachine: Decodable, Identifiable, Equatable, Hashable {
   let instanceId: String
   let name: String?
@@ -32,10 +36,8 @@ struct CloudPhoneMachine: Decodable, Identifiable, Equatable, Hashable {
   let type: String?
   let size: String?
   let shape: String?
-  let runningHourlyUsd: Double?
-  let idleHourlyUsd: Double?
-  let spentUsd: Double?
-  let savedUsd: Double?
+  /// How fast this size uses hours, compared with a Small computer.
+  let hoursRate: Double?
   let sleep: CloudPhoneSleep?
   let madeByAde: Bool?
   let ready: CloudPhoneReadyTag?
@@ -62,23 +64,31 @@ struct CloudPhoneMachine: Decodable, Identifiable, Equatable, Hashable {
 
   static func == (lhs: Self, rhs: Self) -> Bool {
     lhs.instanceId == rhs.instanceId && lhs.state == rhs.state && lhs.name == rhs.name
-      && lhs.shape == rhs.shape && lhs.spentUsd == rhs.spentUsd && lhs.sleep == rhs.sleep
+      && lhs.shape == rhs.shape && lhs.hoursRate == rhs.hoursRate && lhs.sleep == rhs.sleep
   }
 
   func hash(into hasher: inout Hasher) { hasher.combine(instanceId) }
 }
 
-struct CloudPhoneSpending: Decodable, Equatable {
-  let monthlyCapUsd: Double?
-  let monthSpentUsd: Double?
-  let capReached: Bool
-  let capNear: Bool
+/// The account's plan and hours (`hours` / `account` in `cloud.read list`).
+struct CloudPhoneAccount: Decodable, Equatable {
+  struct Hours: Decodable, Equatable {
+    let includedMilli: Int
+    let leftMilli: Int
+    let state: String
+  }
+
+  let plan: String
+  let hours: Hours
+
+  /// Out of hours for this period, as the server counts it.
+  var outOfHours: Bool { hours.state == "zero" }
 }
 
 struct CloudPhoneList: Decodable {
   let machines: [CloudPhoneMachine]
   let runningCount: Int?
-  let spending: CloudPhoneSpending?
+  let account: CloudPhoneAccount?
 }
 
 struct CloudPhoneLimits: Decodable, Equatable {
@@ -154,16 +164,16 @@ extension SyncService {
     )
   }
 
-  /// Whether the provider is set up on the account, for the Work menu item. One
-  /// list read; a machine without the command or without access hides it.
+  /// Whether ADE Cloud exists for this account: the connected machine's answer
+  /// from the server. Off the list, on an older machine, or with no answer,
+  /// it's no, and every cloud entry on the phone is gone.
   func refreshCloudAvailability() async {
     guard cloudSupported else {
       cloudAvailable = false
       return
     }
     do {
-      _ = try await cloudRead("list", as: CloudPhoneList.self)
-      cloudAvailable = true
+      cloudAvailable = try await cloudRead("access", as: CloudPhoneAccess.self).enabled
     } catch {
       cloudAvailable = false
     }

@@ -6,7 +6,7 @@
 
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { CloudLogger, CloudProvider } from "./cloudProvider";
-import { getCloudProvider, type CloudAccessDeps } from "./cloudAccess";
+import { getCloudProvider, watchCloudAccessForSkills, type CloudAccessDeps } from "./cloudAccess";
 import { wakeCloudMachineForUse } from "./cloudSleep";
 
 export function createCloudBrainAccess(deps: {
@@ -25,6 +25,8 @@ export function createCloudBrainAccess(deps: {
     deviceName: deps.deviceName,
     ...(deps.logger ? { logger: deps.logger } : {}),
   };
+  // The brain owns this account here, so its chats' skill listings follow it.
+  watchCloudAccessForSkills(credentials);
   const client = (): Promise<CloudProvider | null> => getCloudProvider(credentials);
   return {
     credentials,

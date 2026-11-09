@@ -71,11 +71,16 @@ const WAKE_RETRY_DEADLINE_MS = 15_000;
 const WAKE_RETRY_DELAY_MS = 500;
 
 /** Wakes (or starts) a box, retrying through the provider's "still changing state" answers for a few seconds. */
-export async function wakeThroughTransition(client: CloudProvider, instanceId: string, now: () => number = () => Date.now()): Promise<void> {
+export async function wakeThroughTransition(
+  client: CloudProvider,
+  instanceId: string,
+  now: () => number = () => Date.now(),
+  options?: { reason?: "push_work" },
+): Promise<void> {
   const deadline = now() + WAKE_RETRY_DEADLINE_MS;
   for (;;) {
     try {
-      await client.startInstance(instanceId);
+      await client.startInstance(instanceId, options);
       return;
     } catch (error) {
       if (!(error instanceof CloudProviderError) || !WAKE_TRANSIENT_CODES.has(error.code) || now() >= deadline) throw error;

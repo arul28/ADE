@@ -35,7 +35,6 @@ ade cloud update <machine>                  # restart on the current ADE
 ade cloud copy <machine> --name "lane box"  # same files, a new machine
 ade cloud move <machine> --to vm            # change type, keep repos, lanes, chats
 ade cloud delete <machine>
-ade cloud sleep-after <machine> 10          # or never
 ade cloud limits                            # what unattended agents may spend
 ade cloud ready on --kind vm --setup "npm ci && docker compose up -d"
 ade cloud ready status|off|retry
@@ -49,20 +48,23 @@ folder's project.
 
 ## Sleep and wake are automatic
 
-- A machine sleeps on its own after a few idle minutes (10 by default). It
-  stays awake while a chat turn, a terminal command, an agent CLI or a setup
-  runs on it, and for its sleep time after another machine last did work there
-  (a command, a file change; never a read), so never keep one awake by hand.
-- A `--machine` call, opening one of its lanes, or sending to one of its chats
-  wakes it in about a second; ADE on it answers a few seconds later.
+- A machine sleeps 3 minutes after its last activity. It stays awake while a
+  chat turn or a real command runs, while an agent CLI works, during setup, a
+  first clone, a copy or a move, and while a person has a tool open on it (the
+  terminal, Linux Desktop, a preview). A shell at its prompt, an agent CLI at
+  its prompt, or a chat waiting on your approval lets it sleep, and so does a
+  command with no output and no input for an hour. Never keep one awake by hand.
+- A `--machine` call, opening one of its lanes or tools, or sending to one of
+  its chats wakes it in about a second; ADE on it answers a few seconds later.
+  A computer that was stopped (at 0 hours) comes back only with an explicit
+  wake from someone with hours.
 - So you rarely need `wake` or `sleep`. Sleep one only when the person asks,
   or when you know nothing else will use it soon.
 
 ## Hours and approvals
 
 These ask the person in your chat first: `create`, `resize`, `update`, `copy`,
-`move`, `delete`, `sleep-after … never`, loosening `ade cloud limits`,
-`ready on`. The card says what it uses in hours ("about 2 hours for each hour
+`move`, `delete`, loosening `ade cloud limits`, `ready on`. The card says what it uses in hours ("about 2 hours for each hour
 it's awake").
 
 - The command waits for the answer; the card gives up after 5 minutes and the

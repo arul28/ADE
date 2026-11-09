@@ -75,6 +75,8 @@ import {
 } from "./appStore";
 import { chatLaunchBindingKey, noteChatLaunchSourceRead } from "./chatLaunchStore";
 import { isAdeAvailable } from "../lib/adeAvailability";
+import { isSavedChatsMachineId } from "./cloudSavedChats";
+import { scheduleCloudSavedChatsRefresh, type SavedChatsContext } from "./cloudSavedChatsSync";
 
 /** Coalescing window for burst-y event sources (lane lifecycle, session churn). */
 const REFRESH_COALESCE_MS = 400;
@@ -2016,6 +2018,8 @@ function applyReachability(): void {
     // This computer is not a connection target and is always reachable; holding a
     // drop record for it would leak a map entry nothing can ever clear.
     if (machineId === THIS_MACHINE_ID) continue;
+    // A deleted computer's saved chats belong to no connection; the list read owns it.
+    if (isSavedChatsMachineId(machineId)) continue;
     const machine = connectivity.get(machineId);
     if (machine?.eligible) continue;
 
@@ -2064,7 +2068,8 @@ function applyReachability(): void {
       noteDeadline(dimAtMs);
       continue;
     }
-    if (nowMs - drop.droppedAtMs >= OFFLINE_RETENTION_MS) {
+    // Saved chats stay readable however long the computer has been away.
+    if (nowMs - drop.droppedAtMs >= OFFLINE_RETENTION_MS && !entry?.sessions.some((session) => session.cloudSavedCopy)) {
       forgotten.push(machineId);
       continue;
     }
@@ -2130,14 +2135,29 @@ function connectionsReadSignature(connections: readonly RemoteRuntimeConnectionS
     .join("\n");
 }
 
+/** What the saved-chats read needs to know, at the moment it runs. */
+function savedChatsContext(): SavedChatsContext {
+  const scope = runtime.scope;
+  return {
+    connections: runtime.connections,
+    projectKey: normalizeGitRemoteIdentity(scope.repoOriginUrl ?? resolveBoundRepoOriginUrl(scope)),
+    isActive: () => runtime.refCount > 0 && isDocumentVisible(),
+  };
+}
+
+let connectionSnapshotSeen = false;
+
 function applySnapshot(snapshot: RemoteRuntimeConnectionSnapshot): void {
   runtime.connections = Array.isArray(snapshot?.connections) ? snapshot.connections : [];
+  connectionSnapshotSeen = true;
   // A machine that drops may come back on another build (an upgrade restarts
   // its brain), so its page is asked for in full again on the next read.
   for (const connection of runtime.connections) {
     if (connection.state !== "connected") runtime.legacySessionPageMachineIds.delete(connection.target.id);
   }
   applyReachability();
+  // A machine going to sleep is when its saved chats start to matter.
+  scheduleCloudSavedChatsRefresh(savedChatsContext);
   // A machine that just appeared has no rows at all, so its first read has to be
   // the full one or it renders statusless until the cadence comes round. A
   // snapshot that changes nothing the union reads is not one: forcing a status
@@ -2179,7 +2199,10 @@ function attach(): void {
     });
   }
   if (typeof window !== "undefined") {
-    const onFocus = () => scheduleRefresh("status");
+    const onFocus = () => {
+      scheduleRefresh("status");
+      scheduleCloudSavedChatsRefresh(savedChatsContext);
+    };
     window.addEventListener("focus", onFocus);
     runtime.disposers.push(() => {
       window.removeEventListener("focus", onFocus);
@@ -2204,6 +2227,7 @@ function attach(): void {
 }
 
 function detach(): void {
+  connectionSnapshotSeen = false;
   runtime.generation += 1;
   runtime.lifecycle += 1;
   machineCallsInFlight = new Map();
@@ -2341,7 +2365,11 @@ export function startCrossMachineLaneSync(scope: CrossMachineLaneScope): () => v
   runtime.scope = scope;
   runtime.refCount += 1;
   if (runtime.refCount === 1) attach();
-  if (scopeChanged || runtime.refCount === 1) scheduleRefresh("status");
+  if (scopeChanged || runtime.refCount === 1) {
+    scheduleRefresh("status");
+    // Before a first connection snapshot every saved computer would look deleted.
+    if (connectionSnapshotSeen) scheduleCloudSavedChatsRefresh(savedChatsContext, { force: true });
+  }
   return () => {
     runtime.refCount = Math.max(0, runtime.refCount - 1);
     if (runtime.refCount === 0) detach();

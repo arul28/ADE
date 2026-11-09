@@ -61,8 +61,8 @@ the provider to save and ingest the image). Building an existing name publishes 
 new revision; boxes already made keep their image, and `ade brain update`
 updates their ADE.
 
-ADE creates from the template named `ade`. A development desktop can point at a
-trial template with `ADE_CLOUD_TEMPLATE=ade-a1-test`.
+ADE's server creates from the exact template version pinned in `cloud_settings`
+(`template_version`, like `ade@8`); bare `ade` means newest and is never sent.
 
 ## Every release builds it
 

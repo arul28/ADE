@@ -1781,7 +1781,7 @@ The box actions on an ADE Cloud card record `feature: "connections"`, `action:
 "cloud_machine_action"` when ADE Cloud confirms the action, in the same IPC
 handler (`registerCloudIpc.ts`). The outcome is the action, prefixed:
 `box_sleep`, `box_wake`, `box_resize`, `box_backup`, `box_delete`,
-`box_set_sleep` (Sleep when idle…), `box_copy` / `box_move` when a copy or
+`box_copy` / `box_move` when a copy or
 move finishes, or `box_reconnect` when Reconnect to ADE brings a removed box
 back. The product question is which parts of the box lifecycle
 people run from ADE. A

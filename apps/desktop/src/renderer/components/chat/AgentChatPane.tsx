@@ -238,6 +238,7 @@ import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import { noteFastModeAllowedFromHost, useFastModeEnabled } from "../../lib/fastModePolicy";
 import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
+import { savedChatAwareAgentChatApi } from "../../state/cloudSavedChatsSync";
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
@@ -4267,8 +4268,8 @@ export function AgentChatPane({
   // The chat API this pane talks to. A ref so every callback below reads the
   // current one without joining its dependency list; the scope a pane is given
   // does not change over its life.
-  const agentChatApiRef = useRef<AgentChatApi>(chatScope?.agentChat ?? window.ade?.agentChat);
-  agentChatApiRef.current = chatScope?.agentChat ?? window.ade?.agentChat;
+  const agentChatApiRef = useRef<AgentChatApi>(chatScope?.agentChat ?? savedChatAwareAgentChatApi(window.ade?.agentChat));
+  agentChatApiRef.current = chatScope?.agentChat ?? savedChatAwareAgentChatApi(window.ade?.agentChat);
   const personalScope = chatScope?.kind === "personal" ? chatScope : null;
   // The boolean the pane's hooks gate on: stable for the pane's life, so it
   // joins a dependency list without re-running anything.

@@ -6,6 +6,7 @@
 
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { cloudStatusAwake, type CloudStatus } from "../../../shared/adeCloud";
+import { setAdeCloudSkillVisible, setAgentSkillAccessRefresh } from "../../../shared/agentSkillRoots";
 import type { AccountVaultResult } from "../../../shared/types/accountVault";
 import { getErrorMessage } from "../shared/utils";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider } from "./cloudProvider";
@@ -93,6 +94,30 @@ const ACCESS_TTL_MS = 10 * 60_000;
 let accessCache: { key: string; enabled: boolean; at: number } | null = null;
 let accessAsking: { key: string; answer: Promise<boolean | null> } | null = null;
 
+const accessKey = (deps: CloudAccessDeps): string => `${deps.directoryBaseUrl() ?? ""}|${deps.accountId() ?? ""}`;
+
+/**
+ * Whether ADE Cloud exists for this account here: yes only on the server's yes,
+ * or a cached yes riding out a failure. Every surface that hides the product
+ * reads this one answer; the TTL behind it is the "at most every 10 minutes".
+ */
+export async function cloudAccessEnabled(deps: CloudAccessDeps): Promise<boolean> {
+  return (await readCloudAccess(deps)).state === "ready";
+}
+
+/**
+ * Hands the skill roots the account this process serves, so a chat launched
+ * after the answer went stale (or the account changed) asks again on its own.
+ * Installed once by whatever owns the account here: the brain, the desktop main.
+ */
+export function watchCloudAccessForSkills(deps: CloudAccessDeps): void {
+  setAgentSkillAccessRefresh(() => {
+    const fresh = accessCache?.key === accessKey(deps) && Date.now() - accessCache.at < ACCESS_TTL_MS;
+    if (fresh || accessAsking) return;
+    void cloudAccessEnabled(deps).catch(() => undefined);
+  });
+}
+
 /** Yes or no from the server, or null when it couldn't be asked; a cached yes rides out a failure. */
 async function readAccessFlag(key: string, provider: CloudProvider, deps: CloudAccessDeps): Promise<boolean | null> {
   const now = Date.now();
@@ -117,7 +142,17 @@ async function readAccessFlag(key: string, provider: CloudProvider, deps: CloudA
 }
 
 async function readCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
-  if (!deps.signedIn()) return { state: "signed_out" };
+  const access = await askCloudAccess(deps);
+  setAdeCloudSkillVisible(access.state === "ready");
+  return access;
+}
+
+async function askCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
+  if (!deps.signedIn()) {
+    // Not a fact about any account: the next sign-in asks again, even the same one.
+    accessCache = null;
+    return { state: "signed_out" };
+  }
   const baseUrl = deps.directoryBaseUrl();
   if (!baseUrl) return { state: "unreadable" };
   const provider = createCloudServerProvider({

@@ -1,9 +1,7 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
 import { ArrowClockwise, ArrowsOutSimple, ArrowsLeftRight, CloudArrowUp, Copy, Moon, MoonStars, PlugsConnected, Sun, Trash, UserMinus } from "@phosphor-icons/react";
 import {
-  CLOUD_DEFAULT_SLEEP_AFTER_MINUTES,
   CLOUD_SHAPES,
-  CLOUD_SLEEP_AFTER_CHOICES,
   cloudHoursRate,
   formatCloudHoursRate,
   type CloudMachine,
@@ -75,7 +73,6 @@ const PENDING_LABELS: Record<CloudBoxPending, string> = {
   delete: "Deleting the computer…",
   update: "Updating. It restarts…",
   remove: "Removing it from ADE…",
-  set_sleep: "Changing how it sleeps…",
   copy: "Copying it into a new machine. A big disk takes a few minutes…",
   move: "Moving it: a new machine, then every file copied over…",
   reconnect: "Signing it back in to your account…",
@@ -109,7 +106,6 @@ export function useCloudBoxActions(args: {
   const [pendingById, setPendingById] = useState<Record<string, CloudBoxPending>>({});
   const [errorById, setErrorById] = useState<Record<string, CloudBoxActionError>>({});
   const [resizing, setResizing] = useState<CloudBoxContext | null>(null);
-  const [sleepSetting, setSleepSetting] = useState<CloudBoxContext | null>(null);
 
   const setPending = useCallback((instanceId: string, pending: CloudBoxPending | null) => {
     setPendingById((current) => {
@@ -132,7 +128,7 @@ export function useCloudBoxActions(args: {
   const run = useCallback(async (
     ctx: CloudBoxContext,
     action: CloudMachineActionKind,
-    extra: { shape?: CloudShapeId; sleepAfterMinutes?: number | null } = {},
+    extra: { shape?: CloudShapeId } = {},
   ): Promise<CloudMachineActionResult | null> => {
     const machineAction = window.ade?.cloud?.machineAction;
     if (!machineAction) return null;
@@ -383,9 +379,6 @@ export function useCloudBoxActions(args: {
         onSelect: () => void moveBox(ctx),
       });
     }
-    if (box.madeByAde && (box.state === "running" || box.state === "asleep")) {
-      items.push({ key: "cloud-sleep-after", label: "Sleep when idle…", icon: <MoonStars size={14} />, disabled: busy, onSelect: () => setSleepSetting(ctx) });
-    }
     if (box.madeByAde && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
       items.push({ key: "cloud-update", label: "Update this computer", icon: <ArrowClockwise size={14} />, disabled: busy, onSelect: () => void updateBox(ctx) });
     }
@@ -431,17 +424,7 @@ export function useCloudBoxActions(args: {
         void run(ctx, "resize", { shape });
       }}
     />
-  ) : sleepSetting ? (
-    <CloudSleepDialog
-      ctx={sleepSetting}
-      onCancel={() => setSleepSetting(null)}
-      onSave={(minutes) => {
-        const ctx = sleepSetting;
-        setSleepSetting(null);
-        void run(ctx, "set_sleep", { sleepAfterMinutes: minutes });
-      }}
-    />
-  ) : null;
+   ) : null;
 
   return {
     pendingById,
@@ -468,72 +451,7 @@ function toastTitle(action: CloudMachineActionKind, name: string): string {
       return `Deleted ${name}`;
     case "update":
       return `Updating ${name}`;
-    case "set_sleep":
-      return `${name}'s sleep changed`;
   }
-}
-
-/**
- * How long a box waits with nothing running before the provider puts it to sleep.
- * ADE on the box keeps it awake while a chat, a command or a setup runs, so a
- * short wait costs nothing in interruptions; opening a lane or sending to a
- * chat there wakes it in about a second.
- */
-function CloudSleepDialog({
-  ctx,
-  onCancel,
-  onSave,
-}: {
-  ctx: CloudBoxContext;
-  onCancel: () => void;
-  onSave: (minutes: number | null) => void;
-}) {
-  const { box, name } = ctx;
-  const current = box.sleep.state === "auto" ? box.sleep.afterMinutes : box.sleep.state === "never" ? null : undefined;
-  const [picked, setPicked] = useState<number | null | undefined>(current ?? CLOUD_DEFAULT_SLEEP_AFTER_MINUTES);
-  const choices: Array<{ value: number | null; label: string }> = [
-    ...CLOUD_SLEEP_AFTER_CHOICES.map((minutes) => ({ value: minutes as number | null, label: minutes < 60 ? `${minutes} min` : "1 hour" })),
-    { value: null, label: "Never" },
-  ];
-  const rate = box.hoursRate != null ? formatCloudHoursRate(box.hoursRate) : null;
-  return (
-    <Dialog
-      open
-      onOpenChange={(open) => { if (!open) onCancel(); }}
-      title={`Sleep ${name} when idle`}
-      description="It sleeps once nothing has run on it for this long. A running chat, command or setup keeps it awake, and opening one of its lanes wakes it in about a second."
-      size="sm"
-      actions={[
-        { label: "Save", onClick: () => { if (picked !== undefined) onSave(picked); }, disabled: picked === undefined || picked === current, autoFocus: true },
-        { label: "Cancel", onClick: onCancel, variant: "secondary" },
-      ]}
-    >
-      <div style={{ display: "grid", gap: 10 }}>
-        <div role="radiogroup" aria-label="Sleep after" className="ade-cx-cloud-shapes">
-          {choices.map((choice) => (
-            <button
-              key={choice.label}
-              type="button"
-              role="radio"
-              aria-checked={choice.value === picked}
-              className="ade-cx-cloud-shape"
-              data-current={choice.value === current ? "true" : undefined}
-              onClick={() => setPicked(choice.value)}
-            >
-              <span className="ade-cx-cloud-shape-size kit-num">{choice.label}</span>
-              {choice.value === current ? <span className="kit-tag">Now</span> : null}
-            </button>
-          ))}
-        </div>
-        {picked === null && rate ? (
-          <p className="ade-cx-cloud-note">It uses {rate} around the clock until you sleep it.</p>
-        ) : null}
-        {box.sleep.state === "pending" ? (
-          <p className="ade-cx-cloud-note">ADE wakes it for a moment to set this up.</p>
-        ) : null}
-      </div>
-    </Dialog>
-  );
 }
 
 /**

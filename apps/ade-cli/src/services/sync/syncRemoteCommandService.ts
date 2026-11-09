@@ -6604,9 +6604,9 @@ function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegis
 }
 
 /** What the phone's ADE Cloud page may run (`cloud.read` / `cloud.write`). */
-const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set(["list", "hours", "limits", "ready_status", "make_status"]);
+const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set(["access", "list", "hours", "limits", "ready_status", "make_status"]);
 const CLOUD_REMOTE_WRITES: ReadonlySet<string> = new Set([
-  "create", "copy", "move", "sleep", "wake", "resize", "delete", "set_sleep", "update", "set_limits",
+  "create", "copy", "move", "sleep", "wake", "resize", "delete", "update", "set_limits",
   "ready_set", "ready_off", "ready_retry",
 ]);
 
@@ -8285,7 +8285,17 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     if (!allowed.has(action)) throw new Error(`cloud has no "${action}" here.`);
     const domain = args.cloudActions?.() ?? null;
     const handler = domain?.[action];
-    if (typeof handler !== "function") throw new Error("ADE Cloud isn't available on this machine.");
+    // No ADE Cloud for this account: everything but `access` answers as if the
+    // command weren't here, so the phone hides the page instead of showing a card.
+    if (action === "access") {
+      if (typeof handler !== "function") return { enabled: false };
+      return await (handler as () => Promise<unknown>).call(domain);
+    }
+    const accessHandler = domain?.access;
+    const accessOn = typeof accessHandler === "function"
+      ? ((await (accessHandler as () => Promise<unknown>).call(domain).catch(() => null)) as { enabled?: unknown } | null)?.enabled === true
+      : false;
+    if (typeof handler !== "function" || !accessOn) throw new Error(`cloud has no "${action}" here.`);
     const input = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args) ? payload.args as Record<string, unknown> : {};
     const { approval: _ignored, ...rest } = input;
     return await (handler as (input: unknown) => Promise<unknown>).call(domain, { ...rest, approval: { by: "person" } });

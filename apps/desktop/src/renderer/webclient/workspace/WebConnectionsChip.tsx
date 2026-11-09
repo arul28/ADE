@@ -27,6 +27,7 @@ import {
   type WebMachineEntry,
 } from "./webWorkspaceModel";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import {
   readWebCloudMachines,
   wakeWebCloudMachine,
@@ -112,8 +113,13 @@ export function WebConnectionsChip() {
   const manager = workspace?.manager ?? null;
   /** Only the newest read may answer: an older one would show a just-woken machine asleep. */
   const cloudReadRef = useRef(0);
+  const cloudEnabled = useAdeCloudEnabled();
   const refreshCloud = useCallback(async () => {
     if (!manager) return;
+    if (!cloudEnabled) {
+      setCloud(null);
+      return;
+    }
     const read = ++cloudReadRef.current;
     const next = await readWebCloudMachines({
       snapshot: manager.getSnapshot(),
@@ -121,7 +127,7 @@ export function WebConnectionsChip() {
       storage: typeof window === "undefined" ? null : window.localStorage,
     }).catch(() => null);
     if (read === cloudReadRef.current) setCloud(next);
-  }, [manager]);
+  }, [cloudEnabled, manager]);
   useEffect(() => {
     if (!open) return;
     void refreshCloud();

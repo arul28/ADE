@@ -25,10 +25,15 @@
  * without either the route answers 503 and Clerk keeps retrying for a while.
  */
 
+import { deleteAllAccountChats } from "./cloud/chats";
+
 export type SignupAnalyticsEnv = {
   CLERK_WEBHOOK_SIGNING_SECRET?: string;
   POSTHOG_PROJECT_TOKEN?: string;
   POSTHOG_HOST?: string;
+  /** For `user.deleted`: the account's ADE Cloud saved chats go with it. */
+  DB?: D1Database;
+  CLOUD_CHATS?: R2Bucket;
 };
 
 const ROUTE = "/webhooks/clerk";
@@ -229,6 +234,15 @@ export async function handleSignupAnalyticsRequest(
   if (payload.type !== "user.created" && payload.type !== "user.deleted") return json(200, { ignored: true });
   const userId = typeof payload.data?.id === "string" ? payload.data.id.trim() : "";
   if (!userId || userId.length > 512) return json(400, { error: "bad_user" });
+
+  if (payload.type === "user.deleted" && env.DB) {
+    // Before the capture, so a failure here asks Clerk to deliver again.
+    try {
+      await deleteAllAccountChats({ DB: env.DB, CLOUD_CHATS: env.CLOUD_CHATS }, userId);
+    } catch {
+      return json(502, { error: "cloud_chats_delete_failed" });
+    }
+  }
 
   const distinctId = await accountDistinctId(userId);
   let capture: Record<string, unknown>;

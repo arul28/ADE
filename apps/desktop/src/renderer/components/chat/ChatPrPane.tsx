@@ -8,20 +8,23 @@ import {
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import type { OpenProjectBinding, PrCheck, PrReview, PrStatus, PrSummary, StackLinkOffer } from "../../../shared/types";
+import type { GitHubPrListItem, OpenProjectBinding, PrCheck, PrReview, PrStatus, PrSummary, StackLinkOffer } from "../../../shared/types";
 import { PrDetailPane, type PrDetailRuntime } from "../prs/detail/PrDetailPane";
 import { PrsProvider } from "../prs/state/PrsContext";
 import { PrSwitcherMenu, PrSwitcherStepper, type PrSwitcher } from "../prs/shared/PrSwitcher";
 import { subscribeChatPrSelections, takeChatPrSelection } from "./chatPrPaneRequests";
 import { ChatPrInlineCreator, inputBase } from "./ChatPrInlineCreator";
-import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
+import { getGitHubSnapshotCoalesced, refreshLinkedPrCoalesced } from "../../lib/prReadCache";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import type { CloudMachine } from "../../../shared/adeCloud";
+import { useCloudComputerAsleep } from "../terminals/cloudToolGate";
 import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
 import { openLanePr, pickPrimaryPr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
 import { selectPrsForChatInLane } from "../../../shared/prChatScope";
 import { isMergeReady, PrDetails, type RelayState } from "./ChatPrDetails";
-import { selectChatPrs } from "../lanes/lanePageModel";
+import { selectChatPrs, selectGithubLanePrTags } from "../lanes/lanePageModel";
 import { Banner } from "../ui/notice";
 import { openLaneOnMachinePath } from "../../lib/laneNavigation";
 import { isImeComposing } from "../../lib/imeComposition";
@@ -174,15 +177,7 @@ const titleBarIconButton =
   "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg/45 transition-colors hover:bg-fg/[0.06] hover:text-fg/85 disabled:pointer-events-none disabled:opacity-40";
 
 
-export const ChatPrPane = React.memo(function ChatPrPane({
-  laneId,
-  branchName,
-  sessionTitle = null,
-  sessionId = null,
-  onClose,
-  runtimePin = null,
-  variant = "pane",
-}: {
+export type ChatPrPaneProps = {
   laneId: string;
   branchName?: string | null;
   /**
@@ -203,7 +198,64 @@ export const ChatPrPane = React.memo(function ChatPrPane({
    * when a pull request exists.
    */
   variant?: "pane" | "tools";
-}) {
+};
+
+/** A sleeping computer's PR, read from GitHub by the window's own machine; only actions that touch the lane's files wake it. */
+export const ChatPrPane = React.memo(function ChatPrPane(props: ChatPrPaneProps) {
+  const asleep = useCloudComputerAsleep(props.runtimePin ?? null);
+  return asleep ? <ChatPrPaneAsleep {...props} box={asleep} /> : <ChatPrPaneLive {...props} />;
+});
+
+function ChatPrPaneAsleep({ laneId, branchName, runtimePin, box }: ChatPrPaneProps & { box: CloudMachine }) {
+  const projectRoot = useAppStore(selectActiveProjectRoot);
+  const bindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
+  // A tab bound to this very computer has no other machine to ask.
+  const windowIsAsleepToo = useAppStore((state) => state.projectBinding?.kind === "remote") && !runtimePin;
+  const pinMachine = useMachineEntryForBinding(runtimePin ?? null);
+  const scope = useChatRuntimeScopeForPin(runtimePin ?? null, laneId);
+  const [github, setGithub] = useState<GitHubPrListItem[] | null>(null);
+  useEffect(() => {
+    if (windowIsAsleepToo) return;
+    let cancelled = false;
+    void getGitHubSnapshotCoalesced({}, { projectRoot, bindingKey })
+      .then((snapshot) => { if (!cancelled) setGithub(snapshot?.repoPullRequests ?? []); })
+      .catch(() => { if (!cancelled) setGithub([]); });
+    return () => { cancelled = true; };
+  }, [bindingKey, projectRoot, windowIsAsleepToo]);
+
+  const lane = useMemo(() => ({
+    laneType: scope.lane?.laneType ?? "worktree",
+    branchRef: scope.lane?.branchRef ?? branchName ?? "",
+    baseRef: scope.lane?.baseRef ?? "",
+    branchDrift: null,
+  }), [branchName, scope.lane?.baseRef, scope.lane?.branchRef, scope.lane?.laneType]);
+  const live = github ? selectGithubLanePrTags(lane, github) : [];
+  // The saved link: the PRs the last read of that computer's lanes carried.
+  const saved = (pinMachine?.prs ?? []).filter((pr) => pr.laneId === laneId);
+  const rows = live.length
+    ? live.map((pr) => ({ key: pr.githubUrl, title: pr.title, number: pr.githubPrNumber, url: pr.githubUrl, state: pr.state }))
+    : saved.map((pr) => ({ key: pr.githubUrl ?? pr.id, title: pr.title, number: pr.githubPrNumber, url: pr.githubUrl, state: pr.state }));
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-2 px-3 py-3 text-[13px]">
+      <p className="text-fg/80">{box.name ?? "This computer"} is asleep. Actions on its branch need it awake.</p>
+      {rows.length ? rows.map((row) => (
+        <a key={row.key} href={row.url ?? undefined} target="_blank" rel="noreferrer" className="truncate text-fg underline">
+          #{row.number} {row.title} ({row.state})
+        </a>
+      )) : <p className="text-muted-fg">No pull request found for this lane.</p>}
+    </div>
+  );
+}
+
+const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
+  laneId,
+  branchName,
+  sessionTitle = null,
+  sessionId = null,
+  onClose,
+  runtimePin = null,
+  variant = "pane",
+}: ChatPrPaneProps) {
   const navigate = useNavigate();
   // Also rendered from the Work view area, which has no chat scope above it,
   // so the scope is derived from the pin this pane is handed.

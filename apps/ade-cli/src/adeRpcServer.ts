@@ -3871,7 +3871,7 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
  * unless a person's own client is asking.
  */
 const CLOUD_APPROVED_ACTIONS = new Set([
-  "create", "resize", "copy", "move", "delete", "set_sleep", "set_cap", "ready_set", "ready_retry", "set_limits",
+  "create", "resize", "copy", "move", "delete", "set_cap", "ready_set", "ready_retry", "set_limits",
 ]);
 
 /**
@@ -4359,6 +4359,8 @@ function scopeWorkToolsAdeActionArgs(
       laneId: resolveChatSessionLaneId(runtime, session) ?? null,
     };
   }
+  // The desktop's once-a-minute "still watching" for a cloud computer; carries no lane.
+  if (action === "noteWatching") return workToolsArgs;
   if (action === "setActiveTool") {
     // Writing the pane's active tool is the human's move on their own desktop.
     // Same gate shape as `built_in_browser.acknowledgeRemoteRequest`.
@@ -5842,6 +5844,17 @@ function isLocalComputerUseAllowed(callerCtx: CallerContext): boolean {
   return callerCtx.role === "cto" || callerCtx.role === "agent";
 }
 
+/** The account's ADE Cloud answer, or false when it can't be read. Cached for 10 minutes behind it. */
+async function cloudDomainEnabled(services: ReturnType<typeof getAdeActionDomainServices>): Promise<boolean> {
+  const access = services.cloud?.access;
+  if (typeof access !== "function") return false;
+  try {
+    return ((await (access as () => Promise<unknown>).call(services.cloud)) as { enabled?: unknown } | null)?.enabled === true;
+  } catch {
+    return false;
+  }
+}
+
 async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionState): Promise<ToolSpec[]> {
   const callerCtx = await resolveEffectiveCallerContext(runtime, session);
   const externalComputerUseAvailable = runtime.computerUseArtifactBrokerService
@@ -6349,7 +6362,9 @@ async function runTool(args: {
     const domains = domain === "all"
       ? (Object.keys(services) as AdeActionDomain[])
       : [domain as AdeActionDomain];
-    const exposedDomains = domains.filter((entry) => !DISABLED_ADE_ACTION_DOMAINS.has(entry));
+    const cloudHidden = domains.includes("cloud") && !(await cloudDomainEnabled(services));
+    const exposedDomains = domains.filter((entry) =>
+      !DISABLED_ADE_ACTION_DOMAINS.has(entry) && !(cloudHidden && entry === "cloud"));
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     const isUserClient = isUserClientSession(session);
     const remoteBrainCaller = isRemoteBrainCallerClientName(session.clientName);
@@ -6388,7 +6403,8 @@ async function runTool(args: {
     }
     const services = getAdeActionDomainServices(runtime);
     const service = services[domain];
-    if (!service) {
+    // No ADE Cloud for this account: the domain answers as if it weren't here.
+    if (!service || (domain === "cloud" && !(await cloudDomainEnabled(services)))) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Domain '${domain}' is unavailable in this runtime.`);
     }
     let callable = service[action];

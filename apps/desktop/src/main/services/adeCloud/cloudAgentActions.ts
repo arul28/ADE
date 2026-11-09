@@ -1,7 +1,6 @@
 /**
  * The `cloud` action domain's machine verbs, behind `ade cloud …`: list,
- * create, sleep, wake, resize, update, copy, move, delete, the sleep setting,
- * hours, and "keep a cloud machine ready" on, off or retry.
+ * create, sleep, wake, resize, update, copy, move, delete, hours, and "keep a cloud machine ready" on, off or retry.
  *
  * Account-level like the rest of the integration: each acts on the account's
  * cloud machines, from whichever brain is asked, and takes
@@ -537,24 +536,6 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         confirm: "Update it",
       });
       return await runAction(box, { instanceId: box.instanceId, action: "update" });
-    },
-
-    async set_sleep(rawArgs?: unknown) {
-      const args = record(rawArgs);
-      const { box } = await resolveMachine(text(args, "machine"));
-      const raw = args.minutes;
-      const minutes = raw === null || raw === "never" ? null : typeof raw === "number" ? raw : Number(raw);
-      if (minutes !== null && !Number.isFinite(minutes)) throw new Error("Pass minutes (5 to 1440) or never.");
-      // Never sleeping uses hours around the clock: that asks first.
-      if (minutes === null) {
-        await approve(readApproval(args), {
-          action: "uncapped",
-          title: `Keep "${box.name ?? box.instanceId}" awake`,
-          body: `It won't sleep on its own, so it uses ${box.hoursRate != null ? formatCloudHoursRate(box.hoursRate) : "hours"} around the clock until someone sleeps it.`,
-          confirm: "Keep it awake",
-        });
-      }
-      return await runAction(box, { instanceId: box.instanceId, action: "set_sleep", sleepAfterMinutes: minutes });
     },
 
     /** Plan, hours left, and what happens at 0. */

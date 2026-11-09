@@ -269,11 +269,6 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { machine: string }",
       example: "ade cloud delete \"lane copy\"",
     },
-    set_sleep: {
-      description: "How long an ADE Cloud machine waits with nothing running before it sleeps (5 to 1440 minutes), or never. Never asks first: it uses hours around the clock.",
-      input: "object { machine: string, minutes: number | \"never\" }",
-      example: "ade cloud sleep-after \"my box\" 30",
-    },
     ready_set: {
       description: "Turn on (or change) \"Keep a cloud machine ready\" for this project: a machine kept prepared and asleep for the next chat. Turning it on asks the person first. A desktop on the account prepares it.",
       input: "object { originUrl?: string, kind?: \"box\" | \"vm\", shape?: string, setup?: string, projectName?: string }",

@@ -119,8 +119,6 @@ export type CloudMachineCreatorDeps = {
    * found by its request id and deleted at the next start.
    */
   pendingCreates?: CloudPendingCreateStore;
-  /** Minutes of nothing running before a new box sleeps (the provider's idle timer). */
-  sleepAfterMinutes?: () => number | null;
 };
 
 /** The person cancelled (closed the dialog or pressed Cancel). */
@@ -771,7 +769,7 @@ export async function bringCloudBoxIntoAde(
   // it when nothing runs. A brain too old to keep itself awake stays awake;
   // the next pass (registerCloudIpc) tries again once it updates.
   if (machineKey) {
-    await enableCloudSleep(client, instance.id, { afterMinutes: deps.sleepAfterMinutes?.() ?? undefined, logger });
+    await enableCloudSleep(client, instance.id, { logger });
   }
   return { instanceId: instance.id, machineKey, name, joined, renamed };
 }

@@ -94,7 +94,7 @@ async function reconnect(
   progress("joining", `${name} is signed in. Adding it to your computers…`, instance.id);
   const joined = await waitForCloudAccountRow(deps, { client, instanceId: instance.id, name, requestId, signal });
   if (joined.machineKey) {
-    await enableCloudSleep(client, instance.id, { afterMinutes: deps.sleepAfterMinutes?.() ?? undefined, logger })
+    await enableCloudSleep(client, instance.id, { logger })
       .catch((error: unknown) => logger.warn?.("cloud.reconnect_sleep_failed", { instanceId: instance.id, error: getErrorMessage(error) }));
   }
   logger.info?.("cloud.machine_reconnected", { instanceId: instance.id, joined: joined.joined });

@@ -15,13 +15,11 @@
  */
 
 import {
+  CLOUD_BACKSTOP_SLEEP_MINUTES,
   CLOUD_DEFAULT_AGENT_LIMITS,
-  CLOUD_DEFAULT_SLEEP_AFTER_MINUTES,
-  CLOUD_SLEEP_METADATA,
   CLOUD_WAKE_PORT,
   CLOUD_WAKE_PORT_LABEL,
   cloudShape,
-  isCloudSleepAfterMinutes,
   type CloudAgentLimits,
   type CloudSleepPolicy,
   type CloudWakeForUseResult,
@@ -30,16 +28,11 @@ import { getErrorMessage } from "../shared/utils";
 import { CloudProviderError, type CloudProvider, type CloudInstance, type CloudLogger } from "./cloudProvider";
 import type { CloudVault } from "./cloudAccess";
 import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
-import { patchCloudMetadata, wakeThroughTransition } from "./cloudReadyClaim";
+import { wakeThroughTransition } from "./cloudReadyClaim";
 
 /** How a box sleeps, read from the provider (the setting lives there, so every computer agrees). */
-export function cloudSleepPolicyOf(instance: Pick<CloudInstance, "autoSleep" | "idleTimeoutSeconds" | "metadata">): CloudSleepPolicy {
-  if (instance.autoSleep) {
-    const minutes = instance.idleTimeoutSeconds != null ? Math.max(5, Math.round(instance.idleTimeoutSeconds / 60)) : 15;
-    return { state: "auto", afterMinutes: minutes };
-  }
-  if (instance.metadata[CLOUD_SLEEP_METADATA] === "never") return { state: "never" };
-  return { state: "pending" };
+export function cloudSleepPolicyOf(instance: Pick<CloudInstance, "autoSleep">): CloudSleepPolicy {
+  return instance.autoSleep ? { state: "auto" } : { state: "pending" };
 }
 
 /**
@@ -58,9 +51,18 @@ function handOverWakeUrlCommand(instanceId: string, url: string): string {
   ].join(" && ");
 }
 
+/** Shell: keeps the computer awake for `reason` (`holdCloudBusy` in cloudKeepAwake.ts); expires by itself. */
+export function cloudHoldCommand(reason: string, ttlMs: number): string {
+  return `d="$ADE_HOME/cloud/holds"; mkdir -p "$d"; printf '{"reason":"${reason}","until":%s}' "$(( $(date +%s%3N) + ${Math.round(ttlMs)} ))" > "$d/${reason}.json"`;
+}
+
+export function cloudReleaseHoldCommand(reason: string): string {
+  return `rm -f "$ADE_HOME/cloud/holds/${reason}.json"`;
+}
+
 export type CloudEnableSleepResult =
-  /** the provider now sleeps the box after `afterMinutes` with nothing running. */
-  | { state: "on"; afterMinutes: number }
+  /** The provider's timer is on at its floor (`CLOUD_BACKSTOP_SLEEP_MINUTES`); the box's brain sleeps it sooner. */
+  | { state: "on" }
   /** The box's ADE predates keeping itself awake; sleep stays off until it updates. */
   | { state: "brain_too_old" }
   /** Not awake now; ADE tries when it is (an exec here would wake it). */
@@ -76,9 +78,8 @@ export type CloudEnableSleepResult =
 export async function enableCloudSleep(
   client: CloudProvider,
   instanceId: string,
-  options: { afterMinutes?: number; wakeIfNeeded?: boolean; logger?: CloudLogger } = {},
+  options: { wakeIfNeeded?: boolean; logger?: CloudLogger } = {},
 ): Promise<CloudEnableSleepResult> {
-  const afterMinutes = isCloudSleepAfterMinutes(options.afterMinutes) ? options.afterMinutes : CLOUD_DEFAULT_SLEEP_AFTER_MINUTES;
   try {
     const instance = await client.getInstance(instanceId);
     if (instance.status !== "running" && !options.wakeIfNeeded) return { state: "not_running" };
@@ -97,38 +98,13 @@ export async function enableCloudSleep(
       options.logger?.info?.("cloud.sleep_brain_too_old", { instanceId });
       return { state: "brain_too_old" };
     }
-    await client.setAutoSleep(instanceId, { autoSleep: true, idleTimeoutSeconds: afterMinutes * 60 });
-    if (instance.metadata[CLOUD_SLEEP_METADATA] !== "auto") {
-      await patchCloudMetadata(client, instanceId, { [CLOUD_SLEEP_METADATA]: "auto" });
-    }
-    options.logger?.info?.("cloud.sleep_enabled", { instanceId, afterMinutes });
-    return { state: "on", afterMinutes };
+    await client.setAutoSleep(instanceId, { autoSleep: true, idleTimeoutSeconds: CLOUD_BACKSTOP_SLEEP_MINUTES * 60 });
+    options.logger?.info?.("cloud.sleep_enabled", { instanceId });
+    return { state: "on" };
   } catch (error) {
     options.logger?.warn?.("cloud.sleep_enable_failed", { instanceId, error: getErrorMessage(error) });
     return { state: "failed", error: getErrorMessage(error) };
   }
-}
-
-/** The person's choice for one box: sleep after N minutes, or never. */
-export async function setCloudSleepAfter(
-  client: CloudProvider,
-  instanceId: string,
-  afterMinutes: number | null,
-  logger?: CloudLogger,
-): Promise<CloudEnableSleepResult | { state: "never" }> {
-  if (afterMinutes == null) {
-    await client.setAutoSleep(instanceId, { autoSleep: false });
-    await patchCloudMetadata(client, instanceId, { [CLOUD_SLEEP_METADATA]: "never" });
-    logger?.info?.("cloud.sleep_disabled", { instanceId });
-    return { state: "never" };
-  }
-  const instance = await client.getInstance(instanceId);
-  // Already handed its wake URL and keeping itself awake: only the timer changes.
-  if (cloudSleepPolicyOf(instance).state === "auto") {
-    await client.setAutoSleep(instanceId, { autoSleep: true, idleTimeoutSeconds: afterMinutes * 60 });
-    return { state: "on", afterMinutes };
-  }
-  return await enableCloudSleep(client, instanceId, { afterMinutes, wakeIfNeeded: true, logger });
 }
 
 /**

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The phone's ADE Cloud page (Work ⋯ menu): this month's spend, the account's
+/// The phone's ADE Cloud page (Work ⋯ menu): the plan's hours left, the account's
 /// machines with every action the desktop card has, ready machines, a new
 /// machine (approved here as it joins), and what agents may spend alone.
 ///
@@ -78,7 +78,7 @@ struct CloudPaneSheet: View {
           if let machine = store.selected {
             CloudMachineFacts(store: store, machine: machine).padding(16)
           } else {
-            CloudSpendingSummary(store: store).padding(16)
+            CloudHoursSummary(store: store).padding(16)
           }
         }
         .background(ADEColor.pageBackground.ignoresSafeArea())
@@ -117,11 +117,11 @@ struct CloudPaneSheet: View {
 
 @MainActor
 final class CloudPaneStore: ObservableObject {
-  enum Phase: Equatable { case loading, loaded, notConnected, failed(String) }
+  enum Phase: Equatable { case loading, loaded, failed(String) }
 
   @Published private(set) var phase: Phase = .loading
   @Published private(set) var machines: [CloudPhoneMachine] = []
-  @Published private(set) var spending: CloudPhoneSpending?
+  @Published private(set) var account: CloudPhoneAccount?
   @Published private(set) var limits: CloudPhoneLimits?
   @Published private(set) var readyProjects: [CloudPhoneReadyPool.Entry] = []
   /// The machine a two-pane layout shows; the first one until the person picks.
@@ -150,7 +150,7 @@ final class CloudPaneStore: ObservableObject {
     self.syncService = syncService
     isFixture = true
     machines = fixtureList.machines
-    spending = fixtureList.spending
+    account = fixtureList.account
     self.limits = limits
     readyProjects = ready
     self.makeJob = makeJob
@@ -167,16 +167,7 @@ final class CloudPaneStore: ObservableObject {
 
   func machine(_ id: String) -> CloudPhoneMachine? { machines.first { $0.instanceId == id } }
 
-  var savedUsd: Double? {
-    let values = machines.compactMap(\.savedUsd)
-    return values.isEmpty ? nil : values.reduce(0, +)
-  }
-
-  var hourlyUsd: Double {
-    machines.reduce(0) { total, machine in
-      total + ((machine.isAwake ? machine.runningHourlyUsd : machine.idleHourlyUsd) ?? 0)
-    }
-  }
+  var outOfHours: Bool { account?.outOfHours == true }
 
   func reload() async {
     if isFixture { return }
@@ -186,18 +177,14 @@ final class CloudPaneStore: ObservableObject {
         if lhs.isAwake != rhs.isAwake { return lhs.isAwake }
         return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
       }
-      spending = list.spending
+      account = list.account
       if selectedId == nil || machine(selectedId!) == nil { selectedId = machines.first?.instanceId }
       phase = .loaded
       limits = try? await syncService.cloudRead("limits", as: CloudPhoneLimits.self)
       readyProjects = (try? await syncService.cloudRead("ready_status", as: CloudPhoneReadyPool.self))?.projects ?? []
     } catch {
       let message = error.localizedDescription
-      if message.localizedCaseInsensitiveContains("isn't available on this account") {
-        phase = .notConnected
-      } else if machines.isEmpty {
-        phase = .failed(message)
-      }
+      if machines.isEmpty { phase = .failed(message) }
     }
   }
 
@@ -227,16 +214,6 @@ final class CloudPaneStore: ObservableObject {
       actionError = error.localizedDescription
     }
     limits = try? await syncService.cloudRead("limits", as: CloudPhoneLimits.self)
-  }
-
-  func setCap(_ usd: Double?) async {
-    actionError = nil
-    do {
-      _ = try await syncService.cloudWrite("set_cap", args: ["monthlyCapUsd": usd.map { $0 as Any } ?? "off"], as: CloudPhoneAck.self)
-    } catch {
-      actionError = error.localizedDescription
-    }
-    await reload()
   }
 
   /// Makes, copies or moves in the background on the connected machine, and
@@ -310,14 +287,10 @@ struct CloudListScreen: View {
       switch store.phase {
       case .loading where store.machines.isEmpty:
         Section { ProgressView().frame(maxWidth: .infinity).listRowBackground(Color.clear) }
-      case .notConnected:
-        Section {
-          CloudNotice(symbol: "cloud", title: "ADE Cloud isn't available yet", detail: "Your cloud machines show here once it is on for this account.")
-        }
       case .failed(let message):
         Section { CloudNotice(symbol: "exclamationmark.triangle", title: "Couldn't read ADE Cloud", detail: message) }
       default:
-        Section { CloudSpendingSummary(store: store).listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16)) }
+        Section { CloudHoursSummary(store: store).listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16)) }
           .listRowBackground(Color.clear)
         if let job = store.makeJob { Section { CloudMakeJobRow(store: store, job: job) } }
         if let error = store.actionError {
@@ -375,25 +348,27 @@ struct CloudListScreen: View {
           ADEHaptics.light()
           store.newMachinePresented = true
         } label: { Image(systemName: "plus") }
-          .disabled(store.phase != .loaded || store.spending?.capReached == true)
+          .disabled(store.phase != .loaded || store.outOfHours)
           .accessibilityLabel("New ADE Cloud machine")
       }
     }
   }
 }
 
-struct CloudSpendingSummary: View {
+struct CloudHoursSummary: View {
   @ObservedObject var store: CloudPaneStore
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 8) {
-        CloudFigure(label: "This month", value: store.spending?.monthSpentUsd.map(cloudUsd) ?? "—",
-                      unit: store.spending?.monthlyCapUsd.map { "of \(cloudUsd($0))" })
-        CloudFigure(label: "Saved asleep", value: store.savedUsd.map(cloudUsd) ?? "—", unit: nil)
-      }
-      if store.spending?.capReached == true {
-        CloudNotice(symbol: "pause.circle", title: "At this month's cap", detail: "ADE won't make, wake or resize machines until the cap goes up or the month ends. Running work carries on.")
+    if let account = store.account {
+      VStack(alignment: .leading, spacing: 8) {
+        HStack(spacing: 8) {
+          CloudFigure(label: "Hours left", value: cloudHours(account.hours.leftMilli),
+                      unit: "of \(cloudHours(account.hours.includedMilli))")
+          CloudFigure(label: "Plan", value: account.plan == "paid" ? "Paid" : "Free", unit: nil)
+        }
+        if account.outOfHours {
+          CloudNotice(symbol: "pause.circle", title: "Out of hours", detail: "Your computers wait until your hours reset. Running work saves and stops.")
+        }
       }
     }
   }
@@ -435,7 +410,7 @@ struct CloudMachineRow: View {
       if busy {
         ProgressView()
       } else {
-        Text(machine.isAwake || machine.isMoving ? machine.runningHourlyUsd.map(cloudHourly) ?? "" : "disk only")
+        Text(machine.isAwake || machine.isMoving ? machine.hoursRate.map(cloudHoursRate) ?? "" : "asleep")
           .font(.caption).foregroundStyle(ADEColor.textMuted)
       }
     }
@@ -559,11 +534,8 @@ struct CloudMachineFacts: View {
       }
       Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
         fact("Size", machine.size ?? (machine.isVM ? "VM" : "Box"))
-        fact("Price", [machine.runningHourlyUsd.map { "\(cloudHourly($0)) awake" }, machine.idleHourlyUsd.map { "\(cloudDaily($0)) asleep" }]
-          .compactMap { $0 }.joined(separator: " · ").ifEmpty("—"))
-        fact("Sleeps", machine.sleep?.label ?? "—")
-        fact("Spent", machine.spentUsd.map { "\(cloudUsd($0)) this month" } ?? "—")
-        if let saved = machine.savedUsd, saved > 0 { fact("Saved", "\(cloudUsd(saved)) asleep") }
+        if let rate = machine.hoursRate { fact("Uses", cloudHoursRate(rate)) }
+        if let sleep = machine.sleep { fact("Sleeps", sleep.label) }
         if machine.pastDue == true { fact("State", "Suspended") }
       }
       .font(.subheadline)
@@ -608,20 +580,11 @@ struct CloudMachineControls: View {
         if machine.isAwake {
           CloudActionButton("Sleep now", symbol: "moon", disabled: busy) { Task { await store.run("sleep", on: machine) } }
         } else if machine.isAsleep {
-          CloudActionButton("Wake", symbol: "sun.max", disabled: busy || store.spending?.capReached == true) { Task { await store.run("wake", on: machine) } }
+          CloudActionButton("Wake", symbol: "sun.max", disabled: busy || store.outOfHours) { Task { await store.run("wake", on: machine) } }
         }
         CloudActionButton("Resize…", symbol: "arrow.up.left.and.arrow.down.right", disabled: busy) { resizing = true }
         CloudActionButton("Copy…", symbol: "plus.square.on.square", disabled: busy) { copying = true }
         CloudActionButton(machine.isVM ? "Move to a box…" : "Move to a VM…", symbol: "arrow.left.arrow.right", disabled: busy) { moving = true }
-        Menu {
-          ForEach([5, 10, 30, 60], id: \.self) { minutes in
-            Button("After \(minutes) min idle") { Task { await store.run("set_sleep", on: machine, args: ["minutes": minutes]) } }
-          }
-          Button("Never (bills around the clock)") { Task { await store.run("set_sleep", on: machine, args: ["minutes": "never"]) } }
-        } label: {
-          CloudActionLabel(title: "Sleep after…", symbol: "timer", primary: false, destructive: false)
-        }
-        .disabled(busy)
         CloudActionButton("Delete…", symbol: "trash", destructive: true, disabled: busy) { confirmDelete = true }
       }
     }
@@ -821,18 +784,7 @@ struct CloudLimitsScreen: View {
         Section { ProgressView().frame(maxWidth: .infinity) }
       }
       Section {
-        Picker("Monthly cap", selection: Binding(
-          get: { store.spending?.monthlyCapUsd ?? 0 },
-          set: { value in Task { await store.setCap(value == 0 ? nil : value) } }
-        )) {
-          Text("Off").tag(0.0)
-          ForEach([10.0, 25.0, 50.0, 100.0], id: \.self) { Text("$\(Int($0))").tag($0) }
-        }
-      } header: { CloudSectionLabel("Monthly cap") } footer: {
-        Text("Optional. ADE stops making and waking machines at the cap.")
-      }
-      Section {
-        Label("Always yours to decide: keeping a machine awake for good, raising the cap or these limits, and deleting a machine an agent didn't make.", systemImage: "lock.fill")
+        Label("Always yours to decide: keeping a machine awake for good, raising these limits, and deleting a machine an agent didn't make.", systemImage: "lock.fill")
           .font(.caption).foregroundStyle(ADEColor.textSecondary)
       }
       .listRowBackground(Color.clear)
@@ -976,22 +928,15 @@ func cloudShapeLabel(_ id: String) -> String {
   cloudShapes.first { $0.id == id }?.label ?? id
 }
 
-/// "$3.42" / "$12" / "under 1¢", as the desktop writes it.
-func cloudUsd(_ usd: Double) -> String {
-  if usd > 0 && usd < 0.01 { return "under 1¢" }
-  return usd >= 10 ? "$\(Int(usd.rounded()))" : String(format: "$%.2f", usd)
+/// Hours from thousandths, as the desktop writes them: "118", "42.5".
+func cloudHours(_ milli: Int) -> String {
+  let hours = Double(max(0, milli)) / 1000
+  return hours >= 100 ? String(Int(hours)) : String(Double(Int(hours * 10)) / 10)
 }
 
-/// "0.8¢/h" / "2.0¢/h".
-func cloudHourly(_ usd: Double) -> String {
-  let cents = usd * 100
-  return cents < 10 ? String(format: "%.1f¢/h", cents) : "\(Int(cents.rounded()))¢/h"
-}
-
-/// What an hourly rate comes to a day, for a machine asleep (its disk): "1¢/day".
-func cloudDaily(_ hourlyUsd: Double) -> String {
-  let cents = hourlyUsd * 24 * 100
-  return cents < 1 ? "under 1¢/day" : cents < 10 ? String(format: "%.1f¢/day", cents) : "\(Int(cents.rounded()))¢/day"
+/// "2.5× hours", as the desktop writes it.
+func cloudHoursRate(_ rate: Double) -> String {
+  "\(rate.formatted(.number.precision(.fractionLength(0...1))))× hours"
 }
 
 func cloudLimitsSummary(_ limits: CloudPhoneLimits) -> String {
@@ -1018,11 +963,11 @@ enum CloudPreviews {
     guard name == "duo-cloud" || name == "duo-cloud-limits" || name == "duo-cloud-making" else { return nil }
     let json = """
     {"machines":[
-      {"instanceId":"zodqsue74s","name":"supabase-stack","machineKey":"mk1","state":"running","type":"vm","size":"VM · 4 vCPU · 8 GB","shape":"4x8","runningHourlyUsd":0.02,"idleHourlyUsd":0.0004,"spentUsd":2.1,"savedUsd":6.4,"sleep":{"state":"auto","afterMinutes":10},"madeByAde":true,"ready":null,"pastDue":false},
-      {"instanceId":"k2p8a1b2c3","name":"lane box","machineKey":"mk2","state":"asleep","type":"box","size":"Box · 2 vCPU · 4 GB","shape":"2x4","runningHourlyUsd":0.008,"idleHourlyUsd":0.0004,"spentUsd":0.42,"savedUsd":3.9,"sleep":{"state":"auto","afterMinutes":10},"madeByAde":true,"ready":null,"pastDue":false},
-      {"instanceId":"a9x7c6v5b4","name":"android vm","machineKey":"mk3","state":"starting","type":"vm","size":"VM · 4 vCPU · 8 GB","shape":"4x8","runningHourlyUsd":0.02,"idleHourlyUsd":0.0004,"spentUsd":0.9,"savedUsd":1.5,"sleep":{"state":"auto","afterMinutes":10},"madeByAde":true,"ready":{"projectName":"acme/app","state":"claimed"},"pastDue":false}
+      {"instanceId":"zodqsue74s","name":"supabase-stack","machineKey":"mk1","state":"running","type":"vm","size":"VM · 4 vCPU · 8 GB","shape":"4x8","hoursRate":5,"sleep":{"state":"auto"},"madeByAde":true,"ready":null,"pastDue":false},
+      {"instanceId":"k2p8a1b2c3","name":"lane box","machineKey":"mk2","state":"asleep","type":"box","size":"Box · 2 vCPU · 4 GB","shape":"2x4","hoursRate":1,"sleep":{"state":"auto"},"madeByAde":true,"ready":null,"pastDue":false},
+      {"instanceId":"a9x7c6v5b4","name":"android vm","machineKey":"mk3","state":"starting","type":"vm","size":"VM · 4 vCPU · 8 GB","shape":"4x8","hoursRate":5,"sleep":{"state":"auto"},"madeByAde":true,"ready":{"projectName":"acme/app","state":"claimed"},"pastDue":false}
     ],"runningCount":2,
-    "spending":{"monthlyCapUsd":null,"monthSpentUsd":3.42,"capReached":false,"capNear":false}}
+    "account":{"plan":"paid","hours":{"includedMilli":500000,"leftMilli":382500,"state":"none"}}}
     """
     guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(json.utf8)) else { return nil }
     let limits = CloudPhoneLimits(unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", preset: "balanced")

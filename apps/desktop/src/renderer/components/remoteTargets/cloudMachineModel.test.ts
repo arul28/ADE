@@ -20,7 +20,8 @@ function box(instanceId: string, machineKey: string | null): CloudMachine {
     madeByAde: true,
     createdAtMs: null,
     ready: null,
-    sleep: { state: "auto", afterMinutes: 10 },
+    sleep: { state: "auto" },
+    diskFull: null,
   };
 }
 

@@ -10,6 +10,7 @@ import { isDeletedCloudRow, matchCloudBoxes } from "./cloudMachineModel";
 import type { MachineAction } from "./MachineActionsMenu";
 import type { MachineRow, MachineSection, MachineSections } from "./remoteMachineModel";
 import { cloudBoxContext, useCloudBoxActions, type CloudBoxContext } from "./useCloudBoxActions";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { useCloudMachines } from "./useCloudMachines";
 
 /** While a box's row lags, how often the account list is read again. */
@@ -55,7 +56,8 @@ export function useCloudMachineGroup(args: {
     onAccountMachinesChanged,
     onOpenSettings,
   } = args;
-  const cloudMachines = useCloudMachines(args.enabled && Boolean(window.ade?.cloud?.listMachines));
+  const cloudEnabled = useAdeCloudEnabled();
+  const cloudMachines = useCloudMachines(args.enabled && cloudEnabled && Boolean(window.ade?.cloud?.listMachines));
   const cloudResult = cloudMachines.result;
   const cloudBoxes = useMemo(
     () => (cloudResult?.state === "ok" ? cloudResult.machines : []),

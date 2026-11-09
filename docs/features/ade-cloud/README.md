@@ -74,7 +74,8 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 
 Shared contracts are in `apps/desktop/src/shared/adeCloud.ts`, `cloudReady.ts`
 and `cloudSignIns.ts`. On a machine, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`
-keeps it awake while it works.
+keeps it awake while it works and asks the server to sleep it 3 minutes after
+that stops (see Sleep and busy rules).
 
 ## Surfaces
 
@@ -108,7 +109,7 @@ Account vault items, scope `all`, kind `integration`: `cloud-budget` (agent
 limits only; the name is historical), `cloud-ready` (which projects keep a machine ready),
 `cloud-claude-token` and `cloud-key-<provider>` (sign-ins for new machines).
 Machine metadata keys are `ade_*` (`ade_machine_key`, `ade_request_id`,
-`ade_sleep`, `ade_made_by_chat`, and the ready-machine keys in `cloudReady.ts`), plus `created_by: ade`.
+`ade_made_by_chat`, `ade_disk_full`, and the ready-machine keys in `cloudReady.ts`), plus `created_by: ade`.
 
 ## The machine template
 
@@ -122,6 +123,39 @@ version; the client doesn't choose. "Update this computer" moves one computer
 to it (`updateInstance`).
 On first boot a new machine installs the ADE version of the app that made it,
 when the image's ADE is older.
+
+## Sleep and busy rules
+
+One busy list, `decideCloudBusy` in `apps/ade-cli/src/services/power/cloudKeepAwake.ts`,
+fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
+
+- Busy: a running chat turn, a real running command, an agent CLI actually working,
+  setup, first clone, move, copy (holds in `$ADE_HOME/cloud/holds/*.json`), someone
+  watching a tool (`work_tools.noteWatching`, once a minute, from the desktop, while
+  its window is in front and the person moved in the last 3 minutes).
+- Idle: a shell at its prompt, an agent CLI at its prompt or asking (`waiting-input`),
+  a chat waiting on approval, and a command or turn with no output and no touch for 60 minutes.
+- A shell's prompt state is read from `/proc` (`readPtyForeground` in `ptyService.ts`):
+  tpgid on a normal kernel, the shell's children on gVisor, whose `/proc` carries no
+  tty fields. Output-based `runtimeState` reads `idle` under a quiet command, so it isn't used for plain shells.
+- Three minutes after the last work, the brain calls `POST /cloud/instances/:id/idle`
+  with its account token. The provider's own 5-minute timer stays on as the backstop.
+- `ade cloud prepare-stop --timeout 40` (the server runs it before a stop at 0 hours)
+  interrupts running chat turns and agent CLIs and writes the saved chat copy.
+- Disk (`cloudDiskGrow.ts`): when idle and at 85% used, a paid computer grows 4 GB
+  through `POST /resize` with `computerIdle: true`. Refused at the plan or the 40 GB
+  shared limit, and full at 95%, the computer's card says so in a plain sentence.
+
+Waking: `WorkSidebar` wraps tool panels in `CloudToolGate`
+(`terminals/cloudToolGate.tsx`): a person's click on a tool that needs the computer
+wakes it through `cloud.machineAction` (start, so a stopped computer returns too);
+a restored tab shows Wake instead; at 0 hours the tool says "Out of hours" and offers
+Push all work to GitHub (`cloud.pushAllWork`, the free short wake).
+
+A send caught by a sleep is retried: chat `sendMessage` carries a `clientSendId`,
+the desktop retries once after the wake when the answer was lost
+(`isRetriableAfterSleep` in `remoteConnectionService.ts`), and the brain drops a
+retry it already took.
 
 ## Timed wakes
 

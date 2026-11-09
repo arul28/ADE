@@ -1969,6 +1969,13 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   "hide-previews": "activity.hide-details",
 };
 
+/** ADE Cloud's settings: they do not exist for an account not on its access list. */
+export const ADE_CLOUD_SETTINGS_GROUP = "ADE Cloud";
+
+export function isAdeCloudSettingEntry(entry: Pick<SettingEntry, "group">): boolean {
+  return entry.group === ADE_CLOUD_SETTINGS_GROUP;
+}
+
 const ENTRIES_BY_ID = new Map(SETTINGS_ENTRIES.map((entry) => [entry.id, entry]));
 const ENTRIES_BY_ANCHOR = new Map(SETTINGS_ENTRIES.map((entry) => [entry.anchor, entry]));
 
@@ -2196,10 +2203,14 @@ function findIndex(): FindRow[] {
  * for more than one many do ("mode"). Every entry is searched: whether a
  * client can show it is that client's call, and its chip says so.
  */
-export function findSettingsEntries(query: string, limit = 3): SettingEntry[] {
+export function findSettingsEntries(
+  query: string,
+  limit = 3,
+  excluded?: (entry: SettingEntry) => boolean,
+): SettingEntry[] {
   const words = findWords(query);
   if (words.length === 0) return [];
-  const rows = findIndex();
+  const rows = excluded ? findIndex().filter((row) => !excluded(row.entry)) : findIndex();
   const rarity = new Map<string, number>();
   for (const word of words) {
     const count = rows.filter((row) => wordHits(`${row.label} ${row.tab} ${row.group} ${row.keywords}`, word)).length;

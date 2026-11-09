@@ -96,6 +96,8 @@ export type CloudProvider = {
   deleteInstance(id: string, context?: { who?: string | null; reason?: string }): Promise<void>;
   /** Checkpoints a running machine: memory and processes kept. Answers with the new status. */
   sleepInstance(id: string): Promise<string>;
+  /** The machine asks to be slept (idle three minutes); the server stops instead at 0 hours. Answers with the new status. */
+  requestIdleSleep(id: string): Promise<string>;
   /** Wakes a sleeping machine or starts a stopped one. `push_work` is the one wake allowed at 0 hours. Answers with the new status. */
   startInstance(id: string, options?: { reason?: "push_work" }): Promise<string>;
   /** Stops the machine (no memory kept). Only an explicit start brings it back. */

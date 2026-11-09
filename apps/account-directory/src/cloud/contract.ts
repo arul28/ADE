@@ -32,6 +32,11 @@
  *   POST   /cloud/billing/checkout             { url }   409 `already_paid`
  *   POST   /cloud/billing/portal               { url }   409 `no_billing`
  *   POST   /cloud/billing/extra-hours          CloudAccountState   403 `needs_paid_plan`
+ *   GET    /cloud/chats?machine&project&limit&cursor   { chats: CloudChatRow[], nextCursor }
+ *   GET    /cloud/chats/:machine/:chat?before&limit     CloudChatTranscriptPage
+ *   PUT    /cloud/chats/:machine/:chat/parts/:seq       CloudChatPartResponse   (from the computer)
+ *   DELETE /cloud/chats/:machine/:chat                  { deleted }
+ *   DELETE /cloud/chats/:machine/lanes/:lane            { deleted }
  *
  * `POST /cloud/instances/:id/start` with `{ reason: "push_work" }` is the one
  * wake allowed at 0 hours: free, short, once a day per computer.
@@ -52,12 +57,24 @@ export const CLOUD_PATHS = {
   billingCheckout: "/cloud/billing/checkout",
   billingPortal: "/cloud/billing/portal",
   billingExtraHours: "/cloud/billing/extra-hours",
+  chats: "/cloud/chats",
 } as const;
 
 /** `/cloud/instances/:id` and its actions. */
 export function cloudInstancePath(id: string, action?: string): string {
   const base = `${CLOUD_PATHS.instances}/${encodeURIComponent(id)}`;
   return action ? `${base}/${action}` : base;
+}
+
+/** `/cloud/chats/:machine/:chat`, plus `/parts/:seq` for an upload. */
+export function cloudChatPath(machineKey: string, chatId: string, seq?: number): string {
+  const base = `${CLOUD_PATHS.chats}/${encodeURIComponent(machineKey)}/${encodeURIComponent(chatId)}`;
+  return seq === undefined ? base : `${base}/parts/${seq}`;
+}
+
+/** `/cloud/chats/:machine/lanes/:lane`. */
+export function cloudChatLanePath(machineKey: string, laneId: string): string {
+  return `${CLOUD_PATHS.chats}/${encodeURIComponent(machineKey)}/lanes/${encodeURIComponent(laneId)}`;
 }
 
 /** Same shape as `CloudInstance` in `apps/desktop/.../cloudProvider.ts`. */
@@ -123,4 +140,47 @@ export type CloudAccountState = {
     /** Banner: a failed payment, or a plan a paid invoice just brought back. */
     notice: "past_due" | "restored" | null;
   };
+};
+
+/** Largest part of a chat the server accepts, in bytes of its text. */
+export const CLOUD_CHAT_MAX_PART_BYTES = 8 * 1024 * 1024;
+/** Most stored bytes one account's saved chats may take. Past it, saves are refused (and logged). */
+export const CLOUD_CHAT_MAX_ACCOUNT_BYTES = 2 * 1024 * 1024 * 1024;
+export const CLOUD_CHAT_MAX_PAGE_PARTS = 12;
+
+/** What the computer sends with a part: the chat's row in the list. */
+export type CloudChatRowInput = {
+  title: string | null;
+  laneId: string | null;
+  laneName: string | null;
+  status: string | null;
+  toolType: string | null;
+  provider: string | null;
+  model: string | null;
+  /** The repo identity (`normalizeGitRemoteIdentity`), so a window lists its own project's chats. */
+  projectKey: string | null;
+  /** The computer's own id and folder for that project, to address a send to it. */
+  projectId: string | null;
+  projectRoot: string | null;
+  lastActivityAt: string | null;
+};
+
+export type CloudChatRow = CloudChatRowInput & {
+  machineKey: string;
+  chatId: string;
+  instanceId: string | null;
+  lastSeq: number;
+  updatedAt: number;
+};
+
+/** `lastSeq` is what the server holds now; replay rules are in `chats.ts`. */
+export type CloudChatPartResponse = { ok: true; lastSeq: number };
+
+export type CloudChatTranscriptPage = {
+  chat: CloudChatRow;
+  /** Newest part first. Each `text` is JSON lines of chat events. */
+  parts: Array<{ seq: number; text: string }>;
+  hasMore: boolean;
+  /** Pass as `before` for the next older page. Null at the start of the chat. */
+  nextBefore: number | null;
 };

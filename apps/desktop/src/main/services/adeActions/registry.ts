@@ -301,7 +301,7 @@ import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
-import { cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
+import { cloudAccessEnabled, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
 import { cloudMachineEnv, type CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
 import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
@@ -4254,7 +4254,13 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
     }),
     logger: runtime.logger,
   });
-  return { ...ready, ...verbs, ...cloudSignIns };
+  return {
+    ...ready,
+    ...verbs,
+    ...cloudSignIns,
+    /** Whether ADE Cloud exists for this account; the only `cloud` action served when it doesn't. */
+    access: async () => ({ enabled: await cloudAccessEnabled(credentials) }),
+  };
 }
 
 /**

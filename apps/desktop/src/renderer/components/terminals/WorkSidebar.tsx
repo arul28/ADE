@@ -49,6 +49,7 @@ import {
   type WorkToolContext,
 } from "./workTools";
 import { WORK_TOOL_COMPONENTS, type WorkToolPanelProps } from "./workToolPanels";
+import { CloudToolGate, type WorkToolOpen } from "./cloudToolGate";
 import { useSideChatView } from "../chat/sideChatState";
 
 /** Escape returns to the picker, but only from inside the pane — see `work.tools.picker`. */
@@ -180,6 +181,7 @@ export function WorkSidebar({
   const keybindings = useAppStore((state) => state.keybindings);
   const reduceMotion = useReducedMotion() ?? false;
   const sidebarRef = useRef<HTMLElement | null>(null);
+  const personOpenedToolRef = useRef<WorkToolOpen | null>(null);
   // The capability gate, the browser view's collection scope and the offline
   // guard all come from the page's feed provider rather than being recomputed
   // here: the corner card reads the same three values, and computing them twice
@@ -485,7 +487,11 @@ export function WorkSidebar({
   // keep-alive is not a panel: it has no WebContentsView, so it may be inert
   // while a tool is on screen.
   const ToolPanel = active && effectiveTool ? WORK_TOOL_COMPONENTS[effectiveTool] : null;
-  const content = ToolPanel ? <ToolPanel {...toolProps} /> : null;
+  const content = ToolPanel && effectiveTool ? (
+    <CloudToolGate tool={effectiveTool} pin={runtimePin} opened={personOpenedToolRef.current}>
+      <ToolPanel {...toolProps} />
+    </CloudToolGate>
+  ) : null;
 
   const selectTool = useCallback((next: WorkSidebarTab | null) => {
     if (effectiveTool === "browser" && next !== "browser") hideBuiltInBrowserView(browserViewRoot);
@@ -496,6 +502,8 @@ export function WorkSidebar({
     // panel's own mount-time autofocus (a terminal, a URL field) still runs
     // afterwards and still wins.
     sidebarRef.current?.focus({ preventScroll: true });
+    // A person's click: only this opens a sleeping computer's tool without asking.
+    personOpenedToolRef.current = next ? { tool: next, at: Date.now() } : null;
     onToolChange(next);
   }, [browserViewRoot, effectiveTool, onToolChange]);
 

@@ -857,6 +857,28 @@ waits). The identifier is the hour's place in the billing period, so a retry
 can't count one twice. Only accounts with extra hours on and past their plan's
 hours are reported.
 
+## Saved chats
+
+ADE Cloud computers can't serve their chats while asleep, stopped, out of hours
+or deleted, so after each chat turn the computer saves the new part of the chat
+here (`src/cloud/chats.ts`, routes in `contract.ts`).
+
+- Parts live in R2 (`CLOUD_CHATS`), one object per part, AES-GCM with one random
+  key per user. That key is sealed with `CLOUD_CHAT_MASTER_KEY` and kept in D1,
+  apart from the chats. Platform encryption, not end-to-end.
+- The list row's text (title, lane name, status, model) is sealed the same way;
+  only ids the list filters on are plain.
+- Parts append by sequence and every upload can be replayed: the same part
+  answers 200, the newest part may be resent with more text, anything else is
+  `409 sequence_conflict` and the computer starts that chat over. A part over
+  8 MiB is refused; an account past 2 GiB is refused and logged
+  (`cloud.chat_account_full`).
+- Every read checks the owner: another account's chat answers 404.
+- Deleting a computer keeps its chats. Deleting a chat, a lane, or the account
+  (Clerk `user.deleted`) removes them; deleting the account also removes the key.
+- Rollout: `wrangler r2 bucket create ade-cloud-chats` (and `-production`),
+  `wrangler secret put CLOUD_CHAT_MASTER_KEY` on both environments.
+
 ## Sign-up analytics
 
 `POST /webhooks/clerk` takes Clerk's `user.created` and `user.deleted`

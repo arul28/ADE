@@ -4,6 +4,7 @@ import { formatCloudHours, type CloudAccountState } from "../../../shared/adeClo
 import { ipcErrorMessage } from "../../lib/format";
 import { Banner } from "../ui/notice";
 import { IntegrationCard } from "./integrations/IntegrationChrome";
+import { PushAllWorkButton } from "../terminals/cloudToolGate";
 import { SettingsToggle } from "./primitives/SettingsControls";
 
 function shortDate(ms: number): string {
@@ -104,6 +105,7 @@ export function CloudPlanCard({ account, onChanged }: {
             <div key={computer.instanceId} className="ade-ig-mini-row">
               <span className="ade-ig-mini-title">{computer.name ?? computer.instanceId}</span>
               <span className="ade-ig-mini-detail">Deleted {shortDate(computer.deletesAt)} unless it's used</span>
+              <PushAllWorkButton instanceId={computer.instanceId} />
             </div>
           ))}
         </div>

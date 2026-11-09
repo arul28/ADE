@@ -73,6 +73,7 @@ export type MiscNamespaces = {
   transcription: AdeNamespace<"transcription">;
   agentTools: AdeNamespace<"agentTools">;
   cloudAgents: AdeNamespace<"cloudAgents">;
+  cloudAccess: NonNullable<Window["ade"]["cloudAccess"]>;
   adeCli: AdeNamespace<"adeCli">;
   devTools: AdeNamespace<"devTools">;
   localhost: AdeNamespace<"localhost">;
@@ -1065,6 +1066,19 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     projectSecrets: createProjectSecretsNamespace(),
     transcription: createTranscriptionNamespace(),
     agentTools: { detect: async () => [] } as AdeNamespace<"agentTools">,
+    cloudAccess: {
+      // The connected machine answers for the account. Not connected, or
+      // nothing known yet, reads as no.
+      read: () => commands.call<{ enabled: boolean }>("cloud.read", { action: "access" }, { fallback: { enabled: false }, retainLastRead: false }),
+      onChanged: (cb) => {
+        let readiness = client.getStatus().readiness;
+        return client.subscribe((status) => {
+          if (status.readiness === readiness) return;
+          readiness = status.readiness;
+          cb();
+        });
+      },
+    },
     cloudAgents: {
       list: (args: CloudAgentListArgs) =>
         call<CloudAgentList>("ai.listCloudAgents", args, {

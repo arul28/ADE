@@ -6,6 +6,7 @@ import type { UsageSnapshot } from "../../../../shared/types/usage";
 import type { AiProviderConnectionStatus } from "../../../../shared/types/config";
 import { isBackgroundItemBlocked } from "../../../../shared/types/core";
 import { cloudMachineResting } from "../../../../shared/adeCloud";
+import { adeCloudEnabled } from "../../../state/cloudAccess";
 import type { AiConfig } from "../../../../shared/types/config";
 import type { ProviderInstance } from "../../../../shared/types/providerInstances";
 import { isProviderDisabled } from "../../../../shared/providerEnablement";
@@ -330,7 +331,7 @@ function unreachableConnections(snapshot: ConnectionSnapshot | null) {
 async function restingCloudItemIds(snapshot: ConnectionSnapshot | null): Promise<Set<string>> {
   const unreachable = unreachableConnections(snapshot);
   const listMachines = window.ade?.cloud?.listMachines;
-  if (unreachable.length === 0 || !isAdeAvailable(listMachines)) return new Set();
+  if (unreachable.length === 0 || !adeCloudEnabled() || !isAdeAvailable(listMachines)) return new Set();
   const listed = await listMachines().catch((error: unknown) => {
     console.warn("[needs-attention] reading ADE Cloud boxes failed", error);
     return null;

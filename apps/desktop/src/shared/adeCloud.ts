@@ -284,6 +284,8 @@ export type CloudMachine = {
   ready: { projectName: string; state: CloudReadyMachineState } | null;
   /** How the box sleeps when nothing runs on it (see `CloudSleepPolicy`). */
   sleep: CloudSleepPolicy;
+  /** A plain sentence when its disk is full and can't grow, or null. */
+  diskFull: string | null;
 };
 
 /*
@@ -297,24 +299,29 @@ export type CloudMachine = {
 /** The port ADE's wake URL routes to. Nothing listens on it: the provider answers 502, which still counts as traffic and wakes the box. */
 export const CLOUD_WAKE_PORT = 7337;
 export const CLOUD_WAKE_PORT_LABEL = "ADE wake";
-/** Minutes of nothing running before a box sleeps, as ADE offers them (the provider allows 5 minutes to a day). */
-export const CLOUD_SLEEP_AFTER_CHOICES = [5, 10, 30, 60] as const;
-export const CLOUD_DEFAULT_SLEEP_AFTER_MINUTES = 10;
+/** A computer sleeps 3 minutes after its last activity (`cloudKeepAwake`); the provider's own timer, at its 5-minute floor, is the backstop. */
+export const CLOUD_BACKSTOP_SLEEP_MINUTES = 5;
 /** The chat whose agent made a machine (create, copy, move): only that chat's unattended agent may delete it. */
 export const CLOUD_MADE_BY_CHAT_METADATA = "ade_made_by_chat";
 
-/** Where ADE notes a person's "Never sleep" on the box, so turning sleep on for older boxes leaves it alone. */
-export const CLOUD_SLEEP_METADATA = "ade_sleep";
+/** Set by the computer's brain when its disk is full and can't grow: `free_limit` or `account_limit`. */
+export const CLOUD_DISK_FULL_METADATA = "ade_disk_full";
+export type CloudDiskFullReason = "free_limit" | "account_limit";
+
+/** What a person reads on a computer whose disk is full and can't grow, or null. */
+export function cloudDiskFullMessage(reason: string | null | undefined): string | null {
+  if (reason === "free_limit") return "This computer's disk is full. Free computers stay at 4 GB; a paid plan lets it grow.";
+  if (reason === "account_limit") return "This computer's disk is full, and your computers have reached the 40 GB they share.";
+  return null;
+}
 
 /**
- * - `auto`: sleeps after `afterMinutes` with nothing running.
- * - `never`: the person turned sleep off for this box.
+ * - `auto`: sleeps a few minutes after nothing runs on it.
  * - `pending`: ADE has not turned sleep on yet: the box's ADE predates it, or
  *   ADE has not reached the box since. It sleeps only when someone sleeps it.
  */
 export type CloudSleepPolicy =
-  | { state: "auto"; afterMinutes: number }
-  | { state: "never" }
+  | { state: "auto" }
   | { state: "pending" };
 
 /** Waking the box behind an account machine for use (`wakeCloudMachineForUse`). */
@@ -324,15 +331,9 @@ export type CloudWakeForUseResult =
   | { state: "not_cloud" }
   | { state: "refused"; message: string };
 
-/** "Sleeps after 10 min idle" / "Never sleeps" / "Sleeps when ADE on it updates". */
+/** "Sleeps when idle" / "Sleeps once ADE on it updates". */
 export function describeCloudSleepPolicy(policy: CloudSleepPolicy): string {
-  if (policy.state === "auto") return `Sleeps after ${policy.afterMinutes} min idle`;
-  if (policy.state === "never") return "Never sleeps";
-  return "Sleeps once ADE on it updates";
-}
-
-export function isCloudSleepAfterMinutes(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 5 && value <= 24 * 60;
+  return policy.state === "auto" ? "Sleeps when idle" : "Sleeps once ADE on it updates";
 }
 
 /**
@@ -505,7 +506,7 @@ export type CloudMachinesResult = {
   message: string | null;
 };
 
-export type CloudMachineActionKind = "sleep" | "wake" | "resize" | "backup" | "delete" | "set_sleep" | "update";
+export type CloudMachineActionKind = "sleep" | "wake" | "resize" | "backup" | "delete" | "update";
 
 export type CloudMachineActionArgs = {
   instanceId: string;
@@ -516,8 +517,6 @@ export type CloudMachineActionArgs = {
   machineKey?: string | null;
   /** For `delete`: who asked, for the server's delete log (an agent's chat; a person's desktop leaves it unset). */
   who?: string | null;
-  /** For `set_sleep`: minutes of nothing running before it sleeps, or null for never. */
-  sleepAfterMinutes?: number | null;
 };
 
 export type CloudMachineActionResult = {
