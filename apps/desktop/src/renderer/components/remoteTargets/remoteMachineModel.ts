@@ -714,6 +714,8 @@ export type MachineUpdateAttempt = {
   /** True while the far app is still downloading, which takes longer to land. */
   downloading: boolean;
   startedAtMs: number;
+  updateInstallMode?: RemoteRuntimeConnectionStatus["updateInstallMode"];
+  downloadUrl?: string | null;
 };
 
 /** Long enough for an app swap plus the brain restart behind it. */
@@ -734,6 +736,8 @@ export function machineUpdateAttemptFromResult(
     targetVersion?: string | null;
     route?: string;
     pendingVersion?: string | null;
+    updateInstallMode?: RemoteRuntimeConnectionStatus["updateInstallMode"];
+    downloadUrl?: string | null;
   },
   fallbackMessage: string,
   nowMs: number,
@@ -758,6 +762,8 @@ export function machineUpdateAttemptFromResult(
       && result.updateApplied === false
       && pendingVersion != null,
     startedAtMs: nowMs,
+    updateInstallMode: result.updateInstallMode,
+    downloadUrl: result.downloadUrl,
   };
 }
 
@@ -840,6 +846,8 @@ export type ConnectedMachine = {
   /** What its tile is drawn from (`MachineAvatar`); absent where unknown. */
   colorKey?: string;
   arch?: string | null;
+  updateInstallMode?: RemoteRuntimeConnectionStatus["updateInstallMode"];
+  downloadUrl?: string | null;
 };
 
 /** The machines a connection snapshot says are connected right now. */
@@ -858,6 +866,8 @@ export function connectedMachinesFromSnapshot(
         track: updateTrackOfVersion(brainVersion),
         colorKey: machineColorKey(connection.target),
         arch: connection.arch ?? connection.target.lastSeenArch ?? null,
+        updateInstallMode: connection.updateInstallMode,
+        downloadUrl: connection.downloadUrl,
       };
     });
 }

@@ -42,6 +42,7 @@ import { PrShippedSummary } from "./PrShippedSummary";
 import { MERGE_METHODS, mergeMethodShortLabel, readLastMergeMethod, writeLastMergeMethod } from "./prMergeRailUtils";
 import type { PrReviewEvent } from "./PrReviewSubmitModal";
 import "./PrFloatingDock.css";
+import { modifierChordLabel } from "../../../lib/platform";
 import { isImeComposing } from "../../../lib/imeComposition";
 
 /* ══════════════════ The dock ══════════════════ */
@@ -761,7 +762,7 @@ export function PrCommentCard({
           }}
         />
         <div className="flex items-center gap-2 px-3 py-2" style={{ borderTop: `1px solid ${COLORS.border}` }}>
-          <span className="text-[11px]" style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}>Markdown supported · ⌘↩ to send</span>
+          <span className="text-[11px]" style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}>Markdown supported · {modifierChordLabel("↩")} to send</span>
           <span className="flex-1" />
           <button
             type="button"

@@ -506,6 +506,7 @@ function summarizeMacDesktop(
     // Windows-only host facts; null on a Mac host. A mirror uses this to render
     // the held/locked/setup cards for a Windows-held lane.
     windowsDesktop: status.windowsDesktop ?? null,
+    linuxDesktop: status.linuxDesktop ?? null,
     // A frame captured before the display went away describes a screen that no
     // longer exists, so it leaves with the display rather than lingering.
     lastObservation: status.display ? lastObservation : null,

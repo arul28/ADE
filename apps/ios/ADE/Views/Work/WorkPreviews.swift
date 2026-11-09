@@ -1456,6 +1456,7 @@ enum ADEPreviewScreen: String, CaseIterable {
   case appleViewerControl = "apple-viewer-control"
   /// The lane's screen and App Control on the live stage, full screen, over
   /// drawn stand-ins. See `MacDesktopViewerPreview`, `AppControlViewerPreview`.
+  case linuxDesktopCard = "linux-desktop-card"
   case macDesktopViewer = "mac-desktop-viewer"
   case macDesktopViewerControl = "mac-desktop-viewer-control"
   case appControlViewer = "app-control-viewer"
@@ -1625,6 +1626,21 @@ struct ADEPreviewScreenHost: View {
           mode: screen == .appleViewerControl ? .controlling : .watching
         )
       )
+    case .linuxDesktopCard:
+      ScrollView {
+        MacDesktopCard(
+          laneId: WorkProofPreviewData.laneId,
+          macDesktop: {
+            var state = MacDesktopViewerPreview.watching.desktop
+            state.linuxDesktop = LinuxDesktopHostFacts(missing: [], encoder: "x264", installCommand: nil)
+            state.windows = [WorkToolsMacDesktopWindow(id: 1, appName: "Terminal", title: "Linux lane")]
+            return state
+          }(),
+          refreshTick: 0, refreshLane: {},
+          macDesktopViewerPresented: .constant(false), macDesktopFrame: .constant(nil),
+          loadedMacDesktopFramePath: .constant(nil), isLiveMacDesktopMounted: .constant(false)
+        ).padding()
+      }.background(ADEColor.pageBackground.ignoresSafeArea())
     case .macDesktopViewer, .macDesktopViewerControl:
       MacDesktopViewer(
         laneId: WorkProofPreviewData.laneId,

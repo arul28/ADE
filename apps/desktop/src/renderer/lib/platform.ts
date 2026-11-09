@@ -6,6 +6,8 @@ import {
 } from "../../shared/captureGesturePlatformSupport";
 
 function getPlatformValue(): string {
+  const bridge = bridgedPlatform();
+  if (bridge) return bridge;
   if (typeof navigator !== "undefined" && typeof navigator.platform === "string") {
     return navigator.platform;
   }
@@ -56,8 +58,8 @@ export function cursorProviderAvailable(): boolean {
  * "Is this a Mac", answered by the preload bridge rather than by
  * `navigator.platform`.
  *
- * Same question as `isMacPlatform` below, different source: that one reads a
- * user-agent string, this one reads the host's real `process.platform`. Copy
+ * Same question as `isMacPlatform` below, but explicitly uses the runtime
+ * target, including its fallback. Copy
  * that says "this Mac" versus "this PC" reads the bridge, so it stays right in
  * the browser-mock and hosted-web paths where the two can disagree. Lives here
  * rather than beside the one component that needs it, because a second

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runAdeCliAutoInstall } from "./adeCliAutoInstall";
 import type { GlobalState } from "../state/globalState";
 import type { AdeCliInstallResult, AdeCliStatus } from "../../../shared/types";
@@ -133,6 +133,62 @@ describe("runAdeCliAutoInstall", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  describe("when this AppImage's ade command names another file", () => {
+    const realPlatform = process.platform;
+    const image = "/home/me/Apps/ADE-1.2.3.AppImage";
+    const shim = (target: string) =>
+      `#!/bin/sh\nexport ADE_APPIMAGE_CLI=1 ELECTRON_RUN_AS_NODE=1\nexec '${target}' "$@"\n`;
+    const settled: GlobalState = {
+      adeCliAutoInstall: { completedAt: "2026-08-01T00:00:00.000Z", outcome: "installed", command: "ade" },
+    };
+
+    afterEach(() => {
+      Object.defineProperty(process, "platform", { value: realPlatform });
+    });
+
+    it.each([
+      { name: "a moved image, with the shim first on PATH", file: shim("/old/ADE.AppImage"), onPath: "target", installs: 1 },
+      { name: "a moved image, with PATH reaching the shim through a symlink", file: shim("/old/ADE.AppImage"), onPath: "link", installs: 1 },
+      { name: "a moved image, with the shim not on PATH", file: shim("/old/ADE.AppImage"), onPath: "none", installs: 1 },
+      { name: "a moved image, with another ade first on PATH", file: shim("/old/ADE.AppImage"), onPath: "other", installs: 0 },
+      { name: "a shim already naming this image", file: shim(image), onPath: "target", installs: 0 },
+      { name: "a file ADE did not write", file: "#!/bin/sh\nexec /opt/ade \"$@\"\n", onPath: "target", installs: 0 },
+    ])("$name: $installs install(s)", async ({ file, onPath, installs }) => {
+      Object.defineProperty(process, "platform", { value: "linux" });
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-appimage-shim-"));
+      try {
+        fs.mkdirSync(path.join(root, "bin"));
+        fs.mkdirSync(path.join(root, "other"));
+        fs.symlinkSync(path.join(root, "bin"), path.join(root, "link"), "junction");
+        const target = path.join(root, "bin", "ade");
+        fs.writeFileSync(target, file);
+        fs.writeFileSync(path.join(root, "other", "ade"), "#!/bin/sh\n");
+        const terminalCommandPath = {
+          target,
+          link: path.join(root, "link", "ade"),
+          other: path.join(root, "other", "ade"),
+          none: null,
+        }[onPath] ?? null;
+        const h = harness({
+          state: settled,
+          env: { APPIMAGE: image },
+          getStatus: async () =>
+            status({ terminalInstalled: terminalCommandPath != null, terminalCommandPath, installTargetPath: target }),
+        });
+
+        const outcome = await h.run();
+
+        expect(h.installForUser).toHaveBeenCalledTimes(installs);
+        expect(outcome).toBe(installs ? "installed" : "already-settled");
+        expect(h.readState().adeCliAutoInstall?.completedAt).toBe(
+          installs ? "2026-08-19T00:00:00.000Z" : settled.adeCliAutoInstall?.completedAt,
+        );
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 
   it("installs once and records the marker when ade is missing", async () => {

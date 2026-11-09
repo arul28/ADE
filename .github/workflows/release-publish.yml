@@ -96,6 +96,13 @@ jobs:
             release-assets/mac/latest-mac.yml
           rm -f release-assets/mac/latest-mac-arm64.yml release-assets/mac/latest-mac-x64.yml
 
+      - name: Download Linux release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ade-linux-release-${{ inputs.release_tag }}-*
+          path: release-assets/linux
+          merge-multiple: true
+
       - name: Download Windows release artifacts
         if: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' }}
         uses: actions/download-artifact@v4
@@ -149,6 +156,14 @@ jobs:
           require_glob 'release-assets/mac/*.dmg' 'macOS DMG'
           require_glob 'release-assets/mac/*.zip' 'macOS zip'
           require_file 'release-assets/mac/latest-mac.yml' 'macOS auto-update metadata'
+
+          for arch in x64 arm64; do
+            require_glob "release-assets/linux/*-linux-$arch.AppImage" "Linux $arch AppImage"
+            require_glob "release-assets/linux/*-linux-$arch.deb" "Linux $arch Debian package"
+          done
+          require_file 'release-assets/linux/latest-linux.yml' 'Linux x64 auto-update metadata'
+          require_file 'release-assets/linux/latest-linux-arm64.yml' 'Linux arm64 auto-update metadata'
+
 
           require_file 'release-assets/runtime/install.sh' 'standalone runtime installer'
           if [ ! -x 'release-assets/runtime/install.sh' ]; then
@@ -295,8 +310,9 @@ jobs:
             release-assets/runtime/ade-darwin-*
             release-assets/runtime/ade-linux-*
           )
-          files=("${base_files[@]}" "${runtime_files[@]}")
-          checksum_files=("${runtime_files[@]}")
+          linux_files=(release-assets/linux/*.AppImage release-assets/linux/*.deb)
+          files=("${base_files[@]}" "${runtime_files[@]}" "${linux_files[@]}" release-assets/linux/latest-linux*.yml)
+          checksum_files=("${runtime_files[@]}" "${linux_files[@]}")
 
           # One switch decides whether this release carries Windows at all.
           if [ "$PUBLISH_WINDOWS" = "1" ]; then
@@ -386,12 +402,14 @@ jobs:
             case "$TAG_NAME" in
               *-*) create_args+=(--prerelease --latest=false) ;;
             esac
+            # With --generate-notes, gh puts this file above the generated notes.
+            cp .github/release-notes/linux.md "$RUNNER_TEMP/release-notes.md"
             if [ -n "$RELEASE_NOTES" ]; then
-              printf '%s\n' "$RELEASE_NOTES" > "$RUNNER_TEMP/release-notes.md"
-              create_args+=(--notes-file "$RUNNER_TEMP/release-notes.md")
+              printf '\n%s\n' "$RELEASE_NOTES" >> "$RUNNER_TEMP/release-notes.md"
             else
               create_args+=(--generate-notes)
             fi
+            create_args+=(--notes-file "$RUNNER_TEMP/release-notes.md")
             gh release create "$TAG_NAME" "${files[@]}" "${create_args[@]}"
           fi
 

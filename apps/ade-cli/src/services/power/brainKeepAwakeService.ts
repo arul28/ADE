@@ -183,7 +183,9 @@ export function createBrainKeepAwakeService(
   /** Activity reads that failed in a row; a held lock survives a short run of them. */
   let failedActivityReads = 0;
   let blockerError: string | null = stateReadError;
-  const supportsWakeLock = platform === "darwin" || platform === "win32";
+  /** Counts `setLevel` calls, so a probe that outlives a newer choice is dropped. */
+  let levelRequests = 0;
+  const supportsWakeLock = platform === "darwin" || platform === "win32" || platform === "linux";
 
   const persist = (next: StoredKeepAwakeState): void => {
     fs.mkdirSync(path.dirname(options.statePath), { recursive: true });
@@ -249,6 +251,19 @@ export function createBrainKeepAwakeService(
         spawned = offThreadSpawnEnabled()
           ? spawnOffThread(powershell, args)
           : spawn(powershell, args, { stdio: "ignore", windowsHide: true });
+      } else if (platform === "linux") {
+        // logind drops the lock when systemd-inhibit ends, and `tail --pid`
+        // ends it with the brain, as `caffeinate -w` does on macOS.
+        spawned = spawn("systemd-inhibit", [
+          "--what=idle:sleep",
+          "--who=ADE",
+          "--why=Agents are working",
+          "--mode=block",
+          "tail",
+          `--pid=${process.pid}`,
+          "-f",
+          "/dev/null",
+        ], { stdio: "ignore" });
       } else {
         attemptedThisActivePeriod = false;
         return;
@@ -347,7 +362,7 @@ export function createBrainKeepAwakeService(
     ]);
     return {
       preferences: { ...state.preferences },
-      platform: platform === "darwin" ? "mac" : platform === "win32" ? "windows" : "other",
+      platform: platform === "darwin" ? "mac" : platform === "win32" ? "windows" : platform === "linux" ? "linux" : "other",
       lidClosedSupported: platform === "darwin",
       lidClosedActive: lidClosedActive === true,
       levelError: blockerError ?? levelUnsupportedError(),
@@ -404,6 +419,7 @@ export function createBrainKeepAwakeService(
     getSnapshot: snapshot,
 
     async setLevel(level: unknown): Promise<KeepAwakeSnapshot> {
+      const request = ++levelRequests;
       if (migrationBlocked) {
         blockerError = stateReadError ?? "ADE can't read the saved keep-awake setting.";
         return snapshot();
@@ -411,13 +427,24 @@ export function createBrainKeepAwakeService(
       if (!isKeepAwakeLevel(level)) level = "never";
       const nextLevel = level as KeepAwakeLevel;
       const currentLevel = state.preferences.level;
-      if (nextLevel !== "never" && platform !== "darwin" && platform !== "win32") {
+      if (nextLevel !== "never" && !supportsWakeLock) {
         blockerError = "This machine doesn't support a keep-awake lock.";
         return snapshot();
       }
       if (nextLevel === "lid-closed" && platform !== "darwin") {
         blockerError = "This machine can't stay awake with the lid closed.";
         return snapshot();
+      }
+      if (platform === "linux" && nextLevel !== "never" && nextLevel !== currentLevel) {
+        // polkit can refuse the lock and the tool can be absent. Settings only
+        // reads on save, so a failure at the first turn would go unseen.
+        const probe = await execSystemText("systemd-inhibit", ["--what=idle:sleep", "--who=ADE", "--why=Checking the lock", "--mode=block", "true"], 5_000);
+        if (request !== levelRequests) return snapshot();
+        if (!probe.ok) {
+          blockerError = "This machine wouldn't let ADE stay awake.";
+          options.logger?.warn("keepAwake.lock_probe_failed", { stderr: probe.stderr.slice(0, 200) });
+          return snapshot();
+        }
       }
       if (platform === "darwin" && nextLevel !== currentLevel) {
         const lidClosedActive = await readLidClosedActive(platform);

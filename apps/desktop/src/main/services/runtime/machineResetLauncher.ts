@@ -1,3 +1,4 @@
+import { runningAppImagePath } from "../native/runningAppImage";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -38,8 +39,7 @@ function relaunchTarget(): string | null {
   }
   // An AppImage runs from a mount that disappears when the app quits; the
   // file to reopen is the AppImage itself.
-  if (process.platform === "linux" && process.env.APPIMAGE?.trim()) return process.env.APPIMAGE.trim();
-  return process.execPath;
+  return runningAppImagePath() ?? process.execPath;
 }
 
 /**

@@ -91,7 +91,8 @@ export function detectInstallSource(args: DetectInstallSourceArgs): ProductAnaly
   if (candidates.some((candidate) => /[/\\]ADE(?: Beta)?\.exe$/i.test(candidate))) {
     return "direct_download";
   }
-  if (candidates.some((candidate) => /\.AppImage$/i.test(candidate))) {
+  // An AppImage, or a Linux package, which installs under /opt/<product>.
+  if (candidates.some((candidate) => /\.AppImage$|^\/opt\/ADE(?: [A-Za-z]+)?\//i.test(candidate))) {
     return "direct_download";
   }
   return "unknown";

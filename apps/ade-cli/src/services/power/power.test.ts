@@ -3,12 +3,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock, execFileOverride } = vi.hoisted(() => ({
+  spawnMock: vi.fn(),
+  execFileOverride: { current: null as ((...args: any[]) => unknown) | null },
+}));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
     spawn: (...args: unknown[]) => spawnMock(...args),
+    execFile: (...args: unknown[]) =>
+      (execFileOverride.current ?? (actual.execFile as (...forwarded: unknown[]) => unknown))(...args),
   };
 });
 
@@ -701,6 +706,7 @@ describe("createBrainKeepAwakeService", () => {
       fs.rmSync(directory, { recursive: true, force: true });
     }
     spawnMock.mockReset();
+    execFileOverride.current = null;
     vi.useRealTimers();
   });
 
@@ -714,24 +720,61 @@ describe("createBrainKeepAwakeService", () => {
     return service;
   }
 
-  function makeService(readActiveAgentWork: () => Promise<boolean | number>) {
+  function makeService(
+    readActiveAgentWork: () => Promise<boolean | number>,
+    options: { platform?: NodeJS.Platform; level?: "never" | "while-away" } = {},
+  ) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "brain-keep-awake-test-"));
     temporaryDirectories.push(directory);
     const statePath = path.join(directory, "keep-awake.json");
     fs.writeFileSync(statePath, JSON.stringify({
       version: 1,
-      preferences: { level: "while-away" },
+      preferences: { level: options.level ?? "while-away" },
       legacyMigrationComplete: true,
     }));
     const service = createBrainKeepAwakeService({
       statePath,
-      platform: "darwin",
+      platform: options.platform ?? "darwin",
       pollMs: 5_000,
       readActiveAgentWork,
     });
     services.push(service);
-    return service;
+    return Object.assign(service, {
+      savedLevel: () => JSON.parse(fs.readFileSync(statePath, "utf8")).preferences.level as string,
+    });
   }
+
+  type ExecDone = (error: Error | null, stdout: string, stderr: string) => void;
+
+  it.each([
+    { name: "keeps the choice when Linux grants the lock", failure: null, level: "while-away", reportsError: false },
+    { name: "reports a refused Linux lock as soon as the choice is saved", failure: new Error("Access denied"), level: "never", reportsError: true },
+  ])("$name", async ({ failure, level, reportsError }) => {
+    execFileOverride.current = (_file, _args, _options, done: ExecDone) => done(failure, "", "");
+    const service = makeService(async () => false, { platform: "linux", level: "never" });
+
+    const snapshot = await service.setLevel("while-away");
+
+    expect(snapshot.preferences.level).toBe(level);
+    expect(service.savedLevel()).toBe(level);
+    expect(Boolean(snapshot.levelError)).toBe(reportsError);
+  });
+
+  it("does not let a slow Linux lock check overwrite a newer choice", async () => {
+    const checks: ExecDone[] = [];
+    execFileOverride.current = (_file, _args, _options, done: ExecDone) => checks.push(done);
+    const service = makeService(async () => false, { platform: "linux", level: "never" });
+
+    const enabling = service.setLevel("while-away");
+    expect(checks).toHaveLength(1);
+    await service.setLevel("never");
+    checks[0]!(null, "", "");
+    const snapshot = await enabling;
+
+    expect(snapshot.preferences.level).toBe("never");
+    expect(service.savedLevel()).toBe("never");
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
 
   it("holds one caffeinate child through repeated active polls, releases it when idle, and starts again with work", async () => {
     let active = true;

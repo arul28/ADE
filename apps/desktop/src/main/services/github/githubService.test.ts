@@ -10,9 +10,12 @@ const mockFetch = vi.hoisted(() => vi.fn());
 // vi.mock — external dependencies
 // ---------------------------------------------------------------------------
 
+const safeStorageBackend = vi.hoisted(() => ({ current: "gnome_libsecret" }));
+
 vi.mock("electron", () => ({
   safeStorage: {
     isEncryptionAvailable: () => true,
+    getSelectedStorageBackend: () => safeStorageBackend.current,
     decryptString: () => JSON.stringify({ token: "ghp_mock" }),
     encryptString: (s: string) => Buffer.from(s),
   },
@@ -687,6 +690,29 @@ describe("githubService.apiRequest", () => {
 
     const [, init] = mockFetch.mock.calls.at(-1) as [string, RequestInit];
     expect((init.headers as Record<string, string>).authorization).toBe("Bearer ghp_machine_token");
+  });
+
+  it("saves a new token to the machine store, not the fixed-key file, on Linux with no keyring", async () => {
+    const realPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    safeStorageBackend.current = "basic_text";
+    try {
+      const credentialStore = new MemoryCredentialStore();
+      const service = makeService({ credentialStore });
+      vi.mocked(fs.writeFileSync).mockClear();
+
+      service.setToken("ghp_no_keyring");
+
+      expect(credentialStore.getSync("github.token.v1")).toBe("ghp_no_keyring");
+      expect(vi.mocked(fs.writeFileSync).mock.calls.filter(([file]) => String(file).includes("github-token"))).toEqual([]);
+      mockFetch.mockResolvedValueOnce(jsonResponse(200, { ok: true }));
+      await service.apiRequest({ method: "GET", path: "/test" });
+      const [, init] = mockFetch.mock.calls.at(-1) as [string, RequestInit];
+      expect((init.headers as Record<string, string>).authorization).toBe("Bearer ghp_no_keyring");
+    } finally {
+      safeStorageBackend.current = "gnome_libsecret";
+      Object.defineProperty(process, "platform", { value: realPlatform });
+    }
   });
 
   it("falls back when GraphQL reports a rate limit in an HTTP 200 response", async () => {

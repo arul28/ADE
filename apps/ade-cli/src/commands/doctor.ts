@@ -838,6 +838,14 @@ function publishLegDetail(health: DoctorPublishHealth): string {
 
 function appRow(input: DoctorInput["app"]): DoctorRow {
   if (!input.installedVersion) {
+    if (input.path) {
+      return {
+        key: "app",
+        label: "App",
+        status: "warn",
+        detail: `ADE desktop found at ${input.path}, but its version is unknown. Start the app to record its version.`,
+      };
+    }
     return {
       key: "app",
       label: "App",

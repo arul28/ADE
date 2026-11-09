@@ -212,22 +212,25 @@ reboot; where that needs root, the install message prints the command.
 
 ## Remote
 
-A Linux machine never has a local ADE desktop app, so every client of its
-screen is remote, and every call reaches it through the lane's pin like any
-other lane screen (`callPinnedRuntimeAction`, the `mac_desktop` action domain,
+A Linux desktop can view its local lane screens, and another desktop, phone,
+or browser can view them remotely. Calls reach the machine that owns the lane
+through its pin like any other lane screen (`callPinnedRuntimeAction`, the `mac_desktop` action domain,
 the stream over the sync socket). "Bring to my screen", claim, release and
 present do not exist on Linux: every window on the lane's screen is already
 the lane's. So the pane's **Add app** opens an app on the screen instead (an
 app name, a path or a web address, with Chrome, Firefox and Terminal one click
 away; `macDesktop.open`), and a window card offers **Close**
 (`macDesktop.closeWindow`) where a Mac card offers Release. Both carry the
-lane's pin like every other pane call. A watch-only client (the phone, a browser tab without control)
-gets **Stop** through `macDesktop.stopSeat`, as on Windows.
+lane's pin like every other pane call. The `macDesktop.stopSeat` action supports stopping a Linux seat remotely. The
+phone shows Linux and offers Stop and Close window when the lane owner advertises
+the corresponding permission; older hosts without Linux facts keep their prior
+presentation. The phone reads screen capabilities from the lane's own machine;
+stream records and unsubscribe follow that machine's connection, and a host
+without streaming keeps the still-image view.
 
 ## Not in scope
 
-Wayland (a lane screen is its own X server; apps that only speak Wayland do not
-run on it), per-lane Unix users or containers (same-user isolation, as on a
+Wayland-only applications on a lane screen (the lane screen is its own X server), per-lane Unix users or containers (same-user isolation, as on a
 Mac), GPU encoding, and the iOS simulator. ADE's built-in browser stays an
 Electron view on the desktop; a Chrome on the lane screen is the Linux
 equivalent.

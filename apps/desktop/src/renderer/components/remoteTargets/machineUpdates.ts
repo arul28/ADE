@@ -35,6 +35,18 @@ export type MachineUpdatesState = {
   attempts: Readonly<Record<string, MachineUpdateAttempt>>;
 };
 
+/**
+ * Whether this machine's update is a download the person installs by hand
+ * (a Linux `.deb`). The host's report wins; a refused attempt covers a report
+ * that was stale or came from an older connection snapshot.
+ */
+export function machineUpdateIsManual(
+  machine: { updateInstallMode?: string | null },
+  attempt?: { updateInstallMode?: string | null } | null,
+): boolean {
+  return (machine.updateInstallMode ?? attempt?.updateInstallMode) === "manual_download";
+}
+
 let state: MachineUpdatesState = {
   updatingIds: new Set(),
   checkingIds: new Set(),
@@ -111,7 +123,8 @@ export async function listOutdatedConnectedMachines(known: readonly string[]): P
   if (known.length === 0 || !canUpdateOtherMachines()) return [];
   try {
     const snapshot = await window.ade.remoteRuntime.getConnectionSnapshot();
-    return machinesBehindOnTheirTrack(connectedMachinesFromSnapshot(snapshot), known);
+    return machinesBehindOnTheirTrack(connectedMachinesFromSnapshot(snapshot), known)
+      .filter((machine) => !machineUpdateIsManual(machine));
   } catch {
     return [];
   }
@@ -191,7 +204,7 @@ export async function runMachineUpdates<T extends MachineUpdateTarget>(
 ): Promise<Array<{ machine: T; attempt: MachineUpdateAttempt }>> {
   // The person already said yes to these machines, so only one whose update
   // call is still running is left out (the host would coalesce it anyway).
-  const idle = machines.filter((machine) => !state.updatingIds.has(machine.id));
+  const idle = machines.filter((machine) => !machineUpdateIsManual(machine, state.attempts[machine.id]) && !state.updatingIds.has(machine.id));
   // A machine that already runs its target (the list read a stale version)
   // is not sent anything: an update it does not need would still restart it
   // on older hosts, stopping whatever runs there. The host refuses too; this
@@ -217,7 +230,7 @@ export async function runMachineUpdates<T extends MachineUpdateTarget>(
  */
 export async function requestMachineUpdates(machines: readonly MachineUpdateTarget[]): Promise<void> {
   // A machine already being asked or updated is not asked a second time.
-  const idle = machines.filter((machine) => !isMachineUpdateBusy(state, machine));
+  const idle = machines.filter((machine) => !machineUpdateIsManual(machine, state.attempts[machine.id]) && !isMachineUpdateBusy(state, machine));
   if (idle.length === 0 || !canUpdateOtherMachines()) return;
   const ids = idle.map((machine) => machine.id);
   setState({ checkingIds: withIds(state.checkingIds, ids, true) });

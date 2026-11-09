@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { updateTrackLabel } from "../../../shared/updateTrack";
 import { ArrowsClockwise, Bell } from "@phosphor-icons/react";
 import type { AutoUpdateSnapshot, UpdateTransactionResult } from "../../../shared/types";
+import { openExternalUrl } from "../../lib/openExternal";
 import { useAutoUpdateSnapshot } from "./useAutoUpdateSnapshot";
 import { dismissToast, showToast } from "./toast/toastStore";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
@@ -32,6 +33,7 @@ type StalenessBanner = {
  * a plain ready state so we surface the "didn't finish" retry copy.
  */
 export function describeStalenessBanner(snapshot: AutoUpdateSnapshot): StalenessBanner | null {
+  if (snapshot.installMode === "manual") return null;
   if (snapshot.parked) {
     return {
       kind: "parked",
@@ -108,6 +110,10 @@ export function AutoUpdateBanner() {
   }, [currentVersion, updateVersion]);
 
   const handleInstallReadyUpdate = useCallback(() => {
+    if (snapshot.installMode === "manual") {
+      openExternalUrl(snapshot.downloadUrl);
+      return;
+    }
     void requestDownloadedUpdateInstall(snapshot, () => setInstallRequested(true))
       .then((started) => {
         if (!started) setInstallRequested(false);
@@ -195,11 +201,11 @@ export function AutoUpdateBanner() {
             ? `${updateTrackLabel(restartAction.switchTo)} ${updateVersion} is ready`
             : `ADE ${updateVersion} is ready`,
           actions: [{
-            label: installRequested ? "Restarting…" : restartAction.label,
+            label: snapshot.installMode === "manual" ? "Download update" : installRequested ? "Restarting…" : restartAction.label,
             icon: <ArrowsClockwise size={12} weight="bold" />,
             variant: "primary",
             busy: installRequested,
-            disabled: installRequested,
+            disabled: installRequested || (snapshot.installMode === "manual" && !snapshot.downloadUrl),
             onClick: handleInstallReadyUpdate,
           }],
           dismiss: {

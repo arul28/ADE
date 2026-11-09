@@ -69,7 +69,7 @@ func macDesktopVisibleMessage(for error: Error, hostIsWindows: Bool = false) -> 
     code: nsError.userInfo["ADEErrorCode"] as? String
   ) ?? (hostIsWindows
     ? "The Windows desktop could not complete the request. Try again."
-    : "The macOS desktop could not complete the request. Try again.")
+    : "The lane screen could not complete the request. Try again.")
 }
 
 /// The Off card's one line: the start in flight, why the last one failed, or
@@ -81,8 +81,14 @@ func macDesktopOffCardMessage(
   error: String?,
   canStart: Bool,
   hostIsWindows: Bool = false,
+  hostIsLinux: Bool = false,
   pcOperation: String? = nil
 ) -> String {
+  if hostIsLinux {
+    if starting { return "Starting the Linux screen…" }
+    if let error = macDesktopVisibleMessage(error) { return error }
+    return canStart ? "The Linux screen is off." : "Start this lane's Linux screen on its machine."
+  }
   if hostIsWindows {
     if starting { return "Waiting for Windows sign-in…" }
     switch pcOperation {

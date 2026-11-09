@@ -483,6 +483,14 @@ function buildChannel(repoRoot, channel, options) {
     return;
   }
 
+  if (process.platform === "linux") {
+    // A leftover brain binary carries an older version, and the AppImage
+    // refuses to install a brain that does not match the app.
+    cleanHostRuntimeArtifacts(repoRoot, currentTarget(), options);
+    run("npm", ["--prefix", "apps/desktop", "run", "dist:linux"], { cwd: repoRoot, env, dryRun: options.dryRun });
+    return;
+  }
+
   ensureHostRuntimeResources(repoRoot, options, env);
   // The native helpers (Mac Desktop driver, capture helper,
   // sim helper) are gitignored build outputs. `dist:mac` builds them; a channel

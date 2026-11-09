@@ -420,6 +420,10 @@ export const DEFAULT_AUTO_UPDATE_PREFERENCES = {
 
 export type AutoUpdateSnapshot = {
   status: AutoUpdateStatus;
+  /** Older brains may omit these fields; their updates use the existing in-app flow. */
+  installMode?: "automatic" | "manual";
+  /** Download page for an installation that cannot update itself. */
+  downloadUrl?: string | null;
   currentVersion: string;
   /** Latest version observed from electron-updater's configured feed. */
   latestKnownVersion: string | null;

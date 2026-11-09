@@ -5,6 +5,7 @@ import { JEV_GROUP_CONFIG_KEY } from "../../../shared/jevSettings";
 import type { OpenCodeProviderAuthMethod } from "../../../shared/types/config";
 import type { JevStatus } from "../../../shared/types/jev";
 import { openCodeProviderDisplayName } from "../../../shared/opencodeProviders";
+import { modifierChordLabel } from "../../lib/platform";
 import { showToast } from "../app/toast/toastStore";
 import { OAuthConnectModal } from "./OAuthConnectModal";
 import { ModernRow, ModernRows, ModernSection, SettingsSegmented, SettingsToggle } from "./primitives";
@@ -153,8 +154,8 @@ export function SmartDecisionsSection() {
               anchor="smart-palette"
               configKey={JEV_GROUP_CONFIG_KEY.palette}
               icon={Command}
-              title="⌘K suggestions"
-              hint="Puts the command that fits what you type at the top of ⌘K, under Suggested."
+              title={`${modifierChordLabel("K")} suggestions`}
+              hint={`Puts the command that fits what you type at the top of ${modifierChordLabel("K")}, under Suggested.`}
             />
             <GroupRow
               anchor="smart-lane-emoji"

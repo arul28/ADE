@@ -5,8 +5,9 @@
 //     --assets <file with one asset name per line> [--repo arul28/ADE]
 //
 // <dir> holds what was downloaded from the versioned release: latest-mac.yml,
-// latest.yml when Windows was published, and release-manifest.json. <out>
-// receives latest-mac.yml / latest.yml with every url and path made absolute
+// latest.yml when Windows was published, latest-linux.yml and
+// latest-linux-arm64.yml when Linux was, and release-manifest.json. <out>
+// receives those updater manifests with every url and path made absolute
 // to https://github.com/<repo>/releases/download/<tag>/ (sha512, size and the
 // rest kept as they are), and beta.json, a copy of the release's manifest.
 //
@@ -45,7 +46,7 @@ export function buildFeed({ tag, repo, inDir, outDir, assets }) {
   fs.mkdirSync(outDir, { recursive: true });
   const written = [];
 
-  for (const name of ["latest-mac.yml", "latest.yml"]) {
+  for (const name of ["latest-mac.yml", "latest.yml", "latest-linux.yml", "latest-linux-arm64.yml"]) {
     const source = path.join(inDir, name);
     if (!fs.existsSync(source)) {
       if (name === "latest-mac.yml") throw new Error(`${tag} has no latest-mac.yml.`);

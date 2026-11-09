@@ -118,6 +118,8 @@ import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { quoteShellArg } from "../../desktop/src/shared/shell";
 import type { MachineWorkCopy } from "./cliRemoteWork";
 import { machineVersionsDrift } from "../../desktop/src/shared/machineVersions";
+import { readDesktopUpdateInstallMode } from "../../desktop/src/main/services/native/desktopUpdateInstallMode";
+import { readInstalledDesktopApp } from "../../desktop/src/main/services/native/nativeHelperPaths";
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { findSettingsEntries, isAdeCloudSettingEntry, settingsEntryLabel } from "../../desktop/src/shared/settingsManifest";
 import { settingAgentAccess } from "../../desktop/src/shared/settingsAgentAccess";
@@ -27960,7 +27962,7 @@ export function resolveWindowsDesktopExecutable(args: {
   return null;
 }
 
-async function launchWindowsDesktopApp(
+async function launchDetachedDesktopApp(
   executablePath: string,
   appName: string,
 ): Promise<Record<string, unknown>> {
@@ -27968,6 +27970,11 @@ async function launchWindowsDesktopApp(
   // the child would launch another CLI process instead of the desktop UI.
   // The other host-only keys (the brain's compile cache included) stay behind too.
   const env = stripHostRuntimeEnv({ ...process.env });
+  // An AppImage CLI's own markers: the first would start another CLI, not the
+  // window, and the others would make a .deb app believe it is that AppImage.
+  delete env.ADE_APPIMAGE_CLI;
+  delete env.APPIMAGE;
+  delete env.APPDIR;
   // Electron reads this to decide whether to attach to the caller's console;
   // the launched app keeps the caller's choice, as it did before the strip.
   if (process.env.ELECTRON_NO_ATTACH_CONSOLE !== undefined) {
@@ -28020,9 +28027,9 @@ async function launchWindowsDesktopApp(
 
 async function runDesktopCommand(rest: string[]): Promise<unknown> {
   const args = [...rest];
+  const defaultAppName = resolveDefaultDesktopAppName();
+  const appName = readValue(args, ["--app-name"]) ?? defaultAppName;
   const sub = firstPositional(args) ?? "open";
-  const appName =
-    readValue(args, ["--app-name"]) ?? resolveDefaultDesktopAppName();
   if (sub !== "open" && sub !== "launch" && sub !== "start") {
     throw new CliUsageError("desktop supports open.");
   }
@@ -28054,15 +28061,35 @@ async function runDesktopCommand(rest: string[]): Promise<unknown> {
           `Unable to find the installed ${appName} executable. Reinstall ADE or set ADE_DESKTOP_APP_PATH.`,
       };
     }
-    return await launchWindowsDesktopApp(executablePath, appName);
+    return await launchDetachedDesktopApp(executablePath, appName);
+  }
+
+  if (process.platform === "linux") {
+    if (appName !== defaultAppName) {
+      return {
+        ok: false,
+        platform: process.platform,
+        appName,
+        message: `On Linux, ade desktop opens this install's own app (${defaultAppName}) and can't pick another by name.`,
+      };
+    }
+    const installed = readInstalledDesktopApp();
+    if (!installed) {
+      return {
+        ok: false,
+        platform: process.platform,
+        appName,
+        message: `Unable to find the installed ${appName} app. Open it once, or set ADE_DESKTOP_APP_PATH.`,
+      };
+    }
+    return await launchDetachedDesktopApp(installed.path, appName);
   }
 
   return {
     ok: false,
     platform: process.platform,
     appName,
-    message:
-      "Launching ADE desktop from the CLI is currently supported on macOS and Windows.",
+    message: "Launching ADE desktop from the CLI is supported on macOS, Windows and Linux.",
   };
 }
 
@@ -29909,6 +29936,7 @@ async function runServe(
             logger: headlessProjectLogger,
             requestRestart: requestBrainServiceRestartFromServe,
             requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
+            updateInstallMode: () => readDesktopUpdateInstallMode(),
             // The app this brain reports as `desktopAppVersion`, on every platform.
             installedApp: async () => {
               const { readInstalledDesktopApp } = await import(
