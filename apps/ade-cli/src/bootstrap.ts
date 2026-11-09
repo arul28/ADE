@@ -3516,6 +3516,7 @@ export async function createAdeRuntime(args: {
         feature: "work",
         action: "settled_lane_released",
         outcome: "completed",
+        automatic: true,
       }),
       ...createSettledLaneReleaseActions({
         devServers: devServerRegistry,

@@ -127,6 +127,8 @@ export function captureFeatureUsedAnalytics(args: {
   outcome: FeatureAnalyticsOutcome;
   provider?: unknown;
   sessionId?: string | null;
+  /** Background work nobody asked for at that moment: not counted as activity. */
+  automatic?: boolean;
 }): void {
   if (!args.analytics) return;
   const provider = args.provider === undefined ? undefined : coarseProviderFamily(args.provider);
@@ -136,6 +138,7 @@ export function captureFeatureUsedAnalytics(args: {
     action: args.action,
     outcome: args.outcome,
     ...(provider ? { provider } : {}),
+    ...(args.automatic ? { mode: "automatic" } : {}),
   };
   const dedupeProvider = provider ? `:${provider}` : "";
   args.analytics.captureInternal({
