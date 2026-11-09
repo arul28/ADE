@@ -1450,13 +1450,13 @@ chat pane mount, which happens either way.
   · compacts at 367k`, the source of that point ("Your setting" or "Claude
   default"), a **Compact now** button, and a "Provider compaction setting" link.
   Compact now sends `/compact` without replacing the unsent draft. It appears for
-  Claude, Codex, Pi, and OpenCode when the OpenCode server lists `compact`
-  (`manualCompactAvailable` on the session summary for web and iOS). Cursor,
-  Droid, and ACP agents stay read-only. It is disabled while a turn or pending
+  Claude, Codex, Pi, OpenCode when the OpenCode server lists `compact`, and
+  local Cursor chats (`manualCompactAvailable` on the session summary for web
+  and iOS). Cursor Cloud chats, Droid, and ACP agents stay read-only. It is disabled while a turn or pending
   input is live; ADE already compacts Claude at 97% of its compaction window
   at a turn boundary when Claude did not compact by itself.
 - **Compact first after the cache expires.** For a chat of a provider whose
-  `/compact` ADE can run (Claude, Codex, Pi, OpenCode) whose prompt cache has
+  `/compact` ADE can run (Claude, Codex, Pi, OpenCode, local Cursor) whose prompt cache has
   expired and whose last measured context is 200,000 tokens or more (Claude
   Code's own idle-compaction floor), a
   `StatusChip` in the composer's status strip reads `Cache expired · 412k` with
@@ -1471,7 +1471,7 @@ chat pane mount, which happens either way.
   behind it like any message sent during a turn, so the send returns at once
   and the thread shows the message as queued, not sent. It is delivered when
   the compaction ends. For Codex, Pi and OpenCode, `/compact` is an action
-  rather than a turn, so there is no queue to put the message behind: the brain
+  rather than a turn, and Cursor's summarize run cannot take a steer, so there is no queue to put the message behind: the brain
   runs the same `/compact` the meter's **Compact now** sends, waits for the
   compaction to end (up to `COMPACT_FIRST_INLINE_WAIT_MS`, 90 seconds), and then
   sends the message. A failure, or a wait that runs long, sends the message with
@@ -1487,7 +1487,7 @@ chat pane mount, which happens either way.
   provider page's setting "After
   the cache expires" chooses `ask` (the chip), `always` (the chip starts on), or
   `never` (no chip). Claude defaults to `ask` (the chip has shipped that way);
-  Codex, Pi and OpenCode default to `never`, so their offer appears only once
+  Codex, Pi, OpenCode and Cursor default to `never`, so their offer appears only once
   someone turns it on. With `always`, ADE also does what Claude Code does by
   itself: a chat on a one-hour cache is compacted 54 minutes in (90% of the
   cache's life, `WARM_IDLE_COMPACT_FRACTION`), while the cache is still warm and

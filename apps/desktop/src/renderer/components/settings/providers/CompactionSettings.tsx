@@ -10,7 +10,7 @@ const NUMBER_INPUT_CLASS = `w-28 ${FIELD_CLASS}`;
 const CLAUDE_WINDOW_STEPS = Array.from({ length: 10 }, (_, i) => (i + 1) * 100_000);
 
 /** Providers whose `/compact` ADE can run, so the idle offer can exist for them. */
-const COMPACT_FIRST_PROVIDERS = new Set(["claude", "codex", "pi", "opencode"]);
+const COMPACT_FIRST_PROVIDERS = new Set(["claude", "codex", "pi", "opencode", "cursor"]);
 
 /**
  * The window the pill waits out, named per provider from each vendor's own
@@ -90,7 +90,7 @@ export function CompactionSettings({ provider, value, account = false, onChange 
           ? "No effect: subagents can only compact earlier than the main chat. Pick a lower number, or raise Compact at."
           : "Subagents can only compact earlier than the main chat, never later. Applies at the next query start."}
           control={windowSelect("subagentAtTokens", "Subagents compact at", "Auto (same as the main chat)")} />
-      </> : provider === "codex" || provider === "copilot" ? <ModernRow title="Compact at" hint="Token count, capped at the active model window. Empty is Auto." control={control("atTokens", "Compact at")} /> : <>
+      </> : provider === "cursor" ? null : provider === "codex" || provider === "copilot" ? <ModernRow title="Compact at" hint="Token count, capped at the active model window. Empty is Auto." control={control("atTokens", "Compact at")} /> : <>
         <ModernRow title={provider === "opencode" ? "Compaction buffer" : "Reserve tokens"} control={control("reserveTokens", "Reserve tokens")} />
         <ModernRow title="Keep recent tokens" control={control("keepRecentTokens", "Keep recent tokens")} />
       </>}

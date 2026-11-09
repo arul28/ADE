@@ -1755,7 +1755,7 @@ struct WorkChatSessionView: View {
       canSend: canSendMessages,
       pendingInput: hasPendingInputGate,
       turnBusy: sending || sendingSnapshot || actionInFlight || isStreamingTurn || sessionStatus == "active",
-      openCodeCompactAvailable: chatSummaryContext.manualCompactAvailable
+      compactCommandListed: chatSummaryContext.manualCompactAvailable
     )
     return WorkComposerContextMeterModel(
       usage: usage,
@@ -1767,8 +1767,8 @@ struct WorkChatSessionView: View {
 
   var composerCompactFirstOffer: WorkCompactFirstOffer? {
     guard chatSummaryContext.compactFirstSupported, chatSummaryContext.compactionIdleMode != "never",
-          // OpenCode only offers `/compact` when its server lists the command.
-          chatSummaryContext.provider != "opencode" || chatSummaryContext.manualCompactAvailable,
+          // OpenCode only offers `/compact` when its server lists the command, Cursor only on local chats.
+          !workManualCompactDependsOnChat(chatSummaryContext.provider) || chatSummaryContext.manualCompactAvailable,
           !hasPendingInputGate, !isStreamingTurn, sessionStatus != "active",
           // A queued message is about to send on its own; the offer would only flash.
           pendingSteers.isEmpty,

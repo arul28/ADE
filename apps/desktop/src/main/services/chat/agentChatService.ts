@@ -1289,7 +1289,7 @@ import {
 } from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import { CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE, cursorOwnsSessionName } from "../../../shared/cursorCloudNaming";
-import { isManualCompactCommand } from "../../../shared/contextCompaction";
+import { COMPACT_BLOCKED_TURN_ACTIVE, isManualCompactCommand } from "../../../shared/contextCompaction";
 import {
   deriveDeterministicAutoLaneIdentity,
   deriveDeterministicLaneNameFromPrompt,
@@ -1652,6 +1652,8 @@ import {
   isCursorSdkUsageExhaustedText,
   isCursorSdkStaleAccessTokenText,
   readCursorSdkStaleTokenFailure,
+  CURSOR_SDK_COMPACT_SKIPPED_KEY,
+  isCursorSdkBusyErrorText,
   type CursorSdkStaleTokenFailure,
   type CursorSdkErrorKind,
   type CursorSdkAgentMode,
@@ -8264,11 +8266,7 @@ function isCursorSdkAgentBusyError(error: unknown): boolean {
   const message = readErrorMessage(error).toLowerCase();
   return code === "agent_busy"
     || statusCode === 409
-    || message.includes("agent_busy")
-    || message.includes("agent busy")
-    || message.includes("already has an active run")
-    || message.includes("active run in progress")
-    || message.includes("already running another task");
+    || isCursorSdkBusyErrorText(message);
 }
 
 function isCursorSdkRuntimeProcessAlive(runtime: CursorRuntime): boolean {
@@ -58647,6 +58645,8 @@ export function createAgentChatService(args: {
   };
 
   type CursorSdkTurnArgs = {
+    /** ADE's `/compact`: run Cursor's summarize, send no prompt, and never recycle the thread. */
+    compactOnly?: boolean;
     promptText: string;
     userText?: string;
     displayText: string;
@@ -58812,23 +58812,27 @@ export function createAgentChatService(args: {
     // agent instead of flattening replay + continuity into one string.
     let consumedTurnContext: ConsumedTurnContextPrefix | null = null;
     let cursorLaneGuidance: string | null = null;
+    const compactOnly = args.compactOnly === true;
     try {
       let composed = args.promptText;
       // Consumes the pending transcript replay and the continuity context in
       // one shot; the parts are kept so a thread recycle can restage each
-      // bucket rather than losing them with the abandoned prompt.
-      const pendingTurnContext = consumePendingTurnContextPrefix(managed, false);
+      // bucket rather than losing them with the abandoned prompt. A compaction
+      // sends no prompt, so all of it waits for the next real turn.
+      const pendingTurnContext = compactOnly ? null : consumePendingTurnContextPrefix(managed, false);
       consumedTurnContext = pendingTurnContext;
       if (pendingTurnContext?.composed) {
         composed = `${pendingTurnContext.composed}\n\n${composed}`;
       }
       const policy = runtime.sdkPolicy ?? resolveCursorSdkPolicy(managed.session);
-      const modeDirective = buildCursorSdkModeDirective(managed, policy);
+      const modeDirective = compactOnly ? null : buildCursorSdkModeDirective(managed, policy);
       if (modeDirective) {
         composed = `${modeDirective}\n\n${composed}`;
       }
       const personalSession = isPersonalSession(managed.session);
-      if (personalSession) {
+      if (compactOnly) {
+        // Nothing to frame.
+      } else if (personalSession) {
         const injected = resolvePersonalPromptFor(
           managed.session,
           managed.laneWorktreePath,
@@ -58892,6 +58896,8 @@ export function createAgentChatService(args: {
       // flag set, so a second failure surfaces to the user.
       const canRecoverCursorThread = (): boolean =>
         args.cursorRecoveryAttempt !== true
+        // Recovery can rotate to a new agent, which has nothing to compact.
+        && !compactOnly
         && !managed.closed
         && !runtime.interrupted
         && managed.runtime === runtime;
@@ -58914,9 +58920,10 @@ export function createAgentChatService(args: {
 
       // Consume the one-shot expiry flag before dispatch so it cannot survive a
       // failed send into the turn after it. The durable copy is cleared with it.
-      const forceExpireActiveRun =
-        args.cursorRecoveryAttempt === true || managed.cursorSdkForceExpireNextSend === true;
-      if (managed.cursorSdkForceExpireNextSend) {
+      // A compaction cannot expire a run, so it leaves the flag for the next send.
+      const forceExpireActiveRun = !compactOnly
+        && (args.cursorRecoveryAttempt === true || managed.cursorSdkForceExpireNextSend === true);
+      if (forceExpireActiveRun && managed.cursorSdkForceExpireNextSend) {
         managed.cursorSdkForceExpireNextSend = false;
         persistChatState(managed);
       }
@@ -58931,6 +58938,7 @@ export function createAgentChatService(args: {
         // re-send, or a send after settlement dismissal). A normal send must
         // never do this — it would discard a turn still genuinely working.
         ...(forceExpireActiveRun ? { forceExpireActiveRun: true } : {}),
+        ...(compactOnly ? { summarize: true } : {}),
         // The recovery re-send is a distinct message to Cursor: on the
         // stale-token path it lands on the *same* resumed agent, where reusing
         // the first attempt's key could be deduped away into a silent no-op.
@@ -58970,7 +58978,7 @@ export function createAgentChatService(args: {
             silenceWatch.sawVisibleOutput,
           );
         }
-        if (silent) {
+        if (silent && !compactOnly) {
           // Terminal silence: the rotated agent stopped answering too. Recycle
           // it without re-sending, so the user's next send genuinely starts on
           // a fresh thread — which is what the error copy promises.
@@ -59018,6 +59026,21 @@ export function createAgentChatService(args: {
       const resultRecord = asRecord(result);
       const resultStatus = typeof resultRecord?.status === "string" ? resultRecord.status : "";
       adoptRuntimeSessionTitle(managed, resultRecord, "cursor_sdk_run_result");
+      if (compactOnly) {
+        // The summarize call's own usage measures the chat before it shrank.
+        delete runtime.eventMapperState.lastContextTokens;
+        const skipped = resultRecord?.[CURSOR_SDK_COMPACT_SKIPPED_KEY];
+        if (skipped) {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: skipped === "cut_off_run"
+              ? "Your last turn was cut off, so Cursor can't compact yet. Send a message, then try again."
+              : "Nothing to compact yet. Send a message first.",
+            turnId,
+          });
+        }
+      }
       let doneEvent = mapCursorSdkRunResultToDoneEvent(result, {
         turnId,
         model: turnModel,
@@ -62323,7 +62346,12 @@ export function createAgentChatService(args: {
         markEpochDirectivesDelivered();
         return;
       }
+      const compactOnly = isManualCompactCommand(submittedText);
+      if (compactOnly && submittedText.replace(/^\s*\/compact(?:\s+|$)/i, "").trim()) {
+        emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: "Cursor compaction ignores custom instructions." });
+      }
       await runCursorSdkTurn(managed, {
+        ...(compactOnly ? { compactOnly: true } : {}),
         promptText,
         userText: submittedText,
         displayText: visibleText,
@@ -63022,7 +63050,9 @@ export function createAgentChatService(args: {
         // OpenCode answers `/compact` only when its server lists the command;
         // without it the text would reach the model as a literal prompt, so the
         // brain refuses the same way the client hides the offer.
-        const runnable = managed.session.provider !== "opencode" || await openCodeCompactListed(managed.session.id);
+        const runnable = managed.session.provider === "opencode"
+          ? await openCodeCompactListed(managed.session.id)
+          : managed.session.provider !== "cursor" || effectiveCursorRuntime(managed, null) === "local";
         const offer = runnable ? compactFirstOffer(await compactFirstArgs(managed)) : null;
         // Checked again: a turn may have started while the history loaded.
         if (offer && isIdleForCompactFirst(managed)) {
@@ -63030,7 +63060,8 @@ export function createAgentChatService(args: {
             compactFirst = await startCompactFirstTurn(managed);
           } else {
             // Codex, Pi and OpenCode run `/compact` as an action, not a turn,
-            // so there is no queue to put the message behind. Wait for the
+            // and Cursor's summarize run cannot take a steer, so there is no
+            // queue to put the message behind. Wait for the
             // compaction to end, then send: the message always reaches the
             // provider either with a compacted chat or, on failure or a wait
             // that runs long, with the full one and the same notice Claude's
@@ -63377,6 +63408,14 @@ export function createAgentChatService(args: {
     ) {
       if (dispatchPromise) await dispatchPromise;
       return;
+    }
+
+    if (
+      prepared.managed.session.provider === "cursor"
+      && isManualCompactCommand(prepared.submittedText)
+      && effectiveCursorRuntime(prepared.managed, prepared.runtime) === "cloud"
+    ) {
+      throw new Error("Cursor Cloud agents compact on their own. /compact only works in local Cursor chats.");
     }
 
     if (prepared.managed.session.provider === "cursor" || prepared.managed.session.provider === "droid") {
@@ -63867,6 +63906,8 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "cursor") {
       if (managed.runtime?.kind === "cursor" && managed.runtime.busy) {
+        // A steer reaches the model as text; `/compact` is an action on the idle chat.
+        if (isManualCompactCommand(trimmed)) throw turnInFlightError(COMPACT_BLOCKED_TURN_ACTIVE);
         // Reassignable: a refused inline steer can discover that a recycle
         // rotated the runtime, and the message must be staged on the live one.
         let rt = managed.runtime;
@@ -67866,6 +67907,7 @@ export function createAgentChatService(args: {
       provider,
       model,
       ...(provider === "opencode" ? { manualCompactAvailable: await openCodeCompactListed(row.id, scope) } : {}),
+      ...(provider === "cursor" ? { manualCompactAvailable: (liveSession?.cursorRuntime ?? persisted?.cursorRuntime) !== "cloud" } : {}),
       ...(compactFirstSupportedProvider(provider)
         ? {
             compactionIdleMode: compactionIdleModeFor({ provider, instanceId: liveSession?.instanceId ?? persisted?.instanceId }, scope),
@@ -74296,6 +74338,7 @@ export function createAgentChatService(args: {
       : [
           { name: "/clear", description: "Clear chat history", source: "local" },
           ...(provider === "pi" ? [{ name: "/compact", description: "Summarize older context to free tokens.", source: "local" as const, argumentHint: "[instructions]" }] : []),
+          ...(provider === "cursor" && managed?.session.cursorRuntime !== "cloud" ? [{ name: "/compact", description: "Summarize older context to free tokens.", source: "local" as const }] : []),
         ];
 
     // Claude command/skill files carry their kind and where they came from, so

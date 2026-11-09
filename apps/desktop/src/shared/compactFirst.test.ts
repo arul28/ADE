@@ -33,7 +33,7 @@ describe("compactFirstOffer", () => {
     // An unknown vendor assumes the longest window, so the offer can only be late.
     ["an OpenCode model whose vendor is unknown, at 30 minutes", { events: [done(31)], contextTokens: 250_000, provider: "opencode", model: "mystery/model" }, false],
     ["an OpenCode model whose vendor is unknown, past an hour", { events: [done(61)], contextTokens: 250_000, provider: "opencode", model: "mystery/model" }, true],
-    ["a provider whose /compact ADE cannot run", { events: [done(90)], contextTokens: 250_000, provider: "cursor" }, false],
+    ["a provider whose /compact ADE cannot run", { events: [done(90)], contextTokens: 250_000, provider: "droid" }, false],
     ["a new turn started after the last done", { events: [done(90), started(80)], contextTokens: 250_000 }, false],
     ["no finished turn yet", { events: [], contextTokens: 250_000 }, false],
     ["context unknown", { events: [done(90)] }, false],

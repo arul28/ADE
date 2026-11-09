@@ -260,7 +260,7 @@ function compactionEventsFromSignal(
 }
 
 /**
- * A compaction the worker saw through Cursor's `preCompact` hook. The first
+ * A compaction the worker saw through Cursor's `summary` messages or `preCompact` hook. The first
  * compaction in a turn shares the text fallback's id (the turn id), so the two
  * paths merge into one divider if both fire.
  */
@@ -283,7 +283,8 @@ function compactionEventsFromHook(record: SdkMessageRecord, turnId: string): Age
     detection: "provider",
     ...(preTokens != null ? { preTokens } : {}),
     ...(durationMs != null ? { durationMs } : {}),
-    ...(phase === "failed" ? { failReason: "interrupted" as const } : {}),
+    ...(phase === "failed" ? { failReason: record.failReason === "provider_error" ? "provider_error" as const : "interrupted" as const } : {}),
+    ...(phase === "completed" && record.fallback === true ? { fallback: true } : {}),
   };
   if (phase !== "started") return [compact];
   const windowSize = readNumber(record.contextWindowSize);

@@ -2149,6 +2149,8 @@ export type AgentChatEvent =
       failReason?: ContextCompactFailReason;
       failDetail?: string;
       summary?: string;
+      /** No summary could be written, so the provider kept a shortened copy of the chat. */
+      fallback?: boolean;
       accountLabel?: string;
       turnId?: string;
     }

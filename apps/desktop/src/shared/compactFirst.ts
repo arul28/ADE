@@ -6,7 +6,7 @@ import type { AgentChatEventEnvelope } from "./types/chat";
 // therefore the only ones the "Compact first" offer can exist for. Keep in step
 // with `providerSupportsManualCompact` (`contextCompaction.ts`).
 // ---------------------------------------------------------------------------
-const COMPACT_FIRST_PROVIDERS = new Set(["claude", "codex", "pi", "opencode"]);
+const COMPACT_FIRST_PROVIDERS = new Set(["claude", "codex", "pi", "opencode", "cursor"]);
 
 export function compactFirstSupportedProvider(provider: string | null | undefined): boolean {
   return typeof provider === "string" && COMPACT_FIRST_PROVIDERS.has(provider);
@@ -32,9 +32,10 @@ export function compactFirstSupportedProvider(provider: string | null | undefine
 //   Anthropic — 5 minutes, or 1 hour at 2x the input price.
 //   https://platform.claude.com/docs/en/build-with-claude/prompt-caching
 //
-// Pi and OpenCode run whatever model the person picked, so their cache window
-// belongs to that model's vendor, not to the harness. OpenCode reports the
-// vendor (`providerID`); Pi ids carry it as a `provider/model` prefix.
+// Pi, OpenCode and Cursor run whatever model the person picked, so their cache
+// window belongs to that model's vendor, not to the harness. OpenCode reports
+// the vendor (`providerID`); Pi ids carry it as a `provider/model` prefix;
+// Cursor ids name the model, and its own models count as unknown.
 // ---------------------------------------------------------------------------
 const OPENAI_PROMPT_CACHE_IDLE_MS = 30 * 60 * 1000;
 const ANTHROPIC_PROMPT_CACHE_IDLE_MS = 60 * 60 * 1000;

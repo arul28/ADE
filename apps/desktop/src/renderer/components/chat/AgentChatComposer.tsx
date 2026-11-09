@@ -5836,7 +5836,7 @@ function AgentChatComposerImpl({
       provider: compactSessionProvider === undefined ? sessionProvider : compactSessionProvider,
       state: usageViewModel?.state ?? "unknown",
       enabled: Boolean(onCompactContext && usageViewModel),
-      openCodeCompactAvailable: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
+      compactCommandListed: sdkSlashCommands.some((command) => command.name.replace(/^\//, "") === "compact"),
       turnActive,
       busy,
       pendingInput: hasPendingInput,

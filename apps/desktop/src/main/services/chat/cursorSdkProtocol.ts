@@ -136,7 +136,9 @@ export type CursorSdkCompactionWireEvent = {
   contextUsagePercent?: number;
   model?: string;
   durationMs?: number;
-  failReason?: "interrupted";
+  failReason?: "interrupted" | "provider_error";
+  /** The model could not write a summary, so Cursor saved a shortened copy of the chat instead. */
+  fallback?: boolean;
   /** What closed it: Cursor's summary message, the next stream event, or the run ending. */
   closedBy?: "summary" | "next_event" | "run_end";
 };
@@ -146,6 +148,11 @@ export type CursorSdkCompactionWireEvent = {
  * the run, so the text-matching compaction fallback stays quiet.
  */
 export const CURSOR_SDK_PRECOMPACT_HOOK_MARK = "adePreCompactHook";
+
+/** Set on the result of a `/compact` that did not run, with the reason. */
+export const CURSOR_SDK_COMPACT_SKIPPED_KEY = "adeCompactSkipped";
+
+export type CursorSdkCompactSkipped = "empty" | "cut_off_run";
 
 /** Key of the per-turn telemetry the worker attaches to a local run result. */
 export const CURSOR_SDK_TURN_TELEMETRY_KEY = "adeTurnTelemetry";
@@ -201,6 +208,8 @@ export type CursorSdkSendPrompt = {
   forceExpireActiveRun?: boolean;
   idempotencyKey?: string | null;
   mode?: CursorSdkAgentMode;
+  /** Run `agent.summarize()` instead of sending `promptText` (ADE's `/compact`). */
+  summarize?: boolean;
   /**
    * Start this prompt on a brand-new local agent instead of continuing the
    * worker's current conversation.
@@ -590,20 +599,23 @@ export function readCursorSdkStaleTokenFailure(
   };
 }
 
+export function isCursorSdkBusyErrorText(text: string | null | undefined): boolean {
+  const lower = text?.toLowerCase() ?? "";
+  return lower.includes("agent_busy")
+    || lower.includes("agent busy")
+    || lower.includes("already has an active run")
+    // The local store's wording, which has no "an".
+    || lower.includes("already has active run")
+    || lower.includes("active run in progress")
+    || lower.includes("already running another task");
+}
+
 export function classifyCursorSdkErrorText(
   ...texts: Array<string | null | undefined>
 ): CursorSdkErrorKind {
   const joined = texts.filter(Boolean).join("\n").toLowerCase();
   if (!joined) return "unknown";
-  if (
-    joined.includes("agent_busy")
-    || joined.includes("agent busy")
-    || joined.includes("already has an active run")
-    || joined.includes("active run in progress")
-    || joined.includes("already running another task")
-  ) {
-    return "busy";
-  }
+  if (isCursorSdkBusyErrorText(joined)) return "busy";
   if (isCursorSdkBackoffErrorText(joined) || isCursorSdkUsageExhaustedText(joined)) return "rate_limit";
   if (isCursorSdkTransportErrorText(joined)) return "network";
   if (

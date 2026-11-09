@@ -25,6 +25,9 @@ import type {
   CursorSdkWorkerResponse,
 } from "./cursorSdkProtocol";
 import {
+  CURSOR_SDK_COMPACT_SKIPPED_KEY,
+  type CursorSdkCompactSkipped,
+  isCursorSdkBusyErrorText,
   CURSOR_SDK_TURN_TELEMETRY_KEY,
   CURSOR_SDK_USAGE_UNAVAILABLE,
   isCursorSdkBackoffErrorText,
@@ -203,10 +206,7 @@ function isAgentBusyError(error: unknown): boolean {
   return (BusyCtor != null && error instanceof BusyCtor)
     || code === "agent_busy"
     || status === 409
-    || message.includes("agent_busy")
-    || message.includes("agent busy")
-    || message.includes("already has an active run")
-    || message.includes("active run in progress");
+    || isCursorSdkBusyErrorText(message);
 }
 
 function isCursorSdkBackoffError(error: unknown): boolean {
@@ -733,8 +733,38 @@ async function sendPrompt(payload: CursorSdkSendPrompt): Promise<unknown> {
     local: { force: payload.forceExpireActiveRun === true },
   };
   startAccountEmailLookup();
-  runTelemetry.beginRun(payload.modelSdkId ?? initState.modelSdkId);
-  currentRun = await agent.send(message, sendOptions);
+  runTelemetry.beginRun(payload.modelSdkId ?? initState.modelSdkId, payload.summarize === true ? "manual" : "auto");
+  if (payload.summarize === true) {
+    try {
+      currentRun = await agent.summarize();
+    } catch (error) {
+      // `summarize()` has no `force` option, so a run a dead worker left behind
+      // blocks it until the next message clears that run.
+      const skipped: CursorSdkCompactSkipped | null = /no saved conversation to summarize/i.test(errorMessage(error))
+        ? "empty"
+        : isAgentBusyError(error) ? "cut_off_run" : null;
+      if (!skipped) throw error;
+      return { status: "finished", [CURSOR_SDK_COMPACT_SKIPPED_KEY]: skipped };
+    }
+  } else {
+    const ownRunActive = currentRun != null;
+    try {
+      currentRun = await agent.send(message, sendOptions);
+    } catch (error) {
+      if (ownRunActive || payload.forceExpireActiveRun === true || !isAgentBusyError(error)) throw error;
+      // Each chat has one worker, and this one is running nothing, so the run
+      // the SDK's store still lists as active was left by a worker that died.
+      // No send gets past it until it is expired. The rejected send recorded
+      // nothing, so retrying cannot duplicate the message.
+      post({
+        type: "log",
+        level: "warn",
+        message: "Cursor SDK local agent had a run left by a dead worker; expiring it and resending.",
+        detail: { error: errorMessage(error) },
+      });
+      currentRun = await agent.send(message, { ...sendOptions, local: { force: true } });
+    }
+  }
   localAgentPrompted = true;
   const runModelParams = normalizeCursorModelParams(payload.modelParams ?? initState.modelParams);
   const sdkRequestId = cursorRunRequestId(currentRun);
@@ -759,9 +789,10 @@ async function sendPrompt(payload: CursorSdkSendPrompt): Promise<unknown> {
         continue;
       }
       const tracked = runTelemetry.beforeStreamEvent(event);
-      if (tracked.completion) {
-        post({ type: "sdk_event", event: tracked.completion, runtime: "local", runId: run.id, agentId: run.agentId });
+      if (tracked.compaction) {
+        post({ type: "sdk_event", event: tracked.compaction, runtime: "local", runId: run.id, agentId: run.agentId });
       }
+      if (tracked.event === null) continue;
       post({
         type: "sdk_event",
         event: tracked.event,
@@ -1063,13 +1094,21 @@ async function streamCloudRun(args: {
     requestId,
     ...(sdkRequestId ? { sdkRequestId } : {}),
   });
+  const cloudTelemetry = createCursorSdkRunTelemetry();
+  cloudTelemetry.beginRun(args.modelSdkId ?? null);
+  const postCloudCompaction = (compaction: unknown): void => {
+    post({ type: "sdk_event", event: compaction, runtime: "cloud", runId, agentId, requestId });
+  };
   try {
     let streamErrorDetail: CursorSdkErrorDetail | undefined;
     try {
       for await (const event of run.stream()) {
+        const tracked = cloudTelemetry.beforeStreamEvent(event);
+        if (tracked.compaction) postCloudCompaction(tracked.compaction);
+        if (tracked.event === null) continue;
         post({
           type: "sdk_event",
-          event,
+          event: tracked.event,
           runtime: "cloud",
           runId,
           agentId,
@@ -1093,6 +1132,9 @@ async function streamCloudRun(args: {
       });
     }
     const result = cursorSdkResultWithStreamFailure(await run.wait(), streamErrorDetail, "cloud");
+    const cloudStatus = result && typeof result === "object" ? (result as { status?: unknown }).status : undefined;
+    const cloudCompactionEnd = cloudTelemetry.endRun(streamErrorDetail ? "error" : typeof cloudStatus === "string" ? cloudStatus : null);
+    if (cloudCompactionEnd) postCloudCompaction(cloudCompactionEnd);
     const errored = result && typeof result === "object" && (result as { status?: unknown }).status === "error";
     const runFailure = errored
       ? await readCursorSdkRunFailureDetail({

@@ -17,17 +17,23 @@ enum WorkContextCompactControl: Equatable {
   case ready
 }
 
+/// `/compact` exists only on some chats of these providers: OpenCode's server
+/// may not list it, and Cursor Cloud chats cannot run it.
+func workManualCompactDependsOnChat(_ provider: String) -> Bool {
+  provider == "opencode" || provider == "cursor"
+}
+
 func workResolveContextCompactControl(
   provider: String,
   usageState: WorkContextUsageState?,
   canSend: Bool,
   pendingInput: Bool,
   turnBusy: Bool,
-  openCodeCompactAvailable: Bool = false
+  compactCommandListed: Bool = false
 ) -> WorkContextCompactControl {
   guard canSend,
         usageState == .measured,
-        (workProviderSupportsManualCompact(provider) || (provider == "opencode" && openCodeCompactAvailable))
+        (workProviderSupportsManualCompact(provider) || (workManualCompactDependsOnChat(provider) && compactCommandListed))
   else {
     return .hidden
   }

@@ -680,14 +680,14 @@ one `context_compact` lifecycle, and adds a guarded Claude fallback at 97%.
 | Codex | Yes | `model_auto_compact_token_limit=<n>` in the thread's config (`thread/start`, `thread/resume`), capped at the model window | `thread/compact/start`; custom instructions are not supported, and ADE says so | `thread/tokenUsage/updated` `modelContextWindow`; occupancy is `last` only, never the cumulative total |
 | OpenCode | Yes | OpenCode config `compaction: { buffer, keep: { tokens } }` | `session.command` when the server lists `compact` | `min(models.dev limit.context, ADE registry)` |
 | Pi | Yes | `settingsManager.applyOverrides({ compaction: { reserveTokens, keepRecentTokens } })` | `sdk.compact()` | SDK `context_usage` |
-| Cursor | Yes | None ("This provider compacts by itself. ADE cannot change when.") | Not supported | The SDK's per-model window or the preCompact hook's `context_window_size` |
+| Cursor | Yes | Compact first only; Cursor has no setting for when it compacts | Local chats: `agent.summarize()`, run as a normal turn. Custom instructions are ignored with a notice. Cursor Cloud chats refuse it. | The SDK's per-model window or the preCompact hook's `context_window_size` |
 | Droid, ACP agents | Varies | None | Sent as a prompt where the agent accepts it | `contextStats.limit` / `usage_update` |
 
 Settings live in project config `ai.compaction.<provider>` (`shared/compactionSettings.ts`:
 `atTokens` (`null` = Auto, the harness default), `subagentAtTokens` (Claude), `reserveTokens`, `keepRecentTokens`,
-`idleMode`). `idleMode` is the Compact first offer: Claude, Codex, Pi and OpenCode — the providers whose
+`idleMode`). `idleMode` is the Compact first offer: Claude, Codex, Pi, OpenCode and local Cursor chats — the providers whose
 `/compact` ADE can run — each wait out their own prompt-cache window (`compactFirstIdleMs`: Claude's measured
-5m/1h, OpenAI's documented `30m`, or the window of the model's vendor for Pi/OpenCode) and then offer to
+5m/1h, OpenAI's documented `30m`, or the window of the model's vendor for Pi/OpenCode/Cursor) and then offer to
 compact before the next send. Claude defaults to `ask`; the other three default to `never`, so their offer
 appears only once someone enables it on the provider page. Only Claude has the automatic warm timer. Compaction itself is always on: a chat that cannot compact only overflows, so there is no off switch,
 and an `enabled: false` saved before is dropped on read. `subagentAtTokens` reaches Claude as `autoCompactWindow` on
@@ -1583,17 +1583,21 @@ payload's `trigger`, `context_tokens`, `context_window_size`,
 `PreCompactRequestQuery`). `cursorSdkEventMapper` turns that event into a
 `context_usage` snapshot (`origin: "live"`, context tokens over window size)
 followed by `context_compact` `started` with `provider: "cursor"`,
-`detection: "provider"`, and `preTokens`. Cursor has no public "done
-compacting" event. The SDK turns the summary it writes into a `task` message,
-and that message closes the compaction. If no summary arrives, the next
+`detection: "provider"`, and `preTokens`. Cursor's `summary` message (below)
+closes the compaction. If no summary message arrives, the next
 generation message (`assistant`, `thinking`, `tool_call`, `usage`) closes it.
 If neither arrives, the run ending closes it, as `failed`/`interrupted` when the
 run was cancelled or errored. The closing event carries `durationMs`, so the
 shared compaction emitter keeps it as sent. The first compaction in a turn uses
 the turn id as its `compactionId`, and later ones use `<turnId>:compact-<n>`.
-Once the hook fires in a run, the worker marks that run's `status` events, and
-the status-text match (`detectCompactionSignalText`) stays quiet. That text
-match now runs only for runs the hook did not report on, such as cloud runs.
+Since `@cursor/sdk` 1.2.0 the stream also carries `summary` messages (`running`,
+`completed`, `error`, and `fallback: true` when the model could not write a
+summary and Cursor kept a shortened copy of the chat). They are the real start and
+end of a compaction, on local and cloud runs. `createCursorSdkRunTelemetry` merges
+them with the hook into one compaction whichever arrives first, and an `error`
+ends it as `failed`/`provider_error`. Once either signal arrives in a run, the
+worker marks that run's `status` events, and the status-text match
+(`detectCompactionSignalText`) stays quiet.
 `ADE_CURSOR_PRECOMPACT_HOOK=0` in the worker environment, or
 `CursorSdkWorkerInit.preCompactHook: false`, removes the entry and turns the
 path off. `cursorSdkPreCompactContract.test.ts` reads the installed SDK's `cjs`
