@@ -3643,7 +3643,7 @@ describe("adeRpcServer", () => {
       laneId: "lane-1",
       provider: "claude",
       permissionMode: "default",
-      model: "anthropic/claude-opus-4-8",
+      model: "anthropic/claude-fable-5-2",
       cols: 90,
       rows: 24,
     });
@@ -3658,9 +3658,40 @@ describe("adeRpcServer", () => {
       }),
     );
     const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { args?: string[]; startupCommand?: string };
-    expect(createCall.args).toEqual(expect.arrayContaining(["--model", "claude-opus-5"]));
-    expect(createCall.startupCommand).toContain("claude-opus-5");
-    expect(response.structuredContent.model).toBe("anthropic/claude-opus-4-8");
+    expect(createCall.args).toEqual(expect.arrayContaining(["--model", "claude-fable-5-2"]));
+    expect(createCall.startupCommand).toContain("claude-fable-5-2");
+    expect(response.structuredContent.model).toBe("anthropic/claude-fable-5-2");
+  });
+
+  it.each([
+    ["a short name", "ade-cli", { provider: "claude", model: "opus" }, "anthropic/claude-opus-5-5"],
+    ["a retired id", "ade-cli", { provider: "claude", modelId: "claude-opus-4-8" }, "anthropic/claude-opus-5"],
+    ["an old Claude id Claude Code would remap", "ade-cli", { provider: "claude", model: "claude-sonnet-4-5" }, "claude-sonnet-5"],
+    ["a full name", "ade-cli", { provider: "claude", model: "claude-fable-5-2" }, null],
+    ["Cursor's own bare Claude-like id", "ade-cli", { provider: "cursor", model: "claude-4.6-sonnet-medium" }, null],
+    ["a Devin pick with its harness id beside it", "ade-cto-remote", { provider: "devin", model: "opus", modelId: "devin/opus" }, null],
+    ["a saved short name from the desktop app", "ade-desktop-local", { provider: "claude", model: "opus" }, null],
+  ])("chat.createSession with %s from %s is refused only when it names no full model", async (_label, clientName, modelArgs, suggested) => {
+    const { runtime } = createRuntime();
+    const createSession = (runtime.agentChatService as any).createSession;
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "caller-1", role: "cto" }, { clientInfo: { name: clientName } });
+
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "createSession",
+      args: { laneId: "lane-1", ...modelArgs },
+    });
+
+    if (suggested) {
+      // Refused as invalid input, naming the full model to use instead.
+      expect(response?.error?.code).toBe(-32602);
+      expect(response?.error?.message).toContain(`"${suggested}"`);
+      expect(createSession).not.toHaveBeenCalled();
+    } else {
+      expect(response?.error).toBeUndefined();
+      expect(createSession).toHaveBeenCalledWith(expect.objectContaining(modelArgs));
+    }
   });
 
   it("passes Claude auto permission mode to fresh Claude Code terminal launches", async () => {
