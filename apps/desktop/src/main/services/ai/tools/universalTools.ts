@@ -1313,10 +1313,14 @@ function isNullDevicePath(resolved: string): boolean {
   return false;
 }
 
-function isSystemExecutableSandboxPath(resolved: string): boolean {
+function isSystemExecutableSandboxPath(resolved: string, requested: string): boolean {
   const norm = resolved.replace(/\\/g, "/");
   if (process.platform !== "win32") {
-    return norm.startsWith("/usr/bin/") || norm.startsWith("/usr/local/bin/");
+    // Newer Ubuntu's coreutils are links from /usr/bin into /usr/lib. Only a
+    // link in /usr/bin counts: /usr/local/bin can be user-writable.
+    return norm.startsWith("/usr/bin/")
+      || norm.startsWith("/usr/local/bin/")
+      || (requested.startsWith("/usr/bin/") && norm.startsWith("/usr/"));
   }
   const lower = norm.toLowerCase();
   const systemRoot = (process.env.SystemRoot || process.env.windir || "C:\\Windows").replace(/\\/g, "/");
@@ -1364,7 +1368,7 @@ export function checkWorkerSandbox(
   for (const entry of pathRefs) {
     const p = entry.raw;
     const resolved = canonicalizePathForContainment(entry.resolved, pathApi);
-    const isSystemExecutablePath = isSystemExecutableSandboxPath(resolved);
+    const isSystemExecutablePath = isSystemExecutableSandboxPath(resolved, entry.resolved);
     if (isNullDevicePath(resolved)) continue;
     if (isSystemExecutablePath && (entry.access === "read" || (!commandMutates && entry.access !== "write"))) continue;
 

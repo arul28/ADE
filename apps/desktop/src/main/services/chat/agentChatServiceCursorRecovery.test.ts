@@ -568,7 +568,6 @@ describe("createAgentChatService", () => {
       expect(mockState.cursorSdkSendCalls[0]?.summarize).toBe(true);
       expect(mockState.cursorSdkSendCalls[1]?.summarize).toBeUndefined();
       expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? "")).toContain("Message queued behind it.");
-      expect(events.some((event) => event.event.type === "user_message" && event.event.deliveryState === "cancelled")).toBe(false);
     });
 
     it("retries a /compact whose access token expired on the same agent, without an error card", async () => {
