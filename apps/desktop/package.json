@@ -607,5 +607,9 @@
         "rank": "Alternate"
       }
     ]
+  },
+  "overrides": {
+    "dompurify": "^3.4.17",
+    "undici@6.29.0": "6.29.1"
   }
 }
