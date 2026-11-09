@@ -215,8 +215,10 @@ export function createChatRouter(deps: {
     if (home && (!only || home.machineKey === null || only.machineKey === home.machineKey)) {
       if (home.machineKey === null) {
         const result = await deps.callTool(connection, { ...call.params, arguments: withProject(home.projectId) });
-        // proof_review's "no proof yet" is an answer once the chat's own project gave it.
-        if (!isChatMiss(name, result) || saysNoProofYet(name, result)) return labeled(result);
+        // proof_review's "no proof yet" is an answer only when the chat's own project gave it,
+        // not a project the call named that the chat is not in.
+        const ranInHome = !projectGiven || projectGiven === home.projectId;
+        if (!isChatMiss(name, result) || (ranInHome && saysNoProofYet(name, result))) return labeled(result);
       } else {
         const remembered = await deps.machines.resolve(home.machineKey);
         if (remembered.kind === "remote" && !deps.machines.unavailableReason(remembered.machine)) {
