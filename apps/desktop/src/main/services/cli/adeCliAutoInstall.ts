@@ -70,6 +70,14 @@ function appImageShimNamesAnotherFile(shimPath: string, appImage: string): boole
   return shim.includes("ADE_APPIMAGE_CLI=1") && !shim.includes(`'${appImage.replace(/'/g, "'\\''")}'`);
 }
 
+function isSameFile(first: string, second: string): boolean {
+  try {
+    return fs.realpathSync(first) === fs.realpathSync(second);
+  } catch {
+    return first === second;
+  }
+}
+
 export async function runAdeCliAutoInstall(
   args: AdeCliAutoInstallArgs,
 ): Promise<AdeCliAutoInstallOutcome> {
@@ -98,7 +106,7 @@ async function attemptAdeCliAutoInstall(
   if (appImage != null) {
     const { terminalCommandPath, installTargetPath } = await args.adeCli.getStatus();
     // Another `ade` first on PATH is the user's choice; installing would reorder it.
-    staleAppImageShim = (terminalCommandPath == null || terminalCommandPath === installTargetPath)
+    staleAppImageShim = (terminalCommandPath == null || isSameFile(terminalCommandPath, installTargetPath))
       && appImageShimNamesAnotherFile(installTargetPath, appImage);
   }
   const repair = repairRequested || staleAppImageShim;

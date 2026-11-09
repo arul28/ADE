@@ -183,6 +183,8 @@ export function createBrainKeepAwakeService(
   /** Activity reads that failed in a row; a held lock survives a short run of them. */
   let failedActivityReads = 0;
   let blockerError: string | null = stateReadError;
+  /** Counts `setLevel` calls, so a probe that outlives a newer choice is dropped. */
+  let levelRequests = 0;
   const supportsWakeLock = platform === "darwin" || platform === "win32" || platform === "linux";
 
   const persist = (next: StoredKeepAwakeState): void => {
@@ -417,6 +419,7 @@ export function createBrainKeepAwakeService(
     getSnapshot: snapshot,
 
     async setLevel(level: unknown): Promise<KeepAwakeSnapshot> {
+      const request = ++levelRequests;
       if (migrationBlocked) {
         blockerError = stateReadError ?? "ADE can't read the saved keep-awake setting.";
         return snapshot();
@@ -436,6 +439,7 @@ export function createBrainKeepAwakeService(
         // polkit can refuse the lock and the tool can be absent. Settings only
         // reads on save, so a failure at the first turn would go unseen.
         const probe = await execSystemText("systemd-inhibit", ["--what=idle:sleep", "--who=ADE", "--why=Checking the lock", "--mode=block", "true"], 5_000);
+        if (request !== levelRequests) return snapshot();
         if (!probe.ok) {
           blockerError = "This machine wouldn't let ADE stay awake.";
           options.logger?.warn("keepAwake.lock_probe_failed", { stderr: probe.stderr.slice(0, 200) });

@@ -540,7 +540,7 @@ async function runDesktopStep(args: {
       step.location = installed.path;
     } else {
       step.state = "skipped";
-      step.detail = `optional for headless use; desktop downloads: https://github.com/${options.repo}/releases/latest`;
+      step.detail = `optional for headless use; desktop app: https://ade-app.dev/docs/getting-started/linux`;
     }
     return 0;
   }

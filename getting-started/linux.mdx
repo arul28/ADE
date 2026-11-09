@@ -31,6 +31,10 @@ ADE runs on Linux as the same app, brain, and CLI as on macOS and Windows: lanes
 
 **On Ubuntu 24.04 or newer, pick the `.deb`.** Anywhere else, the AppImage is the easy choice because it keeps itself current.
 
+<Note>
+  Linux ships through Beta first. If a download below opens a release with no Linux files, open [GitHub Releases](https://github.com/arul28/ADE/releases), pick the newest one marked **Pre-release**, and download from its **Assets** list.
+</Note>
+
 <Tabs>
   <Tab title="AppImage">
     Download for [x64](https://ade-app.dev/download/linux-x64-appimage) or [arm64](https://ade-app.dev/download/linux-arm64-appimage), then:
@@ -57,9 +61,13 @@ Already running the brain on this machine? The desktop app connects to it and le
 
 ## If the AppImage will not start
 
-**"ADE cannot start its security sandbox."** ADE's built-in browser opens web pages inside a security sandbox. Ubuntu 24.04 and newer block what an AppImage needs for it, so ADE stops rather than running without one. Install the `.deb`, which is set up for this.
+**"ADE can't start from this AppImage."** ADE's built-in browser opens web pages inside a security sandbox. Ubuntu 24.04 and newer block what an AppImage needs for it, so ADE stops rather than running without one. The `.deb` works there:
 
-If you accept the risk, you can run without the sandbox:
+1. Download the `.deb` for [x64](https://ade-app.dev/download/linux-x64-deb) or [arm64](https://ade-app.dev/download/linux-arm64-deb). Run `uname -m` if you're not sure: `x86_64` means x64 and `aarch64` means arm64.
+2. Run `sudo apt install ./ADE-*.deb` in the folder you downloaded it to.
+3. Open ADE from your applications menu.
+
+If you can't use a `.deb` and you accept the risk, you can run without the sandbox:
 
 ```bash
 ADE_ALLOW_NO_SANDBOX=1 ./ADE-*.AppImage

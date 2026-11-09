@@ -402,12 +402,14 @@ jobs:
             case "$TAG_NAME" in
               *-*) create_args+=(--prerelease --latest=false) ;;
             esac
+            # With --generate-notes, gh puts this file above the generated notes.
+            cp .github/release-notes/linux.md "$RUNNER_TEMP/release-notes.md"
             if [ -n "$RELEASE_NOTES" ]; then
-              printf '%s\n' "$RELEASE_NOTES" > "$RUNNER_TEMP/release-notes.md"
-              create_args+=(--notes-file "$RUNNER_TEMP/release-notes.md")
+              printf '\n%s\n' "$RELEASE_NOTES" >> "$RUNNER_TEMP/release-notes.md"
             else
               create_args+=(--generate-notes)
             fi
+            create_args+=(--notes-file "$RUNNER_TEMP/release-notes.md")
             gh release create "$TAG_NAME" "${files[@]}" "${create_args[@]}"
           fi
 

@@ -37,6 +37,8 @@ machine's configured PIN or other authorized pairing flow.
 
 ## Release flow
 
+The marketing site's Linux install dialog still offers only the brain. Add the four download choices to `apps/web/src/lib/installTargets.ts` once a beta has been verified on Linux and a stable release carries the packages; the `/download/linux-*` routes are already live. Merging to `main` deploys the site, so it is held until then.
+
 `release-core.yml` builds each architecture in `build-linux-release`, and `release-publish.yml` refuses to publish without all four packages and both manifests. Beta and stable use the same job. On a beta, `scripts/beta/feed.mjs` publishes the two Linux manifests to `beta-feed` with absolute URLs, as for macOS and Windows.
 
 To try a release without reaching any machine's update feed, dispatch `beta.yml` from the branch with `preview_ref` set. It publishes a prerelease that is installed by hand.

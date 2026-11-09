@@ -33,12 +33,23 @@ fi
 if ! unshare -Ur true 2>/dev/null; then
   # No AppArmor profile is offered for the AppImage: it can only match a path
   # under /tmp, which any local user could create to get the same exception.
-  message='ADE cannot start its security sandbox on this system, which blocks the user namespaces an AppImage needs. Install the ADE .deb, which sets this up correctly. To accept the risk and run without the sandbox, start ADE with ADE_ALLOW_NO_SANDBOX=1.'
+  help_url='https://ade-app.dev/docs/getting-started/linux#if-the-appimage-will-not-start'
+  message="ADE can't start from this AppImage.
+
+Your system blocks the security sandbox an AppImage needs, which is normal on Ubuntu 24.04 and newer. Install the ADE .deb instead. It has the permission it needs.
+
+Steps and downloads: $help_url"
   echo "ADE: $message" >&2
-  if command -v zenity >/dev/null 2>&1; then zenity --error --text="$message" || true
-  elif command -v kdialog >/dev/null 2>&1; then kdialog --error "$message" || true
-  elif command -v xmessage >/dev/null 2>&1; then xmessage "$message" || true
+  echo 'ADE: To accept the risk and run without the sandbox, start ADE with ADE_ALLOW_NO_SANDBOX=1.' >&2
+  open_help=
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --question --title='ADE' --width=520 --ok-label='Open help' --cancel-label='Close' --text="$message" && open_help=1
+  elif command -v kdialog >/dev/null 2>&1; then
+    kdialog --title 'ADE' --yes-label 'Open help' --no-label 'Close' --yesno "$message" && open_help=1
+  elif command -v xmessage >/dev/null 2>&1; then
+    xmessage "$message" || true
   fi
+  [[ -z "$open_help" ]] || xdg-open "$help_url" >/dev/null 2>&1 || true
   exit 1
 fi
 exec "$binary" ${args[@]+"${args[@]}"}

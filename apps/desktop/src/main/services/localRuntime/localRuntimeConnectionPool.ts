@@ -2030,7 +2030,9 @@ export class LocalRuntimeConnectionPool {
       // handoff stops the brain before the new app launches; any other brain
       // that answers is preserved.
       if (runningCompatibilityError?.skewState === "runtime_older") forceRestart = true;
-      if (!forceRestart && (runningProbe || getRuntimeServiceStatus().running === true)) {
+      // The app's own fallback brain runs from this image, not those files, and
+      // the install below is what replaces it.
+      if (!forceRestart && !this.appFallback && (runningProbe || getRuntimeServiceStatus().running === true)) {
         this.serviceInstallStatus = {
           state: "skipped", attempted: false, path: cliPath,
           message: "A brain is already running; its runtime was left unchanged.",

@@ -33,7 +33,7 @@ export type InstallTarget = {
     blurb?: string;
     analyticsFeature: MarketingFeature;
   };
-  /** Desktop installer choices for this platform. */
+  /** Absent for Linux — there is no ADE desktop app for Linux. */
   downloads?: {
     heading: string;
     blurb?: string;
@@ -130,22 +130,13 @@ export const INSTALL_TARGETS: Readonly<Record<InstallPlatform, InstallTarget>> =
   },
   linux: {
     platform: "linux",
-    title: "Get ADE for Linux",
+    title: "Run the ADE brain on Linux",
     terminal: {
       heading: "Install from your terminal",
       command: LINUX_INSTALL_COMMAND,
       blurb:
-        "Install the standalone brain, or download the desktop app below.",
+        "Run the brain on any Linux box and control it from ADE on your Mac, Windows, phone, or the web.",
       analyticsFeature: MARKETING_FEATURES.COPY_INSTALL_COMMAND_LINUX,
-    },
-    downloads: {
-      heading: "Download the desktop app",
-      options: [
-        { href: LINKS.downloadLinuxX64AppImage, label: "AppImage", detail: "x64", analyticsCta: MARKETING_CTA_LABELS.DOWNLOAD_LINUX_X64_APPIMAGE },
-        { href: LINKS.downloadLinuxArm64AppImage, label: "AppImage", detail: "arm64", analyticsCta: MARKETING_CTA_LABELS.DOWNLOAD_LINUX_ARM64_APPIMAGE },
-        { href: LINKS.downloadLinuxX64Deb, label: "Debian package", detail: "x64", analyticsCta: MARKETING_CTA_LABELS.DOWNLOAD_LINUX_X64_DEB },
-        { href: LINKS.downloadLinuxArm64Deb, label: "Debian package", detail: "arm64", analyticsCta: MARKETING_CTA_LABELS.DOWNLOAD_LINUX_ARM64_DEB },
-      ],
     },
     footnote: {},
     openAnalyticsFeature: MARKETING_FEATURES.INSTALL_DIALOG_LINUX,
