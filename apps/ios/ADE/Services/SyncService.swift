@@ -25382,13 +25382,14 @@ extension SyncService {
 
       let runtime = session.runtimeState.lowercased()
       let isRunningRuntime = runtime == "running"
-      // A chat resting on a PR watch counts as working but its turn is over, so
-      // the snapshot does not present it as producing output.
-      let isIdleRuntime = canonical.phase == .ready || canonical.phase == .idle || canonical.restingOnPrWatch
+      // A chat resting on a PR watch is working, so Activity must not file it as
+      // Done, but its turn is over, so it stays out of the streaming-only list.
+      let isWorking = isRunningRuntime || canonical.restingOnPrWatch
+      let isIdleRuntime = canonical.phase == .ready || canonical.phase == .idle
       let isEndedRuntime = runtime == "exited" || runtime == "killed" || runtime == "stopped"
 
       if isEndedRuntime && !isFailedStatus && !isAwaiting { continue }
-      if (isRunningRuntime || canonical.restingOnPrWatch) && !isFailedStatus && !isAwaiting { runningChatCount += 1 }
+      if isWorking && !isFailedStatus && !isAwaiting { runningChatCount += 1 }
 
       let started = parseIso8601(session.startedAt) ?? now
       // For active sessions there is no `endedAt`. Use the chat summary's
@@ -25424,7 +25425,7 @@ extension SyncService {
         title: session.title.isEmpty ? session.goal : session.title,
         status: isFailedStatus
           ? "failed"
-          : (isAwaiting ? "awaiting-input" : (isRunningRuntime ? "running" : (isIdleRuntime ? "idle" : status))),
+          : (isAwaiting ? "awaiting-input" : (isWorking ? "running" : (isIdleRuntime ? "idle" : status))),
         awaitingInput: isAwaiting,
         lastActivityAt: lastActivity,
         elapsedSeconds: elapsed,
@@ -25448,7 +25449,7 @@ extension SyncService {
         awaitingInputCount += 1
       } else if isRunningRuntime && lastActivity >= runningRecencyCutoff {
         runningAgents.append(snap)
-      } else if isIdleRuntime && !canonical.restingOnPrWatch {
+      } else if isIdleRuntime {
         idleCount += 1
       }
     }
