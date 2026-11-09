@@ -1314,6 +1314,14 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       };
     };
   }
+  // Every transcript read hands out what agents printed: secrets in it are
+  // masked on the way out, as `readTranscript` does above.
+  for (const action of ["getMainTranscript", "getSubagentTranscript"] as const) {
+    const read = base[action];
+    if (typeof read === "function") {
+      service[action] = async (...args: unknown[]) => redactOutgoingChatText(await (read as (...input: unknown[]) => unknown)(...args));
+    }
+  }
   if (typeof base.getTurnStatus === "function") {
     service.getTurnStatus = (args?: unknown) =>
       agentChatService.getTurnStatus(readStringActionArg(args, "sessionId"));

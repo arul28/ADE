@@ -5,6 +5,8 @@
  * Invented data only — never a real person's projects, chats or paths.
  */
 
+import { createHash } from "node:crypto";
+
 export type Input = Record<string, unknown>;
 export type Fixture = unknown | ((input: Input) => unknown);
 
@@ -89,7 +91,10 @@ export const DEFAULT_RESULTS: Record<string, Fixture> = {
   }),
   chat_interrupt: { mode: "stop_and_clear", cancelledQueuedCount: 0 },
   chat_update: (input: Input) => ({ id: input.session, model: input.model ?? "gpt-5.6", reasoningEffort: input.reasoning_effort ?? null }),
-  files_write: (input: Input) => ({ path: input.path, bytes: String(input.text ?? "").length, sha256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" }),
+  files_write: (input: Input) => {
+    const bytes = Buffer.from(String(input.text ?? ""), input.base64 === true ? "base64" : "utf8");
+    return { path: input.path, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+  },
   lanes_create: (input: Input) => ({ lane: { id: "lane-new", name: input.name, branchRef: `ade/${String(input.name)}`, baseRef: "main", laneType: "worktree" } }),
   chat_start: (input: Input) => ({
     ok: true, launchId: "chat-new", phase: "completed", elapsedMs: 25_000,

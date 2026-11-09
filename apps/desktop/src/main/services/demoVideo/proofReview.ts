@@ -110,6 +110,24 @@ const CROP_MAX_WIDTH = 1568;
 /** A whole picture over this is re-encoded, so it fits an MCP answer. */
 const WHOLE_PICTURE_MAX_BYTES = 2_000_000;
 const CROP_TIMEOUT_MS = 30_000;
+/** pngjs holds the whole picture in memory on the brain's thread; past this (about 100 MB) ffmpeg cuts it instead. */
+const PNG_DECODE_MAX_PIXELS = 25_000_000;
+
+function pageHeightOf(size: ImageDimensions): number {
+  return Math.max(1, Math.round(size.width * PAGE_ASPECT));
+}
+
+function pageCountOf(size: ImageDimensions): number {
+  return Math.max(1, Math.ceil(size.height / pageHeightOf(size)));
+}
+
+/** Where a review writes what it made: `.ade/cache/proof-review`, named for the proof and the time. */
+function reviewOutputPath(args: ReviewArgs, suffix: string): string {
+  const dir = path.join(args.projectRoot, ".ade", "cache", "proof-review");
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = (args.now?.() ?? new Date()).toISOString().replace(/[:.]/g, "-");
+  return path.join(dir, `review-${stamp}-${args.artifact.id.slice(0, 8)}${suffix}`);
+}
 
 /** The band of the picture a window asks for; null when the whole file serves as it is. */
 function cropBand(
@@ -124,8 +142,8 @@ function cropBand(
     return { band: { y: from, height: to - from } };
   }
   if (window?.page == null) return { band: null };
-  const pageHeight = Math.max(1, Math.round(size.width * PAGE_ASPECT));
-  const pages = Math.max(1, Math.ceil(size.height / pageHeight));
+  const pageHeight = pageHeightOf(size);
+  const pages = pageCountOf(size);
   if (window.page > pages) return { band: null, error: `The picture has ${pages} page${pages === 1 ? "" : "s"}.` };
   if (pages === 1 && fileBytes <= WHOLE_PICTURE_MAX_BYTES) return { band: null };
   const y = (window.page - 1) * pageHeight;
@@ -159,16 +177,25 @@ function shrinkPng(image: PNG, factor: number): PNG {
 async function cropPng(input: string, output: string, band: { y: number; height: number }): Promise<void> {
   const source = await new Promise<PNG>((resolve, reject) => {
     const reader = new PNG();
+    const file = fs.createReadStream(input);
     reader.on("parsed", () => resolve(reader));
-    reader.on("error", reject);
-    fs.createReadStream(input).on("error", reject).pipe(reader);
+    // A corrupt file must not keep its descriptor open until garbage collection.
+    reader.on("error", (error) => {
+      file.destroy();
+      reject(error);
+    });
+    file.on("error", reject).pipe(reader);
   });
   const full = new PNG({ width: source.width, height: band.height });
   PNG.bitblt(source, full, 0, band.y, source.width, band.height, 0, 0);
-  const cut = shrinkPng(full, Math.ceil(source.width / CROP_MAX_WIDTH));
-  await new Promise<void>((resolve, reject) => {
-    cut.pack().on("error", reject).pipe(fs.createWriteStream(output)).on("finish", () => resolve()).on("error", reject);
-  });
+  // Halved again while it is still too big to send (a detailed page compresses badly).
+  for (let factor = Math.ceil(source.width / CROP_MAX_WIDTH); ; factor *= 2) {
+    const cut = shrinkPng(full, factor);
+    await new Promise<void>((resolve, reject) => {
+      cut.pack().on("error", reject).pipe(fs.createWriteStream(output)).on("finish", () => resolve()).on("error", reject);
+    });
+    if (fs.statSync(output).size <= WHOLE_PICTURE_MAX_BYTES || cut.width <= 320) return;
+  }
 }
 
 async function cropPicture(
@@ -176,7 +203,7 @@ async function cropPicture(
   size: ImageDimensions,
   band: { y: number; height: number },
 ): Promise<{ cropPath: string } | { cropError: string }> {
-  const isPng = path.extname(args.filePath).toLowerCase() === ".png";
+  const isPng = path.extname(args.filePath).toLowerCase() === ".png" && size.width * size.height <= PNG_DECODE_MAX_PIXELS;
   let tools: Awaited<ReturnType<typeof ensureFfmpegTools>> | null = null;
   if (!isPng) {
     try {
@@ -185,10 +212,8 @@ async function cropPicture(
       return { cropError: error instanceof Error ? error.message : String(error) };
     }
   }
-  const dir = path.join(args.projectRoot, ".ade", "cache", "proof-review");
-  fs.mkdirSync(dir, { recursive: true });
-  const stamp = (args.now?.() ?? new Date()).toISOString().replace(/[:.]/g, "-");
-  const output = path.join(dir, `review-${stamp}-${args.artifact.id.slice(0, 8)}-y${band.y}.${isPng ? "png" : "jpg"}`);
+  const output = reviewOutputPath(args, `-y${band.y}.${isPng ? "png" : "jpg"}`);
+  const dir = path.dirname(output);
   try {
     if (tools) {
       await runFfmpeg({
@@ -196,7 +221,7 @@ async function cropPicture(
         args: [
           "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
           "-i", args.filePath,
-          "-vf", `crop=${size.width}:${band.height}:0:${band.y},scale='min(${CROP_MAX_WIDTH},iw)':-2,format=yuvj420p`,
+          "-vf", `crop=${size.width}:${band.height}:0:${band.y},scale='trunc(min(${CROP_MAX_WIDTH},iw)/2)*2':-2,format=yuvj420p`,
           "-frames:v", "1", "-update", "1", "-q:v", "3",
           "-f", "image2", "-c:v", "mjpeg",
           output,
@@ -219,7 +244,7 @@ async function cropPicture(
 async function reviewImage(args: ReviewArgs, findings: string[]): Promise<ProofReview> {
   const size = readImageSize(args.filePath);
   if (size) imageFindings(size, findings);
-  const pages = size ? Math.max(1, Math.ceil(size.height / Math.max(1, Math.round(size.width * PAGE_ASPECT)))) : 1;
+  const pages = size ? pageCountOf(size) : 1;
   const fileBytes = (() => {
     try {
       return fs.statSync(args.filePath).size;
@@ -312,10 +337,8 @@ async function reviewVideo(args: ReviewArgs, findings: string[]): Promise<ProofR
   } else if (duration == null) {
     sheetError = "ADE could not read the video's length";
   } else {
-    const dir = path.join(args.projectRoot, ".ade", "cache", "proof-review");
-    fs.mkdirSync(dir, { recursive: true });
-    const stamp = (args.now?.() ?? new Date()).toISOString().replace(/[:.]/g, "-");
-    const output = path.join(dir, `review-${stamp}-${args.artifact.id.slice(0, 8)}.png`);
+    const output = reviewOutputPath(args, ".png");
+    const dir = path.dirname(output);
     const request: DemoContactSheetRequest = { input: args.filePath, output, times: frameTimes, columns, tileWidth };
     sheetError = contactSheetRequestError(request);
     for (const maker of sheetError ? [] : sheetMakers) {

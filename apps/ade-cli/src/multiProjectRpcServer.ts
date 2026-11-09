@@ -1,7 +1,7 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
 import { readDeletedChatOnDisk } from "../../desktop/src/main/services/chat/deletedChats";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
-import { isPathInside } from "../../desktop/src/main/services/shared/pathCompare";
+import { isInsideTempFolder } from "../../desktop/src/main/services/shared/pathCompare";
 import { checkHostReachability } from "./services/sync/hostReachabilityCheck";
 import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
@@ -681,6 +681,10 @@ const MACHINE_GITHUB_VAULT_MAX_AGE_MS = 60_000;
 /** The account whose GitHub token a clone with no project open last read; see createMultiProjectRpcRequestHandler. */
 let machineGithubTokenUserId: string | null = null;
 
+/** Chat ids Recently deleted did not have, and when: see `findDeletedChatOnThisMachine`. */
+const deletedChatMisses = new Map<string, number>();
+const DELETED_CHAT_MISS_TTL_MS = 60_000;
+
 const machineProjectLogger: Logger = {
   debug: () => {},
   info: () => {},
@@ -1161,10 +1165,6 @@ export async function decorateProjectListWithIcons<T extends { rootPath: string;
  * keeps deleted test projects there), else `~/Projects`.
  */
 async function defaultParentDir(projectRegistry: ProjectRegistry): Promise<string> {
-  const temps = [
-    os.tmpdir(),
-    ...(process.platform === "win32" ? [] : ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"]),
-  ];
   const recent = [...projectRegistry.list()].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
   // Only a project whose own folder is there (so its parent is too): a
   // deleted project's parent may be a folder nobody uses any more. Checked
@@ -1173,7 +1173,7 @@ async function defaultParentDir(projectRegistry: ProjectRegistry): Promise<strin
   const beside = recent
     .filter((_record, index) => states[index] === "present")
     .map((record) => path.dirname(record.rootPath))
-    .find((parent) => !temps.some((temp) => isPathInside(parent, temp)));
+    .find((parent) => !isInsideTempFolder(parent));
   return beside ?? path.join(os.homedir(), "Projects");
 }
 
@@ -3489,22 +3489,38 @@ export function createMultiProjectRpcRequestHandler(
     // "Do you have this chat?" from this machine's CLI or another machine's,
     // for a chat id given without a machine. Read-only, and it names only the
     // project (which `projects.list` already shows that caller).
+    /**
+     * A chat id in this machine's Recently deleted. A running project answers
+     * itself (it can also tell whether the conversation can still be
+     * reopened); any other is read from its database on disk, never booted.
+     * A miss is remembered a minute: a chat that is not here yet (a lane still
+     * being set up) is asked about on every poll.
+     */
+    const findDeletedChatOnThisMachine = async (sessionId: string): Promise<Record<string, unknown> | null> => {
+      const missedAt = deletedChatMisses.get(sessionId);
+      if (missedAt !== undefined && Date.now() - missedAt < DELETED_CHAT_MISS_TTL_MS) return null;
+      for (const record of projectRegistry.list()) {
+        // One project at a time, yielding between them, so a long registry never holds the brain's loop.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const running = await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
+        const deleted = running
+          ? await running.runtime?.agentChatService?.findDeletedChat?.(sessionId).catch(() => null)
+          : readDeletedChatOnDisk(record.rootPath, sessionId, (error) => {
+            machineProjectLogger.warn("chats.locate_deleted_read_failed", { projectId: record.projectId, error: error instanceof Error ? error.message : String(error) });
+          });
+        if (deleted) return { ...deleted, projectId: record.projectId, projectName: record.displayName };
+      }
+      deletedChatMisses.set(sessionId, Date.now());
+      if (deletedChatMisses.size > 500) deletedChatMisses.delete(deletedChatMisses.keys().next().value!);
+      return null;
+    };
     if (method === "chats.locate") {
       const sessionId = typeof params.sessionId === "string" ? params.sessionId.trim() : "";
       if (!sessionId) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "chats.locate requires sessionId.");
       const scope = await options.crossScopeChats?.findChat?.(sessionId).catch(() => null) ?? null;
       if (!scope) {
-        // A running project answers itself (it can also tell whether the
-        // conversation is still there to reopen); any other is read from its
-        // database on disk. A lookup never boots a project.
-        for (const record of projectRegistry.list()) {
-          const running = await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
-          const deleted = running
-            ? await running.runtime?.agentChatService?.findDeletedChat?.(sessionId).catch(() => null)
-            : readDeletedChatOnDisk(record.rootPath, sessionId);
-          if (deleted) return { found: false, deleted: { ...deleted, projectId: record.projectId, projectName: record.displayName } };
-        }
-        return { found: false };
+        const deleted = await findDeletedChatOnThisMachine(sessionId);
+        return deleted ? { found: false, deleted } : { found: false };
       }
       if (scope.kind === "personal") return { found: true, scope: { kind: "personal" } };
       const record = projectRegistry.list().find((entry) => entry.projectId === scope.projectId);

@@ -58,8 +58,9 @@ calls:
 
 Each answer has `phase` (`running`, `waiting`, `blocked`, `idle`) and `events`
 (`turn_started`, `turn_completed`, `turn_failed`, `turn_interrupted`,
-`input_needed`, `input_resolved`, `error`). `truncated: true` means more
-follow: call again with the new `cursor`. `gap: true` means your cursor was so
+`input_needed`, `input_resolved`, `error`). Without `since` you get the newest
+events. After a cursor, `truncated: true` means more follow: call again with
+the new `cursor`. `gap: true` means your cursor was so
 old that some events were not read: trust `phase`, and use `chat_read`.
 
 `chat_wait` is the same idea with a short block: it answers within 25 s by
@@ -75,7 +76,8 @@ input or fails, and retries a failed POST:
 {"event":"chat.idle","sessionId":"…","laneId":"…","title":"…","status":"idle","at":"2026-11-09T13:00:00.000Z"}
 ```
 
-It lasts 7 days. The computer must be awake to send it. A Grok Bot or other
+It lasts 7 days. The computer must be awake to send it. If it can't be armed,
+the chat still starts, and the answer says `notify: {armed: false}`. A Grok Bot or other
 routine that starts from a webhook URL and key fits this directly.
 
 When a chat waits on the person, `inbox` shows the question and `chat_respond`

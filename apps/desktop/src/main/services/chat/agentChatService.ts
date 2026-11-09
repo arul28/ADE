@@ -298,7 +298,7 @@ import {
   recordChatTextFlush,
   type ChatTextFlushReason,
 } from "../perf/chatTextProbe";
-import { chatLifecycleEvents, transcriptEntriesFromEnvelopes, transcriptTurnFailuresFromEnvelopes, type ChatEventsResult } from "./chatTranscriptEntries";
+import { chatEventsPage, transcriptEntriesFromEnvelopes, transcriptTurnFailuresFromEnvelopes } from "./chatTranscriptEntries";
 import {
   buildFittedTranscriptReplay,
   buildTranscriptReplayDocument,
@@ -629,6 +629,7 @@ import type {
   AgentChatExecutionMode,
   AgentChatEvent,
   AgentChatEventEnvelope,
+  ChatEventsResult,
   AgentChatEventMetadata,
   AgentChatLastTurnFailure,
   AgentChatSessionContextHealth,
@@ -1288,6 +1289,7 @@ import { GOAL_BLOCKED_NOTICE_STATUS, GOAL_REACHED_NOTICE_STATUS, parseClaudeGoal
 import {
   CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
   readTranscriptHistoryPage,
+  readEnvelopesBackToSequence,
   readTranscriptHistoryPageBeforeSequence,
   type TranscriptHistoryPageRead,
 } from "./chatTranscriptHistoryPager";
@@ -25155,7 +25157,7 @@ export function createAgentChatService(args: {
     }
     managed.lastActivityTimestamp = Date.now();
     chatWaits?.signal(managed.session.id);
-    chatWebhooks?.signal(managed.session.id);
+    chatWebhooks?.signal(managed.session.id, event);
     if (event.type === "done") {
       managed.claudeCompactError = null;
       if (event.turnId) managed.lastFinishedTurnId = event.turnId;
@@ -68886,6 +68888,9 @@ export function createAgentChatService(args: {
   };
 
   // --- Event-driven waits ---------------------------------------------------
+  /** Another live brain runs the chat; a CLI's terminal is claimed by the runtime that runs its PTY, not by a chat runtime claim. */
+  const chatOwnedByAnotherBrain = (sessionId: string): boolean =>
+    liveForeignChatRuntimeOwner(sessionId) != null || agentCliOwnedByAnotherRuntime(sessionId);
   const chatWaitRegistry = createChatWaitRegistry({
     logger,
     db: db ?? null,
@@ -68916,10 +68921,7 @@ export function createAgentChatService(args: {
       return row.tracked && isTrackedAgentCliToolType(row.toolType) && !row.archivedAt;
     },
     wakeDeferred: (sessionId) => agentCliWakeDeferred(sessionId),
-    // A CLI's terminal is claimed by the runtime that runs its PTY, not by a
-    // chat runtime claim.
-    ownedByAnotherBrain: (sessionId) =>
-      liveForeignChatRuntimeOwner(sessionId) != null || agentCliOwnedByAnotherRuntime(sessionId),
+    ownedByAnotherBrain: chatOwnedByAnotherBrain,
     getMovedAwayTarget: (sessionId) => getCrossMachineMoveLock(sessionId, "chat_wait"),
     assertDeliverableHere: (sessionId) => {
       assertChatRuntimeOwnedHere(sessionId, "arm a wait that wakes");
@@ -68958,8 +68960,11 @@ export function createAgentChatService(args: {
       const summary = await getSessionSummary(sessionId);
       return summary ? { ...summary } : null;
     },
-    ownedByAnotherBrain: (sessionId) =>
-      liveForeignChatRuntimeOwner(sessionId) != null || agentCliOwnedByAnotherRuntime(sessionId),
+    runsHere: (sessionId) => {
+      const session = managedSessions.get(sessionId);
+      return Boolean(session && !session.deleted) && !chatOwnedByAnotherBrain(sessionId);
+    },
+    ownedElsewhere: chatOwnedByAnotherBrain,
   });
   chatWebhooks = chatWebhookRegistry;
   chatWebhookRegistry.start();
@@ -69071,42 +69076,6 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * The chat's events exactly as written, newest pages first, back to `since`
-   * (or just the newest pages without one). The lossy reader behind
-   * `readTranscript` swaps non-conversation rows for stand-ins, which is no
-   * use for these.
-   */
-  const readEnvelopesBackTo = async (
-    sessionId: string,
-    since: number | null,
-  ): Promise<{ envelopes: AgentChatEventEnvelope[]; reachedSince: boolean }> => {
-    const transcriptPath = await resolveTranscriptPathForSessionId(sessionId);
-    if (!transcriptPath) return { envelopes: [], reachedSince: true };
-    const pages: AgentChatEventEnvelope[][] = [];
-    let cursor = await readHistoryFileSize(transcriptPath);
-    let reachedSince = since === null;
-    const maxPages = since === null ? 2 : 16;
-    for (let count = 0; cursor > 0 && count < maxPages; count += 1) {
-      let page: TranscriptHistoryPageRead;
-      try {
-        page = await readTranscriptHistoryPage({ transcriptPath, sessionId, beforeOffset: cursor, maxBytes: CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES });
-      } catch (error) {
-        logger.warn("agent_chat.events_page_failed", { sessionId, error: getErrorMessage(error) });
-        break;
-      }
-      cursor = page.startOffset;
-      pages.unshift(page.envelopes);
-      if (since !== null && page.envelopes.some((entry) => (entry.sequence ?? Number.POSITIVE_INFINITY) <= since)) reachedSince = true;
-      if (reachedSince && since !== null) break;
-      if (!page.hasMore) {
-        reachedSince = true;
-        break;
-      }
-    }
-    return { envelopes: pages.flat(), reachedSince };
-  };
-
-  /**
    * What happened to a chat since a cursor, for a caller that can only poll:
    * each turn's start and end, input it waits on, errors. `cursor` goes back
    * as `since`, so no transition is missed between calls. Answers at once;
@@ -69117,23 +69086,17 @@ export function createAgentChatService(args: {
     const status = sessionId ? await getTurnStatus(sessionId) : null;
     if (!status) return null;
     const since = typeof args.since === "number" && Number.isFinite(args.since) ? args.since : null;
-    const limit = Math.max(1, Math.min(200, Math.floor(args.limit ?? 50)));
-    const { envelopes, reachedSince } = await readEnvelopesBackTo(sessionId, since);
-    const newer = since === null ? envelopes : envelopes.filter((entry) => (entry.sequence ?? -1) > since);
-    const events = chatLifecycleEvents(newer);
-    const returned = since === null ? events.slice(-limit) : events.slice(0, limit);
-    const truncated = returned.length < events.length;
-    const newest = newer.reduce((max, entry) => Math.max(max, entry.sequence ?? -1), since ?? -1);
-    return {
-      sessionId,
-      // Stopped short: the next call starts after the last event returned.
-      cursor: truncated && since !== null ? returned[returned.length - 1]!.sequence : newest,
-      phase: status.phase,
-      events: returned,
-      truncated,
-      // The cursor is so old that the events right after it were not read.
-      ...(reachedSince ? {} : { gap: true }),
-    };
+    const limit = typeof args.limit === "number" && Number.isFinite(args.limit) ? Math.max(1, Math.min(200, Math.floor(args.limit))) : 50;
+    const transcriptPath = await resolveTranscriptPathForSessionId(sessionId);
+    const read = transcriptPath
+      ? await readEnvelopesBackToSequence({
+        transcriptPath,
+        sessionId,
+        since,
+        onPageError: (error) => logger.warn("agent_chat.events_page_failed", { sessionId, error: getErrorMessage(error) }),
+      })
+      : { envelopes: [], reachedSince: true };
+    return { sessionId, phase: status.phase, ...chatEventsPage(read.envelopes, since, limit, read.reachedSince) };
   };
 
   /**

@@ -240,9 +240,17 @@ the walkthrough for a bot. What it relies on:
   `notify_token` (`--notify-url`, `--notify-token`, `ade chat notify`,
   `chat.armWebhook`) POST to a public https URL each time the chat goes idle,
   needs input or fails, retrying a failed POST for about 13 minutes. The
-  registry (`chatWebhookRegistry.ts`) lives in `.ade/secrets/chat-webhooks.json`,
-  because the project database syncs and the bearer key must not. It lasts 7
-  days and runs a timer only while a webhook exists. There is no MCP stream: the
+  registry (`chatWebhookRegistry.ts`) lives in the project's
+  `.ade/secrets/chat-webhooks.json` (owner-only, by ACL on Windows), because
+  the project database syncs and the bearer key must not. The key travels on
+  stdin (`--notify-token-stdin`), never in a process list. Only the brain that
+  runs a chat checks and posts its webhook, so two brains on one project never
+  both POST; a chat event checks only that chat's webhooks, and a 15 s
+  backstop checks all of them. It lasts 7 days and runs a timer only while a
+  webhook exists. `ade chat notify` arms only a chat its project has (a miss
+  looks on the other machines), and a `chat create` whose webhook can't be
+  armed still sends its prompt and answers `notify: {armed: false}`.
+  `chat.listWebhooks` is a write action: a webhook URL can carry a secret. There is no MCP stream: the
   server answers POST only, and a chat's computer can be the one that is asleep.
 - **Naming where things go.** `chat_start` and `lanes_create` refuse to run
   without `project`, and without `machine` on the account address, because the
@@ -257,18 +265,25 @@ the walkthrough for a bot. What it relies on:
   high) under `.ade/cache/proof-review`, cut with pngjs (ffmpeg for other
   formats); `page`,
   `y_from` and `y_to` choose it (`ade proof review --page`, `--y-from`, `--y-to`).
-- **Secrets.** `chat_read`, previews and `inbox` go through
-  `redactOutgoingChatText`, as does `ade chat read`. What is stored stays as it
-  was, and so are `terminal read` and `chat read` output and `files_search`
-  previews over MCP. A read-only connection can't read `.env` files,
-  `.ade/secrets` or the raw chat logs.
+- **Secrets.** What a shell or an agent wrote is masked with
+  `redactOutgoingChatText` on its way out: every chat transcript action
+  (`readTranscript`, `readTranscriptPage`, `getMainTranscript`,
+  `getSubagentTranscript`), and over MCP the output of `chat
+  read|list|status|wait|inbox|events`, `terminal read|tail|scrollback` and
+  `files search`, typed tool or raw `ade` alike (`printsAgentOutput`). What is
+  stored stays as it was. A read-only connection can't read `.env` files,
+  through `files read` (also `--path=.env`) or `actions run file.readFile`;
+  the file service already refuses `.ade/secrets` and the chat logs.
 - **Webhook addresses.** The URL must be https and public by name; before each
   POST its name is resolved, every address must be public, and the request
   goes to that checked address, so DNS can't point it inward. The file is
   merged on write, so two brains on one project keep each other's webhooks.
 - **Gone chats.** `ade chat locate` reports a chat in Recently deleted: a
   running project checks whether it can be reopened, and any other project's
-  database is read on disk (`reopenable: null`), without booting it. MCP answers `state: "deleted"` with `deletedAt` and
+  database is read on disk (`reopenable: null`), without booting it or waiting
+  on a busy one. A miss is remembered for a minute, so polling a chat that is
+  still being set up does not reopen every database. The routing itself is
+  `remoteMcpChatRouting.ts`. MCP answers `state: "deleted"` with `deletedAt` and
   `reopenable`, or `state: "not_found"`, never a bare null.
 
 - `proof_review` is how an app sees what an agent made: `session` (a chat

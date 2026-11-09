@@ -3,10 +3,12 @@ import path from "node:path";
 import https from "node:https";
 import { lookup } from "node:dns/promises";
 import { randomUUID } from "node:crypto";
-import { isPublicIpAddress, pinnedLookup } from "../net/publicHostGuard";
+import net from "node:net";
+import { isLocalHostname, isPrivateIpAddress, isPublicIpAddress, pinnedLookup } from "../net/publicHostGuard";
 import { chatWaitTargetMatches } from "../../../shared/chatWait";
 import type { Logger } from "../logging/logger";
 import { writeFileAtomic } from "../state/durableFile";
+import { securePrivatePath } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 
 /**
  * Tells an outside URL when a chat stops needing no one: its turn is done, it
@@ -14,8 +16,15 @@ import { writeFileAtomic } from "../state/durableFile";
  * right now (a cloud bot) hears about a chat; `chat.getChatEvents` is the
  * polling path for everything that can only make calls.
  *
- * Lives in the machine's secrets folder, never the project database: that one
- * syncs between machines, and the receiver's bearer key must not.
+ * Lives in the project's `.ade/secrets` folder (owner-only, on Windows by
+ * ACL), never the project database: that one syncs between machines, and the
+ * receiver's bearer key must not.
+ *
+ * Only the brain that runs a chat reads its state and queues news, so two
+ * brains on one project never both report one change. A delivery already
+ * queued (a retry after a restart, say) goes out from any brain no other live
+ * brain runs the chat for. On write, a brain keeps only the state it changed
+ * itself; everything else comes from the file.
  */
 
 const FILE_NAME = "chat-webhooks.json";
@@ -24,10 +33,12 @@ const CHECK_DEBOUNCE_MS = 250;
 const BACKSTOP_MS = 15_000;
 const POST_TIMEOUT_MS = 10_000;
 const MAX_WEBHOOKS = 200;
+/** A removal is remembered past any webhook's lifetime, so no brain revives it. */
+const REMOVED_KEEP_MS = DEFAULT_LIFETIME_MS + 24 * 60 * 60_000;
 /** Delay before each try; one failed POST never loses the news, five do. */
 const RETRY_DELAYS_MS = [0, 5_000, 30_000, 2 * 60_000, 10 * 60_000];
 
-export type ChatWebhookEvent = "chat.idle" | "chat.needs_input" | "chat.failed";
+type ChatWebhookEvent = "chat.idle" | "chat.needs_input" | "chat.failed";
 
 type ChatWebhookState = "idle" | "needs_input" | "failed";
 
@@ -45,11 +56,10 @@ type StoredChatWebhook = {
   deliveries: Delivery[];
 };
 
-export type ChatWebhookView = Pick<StoredChatWebhook, "id" | "sessionId" | "url" | "createdAt" | "expiresAt"> & { hasToken: boolean };
+type ChatWebhookView = Pick<StoredChatWebhook, "id" | "sessionId" | "url" | "createdAt" | "expiresAt"> & { hasToken: boolean };
 
-export type ArmChatWebhookArgs = { sessionId: string; url: string; token?: string | null };
+type ArmChatWebhookArgs = { sessionId: string; url: string; token?: string | null };
 
-const PRIVATE_HOST = /^(?:localhost|.*\.local|.*\.internal|127\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.|\[?::1\]?$|\[?f[cd][0-9a-f]{2}:|\[?fe80:)/i;
 
 /** A public https URL, or a sentence saying why it can't be one. */
 export function chatWebhookUrlProblem(value: string): string | null {
@@ -61,12 +71,16 @@ export function chatWebhookUrlProblem(value: string): string | null {
   }
   if (url.protocol !== "https:") return "The notify URL must use https.";
   if (url.username || url.password) return "The notify URL can't carry a user name or password; use the notify token.";
-  if (PRIVATE_HOST.test(url.hostname)) return "The notify URL must be a public address, not this computer or a private network.";
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  // Other names are resolved and checked before each POST (`postPinned`).
+  if (net.isIP(host) ? isPrivateIpAddress(host) : isLocalHostname(host)) {
+    return "The notify URL must be a public address, not this computer or a private network.";
+  }
   return null;
 }
 
 function stateOfChat(summary: Record<string, unknown>): ChatWebhookState | null {
-  if (summary.awaitingInput === true || summary.phase === "blocked") return "needs_input";
+  if (chatWaitTargetMatches(summary, "awaiting-input")) return "needs_input";
   if (summary.status === "failed") return "failed";
   return chatWaitTargetMatches(summary, "idle") || chatWaitTargetMatches(summary, "terminal") ? "idle" : null;
 }
@@ -93,6 +107,7 @@ async function postPinned(rawUrl: string, headers: Record<string, string>, body:
     if (!addresses.length || addresses.some((entry) => !isPublicIpAddress(entry.address))) return PRIVATE_ADDRESS;
     target = addresses[0]!;
   } catch {
+    // A name that does not resolve now is tried again like any failed POST, and logged when it is given up on.
     return 0;
   }
   return await new Promise<number>((resolve) => {
@@ -116,24 +131,64 @@ export function createChatWebhookRegistry(deps: {
   secretsDir: string;
   /** The chat's summary; null when it is gone. */
   readSummary: (sessionId: string) => Promise<Record<string, unknown> | null>;
-  /** Only the brain running a chat reports on it. */
-  ownedByAnotherBrain: (sessionId: string) => boolean;
-  fetchImpl?: typeof fetch;
-  now?: () => number;
+  /** This brain runs the chat now. */
+  runsHere: (sessionId: string) => boolean;
+  /** Another live brain runs the chat. */
+  ownedElsewhere: (sessionId: string) => boolean;
 }) {
-  const now = deps.now ?? Date.now;
+  const now = Date.now;
   const filePath = path.join(deps.secretsDir, FILE_NAME);
-  const load = (): StoredChatWebhook[] => {
+  const warn = (event: string, error: unknown, data: Record<string, unknown> = {}) =>
+    deps.logger.warn(event, { ...data, error: error instanceof Error ? error.message : String(error) });
+  /**
+   * The file: its webhooks, and the ids removed (cancelled, replaced or
+   * expired), kept so another brain on this project drops them too. Null when
+   * it could not be read, so a write would drop another brain's webhooks.
+   */
+  const load = (): { hooks: StoredChatWebhook[]; removed: Record<string, number> } | null => {
     try {
       const raw: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
-      return Array.isArray(raw) ? (raw as StoredChatWebhook[]).filter((entry) => typeof entry?.id === "string") : [];
-    } catch {
-      return [];
+      // The first version of the file was a bare list.
+      const record = Array.isArray(raw) ? { hooks: raw } : (raw ?? {}) as { hooks?: unknown; removed?: unknown };
+      const list = Array.isArray(record.hooks) ? (record.hooks as StoredChatWebhook[]).filter((entry) => typeof entry?.id === "string") : [];
+      const tombstones = record.removed && typeof record.removed === "object" ? record.removed as Record<string, number> : {};
+      return { hooks: list, removed: tombstones };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return { hooks: [], removed: {} };
+      warn("agent_chat.webhooks_read_failed", error);
+      return null;
     }
   };
-  let hooks = load();
-  /** Ids this brain removed, so a merge with the file does not bring them back. */
-  const removed = new Set<string>();
+  const initial = load();
+  /** Ids removed here or by another brain, and when; kept past any webhook's lifetime. */
+  const removed = new Map<string, number>(Object.entries(initial?.removed ?? {}));
+  let hooks = (initial?.hooks ?? []).filter((hook) => !removed.has(hook.id));
+  const markRemoved = (id: string): void => {
+    removed.set(id, now());
+  };
+  /** Takes in what another brain wrote: its removals win, its new webhooks are added. */
+  const absorb = (onDisk: NonNullable<ReturnType<typeof load>>): void => {
+    for (const [id, at] of Object.entries(onDisk.removed)) if (!removed.has(id)) removed.set(id, at);
+    const known = new Set(hooks.map((hook) => hook.id));
+    hooks = [...hooks.filter((hook) => !removed.has(hook.id)), ...onDisk.hooks.filter((hook) => !known.has(hook.id) && !removed.has(hook.id))];
+  };
+  /** Webhooks whose state this brain changed since its last write: its copy of those wins. */
+  const changedHere = new Set<string>();
+  const checksHook = (hook: StoredChatWebhook): boolean =>
+    deps.runsHere(hook.sessionId) || (hook.deliveries.length > 0 && !deps.ownedElsewhere(hook.sessionId));
+  let fileMtimeMs = 0;
+  let fileCheckedAt = 0;
+  /** Another brain wrote the file since this one last looked (checked at most once a second). */
+  const fileChanged = (): boolean => {
+    if (now() - fileCheckedAt < 1_000) return false;
+    fileCheckedAt = now();
+    const mtime = fs.statSync(filePath, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+    if (mtime === fileMtimeMs) return false;
+    fileMtimeMs = mtime;
+    return true;
+  };
+  /** Sessions with an event since the last check; the backstop checks every hook. */
+  const signalled = new Set<string>();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let backstop: ReturnType<typeof setInterval> | null = null;
   let checking = false;
@@ -142,17 +197,25 @@ export function createChatWebhookRegistry(deps: {
 
   /**
    * Two brains can run one project (a dev brain beside the installed one).
-   * Each writes only what it changed: webhooks the other one added stay.
+   * A webhook this brain owns is written as it holds it; any other is taken
+   * from the file, so neither brain overwrites the other's newer state.
    */
   const persist = (): void => {
+    const onDisk = load();
+    if (onDisk === null) return;
+    const disk = new Map(onDisk.hooks.map((hook) => [hook.id, hook]));
+    hooks = hooks.map((hook) => (changedHere.has(hook.id) || !disk.has(hook.id) ? hook : disk.get(hook.id)!));
+    absorb(onDisk);
+    changedHere.clear();
+    const cutoff = now() - REMOVED_KEEP_MS;
+    for (const [id, at] of removed) if (at < cutoff) removed.delete(id);
     try {
-      const mine = new Set(hooks.map((hook) => hook.id));
-      const theirs = load().filter((hook) => !mine.has(hook.id) && !removed.has(hook.id));
-      hooks = [...hooks, ...theirs];
       fs.mkdirSync(deps.secretsDir, { recursive: true, mode: 0o700 });
-      writeFileAtomic(filePath, JSON.stringify(hooks), { mode: 0o600 });
+      writeFileAtomic(filePath, JSON.stringify({ hooks, removed: Object.fromEntries(removed) }), { mode: 0o600 });
+      securePrivatePath(filePath);
+      fileMtimeMs = fs.statSync(filePath, { throwIfNoEntry: false })?.mtimeMs ?? 0;
     } catch (error) {
-      deps.logger.warn("agent_chat.webhooks_persist_failed", { error: error instanceof Error ? error.message : String(error) });
+      warn("agent_chat.webhooks_persist_failed", error);
     }
   };
 
@@ -161,7 +224,7 @@ export function createChatWebhookRegistry(deps: {
       if (backstop) clearInterval(backstop);
       backstop = null;
     } else if (!backstop && !disposed) {
-      backstop = setInterval(() => void check(), BACKSTOP_MS);
+      backstop = setInterval(() => void check(null), BACKSTOP_MS);
       backstop.unref?.();
     }
   };
@@ -170,7 +233,9 @@ export function createChatWebhookRegistry(deps: {
     if (timer || disposed) return;
     timer = setTimeout(() => {
       timer = null;
-      void check();
+      const sessions = new Set(signalled);
+      signalled.clear();
+      void check(sessions);
     }, CHECK_DEBOUNCE_MS);
     timer.unref?.();
   };
@@ -182,17 +247,10 @@ export function createChatWebhookRegistry(deps: {
       "user-agent": "ADE chat webhook",
       ...(hook.token ? { authorization: `Bearer ${hook.token}` } : {}),
     };
-    let status = 0;
-    if (deps.fetchImpl) {
-      status = await deps.fetchImpl(hook.url, {
-        method: "POST", headers, body: delivery.body, redirect: "manual", signal: AbortSignal.timeout(POST_TIMEOUT_MS),
-      }).then((response) => response.status, () => 0);
-    } else {
-      status = await postPinned(hook.url, headers, delivery.body);
-      if (status === PRIVATE_ADDRESS) {
-        deps.logger.warn("agent_chat.webhook_private_address", { webhookId: hook.id, sessionId: hook.sessionId });
-        return true;
-      }
+    const status = await postPinned(hook.url, headers, delivery.body);
+    if (status === PRIVATE_ADDRESS) {
+      deps.logger.warn("agent_chat.webhook_private_address", { webhookId: hook.id, sessionId: hook.sessionId });
+      return true;
     }
     if (status >= 200 && status < 300) return true;
     const permanent = status >= 400 && status < 500 && status !== 408 && status !== 425 && status !== 429;
@@ -208,8 +266,12 @@ export function createChatWebhookRegistry(deps: {
 
   const checkHook = async (hook: StoredChatWebhook): Promise<boolean> => {
     let changed = false;
-    if (!deps.ownedByAnotherBrain(hook.sessionId)) {
-      const summary = await deps.readSummary(hook.sessionId).catch(() => undefined);
+    // An expired webhook only finishes the deliveries it already queued.
+    if (Date.parse(hook.expiresAt) > now() && deps.runsHere(hook.sessionId)) {
+      const summary = await deps.readSummary(hook.sessionId).catch((error: unknown) => {
+        warn("agent_chat.webhook_summary_failed", error, { webhookId: hook.id, sessionId: hook.sessionId });
+        return null;
+      });
       if (summary) {
         const state = stateOfChat(summary);
         if (state === null) {
@@ -235,7 +297,7 @@ export function createChatWebhookRegistry(deps: {
         }
       }
     }
-    for (const delivery of hook.deliveries.filter((entry) => entry.nextAt <= now())) {
+    for (const delivery of hook.deliveries.filter((entry) => entry.nextAt <= now() && !removed.has(hook.id))) {
       const finished = await post(hook, delivery);
       if (finished) hook.deliveries = hook.deliveries.filter((entry) => entry !== delivery);
       changed = true;
@@ -243,22 +305,36 @@ export function createChatWebhookRegistry(deps: {
     return changed;
   };
 
-  const check = async (): Promise<void> => {
+  /** Checks the webhooks of `sessions` (every one with null) that this brain owns. */
+  const check = async (sessions: ReadonlySet<string> | null): Promise<void> => {
     if (disposed) return;
     if (checking) {
+      for (const session of sessions ?? hooks.map((hook) => hook.sessionId)) signalled.add(session);
       recheck = true;
       return;
     }
     checking = true;
     try {
+      // The full check also picks up webhooks another brain on this project armed for chats this one runs.
+      if (sessions === null) {
+        const onDisk = load();
+        if (onDisk) absorb(onDisk);
+      }
       let changed = false;
-      for (const hook of [...hooks]) {
-        if (await checkHook(hook).catch(() => false)) changed = true;
+      for (const hook of hooks.filter((entry) => checksHook(entry) && (!sessions || sessions.has(entry.sessionId)))) {
+        const hookChanged = await checkHook(hook).catch((error: unknown) => {
+          warn("agent_chat.webhook_check_failed", error, { webhookId: hook.id, sessionId: hook.sessionId });
+          return false;
+        });
+        if (hookChanged) {
+          changed = true;
+          changedHere.add(hook.id);
+        }
       }
       const at = now();
       const kept = hooks.filter((hook) => hook.deliveries.length > 0 || Date.parse(hook.expiresAt) > at);
       if (kept.length !== hooks.length) changed = true;
-      for (const hook of hooks) if (!kept.includes(hook)) removed.add(hook.id);
+      for (const hook of hooks) if (!kept.includes(hook)) markRemoved(hook.id);
       hooks = kept;
       if (changed) persist();
       syncBackstop();
@@ -281,8 +357,29 @@ export function createChatWebhookRegistry(deps: {
   });
 
   return {
-    signal(sessionId: string): void {
-      if (hooks.some((hook) => hook.sessionId === sessionId)) schedule();
+    /**
+     * A chat emitted an event. A turn's start is recorded at once: a turn
+     * that starts and ends between two checks would otherwise read as idle
+     * all along, and its end would never be reported.
+     */
+    signal(sessionId: string, event?: { type: string; turnStatus?: string }): void {
+      // A webhook another brain armed for a chat this one runs arrives through the file.
+      if (fileChanged()) {
+        const onDisk = load();
+        if (onDisk) absorb(onDisk);
+        syncBackstop();
+      }
+      const mine = hooks.filter((hook) => hook.sessionId === sessionId);
+      if (!mine.length) return;
+      if (event?.type === "status" && event.turnStatus === "started") {
+        for (const hook of mine) {
+          hook.seenRunning = true;
+          hook.lastState = null;
+          changedHere.add(hook.id);
+        }
+      }
+      signalled.add(sessionId);
+      schedule();
     },
 
     /** Arms (or replaces) this chat's webhook for this URL. The chat may not exist yet: a launch arms it first. */
@@ -293,7 +390,7 @@ export function createChatWebhookRegistry(deps: {
       const problem = chatWebhookUrlProblem(url);
       if (problem) throw new Error(problem);
       const others = hooks.filter((hook) => !(hook.sessionId === sessionId && hook.url === url));
-      for (const hook of hooks) if (!others.includes(hook)) removed.add(hook.id);
+      for (const hook of hooks) if (!others.includes(hook)) markRemoved(hook.id);
       if (others.length >= MAX_WEBHOOKS) throw new Error(`At most ${MAX_WEBHOOKS} chat webhooks can be armed at once.`);
       const at = now();
       const hook: StoredChatWebhook = {
@@ -307,9 +404,11 @@ export function createChatWebhookRegistry(deps: {
         seenRunning: false,
         deliveries: [],
       };
+      changedHere.add(hook.id);
       hooks = [...others, hook];
       persist();
       syncBackstop();
+      signalled.add(sessionId);
       schedule();
       return view(hook);
     },
@@ -322,7 +421,7 @@ export function createChatWebhookRegistry(deps: {
 
     async cancel(args: { webhookId?: string; sessionId?: string }): Promise<{ cancelled: number }> {
       const before = hooks.length;
-      for (const hook of hooks) if (hook.id === args?.webhookId || hook.sessionId === args?.sessionId) removed.add(hook.id);
+      for (const hook of hooks) if (hook.id === args?.webhookId || hook.sessionId === args?.sessionId) markRemoved(hook.id);
       hooks = hooks.filter((hook) => hook.id !== args?.webhookId && hook.sessionId !== args?.sessionId);
       const cancelled = before - hooks.length;
       if (cancelled > 0) {
@@ -335,7 +434,7 @@ export function createChatWebhookRegistry(deps: {
     start(): void {
       if (hooks.length === 0) return;
       syncBackstop();
-      schedule();
+      void check(null);
     },
 
     dispose(): void {

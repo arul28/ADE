@@ -4,8 +4,9 @@ import path from "node:path";
 import { buildDeeplink, type DeeplinkOwnership } from "../../../../desktop/src/shared/deeplinks";
 import { pathIsWithinRoot } from "../../../../desktop/src/shared/pathContainment";
 import { redactOutgoingChatText } from "../../../../desktop/src/main/utils/redaction";
+import { CHAT_SETTING_FIELDS } from "../../../../desktop/src/shared/chatTurnStatus";
 import type { RemoteMcpToolResult } from "./remoteMcpForward";
-import { MAX_OUTPUT_BYTES, type RemoteRunResult } from "./remoteMcpRunner";
+import { MAX_OUTPUT_BYTES, MAX_STDIN_BYTES, type RemoteRunResult } from "./remoteMcpRunner";
 
 /**
  * ADE MCP's typed tools: named inputs a client can check before calling. Each
@@ -69,8 +70,6 @@ export type TypedTool = {
   launchDefaults?: (input: TypedToolInput, defaults: { provider: string; model: string; reasoningEffort?: string | null }) => TypedToolInput;
   /** What the command reads on stdin, so large text never goes through an argument. */
   stdin?: (input: TypedToolInput) => string | null;
-  /** It returns what agents wrote: secrets they printed are removed from the result. */
-  redactOutput?: true;
   /** It creates something, so it must name where: `project`, and `machine` on the account address. */
   explicitTarget?: true;
   /** Exit codes that are answers, not failures (`chat status` exits 1 when idle). */
@@ -108,10 +107,6 @@ function permissionWord(value: string): string {
   return value === "bypass" || value === "bypassPermissions" ? "full-auto" : value;
 }
 
-/** A chat's real settings, as `chat status` and `chat launch` report them. */
-const CHAT_SETTING_FIELDS = [
-  "model", "modelId", "reasoningEffort", "permissionMode", "claudePermissionMode", "fastMode", "instanceId", "instanceLabel",
-] as const;
 
 const LANE_COMPACT_FIELDS = ["id", "name", "branchRef", "baseRef", "laneType", "archivedAt", "worktreePath"] as const;
 const LANE_STATUS_FIELDS = ["dirty", "ahead", "behind", "comparedTo", "remoteBehind", "changedFileCount", "rebaseInProgress"] as const;
@@ -122,7 +117,36 @@ function compactLane(lane: Record<string, unknown>): Record<string, unknown> {
   return { ...pick(lane, LANE_COMPACT_FIELDS), ...(status ? { status } : {}), ...(primaryOffBase ? { primaryOffBase: true } : {}) };
 }
 
-const FILE_CHUNK_NOTE = "Up to 256 KB per call.";
+
+/**
+ * Commands whose output is text a shell or an agent wrote (chat reads,
+ * statuses and previews, terminal output, search previews): secrets in it are
+ * masked before it leaves through ADE MCP, typed tool or raw `ade` alike.
+ */
+const AGENT_OUTPUT_COMMANDS: Readonly<Record<string, ReadonlySet<string>>> = {
+  chat: new Set(["read", "messages", "transcript", "list", "status", "wait", "inbox", "events"]),
+  terminal: new Set(["read", "tail", "scrollback"]),
+  files: new Set(["search"]),
+};
+const COMMAND_SPELLINGS: Readonly<Record<string, string>> = { chats: "chat", terminals: "terminal", file: "files" };
+
+export function printsAgentOutput(argv: readonly string[]): boolean {
+  const [command, sub] = argv;
+  const canonical = command ? COMMAND_SPELLINGS[command] ?? command : "";
+  return Boolean(sub && AGENT_OUTPUT_COMMANDS[canonical]?.has(sub));
+}
+
+/**
+ * The refusal for a tool that creates something without naming its project,
+ * listing the projects so the model can pick in one more call.
+ */
+export function explicitTargetRefusal(toolName: string, projects: ReadonlyArray<{ displayName: string; projectId: string }>): string {
+  const choices = projects.length
+    ? `Projects here, last opened first: ${projects.map((project) => `${project.displayName} (${project.projectId})`).join(", ")}. `
+      + "Use the one the person named; if they named none, the first."
+    : "No project is open on this computer; projects_clone adds one.";
+  return `${toolName} needs \`project\`, because the default changes as the person works. ${choices}`;
+}
 
 /** A string with something in it, trimmed; null for anything else. */
 export function nonEmptyString(value: unknown): string | null {
@@ -432,7 +456,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
   {
     name: "files_write",
     title: "Write a file in a lane",
-    description: `Writes a file in a lane. ${FILE_CHUNK_NOTE} Bigger: chunks with offset. Answers bytes and sha256.`,
+    description: `Writes a file in a lane, up to ${MAX_STDIN_BYTES / 1024} KB per call. Bigger: chunks with offset. Answers bytes and sha256.`,
     write: true,
     properties: {
       lane: LANE,
@@ -462,7 +486,6 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "files_search",
     title: "Search files in a lane",
     description: "Searches text in a lane's files: path, line and preview per match.",
-    redactOutput: true,
     properties: {
       lane: LANE,
       query: { type: "string", description: "Text to find." },
@@ -595,7 +618,6 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     description: "Agent chats, most recently active first.",
     fanOut: true,
     view: true,
-    redactOutput: true,
     properties: {
       lane: { ...LANE, description: "Only this lane's." },
       include_archived: { type: "boolean", description: "Include archived chats." },
@@ -621,7 +643,6 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     title: "Read a chat",
     description: "A chat's latest messages.",
     view: true,
-    redactOutput: true,
     properties: {
       session: SESSION,
       limit: LIMIT(100, 20),
@@ -646,7 +667,6 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "chat_status",
     title: "Chat status",
     description: "Whether a chat is running, idle or blocked, what it is doing now, and its model, effort, permissions and account.",
-    redactOutput: true,
     properties: { session: SESSION },
     required: ["session"],
     build: (input) => {
@@ -673,7 +693,6 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "chat_wait",
     title: "Wait for a chat",
     description: `Waits until a chat reaches a state (default idle). Answers within ${DEFAULT_WAIT_SECONDS} s by default, so a client's request limit can't cut it off; call again to keep waiting.`,
-    redactOutput: true,
     properties: {
       session: SESSION,
       for: { type: "string", enum: [...WAIT_TARGETS], description: "Default idle: its turn is done." },
@@ -837,7 +856,6 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     description: "Questions and approvals chats wait on the person for, with their options. Every recent project unless `project` is given.",
     fanOut: true,
     view: true,
-    redactOutput: true,
     properties: {},
     build: () => ({ argv: ["chat", "inbox", "--json"] }),
     shape: (value) => ({ items: records(value, ["items"]).map((item) => pick(item, INBOX_FIELDS)) }),
@@ -1064,24 +1082,28 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       const argv = lane.value
         ? ["chat", "create", "--lane", lane.value, freeText("--prompt", prompt)]
         : ["chat", "launch", freeText("--prompt", prompt)];
-      const flags = [
+      // Words go where the CLI reads a word; names, titles and keys are free text.
+      const wordFlags = [
         ["provider", "--provider"], ["model", "--model"], ["reasoning_effort", "--reasoning-effort"], ["instance", "--instance"],
-        ["lane_name", "--lane-name"], ["base", "--from"], ["notify_url", "--notify-url"], ["notify_token", "--notify-token"],
+        ["base", "--from"], ["notify_url", "--notify-url"],
       ] as const;
-      for (const [key, flag] of flags) {
-        const value = key === "lane_name" || key === "notify_token"
-          ? (text(input, key) ? { value: text(input, key) } : { value: null })
-          : optionalWord(input, key);
+      for (const [key, flag] of wordFlags) {
+        const value = optionalWord(input, key);
         if ("error" in value) return value;
         if (value.value) argv.push(freeText(flag, value.value));
       }
-      const title = text(input, "title");
-      if (title) argv.push(freeText("--title", title));
+      for (const [key, flag] of [["lane_name", "--lane-name"], ["title", "--title"]] as const) {
+        const value = text(input, key);
+        if (value) argv.push(freeText(flag, value));
+      }
+      // On stdin, so the key is never in a process list.
+      if (text(input, "notify_token")) argv.push("--notify-token-stdin");
       argv.push(freeText("--permissions", permissionWord(text(input, "permission_mode") ?? "full-auto")));
       if (typeof input.fast === "boolean") argv.push(input.fast ? "--fast" : "--no-fast");
       if (input.dry_run === true) return { argv: [...argv, "--print-config", "--json"] };
       return { argv: lane.value ? [...argv, "--json"] : [...argv, "--wait", "--timeout-ms", String(START_WAIT_SECONDS * 1000), "--json"] };
     },
+    stdin: (input) => text(input, "notify_token"),
     // `--wait` exits 1 when the launch failed or is still setting up; the JSON says which.
     okExitCodes: [0, 1],
     timeoutMs: () => (START_WAIT_SECONDS + 30) * 1000,
@@ -1169,7 +1191,8 @@ export function parseTypedRun(
   try {
     const parsed: unknown = JSON.parse(run.stdout);
     const shaped = tool.shape ? tool.shape(parsed, input, context) : parsed;
-    return { value: tool.redactOutput ? redactOutgoingChatText(shaped) : shaped, raw: parsed };
+    const built = tool.build(input);
+    return { value: "argv" in built && printsAgentOutput(built.argv) ? redactOutgoingChatText(shaped) : shaped, raw: parsed };
   } catch {
     return null;
   }
@@ -1213,8 +1236,12 @@ export function buildTypedToolResult(
 ): { answer: RemoteMcpToolResult; raw: unknown } {
   const parsed = parseTypedRun(tool, input, run, frame.context);
   if (!parsed) {
+    const built = tool.build(input);
+    const shown = "argv" in built && printsAgentOutput(built.argv)
+      ? { ...run, stdout: redactOutgoingChatText(run.stdout), stderr: redactOutgoingChatText(run.stderr) }
+      : run;
     return {
-      answer: { content: [{ type: "text", text: `${frame.headLine}\n${toolText(run, tool.maxOutputBytes)}` }], isError: true },
+      answer: { content: [{ type: "text", text: `${frame.headLine}\n${toolText(shown, tool.maxOutputBytes)}` }], isError: true },
       raw: null,
     };
   }

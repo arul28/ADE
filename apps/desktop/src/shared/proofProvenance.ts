@@ -166,3 +166,6 @@ export function appControlProofCaption(
   const lane = laneName?.trim();
   return lane ? `${app} · ${lane}` : app;
 }
+
+/** The words `ade proof review --chat` uses for a chat with no proof yet; ADE MCP reads them to tell that apart from a missing chat. */
+export const CHAT_HAS_NO_PROOF_YET = "has no video or picture to review yet";

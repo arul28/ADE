@@ -232,7 +232,8 @@ async function runOne(evalCase: EvalCase, model: string, sample: number, outDir:
     turns: typeof final?.num_turns === "number" ? final.num_turns : null,
     ...(error ? { error } : {}),
   };
-  fs.writeFileSync(path.join(outDir, `${evalCase.id}.${model}.${sample}.json`), JSON.stringify({ ...result, events }, null, 2));
+  // `openai/gpt-…` names a folder otherwise.
+  fs.writeFileSync(path.join(outDir, `${evalCase.id}.${model.replace(/[^\w.-]+/g, "_")}.${sample}.json`), JSON.stringify({ ...result, events }, null, 2));
   fs.rmSync(dir, { recursive: true, force: true });
   return result;
 }

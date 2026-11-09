@@ -282,6 +282,7 @@ import {
   type ChatTurnStatusSnapshot,
 } from "../../desktop/src/shared/chatTurnStatus";
 import { chatWaitsOnUser, chatWaitTargetMatches } from "../../desktop/src/shared/chatWait";
+import { CHAT_SETTING_FIELDS } from "../../desktop/src/shared/chatTurnStatus";
 import { chatWebhookUrlProblem } from "../../desktop/src/main/services/chat/chatWebhookRegistry";
 import type { SessionActivitySource, TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import { SESSION_ACTIVITY_VALUES } from "../../desktop/src/shared/types/sessions";
@@ -11124,7 +11125,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
 /** The settings a chat really runs with, for a caller to check what it started. */
 function pickChatSettings(summary: Record<string, unknown>): JsonObject {
   const out: JsonObject = {};
-  for (const key of ["laneId", "model", "modelId", "reasoningEffort", "permissionMode", "claudePermissionMode", "fastMode", "title", "instanceId"]) {
+  for (const key of CHAT_SETTING_FIELDS) {
     const value = summary[key];
     if (value !== undefined && value !== null) out[key] = value as JsonObject[string];
   }
@@ -11136,10 +11137,21 @@ function assertChatWebhookUrl(url: string): void {
   if (problem) throw new CliUsageError(problem);
 }
 
-/** `--notify-url <https> [--notify-token <key>]` on `chat launch` and `chat create`. */
+/**
+ * `--notify-url <https> [--notify-token <key> | --notify-token-stdin]` on
+ * `chat launch` and `chat create`. Stdin keeps the key out of the process list.
+ */
 function readChatNotifyFlags(args: string[]): { url: string; token: string | null } | null {
   const url = readValue(args, ["--notify-url"]);
-  const token = readValue(args, ["--notify-token"]);
+  if (url?.startsWith("-")) throw new CliUsageError("--notify-url needs an https URL.");
+  const tokenFromStdin = readFlag(args, ["--notify-token-stdin"]);
+  if (tokenFromStdin && args.some((word, index) => /^--(?:prompt|text)-file(?:=-)?$/.test(word) && (word.endsWith("=-") || args[index + 1] === "-"))) {
+    throw new CliUsageError("Stdin can carry the prompt or the notify token, not both: pass the prompt with --prompt.");
+  }
+  const inlineToken = readValue(args, ["--notify-token"]);
+  if (inlineToken?.startsWith("--")) throw new CliUsageError("--notify-token needs a value; for one that starts with -- use --notify-token-stdin.");
+  const token = tokenFromStdin ? readAllStdinSync().trim() : inlineToken;
+  if (tokenFromStdin && !token) throw new CliUsageError("--notify-token-stdin got no token on stdin.");
   if (!url) {
     if (token) throw new CliUsageError("--notify-token needs --notify-url.");
     return null;
@@ -11200,7 +11212,11 @@ async function runChatLaunchCommand(
     // A chat's id is its launch's, so the webhook is armed before the chat exists.
     const notifyResult = plan.notify
       ? await callChat("armWebhook", { sessionId: started.launchId, url: plan.notify.url, ...(plan.notify.token ? { token: plan.notify.token } : {}) })
-        .then(() => ({ notify: { armed: true } }), (error: unknown) => ({ notify: { armed: false, error: error instanceof Error ? error.message : String(error) } }))
+        .then(() => ({ notify: { armed: true } }), (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          process.stderr.write(`ade: the chat starts, but its notify webhook was not armed: ${message}\n`);
+          return { notify: { armed: false, error: message } };
+        })
       : {};
     if (!plan.wait) {
       return { output: formatOutput({ ...started, ...notifyResult }, options, "chat-launch"), exitCode: 0 };
@@ -11222,10 +11238,7 @@ async function runChatLaunchCommand(
       if (CHAT_LAUNCH_TERMINAL_PHASES.has(phase)) {
         // What the chat really runs with, which the caller may have left to defaults.
         const session = phase === "completed"
-          ? await connection.request("ade/actions/call", {
-            name: "run_ade_action",
-            arguments: { domain: "chat", action: "getSessionSummary", argsList: [asString(launch.sessionId) ?? launchId] },
-          }).then((raw) => unwrapActionEnvelope(unwrapToolResult(raw)), () => null)
+          ? await callChat("getSessionSummary", { sessionId: asString(launch.sessionId) ?? launchId }).catch(() => null)
           : null;
         const result = { ok: phase === "completed", launchId, phase, elapsedMs, launch, ...notifyResult, ...(isRecord(session) ? { session: pickChatSettings(session) } : {}) };
         return { output: formatOutput(result, options, "chat-launch"), exitCode: phase === "completed" ? 0 : 1 };
@@ -12114,11 +12127,14 @@ function buildChatPlan(args: string[]): CliPlan {
       }]
       : [];
     // Armed before the kickoff, so the first turn's end is reported.
+    // Optional: a webhook that can't be armed (an older host, the cap) must not
+    // strand a made chat without its prompt. The answer says it wasn't armed.
     const notifySteps = (createKey: string): InvocationStep[] => notify
       ? [{
         key: "notify",
         method: "ade/actions/call",
         unwrapToolResult: true,
+        optional: true,
         params: (values) => ({
           name: "run_ade_action",
           arguments: {
@@ -12186,12 +12202,16 @@ function buildChatPlan(args: string[]): CliPlan {
           ],
         };
       }
-      return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, steps: [createStep, ...notifySteps("result"), ...laneChatsSteps("result")] };
+      if (notify) {
+        return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, steps: [{ ...createStep, key: "session" }, ...notifySteps("session"), ...laneChatsSteps("session")] };
+      }
+      return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, steps: [createStep, ...laneChatsSteps("result")] };
     }
     const issueForKickoff = linearIssue;
     const steps: InvocationStep[] = [
       // First step keyed "session" so attach/kickoff can read the new id.
       { ...createStep, key: "session" },
+      ...notifySteps("session"),
       ...laneChatsSteps("session"),
       {
         key: "attach",
@@ -12428,11 +12448,22 @@ function buildChatPlan(args: string[]): CliPlan {
     }
     const url = requireValue(readValue(args, ["--url"]), "--url");
     assertChatWebhookUrl(url);
-    const token = readFlag(args, ["--token-stdin"]) ? readAllStdinSync().trim() : readValue(args, ["--token"]);
+    const tokenFromStdin = readFlag(args, ["--token-stdin"]);
+    const token = tokenFromStdin ? readAllStdinSync().trim() : readValue(args, ["--token"]);
+    if (tokenFromStdin && !token) throw new CliUsageError("--token-stdin got no token on stdin.");
+    const target = requireValue(sessionId, "sessionId");
     return {
       kind: "execute",
       label: "chat notify",
-      steps: [actionStep("result", "chat", "armWebhook", { sessionId: requireValue(sessionId, "sessionId"), url, ...(token ? { token } : {}) })],
+      steps: [
+        // Only the chat's own project can report on it: a miss here goes
+        // looking on the account's other machines, like `chat status`.
+        actionArgsListStep("summary", "chat", "getSessionSummary", [target]),
+        {
+          ...actionStep("result", "chat", "armWebhook", { sessionId: target, url, ...(token ? { token } : {}) }),
+          skipWhen: (values) => unwrapActionEnvelope(values.summary) == null,
+        },
+      ],
     };
   }
   if (sub === "wait" && readFlag(args, ["--background"])) {
@@ -14362,20 +14393,22 @@ function warnInlineChatTextThroughCmd(args: string[], inlineFlags: readonly stri
 let stdinTextRead: string | null = null;
 
 function readAllStdinSync(): string {
-  stdinTextRead ??= readStdinToEndSync();
+  stdinTextRead ??= readStdinSync();
   return stdinTextRead;
 }
 
 /**
- * `readFileSync(0)` fails with EAGAIN when stdin is a non-blocking pipe whose
- * writer has not caught up (a large `stdin` from ADE MCP did it at ~230 KB).
- * Read until end of input, pausing briefly when the pipe is empty.
+ * Stdin to its end, refused past `bound.maxBytes`. `readFileSync(0)` failed
+ * with EAGAIN when stdin was a non-blocking pipe whose writer had not caught
+ * up (a large `stdin` from ADE MCP did it at ~230 KB), so this reads in a
+ * loop, pausing briefly while the pipe is empty.
  */
-function readStdinToEndSync(): string {
+function readStdinSync(bound?: { maxBytes: number; label: string }): string {
   const chunks: Buffer[] = [];
   const pause = new Int32Array(new SharedArrayBuffer(4));
+  let total = 0;
   while (true) {
-    const chunk = Buffer.allocUnsafe(64 * 1024);
+    const chunk = Buffer.allocUnsafe(bound ? Math.min(64 * 1024, bound.maxBytes + 1 - total) : 64 * 1024);
     let bytes = 0;
     try {
       bytes = fs.readSync(0, chunk, 0, chunk.length, null);
@@ -14390,22 +14423,8 @@ function readStdinToEndSync(): string {
       throw error;
     }
     if (bytes === 0) break;
-    chunks.push(chunk.subarray(0, bytes));
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-function readBoundedStdinSync(maxBytes: number, label: string): string {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  while (true) {
-    const chunk = Buffer.alloc(Math.min(8_192, maxBytes + 1 - total));
-    const bytes = fs.readSync(0, chunk, 0, chunk.length, null);
-    if (bytes === 0) break;
     total += bytes;
-    if (total > maxBytes) {
-      throw new CliUsageError(`${label} must be ${maxBytes} bytes or fewer.`);
-    }
+    if (bound && total > bound.maxBytes) throw new CliUsageError(`${bound.label} must be ${bound.maxBytes} bytes or fewer.`);
     chunks.push(chunk.subarray(0, bytes));
   }
   return Buffer.concat(chunks).toString("utf8");
@@ -25650,7 +25669,7 @@ Usage:
       );
     }
     const request = parseObjectJson(
-      readBoundedStdinSync(64 * 1024, "SSH pairing request"),
+      readStdinSync({ maxBytes: 64 * 1024, label: "SSH pairing request" }),
       "SSH pairing request",
     );
     return {
@@ -38258,11 +38277,18 @@ function summarizeExecution(args: {
       plan.label === "chat create from Linear issue") &&
     values.session !== undefined
   ) {
+    const notified = values.notify === undefined ? null : unwrapActionEnvelope(values.notify);
+    if (isRecord(notified) && notified.ok === false) {
+      process.stderr.write(`ade: the chat started, but its notify webhook was not armed: ${String(notified.error ?? "unknown error")}\n`);
+    }
     return {
       ok: true,
       session: unwrapActionEnvelope(values.session),
       ...(values.attach !== undefined ? { attach: unwrapActionEnvelope(values.attach) } : {}),
       ...(values.result !== undefined ? { kickoff: unwrapActionEnvelope(values.result) } : {}),
+      ...(notified !== null
+        ? { notify: isRecord(notified) && notified.ok === false ? { armed: false, error: notified.error ?? null } : { armed: true } }
+        : {}),
     };
   }
 
@@ -38313,6 +38339,14 @@ function summarizeExecution(args: {
         : {}),
       ...(enrichment?.timeZone !== undefined ? { timeZone: enrichment.timeZone } : {}),
     };
+  }
+
+  if (plan.label === "chat notify") {
+    if (unwrapActionEnvelope(values.summary) == null) {
+      chatMissedHere = true;
+      return { result: null };
+    }
+    return unwrapActionEnvelope(values.result);
   }
 
   if (plan.label === "chat events") {

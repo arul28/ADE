@@ -6,6 +6,7 @@ import {
   permissionLevelRank,
   type PermissionLevel,
 } from "../../desktop/src/shared/permissionLadder";
+import { CHAT_HAS_NO_PROOF_YET } from "../../desktop/src/shared/proofProvenance";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { DEMO_STEP_MAX_CHARS, RECORDING_MAX_MS, parseDemoStepFocus } from "../../desktop/src/shared/demoVideo/demoContract";
 import { cloudDomainEnabled } from "../../desktop/src/shared/adeCloud";
@@ -8521,7 +8522,7 @@ async function runTool(args: {
       const chatProof = listChatProof();
       artifact = reviewable("video_recording") ?? reviewable("screenshot");
       if (!artifact) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Chat ${chatSessionId} has no video or picture to review yet. Wait for it to finish (chat wait), or ask it to record one.`);
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Chat ${chatSessionId} ${CHAT_HAS_NO_PROOF_YET}. Wait for it to finish (chat wait), or ask it to record one.`);
       }
       const shown = artifact.id;
       otherProof = chatProof

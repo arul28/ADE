@@ -44,10 +44,18 @@ export const adeBundledAgentSkills = [
  */
 export const adeDeprecatedAgentSkillAliases: ReadonlySet<string> = new Set(["ade-desktop", "ade-ios-simulator"]);
 
-/** The names a prompt lists: no deprecated aliases, no skills withheld from this account. */
+/**
+ * Skills for apps that reach ADE from outside, over ADE MCP (where they are
+ * MCP prompts). An agent inside an ADE chat never needs them, so its prompt's
+ * skill line leaves them out.
+ */
+export const adeOutsideClientAgentSkills: ReadonlySet<string> = new Set(["ade-mcp-client"]);
+
+/** The names a prompt lists: no deprecated aliases, no outside-client skills, no skills withheld from this account. */
 export function adeAdvertisedAgentSkillNames(): string[] {
   const withheld = new Set(adeWithheldAgentSkills());
-  return adeBundledAgentSkills.filter((name) => !adeDeprecatedAgentSkillAliases.has(name) && !withheld.has(name));
+  return adeBundledAgentSkills.filter((name) =>
+    !adeDeprecatedAgentSkillAliases.has(name) && !adeOutsideClientAgentSkills.has(name) && !withheld.has(name));
 }
 
 /**
@@ -325,11 +333,11 @@ export function buildAdeBootstrapGuidance(
     // cited proof as links GitHub cannot show.
     "PRs: open with `ade prs create`, rewrite text with `ade prs body`; `gh` skips proof upload and the lane link.",
     "`mcp__computer_use` drives the user's real screen: use it only on request, after `ade-computer-use`; never substitute `@oai/sky` via `node_repl`.",
-    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Settings questions: `ade settings find <words>`; clean up started processes.",
+    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Settings: `ade settings find <words>`; clean up started processes.",
     // Without this line an agent that needed Linear asked for the API key in
     // chat, where it stays in the transcript. Each command shows a card only
     // the user can answer, and the value never reaches the agent.
-    "Credentials: never ask in chat. `ade secrets request` (a key), `ade integrations connect` (GitHub/Linear/Jira) and `ade mcp servers add` (MCP) show the user a card. Read only requested `ade secrets`; never print them. Never print `.env` files or other secret values either: chats can be read by apps connected to ADE. Scratch files go in `.ade/tmp`.",
+    "Credentials: never ask in chat. `ade secrets request` (a key), `ade integrations connect` (GitHub/Linear/Jira) and `ade mcp servers add` (MCP) show a card. Read only requested `ade secrets`; never print them or `.env` files.",
     // One default per scenario: same chat and lane, subagents for other
     // models, and one wake per thing waited on, so an agent never polls.
     "Stay in this chat and lane unless asked. Another model works as your subagent (`ade new chat --mode chat`). Later: subagents report back; a PR you watch → `ade prs watch`; terminal → `ade terminal watch`; else `ade chat scheduled-work create`. `ade drafts` sends as the user.",

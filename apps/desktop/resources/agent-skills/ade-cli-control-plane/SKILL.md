@@ -232,6 +232,10 @@ Never poll and never block on a long wait. Match the thing you wait on:
 | A dev server, build or log | `ade terminal watch <terminal-id> [--match "ready"]` |
 | A peer (it does not report back) | `ade chat wait <id> --async [--for idle]` |
 | A chat, from a script or outside ADE | `ade chat events <id> --since <cursor> --json` answers at once; `ade chat notify <id> --url https://…` POSTs when it goes idle, needs input or fails |
+
+Scratch files belong in the lane's `.ade/tmp` (git-ignored). Apps connected
+to ADE over MCP can read a chat, so never print a secret or a `.env` file into
+one.
 | Anything else, later | `ade chat scheduled-work create --in 20m --prompt "<what to check>"` (see Scheduled work) |
 
 Claude's own `ScheduleWakeup`, `CronCreate` and `/loop` are mirrored into the

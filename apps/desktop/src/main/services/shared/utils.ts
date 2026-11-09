@@ -939,7 +939,7 @@ export function secureWriteFileWithinRoot(
   return targetPath;
 }
 
-export function secureWriteTextAtomicWithinRoot(root: string, candidate: string, text: string | Buffer): string {
+export function secureWriteAtomicWithinRoot(root: string, candidate: string, text: string | Buffer): string {
   const initialTarget = prepareMutationTargetWithinRoot(root, candidate);
   const tmpPath = path.join(
     initialTarget.parentPath,

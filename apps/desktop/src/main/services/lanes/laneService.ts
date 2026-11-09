@@ -1012,6 +1012,7 @@ async function resolveCompareBase(
   const rangeKey = `${baseOid}...${remoteOid}`;
   let counts = laneAheadBehindByRange.get(rangeKey) ?? null;
   if (counts === null) {
+    // A failed count keeps the local base: the numbers ADE showed before this check existed.
     const res = await runGit(["rev-list", "--left-right", "--count", rangeKey], { cwd: worktreePath, timeoutMs: 8_000 }).catch(() => null);
     if (res?.exitCode !== 0) return local;
     counts = res.stdout;
@@ -1276,6 +1277,7 @@ async function computeLaneStatus(
   // extra spawn happens only on that failure.
   const remoteBase = countsRes.exitCode === 0 ? null : remoteTrackingBaseRef(baseRef);
   if (remoteBase) countsRes = await countAgainst(remoteBase);
+  const comparedTo = compareBase?.label ?? (remoteBase && countsRes.exitCode === 0 ? `origin/${baseRef.trim()}` : null);
   let behind = 0;
   let ahead = 0;
   if (countsRes.exitCode === 0) {
@@ -1332,7 +1334,7 @@ async function computeLaneStatus(
     dirty,
     ahead,
     behind,
-    ...(compareBase ? { comparedTo: compareBase.label } : {}),
+    ...(comparedTo ? { comparedTo } : {}),
     remoteBehind,
     changedFileCount: parsedStatus.changedFileCount,
     staged: parsedStatus.staged,

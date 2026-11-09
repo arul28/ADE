@@ -26,6 +26,7 @@ import { machineProviderUsageHomes } from "../usage/providerUsageHomes";
 import { providerThreadIsInHome } from "./providerThreadMove";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { hasTable, openReadOnlyDatabase } from "../projects/readOnlySqlite";
+import { assertStorageAnswering } from "../state/unansweringRoots";
 
 /**
  * Settings › Recently deleted. Deleting a chat removes ADE's own files for it,
@@ -269,20 +270,29 @@ function listDeletedChatRows(db: DeletedChatsDb): DeletedChatRow[] {
  * without booting it. Whether its conversation can still be reopened is
  * unknown until the project opens, so `reopenable` is null.
  */
-export function readDeletedChatOnDisk(projectRoot: string, sessionId: string): { deletedAt: string; title: string | null; reopenable: null } | null {
+export function readDeletedChatOnDisk(
+  projectRoot: string,
+  sessionId: string,
+  onError: (error: unknown) => void,
+): { deletedAt: string; title: string | null; reopenable: null } | null {
   const dbPath = resolveAdeLayout(projectRoot).dbPath;
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(sessionId) || !fs.existsSync(dbPath)) return null;
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) return null;
   let db: ReturnType<typeof openReadOnlyDatabase> | null = null;
   try {
+    // Before any native call: a folder on a hung mount or behind a permission prompt is skipped, not waited on.
+    assertStorageAnswering(dbPath);
+    if (!fs.existsSync(dbPath)) return null;
     db = openReadOnlyDatabase(dbPath);
-    db.exec("PRAGMA busy_timeout = 250");
+    // A busy database is skipped, never waited on: this runs on the brain's thread for each project.
+    db.exec("PRAGMA busy_timeout = 0");
     if (!hasTable(db, "deleted_chats")) return null;
     const row = db.prepare(
       `select deleted_at as deletedAt, title from deleted_chats d where d.id = ? and d.hidden_at is null
          and ${hasTable(db, "terminal_sessions") ? CHAT_GONE_SQL : "1"} limit 1`,
     ).get<{ deletedAt?: string; title?: string | null }>(sessionId);
     return row?.deletedAt ? { deletedAt: row.deletedAt, title: row.title ?? null, reopenable: null } : null;
-  } catch {
+  } catch (error) {
+    onError(error);
     return null;
   } finally {
     try { db?.close(); } catch { /* already closed */ }

@@ -48,6 +48,16 @@ export type ChatTurnStatusSubagent = {
   resourceLinks?: AgentChatResourceLink[];
 };
 
+/**
+ * The settings a chat really runs with, as `ade chat status` and
+ * `ade chat launch --wait` report them: what a caller checks after starting
+ * a chat it left partly to defaults.
+ */
+export const CHAT_SETTING_FIELDS = [
+  "laneId", "title", "model", "modelId", "reasoningEffort", "permissionMode", "claudePermissionMode", "fastMode",
+  "instanceId", "instanceLabel",
+] as const;
+
 export type ChatTurnStatusSnapshot = {
   sessionId: string;
   phase: ChatTurnStatusPhase;
@@ -147,6 +157,7 @@ export function deriveChatTurnStatus(input: DeriveChatTurnStatusInput): ChatTurn
     phase,
     ...(input.provider ? { provider: input.provider } : {}),
     ...(input.instanceId?.trim() ? { instanceId: input.instanceId.trim() } : {}),
+    ...(input.instanceLabel?.trim() ? { instanceLabel: input.instanceLabel.trim() } : {}),
     turnElapsedMs: turnStartedMs == null ? null : Math.max(0, nowMs - turnStartedMs),
     lastActivityMsAgo: lastActivityMs == null ? null : Math.max(0, nowMs - lastActivityMs),
     currentTool: input.currentTool ?? null,

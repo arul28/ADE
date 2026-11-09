@@ -45,7 +45,8 @@ import {
   secureMkdirWithinRoot,
   secureRenameWithinRoot,
   secureWriteFileWithinRoot,
-  secureWriteTextAtomicWithinRoot,
+  readFileWithinRootSecure,
+  secureWriteAtomicWithinRoot,
 } from "../shared/utils";
 import { createFileWatcherService } from "./fileWatcherService";
 import { createFileSearchIndexService } from "./fileSearchIndexService";
@@ -452,16 +453,27 @@ async function runGitCheckIgnoreBatch(args: {
   return ignored;
 }
 
+/**
+ * Whether a path, once `..` is collapsed, lands in ADE's runtime folders.
+ * Checking the text as given let `foo/../.ade/secrets/x` (and `.ADE/Secrets`
+ * on a case-insensitive disk) through.
+ */
+function resolvesIntoVolatileAdePath(rootPath: string, joinedPath: string): boolean {
+  const relative = path.relative(path.normalize(rootPath), joinedPath).split(path.sep).join("/");
+  const folded = process.platform === "darwin" || process.platform === "win32" ? relative.toLowerCase() : relative;
+  return isVolatileAdeRuntimePath(folded);
+}
+
 function ensureSafePath(
   rootPath: string,
   relPath: string,
   opts: { allowMissing?: boolean } = {},
 ): { absPath: string; normalizedRel: string } {
   const normalizedRel = normalizeRelative(relPath);
-  if (isVolatileAdeRuntimePath(normalizedRel)) {
+  const joinedPath = path.normalize(path.join(rootPath, normalizedRel));
+  if (isVolatileAdeRuntimePath(normalizedRel) || resolvesIntoVolatileAdePath(rootPath, joinedPath)) {
     throw new Error("Refusing to access ADE runtime paths");
   }
-  const joinedPath = path.normalize(path.join(rootPath, normalizedRel));
   let absPath: string;
   try {
     absPath = resolvePathWithinRoot(rootPath, joinedPath, { allowMissing: opts.allowMissing });
@@ -482,27 +494,30 @@ function ensureSafePath(
   return { absPath, normalizedRel };
 }
 
+const CHUNKED_WRITE_MAX_BYTES = 64 * 1024 * 1024;
+
 function decodeBase64Strict(text: string): Buffer {
   const compact = text.replace(/\s+/g, "");
   if (compact.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) throw new Error("The text isn't valid base64.");
   return Buffer.from(compact, "base64");
 }
 
-/** The file's bytes for an appended chunk; the write itself re-checks the path. */
+/** The file's bytes for an appended chunk, read inside the root without following links; empty when it is not there. */
 function readExistingWithinRoot(rootPath: string, relPath: string): Buffer {
-  const target = path.join(rootPath, relPath);
-  const stat = nonAsarFs.lstatSync(target, { throwIfNoEntry: false });
-  if (!stat) return Buffer.alloc(0);
-  if (!stat.isFile()) throw new Error(`${relPath} isn't a regular file.`);
-  return nonAsarFs.readFileSync(target);
+  try {
+    return readFileWithinRootSecure(rootPath, relPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return Buffer.alloc(0);
+    throw error;
+  }
 }
 
 function assertMutablePathAllowed(rootPath: string, relPath: string): string {
   const normalizedRel = normalizeRelative(relPath);
-  if (isVolatileAdeRuntimePath(normalizedRel)) {
+  const candidatePath = path.join(rootPath, normalizedRel);
+  if (isVolatileAdeRuntimePath(normalizedRel) || resolvesIntoVolatileAdePath(rootPath, path.normalize(candidatePath))) {
     throw new Error("Refusing to mutate ADE runtime paths");
   }
-  const candidatePath = path.join(rootPath, normalizedRel);
   if (containsDotGit(candidatePath)) {
     throw new Error("Refusing to access .git internals");
   }
@@ -1046,7 +1061,7 @@ export function createFileService({
     writeTextAtomic({ laneId, relPath, text }: { laneId: string; relPath: string; text: string }): void {
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
       assertMutablePathAllowed(worktreePath, relPath);
-      secureWriteTextAtomicWithinRoot(worktreePath, relPath, text);
+      secureWriteAtomicWithinRoot(worktreePath, relPath, text);
       invalidateGitStatusCache(worktreePath);
       clearPagedDirectoryEntriesCacheForRoot(worktreePath);
       if (onLaneWorktreeMutation) {
@@ -1380,6 +1395,11 @@ export function createFileService({
       const normalizedRel = assertMutablePathAllowed(workspace.rootPath, args.path);
       const chunk = args.encoding === "base64" ? decodeBase64Strict(args.text) : Buffer.from(args.text, "utf8");
       const offset = args.offset ?? 0;
+      if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("`offset` is the number of bytes already written: a whole number, 0 or more.");
+      // Each chunk rewrites the whole file, so a chunked write stops at a size where that stays cheap.
+      if (offset > 0 && offset + chunk.length > CHUNKED_WRITE_MAX_BYTES) {
+        throw new Error(`A chunked write stops at ${CHUNKED_WRITE_MAX_BYTES / (1024 * 1024)} MB. Move bigger files another way (git, a clone).`);
+      }
       let content = chunk;
       if (offset > 0) {
         const existing = readExistingWithinRoot(workspace.rootPath, normalizedRel);
@@ -1388,11 +1408,11 @@ export function createFileService({
         }
         content = Buffer.concat([existing, chunk]);
       }
-      const targetPath = secureWriteTextAtomicWithinRoot(workspace.rootPath, args.path, content);
+      secureWriteAtomicWithinRoot(workspace.rootPath, args.path, content);
       const receipt: FilesWriteReceipt = {
         path: normalizedRel,
         bytes: content.length,
-        sha256: createHash("sha256").update(nonAsarFs.readFileSync(targetPath)).digest("hex"),
+        sha256: createHash("sha256").update(content).digest("hex"),
       };
       invalidateGitStatusCache(workspace.rootPath);
       clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);

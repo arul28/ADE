@@ -6852,3 +6852,25 @@ export type AgentChatGetTurnFileDiffArgs = {
 };
 
 export type AgentChatTurnFileDiff = FileDiff;
+
+/** One turning point of a chat, for a caller that polls (`ade chat events`, ADE MCP's `chat_events`). */
+export type ChatLifecycleEvent = {
+  sequence: number;
+  at: string;
+  kind: "turn_started" | "turn_completed" | "turn_failed" | "turn_interrupted" | "input_needed" | "input_resolved" | "error";
+  turnId?: string;
+  message?: string;
+};
+
+/** `chat.getChatEvents`: what happened since a cursor. */
+export type ChatEventsResult = {
+  sessionId: string;
+  /** Pass back as `since`. */
+  cursor: number;
+  phase: string;
+  events: ChatLifecycleEvent[];
+  /** More events follow: call again with `cursor`. */
+  truncated: boolean;
+  /** Events between `since` and the first one returned were too far back to read. */
+  gap?: true;
+};

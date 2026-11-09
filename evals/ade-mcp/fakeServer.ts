@@ -14,6 +14,7 @@ import { createRemoteMcpProtocol } from "../../apps/ade-cli/src/services/remoteM
 import type { RemoteRunResult } from "../../apps/ade-cli/src/services/remoteMcp/remoteMcpRunner";
 import {
   buildTypedToolResult,
+  explicitTargetRefusal,
   findTypedTool,
   MACHINES_TOOL_NAME,
 } from "../../apps/ade-cli/src/services/remoteMcp/remoteMcpTools";
@@ -111,9 +112,7 @@ function callTool(name: string, rawInput: Input): Record<string, unknown> {
   }
   // As the real protocol refuses it: a tool that creates something must name its project.
   if (typed?.explicitTarget && !(typeof input.project === "string" && input.project.trim())) {
-    return errorResult(`${typed.name} needs \`project\`, because the default changes as the person works. `
-      + `Projects here, last opened first: ${PROJECTS.map((entry) => `${entry.displayName} (${entry.projectId})`).join(", ")}. `
-      + "Use the one the person named; if they named none, the first.");
+    return errorResult(explicitTargetRefusal(typed.name, PROJECTS));
   }
   let words: unknown = input.args;
   if (typed) {
