@@ -1,51 +1,41 @@
+import remarkGfm from "remark-gfm";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
+
 /** Markdown task-list boxes, found in the source text a PR body is written in. */
 
 /** One `- [ ]` / `* [x]` box: `offset` is the character inside the brackets. */
 export type PrTaskBox = { offset: number; checked: boolean };
 
-const TASK_LINE = /^(?:[ \t]{0,3}>[ \t]?)*[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+\[([ xX])\](?=[ \t]|$)/;
-const FENCE = /^(?:[ \t]{0,3}>[ \t]?)*[ \t]{0,3}(`{3,}|~{3,})/;
+type MarkdownNode = {
+  type: string;
+  checked?: boolean | null;
+  position?: { start: { offset?: number } };
+  children?: MarkdownNode[];
+};
 
-/** Every box in `markdown`, in order. Boxes in code fences and HTML comments do not count. */
+const LIST_ITEM_START = /^(?:[-+*]|\d{1,9}[.)])[ \t]+\[[ xX]\]/;
+const parser = unified().use(remarkParse).use(remarkGfm);
+
+/**
+ * Every box in `markdown`, in the order the renderer numbers them. Parsed with
+ * the renderer's own grammar: a look-alike in a fence, an indented code block
+ * or an HTML block must not shift the count, or a click ticks the wrong box.
+ */
 export function findPrTaskBoxes(markdown: string): PrTaskBox[] {
+  if (!/\[[ xX]\]/.test(markdown)) return [];
   const boxes: PrTaskBox[] = [];
-  let offset = 0;
-  let fence: string | null = null;
-  let inComment = false;
-  for (const rawLine of markdown.split("\n")) {
-    const line = rawLine.replace(/\r$/, "");
-    if (inComment) {
-      if (line.includes("-->")) inComment = false;
-    } else {
-      const fenceMatch = FENCE.exec(line);
-      if (fence) {
-        // A fence closes only with the same character, at least as long.
-        if (fenceMatch && fenceMatch[1]!.startsWith(fence[0]!) && fenceMatch[1]!.length >= fence.length
-          && line.trim() === fenceMatch[1]) {
-          fence = null;
-        }
-      } else if (fenceMatch) {
-        fence = fenceMatch[1]!;
-      } else {
-        const commentStart = line.indexOf("<!--");
-        if (commentStart >= 0 && !line.includes("-->", commentStart + 4)) {
-          inComment = true;
-        } else {
-          const task = TASK_LINE.exec(line);
-          if (task) {
-            const bracketChar = task[0].length - 2;
-            boxes.push({ offset: offset + bracketChar, checked: task[1] !== " " });
-          }
-        }
-      }
+  const visit = (node: MarkdownNode) => {
+    if (node.type === "listItem" && typeof node.checked === "boolean") {
+      const start = node.position?.start.offset ?? -1;
+      const marker = start >= 0 ? LIST_ITEM_START.exec(markdown.slice(start, start + 24)) : null;
+      // Still counted when unreadable, so the boxes after it keep their numbers.
+      boxes.push({ offset: marker ? start + marker[0].length - 2 : -1, checked: node.checked });
     }
-    offset += rawLine.length + 1;
-  }
+    node.children?.forEach(visit);
+  };
+  visit(parser.parse(markdown) as MarkdownNode);
   return boxes;
-}
-
-function isCheckedChar(char: string): boolean {
-  return char !== " ";
 }
 
 /**
@@ -54,8 +44,9 @@ function isCheckedChar(char: string): boolean {
  *
  * Bodies from GitHub may use CRLF, and the renderer's slice may not, so the
  * match is made on LF text and carried back to the original offset. Returns
- * null when the box is not there as drawn: the body changed, or the slice is
- * not part of it, and toggling a guessed box would be worse than doing nothing.
+ * null when the box cannot be named exactly: the body changed, the slice is
+ * not part of it, or the same text appears twice with the box in the same
+ * state. Toggling a guessed box would be worse than doing nothing.
  */
 export function togglePrTaskInBody(
   body: string,
@@ -64,15 +55,17 @@ export function togglePrTaskInBody(
   nextChecked: boolean,
 ): string | null {
   const sliceLf = slice.replace(/\r\n/g, "\n");
-  const bodyLf = body.replace(/\r\n/g, "\n");
-  const sliceStart = bodyLf.indexOf(sliceLf);
-  if (sliceStart < 0) return null;
   const box = findPrTaskBoxes(sliceLf)[index];
-  if (!box || box.checked === nextChecked) return null;
-  // The same box as the body's parser sees it, in case the part starts mid-list.
-  const absolute = sliceStart + box.offset;
-  const inBody = findPrTaskBoxes(bodyLf).find((candidate) => candidate.offset === absolute);
-  if (!inBody || inBody.checked === nextChecked || isCheckedChar(bodyLf[absolute]!) === nextChecked) return null;
+  if (!box || box.offset < 0 || box.checked === nextChecked) return null;
+  const bodyLf = body.replace(/\r\n/g, "\n");
+  const bodyBoxes = new Map(findPrTaskBoxes(bodyLf).map((candidate) => [candidate.offset, candidate]));
+  const targets: number[] = [];
+  for (let at = bodyLf.indexOf(sliceLf); at >= 0; at = bodyLf.indexOf(sliceLf, at + 1)) {
+    const candidate = bodyBoxes.get(at + box.offset);
+    if (candidate && candidate.checked !== nextChecked) targets.push(candidate.offset);
+  }
+  if (targets.length !== 1) return null;
+  const absolute = targets[0]!;
   // Count back to the original text: every LF before the box may be a CRLF there.
   let rawOffset = -1;
   for (let i = 0, lf = 0; i < body.length; i += 1) {

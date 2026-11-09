@@ -26,14 +26,25 @@ export function usePrDescriptionTaskToggle(args: {
   const queueRef = useRef<Promise<void>>(Promise.resolve());
   const generationRef = useRef(0);
   const inFlightRef = useRef(0);
+  const awaitingHostRef = useRef(false);
 
   useEffect(() => {
     generationRef.current += 1;
     inFlightRef.current = 0;
+    awaitingHostRef.current = false;
     queueRef.current = Promise.resolve();
     pendingRef.current = null;
     setPendingBody(null);
   }, [prId]);
+
+  // A failed re-read leaves the old text in place, and showing it would untick
+  // a box that saved. The optimistic copy goes only when a new reading arrives.
+  useEffect(() => {
+    if (!awaitingHostRef.current || inFlightRef.current > 0) return;
+    awaitingHostRef.current = false;
+    pendingRef.current = null;
+    setPendingBody(null);
+  }, [body]);
 
   const toggleTask = useCallback((slice: string, index: number, nextChecked: boolean) => {
     if (!enabled) return;
@@ -49,6 +60,7 @@ export function usePrDescriptionTaskToggle(args: {
     }
     pendingRef.current = next;
     setPendingBody(next);
+    awaitingHostRef.current = false;
     const generation = generationRef.current;
     inFlightRef.current += 1;
     queueRef.current = queueRef.current.then(async () => {
@@ -66,16 +78,16 @@ export function usePrDescriptionTaskToggle(args: {
           message: error instanceof Error ? error.message : String(error),
           tone: "error",
         });
+        // The clicks saved before this one did land.
+        await refresh().catch(() => undefined);
         return;
       }
       inFlightRef.current -= 1;
       if (inFlightRef.current > 0 || generation !== generationRef.current) return;
-      // Everything has landed: wait for the host's fresh body, then let go of
-      // the optimistic copy so a later edit elsewhere can show through.
+      // Everything has landed: the host's next body replaces the optimistic
+      // copy, so a later edit elsewhere can show through.
+      awaitingHostRef.current = true;
       await refresh().catch(() => undefined);
-      if (generation !== generationRef.current || inFlightRef.current > 0) return;
-      pendingRef.current = null;
-      setPendingBody(null);
     });
   }, [enabled, pin, prId, refresh]);
 

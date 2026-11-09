@@ -7113,16 +7113,19 @@ export function createPrService({
     const query = args.query.trim().replace(/^@/, "").slice(0, 80);
     const cacheKey = `${githubRepoKey(repo)}\0${args.includeTeams ? "t" : "u"}\0${query.toLowerCase()}`;
     return await mentionablesCache.read(cacheKey, async () => {
+      // The reviewer picker asks for teams too. On a public repo anyone who
+      // commented can be mentioned, but GitHub refuses a review request to them.
+      const peopleField = args.includeTeams ? "assignableUsers" : "mentionableUsers";
       const data = await graphqlRequest<{
         repository?: {
           viewerPermission?: unknown;
-          mentionableUsers?: { nodes?: Array<{ login?: unknown; name?: unknown; avatarUrl?: unknown } | null> | null } | null;
+          people?: { nodes?: Array<{ login?: unknown; name?: unknown; avatarUrl?: unknown } | null> | null } | null;
         } | null;
       }>(
         `query($owner: String!, $name: String!, $query: String, $first: Int!) {
           repository(owner: $owner, name: $name) {
             viewerPermission
-            mentionableUsers(query: $query, first: $first) {
+            people: ${peopleField}(query: $query, first: $first) {
               nodes { login name avatarUrl(size: 48) }
             }
           }
@@ -7130,7 +7133,7 @@ export function createPrService({
         { owner: repo.owner, name: repo.name, query: query || null, first: 20 },
         { repo },
       );
-      const users = (data.repository?.mentionableUsers?.nodes ?? []).flatMap((node) => {
+      const users = (data.repository?.people?.nodes ?? []).flatMap((node) => {
         const login = asString(node?.login).trim();
         if (!login) return [];
         return [{ login, name: asString(node?.name).trim() || null, avatarUrl: asString(node?.avatarUrl).trim() || null }];

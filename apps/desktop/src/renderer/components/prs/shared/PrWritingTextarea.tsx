@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PrMentionableUser, PrRepoReference } from "../../../../shared/types/prs";
 import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { isImeComposing } from "../../../lib/imeComposition";
 import { ViewportOverlayPortal } from "../../ui/ViewportOverlayHost";
 import { PrWritingScopeContext } from "./prMarkdownContext";
 
@@ -15,24 +16,24 @@ type Suggestion =
 
 /** The `@name` or `#12` the caret is on, if any. Looks back a bounded distance. */
 function readTrigger(value: string, caret: number): Trigger | null {
+  // Mid-word, an insert would leave the rest of the word stuck to it.
+  if (/[\w.-]/.test(value[caret] ?? "")) return null;
   const before = value.slice(Math.max(0, caret - 100), caret);
-  const match = /(?:^|[\s(])([@#])([\w.-]*)$/.exec(before);
+  const match = /(?:^|[\s(])(?:@([A-Za-z0-9_][\w.-]*)?|#([\p{L}\p{N}_-]*))$/u.exec(before);
   if (!match) return null;
-  const query = match[2] ?? "";
-  return {
-    kind: match[1] === "@" ? "mention" : "ref",
-    query,
-    start: caret - query.length - 1,
-  };
+  const query = match[1] ?? match[2] ?? "";
+  const start = caret - query.length - 1;
+  return { kind: value[start] === "@" ? "mention" : "ref", query, start };
 }
 
 function filterRefs(refs: PrRepoReference[], query: string): PrRepoReference[] {
   const needle = query.trim().toLowerCase();
   if (!needle) return refs.slice(0, MAX_SUGGESTIONS);
   const byNumber = /^\d+$/.test(needle);
-  return refs
-    .filter((ref) => (byNumber ? String(ref.number).startsWith(needle) : ref.title.toLowerCase().includes(needle)))
-    .slice(0, MAX_SUGGESTIONS);
+  const matches = refs.filter((ref) => (byNumber ? String(ref.number).startsWith(needle) : ref.title.toLowerCase().includes(needle)));
+  // Enter takes the first row, so the number as typed has to be it.
+  const exact = byNumber ? matches.filter((ref) => String(ref.number) === needle) : [];
+  return [...exact, ...matches.filter((ref) => !exact.includes(ref))].slice(0, MAX_SUGGESTIONS);
 }
 
 export type PrWritingTextareaProps = React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
@@ -123,10 +124,12 @@ export const PrWritingTextarea = React.forwardRef<HTMLTextAreaElement, PrWriting
   const apply = React.useCallback((suggestion: Suggestion) => {
     const node = textareaRef.current;
     if (!node || !trigger) return;
-    const inserted = suggestion.kind === "user" ? `@${suggestion.user.login} ` : `#${suggestion.ref.number} `;
+    const token = suggestion.kind === "user" ? `@${suggestion.user.login}` : `#${suggestion.ref.number}`;
     const caret = node.selectionStart ?? node.value.length;
-    const next = `${node.value.slice(0, trigger.start)}${inserted}${node.value.slice(caret)}`;
-    const nextCaret = trigger.start + inserted.length;
+    const after = node.value.slice(caret);
+    // A space already there is reused and stepped over.
+    const next = `${node.value.slice(0, trigger.start)}${token}${/^[ \t]/.test(after) ? "" : " "}${after}`;
+    const nextCaret = trigger.start + token.length + 1;
     // The field is controlled; setting the value through the DOM's own setter
     // and firing `input` runs the caller's onChange like a real keystroke.
     const setValue = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
@@ -144,7 +147,7 @@ export const PrWritingTextarea = React.forwardRef<HTMLTextAreaElement, PrWriting
   const open = trigger != null && suggestions.length > 0 && anchor != null;
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (open) {
+    if (open && !isImeComposing(event)) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
         setActiveIndex((index) => (index + 1) % suggestions.length);
