@@ -2347,6 +2347,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard  Disable fast service tier explicitly.
     --prompt <text>        First chat message or CLI initial input.
+    --prompt-file <path|->  The same, from a file or stdin (-). Alias --text-file.
+                           Use it for long or multi-line text: on Windows,
+                           ade.cmd cuts an argument at its first line break.
+                           Not with --prompt.
 
   Spawn lineage:
     From an agent, the new session is a subagent of that agent's chat and
@@ -2367,6 +2371,13 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode chat --lane auto --lane-name fix-login --prompt "Fix login"
+    $ ade new chat --mode chat --lane <lane> --prompt-file brief.md
+    $ ade new chat --mode chat --lane <lane> --prompt-file - <<'EOF'
+
+  The first message is --prompt <text>, text after --, or --prompt-file <path|->
+  (alias --text-file) for a file or stdin. Use the file form for long or
+  multi-line text: on Windows, ade.cmd cuts an argument at its first line
+  break. Not together with --prompt.
 
   The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
   --auto-create-lane or --lane auto to create a lane before launching.
@@ -7853,8 +7864,34 @@ function autoLaneGenericSuffix(date = new Date()): string {
   ].join("");
 }
 
+/**
+ * Flags that carry a chat's text on the other chat commands. Taken here they
+ * would be parsed and dropped, so the session would start without the message
+ * the caller meant to send and still report ok.
+ */
+const NEW_CHAT_STRANDED_TEXT_FLAGS = ["--note", "--question", "--objective", "--goal", "--steer", "--answer", "--option", "--response"] as const;
+
+function refuseStrandedNewChatTextFlags(args: string[]): void {
+  const stranded = findFlagName(args, NEW_CHAT_STRANDED_TEXT_FLAGS);
+  // Bare `--text` is the output format. Only `--text <value>` carries a message.
+  const textIndex = args.indexOf("--text");
+  const textValue = textIndex >= 0 ? args[textIndex + 1] : undefined;
+  const textCarriesMessage = args.some((token) => token.startsWith("--text="))
+    || Boolean(textValue && !textValue.startsWith("-") && textValue !== "chat" && textValue !== "cli");
+  const flag = stranded ?? (textCarriesMessage ? "--text" : null);
+  if (flag) {
+    throw new CliUsageError(`ade new does not take ${flag}. Put the first message in --prompt or --prompt-file.`);
+  }
+}
+
 function readNewChatPrompt(args: string[]): string | null {
+  refuseStrandedNewChatTextFlags(args);
   const promptArgs = takeArgsAfterTerminator(args);
+  const fileText = readChatTextFile(args, ["--prompt-file", "--text-file"], ["--prompt", "--message", "--initial-input"]);
+  if (fileText !== null) {
+    if (promptArgs) throw new CliUsageError("Use --prompt-file or text after --, not both.");
+    return fileText.trim();
+  }
   const prompt = promptArgs
     ? promptArgs.join(" ").trim()
     : readValue(args, ["--prompt", "--message", "--initial-input"]);
