@@ -14651,12 +14651,9 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
         payload: { sessionId: "other-session", maxBytes: 32_000 },
       }));
       const snapshot = await nextResponse(client.envelopes, "terminal_snapshot", "routed-subscribe");
-      expect(snapshot.payload).toMatchObject({ sessionId: "other-session" });
+      // The transcript comes from project-2's runtime, not the host's own.
+      expect(snapshot.payload).toMatchObject({ sessionId: "other-session", transcript: "other-output" });
       expect((snapshot.payload as { error?: unknown }).error).toBeUndefined();
-      expect(getIfBooted).toHaveBeenCalledWith("project-2");
-      expect(otherPty.readTranscriptSnapshot).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: "other-session" }),
-      );
       expect(readTranscriptSnapshot).not.toHaveBeenCalled();
 
       client.ws.send(encodeSyncEnvelope({
@@ -14748,15 +14745,19 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
   });
 
   it("treats input resent to a second host that shares the ledger as a duplicate", async () => {
-    const first = createTempProjectRoot();
-    const second = createTempProjectRoot();
     const sharedLedger = createTerminalInputDedupeLedger();
     const projectScopes = { getIfBooted: vi.fn(() => null), terminalInputDedupeLedger: sharedLedger };
-    const hostA = createTerminalHost(first.projectRoot, { projectScopes });
-    const hostB = createTerminalHost(second.projectRoot, { projectScopes });
+    let first: ReturnType<typeof createTempProjectRoot> | null = null;
+    let second: ReturnType<typeof createTempProjectRoot> | null = null;
+    let hostA: ReturnType<typeof createTerminalHost> | null = null;
+    let hostB: ReturnType<typeof createTerminalHost> | null = null;
     let clientA: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
     let clientB: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
     try {
+      first = createTempProjectRoot();
+      second = createTempProjectRoot();
+      hostA = createTerminalHost(first.projectRoot, { projectScopes });
+      hostB = createTerminalHost(second.projectRoot, { projectScopes });
       clientA = await connectTerminalPeer(
         await hostA.host.waitUntilListening(),
         hostA.host.getBootstrapToken(),
@@ -14801,10 +14802,10 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
     } finally {
       try { clientA?.ws.close(); } catch { /* ignore */ }
       try { clientB?.ws.close(); } catch { /* ignore */ }
-      await hostA.host.dispose();
-      await hostB.host.dispose();
-      first.cleanup();
-      second.cleanup();
+      await hostA?.host.dispose();
+      await hostB?.host.dispose();
+      first?.cleanup();
+      second?.cleanup();
     }
   });
 
