@@ -394,6 +394,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "connect_requested",
   "mcp_server_requested",
   "mcp_server_remove_requested",
+  // A person moved an automation to another computer ("Runs on"). Never the
+  // rule, either computer, or the repository.
+  "run_on_changed",
   // A person started a safe or live test of an automation. Never the rule or event.
   "safe_test_started",
   "live_test_started",

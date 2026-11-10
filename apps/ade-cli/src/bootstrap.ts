@@ -209,6 +209,7 @@ import {
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import {
+  captureAutomationRunOnChangedAnalytics,
   captureChatAccountSwitchedAnalytics,
   captureNewLaneLaunchAnalytics,
   capturePendingInputDismissedAnalytics,
@@ -3291,6 +3292,7 @@ export async function createAdeRuntime(args: {
         agentChatService: agentChatService ?? undefined,
         prService: headlessLinearServices.prService,
         onEvent: (event) => pushEvent("runtime", { ...event, source: "automations" }),
+        onRunOnChanged: () => captureAutomationRunOnChangedAnalytics({ analytics: productAnalyticsService, surface: "api" }),
         // Read when a rule is listed, after both secret services exist.
         secretAvailable: (ref) => {
           try {

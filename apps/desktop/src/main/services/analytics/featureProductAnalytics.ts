@@ -54,6 +54,7 @@ export type FeatureAnalyticsAction =
   | "session_continue_cli"
   | "session_copy_cli"
   | "webhook_url_created"
+  | "run_on_changed"
   | "safe_test_started"
   | "live_test_started"
   | "secret_requested"
@@ -292,6 +293,17 @@ export function captureWebhookUrlCreatedAnalytics(args: {
   surface: ProductAnalyticsSurface;
 }): void {
   captureFeatureUsedAnalytics({ ...args, feature: "automations", action: "webhook_url_created", outcome: "completed" });
+}
+
+/**
+ * A person chose another computer to run an automation that follows their
+ * account ("Runs on"). Never the rule, either computer, or the repository.
+ */
+export function captureAutomationRunOnChangedAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "automations", action: "run_on_changed", outcome: "completed" });
 }
 
 /**

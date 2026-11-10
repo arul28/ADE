@@ -1521,6 +1521,7 @@ export function createAutomationService({
   prService,
   onEvent,
   secretAvailable,
+  onRunOnChanged,
   cronScheduler = cron,
 }: {
   db: AdeDb;
@@ -1557,6 +1558,8 @@ export function createAutomationService({
    * lacks instead of failing at its first delivery.
    */
   secretAvailable?: (ref: { projectSecret?: string; secretRef?: string }) => boolean;
+  /** A person moved a rule to another computer; the host records the decision. */
+  onRunOnChanged?: () => void;
 }) {
   type AutomationIngressStatusPatch = {
     webhookGateway?: Partial<AutomationIngressStatus["webhookGateway"]>;
@@ -5619,7 +5622,13 @@ export function createAutomationService({
       }
       syncFromConfig();
       emit({ type: "runs-updated", automationId: id });
+      if (current?.home?.deviceId !== saved.home.deviceId) onRunOnChanged?.();
       return this.list();
+    },
+
+    /** The editor changed a rule's home through `saveDraft`; see `onRunOnChanged`. */
+    noteRunOnChanged(): void {
+      onRunOnChanged?.();
     },
 
     toggle(args: { id: string; enabled: boolean }): AutomationRuleSummary[] {
