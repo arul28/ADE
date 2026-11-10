@@ -102,8 +102,10 @@ export type StoredCloudPass = {
   key: string;
   email: string | null;
   check: "match" | "kept_other" | "unchecked";
-  /** Epoch ms. */
+  /** Epoch ms; an estimate until Claude says. A past estimate does not end the pass. */
   expiresAt: number;
+  /** Epoch ms when Claude refused the pass as no longer valid. Absent while it works. */
+  endedAt?: number;
 };
 
 /** One pass as the reconcile hands it to `syncCloudPasses`. */
@@ -127,6 +129,7 @@ function decodeCloudPass(value: unknown): StoredCloudPass | undefined {
     email: trimmedString(value.email) ?? null,
     check: CLOUD_PASS_CHECKS.includes(value.check as StoredCloudPass["check"]) ? value.check as StoredCloudPass["check"] : "unchecked",
     expiresAt,
+    ...(typeof value.endedAt === "number" && Number.isFinite(value.endedAt) ? { endedAt: value.endedAt } : {}),
   };
 }
 
@@ -463,10 +466,11 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
 
   function toPublic(stored: StoredInstance, file: RegistryFile): ProviderInstance {
     const pass = stored.cloudPass;
-    // A pass is a login by itself, with or without an email; it ends with its year.
+    // A pass is a login by itself, with or without an email. Only Claude's
+    // refusal ends it (`endedAt`); a past estimate of its year does not.
     const known = Boolean(pass || stored.account?.email || stored.account?.plan);
-    const loginBroken = known && brokenLogins.has(stored.id);
-    const signedIn = known && !loginBroken && (!pass || pass.expiresAt > now().getTime());
+    const loginBroken = known && (brokenLogins.has(stored.id) || pass?.endedAt != null);
+    const signedIn = known && !loginBroken;
     const siblings = allRecords(file).filter((record) => record.provider === stored.provider);
     // Two config homes signed in to one email are one login and one quota.
     const holders = stored.account?.email
@@ -1105,7 +1109,13 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     const next: StoredInstance = {
       ...base,
       createdAt: new Date(pass.createdAt).toISOString(),
-      cloudPass: { key: pass.key, email, check: pass.check, expiresAt: pass.expiresAt },
+      cloudPass: {
+        key: pass.key,
+        email,
+        check: pass.check,
+        expiresAt: pass.expiresAt,
+        ...(pass.endedAt != null ? { endedAt: pass.endedAt } : {}),
+      },
     };
     if (email) next.account = { email };
     else delete next.account;

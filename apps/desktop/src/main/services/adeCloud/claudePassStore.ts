@@ -58,6 +58,11 @@ export type ClaudePassPayload = {
   madeOn: { machineKey12: string; label: string } | null;
   expiresAt: number;
   expiresAtSource: "estimate" | "claude";
+  /**
+   * When Claude refused this token as no longer valid (claudePassSync.ts
+   * `endPass`). Absent while it works; a Renew writes a new payload without it.
+   */
+  endedAt?: number;
 };
 
 /** The computer an approve ran on, as a pass records it. */
@@ -211,6 +216,7 @@ export function parseClaudePass(raw: string | null | undefined): ClaudePassPaylo
       : null,
     expiresAt,
     expiresAtSource: value.expiresAtSource === "claude" ? "claude" : "estimate",
+    ...(finite(value.endedAt) != null ? { endedAt: finite(value.endedAt)! } : {}),
   };
 }
 
@@ -414,7 +420,10 @@ export function summarizeClaudePass(
   upload: ClaudePassUpload = "account",
 ): CloudClaudePass {
   const left = pass.expiresAt - now;
-  const state: ClaudePassState = left <= 0 ? "ended" : left <= CLAUDE_PASS_ENDING_SOON_MS ? "ending_soon" : "active";
+  // Only Claude's refusal ends a pass; a past estimate is only a date.
+  const state: ClaudePassState = pass.endedAt != null
+    ? "ended"
+    : left <= 0 ? "estimate_passed" : left <= CLAUDE_PASS_ENDING_SOON_MS ? "ending_soon" : "active";
   const email = pass.account.email;
   const local = email ? localAccounts.find((account) => sameClaudeEmail(account.email, email)) : undefined;
   return {
@@ -430,6 +439,7 @@ export function summarizeClaudePass(
     expiresAtSource: pass.expiresAtSource,
     endsInDays: Math.max(0, Math.floor(left / DAY_MS)),
     state,
+    endedAt: pass.endedAt ?? null,
     noticeDueAt: pass.expiresAt - CLAUDE_PASS_NOTICE_MS,
     unreadable: false,
     localInstanceId: local?.instanceId ?? null,

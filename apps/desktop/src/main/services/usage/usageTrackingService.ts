@@ -90,6 +90,7 @@ import {
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
 import { getMachineProviderInstanceStore, sameLoginOwner } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { claudePassUsageWindows } from "../claudePass/claudePassUse";
 import { machineProviderUsageHomes } from "./providerUsageHomes";
 import {
   accountBalanceModelWeight,
@@ -1331,9 +1332,13 @@ async function pollClaudeInstance(
   instance: QuotaInstance,
 ): Promise<UsageProviderPollResult | null> {
   // A Claude pass account (cloud computer) has no login file or Keychain item
-  // to read, so a read would mark it signed out. No reading until its turns
-  // report the limits (P6 step 3).
-  if (isClaudePassAccount(instance.id)) return null;
+  // to read, so a read would mark it signed out. Its limits come from its own
+  // turns (`rate_limit_event`, claudePassUse.ts): memory only, no read, no
+  // network. Nothing seen yet → null, which shows no number, never 0 %.
+  if (isClaudePassAccount(instance.id)) {
+    const windows = claudePassUsageWindows(instance.id);
+    return windows.length > 0 ? { windows, extraUsage: null, errors: [] } : null;
+  }
   // The CLI probe is for a user who just asked — background polls must not
   // spawn Claude. The Keychain is narrower: the default account still skips
   // it on background polls (that lookup can prompt), but a scoped account's

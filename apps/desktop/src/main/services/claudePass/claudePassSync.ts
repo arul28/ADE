@@ -36,6 +36,7 @@ import {
   adoptLegacyClaudePass,
   claudePassVaultFromStore,
   listClaudePasses,
+  parseClaudePass,
   readClaudePassSummaries,
   sameClaudeEmail,
   type ClaudePassVaultStoreLike,
@@ -43,6 +44,7 @@ import {
 import { cloudSignInVaultKey } from "../adeCloud/cloudSignInStore";
 import { claudeConfigHome } from "../shared/providerConfigHomes";
 import { setClaudePassLaunchState } from "./claudePassLaunch";
+import { claudePassUseOf, flushClaudePassUse, keepClaudePassUse, type ClaudePassUseView } from "./claudePassUse";
 
 const TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 /** The whole value is one Claude Code long-lived token. */
@@ -141,6 +143,13 @@ export type ClaudePassStatusEntry =
     homeHasLogin: boolean;
     /** The account setting's Claude smart balance switch for ADE Cloud (the same on every entry). */
     smartBalance: boolean;
+    /** When Claude refused the pass as no longer valid (`state: "ended"`), else null. */
+    endedAt: number | null;
+    /**
+     * Use from this pass's own turns, on the computer that answers (the cloud
+     * computer that ran them). `none_seen` until its first turn there: never 0 %.
+     */
+    use: ClaudePassUseView;
   }
   | { key: string; unreadable: true };
 
@@ -263,10 +272,14 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
       check: entry.pass.account.check,
       expiresAt: entry.pass.expiresAt,
       createdAt: entry.pass.createdAt,
+      ...(entry.pass.endedAt != null ? { endedAt: entry.pass.endedAt } : {}),
     }));
-    const inUse = setting.inUseClaude ? accounts.find((account) => account.key === setting.inUseClaude) : undefined;
-    // "New chats": the pass in use, else the newest pass that is on.
-    const defaultId = (inUse ?? accounts[0])?.id ?? null;
+    // An ended pass stays an account (its chats keep it and show the sign-in
+    // card), but it is never "New chats".
+    const working = accounts.filter((account) => account.endedAt == null);
+    const inUse = setting.inUseClaude ? working.find((account) => account.key === setting.inUseClaude) : undefined;
+    // "New chats": the pass in use, else the newest working pass that is on.
+    const defaultId = (inUse ?? working[0])?.id ?? null;
     const store = deps.store();
     if (!store) return result;
     const synced = store.syncCloudPasses({ passes: accounts, defaultId, smartBalance: setting.smartBalance });
@@ -323,7 +336,45 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
       deps.restart("claude", { instanceIds: result.restarted });
     }
     initialized = true;
+    // The use of a removed pass goes with it; a changed use reaches the file at most once a minute.
+    keepClaudePassUse(new Set(passes.map((entry) => entry.key)));
+    flushClaudePassUse(now());
     return result;
+  }
+
+  /** Pass key → the token whose end this brain already handled (memory only). */
+  const endedTokenByKey = new Map<string, string>();
+
+  /**
+   * Claude refused pass account `instanceId` as no longer valid
+   * (claudePassEnd.ts). Writes `endedAt` into the pass item ONCE for this
+   * token, then reconciles so "New chats" moves on. The guard, in order:
+   *   1. this brain already handled this token's end → nothing;
+   *   2. the vault item now holds another token (a Renew came first) → nothing;
+   *   3. the item already carries `endedAt` (another computer wrote it) → nothing;
+   *   4. else one `set` of the same item with `endedAt`.
+   * Two chats that fail at the same moment run one after the other on this
+   * thread; the second stops at step 1. No retry and no loop: a refused write
+   * is logged and left for the person (Renew or Remove).
+   */
+  function endPass(instanceId: string): "ended" | "already" | "skipped" {
+    const key = keyById.get(instanceId);
+    const token = tokens.get(instanceId);
+    if (!key || !token) return "skipped";
+    if (endedTokenByKey.get(key) === token) return "already";
+    endedTokenByKey.set(key, token);
+    const vault = deps.vault();
+    const accountUserId = deps.accountUserId();
+    if (!vault || !accountUserId) return "skipped";
+    const passVault = claudePassVaultFromStore(vault);
+    const pass = parseClaudePass(passVault.get(key));
+    if (!pass || pass.token !== token) return "skipped";
+    if (pass.endedAt != null) return "already";
+    const wrote = passVault.set(key, JSON.stringify({ ...pass, endedAt: now() }), { expectedAccountUserId: accountUserId });
+    logger?.warn("claude_pass.ended", { key, wrote });
+    if (!wrote) return "skipped";
+    reconcile({ accountUserId });
+    return "ended";
   }
 
   /** `claudePasses` for `provider_logins.status` on this brain. */
@@ -375,6 +426,8 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
         appliedHere: deps.cloudComputer && tokens.has(claudePassInstanceId(pass.key)),
         homeHasLogin: deps.cloudComputer && homeHasLogin.has(pass.key),
         smartBalance: setting.smartBalance,
+        endedAt: pass.endedAt,
+        use: claudePassUseOf(pass.key, now()),
       };
     });
   }
@@ -386,6 +439,7 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
       return reconcile({ accountUserId: deps.accountUserId() });
     },
     statusEntries,
+    endPass,
   };
 }
 

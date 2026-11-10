@@ -1,8 +1,8 @@
 /**
  * Starts the brain's Claude pass reconcile (claudePassSync.ts) on the sign-in
  * sync's hooks (providerLoginHooks.ts): the end of each sync pass, the gate
- * before a Claude turn, and a part of `provider_logins.status`. No timer of
- * its own. `ade serve` calls it next to the sign-in sync's installer.
+ * before a Claude turn, and a part of `provider_logins.status`; and the end
+ * of a pass that a chat reports (claudePassEnd.ts). No timer of its own. `ade serve` calls it next to the sign-in sync's installer.
  *
  * With `staticOff` (an embedded runtime, a development build, sync off) it
  * does nothing: a cloud computer then keeps today's boot token in its env.
@@ -28,6 +28,8 @@ export async function installClaudePassSync(args: {
     { getMachineProviderInstanceStore },
     { isCloudMachine },
     { noteProviderLoginChanged },
+    { configureClaudePassUse },
+    { setClaudePassEndHandler },
   ] = await Promise.all([
     import("../providerLogins/providerLoginHooks"),
     import("./claudePassSync"),
@@ -35,7 +37,11 @@ export async function installClaudePassSync(args: {
     import("../../../../../ade-cli/src/services/providerInstances/providerInstanceStore"),
     import("../../../../../ade-cli/src/services/power/cloudKeepAwake"),
     import("../ai/providerLoginChanged"),
+    import("./claudePassUse"),
+    import("./claudePassEnd"),
   ]);
+  // Last use of each pass, from the file the brain wrote before (keys and numbers only).
+  configureClaudePassUse({ adeDir: args.adeDir });
   const stores = getMachineAccountStores(args.logger);
   const sync = createClaudePassSync({
     cloudComputer: isCloudMachine(),
@@ -45,7 +51,11 @@ export async function installClaudePassSync(args: {
     store: () => getMachineProviderInstanceStore(),
     accountUserId: stores.accountUserId,
     restart: (provider, options) => hooks.restartProviderRuntimesWhenIdle(provider, options),
-    noteChanged: (provider) => noteProviderLoginChanged(provider),
+    noteChanged: (provider) => {
+      noteProviderLoginChanged(provider);
+      // Open windows read `claudePasses` again (an added, removed or ended pass).
+      hooks.notifyProviderLoginsChanged();
+    },
     logger: args.logger,
   });
   const run = (label: string, work: () => unknown): void => {
@@ -56,6 +66,8 @@ export async function installClaudePassSync(args: {
     }
   };
   hooks.onProviderLoginPass((info) => run("pass", () => sync.reconcile({ accountUserId: info.accountUserId })));
+  // Claude refused a pass as no longer valid (a chat's auth failure): one end mark.
+  setClaudePassEndHandler((instanceId) => run("end", () => sync.endPass(instanceId)));
   // Local reads and at most one small file write: no time limit is needed.
   hooks.registerProviderLoginGate("claude", async () => run("gate", () => sync.reconcileForTurn()));
   hooks.registerProviderLoginStatusPart(({ provider }) => {

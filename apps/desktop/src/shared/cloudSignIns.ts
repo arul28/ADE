@@ -183,8 +183,14 @@ export type ClaudePassCheck = "match" | "kept_other" | "unchecked";
 /** Where a pass's label email came from. */
 export type ClaudePassLabelSource = "checked" | "pressed" | "typed" | "none";
 
-/** A pass's place in its year: the tile line starts at `ending_soon`. */
-export type ClaudePassState = "active" | "ending_soon" | "ended";
+/**
+ * A pass's place in its year: the tile line starts at `ending_soon`.
+ * `estimate_passed`: the estimated end (save + 365 days) is past, but Claude
+ * has not refused the pass, so it still works. `ended`: Claude refused the
+ * pass as no longer valid (expired or revoked); only that refusal ends it,
+ * and a Renew clears it.
+ */
+export type ClaudePassState = "active" | "ending_soon" | "estimate_passed" | "ended";
 
 /** One Claude pass for ADE Cloud, as a window may see it: never the token. */
 export type CloudClaudePass = {
@@ -207,6 +213,8 @@ export type CloudClaudePass = {
   /** Whole days left, never below 0. */
   endsInDays: number;
   state: ClaudePassState;
+  /** When Claude refused the pass as no longer valid (`state: "ended"`), else null. */
+  endedAt: number | null;
   /** When the one "ends soon" notice is due. */
   noticeDueAt: number;
   /** The local Claude account on the brain that answered with the same email, or null. */

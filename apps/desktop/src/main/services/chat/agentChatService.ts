@@ -150,7 +150,9 @@ import {
   writeClaudeOutputStyleSelection,
 } from "./claudeOutputStyles";
 import { createClaudeSubprocessReaper, type ClaudeSubprocessReaper } from "./claudeSubprocessReaper";
-import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
+import { claudePassForAccountless, claudePassSignedInHere, withClaudePassEnv } from "../claudePass/claudePassLaunch";
+import { claudePassKeyOfInstance, noteClaudePassRateLimit } from "../claudePass/claudePassUse";
+import { noteClaudePassAuthFailure } from "../claudePass/claudePassEnd";
 import {
   ChatRuntimeOwnedElsewhereError,
   decideChatRuntimeOwnership,
@@ -32391,6 +32393,8 @@ export function createAgentChatService(args: {
 
     if (msg.type === "rate_limit_event") {
       const info = asRecord(record.rate_limit_info) ?? {};
+      // A Claude pass account's limits come only from its turns (claudePassUse.ts).
+      noteClaudePassRateLimit(claudePassAccountOf(managed, "use"), info);
       const classified = classifyClaudeRateLimitInfo(info);
       if (classified.kind === "rejected") {
         noteClaudeSessionQuota(managed, classified.snapshot, state.turnId);
@@ -33245,6 +33249,8 @@ export function createAgentChatService(args: {
     let assistantText = "";
     /** The turn stopped Claude's own sign-in retries; see failClaudeTurnUnauthenticated. */
     let claudeAuthStopRequested = false;
+    /** What Claude said when it refused the sign-in, for the end of a Claude pass (claudePassEnd.ts). */
+    let claudeAuthEndSignal: string | null = null;
     let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null; thinkingTokens?: number | null; cacheWrite1hTokens?: number | null } | undefined;
     let costUsd: number | null = null;
     let resultServedModelCandidate: string | undefined;
@@ -33670,8 +33676,9 @@ export function createAgentChatService(args: {
       // error event that renders the inline re-login card on every chat surface.
       // The "stopped retrying" notice waits for the failure path, which first
       // checks whether the keychain just did not answer (then it is not a sign-out).
-      const failClaudeTurnUnauthenticated = (): never => {
+      const failClaudeTurnUnauthenticated = (signal: string | null = null): never => {
         claudeAuthStopRequested = true;
+        claudeAuthEndSignal ??= signal;
         // A signed-out Claude Code is the user's to fix (the re-login card), not a fault.
         throw markExpected(new Error(CLAUDE_RUNTIME_AUTH_ERROR), "user");
       };
@@ -33945,6 +33952,8 @@ export function createAgentChatService(args: {
         if (msg.type === "rate_limit_event") {
           const rateMsg = msg as any;
           const info = rateMsg.rate_limit_info ?? {};
+          // A Claude pass account's limits come only from its turns (claudePassUse.ts).
+          noteClaudePassRateLimit(claudePassAccountOf(managed, "use"), info);
           const classified = classifyClaudeRateLimitInfo(info);
           if (classified.kind === "rejected") {
             quotaTrippedThisTurn = true;
@@ -34035,7 +34044,9 @@ export function createAgentChatService(args: {
             || error === "authentication_failed"
             || isClaudeRuntimeAuthError(error)
           ) {
-            failClaudeTurnUnauthenticated();
+            failClaudeTurnUnauthenticated(
+              retryMsg.error_status === 401 ? "status_401" : error === "authentication_failed" ? "authentication_failed" : String(error ?? ""),
+            );
           }
           emitClaudeApiRetry(managed, retryMsg, turnId);
           continue;
@@ -34791,7 +34802,7 @@ export function createAgentChatService(args: {
           // error="authentication_failed" (its text otherwise renders as a plain
           // bubble with no recovery affordance). Fast-fail into the re-login card.
           if (assistantMsg.error === "authentication_failed") {
-            failClaudeTurnUnauthenticated();
+            failClaudeTurnUnauthenticated("authentication_failed");
           }
           if (isClaudeSyntheticImageErrorMessage(assistantMsg)) continue;
           if (assistantMsg.error && onBackendDispatched) {
@@ -35307,7 +35318,7 @@ export function createAgentChatService(args: {
             // credentials" errors — route them into the re-login card rather than
             // dumping raw API error text.
             if (isClaudeRuntimeAuthError(resultErrors.userFacing.join(" "))) {
-              failClaudeTurnUnauthenticated();
+              failClaudeTurnUnauthenticated(resultErrors.userFacing.join(" "));
             }
             const quotaErrors = resultErrors.userFacing.filter((err) => isClaudeUsageLimitResultError(err));
             if (quotaErrors.length > 0) {
@@ -35758,6 +35769,12 @@ export function createAgentChatService(args: {
             ? CLAUDE_RUNTIME_AUTH_ERROR
             : (effectiveError instanceof Error ? effectiveError.message : String(effectiveError));
         if (isAuthFailure) {
+          // A Claude pass that Claude refused as no longer valid ends once, on
+          // every computer of the account (claudePassEnd.ts lists the signals).
+          noteClaudePassAuthFailure(
+            claudePassAccountOf(managed, "end"),
+            claudeAuthEndSignal ?? (claudeAuthStopRequested ? null : getErrorMessage(effectiveError)),
+          );
           if (claudeAuthStopRequested) {
             emitChatEvent(managed, {
               type: "system_notice",
@@ -66498,6 +66515,21 @@ export function createAgentChatService(args: {
    * `instanceId`, or the account the store falls back to. Null for a provider
    * without accounts.
    */
+  /**
+   * The Claude pass account a chat's turn runs on (P6), or null. A chat on a
+   * pass account; for `use` also a base-account chat, which runs on the
+   * "New chats" pass (claudePassLaunch.ts). An auth failure of a base-account
+   * chat never ends a pass: its env may have carried another credential.
+   * Free off a cloud computer (no pass is signed in there).
+   */
+  const claudePassAccountOf = (managed: ManagedChatSession, purpose: "use" | "end"): string | null => {
+    if (!claudePassSignedInHere()) return null;
+    const pinned = managed.session.instanceId?.trim() || null;
+    const id = pinned && claudePassKeyOfInstance(pinned) ? pinned : resolvedInstanceIdOf(managed);
+    if (claudePassKeyOfInstance(id)) return id;
+    return purpose === "use" && id === "claude" ? claudePassForAccountless() : null;
+  };
+
   const resolvedInstanceIdOf = (managed: ManagedChatSession): string | null => {
     const provider = managed.session.provider;
     if (!isProviderInstanceProvider(provider)) return null;

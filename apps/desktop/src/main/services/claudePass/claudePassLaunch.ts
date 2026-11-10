@@ -20,6 +20,7 @@
  * so the helper returns the env it was given.
  */
 
+import path from "node:path";
 import { pathKey } from "../shared/pathCompare";
 
 /** Names that would make Claude Code use another credential than the pass. */
@@ -41,6 +42,8 @@ let tokenByHome = new Map<string, string>();
 let keyedFor: NodeJS.Platform = process.platform;
 /** The token of the "New chats" pass, for a Claude process that names no account. */
 let defaultToken: string | null = null;
+/** The account id of that pass (`pass-…`), or null. */
+let defaultId: string | null = null;
 /**
  * True once the reconcile owns Claude's sign-in on this cloud computer (it
  * read a ready vault and took the boot token into the account). From then on
@@ -58,12 +61,21 @@ export function setClaudePassLaunchState(next: {
   homes = next.homes.filter(({ configHome, token }) => Boolean(configHome && token));
   tokenByHome = keyHomes(process.platform);
   defaultToken = next.defaultHome ? tokenByHome.get(pathKey(next.defaultHome)) ?? null : null;
+  defaultId = defaultToken && next.defaultHome ? path.basename(next.defaultHome) : null;
   managed = next.managed;
 }
 
 function keyHomes(platform: NodeJS.Platform): Map<string, string> {
   keyedFor = platform;
   return new Map(homes.map(({ configHome, token }) => [pathKey(configHome, platform), token]));
+}
+
+/**
+ * The pass account a Claude process with no account runs on now (the "New
+ * chats" pass), or null when such a process gets no pass.
+ */
+export function claudePassForAccountless(): string | null {
+  return managed ? defaultId : null;
 }
 
 /** True when a pass signs Claude in on this computer (a cloud computer with a pass on). */
