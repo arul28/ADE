@@ -176,6 +176,13 @@ export function useAutomationMachines({
     [all.lanesByMachineId, lanes],
   );
 
+  /** A machine's own copy of an account rule, or null when it does not list it. */
+  const machineAccountRule = useCallback(
+    (machine: LaneMachine, ruleId: string): AutomationRuleSummary | null =>
+      rulesOfMachine(machine).find((rule) => rule.id === ruleId && followsAccount(rule)) ?? null,
+    [rulesOfMachine],
+  );
+
   /** Whether a machine's ADE lists this account rule, i.e. can run it once it is its home. */
   const machineListsAccountRule = useCallback(
     (machine: LaneMachine, ruleId: string): boolean =>
@@ -187,6 +194,7 @@ export function useAutomationMachines({
     machines,
     boundMachine,
     machineListsAccountRule,
+    machineAccountRule,
     entries,
     entryByKey,
     entryByRule,

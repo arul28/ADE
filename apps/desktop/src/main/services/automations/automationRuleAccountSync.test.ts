@@ -235,6 +235,8 @@ describe("automation rules that follow the account", () => {
     user.id = null;
     expect(a.rules().nightly.runsHere).toBe(true);
     expect(a.rules().nightly.homeOutOfTouch).toBeUndefined();
+    // A run within the lease is counted, and the count reaches the account on sign-in.
+    a.config.recordAutomationRunCount("nightly", 1);
     clock.now += 11 * 60_000;
     expect(a.rules().nightly.homeOutOfTouch).toBe(true);
     a.config.saveAutomationRule({ ...a.stored("nightly")!, prompt: "offline edit" });
@@ -250,5 +252,6 @@ describe("automation rules that follow the account", () => {
     await settleAll(a);
     expect(a.fileRuleIds()).toEqual([]);
     expect(a.rules().nightly.prompt).toBe("offline edit");
+    expect(a.rules().nightly.accountRunCount).toBe(1);
   });
 });

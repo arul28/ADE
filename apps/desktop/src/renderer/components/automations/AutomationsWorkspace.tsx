@@ -208,6 +208,7 @@ export function AutomationsWorkspace({
     machines,
     boundMachine,
     machineListsAccountRule,
+    machineAccountRule,
     entryByKey,
     entryByRule,
     entries,
@@ -572,11 +573,16 @@ export function AutomationsWorkspace({
         const validation = await validateDraft(ruleDraft);
         if (!validation.ok) return;
         // Saved through the new home as "this computer", so it names its own
-        // checkout. The old home stops on its next sync (within a minute) and
-        // the new one waits two minutes (`homeStartsAt`), so they never overlap.
+        // checkout; the new home waits past the old home's lease
+        // (`homeStartsAt`), so they never overlap. When only "Runs on"
+        // changed, the new home's own copy goes back, so the save writes the
+        // home alone and cannot undo a newer edit that computer already has.
+        const contentEdited = JSON.stringify(ruleDraft) !== savedSnapshotRef.current;
+        const targetCopy = contentEdited ? null : machineAccountRule(toMachine, ruleDraft.id);
+        const draftToSave = targetCopy ? toDraftFromRule(targetCopy) : ruleDraft;
         const saved = await onMachine(
           window.ade.automations.saveDraft(
-            { draft: { ...ruleDraft, home: "this-computer" }, confirmations: [...acceptedConfirmations] },
+            { draft: { ...draftToSave, home: "this-computer" }, confirmations: [...acceptedConfirmations] },
             to?.pin ?? null,
           ),
           to,
@@ -665,7 +671,7 @@ export function AutomationsWorkspace({
     } finally {
       setSaving(false);
     }
-  }, [acceptedConfirmations, blockedReason, boundMachine, commitMachineRules, entryByKey, machineListsAccountRule, refreshForeign, selectedRuleId, validateDraft]);
+  }, [acceptedConfirmations, blockedReason, boundMachine, commitMachineRules, entryByKey, machineAccountRule, machineListsAccountRule, refreshForeign, selectedRuleId, validateDraft]);
 
   const saveDraft = useCallback(async () => {
     if (!draft) return;

@@ -364,6 +364,17 @@ export function createAutomationRuleAccountSync(args: {
         if (store.writeHome(entry.rule.id, { ...home, checkout: store.checkout })) claimed += 1;
       }
       if (claimed > 0) cache = null;
+      // Runs counted while signed out go up now, so a later home's limit holds.
+      for (const pending of store.pendingRunCounts()) {
+        const current = accountRule(pending.ruleId);
+        if (!current) {
+          store.clearPendingRunCount(pending.ruleId);
+          continue;
+        }
+        if ((current.runCount ?? 0) >= pending.count || store.writeRunCount(pending.ruleId, pending.count)) {
+          store.clearPendingRunCount(pending.ruleId);
+        }
+      }
       const readded: string[] = [];
       if (!options.confirmed) return { claimed, readded };
       const user = store.accountUserId();

@@ -127,6 +127,8 @@ type LocalState = {
   copy?: { scope: string; accountUserId: string | null; fingerprint: string; rows: AutomationAccountRow[] } | null;
   /** Writes waiting for a sync to confirm them. */
   pending?: AutomationPendingConfirmation[];
+  /** Run counts the account refused (signed out), by rule, to send after sign-in. */
+  pendingRunCounts?: Record<string, { count: number; owner: string | null }>;
   /** Rules saved in `.ade/local.yaml` while signed out: the account they belong to, and when. */
   offlineSaves?: Record<string, { owner: string | null; at: string }>;
 };
@@ -432,19 +434,48 @@ export function createAutomationRuleAccountStore(args: {
       }
     },
 
-    /** Record runs counted so far for a rule with a run limit. */
+    /**
+     * Record runs counted so far for a rule with a run limit. A count the
+     * account refuses (signed out, within the lease) is kept and sent by
+     * `flushRunCounts` after sign-in, so a later home cannot run past the limit.
+     */
     writeRunCount(ruleId: string, count: number): boolean {
       const where = scope();
-      if (!where || !accountUserId()) return false;
+      const keep = () => {
+        const owner = accountUserId() ?? readState().copy?.accountUserId ?? null;
+        updateState((state) => {
+          const pending = { ...(state.pendingRunCounts ?? {}) };
+          pending[ruleId] = { count: Math.max(count, pending[ruleId]?.count ?? 0), owner };
+          return { ...state, pendingRunCounts: pending };
+        });
+        return false;
+      };
+      if (!where || !accountUserId()) return keep();
       try {
-        return args.backend.set(where, automationRuleRunsKey(ruleId), { count: Math.floor(count), at: new Date(now()).toISOString() }) !== false;
+        const ok = args.backend.set(where, automationRuleRunsKey(ruleId), { count: Math.floor(count), at: new Date(now()).toISOString() }) !== false;
+        return ok || keep();
       } catch (error) {
         args.logger?.warn("automations.account_rules.run_count_write_failed", {
           automationId: ruleId,
           error: error instanceof Error ? error.message : String(error),
         });
-        return false;
+        return keep();
       }
+    },
+
+    /** Run counts kept while signed out that belong to the account now signed in. */
+    pendingRunCounts(): Array<{ ruleId: string; count: number }> {
+      const user = accountUserId();
+      return Object.entries(readState().pendingRunCounts ?? {})
+        .filter(([, entry]) => !entry.owner || entry.owner === user)
+        .map(([ruleId, entry]) => ({ ruleId, count: entry.count }));
+    },
+    clearPendingRunCount(ruleId: string): void {
+      updateState((state) => {
+        const pending = { ...(state.pendingRunCounts ?? {}) };
+        delete pending[ruleId];
+        return { ...state, pendingRunCounts: pending };
+      });
     },
 
     /** Rule ids whose row some computer deleted, as account keys. */
