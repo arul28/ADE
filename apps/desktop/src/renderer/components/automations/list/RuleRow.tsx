@@ -11,7 +11,7 @@ import { sourceAccent, sourceDef, sourceForTriggerType } from "../triggerCatalog
 import { RuleSentence } from "./RuleSentence";
 import { MachineChip } from "../../shared/MachineChip";
 import type { MachineChipModel } from "../../../state/laneMachineRouting";
-import { ruleSyncLine } from "../ruleSync";
+import { followsAccount, ruleSyncLine } from "../ruleSync";
 
 /** Rules written before `origin` existed read as the user's own. */
 export function ruleOrigin(rule: Pick<AutomationRule, "origin">): AutomationRule["origin"] {
@@ -141,7 +141,8 @@ export function RuleRow({
   const SyncIcon = sync?.icon ?? null;
   // Shown on the row only when it says where the rule runs or that it is not
   // syncing; the ordinary local cases stay off the row.
-  const showSyncOnRow = Boolean(sync && (rule.source === "account" || sync.tone === "notice"));
+  const synced = followsAccount(rule);
+  const showSyncOnRow = Boolean(sync && (synced || sync.tone === "notice"));
   const runBlocked = offlineMessage ?? elsewhereReason;
 
   return (
@@ -261,8 +262,8 @@ export function RuleRow({
               >
                 <SyncIcon size={11} weight={sync.tone === "notice" ? "bold" : "regular"} className="shrink-0" aria-hidden />
                 {/* The name only when it runs elsewhere and no machine chip says so. */}
-                {!machineChip && rule.source === "account" && rule.home && rule.runsHere === false ? (
-                  <span className="max-w-24 truncate whitespace-nowrap">{rule.home.name}</span>
+                {!machineChip && synced && rule.runsHere === false ? (
+                  <span className="max-w-24 truncate whitespace-nowrap">{rule.home?.name}</span>
                 ) : null}
               </span>
             </SmartTooltip>

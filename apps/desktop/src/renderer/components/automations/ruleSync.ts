@@ -20,6 +20,11 @@ export type RuleSyncLine = {
 
 type SyncFields = Pick<AutomationRuleSummary, "source" | "home" | "localReason" | "homeStartsAt" | "runsHere">;
 
+/** True for a rule that follows the account: every machine with the repository lists it. */
+export function followsAccount(rule: Pick<AutomationRuleSummary, "source" | "home">): boolean {
+  return rule.source === "account" && Boolean(rule.home);
+}
+
 function shortTime(iso: string): string {
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -28,7 +33,7 @@ function shortTime(iso: string): string {
 /** The line for a saved rule, or null when there is nothing to say (an ordinary rule on a host with no account). */
 export function ruleSyncLine(rule: SyncFields, now = Date.now()): RuleSyncLine | null {
   const home = rule.runsHere ? "this computer" : rule.home?.name ?? "another computer";
-  if (rule.source === "account" && rule.home) {
+  if (followsAccount(rule)) {
     const startsAt = rule.homeStartsAt ? Date.parse(rule.homeStartsAt) : Number.NaN;
     if (rule.runsHere && Number.isFinite(startsAt) && startsAt > now) {
       return {
@@ -99,8 +104,8 @@ export function ruleSyncLine(rule: SyncFields, now = Date.now()): RuleSyncLine |
  */
 export function ruleElsewhereReason(rule: Pick<AutomationRuleSummary, "runsHere" | "home" | "needsNewerAde" | "source">): string | null {
   if (rule.needsNewerAde) return "Made with a newer ADE. Update ADE on this computer to run it here.";
-  if (rule.source === "account" && rule.runsHere === false && rule.home) {
-    return `Runs on ${rule.home.name}, which this window isn't connected to.`;
+  if (followsAccount(rule) && rule.runsHere === false) {
+    return `Runs on ${rule.home!.name}, which this window isn't connected to.`;
   }
   return null;
 }

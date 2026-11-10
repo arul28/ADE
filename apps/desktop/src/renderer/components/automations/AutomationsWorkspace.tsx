@@ -30,8 +30,8 @@ import { TestRunDialog, type TestKind } from "./builder/TestRunControls";
 import { RuleHistory } from "./history/RuleHistory";
 import { TemplateGallery } from "./templates/TemplateGallery";
 import { RuleMachineField } from "./builder/RuleMachineField";
-import { followsAccount, machineRuleKey, ruleListKey, useAutomationMachines, type MachineRule } from "./useAutomationMachines";
-import { ruleElsewhereReason, ruleSyncLine } from "./ruleSync";
+import { machineRuleKey, ruleListKey, useAutomationMachines, type MachineRule } from "./useAutomationMachines";
+import { followsAccount, ruleElsewhereReason, ruleSyncLine } from "./ruleSync";
 import type { LaneMachine } from "../../state/laneMachineRouting";
 import { onMachine } from "../../state/projectMachines";
 import { parseMachineScopedId } from "../../state/foreignMachineReads";
@@ -551,7 +551,7 @@ export function AutomationsWorkspace({
       const ok = await confirmDialog({
         title: `Run "${ruleDraft.name || "this automation"}" on ${toName}?`,
         message: [
-          `${savedRule.home?.name ?? fromName} stops running it, and ${toName} starts once it syncs, usually within a minute. Every computer still shows the rule.`,
+          `${savedRule.home?.name ?? fromName} stops within a minute, and ${toName} starts two minutes after you save, so the two never overlap. Every computer still shows the rule.`,
           `Its run history stays on ${savedRule.home?.name ?? fromName}.`,
         ].join("\n\n"),
         confirmLabel: "Change",
@@ -562,22 +562,17 @@ export function AutomationsWorkspace({
       try {
         const validation = await validateDraft(ruleDraft);
         if (!validation.ok) return;
-        // Saved through the machine that runs it today, so it stops first and
-        // two machines never run it at once. A target with no known device id
-        // names itself instead.
-        const viaOrigin = Boolean(toMachine.deviceId);
-        const via = viaOrigin ? from : to;
-        const home: AutomationRuleDraft["home"] = viaOrigin
-          ? { deviceId: toMachine.deviceId!, name: toMachine.machineName, chosenAt: new Date().toISOString() }
-          : "this-computer";
+        // Saved through the new home as "this computer", so it names its own
+        // checkout. The old home stops on its next sync (within a minute) and
+        // the new one waits two minutes (`homeStartsAt`), so they never overlap.
         const saved = await onMachine(
           window.ade.automations.saveDraft(
-            { draft: { ...ruleDraft, home }, confirmations: [...acceptedConfirmations] },
-            via?.pin ?? null,
+            { draft: { ...ruleDraft, home: "this-computer" }, confirmations: [...acceptedConfirmations] },
+            to?.pin ?? null,
           ),
-          via,
+          to,
         );
-        commitMachineRules(via, saved.rules);
+        commitMachineRules(to, saved.rules);
         refreshForeign();
         loadedRuleKeyRef.current = ruleDraft.id;
         setDraftOrigin({ machine: to });

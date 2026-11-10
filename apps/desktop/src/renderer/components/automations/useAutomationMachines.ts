@@ -15,7 +15,7 @@ import {
   type MachineReadLoad,
 } from "../../state/foreignMachineReads";
 import type { RuleMachineView } from "./list/RuleList";
-import { ruleElsewhereReason } from "./ruleSync";
+import { followsAccount, ruleElsewhereReason } from "./ruleSync";
 
 /**
  * One rule on one machine. Rules come from every machine that holds the
@@ -31,11 +31,6 @@ export type MachineRule = {
 
 export function machineRuleKey(machine: LaneMachine, ruleId: string): string {
   return machine.isActiveBinding ? ruleId : machineScopedId(machine.machineId, ruleId);
-}
-
-/** True for a rule that follows the account: every machine with the repository lists it. */
-export function followsAccount(rule: Pick<AutomationRuleSummary, "source" | "home">): boolean {
-  return rule.source === "account" && Boolean(rule.home);
 }
 
 /**

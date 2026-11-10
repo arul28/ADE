@@ -1614,16 +1614,20 @@ export async function createAdeRuntime(args: {
       let ruleSyncTimer: ReturnType<typeof setTimeout> | null = null;
       let ruleSyncRunning = false;
       let ruleSyncAgain = false;
-      const syncAutomationRules = async (): Promise<void> => {
+      // `sync: false` after the store's own sync applied remote rows: its
+      // health already says whether everything went up, with no second request.
+      const syncAutomationRules = async (options: { sync: boolean } = { sync: true }): Promise<void> => {
         if (ruleSyncRunning) {
           ruleSyncAgain = true;
           return;
         }
         ruleSyncRunning = true;
+        let first = true;
         try {
           do {
             ruleSyncAgain = false;
-            const confirmed = await ruleStore.syncedEverything();
+            const confirmed = await ruleStore.syncedEverything({ sync: options.sync || !first });
+            first = false;
             const moved = projectConfigService.migrateAutomationRulesToAccount();
             const settled = projectConfigService.reconcileAutomationRules({ confirmed: confirmed && moved.moved === 0 });
             if (moved.moved > 0 || settled.claimed > 0 || settled.readded.length > 0) ruleSyncAgain = true;
@@ -1637,11 +1641,11 @@ export async function createAdeRuntime(args: {
           ruleSyncRunning = false;
         }
       };
-      const scheduleAutomationRuleSync = (delayMs = 1_500) => {
+      const scheduleAutomationRuleSync = (delayMs = 1_500, options: { sync: boolean } = { sync: true }) => {
         if (ruleSyncTimer) return;
         ruleSyncTimer = setTimeout(() => {
           ruleSyncTimer = null;
-          void syncAutomationRules();
+          void syncAutomationRules(options);
         }, delayMs);
         ruleSyncTimer.unref?.();
       };
@@ -1669,7 +1673,7 @@ export async function createAdeRuntime(args: {
         logger,
       });
       projectConfigService.setAutomationRuleStore(ruleStore);
-      onAccountAutomationRuleRowsChangedRef = () => scheduleAutomationRuleSync(250);
+      onAccountAutomationRuleRowsChangedRef = () => scheduleAutomationRuleSync(250, { sync: false });
       void syncAutomationRules();
       teardown.push(accountAuthService.onSignedIn(() => void syncAutomationRules()));
     }

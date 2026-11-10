@@ -35,7 +35,7 @@ export type AutomationRuleAccountBackend = {
   deletedKeys?(scope: string): ReadonlyArray<{ key: string; updatedAt: string }>;
   /** Flush and pull. `ready` when the account answered. */
   sync?(): Promise<string>;
-  health?(): { pendingChanges: number };
+  health?(): { state: string; pendingChanges: number };
 };
 
 export const AUTOMATION_RULE_KEY_PREFIX = "automations.rule.";
@@ -154,8 +154,15 @@ export function createAutomationRuleAccountStore(args: {
     try {
       const parsed = JSON.parse(fs.readFileSync(args.statePath, "utf8")) as unknown;
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) memoryState = parsed as LocalState;
-    } catch {
-      // Missing or unreadable: an empty state. The account is the authority.
+    } catch (error) {
+      // Missing is an empty state. Unreadable is too (the account is the
+      // authority), but it is worth a line: the signed-out copy and any
+      // unconfirmed writes in it are gone.
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        args.logger?.warn("automations.account_rules.state_read_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
     return memoryState;
   };
@@ -199,7 +206,10 @@ export function createAutomationRuleAccountStore(args: {
       const name = device.name?.trim() || null;
       if (deviceId) knownDevice = { deviceId, name };
       return { deviceId, name };
-    } catch {
+    } catch (error) {
+      args.logger?.warn("automations.account_rules.device_read_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return { deviceId: null, name: null };
     }
   };
@@ -331,7 +341,10 @@ export function createAutomationRuleAccountStore(args: {
             .map((entry) => entry.key)
             .filter((key) => key.startsWith(AUTOMATION_RULE_KEY_PREFIX)),
         );
-      } catch {
+      } catch (error) {
+        args.logger?.warn("automations.account_rules.deleted_read_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
         return new Set();
       }
     },
@@ -409,13 +422,23 @@ export function createAutomationRuleAccountStore(args: {
       const drop = new Set(ruleIds);
       updateState((state) => ({ ...state, pending: (state.pending ?? []).filter((item) => !drop.has(item.ruleId)) }));
     },
-    /** True once every local write has reached the account and the account answered. */
-    async syncedEverything(): Promise<boolean> {
-      if (!args.backend.sync) return false;
+    /**
+     * True once every local write has reached the account and the account
+     * answered. `sync: false` reads the store's health only, for a caller that
+     * runs right after the store's own sync (no second request).
+     */
+    async syncedEverything(options: { sync: boolean } = { sync: true }): Promise<boolean> {
       try {
-        const status = await args.backend.sync();
-        return status === "ready" && (args.backend.health?.().pendingChanges ?? 0) === 0;
-      } catch {
+        if (options.sync) {
+          if (!args.backend.sync) return false;
+          if ((await args.backend.sync()) !== "ready") return false;
+        }
+        const health = args.backend.health?.();
+        return Boolean(health) && health!.state === "ok" && health!.pendingChanges === 0;
+      } catch (error) {
+        args.logger?.warn("automations.account_rules.sync_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
         return false;
       }
     },

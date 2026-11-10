@@ -48,10 +48,11 @@ account sync, runs `migrateAutomationRulesToAccount` then
 - **Changing the home.** **Runs on** in the rule editor, `saveRule` with
   `draft.home`, or `ade automations run-on <id> [--device <sync-device-id>
   --name <computer>]` (`automations.setRunOn`). Only the home row is written
-  when the rule itself is unchanged. The editor saves through the current home
-  so it stops at once. A home chosen for another computer has no checkout yet;
-  that computer claims it for its checkout after its next sync. The new home
-  then waits `HANDOVER_MS` (2 minutes, `homeStartsAt`) before triggered runs,
+  when the rule itself is unchanged. The editor saves through the new home (as
+  "this computer"), so the home names its own checkout; a home named for
+  another computer by device id (the CLI's `--device`) has no checkout yet,
+  and that computer claims it for its checkout after its next sync. The new
+  home waits `HANDOVER_MS` (2 minutes, `homeStartsAt`) before triggered runs,
   so the old home has synced and stopped; Run now does not wait. The old
   home's run count goes with it (`home.runCount`), so `maxRuns` holds.
 - **What stays on this computer** (`localReason`, shown under **Runs on** and
