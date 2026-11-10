@@ -298,6 +298,20 @@ function registeredLinkedLaneOwner(startDir: string): string | null {
  * opening a lane does not register it as a second project. A linked worktree
  * no project lists keeps its own path: opening one standalone is allowed.
  */
+/**
+ * True when `<rootPath>/.ade` is another ADE install's home, not a project's
+ * folder: a Windows profile seen from WSL, or a real home seen from a dev
+ * brain. Only a home has a project registry. Opening one as a project would
+ * write this brain's state into that install's database.
+ */
+export function isOtherAdeInstallHome(
+  rootPath: string,
+  ownAdeDir = resolveMachineAdeDir(),
+): boolean {
+  const adeDir = realpathIfExists(path.join(rootPath, ".ade"));
+  return !pathsEqual(adeDir, realpathIfExists(ownAdeDir)) && fs.existsSync(path.join(adeDir, "projects.json"));
+}
+
 export function normalizeProjectRootPath(rootPath: string): string {
   const managedWorktree = findAdeManagedWorktreeRoot(rootPath);
   if (managedWorktree) return managedWorktree.projectRoot;
