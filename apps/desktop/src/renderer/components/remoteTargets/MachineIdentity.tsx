@@ -274,6 +274,16 @@ export function MachineAvatar({
     setPicking(false);
     tileRef.current?.focus();
   };
+  // The swatches sit outside the sheet's focus trap, so Tab would walk out of
+  // the sheet. It goes round the swatches instead.
+  const onSwatchKeyDown = (event: KeyboardEvent) => {
+    if (event.key !== "Tab") return closeOnEscape(event);
+    const swatches = Array.from(swatchesRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? []);
+    if (swatches.length === 0) return;
+    event.preventDefault();
+    const at = swatches.indexOf(document.activeElement as HTMLButtonElement);
+    swatches[(at + (event.shiftKey ? -1 : 1) + swatches.length) % swatches.length]?.focus();
+  };
   const tile: CSSProperties = {
     position: "relative",
     flexShrink: 0,
@@ -324,7 +334,7 @@ export function MachineAvatar({
         role="group"
         aria-label={`${name} color`}
         onMouseLeave={() => setPicking(false)}
-        onKeyDown={closeOnEscape}
+        onKeyDown={onSwatchKeyDown}
         style={{
           display: "flex",
           gap: 6,
