@@ -383,6 +383,14 @@ ends, and closes on Escape without moving the reading position.
   list's rows and watches the DOM only while open, and closing releases the
   index. Open, streaming re-counts at most every 300 ms and repaints at most
   every 100 ms.
+- **A streaming reply is folded at the count's pace.** Its row changes on every
+  delta, and a fold parses the whole reply so far, so the row folds at most
+  every 300 ms. Between folds it stays searchable by its last fold, and each
+  fold replaces the row's earlier text in the find cache. A row never folded
+  (history paging in, a new message) folds at once, ahead of a waiting fold.
+  What the reader does (new words, Enter at a count of zero) folds the
+  streaming row first, so that count is of the text as it is now; a match that
+  streams in after a zero count is counted but does not move the view.
 - **⌘K hands off.** With a chat on screen and words typed, the palette offers
   `Find "…" in this chat` — first, unless the words lead a command's title, then
   right after the commands so Enter still runs the command. It opens that

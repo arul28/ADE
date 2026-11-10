@@ -245,8 +245,10 @@ export const ChatFindLayer = memo(function ChatFindLayer({
 
   // ── Navigation ──
   const step = useCallback((direction: 1 | -1) => {
-    const current = matchesRef.current;
     if (!queryRef.current.trim()) return;
+    // Nothing counted: count again now, because a streaming reply can hold
+    // text that its paced fold has not read yet.
+    const current = matchesRef.current.total === 0 ? recountNow() : matchesRef.current;
     if (current.total === 0) {
       // Still folding older rows: act once the first count lands.
       if (rowsStillFolding()) pendingStepRef.current = direction;
@@ -260,7 +262,7 @@ export const ChatFindLayer = memo(function ChatFindLayer({
     }
     const next = stepFindIndex(current.total, at, direction);
     select(next == null ? null : chatFindMatchAt(current, next));
-  }, [rowsStillFolding, matchesRef, select, selectStart]);
+  }, [rowsStillFolding, matchesRef, recountNow, select, selectStart]);
   handlers.current.step = step;
 
   // A navigation asked for while the first count was still coming.
