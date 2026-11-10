@@ -79,9 +79,25 @@ export type ChatThreadComment = {
   includeInNextSend: boolean;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Set only by the host: goes up by one each time the body changes. Absent
+   * reads as 0. The owner's pick of a guest comment names it, so an edit made
+   * after the pick keeps the comment out of that send.
+   */
+  revision?: number;
   /** Set only by the host (lane sharing). Absent: the host's own user. */
   author?: AdeMessageAuthor;
 };
+
+/** One guest comment the owner picked for a send: its id and the body revision the owner saw. */
+export type ChatThreadCommentSelection = { id: string; revision: number };
+
+/** The body revision of a comment (`ChatThreadComment.revision`). */
+export function threadCommentRevision(comment: Pick<ChatThreadComment, "revision">): number {
+  return typeof comment.revision === "number" && Number.isSafeInteger(comment.revision) && comment.revision > 0
+    ? comment.revision
+    : 0;
+}
 
 export type ChatThreadCommentCreateArgs = {
   sessionId: string;
@@ -111,14 +127,24 @@ export type ChatThreadCommentsChangedEvent = {
 };
 
 /**
- * The guest comment ids a send names (`includeGuestCommentIds`), cleaned: at
- * most one chat's worth of short ids. Undefined when it names none.
+ * The guest comments a send names (`includeGuestComments`), cleaned: at most
+ * one chat's worth of short ids, each with a whole revision, the first entry
+ * of an id kept. Undefined when it names none.
  */
-export function parseGuestCommentIds(value: unknown): string[] | undefined {
+export function parseGuestCommentSelections(value: unknown): ChatThreadCommentSelection[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  const ids = [...new Set(value.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 128))]
-    .slice(0, MAX_THREAD_COMMENTS_PER_SESSION);
-  return ids.length ? ids : undefined;
+  const seen = new Set<string>();
+  const selections: ChatThreadCommentSelection[] = [];
+  for (const entry of value) {
+    if (selections.length >= MAX_THREAD_COMMENTS_PER_SESSION) break;
+    if (!entry || typeof entry !== "object") continue;
+    const { id, revision } = entry as Record<string, unknown>;
+    if (typeof id !== "string" || !id.length || id.length > 128 || seen.has(id)) continue;
+    if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0) continue;
+    seen.add(id);
+    selections.push({ id, revision });
+  }
+  return selections.length ? selections : undefined;
 }
 
 export function collapseWhitespace(value: string): string {

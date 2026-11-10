@@ -6,6 +6,7 @@ import {
 import { readSavedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
 import { codedError, encodeCodedErrorMessage, isErrnoLikeCode } from "../../../shared/codedError";
 import { LaneShareError } from "../../../../../ade-cli/src/services/sync/laneShareError";
+import type { LaneShareCaller } from "../../../shared/laneShareRights";
 import { stampedAdeVersion } from "../../../../../ade-cli/src/services/remoteMcp/remoteMcpAccount";
 import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 import fs from "node:fs";
@@ -734,6 +735,18 @@ async function withLaneShareErrorCode<T>(call: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Who calls a `lane_share` action. `callerClass` is set by the host's RPC
+ * server from its own session (`run_ade_action` drops any value the caller
+ * sent, and refuses positional arguments for this domain), so here it is
+ * the host's word. Anything but exactly "person" is an agent: a route that
+ * does not set it can never act as the person. Automations never reach this
+ * domain (`isAutomationAllowedAdeAction`).
+ */
+export function laneShareCallerOf(args: Record<string, unknown> | undefined): LaneShareCaller {
+  return args?.callerClass === "person" ? "person" : "agent";
+}
+
 function buildLaneShareDomainService(runtime: AdeRuntime): OpaqueService | null {
   const sync = runtime.syncService;
   const service = typeof sync?.getLaneShareService === "function" ? sync.getLaneShareService() : null;
@@ -745,18 +758,22 @@ function buildLaneShareDomainService(runtime: AdeRuntime): OpaqueService | null 
       rights: args?.rights,
       endsAt: args?.endsAt,
       confirmHighRisk: args?.confirmHighRisk,
-    })),
+    }, laneShareCallerOf(args))),
     list: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.list({ scope: args?.scope })),
     updateRights: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.updateRights({
       grantId: args?.grantId,
       rights: args?.rights,
       endsAt: args?.endsAt,
       confirmHighRisk: args?.confirmHighRisk,
-    })),
-    revoke: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.revoke({ grantId: args?.grantId })),
-    resendInvite: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.resendInvite({ grantId: args?.grantId })),
-    listReceived: () => withLaneShareErrorCode(() => service.listReceived()),
-    leave: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.leave({ grantId: args?.grantId })),
+    }, laneShareCallerOf(args))),
+    revoke: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.revoke({
+      grantId: args?.grantId,
+      laneId: args?.laneId,
+      receiverEmail: args?.receiverEmail,
+    }, laneShareCallerOf(args))),
+    resendInvite: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.resendInvite({ grantId: args?.grantId }, laneShareCallerOf(args))),
+    listReceived: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.listReceived(laneShareCallerOf(args))),
+    leave: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.leave({ grantId: args?.grantId }, laneShareCallerOf(args))),
     ...buildLaneShareMoveActions(sync),
   };
 }

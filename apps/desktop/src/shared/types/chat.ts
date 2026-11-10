@@ -22,7 +22,7 @@ import type { ModelManifest } from "../modelManifest";
 import type { OpenCodeFastRoutes } from "../modelRegistry";
 import type { AdeCardPayload } from "../adeCard";
 import type { ChatErrorPresentation } from "../chatErrorPresentation";
-import type { ChatThreadComment } from "../threadComments";
+import type { ChatThreadComment, ChatThreadCommentSelection } from "../threadComments";
 import type { ClaudePromptCache } from "../claudePromptCache";
 import type { ClaudePluginUiSnapshot } from "../claudePluginUi";
 import type { SessionActivePrWatch } from "../prWatch";
@@ -1380,6 +1380,11 @@ export type AdeMessageAuthor = {
 export type AgentChatEventMetadata = Record<string, unknown> & {
   /** Set only by the host; see `AdeMessageAuthor`. Absent: the host's own user. */
   author?: AdeMessageAuthor;
+  /**
+   * Set only by the host: a guest sent this over its share. A queued message
+   * with it passes the share check again as it starts.
+   */
+  laneShareGuestSend?: true;
   /** A plain prompt with no guest author (`isPlainPromptMessage`). */
   plainPrompt?: true;
   /** Identifies the outside app that sent this person-side message through ADE MCP. */
@@ -5632,10 +5637,11 @@ export type AgentChatSendArgs = {
   includeThreadComments?: boolean;
   /**
    * Comments a lane-sharing guest wrote that go with this send too. A guest's
-   * comment never goes on its own: the owner names each one here, and the
-   * agent reads it as written by another person.
+   * comment never goes on its own: the owner names each one here, with the
+   * body revision the owner saw, and the agent reads it as written by another
+   * person. A comment whose body changed since then stays out.
    */
-  includeGuestCommentIds?: string[];
+  includeGuestComments?: ChatThreadCommentSelection[];
   /**
    * Set once per send attempt by a client talking to another machine. A brain
    * that froze or restarted mid-send may have already taken this message, so
@@ -5901,8 +5907,8 @@ export type AgentChatSteerArgs = {
   sentByUser?: boolean;
   /** See `AgentChatSendArgs.includeThreadComments`. */
   includeThreadComments?: boolean;
-  /** See `AgentChatSendArgs.includeGuestCommentIds`. */
-  includeGuestCommentIds?: string[];
+  /** See `AgentChatSendArgs.includeGuestComments`. */
+  includeGuestComments?: ChatThreadCommentSelection[];
 };
 
 export type AgentChatSteerResult = {

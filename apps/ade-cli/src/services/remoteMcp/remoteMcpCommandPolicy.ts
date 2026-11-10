@@ -83,8 +83,9 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["machines", new Set(["list", "show"])],
   ["projects", new Set(["list"])],
   // `defaults` reads the new-lane defaults; `defaults set` is refused below.
-  ["lanes", new Set(["list", "show", "actions", "reclaim-preview", "defaults"])],
-  ["lane", new Set(["list", "show", "actions", "reclaim-preview", "defaults"])],
+  // `share` lists a lane's shares; `share --add` and `--remove` are refused below.
+  ["lanes", new Set(["list", "show", "actions", "reclaim-preview", "defaults", "share"])],
+  ["lane", new Set(["list", "show", "actions", "reclaim-preview", "defaults", "share"])],
   // `ade lanes deleted list` reads Recently deleted; `restore` creates a lane.
   ["lanes deleted", new Set(["list", "ls"])],
   ["lane deleted", new Set(["list", "ls"])],
@@ -494,6 +495,10 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
   // `lanes defaults set` changes the project's new-lane defaults. Look past
   // the global flags (`--json`, `--pretty`) the CLI strips before it parses.
   if ((command === "lanes" || command === "lane") && sub === "defaults" && args.slice(2).includes("set")) return refuse();
+  // `lanes share --add` makes a share and `--remove` stops one: full access only.
+  if ((command === "lanes" || command === "lane") && sub === "share" && args.slice(2).some((word) => LANE_SHARE_WRITE_FLAG.test(word))) {
+    return refuse();
+  }
   // `cloud ready` alone, `status` or `list` reads the pool; `on`, `off` and
   // `retry` make or delete a billed machine.
   if (command === "cloud" && sub === "ready") {
@@ -505,6 +510,9 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
   if (sub && allowed.has(sub)) return { ok: true, args };
   return refuse();
 }
+
+/** `ade lanes share` flags that make or stop a share instead of listing them. */
+const LANE_SHARE_WRITE_FLAG = /^--(?:add|remove)(?:=|$)/;
 
 /** `ade search` flags that rebuild the index instead of reading it. */
 const SEARCH_WRITE_FLAGS: ReadonlySet<string> = new Set(["--rebuild", "--rebuild-index"]);

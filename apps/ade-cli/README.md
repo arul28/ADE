@@ -583,6 +583,9 @@ ade lanes action initEnv --arg laneId=lane-id              # re-run the full env
 ade lanes delete lane-id --force --delete-branch
 ade lanes deleted list --text                              # lanes whose unsaved work a delete kept, for 30 days
 ade lanes deleted restore <id>                             # bring one back with its uncommitted files; never pushes
+ade lanes share --lane lane-id --text                      # the lane's shares: person, state, preset, risk, end, made by
+ade lanes share --lane lane-id --add guest@example.com --ends 1w   # a Watch share (see, never act); the only kind the CLI, an agent or ADE MCP can make, at most 5 an hour
+ade lanes share --lane lane-id --remove guest@example.com  # stop a share of this lane (or pass its grant id)
 ade chat update [<session>] --title "Fix login" --tag review-ready   # also --model, --effort, --permissions, --fast/--ultrafast; defaults to $ADE_CHAT_SESSION_ID
 ade chat attach-linear-issue <session> --issue-id ENG-431
 ade chat create --from-linear-issue ENG-431

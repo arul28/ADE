@@ -12,8 +12,10 @@ import {
   collapseWhitespace,
   formatThreadReviewBlock,
   normalizeThreadCommentAnchor,
+  threadCommentRevision,
   type ChatThreadComment,
   type ChatThreadCommentCreateArgs,
+  type ChatThreadCommentSelection,
   type ChatThreadCommentDeleteArgs,
   type ChatThreadCommentUpdateArgs,
 } from "../../../shared/threadComments";
@@ -56,6 +58,7 @@ function normalizeStoredComment(entry: unknown, sessionId: string): ChatThreadCo
     includeInNextSend: value.includeInNextSend !== false,
     createdAt: at,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : at,
+    ...(threadCommentRevision(value) > 0 ? { revision: threadCommentRevision(value) } : {}),
     ...withStoredAuthor(value.author),
   };
 }
@@ -98,8 +101,12 @@ export function createThreadCommentService({
    * otherwise reach the agent in the owner's turn, under the owner's
    * permission mode.
    */
-  const goesWithSend = (comment: ChatThreadComment, guestIds: ReadonlySet<string>): boolean => {
-    if (comment.author?.kind === "guest") return guestIds.has(comment.id);
+  /**
+   * A guest's comment goes only when the owner picked it at the body revision
+   * it still has: an edit after the pick keeps it out (and `update` unticks it).
+   */
+  const goesWithSend = (comment: ChatThreadComment, guestPicks: ReadonlyMap<string, number>): boolean => {
+    if (comment.author?.kind === "guest") return guestPicks.get(comment.id) === threadCommentRevision(comment);
     return comment.includeInNextSend;
   };
 
@@ -230,10 +237,12 @@ export function createThreadCommentService({
     const body = args.body === undefined ? previous.body : cleanBody(args.body);
     if (!body) throw new Error("A comment cannot be empty. Delete it instead.");
     // The owner ticked a guest's comment for the text it had: new text waits for a new tick.
-    const guestTextChanged = previous.author?.kind === "guest" && body !== previous.body;
+    const bodyChanged = body !== previous.body;
+    const guestTextChanged = previous.author?.kind === "guest" && bodyChanged;
     const next: ChatThreadComment = {
       ...previous,
       body,
+      ...(bodyChanged ? { revision: threadCommentRevision(previous) + 1 } : {}),
       includeInNextSend: typeof args.includeInNextSend === "boolean"
         ? args.includeInNextSend
         : guestTextChanged ? false : previous.includeInNextSend,
@@ -260,11 +269,11 @@ export function createThreadCommentService({
    */
   const takeForSend = (
     sessionId: string,
-    options: { guestCommentIds?: readonly string[] | null } = {},
+    options: { guestComments?: readonly ChatThreadCommentSelection[] | null } = {},
   ): { block: string | null; count: number; restore: () => void } => {
     const current = read(sessionId);
-    const guestIds = new Set(options.guestCommentIds ?? []);
-    const goes = (comment: ChatThreadComment) => goesWithSend(comment, guestIds);
+    const guestPicks = new Map((options.guestComments ?? []).map((pick) => [pick.id, pick.revision] as const));
+    const goes = (comment: ChatThreadComment) => goesWithSend(comment, guestPicks);
     const taken = current.filter(goes);
     if (!taken.length) return { block: null, count: 0, restore: () => {} };
     const block = formatThreadReviewBlock(taken);
@@ -304,7 +313,7 @@ export function createThreadCommentService({
 
   /** True when a send with `includeThreadComments` would carry at least one comment. */
   const hasCommentsForSend = (sessionId: string): boolean =>
-    isThreadCommentSessionId(sessionId) && read(sessionId).some((comment) => goesWithSend(comment, new Set()));
+    isThreadCommentSessionId(sessionId) && read(sessionId).some((comment) => goesWithSend(comment, new Map()));
 
   /** Drops a deleted chat's comments without telling clients (the chat is gone). */
   const forgetSession = (sessionId: string): void => {

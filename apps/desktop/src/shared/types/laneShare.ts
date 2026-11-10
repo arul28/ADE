@@ -1,8 +1,11 @@
-import type { LaneShareCliTyping, LaneShareRights, LaneShareRiskLevel } from "../laneShareRights";
+import type { LaneShareCliTyping, LaneShareCreatedBy, LaneShareRights, LaneShareRiskLevel } from "../laneShareRights";
 
 /**
  * The owner's lane sharing contract between the renderer and the machine that
- * holds the lane (`lane_share` action domain, user-only). The host service is
+ * holds the lane (`lane_share` action domain). A person in the ADE app may
+ * call every action; an agent or the `ade` CLI only `list`, `create` (a Watch
+ * share) and `revoke` (see "Shares made by an agent" in
+ * docs/features/lanes/lane-sharing.md). The host service is
  * `apps/ade-cli/src/services/sync/laneShareHostService.ts`; these are the
  * shapes it answers with, so the renderer and the host read one definition.
  */
@@ -69,6 +72,12 @@ export type LaneShareGivenEntry = {
   connectedDevices: number;
   /** The shared lane on this runtime. Null for a row of another machine or project. */
   laneState: LaneShareLaneState | null;
+  /**
+   * Who made the share on the machine that holds it: a person in the ADE
+   * app, or an agent (always a Watch share when made). Null for a row this
+   * runtime holds no rights for. Absent from an older host.
+   */
+  createdBy?: LaneShareCreatedBy | null;
 };
 
 export type LaneShareListArgs = {

@@ -27,9 +27,12 @@ export type DesktopProjectRemovalDeps = {
   closeProjectByPath: (rootPath: string) => Promise<void>;
   trashItem: (folderPath: string) => Promise<void>;
   folderExists: (folderPath: string) => boolean;
-  homeDir: string;
-  adeHome: string;
-  runtimePaths: readonly string[];
+  /**
+   * The folders a copy may never be (home, ADE's own, the running app).
+   * Read when a folder is checked, never while the IPC handlers register:
+   * Electron's path calls are not for import or registration time.
+   */
+  protectedPaths: () => { homeDir: string; adeHome: string; runtimePaths: readonly string[] };
   logger: { warn(event: string, fields?: Record<string, unknown>): void };
 };
 
@@ -54,9 +57,7 @@ export function createDesktopProjectRemoval(deps: DesktopProjectRemovalDeps) {
     const refusal = await copyFolderRefusal({
       rootPath,
       registeredRoots: [...brainRoots, ...deps.recentLocalRoots()],
-      homeDir: deps.homeDir,
-      adeHome: deps.adeHome,
-      runtimePaths: deps.runtimePaths,
+      ...deps.protectedPaths(),
     });
     return "reason" in refusal ? refusal.reason : null;
   };

@@ -12,6 +12,12 @@ import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
+import {
+  LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE,
+  laneShareNextDayStart,
+  laneSharePresetRights,
+} from "../../desktop/src/shared/laneShareRights";
+import { LANE_SHARE_GRANT_ID_PATTERN } from "../../desktop/src/shared/laneShareDirectory";
 import type { CloudReadyPool } from "../../desktop/src/shared/cloudReady";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
@@ -2485,6 +2491,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade lanes deleted restore <id>                Bring one back, uncommitted files included: as a new lane, or into its lane if space was freed
     $ ade lanes rename <lane> --name "<name>"       Rename a lane (its branch keeps its name)
     $ ade lanes appearance <lane> --emoji 🐛        Set a lane emoji (use --emoji "" to clear)
+    $ ade lanes share --lane <lane> --text          List the lane's shares (people, state, preset, risk, end, made by)
+    $ ade lanes share --lane <lane> --add <email> [--ends 1h|today|1w|<ISO date>] [--hide-machines] [--hide-models]
+                                                    Share the lane with another ADE account, Watch only: they see
+                                                    its chats and sessions and cannot send, run or approve anything.
+                                                    From the CLI, an agent or ADE MCP: Watch only, at most 5 an hour.
+                                                    More rights: the share sheet in the ADE app
+    $ ade lanes share --lane <lane> --remove <email|grant id>
+                                                    Stop a share of this lane
     $ ade lanes actions --text                      List callable lane service methods
 `,
   git: `${ADE_BANNER}
@@ -7068,6 +7082,163 @@ function readLaneTemplatePayload(args: string[]): JsonObject {
   return parsed;
 }
 
+const LANE_SHARE_WATCH_SENTENCE =
+  "Watch only: this person can see the lane's chats and sessions and cannot send, run or approve anything.";
+
+/**
+ * `--ends` of `ade lanes share --add`: `<n>h`, `<n>d`, `<n>w`, `today` (until
+ * the next midnight here) or an ISO date, as epoch ms in the future.
+ */
+export function parseLaneShareEndsAt(value: string, now: number = Date.now()): number {
+  const text = value.trim();
+  const units: Record<string, number> = { h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000, w: 7 * 24 * 60 * 60 * 1000 };
+  const relative = /^(\d+)\s*([hdw])$/i.exec(text);
+  if (relative) {
+    const count = Number(relative[1]);
+    if (count > 0 && Number.isSafeInteger(count)) return now + count * units[relative[2]!.toLowerCase()]!;
+  } else if (text.toLowerCase() === "today") {
+    return laneShareNextDayStart(now);
+  } else if (/^\d{4}-\d{2}-\d{2}/.test(text)) {
+    const at = Date.parse(text);
+    if (Number.isFinite(at) && at > now) return at;
+  }
+  throw new CliUsageError("--ends takes 1h, 2d, 1w, today, or an ISO date in the future (2026-12-01T18:00:00Z).");
+}
+
+function shareObject(value: unknown): JsonObject {
+  return isRecord(value) ? value : {};
+}
+
+function formatLaneShareEnd(endsAt: unknown): string {
+  return typeof endsAt === "number" && Number.isFinite(endsAt) ? new Date(endsAt).toISOString() : "no end";
+}
+
+/**
+ * `ade lanes share`: the shares of one lane, a new Watch share (`--add`), or
+ * stopping one (`--remove`). The machine that holds the lane decides: from
+ * the CLI, an agent's shell or ADE MCP it makes only a Watch share, at most 5
+ * an hour, and every other change is for a person in the ADE app.
+ */
+function buildLaneSharePlan(args: string[]): CliPlan {
+  const laneId = requireValue(readLaneId(args) ?? envLaneIdForLaneCommand(), "laneId");
+  const add = readValue(args, ["--add", "--invite"]);
+  const remove = readValue(args, ["--remove", "--revoke"]);
+  const preset = readValue(args, ["--preset"]);
+  const endsValue = readValue(args, ["--ends", "--ends-at"]);
+  const hideMachines = readFlag(args, ["--hide-machines"]);
+  const hideModels = readFlag(args, ["--hide-models"]);
+  if (add && remove) throw new CliUsageError("Pass --add or --remove, not both.");
+  if (!add && (preset != null || endsValue != null || hideMachines || hideModels)) {
+    throw new CliUsageError("--preset, --ends, --hide-machines and --hide-models go with --add <email>.");
+  }
+  if (add) {
+    if (preset != null && preset.trim().toLowerCase() !== "watch") throw new CliUsageError(LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE);
+    const input: JsonObject = { laneId, receiverEmail: add.trim() };
+    if (hideMachines || hideModels) {
+      const rights = laneSharePresetRights("watch");
+      rights.privacy = { hideMachines, hideModels };
+      input.rights = rights as unknown as JsonObject;
+    }
+    if (endsValue != null) input.endsAt = parseLaneShareEndsAt(endsValue);
+    return {
+      kind: "execute",
+      label: "lane share add",
+      steps: [actionStep("result", "lane_share", "create", input)],
+      shapeResult: (values) => {
+        const result = shareObject(unwrapActionEnvelope(values.result));
+        const directory = shareObject(result.directory);
+        const grantId = asString(result.grantId);
+        const emailSent = directory.emailSent !== false;
+        return {
+          grantId,
+          laneId,
+          receiverEmail: add.trim(),
+          state: directory.refreshed === true ? "invite sent again" : emailSent ? "invite sent" : "email not sent",
+          emailNotSentReason: emailSent ? null : asString(directory.emailNotSentReason) ?? "failed",
+          link: grantId ? buildDeeplink({ kind: "lane-share", grantId }) : null,
+          preset: "watch",
+          risk: asString(shareObject(result.risk).level) ?? "low",
+          endsAt: typeof input.endsAt === "number" ? input.endsAt : null,
+          createdBy: asString(result.createdBy),
+          note: LANE_SHARE_WATCH_SENTENCE,
+        };
+      },
+      formatText: (value) => {
+        const result = shareObject(value);
+        const reason = asString(result.emailNotSentReason);
+        const state = reason
+          ? `Email not sent (${reason === "not_configured" ? "invite emails are not set up" : reason === "rate_limited" ? "an invite went out less than 10 minutes ago" : "the email failed"}). Send the link yourself.`
+          : result.state === "invite sent again" ? `The invite to ${asString(result.receiverEmail)} was sent again.` : `Invite sent to ${asString(result.receiverEmail)}.`;
+        return [
+          state,
+          `Link: ${asString(result.link) ?? "(none)"}`,
+          `Ends: ${formatLaneShareEnd(result.endsAt)}`,
+          LANE_SHARE_WATCH_SENTENCE,
+        ].join("\n");
+      },
+    };
+  }
+  if (remove) {
+    const target = remove.trim();
+    const input: JsonObject = LANE_SHARE_GRANT_ID_PATTERN.test(target)
+      ? { laneId, grantId: target }
+      : { laneId, receiverEmail: target };
+    return {
+      kind: "execute",
+      label: "lane share remove",
+      steps: [actionStep("result", "lane_share", "revoke", input)],
+      shapeResult: (values) => unwrapActionEnvelope(values.result),
+      formatText: (value) => {
+        const result = shareObject(value);
+        const lines = [`Stopped the share ${asString(result.grantId) ?? target}. The person has no access to this lane now.`];
+        const running = Array.isArray(result.runningTurnSessionIds) ? result.runningTurnSessionIds.length : 0;
+        if (running > 0) lines.push(`${running} turn(s) the person started keep running.`);
+        if (result.directoryRevoked === false && asString(result.directoryMessage)) lines.push(asString(result.directoryMessage)!);
+        return lines.join("\n");
+      },
+    };
+  }
+  return {
+    kind: "execute",
+    label: "lane share list",
+    steps: [actionStep("result", "lane_share", "list", {})],
+    shapeResult: (values) => {
+      const result = shareObject(unwrapActionEnvelope(values.result));
+      const shares = (Array.isArray(result.shares) ? result.shares : [])
+        .filter(isRecord)
+        .filter((share) => share.laneId === laneId)
+        .map((share) => ({
+          grantId: asString(share.grantId),
+          receiverEmail: asString(share.receiverEmail),
+          state: asString(share.state),
+          preset: asString(share.preset),
+          risk: asString(shareObject(share.risk).level) ?? asString(share.directoryRisk),
+          endsAt: typeof share.endsAt === "number" ? share.endsAt : null,
+          createdBy: asString(share.createdBy),
+          link: asString(share.link),
+        }));
+      return { laneId, shares };
+    },
+    formatText: (value) => {
+      const shares = (Array.isArray(shareObject(value).shares) ? shareObject(value).shares as unknown[] : []).filter(isRecord);
+      return renderTable(
+        ["person", "state", "preset", "risk", "ends", "made by", "grant"],
+        shares.map((share) => [
+          share.receiverEmail ?? "-",
+          share.state ?? "-",
+          share.preset ?? "-",
+          share.risk ?? "-",
+          formatLaneShareEnd(share.endsAt),
+          share.createdBy ?? "-",
+          share.grantId ?? "-",
+        ]),
+        "This lane has no shares.",
+        { fullColumns: ["grant"] },
+      );
+    },
+  };
+}
+
 function buildLanePlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "actions") {
@@ -7458,6 +7629,9 @@ function buildLanePlan(args: string[]): CliPlan {
         ),
       ],
     };
+  }
+  if (sub === "share" || sub === "shares") {
+    return buildLaneSharePlan(args);
   }
   if (sub === "rename") {
     const laneId = requireValue(

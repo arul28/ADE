@@ -1,11 +1,16 @@
 import { LaneShareError } from "./laneShareError";
 import {
+  LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE,
+  LANE_SHARE_PERSON_ONLY_MESSAGE,
+  laneShareAgentRightsRefusal,
   laneShareCliTypingFor,
   laneShareHighRiskRefusal,
   laneSharePresetLabel,
+  laneSharePresetRights,
   laneShareRightsForHost,
   laneShareRiskLevel,
   parseLaneShareRights,
+  type LaneShareCaller,
   type LaneShareCliTyping,
   type LaneShareRights,
   type LaneShareRiskLevel,
@@ -53,9 +58,20 @@ import type { LaneShareCloseResult } from "./syncHostService";
  *     stays closed here, the result says so, and the owner's list shows the
  *     grant as "needs rights" until a second revoke reaches the directory.
  *     A share never stays open here because a network call failed.
+ *
+ * Every action takes the caller (`LaneShareCaller`), which only the host's
+ * RPC server sets, from its own session (`laneShareCallerOf` in the action
+ * registry; never from the call's arguments). A person in the ADE app may do
+ * everything. An agent (the `ade` CLI, an agent's shell, an ADE MCP
+ * connection) may list, make a Watch share (`laneShareAgentRightsRefusal`,
+ * at most `AGENT_SHARES_PER_HOUR` an hour on this machine) and stop a share
+ * of this machine. Anything that is not exactly "person" is an agent.
  */
 
 const MAX_EMAIL_CHARS = 320;
+/** Shares an agent may make on this machine in one hour, on top of the directory's own limits. */
+export const AGENT_SHARES_PER_HOUR = 5;
+const HOUR_MS = 60 * 60 * 1000;
 
 export type LaneShareHostErrorCode =
   | "invalid_args"
@@ -70,6 +86,8 @@ export type LaneShareHostErrorCode =
   | "invite_expired"
   | "rate_limited"
   | "share_back_mismatch"
+  | "person_only"
+  | "agent_watch_only"
   | typeof LANE_SHARING_UNAVAILABLE;
 
 /** The directory's mapped codes this service keeps; any other refusal is `directory_refused`. */
@@ -137,16 +155,37 @@ function grantIdOf(body: unknown): string | null {
   return typeof grant?.id === "string" && GRANT_ID.test(grant.id) ? grant.id : null;
 }
 
+/** Refuses an action only a person in the ADE app may take. Fail closed: anything but "person" is an agent. */
+function requirePerson(caller: LaneShareCaller): void {
+  if (caller !== "person") throw new LaneShareHostError("person_only", LANE_SHARE_PERSON_ONLY_MESSAGE);
+}
+
 /**
  * The rights to store, as this machine enforces them (CLI typing off where
  * it is not available), with the risk rule: high risk needs the owner's
- * explicit confirmation.
+ * explicit confirmation. An agent gets the Watch preset when it names no
+ * rights, may not ask for more (refused, never clamped), and may not confirm
+ * a high-risk share; its share must come out low risk.
  */
 function checkedRights(
   value: unknown,
   confirmHighRisk: unknown,
   cliTyping: LaneShareCliTyping,
+  caller: LaneShareCaller,
 ): { rights: LaneShareRights; risk: { level: LaneShareRiskLevel; reasons: string[] } } {
+  if (caller !== "person") {
+    if (confirmHighRisk === true) {
+      throw new LaneShareHostError("agent_watch_only", `${LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE} An agent cannot confirm a high-risk share.`);
+    }
+    const asked = value === undefined || value === null ? laneSharePresetRights("watch") : parseLaneShareRights(value);
+    const refusal = laneShareAgentRightsRefusal(asked);
+    if (refusal) throw new LaneShareHostError("agent_watch_only", refusal);
+    const rights = laneShareRightsForHost(asked, cliTyping);
+    const risk = laneShareRiskLevel(rights);
+    // A second guard: whatever the ceiling lets through must be low risk.
+    if (risk.level !== "low") throw new LaneShareHostError("agent_watch_only", LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE);
+    return { rights, risk };
+  }
   const rights = laneShareRightsForHost(parseLaneShareRights(value), cliTyping);
   const refusal = laneShareHighRiskRefusal(rights, confirmHighRisk);
   if (refusal) throw new LaneShareHostError("confirm_high_risk", refusal);
@@ -243,6 +282,43 @@ export function createLaneShareHostService(options: {
     return { grantId, body };
   };
 
+  /**
+   * When an agent made each of its shares in the last hour (in memory; a
+   * restart forgets it, and the directory keeps its own limits). A slot is
+   * taken before the directory call and given back when the invite fails.
+   */
+  let agentCreates: number[] = [];
+  const takeAgentCreateSlot = (): (() => void) => {
+    const at = now();
+    // A clock moved back keeps its slots counted.
+    agentCreates = agentCreates.filter((made) => at - made < HOUR_MS);
+    if (agentCreates.length >= AGENT_SHARES_PER_HOUR) {
+      throw new LaneShareHostError(
+        "rate_limited",
+        `An agent or the CLI can make at most ${AGENT_SHARES_PER_HOUR} lane shares an hour on this computer. Try again later, or share from the ADE app.`,
+      );
+    }
+    agentCreates.push(at);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const index = agentCreates.indexOf(at);
+      if (index >= 0) agentCreates.splice(index, 1);
+    };
+  };
+
+  /** The one share of `laneId` on this machine that goes to `email`, by its local row. */
+  const grantIdForEmail = (laneId: unknown, email: unknown): string => {
+    const lane = typeof laneId === "string" ? laneId.trim() : "";
+    const address = cleanEmail(email)?.toLowerCase() ?? null;
+    if (!lane || !address) throw new LaneShareHostError("invalid_args", "Name the share: a grant id, or a lane and an email address.");
+    const matches = options.store.list().filter((record) => record.laneId === lane && record.receiverEmail?.toLowerCase() === address);
+    if (matches.length === 0) throw new LaneShareHostError("not_found", "This computer has no share of that lane with that email address.");
+    if (matches.length > 1) throw new LaneShareHostError("invalid_args", "More than one share of that lane goes to that address. Pass the grant id.");
+    return matches[0]!.grantId;
+  };
+
   const usageOf = (grantId: string): LaneShareUsage | null =>
     options.store.get(grantId) ? options.store.usage(grantId) : null;
 
@@ -283,9 +359,15 @@ export function createLaneShareHostService(options: {
   return {
     /**
      * A new share: the directory invite first (it also emails the guest),
-     * then the rights on this machine. A refused invite stores nothing.
+     * then the rights on this machine. A refused invite stores nothing. An
+     * agent makes only a Watch share (see `checkedRights`), never a share
+     * back of a move, and at most `AGENT_SHARES_PER_HOUR` an hour.
      */
-    async create(args: { laneId: unknown; receiverEmail: unknown; rights: unknown; endsAt?: unknown; confirmHighRisk?: unknown; shareBackOf?: unknown }) {
+    async create(
+      args: { laneId: unknown; receiverEmail: unknown; rights?: unknown; endsAt?: unknown; confirmHighRisk?: unknown; shareBackOf?: unknown },
+      caller: LaneShareCaller,
+    ) {
+      const createdBy = caller === "person" ? "person" : "agent";
       const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
       if (!laneId) throw new LaneShareHostError("invalid_args", "Choose a lane to share.");
       if (options.store.laneState(laneId) !== "active") {
@@ -293,17 +375,26 @@ export function createLaneShareHostService(options: {
       }
       const receiverEmail = cleanEmail(args.receiverEmail);
       if (!receiverEmail) throw new LaneShareHostError("invalid_args", "That email address isn't valid.");
-      const { rights: asked, risk } = checkedRights(args.rights, args.confirmHighRisk, cliTyping);
+      if (createdBy === "agent" && args.shareBackOf !== undefined) requirePerson(caller);
+      const { rights: asked, risk } = checkedRights(args.rights, args.confirmHighRisk, cliTyping, caller);
       const endsAt = cleanEndsAt(args.endsAt, now());
       // The host enforces the end date from its own rights, as an edit keeps it.
       const rights = endsAt !== undefined ? { ...asked, limits: { ...asked.limits, endsAt } } : asked;
       const shareBackOf = args.shareBackOf === undefined ? null : cleanGrantId(args.shareBackOf);
-      const { grantId, body } = await invite(laneId, receiverEmail, rights, risk.level, endsAt, shareBackOf);
-      const record = options.store.put({ grantId, laneId, receiverEmail, rights });
-      options.logger?.info("lane_share.host_created", { grantId, risk: risk.level });
+      const releaseSlot = createdBy === "agent" ? takeAgentCreateSlot() : null;
+      let made: Awaited<ReturnType<typeof invite>>;
+      try {
+        made = await invite(laneId, receiverEmail, rights, risk.level, endsAt, shareBackOf);
+      } catch (error) {
+        releaseSlot?.();
+        throw error;
+      }
+      const { grantId, body } = made;
+      const record = options.store.put({ grantId, laneId, receiverEmail, rights, createdBy });
+      options.logger?.info("lane_share.host_created", { grantId, risk: risk.level, createdBy });
       refresh();
       changed(grantId, laneId);
-      return { grantId, rights: record.rights, risk, directory: body };
+      return { grantId, rights: record.rights, risk, createdBy: record.createdBy, directory: body };
     },
 
     /**
@@ -352,6 +443,7 @@ export function createLaneShareHostService(options: {
             usage: null,
             connectedDevices: 0,
             laneState: null,
+            createdBy: null,
           });
           continue;
         }
@@ -375,18 +467,21 @@ export function createLaneShareHostService(options: {
           usage: live ? usageOf(grantId) : null,
           connectedDevices: live ? host?.laneShareConnectedDevices(grantId) ?? 0 : 0,
           laneState: laneId ? options.store.laneState(laneId) : "unknown",
+          createdBy: live && record ? record.createdBy : null,
         });
       }
       return { shares, cliTyping };
     },
 
     /** Shares other accounts gave this account (the "Shared with me" list). Display only. */
-    async listReceived(): Promise<LaneShareReceivedResult> {
+    async listReceived(caller: LaneShareCaller): Promise<LaneShareReceivedResult> {
+      requirePerson(caller);
       return parseLaneShareReceivedResponse(await request("GET", "/lane-shares/received"));
     },
 
     /** Leaves a share given to this account, or declines its invite. */
-    async leave(args: { grantId: unknown }): Promise<{ grantId: string; state: string }> {
+    async leave(args: { grantId: unknown }, caller: LaneShareCaller): Promise<{ grantId: string; state: string }> {
+      requirePerson(caller);
       const grantId = cleanGrantId(args.grantId);
       const body = await request("POST", `/lane-shares/${encodeURIComponent(grantId)}/leave`);
       const grant = body && typeof body === "object" ? (body as { grant?: { state?: unknown } }).grant : null;
@@ -398,11 +493,13 @@ export function createLaneShareHostService(options: {
      * Then the directory's preset, risk and end follow; a failed directory
      * write is reported and the local rights stay (the host enforces them).
      * A live grant of this machine that holds no rights here ("needs
-     * rights") gets these as its first rights.
+     * rights") gets these as its first rights. Only a person changes rights;
+     * a share an agent made keeps that label when a person raises it.
      */
-    async updateRights(args: { grantId: unknown; rights: unknown; endsAt?: unknown; confirmHighRisk?: unknown }) {
+    async updateRights(args: { grantId: unknown; rights: unknown; endsAt?: unknown; confirmHighRisk?: unknown }, caller: LaneShareCaller) {
+      requirePerson(caller);
       const grantId = cleanGrantId(args.grantId);
-      const { rights: asked, risk } = checkedRights(args.rights, args.confirmHighRisk, cliTyping);
+      const { rights: asked, risk } = checkedRights(args.rights, args.confirmHighRisk, cliTyping, caller);
       const endsAt = cleanEndsAt(args.endsAt, now());
       // The end date is kept in the local rights too, before the directory
       // write: the host enforces it, so a failed write cannot leave an old,
@@ -442,9 +539,19 @@ export function createLaneShareHostService(options: {
      * admitted, then the open connections close at once, the guest's queued
      * messages go, and the local row is deleted. A guest turn that already
      * started keeps running and is reported.
+     *
+     * The share is named by its grant id, or by its lane and the guest's
+     * email address (a row this machine holds). A person may stop any share
+     * of the account (Settings › Sharing stops one on another computer); an
+     * agent only a share of this machine and project.
      */
-    async revoke(args: { grantId: unknown }) {
-      const grantId = cleanGrantId(args.grantId);
+    async revoke(args: { grantId?: unknown; laneId?: unknown; receiverEmail?: unknown }, caller: LaneShareCaller) {
+      const grantId = args.grantId === undefined || args.grantId === null || args.grantId === ""
+        ? grantIdForEmail(args.laneId, args.receiverEmail)
+        : cleanGrantId(args.grantId);
+      if (caller !== "person" && !options.store.get(grantId) && !(await givenGrant(grantId))) {
+        throw new LaneShareHostError("not_found", "This computer has no live lane share with that id.");
+      }
       const laneId = options.store.get(grantId)?.laneId ?? null;
       // No await before this line and the close: no hello or action of the
       // guest can pass in between.
@@ -474,7 +581,8 @@ export function createLaneShareHostService(options: {
     },
 
     /** Sends the invite of a pending share again (a new 24 h window, the same rights). */
-    async resendInvite(args: { grantId: unknown }) {
+    async resendInvite(args: { grantId: unknown }, caller: LaneShareCaller) {
+      requirePerson(caller);
       const grantId = cleanGrantId(args.grantId);
       const record = options.store.get(grantId);
       if (!record?.receiverEmail) throw new LaneShareHostError("not_found", "This computer holds no invite for that lane share.");
@@ -483,7 +591,7 @@ export function createLaneShareHostService(options: {
       const { grantId: sentId, body } = await invite(record.laneId, record.receiverEmail, record.rights, risk.level, record.rights.limits.endsAt ?? null);
       if (sentId !== grantId) {
         // The directory made a new grant (the old one closed): keep the rights under it.
-        options.store.put({ grantId: sentId, laneId: record.laneId, receiverEmail: record.receiverEmail, rights: record.rights });
+        options.store.put({ grantId: sentId, laneId: record.laneId, receiverEmail: record.receiverEmail, rights: record.rights, createdBy: record.createdBy });
       }
       changed(sentId, record.laneId);
       return { grantId: sentId, directory: body };

@@ -739,12 +739,15 @@ export function createSyncService(args: SyncServiceArgs) {
       };
     },
     rightsStore: laneShareRights,
+    // The share back and its undo run inside a move that the person who
+    // receives the work accepted in the ADE app (`moveRespond` and
+    // `moveReceiveLand` are person-only), so they act as that person.
     share: () => ({
-      create: async (createArgs) => ({ grantId: (await laneShareService.create(createArgs)).grantId }),
+      create: async (createArgs) => ({ grantId: (await laneShareService.create(createArgs, "person")).grantId }),
       shareBackParty: (grantId) => laneShareService.shareBackParty(grantId),
       acceptShareBack: (acceptArgs) => laneShareService.acceptShareBack(acceptArgs),
       revoke: async (grantId) => {
-        await laneShareService.revoke({ grantId });
+        await laneShareService.revoke({ grantId }, "person");
       },
     }),
     getRepoKey: readLaneShareRepoKey,

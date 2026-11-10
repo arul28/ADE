@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import {
+  LANE_SHARE_DEFAULT_RIGHTS_KEY,
   LANE_SHARE_PRESET_NAMES,
   laneSharePresetRights,
   laneShareRiskLevel,
@@ -16,7 +17,7 @@ import { confirmDialog } from "../ui/dialog";
  * every machine of the account starts from the same rights. The end date is
  * never part of it: an end is chosen per share.
  */
-export const LANE_SHARE_DEFAULT_RIGHTS_KEY = "laneShare.defaultRights";
+export { LANE_SHARE_DEFAULT_RIGHTS_KEY };
 
 export type LaneShareDefaults = {
   preset: LaneSharePresetName | "custom";

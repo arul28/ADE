@@ -24,14 +24,26 @@ export function parseMessageAuthor(value: unknown): AdeMessageAuthor | null {
   return { kind: record.kind, userId, name };
 }
 
+/** The metadata key of the host-set mark on a guest's own send (`withHostMessageAuthor`). */
+export const LANE_SHARE_GUEST_SEND_KEY = "laneShareGuestSend" as const;
+
+/** Whether the message was sent by a guest over its share (not a guest draft the owner sent). */
+export function isLaneShareGuestSend(metadata: Record<string, unknown> | null | undefined): boolean {
+  return metadata?.[LANE_SHARE_GUEST_SEND_KEY] === true && parseMessageAuthor(metadata.author)?.kind === "guest";
+}
+
 /** Whether the row was written by a guest. Missing or malformed authors are the host. */
 function isGuestAuthored(value: unknown): boolean {
   return parseMessageAuthor(value)?.kind === "guest";
 }
 
 /**
- * `args` with any caller-sent `metadata.author` removed, and the host's own
- * `author` set when it passes one. The only way an author reaches a message.
+ * `args` with any caller-sent `metadata.author` and `metadata.laneShareGuestSend`
+ * removed, and the host's own `author` set when it passes one. The only way
+ * an author reaches a message. A guest author passed here is a guest's own
+ * send over its share, so it also gets `laneShareGuestSend`: the mark that
+ * makes a queued message pass the share check again as it starts. A guest's
+ * draft that the owner sends keeps its author but has no mark.
  */
 export function withHostMessageAuthor<T extends { metadata?: Record<string, unknown> | null | undefined }>(
   args: T,
@@ -39,10 +51,12 @@ export function withHostMessageAuthor<T extends { metadata?: Record<string, unkn
 ): T {
   const metadata = args.metadata;
   const hostAuthor = author ? parseMessageAuthor(author) : null;
-  const hasClientAuthor = Boolean(metadata && Object.prototype.hasOwnProperty.call(metadata, "author"));
-  if (!hasClientAuthor && !hostAuthor) return args;
-  const { author: _clientAuthor, ...rest } = metadata ?? {};
-  const nextMetadata = hostAuthor ? { ...rest, author: hostAuthor } : rest;
+  const hasOwn = (key: string) => Boolean(metadata && Object.prototype.hasOwnProperty.call(metadata, key));
+  if (!hasOwn("author") && !hasOwn(LANE_SHARE_GUEST_SEND_KEY) && !hostAuthor) return args;
+  const { author: _clientAuthor, [LANE_SHARE_GUEST_SEND_KEY]: _clientMark, ...rest } = metadata ?? {};
+  const nextMetadata = hostAuthor
+    ? { ...rest, author: hostAuthor, ...(hostAuthor.kind === "guest" ? { [LANE_SHARE_GUEST_SEND_KEY]: true } : {}) }
+    : rest;
   return {
     ...args,
     metadata: Object.keys(nextMetadata).length > 0 ? nextMetadata : (metadata == null ? metadata : null),

@@ -189,7 +189,7 @@ import {
 } from "./AgentChatComposer";
 import {
   countCommentsForNextSend,
-  guestCommentIdsForNextSend,
+  guestCommentsForNextSend,
   requestThreadCommentFocus,
   setThreadComments,
   useThreadComments,
@@ -15278,9 +15278,9 @@ export function AgentChatPane({
           : contextAttachmentsSnapshot.length || !includeThreadComments
             ? "Attached issue context"
             : "");
-      const guestCommentIdsForSend = includeThreadComments ? guestCommentIdsForNextSend(threadCommentsRef.current) : [];
+      const guestCommentsForSend = includeThreadComments ? guestCommentsForNextSend(threadCommentsRef.current) : [];
       const threadCommentSendFields = includeThreadComments
-        ? { includeThreadComments: true as const, ...(guestCommentIdsForSend.length ? { includeGuestCommentIds: guestCommentIdsForSend } : {}) }
+        ? { includeThreadComments: true as const, ...(guestCommentsForSend.length ? { includeGuestComments: guestCommentsForSend } : {}) }
         : {};
 
       let sessionId = selectedSessionId;

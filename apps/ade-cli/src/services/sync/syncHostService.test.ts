@@ -6422,7 +6422,7 @@ describe("sync host account authentication", () => {
           const first = await connectGuest(env.port, env.proof, directory);
           guests.push(first);
           expect(first.first.type).toBe("hello_ok");
-          const result = await ownerService(env, { revoke: status }).revoke({ grantId: grantId("a") });
+          const result = await ownerService(env, { revoke: status }).revoke({ grantId: grantId("a") }, "person");
           expect(result).toMatchObject({ closedConnections: 1, directoryRevoked });
           if (!directoryRevoked) expect(result.directoryMessage).toContain("closed on this computer");
           await waitForValue(() => first.client.closeEvents[0], "revoked guest close");
@@ -6447,7 +6447,7 @@ describe("sync host account authentication", () => {
           env.emitChatEvent("session-shared", { type: "status", turnStatus: "started", turnId: "turn-g" });
           env.chatState.status = "active";
           expect((await runCommand(guest.client, "queued", "chat.send", { sessionId: "session-shared", text: "next" })).ok).toBe(true);
-          const result = await ownerService(env, { patch: 503 }).updateRights({ grantId: grantId("a"), rights: laneSharePresetRights("watch") });
+          const result = await ownerService(env, { patch: 503 }).updateRights({ grantId: grantId("a"), rights: laneSharePresetRights("watch") }, "person");
           expect(result).toMatchObject({ appliedConnections: 1, directorySynced: false });
           // Rights that no longer send or steer take the queued message away.
           await waitForValue(() => (env.agentChatService.cancelSteer.mock.calls.length > 0 ? true : undefined), "queued message removed");
@@ -6512,7 +6512,7 @@ describe("sync host account authentication", () => {
             given: [{ id: grantId("a"), machineKey: "machine-guest-test", laneId: sharedLane, state: "active", receiverEmail: "guest@example.com" }],
           });
           expect((await owner.list()).shares).toEqual([expect.objectContaining({ grantId: grantId("a"), rights: null, needsRights: true })]);
-          await owner.updateRights({ grantId: grantId("a"), rights: laneSharePresetRights("watch") });
+          await owner.updateRights({ grantId: grantId("a"), rights: laneSharePresetRights("watch") }, "person");
           const admitted = await connectGuest(env.port, env.proof, directory);
           guests.push(admitted);
           expect(admitted.first.type).toBe("hello_ok");

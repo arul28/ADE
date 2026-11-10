@@ -2,7 +2,7 @@ import React from "react";
 import { ArrowsLeftRight } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { LaneShareGivenEntry } from "../../../shared/types/laneShare";
-import { laneShareRiskLevel, type LaneShareRights } from "../../../shared/laneShareRights";
+import { laneShareRiskLevel, type LaneShareCliTyping, type LaneShareRights } from "../../../shared/laneShareRights";
 import { LANE_SHARE_MOVE_FINAL_STAGES, moveErrorText, type LaneShareMoveView } from "../../../shared/laneShareMove";
 import { Banner } from "../ui/notice";
 import { confirmDialog } from "../ui/dialog";
@@ -82,6 +82,8 @@ export const LaneShareOwnerMoveCard = React.memo(function LaneShareOwnerMoveCard
   style?: React.CSSProperties;
 }) {
   const shares = useMovableLaneShares(pin, laneId);
+  // The work lands on this machine (the pin's), so its share back follows this machine's CLI typing.
+  const cliTyping = useLaneShareList(pin, { enabled: Boolean(laneId) }).entry?.cliTyping ?? null;
   const enabled = shares.length > 0;
   const pinKey = pin?.key ?? null;
   const [moves, setMoves] = React.useState<LaneShareMoveView[]>([]);
@@ -149,7 +151,7 @@ export const LaneShareOwnerMoveCard = React.memo(function LaneShareOwnerMoveCard
   return (
     <div className="flex flex-col gap-1.5" style={style} data-testid="lane-share-owner-move-card">
       {shown.map((move) => move.direction === "to_owner" && move.stage === "offered" ? (
-        <OwnerConsent key={move.moveId} move={move} pin={pin} guestEmail={shares.find((share) => share.grantId === move.grantId)?.receiverEmail ?? null} onChanged={reload} />
+        <OwnerConsent key={move.moveId} move={move} pin={pin} cliTyping={cliTyping} guestEmail={shares.find((share) => share.grantId === move.grantId)?.receiverEmail ?? null} onChanged={reload} />
       ) : (
         <OwnerMoveStatus key={move.moveId} move={move} pin={pin} who={move.starterName ?? guestOf(move.grantId)} onDismiss={() => dismiss(move.moveId)} onChanged={reload} />
       ))}
@@ -209,11 +211,13 @@ function OwnerMoveStatus({
 function OwnerConsent({
   move,
   pin,
+  cliTyping,
   guestEmail,
   onChanged,
 }: {
   move: LaneShareMoveView;
   pin: OpenProjectBinding | null;
+  cliTyping: LaneShareCliTyping | null;
   guestEmail: string | null;
   onChanged: () => Promise<void>;
 }) {
@@ -260,7 +264,7 @@ function OwnerConsent({
           <button type="button" className="self-start text-[11.5px] text-fg/60 underline-offset-2 hover:underline" onClick={() => setEditRights((open) => !open)}>
             {editRights ? "Hide the rights of the share back" : `Share back with ${who}: the same rights (change)`}
           </button>
-          {editRights ? <LaneShareRightsPanel rights={rights} endsAt={endsAt} onChange={setRights} onEndsAtChange={setEndsAt} now={Date.now()} /> : null}
+          {editRights ? <LaneShareRightsPanel rights={rights} endsAt={endsAt} onChange={setRights} onEndsAtChange={setEndsAt} now={Date.now()} cliTyping={cliTyping} /> : null}
         </div>
       ) : null}
       <div className="flex items-center gap-2">

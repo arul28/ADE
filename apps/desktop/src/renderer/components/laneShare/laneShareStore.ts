@@ -75,6 +75,17 @@ function setEntry(key: string, entry: LaneShareListEntry): void {
   useLaneShareStore.setState((state) => ({ lists: { ...state.lists, [key]: entry } }));
 }
 
+type LaneSharesLoadedListener = (key: string, pin: OpenProjectBinding | null, shares: readonly LaneShareGivenEntry[]) => void;
+const loadedListeners = new Set<LaneSharesLoadedListener>();
+
+/** Runs after each good read of a list (the agent share notice). Returns its removal. */
+export function onLaneSharesLoaded(listener: LaneSharesLoadedListener): () => void {
+  loadedListeners.add(listener);
+  return () => {
+    loadedListeners.delete(listener);
+  };
+}
+
 /** Reads the list again. Concurrent calls for one key share one request. */
 export function loadLaneShares(key: string, pin: OpenProjectBinding | null): Promise<void> {
   const running = inFlight.get(key);
@@ -84,12 +95,20 @@ export function loadLaneShares(key: string, pin: OpenProjectBinding | null): Pro
   const request = (async () => {
     try {
       const result = await window.ade.laneShare.list({}, pin);
+      const shares = Array.isArray(result?.shares) ? result.shares : EMPTY;
       setEntry(key, {
         status: "ready",
-        shares: Array.isArray(result?.shares) ? result.shares : EMPTY,
+        shares,
         problem: null,
         cliTyping: result?.cliTyping ?? null,
       });
+      for (const listener of loadedListeners) {
+        try {
+          listener(key, pin, shares);
+        } catch (error) {
+          logRendererDebugEvent("lane_share.list_listener_failed", { error: error instanceof Error ? error.message : String(error) });
+        }
+      }
     } catch (error) {
       setEntry(key, { status: "error", shares: previous?.shares ?? EMPTY, problem: laneShareProblem(error, { pin }), cliTyping: previous?.cliTyping ?? null });
     } finally {

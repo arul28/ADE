@@ -594,6 +594,14 @@ a value, the CLI reads `--help` as the value and runs the command
 every `remote_mcp` action (reads included) away from any client but the
 desktop, whatever its role.
 
+Lane shares: a read-only connection can only list a lane's shares (`lanes
+share --lane <lane>`, `actions run lane_share.list`); the command policy
+refuses `lanes share --add` and `--remove` and every `lane_share` write. A
+full-access connection can list, make a share and stop one, but its CLI is
+an agent to the lane's machine, so the host makes only a Watch share (it
+sees, it cannot act), at most 5 an hour, and refuses every other share
+change (see [lane sharing](../lanes/lane-sharing.md#shares-made-by-an-agent)).
+
 The blocklist stops the obvious routes, not a determined app: full access is
 real, and an app can start shells and agents, so it can do what the person
 can. Revoking stops new calls; it does not undo anything already done.

@@ -75,12 +75,15 @@ before a guest or a commit trailer shows it.
 
 The owner's actions are the `lane_share` action domain on the lane's machine
 (`laneShareHostService.ts`): `create`, `list`, `updateRights`, `revoke`,
-`resendInvite`, `listReceived`, `leave`, and the `move*` actions. The domain
-is user-only:
+`resendInvite`, `listReceived`, `leave`, and the `move*` actions. A person in
+the ADE app may call all of them. An agent may call only `list`, `create` (a
+Watch share) and `revoke`; see [Shares made by an agent](#shares-made-by-an-agent).
 
-- `actionPolicy.ts` gives no agent role any `lane_share` action.
-- `adeRpcServer.ts` (`mayUseUserOnlyActions`) admits only an RPC caller that
-  names itself as an ADE desktop client and carries no agent identity.
+- `actionPolicy.ts` keeps every other `lane_share` action user-only
+  (`ADE_ACTION_USER_ONLY`) and away from automations.
+- `adeRpcServer.ts` (`mayUseUserOnlyActions`) admits to those only an RPC
+  caller that names itself as an ADE desktop client and carries no agent
+  identity.
 - A guest never reaches the domain. Its connection has no runtime RPC
   channel.
 
@@ -101,6 +104,57 @@ The host pushes `lane_share_event` on its runtime event stream:
 `lane_share_guest_turn_running` and `lane_share_move_changed`.
 `laneShareStore.ts` keeps one share list per machine and refreshes it from
 these events, so a lane with no share costs no extra call.
+
+### Shares made by an agent
+
+An agent can make a share, but only a read-only one, so that in the worst
+case a share made by an agent cannot change anything on the host.
+
+- **Who is an agent.** The host's RPC server sets the caller class of every
+  `lane_share` call from its own session, never from the call's arguments
+  (`run_ade_action` drops any `callerClass` the caller sent, and refuses
+  positional arguments for the domain). A person is
+  `mayUseUserOnlyActions(session)`: an ADE desktop client name with no agent
+  identity, on this machine or a paired desktop (`ade-desktop-remote`).
+  Everyone else is an agent: the `ade` CLI, an agent's shell, an ADE MCP
+  connection, another machine's brain. The action registry passes the class
+  to the host service (`laneShareCallerOf`), and anything that is not exactly
+  `person` is an agent.
+- **What an agent may do.** `list`; `create` with Watch rights only; `revoke`
+  of a share of this machine and project. Every other action answers "Only a
+  person in the ADE app can do this." (`person_only`).
+- **The ceiling.** `laneShareAgentRightsRefusal` (`laneShareRights.ts`)
+  refuses, and never clamps, any switch above the Watch preset: history
+  before the share, every Speak, Run, Decide and Tools switch, and any model,
+  reasoning or mode entry. The refusal names each switch. Privacy switches,
+  the end date and message limits may be set. No rights means the Watch
+  preset. An agent cannot confirm a high-risk share, and the host refuses an
+  agent's share that does not come out low risk (`agent_watch_only`).
+- **Rate.** At most 5 shares an hour per machine from agents, counted in
+  memory by the host service (`AGENT_SHARES_PER_HOUR`), on top of the
+  directory's limits.
+- **Record.** The host's rights row records `created_by` (`person` or
+  `agent`; a row from before reads as `person`). `lane_share.list` returns it
+  as `createdBy`, and the share sheet's guest row and Settings › Sharing show
+  "Made by an agent". A person may raise such a share later; the label stays.
+  The share emits the usual `lane_share_changed` event.
+- **Owner notice.** On each read of a machine's share list, a new live share
+  that an agent made shows the owner a sticky toast once: "An agent shared
+  the lane <lane> with <email>. Watch only.", with **Remove** (a revoke with
+  that machine's pin) and **View** (the share sheet). The noticed grant ids
+  and each list's last read time are kept in this viewer's local storage
+  (`laneShareAgentNotice.tsx`, `agentSharesToNotice`), so a share made while
+  the app was closed shows on the next read and a reconnect shows nothing
+  again. The label stays the durable signal.
+- **The CLI.** `ade lanes share --lane <lane>` lists, `--add <email>` makes a
+  Watch share (`--ends`, `--hide-machines`, `--hide-models`), and `--remove
+  <email|grant id>` stops one. `--preset` takes only `watch`.
+- **ADE MCP.** A read-only connection can list shares only: the command
+  policy refuses `lanes share --add/--remove` and `actions run` of a
+  `lane_share` write. A full-access connection can list, make a Watch share
+  and stop a share.
+- **Default rights.** `account_settings.set` or `remove` of
+  `laneShare.defaultRights` is for a person only, by the same test.
 
 ### Surfaces
 
@@ -261,8 +315,11 @@ rides as `metadata.author` on a `user_message` event, `DraftEntry.author`
   command or skill, and no `@chat:`-style expansion. The host refuses a
   guest message that starts with `/` or `!` (`lane_share_plain_text_only`).
 - A guest's thread comment goes with a send only when the owner names it in
-  `includeGuestCommentIds`. `formatThreadReviewBlock` marks it as written by
-  another person and breaks its `@word:` chips.
+  `includeGuestComments`, with the body `revision` the owner saw. The host
+  adds one to `revision` on each body edit. A comment that a guest edited
+  after the owner picked it stays out of that send, and the edit unticks it.
+  `formatThreadReviewBlock` marks it as written by another person and breaks
+  its `@word:` chips.
 - The host adds a note to the text the agent gets (not the text the chat
   shows) for a guest's message. The note names the guest by its directory
   name and asks for a `Co-authored-by` trailer on any commit of that turn
@@ -334,7 +391,7 @@ still refuses each typed line and each first line with
 | File | Responsibility |
 |------|----------------|
 | `apps/account-directory/src/laneShares/{routes,contract,invites,tickets,shareRows,clerkAccount}.ts` | Directory routes, shapes, invites and email limits, one-use tickets, grant rows, Clerk verified-address reads. |
-| `apps/desktop/src/shared/laneShareRights.ts` | Rights type, parser, presets, risk, display name, daily window, guest state. |
+| `apps/desktop/src/shared/laneShareRights.ts` | Rights type, parser, presets, risk, the agent ceiling, display name, daily window, guest state. |
 | `apps/desktop/src/shared/types/laneShare.ts` | Owner and guest contract shapes, `LaneShareEvent`. |
 | `apps/desktop/src/shared/laneShareDirectory.ts`, `laneShareGuestDirectory.ts` | Directory id and ticket shapes, error mapping, the guest's account calls. |
 | `apps/desktop/src/shared/laneShareMove.ts` | Move trust rules, payload parser, consents. |

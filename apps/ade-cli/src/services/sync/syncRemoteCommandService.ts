@@ -380,7 +380,7 @@ import {
   parseAgentChatCreateFields,
   parseAgentChatFileRefs,
   parseAgentChatSendArgs,
-  guestCommentIdsField,
+  guestCommentsField,
   parseChatLaunchArgs,
   parseChatLaunchCompleteClientArgs,
   parseChatLaunchIdArgs,
@@ -2841,7 +2841,7 @@ function parseAgentChatSteerArgs(value: Record<string, unknown>): AgentChatSteer
     // typed in the composer.
     sentByUser: true,
     ...(includeThreadComments ? { includeThreadComments: true } : {}),
-    ...guestCommentIdsField(includeThreadComments, value.includeGuestCommentIds),
+    ...guestCommentsField(includeThreadComments, value.includeGuestComments),
   };
 }
 

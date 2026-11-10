@@ -4912,9 +4912,11 @@ export function registerIpc({
     closeProjectByPath,
     trashItem: (folderPath) => shell.trashItem(folderPath),
     folderExists: (folderPath) => fs.existsSync(folderPath),
-    homeDir: app.getPath("home"),
-    adeHome: process.env.ADE_HOME?.trim() || path.join(app.getPath("home"), ".ade"),
-    runtimePaths: [process.cwd(), process.execPath, app.getAppPath(), app.getPath("userData")],
+    protectedPaths: () => ({
+      homeDir: app.getPath("home"),
+      adeHome: process.env.ADE_HOME?.trim() || path.join(app.getPath("home"), ".ade"),
+      runtimePaths: [process.cwd(), process.execPath, app.getAppPath(), app.getPath("userData")],
+    }),
     logger: { warn: (event, fields) => getCtx().logger.warn(event, fields) },
   });
 

@@ -3,7 +3,8 @@ import { ArrowsLeftRight, FolderPlus } from "@phosphor-icons/react";
 import type { OpenProjectBinding, RecentProjectSummary } from "../../../../shared/types";
 import type { AgentChatSessionSummary } from "../../../../shared/types/chat";
 import type { LaneShareReceivedEntry } from "../../../../shared/types/laneShare";
-import { laneShareRiskLevel, type LaneShareGuestState, type LaneShareRights } from "../../../../shared/laneShareRights";
+import { laneShareCliTypingFor, laneShareRiskLevel, type LaneShareCliTyping, type LaneShareGuestState, type LaneShareRights } from "../../../../shared/laneShareRights";
+import { rendererRuntimeTarget } from "../../../lib/platform";
 import { LANE_SHARE_MOVE_FINAL_STAGES, moveErrorText, type LaneShareMoveView } from "../../../../shared/laneShareMove";
 import { remoteProjectBindingKey } from "../../../../shared/projectIdentity";
 import { Banner } from "../../ui/notice";
@@ -31,7 +32,12 @@ import { receiveMoveHere, sendMoveToOwner, type LaneShareMoveProgress } from "./
  * from, so both say to use the desktop app.
  */
 
-type Destination = { machineId: string; name: string; pin: OpenProjectBinding };
+/**
+ * `cliTyping`: whether the destination can let the owner type into a CLI of
+ * the new lane, which it shares back. Known for this computer only; null for
+ * another (the switch stays on, and that machine's host still decides).
+ */
+type Destination = { machineId: string; name: string; pin: OpenProjectBinding; cliTyping: LaneShareCliTyping | null };
 
 function repoUrlFromKey(repoKey: string | null): string | null {
   if (!repoKey) return null;
@@ -61,7 +67,12 @@ function useMoveDestinations(repoKey: string | null, active: boolean): { destina
       const copy = copies.get(machine.machineId);
       if (!copy || !machine.online) continue;
       if (machine.isLocal) {
-        out.push({ machineId: machine.machineId, name: machine.name, pin: localProjectBindingForRoot(copy.rootPath, copy.displayName) });
+        out.push({
+          machineId: machine.machineId,
+          name: machine.name,
+          pin: localProjectBindingForRoot(copy.rootPath, copy.displayName),
+          cliTyping: laneShareCliTypingFor(rendererRuntimeTarget().platform),
+        });
         continue;
       }
       const connection = snapshot?.connections.find((entry) => entry.target.id === machine.targetId);
@@ -80,6 +91,7 @@ function useMoveDestinations(repoKey: string | null, active: boolean): { destina
           rootPath: copy.rootPath,
           displayName: copy.displayName,
         },
+        cliTyping: null,
       });
     }
     return out;
@@ -271,7 +283,14 @@ export function LaneShareGuestMoveCard({
                   {editRights ? "Hide the rights of the share back" : `Share back with ${ownerLabel}: the same rights (change)`}
                 </button>
                 {editRights ? (
-                  <LaneShareRightsPanel rights={rights} endsAt={endsAt} onChange={setRights} onEndsAtChange={setEndsAt} now={Date.now()} />
+                  <LaneShareRightsPanel
+                    rights={rights}
+                    endsAt={endsAt}
+                    onChange={setRights}
+                    onEndsAtChange={setEndsAt}
+                    now={Date.now()}
+                    cliTyping={destinations.find((entry) => entry.machineId === machineId)?.cliTyping ?? null}
+                  />
                 ) : null}
               </div>
             ) : null}

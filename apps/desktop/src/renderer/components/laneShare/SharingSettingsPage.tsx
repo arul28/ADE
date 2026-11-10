@@ -242,6 +242,7 @@ function SharedByMe() {
                         {usage ? <span className="kit-num">{usage}</span> : null}
                         <span>{formatLaneShareEnd(entry.endsAt)}</span>
                         <span className="kit-tag" data-tone={state.tone ?? undefined}>{state.label}</span>
+                        {entry.createdBy === "agent" ? <span data-testid="lane-share-made-by-agent">Made by an agent</span> : null}
                         {!entry.local ? <span className="text-fg/40">On another computer</span> : null}
                       </span>
                     }

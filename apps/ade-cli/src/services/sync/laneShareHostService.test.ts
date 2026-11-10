@@ -32,7 +32,11 @@ function makeStore() {
 }
 
 /** The service with the account directory at the network boundary, on a darwin host unless the test names another. */
-function makeService(directory: (url: string, init?: RequestInit) => Promise<Response>, platform: NodeJS.Platform = "darwin") {
+function makeService(
+  directory: (url: string, init?: RequestInit) => Promise<Response>,
+  platform: NodeJS.Platform = "darwin",
+  now: () => number = Date.now,
+) {
   const store = makeStore();
   const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => directory(String(input), init));
   const service = createLaneShareHostService({
@@ -44,6 +48,7 @@ function makeService(directory: (url: string, init?: RequestInit) => Promise<Res
     getProjectLabel: () => "widgets",
     getLaneLabel: () => "shared",
     platform,
+    now,
   });
   return { service, store, fetchImpl };
 }
@@ -67,14 +72,14 @@ describe("lane share host service", () => {
     ["answers with no grant id", async () => json(201, { grant: {} }), "unavailable"],
   ])("stores nothing when the directory %s", async (_label, answer, code) => {
     const { service, store } = makeService(answer);
-    await expect(service.create({ laneId, receiverEmail: "guest@example.com", rights: laneSharePresetRights("comment") }))
+    await expect(service.create({ laneId, receiverEmail: "guest@example.com", rights: laneSharePresetRights("comment") }, "person"))
       .rejects.toMatchObject({ code });
     expect(store.list()).toEqual([]);
   });
 
   it.each<[string, (service: ReturnType<typeof makeService>["service"]) => Promise<unknown>]>([
-    ["a new share", (service) => service.create({ laneId, receiverEmail: "guest@example.com", rights: highRisk() })],
-    ["an edit", (service) => service.updateRights({ grantId, rights: highRisk() })],
+    ["a new share", (service) => service.create({ laneId, receiverEmail: "guest@example.com", rights: highRisk() }, "person")],
+    ["an edit", (service) => service.updateRights({ grantId, rights: highRisk() }, "person")],
   ])("refuses high-risk rights for %s without the owner's confirmation, and changes nothing", async (_label, act) => {
     const { service, store, fetchImpl } = makeService(async () => invited());
     store.put({ grantId, laneId, receiverEmail: "guest@example.com", rights: laneSharePresetRights("watch") });
@@ -96,10 +101,10 @@ describe("lane share host service", () => {
       ? json(200, { grants: [{ id: grantId, state: "active", laneId, machineKey: "machine-1", repoKey: "repo:github.com/acme/widgets" }] })
       : invited(), platform);
     // High risk needs the owner's confirmation only where the right is kept.
-    const created = await service.create({ laneId, receiverEmail: "guest@example.com", rights: highRisk(), confirmHighRisk: available });
+    const created = await service.create({ laneId, receiverEmail: "guest@example.com", rights: highRisk(), confirmHighRisk: available }, "person");
     expect(created.risk.level).toBe(available ? "high" : "low");
     expect(store.get(grantId)?.rights.run.typeInCliSessions).toBe(available);
-    const edited = await service.updateRights({ grantId, rights: highRisk(), confirmHighRisk: available });
+    const edited = await service.updateRights({ grantId, rights: highRisk(), confirmHighRisk: available }, "person");
     expect(edited.risk.level).toBe(available ? "high" : "low");
     expect(store.get(grantId)?.rights.run.typeInCliSessions).toBe(available);
     // A share stored with the right on (an older build) lists as this host enforces it.
@@ -107,6 +112,120 @@ describe("lane share host service", () => {
     const listed = await service.list();
     expect(listed.cliTyping).toEqual(available ? { available: true, reason: null } : { available: false, reason: "windows_host" });
     expect(listed.shares[0]).toMatchObject({ rights: { run: { typeInCliSessions: available } }, risk: { level: available ? "high" : "low" } });
+  });
+});
+
+// An agent (the `ade` CLI, an agent's shell, ADE MCP) may list, make a Watch
+// share and stop a share of this machine. The worst share it can make cannot
+// change anything here.
+describe("lane share host service, a share made by an agent", () => {
+  const otherMachineGrant = `ls_${"d".repeat(32)}`;
+  /** A directory that invites with a new grant id each time and lists this machine's grants. */
+  function makeAgentService(now: () => number = Date.now) {
+    let next = 0;
+    const made: string[] = [];
+    const harness = makeService(async (url, init) => {
+      const method = init?.method ?? "GET";
+      if (method === "GET" && url.endsWith("/lane-shares/given")) {
+        return json(200, {
+          grants: [
+            ...made.map((id) => ({ id, state: "pending", laneId, machineKey: "machine-1", repoKey: "repo:github.com/acme/widgets" })),
+            { id: otherMachineGrant, state: "active", laneId, machineKey: "machine-2", repoKey: "repo:github.com/acme/widgets" },
+          ],
+        });
+      }
+      if (method === "POST" && url.endsWith("/lane-shares")) {
+        const id = `ls_${(next++).toString(16).padStart(32, "0")}`;
+        made.push(id);
+        return json(201, { grant: { id } });
+      }
+      return json(200, { grant: { state: "revoked" } });
+    }, "darwin", now);
+    return harness;
+  }
+
+  it("makes a Watch share when it names no rights, records it as an agent's, and lists it so", async () => {
+    const { service, store } = makeAgentService();
+    const created = await service.create({ laneId, receiverEmail: "guest@example.com" }, "agent");
+    expect(created.risk.level).toBe("low");
+    expect(created.createdBy).toBe("agent");
+    expect(store.get(created.grantId)).toMatchObject({ createdBy: "agent", rights: laneSharePresetRights("watch") });
+    // The privacy switches and an end date are allowed.
+    const hidden = laneSharePresetRights("watch");
+    hidden.privacy = { hideMachines: true, hideModels: true };
+    const second = await service.create({ laneId, receiverEmail: "other@example.com", rights: hidden, endsAt: Date.now() + 60_000 }, "agent");
+    expect(store.get(second.grantId)?.rights.privacy).toEqual({ hideMachines: true, hideModels: true });
+    const listed = await service.list();
+    expect(listed.shares.find((share) => share.grantId === created.grantId)).toMatchObject({ createdBy: "agent", risk: { level: "low" } });
+  });
+
+  it.each<[string, (rights: LaneShareRights) => void, Record<string, unknown>?]>([
+    ["send", (rights) => { rights.speak.send = true; }],
+    ["steer", (rights) => { rights.speak.steer = true; }],
+    ["comment", (rights) => { rights.speak.comment = true; }],
+    ["drafts", (rights) => { rights.speak.drafts = true; }],
+    ["startChats", (rights) => { rights.run.startChats = true; }],
+    ["startCliSessions", (rights) => { rights.run.startCliSessions = true; }],
+    ["typeInCliSessions", (rights) => { rights.run.typeInCliSessions = true; }],
+    ["approvals", (rights) => { rights.decide.approvals = true; }],
+    ["questions", (rights) => { rights.decide.questions = true; }],
+    ["a tools read", (rights) => { rights.tools.file = true; }],
+    ["the terminal tools switch", (rights) => { rights.tools.terminal = true; }],
+    ["history before the share", (rights) => { rights.see.historyBeforeShare = true; }],
+    ["a confirmed high risk", () => {}, { confirmHighRisk: true }],
+  ])("refuses an agent's share with %s, and stores and sends nothing", async (_label, change, extra = {}) => {
+    const { service, store, fetchImpl } = makeAgentService();
+    const rights = laneSharePresetRights("watch");
+    change(rights);
+    await expect(service.create({ laneId, receiverEmail: "guest@example.com", rights, ...extra }, "agent"))
+      .rejects.toMatchObject({ code: "agent_watch_only", message: expect.stringContaining("only a Watch share") });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(store.list()).toEqual([]);
+  });
+
+  it.each<[string, (service: ReturnType<typeof makeService>["service"]) => Promise<unknown>]>([
+    ["change rights", (service) => service.updateRights({ grantId, rights: laneSharePresetRights("watch") }, "agent")],
+    ["send an invite again", (service) => service.resendInvite({ grantId }, "agent")],
+    ["leave a share", (service) => service.leave({ grantId }, "agent")],
+    ["read the shares given to the account", (service) => service.listReceived("agent")],
+  ])("refuses an agent that asks to %s", async (_label, act) => {
+    const { service, store, fetchImpl } = makeAgentService();
+    store.put({ grantId, laneId, receiverEmail: "guest@example.com", rights: laneSharePresetRights("watch"), createdBy: "agent" });
+    await expect(act(service)).rejects.toMatchObject({ code: "person_only", message: "Only a person in the ADE app can do this." });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(store.get(grantId)?.rights).toEqual(laneSharePresetRights("watch"));
+  });
+
+  it("lets an agent stop a share of this machine, by grant id or email, but not one of another machine", async () => {
+    const { service, store } = makeAgentService();
+    const byId = await service.create({ laneId, receiverEmail: "guest@example.com" }, "agent");
+    await service.create({ laneId, receiverEmail: "other@example.com" }, "agent");
+    await expect(service.revoke({ grantId: byId.grantId }, "agent")).resolves.toMatchObject({ grantId: byId.grantId, directoryRevoked: true });
+    await expect(service.revoke({ laneId, receiverEmail: "OTHER@example.com" }, "agent")).resolves.toMatchObject({ directoryRevoked: true });
+    expect(store.list()).toEqual([]);
+    await expect(service.revoke({ grantId: otherMachineGrant }, "agent")).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("lets an agent make 5 shares an hour on this machine, then refuses until the hour has passed", async () => {
+    let clock = Date.UTC(2026, 10, 10, 12);
+    const { service } = makeAgentService(() => clock);
+    for (let index = 0; index < 5; index += 1) {
+      await service.create({ laneId, receiverEmail: `guest${index}@example.com` }, "agent");
+    }
+    await expect(service.create({ laneId, receiverEmail: "guest5@example.com" }, "agent"))
+      .rejects.toMatchObject({ code: "rate_limited", message: expect.stringContaining("at most 5 lane shares an hour") });
+    // A person is not counted.
+    await service.create({ laneId, receiverEmail: "person@example.com", rights: laneSharePresetRights("comment") }, "person");
+    clock += 60 * 60 * 1000;
+    await expect(service.create({ laneId, receiverEmail: "guest5@example.com" }, "agent")).resolves.toMatchObject({ createdBy: "agent" });
+  });
+
+  it("lets a person raise an agent's share, which keeps its label", async () => {
+    const { service, store } = makeAgentService();
+    const created = await service.create({ laneId, receiverEmail: "guest@example.com" }, "agent");
+    const raised = await service.updateRights({ grantId: created.grantId, rights: laneSharePresetRights("collaborate") }, "person");
+    expect(raised.risk.level).toBe("medium");
+    expect(store.get(created.grantId)).toMatchObject({ createdBy: "agent", rights: { speak: { send: true } } });
   });
 });
 

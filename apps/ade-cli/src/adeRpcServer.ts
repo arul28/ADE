@@ -17,6 +17,7 @@ import { SHEET_MAX_FRAMES } from "../../desktop/src/main/services/demoVideo/shee
 import { resolveStoredProofFile } from "../../desktop/src/main/services/prs/prBodyProofStaging";
 import { QUESTION_DECLINED_MODEL_MESSAGE, answersForModel } from "../../desktop/src/shared/pendingInputAnswers";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
+import { LANE_SHARE_DEFAULT_RIGHTS_KEY, LANE_SHARE_PERSON_ONLY_MESSAGE } from "../../desktop/src/shared/laneShareRights";
 import { ownerOnlyProjectConfigChange } from "../../desktop/src/shared/settingsAgentAccess";
 import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../desktop/src/shared/claudePluginUi";
 import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
@@ -6495,6 +6496,18 @@ async function runTool(args: {
         "Only the user can change whether the CTO reaches other machines (Settings › CTO).",
       );
     }
+    if (
+      domain === "account_settings"
+      && (action === "set" || action === "remove")
+      && typeof argsList?.[1] === "string"
+      && argsList[1].trim() === LANE_SHARE_DEFAULT_RIGHTS_KEY
+      && !mayUseUserOnlyActions(session)
+    ) {
+      // The start rights of every new lane share (Settings › Sharing) are the
+      // person's: an agent that raised them would widen the next share a
+      // person makes without looking.
+      throw new JsonRpcError(JsonRpcErrorCode.policyDenied, LANE_SHARE_PERSON_ONLY_MESSAGE);
+    }
     if (domain === "project_config" && action === "save" && !userAtControls) {
       // An agent may change the setup of the work (tests, automations, lane
       // templates…) but not the person's settings that share the same file:
@@ -7179,6 +7192,19 @@ async function runTool(args: {
       } else {
         externalSessionsAccessDenied(`run_ade_action:${domain}.${action}`);
       }
+    }
+    if (domain === "lane_share") {
+      // Only the runtime says who calls (`laneShareCallerOf` in the action
+      // registry): a person at the desktop, by the same test as user-only
+      // actions, or an agent (the `ade` CLI, an agent's shell, ADE MCP,
+      // another machine's brain). Any value the caller sent is dropped.
+      // Positional arguments would skip the stamp, so the domain takes one
+      // object argument from every caller.
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `lane_share.${action} takes one object argument.`);
+      }
+      const { callerClass: _callerSent, ...shareArgs } = scopedObjectArgs;
+      scopedObjectArgs = { ...shareArgs, callerClass: mayUseUserOnlyActions(session) ? "person" : "agent" };
     }
     if (domain === "chat" && RUNTIME_ACTOR_CHAT_ACTIONS.has(action)) {
       // Only the runtime says who is calling (`AgentChatRuntimeActor`): any

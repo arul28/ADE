@@ -94,17 +94,28 @@ describe("lane share rights", () => {
 });
 
 describe("lane share rights store", () => {
-  it("keeps rights and counters across a restart, and drops them with the grant", () => {
-    const { db, sqlite } = openDb();
+  it("keeps rights, counters and who made the share across a restart, and drops them with the grant", () => {
+    // A table from before `created_by`: it gains the column, and its rows read as made by a person.
+    const older = new DatabaseSync(":memory:");
+    older.exec(`create table lane_share_rights (grant_id text primary key, lane_id text not null, receiver_email text,
+      rights_json text not null, total_count integer not null default 0, day_key text, day_count integer not null default 0,
+      created_at integer not null, updated_at integer not null, missing_since integer)`);
+    const OLD = `ls_${"b".repeat(32)}`;
+    older.prepare("insert into lane_share_rights (grant_id, lane_id, rights_json, created_at, updated_at) values (?, 'lane-0', '{}', 1, 1)").run(OLD);
+    const { db, sqlite } = openDb(older);
     const first = createLaneShareRightsStore({ db, now: () => Date.UTC(2026, 10, 10, 12) });
-    first.put({ grantId: GRANT, laneId: "lane-1", receiverEmail: "guest@example.com", rights: withLimits({ messagesTotal: 5 }) });
+    expect(first.get(OLD)?.createdBy).toBe("person");
+    first.put({ grantId: GRANT, laneId: "lane-1", receiverEmail: "guest@example.com", rights: withLimits({ messagesTotal: 5 }), createdBy: "agent" });
     expect(first.claimMessage(GRANT).ok).toBe(true);
     first.addItem(GRANT, "draft", "draft-1", null);
 
     const reopened = createLaneShareRightsStore({ db: openDb(sqlite).db, now: () => Date.UTC(2026, 10, 10, 13) });
-    expect(reopened.get(GRANT)).toMatchObject({ laneId: "lane-1", rights: { speak: { send: true } }, usage: { total: 1 } });
+    expect(reopened.get(GRANT)).toMatchObject({ laneId: "lane-1", rights: { speak: { send: true } }, usage: { total: 1 }, createdBy: "agent" });
     expect(reopened.usage(GRANT).messagesLeftTotal).toBe(4);
     expect(reopened.hasItem(GRANT, "draft", "draft-1")).toBe(true);
+    // New rights for the same share keep how it was made.
+    reopened.put({ grantId: GRANT, laneId: "lane-1", rights: withLimits({ messagesTotal: 9 }) });
+    expect(reopened.get(GRANT)?.createdBy).toBe("agent");
 
     reopened.delete(GRANT);
     expect(reopened.get(GRANT)).toBeNull();

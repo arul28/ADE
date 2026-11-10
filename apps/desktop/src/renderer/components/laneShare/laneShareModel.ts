@@ -16,6 +16,30 @@ export function isLiveLaneShare(entry: Pick<LaneShareGivenEntry, "state">): bool
   return entry.state === "pending" || entry.state === "active";
 }
 
+/** How far a share's directory time may run behind this computer's clock and still count as new. */
+export const AGENT_SHARE_NOTICE_CLOCK_SKEW_MS = 5 * 60_000;
+
+/**
+ * The shares of one machine's list that get the owner's "An agent shared"
+ * notice: made by an agent on that machine, still live, never noticed here,
+ * and made after this computer last read that list (less the clock skew).
+ * A first read ever (`lastListAt` null) only sets the starting point.
+ */
+export function agentSharesToNotice(
+  shares: readonly LaneShareGivenEntry[],
+  seen: { grantIds: ReadonlySet<string>; lastListAt: number | null },
+): LaneShareGivenEntry[] {
+  const since = seen.lastListAt;
+  if (since == null) return [];
+  return shares.filter((entry) =>
+    entry.local
+    && entry.createdBy === "agent"
+    && isLiveLaneShare(entry)
+    && !seen.grantIds.has(entry.grantId)
+    && entry.createdAt != null
+    && entry.createdAt > since - AGENT_SHARE_NOTICE_CLOCK_SKEW_MS);
+}
+
 /** The live shares of one lane, plus its expired invites (they can be sent again). */
 export function laneSharesForLane(shares: readonly LaneShareGivenEntry[], laneId: string): LaneShareGivenEntry[] {
   return shares.filter((entry) => entry.laneId === laneId && (isLiveLaneShare(entry) || entry.state === "expired"));

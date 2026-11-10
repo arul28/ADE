@@ -939,10 +939,14 @@ these rules apply under any rights:
   platform in any payload. With "history before the share" off, previews,
   summaries, goals, thread comments and subagents from before the share are
   removed from every read, not only from the transcript.
-- `lane_share.*` actions are user-only: only an RPC caller that names itself
-  as an ADE desktop client and carries no agent identity reaches them. A
-  guest never reaches them: its commands are limited to a fixed list, and
-  its connection has no runtime RPC channel.
+- `lane_share.*` actions are user-only, except three: only an RPC caller
+  that names itself as an ADE desktop client and carries no agent identity
+  reaches the rest. A guest never reaches any of them: its commands are
+  limited to a fixed list, and its connection has no runtime RPC channel.
+- An agent (the `ade` CLI, an agent's shell, ADE MCP) can only list shares,
+  make a Watch share (it sees, it cannot act), at most 5 an hour per machine,
+  and stop a share of that machine. The host machine enforces it, from the
+  caller its RPC server knows; this Worker has no part in it.
 
 - Every route takes the account bearer and checks the caller's user id against
   the row. A pending invite matches a caller only through an address Clerk has

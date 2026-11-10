@@ -21,6 +21,8 @@ import {
   writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { afterEach, describe, expect, it, test, vi } from "vitest";
+import { openKvDb } from "../state/kvDb";
+import { createDraft } from "./draftService";
 
 
 // ---------------------------------------------------------------------------
@@ -58,6 +60,8 @@ describe("acp chat runtime", () => {
     /** Seeded persisted state, for the resume test. */
     seedPersistedState?: Record<string, unknown>;
     sessionOverrides?: Record<string, unknown>;
+    /** A real database, for the draft tests. */
+    db?: unknown;
   }) {
     const agent = createMockAcpAgent();
     agent.on("session/new", respondWithSession("acp-session-1", options.sessionExtra ?? {}));
@@ -75,6 +79,7 @@ describe("acp chat runtime", () => {
       onEvent: (event: AgentChatEventEnvelope) => events.push(event),
       acpSpawnOverride: () => agent.child,
       acpSessionPool: pool,
+      ...(options.db ? { db: options.db } : {}),
     });
     const session = await harness.service.createSession({
       laneId: "lane-1",
@@ -607,11 +612,21 @@ describe("acp chat runtime", () => {
     expect(harness.agent.received.filter((entry) => entry.method === "session/prompt")).toHaveLength(0);
   });
 
+  // The last row: a lane share guest wrote the draft and the owner sends it.
+  // It keeps the guest author, but it is the owner's send, so the share check
+  // for a guest's own queued message (here refusing) does not drop it.
   it.each([
     ["a steer (the composer's queue mode)", "steer"],
     ["a direct send (CLI, automations)", "sendMessage"],
+    ["a guest's draft that the owner sends", "ownerSendsGuestDraft"],
   ] as const)("queues %s made while a Grok turn runs, and runs it next", async (_label, route) => {
-    const harness = await openAcpHarness({ provider: "grok", model: "grok-4.6", modelId: "xai/grok-4-6" });
+    const db = route === "ownerSendsGuestDraft"
+      ? await openKvDb(path.join(tmpRoot, "guest-draft.db"), { debug() {}, info() {}, warn() {}, error() {} } as never)
+      : null;
+    const harness = await openAcpHarness({ provider: "grok", model: "grok-4.6", modelId: "xai/grok-4-6", ...(db ? { db } : {}) });
+    if (db) acpTeardown.push(() => db.close());
+    const guestGate = vi.fn(() => false);
+    if (db) harness.service.installQueuedGuestSteerGate(guestGate);
     let releaseFirst: (() => void) | null = null;
     let prompts = 0;
     harness.agent.on("session/prompt", async () => {
@@ -625,8 +640,18 @@ describe("acp chat runtime", () => {
     if (route === "steer") {
       const result = await harness.service.steer({ sessionId: harness.session.id, text: "second" });
       expect(result.queued).toBe(true);
-    } else {
+    } else if (route === "sendMessage") {
       await harness.service.sendMessage({ sessionId: harness.session.id, text: "second" });
+    } else {
+      const draft = createDraft(db!, {
+        text: "second",
+        schedule: {
+          scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+          targetKind: "existing",
+          targetSessionId: harness.session.id,
+        },
+      }, { author: { kind: "guest", userId: "user_guest", name: "Guest" } });
+      await expect(harness.service.sendDraftNow(draft.id)).resolves.toEqual({ ok: true });
     }
     await vi.waitFor(() => {
       expect(eventsOfType(harness, "user_message").some((event) => event.deliveryState === "queued")).toBe(true);

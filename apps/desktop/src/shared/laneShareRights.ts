@@ -437,6 +437,63 @@ export function laneShareHighRiskRefusal(rights: LaneShareRights, confirmHighRis
     : null;
 }
 
+// ---------------------------------------------------------------------------
+// Shares made by an agent.
+//
+// The host knows who asks for a lane share write (`LaneShareCaller`), from
+// its own RPC session and never from the call's arguments. A person in the
+// ADE app may give any rights. Every other caller (the `ade` CLI, an agent's
+// shell, an ADE MCP connection) is an agent: it may list shares, make a
+// Watch share and stop a share of this machine, and nothing else. In the
+// worst case, a share made by an agent cannot change anything on the host.
+
+/** Who asked the host for a lane share action. Set by the host's RPC server only. */
+export type LaneShareCaller = "person" | "agent";
+
+/** How a share was made, as the host records it. Rows from before this field read as `person`. */
+export type LaneShareCreatedBy = LaneShareCaller;
+
+/** The answer to an agent that asks for an action only a person may take. */
+export const LANE_SHARE_PERSON_ONLY_MESSAGE = "Only a person in the ADE app can do this.";
+
+/** What an agent is told when it asks for more than a Watch share. */
+export const LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE =
+  "An agent or the CLI can make only a Watch share. Open the share sheet in the ADE app for more rights.";
+
+/** The account settings key of the person's default rights for a new share (Settings › Sharing). */
+export const LANE_SHARE_DEFAULT_RIGHTS_KEY = "laneShare.defaultRights";
+
+/**
+ * The agent ceiling: null when an agent may make a share with `rights`,
+ * else the refusal, which names each switch that is not allowed. The
+ * ceiling is the Watch preset (`laneSharePresetRights("watch")`): it may see
+ * chats, subagent chats, CLI sessions and shells from the share's start on.
+ * History before the share, every Speak, Run, Decide and Tools switch, and
+ * any model, reasoning or mode entry are refused. The privacy switches (they
+ * only hide more), the end date and the message limits may be set either way.
+ *
+ * It refuses and never clamps: the agent must learn that its request was
+ * refused, and what to drop.
+ */
+export function laneShareAgentRightsRefusal(rights: LaneShareRights): string | null {
+  const ceiling = laneSharePresetRights("watch");
+  const excess: string[] = [];
+  for (const group of ["see", "speak", "decide"] as const) {
+    const have = rights[group] as Record<string, boolean>;
+    const allowed = ceiling[group] as Record<string, boolean>;
+    for (const key of Object.keys(have)) if (have[key] && !allowed[key]) excess.push(`${group}.${key}`);
+  }
+  for (const key of ["startChats", "startCliSessions", "typeInCliSessions"] as const) {
+    if (rights.run[key]) excess.push(`run.${key}`);
+  }
+  for (const key of ["models", "reasoningLevels", "permissionModes"] as const) {
+    if (rights.run[key].length > 0) excess.push(`run.${key}`);
+  }
+  for (const domain of LANE_SHARE_TOOL_DOMAINS) if (rights.tools[domain]) excess.push(`tools.${domain}`);
+  if (excess.length === 0) return null;
+  return `${LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE} Not allowed: ${excess.join(", ")}.`;
+}
+
 /** Whether a guest may move work between its machine and the owner's: Collaborate (send and start chats). */
 export function laneShareMayMove(rights: Pick<LaneShareRights, "speak" | "run"> | null | undefined): boolean {
   return Boolean(rights?.speak.send && rights.run.startChats);

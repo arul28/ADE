@@ -353,6 +353,7 @@ import {
   type ChatThreadCommentCreateArgs,
   type ChatThreadCommentDeleteArgs,
   type ChatThreadCommentListArgs,
+  type ChatThreadCommentSelection,
   type ChatThreadCommentUpdateArgs,
 } from "../../../shared/threadComments";
 import type { GithubService } from "../github/githubService";
@@ -814,6 +815,7 @@ import {
   leadingPromptCommandCharacter,
   parseMessageAuthor,
   withHostMessageAuthor,
+  isLaneShareGuestSend,
 } from "../../../shared/messageAuthor";
 import {
   applyClaudePlanModeTransition as applyClaudePlanModeTransitionShared,
@@ -48559,8 +48561,13 @@ export function createAgentChatService(args: {
    */
   let queuedGuestSteerGate: ((args: { sessionId: string; steerId: string; author: AdeMessageAuthor }) => boolean) | null = null;
 
-  /** Whether a queued message may start now: always, unless a guest wrote it and the host's gate refuses. */
+  /**
+   * Whether a queued message may start now: always, unless a guest sent it
+   * over its share and the host's gate refuses. A guest's draft that the
+   * owner sent keeps the guest author but has no host mark, and runs.
+   */
   const queuedSteerMayStart = (managed: ManagedChatSession, steer: QueuedSteer): boolean => {
+    if (!isLaneShareGuestSend(steer.metadata)) return true;
     const author = parseMessageAuthor(steer.metadata?.author);
     if (author?.kind !== "guest") return true;
     // A guest's message with no host check to pass does not start.
@@ -63550,7 +63557,7 @@ export function createAgentChatService(args: {
   };
 
   type ThreadReviewIntake<T> = {
-    args: Omit<T, "includeThreadComments" | "includeGuestCommentIds">;
+    args: Omit<T, "includeThreadComments" | "includeGuestComments">;
     block: string | null;
     restore: () => void;
   };
@@ -63573,11 +63580,11 @@ export function createAgentChatService(args: {
     text: string;
     displayText?: string;
     includeThreadComments?: boolean;
-    includeGuestCommentIds?: string[];
+    includeGuestComments?: ChatThreadCommentSelection[];
   }>(
     args: T,
   ): ThreadReviewIntake<T> => {
-    const { includeThreadComments, includeGuestCommentIds, ...rest } = args;
+    const { includeThreadComments, includeGuestComments, ...rest } = args;
     const untouched: ThreadReviewIntake<T> = { args: rest, block: null, restore: () => {} };
     if (!includeThreadComments) return untouched;
     const typed = args.text.trim();
@@ -63594,7 +63601,7 @@ export function createAgentChatService(args: {
     // with it, and a message without them would read as an unrelated reply.
     let taken: ReturnType<ThreadCommentService["takeForSend"]>;
     try {
-      taken = threadComments.takeForSend(args.sessionId, { guestCommentIds: includeGuestCommentIds ?? null });
+      taken = threadComments.takeForSend(args.sessionId, { guestComments: includeGuestComments ?? null });
     } catch (error) {
       logger.warn("agent_chat.thread_comments_take_failed", {
         sessionId: args.sessionId,

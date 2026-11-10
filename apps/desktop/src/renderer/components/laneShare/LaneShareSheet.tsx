@@ -129,6 +129,7 @@ function GuestRow({
         <div className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-fg/50">
           {entry.connectedDevices > 0 ? <span className="kit-dot" data-state="ok" aria-hidden /> : null}
           <span className="kit-tag" data-tone={state.tone ?? undefined}>{state.label}</span>
+          {entry.createdBy === "agent" ? <span className="truncate" data-testid="lane-share-made-by-agent">Made by an agent</span> : null}
         </div>
       </div>
       {editable ? (

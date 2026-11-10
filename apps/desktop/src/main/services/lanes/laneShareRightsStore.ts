@@ -3,6 +3,7 @@ import {
   laneShareLocalDayKey,
   laneShareNextDayStart,
   parseLaneShareRights,
+  type LaneShareCreatedBy,
   type LaneShareRights,
 } from "../../../shared/laneShareRights";
 import type { AdeDb } from "../state/kvDb";
@@ -58,13 +59,17 @@ export function ensureLaneShareRightsSchema(db: Pick<AdeDb, "run" | "all">): voi
       day_count integer not null default 0,
       created_at integer not null,
       updated_at integer not null,
-      missing_since integer
+      missing_since integer,
+      created_by text
     )
   `);
-  // Tables made before `missing_since` existed (dev builds of this branch).
+  // Tables made before `missing_since` or `created_by` existed (dev builds of this branch).
   const columns = db.all<{ name: string }>(`pragma table_info(${LANE_SHARE_RIGHTS_TABLE})`);
   if (!columns.some((column) => column.name === "missing_since")) {
     db.run(`alter table ${LANE_SHARE_RIGHTS_TABLE} add column missing_since integer`);
+  }
+  if (!columns.some((column) => column.name === "created_by")) {
+    db.run(`alter table ${LANE_SHARE_RIGHTS_TABLE} add column created_by text`);
   }
   db.run(`create index if not exists idx_${LANE_SHARE_RIGHTS_TABLE}_lane on ${LANE_SHARE_RIGHTS_TABLE}(lane_id)`);
   db.run(`
@@ -90,6 +95,7 @@ type RightsRow = {
   created_at: number;
   updated_at: number;
   missing_since: number | null;
+  created_by: string | null;
 };
 
 export type LaneShareRightsRecord = {
@@ -97,6 +103,8 @@ export type LaneShareRightsRecord = {
   laneId: string;
   receiverEmail: string | null;
   rights: LaneShareRights;
+  /** Who made the share on this host. A row from before this column reads as `person`. */
+  createdBy: LaneShareCreatedBy;
   /** Guest messages counted: over the share's life, and on `dayKey` (host local date). */
   usage: { total: number; dayKey: string | null; dayCount: number };
   createdAt: number;
@@ -141,6 +149,7 @@ function toRecord(row: RightsRow): LaneShareRightsRecord {
     laneId: row.lane_id,
     receiverEmail: row.receiver_email,
     rights: readRights(row.rights_json),
+    createdBy: row.created_by === "agent" ? "agent" : "person",
     usage: { total: Number(row.total_count) || 0, dayKey: row.day_key, dayCount: Number(row.day_count) || 0 },
     createdAt: Number(row.created_at) || 0,
     updatedAt: Number(row.updated_at) || 0,
@@ -187,19 +196,29 @@ export function createLaneShareRightsStore(options: {
       return db.all<RightsRow>(`select * from ${LANE_SHARE_RIGHTS_TABLE} order by created_at desc`).map(toRecord);
     },
 
-    /** A new share's row, or the rights of an existing one (its counters stay). */
-    put(args: { grantId: string; laneId: string; receiverEmail?: string | null; rights: LaneShareRights }): LaneShareRightsRecord {
+    /**
+     * A new share's row, or the rights of an existing one (its counters
+     * stay). `createdBy` counts only for a new row: an existing row keeps how
+     * it was made, so a person who raises an agent's share keeps the label.
+     */
+    put(args: {
+      grantId: string;
+      laneId: string;
+      receiverEmail?: string | null;
+      rights: LaneShareRights;
+      createdBy?: LaneShareCreatedBy;
+    }): LaneShareRightsRecord {
       const at = now();
       const rightsJson = JSON.stringify(parseLaneShareRights(args.rights));
       db.run(
-        `insert into ${LANE_SHARE_RIGHTS_TABLE} (grant_id, lane_id, receiver_email, rights_json, created_at, updated_at)
-         values (?, ?, ?, ?, ?, ?)
+        `insert into ${LANE_SHARE_RIGHTS_TABLE} (grant_id, lane_id, receiver_email, rights_json, created_at, updated_at, created_by)
+         values (?, ?, ?, ?, ?, ?, ?)
          on conflict(grant_id) do update set
            lane_id = excluded.lane_id,
            receiver_email = coalesce(excluded.receiver_email, receiver_email),
            rights_json = excluded.rights_json,
            updated_at = excluded.updated_at`,
-        [args.grantId, args.laneId, args.receiverEmail ?? null, rightsJson, at, at],
+        [args.grantId, args.laneId, args.receiverEmail ?? null, rightsJson, at, at, args.createdBy === "agent" ? "agent" : "person"],
       );
       return toRecord(row(args.grantId)!);
     },
