@@ -27899,8 +27899,13 @@ extension SyncService {
   /// Make another paired machine the focused one (full sync). Returns true
   /// when the phone attached to that machine.
   @discardableResult
+  /// The machine is already primary and live, so a focus switch to it is a no-op.
+  private func isFocusedAndLive(_ machineKey: String) -> Bool {
+    machineKey == focusedMachineKey && connectionState == .connected
+  }
+
   func switchFocus(toMachineKey machineKey: String) async -> Bool {
-    if machineKey == focusedMachineKey, connectionState == .connected { return true }
+    if isFocusedAndLive(machineKey) { return true }
     guard let entry = fleetMachineProfiles().first(where: { $0.machineKey == machineKey }),
           let host = discoveredHost(fromSavedProfile: entry.profile)
     else {
@@ -28119,7 +28124,7 @@ extension SyncService {
     let baselineHydratedAt = domainStatuses[.work]?.lastHydratedAt
     // Already focused and live: the switch does not reconnect, so no fresh
     // hydration comes and there is nothing to wait for.
-    let wasAlreadyAttached = machineKey == focusedMachineKey && connectionState == .connected
+    let wasAlreadyAttached = isFocusedAndLive(machineKey)
     guard await switchFocusKeepingPrevious(toMachineKey: machineKey) else { return false }
     let root = normalizedProjectRoot(project.rootPath)
     let target = projects.first { candidate in
