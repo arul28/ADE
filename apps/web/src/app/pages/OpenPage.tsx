@@ -10,7 +10,7 @@ import {
   GitCommitHorizontal,
   GitPullRequest,
   Globe,
-  Image,
+  Image as ImageIcon,
   Link2Off,
   MessageSquare,
   Settings,
@@ -551,7 +551,8 @@ export function OpenPage() {
             <h1 className="text-balance text-[28px] font-bold leading-tight tracking-[-0.02em] text-fg">{title}</h1>
             <p className="mt-1 text-[15px] leading-relaxed text-muted-fg">{summary}</p>
             {value ? (
-              <p className="mt-1 break-all font-mono text-[13px] text-fg/80" title={valueLabel}>
+              <p className="mt-1 break-all font-mono text-[13px] text-fg/80">
+                {valueLabel ? <span className="font-sans text-muted-fg">{valueLabel}: </span> : null}
                 {value}
               </p>
             ) : null}
@@ -579,7 +580,7 @@ export function OpenPage() {
             <div className="grid gap-1 p-2">
               {adeUrl ? (
                 <OpenChoice
-                  icon={<AppWindow className="h-[18px] w-[18px]" />}
+                  icon={<AppWindow className={CHOICE_ICON} />}
                   title="The ADE app"
                   hint="On this device. Fastest when ADE is installed."
                   lead={!browserLeads}
@@ -589,7 +590,7 @@ export function OpenPage() {
               ) : null}
               {betaUrl && offerBeta ? (
                 <OpenChoice
-                  icon={<AppWindow className="h-[18px] w-[18px]" />}
+                  icon={<AppWindow className={CHOICE_ICON} />}
                   title="ADE Beta"
                   hint="The TestFlight app on this iPhone or iPad."
                   lead={false}
@@ -599,7 +600,7 @@ export function OpenPage() {
               ) : null}
               {webUrl ? (
                 <OpenChoice
-                  icon={<Globe className="h-[18px] w-[18px]" />}
+                  icon={<Globe className={CHOICE_ICON} />}
                   title="Your browser"
                   hint="Nothing to install. Sign in with your ADE account."
                   lead={browserLeads}
@@ -655,13 +656,15 @@ const KIND_ICONS: Record<OpenTarget["kind"], LucideIcon> = {
   session: MessageSquare,
   file: FileText,
   commit: GitCommitHorizontal,
-  artifact: Image,
+  artifact: ImageIcon,
   branch: GitBranch,
   pr: GitPullRequest,
   "linear-issue": CircleDot,
   settings: Settings,
   unknown: Link2Off,
 };
+
+const CHOICE_ICON = "h-[18px] w-[18px]";
 
 /** One place a link can open: a full-width row, the suggested one tinted. */
 function OpenChoice({

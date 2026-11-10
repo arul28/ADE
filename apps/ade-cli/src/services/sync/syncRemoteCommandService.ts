@@ -5657,11 +5657,13 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       id: requireString(payload.id, "chat.getDeletedDetail requires id."),
       ...(typeof payload.before === "string" && payload.before ? { before: payload.before } : {}),
     }));
-  register("chat.reopenDeleted", { viewerAllowed: true }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").reopenDeletedChat({
+  register("chat.reopenDeleted", { viewerAllowed: true }, async (payload) => {
+    const laneId = asTrimmedString(payload.laneId);
+    return requireService(args.agentChatService, "Agent chat service not available.").reopenDeletedChat({
       id: requireString(payload.id, "chat.reopenDeleted requires id."),
-      ...(asTrimmedString(payload.laneId) ? { laneId: asTrimmedString(payload.laneId)! } : {}),
-    }));
+      ...(laneId ? { laneId } : {}),
+    });
+  });
   register("chat.removeDeleted", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").removeDeletedChats({
       ids: asStringArray(payload.ids),
@@ -8143,9 +8145,12 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   // reviewer picker and the @ / # menus. Reads are not queued: a late answer
   // to a search helps nobody.
   register("prs.updateDescription", { viewerAllowed: true, queueable: true }, async (payload) => {
+    // A call without a body is a broken call, not a request to clear the
+    // description. An empty string is that request.
+    if (typeof payload.body !== "string") throw new Error("prs.updateDescription requires body.");
     await args.prService.updateDescription({
       prId: requirePrId(payload, "prs.updateDescription"),
-      body: typeof payload.body === "string" ? payload.body : "",
+      body: payload.body,
     });
     return { ok: true };
   });

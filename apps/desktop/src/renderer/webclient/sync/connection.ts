@@ -54,8 +54,8 @@ const DEFAULT_TRANSPORT_OPEN_TIMEOUT_MS = 8_000;
  * after it in the dial order. Direct routes are tried before ADE Relay so a
  * browser that gains one starts to use it; a direct route that is there opens
  * in well under a second, and one that is not (a Tailscale name from a
- * network this browser is not on) used to hold the dial for the full timeout
- * before the working route got its turn.
+ * network this browser is not on) would otherwise hold the dial for the full
+ * timeout before the working route gets its turn.
  */
 const SPECULATIVE_TRANSPORT_OPEN_TIMEOUT_MS = 3_000;
 const DEFAULT_AUTHENTICATED_HELLO_TIMEOUT_MS = 12_000;
@@ -530,7 +530,10 @@ export class SyncConnection {
     let lastError: Error | null = null;
     const lastGoodIndex = dialable.findIndex((candidate) => candidate.url === environment.lastGoodEndpoint);
     for (const [index, candidate] of dialable.entries()) {
-      const openTimeoutMs = index < lastGoodIndex
+      // Only a direct route is a guess. ADE Relay can take longer than that to
+      // open, and it is the live route a project switch dials first.
+      const speculative = index < lastGoodIndex && browserDialCandidateRouteKind(candidate) !== "relay";
+      const openTimeoutMs = speculative
         ? Math.min(this.transportOpenTimeoutMs, SPECULATIVE_TRANSPORT_OPEN_TIMEOUT_MS)
         : this.transportOpenTimeoutMs;
       try {

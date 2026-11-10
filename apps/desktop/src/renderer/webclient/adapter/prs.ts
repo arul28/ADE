@@ -517,7 +517,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     },
     getRepoReferences: async (args: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.getRepoReferences", pin, infra);
-      if (!commands.hasAction("prs.getRepoReferences")) return [];
+      if (!commands.hasAction("prs.getRepoReferences")) throw new Error("Update ADE on that computer to search for issues and PRs here.");
       return await read<PrRepoReference[]>("prs.getRepoReferences", args, []);
     },
     // A host without these must say so, so the GitHub tab falls back to loaded

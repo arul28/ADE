@@ -475,7 +475,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     getDeletedDetail: async (args, pin) => {
       guardPin("getDeletedDetail", pin);
-      return await callRequired<ExternalSessionDetail>("chat.getDeletedDetail", args, "Chat history", true);
+      // A transcript page: not kept as a reconnect answer once the preview closes.
+      return await callLargeRead<ExternalSessionDetail>("chat.getDeletedDetail", args, () => {
+        throw new Error("Chat history action 'chat.getDeletedDetail' is unavailable on the connected ADE host.");
+      });
     },
     reopenDeleted: async (args, pin) => {
       guardPin("reopenDeleted", pin);
@@ -485,8 +488,8 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("removeDeleted", pin);
       return await callRequiredMutation<DeletedChatRemoveResult>("chat.removeDeleted", args);
     },
-    // The ways out of a stuck chat. Without these the web's stand-in answered
-    // "not available in the ADE web app" on every recovery button.
+    // The ways out of a stuck chat: each recovery button calls the chat's own
+    // machine.
     recoverTurn: async (args, pin) => {
       guardPin("recoverTurn", pin);
       return await callRequiredMutation("chat.recoverTurn", args);

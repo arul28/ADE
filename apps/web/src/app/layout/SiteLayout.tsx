@@ -8,15 +8,15 @@ export function SiteLayout({ children }: { children: ReactNode }) {
   // HomePage renders its own editorial Masthead, /_og is a bare 1200×630 card
   // for screenshotting, and /open is a hand-off screen that looks like the ADE
   // app's own start screens. All three skip the global chrome.
-  const isHome = pathname === "/" || pathname === "/_og" || pathname === "/open";
+  const bare = pathname === "/" || pathname === "/_og" || pathname === "/open";
 
   return (
     <div className="flex min-h-screen flex-col">
-      {!isHome && <SiteHeader />}
+      {!bare && <SiteHeader />}
       <main id="main" className="flex-1">
         {children}
       </main>
-      {!isHome && <SiteFooter />}
+      {!bare && <SiteFooter />}
     </div>
   );
 }

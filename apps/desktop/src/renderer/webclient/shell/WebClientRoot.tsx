@@ -581,8 +581,8 @@ export function WebClientRoot({
         const steps: string[] = [];
         const result = await resolveOwnedTarget(ownedLinkTarget, installed.adapter, (message) => {
           if (disposed || ownedLinkRunRef.current !== runId) return;
-          const done = steps.map(finishedStepText);
-          steps.push(message);
+          const done = [...steps];
+          steps.push(finishedStepText(message));
           setPhase({ kind: "booting", title: "Opening your link", message, done });
         });
         if (disposed) return;
@@ -891,7 +891,7 @@ export function WebClientRoot({
  * How long an owned link waits to learn whether its chat or lane still exists.
  * The check only decides between "open it" and "it is gone"; with no answer
  * the link opens anyway, so a project that is still starting on the computer
- * must not hold the page for the full request timeout (65 seconds).
+ * must not hold the page for the full request timeout.
  */
 const OWNED_LINK_CHECK_MS = 6_000;
 
@@ -929,8 +929,9 @@ function ProgressScreen({ title, message, done = [] }: { title: string; message:
   return (
     <ScreenShell title={title}>
       <div role="status" aria-live="polite" style={{ display: "grid", gap: 12 }}>
-        {done.map((step) => (
-          <div key={step} style={{ ...row, color: COLORS.textMuted }}>
+        {done.map((step, index) => (
+          // The list only grows, so the position is a stable key.
+          <div key={index} style={{ ...row, color: COLORS.textMuted }}>
             <svg aria-hidden width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
               <path d="M3 7.4l2.6 2.6L11 4.4" stroke={COLORS.success} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
