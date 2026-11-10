@@ -1,7 +1,12 @@
 import type { AgentChatProvider } from "../../../../desktop/src/shared/types/chat";
 import { MAX_DRAFTS, type AdeMessageAuthor } from "../../../../desktop/src/shared/types/chat";
 import { isLaunchProfile, LAUNCH_PROFILE_TOOL_TYPE } from "../../../../desktop/src/shared/cliLaunch";
-import { laneShareRightsEnded } from "../../../../desktop/src/shared/laneShareRights";
+import {
+  LANE_SHARE_CLI_TYPING_UNAVAILABLE,
+  LANE_SHARE_CLI_TYPING_UNAVAILABLE_MESSAGE,
+  laneShareRightsEnded,
+  type LaneShareCliTyping,
+} from "../../../../desktop/src/shared/laneShareRights";
 import {
   LANE_SHARE_PLAIN_TEXT_ONLY,
   LANE_SHARE_PLAIN_TEXT_ONLY_MESSAGE,
@@ -39,14 +44,9 @@ import type { SyncRemoteCommandExecutionContext } from "./syncRemoteCommandServi
  * a command names, and the card it answers. Sets the verified author.
  */
 
-/** On Windows a CLI starts without exec, so a shell stays when it exits, and the host cannot tell which program has the terminal. */
-function laneShareWindowsTypingRefusal(): LaneShareGuestRefusal | null {
-  return process.platform === "win32"
-    ? { code: "lane_share_right_missing", message: "Typing into a CLI is not available on a shared lane of this computer." }
-    : null;
-}
-
 export type LaneShareGuestCommandPrepDeps = {
+  /** Whether this machine lets a guest type into a CLI (`laneShareCliTypingFor`). */
+  cliTyping: LaneShareCliTyping;
   chat: () => ReturnType<typeof createAgentChatService> | null | undefined;
   laneShareRights: LaneShareRightsStore | null;
   logger: { warn(event: string, fields?: Record<string, unknown>): void };
@@ -64,6 +64,14 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
   const laneShareTurnOwners = deps.turnOwners;
   const resolveLaneShareSession = deps.resolveSession;
   const laneShareLaneState = deps.laneState;
+
+  /**
+   * Any typed line, under any rights, on a host that cannot take one: on
+   * Windows a CLI starts without exec, so a shell stays when it exits, and
+   * the host cannot tell which program reads the keys.
+   */
+  const laneShareCliTypingRefusal = (): LaneShareGuestRefusal | null =>
+    deps.cliTyping.available ? null : { code: LANE_SHARE_CLI_TYPING_UNAVAILABLE, message: LANE_SHARE_CLI_TYPING_UNAVAILABLE_MESSAGE };
 
   function laneShareGuestOwnsRunningTurn(sessionId: string, role: LaneShareGuestRole): boolean {
     return laneShareTurnOwners.get(sessionId)?.userId === role.userId;
@@ -179,8 +187,8 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
   function laneShareGuestTypingRefusal(role: LaneShareGuestRole, payload: Record<string, unknown> | null): LaneShareGuestRefusal | null {
     const sessionId = payload?.sessionId;
     if (typeof sessionId !== "string") return { code: "forbidden_command", message: "That session is not part of this shared lane." };
-    const windows = laneShareWindowsTypingRefusal();
-    if (windows) return windows;
+    const unavailable = laneShareCliTypingRefusal();
+    if (unavailable) return unavailable;
     if (laneShareRightsEnded(role.rights, Date.now())) return { code: "lane_share_ended", message: "This share has ended." };
     if (!laneShareGuestTakeRate(role)) return { code: "lane_share_rate_limited", message: "Too many requests at once. Wait a moment, then try again." };
     if (!laneShareGuestMayTypeInto(role, sessionId, resolveLaneShareSession)) {
@@ -331,15 +339,15 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
         const locked = laneShareCheckLocks(rights, gateArgs, null);
         if (locked) return { ok: false, refusal: locked };
         if (typeof gateArgs.initialInput === "string" && gateArgs.initialInput.trim()) {
+          // First: a host that takes no typed line says so under any rights.
+          const unavailable = laneShareCliTypingRefusal();
+          if (unavailable) return { ok: false, refusal: unavailable };
           if (!rights.run.typeInCliSessions) return laneShareRefuse("Your access to this shared lane does not include typing in a CLI.", "lane_share_right_missing");
-          // No line a CLI reads as a command (`/`, `!`, and `#` for Claude's
-          // memory line), and, as for typing, no Windows host.
+          // No line a CLI reads as a command (`/`, `!`, and `#` for Claude's memory line).
           for (const line of gateArgs.initialInput.split(/\r\n|\r|\n/)) {
             const plain = laneSharePlainTextRefusal(line, ["#"]);
             if (plain) return { ok: false, refusal: plain };
           }
-          const windows = laneShareWindowsTypingRefusal();
-          if (windows) return { ok: false, refusal: windows };
           const claimed = claimLaneShareMessage(role);
           if ("refusal" in claimed) return { ok: false, refusal: claimed.refusal };
           return { ok: true, args: gateArgs, claim: claimed.claim };

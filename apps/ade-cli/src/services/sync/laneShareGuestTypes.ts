@@ -108,6 +108,7 @@ export type LaneShareGuestHostDeps = LaneShareGuestSyncHostDeps & {
     getLaneShareRepoKey?: () => string | null;
     laneShareMoves?: LaneShareMoveService | null;
     onLaneShareEvent?: (event: LaneShareEvent) => void;
+    platform?: NodeJS.Platform;
   };
   peers: ReadonlySet<LaneShareGuestPeer>;
   send(target: WebSocket | LaneShareGuestPeer, type: SyncEnvelope["type"], payload: unknown, requestId?: string | null): boolean;

@@ -11,7 +11,9 @@ import type { createAgentChatService } from "../../../../desktop/src/main/servic
 import type { LaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
 import { toOptionalString } from "../../../../desktop/src/main/services/shared/utils";
 import {
+  laneShareCliTypingFor,
   laneShareRightsEnded,
+  laneShareRightsForHost,
   type LaneShareGuestPresence,
   type LaneShareGuestState,
 } from "../../../../desktop/src/shared/laneShareRights";
@@ -60,6 +62,8 @@ export type LaneShareGuestGatesDeps = LaneShareGuestSyncHostDeps & {
     projectId?: string | null;
     agentChatService?: ReturnType<typeof createAgentChatService>;
     laneShareMoves?: LaneShareMoveService | null;
+    /** This machine's `process.platform` (the default): a Windows host takes no guest CLI typing. */
+    platform?: NodeJS.Platform;
   };
   /** The guest host's state and rules. */
   host: {
@@ -361,7 +365,10 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     }
   }
 
+  // Whether a guest may type into a CLI on this machine at all (not on Windows).
+  const cliTyping = laneShareCliTypingFor(args.platform ?? process.platform);
   const laneShareGuestCommandPrep = createLaneShareGuestCommandPrep({
+    cliTyping,
     chat: () => args.agentChatService,
     laneShareRights,
     logger: args.logger,
@@ -396,7 +403,8 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
       laneId,
       state: laneShareLaneState(laneId) === "archived" ? "paused" : "active",
       endsAt: earliestLaneShareEnd(grant?.endsAtMs ?? null, role.rights.limits.endsAt),
-      rights: role.rights,
+      // As this host enforces them: CLI typing off where it is not available.
+      rights: laneShareRightsForHost(role.rights, cliTyping),
       models: [...role.rights.run.models],
       limits: {
         messagesPerDay: role.rights.limits.messagesPerDay,
@@ -406,6 +414,7 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
         dailyResetAt: usage?.dailyResetAt ?? null,
       },
       machine: hide ? null : { name: brain.deviceName, platform: String(brain.platform ?? "") },
+      cliTyping,
       present,
       move: args.laneShareMoves?.guestView({ grantId: role.grantId }) ?? null,
     };

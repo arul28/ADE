@@ -56,7 +56,7 @@ docs/
     ├── history/                           # operations timeline, transcripts, export
     ├── apple-device/                      # Apple Development tool + helper stream + ADEInspector
     ├── android-device/                    # Android Development tool + scrcpy stream (P0)
-    ├── lanes/                             # worktree isolation, stacking, runtime, OAuth
+    ├── lanes/                             # worktree isolation, stacking, runtime, OAuth, lane sharing
     ├── issues/                            # open an issue where you are: Issues tool tab, issue sheet
     ├── linear-integration/                # issue reads, lane/PR flow, live-status round-trip
     ├── mac-desktop/                       # per-lane macOS virtual display driven by `ade screen` / `ade mac-desktop`

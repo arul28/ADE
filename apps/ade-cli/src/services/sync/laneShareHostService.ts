@@ -1,9 +1,12 @@
 import { LaneShareError } from "./laneShareError";
 import {
+  laneShareCliTypingFor,
   laneShareHighRiskRefusal,
   laneSharePresetLabel,
+  laneShareRightsForHost,
   laneShareRiskLevel,
   parseLaneShareRights,
+  type LaneShareCliTyping,
   type LaneShareRights,
   type LaneShareRiskLevel,
 } from "../../../../desktop/src/shared/laneShareRights";
@@ -11,6 +14,7 @@ import type { LaneShareRightsStore, LaneShareUsage } from "../../../../desktop/s
 import type {
   LaneShareEvent,
   LaneShareGivenEntry,
+  LaneShareListResult,
   LaneShareReceivedResult,
 } from "../../../../desktop/src/shared/types/laneShare";
 import { parseLaneShareReceivedResponse } from "../../../../desktop/src/shared/laneShareGuestDirectory";
@@ -133,9 +137,17 @@ function grantIdOf(body: unknown): string | null {
   return typeof grant?.id === "string" && GRANT_ID.test(grant.id) ? grant.id : null;
 }
 
-/** The rights to store, with the risk rule: high risk needs the owner's explicit confirmation. */
-function checkedRights(value: unknown, confirmHighRisk: unknown): { rights: LaneShareRights; risk: { level: LaneShareRiskLevel; reasons: string[] } } {
-  const rights = parseLaneShareRights(value);
+/**
+ * The rights to store, as this machine enforces them (CLI typing off where
+ * it is not available), with the risk rule: high risk needs the owner's
+ * explicit confirmation.
+ */
+function checkedRights(
+  value: unknown,
+  confirmHighRisk: unknown,
+  cliTyping: LaneShareCliTyping,
+): { rights: LaneShareRights; risk: { level: LaneShareRiskLevel; reasons: string[] } } {
+  const rights = laneShareRightsForHost(parseLaneShareRights(value), cliTyping);
   const refusal = laneShareHighRiskRefusal(rights, confirmHighRisk);
   if (refusal) throw new LaneShareHostError("confirm_high_risk", refusal);
   return { rights, risk: laneShareRiskLevel(rights) };
@@ -155,9 +167,14 @@ export function createLaneShareHostService(options: {
   /** A share of this machine changed; the owner's lists read it again. */
   onEvent?: (event: LaneShareEvent) => void;
   now?: () => number;
+  /** This machine's `process.platform`: it decides whether a guest may type into a CLI here. */
+  platform?: NodeJS.Platform;
   logger?: { info(event: string, fields?: Record<string, unknown>): void; warn(event: string, fields?: Record<string, unknown>): void };
 }) {
   const now = options.now ?? Date.now;
+  const cliTyping = laneShareCliTypingFor(options.platform ?? process.platform);
+  /** Stored rights as this machine enforces them (a share stored before, or on another build, may still hold CLI typing). */
+  const enforced = (rights: LaneShareRights): LaneShareRights => laneShareRightsForHost(rights, cliTyping);
 
   const request = async (method: "GET" | "POST" | "PATCH", path: string, body?: Record<string, unknown>): Promise<unknown> => {
     let answer: { status: number; body: unknown };
@@ -276,7 +293,7 @@ export function createLaneShareHostService(options: {
       }
       const receiverEmail = cleanEmail(args.receiverEmail);
       if (!receiverEmail) throw new LaneShareHostError("invalid_args", "That email address isn't valid.");
-      const { rights: asked, risk } = checkedRights(args.rights, args.confirmHighRisk);
+      const { rights: asked, risk } = checkedRights(args.rights, args.confirmHighRisk, cliTyping);
       const endsAt = cleanEndsAt(args.endsAt, now());
       // The host enforces the end date from its own rights, as an edit keeps it.
       const rights = endsAt !== undefined ? { ...asked, limits: { ...asked.limits, endsAt } } : asked;
@@ -295,7 +312,7 @@ export function createLaneShareHostService(options: {
      * account gave, on any machine; only the rows of this machine and project
      * carry rights, usage and connections (`local: true`).
      */
-    async list(args: { scope?: unknown } = {}): Promise<{ shares: LaneShareGivenEntry[] }> {
+    async list(args: { scope?: unknown } = {}): Promise<LaneShareListResult & { cliTyping: LaneShareCliTyping }> {
       const machineKey = options.getMachineKey().trim();
       const repoKey = options.getRepoKey();
       const grants = args.scope === "account"
@@ -352,15 +369,15 @@ export function createLaneShareHostService(options: {
         shares.push({
           ...base,
           local: true,
-          rights: live && record ? record.rights : null,
+          rights: live && record ? enforced(record.rights) : null,
           needsRights: live && !record,
-          risk: live && record ? laneShareRiskLevel(record.rights) : null,
+          risk: live && record ? laneShareRiskLevel(enforced(record.rights)) : null,
           usage: live ? usageOf(grantId) : null,
           connectedDevices: live ? host?.laneShareConnectedDevices(grantId) ?? 0 : 0,
           laneState: laneId ? options.store.laneState(laneId) : "unknown",
         });
       }
-      return { shares };
+      return { shares, cliTyping };
     },
 
     /** Shares other accounts gave this account (the "Shared with me" list). Display only. */
@@ -385,7 +402,7 @@ export function createLaneShareHostService(options: {
      */
     async updateRights(args: { grantId: unknown; rights: unknown; endsAt?: unknown; confirmHighRisk?: unknown }) {
       const grantId = cleanGrantId(args.grantId);
-      const { rights: asked, risk } = checkedRights(args.rights, args.confirmHighRisk);
+      const { rights: asked, risk } = checkedRights(args.rights, args.confirmHighRisk, cliTyping);
       const endsAt = cleanEndsAt(args.endsAt, now());
       // The end date is kept in the local rights too, before the directory
       // write: the host enforces it, so a failed write cannot leave an old,
@@ -461,7 +478,7 @@ export function createLaneShareHostService(options: {
       const grantId = cleanGrantId(args.grantId);
       const record = options.store.get(grantId);
       if (!record?.receiverEmail) throw new LaneShareHostError("not_found", "This computer holds no invite for that lane share.");
-      const risk = laneShareRiskLevel(record.rights);
+      const risk = laneShareRiskLevel(enforced(record.rights));
       // The stored end goes with it: the directory writes the invite's end over the old one.
       const { grantId: sentId, body } = await invite(record.laneId, record.receiverEmail, record.rights, risk.level, record.rights.limits.endsAt ?? null);
       if (sentId !== grantId) {

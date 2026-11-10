@@ -2640,8 +2640,13 @@ func normalizedSystemNoticeKind(from status: String?) -> AgentChatNoticeKind? {
 /// timeline. A move's "ended" notice (`cross_machine_handoff_ended`) says it
 /// all in its message; its detail is the move record, which SyncService folds
 /// into the chat summary from the raw payload, so the decoded notice drops it.
+/// A lane share move's notice (`lane_share_moved`) also says it all in its
+/// message; its detail is only the move id, which no phone surface reads.
 func systemNoticeStatusHidesDetail(_ status: String?) -> Bool {
-  status?.trimmingCharacters(in: .whitespacesAndNewlines) == "cross_machine_handoff_ended"
+  switch status?.trimmingCharacters(in: .whitespacesAndNewlines) {
+  case "cross_machine_handoff_ended", "lane_share_moved": return true
+  default: return false
+  }
 }
 
 enum AgentChatApprovalRequestKind: String, Codable, Equatable {

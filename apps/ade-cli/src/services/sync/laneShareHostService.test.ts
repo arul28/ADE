@@ -31,8 +31,8 @@ function makeStore() {
   return createLaneShareRightsStore({ db });
 }
 
-/** The service with the account directory at the network boundary. */
-function makeService(directory: (url: string, init?: RequestInit) => Promise<Response>) {
+/** The service with the account directory at the network boundary, on a darwin host unless the test names another. */
+function makeService(directory: (url: string, init?: RequestInit) => Promise<Response>, platform: NodeJS.Platform = "darwin") {
   const store = makeStore();
   const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => directory(String(input), init));
   const service = createLaneShareHostService({
@@ -43,6 +43,7 @@ function makeService(directory: (url: string, init?: RequestInit) => Promise<Res
     getRepoKey: () => "repo:github.com/acme/widgets",
     getProjectLabel: () => "widgets",
     getLaneLabel: () => "shared",
+    platform,
   });
   return { service, store, fetchImpl };
 }
@@ -83,10 +84,29 @@ describe("lane share host service", () => {
     expect(store.list().map((record) => record.rights)).toEqual([laneSharePresetRights("watch")]);
   });
 
-  it("stores high-risk rights once the owner confirms them", async () => {
-    const { service, store } = makeService(async () => invited());
-    await service.create({ laneId, receiverEmail: "guest@example.com", rights: highRisk(), confirmHighRisk: true });
-    expect(store.get(grantId)?.rights.run.typeInCliSessions).toBe(true);
+  // A Windows host cannot let a guest type into a CLI: it stores the right
+  // as off, so the risk and the stored rights match what it enforces, and
+  // shows a right stored before as off.
+  it.each<[NodeJS.Platform, boolean]>([
+    ["win32", false],
+    ["darwin", true],
+    ["linux", true],
+  ])("on a %s host, CLI typing is stored and listed as %s", async (platform, available) => {
+    const { service, store } = makeService(async (url, init) => (init?.method ?? "GET") === "GET" && url.endsWith("/lane-shares/given")
+      ? json(200, { grants: [{ id: grantId, state: "active", laneId, machineKey: "machine-1", repoKey: "repo:github.com/acme/widgets" }] })
+      : invited(), platform);
+    // High risk needs the owner's confirmation only where the right is kept.
+    const created = await service.create({ laneId, receiverEmail: "guest@example.com", rights: highRisk(), confirmHighRisk: available });
+    expect(created.risk.level).toBe(available ? "high" : "low");
+    expect(store.get(grantId)?.rights.run.typeInCliSessions).toBe(available);
+    const edited = await service.updateRights({ grantId, rights: highRisk(), confirmHighRisk: available });
+    expect(edited.risk.level).toBe(available ? "high" : "low");
+    expect(store.get(grantId)?.rights.run.typeInCliSessions).toBe(available);
+    // A share stored with the right on (an older build) lists as this host enforces it.
+    store.updateRights(grantId, highRisk());
+    const listed = await service.list();
+    expect(listed.cliTyping).toEqual(available ? { available: true, reason: null } : { available: false, reason: "windows_host" });
+    expect(listed.shares[0]).toMatchObject({ rights: { run: { typeInCliSessions: available } }, risk: { level: available ? "high" : "low" } });
   });
 });
 

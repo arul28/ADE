@@ -1326,6 +1326,11 @@ type SyncHostServiceArgs = {
   getLaneShareRepoKey?: () => string | null;
   /** Moves of a chat to or from the other person of a share (`laneShare.move` guest command). */
   laneShareMoves?: LaneShareMoveService | null;
+  /**
+   * This machine's `process.platform` (the default). Lane sharing reads it:
+   * a Windows host cannot let a guest type into a CLI (`laneShareCliTypingFor`).
+   */
+  platform?: NodeJS.Platform;
   /** Lane sharing events for the owner's app (a guest turn still running after a revoke). */
   onLaneShareEvent?: (event: LaneShareHostEvent) => void;
   /** Test seam for account-session lease reconciliation. */

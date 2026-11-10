@@ -2238,8 +2238,15 @@ export type SyncTerminalInputPayload = {
 /**
  * A lane share host's refusal of a guest's typed line (`lane_share_*`, or
  * `forbidden_command`). Only a guest connection gets these.
+ * `lane_share_cli_typing_unavailable`: this host cannot take typed lines at
+ * all (a Windows host), apart from `lane_share_right_missing`. A client that
+ * does not know a code shows the message.
  */
-export type LaneShareTerminalInputRefusalCode = `lane_share_${string}` | "forbidden_command";
+export type LaneShareTerminalInputRefusalCode =
+  | "lane_share_cli_typing_unavailable"
+  | "lane_share_right_missing"
+  | `lane_share_${string}`
+  | "forbidden_command";
 
 export type SyncTerminalInputAckErrorCode =
   | "invalid_input_id"

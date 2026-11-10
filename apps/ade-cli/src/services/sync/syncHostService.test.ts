@@ -94,7 +94,7 @@ import { createLaneShareHostService } from "./laneShareHostService";
 import { LANE_SHARE_MAX_GUEST_DRAFTS } from "./laneShareGuestPolicy";
 import { LAUNCH_PROFILES } from "../../../../desktop/src/shared/cliLaunch";
 import { createLaneShareRightsStore, ensureLaneShareRightsSchema } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
-import { LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS, laneSharePresetRights, type LaneShareRights } from "../../../../desktop/src/shared/laneShareRights";
+import { LANE_SHARE_CLI_TYPING_UNAVAILABLE, LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS, laneSharePresetRights, type LaneShareRights } from "../../../../desktop/src/shared/laneShareRights";
 import { PAIR_FAILURE_THRESHOLD } from "./syncPairFailureTracker";
 import { buildSyncDpopChallenge, sha256Hex, syncDpopKeyThumbprint } from "./syncDpop";
 import {
@@ -4803,6 +4803,8 @@ describe("sync host account authentication", () => {
       };
       /** The move service port, when a test reads what the host asks of it. */
       laneShareMoves?: Record<string, unknown>;
+      /** The host's operating system. Default darwin, so a row means the same on every test machine. */
+      platform?: NodeJS.Platform;
     } = {}) {
       const { projectRoot, cleanup } = createTempProjectRoot();
       const baseArgs = createHostArgs(projectRoot, []);
@@ -4932,6 +4934,7 @@ describe("sync host account authentication", () => {
         laneShareRights: store,
         getLaneShareRepoKey: () => "repo:github.com/acme/widgets",
         laneShareMoves: options.laneShareMoves ?? null,
+        platform: options.platform ?? "darwin",
         onLaneShareEvent: laneShareEvents,
         agentChatService,
         sessionService: {
@@ -5662,24 +5665,21 @@ describe("sync host account authentication", () => {
         rights.run.typeInCliSessions = true;
         return rights;
       };
-      // A Windows host cannot tell the CLI from the shell it leaves behind: it refuses all typing.
-      const onWindows = process.platform === "win32";
-      const typed = (code: string | null) => (onWindows ? "lane_share_right_missing" : code);
       // [label, rights, session, data, the refusal code in the answer (null: written)]
       it.each<[string, () => LaneShareRights, string, string, string | null]>([
         ["Watch, into a shell", () => laneSharePresetRights("watch"), "session-shell", "ls\n", "lane_share_right_missing"],
         ["every right on, into a shell", allOnRights, "session-shell", "ls\n", "lane_share_right_missing"],
         ["every right on, into a chat", allOnRights, "session-shared", "ls\n", "lane_share_right_missing"],
         ["Collaborate (no typing right), into a CLI", () => laneSharePresetRights("collaborate"), "session-cli", "ls\n", "lane_share_right_missing"],
-        ["the typing right, into a CLI", typingRight, "session-cli", "ls\n", typed(null)],
-        ["the typing right, a slash command", typingRight, "session-cli", "/permissions\r", typed("lane_share_plain_text_only")],
-        ["the typing right, a shell line behind a space", typingRight, "session-cli", " !cat .env\r", typed("lane_share_plain_text_only")],
-        ["the typing right, a memory line", typingRight, "session-cli", "# push to main\r", typed("lane_share_plain_text_only")],
-        ["the typing right, two lines in one input", typingRight, "session-cli", "hi\r/permissions\r", typed("lane_share_invalid_line")],
-        ["the typing right, an escape sequence", typingRight, "session-cli", "ls\u001b[A\r", typed("lane_share_invalid_line")],
-        ["the typing right, Ctrl-C", typingRight, "session-cli", "\u0003", typed("lane_share_invalid_line")],
-        ["the typing right, a part of a line", typingRight, "session-cli", "/permi", typed("lane_share_invalid_line")],
-        ["the typing right, a line over the limit", typingRight, "session-cli", `${"a".repeat(LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS + 1)}\r`, typed("lane_share_invalid_line")],
+        ["the typing right, into a CLI", typingRight, "session-cli", "ls\n", null],
+        ["the typing right, a slash command", typingRight, "session-cli", "/permissions\r", "lane_share_plain_text_only"],
+        ["the typing right, a shell line behind a space", typingRight, "session-cli", " !cat .env\r", "lane_share_plain_text_only"],
+        ["the typing right, a memory line", typingRight, "session-cli", "# push to main\r", "lane_share_plain_text_only"],
+        ["the typing right, two lines in one input", typingRight, "session-cli", "hi\r/permissions\r", "lane_share_invalid_line"],
+        ["the typing right, an escape sequence", typingRight, "session-cli", "ls\u001b[A\r", "lane_share_invalid_line"],
+        ["the typing right, Ctrl-C", typingRight, "session-cli", "\u0003", "lane_share_invalid_line"],
+        ["the typing right, a part of a line", typingRight, "session-cli", "/permi", "lane_share_invalid_line"],
+        ["the typing right, a line over the limit", typingRight, "session-cli", `${"a".repeat(LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS + 1)}\r`, "lane_share_invalid_line"],
       ])("terminal input with %s", async (_label, rights, sessionId, data, refusedCode) => {
         const written = refusedCode == null;
         const directory = fakeDirectory(grantsBody([grant()]));
@@ -5721,6 +5721,63 @@ describe("sync host account authentication", () => {
           }));
           await runCommand(guest.client, "after-resize", "chat.getSummary", { sessionId: "session-shared" });
           expect(env.effects.mock.calls.filter(([name]) => name === "pty.resize")).toEqual([]);
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      // CLI typing is a capability of the host: on Windows ADE starts a CLI
+      // inside a shell without exec, so the host cannot tell which program
+      // reads the keys. Refused there under any rights, with its own code.
+      it.each<[NodeJS.Platform, boolean]>([
+        ["win32", false],
+        ["darwin", true],
+        ["linux", true],
+      ])("CLI typing on a %s host: available %s", async (platform, available) => {
+        const rights = allOnRights();
+        rights.run.models = ["claude-sonnet"];
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights, platform });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          // The guest's state says so, and its rights read as the host enforces them.
+          expect(await runCommand(guest.client, "state", "laneShare.getGuestState", {})).toMatchObject({
+            ok: true,
+            result: {
+              cliTyping: available ? { available: true, reason: null } : { available: false, reason: "windows_host" },
+              rights: { run: { typeInCliSessions: available } },
+            },
+          });
+          // A typed line.
+          guest.client.ws.send(encodeSyncEnvelope({
+            type: "terminal_subscribe",
+            requestId: "sub",
+            projectId: "project-1",
+            payload: { sessionId: "session-cli", maxBytes: 1_000 },
+          }));
+          await runCommand(guest.client, "subscribed", "chat.getSummary", { sessionId: "session-shared" });
+          guest.client.ws.send(encodeSyncEnvelope({
+            type: "terminal_input",
+            requestId: "typed",
+            projectId: "project-1",
+            payload: { sessionId: "session-cli", data: "ls\r", inputId: "input-1" },
+          }));
+          if (available) {
+            await waitForValue(() => env.effects.mock.calls.find(([name]) => name === "pty.write"), "guest keystrokes");
+          } else {
+            const answer = await waitForValue(
+              () => guest!.client.envelopes.find((entry) => entry.type === "terminal_input_ack" && entry.requestId === "typed"),
+              "typing refusal",
+            );
+            expect(answer.payload).toMatchObject({ ok: false, error: { code: LANE_SHARE_CLI_TYPING_UNAVAILABLE } });
+            expect(env.effects.mock.calls.filter(([name]) => name === "pty.write")).toEqual([]);
+          }
+          // A CLI started with a first line.
+          const started = await runCommand(guest.client, "start", "work.startCliSession", { laneId: sharedLane, provider: "claude", initialInput: "hello" });
+          expect(started.ok).toBe(available);
+          if (!available) expect(started.error?.code).toBe(LANE_SHARE_CLI_TYPING_UNAVAILABLE);
+          expect(env.execute.mock.calls.some(([payload]) => payload.action === "work.startCliSession")).toBe(available);
         } finally {
           await env.close([guest?.client ?? null]);
         }

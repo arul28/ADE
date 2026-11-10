@@ -2,7 +2,7 @@ import React from "react";
 import { logRendererDebugEvent } from "../../../lib/debugLog";
 import { ArrowsClockwise, ArrowsLeftRight, ChatCircle, FolderPlus, Plus, Robot, SignOut, Terminal, TerminalWindow, X } from "@phosphor-icons/react";
 import type { LaneShareReceivedEntry } from "../../../../shared/types/laneShare";
-import { laneShareMayMove, type LaneShareGuestState } from "../../../../shared/laneShareRights";
+import { laneShareGuestCliTyping, laneShareMayMove, type LaneShareGuestState } from "../../../../shared/laneShareRights";
 import { parseCodedErrorMessage } from "../../../../shared/codedError";
 import { leadingPromptCommandCharacter, LANE_SHARE_PLAIN_TEXT_ONLY_MESSAGE } from "../../../../shared/messageAuthor";
 import { isLaunchProfile } from "../../../../shared/cliLaunch";
@@ -80,12 +80,15 @@ function GuestTerminal({
   grantId,
   connected,
   canType,
+  typingUnavailableNote,
   guestState,
 }: {
   session: LaneShareGuestSession;
   grantId: string;
   connected: boolean;
   canType: boolean;
+  /** Shown in place of the typing box when the owner's computer takes no typed line. */
+  typingUnavailableNote: string | null;
   guestState: LaneShareGuestState | null;
 }) {
   const sessionId = session.sessionId;
@@ -176,7 +179,7 @@ function GuestTerminal({
         {live && commandChar ? <span className="text-[var(--color-warning)]">{LANE_SHARE_PLAIN_TEXT_ONLY_MESSAGE}</span> : null}
         <span>
           {exited !== undefined ? `Exited${exited != null ? ` (${exited})` : ""}. ` : ""}
-          {live ? "Each line counts as one message." : "Read only: you can watch this session, not type in it."}
+          {live ? "Each line counts as one message." : typingUnavailableNote ?? "Read only: you can watch this session, not type in it."}
           {facts ? ` ${facts}` : ""}
         </span>
       </div>
@@ -224,7 +227,8 @@ function GuestStartPanel({
   const [firstLine, setFirstLine] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [refusal, setRefusal] = React.useState<string | null>(null);
-  const canTypeFirst = kind === "cli" && rights.run.typeInCliSessions;
+  // No first-line field where the owner's computer takes no typed line.
+  const canTypeFirst = kind === "cli" && rights.run.typeInCliSessions && laneShareGuestCliTyping(guestState).available;
   const firstLineCommand = canTypeFirst ? commandLineCharacter(firstLine) : null;
 
   const start = async () => {
@@ -365,7 +369,10 @@ export function LaneShareGuestView({
   const paused = guestState?.state === "paused";
   const canStartChat = Boolean(rights?.run.startChats) && connected && !paused;
   const canStartCli = Boolean(rights?.run.startCliSessions) && connected && !paused;
-  const canTypeCli = Boolean(rights?.run.typeInCliSessions) && !paused;
+  // The host's capability, not the viewer's OS. The note names neither the OS nor the machine ("Hide my machines").
+  const cliTypingAvailable = laneShareGuestCliTyping(guestState).available;
+  const canTypeCli = Boolean(rights?.run.typeInCliSessions) && cliTypingAvailable && !paused;
+  const typingUnavailableNote = cliTypingAvailable ? null : `Typing into a CLI is not available on this computer of ${ownerLabel}.`;
   const waiting = connectionState?.kind === "retrying" || connectionState?.kind === "host_offline" ? connectionState : null;
   // Moving a chat to the owner needs Collaborate (send and start chats); the host checks it again.
   const canMoveOut = laneShareMayMove(rights) && connected && !paused;
@@ -472,6 +479,7 @@ export function LaneShareGuestView({
             grantId={grantId}
             connected={connected}
             canType={canTypeCli && selected.kind === "cli"}
+            typingUnavailableNote={selected.kind === "cli" ? typingUnavailableNote : null}
             guestState={guestState}
           />
         ) : (

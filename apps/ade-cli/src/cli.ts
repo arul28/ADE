@@ -2346,7 +2346,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade projects clone owner/repo [--path <folder>] [--name <dir>]
                                                     Clone a GitHub repository with this computer's GitHub sign-in and open it as a project
     $ ade projects prune [--dry-run]                Remove projects whose folder is gone from ADE (never deletes a folder)
-    $ ade projects remove <project-id>
+    $ ade projects remove <project-id>              Remove the project from ADE on this machine (the folder stays)
     $ ade projects touch <project-id>
     $ ade projects inspect /path/to/checkout --json Classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 `,

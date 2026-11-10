@@ -715,7 +715,18 @@ Browser shell and routes:
   the snooze duration menu rows get a 44px minimum height (the row count varies
   with the time of day — see `resolveSnoozePresets`).
 - `apps/desktop/src/renderer/webclient/shell/webRoutes.ts` - thin web route
-  layer over `apps/desktop/src/shared/deeplinks.ts`.
+  layer over `apps/desktop/src/shared/deeplinks.ts`. A `lane-share` link maps
+  to `/shared?grant=<id>`, the shared lanes page, which needs no machine of the
+  browser's own.
+- `apps/desktop/src/renderer/webclient/sync/relayReady.ts` - ADE Relay's
+  `ready=2` socket handshake (`accepted`, then `ready`) for every browser-side
+  socket to `wss://<relay>/connect/<machineKey>`: the paired sync connection
+  and the lane share guest connection.
+- Lane sharing in the web client: the guest's side works (the `/shared` page,
+  the shared lane view and the guest connection, with
+  `laneShareGuest` account calls through `account/client.ts`), and the owner's
+  side does not (the adapter's `laneShare.*` answers `lane_share_desktop_only`,
+  and Settings › Sharing is hidden). See [lane sharing](../lanes/lane-sharing.md).
 
 Reused desktop renderer (web-mode adaptation):
 

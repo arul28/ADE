@@ -5,6 +5,7 @@ import {
   LANE_SHARE_PRESET_NAMES,
   laneSharePresetLabel,
   laneSharePresetRights,
+  laneShareRightsForHost,
   laneShareRiskLevel,
   type LaneSharePresetName,
   type LaneShareRights,
@@ -171,6 +172,11 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
     if (selected !== NEW && entry?.status === "ready" && !shares.some((share) => share.grantId === selected)) setSelected(NEW);
   }, [entry?.status, selected, shares]);
 
+  // The lane's machine decides whether a guest may type into a CLI there:
+  // where it cannot, every draft holds the switch off, so the risk, the
+  // preset and the rights sent match what that machine enforces.
+  const cliTyping = entry?.cliTyping ?? null;
+  const forHost = (rights: LaneShareRights): LaneShareRights => laneShareRightsForHost(rights, cliTyping);
   const problem = entry?.problem ?? null;
   const blocked = problem?.blocking === true;
   const loading = !entry || (entry.status === "loading" && entry.shares.length === 0);
@@ -181,7 +187,8 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
   const savedDraft: Draft | null = selectedEntry
     ? { rights: selectedEntry.rights ?? defaults.rights, endsAt: selectedEntry.endsAt }
     : null;
-  const draft: Draft = selectedEntry ? edits[selectedEntry.grantId] ?? savedDraft! : newDraft;
+  const shownDraft: Draft = selectedEntry ? edits[selectedEntry.grantId] ?? savedDraft! : newDraft;
+  const draft: Draft = { ...shownDraft, rights: forHost(shownDraft.rights) };
   const dirty = selectedEntry
     ? Boolean(edits[selectedEntry.grantId]) && (
       !sameLaneShareRights(edits[selectedEntry.grantId]!.rights, selectedEntry.rights)
@@ -229,7 +236,7 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
       setFormError(`${receiverEmail} already has access. Their rights are shown here.`);
       return;
     }
-    const rights: LaneShareRights = { ...newDraft.rights, limits: { ...newDraft.rights.limits, endsAt: newDraft.endsAt } };
+    const rights: LaneShareRights = forHost({ ...newDraft.rights, limits: { ...newDraft.rights.limits, endsAt: newDraft.endsAt } });
     const high = laneShareRiskLevel(rights).level === "high";
     if (high && !(await confirmHighRiskShare(receiverEmail, rights))) return;
     setBusy("invite");
@@ -433,7 +440,7 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
                   }}
                 />
                 <PresetSelect
-                  value={presetOf(newDraft.rights)}
+                  value={presetOf(forHost(newDraft.rights))}
                   disabled={formDisabled || atLimit}
                   label="Rights for the new person"
                   onChange={(preset) => {
@@ -462,7 +469,7 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
                     key={share.grantId}
                     entry={share}
                     selected={selected === share.grantId}
-                    presetValue={shareDraft ? presetOf(shareDraft) : "custom"}
+                    presetValue={shareDraft ? presetOf(forHost(shareDraft)) : "custom"}
                     revokePending={revokePending[share.grantId] === true}
                     disabled={formDisabled}
                     onSelect={() => {
@@ -554,6 +561,7 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
                 endsAt={draft.endsAt}
                 now={now}
                 disabled={rightsDisabled}
+                cliTyping={cliTyping}
                 onChange={(rights) => updateDraft({ ...draft, rights })}
                 onEndsAtChange={(endsAt) => updateDraft({ ...draft, endsAt })}
               />

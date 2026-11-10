@@ -275,6 +275,16 @@ as unknown, never gone, so `prune` keeps it. `projects clone` without `--path`
 clones beside the other projects; a `--path` sent to another computer must be
 absolute there (a leading `~` means that computer's home).
 
+`ade projects remove` removes only the registry entry; the folder stays.
+Deleting a project's folder is the person's act: the desktop's **Remove
+project** dialog calls `projects.inspectRemoval` (a fresh read of changed
+files, unpushed commits, stashes and what runs) and then `projects.removeCopy`
+with `deleteFolder` and the `stateToken` it saw. `projects.removeCopy` refuses
+an agent caller and any caller below the cto role, so no `ade` command wraps
+it. A project with a git origin shows the account's shared name and icon
+(`project.name` / `project.icon` rows under `repo:<origin>` in the account
+settings store, or `.ade/project-record.json` with sync off) on every machine.
+
 …or call the same JSON-RPC methods directly:
 
 ```text
@@ -300,6 +310,7 @@ runtime/info     machineInfo.get   machine.updateAndRestart
 runtime.activitySummary            runtime.updateImpact
 account.call     attention.call
 projects.list    projects.add      projects.remove   projects.touch
+projects.inspectRemoval            projects.removeCopy
 projects.browseDirectories         projects.getDetail
 projects.getWorkSummary            projects.getDefaultParentDir
 projects.getHandoffStoragePreflight
@@ -1104,7 +1115,7 @@ renderer publishing what it has open for phones and the hosted web client to
 mirror; an agent that wants a pane open should open the tool it needs
 (`ade browser panel`) rather than claim one is open.
 
-Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet. For stored project credentials, prefer `ade secrets`; account-linked projects default to account storage, `--storage account|device` chooses the scope explicitly, `list` is metadata-only and includes each secret's location, and `get --text` prints the secret value. Agents should read only the named secret the user asked for and avoid logging it.
+Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet. User-only domains, such as `lane_share` (sharing a lane with another account), are left out of `ade actions list` and refused by `ade actions run`: only the ADE desktop app, with no agent identity, reaches them. For stored project credentials, prefer `ade secrets`; account-linked projects default to account storage, `--storage account|device` chooses the scope explicitly, `list` is metadata-only and includes each secret's location, and `get --text` prints the secret value. Agents should read only the named secret the user asked for and avoid logging it.
 
 Output modes are explicit: `--text` for human-readable summaries, `--json` (default for piped output) for stable JSON, and `--pretty` for pretty-printed JSON.
 

@@ -349,6 +349,15 @@ Its `accountSignedIn` gate is *ownership*, not usability — see
   least-recently-used non-active machines become Parked and reconnect on
   demand. Saved pre-release local pairings remain a reconnect compatibility
   path. See `../web-client/README.md`.
+- **Lane share guest** — another ADE account that the machine's owner
+  shared one lane with. It connects over Relay only, with
+  `auth: { kind: "guest", deviceId, ticket, dpop }`: a one-use ticket from
+  the account directory, which the host redeems with its own owner's token,
+  and a DPoP proof by the key the ticket was minted for. It is never a sync
+  client: it gets no changesets, no catalog, no roster and no runtime RPC
+  channel, only a default-refuse list of envelopes and commands for the
+  granted lane. It never writes a pairing record. See
+  [lane sharing](../lanes/lane-sharing.md#the-guest-connection).
 - **Cluster state** — a singleton `sync_cluster_state` row with
   the legacy columns `brain_device_id` and `brain_epoch` tracks which
   device currently owns execution within a cluster.
@@ -743,7 +752,7 @@ Runtime support files outside `services/sync/`:
   deleted** (`rejectedAt` / `needsReauth` / `rejectedReason` on the stored
   record) and `sessionState` reports `active | signed_out | expired |
   unreadable` so every surface can say which it is; see
-  [onboarding and settings → Account session state](../onboarding-and-settings/README.md#account-session-state-is-a-tri-state-not-a-boolean).
+  [onboarding and settings → Account session state](../onboarding-and-settings/README.md#account-session-state-is-a-four-state-not-a-boolean).
 - `apps/ade-cli/src/services/account/accountSessionRotationJournal.ts` — the
   crash-safe journal that makes a rotating refresh grant recoverable. The
   identity provider consumes the old grant the instant the exchange is accepted,
@@ -1975,8 +1984,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `syncHelloProtocol.ts` — the one parser for `hello` and `pairing_request`
   payloads, imported by both ingress paths (`syncHostService` and
   `brainProjectActionsSyncHandler`). Normalizes the legacy top-level `token`
-  into `auth: { kind: "bootstrap" }`, validates each of the four auth shapes
-  (`bootstrap`, `paired`, `account`, `account_sealed`), bounds the carried
+  into `auth: { kind: "bootstrap" }`, validates each of the five auth shapes
+  (`bootstrap`, `paired`, `account`, `account_sealed`, and the lane share
+  `guest`, which keeps only `deviceId`, a well-formed ticket and a DPoP proof,
+  and is refused when it also carries an account token, a relay token or a
+  secret), bounds the carried
   relay account token, and parses `connectionAttempt` (id capped at
   `CONNECTION_ATTEMPT_ID_MAX_CHARS`, timestamps no further ahead than
   `CONNECTION_ATTEMPT_MAX_FUTURE_MS`) plus `dbVersionBySite` and the
@@ -2683,7 +2695,18 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   ceiling has no safe slot, verification fails closed with
   `nonce_cache_saturated` instead of evicting another device's replay history.
   Shared by `syncHostService` and the brain
-  ingress handler.
+  ingress handler. `syncDpopKeyThumbprint` gives the RFC 7638 thumbprint of a
+  P-256 key; lane sharing binds a guest's connection ticket to it.
+- `laneShareGuestHost.ts`, `laneShareGuestGates.ts`, `laneShareGuestPolicy.ts`,
+  `laneShareGuestCommandPrep.ts`, `laneShareGuestScrub.ts`,
+  `laneShareGuestQueue.ts`, `laneShareGuestTypes.ts`,
+  `laneShareGrantService.ts`, `laneShareHostService.ts`,
+  `laneShareMoveService.ts`, `laneShareError.ts` — lane sharing on the host:
+  the guest connection and its default-refuse gates, the grant list read from
+  the account directory (only while a guest is connected), the owner's
+  `lane_share` actions, and moving a chat to the other person. The sync host
+  hands a `guest` hello to `laneShareGuestHost`. See
+  [lane sharing](../lanes/lane-sharing.md).
 - `syncSecurityStore.ts` — machine-level sync security posture stored at
   `~/.ade/secrets/sync-security.json` (chmod `0600`). Owns the
   `requireDpop` flag with the `ADE_SYNC_REQUIRE_DPOP=1|0` env override; both
@@ -4236,6 +4259,12 @@ feature is merged or because a deliberately isolated-port host is running.
 
 ## Security model
 
+- **Lane share guests**: a guest of another account reaches only the lane
+  the owner shared, through the host's own rights table and default-refuse
+  gates. Its account token goes only to the account directory; the host sees
+  a one-use ticket bound to the guest's DPoP key. The trust statements are in
+  `apps/account-directory/README.md`, "Lane sharing", and the mechanism in
+  [lane sharing](../lanes/lane-sharing.md).
 - **Device-bound pairing (DPoP)**: iOS keeps a P-256 key in the Secure
   Enclave. `pairing_request` registers the public key
   (`SyncPairingRecord.dpopPublicKey`), and every paired `hello` must then

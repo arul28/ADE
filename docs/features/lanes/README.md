@@ -96,6 +96,18 @@ selections are split by owner before their actions run. The shared router lives
 in `renderer/state/laneMachineRouting.ts`; unknown and unroutable targets fail
 closed instead of falling back to the tab's current machine.
 
+## Sharing a lane with another account
+
+**Share lane…** in the lane menu gives another ADE account limited access to
+this one lane on this machine. The owner picks the person's rights (a preset
+from Watch to Collaborate, or each switch), and the machine that holds the
+lane enforces them on every action of the guest. The guest opens the lane
+from the Work sidebar's "Shared with me" group or the `/shared` page, over
+ADE Relay, with a one-use ticket from the account directory. The owner or a
+Collaborate guest can also move a chat of the lane, with its unpushed work,
+to a computer of the other person, after that person accepts. See
+[lane-sharing.md](./lane-sharing.md).
+
 ## Default-branch auto-pull
 
 The primary checkout's default branch stays current without a manual pull.
@@ -190,6 +202,7 @@ Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 | `runtimeDiagnosticsService.ts` | Aggregate lane health checks, fallback mode (Phase 5 W6) |
 | `laneLaunchContext.ts` | Pure helper: resolves launch cwd/env for terminals and tools. Returns `{ laneWorktreePath, cwd, execStrategy: "local" }`, validates that requested working directories stay inside the lane worktree unless the caller explicitly opts into an external absolute cwd, and surfaces clear errors for missing worktrees. |
 | `laneListSnapshotService.ts` | Assembles lane snapshots with presence, conflict status, and runtime session counts. |
+| `laneShareRightsStore.ts` | The host's own rights and guest message counters of each lane share, in two local-only tables that never sync. See [lane-sharing.md](./lane-sharing.md#host-records). |
 
 Renderer components:
 
@@ -241,6 +254,7 @@ Renderer components:
 | `renderer/components/app/useLaneDependencyBanners.tsx` | The two notices about the open project's main checkout, on the tab's machine: "Packages in the main checkout are out of date" (docked; **Update** opens a terminal in the primary lane that runs `updateCommand`, then watches until the install lands) and "Set up a lane template" (floating prompt, shown when the project has lockfiles and no default template; snoozes two weeks, or **Don't show again**). |
 | `renderer/components/lanes/useLaneTemplateSetupChat.ts`, `renderer/lib/laneTemplateSetupPrompt.ts`, `renderer/lib/laneChatHandoff.ts` | "Set up with an agent": a new chat draft in the **primary lane of the machine whose templates are meant**, with the setup prompt in the composer (never sent). `useLaneChatHandoff(pin)` is the shared lane-chat handoff (PR actions use it too): a null pin is the tab's machine; another machine's draft carries its machine id like `useStartChatInLane`. The banner passes null; Settings passes `useSettingsMachineScope().pin` and reads that machine's primary lane with `lanes.list(…, pin)`. |
 | `renderer/components/settings/LaneTemplatesSection.tsx` | Settings → Lanes → New lanes manages start defaults and templates. |
+| `renderer/components/laneShare/` | Lane sharing, the owner's side: the share sheet and rights panel, the share mark on lane rows and headers, the chat composer line, the move card, Settings › Sharing, the default rights, and the per-machine share list (`laneShareStore.ts`). `laneShare/guest/` is the guest's side: the connection, the Work sidebar shelf, the `/shared` page and the shared lane view. See [lane-sharing.md](./lane-sharing.md). |
 
 Shared code:
 
@@ -380,6 +394,7 @@ Detail docs in this folder:
 - [`worktree-isolation.md`](./worktree-isolation.md) — git worktree mechanics and per-lane state directories.
 - [`runtime.md`](./runtime.md) — runtime diagnostics, proxy, preview, port allocation, env init, LaneRuntimeBar.
 - [`oauth-redirect.md`](./oauth-redirect.md) — OAuth redirect service (new on this branch) and `http.request` mocking strategy.
+- [`lane-sharing.md`](./lane-sharing.md) — sharing one lane with another ADE account: rights, the host's guest gates, the guest connection, message authors, and moving a chat to the other person.
 
 ## Lane types
 
@@ -1292,6 +1307,15 @@ Runtime isolation (Phase 5):
 `lanes.applyTemplate` commands, and the chat-launch environment stage all
 call `runLaneEnvironmentSetup` (`laneEnvironmentSetup.ts`). Add environment
 setup behavior there, not in one entry point.
+
+Lane sharing has no Electron IPC channel on the owner's side.
+`window.ade.laneShare.*` (`list`, `create`, `updateRights`, `revoke`,
+`resendInvite`, `listReceived`, `leave`, `move`, `onEvent`) takes the lane's
+pin and calls the `lane_share` runtime action domain, which is user-only.
+The guest's account calls are IPC: `ade.laneShareGuest.listReceived`,
+`.open`, `.accept`, `.leave` and `.connect` go from the main process to the
+account directory with this computer's account token, with no pin. See
+[lane-sharing.md](./lane-sharing.md).
 
 ## Renderer wiring
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { create } from "zustand";
 import type { OpenProjectBinding } from "../../../shared/types";
+import type { LaneShareCliTyping } from "../../../shared/laneShareRights";
 import type { LaneShareGivenEntry } from "../../../shared/types/laneShare";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { laneShareProblem, type LaneShareProblem } from "./laneShareModel";
@@ -22,6 +23,8 @@ export type LaneShareListEntry = {
   status: "loading" | "ready" | "error";
   shares: LaneShareGivenEntry[];
   problem: LaneShareProblem | null;
+  /** Whether that machine lets a guest type into a CLI. Null: not read yet, or an older host (read as available). */
+  cliTyping: LaneShareCliTyping | null;
 };
 
 /** What the sheet host opens. */
@@ -77,13 +80,18 @@ export function loadLaneShares(key: string, pin: OpenProjectBinding | null): Pro
   const running = inFlight.get(key);
   if (running) return running;
   const previous = useLaneShareStore.getState().lists[key];
-  if (!previous) setEntry(key, { status: "loading", shares: EMPTY, problem: null });
+  if (!previous) setEntry(key, { status: "loading", shares: EMPTY, problem: null, cliTyping: null });
   const request = (async () => {
     try {
       const result = await window.ade.laneShare.list({}, pin);
-      setEntry(key, { status: "ready", shares: Array.isArray(result?.shares) ? result.shares : EMPTY, problem: null });
+      setEntry(key, {
+        status: "ready",
+        shares: Array.isArray(result?.shares) ? result.shares : EMPTY,
+        problem: null,
+        cliTyping: result?.cliTyping ?? null,
+      });
     } catch (error) {
-      setEntry(key, { status: "error", shares: previous?.shares ?? EMPTY, problem: laneShareProblem(error, { pin }) });
+      setEntry(key, { status: "error", shares: previous?.shares ?? EMPTY, problem: laneShareProblem(error, { pin }), cliTyping: previous?.cliTyping ?? null });
     } finally {
       inFlight.delete(key);
     }

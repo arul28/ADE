@@ -5,6 +5,8 @@ import {
   LANE_SHARE_TOOL_READS,
   laneShareLowRiskSummary,
   laneShareRiskLevel,
+  type LaneShareCliTyping,
+  type LaneShareCliTypingUnavailableReason,
   type LaneShareRights,
   type LaneShareToolDomain,
 } from "../../../shared/laneShareRights";
@@ -29,6 +31,11 @@ const TOOL_TITLES: Record<LaneShareToolDomain, string> = {
   mac_desktop: "Mac desktop",
   android_emulator: "Android emulator",
   app_control: "App control",
+};
+
+/** Why the lane's machine cannot offer "Type into CLI sessions", as the owner reads it. */
+const CLI_TYPING_UNAVAILABLE_HINTS: Record<LaneShareCliTypingUnavailableReason, string> = {
+  windows_host: "Not available for a lane on a Windows computer: ADE cannot tell a CLI from the shell behind it there.",
 };
 
 const MODE_TITLES: Record<AgentChatPermissionMode, string> = {
@@ -116,6 +123,7 @@ export function LaneShareRightsPanel({
   onEndsAtChange,
   disabled = false,
   now,
+  cliTyping = null,
 }: {
   rights: LaneShareRights;
   endsAt: number | null;
@@ -123,6 +131,12 @@ export function LaneShareRightsPanel({
   onEndsAtChange: (next: number | null) => void;
   disabled?: boolean;
   now: number;
+  /**
+   * Whether the machine of the shared lane lets a guest type into a CLI.
+   * Not available: the switch stays off and says why. Null: no particular
+   * machine (the saved defaults) or an older host.
+   */
+  cliTyping?: LaneShareCliTyping | null;
 }) {
   const set = <G extends "see" | "speak" | "run" | "decide" | "privacy">(group: G, patch: Partial<LaneShareRights[G]>) =>
     onChange({ ...rights, [group]: { ...rights[group], ...patch } });
@@ -132,6 +146,7 @@ export function LaneShareRightsPanel({
   React.useEffect(() => setModelsText(listText(rights.run.models)), [rights.run.models]);
   React.useEffect(() => setLevelsText(listText(rights.run.reasoningLevels)), [rights.run.reasoningLevels]);
   const quickEnds = laneShareQuickEnds(now);
+  const cliTypingOff = cliTyping?.available === false ? CLI_TYPING_UNAVAILABLE_HINTS[cliTyping.reason] : null;
 
   return (
     <div className="flex min-w-0 flex-col gap-1" data-testid="lane-share-rights">
@@ -163,9 +178,9 @@ export function LaneShareRightsPanel({
         <Row title="Start CLI sessions" checked={rights.run.startCliSessions} disabled={disabled} onChange={(startCliSessions) => set("run", { startCliSessions })} />
         <Row
           title="Type into CLI sessions"
-          hint="Same reach as a shell. Refused on a Windows host."
-          checked={rights.run.typeInCliSessions}
-          disabled={disabled}
+          hint={cliTypingOff ?? "Same reach as a shell."}
+          checked={cliTypingOff ? false : rights.run.typeInCliSessions}
+          disabled={disabled || cliTypingOff != null}
           onChange={(typeInCliSessions) => set("run", { typeInCliSessions })}
         />
         <label className="flex flex-col gap-1 py-1">

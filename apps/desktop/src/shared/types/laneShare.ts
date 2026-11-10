@@ -1,4 +1,4 @@
-import type { LaneShareRights, LaneShareRiskLevel } from "../laneShareRights";
+import type { LaneShareCliTyping, LaneShareRights, LaneShareRiskLevel } from "../laneShareRights";
 
 /**
  * The owner's lane sharing contract between the renderer and the machine that
@@ -76,7 +76,15 @@ export type LaneShareListArgs = {
   scope?: "machine" | "account";
 };
 
-export type LaneShareListResult = { shares: LaneShareGivenEntry[] };
+export type LaneShareListResult = {
+  shares: LaneShareGivenEntry[];
+  /**
+   * Whether the machine that answered lets a guest type into a CLI. Its local
+   * rows already show `run.typeInCliSessions` as that machine enforces it.
+   * Absent from an older host: read as available.
+   */
+  cliTyping?: LaneShareCliTyping;
+};
 
 export type LaneShareCreateArgs = {
   laneId: string;

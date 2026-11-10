@@ -93,7 +93,8 @@ export type LaneShareRights = {
     /**
      * Typing into a CLI session (never a shell). High risk: it gives the same
      * reach as a shell on this computer. Each submitted line counts as a
-     * message. Refused when the host runs Windows.
+     * message. Not available on a Windows host (`laneShareCliTypingFor`):
+     * there the host stores and enforces it as off.
      */
     typeInCliSessions: boolean;
     /**
@@ -276,6 +277,37 @@ export function parseLaneShareRights(value: unknown): LaneShareRights {
   };
   rights.privacy = { hideMachines: flag(privacy.hideMachines), hideModels: flag(privacy.hideModels) };
   return rights;
+}
+
+/**
+ * Why a host cannot let a guest type into a CLI. `windows_host`: on Windows
+ * ADE starts a CLI inside a shell without exec, the shell stays when the CLI
+ * exits, and the host cannot tell which program reads the keys.
+ */
+export type LaneShareCliTypingUnavailableReason = "windows_host";
+
+/** Whether the machine of a shared lane can let a guest type into a CLI (`run.typeInCliSessions`). Computed on that machine. */
+export type LaneShareCliTyping =
+  | { available: true; reason: null }
+  | { available: false; reason: LaneShareCliTypingUnavailableReason };
+
+/** The host's refusal code for a typed line or a first line on a host that cannot take one (not a missing right). */
+export const LANE_SHARE_CLI_TYPING_UNAVAILABLE = "lane_share_cli_typing_unavailable" as const;
+export const LANE_SHARE_CLI_TYPING_UNAVAILABLE_MESSAGE = "Typing into a CLI is not available on a shared lane of this computer.";
+
+/** The CLI typing capability of a machine with this `process.platform`. */
+export function laneShareCliTypingFor(platform: string): LaneShareCliTyping {
+  return platform === "win32" ? { available: false, reason: "windows_host" } : { available: true, reason: null };
+}
+
+/**
+ * The rights as a host with this capability enforces them: CLI typing off
+ * where it is not available. Null or undefined (an older host that sent no
+ * capability) keeps the rights as they are.
+ */
+export function laneShareRightsForHost(rights: LaneShareRights, cliTyping: LaneShareCliTyping | null | undefined): LaneShareRights {
+  if (cliTyping?.available !== false || !rights.run.typeInCliSessions) return rights;
+  return { ...rights, run: { ...rights.run, typeInCliSessions: false } };
 }
 
 /** Permission modes in which an agent asks before it runs a tool that changes something. */
@@ -506,6 +538,17 @@ export type LaneShareGuestPresence = {
   self?: boolean;
 };
 
+/**
+ * The CLI typing capability of a guest's host. A host that sends no
+ * capability is available unless its platform says Windows (`mapPlatform`
+ * names it `windows`); with hidden machines nothing names it, so it is
+ * available and the host's own refusal still answers each line.
+ */
+export function laneShareGuestCliTyping(state: Pick<LaneShareGuestState, "cliTyping" | "machine"> | null | undefined): LaneShareCliTyping {
+  if (state?.cliTyping) return state.cliTyping;
+  return state?.machine?.platform === "windows" ? { available: false, reason: "windows_host" } : { available: true, reason: null };
+}
+
 export type LaneShareGuestState = {
   grantId: string;
   laneId: string;
@@ -527,6 +570,8 @@ export type LaneShareGuestState = {
   };
   /** Null when the owner hides its machines. */
   machine: { name: string; platform: string } | null;
+  /** Whether this host lets a guest type into a CLI. Absent from an older host: read it with `laneShareGuestCliTyping`. */
+  cliTyping?: LaneShareCliTyping;
   present: LaneShareGuestPresence[];
   /**
    * The move of a chat to or from this guest that is live or just ended
