@@ -62,6 +62,7 @@ import { hydrateFastModeEnabled } from "../../lib/fastModePolicy";
 import { cn } from "../ui/cn";
 import { parkedSurfaceProps, useParkedSurfaceFocus } from "../../lib/parkedSurface";
 import { AppearanceRoot } from "./AppearanceRoot";
+import { AppearanceScheduleHost } from "./AppearanceScheduleHost";
 import { fgTint } from "../lanes/laneDesignTokens";
 
 function createPreloadableRoute<TProps extends object>(
@@ -1713,6 +1714,8 @@ export function App() {
             isWebClientMode() ? "selection:bg-accent/30" : "ade-app-selection",
           )}
         >
+          {/* Switches the whole look at the times set in Appearance › Schedule. */}
+          <AppearanceScheduleHost />
           <OnboardingBootstrap />
           <AppNavigationBridge />
           <CrossRepoPrBanner />

@@ -63,6 +63,7 @@ import {
   type AdeTheme,
 } from "../../shared/theme";
 import { applyAdeTheme } from "../theme/applyTheme";
+import { dueSlot, markSlotApplied, readAppearanceSchedule, type ScheduledLook } from "../theme/appearanceSchedule";
 import {
   AppearanceStoreContext,
   USER_PREFERENCES_STORAGE_KEY,
@@ -1342,10 +1343,47 @@ function persistStarPillPrefs(prefs: StarPillPrefs): void {
 
 function readInitialUserPreferences(): PersistedUserPreferences {
   const unified = readUnifiedUserPreferences();
-  if (unified) return unified;
+  if (unified) return withDueScheduledLook(unified);
   const legacy = readLegacyUserPreferences();
   persistUserPreferences(legacy);
-  return legacy;
+  return withDueScheduledLook(legacy);
+}
+
+/** The appearance values a scheduled look sets; everything else is left as it is. */
+function withScheduledLook<T extends Pick<PersistedUserPreferences, "theme" | "themeId" | "customThemes" | "themeFollowsSystem" | "interfacePreferences">>(
+  prefs: T,
+  look: ScheduledLook,
+): T {
+  const themeId = coerceThemeId(look.themeId);
+  const interfacePreferences = normalizeInterfacePreferences({
+    ...prefs.interfacePreferences,
+    sansFont: look.sansFont,
+    monoFont: look.monoFont,
+    scene: { ...look.scene, choiceMade: true },
+  });
+  const theme = baseModeForThemeId(
+    effectiveThemeId(themeId, look.followsSystem, readSystemColorScheme()),
+    prefs.customThemes,
+  );
+  return { ...prefs, theme, themeId, themeFollowsSystem: look.followsSystem, interfacePreferences };
+}
+
+/**
+ * A slot of the appearance schedule that began while ADE was closed is
+ * applied before the first paint, so the app does not open on the old look
+ * and then switch.
+ */
+function withDueScheduledLook(prefs: PersistedUserPreferences): PersistedUserPreferences {
+  try {
+    const due = dueSlot(readAppearanceSchedule(), Date.now());
+    if (!due) return prefs;
+    const next = withScheduledLook(prefs, due.slot.look);
+    persistUserPreferences(next);
+    markSlotApplied(due);
+    return next;
+  } catch {
+    return prefs;
+  }
 }
 
 const initialPersistedWorkViews = readPersistedWorkViewState();
@@ -3759,6 +3797,32 @@ const rootAppStore = createStore<AppState>()(createAppState);
 // value put in it is a full app store.
 const AppStoreContext = AppearanceStoreContext as unknown as React.Context<AppStoreApi | null>;
 registerRootAppearanceStore(rootAppStore);
+
+/** Put a scheduled look on screen: theme, mode, background and fonts, saved like a choice made by hand. */
+export function applyScheduledLook(look: ScheduledLook): void {
+  rootAppStore.setState((prev) => {
+    const next = withScheduledLook(prev, look);
+    persistUserPreferencesFrom(next);
+    return {
+      theme: next.theme,
+      themeId: next.themeId,
+      themeFollowsSystem: next.themeFollowsSystem,
+      interfacePreferences: next.interfacePreferences,
+    };
+  });
+}
+
+/** The look on screen now, as a schedule slot stores it. */
+export function captureCurrentLook(): ScheduledLook {
+  const state = rootAppStore.getState();
+  return {
+    themeId: state.themeId,
+    followsSystem: state.themeFollowsSystem,
+    scene: state.interfacePreferences.scene,
+    sansFont: state.interfacePreferences.sansFont,
+    monoFont: state.interfacePreferences.monoFont,
+  };
+}
 
 /** `previous` when it is the same local binding as `next`, field for field. */
 function reuseSameLocalBinding(previous: OpenProjectBinding | null, next: OpenProjectBinding): OpenProjectBinding {
