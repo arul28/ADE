@@ -123,6 +123,7 @@ export const PROPERTIES = Object.freeze({
   // people, not machines.
   MACHINE_ID: "machine_id",
   ERROR_CODE: "error_code",
+  CODE: "code",
   ACTION_DOMAIN: "action_domain",
   BRAIN_ACTION: "brain_action",
   KIND: "kind",
@@ -890,6 +891,17 @@ export const dashboardSpec = Object.freeze({
           }),
         ),
         insight(
+          "publish-failures-by-code",
+          "Route publish failures by code",
+          "Sustained failures to publish this machine's route to the account, split by the closed failure code. A code such as `token_unreadable` is its own line here; the Reliability incidents chart shows only the total.",
+          trends({
+            series: [eventNode(EVENTS.PUBLISH_FAILING, "Route publish failing")],
+            interval: "day",
+            dateFrom: "-30d",
+            breakdown: PROPERTIES.CODE,
+          }),
+        ),
+        insight(
           "reliability-per-install-by-channel",
           "Failures per active install: beta vs stable",
           `Brain wedge recoveries, failed brain actions and route-publish failures per install (machine) that opened ADE, by release channel. Beta has far fewer installs, so compare rates, not counts: a beta line above stable is a regression to stop before stable.${MINIMUM_VOLUME_NOTE}`,
@@ -1017,6 +1029,26 @@ export const dashboardSpec = Object.freeze({
                 ],
               }),
             ],
+            windowInterval: 1,
+          }),
+        ),
+        insight(
+          "desktop-onboarding-funnel",
+          "First-run setup funnel",
+          "The first-run cards on a new computer, in order: welcome → sign-in → connect agents → bring projects in → done, within one day (`ade_feature_used`, feature `onboarding`). The step people leave on is the drop. Sent from the first desktop release after 1.2.130-beta.2.",
+          funnel({
+            series: [
+              ["onboarding_welcome_shown", "Welcome shown"],
+              ["onboarding_sign_in_shown", "Sign-in shown"],
+              ["onboarding_agents_shown", "Connect agents shown"],
+              ["onboarding_projects_shown", "Bring projects in shown"],
+              ["onboarding_completed", "Setup finished"],
+            ].map(([action, label]) => eventNode(EVENTS.FEATURE_USED, label, {
+              properties: [
+                eventProperty(PROPERTIES.FEATURE, "onboarding"),
+                eventProperty(PROPERTIES.ACTION, action),
+              ],
+            })),
             windowInterval: 1,
           }),
         ),

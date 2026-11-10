@@ -53,8 +53,15 @@ import { redactProcessOutput } from "../../../utils/redaction";
 
 /** Default ceiling for a single request. A prompt uses its own, much larger. */
 export const ACP_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
-/** Handshake must be quick. A hung binary must not wedge a chat launch. */
-export const ACP_HANDSHAKE_TIMEOUT_MS = 20_000;
+/**
+ * How long an agent may take to answer `initialize`. A hung binary must not
+ * wedge a chat launch, but a cold start is not a hang: an agent that unpacks
+ * itself on every launch (Antigravity), or one a virus scanner reads on its
+ * first run (Windows), took longer than the old 20 s on real machines and was
+ * shown as broken (ADE-BRAIN-6P, 6T and 1S, 2026-11-09). An agent that dies
+ * closes the connection at once and never waits for this.
+ */
+export const ACP_HANDSHAKE_TIMEOUT_MS = 60_000;
 /** Grace period between SIGTERM and SIGKILL on disposal. */
 export const ACP_TERMINATE_GRACE_MS = 1_500;
 
@@ -125,6 +132,25 @@ export type AcpConnectionExit = {
   stderrTail: string;
 };
 
+/**
+ * What the agent's process did between its spawn and now, in counts and closed
+ * values only (no text the agent wrote). An agent that never answered
+ * `initialize` left nothing else to read: no stderr, no exit (ADE-BRAIN-6P,
+ * three Windows machines, 2026-11-09). These say whether the process was still
+ * running, and whether it wrote anything at all.
+ */
+export type AcpStartupTrace = {
+  pid: number | null;
+  alive: boolean;
+  ageMs: number;
+  stdoutBytes: number;
+  stderrBytes: number;
+  /** How long after the spawn the first stdout byte came; null when none has. */
+  firstStdoutAfterMs: number | null;
+  exitCode: number | null;
+  exitSignal: string | null;
+};
+
 export type AcpConnection = {
   readonly pid: number | null;
   readonly spawnPlan: AcpSpawnPlan;
@@ -140,6 +166,8 @@ export type AcpConnection = {
    * handler is registered) can still hand its diagnostics to the caller.
    */
   readStderrTail(): string;
+  /** The process's life so far, for a failure report. See `AcpStartupTrace`. */
+  readStartupTrace(): AcpStartupTrace;
   request<TResult>(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<TResult>;
   notify(method: string, params?: unknown): void;
   /** Register a handler for `session/update`. Returns an unsubscribe function. */
@@ -482,7 +510,15 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
     handleFrame(frame);
   });
 
-  child.stdout?.on("data", readStdoutLine.push);
+  const spawnedAtMs = Date.now();
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let firstStdoutAtMs: number | null = null;
+  child.stdout?.on("data", (chunk: Buffer | string) => {
+    firstStdoutAtMs ??= Date.now();
+    stdoutBytes += chunk.length;
+    readStdoutLine.push(chunk);
+  });
   // The process can exit before its last output is read. Waiting for stdout to
   // end keeps a final message that has no newline; the bound covers a child
   // that left a grandchild holding the pipe.
@@ -541,6 +577,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
     }
   };
   child.stderr?.on("data", (chunk: Buffer | string) => {
+    stderrBytes += chunk.length;
     readStderrText(typeof chunk === "string" ? chunk : stderrDecoder.write(chunk));
   });
   child.stderr?.once("close", () => {
@@ -585,6 +622,19 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
     },
     isAlive: () => !disposed && !exited,
     readStderrTail: stderrTailWithPartial,
+    readStartupTrace: () => {
+      const exit = exited ?? exitAwaitingStdout;
+      return {
+        pid: child.pid ?? null,
+        alive: !disposed && !exit,
+        ageMs: Date.now() - spawnedAtMs,
+        stdoutBytes,
+        stderrBytes,
+        firstStdoutAfterMs: firstStdoutAtMs === null ? null : firstStdoutAtMs - spawnedAtMs,
+        exitCode: exit?.code ?? null,
+        exitSignal: exit?.signal ?? null,
+      };
+    },
     request: <TResult>(method: string, params?: unknown, options?: { timeoutMs?: number }) => {
       return new Promise<TResult>((resolve, reject) => {
         if (exited) {

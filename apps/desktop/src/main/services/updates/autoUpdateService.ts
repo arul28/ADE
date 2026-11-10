@@ -55,8 +55,16 @@ import { createTrackFeedPolicy } from "./updateTrackFeed";
 import type { LatestByTrackReader } from "./latestByTrack";
 import type { UpdateTrackSwitchResult } from "../../../shared/types";
 import { InstallOnQuitDeferredError } from "./installOnQuit";
+import { RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
+/**
+ * The prepare limit for a Windows install. Prepare removes the brain's
+ * service there: it may wait the whole install lock, then runs several
+ * PowerShell calls in a row, so it gets the lock wait twice over. The app
+ * passes this; the service's own default stays the install watchdog.
+ */
+export const WINDOWS_PREPARE_WATCHDOG_MS = 2 * RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS;
 // A download that received nothing for this long is cancelled, and the next
 // check starts over (see downloadStallWatchdog.ts). Left alone, it would stay
 // pending and every later check would wait on it until ADE restarts.
@@ -202,6 +210,13 @@ type CreateAutoUpdateServiceArgs = {
   getDiskSpace?: (targetPath: string) => DiskSpaceInfo;
   platform?: NodeJS.Platform;
   installWatchdogMs?: number;
+  /**
+   * The limit for the prepare step alone; the install watchdog when not set.
+   * Inside the install watchdog a slow Windows machine answered
+   * `prepare_timeout` for a step that was still working
+   * (see {@link WINDOWS_PREPARE_WATCHDOG_MS}).
+   */
+  prepareWatchdogMs?: number;
   downloadStallMs?: number;
   downloadStallPollMs?: number;
   quitStagingSlowWarnMs?: number;
@@ -603,6 +618,7 @@ export function createAutoUpdateService({
   getDiskSpace = readDiskSpace,
   platform = process.platform,
   installWatchdogMs = DEFAULT_INSTALL_WATCHDOG_MS,
+  prepareWatchdogMs = installWatchdogMs,
   downloadStallMs = DEFAULT_DOWNLOAD_STALL_MS,
   downloadStallPollMs = DEFAULT_DOWNLOAD_STALL_POLL_MS,
   quitStagingSlowWarnMs = DEFAULT_QUIT_STAGING_SLOW_WARN_MS,
@@ -1771,17 +1787,18 @@ export function createAutoUpdateService({
     task: Promise<T>,
     phase: AutoUpdatePhase,
     timeoutMessage: string,
+    timeoutMs: number = installWatchdogMs,
   ): Promise<{ completed: true; value: T } | { completed: false }> {
     let timeout: ReturnType<typeof setTimeout> | null = null;
     const timeoutResult = new Promise<{ completed: false }>((resolve) => {
       timeout = setTimeout(() => {
         logger.warn("autoUpdate.install_step_timed_out", {
           phase,
-          installWatchdogMs,
+          timeoutMs,
           message: timeoutMessage,
         });
         resolve({ completed: false });
-      }, installWatchdogMs);
+      }, timeoutMs);
     });
     const taskResult = task.then((value) => ({ completed: true as const, value }));
     try {
@@ -2387,6 +2404,7 @@ export function createAutoUpdateService({
           Promise.resolve(beforeQuitAndInstall?.(resumeChats, { closeAfterInstall: options.closeAfterInstall === true })),
           "install",
           "ADE could not prepare to quit for the update. Try again.",
+          prepareWatchdogMs,
         );
         if (!prepareResult.completed) {
           return await abortInstall("prepare_timeout", installReadySnapshot);

@@ -32,6 +32,8 @@ import {
   validateHandoffLaneTarget,
 } from "./automationService";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { codexConfigApprovalPolicy } from "../../../shared/codexApprovalPolicy";
+import type { AgentChatCodexApprovalPolicy } from "../../../shared/types/chat";
 import { codexReasoningEffortFlags, resolveCodexCliModelForLaunch } from "../../../shared/cliLaunch";
 import { getModelById } from "../../../shared/modelRegistry";
 import {
@@ -445,7 +447,7 @@ async function runCodexExec(args: {
   schema: Record<string, unknown>;
   logger: Logger;
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
-  askForApproval: "untrusted" | "on-failure" | "on-request" | "never";
+  askForApproval: AgentChatCodexApprovalPolicy;
   webSearch: boolean;
   additionalWritableDirs: string[];
   model?: string | null;
@@ -469,8 +471,10 @@ async function runCodexExec(args: {
     outPath,
     "--sandbox",
     args.sandbox,
-    "--ask-for-approval",
-    args.askForApproval,
+    // `codex exec` has neither `--ask-for-approval` nor `--search` (it exits
+    // with "unexpected argument"); both are config keys.
+    "-c",
+    `approval_policy=${codexConfigApprovalPolicy(args.askForApproval)}`,
     "--cd",
     args.cwd,
     "--skip-git-repo-check"
@@ -486,7 +490,7 @@ async function runCodexExec(args: {
     ...codexReasoningEffortFlags(resolvePlannerCodexReasoningEffort(args.model, args.reasoningEffort)),
   );
 
-  if (args.webSearch) cliArgs.push("--search");
+  if (args.webSearch) cliArgs.push("-c", "web_search=live");
   for (const dir of args.additionalWritableDirs) {
     const trimmed = dir.trim();
     if (trimmed) {

@@ -21,6 +21,7 @@ import type {
   SessionSettleOverride,
   SessionWakeReason,
 } from "../../../shared/types";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import {
   parseSettleOverrideArg,
   parseSnoozeDeadline,
@@ -41,13 +42,15 @@ export function optionalNonEmptyString(value: unknown): string | null {
   return trimmed.length ? trimmed : null;
 }
 
+/**
+ * A missing or empty required argument is the caller's input (a CLI or agent
+ * call without the field), so the caller gets the message and Sentry gets a
+ * log, not an issue.
+ */
 export function requireNonEmptyString(value: unknown, field: string): string {
-  if (typeof value !== "string") {
-    throw new Error(`Expected '${field}' to be a non-empty string.`);
-  }
-  const trimmed = value.trim();
+  const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed.length) {
-    throw new Error(`Expected '${field}' to be a non-empty string.`);
+    throw new AdeExpectedError(`Expected '${field}' to be a non-empty string.`, "user");
   }
   return trimmed;
 }

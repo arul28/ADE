@@ -25,6 +25,7 @@ import {
   droidPermissionModeFromLegacyPermissionMode,
   museCliApprovalFlag,
 } from "./types/chat";
+import { codexCliApprovalFlagValue } from "./codexApprovalPolicy";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   filterAdeAgentSkillRoots,
@@ -2061,8 +2062,10 @@ function permissionModeToClaudeFlag(permissionMode: AgentChatPermissionMode | nu
 
 function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
   if (permissionMode === "full-auto") return ["--dangerously-bypass-approvals-and-sandbox"];
-  if (permissionMode === "default") return ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"];
-  if (permissionMode === "edit") return ["--sandbox", "workspace-write", "--ask-for-approval", "untrusted"];
+  // The CLI flag has no value between "ask" and "never", so both rungs match.
+  if (permissionMode === "default" || permissionMode === "edit") {
+    return ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"];
+  }
   if (permissionMode === "plan") return ["--sandbox", "read-only", "--ask-for-approval", "on-request"];
   return [];
 }
@@ -2075,7 +2078,7 @@ function codexResumePermissionFlags(args: {
 }): string[] {
   if (args.configSource === "config-toml") return [];
   if (args.approvalPolicy && args.sandbox) {
-    return ["--sandbox", args.sandbox, "--ask-for-approval", args.approvalPolicy];
+    return ["--sandbox", args.sandbox, "--ask-for-approval", codexCliApprovalFlagValue(args.approvalPolicy)];
   }
   if (args.approvalPolicy || args.sandbox) return [];
   return permissionModeToCodexFlags(args.permissionMode);

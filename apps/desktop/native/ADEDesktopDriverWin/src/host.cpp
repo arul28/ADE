@@ -857,9 +857,16 @@ class Host {
 int runHost(const std::wstring& home) {
   const auto mutexName = L"Local\\ade-screen-host-" + homeKey(home);
   HANDLE mutex = CreateMutexW(nullptr, TRUE, mutexName.c_str());
-  if (!mutex || GetLastError() == ERROR_ALREADY_EXISTS) {
-    if (mutex) CloseHandle(mutex);
-    logLine("another screen host already owns this ADE home, or the host lock could not be created");
+  const DWORD lockError = GetLastError();
+  // Two different texts: ADE reads the first as a state (another brain's host
+  // serves this screen) and the second as a defect.
+  if (mutex && lockError == ERROR_ALREADY_EXISTS) {
+    CloseHandle(mutex);
+    logLine("another screen host already owns this ADE home");
+    return 2;
+  }
+  if (!mutex) {
+    logLine("the screen host lock could not be created (error " + std::to_string(lockError) + ")");
     return 2;
   }
   struct HostLock { HANDLE handle; ~HostLock() { ReleaseMutex(handle); CloseHandle(handle); } } hostLock{mutex};

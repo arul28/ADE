@@ -173,6 +173,9 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // the re-login card), and a move refused until the user publishes or commits.
   /^Claude Code is detected, but ADE chat could not authenticate it\. /,
   /^(?:Lane '.+'|Chat '.+'|This chat) can't move yet:\n/,
+  // Added from Sentry traffic, 2026-11-09. Cursor refusing a Cloud Agent on a
+  // plan that has none ("upgrade to Pro"): the account's state, shown to the user.
+  /\[plan_required\]/,
 ];
 
 /**

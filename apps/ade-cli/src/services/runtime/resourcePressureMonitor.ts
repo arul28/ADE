@@ -10,8 +10,10 @@ import {
 import {
   readProcessGroups,
   type ProcessGroupSnapshot,
+  type ProcessGroupName,
   type ProcessGroupUsage,
 } from "../../../../desktop/src/main/services/machineStats/processGroups";
+import type { RamGbBucket } from "../../../../desktop/src/main/services/analytics/productAnalyticsPolicy";
 import {
   openDatabaseWalSizesMb,
   takeDbWriteCounts,
@@ -46,6 +48,15 @@ export const RESOURCE_PRESSURE_ANALYTICS_DEDUPE_MS = 6 * 60 * 60_000;
 /** Available memory below this share of RAM is a breach. */
 const MEMORY_AVAILABLE_SHARE = 0.10;
 const MEMORY_AVAILABLE_CRITICAL_SHARE = 0.05;
+/**
+ * On macOS the operating system's own `warn` counts only with less than this
+ * share of RAM available. macOS raises its warn level long before memory is
+ * short: in the first week of this monitor every Mac report was a `warn` with
+ * 40 to 50% of RAM available (16 GB with 7.4 GB free, 48 GB with 20 GB free),
+ * which is not a machine in trouble. A `warn` on Windows (commit charge) or
+ * Linux (a measured stall) is real at any share, and `critical` always counts.
+ */
+const DARWIN_OS_WARN_AVAILABLE_SHARE = 0.25;
 /** Linux and Windows: swap used past this share of the swap there is. */
 const SWAP_USED_SHARE = 0.85;
 /**
@@ -119,6 +130,19 @@ export const INITIAL_RESOURCE_PRESSURE_STATE: ResourcePressureState = {
   lastWalMaxMb: null,
 };
 
+/** ADE's own processes. The emulators it starts are counted apart (`emulator_count`). */
+const ADE_PROCESS_GROUPS: ReadonlySet<ProcessGroupName> = new Set(["installed_brain", "dev_brain", "desktop"]);
+
+/** Installed RAM as a closed bucket, so the event never carries the exact size. */
+function ramGbBucket(totalMb: number): RamGbBucket {
+  const gb = totalMb / 1024;
+  if (gb <= 8.5) return "le_8";
+  if (gb <= 16.5) return "9_16";
+  if (gb <= 32.5) return "17_32";
+  if (gb <= 64.5) return "33_64";
+  return "gt_64";
+}
+
 /** Which limits a sample breaks, and how badly. Pure. */
 export function resourcePressureBreach(
   sample: ResourcePressureSample,
@@ -130,7 +154,9 @@ export function resourcePressureBreach(
   if (memory) {
     const availableShare = memory.availableMb !== null && memory.totalMb > 0 ? memory.availableMb / memory.totalMb : null;
     const pressure: HostMemoryPressure | null = memory.pressure;
-    if ((availableShare !== null && availableShare < MEMORY_AVAILABLE_SHARE) || pressure === "warn" || pressure === "critical") {
+    const osWarn = pressure === "warn"
+      && (sample.platform !== "darwin" || availableShare === null || availableShare < DARWIN_OS_WARN_AVAILABLE_SHARE);
+    if ((availableShare !== null && availableShare < MEMORY_AVAILABLE_SHARE) || osWarn || pressure === "critical") {
       kinds.add("memory");
     }
     if (pressure === "critical" || (availableShare !== null && availableShare < MEMORY_AVAILABLE_CRITICAL_SHARE)) critical = true;
@@ -330,6 +356,19 @@ export function createResourcePressureMonitor(deps: ResourcePressureMonitorDeps)
     };
     episodes = [...episodes, episode].slice(-RESOURCE_PRESSURE_EPISODES_KEPT);
     const groups = Object.fromEntries((processes?.groups ?? []).map((group) => [`${group.group}Mb`, group.mb]));
+    // What the machine has, and how much of it is ADE's own processes (every
+    // measured group but `other`): without these a report could not tell a
+    // machine that is short of memory from one that ADE filled.
+    const totalMb = sample.memory?.totalMb ?? null;
+    const availableMb = sample.memory?.availableMb ?? null;
+    const adeMb = processes ? processes.groups.filter((group) => ADE_PROCESS_GROUPS.has(group.group)).reduce((sum, group) => sum + group.mb, 0) : null;
+    const memoryFacts = totalMb && totalMb > 0
+      ? {
+          ram_gb_bucket: ramGbBucket(totalMb),
+          ...(availableMb === null ? {} : { available_pct: Math.round((availableMb / totalMb) * 100) }),
+          ...(adeMb === null ? {} : { ade_mb: Math.round(adeMb), ade_pct_of_ram: Math.round((adeMb / totalMb) * 100) }),
+        }
+      : {};
     // A warn line is a Sentry Log (`logBridge.ts`), searchable by machine_id.
     // Numbers and group names only.
     deps.logger.warn("machine.resource_pressure", {
@@ -362,7 +401,10 @@ export function createResourcePressureMonitor(deps: ResourcePressureMonitorDeps)
           severity: breach.severity,
           emulator_count: emulatorCountBucket(episode.emulatorCount),
           ...(episode.devBrainRunning === null ? {} : { dev_brain_running: episode.devBrainRunning }),
-          ...(episode.topTables[0] ? { top_table: episode.topTables[0].table } : {}),
+          // The busiest table explains a growing log or a busy brain. It says
+          // nothing about memory, where it only named the heartbeat table.
+          ...(episode.topTables[0] && (primary === "wal" || primary === "cpu") ? { top_table: episode.topTables[0].table } : {}),
+          ...memoryFacts,
         },
       });
     } catch {

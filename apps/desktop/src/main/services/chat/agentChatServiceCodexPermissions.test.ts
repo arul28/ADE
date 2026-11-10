@@ -490,7 +490,7 @@ describe("createAgentChatService", () => {
         reasoningEffort?: unknown;
         reasoning_effort?: unknown;
       } | undefined;
-      expect(turnStartParams?.approvalPolicy).toBe("on-failure");
+      expect(turnStartParams?.approvalPolicy).toBe("on-request");
       expect(turnStartParams?.sandboxPolicy?.type).toBe("workspaceWrite");
       expect(turnStartParams?.effort).toBe("xhigh");
       expect(turnStartParams?.reasoningEffort).toBeUndefined();

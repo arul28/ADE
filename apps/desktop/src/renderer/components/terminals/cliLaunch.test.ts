@@ -1107,9 +1107,9 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(command).not.toContain("control plane for ADE state");
     });
 
-    it("adds untrusted approval and workspace-write sandbox for edit", () => {
+    it("adds on-request approval and workspace-write sandbox for edit", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "edit" });
-      expect(command).toContain("codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted");
+      expect(command).toContain("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request");
       expect(command).not.toContain("control plane for ADE state");
     });
 
@@ -1638,7 +1638,7 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "thread",
       targetId: "thread-99",
       launch: { permissionMode: "edit" },
-    })).toBe("codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-99");
+    })).toBe("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-99");
 
     expect(buildTrackedCliResumeCommand({
       provider: "cursor",
@@ -1803,7 +1803,7 @@ describe("tracked CLI resume helpers", () => {
       targetId: "thread-99",
       launch: { permissionMode: "edit", model: "gpt-5.4", reasoningEffort: "medium", fastMode: true },
     })).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox workspace-write --ask-for-approval untrusted resume thread-99",
+      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox workspace-write --ask-for-approval on-request resume thread-99",
     );
 
     expect(buildTrackedCliResumeCommand({

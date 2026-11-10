@@ -32,7 +32,7 @@ import {
   resolveWindowsSupervisorLogPath,
 } from "../serviceManager/installWindows";
 import { readWindowsServicePidRecord } from "../serviceManager/windowsSupervisor";
-import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import { brainLogPath, resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { readBrainHeartbeat } from "../services/runtime/brainHeartbeat";
 
 /** The state files are a few hundred bytes; anything far larger is not one of them. */
@@ -132,6 +132,24 @@ export function desktopLogsAttachment(env: NodeJS.ProcessEnv = process.env): Dia
   }
   files.push({ label: "Desktop machine log", filePath: path.join(runtimeDir, MACHINE_MAIN_LOG_FILE_NAME), maxBytes: 64_000 });
   return logTailsAttachment("desktop-logs.txt", files);
+}
+
+/**
+ * The brain log on disk, which every brain on this ADE home writes. The log
+ * tail a report carries by default is the reporting brain's own memory, so on
+ * a restart loop it held only the brain that survived: on 2026-11-09 a Windows
+ * report showed four brains exit with code 1 and no line from any of them.
+ * This is their last words. Null when the file is absent or empty.
+ */
+export function brainLogAttachment(env: NodeJS.ProcessEnv = process.env): DiagnosticAttachment | null {
+  const logPath = brainLogPath(resolveMachineAdeLayout(env));
+  const { dir, name, ext } = path.parse(logPath);
+  return logTailsAttachment("brain-log.txt", [
+    // What the logger's last rotation kept: the earlier brains' lines when the
+    // log rotated during the loop. Absent until the first rotation.
+    { label: "Brain log, before the last rotation", filePath: path.join(dir, `${name}.1${ext}`), maxBytes: 64_000 },
+    { label: "Brain log, all brains", filePath: logPath, maxBytes: 192_000 },
+  ]);
 }
 
 /** The newest part of each file under its own heading, as one file. Null when every file is absent or empty. */

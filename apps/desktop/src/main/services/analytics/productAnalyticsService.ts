@@ -28,11 +28,11 @@ import {
   productAnalyticsEventContext,
   safeProductAnalyticsString,
   sanitizeProductAnalyticsProperties,
-  sanitizeSurveyEventProperties,
   SEPARATE_ALLOWANCE_EVENTS,
 } from "./productAnalyticsPolicy";
 import { sanitizeAiGenerationProperties } from "./aiGenerationPolicy";
 import { sanitizeExceptionProperties } from "./exceptionPolicy";
+import { sanitizeSurveyEventProperties } from "./surveyAnalyticsPolicy";
 
 /** Events whose properties come from a typed payload the main process built, never from `properties`. */
 const TYPED_PAYLOAD_SANITIZERS: Partial<Record<

@@ -1,5 +1,6 @@
 import { nowIso } from "../shared/utils";
 import { addSentryBreadcrumb, captureProblem } from "../../../shared/sentry/capture";
+import { isExpectedOutcomeText } from "../../../shared/sentry/expectedFailure";
 import { forwardLogToSentry } from "../../../shared/sentry/logBridge";
 
 export type ProviderRuntimeHealthState = "ready" | "auth-failed" | "runtime-failed";
@@ -27,9 +28,11 @@ const providerHealth = new Map<ProviderRuntimeHealthProvider, ProviderRuntimeHea
 let providerHealthVersion = 0;
 
 /** What a failure report carries beyond the health row: never shown, never part of its identity. */
-type ProviderRuntimeFailureDetail = {
+export type ProviderRuntimeFailureDetail = {
   /** The provider process's last stderr lines, already scrubbed and bounded. */
   stderrTail?: string | null;
+  /** Counts and closed values about the process that failed (alive, bytes written, age). No free text. */
+  startup?: Record<string, number | boolean | string | null> | null;
 };
 
 function setProviderRuntimeHealth(next: ProviderRuntimeHealth, detail?: ProviderRuntimeFailureDetail): void {
@@ -116,11 +119,15 @@ function reportHealthTransition(
   const kind = runtimeFailureKind(next.message);
   const reportKey = `${next.provider}:${kind}`;
   const stderrTail = detail?.stderrTail?.trim() || null;
-  if (reportedRuntimeFailures.has(reportKey)) {
+  const startup = detail?.startup ?? null;
+  const extra = { ...(stderrTail ? { stderrTail } : {}), ...(startup ? { startup } : {}) };
+  // A refusal the provider gave on purpose (a plan without Cloud Agents) is an
+  // answer the user sees, like every other expected outcome: a log, not an issue.
+  if (reportedRuntimeFailures.has(reportKey) || isExpectedOutcomeText(next.message ?? "")) {
     forwardLogToSentry("warn", `provider.${next.provider}.runtime_failed`, {
       message: next.message ?? null,
       kind,
-      ...(stderrTail ? { stderrTail } : {}),
+      ...extra,
     });
     return;
   }
@@ -129,7 +136,7 @@ function reportHealthTransition(
     tags: { provider: next.provider, "provider.state": next.state, "provider.failure": kind },
     fingerprint: ["provider", next.provider, next.state, kind],
     level: "warning",
-    ...(stderrTail ? { extra: { stderrTail } } : {}),
+    ...(Object.keys(extra).length > 0 ? { extra } : {}),
   });
 }
 

@@ -514,7 +514,7 @@ import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/built
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
-import { createAutoUpdateService, shouldShowInstalledNotice } from "./services/updates/autoUpdateService";
+import { createAutoUpdateService, shouldShowInstalledNotice, WINDOWS_PREPARE_WATCHDOG_MS } from "./services/updates/autoUpdateService";
 import { createLatestByTrackReader } from "./services/updates/latestByTrack";
 import { fetchAdeLatestRelease } from "./services/github/adeReleaseFeed";
 import { fetchReleaseManifestJson } from "../../../ade-cli/src/lib/releaseAssets";
@@ -3528,6 +3528,7 @@ app.whenReady().then(async () => {
   // which its "Go back" drives; the install hook below reads it then.
   let startupRecovery: StartupRecovery | null = null;
   const autoUpdateService = createAutoUpdateService({
+    prepareWatchdogMs: process.platform === "win32" ? WINDOWS_PREPARE_WATCHDOG_MS : undefined,
     logger: updateLogger,
     currentVersion: app.getVersion(),
     globalStatePath,

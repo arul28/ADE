@@ -441,7 +441,11 @@
         "severity",
         "emulator_count",
         "dev_brain_running",
-        "top_table"
+        "top_table",
+        "ram_gb_bucket",
+        "available_pct",
+        "ade_mb",
+        "ade_pct_of_ram"
       ]
     },
     {
@@ -516,7 +520,8 @@
         "$survey_name",
         "$survey_iteration",
         "$survey_questions",
-        "$survey_partially_completed"
+        "$survey_partially_completed",
+        "shown_for_ms"
       ]
     },
     {
@@ -535,7 +540,8 @@
         "$survey_submission_id",
         "$survey_completed",
         "$survey_response",
-        "$survey_response_<question_id>"
+        "$survey_response_<question_id>",
+        "shown_for_ms"
       ]
     },
     {

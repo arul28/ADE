@@ -229,6 +229,8 @@ describe("createSentryEventHooks", () => {
     // A line past the cut: only a JSON line is scrubbed by key, and a cut one is no longer JSON.
     recordLogTailLine(JSON.stringify({ ts: "t1", level: "info", event: "sync.paired", meta: { pushToken, machineKey, devices: "d".repeat(4_000) } }));
     recordLogTailLine(JSON.stringify({ ts: "t2", level: "warn", event: "runtime.slow", meta: { action: "lane.list", accessToken: "short-secret-123" } }));
+    // A torn line: a write cut short after a secret key. It no longer parses, so its key-matched value must still go.
+    recordLogTailLine('{"ts":"t3","level":"info","event":"sync.torn","meta":{"machineKey":"torn-key-7731","note":"cut sho');
     const hooks = createSentryEventHooks();
     const firstHint: { attachments?: Array<{ filename: string; data: string | Uint8Array }> } = {};
     const repeatHint: typeof firstHint = {};
@@ -242,7 +244,7 @@ describe("createSentryEventHooks", () => {
     const text = String(tail?.data ?? "");
     expect(text).toContain('"event":"sync.paired"');
     expect(text).toContain('"action":"lane.list"');
-    for (const secret of [pushToken, machineKey, "short-secret-123"]) expect(text).not.toContain(secret);
+    for (const secret of [pushToken, machineKey, "short-secret-123", "torn-key-7731"]) expect(text).not.toContain(secret);
     expect(repeatHint.attachments).toBeUndefined();
     expect(otherIssueHint.attachments?.some((file) => file.filename.startsWith("ade-log-tail"))).toBe(true);
   });

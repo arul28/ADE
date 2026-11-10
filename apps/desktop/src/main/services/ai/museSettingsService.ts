@@ -20,6 +20,7 @@
  * change goes through MSP.
  */
 import { execFile } from "node:child_process";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import type {
   CapabilityName,
   ComputerUseSettings,
@@ -621,7 +622,8 @@ export function parseMuseSettingsRunArgs(raw: unknown): MuseSettingsRunArgs {
   const request = asRecord(record.request);
   const kind = request.kind;
   if (typeof kind !== "string" || !Object.hasOwn(MUSE_SETTINGS_REQUEST_KINDS, kind)) {
-    throw new Error(`Unknown Muse settings request: ${String(kind)}`);
+    // The window always sends a typed kind; this is a direct action call without one.
+    throw new AdeExpectedError(`Unknown Muse settings request: ${String(kind)}`, "user");
   }
   return {
     handleId: requireText(record.handleId, "handleId", 200),
