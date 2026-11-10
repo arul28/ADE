@@ -29,16 +29,27 @@ export type ProviderLoginPayload = {
   account: { email: string | null; id: string | null } | null;
   capturedAt: number;
   renewedAt: number | null;
-  renewedBy: { machineKey: string; label: string } | null;
+  /** The computer that renewed this copy last; `cloud` when it was an ADE Cloud computer that took the renewal over (step 3b). */
+  renewedBy: { machineKey: string; label: string; cloud?: boolean } | null;
   expiresAt: number | null;
   familyHash: string;
+  /**
+   * The family hashes this sign-in had before `familyHash`, newest first, at
+   * most `PROVIDER_LOGIN_LINEAGE_MAX`, since the last new sign-in. A refresh
+   * token that rotates on each renewal changes the family; the lineage says
+   * the new copy still comes from the same sign-in (the write-back, step 3b).
+   */
+  lineage?: string[];
   contentHash: string;
   files: CarriedFile[];
   parts?: Record<string, unknown>;
 };
 
 /** What `status` may know about an item: everything but the login. */
-export type ProviderLoginPayloadMeta = Omit<ProviderLoginPayload, "files" | "parts" | "familyHash" | "contentHash">;
+export type ProviderLoginPayloadMeta = Omit<ProviderLoginPayload, "files" | "parts" | "familyHash" | "contentHash" | "lineage">;
+
+/** How many earlier family hashes a payload keeps: about 4 days of Grok renewals (one each ~6 h), 16 x 17 characters. */
+export const PROVIDER_LOGIN_LINEAGE_MAX = 16;
 
 /** 16 hex of SHA-256: enough to compare, nothing to recover a token from. */
 export function shortHash(value: string | Buffer): string {
@@ -71,24 +82,39 @@ export function buildProviderLoginPayload(args: {
   provider: ProviderLoginProvider;
   login: ParsedLogin;
   machine: ProviderLoginMachine;
-  previous: ProviderLoginPayloadMeta & { familyHash: string } | null;
+  previous: ProviderLoginPayloadMeta & { familyHash: string; lineage?: string[] } | null;
   now: number;
+  /**
+   * This computer renewed the sign-in another computer made (a cloud
+   * computer that took the renewal over, step 3b): the origin stays the
+   * previous one, and a new family is a renewal, not a new sign-in.
+   */
+  renewal?: { cloud: boolean } | null;
 }): ProviderLoginPayload {
   const familyHash = shortHash(args.login.familySecret);
-  const sameFamily = args.previous?.familyHash === familyHash;
+  const previous = args.previous;
+  const sameFamily = previous?.familyHash === familyHash;
+  const renewal = Boolean(previous && (sameFamily || args.renewal));
+  const lineage = renewal && previous
+    ? [...new Set([previous.familyHash, ...(previous.lineage ?? [])])].filter((hash) => hash && hash !== familyHash).slice(0, PROVIDER_LOGIN_LINEAGE_MAX)
+    : [];
+  const origin = args.renewal && previous?.origin.machineKey ? previous.origin : args.machine;
   return {
     v: 1,
     provider: args.provider,
     slot: args.login.slot,
     class: args.login.class,
-    origin: { machineKey: args.machine.machineKey, deviceId: args.machine.deviceId, label: args.machine.label, platform: args.machine.platform },
+    origin: { machineKey: origin.machineKey, deviceId: origin.deviceId, label: origin.label, platform: origin.platform },
     account: args.login.account,
-    // A new family is a new sign-in; the same family changed is a renewal.
-    capturedAt: sameFamily ? args.previous!.capturedAt : args.now,
-    renewedAt: sameFamily ? args.now : null,
-    renewedBy: sameFamily ? { machineKey: args.machine.machineKey, label: args.machine.label } : null,
+    // A new family is a new sign-in; the same family changed (or a takeover's renewal) is a renewal.
+    capturedAt: renewal ? previous!.capturedAt : args.now,
+    renewedAt: renewal ? args.now : null,
+    renewedBy: renewal
+      ? { machineKey: args.machine.machineKey, label: args.machine.label, ...(args.renewal?.cloud ? { cloud: true } : {}) }
+      : null,
     expiresAt: args.login.expiresAt,
     familyHash,
+    ...(lineage.length ? { lineage } : {}),
     contentHash: loginContentHash(args.login),
     files: args.login.files,
     ...(args.login.parts ? { parts: args.login.parts } : {}),
@@ -108,7 +134,7 @@ function stringOr(value: unknown, fallback: string): string {
  * that is not payload v1. The login itself is dropped here, before the
  * result reaches any caller.
  */
-export function readProviderLoginMeta(value: string | null): (ProviderLoginPayloadMeta & { familyHash: string; contentHash: string }) | null {
+export function readProviderLoginMeta(value: string | null): (ProviderLoginPayloadMeta & { familyHash: string; contentHash: string; lineage: string[] }) | null {
   if (!value) return null;
   let parsed: unknown;
   try {
@@ -136,9 +162,14 @@ export function readProviderLoginMeta(value: string | null): (ProviderLoginPaylo
       : null,
     capturedAt: numberOrNull(parsed.capturedAt) ?? 0,
     renewedAt: numberOrNull(parsed.renewedAt),
-    renewedBy: renewedBy ? { machineKey: stringOr(renewedBy.machineKey, ""), label: stringOr(renewedBy.label, "") } : null,
+    renewedBy: renewedBy
+      ? { machineKey: stringOr(renewedBy.machineKey, ""), label: stringOr(renewedBy.label, ""), ...(renewedBy.cloud === true ? { cloud: true } : {}) }
+      : null,
     expiresAt: numberOrNull(parsed.expiresAt),
     familyHash: stringOr(parsed.familyHash, ""),
+    lineage: Array.isArray(parsed.lineage)
+      ? parsed.lineage.filter((hash): hash is string => typeof hash === "string" && /^[0-9a-f]{16}$/.test(hash)).slice(0, PROVIDER_LOGIN_LINEAGE_MAX)
+      : [],
     contentHash: stringOr(parsed.contentHash, ""),
   };
 }

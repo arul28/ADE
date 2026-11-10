@@ -34,7 +34,7 @@ const ROTATING_OWNER_TAKEOVER_GRACE_MS = 10 * 60 * 1000;
  * claim the same stale grant in the same instant; the vault keeps the later
  * write, and this wait lets the earlier claimant see that before it exchanges.
  */
-const ROTATING_CLAIM_SETTLE_MS = 30 * 1000;
+export const ROTATING_CLAIM_SETTLE_MS = 30 * 1000;
 /** How fresh the vault's view must be before deciding who renews. */
 const ROTATING_VAULT_FRESH_MS = 30 * 1000;
 
@@ -68,7 +68,7 @@ export type RotatingRenewalRole = "renew" | "claim" | "read";
  * rewrites the item without making the token any less expired: without it a
  * third machine would find the new owner already stale and claim again.
  */
-function rotatingRenewalRole(args: {
+export function rotatingRenewalRole(args: {
   deviceId: string | null | undefined;
   owner: string | null | undefined;
   expiresAtMs: number | null;
@@ -147,6 +147,12 @@ export async function decideRotatingRenewal(args: {
   expiresAtMs: number | null;
   currentValue: string;
   nowMs?: number;
+  /**
+   * How long past expiry before a claim (default 10 min). The sign-in sync's
+   * gate on a cloud computer passes 60 s (P5 §5.3); MCP and Linear keep the
+   * default.
+   */
+  graceMs?: number;
   logger?: Logger;
   logContext?: Record<string, unknown>;
 }): Promise<RotatingRenewalVerdict> {
@@ -170,6 +176,7 @@ export async function decideRotatingRenewal(args: {
     expiresAtMs: args.expiresAtMs,
     updatedAtMs: Date.parse(item.updatedAt),
     nowMs: now(),
+    graceMs: args.graceMs,
   });
   if (role === "read") return { renew: false, reason: "other_owner" };
   if (role === "renew") {
@@ -194,6 +201,7 @@ export async function decideRotatingRenewal(args: {
     expiresAtMs: args.expiresAtMs,
     updatedAtMs: Date.parse(latest.updatedAt),
     nowMs: now(),
+    graceMs: args.graceMs,
   });
   if (latestRole === "read") return { renew: false, reason: "other_owner" };
   let latestValue: string | null = null;

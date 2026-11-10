@@ -12,11 +12,16 @@
  * `instanceIds`).
  */
 
-import type { ProviderLoginGateOutcome, ProviderLoginProvider, ProviderLoginStatusParts } from "../../../shared/types/providerLogins";
+import type {
+  ProviderLoginGateOptions,
+  ProviderLoginGateOutcome,
+  ProviderLoginProvider,
+  ProviderLoginStatusParts,
+} from "../../../shared/types/providerLogins";
 
 type Gate = (provider: string) => Promise<void>;
 /** The sync's own gate: what it found, for a caller that shows the person why a turn waits or fails. */
-type BaseGate = (provider: string) => Promise<ProviderLoginGateOutcome | void>;
+type BaseGate = (provider: string, options?: ProviderLoginGateOptions) => Promise<ProviderLoginGateOutcome | void>;
 
 let gate: BaseGate | null = null;
 /** Checks before a turn for a provider the carry table does not handle (P6: Claude). */
@@ -49,8 +54,13 @@ export function registerProviderLoginGate(provider: string, beforeTurn: Gate): (
   };
 }
 
-async function runGate(provider: string, base: BaseGate, extra: Set<Gate> | undefined): Promise<ProviderLoginGateOutcome | null> {
-  const outcome = await base(provider).catch(() => undefined);
+async function runGate(
+  provider: string,
+  base: BaseGate,
+  extra: Set<Gate> | undefined,
+  options: ProviderLoginGateOptions | undefined,
+): Promise<ProviderLoginGateOutcome | null> {
+  const outcome = await base(provider, options).catch(() => undefined);
   for (const check of [...(extra ?? [])]) await check(provider).catch(() => undefined);
   return outcome ?? null;
 }
@@ -60,13 +70,14 @@ async function runGate(provider: string, base: BaseGate, extra: Set<Gate> | unde
  * promise when a gate or a registered check applies, else null, so the caller
  * does not even await. It never throws. The promise holds the sync's outcome
  * (`owner_off` names the computer that did not renew in time); a caller may
- * ignore it, and the turn goes ahead either way.
+ * ignore it, and the turn goes ahead either way. `options.onWait` hears the
+ * line to show while the turn waits for a fresh sign-in.
  */
 export const providerLoginGate = Object.assign(
-  (provider: string): Promise<ProviderLoginGateOutcome | null> | null => {
+  (provider: string, options?: ProviderLoginGateOptions): Promise<ProviderLoginGateOutcome | null> | null => {
     // No installed gate (every computer but a cloud computer with the sync on): nothing runs, not even a registered check.
     if (!gate) return null;
-    return runGate(provider, gate, beforeTurnChecks.get(provider.trim().toLowerCase()));
+    return runGate(provider, gate, beforeTurnChecks.get(provider.trim().toLowerCase()), options);
   },
   { register: registerProviderLoginGate },
 );

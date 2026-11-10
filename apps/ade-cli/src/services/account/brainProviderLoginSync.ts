@@ -34,6 +34,7 @@ export async function installBrainProviderLoginSync(args: {
     { BORROW_RENEW_AHEAD_MS, renewProviderLogin, withMachineRenewLock },
     { codexConfigHome, grokConfigHome },
     { createCloudComputerCheck },
+    { createHeadlessAccountVaultBridge },
   ] = await Promise.all([
     import("../../../../desktop/src/main/services/providerLogins/providerLoginSync"),
     import("../../../../desktop/src/main/services/adeCloud/cloudAccess"),
@@ -42,6 +43,7 @@ export async function installBrainProviderLoginSync(args: {
     import("../proxy/borrowedLogins"),
     import("../../../../desktop/src/main/services/shared/providerConfigHomes"),
     import("../../../../desktop/src/main/services/providerLogins/providerLoginCloudComputers"),
+    import("./accountRuntimeLifecycle"),
   ]);
   // The name the machine directory and the Usage page show ("Mac Studio"), not
   // the network hostname. Loaded lazily, as the brain loads the registry; the
@@ -63,6 +65,10 @@ export async function installBrainProviderLoginSync(args: {
     }
   };
   const stores = args.staticOff ? null : (await import("./machineAccountStores")).getMachineAccountStores(args.logger);
+  // The same store, as `decideRotatingRenewal` reads it: the takeover on a
+  // cloud computer and the claim back on the origin (step 3b).
+  const rotatingVault = stores ? createHeadlessAccountVaultBridge(() => stores.vault) : null;
+  const renewLockDir = path.join(args.adeDir, "proxy", "auth");
   const accessDeps = cloudAccessDepsFor({
     account: () => args.accountAuthService,
     directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl(),
@@ -113,7 +119,8 @@ export async function installBrainProviderLoginSync(args: {
     onCloudAccessChanged: onCloudAccessAnswerChanged,
     cloudComputer: isCloudMachine(),
     logger: args.logger,
-    // Renewal ahead on the owner computer (step 3a): the proxy's renew call,
+    // Renewal ahead on the owner computer (step 3a), and on a cloud computer
+    // that took the renewal over (step 3b): the proxy's renew call,
     // under the machine lock its own keeper takes. The base login of each
     // provider is the one capture reads (`CODEX_HOME`, `GROK_HOME`).
     renewer: {
@@ -122,11 +129,14 @@ export async function installBrainProviderLoginSync(args: {
         if (provider !== "codex" && provider !== "grok") return false;
         const configHome = provider === "codex" ? codexConfigHome({ env: process.env }) : grokConfigHome({ env: process.env });
         return await withMachineRenewLock(
-          path.join(args.adeDir, "proxy", "auth"),
+          renewLockDir,
           () => renewProviderLogin({ id: provider, provider, configHome, isDefault: true }, process.env),
         );
       },
+      // The write-back on the origin takes the same lock: never a write while ADE's keeper renews the file.
+      withLock: (fn) => withMachineRenewLock(renewLockDir, fn),
     },
+    rotatingVault: () => rotatingVault,
     ...(cloudComputers ? { cloudComputerExists: () => cloudComputers.exists() } : {}),
   }));
   if (args.staticOff) return;

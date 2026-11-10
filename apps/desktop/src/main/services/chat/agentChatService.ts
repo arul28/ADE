@@ -62713,8 +62713,11 @@ export function createAgentChatService(args: {
 
     // On a cloud computer, the account's sign-in for this provider is pulled
     // and written before the provider starts or resumes (P5 §4.4). Null
-    // everywhere else: no await, no cost.
-    const loginGate = providerLoginGate(managed.session.provider);
+    // everywhere else: no await, no cost. While the turn waits for a fresh
+    // copy (P5 §5.3), the chat says so.
+    const loginGate = providerLoginGate(managed.session.provider, {
+      onWait: (message) => emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message }),
+    });
     if (loginGate) await loginGate;
 
     // Both dispatch commit points cancel the pending auto-resume: this one and

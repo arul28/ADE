@@ -72,6 +72,11 @@ export type ProviderLoginLocalState =
   | "removed_from_account"
   /** Another computer renews this sign-in, and its copy is newer. */
   | "other_owner_newer"
+  /**
+   * A cloud computer renewed this computer's sign-in while it was off, and
+   * ADE wrote the newer copy into the login file here (step 3b).
+   */
+  | "written_back"
   /** A saved ADE Cloud key wrote this file; it stays a key. */
   | "from_saved_key"
   /**
@@ -104,7 +109,16 @@ export type ProviderLoginSignIn = {
   account: { email: string | null; id: string | null } | null;
   capturedAt: string | null;
   renewedAt: string | null;
+  /** The name of the computer that renewed this copy last; it may be a cloud computer (step 3b). */
   renewedBy: string | null;
+  /** True when `renewedBy` is an ADE Cloud computer that took the renewal over. */
+  renewedByCloud?: boolean;
+  /**
+   * The computer that renews this sign-in now (the vault's owner): its name,
+   * whether it is a cloud computer, and whether it is this computer. Null for
+   * a sign-in that never renews, or when the owner is not known.
+   */
+  renewsNow?: { label: string; cloudComputer: boolean; thisComputer: boolean } | null;
   expiresAt: string | null;
   /** The switch for ADE Cloud. On from the start. */
   onForCloud: boolean;
@@ -121,6 +135,11 @@ export type ProviderLoginProviderStatus = {
     state: ProviderLoginLocalState;
     /** The vault key of this computer's sign-in, when it has one. */
     key: string | null;
+    /**
+     * The last write-back here (step 3b): when ADE wrote the newer copy into
+     * the login file, and the name of the computer that renewed it.
+     */
+    writtenBack?: { at: string; renewedBy: string } | null;
   };
   /**
    * A sign-in ADE copies from this Mac's Keychain only when the person allows
@@ -169,13 +188,20 @@ export type ProviderLoginApplied = {
 
 /**
  * What the check before a turn found on a cloud computer. `owner_off`: the
- * copy here was about to expire and the computer that renews it (named) did
- * not send a new one in the short wait.
+ * copy here was about to expire, the computer that renews it (named) did not
+ * send a new one in the short wait, and this computer could not take the
+ * renewal over in time (step 3b: the last resort).
  */
 export type ProviderLoginGateOutcome =
-  | { result: "ok" }
+  /** `renewedHere`: this cloud computer took the renewal over and renewed the sign-in for this turn (step 3b). */
+  | { result: "ok"; renewedHere?: boolean }
   | { result: "timeout" }
   | { result: "owner_off"; provider: ProviderLoginProvider; ownerLabel: string };
+
+/** What a caller of the gate may pass: `onWait` hears the line to show while the turn waits (step 3b). */
+export type ProviderLoginGateOptions = {
+  onWait?: (message: string) => void;
+};
 
 export type ProviderLoginStatus = {
   thisComputer: {

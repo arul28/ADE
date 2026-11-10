@@ -14,8 +14,14 @@
  *   only when it has none. Qwen's settings get only their auth part.
  *   Antigravity's agent settings get only `auth.type` (and `gcp.project` and
  *   `gcp.location` for a business sign-in).
- * - A cloud computer never renews in this step, so every renewing copy is
- *   access-only: its refresh token is taken out (`accessOnlyFile`).
+ * - A cloud computer that does not own a renewing sign-in gets it
+ *   access-only: its refresh token is taken out (`accessOnlyFile`). Only a
+ *   cloud computer that took the renewal over (step 3b, `full`) gets the full
+ *   copy.
+ *
+ * The write-back (step 3b, `writeBackSignIn`) is the one write on the
+ * person's own computer: the newer copy of a sign-in that computer made,
+ * after a cloud computer renewed it, into the same login file.
  *
  * `applied.json` records what this computer wrote (paths and 16-hex hashes,
  * never a value), so removal deletes only a file that is still the one ADE
@@ -68,6 +74,10 @@ export type AppliedEntry = {
   antigravity?: { path: string; fields: Record<string, string> };
   /** The copy's expiry (epoch ms), for the short wait before a turn (step 3a); null when it has none. */
   expiresAt?: number | null;
+  /** This cloud computer took the renewal over: the full copy is here, and it renews and pushes it (step 3b). */
+  owned?: boolean;
+  /** For an owned copy: the short hash of the sign-in's account identity, so a renewed file here is known as the same sign-in. */
+  accountHash?: string;
   appliedAt: number;
 };
 
@@ -113,14 +123,16 @@ export function writeAppliedState(adeDir: string, state: AppliedStateFile): void
 
 // ── writing ───────────────────────────────────────────────────────────
 
-/** Draft, sync, rename: mode 600 in a mode-700 folder. */
-export function writePrivateFileAtomic(target: string, data: Buffer): void {
+/** Draft, sync, rename: mode 600 (or `mode`) in a mode-700 folder. */
+export function writePrivateFileAtomic(target: string, data: Buffer, mode = 0o600): void {
   const dir = path.dirname(target);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const draft = path.join(dir, `.${path.basename(target)}.ade-${process.pid}-${crypto.randomBytes(4).toString("hex")}.tmp`);
   let fd: number | null = null;
   try {
-    fd = fs.openSync(draft, "wx", 0o600);
+    fd = fs.openSync(draft, "wx", mode);
+    // The umask can take bits away from the open's mode; the file gets exactly this mode.
+    if (mode !== 0o600) fs.fchmodSync(fd, mode);
     fs.writeSync(fd, data);
     fs.fsyncSync(fd);
     fs.closeSync(fd);
@@ -356,18 +368,20 @@ export type ApplySignIn = {
   parts: Record<string, unknown> | null;
   /** The copy's expiry from the vault item, kept for the short wait before a turn. */
   expiresAt?: number | null;
+  /** This cloud computer owns the renewal (it took it over): the full copy, refresh token kept. */
+  full?: boolean;
 };
 
 export type ApplyResult = { ok: true; entry: AppliedEntry } | { ok: false; reason: "refused_path" | "unreadable_target" | "nothing_to_write" | "write_failed"; code?: string | null };
 
 /**
- * Write one sign-in. A cloud computer is never the owner in step 2a, so a
- * renewing copy is always access-only. The previous entry of the same place
+ * Write one sign-in. A renewing copy is access-only unless this cloud
+ * computer owns its renewal (`full`, step 3b). The previous entry of the same place
  * (another sign-in of the provider) is replaced file by file: a file it wrote
  * that this one does not write is removed when it is still ADE's.
  */
 export async function applySignIn(want: ApplySignIn, previous: AppliedEntry | null, ctx: CarryContext, now: number): Promise<ApplyResult> {
-  const accessOnly = want.class === "renewing";
+  const accessOnly = want.class === "renewing" && !want.full;
   let renewalSafe = true;
   const files: AppliedFile[] = [];
   const entry: AppliedEntry = {
@@ -379,6 +393,7 @@ export async function applySignIn(want: ApplySignIn, previous: AppliedEntry | nu
     files,
     loginHashes: [],
     expiresAt: want.expiresAt ?? null,
+    ...(want.full && want.class === "renewing" ? { owned: true } : {}),
     appliedAt: now,
   };
   try {
@@ -480,6 +495,93 @@ export async function applySignIn(want: ApplySignIn, previous: AppliedEntry | nu
   entry.renewalSafe = renewalSafe;
   entry.loginHashes = readBackLoginHashes(want.provider, want.provider === "pi" ? want.slot : null, ctx);
   return { ok: true, entry };
+}
+
+// ── the write-back on the origin (step 3b) ────────────────────────────
+
+/** The providers whose sign-in a cloud computer can take over and so may come back renewed. */
+const WRITE_BACK_FILES: Partial<Record<ProviderLoginProvider, RegExp>> = {
+  codex: /^auth\.json$/,
+  grok: /^auth\.json$/,
+  // Only the token file: the person's `device_id` and config here stay as they are.
+  kimi: /^credentials\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/,
+};
+
+export type WriteBack = {
+  provider: ProviderLoginProvider;
+  slot: string;
+  files: CarriedFile[];
+  parts: Record<string, unknown> | null;
+  /** `loginContentHash` of the copy capture last read here and put in the account: the file must still be it. */
+  expectHash: string;
+};
+
+export type WriteBackResult =
+  | { ok: true; loginHashes: string[] }
+  | { ok: false; reason: "local_changed" | "refused_path" | "unreadable_target" | "nothing_to_write" | "write_failed"; code?: string | null };
+
+function modeOf(abs: string): number {
+  try {
+    return fs.statSync(abs).mode & 0o777;
+  } catch {
+    return 0o600;
+  }
+}
+
+/**
+ * Write the newer copy of this computer's own sign-in into its login file
+ * (step 3b). The caller checked the account side (the origin, the family,
+ * the account, the renewal facts); this checks the file side, again, just
+ * before the write: the file must still hold the copy capture last put in
+ * the account (`expectHash`). A file the person changed (a new sign-in) or
+ * removed (a sign-out) is never written: the local state wins.
+ *
+ * The full copy, never access-only. A draft and a rename, with the mode the
+ * file had. Pi's `auth.json` under Pi's own lock, one entry only. Paths come
+ * from the allowlist and this computer's own locators, never from the item.
+ */
+export async function writeBackSignIn(back: WriteBack, ctx: CarryContext): Promise<WriteBackResult> {
+  const stillOurs = (): boolean => {
+    const hashes = readBackLoginHashes(back.provider, back.provider === "pi" ? back.slot : null, ctx);
+    return hashes.length === 1 && hashes[0] === back.expectHash;
+  };
+  try {
+    if (back.provider === "pi") {
+      const piEntry = isRecord(back.parts?.piEntry) ? back.parts!.piEntry as Record<string, unknown> : null;
+      if (!piEntry || back.slot === "anthropic") return { ok: false, reason: "nothing_to_write" };
+      const authPath = path.join(carryRootDir("piAgent", ctx)!, "auth.json");
+      if (!fs.existsSync(authPath)) return { ok: false, reason: "local_changed" };
+      const result = await withPiAuthLock(authPath, (): true | "local_changed" | "unreadable_target" => {
+        // Checked inside the lock: Pi cannot write between the check and the rename.
+        if (!stillOurs()) return "local_changed";
+        const current = readJsonObject(authPath);
+        if (current === "unreadable" || current === "missing") return "unreadable_target";
+        writePrivateFileAtomic(authPath, encodeJson({ ...current, [back.slot]: piEntry }), modeOf(authPath));
+        return true;
+      });
+      if (result !== true) return { ok: false, reason: result };
+    } else {
+      const pattern = WRITE_BACK_FILES[back.provider];
+      if (!pattern) return { ok: false, reason: "refused_path" };
+      const targets: Array<{ abs: string; bytes: Buffer }> = [];
+      for (const file of back.files) {
+        if (!pattern.test(file.rel)) continue;
+        if (!isApplyFileAllowed(back.provider, file.root, file.rel)) return { ok: false, reason: "refused_path" };
+        const dir = carryRootDir(file.root, ctx);
+        if (!dir) return { ok: false, reason: "refused_path" };
+        targets.push({ abs: path.join(dir, ...file.rel.split("/")), bytes: carriedFileBytes(file) });
+      }
+      if (targets.length !== 1) return { ok: false, reason: "nothing_to_write" };
+      const [target] = targets as [{ abs: string; bytes: Buffer }];
+      // Only over the login file that is there: a sign-out here is never undone.
+      if (!fs.existsSync(target.abs)) return { ok: false, reason: "local_changed" };
+      if (!stillOurs()) return { ok: false, reason: "local_changed" };
+      writePrivateFileAtomic(target.abs, target.bytes, modeOf(target.abs));
+    }
+  } catch (error) {
+    return { ok: false, reason: "write_failed", code: (error as NodeJS.ErrnoException)?.code ?? null };
+  }
+  return { ok: true, loginHashes: readBackLoginHashes(back.provider, back.provider === "pi" ? back.slot : null, ctx) };
 }
 
 /** The Codex `auth.json` a saved OpenAI key becomes, in the shape `codex login --with-api-key` writes. */

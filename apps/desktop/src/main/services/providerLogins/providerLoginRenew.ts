@@ -15,9 +15,12 @@
  * One timer for each planned sign-in, aimed at `expiresAt - ahead`, unref'd.
  * A sign-in renews at most once at a time on this computer: one renewal per
  * provider in this process, and the machine lock the proxy's own keeper takes
- * (`borrowedLogins.ts`) across processes. Not here: a cloud computer taking
- * the renewal over, and the write-back to the origin (they wait for the
- * owner's answer to open question 1).
+ * (`borrowedLogins.ts`) across processes.
+ *
+ * Step 3b: the same planner runs on a cloud computer for a sign-in it took
+ * the renewal over for (it is the vault's owner then), and stops when the
+ * origin claims it back. The takeover itself and the write-back to the
+ * origin are in the sync (`providerLoginSync.ts`).
  */
 
 import type { ProviderLoginProvider } from "../../../shared/types/providerLogins";
@@ -31,6 +34,12 @@ export type ProviderLoginRenewer = {
    * when the lock was busy (the keeper renews this computer's logins now).
    */
   renew(provider: ProviderLoginProvider): Promise<boolean | null>;
+  /**
+   * Run `fn` under the same machine lock, or null when it is busy. The
+   * write-back on the origin (step 3b) takes it, so it never writes a login
+   * file while ADE's own keeper renews it.
+   */
+  withLock?<T>(fn: () => Promise<T>): Promise<T | null>;
 };
 
 export type OwnerRenewTarget = { key: string; provider: ProviderLoginProvider; expiresAt: number };

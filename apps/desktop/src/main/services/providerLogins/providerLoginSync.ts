@@ -19,6 +19,13 @@
  * turn on a cloud computer whose copy is about to expire, and the person's
  * one Keychain read on a Mac (`allowKeychain`).
  *
+ * Step 3b (the owner's yes of 2026-11-10): when the owner computer is off
+ * and the copy is past its expiry + 60 s, the cloud computer whose turn
+ * waits takes the renewal over (`decideRotatingRenewal`, 60 s grace), gets
+ * the full copy, renews it and pushes it as the new owner. The origin, when
+ * it wakes, writes that newer copy of its OWN sign-in into its login file
+ * (the write-back), and claims the renewal back by the normal rule.
+ *
  * Never logs a value, a hash or a file's content: events carry the provider,
  * the slot, sizes and reason codes.
  */
@@ -33,6 +40,7 @@ import {
   type ProviderLoginApplied,
   type ProviderLoginApplyState,
   type ProviderLoginCaptureOffReason,
+  type ProviderLoginGateOptions,
   type ProviderLoginGateOutcome,
   type ProviderLoginLocalState,
   type ProviderLoginProvider,
@@ -41,6 +49,13 @@ import {
   type ProviderLoginStatus,
 } from "../../../shared/types/providerLogins";
 import { CLOUD_SIGN_INS } from "../../../shared/cloudSignIns";
+import {
+  ROTATING_CLAIM_SETTLE_MS,
+  decideRotatingRenewal,
+  rotatingRenewalRole,
+  type RotatingCredentialVault,
+  type RotatingRenewalVerdict,
+} from "../account/rotatingCredentialOwner";
 import { noteProviderLoginChanged, onProviderLoginChanged } from "../ai/providerLoginChanged";
 import { isRecord } from "../shared/utils";
 import {
@@ -71,6 +86,7 @@ import {
   readBackLoginHashes,
   removeApplied,
   writeAppliedState,
+  writeBackSignIn,
   type AppliedEntry,
   type AppliedStateFile,
 } from "./providerLoginApply";
@@ -126,8 +142,32 @@ const SHORT_WAIT_LEFT_MS = 60_000;
 const SHORT_WAIT_RENEWING_MS = 60_000;
 const SHORT_WAIT_POLL_MS = 5_000;
 const SHORT_WAIT_POLL_LIMIT_MS = 20_000;
-/** The whole gate, with the short wait, never passes this. Then the turn goes ahead (`owner_off`). */
-const SHORT_WAIT_GATE_LIMIT_MS = 30_000;
+/** The whole gate, with the short wait and a takeover, never passes this. Then the turn goes ahead (`owner_off`). */
+const SHORT_WAIT_GATE_LIMIT_MS = 45_000;
+/** A cloud computer takes the renewal over only this long past the copy's expiry (and its last write), P5 §5.2. */
+const TAKEOVER_GRACE_MS = 60_000;
+
+/**
+ * The providers a cloud computer can take the renewal over for, and how it
+ * renews: "renew" by ADE's renew call (the provider's CLI, one process),
+ * "cli" by the provider's own CLI when the turn starts on the full copy.
+ * Droid has no expiry ADE can read, so no turn ever waits for it. Pi's
+ * Anthropic login is never carried. Every other carried provider is Fixed.
+ */
+const TAKEOVER_HOW: Partial<Record<ProviderLoginProvider, "renew" | "cli">> = {
+  codex: "renew",
+  grok: "renew",
+  kimi: "cli",
+  pi: "cli",
+};
+
+const PROVIDER_NAMES: Partial<Record<ProviderLoginProvider, string>> = {
+  codex: "Codex",
+  grok: "Grok",
+  kimi: "Kimi",
+  pi: "Pi",
+  droid: "Droid",
+};
 
 /**
  * The saved ADE Cloud keys (`integration/cloud-key-<id>`) by the provider they
@@ -229,6 +269,12 @@ export type ProviderLoginSyncDeps = {
   cloudComputerExists?: () => Promise<boolean | null>;
   /** The `security` command for the person's Keychain read. The scratch checks pass a fake one. */
   keychainCommand?: string;
+  /**
+   * The account vault as `decideRotatingRenewal` reads it (the brain passes
+   * `createHeadlessAccountVaultBridge` over the same store). Absent: no
+   * takeover on a cloud computer and no claim back on the origin (step 3b).
+   */
+  rotatingVault?: () => RotatingCredentialVault | null;
 };
 
 const OFF_MESSAGES: Record<ProviderLoginCaptureOffReason, string> = {
@@ -252,6 +298,7 @@ const LOCAL_MESSAGES: Record<ProviderLoginLocalState, string> = {
   unreadable: "ADE found a login file but could not read a sign-in from it.",
   removed_from_account: "You removed this sign-in from your account. Sign in again here to add it back.",
   other_owner_newer: "Another computer renews this sign-in, so your account keeps that computer's copy.",
+  written_back: "A cloud computer renewed this sign-in while this computer was off. ADE wrote the newer copy into the login file here.",
   from_saved_key: "This file came from a saved ADE Cloud key. It stays a key.",
   from_account: "This is the account's sign-in. ADE wrote it on this cloud computer.",
   account_refused: "Your account service doesn't take sign-ins yet. ADE keeps this one on this computer and tries again every hour.",
@@ -260,7 +307,7 @@ const LOCAL_MESSAGES: Record<ProviderLoginLocalState, string> = {
 
 /** When one provider has several sign-ins (Pi), the state that says the most wins. */
 const LOCAL_STATE_RANK: ProviderLoginLocalState[] = [
-  "account_refused", "too_large", "unreadable", "settling", "other_owner_newer", "removed_from_account", "captured",
+  "account_refused", "too_large", "unreadable", "settling", "other_owner_newer", "removed_from_account", "written_back", "captured",
   "from_account", "from_saved_key", "os_store", "not_signed_in", "not_checked",
 ];
 
@@ -287,7 +334,30 @@ export function cloudChoiceKey(provider: ProviderLoginProvider, slot: string): s
   return provider === "pi" ? `pi:${slot}` : provider;
 }
 
-type LoginMemo = { slot: string; key: string; contentHash: string; familyHash: string; class: ParsedLogin["class"]; expiresAt: number | null };
+type LoginMemo = {
+  slot: string;
+  key: string;
+  contentHash: string;
+  familyHash: string;
+  class: ParsedLogin["class"];
+  expiresAt: number | null;
+  account: ParsedLogin["account"];
+};
+
+/** The same account identity: both unknown, or every field either side knows is the same. */
+function sameAccount(left: ParsedLogin["account"], right: ParsedLogin["account"]): boolean {
+  if (!left || !right) return !left && !right;
+  const fields = ([["email", left.email, right.email], ["id", left.id, right.id]] as const)
+    .filter(([, mine, theirs]) => mine != null || theirs != null);
+  return fields.length > 0 && fields.every(([, mine, theirs]) => mine === theirs);
+}
+
+const accountHash = (account: ParsedLogin["account"]): string => shortHash(JSON.stringify(account ?? null));
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => {
+  const timer = setTimeout(resolve, Math.max(0, ms));
+  timer.unref?.();
+});
 type BundleMemo = { logins: LoginMemo[]; skipped: Array<{ slot: string; state: ProviderLoginLocalState }> };
 
 type BundleObservation =
@@ -412,6 +482,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
         familyHash: shortHash(login.familySecret),
         class: login.class,
         expiresAt: login.expiresAt,
+        account: login.account,
       },
       full: login,
     }));
@@ -419,7 +490,10 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     return { kind: "parsed", logins, skipped: parsed.skipped };
   }
 
-  type PushDecision = { push: false; state: ProviderLoginLocalState } | { push: true };
+  type PushDecision = { push: false; state: ProviderLoginLocalState; writeBack?: true } | { push: true };
+
+  /** `later` is a later expiry than `than`; false when either is unknown. */
+  const laterExpiry = (later: number | null, than: number | null): boolean => later != null && than != null && later > than;
 
   function decide(
     login: LoginMemo,
@@ -437,24 +511,40 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     }
     if (!row) return { push: true };
     const meta = metaFor(vault, row);
+    // The copy the write-back wrote here: never pushed back (no echo). Once the file changes, the normal rules apply.
+    const back = state.writtenBack?.[login.key];
+    if (back) {
+      if (back.contentHash === login.contentHash) return { push: false, state: "written_back" };
+      delete state.writtenBack![login.key];
+    }
     // What this computer last pushed, and the account still holds it. (A write that lost to a newer one is not "captured".)
     if (pushed?.pushedHash === login.contentHash && meta?.contentHash === login.contentHash) return { push: false, state: "captured" };
     if (meta?.contentHash === login.contentHash) {
       state.pushed[login.key] = { pushedHash: login.contentHash, familyHash: login.familyHash, pushedAt: now(), absentSince: null, absentPasses: 0 };
       return { push: false, state: "captured" };
     }
-    // Another computer renews this family: never put this copy over its copy,
-    // whatever this one's expiry says (step 3a). The origin that renewed by
-    // itself after a cloud computer took over (design §3.4, third row) comes
-    // back with the takeover and the write-back, after the owner's answer.
-    if (
-      login.class === "renewing"
-      && row.refreshOwner
-      && row.refreshOwner !== machine.deviceId
-      && meta?.familyHash === login.familyHash
-    ) {
-      return { push: false, state: "other_owner_newer" };
+    if (login.class === "renewing" && row.refreshOwner && row.refreshOwner !== machine.deviceId && meta) {
+      // Another computer renews this sign-in now. A copy of its family (the
+      // same family, or an earlier one of the same sign-in) never goes over
+      // that computer's copy, with two exceptions on the origin after a
+      // cloud computer took the renewal over (design §3.4, step 3b).
+      const ofFamily = meta.familyHash === login.familyHash || meta.lineage.includes(login.familyHash);
+      // The local file is the very copy this computer last put in the account: nothing new here.
+      const unchanged = pushed?.pushedHash === login.contentHash;
+      const originAfterTakeover = !deps.cloudComputer
+        && meta.origin.deviceId === machine.deviceId
+        && row.refreshOwner !== meta.origin.deviceId;
+      if (ofFamily) {
+        // §3.4 row 3: the CLI here renewed by itself to a later expiry. It holds the newest family: push and own it again.
+        if (originAfterTakeover && !unchanged && laterExpiry(login.expiresAt, meta.expiresAt)) return { push: true };
+        // The write-back: the account holds a newer copy of this very sign-in, and the file here is unchanged since capture.
+        if (originAfterTakeover && unchanged) return { push: false, state: "other_owner_newer", writeBack: true };
+        return { push: false, state: "other_owner_newer" };
+      }
+      // An old copy this computer pushed before, whose family the account no longer lists: never pushed again.
+      if (unchanged) return { push: false, state: "other_owner_newer" };
     }
+    // A new family here is a new sign-in (§3.4 row 1): it goes up, and names this computer the owner.
     return { push: true };
   }
 
@@ -466,29 +556,45 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     rows: Map<string, VaultRow>,
     state: ProviderLoginStateFile,
     machine: ProviderLoginMachine,
+    takeover: { place: string } | null = null,
   ): ProviderLoginLocalState {
     const row = rows.get(memo.key);
     const previous = row && !row.deleted
       ? readProviderLoginMeta(vault.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, memo.key))
       : null;
-    const payload = buildProviderLoginPayload({ provider, login, machine, previous, now: now() });
+    const payload = buildProviderLoginPayload({
+      provider,
+      login,
+      machine,
+      previous,
+      now: now(),
+      // A cloud computer that took the renewal over pushes into the origin's key: the origin stays, and the lineage grows.
+      ...(takeover ? { renewal: { cloud: deps.cloudComputer } } : {}),
+    });
     const value = JSON.stringify(payload);
     if (value.length > PROVIDER_LOGIN_MAX_CHARS) {
       deps.logger.warn("provider_login.capture_too_large", { provider, slot: memo.slot, chars: value.length });
       return "too_large";
     }
     // Every write names the owner: the store would clear it otherwise (P4 §4).
-    // A cloud computer is never the owner in step 2a, even of a sign-in made on
-    // it: no renewal, takeover or write-back runs there yet (step 3).
-    const written = vault.set(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, memo.key, value, {
-      refreshOwner: login.class === "renewing" && !deps.cloudComputer ? machine.deviceId : null,
-    });
+    // A cloud computer names itself only for a sign-in it took the renewal
+    // over for (step 3b); a sign-in made on it renews nowhere (no owner).
+    const owner = login.class === "renewing" && (!deps.cloudComputer || takeover) ? machine.deviceId : null;
+    const written = vault.set(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, memo.key, value, { refreshOwner: owner });
     if (!written) {
       deps.logger.warn("provider_login.capture_write_refused", { provider, slot: memo.slot });
       return "not_checked";
     }
     state.pushed[memo.key] = { pushedHash: memo.contentHash, familyHash: memo.familyHash, pushedAt: now(), absentSince: null, absentPasses: 0 };
-    deps.logger.info("provider_login.captured", { provider, slot: memo.slot, class: login.class, chars: value.length });
+    if (state.signedOut?.[memo.key]) delete state.signedOut[memo.key];
+    deps.logger.info("provider_login.captured", {
+      provider,
+      slot: memo.slot,
+      class: login.class,
+      chars: value.length,
+      ...(takeover ? { takeover: true } : {}),
+    });
+    if (takeover) noteOwnedCopy(takeover.place, memo, payload.expiresAt);
     return "captured";
   }
 
@@ -509,7 +615,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       const machine = deps.machine();
       const accountUserId = deps.accountUserId();
       if (vault && machine && accountUserId) {
-        if (deps.cloudComputer) await runApply(vault, accountUserId, originId(machine.machineKey), providers, false);
+        if (deps.cloudComputer) await runApply(vault, accountUserId, originId(machine.machineKey), machine.deviceId, providers, false);
         notifyProviderLoginPass({ accountUserId, cloudComputer: deps.cloudComputer, providers: providers ? [...providers] : null, captureOff: "all_off" });
       }
       return;
@@ -532,6 +638,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     const parked = new Set(vault.parkedKeys?.(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND) ?? []);
     const seenKeys = new Set<string>();
     const uncertain = new Set<ProviderLoginProvider>();
+    const writeBacks: Array<{ provider: ProviderLoginProvider; memo: LoginMemo; slotId: string; bundleId: string }> = [];
+    const removedThisPass = new Set<string>();
 
     for (const row of PROVIDER_LOGIN_CARRY) {
       if (row.carry !== "carried" || !row.locate || !row.parse) continue;
@@ -569,23 +677,41 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
             continue;
           }
         }
-        for (const { memo, full } of observation.logins) {
-          if (deps.cloudComputer && appliedLoginHashes.has(memo.contentHash)) {
+        for (const { memo: observed, full } of observation.logins) {
+          if (deps.cloudComputer && appliedLoginHashes.has(observed.contentHash)) {
             // The account's sign-in that apply wrote here: never captured back, and
             // the sign-in it replaced (made here) is not "signed out here".
-            setLocal(row.provider, `${bundle.id}:${memo.slot}`, "from_account", null);
+            setLocal(row.provider, `${bundle.id}:${observed.slot}`, "from_account", null);
             uncertain.add(row.provider);
             continue;
           }
-          seenKeys.add(memo.key);
+          // A sign-in this cloud computer took the renewal over for, renewed here
+          // (by ADE or by its CLI): it goes back into that sign-in's own key, never
+          // into a new one, and only while this computer still owns it (step 3b).
+          const takeover = deps.cloudComputer ? ownedPlaceFor(row.provider, observed) : null;
+          const memo = takeover ? { ...observed, key: takeover.source } : observed;
+          if (takeover) {
+            uncertain.add(row.provider);
+            const ownedRow = rows.get(takeover.source);
+            if (!ownedRow || ownedRow.deleted || ownedRow.refreshOwner !== machine.deviceId) {
+              // The person removed it, or the origin claimed it back: never pushed from here.
+              setLocal(row.provider, `${bundle.id}:${memo.slot}`, "from_account", null);
+              continue;
+            }
+          } else {
+            seenKeys.add(memo.key);
+          }
           const pushed = state.pushed[memo.key];
           if (pushed) {
             pushed.absentSince = null;
             pushed.absentPasses = 0;
           }
           const decision = decide(memo, vault, rows, state, machine);
+          if (!decision.push && decision.writeBack) {
+            writeBacks.push({ provider: row.provider, memo, slotId: `${bundle.id}:${memo.slot}`, bundleId: bundle.id });
+          }
           let local: ProviderLoginLocalState = decision.push && full
-            ? push(row.provider, full, memo, vault, rows, state, machine)
+            ? push(row.provider, full, memo, vault, rows, state, machine, takeover ? { place: takeover.place } : null)
             : decision.push ? "settling" : decision.state;
           if (decision.push && full && local === "captured") accountChanged = true;
           // Written here, but the account service will not take it: say so, never "in your account".
@@ -593,6 +719,11 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
           setLocal(row.provider, `${bundle.id}:${memo.slot}`, local, memo.key);
         }
       }
+    }
+
+    // The write-back (step 3b): the newer copy of this computer's own sign-in, into its login file.
+    for (const candidate of writeBacks) {
+      if (await writeBack(candidate, vault, rows, state, machine)) setLocal(candidate.provider, candidate.slotId, "written_back", candidate.memo.key);
     }
 
     // This computer's sign-ins that are gone here: two passes 60 s apart remove them from the account.
@@ -613,6 +744,27 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       }
       // Forget it: if the login comes back, the next pass captures it again into the same key.
       delete state.pushed[key];
+      if (state.writtenBack?.[key]) delete state.writtenBack[key];
+      // Kept, so a copy that comes back into the account while the person is still signed out here leaves again.
+      state.signedOut = { ...(state.signedOut ?? {}), [key]: now() };
+      removedThisPass.add(key);
+    }
+
+    // A sign-in the person signed out of here that is back in the account (a
+    // cloud computer's write that crossed the removal): removed again, while
+    // the person is still signed out here. A new sign-in here clears the mark.
+    for (const key of Object.keys(state.signedOut ?? {})) {
+      const parsedKey = parseProviderLoginKey(key);
+      if (!parsedKey || parsedKey.origin12 !== origin12 || seenKeys.has(key)) {
+        delete state.signedOut![key];
+        continue;
+      }
+      if ((providers && !providers.has(parsedKey.provider)) || uncertain.has(parsedKey.provider) || removedThisPass.has(key)) continue;
+      const row = rows.get(key);
+      if (row && !row.deleted && vault.remove(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, key)) {
+        accountChanged = true;
+        deps.logger.info("provider_login.removed", { provider: parsedKey.provider, slot: parsedKey.slot, reason: "signed_out_at_origin_again" });
+      }
     }
 
     if (JSON.stringify(state) !== before) {
@@ -623,8 +775,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       }
     }
     if (accountChanged) notifyProviderLoginsChanged();
-    if (deps.cloudComputer) await runApply(vault, accountUserId, origin12, providers, true);
-    else await planRenewals(vault, machine, origin12);
+    if (deps.cloudComputer) await runApply(vault, accountUserId, origin12, machine.deviceId, providers, true);
+    await planRenewals(vault, machine, origin12, state);
     notifyProviderLoginPass({
       accountUserId,
       cloudComputer: deps.cloudComputer,
@@ -662,7 +814,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     return inFlight;
   }
 
-  function signInsFromVault(vault: ProviderLoginVault | null, origin12: string | null, setting: CloudSetting): ProviderLoginSignIn[] {
+  function signInsFromVault(vault: ProviderLoginVault | null, origin12: string | null, setting: CloudSetting, deviceId: string | null = null): ProviderLoginSignIn[] {
     if (!vault) return [];
     const signIns: ProviderLoginSignIn[] = [];
     for (const row of vault.list(ACCOUNT_SCOPE_ALL)) {
@@ -687,6 +839,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
         capturedAt: iso(meta.capturedAt),
         renewedAt: iso(meta.renewedAt),
         renewedBy: meta.renewedBy?.label ?? null,
+        renewedByCloud: meta.renewedBy?.cloud === true,
+        renewsNow: renewsNowOf(row, meta, deviceId),
         expiresAt: iso(meta.expiresAt),
         onForCloud: !setting.off.includes(row.key),
         inUseOnCloud: false,
@@ -709,14 +863,34 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     return signIns.sort((left, right) => left.key.localeCompare(right.key));
   }
 
+  /** Who renews a sign-in now (the vault's owner), for the status (step 3b). */
+  function renewsNowOf(
+    row: VaultRow,
+    meta: NonNullable<ReturnType<typeof readProviderLoginMeta>>,
+    deviceId: string | null,
+  ): ProviderLoginSignIn["renewsNow"] {
+    const owner = row.refreshOwner;
+    if (!owner || meta.class !== "renewing") return null;
+    const thisComputer = Boolean(deviceId && owner === deviceId);
+    if (owner === meta.origin.deviceId) return { label: meta.origin.label, cloudComputer: false, thisComputer };
+    if (thisComputer) return { label: deps.machine()?.label ?? meta.renewedBy?.label ?? "", cloudComputer: deps.cloudComputer, thisComputer };
+    if (meta.renewedBy && meta.renewedBy.machineKey !== meta.origin.machineKey) {
+      return { label: meta.renewedBy.label, cloudComputer: meta.renewedBy.cloud === true, thisComputer };
+    }
+    // Claimed, and not renewed yet by its new owner: the name is not in the item yet.
+    return { label: "another computer", cloudComputer: false, thisComputer };
+  }
+
   async function status(provider?: ProviderLoginProvider | null): Promise<ProviderLoginStatus> {
     const off = await captureOffReason();
     const vault = deps.staticOff ? null : deps.vault();
     const machine = deps.staticOff ? null : deps.machine();
     const setting = cloudSetting();
     const origin12 = machine ? originId(machine.machineKey) : null;
-    const signIns = signInsFromVault(deps.accountUserId() ? vault : null, origin12, setting)
+    const signIns = signInsFromVault(deps.accountUserId() ? vault : null, origin12, setting, machine?.deviceId ?? null)
       .filter((signIn) => !provider || signIn.provider === provider);
+    const accountUserId = deps.staticOff ? null : deps.accountUserId();
+    const writtenBack = accountUserId ? loadState(accountUserId).writtenBack ?? {} : {};
     const providers = PROVIDER_LOGIN_CARRY
       .filter((row) => !provider || row.provider === provider)
       .map((row) => {
@@ -728,6 +902,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
           best = { state: "os_store", key: null };
         }
         let message = row.carry === "carried" && best.state !== "not_checked" ? LOCAL_MESSAGES[best.state] : row.message;
+        const back = best.state === "written_back" && best.key ? writtenBack[best.key] ?? null : null;
+        if (back) message = `Renewed by ${back.renewedBy}. ADE wrote the newer copy into the login file here.`;
         const keychain = keychainStatus(row.provider, off, vault);
         if (keychain?.key && !off) {
           best = { state: "captured", key: keychain.key };
@@ -737,7 +913,11 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
           provider: row.provider,
           carry: row.carry,
           message,
-          local: { state: best.state, key: best.key },
+          local: {
+            state: best.state,
+            key: best.key,
+            ...(back ? { writtenBack: { at: new Date(back.at).toISOString(), renewedBy: back.renewedBy } } : {}),
+          },
           ...(keychain ? { keychain: keychain.part } : {}),
         };
       });
@@ -891,7 +1071,18 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
   // pass, so the local states say whether a file here is safe to replace.
 
   type Want =
-    | { kind: "signin"; place: string; provider: ProviderLoginProvider; slot: string; key: string; contentHash: string; class: ParsedLogin["class"]; own: boolean }
+    | {
+      kind: "signin";
+      place: string;
+      provider: ProviderLoginProvider;
+      slot: string;
+      key: string;
+      contentHash: string;
+      class: ParsedLogin["class"];
+      own: boolean;
+      /** This cloud computer owns the renewal (it took it over): the full copy goes here (step 3b). */
+      owned: boolean;
+    }
     | { kind: "key"; place: string; provider: ProviderLoginProvider; id: string; token: string; contentHash: string };
 
   let appliedCache: AppliedStateFile | null = null;
@@ -992,7 +1183,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
   }
 
   /** What ADE Cloud uses for each place now (P5 §4.2), from the vault and the setting. */
-  function desiredPlaces(vault: ProviderLoginVault, setting: CloudSetting, origin12: string): Map<string, Want> {
+  function desiredPlaces(vault: ProviderLoginVault, setting: CloudSetting, origin12: string, deviceId: string): Map<string, Want> {
     const candidates = new Map<string, Array<{ row: VaultRow; meta: NonNullable<ReturnType<typeof readProviderLoginMeta>>; provider: ProviderLoginProvider; slot: string }>>();
     if (setting.enabled) {
       for (const row of vault.list(ACCOUNT_SCOPE_ALL)) {
@@ -1028,6 +1219,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
         contentHash: pick.meta.contentHash,
         class: pick.meta.class,
         own: parsedKey.origin12 === origin12,
+        owned: pick.meta.class === "renewing" && parsedKey.origin12 !== origin12 && pick.row.refreshOwner === deviceId,
       });
     }
     // A carried provider with no sign-in in use falls back to its saved key; a key-only provider always uses it.
@@ -1063,6 +1255,68 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     return false;
   }
 
+  function saveApplied(): void {
+    if (!appliedCache) return;
+    rememberAppliedHashes(appliedCache);
+    try {
+      writeAppliedState(deps.adeDir, appliedCache);
+    } catch (error) {
+      deps.logger.warn("provider_login.applied_write_failed", { code: (error as NodeJS.ErrnoException)?.code ?? null });
+    }
+  }
+
+  /**
+   * The place of a sign-in this cloud computer took the renewal over for,
+   * when `login` (read here, not the copy apply wrote) is that sign-in renewed
+   * here: the same provider and slot, and the same account. Its files are
+   * then recorded as ADE's again, so they still leave when the sign-in
+   * leaves the account (step 3b).
+   */
+  function ownedPlaceFor(provider: ProviderLoginProvider, login: LoginMemo): { place: string; source: string } | null {
+    const place = cloudChoiceKey(provider, login.slot);
+    const entry = appliedCache?.applied[place];
+    if (!entry?.owned || entry.provider !== provider || login.class !== "renewing") return null;
+    if (entry.accountHash && entry.accountHash !== accountHash(login.account)) return null;
+    let changed = false;
+    for (const file of entry.files) {
+      try {
+        const hash = shortHash(fs.readFileSync(file.abs));
+        if (hash !== file.hash) {
+          file.hash = hash;
+          changed = true;
+        }
+      } catch {
+        // Gone: removal has nothing to take.
+      }
+    }
+    if (entry.pi) {
+      try {
+        const current = JSON.parse(fs.readFileSync(entry.pi.authPath, "utf8")) as unknown;
+        const value = isRecord(current) ? current[entry.pi.slot] : undefined;
+        const hash = value === undefined ? null : shortHash(JSON.stringify(value));
+        if (hash && hash !== entry.pi.entryHash) {
+          entry.pi.entryHash = hash;
+          changed = true;
+        }
+      } catch {
+        // Unreadable now: the next pass looks again.
+      }
+    }
+    if (changed) saveApplied();
+    return { place, source: entry.source };
+  }
+
+  /** After a takeover's push: the applied entry is that copy, so apply leaves it and capture skips it. */
+  function noteOwnedCopy(place: string, memo: LoginMemo, expiresAt: number | null): void {
+    const entry = appliedCache?.applied[place];
+    if (!entry?.owned) return;
+    entry.contentHash = memo.contentHash;
+    entry.loginHashes = [memo.contentHash];
+    entry.expiresAt = expiresAt;
+    ownerOff.delete(place);
+    saveApplied();
+  }
+
   /** Bring the files and env keys here in line with what the account picked. Cloud computers only. */
   /**
    * Without a capture pass just before (the off switch for all), the local
@@ -1074,7 +1328,14 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     return readBackLoginHashes(provider, provider === "pi" ? place.slice("pi:".length) : null, ctx).length === 0;
   }
 
-  async function runApply(vault: ProviderLoginVault, accountUserId: string, origin12: string, providers: Set<ProviderLoginProvider> | null, captureRan: boolean): Promise<void> {
+  async function runApply(
+    vault: ProviderLoginVault,
+    accountUserId: string,
+    origin12: string,
+    deviceId: string,
+    providers: Set<ProviderLoginProvider> | null,
+    captureRan: boolean,
+  ): Promise<void> {
     const state = await loadApplied(accountUserId);
     const before = JSON.stringify(state);
     // Fix B1: the boot leaves the sign-in variables the desktop sent in the env
@@ -1098,7 +1359,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       }
     }
     const setting = cloudSetting();
-    const wants = desiredPlaces(vault, setting, origin12);
+    const wants = desiredPlaces(vault, setting, origin12, deviceId);
     const changed = new Set<string>();
     const places = new Set([...wants.keys(), ...Object.keys(state.applied)]);
     for (const place of places) {
@@ -1118,7 +1379,9 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
         continue;
       }
       const source = want.kind === "key" ? `key:${want.id}` : want.key;
-      if (have && have.source === source && have.contentHash === want.contentHash) {
+      const owned = want.kind === "signin" && want.owned;
+      // The same copy, and the same owner: nothing to do. A change of owner (a takeover, or the origin's claim back) writes again.
+      if (have && have.source === source && have.contentHash === want.contentHash && Boolean(have.owned) === owned) {
         applyStates.set(place, { state: want.kind === "key" ? "key" : have.files.length || have.pi || have.qwen ? "applied" : "own", key: want.kind === "key" ? "key" : want.key });
         continue;
       }
@@ -1147,8 +1410,10 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
             files: payload.files,
             parts: payload.parts,
             expiresAt: payload.expiresAt,
+            full: owned,
           }, have, ctx, now())
           : { ok: false, reason: "nothing_to_write" };
+        if (result.ok && owned) result.entry.accountHash = accountHash(payload?.account ?? null);
       }
       if (!result.ok) {
         applyStates.set(place, { state: "failed", key: want.kind === "key" ? "key" : want.key });
@@ -1167,6 +1432,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
         key: want.kind === "key" ? "key" : want.key,
         accessOnly: result.entry.accessOnly,
         renewalSafe: result.entry.renewalSafe,
+        ...(owned ? { owned: true } : {}),
       });
     }
 
@@ -1211,11 +1477,12 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
   /**
    * The gate before a turn or a CLI start, on a cloud computer: a fresh vault,
    * then this provider applied. When the copy here is about to expire, the
-   * short wait (§5.3 steps 1 and 2): pull now; while the owner may be renewing,
-   * pull every 5 s for up to 20 s; then `owner_off` with the owner's name. No
-   * claim and no takeover. The whole gate stays under 30 s.
+   * short wait (§5.3): pull now; while the owner may be renewing (up to 60 s
+   * past expiry), pull every 5 s for up to 20 s; then, the owner being off,
+   * take the renewal over (step 3b). The whole gate stays under 45 s; then
+   * `owner_off` with the owner's name, and the turn goes ahead.
    */
-  async function gate(provider: string): Promise<ProviderLoginGateOutcome> {
+  async function gate(provider: string, options: ProviderLoginGateOptions = {}): Promise<ProviderLoginGateOutcome> {
     // A new cloud computer's first turn can come while the ADE Cloud answer is still being read.
     if (!ticks.length && accessPending) await Promise.race([accessPending, new Promise((resolve) => setTimeout(resolve, GATE_LIMIT_MS).unref?.())]);
     if (!ticks.length) return { result: "ok" };
@@ -1239,10 +1506,16 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     const applied = synced === "timeout" ? "timeout" : await limit(pass([providerId as ProviderLoginProvider]));
     let outcome: ProviderLoginGateOutcome = synced === "timeout" || applied === "timeout" ? { result: "timeout" } : { result: "ok" };
     const expiring = outcome.result === "ok" ? expiringCopy(providerId) : null;
-    if (expiring) outcome = await shortWait(providerId as ProviderLoginProvider, expiring, started, limit);
+    if (expiring) outcome = await shortWait(providerId as ProviderLoginProvider, expiring, started, limit, options);
     const waitedMs = now() - started;
     if (waitedMs >= 100 || outcome.result !== "ok") {
-      deps.logger.info("provider_login.gate", { provider: providerId, waitedMs, result: outcome.result, shortWait: Boolean(expiring) });
+      deps.logger.info("provider_login.gate", {
+        provider: providerId,
+        waitedMs,
+        result: outcome.result,
+        shortWait: Boolean(expiring),
+        ...(outcome.result === "ok" && outcome.renewedHere ? { renewedHere: true } : {}),
+      });
     }
     return outcome;
   }
@@ -1261,6 +1534,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     expiring: { place: string; entry: AppliedEntry },
     started: number,
     limit: <T>(promise: Promise<T> | undefined, budgetMs?: number) => Promise<T | "timeout" | undefined>,
+    options: ProviderLoginGateOptions,
   ): Promise<ProviderLoginGateOutcome> {
     const pullAndApply = async (): Promise<boolean> => {
       const pulled = await limit(deps.vault()?.sync?.(), SHORT_WAIT_GATE_LIMIT_MS);
@@ -1268,26 +1542,205 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       if ((await limit(pass([provider]), SHORT_WAIT_GATE_LIMIT_MS)) === "timeout") return false;
       return !expiringCopy(provider);
     };
+    const key = expiring.entry.source;
+    const running = takeovers.get(key);
     // A turn moments after one that waited in vain does not wait again: the 30 s tick still pulls.
     const recent = ownerOff.get(expiring.place);
-    if (recent && now() - recent.at < GATE_MAX_AGE_MS) return { result: "owner_off", provider, ownerLabel: recent.ownerLabel };
-    // Step 1: a newer copy may already be in the account.
-    if (await pullAndApply()) return { result: "ok" };
-    // Step 2: the owner may be renewing now (Grok renews 200 s before expiry).
-    const expiresAt = expiring.entry.expiresAt ?? 0;
-    if (now() < expiresAt + SHORT_WAIT_RENEWING_MS) {
-      const pollEnd = Math.min(now() + SHORT_WAIT_POLL_LIMIT_MS, started + SHORT_WAIT_GATE_LIMIT_MS - SHORT_WAIT_POLL_MS);
-      while (now() < pollEnd) {
-        await new Promise((resolve) => {
-          const timer = setTimeout(resolve, Math.max(0, Math.min(SHORT_WAIT_POLL_MS, pollEnd - now())));
-          timer.unref?.();
-        });
-        if (await pullAndApply()) return { result: "ok" };
+    if (!running && recent && now() - recent.at < GATE_MAX_AGE_MS) return { result: "owner_off", provider, ownerLabel: recent.ownerLabel };
+    const ownerLabel = ownerLabelOf(key);
+    try {
+      options.onWait?.(`Getting a fresh ${PROVIDER_NAMES[provider] ?? provider} sign-in from ${ownerLabel}…`);
+    } catch {
+      // The line is for the person; a caller's failure never holds the turn.
+    }
+    if (!running) {
+      // Step 1: a newer copy may already be in the account.
+      if (await pullAndApply()) return { result: "ok" };
+      // Step 2: the owner may be renewing now (Grok renews 200 s before expiry), until 60 s past expiry.
+      const expiresAt = expiring.entry.expiresAt ?? 0;
+      if (now() < expiresAt + SHORT_WAIT_RENEWING_MS) {
+        const pollEnd = Math.min(
+          now() + SHORT_WAIT_POLL_LIMIT_MS,
+          expiresAt + SHORT_WAIT_RENEWING_MS,
+          started + SHORT_WAIT_GATE_LIMIT_MS - SHORT_WAIT_POLL_MS,
+        );
+        while (now() < pollEnd) {
+          await delay(Math.min(SHORT_WAIT_POLL_MS, pollEnd - now()));
+          if (await pullAndApply()) return { result: "ok" };
+        }
       }
     }
-    const ownerLabel = ownerLabelOf(expiring.entry.source);
+    // Steps 3 and 4: the owner did not renew. Take the renewal over (only past
+    // expiry + 60 s), within what is left of the 45 s. A takeover that needs
+    // longer goes on after the turn, and the next turn gets its copy.
+    const took = await limit(takeover(provider, expiring.place, key), SHORT_WAIT_GATE_LIMIT_MS);
+    if (took === "renewed") return { result: "ok", renewedHere: true };
+    if (took === "fresh") return { result: "ok" };
     ownerOff.set(expiring.place, { ownerLabel, at: now() });
     return { result: "owner_off", provider, ownerLabel };
+  }
+
+  // ── The takeover by a cloud computer (step 3b, §5.3 steps 3 and 4) ───
+
+  type TakeoverResult = "renewed" | "fresh" | "none";
+  /** One takeover per sign-in at a time; a second turn waits on the same one. */
+  const takeovers = new Map<string, Promise<TakeoverResult>>();
+
+  function takeover(provider: ProviderLoginProvider, place: string, key: string): Promise<TakeoverResult> {
+    const running = takeovers.get(key);
+    if (running) return running;
+    const next = runTakeover(provider, place, key)
+      .catch((error): TakeoverResult => {
+        deps.logger.warn("provider_login.takeover_failed", { provider, name: error instanceof Error ? error.name : "unknown" });
+        return "none";
+      })
+      .finally(() => {
+        if (takeovers.get(key) === next) takeovers.delete(key);
+      });
+    takeovers.set(key, next);
+    return next;
+  }
+
+  /**
+   * Claim the renewal of one sign-in with the 60 s grace, wait the 30 s claim
+   * settle, check again, then get the full copy here (apply sees the new
+   * owner) and renew it: ADE's renew call for Codex and Grok (one CLI
+   * process), the CLI itself on start for Kimi and Pi. Capture then pushes
+   * the renewed copy into the same key, with this computer as the owner.
+   * "No renewals for nobody": only a sign-in that is on and in use for ADE
+   * Cloud, and only when a turn here waits for it.
+   */
+  async function runTakeover(provider: ProviderLoginProvider, place: string, key: string): Promise<TakeoverResult> {
+    const started = now();
+    const vault = deps.vault();
+    const machine = deps.machine();
+    const rotating = deps.rotatingVault?.() ?? null;
+    const how = TAKEOVER_HOW[provider];
+    const finish = (result: TakeoverResult, step: string): TakeoverResult => {
+      deps.logger.info("provider_login.takeover", { provider, step, result, ms: now() - started });
+      return result;
+    };
+    if (!vault || !machine || !rotating || !how) return finish("none", "unsupported");
+    if (how === "renew" && !deps.renewer?.aheadMs[provider]) return finish("none", "unsupported");
+    const signIn = signInsFromVault(vault, originId(machine.machineKey), cloudSetting(), machine.deviceId).find((entry) => entry.key === key);
+    if (!signIn || signIn.class !== "renewing" || !signIn.onForCloud || !signIn.inUseOnCloud) return finish("none", "not_in_use");
+    const ref = { scope: ACCOUNT_SCOPE_ALL, kind: PROVIDER_LOGIN_VAULT_KIND, key };
+    const decideOnce = (): Promise<RotatingRenewalVerdict> | null => {
+      const row = vault.list(ACCOUNT_SCOPE_ALL).find((entry) => entry.kind === PROVIDER_LOGIN_VAULT_KIND && entry.key === key);
+      const meta = row && !row.deleted ? metaFor(vault, row) : null;
+      const value = row && !row.deleted ? vault.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, key) : null;
+      if (!row || !meta || !value || meta.expiresAt == null) return null;
+      // Not past expiry + 60 s (and the last write + 60 s): the owner may still send it; nothing to claim.
+      const role = rotatingRenewalRole({
+        deviceId: machine.deviceId,
+        owner: row.refreshOwner,
+        expiresAtMs: meta.expiresAt,
+        updatedAtMs: Date.parse(row.updatedAt),
+        nowMs: now(),
+        graceMs: TAKEOVER_GRACE_MS,
+      });
+      if (role === "read") return Promise.resolve({ renew: false, reason: "other_owner" });
+      return decideRotatingRenewal({
+        vault: rotating,
+        deviceId: machine.deviceId,
+        ref,
+        expiresAtMs: meta.expiresAt,
+        currentValue: value,
+        nowMs: now(),
+        graceMs: TAKEOVER_GRACE_MS,
+        logger: deps.logger,
+        logContext: { provider },
+      });
+    };
+    let verdict = await decideOnce();
+    if (!verdict) return finish("none", "no_copy");
+    const claimed = !verdict.renew && (verdict.reason === "claimed" || verdict.reason === "claim_settling");
+    // A claim stands only after the settle: a second claimant's later write wins, and this one then reads instead.
+    for (let check = 0; check < 3 && !verdict.renew && (verdict.reason === "claimed" || verdict.reason === "claim_settling"); check += 1) {
+      if (check === 0) {
+        claimedAt.set(key, now());
+        deps.logger.info("provider_login.takeover_claimed", { provider, reason: verdict.reason });
+      }
+      await delay(ROTATING_CLAIM_SETTLE_MS + 250);
+      verdict = (await decideOnce()) ?? { renew: false, reason: "claim_failed" };
+    }
+    if (!verdict.renew) {
+      // Another computer renews it (another claimant stood, or the owner sent a
+      // copy): take what the account has. After a claim that lost, the claimant
+      // that stood renews in the next seconds, so pull a few times (the gate's
+      // limit still ends the turn's wait).
+      for (let pull = 0; ; pull += 1) {
+        await vault.sync?.().catch(() => undefined);
+        await pass([provider]);
+        if (!expiringCopy(provider)) return finish("fresh", verdict.reason);
+        if (!claimed || pull >= 3) return finish("none", verdict.reason);
+        await delay(SHORT_WAIT_POLL_MS);
+      }
+    }
+    // This computer owns the renewal now: the full copy here.
+    await pass([provider]);
+    const entry = appliedCache?.applied[place];
+    if (!entry?.owned || entry.source !== key) return finish("none", "no_full_copy");
+    if (how === "cli") return finish("renewed", "full_copy");
+    const answer = await deps.renewer!.renew(provider).catch(() => false);
+    if (!answer) return finish("none", answer === null ? "renew_busy" : "renew_failed");
+    // The renewed file is read once it is stable; capture pushes it into the same key, this computer the owner.
+    await delay(STABLE_AGE_MS + 250);
+    await pass([provider]);
+    return finish("renewed", "renewed");
+  }
+
+  // ── The write-back on the origin (step 3b) ───────────────────────────
+
+  /**
+   * Write the newer copy of this computer's own sign-in into its login file,
+   * after a cloud computer renewed it. Every limit, again, on the whole item:
+   * this computer made it (the same key and the same device), it is a
+   * renewing sign-in, another computer owns it now and renewed it, the copy
+   * here is of the same sign-in (its family is the item's, or one the item
+   * lists as earlier), the account is the same, the item's expiry is later,
+   * and the file here is still the copy capture last put in the account.
+   * `writeBackSignIn` checks the file again just before the rename.
+   */
+  async function writeBack(
+    candidate: { provider: ProviderLoginProvider; memo: LoginMemo; bundleId: string },
+    vault: ProviderLoginVault,
+    rows: Map<string, VaultRow>,
+    state: ProviderLoginStateFile,
+    machine: ProviderLoginMachine,
+  ): Promise<boolean> {
+    const { provider, memo } = candidate;
+    const row = rows.get(memo.key);
+    const payload = row && !row.deleted ? readProviderLoginPayload(vault.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, memo.key)) : null;
+    const parsedKey = parseProviderLoginKey(memo.key);
+    const refused = (reason: string): false => {
+      deps.logger.info("provider_login.write_back_skipped", { provider, slot: memo.slot, reason });
+      return false;
+    };
+    if (deps.cloudComputer || !row || !payload || !parsedKey) return refused("no_item");
+    if (parsedKey.origin12 !== originId(machine.machineKey) || payload.origin.deviceId !== machine.deviceId) return refused("not_origin");
+    if (payload.provider !== provider || payload.slot !== memo.slot || payload.class !== "renewing" || memo.class !== "renewing") return refused("not_renewing");
+    if (provider === "pi" && memo.slot === "anthropic") return refused("not_carried");
+    if (!row.refreshOwner || row.refreshOwner === machine.deviceId) return refused("own_owner");
+    if (!payload.renewedBy || payload.renewedAt == null || payload.renewedBy.machineKey === machine.machineKey) return refused("not_renewed_elsewhere");
+    if (payload.familyHash !== memo.familyHash && !payload.lineage.includes(memo.familyHash)) return refused("other_family");
+    if (!sameAccount(payload.account, memo.account)) return refused("other_account");
+    if (!laterExpiry(payload.expiresAt, memo.expiresAt)) return refused("not_newer");
+    if (state.pushed[memo.key]?.pushedHash !== memo.contentHash) return refused("local_changed");
+    const write = () => writeBackSignIn({ provider, slot: memo.slot, files: payload.files, parts: payload.parts, expectHash: memo.contentHash }, ctx);
+    // Under ADE's machine lock, so ADE's own keeper never renews this file at the same moment.
+    const result = deps.renewer?.withLock ? await deps.renewer.withLock(write) : await write();
+    if (!result) return refused("lock_busy");
+    if (!result.ok) return refused(result.reason === "write_failed" && result.code === "ELOCKED" ? "lock_busy" : result.reason);
+    const readBack = result.loginHashes[0] ?? payload.contentHash;
+    const renewedBy = payload.renewedBy.label || "another computer";
+    state.pushed[memo.key] = { pushedHash: readBack, familyHash: payload.familyHash, pushedAt: now(), absentSince: null, absentPasses: 0 };
+    state.writtenBack = { ...(state.writtenBack ?? {}), [memo.key]: { contentHash: readBack, familyHash: payload.familyHash, at: now(), renewedBy } };
+    // The marks moved: the next pass reads the file again and finds this copy.
+    bundleMemos.delete(candidate.bundleId);
+    deps.logger.info("provider_login.written_back", { provider, slot: memo.slot, renewedByCloud: payload.renewedBy.cloud === true });
+    noteProviderLoginChanged(provider);
+    return true;
   }
 
   /** The name of the computer that renews this sign-in: its origin unless another computer renewed it last. */
@@ -1301,11 +1754,11 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
   }
 
   // ── Renewal ahead on the owner computer (step 3a) ────────────────────
-  // Never on a cloud computer: its copies are access-only, and it never sets
-  // `refreshOwner`. The takeover by a cloud computer and the write-back to
-  // the origin are not built (open question 1).
+  // On a cloud computer only for a sign-in it took the renewal over for
+  // (step 3b): it owns it then and holds the full copy. It stops when the
+  // origin claims the renewal back.
 
-  const ownerRenewal = deps.renewer && !deps.cloudComputer
+  const ownerRenewal = deps.renewer
     ? createOwnerRenewal({
       renewer: deps.renewer,
       now,
@@ -1328,39 +1781,113 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
   /** Bumped by each plan, so an answer that comes late never undoes a newer plan. */
   let planGeneration = 0;
 
+  /** Claims this computer made (a takeover, or a claim back), by key: no renewal until the 30 s settle passes. */
+  const claimedAt = new Map<string, number>();
+  const claimBacks = new Set<string>();
+
   /**
    * The sign-ins this computer renews ahead, and only when all hold: capture
-   * is on (this runs at the end of a capture pass), the sign-in was made here
-   * and this computer is its owner, it is on and in use for ADE Cloud, ADE
-   * can make its CLI renew, and the account has a cloud computer.
+   * is on (this runs at the end of a capture pass), this computer is the
+   * owner, the sign-in is on and in use for ADE Cloud, ADE can make its CLI
+   * renew, and the account has a cloud computer. The owner is the origin, or
+   * a cloud computer that took the renewal over and holds the full copy
+   * (step 3b). On the origin, a sign-in another computer owns is claimed back
+   * by the normal rule (10 min past expiry) when the file here holds the
+   * account's newest copy.
    */
-  async function planRenewals(vault: ProviderLoginVault, machine: ProviderLoginMachine, origin12: string): Promise<void> {
-    if (!ownerRenewal || !deps.renewer) return;
-    const owners = new Map<string, string | null>();
+  async function planRenewals(vault: ProviderLoginVault, machine: ProviderLoginMachine, origin12: string, state: ProviderLoginStateFile): Promise<void> {
+    const rows = new Map<string, VaultRow>();
     for (const row of vault.list(ACCOUNT_SCOPE_ALL)) {
-      if (row.kind === PROVIDER_LOGIN_VAULT_KIND && !row.deleted) owners.set(row.key, row.refreshOwner);
+      if (row.kind === PROVIDER_LOGIN_VAULT_KIND && !row.deleted) rows.set(row.key, row);
     }
     // Owner only once the account service took this computer's write: a
     // queued write can still lose to the owner's newer one (the stale rule).
-    for (const key of vault.pendingKeys?.(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND) ?? []) owners.delete(key);
+    const pending = new Set(vault.pendingKeys?.(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND) ?? []);
     const targets: OwnerRenewTarget[] = [];
-    for (const signIn of signInsFromVault(vault, origin12, cloudSetting())) {
-      if (!signIn.origin.thisComputer || signIn.class !== "renewing" || !signIn.onForCloud || !signIn.inUseOnCloud) continue;
-      if (!deps.renewer.aheadMs[signIn.provider] || owners.get(signIn.key) !== machine.deviceId) continue;
+    for (const signIn of signInsFromVault(vault, origin12, cloudSetting(), machine.deviceId)) {
+      if (signIn.class !== "renewing" || !signIn.onForCloud || !signIn.inUseOnCloud) continue;
+      const row = rows.get(signIn.key);
+      if (!row || pending.has(signIn.key)) continue;
+      if (deps.cloudComputer) {
+        // A cloud computer renews only a sign-in it took over, while it holds the full copy.
+        const entry = appliedCache?.applied[cloudChoiceKey(signIn.provider, signIn.slot)];
+        if (signIn.origin.thisComputer || !entry?.owned || entry.source !== signIn.key) continue;
+      } else if (!signIn.origin.thisComputer) {
+        continue;
+      }
+      if (row.refreshOwner !== machine.deviceId) {
+        if (!deps.cloudComputer) maybeClaimBack(row, vault, machine, state);
+        continue;
+      }
+      // A takeover renews it now; the planner takes over from the copy it pushes.
+      if (takeovers.has(signIn.key)) continue;
+      const claimed = claimedAt.get(signIn.key);
+      if (claimed != null && now() - claimed < ROTATING_CLAIM_SETTLE_MS) continue;
+      if (!deps.renewer?.aheadMs[signIn.provider]) continue;
       const expiresAt = signIn.expiresAt ? Date.parse(signIn.expiresAt) : Number.NaN;
       if (Number.isFinite(expiresAt)) targets.push({ key: signIn.key, provider: signIn.provider, expiresAt });
     }
+    if (!ownerRenewal) return;
     const generation = ++planGeneration;
     if (!targets.length) {
       ownerRenewal.plan([]);
       return;
     }
     // Asked only now, when a sign-in is otherwise due. The pass never waits on
-    // it: a read can take seconds, and a later pass's plan wins.
-    const answer = deps.cloudComputerExists ? deps.cloudComputerExists().catch(() => null) : Promise.resolve(null);
+    // it: a read can take seconds, and a later pass's plan wins. A cloud
+    // computer is one, so it does not ask.
+    const answer = deps.cloudComputer
+      ? Promise.resolve(true)
+      : deps.cloudComputerExists ? deps.cloudComputerExists().catch(() => null) : Promise.resolve(null);
     void answer.then((exists) => {
       if (generation === planGeneration) ownerRenewal.plan(exists === true ? targets : []);
     });
+  }
+
+  /**
+   * The origin claims the renewal of its own sign-in back (§5.2): only by the
+   * normal rule (the owner sent nothing for 10 min past expiry), only when the
+   * file here holds the account's newest copy (captured, or written back), and
+   * never in the pass's path (the claim reads the vault and waits for it).
+   */
+  function maybeClaimBack(row: VaultRow, vault: ProviderLoginVault, machine: ProviderLoginMachine, state: ProviderLoginStateFile): void {
+    const key = row.key;
+    if (!row.refreshOwner || claimBacks.has(key)) return;
+    const meta = metaFor(vault, row);
+    if (!meta || meta.origin.deviceId !== machine.deviceId || meta.expiresAt == null) return;
+    const back = state.writtenBack?.[key];
+    const inStep = back ? back.familyHash === meta.familyHash : state.pushed[key]?.pushedHash === meta.contentHash;
+    if (!inStep) return;
+    const role = rotatingRenewalRole({
+      deviceId: machine.deviceId,
+      owner: row.refreshOwner,
+      expiresAtMs: meta.expiresAt,
+      updatedAtMs: Date.parse(row.updatedAt),
+      nowMs: now(),
+    });
+    if (role !== "claim") return;
+    const rotating = deps.rotatingVault?.() ?? null;
+    const value = vault.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, key);
+    if (!rotating || !value) return;
+    claimBacks.add(key);
+    const provider = meta.provider;
+    void decideRotatingRenewal({
+      vault: rotating,
+      deviceId: machine.deviceId,
+      ref: { scope: ACCOUNT_SCOPE_ALL, kind: PROVIDER_LOGIN_VAULT_KIND, key },
+      expiresAtMs: meta.expiresAt,
+      currentValue: value,
+      nowMs: now(),
+      logger: deps.logger,
+      logContext: { provider },
+    })
+      .then((verdict) => {
+        const claimed = !verdict.renew && verdict.reason === "claimed";
+        if (claimed) claimedAt.set(key, now());
+        deps.logger.info("provider_login.claim_back", { provider, result: verdict.renew ? "owner" : verdict.reason });
+      })
+      .catch(() => undefined)
+      .finally(() => claimBacks.delete(key));
   }
 
   // ── The person's Keychain read on a Mac (§3.7) ──────────────────────
@@ -1432,6 +1959,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
         familyHash: shortHash(login.familySecret),
         class: login.class,
         expiresAt: login.expiresAt,
+        account: login.account,
       };
       const decision = decide(memo, vault, rows, state, machine);
       local = decision.push ? push("antigravity", login, memo, vault, rows, state, machine) : decision.state;

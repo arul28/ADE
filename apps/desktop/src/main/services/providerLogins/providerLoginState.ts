@@ -37,7 +37,21 @@ export type ProviderLoginStateFile = {
   pushed: Record<string, PushedLogin>;
   /** The person's last Allow of a Keychain read, by provider (a Mac only): when, the slot, and the key it wrote. */
   keychain?: Record<string, { allowedAt: number; slot: string; key: string }>;
+  /**
+   * The write-back (step 3b), by vault key: the newer copy a cloud computer
+   * renewed, which ADE wrote into this computer's login file. `contentHash`
+   * is what capture reads back from it, so capture never pushes it again.
+   */
+  writtenBack?: Record<string, WrittenBack>;
+  /**
+   * This computer's sign-ins it removed from the account because the person
+   * signed out here, by vault key, with the time. A copy that comes back into
+   * the account while the person is still signed out here is removed again.
+   */
+  signedOut?: Record<string, number>;
 };
+
+export type WrittenBack = { contentHash: string; familyHash: string; at: number; renewedBy: string };
 
 export function emptyState(accountUserId: string | null): ProviderLoginStateFile {
   return { v: 1, accountUserId, bundles: {}, pushed: {} };
@@ -61,6 +75,8 @@ export function readProviderLoginState(adeDir: string, accountUserId: string | n
     bundles: isRecord(parsed.bundles) ? parsed.bundles as Record<string, BundleMarks> : {},
     pushed: isRecord(parsed.pushed) ? parsed.pushed as Record<string, PushedLogin> : {},
     ...(isRecord(parsed.keychain) ? { keychain: parsed.keychain as NonNullable<ProviderLoginStateFile["keychain"]> } : {}),
+    ...(isRecord(parsed.writtenBack) ? { writtenBack: parsed.writtenBack as Record<string, WrittenBack> } : {}),
+    ...(isRecord(parsed.signedOut) ? { signedOut: parsed.signedOut as Record<string, number> } : {}),
   };
 }
 
