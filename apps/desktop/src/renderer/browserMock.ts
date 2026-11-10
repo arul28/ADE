@@ -10395,6 +10395,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       autoApplyPending: null,
       autoApplySuppressedUntil: null,
     }),
+    laneShare: {
+      list: async () => ({ shares: [] }),
+      create: async () => { throw new Error("Lane sharing isn't available in the browser preview."); },
+      updateRights: async () => { throw new Error("Lane sharing isn't available in the browser preview."); },
+      revoke: async () => { throw new Error("Lane sharing isn't available in the browser preview."); },
+      resendInvite: async () => { throw new Error("Lane sharing isn't available in the browser preview."); },
+      listReceived: async () => ({ shares: [], pendingInvitesUnavailable: false }),
+      leave: async () => { throw new Error("Lane sharing isn't available in the browser preview."); },
+      onEvent: () => () => {},
+    },
     remoteMcpCall: async <T,>(action: RemoteMcpAction, args?: Record<string, unknown>): Promise<T> =>
       (await browserMockRemoteMcp(action, args)) as T,
     keepAwakeGet: resolved(MOCK_KEEP_AWAKE_SNAPSHOT),

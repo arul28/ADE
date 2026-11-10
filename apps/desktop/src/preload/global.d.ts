@@ -10,6 +10,19 @@ import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } fro
 import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
+import type {
+  LaneShareCreateArgs,
+  LaneShareCreateResult,
+  LaneShareEvent,
+  LaneShareLeaveResult,
+  LaneShareListArgs,
+  LaneShareListResult,
+  LaneShareReceivedResult,
+  LaneShareResendResult,
+  LaneShareRevokeResult,
+  LaneShareUpdateRightsArgs,
+  LaneShareUpdateRightsResult,
+} from "../shared/types/laneShare";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
 import type { UpdateTrack } from "../shared/updateTrack";
@@ -5202,6 +5215,22 @@ declare global {
         ) => Promise<CtoGetLinearOAuthSessionResult>;
         runProjectScan: (pin?: OpenProjectBinding | null) => Promise<CtoRunProjectScanResult>;
         getAttention: (pin?: OpenProjectBinding | null) => Promise<CtoAttentionState>;
+      };
+      /**
+       * The owner's lane sharing (`lane_share` runtime actions, user-only).
+       * A share lives on the lane's own machine: pass that machine's pin.
+       * No pin: the machine the project tab is bound to.
+       */
+      laneShare: {
+        list: (args?: LaneShareListArgs, pin?: OpenProjectBinding | null) => Promise<LaneShareListResult>;
+        create: (args: LaneShareCreateArgs, pin?: OpenProjectBinding | null) => Promise<LaneShareCreateResult>;
+        updateRights: (args: LaneShareUpdateRightsArgs, pin?: OpenProjectBinding | null) => Promise<LaneShareUpdateRightsResult>;
+        revoke: (args: { grantId: string }, pin?: OpenProjectBinding | null) => Promise<LaneShareRevokeResult>;
+        resendInvite: (args: { grantId: string }, pin?: OpenProjectBinding | null) => Promise<LaneShareResendResult>;
+        listReceived: (pin?: OpenProjectBinding | null) => Promise<LaneShareReceivedResult>;
+        leave: (args: { grantId: string }, pin?: OpenProjectBinding | null) => Promise<LaneShareLeaveResult>;
+        /** `lane_share_event` from the pinned machine, else the bound one. */
+        onEvent: (cb: (event: LaneShareEvent) => void, pin?: OpenProjectBinding | null) => () => void;
       };
       remoteMcpCall: <T = unknown>(
         action: RemoteMcpAction,

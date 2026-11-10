@@ -201,6 +201,18 @@ export function createAdeWebAdapter(
       target,
       reason: "Switch update tracks in the ADE desktop app on that computer.",
     }),
+    // The owner shares a lane from the desktop app on the account; the web
+    // client has no runtime action channel for the owner's lane_share verbs.
+    laneShare: {
+      list: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      create: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      updateRights: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      revoke: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      resendInvite: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      listReceived: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      leave: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      onEvent: () => () => {},
+    },
     // ADE MCP belongs to a physical machine; the manifest hides it on web.
     remoteMcpCall: async () => {
       throw new Error("Manage ADE MCP on the computer itself.");

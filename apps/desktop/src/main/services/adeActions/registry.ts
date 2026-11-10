@@ -4,7 +4,7 @@ import {
   writeSavedContinueAfterRestart,
 } from "../../../../../ade-cli/src/services/runtime/continueAfterRestartStore";
 import { readSavedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
-import { encodeCodedErrorMessage, isErrnoLikeCode } from "../../../shared/codedError";
+import { codedError, encodeCodedErrorMessage, isErrnoLikeCode } from "../../../shared/codedError";
 import { stampedAdeVersion } from "../../../../../ade-cli/src/services/remoteMcp/remoteMcpAccount";
 import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 import fs from "node:fs";
@@ -717,27 +717,50 @@ function buildRemoteMcpDomainService(runtime: AdeRuntime): OpaqueService | null 
  * Lane sharing, the owner's side (lanes on THIS machine). A renderer call for
  * a lane on another machine passes that machine's pin, so it runs there.
  */
+/**
+ * The host service throws `LaneShareHostError` with a `code`. Error fields do
+ * not cross IPC, so the code goes in the message (`code: sentence`), where
+ * `parseCodedErrorMessage` reads it. A directory refusal carries the
+ * directory's own code (`self_invite`, `guest_limit`, …).
+ */
+async function withLaneShareErrorCode<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    const coded = error as { name?: unknown; code?: unknown; directoryCode?: unknown; message?: unknown } | null;
+    if (coded?.name === "LaneShareHostError" && typeof coded.code === "string") {
+      const code = coded.code === "directory_refused" && typeof coded.directoryCode === "string" && coded.directoryCode
+        ? coded.directoryCode
+        : coded.code;
+      throw codedError(encodeCodedErrorMessage(code, String(coded.message ?? "")), code);
+    }
+    throw error;
+  }
+}
+
 function buildLaneShareDomainService(runtime: AdeRuntime): OpaqueService | null {
   const sync = runtime.syncService;
   const service = typeof sync?.getLaneShareService === "function" ? sync.getLaneShareService() : null;
   if (!service) return null;
   return {
-    create: (args?: Record<string, unknown>) => service.create({
+    create: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.create({
       laneId: args?.laneId,
       receiverEmail: args?.receiverEmail,
       rights: args?.rights,
       endsAt: args?.endsAt,
       confirmHighRisk: args?.confirmHighRisk,
-    }),
-    list: () => service.list(),
-    updateRights: (args?: Record<string, unknown>) => service.updateRights({
+    })),
+    list: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.list({ scope: args?.scope })),
+    updateRights: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.updateRights({
       grantId: args?.grantId,
       rights: args?.rights,
       endsAt: args?.endsAt,
       confirmHighRisk: args?.confirmHighRisk,
-    }),
-    revoke: (args?: Record<string, unknown>) => service.revoke({ grantId: args?.grantId }),
-    resendInvite: (args?: Record<string, unknown>) => service.resendInvite({ grantId: args?.grantId }),
+    })),
+    revoke: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.revoke({ grantId: args?.grantId })),
+    resendInvite: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.resendInvite({ grantId: args?.grantId })),
+    listReceived: () => withLaneShareErrorCode(() => service.listReceived()),
+    leave: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.leave({ grantId: args?.grantId })),
   };
 }
 

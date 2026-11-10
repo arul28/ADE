@@ -285,6 +285,7 @@ import {
   settingsHeldBesideEffortChange,
 } from "../../../shared/chatTurnStatus";
 import { Banner, NoticeChip, StatusChip, StatusStrip, noticeKindModel } from "../ui/notice";
+import { LaneShareComposerChip } from "../laneShare/LaneShareComposerChip";
 import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
   compareChatSessionsByEffectiveRecency,
@@ -18973,6 +18974,8 @@ export function AgentChatPane({
         {compactFirstChip}
         {mcpRefreshChip}
         {pendingSettingsChip}
+        {/* Lane sharing (owner view): who has access to this lane, who is here. Same machine as the chat. */}
+        {!forceDraft ? <LaneShareComposerChip pin={chatRuntimePin} laneId={composerDriftLaneId ?? null} laneName={laneDisplayLabel ?? null} /> : null}
         {sessionDelta ? (
           <StatusChip
             tone="neutral"

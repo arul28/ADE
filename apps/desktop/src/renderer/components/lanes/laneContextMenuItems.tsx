@@ -13,8 +13,10 @@ import {
   Path,
   PushPin,
   PushPinSlash,
+  ShareNetwork,
   Smiley,
   Stack,
+  UsersThree,
   X,
   type Icon,
 } from "@phosphor-icons/react";
@@ -37,6 +39,7 @@ import { LaneEmojiPicker } from "./LaneEmojiPicker";
 import { promptDialog } from "../ui/dialog";
 import { branchNameProblem } from "../../../shared/laneBranchName";
 import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
+import type { LaneMenuShareArgs } from "../laneShare/useLaneShareMenu";
 
 export function LaneMenuGlyph({ icon: Icon }: { icon: Icon }) {
   return (
@@ -126,6 +129,8 @@ export type LaneMenuArgs = {
    * that tab, so the session card's Lane submenu omits them.
    */
   omitTabActions?: boolean;
+  /** Lane sharing entries (`useLaneShareMenu`), already addressed to the lane's machine. */
+  share?: LaneMenuShareArgs | null;
 };
 
 /**
@@ -481,6 +486,21 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
   if (manage.length) {
     // Continues the tab actions' block: two one-row groups read as one.
     groups.push({ key: "manage", joinPrevious: groups[groups.length - 1]?.key === "tabs" && !groups[groups.length - 1]?.label, entries: manage });
+  }
+
+  // ── Share: only where the caller passes the lane's share entries.
+  const share = args.share;
+  if (share && lane) {
+    const shareEntries: LaneMenuEntry[] = [
+      { kind: "action", key: "share-lane", label: "Share lane…", icon: ShareNetwork, onSelect: () => { onClose(); share.onShare(); } },
+    ];
+    if (share.liveCount > 0) {
+      shareEntries.push(
+        { kind: "action", key: "manage-sharing", label: "Manage sharing…", icon: UsersThree, onSelect: () => { onClose(); share.onManage(); } },
+        { kind: "action", key: "stop-sharing", label: "Stop sharing with all", icon: X, onSelect: () => { onClose(); share.onStopAll(); } },
+      );
+    }
+    groups.push({ key: "share", entries: shareEntries });
   }
 
   return groups;

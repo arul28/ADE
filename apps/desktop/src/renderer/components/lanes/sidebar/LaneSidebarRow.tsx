@@ -1,6 +1,6 @@
 import React from "react";
 import { CircleDashed, CircleNotch, UsersThree } from "@phosphor-icons/react";
-import type { LaneListSnapshot, LaneSummary } from "../../../../shared/types";
+import type { LaneListSnapshot, LaneSummary, OpenProjectBinding } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { relativeTimeCompact } from "../../../lib/format";
 import { ToolLogo } from "../../terminals/ToolLogos";
@@ -18,6 +18,7 @@ import { LaneSidebarPrChip } from "./LaneSidebarPrChip";
 import { LaneMacDesktopPeek } from "../LaneMacDesktopPeek";
 import { MachineChip } from "../../shared/MachineChip";
 import { LaneEmojiGlyph } from "../LaneEmojiGlyph";
+import { LaneShareMark } from "../../laneShare/LaneShareMark";
 import type { MachineChipModel } from "../../../state/laneMachineRouting";
 import {
   laneAgentToolType,
@@ -71,6 +72,12 @@ export type LaneSidebarRowProps = {
    * page's own callbacks.
    */
   foreign?: boolean;
+  /**
+   * Where the lane's share mark reads: the lane's own id on its machine and
+   * that machine's pin. Omitted for a local row (its id, no pin). A foreign
+   * row without one shows no mark.
+   */
+  shareTarget?: { laneId: string; pin: OpenProjectBinding | null } | null;
   onSelect: (laneId: string, event: React.MouseEvent) => void;
   onContextMenu: (laneId: string, event: React.MouseEvent) => void;
   onOpenPr: (pr: LaneTabPrTag) => void;
@@ -222,11 +229,13 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
     machineChip = null,
     disabledReason = null,
     foreign = false,
+    shareTarget = null,
     onSelect,
     onContextMenu,
     onOpenPr,
     onOpenAgent,
   } = props;
+  const share = shareTarget ?? (foreign ? null : { laneId: lane.id, pin: null });
   const deleting = deleteStatusLabel != null;
   const unreachable = disabledReason != null;
   const branch = laneBranchLabel(lane.branchRef);
@@ -314,6 +323,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
           />
           <span className="min-w-0 truncate">{lane.name}</span>
         </span>
+        {share && !deleting ? <LaneShareMark laneId={share.laneId} laneName={lane.name} pin={share.pin} /> : null}
         {deleting || creating ? (
           <CircleNotch size={12} className="shrink-0 animate-spin" style={{ color: deleting ? COLORS.textMuted : COLORS.accent }} />
         ) : (

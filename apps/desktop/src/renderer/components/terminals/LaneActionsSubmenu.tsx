@@ -11,6 +11,7 @@ import { useLaneMenuActions } from "./useWorkLaneContextMenu";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { historyCommitsPath } from "../history/historyUrlHydration";
+import { useLaneShareMenu } from "../laneShare/useLaneShareMenu";
 
 /**
  * The lane menu, hosted as a submenu of a singleton lane's session menu.
@@ -86,6 +87,8 @@ export function LaneActionsSubmenu({
   const isForeignLane = Boolean(
     startChatMachineId && startChatMachineId !== boundMachineId,
   );
+  // The lane's machine: the session row's binding (null for the tab's own).
+  const share = useLaneShareMenu({ laneId: lane?.id ?? null, laneName: lane?.name ?? null, pin: binding ?? null });
   const actions = useLaneMenuActions({
     close: onClose,
     onManageLane: (id) => onManageLane(id, {
@@ -115,8 +118,10 @@ export function LaneActionsSubmenu({
       ...(openIn ? { openIn } : {}),
       runtimePin: binding,
       omitTabActions: isForeignLane,
+      share,
     });
   }, [
+    share,
     actions,
     binding,
     isForeignLane,

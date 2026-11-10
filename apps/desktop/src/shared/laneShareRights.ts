@@ -309,6 +309,30 @@ const TOOL_LABELS: Record<LaneShareToolDomain, string> = {
  * allows turns and has no message limit, and the agent's reach outside the
  * lane (the agent's own tools are not limited to the lane's worktree).
  */
+/**
+ * One sentence on what a low-risk share lets the person do, read from the
+ * rights (what they see, and whether they comment or write drafts). Shown when
+ * `laneShareRiskLevel` gives no reasons.
+ */
+export function laneShareLowRiskSummary(rights: LaneShareRights): string {
+  const seen: string[] = [];
+  if (rights.see.chats) seen.push(rights.see.subagentChats ? "chats and subagent chats" : "chats");
+  if (rights.see.cliSessions) seen.push("CLI sessions");
+  if (rights.see.shells) seen.push("shells (read only)");
+  const see = seen.length === 0
+    ? "This person sees nothing in the lane yet."
+    : `This person can see the lane's ${seen.length === 1 ? seen[0] : `${seen.slice(0, -1).join(", ")} and ${seen[seen.length - 1]}`}.`;
+  const comment = rights.speak.comment;
+  const drafts = rights.speak.drafts;
+  if (!comment && !drafts) return `Watch only. ${see}`;
+  const act = comment && drafts
+    ? "They can comment on replies and write drafts. Only you send a draft."
+    : comment
+      ? "They can comment on replies."
+      : "They can write drafts. Only you send a draft.";
+  return `${see} ${act} Nothing they do starts a turn.`;
+}
+
 export function laneShareRiskLevel(rights: LaneShareRights): { level: LaneShareRiskLevel; reasons: string[] } {
   const high: string[] = [];
   const medium: string[] = [];

@@ -1,3 +1,4 @@
+import type { LaneShareEvent } from "../../../../desktop/src/shared/types/laneShare";
 import { REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES } from "../../../../desktop/src/shared/projectIcons";
 import { readRecentHostStall } from "../runtime/hostStallRecord";
 import {
@@ -1486,14 +1487,8 @@ function toSyncPeerConnectionState(peer: PeerState, currentServerDbVersion: numb
   };
 }
 
-/** What the host tells the owner's app about a share (lane sharing). */
-export type LaneShareHostEvent = {
-  type: "lane_share_guest_turn_running";
-  grantId: string;
-  sessionId: string;
-  guestName: string | null;
-  message: string;
-};
+/** What the host tells the owner's clients about its shares (`lane_share_event`). */
+export type LaneShareHostEvent = LaneShareEvent;
 
 /** What the host did to close a share at once (revoke, lane deleted). */
 export type LaneShareCloseResult = {
@@ -3439,6 +3434,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return { closedConnections, removedQueuedMessages, runningTurnSessionIds };
   }
 
+  /** Tells the owner's clients that a guest device came or went (no names, no device ids). */
+  function emitLaneSharePresence(role: LaneShareGuestRole): void {
+    try {
+      args.onLaneShareEvent?.({ type: "lane_share_presence_changed", grantId: role.grantId, laneId: role.grants[0]?.laneId ?? null });
+    } catch {
+      // A listener failure never touches the connection.
+    }
+  }
+
   /** Connected devices of a grant's guest, for the owner's list. */
   function laneShareConnectedDevices(grantId: string): number {
     return connectedLaneShareGuests().filter((peer) => peer.laneShareGuest!.grantId === grantId).length;
@@ -3790,6 +3794,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         guestUserId: role.userId,
         grantCount: role.grants.length,
       });
+      emitLaneSharePresence(role);
     }
     peer.negotiatedCompression = negotiatedCompression;
     syncLaneShareRefreshTimer();
@@ -5638,6 +5643,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (peer.laneShareGuest) {
         laneShareGuestPeersBySocket.delete(peer.ws);
         syncLaneShareRefreshTimer();
+        emitLaneSharePresence(peer.laneShareGuest);
       }
       // Every Mac Desktop viewer this socket owned is gone. The release stops
       // the encoder when the set empties, same as a closing chat.

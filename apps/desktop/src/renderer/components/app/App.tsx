@@ -32,6 +32,7 @@ import {
   type InboundDeeplinkTarget,
 } from "./InboundDeeplinkModal";
 import { DialogHost } from "../ui/dialog/confirm";
+import { LaneShareSheetHost } from "../laneShare/LaneShareSheetHost";
 import { BrowserAgentAccessPromptHost } from "./BrowserAgentAccessPrompt";
 import { QuitPromptHost } from "./QuitPromptHost";
 import { GitFolderTrustPromptHost } from "./GitFolderTrustPrompt";
@@ -1727,6 +1728,8 @@ export function App() {
           </Routes>
           {/* The one host for confirmDialog / promptDialog (ui/dialog). */}
           <DialogHost />
+          {/* The lane share sheet, opened from any lane menu or mark. */}
+          <LaneShareSheetHost />
           {/* The guided tour after first-run setup, then contextual hints; both
               render nothing unless onboarding is on. */}
           <OnboardingTourHost />

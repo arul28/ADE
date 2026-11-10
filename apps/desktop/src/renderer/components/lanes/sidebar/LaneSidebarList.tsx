@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ListBullets, MagnifyingGlass, Plus, Rows, X } from "@phosphor-icons/react";
-import type { LaneDeleteProgress, LaneListSnapshot } from "../../../../shared/types";
+import type { LaneDeleteProgress, LaneListSnapshot, OpenProjectBinding } from "../../../../shared/types";
 import type { LaneRebaseLine } from "../laneRebaseNeeds";
 import type { LaneCatchUpTarget } from "../LaneCatchUpMenu";
 import type { CreatingIssuePlaceholder } from "../../../lib/launchedLanesHighlight";
@@ -80,6 +80,8 @@ export type LaneSidebarListProps = {
   onClearMultiSelection: () => void;
   /** Machine chip per row key; absent on a single-machine project. */
   machineChipByLaneId?: ReadonlyMap<string, MachineChipModel>;
+  /** Foreign rows: the lane's own id and its machine's pin, for the share mark. */
+  shareTargetByLaneId?: ReadonlyMap<string, { laneId: string; pin: OpenProjectBinding | null }>;
   /** Why a row cannot be acted on (its machine is offline), per row key. */
   disabledReasonByLaneId?: ReadonlyMap<string, string>;
   /** Row keys of lanes on machines other than the tab's. */
@@ -133,6 +135,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     onOpenAgent,
     onClearMultiSelection,
     machineChipByLaneId,
+    shareTargetByLaneId,
     disabledReasonByLaneId,
     foreignLaneIds,
     toolbar,
@@ -190,6 +193,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
         creating={!deleting && settingUpLaneIds.has(laneId)}
         needsYouReason={needsYouReasonByLaneId.get(laneId) ?? null}
         machineChip={machineChipByLaneId?.get(laneId) ?? null}
+        shareTarget={shareTargetByLaneId?.get(laneId) ?? null}
         disabledReason={disabledReasonByLaneId?.get(laneId) ?? null}
         foreign={foreignLaneIds?.has(laneId) ?? false}
         onSelect={onSelectRow}

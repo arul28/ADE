@@ -6,6 +6,12 @@ import {
   type LaneShareRiskLevel,
 } from "../../../../desktop/src/shared/laneShareRights";
 import type { LaneShareRightsStore, LaneShareUsage } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
+import type {
+  LaneShareEvent,
+  LaneShareGivenEntry,
+  LaneShareReceivedEntry,
+  LaneShareReceivedResult,
+} from "../../../../desktop/src/shared/types/laneShare";
 import {
   LaneShareGrantError,
   resolveLaneShareDirectoryBase,
@@ -54,30 +60,7 @@ export class LaneShareHostError extends Error {
   }
 }
 
-/** One share as the owner's list shows it. */
-export type LaneShareGivenEntry = {
-  grantId: string;
-  laneId: string;
-  receiverEmail: string | null;
-  state: string;
-  endsAt: number | null;
-  createdAt: number | null;
-  acceptedAt: number | null;
-  /**
-   * Null for a share this machine holds no rights for (made on another
-   * machine, the store was lost, or a revoke that did not reach the
-   * directory). Such a guest gets nothing; see `needsRights`.
-   */
-  rights: LaneShareRights | null;
-  /**
-   * A live grant (pending or active) with no rights on this machine: the
-   * guest is refused until the owner sets rights here or revokes the share.
-   */
-  needsRights: boolean;
-  risk: { level: LaneShareRiskLevel; reasons: string[] } | null;
-  usage: LaneShareUsage | null;
-  connectedDevices: number;
-};
+export type { LaneShareGivenEntry } from "../../../../desktop/src/shared/types/laneShare";
 
 type HostControls = {
   applyLaneShareRights(grantId: string): number;
@@ -123,6 +106,38 @@ function directoryError(status: number, body: unknown): LaneShareHostError {
   return new LaneShareHostError("directory_refused", message, code);
 }
 
+const RISK_LEVELS = new Set<string>(["low", "medium", "high"]);
+
+const str = (value: unknown): string | null => (typeof value === "string" && value ? value : null);
+const num = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+const riskLabel = (value: unknown): LaneShareRiskLevel | null =>
+  typeof value === "string" && RISK_LEVELS.has(value) ? value as LaneShareRiskLevel : null;
+
+function isGrantRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object"
+    && typeof (value as { id?: unknown }).id === "string" && GRANT_ID.test((value as { id: string }).id);
+}
+
+/** A received grant as the "Shared with me" list shows it. Display fields only. */
+function receivedEntry(grant: Record<string, unknown>): LaneShareReceivedEntry {
+  return {
+    grantId: grant.id as string,
+    state: str(grant.state) ?? "unknown",
+    laneId: str(grant.laneId) ?? "",
+    repoKey: str(grant.repoKey),
+    projectLabel: str(grant.projectLabel),
+    laneLabel: str(grant.laneLabel),
+    preset: str(grant.preset),
+    risk: riskLabel(grant.risk),
+    giverLabel: str(grant.giverLabel),
+    receiverEmail: str(grant.receiverEmail),
+    endsAt: num(grant.endsAt),
+    inviteExpiresAt: num(grant.inviteExpiresAt),
+    createdAt: num(grant.createdAt),
+    acceptedAt: num(grant.acceptedAt),
+  };
+}
+
 function grantIdOf(body: unknown): string | null {
   const grant = body && typeof body === "object" ? (body as { grant?: { id?: unknown } }).grant : null;
   return typeof grant?.id === "string" && GRANT_ID.test(grant.id) ? grant.id : null;
@@ -152,6 +167,8 @@ export function createLaneShareHostService(options: {
   getLaneLabel: (laneId: string) => string | null;
   /** A fresh grant read, so a new or changed share reaches the host gates now. */
   refreshGrants?: () => Promise<unknown>;
+  /** A share of this machine changed; the owner's lists read it again. */
+  onEvent?: (event: LaneShareEvent) => void;
   now?: () => number;
   logger?: { info(event: string, fields?: Record<string, unknown>): void; warn(event: string, fields?: Record<string, unknown>): void };
 }) {
@@ -174,6 +191,14 @@ export function createLaneShareHostService(options: {
 
   const refresh = (): void => {
     void options.refreshGrants?.().catch(() => {});
+  };
+
+  const changed = (grantId: string | null, laneId: string | null): void => {
+    try {
+      options.onEvent?.({ type: "lane_share_changed", grantId, laneId });
+    } catch {
+      // A listener failure never fails the write.
+    }
   };
 
   const invite = async (laneId: string, receiverEmail: string, rights: LaneShareRights, risk: LaneShareRiskLevel, endsAt: number | null | undefined) => {
@@ -200,17 +225,29 @@ export function createLaneShareHostService(options: {
   const usageOf = (grantId: string): LaneShareUsage | null =>
     options.store.get(grantId) ? options.store.usage(grantId) : null;
 
-  /** The directory's given grants of this machine, as raw records. */
-  const givenGrants = async (): Promise<Record<string, unknown>[]> => {
-    const machineKey = options.getMachineKey().trim();
+  /** Every grant the account gave, on any machine, as raw records. */
+  const accountGrants = async (): Promise<Record<string, unknown>[]> => {
     const body = await request("GET", "/lane-shares/given");
     const grants = body && typeof body === "object" && Array.isArray((body as { grants?: unknown }).grants)
       ? (body as { grants: unknown[] }).grants
       : [];
-    return grants.filter((value): value is Record<string, unknown> =>
-      Boolean(value) && typeof value === "object"
-      && typeof (value as { id?: unknown }).id === "string" && GRANT_ID.test((value as { id: string }).id)
-      && (value as { machineKey?: unknown }).machineKey === machineKey);
+    return grants.filter(isGrantRecord);
+  };
+
+  /**
+   * Whether a directory grant belongs to this runtime: this machine and this
+   * project's repo. The rights store is per project, so a grant of another
+   * project on this machine is not "needs rights" here. A grant with no repo
+   * key (a directory older than repo keys) is read as this project's.
+   */
+  const isOwnGrant = (grant: Record<string, unknown>, machineKey: string, repoKey: string | null): boolean =>
+    grant.machineKey === machineKey && (typeof grant.repoKey !== "string" || grant.repoKey === repoKey);
+
+  /** The directory's given grants of this machine and project, as raw records. */
+  const givenGrants = async (): Promise<Record<string, unknown>[]> => {
+    const machineKey = options.getMachineKey().trim();
+    const repoKey = options.getRepoKey();
+    return (await accountGrants()).filter((grant) => isOwnGrant(grant, machineKey, repoKey));
   };
 
   /** A live (pending or active) grant of this machine, from the directory. */
@@ -235,51 +272,109 @@ export function createLaneShareHostService(options: {
       }
       const receiverEmail = cleanEmail(args.receiverEmail);
       if (!receiverEmail) throw new LaneShareHostError("invalid_args", "That email address isn't valid.");
-      const { rights, risk } = checkedRights(args.rights, args.confirmHighRisk);
+      const { rights: asked, risk } = checkedRights(args.rights, args.confirmHighRisk);
       const endsAt = cleanEndsAt(args.endsAt, now());
+      // The host enforces the end date from its own rights, as an edit keeps it.
+      const rights = endsAt !== undefined ? { ...asked, limits: { ...asked.limits, endsAt } } : asked;
       const { grantId, body } = await invite(laneId, receiverEmail, rights, risk.level, endsAt);
       const record = options.store.put({ grantId, laneId, receiverEmail, rights });
       options.logger?.info("lane_share.host_created", { grantId, risk: risk.level });
       refresh();
+      changed(grantId, laneId);
       return { grantId, rights: record.rights, risk, directory: body };
     },
 
-    /** This machine's shares: the directory's list for this machine, with local rights, usage and connections. */
-    async list(): Promise<{ shares: LaneShareGivenEntry[] }> {
-      const grants = await givenGrants();
+    /**
+     * This machine's shares of this project: the directory's list, with local
+     * rights, usage and connections. `scope: "account"` lists every share the
+     * account gave, on any machine; only the rows of this machine and project
+     * carry rights, usage and connections (`local: true`).
+     */
+    async list(args: { scope?: unknown } = {}): Promise<{ shares: LaneShareGivenEntry[] }> {
+      const machineKey = options.getMachineKey().trim();
+      const repoKey = options.getRepoKey();
+      const grants = args.scope === "account"
+        ? await accountGrants()
+        : (await accountGrants()).filter((grant) => isOwnGrant(grant, machineKey, repoKey));
       const host = options.getHost();
       const shares: LaneShareGivenEntry[] = [];
       for (const grant of grants) {
         const grantId = grant.id as string;
         const state = typeof grant.state === "string" ? grant.state : "unknown";
+        const live = state === "pending" || state === "active";
+        const laneId = typeof grant.laneId === "string" ? grant.laneId : "";
+        const base = {
+          grantId,
+          laneId,
+          receiverEmail: str(grant.receiverEmail),
+          state,
+          endsAt: num(grant.endsAt),
+          createdAt: num(grant.createdAt),
+          acceptedAt: num(grant.acceptedAt),
+          inviteExpiresAt: num(grant.inviteExpiresAt),
+          link: str(grant.link),
+          repoKey: str(grant.repoKey),
+          projectLabel: str(grant.projectLabel),
+          laneLabel: str(grant.laneLabel),
+          preset: str(grant.preset),
+          directoryRisk: riskLabel(grant.risk),
+          machineKey: str(grant.machineKey),
+        };
+        if (!isOwnGrant(grant, machineKey, repoKey)) {
+          shares.push({
+            ...base,
+            local: false,
+            rights: null,
+            needsRights: false,
+            risk: null,
+            usage: null,
+            connectedDevices: 0,
+            laneState: null,
+          });
+          continue;
+        }
         let record = options.store.get(grantId);
         // A final grant's rights and records go (kept until the grant is final).
-        if (record && state !== "pending" && state !== "active") {
+        if (record && !live) {
           options.store.delete(grantId);
         }
         // Rights stored for another lane than the directory's grant are not
         // this share's: they go, and the share needs rights again.
-        if (record && typeof grant.laneId === "string" && record.laneId !== grant.laneId) {
+        if (record && laneId && record.laneId !== laneId) {
           options.store.deleteRights(grantId);
           record = null;
         }
-        const live = state === "pending" || state === "active";
         shares.push({
-          grantId,
-          laneId: typeof grant.laneId === "string" ? grant.laneId : "",
-          receiverEmail: typeof grant.receiverEmail === "string" ? grant.receiverEmail : null,
-          state,
-          endsAt: typeof grant.endsAt === "number" ? grant.endsAt : null,
-          createdAt: typeof grant.createdAt === "number" ? grant.createdAt : null,
-          acceptedAt: typeof grant.acceptedAt === "number" ? grant.acceptedAt : null,
+          ...base,
+          local: true,
           rights: live && record ? record.rights : null,
           needsRights: live && !record,
           risk: live && record ? laneShareRiskLevel(record.rights) : null,
           usage: live ? usageOf(grantId) : null,
           connectedDevices: live ? host?.laneShareConnectedDevices(grantId) ?? 0 : 0,
+          laneState: laneId ? options.store.laneState(laneId) : "unknown",
         });
       }
       return { shares };
+    },
+
+    /** Shares other accounts gave this account (the "Shared with me" list). Display only. */
+    async listReceived(): Promise<LaneShareReceivedResult> {
+      const body = await request("GET", "/lane-shares/received");
+      const record = body && typeof body === "object" ? body as { grants?: unknown; pendingInvitesUnavailable?: unknown } : {};
+      const grants = Array.isArray(record.grants) ? record.grants.filter(isGrantRecord) : [];
+      return {
+        shares: grants.map(receivedEntry),
+        pendingInvitesUnavailable: record.pendingInvitesUnavailable === true,
+      };
+    },
+
+    /** Leaves a share given to this account, or declines its invite. */
+    async leave(args: { grantId: unknown }): Promise<{ grantId: string; state: string }> {
+      const grantId = cleanGrantId(args.grantId);
+      const body = await request("POST", `/lane-shares/${encodeURIComponent(grantId)}/leave`);
+      const grant = body && typeof body === "object" ? (body as { grant?: { state?: unknown } }).grant : null;
+      return { grantId, state: str(grant?.state) ?? "left" };
     },
 
     /**
@@ -319,6 +414,7 @@ export function createLaneShareHostService(options: {
         options.logger?.warn("lane_share.host_edit_directory_failed", { grantId, code: (error as LaneShareHostError).code ?? null });
       }
       refresh();
+      changed(grantId, record.laneId);
       return { grantId, rights: record.rights, risk, appliedConnections, directorySynced, directoryMessage };
     },
 
@@ -330,6 +426,7 @@ export function createLaneShareHostService(options: {
      */
     async revoke(args: { grantId: unknown }) {
       const grantId = cleanGrantId(args.grantId);
+      const laneId = options.store.get(grantId)?.laneId ?? null;
       // No await before this line and the close: no hello or action of the
       // guest can pass in between.
       options.store.deleteRights(grantId);
@@ -353,6 +450,7 @@ export function createLaneShareHostService(options: {
         directoryRevoked,
       });
       refresh();
+      changed(grantId, laneId);
       return { grantId, ...closed, directoryRevoked, directoryMessage };
     },
 
@@ -367,12 +465,15 @@ export function createLaneShareHostService(options: {
         // The directory made a new grant (the old one closed): keep the rights under it.
         options.store.put({ grantId: sentId, laneId: record.laneId, receiverEmail: record.receiverEmail, rights: record.rights });
       }
+      changed(sentId, record.laneId);
       return { grantId: sentId, directory: body };
     },
 
     /** Lane archived: every share of it pauses (connections close; a hello is refused until unarchived). */
     pauseLane(laneId: string): number {
-      return options.getHost()?.closeLaneShareLane(laneId, "The owner paused this shared lane") ?? 0;
+      const closed = options.getHost()?.closeLaneShareLane(laneId, "The owner paused this shared lane") ?? 0;
+      changed(null, laneId);
+      return closed;
     },
 
     /** Lane deleted: every share of it ends, here first (as in `revoke`), then in the directory. */
@@ -396,6 +497,7 @@ export function createLaneShareHostService(options: {
         }
       }
       refresh();
+      changed(null, laneId);
       return ended;
     },
   };

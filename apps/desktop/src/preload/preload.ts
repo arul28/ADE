@@ -1,5 +1,18 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
+import type {
+  LaneShareCreateArgs,
+  LaneShareCreateResult,
+  LaneShareEvent,
+  LaneShareLeaveResult,
+  LaneShareListArgs,
+  LaneShareListResult,
+  LaneShareReceivedResult,
+  LaneShareResendResult,
+  LaneShareRevokeResult,
+  LaneShareUpdateRightsArgs,
+  LaneShareUpdateRightsResult,
+} from "../shared/types/laneShare";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
 import type { NewLaneDefaults } from "../shared/laneStart";
@@ -2388,6 +2401,21 @@ function callPinnedOrBoundRuntimeActionOr<T>(
 }
 
 /**
+ * A lane share action on the lane's own machine: the pin, else the tab's
+ * bound runtime. The shares live in that machine's brain; this Electron
+ * process holds none, so with no runtime the call fails with a reason.
+ */
+function callLaneShareAction<T>(
+  action: string,
+  args: Record<string, unknown>,
+  pin: OpenProjectBinding | null | undefined,
+): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr<T>(pin, "lane_share", action, { args }, async () => {
+    throw new Error("lane_share_no_runtime: Lane sharing needs the project's ADE brain. Open the project and try again.");
+  });
+}
+
+/**
  * The lane machine's dev servers. The runtime's list is the source; this
  * Electron process's own registry is added only when the lane is on this
  * computer, because it describes this computer's terminals. A runtime too old
@@ -3152,6 +3180,11 @@ const remoteDevServerEventFanout = createRemoteRuntimeFanout<DevServerEvent>({
   label: "dev server",
   onSubscribe: () => ensureRemoteRuntimeEventPump(),
 });
+const remoteLaneShareEventFanout = createRemoteRuntimeFanout<LaneShareEvent>({
+  eventType: "lane_share_event",
+  label: "lane share",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
 const remoteWorkToolShowRequestFanout = createRemoteRuntimeFanout<WorkToolShowRequest>({
   eventType: WORK_TOOL_SHOW_REQUEST_EVENT,
   label: "work tool show request",
@@ -3198,6 +3231,7 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteBuiltInBrowserRemoteCallFanout,
   remoteWorkToolShowRequestFanout,
   remoteDevServerEventFanout,
+  remoteLaneShareEventFanout,
 ];
 
 function createLocalIpcEventSubscription<T>(
@@ -14435,6 +14469,31 @@ const adeBridge = {
     pin
       ? Promise.resolve({ ok: false, error: "Open Settings on the selected Mac to change lid-closed mode." })
       : ipcRenderer.invoke(IPC.keepAwakeApplyLidClosed, disabled),
+  laneShare: {
+    list: (args?: LaneShareListArgs, pin?: OpenProjectBinding | null): Promise<LaneShareListResult> =>
+      callLaneShareAction<LaneShareListResult>("list", { ...(args ?? {}) }, pin),
+    create: (args: LaneShareCreateArgs, pin?: OpenProjectBinding | null): Promise<LaneShareCreateResult> =>
+      callLaneShareAction<LaneShareCreateResult>("create", { ...args }, pin),
+    updateRights: (args: LaneShareUpdateRightsArgs, pin?: OpenProjectBinding | null): Promise<LaneShareUpdateRightsResult> =>
+      callLaneShareAction<LaneShareUpdateRightsResult>("updateRights", { ...args }, pin),
+    revoke: (args: { grantId: string }, pin?: OpenProjectBinding | null): Promise<LaneShareRevokeResult> =>
+      callLaneShareAction<LaneShareRevokeResult>("revoke", { grantId: args.grantId }, pin),
+    resendInvite: (args: { grantId: string }, pin?: OpenProjectBinding | null): Promise<LaneShareResendResult> =>
+      callLaneShareAction<LaneShareResendResult>("resendInvite", { grantId: args.grantId }, pin),
+    listReceived: (pin?: OpenProjectBinding | null): Promise<LaneShareReceivedResult> =>
+      callLaneShareAction<LaneShareReceivedResult>("listReceived", {}, pin),
+    leave: (args: { grantId: string }, pin?: OpenProjectBinding | null): Promise<LaneShareLeaveResult> =>
+      callLaneShareAction<LaneShareLeaveResult>("leave", { grantId: args.grantId }, pin),
+    onEvent: (cb: (event: LaneShareEvent) => void, pin?: OpenProjectBinding | null): (() => void) => {
+      const removePinned = subscribePinnedProjectRuntimeEvents(
+        pin,
+        (payload) => toWrappedEvent<LaneShareEvent>(payload, "lane_share_event"),
+        cb,
+        "lane share",
+      );
+      return removePinned ?? remoteLaneShareEventFanout.subscribe(cb);
+    },
+  },
   // ADE MCP is a "This computer" section like keep-awake: no pin means
   // this machine's own brain (through main), a pin means that machine's brain.
   remoteMcpCall: async <T = unknown>(

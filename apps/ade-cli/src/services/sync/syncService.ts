@@ -714,6 +714,7 @@ export function createSyncService(args: SyncServiceArgs) {
     getProjectLabel: () => path.basename(args.projectRoot) || null,
     getLaneLabel: (laneId) => args.laneService.findLaneIdentity(laneId)?.name ?? null,
     refreshGrants: () => laneShareGrants.refresh(),
+    onEvent: (event) => args.onLaneShareEvent?.(event),
     logger: args.logger,
   });
   const isRelayAccountSignedIn = (): boolean => {
