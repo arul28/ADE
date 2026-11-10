@@ -18,6 +18,7 @@ import { runWithAbortSignal } from "./abortSignal";
 import {
   closeSocketQuietly,
   createSyncTerminalStreams,
+  normalizeTerminalInputId,
   type SyncTerminalTarget,
 } from "./syncTerminalStreams";
 import {
@@ -2685,13 +2686,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   });
   /**
    * Where a `terminal_*` envelope goes: this project, another open project of
-   * this machine, or nowhere (null) when its scope is refused.
+   * this machine, or nowhere (null) when its scope is refused. A lane share
+   * guest only ever reaches this host's own project: never a route to another.
    */
   function terminalTargetFor(
+    peer: PeerState,
     envelope: ParsedSyncEnvelope,
     scope: SyncHostProjectScopeResolution,
   ): SyncTerminalTarget | null {
     if (scope.ok) return { kind: "hosted" };
+    if (peer.laneShareGuest) return null;
     if (scope.code !== "project_mismatch" || !args.projectScopes) return null;
     return syncTerminalProjectTarget(envelope);
   }
@@ -2951,7 +2955,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     isPeerLifecycleCurrent,
     clearPeerAuthTimeout,
     discardChatEventCoalescer,
-    clearTerminalSnapshotBarrier,
     isDisposed: () => disposed,
     getLocalActiveLaneIds: () => localActiveLaneIds,
     heartbeatIntervalMs,
@@ -7453,7 +7456,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           args.projectId,
           hostProjectIdAliases,
         );
-        await terminalStreams.handleInput(peer, envelope, terminalTargetFor(envelope, projectScope));
+        await terminalStreams.handleInput(peer, envelope, terminalTargetFor(peer, envelope, projectScope));
       });
       peer.terminalInputQueue = work.catch((error) => {
         args.logger.warn("sync_host.terminal_input_failed", {
@@ -8443,6 +8446,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           args.projectId,
           hostProjectIdAliases,
         );
+    // Lane sharing: a guest's envelope that names another project never takes
+    // a route to this machine's other projects (terminals, files). Like every
+    // refused guest envelope it gets no reply, so a guest cannot probe which
+    // projects are open here.
+    if (peer.laneShareGuest && !projectScope.ok) {
+      args.logger.warn("sync_host.lane_share_guest_refused_envelope", {
+        type: envelope.type,
+        guestUserId: peer.laneShareGuest.userId,
+        code: projectScope.code,
+      });
+      return;
+    }
     const executeFileRequest = args.remoteCommandExecutor?.executeFileRequest;
     if (
       !projectScope.ok
@@ -8468,7 +8483,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
     if (!projectScope.ok && isSyncTerminalEnvelopeType(envelope.type)) {
       // A phone opening a terminal of this machine's other open project.
-      const terminalTarget = terminalTargetFor(envelope, projectScope);
+      const terminalTarget = terminalTargetFor(peer, envelope, projectScope);
       if (terminalTarget) {
         if (envelope.type === "terminal_input") {
           await terminalStreams.handleInput(peer, envelope, terminalTarget);

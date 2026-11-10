@@ -4805,6 +4805,10 @@ describe("sync host account authentication", () => {
       laneShareMoves?: Record<string, unknown>;
       /** The host's operating system. Default darwin, so a row means the same on every test machine. */
       platform?: NodeJS.Platform;
+      /** This machine's other open projects, for the routed terminal and file paths. */
+      projectScopes?: { getIfBooted: (projectId: string) => Promise<unknown> | null };
+      /** Runs a file read in another open project (the routed file path). */
+      executeFileRequest?: (...callArgs: unknown[]) => unknown;
     } = {}) {
       const { projectRoot, cleanup } = createTempProjectRoot();
       const baseArgs = createHostArgs(projectRoot, []);
@@ -4935,6 +4939,8 @@ describe("sync host account authentication", () => {
         getLaneShareRepoKey: () => "repo:github.com/acme/widgets",
         laneShareMoves: options.laneShareMoves ?? null,
         platform: options.platform ?? "darwin",
+        ...(options.projectScopes ? { projectScopes: options.projectScopes as never } : {}),
+        ...(options.executeFileRequest ? { remoteCommandExecutor: { executeFileRequest: options.executeFileRequest } as never } : {}),
         onLaneShareEvent: laneShareEvents,
         agentChatService,
         sessionService: {
@@ -5327,16 +5333,20 @@ describe("sync host account authentication", () => {
       }
     });
 
-    it.each([
+    // The host also serves this machine's other open projects (`rosterTerminal`):
+    // a guest's envelope that names one never reaches them.
+    it.each<[string, string, Record<string, unknown>, string?]>([
       ["a terminal resize", "terminal_resize", { sessionId: "session-shared", cols: 10, rows: 5 }],
       ["a file read", "file_request", { action: "readFile", args: { laneId: sharedLane, path: "README.md" } }],
       ["a runtime RPC channel", "rpc_open", { channelId: "c1" }],
       ["a changeset", "changeset_batch", { batchId: "b1", fromDbVersion: 0, toDbVersion: 1, changes: [] }],
       ["a roster subscription", "roster_subscribe", {}],
       ["a project catalog request", "project_catalog_request", {}],
-    ])("drops %s from a guest without an answer", async (_label, type, payload) => {
+      ["a terminal subscribe in another open project", "terminal_subscribe", { sessionId: "session-shared", maxBytes: 1_000 }, "project-2"],
+    ])("drops %s from a guest without an answer", async (_label, type, payload, projectId = "project-1") => {
       const directory = fakeDirectory(grantsBody([grant()]));
-      const env = await startGuestHost(directory);
+      const getIfBooted = vi.fn(() => null);
+      const env = await startGuestHost(directory, { projectScopes: { getIfBooted } });
       let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
       try {
         guest = await connectGuest(env.port, env.proof, directory);
@@ -5356,7 +5366,7 @@ describe("sync host account authentication", () => {
         guest.client.ws.send(encodeSyncEnvelope({
           type: type as never,
           requestId: `dropped-${type}`,
-          projectId: "project-1",
+          projectId,
           payload,
         }));
         // Envelopes from one socket are handled in order: the command's result
@@ -5365,6 +5375,7 @@ describe("sync host account authentication", () => {
         const answered = guest.client.envelopes.slice(before).filter((entry) => entry.requestId === `dropped-${type}`);
         expect(answered).toEqual([]);
         expect(env.effects).not.toHaveBeenCalled();
+        expect(getIfBooted).not.toHaveBeenCalled();
         expect(guest.client.ws.readyState).toBe(WebSocket.OPEN);
       } finally {
         await env.close([guest?.client ?? null]);
@@ -6553,7 +6564,7 @@ describe("sync host account authentication", () => {
         }
       });
 
-      it.each<[string, string, Record<string, unknown>, boolean]>([
+      it.each([
         ["a path that climbs out of the worktree", "git.getFile", { laneId: sharedLane, path: "../other-lane/secret.env", mode: "unstaged" }, false],
         ["an absolute path", "git.getFile", { laneId: sharedLane, path: "/etc/passwd", mode: "unstaged" }, false],
         ["a compare ref", "git.getFile", { laneId: sharedLane, path: "src/a.ts", mode: "commit", compareRef: "main" }, false],
@@ -6563,15 +6574,19 @@ describe("sync host account authentication", () => {
         ["a file read in another lane", "file:readFile", { workspaceId: privateLane, path: "README.md" }, false],
         ["a file write", "file:writeText", { workspaceId: sharedLane, path: "README.md", text: "x" }, false],
         ["a file read in the worktree", "file:readFile", { workspaceId: sharedLane, path: "README.md" }, true],
+        // This machine's other open projects are served too: a guest never reaches one.
+        ["a file read that names another open project", "file:readFile", { workspaceId: sharedLane, path: "README.md" }, false, "project-2"],
         ["a commit read by a name, not a hash", "git.getCommitMessage", { laneId: sharedLane, commitSha: "main" }, false],
         ["a commit read the git service checks against the lane's history", "git.listCommitFiles", { laneId: sharedLane, commitSha: "a".repeat(40) }, true],
-      ])("tool reads: refuses %s", async (_label, action, args, allowed) => {
+      ] as Array<[string, string, Record<string, unknown>, boolean, string?]>)("tool reads: refuses %s", async (_label, action, args, allowed, projectId = "project-1") => {
         const rights = laneSharePresetRights("watch");
         rights.tools.diff = true;
         rights.tools.file = true;
         rights.tools.git = true;
         const directory = fakeDirectory(grantsBody([grant()]));
-        const env = await startGuestHost(directory, { rights });
+        const getIfBooted = vi.fn(() => Promise.resolve({ runtime: {} }));
+        const executeFileRequest = vi.fn(async () => ({ ok: true }));
+        const env = await startGuestHost(directory, { rights, projectScopes: { getIfBooted }, executeFileRequest });
         let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
         try {
           guest = await connectGuest(env.port, env.proof, directory);
@@ -6579,12 +6594,14 @@ describe("sync host account authentication", () => {
             guest.client.ws.send(encodeSyncEnvelope({
               type: "file_request",
               requestId: "file",
-              projectId: "project-1",
+              projectId,
               payload: { action: action.slice(5), args },
             }));
             await runCommand(guest.client, "after-file", "chat.getSummary", { sessionId: "session-shared" });
             const calls = env.effects.mock.calls.filter(([name]) => String(name).startsWith("files."));
             expect(calls.length > 0).toBe(allowed);
+            expect(executeFileRequest).not.toHaveBeenCalled();
+            expect(getIfBooted).not.toHaveBeenCalled();
             if (allowed) expect(calls[0]![1]).toMatchObject({ workspaceId: sharedLane, path: "README.md", includeIgnored: false });
           } else {
             const result = await runCommand(guest.client, "git", action, args);

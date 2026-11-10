@@ -49,6 +49,8 @@ export type LaneShareGuestPeer = {
   adoptChallenge: AdoptChallengeState | null;
   helloAcceptedAtMs: number;
   subscribedSessionIds: Set<string>;
+  /** The terminal snapshot barrier of each subscribed session (`syncTerminalSnapshotBarrier.ts`). */
+  pendingTerminalSnapshots: Map<string, unknown>;
   subscribedChatSessionIds: Set<string>;
   hydratingChatSessionIds: Set<string>;
   chatSubscriptionBindings: Map<string, unknown>;
@@ -116,7 +118,6 @@ export type LaneShareGuestHostDeps = LaneShareGuestSyncHostDeps & {
   isPeerLifecycleCurrent(peer: LaneShareGuestPeer, generation: number): boolean;
   clearPeerAuthTimeout(peer: LaneShareGuestPeer): void;
   discardChatEventCoalescer(peer: LaneShareGuestPeer, sessionId: string): void;
-  clearTerminalSnapshotBarrier(peer: LaneShareGuestPeer, sessionId: string): void;
   isDisposed(): boolean;
   heartbeatIntervalMs: number;
   pollIntervalMs: number;

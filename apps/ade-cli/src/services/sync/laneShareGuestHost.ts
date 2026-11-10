@@ -63,7 +63,6 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
     isPeerLifecycleCurrent,
     clearPeerAuthTimeout,
     discardChatEventCoalescer,
-    clearTerminalSnapshotBarrier,
     isDisposed,
     heartbeatIntervalMs,
     pollIntervalMs,
@@ -283,7 +282,8 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
     }
     for (const sessionId of [...peer.subscribedSessionIds]) {
       if (laneShareGuestMaySeeSession(role, sessionId, resolveLaneShareSession)) continue;
-      clearTerminalSnapshotBarrier(peer, sessionId);
+      // The barrier and the subscription together, as the terminal streams drop them.
+      peer.pendingTerminalSnapshots.delete(sessionId);
       peer.subscribedSessionIds.delete(sessionId);
     }
   }

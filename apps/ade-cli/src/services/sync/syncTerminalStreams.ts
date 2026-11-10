@@ -53,7 +53,8 @@ const TERMINAL_INPUT_ID_MAX_CHARS = 128;
 // sets, so a size restore must ask each one before it snaps a PTY back.
 const liveTerminalStreamInstances = new Set<{ isWatching(sessionId: string): boolean }>();
 
-function normalizeTerminalInputId(value: unknown): string | null {
+/** A terminal input id as the streams read it: trimmed, at most 128 characters, or null. */
+export function normalizeTerminalInputId(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const inputId = value.trim();
   if (!inputId || inputId.length > TERMINAL_INPUT_ID_MAX_CHARS) return null;
