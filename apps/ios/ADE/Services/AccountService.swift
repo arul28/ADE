@@ -832,6 +832,16 @@ final class AccountService: ObservableObject {
   func seedPreviewMachines(_ previewMachines: [AccountMachine]) {
     machines = previewMachines
   }
+
+  /// A fixture screen's signed-in account. Clerk is never configured there,
+  /// so every path that reads `Clerk.shared` checks this and stops first.
+  private(set) var isPreviewSeeded = false
+
+  func seedPreviewSignedIn(_ previewIdentity: AccountIdentity) {
+    isPreviewSeeded = true
+    identity = previewIdentity
+    phase = .signedIn
+  }
 #endif
 
   /// The account-directory row for a saved fleet key (`machine:<deviceId>`),
@@ -1258,6 +1268,15 @@ final class AccountService: ObservableObject {
   }
 
   func signOut() async {
+#if DEBUG
+    // A fixture screen signs out locally; it has no Clerk session to end.
+    if isPreviewSeeded {
+      isPreviewSeeded = false
+      identity = nil
+      phase = .signedOut
+      return
+    }
+#endif
     // Capture the current credential and persist the cleanup obligation before
     // invalidating local authorization. The UI/account boundary is then
     // committed before the bounded Relay request begins.
@@ -1352,6 +1371,9 @@ final class AccountService: ObservableObject {
   // MARK: - Token
 
   var currentPairingAuthorization: AccountPairingAuthorization? {
+#if DEBUG
+    if isPreviewSeeded { return nil }
+#endif
     guard let ownerId = identity?.userId,
           accountSessionStatusAllowsAccess(Clerk.shared.session?.status),
           accountSessionTokenIsAllowed(
@@ -1367,7 +1389,10 @@ final class AccountService: ObservableObject {
   }
 
   func isPairingCommitAuthorized(_ authorization: AccountPairingAuthorization) -> Bool {
-    accountPairingCommitIsAuthorized(
+#if DEBUG
+    if isPreviewSeeded { return false }
+#endif
+    return accountPairingCommitIsAuthorized(
       authorization,
       currentGeneration: pairingAuthorizationGeneration,
       localSignOutSuppressed: localSignOutState.isSuppressed,
@@ -2104,6 +2129,10 @@ final class AccountService: ObservableObject {
   /// no base URL → `.unconfigured`; unreachable → `.unreachable`; the local
   /// pairing flow is never blocked on this.
   func loadMachines() async {
+#if DEBUG
+    // A fixture screen keeps its seeded machines.
+    if isPreviewSeeded { return }
+#endif
     guard isSignedIn, let requestedOwnerId = identity?.userId else { return }
     guard let baseURL = AccountConfig.directoryBaseURL else {
       machinesState = .unconfigured

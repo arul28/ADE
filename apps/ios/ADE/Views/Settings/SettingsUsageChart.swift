@@ -171,7 +171,7 @@ struct ADEUsageAccountDetailSheet: View {
           if segment.account?.notSignedInHere == true {
             row("Signed in", "Only on \(segment.account?.readingFrom?.label ?? "another computer")")
           }
-          row("Read on", segment.account?.machines.map(\.label).joined(separator: " · ") ?? "This machine")
+          row("Read on", segment.account?.machines.map(\.label).joined(separator: " · ") ?? "Your primary machine")
           row("Left", "\(Int(segment.percentLeft.rounded()))%")
           if let resetsValue {
             row("Resets", resetsValue)

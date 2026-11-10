@@ -28907,6 +28907,13 @@ async function runServe(
       overrides,
     );
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
+  // One phone input ledger for the brain's own ingress and every project
+  // sync host: a resent input id is a duplicate on either one. It holds the
+  // receipts of all of them, so it gets a larger bound than one host's.
+  const syncHostModule = await import("./services/sync/syncHostService");
+  const brainTerminalInputDedupeLedger = syncHostModule.createTerminalInputDedupeLedger({
+    maxEntries: syncHostModule.TERMINAL_INPUT_DEDUPE_MAX_ENTRIES * 4,
+  });
   const keepAwakeServiceModule = !embedded && servesMachineEndpoint
     ? await import("./services/power/brainKeepAwakeService")
     : null;
@@ -29658,6 +29665,16 @@ async function runServe(
         buildSnapshot: () => activityRosterProvider.buildSnapshot(),
       },
       foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
+      // Terminals of open projects only: a terminal never boots a project.
+      terminalProjects: async ({ projectId, projectRootPath }) => {
+        const resolvedId = projectRegistry.get(projectId)?.projectId
+          ?? projectRegistry.resolveMovedProjectId(projectId)
+          ?? (projectRootPath ? projectRegistry.findAtRootPath(projectRootPath)?.projectId ?? null : null);
+        if (!resolvedId) return null;
+        const { resolveBootedTerminalProject } = await import("./services/sync/syncTerminalTargets");
+        return await resolveBootedTerminalProject(scopeRegistry, resolvedId, headlessProjectLogger);
+      },
       // A project socket served here moves to the project host once one attaches.
       projectHostAttached: () => sharedSyncListener?.hasConnectionHandler() ?? false,
       onProjectHostAttached: (listener) => sharedSyncListener?.onConnectionHandlerAttached(listener) ?? (() => {}),
@@ -29720,6 +29737,7 @@ async function runServe(
   let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
+    terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
     ...(keepAwakeService ? { keepAwakeService } : {}),
     // A project removed during a repair's teardown: that teardown already
     // handed its emulators off, and nothing will re-adopt them.

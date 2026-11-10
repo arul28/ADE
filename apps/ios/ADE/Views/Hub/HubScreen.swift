@@ -857,7 +857,7 @@ struct HubPhoneLayout<Title: View, FilterBar: View, Roster: View, Composer: View
   @ViewBuilder var roster: () -> Roster
   @ViewBuilder var composer: () -> Composer
   /// Where the status bar leaves an empty band beside the clock
-  /// (`hubStatusBandLeadingWidth`): the band's width and height. The header
+  /// (`hubStatusBandReading`): the band's width and height. The header
   /// moves up into it and everything under it gains the row's height.
   @State private var statusBand: CGSize?
 
@@ -888,10 +888,15 @@ struct HubPhoneLayout<Title: View, FilterBar: View, Roster: View, Composer: View
       HubComposerClearsCorner(content: composer)
     }
     .hubComposerAtScreenBottom()
-    .onGeometryChange(for: CGSize?.self) { proxy in
-      hubStatusBandLeadingWidth(proxy).map { CGSize(width: $0, height: proxy.safeAreaInsets.top) }
-    } action: { band in
-      if band != statusBand { statusBand = band }
+    .onGeometryChange(for: HubStatusBandGeometry.self) { proxy in
+      let reading = hubStatusBandReading(proxy)
+      return HubStatusBandGeometry(
+        band: reading.width.map { CGSize(width: $0, height: proxy.safeAreaInsets.top) },
+        detail: reading.detail
+      )
+    } action: { geometry in
+      if geometry.band != statusBand { statusBand = geometry.band }
+      HubLayoutDiagnostics.shared.hubHeader = geometry.detail
     }
     .navigationBarTitleDisplayMode(.inline)
     // The header is a row of its own (under the status bar, the full width),
@@ -923,6 +928,13 @@ struct HubPhoneLayout<Title: View, FilterBar: View, Roster: View, Composer: View
   private func collapse() {
     withAnimation(hubComposerSpring) { composerExpanded = false }
   }
+}
+
+/// The Hub header's geometry reading: the band beside the clock (nil = a
+/// row of its own) and the facts behind it, for Settings › Advanced.
+private struct HubStatusBandGeometry: Equatable {
+  var band: CGSize?
+  var detail: String
 }
 
 /// Identifies a chat opened from the hub, carrying enough context to activate

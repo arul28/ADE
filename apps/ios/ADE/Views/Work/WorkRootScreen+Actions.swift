@@ -258,9 +258,12 @@ extension WorkRootListScreen {
   func hydrateSearchOutputBuffersIfNeeded() async {
     guard isLive, isWorkRootActive else { return }
     guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    // Another machine's terminal rows are left out: the focused machine
+    // cannot serve their output.
     let candidates = mergedSessions
       .filter { session in
-        syncService.terminalBuffers[session.id] == nil
+        !workIsRemoteMachineTerminalRow(session)
+          && syncService.terminalBuffers[session.id] == nil
           && normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id]) != "ended"
       }
       .prefix(8)
@@ -781,9 +784,24 @@ extension WorkRootListScreen {
     guard !navigationMutationPending else { return }
     // Wide display: the chat opens in the column beside the list instead of
     // over it. Selecting twice is harmless — the route id only changes when it
-    // is a different chat.
+    // is a different chat. Another machine's terminal row is decided there.
     if duoLayout.isWide {
       duoSelectSession(session)
+      return
+    }
+    // Another machine's CLI or shell row streams over that machine's light
+    // link when it can. Otherwise that machine is focused first.
+    if workIsRemoteMachineTerminalRow(session) {
+      if let remote = remoteTerminalContextOrOpen(session: session, sessionId: session.id, laneId: session.laneId) {
+        navigationMutationPending = true
+        selectedSessionTransitionId = session.id
+        Task { @MainActor in
+          await Task.yield()
+          // Not restored at launch: the restore path opens focused-machine sessions.
+          path.append(WorkSessionRoute(sessionId: session.id, remoteTerminal: remote))
+          navigationMutationPending = false
+        }
+      }
       return
     }
     navigationMutationPending = true
@@ -830,6 +848,37 @@ extension WorkRootListScreen {
       syncService.showProjectHub()
       return
     }
+    // A CLI or shell session on another machine (a Lanes dashboard row) opens
+    // on that machine, never as a chat route: over its light link when it can,
+    // else once that machine is focused (the open then asks again with the
+    // session's own lane id).
+    if let laneId = request.laneId, isWorkRemoteLaneId(laneId) {
+      let row = mergedSessions.first(where: { $0.id == request.sessionId })
+      let rosterChat = syncService.remoteMachineRosterChat(sessionId: request.sessionId)
+      let isChat = row.map(isChatSession) ?? rosterChat?.isChatTool ?? true
+      if !isChat {
+        syncService.requestedWorkSessionNavigation = nil
+        navigationMutationPending = false
+        let session = row ?? rosterChat?.asTerminalSessionSummary(laneName: "")
+        guard let remote = remoteTerminalContextOrOpen(
+          session: session,
+          sessionId: request.sessionId,
+          laneId: laneId
+        ) else { return }
+        selectedSessionTransitionId = request.sessionId
+        let route = WorkSessionRoute(sessionId: request.sessionId, remoteTerminal: remote)
+        if duoLayout.isWide {
+          duoComposeRoute = nil
+          duoSelectedRoute = route
+          path = NavigationPath()
+        } else {
+          var fresh = NavigationPath()
+          fresh.append(route)
+          path = fresh
+        }
+        return
+      }
+    }
     navigationMutationPending = false
     selectedSessionTransitionId = request.sessionId
     var fresh = NavigationPath()
@@ -866,6 +915,103 @@ extension WorkRootListScreen {
     await AccountService.shared.acknowledgeAttentionNavigation(
       request.attentionItemId
     )
+  }
+
+  /// The light-link context of another machine's CLI or shell row, or nil
+  /// when that machine has to be focused first. `laneId` is the row's
+  /// namespaced lane id; it names the machine.
+  func remoteTerminalContext(
+    for session: TerminalSessionSummary,
+    laneId: String? = nil
+  ) -> WorkRemoteTerminalContext? {
+    guard let machineKey = workParseRemoteLaneId(laneId ?? session.laneId)?.machineKey else { return nil }
+    return workRemoteTerminalContext(session: session, machineKey: machineKey, fleet: syncService.machineFleet)
+  }
+
+  /// The light-link context of another machine's CLI or shell row. When the
+  /// link cannot stream it, this starts the focus-and-open fallback instead and
+  /// returns nil, so the caller returns.
+  func remoteTerminalContextOrOpen(
+    session: TerminalSessionSummary?,
+    sessionId: String,
+    laneId: String
+  ) -> WorkRemoteTerminalContext? {
+    if let session, let remote = remoteTerminalContext(for: session, laneId: laneId) {
+      return remote
+    }
+    openRemoteMachineTerminal(sessionId: sessionId, laneId: laneId)
+    return nil
+  }
+
+  /// Opens a CLI or shell session that lives on another machine.
+  ///
+  /// The fallback when that machine's light link cannot stream terminals
+  /// (the link is down or its ADE is older). This focuses the
+  /// session's machine, opens its checkout of the project there, and waits
+  /// until that project is active with fresh work rows. Then it asks for the
+  /// session through the ordinary navigation request, with the session's own
+  /// lane id on that machine. Every step goes to the machine that the
+  /// namespaced lane id names.
+  @MainActor
+  func openRemoteMachineTerminal(sessionId: String, laneId: String) {
+    guard !navigationMutationPending else { return }
+    guard let lane = workParseRemoteLaneId(laneId) else { return }
+    let machineKey = lane.machineKey
+    let entry = syncService.remoteMachineChat(sessionId: sessionId).flatMap { $0.machineKey == machineKey ? $0 : nil }
+    let projectId = entry?.projectId
+      ?? inputs.remoteMachineRepos.first(where: { $0.machineKey == machineKey })?.projectId
+    let project = projectId.flatMap { id in
+      syncService.machineFleet?.machine(for: machineKey)?.projects
+        .first(where: { $0.projectId == id })?
+        .asRemoteMachineProjectSummary
+    }
+    guard let project else {
+      ADEHaptics.error()
+      actionErrorMessage = "That machine is not paired with this phone any more."
+      return
+    }
+    // Blocks a second tap for the whole wait. A switch that starts shows the
+    // Hub with its own connecting state at once.
+    navigationMutationPending = true
+    Task { @MainActor in
+      defer { navigationMutationPending = false }
+      let ready = await syncService.openProjectAndWait(project, onMachine: machineKey)
+      guard ready else {
+        ADEHaptics.error()
+        let message: String
+        // The machine is focused, but its project did not open: the Hub's
+        // own wording for a failed activation.
+        if syncService.focusedMachineKey == machineKey,
+           case .failed(let reason) = hubChatActivationOutcome(
+             projectName: project.displayName,
+             isActiveProject: false,
+             lastError: syncService.lastError,
+             timedOut: false
+           ) {
+          message = reason
+        } else {
+          let machineName = syncService.machineFleet?.machine(for: machineKey)?.name ?? "that machine"
+          message = syncService.lastConnectAttemptFailure?.message
+            ?? syncService.lastError
+            ?? "Can’t reach \(machineName) right now."
+        }
+        // A switch that started shows the Hub in place of Work, so the Hub's
+        // notice line carries the failure there.
+        if syncService.shouldShowProjectHub {
+          syncService.hubNotice = HubNotice(message: message)
+        } else {
+          actionErrorMessage = message
+        }
+        return
+      }
+      // The wait leaves the Hub open. Close it so the Work root opens the
+      // session.
+      syncService.closeProjectHub()
+      syncService.requestedWorkSessionNavigation = WorkSessionNavigationRequest(
+        sessionId: sessionId,
+        laneId: lane.laneId
+      )
+    }
   }
 
   @MainActor
