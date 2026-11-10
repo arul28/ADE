@@ -387,7 +387,7 @@ import type {
   GitHubAppDeviceAuthStartResult,
   GitHubAppUserAuthStatus,
   GitHubAutolink,
-  GitHubRepoRef,
+  GitHubRemoteStatus,
   GitHubRepoStarState,
   GitHubRequestBudget,
   GitHubSetTokenResult,
@@ -12019,7 +12019,10 @@ export function registerIpc({
     return await ctx.githubService.getStatus({ forceRefresh: Boolean(arg?.forceRefresh) });
   });
 
-  ipcMain.handle(IPC.githubGetRemoteStatus, async (): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> => {
+  // Answers for this window's project context, which can be another project
+  // than the renderer's while the window switches. The answer names its
+  // project (`projectRoot`) so the renderer can drop a mismatch.
+  ipcMain.handle(IPC.githubGetRemoteStatus, async (): Promise<GitHubRemoteStatus> => {
     const ctx = getCtx();
     return await ctx.githubService.getRemoteStatus();
   });

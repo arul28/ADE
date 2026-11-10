@@ -548,7 +548,7 @@ import type {
   GitHubIssueTypeOption,
   GitHubAppUserAuthStatus,
   GitHubAutolink,
-  GitHubRepoRef,
+  GitHubRemoteStatus,
   GitHubRepoStarState,
   GitHubRequestBudget,
   GitHubSetTokenResult,
@@ -1499,10 +1499,14 @@ const githubStatusCache = createShortIpcCache<GitHubStatus>(
   () => ipcRenderer.invoke(IPC.githubGetStatus, {}),
   30_000,
 );
-const githubRemoteStatusCache = createShortIpcCache<{
-  repo: GitHubRepoRef | null;
-  hasOrigin: boolean;
-}>(() => ipcRenderer.invoke(IPC.githubGetRemoteStatus), 30_000);
+// Not keyed by project: only the unbound path reads it (a bound window asks
+// its runtime), and every binding change and project event clears it
+// (clearProjectScopedReadCaches). Each answer names its project, so a reader
+// can still drop one that describes another project.
+const githubRemoteStatusCache = createShortIpcCache<GitHubRemoteStatus>(
+  () => ipcRenderer.invoke(IPC.githubGetRemoteStatus),
+  30_000,
+);
 const githubAppInstallationStatusCache = createKeyedShortIpcCache<GitHubAppInstallationStatus>(
   (key) => ipcRenderer.invoke(
     IPC.githubGetAppInstallationStatus,
@@ -12631,7 +12635,7 @@ const adeBridge = {
       ),
     getRemoteStatus: async (opts?: {
       forceRefresh?: boolean;
-    }): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> => {
+    }): Promise<GitHubRemoteStatus> => {
       return callProjectRuntimeActionOr(
         "github",
         "getRemoteStatus",

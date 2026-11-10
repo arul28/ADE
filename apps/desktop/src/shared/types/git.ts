@@ -367,6 +367,24 @@ export type GitHubRepoRef = {
   name: string;
 };
 
+/**
+ * The origin of one project: `github.getRemoteStatus`.
+ *
+ * `projectRoot` names the project this answer describes. A caller that asks
+ * for one project can get an answer for another while a window switches
+ * projects (the window's project context and the caller's project change at
+ * different moments), so a caller compares it and drops a mismatch. The
+ * window's no-project context sends an empty string, which matches no project.
+ * Optional: an older runtime does not send it. A missing value means "not
+ * known", and the caller keeps the answer as before.
+ */
+export type GitHubRemoteStatus = {
+  repo: GitHubRepoRef | null;
+  // True when the project has any `origin` remote, even non-GitHub.
+  hasOrigin: boolean;
+  projectRoot?: string;
+};
+
 export type GitHubRateLimitState = {
   limit: number | null;
   remaining: number | null;

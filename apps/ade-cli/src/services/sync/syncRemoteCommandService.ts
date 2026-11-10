@@ -172,6 +172,7 @@ import type {
   GitResetCommitArgs,
   GitRevertArgs,
   GitGetUserIdentityArgs,
+  GitHubRemoteStatus,
   GitHubRepoRef,
   GitHubRequestBudget,
   GitHubStatus,
@@ -7243,7 +7244,7 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.githubService, "GitHub service not available.").getStatus({
       forceRefresh: payload.forceRefresh === true,
     }));
-  register("github.getRemoteStatus", { viewerAllowed: true, observesAbort: true }, async (): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> =>
+  register("github.getRemoteStatus", { viewerAllowed: true, observesAbort: true }, async (): Promise<GitHubRemoteStatus> =>
     requireService(args.githubService, "GitHub service not available.").getRemoteStatus());
   // The web client's PR timers run in the browser but spend THIS machine's
   // quota. Without this registration its adapter falls back to an all-null

@@ -650,7 +650,7 @@ import type {
   GitHubIssueTypeOption,
   GitHubAppUserAuthStatus,
   GitHubAutolink,
-  GitHubRepoRef,
+  GitHubRemoteStatus,
   GitHubRepoStarState,
   GitHubRequestBudget,
   GitHubSetTokenResult,
@@ -4556,7 +4556,7 @@ declare global {
         getStatus: (opts?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
         getRemoteStatus: (opts?: {
           forceRefresh?: boolean;
-        }) => Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }>;
+        }) => Promise<GitHubRemoteStatus>;
         setToken: (token: string, pin?: OpenProjectBinding | null) => Promise<GitHubSetTokenResult>;
         clearToken: (pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
         getAppUserAuthStatus: (pin?: OpenProjectBinding | null) => Promise<GitHubAppUserAuthStatus>;

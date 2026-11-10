@@ -21,6 +21,7 @@ import type {
   GitHubAutolink,
   GitHubCredentialVerification,
   GitHubRateLimitState,
+  GitHubRemoteStatus,
   GitHubRepoRef,
   GitHubRepoStarState,
   GitHubRequestBudget,
@@ -2738,7 +2739,12 @@ export function createGithubService({
   };
 
   return {
-    getRemoteStatus: detectOrigin,
+    // Names the project it describes, so a renderer that asked for another
+    // project (mid switch) can drop it. See GitHubRemoteStatus.
+    getRemoteStatus: async (): Promise<GitHubRemoteStatus> => ({
+      ...(await detectOrigin()),
+      projectRoot,
+    }),
 
     getStatus,
     verifyStoredPat,
