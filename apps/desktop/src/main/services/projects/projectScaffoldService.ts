@@ -15,8 +15,11 @@ import { codedError } from "../../../shared/codedError";
 import { gitCommandError, runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { createGithubService } from "../github/githubService";
-import { resolveGithubRemoteRepo } from "../github/githubSshAlias";
-import type { GithubRepoSlug } from "../../../shared/githubRemote";
+import { canonicalGitOriginUrl, resolveGithubRemoteRepo } from "../github/githubSshAlias";
+import { githubRepoSlugsEqual, parseGithubRemoteUrl, type GithubRepoSlug } from "../../../shared/githubRemote";
+import { pathKey } from "../shared/pathCompare";
+import { readGitConfigOriginUrl } from "./recentProjectSummary";
+import { resolveGitMetadataDirectory } from "./worktreeParent";
 import { initializeOrRepairAdeProject } from "./adeProjectService";
 import { ensureProjectLocalDatabase } from "./projectLocalDatabase";
 import { redactGitOutput } from "../../utils/redaction";
@@ -66,19 +69,15 @@ function isDirectoryNonEmpty(dirPath: string): boolean {
   }
 }
 
-export type CloneTarget = {
+type CloneTarget = {
   url: string;
   repo: GithubRepoSlug;
   parentDir: string;
   rootPath: string;
 };
 
-/**
- * Where a clone of `input` lands, with the same checks and coded errors as
- * the clone itself. Exported so a caller can key on the folder before it
- * clones (two clones of one folder at once share one run).
- */
-export async function resolveCloneTarget(input: CloneProjectInput): Promise<CloneTarget> {
+/** Where a clone of `input` lands, with the same checks and coded errors as the clone itself. */
+async function resolveCloneTarget(input: CloneProjectInput): Promise<CloneTarget> {
   const url = (input.url ?? "").trim();
   if (!url) {
     throw codedError("Enter a GitHub repository URL.", "invalid_github_url");
@@ -94,6 +93,52 @@ export async function resolveCloneTarget(input: CloneProjectInput): Promise<Clon
   const explicitName = (input.name ?? "").trim();
   const name = validateProjectName(explicitName.length > 0 ? explicitName : repo.repo);
   return { url, repo, parentDir, rootPath: path.join(parentDir, name) };
+}
+
+export type CloneRepositoryOptions = {
+  /**
+   * A folder that already holds a complete checkout of this repository is
+   * the answer, with no clone. Without it, any folder there is `target_exists`.
+   */
+  reuseExistingCheckout?: boolean;
+  /** Runs before a real clone only (not before a reuse or a join): a storage preflight. */
+  beforeClone?: () => Promise<void>;
+  /** Wraps a real clone only: a keep-awake hold. */
+  wrapClone?: <T>(run: () => Promise<T>) => Promise<T>;
+};
+
+/**
+ * Clones running in this process, by target folder. Module-wide because every
+ * caller (desktop IPC, phone, CLI, brain RPC) makes its own service, and two
+ * clones into one folder would race: the loser's rollback deletes the
+ * winner's folder mid-clone.
+ */
+const clonesInFlight = new Map<string, { repo: GithubRepoSlug; result: Promise<CloneProjectResult> }>();
+
+/**
+ * True when `rootPath` is itself a complete checkout whose `origin` is `repo`
+ * (https, ssh or an alias, any case). A clone killed part-way is not one.
+ */
+async function isCompleteCheckoutOf(rootPath: string, repo: GithubRepoSlug, logger: Logger): Promise<boolean> {
+  // Reads `rootPath/.git` only, so a plain folder inside another checkout never
+  // answers with that checkout's origin.
+  const origin = readGitConfigOriginUrl(rootPath);
+  if (!githubRepoSlugsEqual(parseGithubRemoteUrl(canonicalGitOriginUrl(origin)), repo)) return false;
+  // `git clone` writes HEAD before it checks files out; the index appears only
+  // when the checkout finishes, and `index.lock` is there while it runs.
+  const gitDir = resolveGitMetadataDirectory(rootPath);
+  if (!gitDir || !fs.existsSync(path.join(gitDir, "index")) || fs.existsSync(path.join(gitDir, "index.lock"))) return false;
+  try {
+    const head = await runGit(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], { cwd: rootPath, timeoutMs: 10_000 });
+    return head.exitCode === 0;
+  } catch (error) {
+    // A real checkout then answers target_exists; say why.
+    logger.warn("project_scaffold.clone_reuse_check_failed", {
+      rootPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
 }
 
 function hashToken(token: string): string {
@@ -180,8 +225,71 @@ export function createProjectScaffoldService({
     }
   };
 
-  const cloneRepository = async (input: CloneProjectInput): Promise<CloneProjectResult> => {
-    const { url, parentDir, rootPath } = await resolveCloneTarget(input);
+  /**
+   * Clone `input` into its folder. A second clone into a folder whose clone
+   * is still running waits for that one and gets the same folder (another
+   * repository there is `target_exists`). `options` say what a real clone
+   * needs; a join uses the running clone's.
+   */
+  const cloneRepository = async (
+    input: CloneProjectInput,
+    options: CloneRepositoryOptions = {},
+  ): Promise<CloneProjectResult> => {
+    const target = await resolveCloneTarget(input);
+    return await joinOrClone(input, target, options, true);
+  };
+
+  const joinOrClone = async (
+    input: CloneProjectInput,
+    target: CloneTarget,
+    options: CloneRepositoryOptions,
+    retryAfterFailedJoin: boolean,
+  ): Promise<CloneProjectResult> => {
+    const key = pathKey(path.resolve(target.rootPath));
+    const running = clonesInFlight.get(key);
+    if (running) {
+      if (!githubRepoSlugsEqual(running.repo, target.repo)) {
+        throw codedError("A folder already exists at that path.", "target_exists");
+      }
+      if (!retryAfterFailedJoin) return await running.result;
+      try {
+        return await running.result;
+      } catch (error) {
+        // The joined clone failed with its own settings (another GitHub
+        // sign-in, say). This request runs once with its own, and never again.
+        logger.info("project_scaffold.clone_join_failed_retrying", {
+          rootPath: target.rootPath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        if (clonesInFlight.get(key) === running) clonesInFlight.delete(key);
+        return await joinOrClone(input, target, options, false);
+      }
+    }
+    const wrapClone = options.wrapClone ?? (<T,>(run: () => Promise<T>) => run());
+    // No await between the lookup above and the set below, so two clones can't both start.
+    const entry = {
+      repo: target.repo,
+      result: (async (): Promise<CloneProjectResult> => {
+        if (options.reuseExistingCheckout && await isCompleteCheckoutOf(target.rootPath, target.repo, logger)) {
+          return { rootPath: target.rootPath };
+        }
+        return await wrapClone(async () => {
+          await options.beforeClone?.();
+          return await cloneIntoTarget(input, target);
+        });
+      })(),
+    };
+    clonesInFlight.set(key, entry);
+    try {
+      return await entry.result;
+    } finally {
+      // A failure is shared with whoever joined, then forgotten, so a retry clones again.
+      if (clonesInFlight.get(key) === entry) clonesInFlight.delete(key);
+    }
+  };
+
+  const cloneIntoTarget = async (input: CloneProjectInput, target: CloneTarget): Promise<CloneProjectResult> => {
+    const { url, parentDir, rootPath } = target;
 
     if (fs.existsSync(rootPath) && isDirectoryNonEmpty(rootPath)) {
       throw codedError("A folder already exists at that path.", "target_exists");

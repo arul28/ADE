@@ -282,12 +282,16 @@ export function registerCloudIpc(args: {
     return (async () => {
       // Not a cloud computer: null, so the caller takes the normal failure path.
       if (!(await machines.knowsBox(machineKey))) return null;
-      const client = await savedClient();
-      if (!client) return false;
-      const instances = await Promise.race([
-        client.listInstances(),
-        new Promise<null>((resolve) => { setTimeout(() => resolve(null), 5_000).unref?.(); }),
-      ]);
+      // A read `knowsBox` just made is fresh enough: no second read in a row.
+      let instances = machines.recentInstances(5_000);
+      if (!instances) {
+        const client = await savedClient();
+        if (!client) return false;
+        instances = await Promise.race([
+          client.listInstances(),
+          new Promise<null>((resolve) => { setTimeout(() => resolve(null), 5_000).unref?.(); }),
+        ]);
+      }
       const instance = instances ? cloudInstanceForMachine(instances, machineKey, target.hostname) : null;
       if (!instance) return false;
       const state = cloudMachineState(instance.status);

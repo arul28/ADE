@@ -1,9 +1,9 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
 import { readDeletedChatOnDisk } from "../../desktop/src/main/services/chat/deletedChats";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
-import { isInsideTempFolder, pathKey } from "../../desktop/src/main/services/shared/pathCompare";
+import { isInsideTempFolder } from "../../desktop/src/main/services/shared/pathCompare";
 import { checkHostReachability } from "./services/sync/hostReachabilityCheck";
-import { ACTION_NOT_CALLABLE_CODE, codedError, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
+import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { conditionalActionResult } from "./conditionalActionResult";
 import { CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM, CONDITIONAL_ACTION_PARAM } from "../../desktop/src/shared/conditionalActionResult";
@@ -20,9 +20,7 @@ import {
   getProjectWorkSummary,
 } from "../../desktop/src/main/services/projects/projectDetailService";
 import { inspectProjectPath } from "../../desktop/src/main/services/projects/projectPathInspector";
-import { createProjectScaffoldService, resolveCloneTarget } from "../../desktop/src/main/services/projects/projectScaffoldService";
-import { readGitConfigOriginUrl } from "../../desktop/src/main/services/projects/recentProjectSummary";
-import { githubRepoSlugsEqual, parseGithubRemoteUrl, type GithubRepoSlug } from "../../desktop/src/shared/githubRemote";
+import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { githubExtraHeaderGitEnv } from "../../desktop/src/main/services/git/gitTransportAuth";
 import type { SyncHostRecoveryResult } from "../../desktop/src/shared/types/syncHostRecovery";
@@ -165,7 +163,7 @@ import {
   omitRemoteCaller,
   readMachineCallScope,
 } from "./services/account/agentRemoteRpc";
-import { canonicalGitOriginUrl, gitRemoteIdentity, peerGitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
+import { gitRemoteIdentity, peerGitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { readPermissionLevel } from "../../desktop/src/shared/permissionLadder";
 import { readInstalledDesktopAppVersion } from "../../desktop/src/main/services/native/nativeHelperPaths";
 import { readDesktopUpdateInstallMode } from "../../desktop/src/main/services/native/desktopUpdateInstallMode";
@@ -1370,75 +1368,6 @@ function omitProjectId(
 
 
 /**
- * Clones running on this machine, by target folder. Module-wide because each
- * connection gets its own handler, and two new-chat panes can ask over two.
- */
-const clonesInFlight = new Map<string, { repo: GithubRepoSlug; result: Promise<CloneProjectResult> }>();
-
-/**
- * True when `rootPath` is itself a complete Git checkout whose `origin` is
- * `repo` (https, ssh or an alias, any case).
- */
-async function isCheckoutOfRepository(rootPath: string, repo: GithubRepoSlug): Promise<boolean> {
-  // Reads `rootPath/.git` only, so a plain folder inside another checkout never
-  // answers with that checkout's origin.
-  const origin = readGitConfigOriginUrl(rootPath);
-  if (!githubRepoSlugsEqual(parseGithubRemoteUrl(canonicalGitOriginUrl(origin)), repo)) return false;
-  // A clone killed part-way (the machine stopped) leaves origin set and no
-  // commit; that folder is not a project.
-  try {
-    const head = await runGit(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], { cwd: rootPath, timeoutMs: 10_000 });
-    return head.exitCode === 0;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Put a GitHub repository in its folder on this machine, for `projects.clone`
- * and `machines.cloneForAgent` alike:
- *
- * - while a clone into that folder runs, a second request for the same
- *   repository waits for it and gets the same folder (another repository
- *   there is `target_exists`);
- * - a folder that already holds a checkout of that repository is the answer,
- *   with no clone;
- * - otherwise `clone` runs.
- *
- * The caller registers the folder, so each caller keeps its own registration.
- */
-async function cloneOrReuseCheckout(
-  input: CloneProjectInput,
-  clone: () => Promise<CloneProjectResult>,
-): Promise<CloneProjectResult> {
-  const target = await resolveCloneTarget(input);
-  const key = pathKey(path.resolve(target.rootPath));
-  const running = clonesInFlight.get(key);
-  if (running) {
-    if (!githubRepoSlugsEqual(running.repo, target.repo)) {
-      throw codedError("A folder already exists at that path.", "target_exists");
-    }
-    return await running.result;
-  }
-  // No await between the lookup above and the set below, so two requests can't
-  // both start: the checkout check runs inside the stored promise.
-  const entry = {
-    repo: target.repo,
-    result: (async (): Promise<CloneProjectResult> =>
-      await isCheckoutOfRepository(target.rootPath, target.repo)
-        ? { rootPath: target.rootPath }
-        : await clone())(),
-  };
-  clonesInFlight.set(key, entry);
-  try {
-    return await entry.result;
-  } finally {
-    // A failure is shared with whoever joined, then forgotten, so a retry clones again.
-    if (clonesInFlight.get(key) === entry) clonesInFlight.delete(key);
-  }
-}
-
-/**
  * Set a repository up on this machine for another machine's agent
  * (`ade chat create --machine <here> --clone`). The same rules as a
  * cross-machine handoff's destination: GitHub only (cloned from its canonical
@@ -1522,11 +1451,15 @@ export function createMultiProjectRpcRequestHandler(
   // a cloud computer's busy list sees it.
   const whileFirstCloneHeld = <T>(run: () => Promise<T>): Promise<T> =>
     options.holdCloudWork ? options.holdCloudWork("first_clone", 30 * 60_000, run) : run();
-  const cloneIntoFolder = (input: CloneProjectInput, beforeClone?: () => Promise<void>): Promise<CloneProjectResult> =>
-    cloneOrReuseCheckout(input, () => whileFirstCloneHeld(async () => {
-      await beforeClone?.();
-      return await (await createMachineProjectScaffoldService()).cloneRepository(input);
-    }));
+  // Another machine asked: a second request for the same folder joins the
+  // first (the scaffold service), and a folder that already holds this
+  // repository is the answer. The hold wraps only a real clone.
+  const cloneIntoFolder = async (input: CloneProjectInput, beforeClone?: () => Promise<void>): Promise<CloneProjectResult> =>
+    await (await createMachineProjectScaffoldService()).cloneRepository(input, {
+      reuseExistingCheckout: true,
+      beforeClone,
+      wrapClone: whileFirstCloneHeld,
+    });
   const accountAuthService = options.accountAuthService ?? getSharedAccountAuthService({
     projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
   });
@@ -3819,8 +3752,6 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.clone") {
       const input = await readCloneProjectInput(params, () => defaultParentDir(projectRegistry));
-      // A second request for the same folder joins the first; a folder that
-      // already holds this repository is reused instead of `target_exists`.
       const result = await cloneIntoFolder(input);
       return await decorateProjectWithIcon(
         projectRegistry.add(

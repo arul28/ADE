@@ -1,5 +1,5 @@
 import "./machines.css";
-import { useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent } from "react";
 import { AppleLogo as PhosphorAppleLogo, Desktop, LinuxLogo, WindowsLogo } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
@@ -257,6 +257,14 @@ export function MachineAvatar({
   const color = useMachineColor(colorKey);
   const [picking, setPicking] = useState(false);
   const tileRef = useRef<HTMLButtonElement | null>(null);
+  const swatchesRef = useRef<HTMLDivElement | null>(null);
+  // The swatches are portalled outside the Connections sheet's focus trap, so
+  // focus moves into them on open: the current color, else the first.
+  useEffect(() => {
+    if (!picking) return;
+    const swatches = swatchesRef.current;
+    (swatches?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]') ?? swatches?.querySelector<HTMLButtonElement>("button"))?.focus();
+  }, [picking]);
   // Escape closes the swatches, not the Connections sheet around them, and
   // hands focus back to the tile.
   const closeOnEscape = (event: KeyboardEvent) => {
@@ -327,6 +335,7 @@ export function MachineAvatar({
           boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
         }}
       >
+        <div ref={swatchesRef} style={{ display: "contents" }}>
         {MACHINE_COLORS.map((swatch) => (
           <button
             key={swatch}
@@ -336,6 +345,8 @@ export function MachineAvatar({
             onClick={() => {
               setMachineColor(colorKey, swatch);
               setPicking(false);
+              // The picked swatch unmounts with the row; focus goes back to the tile.
+              tileRef.current?.focus();
             }}
             style={{
               width: 18,
@@ -349,6 +360,7 @@ export function MachineAvatar({
             }}
           />
         ))}
+        </div>
       </AnchoredMenu>
     </span>
   );

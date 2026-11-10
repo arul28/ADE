@@ -2327,6 +2327,7 @@ describe("multi-project RPC server", () => {
         await cloneGate;
         writeOrigin(target);
         fs.writeFileSync(path.join(target, ".git", "HEAD"), "ref: refs/heads/main\n");
+        fs.writeFileSync(path.join(target, ".git", "index"), "");
       }
       return { exitCode: 0, stdout: "", stderr: "" };
     });
@@ -2340,7 +2341,8 @@ describe("multi-project RPC server", () => {
       const first = clone(2, { url: "https://github.com/example/repo.git" });
       await vi.waitFor(() => expect(cloneCalls()).toBe(1));
       // Another pane asks while the first clone runs: it waits for that one.
-      const second = clone(3, { url: "https://github.com/Example/Repo" });
+      // The folder name is given: on a case-sensitive disk "Repo" is another folder.
+      const second = clone(3, { url: "https://github.com/Example/Repo", name: "repo" });
       // A different repository into the same folder is refused, not joined.
       await expect(clone(4, { url: "https://github.com/someone/else.git", name: "repo" }))
         .rejects.toThrow(/target_exists|already exists/);
@@ -2360,6 +2362,11 @@ describe("multi-project RPC server", () => {
       // A clone killed part-way: origin is set but HEAD has no commit. Not reused.
       writeOrigin(path.join(parentDir, "killed"));
       await expect(clone(7, { url: "https://github.com/example/repo.git", name: "killed" }))
+        .rejects.toThrow(/target_exists|already exists/);
+      // Killed during checkout: HEAD is written, the index is not. Not reused.
+      writeOrigin(path.join(parentDir, "checking-out"));
+      fs.writeFileSync(path.join(parentDir, "checking-out", ".git", "HEAD"), "ref: refs/heads/main\n");
+      await expect(clone(8, { url: "https://github.com/example/repo.git", name: "checking-out" }))
         .rejects.toThrow(/target_exists|already exists/);
     } finally {
       handler.dispose();
