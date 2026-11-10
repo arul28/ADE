@@ -909,6 +909,7 @@ describe("preload Apple device input routing", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-2",
       projectId: "project-2",
+      projectRootPath: "/remote/chat-project",
       request: {
         domain: "chat",
         action: "getImageDataUrl",
@@ -1127,6 +1128,7 @@ describe("preload Apple device input routing", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-2",
       projectId: "project-2",
+      projectRootPath: "/remote/chat-project",
       request: { domain: "chat", action: "modelCatalog", args: { mode: "cached" } },
     });
     expect(invoke).not.toHaveBeenCalledWith(
@@ -1188,6 +1190,7 @@ describe("preload Apple device input routing", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-2",
       projectId: "project-2",
+      projectRootPath: "/remote/chat-project",
       request: { domain: "ai", action: "isOpenCodeInstalled" },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.aiIsOpenCodeInstalled, expect.anything());
@@ -3156,6 +3159,7 @@ describe("preload Apple device input routing", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: capturedBinding.targetId,
       projectId: capturedBinding.projectId,
+      projectRootPath: capturedBinding.rootPath,
       request: {
         domain: "chat",
         action: "listDrafts",
@@ -3164,6 +3168,7 @@ describe("preload Apple device input routing", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: capturedBinding.targetId,
       projectId: capturedBinding.projectId,
+      projectRootPath: capturedBinding.rootPath,
       request: {
         domain: "chat",
         action: "createDraft",
@@ -3173,6 +3178,7 @@ describe("preload Apple device input routing", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: capturedBinding.targetId,
       projectId: capturedBinding.projectId,
+      projectRootPath: capturedBinding.rootPath,
       request: {
         domain: "chat",
         action: "deleteDraft",
@@ -7425,6 +7431,7 @@ describe("per-chat runtime routing", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-b",
       projectId: "project-b",
+      projectRootPath: "/repo-b",
       request: { domain: "chat", action: "sendMessage", args: { ...foreignArgs, ...sentFrom(false), clientSendId: expect.any(String) } },
     });
     expect(invoke).not.toHaveBeenCalledWith(
@@ -7604,6 +7611,7 @@ describe("per-chat runtime routing", () => {
     expect(remoteWindow.invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: machineB.targetId,
       projectId: machineB.projectId,
+      projectRootPath: machineB.rootPath,
       request: { domain: "external-sessions", action: "list", args: localArgs },
     });
   });
@@ -7866,6 +7874,7 @@ describe("per-chat runtime routing", () => {
     expect(remoteRequests[0]).toEqual({
       id: "target-b",
       projectId: "project-b",
+      projectRootPath: "/repo-b",
       request: {
         domain: "file",
         action: "writeWorkspaceText",
@@ -8250,6 +8259,7 @@ describe("per-chat runtime routing", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-b",
       projectId: "project-b",
+      projectRootPath: "/repo-b",
       request: {
         domain: "chat",
         action: "getChatEventHistory",
@@ -8259,6 +8269,7 @@ describe("per-chat runtime routing", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-b",
       projectId: "project-b",
+      projectRootPath: "/repo-b",
       request: {
         domain: "session",
         action: "readTranscriptTail",
@@ -8268,6 +8279,7 @@ describe("per-chat runtime routing", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-b",
       projectId: "project-b",
+      projectRootPath: "/repo-b",
       // An Enter is a message sent, so it names this desktop too.
       request: {
         domain: "pty",
@@ -9123,16 +9135,19 @@ describe("per-chat runtime routing", () => {
         {
           id: "target-b",
           projectId: "project-b",
+          projectRootPath: "/repo-b",
           request: { cursor: 0, limit: 200, replay: false },
         },
         {
           id: "target-b",
           projectId: "project-b",
+          projectRootPath: "/repo-b",
           request: { cursor: 12, limit: 200 },
         },
         {
           id: "target-b",
           projectId: "project-b",
+          projectRootPath: "/repo-b",
           request: { cursor: 0, limit: 200, replay: false },
         },
       ]);

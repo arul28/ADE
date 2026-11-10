@@ -102,6 +102,7 @@ import {
 } from "../../../shared/connectionDiagnosis";
 import { adeActionAccess, isBackgroundAdeWrite, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
+import { findMachineProject } from "../../../shared/projectIdentity";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
@@ -1519,15 +1520,65 @@ export class RemoteConnectionService {
     }));
   }
 
+  /**
+   * The id the machine routes a project by. A pin made from a saved chat can
+   * name the project by an id the machine never had (older cloud computers
+   * uploaded the project's database id); the pin's folder finds it there.
+   * Anything else goes as asked, and the machine answers for it.
+   */
+  private projectIdOnMachine(
+    targetId: string,
+    projectId: string,
+    projectRootPath: string | null | undefined,
+    known: readonly RemoteRuntimeProjectRecord[] | null = null,
+  ): string {
+    if (!projectRootPath) return projectId;
+    const projects = known ?? this.statusById.get(targetId)?.projects;
+    return findMachineProject(projects, { projectId, rootPath: projectRootPath })?.projectId ?? projectId;
+  }
+
+  /**
+   * `projectIdOnMachine`, for a call about to go out. A machine this app holds
+   * no project list for (awake, but not connected here yet) is asked for it
+   * first; a failure there is the call's failure.
+   */
+  private async routedProjectId(
+    target: RemoteRuntimeTarget,
+    projectId: string,
+    projectRootPath: string | null | undefined,
+    known: readonly RemoteRuntimeProjectRecord[] | null = null,
+  ): Promise<string> {
+    if (!projectRootPath) return projectId;
+    let projects = known;
+    if (!projects && !this.statusById.get(target.id)?.projects?.length) {
+      projects = coerceProjects(await this.pool.projectsForTarget(target));
+      this.mergeStatus(target.id, { projects: [...projects] });
+    }
+    return this.projectIdOnMachine(target.id, projectId, projectRootPath, projects);
+  }
+
+  /** A machine woken for a call lists its projects, as a Connect does. */
+  private noteWokenProjects(targetId: string, result: RemoteRuntimeConnectResult): RemoteRuntimeProjectRecord[] {
+    if (this.registry.get(targetId) && !this.manuallyDisconnectedTargetIds.has(targetId)) {
+      this.mergeStatus(targetId, { projects: result.projects });
+    }
+    return result.projects;
+  }
+
   async callAction(
     targetId: string,
     projectId: string,
     request: RemoteRuntimeActionRequest,
+    options?: { projectRootPath?: string | null },
   ): Promise<RemoteRuntimeActionResult> {
     // Sending to a chat or changing anything on a sleeping cloud machine wakes
     // it first, and waits for it to come back. The app's own background writes don't.
     const wakes = adeActionAccess(request.domain, request.action) === "write"
       && !isBackgroundAdeWrite(request.domain, request.action);
+    // Read after any wake: the woken machine's own list, else the last one known.
+    let wokenProjects: RemoteRuntimeProjectRecord[] | null = null;
+    const routedProjectId = (machine: RemoteRuntimeTarget) =>
+      this.routedProjectId(machine, projectId, options?.projectRootPath, wokenProjects);
     if (!this.pool.hasEntry(targetId) && wakes) {
       const sleeping = this.registry.get(targetId);
       // The same guards as any implicit use, but for the reconnect backoff a
@@ -1541,7 +1592,7 @@ export class RemoteConnectionService {
       }
       if (sleeping && await this.wakeForUse(sleeping)) {
         this.clearAutomaticReconnectState(targetId);
-        await this.connectWokenMachine(sleeping);
+        wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(sleeping));
       } else if (this.asleepChecks.isResting(targetId)) {
         // Not woken by this app: another device woke it already. The rest
         // ends, and the dial below finds out (a failed one asks again).
@@ -1552,7 +1603,7 @@ export class RemoteConnectionService {
     try {
       let result: RemoteRuntimeActionResult;
       try {
-        result = await this.pool.callActionForTarget(target, projectId, request);
+        result = await this.pool.callActionForTarget(target, await routedProjectId(target), request);
       } catch (error) {
         // A connection that looked open to a box that is asleep: wake it. The
         // call is sent once more only when sending it twice is safe, or when
@@ -1560,10 +1611,10 @@ export class RemoteConnectionService {
         // person's retry reaches the woken machine.
         if (!wakes || !(await this.wakeForUse(target))) throw error;
         this.clearAutomaticReconnectState(targetId);
-        await this.connectWokenMachine(target);
+        wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(target));
         if (error instanceof RemoteActionOutcomeUnknownError
           && !isRetriableAfterSleep(request, this.statusById.get(targetId)?.capabilities?.clientSendDedupe === true)) throw error;
-        result = await this.pool.callActionForTarget(target, projectId, request);
+        result = await this.pool.callActionForTarget(target, await routedProjectId(target), request);
       }
       this.mergeStatus(targetId, {
         state: "connected",
@@ -1587,6 +1638,7 @@ export class RemoteConnectionService {
     targetId: string,
     projectId: string,
     request: RemoteRuntimeStreamEventsRequest = {},
+    options?: { projectRootPath?: string | null },
   ): Promise<RemoteRuntimeStreamEventsResult> {
     const key = JSON.stringify([
       targetId,
@@ -1598,7 +1650,7 @@ export class RemoteConnectionService {
     ]);
     const inFlight = this.inFlightStreamEvents.get(key);
     if (inFlight) return inFlight;
-    const read = this.readStreamEvents(targetId, projectId, request).finally(() => {
+    const read = this.readStreamEvents(targetId, projectId, request, options).finally(() => {
       if (this.inFlightStreamEvents.get(key) === read) this.inFlightStreamEvents.delete(key);
     });
     this.inFlightStreamEvents.set(key, read);
@@ -1609,12 +1661,13 @@ export class RemoteConnectionService {
     targetId: string,
     projectId: string,
     request: RemoteRuntimeStreamEventsRequest,
+    options?: { projectRootPath?: string | null },
   ): Promise<RemoteRuntimeStreamEventsResult> {
     const target = await this.requireTargetForImplicitUse(targetId);
     try {
       const result = await this.pool.streamEventsForTarget(
         target,
-        projectId,
+        await this.routedProjectId(target, projectId, options?.projectRootPath),
         request,
       );
       this.mergeStatus(targetId, {
@@ -1637,12 +1690,13 @@ export class RemoteConnectionService {
     onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
     onEnded?: () => void,
     onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
+    options?: { projectRootPath?: string | null },
   ): Promise<() => void> {
     const target = await this.requireTargetForImplicitUse(targetId);
     try {
       const cleanup = await this.pool.subscribeEventsForTarget(
         target,
-        projectId,
+        await this.routedProjectId(target, projectId, options?.projectRootPath),
         request,
         onEvent,
         onEnded,

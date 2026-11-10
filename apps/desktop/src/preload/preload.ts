@@ -2329,6 +2329,8 @@ async function callPinnedRuntimeAction<T>(
     const response = await remoteTargetGate.invoke<RemoteRuntimeActionResult>(IPC.remoteRuntimeCallAction, pin.targetId, {
       id: pin.targetId,
       projectId: pin.projectId,
+      // A pin from a saved chat can carry an id the machine doesn't list.
+      projectRootPath: pin.rootPath || null,
       request: { domain, action, ...request },
     });
     return response.result as T;

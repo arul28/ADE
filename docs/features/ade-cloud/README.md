@@ -160,6 +160,13 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   and a failed redial, and is asked again 45 s and 90 s later: a computer closes
   its link up to a minute before its status says asleep. A person's write wakes it; the saved-connection
   maintenance asks again every 5 minutes and redials once it is awake.
+- A saved chat names its project by the id the brain routes by (the registry id,
+  written in `bootstrap.ts`). Copies saved before that carry the project database
+  id, which the brain does not know. So a pinned remote call also sends the pin's
+  folder, and `callAction` in `remoteConnectionService.ts` sends the id the
+  machine lists: by id, then by folder (`findMachineProject`). It reads the list
+  of the machine it has just woken, or asks a machine it holds no list for. It
+  never picks among several projects when none matches.
 - Wake, the rest above and the update check apply only to a machine the desktop
   knows as a cloud computer (`knowsBox` in `cloudMachines.ts`). That answer does
   not depend on the Connections pane: the computers are read once at start, any

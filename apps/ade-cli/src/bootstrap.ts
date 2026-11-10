@@ -2883,7 +2883,10 @@ export async function createAdeRuntime(args: {
               provider: summary?.provider ?? null,
               model: summary?.model ?? null,
               projectKey,
-              projectId,
+              // The id a remote call names this project by (the brain's
+              // registry), not the project database's own id: a send from
+              // the saved copy is routed with it.
+              projectId: syncRuntimeOptions?.registryProjectId ?? projectId,
               projectRoot,
               lastActivityAt: row.lastActivityAt ?? row.startedAt ?? null,
             };
