@@ -1513,12 +1513,16 @@ export function registerRuntimeBridge({
       arg: {
         id: string;
         projectId: string;
+        /** The pin's folder: finds the project when the machine doesn't list the pin's id. */
+        projectRootPath?: string | null;
         request: RemoteRuntimeActionRequest;
       },
     ): Promise<RemoteRuntimeActionResult> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       const projectId =
         typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      const projectRootPath =
+        typeof arg?.projectRootPath === "string" ? arg.projectRootPath.trim() || null : null;
       const request =
         arg?.request &&
         typeof arg.request === "object" &&
@@ -1541,9 +1545,10 @@ export function registerRuntimeBridge({
         target.id,
         projectId,
         actionRequest,
+        { projectRootPath },
       );
       trackPageFileWatch(event.sender, remoteFileWatchRuntimeKey(target.id, projectId), actionRequest, (fileRequest) =>
-        remoteConnectionService.callAction(target.id, projectId, fileRequest));
+        remoteConnectionService.callAction(target.id, projectId, fileRequest, { projectRootPath }));
       return result;
     },
   );
@@ -1953,18 +1958,25 @@ export function registerRuntimeBridge({
       arg: {
         id: string;
         projectId: string;
+        /** The pin's folder, as for `remoteRuntimeCallAction`. */
+        projectRootPath?: string | null;
         request?: RemoteRuntimeStreamEventsRequest;
       },
     ): Promise<RemoteRuntimeStreamEventsResult> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       const projectId =
         typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      const projectRootPath =
+        typeof arg?.projectRootPath === "string" ? arg.projectRootPath.trim() || null : null;
       if (!id) throw new Error("Remote target id is required.");
       if (!projectId) throw new Error("Remote project id is required.");
       const target = requireRemoteTarget(id);
       const request = normalizeRuntimeStreamEventsRequest(arg?.request);
+      // Keys stay on the pin's own id, so a release names the same stream; only
+      // the machine is asked by the id it lists, read at each (re)subscribe.
       const bindingKey = remoteProjectBindingKey(target.id, projectId);
       const requestKey = runtimeEventRequestKey(bindingKey, request);
+      const routedProjectId = () => remoteConnectionService.projectIdOnMachine(target.id, projectId, projectRootPath);
       const subscribe = (
         onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
         onEnded: () => void,
@@ -1972,7 +1984,7 @@ export function registerRuntimeBridge({
       ) =>
         remoteConnectionService.subscribeEvents(
           target.id,
-          projectId,
+          routedProjectId(),
           {
             cursor: request.cursor,
             limit: request.limit,
@@ -2001,7 +2013,7 @@ export function registerRuntimeBridge({
         };
       }
       const result = withRendererVisibleEvents(
-        await remoteConnectionService.streamEvents(target.id, projectId, request),
+        await remoteConnectionService.streamEvents(target.id, routedProjectId(), request),
       );
       // A pump that started live already has a push stream for this binding and
       // category. A second, replaying one would send every event over the wire

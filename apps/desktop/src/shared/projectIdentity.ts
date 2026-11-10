@@ -18,6 +18,27 @@ export function remoteProjectBindingKey(targetId: string, projectId: string): st
   return `remote:${targetId}:${projectId}`;
 }
 
+const comparableRootPath = (rootPath: string | null | undefined): string | null =>
+  rootPath?.trim().replace(/[\\/]+$/, "") || null;
+
+/**
+ * The project a machine lists for a reference to it: by id, then by folder.
+ * The folder finds a project that the reference names by an id the machine
+ * never had, such as the project database id that saved chats carried before
+ * they carried the machine's own id.
+ */
+export function findMachineProject<T extends { projectId: string; rootPath: string }>(
+  projects: readonly T[] | null | undefined,
+  ref: { projectId?: string | null; rootPath?: string | null },
+): T | null {
+  if (!projects?.length) return null;
+  const byId = ref.projectId ? projects.find((project) => project.projectId === ref.projectId) : undefined;
+  if (byId) return byId;
+  const rootPath = comparableRootPath(ref.rootPath);
+  if (!rootPath) return null;
+  return projects.find((project) => comparableRootPath(project.rootPath) === rootPath) ?? null;
+}
+
 /** State key for an open project binding. Local projects key by root path. */
 export function projectBindingKey(binding: OpenProjectBinding): string {
   return binding.kind === "remote"

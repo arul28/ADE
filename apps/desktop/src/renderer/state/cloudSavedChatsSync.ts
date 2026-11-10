@@ -4,7 +4,7 @@
  * every 30 s, never a poll. Transcripts are read only when a chat is opened.
  */
 
-import { remoteProjectBindingKey } from "../../shared/projectIdentity";
+import { findMachineProject, remoteProjectBindingKey } from "../../shared/projectIdentity";
 import type { CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import type { RemoteRuntimeConnectionStatus } from "../../shared/types/remoteRuntime";
@@ -78,8 +78,12 @@ const realBinding = (
   connection: RemoteRuntimeConnectionStatus,
   row: CloudSavedChatRow,
 ): OpenProjectBinding | null => {
-  const project = connection.projects?.find((candidate) => candidate.projectId === row.projectId)
-    ?? connection.projects?.[0];
+  // By id, then by folder (older rows carry the project's database id, not the
+  // id the machine routes by), then the machine's only project. Never a guess
+  // among several: the row's own id goes, and the machine answers for it.
+  const projects = connection.projects ?? [];
+  const project = findMachineProject(projects, { projectId: row.projectId, rootPath: row.projectRoot })
+    ?? (projects.length === 1 ? projects[0] : undefined);
   const projectId = project?.projectId ?? row.projectId;
   if (!projectId) return null;
   return {
