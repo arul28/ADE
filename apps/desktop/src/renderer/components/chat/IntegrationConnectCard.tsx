@@ -352,7 +352,7 @@ export function IntegrationConnectComposer({
       <div className="ade-icc-banner" style={brand.banner}>
         <img className="ade-icc-banner-art" src={brand.art} alt="" draggable={false} />
         <div className="ade-icc-banner-shade" aria-hidden />
-        <span className="ade-icc-logo"><SolidLogo spec={{ ...brand.logo, size: 25 }} straight /></span>
+        <span className="ade-icc-logo"><SolidLogo spec={{ ...brand.logo, size: 25 }} straight floor={false} /></span>
         <CardHeading askerFamily={askerFamily} asker={asker} verb="asks to connect" title={spec.label} />
         <span className="ade-icc-banner-tools">
           {card.current ? <span className="ade-icc-chip" data-testid="integration-connect-current">{card.current}</span> : null}

@@ -154,7 +154,7 @@ function IntegrationMark({ server, entry, integration }: {
     const brand = integrationBrand(integration);
     return (
       <span className="ade-ix-mark" style={brand.banner} data-light={brand.lightBanner ? "true" : undefined}>
-        <SolidLogo spec={{ ...brand.logo, size: 22 }} straight />
+        <SolidLogo spec={{ ...brand.logo, size: 22 }} straight floor={false} />
       </span>
     );
   }
@@ -162,7 +162,7 @@ function IntegrationMark({ server, entry, integration }: {
     const brand = mcpCatalogueBrand(entry);
     return (
       <span className="ade-ix-mark" style={brand.banner}>
-        <SolidLogo spec={{ ...brand.logo, size: 22 }} straight />
+        <SolidLogo spec={{ ...brand.logo, size: 22 }} straight floor={false} />
       </span>
     );
   }

@@ -441,7 +441,7 @@ function brandMark(providerId: string, size: number) {
 
 function BrandLogo({ providerId, size }: { providerId: string; size: number }) {
   const brand = providerBrand(SPECS[providerId]?.brandId ?? providerId);
-  if (brand.logo.kind === "solid") return <SolidLogo spec={{ ...brand.logo, size }} straight />;
+  if (brand.logo.kind === "solid") return <SolidLogo spec={{ ...brand.logo, size }} straight floor={false} />;
   return (
     <span
       className="ade-psc-tile"

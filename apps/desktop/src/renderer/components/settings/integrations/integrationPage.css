@@ -676,7 +676,6 @@
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 .ade-ix-mark > .ade-pv-mark3d { width: 30px; height: 30px; }
-.ade-ix-mark .ade-pv-mark3d-floor { display: none; }
 .ade-ix-mark-plain {
   color: color-mix(in srgb, var(--ig-accent) 60%, white 40%);
   background: color-mix(in srgb, var(--ig-accent) 22%, rgba(14, 15, 19, 0.9));
@@ -767,7 +766,6 @@
   color: #fff;
 }
 .ade-ix-dialog-hero > .ade-pv-mark3d { width: 40px; height: 40px; }
-.ade-ix-dialog-hero .ade-pv-mark3d-floor { display: none; }
 .ade-ix-dialog-id { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .ade-ix-dialog-name { font-size: 16px; font-weight: 680; }
 .ade-ix-dialog-by { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; opacity: 0.8; }
