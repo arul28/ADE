@@ -128,6 +128,26 @@ function json(contents: ReadonlyMap<string, Buffer>, rel: string): Record<string
   }
 }
 
+/**
+ * Antigravity's `settings.json` is Hjson to its agent (comments, trailing
+ * commas). The same loose read as `antigravityAuth.ts`: comments and trailing
+ * commas out, then JSON. Anything still unreadable is null.
+ */
+export function parseAntigravitySettings(raw: string): Record<string, unknown> | null {
+  try {
+    const withoutComments = raw
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:"'\\])\/\/[^\n]*/g, "$1");
+    const parsed = JSON.parse(withoutComments.replace(/,(\s*[}\]])/g, "$1")) as unknown;
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The agent's own settings file, under its private folder (not Gemini CLI's `<GEMINI_HOME>/settings.json`). */
+export const ANTIGRAVITY_SETTINGS_REL = "antigravity-acp/settings.json";
+
 function str(record: Record<string, unknown> | null | undefined, key: string): string | null {
   const value = record?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -545,16 +565,10 @@ const ROWS: CarryRow[] = [
     carry: "carried",
     message: "ADE copies Antigravity's Google sign-in. On a Mac it is in the Keychain, and ADE reads it only when you allow it.",
     locate: (ctx) => {
-      // macOS keeps it in the Keychain: never read in the background (the Allow action is P5 step 3).
+      // macOS keeps it in the Keychain: never read in the background. The
+      // person's Allow (`provider_logins.allowKeychain`) reads it once.
       if (ctx.platform === "darwin") return [];
-      const geminiHome = ctx.env.GEMINI_HOME?.trim() ? path.resolve(ctx.env.GEMINI_HOME.trim()) : path.join(ctx.homeDir, ".gemini");
-      return (["personal", "business"] as const).map((slot) => ({
-        id: `antigravity/${slot}`,
-        files: [
-          file("geminiHome", geminiHome, slot === "personal" ? "antigravity-acp/acp_token.json" : "antigravity-acp/acp_business_token.json"),
-          file("geminiHome", geminiHome, "settings.json", { carry: false, required: false }),
-        ],
-      }));
+      return (["personal", "business"] as const).map((slot) => antigravityBundle(ctx, slot));
     },
     parse: (bundle, contents) => {
       const slot = bundle.id.endsWith("business") ? "business" : "personal";
@@ -562,7 +576,8 @@ const ROWS: CarryRow[] = [
       const raw = text(contents, tokenSpec.rel);
       const data = json(contents, tokenSpec.rel);
       if (!raw || !data) return { unreadable: true };
-      const settings = json(contents, "settings.json");
+      const settingsText = text(contents, ANTIGRAVITY_SETTINGS_REL);
+      const settings = settingsText == null ? null : parseAntigravitySettings(settingsText);
       const auth = isRecord(settings?.auth) ? settings.auth : null;
       const gcp = isRecord(settings?.gcp) ? settings.gcp : null;
       return {
@@ -595,6 +610,22 @@ const ROWS: CarryRow[] = [
 ];
 
 export const PROVIDER_LOGIN_CARRY: ReadonlyArray<CarryRow> = ROWS;
+
+/**
+ * Antigravity's bundle for one slot: its token file and the agent's settings.
+ * On a Mac the Allow action fills the token file's part from the Keychain
+ * item instead of the file (the file is not there).
+ */
+export function antigravityBundle(ctx: CarryContext, slot: "personal" | "business"): CarryBundle {
+  const geminiHome = carryRootDir("geminiHome", ctx)!;
+  return {
+    id: `antigravity/${slot}`,
+    files: [
+      file("geminiHome", geminiHome, slot === "personal" ? "antigravity-acp/acp_token.json" : "antigravity-acp/acp_business_token.json"),
+      file("geminiHome", geminiHome, ANTIGRAVITY_SETTINGS_REL, { carry: false, required: false }),
+    ],
+  };
+}
 
 export function carryRow(provider: ProviderLoginProvider): CarryRow {
   return ROWS.find((row) => row.provider === provider)!;

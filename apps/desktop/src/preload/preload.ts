@@ -11425,6 +11425,18 @@ const adeBridge = {
       callProviderLogins<ProviderLoginSyncStatus>("status", args, pin),
     captureNow: (args: { provider?: ProviderLoginProvider | null } = {}, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
       callProviderLogins<ProviderLoginSyncStatus>("captureNow", args, pin),
+    /**
+     * The one Keychain read that macOS asks the person about, on the Mac in
+     * front of them. Never the tab's bound machine: a call for another
+     * computer (a remote pin or a remote binding) is refused here, since the
+     * prompt would show on that computer's screen.
+     */
+    allowKeychain: async (args: { provider: "antigravity"; slot?: "personal" | "business" | null }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> => {
+      if (pin?.kind === "remote" || (!pin && await getRemoteProjectBinding())) {
+        throw new Error("Run this on that Mac. ADE reads a Mac's Keychain only on the Mac you are using.");
+      }
+      return await ipcRenderer.invoke(IPC.providerLoginsCall, { action: "allowKeychain", args: { ...args } }) as ProviderLoginSyncStatus;
+    },
     use: (args: { provider: ProviderLoginProvider; key: string | null; slot?: string | null }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
       callProviderLogins<ProviderLoginSyncStatus>("use", args, pin),
     setCloud: (args: { key: string; on: boolean }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>

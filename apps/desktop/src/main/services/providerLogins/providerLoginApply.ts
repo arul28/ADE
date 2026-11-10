@@ -12,6 +12,8 @@
  * - Pi's `auth.json` is merged one entry at a time under Pi's own lock (the
  *   `<file>.lock` folder of proper-lockfile). Kimi's config gets one section,
  *   only when it has none. Qwen's settings get only their auth part.
+ *   Antigravity's agent settings get only `auth.type` (and `gcp.project` and
+ *   `gcp.location` for a business sign-in).
  * - A cloud computer never renews in this step, so every renewing copy is
  *   access-only: its refresh token is taken out (`accessOnlyFile`).
  *
@@ -33,11 +35,13 @@ import type { ProviderLoginProvider } from "../../../shared/types/providerLogins
 import { writeFileAtomic } from "../state/durableFile";
 import { isRecord } from "../shared/utils";
 import {
+  ANTIGRAVITY_SETTINGS_REL,
   accessOnlyFile,
   accessOnlyPiEntry,
   carryRootDir,
   carryRow,
   isApplyFileAllowed,
+  parseAntigravitySettings,
   type CarriedFile,
   type CarryContext,
 } from "./providerLoginCarry";
@@ -60,6 +64,10 @@ export type AppliedEntry = {
   pi?: { authPath: string; slot: string; entryHash: string };
   kimiConfig?: { path: string };
   qwen?: { path: string; partHash: string; envKeys: string[]; wroteProviders: boolean };
+  /** The agent settings fields apply wrote, by dotted name, with the short hash of each value. */
+  antigravity?: { path: string; fields: Record<string, string> };
+  /** The copy's expiry (epoch ms), for the short wait before a turn (step 3a); null when it has none. */
+  expiresAt?: number | null;
   appliedAt: number;
 };
 
@@ -262,6 +270,56 @@ function qwenPartOf(settings: Record<string, unknown>, envKeys?: readonly string
 
 const qwenPartHash = (part: QwenPart): string => shortHash(JSON.stringify(part));
 
+// ── Antigravity's agent settings ──────────────────────────────────────
+
+const ANTIGRAVITY_AUTH_TYPES = new Set(["oauth-personal", "oauth-business"]);
+/** A project id or a location: short, one line. Anything else from a vault item is not written. */
+const SETTING_TEXT = /^[^\u0000-\u001f]{1,200}$/;
+
+/** The fields to write, by dotted name: what the agent needs to pick this sign-in's token. */
+function antigravityFields(slot: string, parts: Record<string, unknown> | null): Record<string, string> | null {
+  const settings = isRecord(parts?.antigravitySettings) ? parts!.antigravitySettings as Record<string, unknown> : null;
+  const authType = typeof settings?.authType === "string" && ANTIGRAVITY_AUTH_TYPES.has(settings.authType)
+    ? settings.authType
+    : slot === "business" ? "oauth-business" : slot === "personal" ? "oauth-personal" : null;
+  if (!authType) return null;
+  const fields: Record<string, string> = { "auth.type": authType };
+  if (authType === "oauth-business") {
+    if (typeof settings?.gcpProject === "string" && SETTING_TEXT.test(settings.gcpProject)) fields["gcp.project"] = settings.gcpProject;
+    if (typeof settings?.gcpLocation === "string" && SETTING_TEXT.test(settings.gcpLocation)) fields["gcp.location"] = settings.gcpLocation;
+  }
+  return fields;
+}
+
+function readDotted(record: Record<string, unknown>, name: string): unknown {
+  const [group, field] = name.split(".") as [string, string];
+  const inner = record[group];
+  return isRecord(inner) ? inner[field] : undefined;
+}
+
+const fieldHash = (record: Record<string, unknown>, name: string): string => shortHash(JSON.stringify(readDotted(record, name) ?? null));
+
+/** Take these dotted fields out, and a group left empty with them. */
+function withoutFields(record: Record<string, unknown>, names: readonly string[]): Record<string, unknown> {
+  const next = { ...record };
+  for (const name of names) {
+    const [group, field] = name.split(".") as [string, string];
+    if (!isRecord(next[group])) continue;
+    const inner = { ...(next[group] as Record<string, unknown>) };
+    delete inner[field];
+    if (Object.keys(inner).length) next[group] = inner;
+    else delete next[group];
+  }
+  return next;
+}
+
+/** The settings file as an object, "missing", or "unreadable" (Hjson the loose read cannot take). */
+function readAntigravitySettingsFile(file: string): Record<string, unknown> | "missing" | "unreadable" {
+  const raw = readBytes(file);
+  if (!raw) return "missing";
+  return parseAntigravitySettings(raw.toString("utf8")) ?? "unreadable";
+}
+
 // ── the readback that tells capture "this file is the account's" ──────
 
 /** Hash what capture would read back from this provider's files now (one slot for Pi). */
@@ -296,6 +354,8 @@ export type ApplySignIn = {
   class: "fixed" | "renewing";
   files: CarriedFile[];
   parts: Record<string, unknown> | null;
+  /** The copy's expiry from the vault item, kept for the short wait before a turn. */
+  expiresAt?: number | null;
 };
 
 export type ApplyResult = { ok: true; entry: AppliedEntry } | { ok: false; reason: "refused_path" | "unreadable_target" | "nothing_to_write" | "write_failed"; code?: string | null };
@@ -318,6 +378,7 @@ export async function applySignIn(want: ApplySignIn, previous: AppliedEntry | nu
     renewalSafe,
     files,
     loginHashes: [],
+    expiresAt: want.expiresAt ?? null,
     appliedAt: now,
   };
   try {
@@ -387,6 +448,27 @@ export async function applySignIn(want: ApplySignIn, previous: AppliedEntry | nu
         entry.kimiConfig = previous.kimiConfig;
       }
     }
+
+    if (want.provider === "antigravity") {
+      // Only the fields the agent needs to pick this token go in; the rest of the settings here stay.
+      const fields = antigravityFields(want.slot, want.parts);
+      if (!fields) return { ok: false, reason: "nothing_to_write" };
+      const settingsPath = path.join(carryRootDir("geminiHome", ctx)!, ...ANTIGRAVITY_SETTINGS_REL.split("/"));
+      const current = readAntigravitySettingsFile(settingsPath);
+      if (current === "unreadable") return { ok: false, reason: "unreadable_target" };
+      // A business copy replaced by a personal one: a gcp field the earlier copy wrote leaves, if unchanged.
+      const names = Object.keys(fields);
+      const stale = Object.entries(previous?.antigravity?.fields ?? {})
+        .filter(([name, hash]) => !names.includes(name) && current !== "missing" && fieldHash(current, name) === hash)
+        .map(([name]) => name);
+      let next: Record<string, unknown> = current === "missing" ? {} : withoutFields(current, stale);
+      for (const [name, value] of Object.entries(fields)) {
+        const [group, field] = name.split(".") as [string, string];
+        next = { ...next, [group]: { ...(isRecord(next[group]) ? next[group] as Record<string, unknown> : {}), [field]: value } };
+      }
+      writePrivateFileAtomic(settingsPath, encodeJson(next));
+      entry.antigravity = { path: settingsPath, fields: Object.fromEntries(names.map((name) => [name, fieldHash(next, name)])) };
+    }
   } catch (error) {
     return { ok: false, reason: "write_failed", code: (error as NodeJS.ErrnoException)?.code ?? null };
   }
@@ -432,7 +514,8 @@ export function applyCodexKey(source: string, token: string, ctx: CarryContext, 
 /**
  * Take one applied sign-in away: each file only while it is still the one
  * ADE wrote; Pi's entry only while it is unchanged; Kimi's section only when
- * ADE wrote it; Qwen's auth part only while it is unchanged.
+ * ADE wrote it; Qwen's auth part only while it is unchanged; Antigravity's
+ * settings fields only while they are still the values apply wrote.
  */
 export async function removeApplied(entry: AppliedEntry): Promise<{ kept: number }> {
   let kept = 0;
@@ -476,6 +559,16 @@ export async function removeApplied(entry: AppliedEntry): Promise<{ kept: number
         if (entry.qwen.wroteProviders) delete next.modelProviders;
         writePrivateFileAtomic(entry.qwen.path, encodeJson(next));
       }
+    }
+  }
+  if (entry.antigravity && isRecord(entry.antigravity.fields)) {
+    const { path: settingsPath, fields } = entry.antigravity;
+    const current = readAntigravitySettingsFile(settingsPath);
+    if (isRecord(current)) {
+      // Each field still as apply wrote it leaves; one the agent or the person changed stays.
+      const unchanged = Object.entries(fields).filter(([name, hash]) => fieldHash(current, name) === hash).map(([name]) => name);
+      kept += Object.keys(fields).length - unchanged.length;
+      if (unchanged.length) writePrivateFileAtomic(settingsPath, encodeJson(withoutFields(current, unchanged)));
     }
   }
   return { kept };

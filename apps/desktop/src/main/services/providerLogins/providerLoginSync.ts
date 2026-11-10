@@ -14,7 +14,10 @@
  * account that has ADE Cloud, ADE Cloud's sign-ins switched on, and a vault
  * that synced. An account without ADE Cloud never has a login uploaded.
  *
- * Apply on cloud computers and renewal are P5 steps 2 and 3.
+ * Apply on cloud computers is step 2. Step 3a adds renewal ahead of expiry
+ * on the owner computer (`providerLoginRenew.ts`), the short wait before a
+ * turn on a cloud computer whose copy is about to expire, and the person's
+ * one Keychain read on a Mac (`allowKeychain`).
  *
  * Never logs a value, a hash or a file's content: events carry the provider,
  * the slot, sizes and reason codes.
@@ -30,15 +33,34 @@ import {
   type ProviderLoginApplied,
   type ProviderLoginApplyState,
   type ProviderLoginCaptureOffReason,
+  type ProviderLoginGateOutcome,
   type ProviderLoginLocalState,
   type ProviderLoginProvider,
+  type ProviderLoginProviderStatus,
   type ProviderLoginSignIn,
   type ProviderLoginStatus,
 } from "../../../shared/types/providerLogins";
 import { CLOUD_SIGN_INS } from "../../../shared/cloudSignIns";
 import { noteProviderLoginChanged, onProviderLoginChanged } from "../ai/providerLoginChanged";
 import { isRecord } from "../shared/utils";
-import { PROVIDER_LOGIN_CARRY, carryRow, type CarryBundle, type CarryContext, type CarryRow, type ParsedLogin } from "./providerLoginCarry";
+import {
+  ANTIGRAVITY_SETTINGS_REL,
+  PROVIDER_LOGIN_CARRY,
+  antigravityBundle,
+  carryRow,
+  parseAntigravitySettings,
+  type CarryBundle,
+  type CarryContext,
+  type CarryRow,
+  type ParsedLogin,
+} from "./providerLoginCarry";
+import {
+  ANTIGRAVITY_KEYCHAIN_ACCOUNTS,
+  decodeKeychainSecret,
+  readKeychainSecret,
+  type AntigravityKeychainSlot,
+} from "./providerLoginKeychain";
+import { createOwnerRenewal, type OwnerRenewTarget, type ProviderLoginRenewer } from "./providerLoginRenew";
 import {
   adoptOldCodexKeyFile,
   applyCodexKey,
@@ -98,6 +120,14 @@ const ACCESS_RECHECK_MAX_MS = 30 * 60_000;
 const GATE_MAX_AGE_MS = 30_000;
 /** The gate never holds a turn longer than this. */
 const GATE_LIMIT_MS = 5_000;
+/** A copy here with less than this left makes a turn wait for a fresh one (§5.3 steps 1 and 2). */
+const SHORT_WAIT_LEFT_MS = 60_000;
+/** The owner may be renewing right now while the copy is no more than this past its expiry. */
+const SHORT_WAIT_RENEWING_MS = 60_000;
+const SHORT_WAIT_POLL_MS = 5_000;
+const SHORT_WAIT_POLL_LIMIT_MS = 20_000;
+/** The whole gate, with the short wait, never passes this. Then the turn goes ahead (`owner_off`). */
+const SHORT_WAIT_GATE_LIMIT_MS = 30_000;
 
 /**
  * The saved ADE Cloud keys (`integration/cloud-key-<id>`) by the provider they
@@ -148,6 +178,8 @@ export type ProviderLoginVault = {
   health(): { state: "ok" | "failing" | "unavailable"; syncReady?: boolean };
   /** Keys of this kind the account service refused (an older relay); retried hourly by the store. */
   parkedKeys?(scope: string, kind: typeof PROVIDER_LOGIN_VAULT_KIND): string[];
+  /** Keys with a write the account service has not taken yet (queued, or parked). */
+  pendingKeys?(scope: string, kind: typeof PROVIDER_LOGIN_VAULT_KIND): string[];
   startPeriodicSync(intervalMs?: number, onSync?: (status: "ready" | "unavailable" | "failed") => void): () => void;
   /** With `maxAgeMs`, no network when the last pull is younger (the gate before a turn). */
   sync?(options?: { maxAgeMs?: number } | null): Promise<"ready" | "unavailable" | "failed">;
@@ -184,6 +216,19 @@ export type ProviderLoginSyncDeps = {
   platform?: NodeJS.Platform;
   now?: () => number;
   settleMs?: number;
+  /**
+   * Renewal ahead of expiry on the owner computer (step 3a): the proxy's renew
+   * call and shared machine lock, from the brain. Absent: no renewal ahead.
+   */
+  renewer?: ProviderLoginRenewer | null;
+  /**
+   * Whether the account has at least one cloud computer now. Asked only when a
+   * sign-in owned here is otherwise due a planned renewal. null (unknown) or
+   * absent: no renewal ahead, no timer.
+   */
+  cloudComputerExists?: () => Promise<boolean | null>;
+  /** The `security` command for the person's Keychain read. The scratch checks pass a fake one. */
+  keychainCommand?: string;
 };
 
 const OFF_MESSAGES: Record<ProviderLoginCaptureOffReason, string> = {
@@ -206,7 +251,7 @@ const LOCAL_MESSAGES: Record<ProviderLoginLocalState, string> = {
   too_large: "This sign-in is too big for your account.",
   unreadable: "ADE found a login file but could not read a sign-in from it.",
   removed_from_account: "You removed this sign-in from your account. Sign in again here to add it back.",
-  other_owner_newer: "Another computer renews this sign-in, and its copy is newer.",
+  other_owner_newer: "Another computer renews this sign-in, so your account keeps that computer's copy.",
   from_saved_key: "This file came from a saved ADE Cloud key. It stays a key.",
   from_account: "This is the account's sign-in. ADE wrote it on this cloud computer.",
   account_refused: "Your account service doesn't take sign-ins yet. ADE keeps this one on this computer and tries again every hour.",
@@ -391,19 +436,22 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       return { push: true };
     }
     if (!row) return { push: true };
-    if (pushed?.pushedHash === login.contentHash) return { push: false, state: "captured" };
-    const meta = readProviderLoginMeta(vault.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, login.key));
+    const meta = metaFor(vault, row);
+    // What this computer last pushed, and the account still holds it. (A write that lost to a newer one is not "captured".)
+    if (pushed?.pushedHash === login.contentHash && meta?.contentHash === login.contentHash) return { push: false, state: "captured" };
     if (meta?.contentHash === login.contentHash) {
       state.pushed[login.key] = { pushedHash: login.contentHash, familyHash: login.familyHash, pushedAt: now(), absentSince: null, absentPasses: 0 };
       return { push: false, state: "captured" };
     }
-    // Another computer renews this family, and its copy is not older: never overwrite it with this one.
+    // Another computer renews this family: never put this copy over its copy,
+    // whatever this one's expiry says (step 3a). The origin that renewed by
+    // itself after a cloud computer took over (design §3.4, third row) comes
+    // back with the takeover and the write-back, after the owner's answer.
     if (
       login.class === "renewing"
       && row.refreshOwner
       && row.refreshOwner !== machine.deviceId
       && meta?.familyHash === login.familyHash
-      && (meta.expiresAt ?? 0) >= (login.expiresAt ?? 0)
     ) {
       return { push: false, state: "other_owner_newer" };
     }
@@ -447,6 +495,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
   async function runPass(providers: Set<ProviderLoginProvider> | null): Promise<void> {
     const off = await captureOffReason();
     lastPassAt = now();
+    // Capture off for any reason: no renewal ahead, and no timer for one.
+    if (off) ownerRenewal?.plan([]);
     // The account lost ADE Cloud or signed out between two answers: stop riding the ticks.
     if (off === "no_ade_cloud" || off === "signed_out") leaveTicks();
     if (off === "all_off") {
@@ -484,7 +534,11 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       if (row.carry !== "carried" || !row.locate || !row.parse) continue;
       if (providers && !providers.has(row.provider)) continue;
       localStates.set(row.provider, new Map());
-      for (const bundle of row.locate(ctx)) {
+      const bundles = row.locate(ctx);
+      // Not looked at here (Antigravity on a Mac, read only on the person's
+      // Allow): its sign-in is not "gone from this computer".
+      if (!bundles.length) uncertain.add(row.provider);
+      for (const bundle of bundles) {
         let observation = await observeBundle(row, bundle, state, origin12, false);
         if (observation.kind === "absent") {
           setLocal(row.provider, bundle.id, "not_signed_in", null);
@@ -567,6 +621,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     }
     if (accountChanged) notifyProviderLoginsChanged();
     if (deps.cloudComputer) await runApply(vault, accountUserId, origin12, providers, true);
+    else await planRenewals(vault, machine, origin12);
     notifyProviderLoginPass({
       accountUserId,
       cloudComputer: deps.cloudComputer,
@@ -669,8 +724,19 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
         if ((best.state === "not_signed_in" || best.state === "not_checked") && row.carry !== "never" && row.osStore?.(ctx)) {
           best = { state: "os_store", key: null };
         }
-        const message = row.carry === "carried" && best.state !== "not_checked" ? LOCAL_MESSAGES[best.state] : row.message;
-        return { provider: row.provider, carry: row.carry, message, local: { state: best.state, key: best.key } };
+        let message = row.carry === "carried" && best.state !== "not_checked" ? LOCAL_MESSAGES[best.state] : row.message;
+        const keychain = keychainStatus(row.provider, off, vault);
+        if (keychain?.key && !off) {
+          best = { state: "captured", key: keychain.key };
+          message = keychain.part.message;
+        }
+        return {
+          provider: row.provider,
+          carry: row.carry,
+          message,
+          local: { state: best.state, key: best.key },
+          ...(keychain ? { keychain: keychain.part } : {}),
+        };
       });
     return {
       thisComputer: {
@@ -707,6 +773,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
           renewalSafe: entry?.renewalSafe ?? true,
           appliedAt: entry ? new Date(entry.appliedAt).toISOString() : null,
           message: APPLY_MESSAGES[local.state],
+          ownerOff: ownerOff.has(place) ? { ownerLabel: ownerOff.get(place)!.ownerLabel, at: new Date(ownerOff.get(place)!.at).toISOString() } : null,
         };
       })
       .filter((entry) => !provider || entry.provider === provider);
@@ -828,6 +895,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
   /** What the first apply took out of the env (fix B1); null until then. Values stay in memory only. */
   let envTaken: Readonly<Record<string, string>> | null = null;
   const applyStates = new Map<string, { state: ProviderLoginApplyState; key: string | null }>();
+  /** The last turn whose short wait ended without a fresh copy, by place (cleared when a new copy applies). */
+  const ownerOff = new Map<string, { ownerLabel: string; at: number }>();
   let appliedLoginHashes = new Set<string>();
 
   const rememberAppliedHashes = (state: AppliedStateFile): void => {
@@ -864,7 +933,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     const entries = Object.values(appliedCache?.applied ?? {}).filter((entry) => entry.provider === provider);
     const files = entries.flatMap((entry) => entry.files);
     if (!files.length) return false;
-    const kimiConfigs = new Set(entries.flatMap((entry) => (entry.kimiConfig ? [entry.kimiConfig.path] : [])));
+    // Files apply only adds a part to (Kimi's config, Antigravity's settings) are left out.
+    const kimiConfigs = new Set(entries.flatMap((entry) => [entry.kimiConfig?.path, entry.antigravity?.path].filter((abs): abs is string => Boolean(abs))));
     let present = 0;
     for (const spec of bundle.files) {
       if (kimiConfigs.has(spec.abs)) continue;
@@ -1073,6 +1143,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
             class: payload.class,
             files: payload.files,
             parts: payload.parts,
+            expiresAt: payload.expiresAt,
           }, have, ctx, now())
           : { ok: false, reason: "nothing_to_write" };
       }
@@ -1082,6 +1153,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
         continue;
       }
       state.applied[place] = result.entry;
+      ownerOff.delete(place);
       applyStates.set(place, { state: want.kind === "key" ? "key" : "applied", key: want.kind === "key" ? "key" : want.key });
       // Until the next pass reads the file back, the status says whose it is.
       if (want.kind === "signin") setLocal(provider, `applied:${place}`, "from_account", null);
@@ -1133,21 +1205,27 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     if (changed.size) notifyProviderLoginsChanged();
   }
 
-  /** The gate before a turn or a CLI start, on a cloud computer: a fresh vault, then this provider applied. */
-  async function gate(provider: string): Promise<void> {
+  /**
+   * The gate before a turn or a CLI start, on a cloud computer: a fresh vault,
+   * then this provider applied. When the copy here is about to expire, the
+   * short wait (§5.3 steps 1 and 2): pull now; while the owner may be renewing,
+   * pull every 5 s for up to 20 s; then `owner_off` with the owner's name. No
+   * claim and no takeover. The whole gate stays under 30 s.
+   */
+  async function gate(provider: string): Promise<ProviderLoginGateOutcome> {
     // A new cloud computer's first turn can come while the ADE Cloud answer is still being read.
     if (!ticks.length && accessPending) await Promise.race([accessPending, new Promise((resolve) => setTimeout(resolve, GATE_LIMIT_MS).unref?.())]);
-    if (!ticks.length) return;
+    if (!ticks.length) return { result: "ok" };
     const providerId = provider.trim().toLowerCase();
     const gated = PROVIDER_LOGIN_CARRY.some((row) => row.provider === providerId && row.carry === "carried")
       || SAVED_KEYS.some((spec) => spec.provider === providerId);
-    if (!gated) return;
+    if (!gated) return { result: "ok" };
     const started = now();
-    const limit = <T>(promise: Promise<T> | undefined): Promise<T | "timeout" | undefined> => {
+    const limit = <T>(promise: Promise<T> | undefined, budgetMs = GATE_LIMIT_MS): Promise<T | "timeout" | undefined> => {
       if (!promise) return Promise.resolve(undefined);
       let timer: ReturnType<typeof setTimeout> | null = null;
       const timeout = new Promise<"timeout">((resolve) => {
-        timer = setTimeout(() => resolve("timeout"), Math.max(0, GATE_LIMIT_MS - (now() - started)));
+        timer = setTimeout(() => resolve("timeout"), Math.max(0, budgetMs - (now() - started)));
         timer.unref?.();
       });
       return Promise.race([promise.catch(() => undefined), timeout]).finally(() => {
@@ -1156,10 +1234,235 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     };
     const synced = await limit(deps.vault()?.sync?.({ maxAgeMs: GATE_MAX_AGE_MS }));
     const applied = synced === "timeout" ? "timeout" : await limit(pass([providerId as ProviderLoginProvider]));
+    let outcome: ProviderLoginGateOutcome = synced === "timeout" || applied === "timeout" ? { result: "timeout" } : { result: "ok" };
+    const expiring = outcome.result === "ok" ? expiringCopy(providerId) : null;
+    if (expiring) outcome = await shortWait(providerId as ProviderLoginProvider, expiring, started, limit);
     const waitedMs = now() - started;
-    if (waitedMs >= 100 || synced === "timeout" || applied === "timeout") {
-      deps.logger.info("provider_login.gate", { provider: providerId, waitedMs, result: synced === "timeout" || applied === "timeout" ? "timeout" : "ok" });
+    if (waitedMs >= 100 || outcome.result !== "ok") {
+      deps.logger.info("provider_login.gate", { provider: providerId, waitedMs, result: outcome.result, shortWait: Boolean(expiring) });
     }
+    return outcome;
+  }
+
+  /** The applied copy of this provider that renews elsewhere and has less than 60 s left, if any. */
+  function expiringCopy(provider: string): { place: string; entry: AppliedEntry } | null {
+    for (const [place, entry] of Object.entries(appliedCache?.applied ?? {})) {
+      if (entry.provider !== provider || !entry.accessOnly || entry.expiresAt == null) continue;
+      if (entry.expiresAt - now() < SHORT_WAIT_LEFT_MS) return { place, entry };
+    }
+    return null;
+  }
+
+  async function shortWait(
+    provider: ProviderLoginProvider,
+    expiring: { place: string; entry: AppliedEntry },
+    started: number,
+    limit: <T>(promise: Promise<T> | undefined, budgetMs?: number) => Promise<T | "timeout" | undefined>,
+  ): Promise<ProviderLoginGateOutcome> {
+    const pullAndApply = async (): Promise<boolean> => {
+      const pulled = await limit(deps.vault()?.sync?.(), SHORT_WAIT_GATE_LIMIT_MS);
+      if (pulled === "timeout") return false;
+      if ((await limit(pass([provider]), SHORT_WAIT_GATE_LIMIT_MS)) === "timeout") return false;
+      return !expiringCopy(provider);
+    };
+    // A turn moments after one that waited in vain does not wait again: the 30 s tick still pulls.
+    const recent = ownerOff.get(expiring.place);
+    if (recent && now() - recent.at < GATE_MAX_AGE_MS) return { result: "owner_off", provider, ownerLabel: recent.ownerLabel };
+    // Step 1: a newer copy may already be in the account.
+    if (await pullAndApply()) return { result: "ok" };
+    // Step 2: the owner may be renewing now (Grok renews 200 s before expiry).
+    const expiresAt = expiring.entry.expiresAt ?? 0;
+    if (now() < expiresAt + SHORT_WAIT_RENEWING_MS) {
+      const pollEnd = Math.min(now() + SHORT_WAIT_POLL_LIMIT_MS, started + SHORT_WAIT_GATE_LIMIT_MS - SHORT_WAIT_POLL_MS);
+      while (now() < pollEnd) {
+        await new Promise((resolve) => {
+          const timer = setTimeout(resolve, Math.max(0, Math.min(SHORT_WAIT_POLL_MS, pollEnd - now())));
+          timer.unref?.();
+        });
+        if (await pullAndApply()) return { result: "ok" };
+      }
+    }
+    const ownerLabel = ownerLabelOf(expiring.entry.source);
+    ownerOff.set(expiring.place, { ownerLabel, at: now() });
+    return { result: "owner_off", provider, ownerLabel };
+  }
+
+  /** The name of the computer that renews this sign-in: its origin unless another computer renewed it last. */
+  function ownerLabelOf(key: string): string {
+    const vault = deps.vault();
+    const row = vault?.list(ACCOUNT_SCOPE_ALL).find((entry) => entry.kind === PROVIDER_LOGIN_VAULT_KIND && entry.key === key);
+    const meta = vault && row ? metaFor(vault, row) : null;
+    if (!meta) return "the computer that made this sign-in";
+    if (row?.refreshOwner && row.refreshOwner === meta.origin.deviceId) return meta.origin.label || "the computer that made this sign-in";
+    return meta.renewedBy?.label || meta.origin.label || "the computer that made this sign-in";
+  }
+
+  // ── Renewal ahead on the owner computer (step 3a) ────────────────────
+  // Never on a cloud computer: its copies are access-only, and it never sets
+  // `refreshOwner`. The takeover by a cloud computer and the write-back to
+  // the origin are not built (open question 1).
+
+  const ownerRenewal = deps.renewer && !deps.cloudComputer
+    ? createOwnerRenewal({
+      renewer: deps.renewer,
+      now,
+      logger: deps.logger,
+      onRenewed: (target, outcome) => {
+        // The keeper renewing it (busy) changes the file too. Either way the
+        // file is read once it is stable, and the pass pushes it.
+        if (outcome === "failed" || !ticks.length) return;
+        const id = `renew:${target.provider}`;
+        clearTimeout(settleTimers.get(id));
+        const timer = setTimeout(() => {
+          settleTimers.delete(id);
+          void pass([target.provider]);
+        }, STABLE_AGE_MS + 250);
+        timer.unref?.();
+        settleTimers.set(id, timer);
+      },
+    })
+    : null;
+
+  /**
+   * The sign-ins this computer renews ahead, and only when all hold: capture
+   * is on (this runs at the end of a capture pass), the sign-in was made here
+   * and this computer is its owner, it is on and in use for ADE Cloud, ADE
+   * can make its CLI renew, and the account has a cloud computer.
+   */
+  async function planRenewals(vault: ProviderLoginVault, machine: ProviderLoginMachine, origin12: string): Promise<void> {
+    if (!ownerRenewal || !deps.renewer) return;
+    const owners = new Map<string, string | null>();
+    for (const row of vault.list(ACCOUNT_SCOPE_ALL)) {
+      if (row.kind === PROVIDER_LOGIN_VAULT_KIND && !row.deleted) owners.set(row.key, row.refreshOwner);
+    }
+    // Owner only once the account service took this computer's write: a
+    // queued write can still lose to the owner's newer one (the stale rule).
+    for (const key of vault.pendingKeys?.(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND) ?? []) owners.delete(key);
+    const targets: OwnerRenewTarget[] = [];
+    for (const signIn of signInsFromVault(vault, origin12, cloudSetting())) {
+      if (!signIn.origin.thisComputer || signIn.class !== "renewing" || !signIn.onForCloud || !signIn.inUseOnCloud) continue;
+      if (!deps.renewer.aheadMs[signIn.provider] || owners.get(signIn.key) !== machine.deviceId) continue;
+      const expiresAt = signIn.expiresAt ? Date.parse(signIn.expiresAt) : Number.NaN;
+      if (Number.isFinite(expiresAt)) targets.push({ key: signIn.key, provider: signIn.provider, expiresAt });
+    }
+    if (!targets.length) {
+      ownerRenewal.plan([]);
+      return;
+    }
+    const exists = await deps.cloudComputerExists?.().catch(() => null) ?? null;
+    ownerRenewal.plan(exists === true ? targets : []);
+  }
+
+  // ── The person's Keychain read on a Mac (§3.7) ──────────────────────
+
+  /**
+   * Copy Antigravity's sign-in from this Mac's Keychain into the account:
+   * one `security` read, which macOS asks the person about. Behind the same
+   * gates as capture. Never runs in a pass or on a timer.
+   */
+  async function allowKeychain(args: { provider: ProviderLoginProvider; slot?: AntigravityKeychainSlot | null }): Promise<ProviderLoginStatus> {
+    if (args.provider !== "antigravity") throw new Error("Only Antigravity's sign-in is copied from the Keychain.");
+    if (platform !== "darwin" || deps.cloudComputer) throw new Error("ADE copies a sign-in from the Keychain only on a Mac.");
+    const off = await captureOffReason();
+    if (off) throw new Error(OFF_MESSAGES[off]);
+    // The method the agent saved says which of its two items is the sign-in (no prompt: a plain file).
+    let slot: AntigravityKeychainSlot = args.slot ?? "personal";
+    if (!args.slot) {
+      try {
+        const settings = parseAntigravitySettings(fs.readFileSync(antigravityBundle(ctx, "personal").files[1]!.abs, "utf8"));
+        if (isRecord(settings?.auth) && settings.auth.type === "oauth-business") slot = "business";
+      } catch {
+        // No settings: the Google-account sign-in.
+      }
+    }
+    const read = await readKeychainSecret({
+      account: ANTIGRAVITY_KEYCHAIN_ACCOUNTS[slot],
+      ...(deps.keychainCommand ? { command: deps.keychainCommand } : {}),
+    });
+    deps.logger.info("provider_login.keychain_read", { provider: "antigravity", slot, result: read.ok ? "ok" : read.reason });
+    if (!read.ok) {
+      throw new Error(
+        read.reason === "not_found" ? "This Mac's Keychain has no Antigravity sign-in. Sign in to Antigravity first, then allow again."
+          : read.reason === "denied" ? "macOS did not let ADE read it. Allow again, and choose Allow when macOS asks."
+            : read.reason === "timeout" ? "macOS asked, but there was no answer in 2 minutes. Allow again."
+              : "ADE couldn't read the Keychain. Try again.",
+      );
+    }
+    const token = decodeKeychainSecret(read.data);
+    if (!token) throw new Error("ADE found the Keychain item but could not read a sign-in from it.");
+    // Behind the pass in flight, so the marks file has one writer.
+    while (inFlight) await inFlight.catch(() => undefined);
+    const vault = deps.vault();
+    const machine = deps.machine();
+    const accountUserId = deps.accountUserId();
+    if (!vault || !machine || !accountUserId) throw new Error(OFF_MESSAGES.vault_unavailable);
+    const bundle = antigravityBundle(ctx, slot);
+    const contents = new Map<string, Buffer>([[bundle.files[0]!.rel, token]]);
+    try {
+      contents.set(ANTIGRAVITY_SETTINGS_REL, fs.readFileSync(bundle.files[1]!.abs));
+    } catch {
+      // No agent settings on this Mac: the slot says which method it is.
+    }
+    const row = carryRow("antigravity");
+    const parsed = row.parse!(bundle, contents, ctx);
+    if ("unreadable" in parsed || !parsed.logins.length) throw new Error("ADE found the Keychain item but could not read a sign-in from it.");
+    const origin12 = originId(machine.machineKey);
+    const state = loadState(accountUserId);
+    const rows = new Map<string, VaultRow>();
+    for (const vaultRow of vault.list(ACCOUNT_SCOPE_ALL)) {
+      if (vaultRow.kind === PROVIDER_LOGIN_VAULT_KIND) rows.set(vaultRow.key, vaultRow);
+    }
+    let local: ProviderLoginLocalState = "not_checked";
+    let key: string | null = null;
+    for (const login of parsed.logins) {
+      const memo: LoginMemo = {
+        slot: login.slot,
+        key: providerLoginKey("antigravity", origin12, login.slot),
+        contentHash: loginContentHash(login),
+        familyHash: shortHash(login.familySecret),
+        class: login.class,
+        expiresAt: login.expiresAt,
+      };
+      const decision = decide(memo, vault, rows, state, machine);
+      local = decision.push ? push("antigravity", login, memo, vault, rows, state, machine) : decision.state;
+      key = memo.key;
+    }
+    if (local === "removed_from_account") {
+      throw new Error("You removed this sign-in from your account. Sign in to Antigravity again on this Mac, then allow again.");
+    }
+    if (local !== "captured" || !key) throw new Error("ADE couldn't put the sign-in in your account. Try again in a moment.");
+    state.keychain = { ...(state.keychain ?? {}), antigravity: { allowedAt: now(), slot, key } };
+    try {
+      writeProviderLoginState(deps.adeDir, state);
+    } catch (error) {
+      deps.logger.warn("provider_login.state_write_failed", { code: (error as NodeJS.ErrnoException)?.code ?? null });
+    }
+    notifyProviderLoginsChanged();
+    return await status("antigravity");
+  }
+
+  /** The Keychain part of a provider's status, on a Mac only, and the key the last Allow wrote while it is in the account. */
+  function keychainStatus(
+    provider: ProviderLoginProvider,
+    off: ProviderLoginCaptureOffReason | null,
+    vault: ProviderLoginVault | null,
+  ): { part: NonNullable<ProviderLoginProviderStatus["keychain"]>; key: string | null } | null {
+    if (provider !== "antigravity" || platform !== "darwin" || deps.cloudComputer || deps.staticOff) return null;
+    const accountUserId = deps.accountUserId();
+    const allowed = accountUserId ? loadState(accountUserId).keychain?.antigravity ?? null : null;
+    const stillThere = Boolean(allowed && vault?.list(ACCOUNT_SCOPE_ALL).some((row) =>
+      row.kind === PROVIDER_LOGIN_VAULT_KIND && row.key === allowed.key && !row.deleted));
+    const allowedAt = allowed && stillThere ? new Date(allowed.allowedAt) : null;
+    return {
+      part: {
+        canAllow: !off,
+        allowedAt: allowedAt ? allowedAt.toISOString() : null,
+        message: allowedAt
+          ? `Copied from this Mac on ${allowedAt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}. Allow again to update.`
+          : "On a Mac this sign-in is in the Keychain. Allow ADE to copy it once; macOS asks you first.",
+      },
+      key: allowedAt ? allowed!.key : null,
+    };
   }
 
   // ── Joining the shared ticks only for an account with ADE Cloud (F1) ──
@@ -1190,6 +1493,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
   }
 
   function leaveTicks(): void {
+    ownerRenewal?.stop();
     if (!ticks.length) return;
     for (const release of ticks.splice(0)) release();
     for (const timer of settleTimers.values()) clearTimeout(timer);
@@ -1275,6 +1579,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     },
     refreshAccess,
     ...writes,
+    allowKeychain,
     pass,
     status,
     /** The person's "look now": one pass (still behind every gate), then the status. */

@@ -1,4 +1,5 @@
 import os from "node:os";
+import path from "node:path";
 
 import type { ProviderLoginCaptureOffReason } from "../../../../desktop/src/shared/types/providerLogins";
 import type { AccountAuthService } from "./accountAuthService";
@@ -27,11 +28,15 @@ export async function installBrainProviderLoginSync(args: {
     { cloudAccessDepsFor, onCloudAccessAnswerChanged, readCloudAccessState },
     { getOrCreateLocalAccountMachineIdentity },
     { isCloudMachine },
+    { BORROW_RENEW_AHEAD_MS, renewProviderLogin, withMachineRenewLock },
+    { codexConfigHome, grokConfigHome },
   ] = await Promise.all([
     import("../../../../desktop/src/main/services/providerLogins/providerLoginSync"),
     import("../../../../desktop/src/main/services/adeCloud/cloudAccess"),
     import("../../../../desktop/src/main/services/account/localMachineIdentity"),
     import("../power/cloudKeepAwake"),
+    import("../proxy/borrowedLogins"),
+    import("../../../../desktop/src/main/services/shared/providerConfigHomes"),
   ]);
   // The name the machine directory and the Usage page show ("Mac Studio"), not
   // the network hostname. Loaded lazily, as the brain loads the registry; the
@@ -79,6 +84,23 @@ export async function installBrainProviderLoginSync(args: {
     onCloudAccessChanged: onCloudAccessAnswerChanged,
     cloudComputer: isCloudMachine(),
     logger: args.logger,
+    // Renewal ahead on the owner computer (step 3a): the proxy's renew call,
+    // under the machine lock its own keeper takes. The base login of each
+    // provider is the one capture reads (`CODEX_HOME`, `GROK_HOME`).
+    renewer: {
+      aheadMs: { codex: BORROW_RENEW_AHEAD_MS.codex, grok: BORROW_RENEW_AHEAD_MS.grok },
+      renew: async (provider) => {
+        if (provider !== "codex" && provider !== "grok") return false;
+        const configHome = provider === "codex" ? codexConfigHome({ env: process.env }) : grokConfigHome({ env: process.env });
+        return await withMachineRenewLock(
+          path.join(args.adeDir, "proxy", "auth"),
+          () => renewProviderLogin({ id: provider, provider, configHome, isDefault: true }, process.env),
+        );
+      },
+    },
+    // "A cloud computer exists" (B2) is not wired: no fact reaches the brain
+    // without a new request, and the lead decides which one. Until then the
+    // answer is unknown, so nothing renews ahead and no timer exists.
   }));
   if (args.staticOff) return;
   // Sign-in asks the ADE Cloud answer once; sign-out leaves the ticks at once.

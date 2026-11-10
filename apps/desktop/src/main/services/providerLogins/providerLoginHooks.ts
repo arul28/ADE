@@ -12,16 +12,18 @@
  * `instanceIds`).
  */
 
-import type { ProviderLoginProvider, ProviderLoginStatusParts } from "../../../shared/types/providerLogins";
+import type { ProviderLoginGateOutcome, ProviderLoginProvider, ProviderLoginStatusParts } from "../../../shared/types/providerLogins";
 
 type Gate = (provider: string) => Promise<void>;
+/** The sync's own gate: what it found, for a caller that shows the person why a turn waits or fails. */
+type BaseGate = (provider: string) => Promise<ProviderLoginGateOutcome | void>;
 
-let gate: Gate | null = null;
+let gate: BaseGate | null = null;
 /** Checks before a turn for a provider the carry table does not handle (P6: Claude). */
 const beforeTurnChecks = new Map<string, Set<Gate>>();
 
 /** The sync installs the gate on a cloud computer only; everywhere else it stays null. */
-export function installProviderLoginGate(next: Gate | null): void {
+export function installProviderLoginGate(next: BaseGate | null): void {
   gate = next;
 }
 
@@ -47,18 +49,21 @@ export function registerProviderLoginGate(provider: string, beforeTurn: Gate): (
   };
 }
 
-async function runGate(provider: string, base: Gate, extra: Set<Gate> | undefined): Promise<void> {
-  await base(provider).catch(() => undefined);
+async function runGate(provider: string, base: BaseGate, extra: Set<Gate> | undefined): Promise<ProviderLoginGateOutcome | null> {
+  const outcome = await base(provider).catch(() => undefined);
   for (const check of [...(extra ?? [])]) await check(provider).catch(() => undefined);
+  return outcome ?? null;
 }
 
 /**
  * Before a provider starts or resumes a turn, or a CLI session starts: a
  * promise when a gate or a registered check applies, else null, so the caller
- * does not even await. It never throws.
+ * does not even await. It never throws. The promise holds the sync's outcome
+ * (`owner_off` names the computer that did not renew in time); a caller may
+ * ignore it, and the turn goes ahead either way.
  */
 export const providerLoginGate = Object.assign(
-  (provider: string): Promise<void> | null => {
+  (provider: string): Promise<ProviderLoginGateOutcome | null> | null => {
     // No installed gate (every computer but a cloud computer with the sync on): nothing runs, not even a registered check.
     if (!gate) return null;
     return runGate(provider, gate, beforeTurnChecks.get(provider.trim().toLowerCase()));

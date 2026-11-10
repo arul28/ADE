@@ -35,6 +35,8 @@ export type ProviderLoginStateFile = {
   accountUserId: string | null;
   bundles: Record<string, BundleMarks>;
   pushed: Record<string, PushedLogin>;
+  /** The person's last Allow of a Keychain read, by provider (a Mac only): when, the slot, and the key it wrote. */
+  keychain?: Record<string, { allowedAt: number; slot: string; key: string }>;
 };
 
 export function emptyState(accountUserId: string | null): ProviderLoginStateFile {
@@ -58,6 +60,7 @@ export function readProviderLoginState(adeDir: string, accountUserId: string | n
     accountUserId,
     bundles: isRecord(parsed.bundles) ? parsed.bundles as Record<string, BundleMarks> : {},
     pushed: isRecord(parsed.pushed) ? parsed.pushed as Record<string, PushedLogin> : {},
+    ...(isRecord(parsed.keychain) ? { keychain: parsed.keychain as NonNullable<ProviderLoginStateFile["keychain"]> } : {}),
   };
 }
 

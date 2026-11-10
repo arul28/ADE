@@ -1,6 +1,7 @@
 /**
  * The `provider_logins` actions: `status` (a read for anyone), `captureNow`
- * (the person's "look now"), and the person's four writes `use`, `setCloud`,
+ * (the person's "look now"), `allowKeychain` (the person's one Keychain read
+ * on a Mac, user-only and machine-scoped), and the person's four writes `use`, `setCloud`,
  * `setCloudAll` and `remove` (user-only: the desktop app, never the CLI, an
  * agent or an outside app; `actionPolicy.ts`). Each one runs on the brain the
  * call reaches; the writes are account-wide, so any brain of the person's
@@ -74,6 +75,20 @@ export function buildProviderLoginsDomainService() {
       const provider = readProvider(args);
       const sync = providerLoginSync();
       return sync ? await sync.captureNow(provider) : notThisRuntime(provider);
+    },
+    /**
+     * `{provider: "antigravity", slot?}`: copy the sign-in from this Mac's
+     * Keychain, once. Refused off macOS. The desktop calls it only for the Mac
+     * the person is using (a remote pin is refused in the preload).
+     */
+    async allowKeychain(args?: unknown): Promise<ProviderLoginStatus> {
+      const provider = readProvider(args);
+      if (provider !== "antigravity") throw new Error("provider_logins.allowKeychain needs provider \"antigravity\".");
+      const raw = isRecord(args) ? args.slot : undefined;
+      if (raw !== undefined && raw !== null && raw !== "personal" && raw !== "business") {
+        throw new Error("provider_logins.allowKeychain takes slot \"personal\" or \"business\".");
+      }
+      return await requireSync().allowKeychain({ provider, slot: raw ?? null });
     },
     /** `{provider, key}`: a vault key, "key" for the saved key, or null for the newest. Pi takes `slot` with null. */
     async use(args?: unknown): Promise<ProviderLoginStatus> {

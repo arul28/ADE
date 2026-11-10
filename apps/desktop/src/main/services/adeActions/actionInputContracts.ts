@@ -1714,6 +1714,14 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { provider?: string }",
       example: "ade actions run provider_logins.captureNow --text",
     },
+    allowKeychain: {
+      description:
+        "On a Mac: copy Antigravity's Google sign-in from this Mac's Keychain into the account, once. macOS asks the "
+        + "person first; ADE never reads the Keychain in the background. Refused off macOS and for another computer. "
+        + "Only the ADE desktop app on this Mac calls it.",
+      input: "object { provider: \"antigravity\", slot?: \"personal\" | \"business\" }",
+      example: "(desktop only) provider_logins.allowKeychain {\"provider\":\"antigravity\"}",
+    },
     use: {
       description:
         "Pick the sign-in ADE Cloud uses for a provider: a sign-in's key from status, \"key\" for the saved ADE Cloud key, "

@@ -12524,7 +12524,7 @@ export function registerIpc({
   ipcMain.handle(IPC.providerLoginsCall, async (_event, arg: unknown): Promise<unknown> => {
     const request = arg && typeof arg === "object" ? arg as { action?: unknown; args?: unknown } : {};
     const action = typeof request.action === "string" ? request.action : "";
-    if (!["status", "captureNow", "use", "setCloud", "setCloudAll", "remove"].includes(action)) {
+    if (!["status", "captureNow", "allowKeychain", "use", "setCloud", "setCloudAll", "remove"].includes(action)) {
       throw new Error(`provider_logins has no ${action || "?"} action.`);
     }
     const pool = localRuntimeConnectionPool;
@@ -12535,7 +12535,10 @@ export function registerIpc({
       const response = await pool.callSync<{ result?: unknown }>("providerLogins.call", {
         action,
         ...(request.args && typeof request.args === "object" ? { args: request.args } : {}),
-      }, { timeoutMs: localRuntimeActionTimeoutMs("provider_logins", action) });
+      }, {
+        // The Keychain read waits for the person to answer the macOS prompt (its own limit is 2 min).
+        timeoutMs: action === "allowKeychain" ? 150_000 : localRuntimeActionTimeoutMs("provider_logins", action),
+      });
       return response?.result;
     } catch (error) {
       if (!(error instanceof Error)) throw error;

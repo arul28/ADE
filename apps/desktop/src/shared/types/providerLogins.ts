@@ -122,6 +122,18 @@ export type ProviderLoginProviderStatus = {
     /** The vault key of this computer's sign-in, when it has one. */
     key: string | null;
   };
+  /**
+   * A sign-in ADE copies from this Mac's Keychain only when the person allows
+   * it (Antigravity on macOS). Absent everywhere else.
+   */
+  keychain?: {
+    /** True when an Allow can run now (capture is on). */
+    canAllow: boolean;
+    /** The last Allow that put the sign-in in the account; null before the first. */
+    allowedAt: string | null;
+    /** Plain words for the tile, such as "Copied from this Mac on Nov 10, 2026. Allow again to update." */
+    message: string;
+  };
 };
 
 /**
@@ -148,7 +160,22 @@ export type ProviderLoginApplied = {
   renewalSafe: boolean;
   appliedAt: string | null;
   message: string;
+  /**
+   * The last turn here that needed a fresh copy and did not get one: the
+   * computer that renews this sign-in did not renew it in time (step 3a).
+   */
+  ownerOff?: { ownerLabel: string; at: string } | null;
 };
+
+/**
+ * What the check before a turn found on a cloud computer. `owner_off`: the
+ * copy here was about to expire and the computer that renews it (named) did
+ * not send a new one in the short wait.
+ */
+export type ProviderLoginGateOutcome =
+  | { result: "ok" }
+  | { result: "timeout" }
+  | { result: "owner_off"; provider: ProviderLoginProvider; ownerLabel: string };
 
 export type ProviderLoginStatus = {
   thisComputer: {

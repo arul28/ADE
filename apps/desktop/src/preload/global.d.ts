@@ -4176,6 +4176,11 @@ declare global {
       providerLogins: {
         status: (args?: { provider?: ProviderLoginProvider | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         captureNow: (args?: { provider?: ProviderLoginProvider | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        /**
+         * Copy Antigravity's sign-in from this Mac's Keychain, once (macOS asks first).
+         * Refused off macOS and for another computer's pin or binding ("Run this on that Mac").
+         */
+        allowKeychain: (args: { provider: "antigravity"; slot?: "personal" | "business" | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         use: (args: { provider: ProviderLoginProvider; key: string | null; slot?: string | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         setCloud: (args: { key: string; on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         setCloudAll: (args: { on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
