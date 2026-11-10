@@ -931,8 +931,8 @@ chat, query `the`. The A/B streaming rows are `npm run bench:webclient
 | Find: first count after typing, 5,031-event chat, cold index | in-page timer | — | 114 ms | 200 ms |
 | Find: final count, same chat, cold index (3 ms slices + 300 ms recount) | same | — | 492 ms | 800 ms |
 | Find: next match to painted highlight, p50 / max of 20 | same | — | 4 / 7 ms | 8 / 33 ms |
-| Find open while a 50 KB reply streams: markdown parses of the streaming row | Browser mock, see below | 281-485 | 51-53 | not set yet; needs approval |
-| Find open while a 50 KB reply streams: main-thread script time over the stream | same | 12.6-13.4 s (find closed: 8.5-9.4 s) | 8.8-9.2 s | not set yet; needs approval |
+| Find open while a 50 KB reply streams: markdown parses of the streaming row | Browser mock, see below | 281-485 | 51-53 | 70 (proposed, needs approval) |
+| Find open while a 50 KB reply streams: main-thread script time over the stream | same | 12.6-13.4 s (find closed: 8.5-9.4 s) | 8.8-9.2 s | 10.5 s (proposed, needs approval) |
 
 Closed, find does no work: its layer is memoized on stable props and
 subscribes to rows only while open. Indexing parses markdown in 3 ms slices, so
