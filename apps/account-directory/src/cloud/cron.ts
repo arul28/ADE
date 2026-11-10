@@ -9,6 +9,7 @@ import {
   DELETION_WARNING_LATE_MS,
   PENDING_TIMEOUT_MS,
   adoptionStatements,
+  countedDiskGb,
   deleteComputer,
   deletionDueAt,
   diskDayStatement,
@@ -18,6 +19,7 @@ import {
   hoursState,
   isOutOfHours,
   isPendingId,
+  MOVE_GRACE_MS,
   liveUsedMilli,
   logCloud,
   percentUsed,
@@ -80,14 +82,20 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
     where c.deleted_at is null
   `).all<TickComputer>();
   const computers = rows.results ?? [];
-  if (computers.length === 0) return;
-
   const provider = options.provider ?? createCloudProvider(key);
+  // The account jobs (disk days to bill, the month's cost against the owner's limit) run with no computer left too.
+  if (computers.length === 0) {
+    await runOwnerChecks(env, provider, [], [], now);
+    await runDaily(env, provider, [], now, waitUntil);
+    return;
+  }
+
   let instances: CloudInstance[];
   try {
     instances = await provider.listInstances();
   } catch (error) {
     reportCloudFailure("cloud.tick_list_failed", { code: error instanceof CloudProviderError ? error.code : "unknown" });
+    await runOwnerChecks(env, provider, [], computers, now);
     return;
   }
 
@@ -95,15 +103,19 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   const pendingStatements: D1PreparedStatement[] = [];
   const pendingDeletes: string[] = [];
   const live: TickComputer[] = [];
+  // Accounts whose disk the provider just confirmed (a lost create or copy adopted, a lost grow settled): today's disk row follows.
+  const diskConfirmed = new Map<string, true>();
   const taken = new Set(computers.filter((computer) => !isPendingId(computer.instance_id)).map((computer) => computer.instance_id));
   for (const computer of computers) {
     if (isPendingId(computer.instance_id)) {
       adoptPending(env, computer, instances, taken, now, pendingStatements, pendingDeletes, live);
+      if (!isPendingId(computer.instance_id)) diskConfirmed.set(computer.user_id, true);
     } else {
       live.push(computer);
     }
   }
-  if (pendingStatements.length) await env.DB.batch(pendingStatements);
+  if (pendingStatements.length) await env.DB.batch([...pendingStatements, ...await diskDayStatements(env, diskConfirmed, now)]);
+  diskConfirmed.clear();
   if (pendingDeletes.length) {
     await env.DB.batch(pendingDeletes.map((id) => env.DB.prepare("delete from cloud_computers where instance_id = ?").bind(id)));
   }
@@ -122,13 +134,18 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
       statements.push(env.DB.prepare("update cloud_computers set machine_key = ? where instance_id = ?").bind(computer.machine_key, computer.instance_id));
     }
     // At rest the provider's disk is the truth: a grow whose answer was lost leaves this row ahead, holding room in the shared limit.
+    // Once settled, the reservation ends either way (and a grow that landed is billed from today's row).
     const disk = instance.resources?.disk;
     const growLanding = computer.disk_reserved_at != null && now - computer.disk_reserved_at < DISK_GROW_SETTLE_MS;
-    if (disk && disk !== computer.disk_gb && isRestingStatus(instance.status) && !growLanding) {
-      statements.push(env.DB.prepare("update cloud_computers set disk_gb = ? where instance_id = ? and disk_gb = ?").bind(disk, computer.instance_id, computer.disk_gb));
+    if (disk && (disk !== computer.disk_gb || computer.disk_reserved_at != null) && isRestingStatus(instance.status) && !growLanding) {
+      statements.push(env.DB.prepare("update cloud_computers set disk_gb = ?, disk_reserved_at = null where instance_id = ? and disk_gb = ? and disk_reserved_at is ?")
+        .bind(disk, computer.instance_id, computer.disk_gb, computer.disk_reserved_at));
+      if (computer.disk_reserved_at != null) diskConfirmed.set(computer.user_id, true);
       computer.disk_gb = disk;
+      computer.disk_reserved_at = null;
     }
   }
+  statements.push(...await diskDayStatements(env, diskConfirmed, now));
   if (statements.length) await env.DB.batch(statements);
 
   await confirmGone(env, provider, gone, live, now);
@@ -221,7 +238,7 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
       await warnHours(env, account, state, used, now);
       // Disk nobody pays for (the free plan above its disk) stops the computers as 0 hours does.
       const blocked = state === "zero" ? "out_of_hours"
-        : freePlanOverDisk(account, owned.reduce((sum, computer) => sum + computer.disk_gb, 0)) ? "over_plan_disk"
+        : freePlanOverDisk(account, countedDiskGb(owned)) ? "over_plan_disk"
         : null;
       if (blocked) {
         blockedUsers.push(account.user_id);
@@ -336,6 +353,11 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
   } catch (error) {
     reportCloudFailure("cloud.cost_estimate_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
+  try {
+    await endMoves(env, now);
+  } catch (error) {
+    reportCloudFailure("cloud.move_end_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
   // Finished days of extra disk, every ten minutes, so a failed send is retried inside Stripe's dedupe window.
   try {
     await reportExtraDiskDays(env, now);
@@ -364,6 +386,38 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
   if (now - lastAlert < OWNER_ALERT_REPEAT_MS) return;
   await writeSetting(env, "owner_alert_at", String(now), now);
   await sendCloudEmail(env, { owner: true, subject: "ADE Cloud needs attention", text: alerts.join("\n") });
+}
+
+/**
+ * Ends the moves that are over: the source was deleted (the move worked) or
+ * the new computer was (it failed). A source still there after
+ * `MOVE_GRACE_MS` counts toward the disk again, with the new computer: the
+ * plan's limits hold, extra disk is billed from today's row, and the owner's
+ * report lists a paid account over its disk.
+ */
+async function endMoves(env: CloudEnv, now: number): Promise<void> {
+  const rows = await env.DB.prepare(`
+    select m.instance_id, m.user_id, (m.deleted_at is null and s.instance_id is not null) as source_left
+    from cloud_computers m
+    left join cloud_computers s on s.instance_id = m.moving_from and s.deleted_at is null
+    where m.moving_from is not null and (m.deleted_at is not null or s.instance_id is null or m.created_at <= ?)
+  `).bind(now - MOVE_GRACE_MS).all<{ instance_id: string; user_id: string; source_left: number }>();
+  const ended = rows.results ?? [];
+  if (ended.length === 0) return;
+  const statements = ended.map((row) => env.DB.prepare("update cloud_computers set moving_from = null where instance_id = ?").bind(row.instance_id));
+  const left = new Map(ended.filter((row) => row.source_left).map((row) => [row.user_id, true]));
+  if (left.size) {
+    // The desktop didn't finish the move (closed, or the delete failed): both computers count now.
+    reportCloudFailure("cloud.move_source_left", { count: left.size });
+    statements.push(...await diskDayStatements(env, left, now));
+  }
+  await env.DB.batch(statements);
+}
+
+/** Today's disk row for each account in `users` (not deleted), to run after the writes that changed its disk. */
+async function diskDayStatements(env: CloudEnv, users: Map<string, unknown>, now: number): Promise<D1PreparedStatement[]> {
+  if (users.size === 0) return [];
+  return (await accountsOf(env, users)).filter((account) => account.deleted_at == null).map((account) => diskDayStatement(env, account, now));
 }
 
 async function runDaily(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number, waitUntil: CloudWaitUntil): Promise<void> {
@@ -406,10 +460,7 @@ async function runDaily(env: CloudEnv, provider: CloudProvider, computers: TickC
 
 /** Today's starting disk for each account with computers, so a day with no change still has its row. */
 async function writeDiskBaseline(env: CloudEnv, computers: TickComputer[], now: number): Promise<void> {
-  const byUser = groupByUser(computers);
-  if (byUser.size === 0) return;
-  const accounts = await accountsOf(env, byUser);
-  const statements = accounts.filter((account) => account.deleted_at == null).map((account) => diskDayStatement(env, account, now));
+  const statements = await diskDayStatements(env, groupByUser(computers), now);
   if (statements.length) await env.DB.batch(statements);
 }
 

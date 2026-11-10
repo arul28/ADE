@@ -18,6 +18,12 @@ alter table cloud_accounts add column extra_disk_asked_at integer;
 -- passes the monthly limit they set; cleared once it fits again.
 alter table cloud_accounts add column extra_disk_over_limit_at integer;
 
+-- While a move runs, the new computer names the one it moves: that one's
+-- disk is left out of the account's disk until the desktop deletes it, and
+-- counts again if it is still there two hours later.
+alter table cloud_computers add column moving_from text;
+create index if not exists idx_cloud_computers_moving_from on cloud_computers (moving_from) where moving_from is not null;
+
 -- What the provider charges for the awake time of each computer-day, in
 -- millionths of a dollar. Corrected with the provider's minutes by the daily
 -- reconcile, like the hours.

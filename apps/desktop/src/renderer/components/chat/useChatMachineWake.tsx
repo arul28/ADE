@@ -86,8 +86,13 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
     if (known && !box && targetId) setNotCloudTargetId(targetId);
   }, [box, known, targetId]);
   const resting = offline && !gone && cloudComputerResting(box);
-  const [waking, setWaking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Both stamped with the target they are for: the single-chat view keeps
+  // this provider mounted across chats, and another machine's chat must not
+  // show this machine's wake or its late failure.
+  const [wakingTargetId, setWakingTargetId] = useState<string | null>(null);
+  const [failure, setFailure] = useState<{ targetId: string; message: string } | null>(null);
+  const waking = targetId != null && wakingTargetId === targetId;
+  const error = failure && failure.targetId === targetId ? failure.message : null;
   const machineName = scope.machineName;
   // `scope.online` follows the connection snapshot: main pushes
   // `onConnectionSnapshotChanged` once the connect succeeds, and
@@ -95,9 +100,12 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
   // machine's entry online, which the scope reads. A wake waits for that.
   const onlineRef = useRef(scope.online);
   onlineRef.current = scope.online;
+  const targetRef = useRef(targetId);
+  targetRef.current = targetId;
   const pendingRef = useRef<{ resolve: (online: boolean) => void; timer: number } | null>(null);
-  // From the click to the end of the wait: a second click meanwhile starts nothing.
-  const inFlightRef = useRef(false);
+  // From the click to the end of the wait: a second click on the same machine
+  // meanwhile starts nothing.
+  const inFlightTargetRef = useRef<string | null>(null);
 
   const settle = useCallback((online: boolean) => {
     const pending = pendingRef.current;
@@ -110,37 +118,41 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (scope.online) settle(true);
   }, [scope.online, settle]);
-  // A chat that closes mid-wake drops its wait.
-  useEffect(() => () => settle(false), [settle]);
+  // A chat that closes, or a switch to another machine's chat, drops the wait:
+  // the cleanup runs before the effect above reads the new chat's `online`.
+  useEffect(() => () => settle(false), [settle, targetId]);
 
   const wake = useCallback(async (): Promise<boolean> => {
     const connect = window.ade?.remoteRuntime?.connect;
-    if (!targetId || !connect || inFlightRef.current) return false;
-    inFlightRef.current = true;
+    if (!targetId || !connect || inFlightTargetRef.current === targetId) return false;
+    inFlightTargetRef.current = targetId;
+    const fail = (message: string) => setFailure({ targetId, message });
     try {
-      setWaking(true);
-      setError(null);
+      setWakingTargetId(targetId);
+      setFailure(null);
       try {
         await connect(targetId);
-      } catch (failure) {
-        console.warn("[cloud] waking the chat's machine failed", failure);
-        setError(`ADE couldn't wake ${machineName}. Try again.`);
+      } catch (connectFailure) {
+        console.warn("[cloud] waking the chat's machine failed", connectFailure);
+        fail(`ADE couldn't wake ${machineName}. Try again.`);
         refresh();
         return false;
       }
       refresh();
+      // The person opened another machine's chat meanwhile: its `online` is not this wake's.
+      if (targetRef.current !== targetId) return false;
       if (onlineRef.current) return true;
       // One timer for this click, not a poll: the snapshot settles it sooner.
       return await new Promise<boolean>((resolve) => {
         const timer = window.setTimeout(() => {
-          setError(`${machineName} didn't come back online in time. Try again.`);
+          fail(`${machineName} didn't come back online in time. Try again.`);
           settle(false);
         }, WOKEN_MACHINE_CONNECT_WAIT_MS);
         pendingRef.current = { resolve, timer };
       });
     } finally {
-      inFlightRef.current = false;
-      setWaking(false);
+      if (inFlightTargetRef.current === targetId) inFlightTargetRef.current = null;
+      setWakingTargetId((current) => (current === targetId ? null : current));
     }
   }, [machineName, refresh, settle, targetId]);
 

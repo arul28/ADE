@@ -13,6 +13,9 @@ import { detectPushDivergence } from "../../shared/laneDivergence";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { AppStoreProvider, createProjectAppStore, useAppStore } from "./appStore";
 import { buildAllMachineLanes, buildForeignSessionLanes, createLaneMachineRouter } from "./laneMachineRouting";
+import { rowShowsConnected } from "./cloudRestingRows";
+import { refreshCloudSavedChats } from "./cloudSavedChatsSync";
+import { useCloudMachines } from "../components/remoteTargets/useCloudMachines";
 import {
   buildCrossMachineLaneRows,
   cancelCrossMachineOptimisticChatSession,
@@ -2734,5 +2737,130 @@ describe("lane actions resolve against the lane's machine", () => {
     expect(laptop?.blockedReason).toMatch(/offline/);
     // A stale slice of the tab's own machine is not a foreign lane.
     expect(bySession.has(THIS_MACHINE_ID)).toBe(false);
+  });
+});
+
+describe("a chat after its ADE Cloud computer moved", () => {
+  const OLD = "target-old";
+  const NEW = "target-new";
+  const machineKeyOf: Record<string, string> = { [OLD]: "key-old", [NEW]: "key-new" };
+  const bindingOf = (targetId: string) => ({
+    kind: "remote",
+    key: `${targetId}:proj`,
+    targetId,
+    runtimeName: targetId,
+    transport: "paired",
+    projectId: "proj",
+    rootPath: "/repo",
+    displayName: "repo",
+  }) as OpenProjectBinding;
+
+  // The saved copies come from the account's list, the live chat from the
+  // computer that answers; the row that shows the chat is where a send goes.
+  it.each<{
+    name: string;
+    savedOn: Array<[targetId: string, updatedAt: number]>;
+    connected: string[];
+    stillExists: string[];
+    liveOn: string | null;
+    owner: string;
+    savedCopy: boolean;
+    looksConnected: boolean;
+  }>([
+    {
+      name: "the new computer's live chat wins over the old computer's saved copy",
+      savedOn: [[OLD, 1]],
+      connected: [NEW],
+      stillExists: [OLD, NEW],
+      liveOn: NEW,
+      owner: NEW,
+      savedCopy: false,
+      looksConnected: true,
+    },
+    {
+      name: "a saved copy of a computer that exists wins over a newer copy of a deleted one",
+      savedOn: [[OLD, 2], [NEW, 1]],
+      connected: [],
+      stillExists: [NEW],
+      liveOn: null,
+      owner: NEW,
+      savedCopy: true,
+      looksConnected: true,
+    },
+    {
+      name: "a deleted computer's chat stays on it and does not look connected",
+      savedOn: [[OLD, 1]],
+      connected: [],
+      stillExists: [NEW],
+      liveOn: null,
+      owner: OLD,
+      savedCopy: true,
+      looksConnected: false,
+    },
+  ])("$name", async ({ savedOn, connected, stillExists, liveOn, owner, savedCopy, looksConnected }) => {
+    window.ade = {
+      cloud: {
+        onStatusChanged: () => () => undefined,
+        listMachines: async () => ({
+          state: "ok",
+          machines: stillExists.map((id) => ({ machineKey: machineKeyOf[id], instanceId: `i-${id}`, state: "stopped" })),
+        }),
+        savedChats: {
+          list: async () => ({
+            nextCursor: null,
+            chats: savedOn.map(([id, updatedAt]) => ({
+              machineKey: machineKeyOf[id],
+              chatId: "chat-1",
+              instanceId: null,
+              lastSeq: 1,
+              updatedAt,
+              title: "Chat",
+              laneId: "lane-1",
+              laneName: "Lane One",
+              status: null,
+              toolType: "claude-chat",
+              provider: null,
+              model: null,
+              projectKey: "repo-key",
+              projectId: "proj",
+              projectRoot: "/repo",
+              lastActivityAt: null,
+            })),
+          }),
+        },
+      },
+    } as unknown as typeof window.ade;
+    // The old computer is first in the store, so order alone would pick it.
+    for (const id of [OLD, NEW]) {
+      useAppStore.getState().mergeCrossMachineLanes({
+        machineId: id,
+        machineName: id,
+        targetId: id,
+        projectId: "proj",
+        binding: bindingOf(id),
+        online: connected.includes(id),
+        lanes: [makeLane()],
+        sessions: liveOn === id ? [makeSession({ id: "chat-1" })] : [],
+      });
+    }
+    // A surface keeps the account's computer list current while it is open.
+    const watch = renderHook(() => useCloudMachines(true));
+    await act(async () => {});
+    await refreshCloudSavedChats({
+      projectKey: "repo-key",
+      isActive: () => true,
+      connections: [OLD, NEW].map((id) => ({
+        target: { id, name: id, hostname: null, pairedMachine: { machineKey: machineKeyOf[id] } },
+        state: connected.includes(id) ? "connected" : "disconnected",
+        projects: [{ projectId: "proj", rootPath: "/repo", displayName: "repo" }],
+      })) as never,
+    });
+    watch.unmount();
+
+    const rows = buildCrossMachineLaneRows({ localLanes: [], machines: useAppStore.getState().crossMachineLanesByMachineId });
+    const holders = rows.filter((row) => row.sessions.some((session) => session.id === "chat-1"));
+    expect(holders.map((row) => (row.binding?.kind === "remote" ? row.binding.targetId : null))).toEqual([owner]);
+    expect(holders[0]!.sessions.find((session) => session.id === "chat-1")!.cloudSavedCopy === true).toBe(savedCopy);
+    expect(rowShowsConnected(holders[0]!)).toBe(looksConnected);
   });
 });

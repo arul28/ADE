@@ -243,6 +243,8 @@ const machineOnline = (machineId: string): boolean =>
 
 /** Sends in flight per chat that wake its computer; the mark ends with the last one. */
 const wakeHolds = new Map<string, number>();
+/** A send that never settles still ends its mark (and its store watch) after this. */
+const WAKE_MARK_BACKSTOP_MS = 2 * WOKEN_MACHINE_CONNECT_WAIT_MS;
 
 /** One send's part of a chat's waking mark (`markCloudWakeForSend`). */
 export type CloudWakeSendMark = {
@@ -251,7 +253,8 @@ export type CloudWakeSendMark = {
    * that gave up waiting (a transport timeout) after the message left keeps
    * the mark until the turn shows live, or for `WOKEN_MACHINE_CONNECT_WAIT_MS`:
    * the machine usually still delivers it. Anything else (success, a refusal,
-   * a message that never left) ends the mark now.
+   * a message that never left) ends the mark now. A send that never settles
+   * ends it at `WAKE_MARK_BACKSTOP_MS`.
    */
   settle: (failure?: unknown, messageLeft?: boolean) => void;
 };
@@ -295,6 +298,7 @@ export function markCloudWakeForSend(
     if (ended) return;
     ended = true;
     unsubscribe();
+    window.clearTimeout(backstop);
     if (timer != null) window.clearTimeout(timer);
     const left = (wakeHolds.get(sessionId) ?? 1) - 1;
     if (left > 0) {
@@ -304,6 +308,7 @@ export function markCloudWakeForSend(
     wakeHolds.delete(sessionId);
     rootAppStoreApi.getState().setCloudSessionWaking(sessionId, null);
   };
+  const backstop = window.setTimeout(end, WAKE_MARK_BACKSTOP_MS);
   const unsubscribe = rootAppStoreApi.subscribe((state) => {
     if (state.crossMachineLanesByMachineId === seen) return;
     seen = state.crossMachineLanesByMachineId;

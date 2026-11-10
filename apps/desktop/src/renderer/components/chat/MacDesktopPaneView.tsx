@@ -15,7 +15,7 @@ import {
   WindowsLogo,
 } from "@phosphor-icons/react";
 import { macDesktopNotParkedSentence } from "./macDesktopActivityText";
-import { desktopSeatKind, type MacDesktopWindow } from "../../../shared/types/macDesktop";
+import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
 import { desktopToolProductName } from "../terminals/workTools";
 import { STOP_CONFIRM_COPY } from "./MacDesktopStopConfirm";
 import { cn } from "../ui/cn";
@@ -164,19 +164,13 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     connectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording, toggleRecording,
     saveScreenshot, openReceipt, nowTick, present, refreshClaimable, claimWindow, releaseWindowById, openApp, closeWindowById,
-    selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE, desktopTool, hostPlatform,
+    selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE, desktopTool, hostPlatform, seatKind,
   } = controller;
   // The host's own answer, else what the Work tab knows: an unreachable host
   // answers nothing, and the name must still match the tab.
   const platform = status?.platform ?? hostPlatform ?? null;
   const windowsHost = desktopTool === "windows-desktop" || platform === "win32";
   const desktopName = desktopToolProductName(windowsHost ? "windows-desktop" : "mac-desktop", platform);
-  /** Which screen Stop ends; a Windows seat is shared (Mode B) only while a display runs. */
-  const seatKind = desktopSeatKind({
-    platform: windowsHost ? "win32" : platform,
-    display,
-    windowsDesktop: display ? status?.windowsDesktop : null,
-  });
   const windowsShared = Boolean(display) && seatKind === "windows-shared";
   // A private Windows screen is another Windows session: a window cannot move
   // between it and the user's screen, so the two "move" controls are not drawn.

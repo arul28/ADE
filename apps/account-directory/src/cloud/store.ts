@@ -74,6 +74,8 @@ export type ComputerRow = {
   last_awake_at: number | null;
   created_at: number;
   deleted_at: number | null;
+  /** While a move runs: the computer it moves (see `MOVE_GRACE_MS`). */
+  moving_from: string | null;
   cold_storage: number;
   free_wake_started_at: number | null;
   free_wake_until: number | null;
@@ -468,15 +470,34 @@ export function computerLimit(account: AccountRow): number {
 }
 
 /**
- * SQL for the disk an account's computers hold now, reservations included, as
- * a scalar subquery for the account named by `userIdSql` (a `?` or a column).
- * With `except`, it takes one more `?`: an instance to leave out (a move's source).
+ * How long a move's source may stay without counting toward the disk. The
+ * desktop deletes it when the files are across (at most about 45 minutes); one
+ * still there after this counts again, so a move can't keep two copies free.
  */
-export function accountDiskSql(userIdSql: string, options: { except?: boolean } = {}): string {
-  return `(select coalesce(sum(disk_gb), 0) from cloud_computers where user_id = ${userIdSql} and deleted_at is null${options.except ? " and instance_id <> ?" : ""})`;
+export const MOVE_GRACE_MS = 2 * 60 * 60_000;
+
+/**
+ * SQL for the disk an account's computers hold now, as a scalar subquery for
+ * the account named by `userIdSql` (a `?` or a column). A move's source is
+ * left out while its move runs (`moving_from`). With `except`, it takes one
+ * more `?`: an instance to leave out (a move about to start, or a computer
+ * about to change size). `billable` leaves out reservations no computer
+ * stands behind yet: a create or copy not yet adopted (`pending:`) and a grow the
+ * provider hasn't confirmed (`disk_reserved_at`), which the confirm write counts.
+ */
+export function accountDiskSql(userIdSql: string, options: { except?: boolean; billable?: boolean } = {}): string {
+  return `(select coalesce(sum(dc.disk_gb), 0) from cloud_computers dc where dc.user_id = ${userIdSql} and dc.deleted_at is null`
+    + " and not exists (select 1 from cloud_computers dm where dm.moving_from = dc.instance_id and dm.deleted_at is null)"
+    + `${options.billable ? ` and dc.instance_id not like '${PENDING_PREFIX}%' and dc.disk_reserved_at is null` : ""}${options.except ? " and dc.instance_id <> ?" : ""})`;
 }
 
-/** Disk the account's computers hold now, reservations included; `except` leaves one computer out (a move's source). */
+/** The disk `computers` (one account's, not deleted) count toward the plan; as `accountDiskSql`. */
+export function countedDiskGb(computers: Pick<ComputerRow, "instance_id" | "disk_gb" | "moving_from">[]): number {
+  const moving = new Set(computers.map((computer) => computer.moving_from).filter((id) => id != null));
+  return computers.reduce((sum, computer) => (moving.has(computer.instance_id) ? sum : sum + computer.disk_gb), 0);
+}
+
+/** Disk the account's computers hold now, reservations included; `except` leaves one computer out. */
 export async function accountDiskGb(env: CloudDb, userId: string, except = ""): Promise<number> {
   const row = await env.DB.prepare(`select ${accountDiskSql("?", { except: true })} as gb`)
     .bind(userId, except).first<{ gb: number }>();
@@ -494,8 +515,10 @@ export type DiskDayAccount = Pick<AccountRow, "user_id" | "plan" | "paid_plan" |
 /**
  * Raises today's peak disk for the account to what its computers hold now,
  * with the bought plan's disk and whether the day may be billed, as they are
- * now. Run after every change that adds disk and every plan change; the daily
- * run writes each day's starting row. Extra disk is billed from these rows
+ * now. Run once the provider has made every change that adds disk (a
+ * reservation alone is never billed), after every plan change, and when a
+ * move runs past `MOVE_GRACE_MS`; the daily run writes each day's starting
+ * row. Extra disk is billed from these rows
  * only. A day keeps the most plan disk it saw (an upgrade raises it) and is
  * billable only if it was billable all day (a `past_due` moment, or extra
  * disk off, makes the whole day free).
@@ -503,7 +526,7 @@ export type DiskDayAccount = Pick<AccountRow, "user_id" | "plan" | "paid_plan" |
 export function diskDayStatement(env: CloudDb, account: DiskDayAccount, now: number): D1PreparedStatement {
   return env.DB.prepare(`
     insert into cloud_disk_days (user_id, day, peak_gb, plan_gb, billable)
-    values (?, ?, ${accountDiskSql("?")}, ?, ?)
+    values (?, ?, ${accountDiskSql("?", { billable: true })}, ?, ?)
     on conflict (user_id, day) do update set
       peak_gb = max(peak_gb, excluded.peak_gb),
       plan_gb = max(plan_gb, excluded.plan_gb),

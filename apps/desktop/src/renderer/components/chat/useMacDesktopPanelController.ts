@@ -7,7 +7,7 @@ import {
 } from "react";
 import { confirmDialog } from "../ui/dialog/confirm";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { desktopProductName, macDesktopPaneCaption } from "../../../shared/types/macDesktop";
+import { desktopProductName, desktopSeatKind, macDesktopPaneCaption } from "../../../shared/types/macDesktop";
 import type {
   MacDesktopDisplay,
   MacDesktopLeaseState,
@@ -306,6 +306,15 @@ export function useMacDesktopPanelController({
   );
 
   const display: MacDesktopDisplay | null = status?.display ?? null;
+  // The one seat answer: the pane's controls and the takeover gesture both
+  // read it. The host's own platform, else what the Work tab knows. A Windows
+  // seat is shared (Mode B) only while a display runs.
+  const seatPlatform = status?.platform ?? hostPlatform ?? null;
+  const seatKind = desktopSeatKind({
+    platform: desktopTool === "windows-desktop" || seatPlatform === "win32" ? "win32" : seatPlatform,
+    display,
+    windowsDesktop: display ? status?.windowsDesktop : null,
+  });
   const lease: MacDesktopLeaseState | null = status?.lease ?? null;
   const windows: MacDesktopWindow[] = status?.windows ?? [];
   const supported = status?.supported ?? null;
@@ -664,7 +673,7 @@ export function useMacDesktopPanelController({
     toDisplayPoint,
     busy,
     takeoverBlocked,
-    platform: status?.platform ?? hostPlatform,
+    seat: seatKind,
     display,
     laneId,
     sessionId,
@@ -1060,6 +1069,7 @@ export function useMacDesktopPanelController({
   return {
     desktopTool,
     hostPlatform,
+    seatKind,
     laneId, laneName, sessionId, runtimePin, machineFacts,
     status, setStatus, statusError, setStatusError, readError, unconfirmed, refreshStatus, stopDisplay, stopping,
     start, starting, gaveUp, cursor, notParked, dismissNotParked, appsLeftOpen, dismissAppLeftOpen,

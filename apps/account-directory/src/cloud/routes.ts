@@ -29,6 +29,7 @@ import {
   countedPlanDiskGb,
   diskDayStatement,
   extraDiskMicrosThisPeriod,
+  countedDiskGb,
   freePlanOverDisk,
   overPlanDiskMessage,
   planIdOf,
@@ -158,7 +159,7 @@ async function diskRoom(env: CloudEnv, account: AccountRow, nextTotalGb: number,
 
 /** On the free plan with more disk than it has, a wake is refused (`freePlanOverDisk`). */
 function overPlanDisk(account: AccountRow, computers: ComputerRow[]): Refused | null {
-  const diskGb = computers.reduce((sum, computer) => sum + computer.disk_gb, 0);
+  const diskGb = countedDiskGb(computers);
   return freePlanOverDisk(account, diskGb) ? { response: fail("over_plan_disk", overPlanDiskMessage(diskGb), 402), refusal: "over_plan_disk" } : null;
 }
 
@@ -259,8 +260,9 @@ async function markGone(env: CloudEnv, computer: ComputerRow, now: number): Prom
 /**
  * A reservation that makes the computer and disk limits hold under concurrent
  * creates. `capGb` is the most disk the account may hold at one time (from
- * `diskRoom`); a move leaves its source out of the sum, because the move
- * deletes it.
+ * `diskRoom`). A move leaves its source out of the sum and records it in
+ * `moving_from`: the move deletes it, and one still there after
+ * `MOVE_GRACE_MS` counts again (the tick's `endMoves`).
  */
 async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
   size: CloudSize;
@@ -276,17 +278,19 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
   const pendingId = newPendingId();
   const cutoff = args.now - PENDING_TIMEOUT_MS;
   const result = await env.DB.prepare(`
-    insert into cloud_computers (instance_id, user_id, request_id, type, cpu, memory_gb, disk_gb, multiplier_milli, template_version, name, status, status_changed_at, last_awake_at, created_at)
-    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?
+    insert into cloud_computers (instance_id, user_id, request_id, type, cpu, memory_gb, disk_gb, multiplier_milli, template_version, name, status, status_changed_at, last_awake_at, created_at, moving_from)
+    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?
     where (select count(*) from cloud_computers where user_id = ? and deleted_at is null and (status != 'provisioning' or created_at > ?)) < ?
       and ${accountDiskSql("?", { except: true })} + ? <= ?
       and not exists (select 1 from cloud_computers where request_id = ? and user_id <> ?)
+      and not exists (select 1 from cloud_computers where deleted_at is null and moving_from is not null and (moving_from = ? or instance_id = ?))
   `).bind(
     pendingId, account.user_id, args.requestId, args.size.type, args.size.cpu, args.size.memoryGb, args.diskGb, args.size.multiplierMilli,
-    args.templateVersion, args.name, args.now, args.now, args.now,
+    args.templateVersion, args.name, args.now, args.now, args.now, args.moveFromInstanceId,
     account.user_id, cutoff, limit,
     account.user_id, args.moveFromInstanceId ?? "", args.diskGb, args.capGb,
     args.requestId, account.user_id,
+    args.moveFromInstanceId, args.moveFromInstanceId,
   ).run();
   if (result.meta.changes === 1) return { ok: true, pendingId };
   // The tag finds a lost create in the shared provider list, so it can only ever be one account's.
@@ -361,19 +365,21 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
   if (isMove) {
     const source = typeof body.moveFromInstanceId === "string" ? await ownedComputer(env, userId, body.moveFromInstanceId) : null;
     if (!source) return notFound();
+    // One move at a time per computer: a chain (A to B, then B to C) would leave both A and B out of the disk.
+    if (source.moving_from != null || await env.DB.prepare("select 1 as busy from cloud_computers where moving_from = ? and deleted_at is null limit 1").bind(source.instance_id).first()) {
+      return fail("computer_busy", "This computer is in the middle of a move. Try again when the move is done.", 409);
+    }
     diskGb = source.disk_gb;
     moveFromInstanceId = source.instance_id;
     const tooBig = tierRefusal(size, diskGb, true);
     if (tooBig) return refuse(tooBig);
   }
-  // The move's source is deleted at the end of the move, so its disk isn't counted twice.
+  // The move's source is deleted at the end of the move, so its disk isn't counted twice while it runs.
   const room = await diskRoom(env, account, await accountDiskGb(env, userId, moveFromInstanceId ?? "") + diskGb, now);
   if (!room.ok) return refuse(room);
 
   const reservation = await reserveComputer(env, account, { size, diskGb, capGb: room.capGb, moveFromInstanceId, name, requestId, templateVersion, now });
   if (!reservation.ok) return reservation.refusal ? refuse({ response: reservation.response, refusal: reservation.refusal }) : reservation.response;
-  // A move's day keeps the peak it had: the source goes when the move ends.
-  if (!isMove) await diskDayStatement(env, account, now).run();
 
   try {
     const instance = await provider.createInstance({
@@ -385,7 +391,11 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
       metadata,
       ...(publicPorts.length ? { publicPorts } : {}),
     });
-    await env.DB.batch(adoptionStatements(env, { pendingId: reservation.pendingId, instance, machineKey: metadata.ade_machine_key ?? null, now: Date.now(), reason: "create" }));
+    // Billed disk only once the provider made it (a move's source stays out while the move runs).
+    await env.DB.batch([
+      ...adoptionStatements(env, { pendingId: reservation.pendingId, instance, machineKey: metadata.ade_machine_key ?? null, now: Date.now(), reason: "create" }),
+      diskDayStatement(env, account, now),
+    ]);
     track({ action, tier: tierOf(size) });
     return json(instance, 201);
   } catch (error) {
@@ -437,14 +447,16 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
     now,
   });
   if (!reservation.ok) return reservation.refusal ? refuse({ response: reservation.response, refusal: reservation.refusal }) : reservation.response;
-  await diskDayStatement(env, account, now).run();
   try {
     const instance = await provider.forkInstance(computer.instance_id, {
       ...(name ? { name } : {}),
       resources: { cpu: size.cpu, memory: size.memoryGb, disk: requestedDisk },
       metadata,
     });
-    await env.DB.batch(adoptionStatements(env, { pendingId: reservation.pendingId, instance, machineKey: metadata.ade_machine_key ?? null, now: Date.now(), reason: "copy" }));
+    await env.DB.batch([
+      ...adoptionStatements(env, { pendingId: reservation.pendingId, instance, machineKey: metadata.ade_machine_key ?? null, now: Date.now(), reason: "copy" }),
+      diskDayStatement(env, account, now),
+    ]);
     track({ action: "copy", tier: tierOf(size) });
     return json(instance, 201);
   } catch (error) {
@@ -487,18 +499,18 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
     // Already this size on the row: a retry, and its room is already held.
     if (nextDisk !== computer.disk_gb) {
       if ((await ownerLimitState(env)).reached) return refuse({ response: cantGrowDisk(), refusal: "owner_limit" });
-      const room = await diskRoom(env, account, await accountDiskGb(env, computer.user_id) - computer.disk_gb + nextDisk, now);
+      // The other computers plus this one at its new size (a move's source too, while its move runs).
+      const room = await diskRoom(env, account, await accountDiskGb(env, computer.user_id, computer.instance_id) + nextDisk, now);
       if (!room.ok) return refuse(room);
       const reserved = await env.DB.prepare(`
         update cloud_computers set disk_gb = ?, disk_reserved_at = ?
         where instance_id = ? and disk_gb = ?
-          and ${accountDiskSql("?")} - ? + ? <= ?
-      `).bind(nextDisk, now, computer.instance_id, computer.disk_gb, computer.user_id, computer.disk_gb, nextDisk, room.capGb).run();
+          and ${accountDiskSql("?", { except: true })} + ? <= ?
+      `).bind(nextDisk, now, computer.instance_id, computer.disk_gb, computer.user_id, computer.instance_id, nextDisk, room.capGb).run();
       if (reserved.meta.changes !== 1) {
-        const again = await diskRoom(env, account, await accountDiskGb(env, computer.user_id) - computer.disk_gb + nextDisk, now);
+        const again = await diskRoom(env, account, await accountDiskGb(env, computer.user_id, computer.instance_id) + nextDisk, now);
         return again.ok ? diskChanged() : refuse(again);
       }
-      await diskDayStatement(env, account, now).run();
     } else if (nextDisk !== currentDisk) {
       // A retry: its room is held, so only the clock needs renewing.
       await env.DB.prepare("update cloud_computers set disk_reserved_at = ? where instance_id = ?").bind(now, computer.instance_id).run();
@@ -516,7 +528,7 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
     status = await provider.resizeInstance(computer.instance_id, resize);
   } catch (error) {
     if (nextDisk !== currentDisk && providerMadeNothing(error)) {
-      await env.DB.prepare("update cloud_computers set disk_gb = ? where instance_id = ? and disk_gb = ?")
+      await env.DB.prepare("update cloud_computers set disk_gb = ?, disk_reserved_at = null where instance_id = ? and disk_gb = ?")
         .bind(currentDisk, computer.instance_id, nextDisk).run();
     }
     throw error;
@@ -528,10 +540,13 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
   }
   computer.multiplier_milli = size.multiplierMilli;
   statements.push(
-    env.DB.prepare("update cloud_computers set cpu = ?, memory_gb = ?, disk_gb = ?, multiplier_milli = ? where instance_id = ?")
+    // A confirmed grow is no longer a reservation, so it counts as billed disk from here.
+    env.DB.prepare(`update cloud_computers set cpu = ?, memory_gb = ?, disk_gb = ?, multiplier_milli = ?${nextDisk !== currentDisk ? ", disk_reserved_at = null" : ""} where instance_id = ?`)
       .bind(size.cpu, size.memoryGb, nextDisk, size.multiplierMilli, computer.instance_id),
     ...statusChangeStatements(env, computer, status, now, "resize"),
   );
+  // The bigger disk is billed only now that the provider made it; a refused grow gave its room back above.
+  if (nextDisk !== currentDisk) statements.push(diskDayStatement(env, account, now));
   await env.DB.batch(statements);
   if (shapeChanges) track({ action: "tier_change", tier: tierOf(size) });
   if (nextDisk !== currentDisk) track({ action: "grow", tier: tierOf(size) });

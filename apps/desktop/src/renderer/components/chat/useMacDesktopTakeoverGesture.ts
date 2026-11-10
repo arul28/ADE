@@ -5,7 +5,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
-import { desktopSeatKind, type MacDesktopDisplay } from "../../../shared/types/macDesktop";
+import type { DesktopSeatKind, MacDesktopDisplay } from "../../../shared/types/macDesktop";
 import {
   macDesktopPointerUpCall,
   macDesktopWheelCall,
@@ -60,15 +60,20 @@ export function useMacDesktopTakeoverGesture(
     toDisplayPoint: (clientX: number, clientY: number) => MacDesktopPoint | null;
     busy: boolean;
     takeoverBlocked: boolean;
-    platform: NodeJS.Platform | null;
+    /**
+     * The seat the pane resolved (`useMacDesktopPanelController`), never
+     * worked out again here: an older Windows host says "shared" only in
+     * `status.windowsDesktop`, and a second answer could send real input to
+     * the user's own desktop.
+     */
+    seat: DesktopSeatKind;
     display: MacDesktopDisplay | null;
     laneId: string;
     sessionId: string | null;
     controllerId: string;
   },
 ): void {
-  const { busy, takeoverBlocked, display } = options;
-  const seat = desktopSeatKind({ platform: options.platform, display });
+  const { busy, takeoverBlocked, display, seat } = options;
   const takeoverDeliversGesture = Boolean(display) && (seat === "linux" || seat === "windows-private");
   const controlStateRef = useRef({ busy, takeoverBlocked, takeoverDeliversGesture });
   controlStateRef.current = { busy, takeoverBlocked, takeoverDeliversGesture };

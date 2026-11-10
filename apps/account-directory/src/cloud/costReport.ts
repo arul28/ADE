@@ -144,13 +144,14 @@ export async function runDailyCostReport(env: CloudEnv, day: string, extraDiskOv
     env.DB.prepare("select user_id, extra_reported_milli, period_start from cloud_account_days where day = ?")
       .bind(previousDay).all<{ user_id: string; extra_reported_milli: number; period_start: number | null }>(),
   ]);
-  // Disk nobody pays for: the free plan (a cancelled plan included) above its disk.
+  // Disk nobody pays for: the free plan (a cancelled plan included) above its disk,
+  // or a paid plan above its disk with extra disk off (a move that left its source).
   const overDiskRows = await env.DB.prepare(`
     select * from (
-      select a.user_id, a.plan, a.stripe_status, ${accountDiskSql("a.user_id")} as disk_gb
-      from cloud_accounts a where a.deleted_at is null and a.plan = 'free'
+      select a.*, ${accountDiskSql("a.user_id")} as disk_gb
+      from cloud_accounts a where a.deleted_at is null
     ) where disk_gb > ?
-  `).bind(CLOUD_PLANS.free.diskGb).all<Pick<AccountRow, "user_id" | "plan" | "stripe_status"> & { disk_gb: number }>();
+  `).bind(CLOUD_PLANS.free.diskGb).all<AccountRow & { disk_gb: number }>();
   const compute = new Map((computeRows.results ?? []).map((row) => [row.user_id, row.cost]));
   const disk = new Map((diskRows.results ?? []).map((row) => [row.user_id, row]));
   const previous = new Map((previousRows.results ?? []).map((row) => [row.user_id, row]));
@@ -219,6 +220,10 @@ export async function runDailyCostReport(env: CloudEnv, day: string, extraDiskOv
     alarms.push(`Account ${row.userId} holds ${row.extraGb} GB of extra disk, about ${formatCloudCents(row.monthCents)} a month, over its ${formatCloudCents(row.limitCents)} limit. Billing stops at the limit; the person was told.`);
   }
   for (const row of overDiskRows.results ?? []) {
+    const planId = planIdOf(row);
+    if (planId !== "free" && row.extra_disk_state !== "on" && row.disk_gb > CLOUD_PLANS[planId].diskGb) {
+      alarms.push(`Account ${row.user_id} holds ${row.disk_gb} GB on the ${planId} plan, over its ${CLOUD_PLANS[planId].diskGb} GB, with extra disk off. A move left its old computer; nothing bills the difference.`);
+    }
     if (!freePlanOverDisk(row, row.disk_gb)) continue;
     alarms.push(`Account ${row.user_id} is on the free plan with ${row.disk_gb} GB of disk, over the free ${CLOUD_PLANS.free.diskGb} GB. Its computers stay stopped until it deletes some or buys a plan; unused ones are deleted after 30 days.`);
   }
