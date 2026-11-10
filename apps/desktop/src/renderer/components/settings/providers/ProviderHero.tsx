@@ -3,7 +3,7 @@
  * 3D, the provider's name and state, and what the user ran on it across
  * every machine on their ADE account in the last 30 days.
  */
-import React, { useEffect, useMemo, useState } from "react";
+import React, { cloneElement, isValidElement, useEffect, useMemo, useState, type CSSProperties, type ReactNode, type SVGProps } from "react";
 import type { AdeUsageStats } from "../../../../shared/types/usage";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { formatCost, formatTokens } from "../../../lib/format";
@@ -77,7 +77,12 @@ const SOLID_DEPTH = 10;
  * viewer with its depth falling straight down (the integration pages); the
  * provider pages turn it a little.
  */
-export function SolidLogo({ spec, straight = false }: { spec: Extract<ProviderBrandLogo, { kind: "solid" }>; straight?: boolean }) {
+export function SolidLogo({ spec, straight = false, floor = false }: {
+  spec: Extract<ProviderBrandLogo, { kind: "solid" }>;
+  straight?: boolean;
+  /** The shadow it casts under it, for a hero-sized logo. Tiles and cards go without. */
+  floor?: boolean;
+}) {
   const size = spec.size ?? 84;
   // A straight mark is seen from the front: a thin edge, in proportion to the
   // mark. A fixed depth would make a small mark look tall and tipped back.
@@ -89,12 +94,12 @@ export function SolidLogo({ spec, straight = false }: { spec: Extract<ProviderBr
   const layers = Array.from({ length: count }, (_, index) => count - index);
   return (
     <div className="ade-pv-mark3d" data-straight={straight ? "true" : undefined} aria-hidden>
-      <div className="ade-pv-mark3d-floor" />
+      {floor ? <div className="ade-pv-mark3d-floor" /> : null}
       <div className="ade-pv-mark3d-body">
         {layers.map((depth) => (
-          <span
+          <SolidLayer
             key={depth}
-            className="ade-pv-mark3d-layer"
+            mark={spec.mark(size)}
             style={{
               transform: straight ? `translateY(${depth * straightStep}px)` : `translate(${depth * 0.8}px, ${depth * 1}px)`,
               // The far layers are darker, so the side reads as lit from the front.
@@ -102,24 +107,36 @@ export function SolidLogo({ spec, straight = false }: { spec: Extract<ProviderBr
                 ? { filter: `brightness(${0.32 + (SOLID_DEPTH - depth * (SOLID_DEPTH / count)) * 0.035}) saturate(1.3)` }
                 : { color: spec.side, filter: `brightness(${0.7 + (SOLID_DEPTH - depth * (SOLID_DEPTH / count)) * 0.04})` }),
             }}
-          >
-            {spec.mark(size)}
-          </span>
+          />
         ))}
-        <span className="ade-pv-mark3d-layer" data-face="true" style={spec.face ? { color: spec.face } : undefined}>
-          {spec.mark(size)}
-        </span>
-        <span className="ade-pv-mark3d-layer" data-gloss="true">
-          {spec.mark(size)}
-        </span>
+        <SolidLayer mark={spec.mark(size)} part="face" style={spec.face ? { color: spec.face } : undefined} />
+        <SolidLayer mark={spec.mark(size)} part="gloss" />
       </div>
     </div>
   );
 }
 
+/**
+ * One copy of the mark. A plain `<svg>` mark is the layer itself; any other
+ * mark (a component) sits in a span. A grid of tiles draws five copies per
+ * logo, so the span it saves is about a sixth of the Integrations page.
+ */
+function SolidLayer({ mark, part, style }: { mark: ReactNode; part?: "face" | "gloss"; style?: CSSProperties }) {
+  const layer = {
+    className: "ade-pv-mark3d-layer",
+    "data-face": part === "face" ? "true" : undefined,
+    "data-gloss": part === "gloss" ? "true" : undefined,
+  };
+  if (isValidElement<SVGProps<SVGSVGElement>>(mark) && mark.type === "svg") {
+    const className = [mark.props.className, layer.className].filter(Boolean).join(" ");
+    return cloneElement(mark, { ...layer, className, style: { ...mark.props.style, ...style } });
+  }
+  return <span {...layer} style={style}>{mark}</span>;
+}
+
 function ProviderLogo3d({ descriptor }: { descriptor: ProviderDescriptor }) {
   const logo = providerBrand(descriptor.id).logo;
-  if (logo.kind === "solid") return <SolidLogo spec={logo} />;
+  if (logo.kind === "solid") return <SolidLogo spec={logo} floor />;
   return (
     <div className="ade-pv-logo3d" aria-hidden>
       <div className="ade-pv-logo3d-face" style={{ background: logo.background, color: logo.color }}>

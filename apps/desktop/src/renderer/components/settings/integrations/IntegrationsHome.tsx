@@ -346,7 +346,7 @@ export function IntegrationsHome({
                   >
                     <span className="ade-ig-tile-banner" style={brand.banner} aria-hidden>
                       <img src={brand.art} alt="" draggable={false} />
-                      <SolidLogo spec={brand.logo} straight />
+                      <SolidLogo spec={brand.logo} straight floor />
                     </span>
                     <span className="ade-ig-tile-body">
                       <span className="ade-ig-tile-name">

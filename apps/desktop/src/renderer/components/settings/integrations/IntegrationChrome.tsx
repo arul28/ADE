@@ -148,7 +148,7 @@ export function IntegrationHero({
       {art ?? (picture ? <img className="ade-ig-hero-art" src={picture} alt="" draggable={false} /> : null)}
       <div className="ade-ig-hero-shade" />
       <div className="ade-ig-hero-row" data-panel={showPanel ? undefined : "none"}>
-        <SolidLogo spec={brand.logo} straight />
+        <SolidLogo spec={brand.logo} straight floor />
         <div className="ade-ig-hero-id">
           <h1 className="ade-ig-hero-name">{brand.label}</h1>
           <p className="ade-ig-hero-tagline">{brand.tagline}</p>
