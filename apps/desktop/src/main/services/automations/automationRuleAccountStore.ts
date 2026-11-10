@@ -129,8 +129,12 @@ type LocalState = {
   pending?: AutomationPendingConfirmation[];
   /** Run counts the account refused (signed out), by rule, to send after sign-in. */
   pendingRunCounts?: Record<string, { count: number; owner: string | null }>;
-  /** Rules saved in `.ade/local.yaml` while signed out: the account they belong to, and when. */
-  offlineSaves?: Record<string, { owner: string | null; at: string }>;
+  /**
+   * Rules waiting in `.ade/local.yaml` (saved signed out, or before the first
+   * sync): the account they belong to, when, and whether it was an edit of an
+   * account rule or a new rule.
+   */
+  offlineSaves?: Record<string, { owner: string | null; at: string; kind?: "edit" | "new" }>;
 };
 
 export type AutomationRuleAccountStore = ReturnType<typeof createAutomationRuleAccountStore>;
@@ -596,16 +600,16 @@ export function createAutomationRuleAccountStore(args: {
     // ── Saved while signed out ─────────────────────────────────────────────
 
     /** Remember whose rule this is (the account last signed in here), and when it was saved. */
-    noteOfflineSave(ruleId: string): void {
+    noteOfflineSave(ruleId: string, kind: "edit" | "new"): void {
       const owner = accountUserId() ?? readState().copy?.accountUserId ?? null;
       const at = new Date(now()).toISOString();
-      updateState((state) => ({ ...state, offlineSaves: { ...(state.offlineSaves ?? {}), [ruleId]: { owner, at } } }));
+      updateState((state) => ({ ...state, offlineSaves: { ...(state.offlineSaves ?? {}), [ruleId]: { owner, at, kind } } }));
     },
-    /** Who a rule saved while signed out belongs to, and when; undefined when it was not saved that way. */
-    offlineSave(ruleId: string): { owner: string | null; at: string } | undefined {
+    /** Who a rule waiting in the file belongs to, when, and what kind of save; undefined when none. */
+    offlineSave(ruleId: string): { owner: string | null; at: string; kind: "edit" | "new" } | undefined {
       const saves = readState().offlineSaves ?? {};
       const entry = Object.prototype.hasOwnProperty.call(saves, ruleId) ? saves[ruleId] : undefined;
-      return entry && typeof entry === "object" ? entry : undefined;
+      return entry && typeof entry === "object" ? { ...entry, kind: entry.kind ?? "edit" } : undefined;
     },
     clearOfflineSave(ruleIds: readonly string[]): void {
       if (ruleIds.length === 0) return;

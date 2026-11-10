@@ -268,7 +268,7 @@ export function createAutomationRuleAccountSync(args: {
           store.addPending({ ruleId: rule.id, rule: content(rule) as ConfigAutomationRule & Record<string, unknown>, home: here });
           continue;
         }
-        store.noteOfflineSave(rule.id);
+        store.noteOfflineSave(rule.id, "new");
         kept.push(rule);
       }
       return kept;
@@ -310,7 +310,9 @@ export function createAutomationRuleAccountSync(args: {
           kept.push(rule);
           continue;
         }
-        if (rule.home || offline) {
+        // A new rule that waited here takes the path below like a legacy
+        // rule: an id another computer already used is renamed, not taken.
+        if (rule.home || offline?.kind === "edit") {
           // Saved while signed out: an edit of an account rule. If another
           // computer deleted the rule after this edit was made, the delete
           // stands; an edit made after the delete brings the rule back.
@@ -453,12 +455,12 @@ export function createAutomationRuleAccountSync(args: {
         // Waiting in the file (signed out, not synced yet): record whose it
         // is, so it never moves into another account.
         if (!store.signedIn() || !store.hasSynced()) {
-          store.noteOfflineSave(rule.id);
+          store.noteOfflineSave(rule.id, "new");
           return { handled: false };
         }
         const home = options.home ? resolveHome(options.home, undefined) : store.thisComputerHome();
         if (!home || !fileInAccount(rule, home)) {
-          store.noteOfflineSave(rule.id);
+          store.noteOfflineSave(rule.id, "new");
           return { handled: false };
         }
         store.addPending({ ruleId: rule.id, rule: content(rule) as ConfigAutomationRule & Record<string, unknown>, home });
@@ -477,7 +479,7 @@ export function createAutomationRuleAccountSync(args: {
         }
         // Kept here with its home until sign-in; the home keeps running the
         // last synced version meanwhile.
-        store.noteOfflineSave(rule.id);
+        store.noteOfflineSave(rule.id, "edit");
         return { handled: false, keepHome: currentHome ?? store.thisComputerHome() ?? undefined };
       }
       const homeToWrite = requestedHome ?? (currentHome ? null : store.thisComputerHome());
@@ -487,7 +489,7 @@ export function createAutomationRuleAccountSync(args: {
         ? !homeToWrite || store.writeHome(rule.id, homeToWrite)
         : fileInAccount(rule, homeToWrite);
       if (!ok) {
-        store.noteOfflineSave(rule.id);
+        store.noteOfflineSave(rule.id, "edit");
         return { handled: false, keepHome: currentHome ?? undefined };
       }
       if (fileCopy) args.writeFileRules(args.readFileRules().filter((entry) => entry.id !== rule.id));

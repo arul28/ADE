@@ -147,6 +147,16 @@ describe("automation rules that follow the account", () => {
     expect(onA[readded].runsHere).toBe(true);
     expect(b.rules().nightly.runsHere).toBe(true);
     expect(a.fileRuleIds()).toEqual([]);
+
+    // A new rule saved on a computer that has not synced yet waits in its
+    // file; when the sync shows another rule under that id, it is renamed.
+    const c = await createComputer({ name: "mac-c", relay });
+    c.config.saveAutomationRule(rule("nightly", "C's review") as never);
+    expect(c.fileRuleIds()).toEqual(["nightly"]);
+    await settleAll(c, a, b);
+    const onC = c.rules();
+    expect(onC.nightly.prompt).toBe("B's review");
+    expect(Object.values(onC).some((entry) => entry.prompt === "C's review" && entry.id !== "nightly")).toBe(true);
   });
 
   it("keeps an edit on one computer and a change of home on another made at the same time", async () => {
