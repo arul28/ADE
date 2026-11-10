@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.130] - 2026-11-10
+
+### Added
+
+- Linux desktop app: `.deb` and AppImage for x64 and arm64 (#2137, #2150).
+- Appearance schedule by time of day (#2153).
+- ADE MCP for outside bots: chat ids that resolve, events, webhooks, full `chat_start`, files, readable proof (#2145).
+- File links that open, PR writing help, optional release of settled chats (#2147).
+- Lanes are created in the background (#2149).
+- 23 more servers in the MCP catalogue (#2159).
+
+### Changed
+
+- Cursor SDK 1.3.1, Claude 0.3.319, Codex 0.167.0 (#2130, #2126, #2127).
+- Short CLI commands start faster (#2143).
+
+### Fixed
+
+- `ade` refuses to open another ADE install's home as a project (#2157, #2160).
+- ADE Cloud: a send that wakes a computer reaches the right project; the app knows its computers without the Connections pane (#2162, #2156).
+- Chat recovery after updates, lane delete safety, Git and PR reliability, Sentry and PostHog issues (#2133, #2115, #2144, #2141, #2154).
+
 ### Models
 
 - Claude Fable 5.2 leads the Claude list (Medium effort by default, $8 / $40 per million tokens); Fable 5.1 moves below Haiku 5.5. Claude Agent SDK 0.3.321 (Claude Code 2.1.321), the first to know Fable 5.2.
@@ -2849,7 +2871,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.129...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.130...HEAD
+[1.2.130]: https://github.com/arul28/ADE/compare/v1.2.129...v1.2.130
 [1.2.129]: https://github.com/arul28/ADE/compare/v1.2.128...v1.2.129
 [1.2.128]: https://github.com/arul28/ADE/compare/v1.2.127...v1.2.128
 [1.2.127]: https://github.com/arul28/ADE/compare/v1.2.126...v1.2.127

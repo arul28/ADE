@@ -1,0 +1,43 @@
+---
+title: "v1.2.130"
+description: "Release notes for ADE v1.2.130 - November 10, 2026"
+---
+
+ADE 1.2.130 brings the desktop app to Linux, adds a schedule that changes ADE's whole look by time of day, and lets outside bots drive ADE over MCP.
+
+## New
+
+- ADE has a desktop app for Linux, as a `.deb` and an AppImage for x64 and ARM, on Ubuntu 22.04, Debian 12 or newer (#2137, #2150).
+- Settings › Appearance has a Schedule that changes the theme, background and fonts by time of day (#2153).
+- Claude Fable 5.2 leads the Claude list, and the CLI, MCP and agents name models by their full names (#2148).
+- Outside bots can drive ADE over MCP, with chat ids that resolve, events and webhooks, full chat start, files and readable proof (#2145).
+- File links in chats open the file, PRs get writing help, and settled chats can release their lanes (#2147).
+- New lanes are created in the background, so you can keep working while one is set up (#2149).
+- The MCP catalogue has 23 more servers, including Zapier, Make, Todoist and Airtable (#2159).
+
+## Improved
+
+- A chat with an active PR watch reads Shipping instead of Done (#2142).
+- Short `ade` commands start faster (#2143).
+- Cursor is on SDK 1.3.1, with `/compact` and chats that recover after a crash (#2130).
+- Claude is on 0.3.319 and automations no longer wait on a card, and Codex is on 0.167.0 (#2126, #2127).
+- Work groups show each session's lane, including sessions on other machines (#2138).
+- GitHub setup reminders stay dismissed per repository, and Settings can bring them back (#2138).
+
+## Fixed
+
+- Chats come back on their own after an update, and failed connections leave a trail (#2133).
+- Deleting a lane keeps its unsaved work, and the Storage rules page is clearer (#2115).
+- Git, PR and chat reliability fixes across ADE (#2144).
+- Agent tool safety, storage cleanup and lost chat messages are fixed (#2141).
+- Open Sentry and PostHog issues are fixed, including Codex approvals, Windows updates and iOS launch (#2154).
+- Image paste into a remote shell works (#2149).
+- Import menu dropdowns stay above the dialog (#2155).
+- Quick commands on cloud machines keep their output, and cloud machines work in the web app (#2109, #2110).
+- `ade` no longer opens another ADE install's home as a project, such as a Windows profile seen from WSL (#2157, #2160).
+- The color picker stays inside the window (#2156).
+
+## Linux
+
+- The AppImage updates itself, and the `.deb` links the new download. On Ubuntu 24.04 and newer, use the `.deb` (#2137).
+- A failed tool download no longer fails a Linux build, and a build that needs too new a system can't ship (#2150).
