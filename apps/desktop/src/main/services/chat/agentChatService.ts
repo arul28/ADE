@@ -150,6 +150,7 @@ import {
   writeClaudeOutputStyleSelection,
 } from "./claudeOutputStyles";
 import { createClaudeSubprocessReaper, type ClaudeSubprocessReaper } from "./claudeSubprocessReaper";
+import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import {
   ChatRuntimeOwnedElsewhereError,
   decideChatRuntimeOwnership,
@@ -35911,7 +35912,8 @@ export function createAgentChatService(args: {
     cliArgs: string[],
     timeoutMs = 45_000,
   ): Promise<ClaudeBackgroundCliResult> => {
-    const env = buildAgentRuntimeEnv(managed);
+    // A Claude pass account gets its token here, at the spawn (claudePassLaunch.ts).
+    const env = withClaudePassEnv(buildAgentRuntimeEnv(managed));
     const claudeDownload = chatPinnedToolDownload(null, "claude-code", "Claude Code");
     if (claudeDownload) await claudeDownload;
     const resolved = resolveClaudeCodeExecutable({ env });

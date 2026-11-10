@@ -196,6 +196,7 @@ import {
   type PinnedProviderCli,
 } from "./pinnedProviderCli";
 import { museCredentialEnv } from "../ai/museAuth";
+import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { findMuseSessionForCwd } from "../externalSessions/discoverMuse";
 import {
   buildTrackedCliResumeCommand,
@@ -7327,12 +7328,15 @@ export function createPtyService({
           });
         }
         const ptyLib = loadPty();
+        // A Claude CLI on a Claude pass account gets the pass here, at the
+        // spawn: never in `launchEnv`, which a tracked command can carry.
+        const spawnEnv = isClaudeTrackedCliToolType(toolTypeHint) ? withClaudePassEnv(launchEnv) : launchEnv;
         const opts: IWindowsPtyForkOptions = {
           name: "xterm-256color",
           cols,
           rows,
           cwd,
-          env: launchEnv
+          env: spawnEnv
         };
         let lastErr: unknown = null;
         let created: IPty | null = null;
@@ -7362,7 +7366,7 @@ export function createPtyService({
             try {
               created = await spawnPtyWhenReady(() => ptyLib.spawn(shell.file, shell.args, {
                 ...opts,
-                env: shell.env ? { ...launchEnv, ...shell.env } : launchEnv,
+                env: shell.env ? { ...spawnEnv, ...shell.env } : spawnEnv,
               }));
               selectedShell = shell;
               launchedDirectCommand = false;

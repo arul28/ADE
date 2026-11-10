@@ -971,8 +971,10 @@ export async function recheckSignedOutLogins(
 ): Promise<string[]> {
   if (args.provider && args.provider !== "claude") return [];
   const wanted = args.instanceId?.trim();
-  const targets = getMachineProviderInstanceStore().list("claude").filter((instance) => (
-    wanted ? instance.id === wanted : instance.loginBroken === true
+  const store = getMachineProviderInstanceStore();
+  // A Claude pass account has no login file to read (its token joins at the spawn).
+  const targets = store.list("claude").filter((instance) => (
+    (wanted ? instance.id === wanted : instance.loginBroken === true) && !store.cloudPassOf(instance.id)
   ));
   const restored: string[] = [];
   await Promise.all(targets.map(async (instance) => {
@@ -1315,11 +1317,23 @@ async function refreshClaudeLoginInBackground(
  * Quota for ONE Claude account. `null` = this account's config home holds no
  * login, so it has nothing to report.
  */
+function isClaudePassAccount(instanceId: string): boolean {
+  try {
+    return getMachineProviderInstanceStore().cloudPassOf(instanceId) !== null;
+  } catch {
+    return false;
+  }
+}
+
 async function pollClaudeInstance(
   logger: Logger,
   context: UsageProviderPollContext,
   instance: QuotaInstance,
 ): Promise<UsageProviderPollResult | null> {
+  // A Claude pass account (cloud computer) has no login file or Keychain item
+  // to read, so a read would mark it signed out. No reading until its turns
+  // report the limits (P6 step 3).
+  if (isClaudePassAccount(instance.id)) return null;
   // The CLI probe is for a user who just asked — background polls must not
   // spawn Claude. The Keychain is narrower: the default account still skips
   // it on background polls (that lookup can prompt), but a scoped account's

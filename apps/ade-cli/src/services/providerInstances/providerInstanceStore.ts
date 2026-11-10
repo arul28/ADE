@@ -12,6 +12,7 @@ import {
 import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { isAdeProviderHomePath } from "../../../../desktop/src/shared/parentAgentEnv";
 import { resolveMachineAdeDir } from "../projects/machineLayout";
+import { isCloudMachine } from "../power/cloudKeepAwake";
 import {
   ensurePrivateDirectory,
   type WindowsAclRunner,
@@ -87,7 +88,47 @@ type StoredInstance = {
   claudeLoginEndsAt?: string;
   /** The login this config home held before a different one replaced it. */
   replacedAccount?: ProviderInstanceReplacedAccount;
+  /**
+   * A Claude pass of the ADE account (claudePassSync.ts), on a cloud computer
+   * only. The config home holds no login: the pass token is added to the
+   * Claude process env at its spawn (claudePassLaunch.ts), never written here.
+   */
+  cloudPass?: StoredCloudPass;
 };
+
+/** What the registry keeps of one Claude pass: never its token. */
+export type StoredCloudPass = {
+  /** The vault key, `claude-pass/<12 hex>` or `claude-pass/legacy`. */
+  key: string;
+  email: string | null;
+  check: "match" | "kept_other" | "unchecked";
+  /** Epoch ms. */
+  expiresAt: number;
+};
+
+/** One pass as the reconcile hands it to `syncCloudPasses`. */
+export type CloudPassAccount = StoredCloudPass & {
+  /** `pass-<12 hex>` or `pass-legacy`. */
+  id: string;
+  /** Epoch ms of the pass's first save, for the account's order and its name without an email. */
+  createdAt: number;
+};
+
+const CLOUD_PASS_ID_PATTERN = /^pass-(?:legacy|[0-9a-f]{12})$/;
+const CLOUD_PASS_CHECKS: readonly StoredCloudPass["check"][] = ["match", "kept_other", "unchecked"];
+
+function decodeCloudPass(value: unknown): StoredCloudPass | undefined {
+  if (!isRecord(value)) return undefined;
+  const key = trimmedString(value.key);
+  const expiresAt = typeof value.expiresAt === "number" && Number.isFinite(value.expiresAt) ? value.expiresAt : null;
+  if (!key || !/^claude-pass\/(?:legacy|[0-9a-f]{12})$/.test(key) || expiresAt == null) return undefined;
+  return {
+    key,
+    email: trimmedString(value.email) ?? null,
+    check: CLOUD_PASS_CHECKS.includes(value.check as StoredCloudPass["check"]) ? value.check as StoredCloudPass["check"] : "unchecked",
+    expiresAt,
+  };
+}
 
 type RegistryFile = {
   version: number;
@@ -208,6 +249,7 @@ function decodeStoredInstance(value: unknown): StoredInstance | null {
   const replacedEmail = trimmedString(replaced?.email);
   const replacedPlan = trimmedString(replaced?.plan);
   const claudeLoginEndsAt = provider === "claude" ? trimmedString(value.claudeLoginEndsAt) : undefined;
+  const cloudPass = provider === "claude" && CLOUD_PASS_ID_PATTERN.test(id) ? decodeCloudPass(value.cloudPass) : undefined;
   const replacedAccount: ProviderInstanceReplacedAccount | undefined = replaced && replacedEmail
     ? {
       email: replacedEmail,
@@ -229,6 +271,7 @@ function decodeStoredInstance(value: unknown): StoredInstance | null {
     ...(account && (account.email || account.plan) ? { account } : {}),
     ...(replacedAccount ? { replacedAccount } : {}),
     ...(claudeLoginEndsAt ? { claudeLoginEndsAt } : {}),
+    ...(cloudPass ? { cloudPass } : {}),
   };
 }
 
@@ -419,9 +462,11 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
   }
 
   function toPublic(stored: StoredInstance, file: RegistryFile): ProviderInstance {
-    const known = Boolean(stored.account?.email || stored.account?.plan);
+    const pass = stored.cloudPass;
+    // A pass is a login by itself, with or without an email; it ends with its year.
+    const known = Boolean(pass || stored.account?.email || stored.account?.plan);
     const loginBroken = known && brokenLogins.has(stored.id);
-    const signedIn = known && !loginBroken;
+    const signedIn = known && !loginBroken && (!pass || pass.expiresAt > now().getTime());
     const siblings = allRecords(file).filter((record) => record.provider === stored.provider);
     // Two config homes signed in to one email are one login and one quota.
     const holders = stored.account?.email
@@ -441,10 +486,12 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       ...(stored.mainPromptCacheTtl ? { mainPromptCacheTtl: stored.mainPromptCacheTtl } : {}),
       ...(stored.onExtraUsage ? { onExtraUsage: stored.onExtraUsage } : {}),
       ...(stored.claudeLoginEndsAt ? { claudeLoginEndsAt: stored.claudeLoginEndsAt } : {}),
+      ...(pass ? { claudeLoginEndsAt: new Date(pass.expiresAt).toISOString() } : {}),
       provider: stored.provider,
       // An account is named by its login, never its id or a typed name: the
-      // email once it has signed in (`providerAccountName`).
-      label: providerAccountName(stored),
+      // email once it has signed in (`providerAccountName`). A pass without
+      // an email is named by its date.
+      label: pass && !pass.email ? `Claude pass from ${stored.createdAt.slice(0, 10)}` : providerAccountName(stored),
       ...(stored.accentColor ? { accentColor: stored.accentColor } : {}),
       configHome: stored.configHome,
       isDefault: defaultIdFor(stored.provider, file) === stored.id,
@@ -467,10 +514,14 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
    */
   function allRecords(file: RegistryFile): StoredInstance[] {
     const records: StoredInstance[] = [];
+    // A pass account exists on a cloud computer only. A registry copied from
+    // one (a forked disk, a moved ADE home) shows none of its passes here.
+    const passesHere = isCloudMachine(env);
     for (const provider of PROVIDER_INSTANCE_PROVIDERS) {
       records.push(baseInstanceRecord(provider, file));
       for (const instance of file.instances) {
         if (instance.provider !== provider || instance.id === provider) continue;
+        if (instance.cloudPass && !passesHere) continue;
         records.push(instance);
       }
     }
@@ -900,7 +951,8 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
    */
   async function refreshAccounts(provider?: ProviderInstanceProvider): Promise<ProviderInstance[]> {
     const file = readFile();
-    const records = allRecords(file).filter((record) => !provider || record.provider === provider);
+    // A pass account's config home has no login to read; its account comes from the pass.
+    const records = allRecords(file).filter((record) => (!provider || record.provider === provider) && !record.cloudPass);
     const reads = await Promise.all(records.map(async (record) => ({
       record,
       read: await readAccountFor(record),
@@ -950,6 +1002,116 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     return allRecords(after)
       .filter((record) => !provider || record.provider === provider)
       .map((record) => toPublic(record, after));
+  }
+
+  /**
+   * The Claude pass of one account id, or null for any other account (and for
+   * every account off a cloud computer).
+   */
+  function cloudPassOf(id: string): StoredCloudPass | null {
+    const trimmed = typeof id === "string" ? id.trim() : "";
+    if (!CLOUD_PASS_ID_PATTERN.test(trimmed) || !isCloudMachine(env)) return null;
+    return readFile().instances.find((entry) => entry.id === trimmed)?.cloudPass ?? null;
+  }
+
+  /**
+   * Make the registry's pass accounts exactly `passes` (claudePassSync.ts).
+   * Cloud computers only: anywhere else it changes nothing. One write, only
+   * on a change. A removed pass's config home stays on disk, as for any
+   * removed account (it holds no login).
+   *
+   * - `defaultId`: the pass for new chats, or null. Null moves the default
+   *   back to the base account only when the default was a pass.
+   * - `smartBalance`: the account's ADE Cloud switch; null leaves the setting.
+   */
+  function syncCloudPasses(args: {
+    passes: readonly CloudPassAccount[];
+    defaultId: string | null;
+    smartBalance: boolean | null;
+  }): { added: string[]; removed: string[]; changed: string[]; wrote: boolean } {
+    const result = { added: [] as string[], removed: [] as string[], changed: [] as string[], wrote: false };
+    if (!isCloudMachine(env)) return result;
+    const file = readFile();
+    const wanted = new Map(args.passes.filter((pass) => CLOUD_PASS_ID_PATTERN.test(pass.id)).map((pass) => [pass.id, pass]));
+    let dirty = false;
+    const kept: StoredInstance[] = [];
+    for (const entry of file.instances) {
+      if (!entry.cloudPass && !CLOUD_PASS_ID_PATTERN.test(entry.id)) {
+        kept.push(entry);
+        continue;
+      }
+      const pass = wanted.get(entry.id);
+      if (!pass) {
+        result.removed.push(entry.id);
+        brokenLogins.delete(entry.id);
+        dirty = true;
+        continue;
+      }
+      wanted.delete(entry.id);
+      const next = passRecord(pass, entry);
+      if (JSON.stringify(next) !== JSON.stringify(entry)) {
+        result.changed.push(entry.id);
+        dirty = true;
+      }
+      kept.push(next);
+    }
+    for (const pass of wanted.values()) {
+      const configHome = path.join(options.adeDir, INSTANCE_HOMES_DIR, "claude", pass.id);
+      ensurePrivateDirectory(configHome, {
+        platform: options.platform,
+        aclRunner: options.aclRunner,
+        currentUser: options.currentWindowsUser,
+      });
+      kept.push(passRecord(pass, null, configHome));
+      result.added.push(pass.id);
+      dirty = true;
+    }
+    file.instances = kept;
+    const currentDefault = file.defaults.claude;
+    if (args.defaultId && kept.some((entry) => entry.id === args.defaultId && entry.cloudPass)) {
+      if (currentDefault !== args.defaultId) {
+        file.defaults.claude = args.defaultId;
+        dirty = true;
+      }
+    } else if (currentDefault && (CLOUD_PASS_ID_PATTERN.test(currentDefault) || !kept.some((entry) => entry.id === currentDefault))) {
+      delete file.defaults.claude;
+      dirty = true;
+    }
+    if (args.smartBalance != null) {
+      const current = { ...DEFAULT_PROVIDER_INSTANCE_SETTINGS, ...(file.settings.claude ?? {}) };
+      if (current.smartBalance !== args.smartBalance) {
+        file.settings.claude = { ...current, smartBalance: args.smartBalance };
+        dirty = true;
+      }
+    }
+    if (!dirty) return result;
+    writeFile(file);
+    result.wrote = true;
+    emit({ reason: "refresh", provider: "claude" });
+    return result;
+  }
+
+  function passRecord(pass: CloudPassAccount, existing: StoredInstance | null, configHome?: string): StoredInstance {
+    const email = pass.email?.trim() || null;
+    const base: StoredInstance = existing
+      ? { ...existing }
+      : {
+        id: pass.id,
+        provider: "claude",
+        label: pass.id,
+        configHome: configHome ?? path.join(options.adeDir, INSTANCE_HOMES_DIR, "claude", pass.id),
+        createdAt: new Date(pass.createdAt).toISOString(),
+      };
+    const next: StoredInstance = {
+      ...base,
+      createdAt: new Date(pass.createdAt).toISOString(),
+      cloudPass: { key: pass.key, email, check: pass.check, expiresAt: pass.expiresAt },
+    };
+    if (email) next.account = { email };
+    else delete next.account;
+    delete next.claudeLoginEndsAt;
+    delete next.replacedAccount;
+    return next;
   }
 
   function snapshot(): ProviderInstanceRegistry {
@@ -1020,6 +1182,8 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     },
     refreshAccounts,
     setLoginBroken,
+    cloudPassOf,
+    syncCloudPasses,
     /** Every write emits; returns the unsubscribe. */
     onChange(listener: (change: ProviderInstanceStoreChange) => void): () => void {
       listeners.add(listener);

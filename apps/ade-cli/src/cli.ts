@@ -28897,6 +28897,15 @@ async function runServe(
   })).catch((error: unknown) => {
     headlessProjectLogger.warn("provider_login.install_failed", { name: error instanceof Error ? error.name : "unknown" });
   });
+  // Claude passes use the sign-in sync's hooks (its pass, its gate, its
+  // status). The same fixed conditions turn both off; the boot token then stays.
+  void import("../../desktop/src/main/services/claudePass/installClaudePassSync").then(({ installClaudePassSync }) => installClaudePassSync({
+    staticOff: embedded ? "embedded" : !brainReportsAsRelease(process.env) ? "dev_brain" : !syncEnabled ? "sync_off" : null,
+    adeDir: layout.adeDir,
+    logger: headlessProjectLogger,
+  })).catch((error: unknown) => {
+    headlessProjectLogger.warn("claude_pass.install_failed", { name: error instanceof Error ? error.name : "unknown" });
+  });
   // Both profiles get it. An embedded runtime is exactly the case that needs
   // it most: the embedder's first screen asks "which CLIs do you have", and
   // without this it would have to write that detection itself.
