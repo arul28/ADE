@@ -66,6 +66,8 @@ import { useAndroidStorageActions } from "./useAndroidStorageActions";
 import { useAndroidExtraDevices } from "./useAndroidExtraDevices";
 import { AndroidQuickChips } from "./AndroidQuickChips";
 import { AndroidPaneStrip } from "./AndroidPaneStrip";
+import { AndroidCloudComputerNotice, cloudComputerWithoutAndroid } from "./AndroidCloudComputerNotice";
+import { useCloudComputer } from "../remoteTargets/useCloudComputer";
 import { AndroidCrashPin } from "./AndroidCrashPin";
 import { subscribeAndroidPickerRequests, takeAndroidPickerRequest } from "./androidPickerRequests";
 import type { AndroidDrawerGroupId } from "./drawer/androidDrawerState";
@@ -163,6 +165,10 @@ export function AndroidDevicePane({
   // A lane on a project tab bound to another machine has no pin, so the
   // caller passes no name: the tab's binding names the machine.
   const remoteMachineName = machineName ?? (binding?.kind === "remote" ? binding.runtimeName : null);
+  // An ADE Cloud computer gets its own notice in place of the KVM one or a
+  // start refused for disk. Found by the same pin as every Android call.
+  const { box: cloudBox, account: cloudAccount, refresh: refreshCloud } = useCloudComputer(runtimePin);
+  const cloudNoAndroid = cloudComputerWithoutAndroid(cloudBox);
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [bodyWidth, setBodyWidth] = useState(720);
@@ -688,6 +694,19 @@ export function AndroidDevicePane({
       onRetry3D={() => { setThreeFailure(null); setViewMode("3d"); setViewNonce((nonce) => nonce + 1); }}
       onDismiss3D={() => setThreeFailure(null)}
       onDismissAcceleration={() => setNoAccelDismissed(true)}
+      cloudNeedsFullComputer={cloudNoAndroid != null}
+      renderCloudNotice={cloudBox
+        ? (need, onDismiss) => (
+          <AndroidCloudComputerNotice
+            box={cloudBox}
+            account={cloudAccount}
+            need={need}
+            name={remoteMachineName}
+            refresh={refreshCloud}
+            onDismiss={onDismiss}
+          />
+        )
+        : null}
     />
   );
 

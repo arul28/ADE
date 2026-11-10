@@ -36,6 +36,7 @@ import { MacDesktopPermissionCard } from "./MacDesktopPermissionCard";
 import { MAC_DESKTOP_SECONDARY_BUTTON, MacDesktopStateCard } from "./MacDesktopStateCard";
 import { MAC_DESKTOP_NOT_ANSWERING } from "./macDesktopStatusStore";
 import { MacDesktopStatusStrip, type MacDesktopStripMessage } from "./MacDesktopStatusStrip";
+import { MacDesktopEmptyScreenHint, MacDesktopPictureCard, MacDesktopTakeoverHint } from "./MacDesktopPictureOverlays";
 import { MacDesktopClaimPicker } from "./MacDesktopClaimPicker";
 import { LinuxDesktopOpenApp } from "./LinuxDesktopOpenApp";
 import {
@@ -163,13 +164,16 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     connectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording, toggleRecording,
     saveScreenshot, openReceipt, nowTick, present, refreshClaimable, claimWindow, releaseWindowById, openApp, closeWindowById,
-    selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE, desktopTool,
+    selectWindow, openSettingsPane, checkAgain, readAgain, stopNow, SETTINGS_PANE, desktopTool, hostPlatform,
   } = controller;
-  const windowsHost = desktopTool === "windows-desktop" || status?.platform === "win32";
-  const desktopName = desktopToolProductName(windowsHost ? "windows-desktop" : "mac-desktop", status?.platform ?? null);
+  // The host's own answer, else what the Work tab knows: an unreachable host
+  // answers nothing, and the name must still match the tab.
+  const platform = status?.platform ?? hostPlatform ?? null;
+  const windowsHost = desktopTool === "windows-desktop" || platform === "win32";
+  const desktopName = desktopToolProductName(windowsHost ? "windows-desktop" : "mac-desktop", platform);
   /** Which screen Stop ends; a Windows seat is shared (Mode B) only while a display runs. */
   const seatKind = desktopSeatKind({
-    platform: windowsHost ? "win32" : status?.platform,
+    platform: windowsHost ? "win32" : platform,
     display,
     windowsDesktop: display ? status?.windowsDesktop : null,
   });
@@ -739,16 +743,10 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
         testId: "mac-desktop-capture-notice",
       };
     }
-    if (inputErrorText) {
-      return {
-        key: `input:${inputErrorText}`,
-        tone: "error",
-        sentence: inputErrorText,
-        onDismiss: realInput.clearInputError,
-        testId: "mac-desktop-input-error",
-      };
-    }
-    // A missing grant is not a strip line any more: it is the permission card
+    // A refused input is not a strip line: it is drawn on the picture, under
+    // the takeover hint's rules (`renderTakeoverHint`), so the picture keeps
+    // its place while the message comes and goes.
+    // A missing grant is not a strip line: it is the permission card
     // under the top row, which names the grant, its path and its one button.
     // The video's own state is not a strip line either: it is drawn on the
     // picture (`renderVideoOverlay`), where the problem is.
@@ -774,20 +772,13 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     const detail = stopped ? macDesktopErrorText(live.error, { laneId, laneName }) : null;
     const suffix = scope === "pane" ? "" : "-fs";
     return (
-      <div className="pointer-events-none absolute inset-0 z-[12] flex items-center justify-center p-3">
-        <div
-          role="status"
-          data-testid={`${stopped ? "mac-desktop-video-stopped" : "mac-desktop-connect-slow"}${suffix}`}
-          className="pointer-events-auto flex max-w-[320px] flex-col items-center gap-2 rounded-[12px] border border-border/70 bg-[color-mix(in_srgb,var(--color-surface)_92%,transparent)] px-4 py-3 text-center font-sans shadow-float"
-        >
-          <p className="text-[13px] font-medium text-fg">
-            {stopped ? "Video stopped" : "The picture is not coming through"}
-          </p>
-          <p className="text-[12px] leading-5 text-muted-fg">
-            {restartingCapture
-              ? "Restarting the capture…"
-              : stopped ? `${desktopName} is still running.` : `${desktopName} is up, but no video has arrived yet.`}
-          </p>
+      <MacDesktopPictureCard
+        testId={`${stopped ? "mac-desktop-video-stopped" : "mac-desktop-connect-slow"}${suffix}`}
+        title={stopped ? "Video stopped" : "The picture is not coming through"}
+        line={restartingCapture
+          ? "Restarting the capture…"
+          : stopped ? `${desktopName} is still running.` : `${desktopName} is up, but no video has arrived yet.`}
+      >
           {restartingCapture ? null : (
           <div className="flex items-center gap-3">
             {/* A fresh `startStream`, budget included: the automatic retries
@@ -829,42 +820,35 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
           {stopped && detail && videoDetailsOpen ? (
             <p className="max-w-full break-words text-left font-mono text-[11px] leading-4 text-muted-fg">{detail}</p>
           ) : null}
-        </div>
-      </div>
+      </MacDesktopPictureCard>
     );
   };
 
   /**
-   * The way out, on the picture, for the whole takeover.
-   *
-   * During a takeover ⌘Q is held back and clicks move focus onto the lane's
-   * screen, so Escape is the exit — and a person who did not know that had to
-   * restart their Mac. This used to be a small line at the right end of the
-   * chrome row, which a narrow pane clips; it is on the picture now, where
-   * they are looking. Click-through except the button, so it never steals a
-   * click from the lane.
+   * A live Linux screen with nothing open is one flat colour, which reads as
+   * dead. Linux only: there the window list is every window on the lane's own
+   * X display, kept current by the host's window events. On a Mac or Windows
+   * host the list holds only the lane's own windows, so an empty list does not
+   * mean an empty screen. Nothing shows while the list could be out of date.
+   * In the pane only: the picker it opens covers the pane, not full screen.
    */
+  const renderEmptyScreenHint = (scope: MacDesktopChromeScope) => {
+    if (scope !== "pane" || expanded) return null;
+    if (!linuxSeat || !display || live.status !== "playing" || unconfirmed || readError) return null;
+    if (parkedWindows.length > 0 || pickerOpen) return null;
+    return <MacDesktopEmptyScreenHint onAddApp={() => setPickerOpen(true)} />;
+  };
+
+  /** The way out, on the picture, for the whole takeover (`MacDesktopTakeoverHint`). */
   const renderTakeoverHint = (scope: MacDesktopChromeScope) => {
     if (!iHaveControl || scope !== (expanded ? "fullscreen" : "pane")) return null;
     return (
-      <div className="pointer-events-none absolute inset-x-0 bottom-3 z-[13] flex justify-center px-3">
-        <div
-          role="status"
-          data-testid={`mac-desktop-takeover-banner${scope === "pane" ? "" : "-fs"}`}
-          className="flex items-center gap-2 rounded-full border border-amber-300/30 bg-[color-mix(in_srgb,var(--color-surface)_92%,transparent)] px-3 py-1 font-sans text-[12px] text-fg shadow-float"
-        >
-          <span>
-            You're driving this screen. Press <kbd className="font-medium text-amber-200">Esc</kbd> to give it back.
-          </span>
-          <button
-            type="button"
-            className="pointer-events-auto text-amber-200 underline underline-offset-2"
-            onClick={() => void returnControl()}
-          >
-            Return to agent
-          </button>
-        </div>
-      </div>
+      <MacDesktopTakeoverHint
+        suffix={scope === "pane" ? "" : "-fs"}
+        inputError={inputErrorText}
+        onDismissInputError={realInput.clearInputError}
+        onReturnControl={() => void returnControl()}
+      />
     );
   };
 
@@ -1069,6 +1053,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
           {renderPicture("pane")}
           {renderCaptureOverlay("pane")}
           {renderVideoOverlay("pane")}
+          {renderEmptyScreenHint("pane")}
           {renderTakeoverHint("pane")}
         </div>
 

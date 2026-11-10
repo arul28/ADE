@@ -9,8 +9,13 @@ import type { CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import type { RemoteRuntimeConnectionStatus } from "../../shared/types/remoteRuntime";
 import type { AgentChatApi } from "../components/chat/agentChatApi";
+import { isRuntimeTransportTimeoutError } from "../../shared/runtimeErrors";
+import { sessionTurnLive } from "../../shared/sessionStatusPresentation";
+import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../shared/wokenMachine";
 import { rootAppStoreApi } from "./appStore";
 import { adeCloudEnabled } from "./cloudAccess";
+import { cloudBoxForMachine } from "../components/remoteTargets/cloudMachineModel";
+import { watchedCloudMachines } from "../components/remoteTargets/useCloudMachines";
 import {
   SAVED_CHATS_MACHINE_PREFIX,
   isSavedChatsMachineId,
@@ -121,9 +126,64 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     }
     const nextLocations: Array<{ pinKey: string; location: SavedChatLocation }> = [];
     const keptSyntheticIds = new Set<string>();
+    // The account's cloud computers, when a surface keeps that list current.
+    // A computer missing from it was deleted, even while this desktop still
+    // holds a saved connection to it (a move made on another desktop).
+    const cloud = watchedCloudMachines();
+    const cloudBoxes = cloud?.state === "ok" ? cloud.machines : null;
+    const machineFacts = new Map<string, { connection: RemoteRuntimeConnectionStatus | null; gone: boolean }>();
     for (const [machineKey, rows] of byMachine) {
+      const connection = connectionFor(context.connections, machineKey, rows[0]!.instanceId);
+      const gone = !connection
+        || (cloudBoxes != null && !cloudBoxForMachine(cloudBoxes, { machineKey, hostname: rows[0]!.instanceId }));
+      machineFacts.set(machineKey, { connection, gone });
+    }
+    // One computer shows each chat. After a move, the new computer saves the
+    // same chats (same ids) as the old one. A computer that still exists wins
+    // over a deleted one; between two that exist, a connected one, then the
+    // newer copy. Object order never decides.
+    const ownerByChatId = new Map<string, { machineKey: string; connected: boolean; updatedAt: number }>();
+    for (const [machineKey, rows] of byMachine) {
+      const facts = machineFacts.get(machineKey)!;
+      if (facts.gone) continue;
+      const connected = facts.connection?.state === "connected";
+      for (const row of rows) {
+        const current = ownerByChatId.get(row.chatId);
+        if (
+          !current
+          || (connected && !current.connected)
+          || (connected === current.connected && row.updatedAt > current.updatedAt)
+        ) ownerByChatId.set(row.chatId, { machineKey, connected, updatedAt: row.updatedAt });
+      }
+    }
+    for (const [machineKey, machineRows] of byMachine) {
+      const { connection, gone } = machineFacts.get(machineKey)!;
+      const rows = machineRows.filter((row) => {
+        const owner = ownerByChatId.get(row.chatId);
+        return owner ? owner.machineKey === machineKey : gone;
+      });
+      if (rows.length === 0) {
+        // Every chat it saved shows from another computer now: drop the saved
+        // copies an earlier read put on its connection's slice.
+        const stale = connection && connection.state !== "connected"
+          ? store.crossMachineLanesByMachineId[connection.target.id] ?? null
+          : null;
+        if (stale?.sessions.some((session) => session.cloudSavedCopy)) {
+          store.mergeCrossMachineLanes({
+            machineId: stale.machineId,
+            machineName: stale.machineName,
+            targetId: stale.targetId,
+            projectId: stale.projectId,
+            binding: stale.binding,
+            online: stale.online,
+            lanes: stale.lanes,
+            sessions: stale.sessions.filter((session) => !session.cloudSavedCopy),
+            error: stale.error ?? null,
+          });
+        }
+        continue;
+      }
       const first = rows[0]!;
-      const connection = connectionFor(context.connections, machineKey, first.instanceId);
       // Connected: the live list owns this machine. Nothing saved shows.
       if (connection?.state === "connected") continue;
       const machineId = connection?.target.id ?? `${SAVED_CHATS_MACHINE_PREFIX}${machineKey}`;
@@ -151,6 +211,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         projectId: binding.kind === "remote" ? binding.projectId : null,
         binding,
         online: false,
+        computerGone: gone,
         lanes,
         sessions: [...retained, ...sessions],
         error: null,
@@ -158,7 +219,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       for (const row of rows) {
         nextLocations.push({
           pinKey: binding.key,
-          location: { machineKey, chatId: row.chatId, machineId, computerGone: !connection, row },
+          location: { machineKey, chatId: row.chatId, machineId, computerGone: gone, row },
         });
       }
     }
@@ -183,25 +244,58 @@ const machineOnline = (machineId: string): boolean =>
 /** Sends in flight per chat that wake its computer; the mark ends with the last one. */
 const wakeHolds = new Map<string, number>();
 
+/** One send's part of a chat's waking mark (`markCloudWakeForSend`). */
+export type CloudWakeSendMark = {
+  /**
+   * The send ended. The first call decides; later calls do nothing. A call
+   * that gave up waiting (a transport timeout) after the message left keeps
+   * the mark until the turn shows live, or for `WOKEN_MACHINE_CONNECT_WAIT_MS`:
+   * the machine usually still delivers it. Anything else (success, a refusal,
+   * a message that never left) ends the mark now.
+   */
+  settle: (failure?: unknown, messageLeft?: boolean) => void;
+};
+
+type MachineLanes = ReturnType<typeof rootAppStoreApi.getState>["crossMachineLanesByMachineId"];
+
+/** Turn starts of this chat that its own machine shows live (never a saved copy). */
+function liveTurnStarts(machines: MachineLanes, sessionId: string): string[] {
+  const starts: string[] = [];
+  for (const entry of Object.values(machines)) {
+    for (const session of entry.sessions) {
+      if (session.id === sessionId && sessionTurnLive(session)) starts.push(session.currentTurnStartedAt ?? "");
+    }
+  }
+  return starts;
+}
+
 /**
  * Marks the chat as waking its computer when this send wakes one: the chat is
  * a saved copy, and its computer is not connected and still exists. Returns
- * the function that ends the mark (a second call does nothing), or null when
- * the send wakes nothing. Display only: the send goes out unchanged.
+ * the send's mark, or null when the send wakes nothing. Display only: the
+ * send goes out unchanged. A new turn that the woken machine shows live ends
+ * the mark at any point; this reads the store's own updates, no poll.
  */
 export function markCloudWakeForSend(
   sessionId: string,
   pin: OpenProjectBinding | null | undefined,
-): (() => void) | null {
+): CloudWakeSendMark | null {
   const location = savedChatLocation(pin, sessionId, machineOnline);
   if (!location || location.computerGone) return null;
   const holds = wakeHolds.get(sessionId) ?? 0;
   wakeHolds.set(sessionId, holds + 1);
   if (holds === 0) rootAppStoreApi.getState().setCloudSessionWaking(sessionId, new Date().toISOString());
+  let seen = rootAppStoreApi.getState().crossMachineLanesByMachineId;
+  // A row kept from before the sleep can still show an old turn; only a new one counts.
+  const earlierTurns = new Set(liveTurnStarts(seen, sessionId));
+  let settled = false;
   let ended = false;
-  return () => {
+  let timer: number | null = null;
+  const end = () => {
     if (ended) return;
     ended = true;
+    unsubscribe();
+    if (timer != null) window.clearTimeout(timer);
     const left = (wakeHolds.get(sessionId) ?? 1) - 1;
     if (left > 0) {
       wakeHolds.set(sessionId, left);
@@ -210,6 +304,42 @@ export function markCloudWakeForSend(
     wakeHolds.delete(sessionId);
     rootAppStoreApi.getState().setCloudSessionWaking(sessionId, null);
   };
+  const unsubscribe = rootAppStoreApi.subscribe((state) => {
+    if (state.crossMachineLanesByMachineId === seen) return;
+    seen = state.crossMachineLanesByMachineId;
+    if (liveTurnStarts(seen, sessionId).some((start) => !earlierTurns.has(start))) end();
+  });
+  return {
+    settle: (failure, messageLeft = true) => {
+      if (settled || ended) return;
+      settled = true;
+      if (failure != null && messageLeft && isRuntimeTransportTimeoutError(failure)) {
+        timer = window.setTimeout(end, WOKEN_MACHINE_CONNECT_WAIT_MS);
+        return;
+      }
+      end();
+    },
+  };
+}
+
+/**
+ * Sends with the chat's waking mark around it: every send to a saved chat
+ * (submit, retry, a command) says it is waking the computer the same way.
+ */
+export async function sendWithCloudWakeMark<T>(
+  sessionId: string | null | undefined,
+  pin: OpenProjectBinding | null | undefined,
+  send: () => Promise<T>,
+): Promise<T> {
+  const mark = sessionId ? markCloudWakeForSend(sessionId, pin) : null;
+  try {
+    return await send();
+  } catch (error) {
+    mark?.settle(error);
+    throw error;
+  } finally {
+    mark?.settle();
+  }
 }
 
 const wrappedApis = new WeakMap<object, AgentChatApi>();

@@ -53,6 +53,12 @@ import { cloudHoldCommand, cloudReleaseHoldCommand } from "./cloudSleep";
 
 export type CloudCopyDeps = CloudMachineCreatorDeps & {
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
+  /**
+   * A move deleted its source: forget this desktop's saved connection to it,
+   * as Delete computer does. Set only where those connections live (the
+   * desktop's main process); a brain has none.
+   */
+  forgetMachineConnections?: (machine: { machineKey: string | null; instanceId: string }) => void;
 };
 
 /** A fork of a big disk answers 202 and finishes on its own; a warm VM took 167 s. */
@@ -133,42 +139,53 @@ export async function copyCloudMachine(
       .catch((error: unknown) => logger.warn?.("cloud.machine_copy_hold_failed", { error: getErrorMessage(error) }));
   }
   const forkStarted = Date.now();
+  /** The fork, running; a fork that never ran is deleted. */
+  const forkAndWait = async (): Promise<CloudInstance> => {
+    let fork: CloudInstance;
+    try {
+      fork = await client.forkInstance(source.id, {
+        name,
+        ...(shape ? { resources: { cpu: shape.cpu, memory: shape.memoryGb } } : {}),
+        metadata: copyMetadata(source, requestId, {
+          ade_copied_from: source.id,
+          ...(args.madeByChat ? { [CLOUD_MADE_BY_CHAT_METADATA]: args.madeByChat } : {}),
+        }),
+      }, options.signal);
+    } catch (error) {
+      // Nothing to find but by the request id, which the next app start reconciles.
+      if (options.signal?.aborted) throw new CloudCreateCancelled();
+      throw error;
+    }
+    deps.pendingCreates?.attach(requestId, fork.id);
+    logger.info?.("cloud.machine_copy_started", { sourceId: source.id, instanceId: fork.id });
+    try {
+      if (fork.status !== "running") {
+        progress("creating", "ADE Cloud is copying the disk. A big one takes a few minutes…", fork.id);
+        fork = await waitForRunning(client, fork.id, options.signal, sleep);
+      }
+    } catch (error) {
+      const gone = await deleteCloudInstanceConfirmed(client, fork.id, { logger, sleep });
+      if (gone) deps.pendingCreates?.finish(requestId);
+      throw error;
+    }
+    return fork;
+  };
   let fork: CloudInstance;
   try {
-    fork = await client.forkInstance(source.id, {
-      name,
-      ...(shape ? { resources: { cpu: shape.cpu, memory: shape.memoryGb } } : {}),
-      metadata: copyMetadata(source, requestId, {
-        ade_copied_from: source.id,
-        ...(args.madeByChat ? { [CLOUD_MADE_BY_CHAT_METADATA]: args.madeByChat } : {}),
-      }),
-    }, options.signal);
-  } catch (error) {
-    // Nothing to find but by the request id, which the next app start reconciles.
-    if (options.signal?.aborted) throw new CloudCreateCancelled();
-    throw error;
-  }
-  deps.pendingCreates?.attach(requestId, fork.id);
-  logger.info?.("cloud.machine_copy_started", { sourceId: source.id, instanceId: fork.id });
-  try {
-    if (fork.status !== "running") {
-      progress("creating", "ADE Cloud is copying the disk. A big one takes a few minutes…", fork.id);
-      fork = await waitForRunning(client, fork.id, options.signal, sleep);
+    fork = await forkAndWait();
+  } finally {
+    // The source's hold ends with the fork, worked or not; its time-out only
+    // covers an ADE that quit mid-copy.
+    if (source.status === "running") {
+      await client.exec(source.id, cloudReleaseHoldCommand("copy"), { timeoutMs: 30_000 })
+        .catch((error: unknown) => logger.warn?.("cloud.machine_copy_release_failed", { error: getErrorMessage(error) }));
     }
-  } catch (error) {
-    const gone = await deleteCloudInstanceConfirmed(client, fork.id, { logger, sleep });
-    if (gone) deps.pendingCreates?.finish(requestId);
-    throw error;
   }
   const forkMs = Date.now() - forkStarted;
   logger.info?.("cloud.machine_copied", { sourceId: source.id, instanceId: fork.id, forkMs });
   // The source's sign-in files came with the disk; the copy signs in fresh.
   await client.exec(fork.id, `rm -f "$ADE_HOME/logs/cloud-sign-in.log" "$ADE_HOME/logs/cloud-sign-in.pid"; ${cloudReleaseHoldCommand("copy")}`, { timeoutMs: 60_000 })
     .catch((error: unknown) => logger.warn?.("cloud.machine_copy_cleanup_failed", { instanceId: fork.id, error: getErrorMessage(error) }));
-  if (source.status === "running") {
-    await client.exec(source.id, cloudReleaseHoldCommand("copy"), { timeoutMs: 30_000 })
-      .catch((error: unknown) => logger.warn?.("cloud.machine_copy_release_failed", { error: getErrorMessage(error) }));
-  }
   // The copy came up signed out (the copied-home guard): sign it in like a new box.
   const result = await bringCloudBoxIntoAde(deps, { client, instance: fork, name, requestId, signal: options.signal, progress, directory });
   return { ...result, copiedFrom: source.id, forkMs };
@@ -320,6 +337,11 @@ export async function moveCloudMachine(
       }).join("; ");
       await client.exec(target.instanceId, add, { timeoutMs: 120_000 });
     }
+    // The move's work on the new machine is done: it may sleep when idle
+    // again. The 45-minute time-out only covers an ADE that quit mid-move; a
+    // failed move deletes the new machine, hold and all.
+    await client.exec(target.instanceId, cloudReleaseHoldCommand("move"), { timeoutMs: 30_000 })
+      .catch((release: unknown) => logger.warn?.("cloud.machine_move_release_failed", { instanceId: target.instanceId, error: getErrorMessage(release) }));
   } catch (error) {
     // The old machine is untouched but for the pause: let its ADE start again,
     // and take the half-made new one away.
@@ -354,6 +376,15 @@ export async function moveCloudMachine(
   if (sourceDeleted && sourceKey) {
     await deps.removeAccountMachine(sourceKey)
       .catch((removal: unknown) => logger.warn?.("cloud.machine_move_row_left", { error: getErrorMessage(removal) }));
+  }
+  if (sourceDeleted) {
+    // Left behind, the old connection kept its chats pinned to a computer
+    // that no longer exists, and every send there failed.
+    try {
+      deps.forgetMachineConnections?.({ machineKey: sourceKey, instanceId: source.id });
+    } catch (error) {
+      logger.warn?.("cloud.machine_move_connection_left", { error: getErrorMessage(error) });
+    }
   }
   let renamed = target.renamed;
   if (target.machineKey && sourceDeleted) {

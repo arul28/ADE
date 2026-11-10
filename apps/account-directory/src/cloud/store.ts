@@ -1,20 +1,23 @@
 import * as Sentry from "@sentry/cloudflare";
 import type { CallerTokenEnv } from "../callerToken";
-import type { CloudAccountState, CloudHoursState, CloudInstance } from "./contract";
+import { overPlanDiskSentence, type CloudAccountState, type CloudExtraDiskState, type CloudHoursState, type CloudInstance, type CloudPlanFacts, type CloudPlanId } from "./contract";
 import type { CloudEmailEnv } from "./email";
 import {
-  FREE_COMPUTER_LIMIT,
+  CLOUD_PLANS,
+  CENT_MICROS,
+  EXTRA_DISK_MICROS_PER_GB_DAY,
   FREE_INCLUDED_MILLI,
-  PAID_COMPUTER_LIMIT,
-  PAID_DISK_POOL_GB,
-  PAID_INCLUDED_MILLI,
   cloudCatalog,
+  computeCostMicrosFor,
+  type CloudOffers,
   freePeriodFor,
   hoursMilliFor,
   isMeteredStatus,
   isRestingStatus,
   splitByUtcDay,
+  utcDay,
   type CloudComputerType,
+  type CloudPaidPlanId,
 } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 
@@ -33,6 +36,16 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   STRIPE_PLAN_PRICE_ID?: string;
   STRIPE_EXTRA_PRICE_ID?: string;
   STRIPE_METER_EVENT?: string;
+  /** Pro's monthly price (`scripts/stripe-setup.mjs`). Unset: only Plus can be bought. */
+  STRIPE_PRO_PRICE_ID?: string;
+  /** Extra disk's metered price and meter. Unset: extra disk can't be turned on. */
+  STRIPE_DISK_PRICE_ID?: string;
+  STRIPE_DISK_METER_EVENT?: string;
+  /** The billing portal setup that lets a person switch between Plus and Pro. */
+  STRIPE_PORTAL_CONFIG_ID?: string;
+  /** Server-side product analytics (`analytics.ts`); unset sends nothing. */
+  POSTHOG_PROJECT_TOKEN?: string;
+  POSTHOG_HOST?: string;
   /** Saved chats: sealed transcript parts. Created at rollout; missing answers 503. */
   CLOUD_CHATS?: R2Bucket;
   /** 32 random bytes, base64. Seals each user's chat key. Required for saved chats. */
@@ -73,6 +86,10 @@ export type ComputerRow = {
 export type AccountRow = {
   user_id: string;
   plan: "free" | "paid";
+  /** Which paid plan; read only while `plan` is `paid`. */
+  paid_plan: CloudPaidPlanId;
+  /** A downgrade waiting for the next period; `paid_plan` holds until then. */
+  paid_plan_next: CloudPaidPlanId | null;
   included_milli: number;
   used_milli: number;
   period_start: number;
@@ -91,6 +108,11 @@ export type AccountRow = {
   warned_zero_at: number | null;
   hours_restored_at: number | null;
   billing_restored_at: number | null;
+  extra_disk_state: CloudExtraDiskState;
+  extra_disk_limit_cents: number | null;
+  extra_disk_asked_at: number | null;
+  /** When the person was told their extra disk, kept a full month, passes their limit; cleared once it fits again. */
+  extra_disk_over_limit_at: number | null;
   deleted_at: number | null;
   created_at: number;
   updated_at: number;
@@ -168,18 +190,22 @@ export function settleStatements(env: CloudDb, computer: ComputerRow, upTo: numb
   if (start == null) return [];
   const statements: D1PreparedStatement[] = [];
   let chargedMilli = 0;
+  const shape = { type: computer.type, cpu: computer.cpu, memoryGb: computer.memory_gb };
   for (const { day, ms } of splitByUtcDay(start, upTo)) {
     const milli = hoursMilliFor(ms, computer.multiplier_milli);
     chargedMilli += milli;
+    // What the provider charges for this stretch, for the owner's daily report.
+    const costMicros = computeCostMicrosFor(ms, shape);
     statements.push(env.DB.prepare(`
-      insert into cloud_computer_days (instance_id, day, user_id, metered_ms, metered_milli, multiplier_milli)
-      select ?, ?, ?, ?, ?, ?
+      insert into cloud_computer_days (instance_id, day, user_id, metered_ms, metered_milli, multiplier_milli, cost_micros)
+      select ?, ?, ?, ?, ?, ?, ?
       where ${guard ? guard.sql : "1"}
       on conflict (instance_id, day) do update set
         metered_ms = metered_ms + excluded.metered_ms,
         metered_milli = metered_milli + excluded.metered_milli,
-        multiplier_milli = excluded.multiplier_milli
-    `).bind(computer.instance_id, day, computer.user_id, ms, milli, computer.multiplier_milli, ...(guard?.binds ?? [])));
+        multiplier_milli = excluded.multiplier_milli,
+        cost_micros = cost_micros + excluded.cost_micros
+    `).bind(computer.instance_id, day, computer.user_id, ms, milli, computer.multiplier_milli, costMicros, ...(guard?.binds ?? [])));
   }
   if (chargedMilli > 0) {
     statements.push(env.DB.prepare(`update cloud_accounts set used_milli = used_milli + ?, updated_at = ? where user_id = ?${guard ? ` and ${guard.sql}` : ""}`)
@@ -246,10 +272,14 @@ export function statusChangeStatements(env: CloudEnv, computer: ComputerRow, sta
   const nextMetered = isMeteredStatus(status);
   if (wasMetered && !nextMetered) {
     statements.push(...settleStatements(env, computer, now, guard), ...freeWakeStatements(env, computer, now, guard));
+    // A free wake that didn't count as use (over the plan's disk, see handleStart) leaves
+    // `last_awake_at` before its start; closing it keeps the 30-day delete clock where it was.
+    const freeWakeNotUse = computer.free_wake_started_at != null
+      && (computer.last_awake_at == null || computer.last_awake_at < computer.free_wake_started_at);
     computer.awake_since = null;
     computer.free_wake_started_at = null;
     computer.free_wake_until = null;
-    computer.last_awake_at = now;
+    if (!freeWakeNotUse) computer.last_awake_at = now;
   } else if (!wasMetered && nextMetered) {
     computer.awake_since = now;
     computer.last_awake_at = now;
@@ -327,7 +357,7 @@ export async function deleteComputer(
   now: number,
 ): Promise<void> {
   const events = await provider.instanceEvents(computer.instance_id).catch((error: unknown) => {
-    logCloud("cloud.delete_events_read_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+    reportCloudFailure("cloud.delete_events_read_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
     return null;
   });
   try {
@@ -378,8 +408,116 @@ export function accountRules(account: Pick<AccountRow, "plan" | "stripe_status">
   return account.plan === "paid" && account.stripe_status !== "past_due" ? "paid" : "free";
 }
 
+/** Which paid plan the row names (the column defaults to Plus). */
+export function paidPlanOf(account: Pick<AccountRow, "paid_plan">): CloudPaidPlanId {
+  return account.paid_plan === "pro" ? "pro" : "plus";
+}
+
+/** The plan whose limits are in force: `past_due` is the free plan until a paid invoice. */
+export function planIdOf(account: Pick<AccountRow, "plan" | "stripe_status" | "paid_plan">): CloudPlanId {
+  return accountRules(account) === "free" ? "free" : paidPlanOf(account);
+}
+
+/** The plan the person pays for, `past_due` included. */
+export function boughtPlanIdOf(account: Pick<AccountRow, "plan" | "paid_plan">): CloudPlanId {
+  return account.plan === "paid" ? paidPlanOf(account) : "free";
+}
+
+/** Pro and extra disk are sold only once their Stripe prices are set (`scripts/stripe-setup.mjs`). */
+export function cloudOffers(env: Pick<CloudEnv, "STRIPE_PLAN_PRICE_ID" | "STRIPE_PRO_PRICE_ID" | "STRIPE_DISK_PRICE_ID" | "STRIPE_DISK_METER_EVENT">): CloudOffers {
+  return {
+    pro: Boolean(env.STRIPE_PLAN_PRICE_ID?.trim() && env.STRIPE_PRO_PRICE_ID?.trim()),
+    extraDisk: Boolean(env.STRIPE_DISK_PRICE_ID?.trim() && env.STRIPE_DISK_METER_EVENT?.trim()),
+  };
+}
+
+/**
+ * On the free plan (a cancelled plan rolls to it) with more disk than the
+ * free plan has: nothing pays for that disk, so its computers stay stopped
+ * (only the short push-work wake) until a computer is deleted or a plan is
+ * bought. A `past_due` account is not in this state: Stripe is still trying
+ * the card, and its computers and timed wakes keep working.
+ */
+export function freePlanOverDisk(account: Pick<AccountRow, "plan">, diskGb: number): boolean {
+  return account.plan === "free" && diskGb > CLOUD_PLANS.free.diskGb;
+}
+
+/**
+ * The plan disk that counts for what may stay: `base`'s disk, or the next
+ * plan's when a downgrade waits for the period end and has less. Grows,
+ * turning extra disk off, the downgrade check and the daily limit check all
+ * read it, so nothing grows into disk the next plan won't cover.
+ */
+export function countedPlanDiskGb(
+  account: Pick<AccountRow, "plan" | "stripe_status" | "paid_plan" | "paid_plan_next">,
+  base: CloudPlanId = planIdOf(account),
+  next: CloudPaidPlanId | null = account.paid_plan_next,
+): number {
+  const baseGb = CLOUD_PLANS[base].diskGb;
+  return next && base !== "free" ? Math.min(baseGb, CLOUD_PLANS[next].diskGb) : baseGb;
+}
+
+export const overPlanDiskMessage = (diskGb: number): string => overPlanDiskSentence(diskGb, CLOUD_PLANS.free.diskGb);
+
+export function planFacts(account: Pick<AccountRow, "plan" | "stripe_status" | "paid_plan">): CloudPlanFacts {
+  return CLOUD_PLANS[planIdOf(account)];
+}
+
 export function computerLimit(account: AccountRow): number {
-  return accountRules(account) === "paid" ? PAID_COMPUTER_LIMIT : FREE_COMPUTER_LIMIT;
+  return planFacts(account).computerLimit;
+}
+
+/**
+ * SQL for the disk an account's computers hold now, reservations included, as
+ * a scalar subquery for the account named by `userIdSql` (a `?` or a column).
+ * With `except`, it takes one more `?`: an instance to leave out (a move's source).
+ */
+export function accountDiskSql(userIdSql: string, options: { except?: boolean } = {}): string {
+  return `(select coalesce(sum(disk_gb), 0) from cloud_computers where user_id = ${userIdSql} and deleted_at is null${options.except ? " and instance_id <> ?" : ""})`;
+}
+
+/** Disk the account's computers hold now, reservations included; `except` leaves one computer out (a move's source). */
+export async function accountDiskGb(env: CloudDb, userId: string, except = ""): Promise<number> {
+  const row = await env.DB.prepare(`select ${accountDiskSql("?", { except: true })} as gb`)
+    .bind(userId, except).first<{ gb: number }>();
+  return row?.gb ?? 0;
+}
+
+/** Whether a disk-day written now may be billed: a paid plan in good standing, with extra disk on. */
+function diskDayBillable(account: Pick<AccountRow, "plan" | "stripe_status" | "extra_disk_state" | "stripe_customer_id" | "stripe_subscription_id">): boolean {
+  return accountRules(account) === "paid" && account.extra_disk_state === "on"
+    && Boolean(account.stripe_customer_id && account.stripe_subscription_id);
+}
+
+export type DiskDayAccount = Pick<AccountRow, "user_id" | "plan" | "paid_plan" | "stripe_status" | "extra_disk_state" | "stripe_customer_id" | "stripe_subscription_id">;
+
+/**
+ * Raises today's peak disk for the account to what its computers hold now,
+ * with the bought plan's disk and whether the day may be billed, as they are
+ * now. Run after every change that adds disk and every plan change; the daily
+ * run writes each day's starting row. Extra disk is billed from these rows
+ * only. A day keeps the most plan disk it saw (an upgrade raises it) and is
+ * billable only if it was billable all day (a `past_due` moment, or extra
+ * disk off, makes the whole day free).
+ */
+export function diskDayStatement(env: CloudDb, account: DiskDayAccount, now: number): D1PreparedStatement {
+  return env.DB.prepare(`
+    insert into cloud_disk_days (user_id, day, peak_gb, plan_gb, billable)
+    values (?, ?, ${accountDiskSql("?")}, ?, ?)
+    on conflict (user_id, day) do update set
+      peak_gb = max(peak_gb, excluded.peak_gb),
+      plan_gb = max(plan_gb, excluded.plan_gb),
+      billable = min(billable, excluded.billable)
+  `).bind(account.user_id, utcDay(now), account.user_id, CLOUD_PLANS[boughtPlanIdOf(account)].diskGb, diskDayBillable(account) ? 1 : 0);
+}
+
+/** This period's billable extra disk so far, in micros: the days already billed plus the ones not yet reported. */
+export async function extraDiskMicrosThisPeriod(env: CloudDb, account: Pick<AccountRow, "user_id" | "period_start">): Promise<number> {
+  const row = await env.DB.prepare(`
+    select coalesce(sum(case when billable = 1 then coalesce(billed_gb, max(0, peak_gb - plan_gb)) else 0 end), 0) as gb_days
+    from cloud_disk_days where user_id = ? and day >= ?
+  `).bind(account.user_id, utcDay(account.period_start)).first<{ gb_days: number }>();
+  return (row?.gb_days ?? 0) * EXTRA_DISK_MICROS_PER_GB_DAY;
 }
 
 /** Extra hours already used: what is still billed once the switch goes off. */
@@ -475,13 +613,15 @@ export async function rollPeriodIfDue(env: CloudEnv, account: AccountRow, now: n
   // `past_due` stays a paid account underneath: only a cancel ends the plan here.
   const nextPlan = cancelled ? "free" : account.plan === "paid" ? "paid" : "free";
   const rolled = await startFreshPeriod(env, account, { plan: nextPlan, start: period.start, end: period.end, included: FREE_INCLUDED_MILLI }, now, cancelled ? [
-    env.DB.prepare("update cloud_accounts set cancel_at_period_end = 0, extra_enabled = 0, stripe_status = null, updated_at = ? where user_id = ?").bind(now, account.user_id),
+    env.DB.prepare("update cloud_accounts set cancel_at_period_end = 0, extra_enabled = 0, extra_disk_state = 'off', stripe_status = null, updated_at = ? where user_id = ?").bind(now, account.user_id),
   ] : []);
-  return cancelled ? { ...rolled, cancel_at_period_end: 0, extra_enabled: 0, stripe_status: null } : rolled;
+  return cancelled ? { ...rolled, cancel_at_period_end: 0, extra_enabled: 0, extra_disk_state: "off", stripe_status: null } : rolled;
 }
 
 export type CloudPlanChange = {
   plan?: "free" | "paid";
+  /** Which paid plan the subscription's plan item is. */
+  paidPlan?: CloudPaidPlanId;
   periodStart?: number;
   periodEnd?: number;
   stripeCustomerId?: string | null;
@@ -500,9 +640,10 @@ type PlanTransition = {
 function planTransition(
   account: AccountRow,
   change: CloudPlanChange,
-  state: { nextPlan: "free" | "paid"; wasPastDue: boolean; isPastDue: boolean; now: number },
+  state: { nextPlan: "free" | "paid"; nextPaidPlan: CloudPaidPlanId; wasPastDue: boolean; isPastDue: boolean; now: number },
 ): PlanTransition | null {
-  const { nextPlan, wasPastDue, isPastDue, now } = state;
+  const { nextPlan, nextPaidPlan, wasPastDue, isPastDue, now } = state;
+  const paidIncluded = CLOUD_PLANS[nextPaidPlan].includedMilli;
   const free = freePeriodFor(now);
   if (!wasPastDue && isPastDue && account.plan === "paid") {
     return { kind: "past_due", next: { plan: "paid", start: free.start, end: free.end, included: FREE_INCLUDED_MILLI } };
@@ -511,17 +652,17 @@ function planTransition(
     const stashEnd = account.past_due_period_end;
     const end = change.periodEnd ?? stashEnd ?? free.end;
     return stashEnd != null && stashEnd > now && end === stashEnd
-      ? { kind: "restored_same_period", next: { plan: "paid", start: change.periodStart ?? account.period_start, end, included: PAID_INCLUDED_MILLI } }
-      : { kind: "restored_new_period", next: { plan: "paid", start: change.periodStart ?? now, end, included: PAID_INCLUDED_MILLI } };
+      ? { kind: "restored_same_period", next: { plan: "paid", start: change.periodStart ?? account.period_start, end, included: paidIncluded } }
+      : { kind: "restored_new_period", next: { plan: "paid", start: change.periodStart ?? now, end, included: paidIncluded } };
   }
   if (account.plan === "free" && nextPlan === "paid") {
-    return { kind: "to_paid", next: { plan: "paid", start: change.periodStart ?? now, end: change.periodEnd ?? free.end, included: PAID_INCLUDED_MILLI } };
+    return { kind: "to_paid", next: { plan: "paid", start: change.periodStart ?? now, end: change.periodEnd ?? free.end, included: paidIncluded } };
   }
   if (account.plan === "paid" && nextPlan === "free") {
     return { kind: "to_free", next: { plan: "free", start: free.start, end: free.end, included: FREE_INCLUDED_MILLI } };
   }
   if (nextPlan === "paid" && change.periodStart !== undefined && change.periodStart !== account.period_start && !isPastDue) {
-    return { kind: "renewal", next: { plan: "paid", start: change.periodStart, end: change.periodEnd ?? account.period_end, included: PAID_INCLUDED_MILLI } };
+    return { kind: "renewal", next: { plan: "paid", start: change.periodStart, end: change.periodEnd ?? account.period_end, included: paidIncluded } };
   }
   return null;
 }
@@ -529,9 +670,11 @@ function planTransition(
 /**
  * The one place a plan changes; the Stripe webhook calls this. Fields left out
  * keep their value. Free to paid and paid to free each start fresh hours, a
- * renewal (a new `periodStart`) starts a fresh 500, `past_due` drops to free
- * rules with fresh hours and turns extra hours off, and a later paid invoice
- * restores what the account had used if the same period is still running.
+ * renewal (a new `periodStart`) starts the plan's fresh hours, `past_due`
+ * drops to free rules with fresh hours and turns extra hours off, and a later
+ * paid invoice restores what the account had used if the same period is still
+ * running. Plus to Pro gives Pro's hours now and keeps the hours used; Pro to
+ * Plus waits for the next period (`paid_plan_next`).
  */
 export async function applyCloudPlanChange(env: CloudEnv, userId: string, change: CloudPlanChange, now = Date.now()): Promise<AccountRow> {
   const account = await loadAccount(env, userId, now);
@@ -539,6 +682,13 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
   const nextStripeStatus = change.stripeStatus === undefined ? account.stripe_status : change.stripeStatus;
   const wasPastDue = account.stripe_status === "past_due";
   const isPastDue = nextStripeStatus === "past_due";
+  const currentPaidPlan = paidPlanOf(account);
+  const requestedPaidPlan = change.paidPlan ?? currentPaidPlan;
+  // Pro to Plus waits for the next period: the person paid for Pro's hours and limits until then.
+  const newPeriod = change.periodStart !== undefined && change.periodStart !== account.period_start;
+  const deferDowngrade = account.plan === "paid" && nextPlan === "paid" && !wasPastDue && !isPastDue
+    && currentPaidPlan === "pro" && requestedPaidPlan === "plus" && !newPeriod;
+  const nextPaidPlan: CloudPaidPlanId = deferDowngrade ? "pro" : requestedPaidPlan;
   /** A new billing period: nothing is reported or owed in it yet. */
   const clearExtraReports: Array<[keyof AccountRow, unknown]> = [["extra_reported_milli", 0], ["extra_owed_milli", 0]];
 
@@ -547,8 +697,15 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
   if (change.stripeSubscriptionId !== undefined) extras.push(["stripe_subscription_id", change.stripeSubscriptionId]);
   if (change.stripeStatus !== undefined) extras.push(["stripe_status", change.stripeStatus]);
   if (change.cancelAtPeriodEnd !== undefined) extras.push(["cancel_at_period_end", change.cancelAtPeriodEnd ? 1 : 0]);
+  if (nextPaidPlan !== account.paid_plan) extras.push(["paid_plan", nextPaidPlan]);
+  if (deferDowngrade) {
+    if (account.paid_plan_next !== "plus") extras.push(["paid_plan_next", "plus"]);
+  } else if ((change.paidPlan !== undefined || nextPlan === "free") && account.paid_plan_next != null) {
+    // The new period began, the person went back to Pro, or the plan ended.
+    extras.push(["paid_plan_next", null]);
+  }
 
-  const transition = planTransition(account, change, { nextPlan, wasPastDue, isPastDue, now });
+  const transition = planTransition(account, change, { nextPlan, nextPaidPlan, wasPastDue, isPastDue, now });
   if (transition?.kind === "past_due") {
     // Read before the fresh start replaces them: a later paid invoice restores these.
     const stashUsed = liveUsedMilli(account, await listComputers(env, userId), now);
@@ -571,8 +728,20 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
       extras.push(...clearExtraReports);
       break;
     case "to_free":
-      extras.push(["extra_enabled", 0]);
+      // Bought again later, extra disk asks again.
+      extras.push(["extra_enabled", 0], ["extra_disk_state", "off"]);
       break;
+  }
+  // Plus to Pro or back inside a running period (no new period start): the
+  // hours used stay, and the plan's hours change now. An upgrade at 0 hours
+  // gives hours back, so the warnings start over.
+  if (!transition && nextPlan === "paid" && account.plan === "paid" && !isPastDue && nextPaidPlan !== account.paid_plan) {
+    const included = CLOUD_PLANS[nextPaidPlan].includedMilli;
+    extras.push(["included_milli", included]);
+    if (included > account.included_milli) {
+      extras.push(["warned_80_at", null], ["warned_95_at", null], ["warned_zero_at", null]);
+      if (account.warned_zero_at != null) extras.push(["hours_restored_at", now]);
+    }
   }
 
   if (change.extraEnabled !== undefined && nextPlan === "paid" && !isPastDue) extras.push(["extra_enabled", change.extraEnabled ? 1 : 0]);
@@ -583,7 +752,12 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
   }
   if (transition) await startFreshPeriod(env, account, transition.next, now, updates);
   else if (updates.length) await env.DB.batch(updates);
-  return (await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>()) ?? account;
+  const after = (await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>()) ?? account;
+  // Today's disk-day follows the plan as it is now: an upgrade raises its plan disk, `past_due` makes it unbillable.
+  if (transition || nextPaidPlan !== account.paid_plan || nextStripeStatus !== account.stripe_status) {
+    await diskDayStatement(env, after, now).run();
+  }
+  return after;
 }
 
 const BILLING_RESTORED_NOTICE_MS = 3 * 24 * 60 * 60_000;
@@ -625,6 +799,10 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
   const [computers, deletedInstanceIds] = await Promise.all([listComputers(env, userId), recentlyDeletedInstanceIds(env, userId, now)]);
   const live = liveUsedMilli(account, computers, now);
   const rules = accountRules(account);
+  const plan = planFacts(account);
+  const diskUsed = computers.reduce((sum, computer) => sum + computer.disk_gb, 0);
+  const offers = cloudOffers(env);
+  const extraDiskMicros = offers.extraDisk && rules === "paid" && account.extra_disk_state === "on" ? await extraDiskMicrosThisPeriod(env, account) : 0;
   const due = computers
     .filter((computer) => !isPendingId(computer.instance_id))
     .map((computer) => ({ computer, deletesAt: deletionDueAt(computer, account, live) }))
@@ -634,6 +812,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
   return {
     plan: account.plan,
     rules,
+    planId: boughtPlanIdOf(account),
     hours: {
       includedMilli: account.included_milli,
       usedMilli: live,
@@ -646,10 +825,15 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
       enabled: extraActive(account),
       usedMilli: Math.max(0, live - account.included_milli),
     },
-    disk: {
-      usedGb: computers.reduce((sum, computer) => sum + computer.disk_gb, 0),
-      limitGb: rules === "paid" ? PAID_DISK_POOL_GB : null,
-    },
+    ...(offers.extraDisk ? {
+      extraDisk: {
+        available: rules === "paid",
+        state: account.extra_disk_state,
+        monthlyLimitCents: account.extra_disk_limit_cents,
+        usedCents: Math.floor(extraDiskMicros / CENT_MICROS),
+      },
+    } : {}),
+    disk: { usedGb: diskUsed, limitGb: plan.diskGb },
     computers: {
       total: computers.length,
       awake: computers.filter((computer) => isMeteredStatus(computer.status)).length,
@@ -657,12 +841,13 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     },
     dueForDeletion: due,
     deletedInstanceIds,
-    catalog: cloudCatalog(),
+    catalog: cloudCatalog(offers),
     billing: {
       periodStart: account.period_start,
       periodEnd: account.period_end,
       stripeStatus: account.stripe_status,
       cancelAtPeriodEnd: account.cancel_at_period_end === 1,
+      nextPlanId: account.plan === "paid" ? account.paid_plan_next : null,
       notice: billingNotice(account, now),
     },
   };

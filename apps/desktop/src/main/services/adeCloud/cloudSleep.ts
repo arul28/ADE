@@ -173,7 +173,8 @@ export async function wakeCloudMachineForUse(
   try {
     await wakeThroughTransition(client, instance.id, now);
   } catch (error) {
-    if (error instanceof CloudProviderError && error.code === "out_of_hours") return { state: "refused", message: error.message };
+    // 0 hours, or more disk than the free plan has: the server's sentence says why.
+    if (error instanceof CloudProviderError && (error.code === "out_of_hours" || error.code === "over_plan_disk")) return { state: "refused", message: error.message };
     throw error;
   }
   options.logger?.info?.("cloud.machine_woken_for_use", { instanceId: instance.id, wakeMs: now() - started });

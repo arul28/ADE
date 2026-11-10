@@ -39,6 +39,11 @@ export type ChipActionContext = {
   /** A `@pr:` mention's resolved row, once known. */
   prTarget: DeeplinkPrTarget | null;
   machineFacts: MachineFacts | null;
+  /**
+   * The chat's machine is an ADE Cloud computer that is asleep: a new chat
+   * there is still offered, and its first send wakes the computer.
+   */
+  machineResting?: boolean;
   /** Opens the chip's own card with its menu; a machine chip's click. */
   openMenu: () => void;
 };
@@ -258,7 +263,7 @@ function openMcpSettings(serverName: string): void {
 /** Rows a kind adds after its primary row; see `buildChipMenuEntries`. */
 export function chipMenuExtras(chip: Chip, context: ChipActionContext): ContextMenuEntry[] {
   const laneId = context.scope.laneId;
-  if (chip.source.origin === "model" && laneId && context.scope.online) {
+  if (chip.source.origin === "model" && laneId && (context.scope.online || context.machineResting === true)) {
     const { mention } = chip.source;
     return [{
       kind: "item",

@@ -1,6 +1,9 @@
+import { captureCloudAction, captureCloudDay, type CloudWaitUntil } from "./analytics";
+import { checkExtraDiskLimits, reportExtraDiskDays, type ExtraDiskOverLimit } from "./billing";
 import { sendCloudEmail } from "./email";
 import type { CloudHoursState, CloudInstance } from "./contract";
-import { hoursMilliFor, isMeteredStatus, isRestingStatus, utcDay } from "./plans";
+import { refreshCostEstimate, runDailyCostReport } from "./costReport";
+import { cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
 import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudProvider } from "./provider";
 import {
   DELETION_WARNING_LATE_MS,
@@ -8,6 +11,8 @@ import {
   adoptionStatements,
   deleteComputer,
   deletionDueAt,
+  diskDayStatement,
+  freePlanOverDisk,
   goneFromProviderStatements,
   groupByUser,
   hoursState,
@@ -16,6 +21,7 @@ import {
   liveUsedMilli,
   logCloud,
   percentUsed,
+  planIdOf,
   reportCloudFailure,
   readSetting,
   readTimeSetting,
@@ -62,8 +68,9 @@ const UNEXPLAINED_MINUTES = 15;
 
 type TickComputer = ComputerRow & { last_seen_at: number | null };
 
-export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number; provider?: CloudProvider } = {}): Promise<void> {
+export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number; provider?: CloudProvider; waitUntil?: CloudWaitUntil } = {}): Promise<void> {
   const now = options.now ?? Date.now();
+  const waitUntil = options.waitUntil;
   const key = env.AGENT37_API_KEY?.trim();
   if (!key) return;
   const rows = await env.DB.prepare(`
@@ -80,7 +87,7 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   try {
     instances = await provider.listInstances();
   } catch (error) {
-    logCloud("cloud.tick_list_failed", { code: error instanceof CloudProviderError ? error.code : "unknown" });
+    reportCloudFailure("cloud.tick_list_failed", { code: error instanceof CloudProviderError ? error.code : "unknown" });
     return;
   }
 
@@ -127,8 +134,8 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   await confirmGone(env, provider, gone, live, now);
   await settleAccounts(env, provider, live, now);
   await sleepUnseen(env, provider, live, now);
-  await runOwnerChecks(env, provider, instances, now);
-  await runDaily(env, provider, live, now);
+  await runOwnerChecks(env, provider, instances, live, now);
+  await runDaily(env, provider, live, now, waitUntil);
 }
 
 /** A reservation the Worker didn't finish: adopted by its request tag, or given up on. */
@@ -172,7 +179,8 @@ async function confirmGone(env: CloudEnv, provider: CloudProvider, gone: TickCom
       if (!(error instanceof CloudProviderError && error.status === 404)) continue;
       await env.DB.batch(goneFromProviderStatements(env, computer, now));
       live.splice(live.indexOf(computer), 1);
-      logCloud("cloud.computer_gone", { instanceId: computer.instance_id });
+      // Nobody here deleted it: worth a look every time.
+      reportCloudFailure("cloud.computer_gone", { instanceId: computer.instance_id });
     }
   }
 }
@@ -189,7 +197,8 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
   if (byUser.size === 0) return;
   const accounts = await accountsOf(env, byUser);
   let rolls = 0;
-  const outOfHoursUsers: string[] = [];
+  /** Accounts whose computers may not wake now (0 hours, or the free plan above its disk). */
+  const blockedUsers: string[] = [];
   await Promise.all(accounts.map(async (row) => {
     // Most accounts roll at once on the 1st: a tick does its share and leaves the rest due.
     if (row.deleted_at == null && row.period_end <= now && ++rolls > PERIOD_ROLLS_PER_TICK) return;
@@ -210,18 +219,23 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
       const used = liveUsedMilli(account, owned, now);
       const state = hoursState(account, used);
       await warnHours(env, account, state, used, now);
-      if (state === "zero") {
-        outOfHoursUsers.push(account.user_id);
-        await stopAtZero(env, provider, owned, now);
+      // Disk nobody pays for (the free plan above its disk) stops the computers as 0 hours does.
+      const blocked = state === "zero" ? "out_of_hours"
+        : freePlanOverDisk(account, owned.reduce((sum, computer) => sum + computer.disk_gb, 0)) ? "over_plan_disk"
+        : null;
+      if (blocked) {
+        blockedUsers.push(account.user_id);
+        await stopAll(env, provider, owned, now, blocked);
       }
     } catch (error) {
       // One account's failure must not cost every other account its tick.
       reportCloudFailure("cloud.tick_account_failed", { userId: row.user_id, message: error instanceof Error ? error.message : "unknown" });
     }
   }));
-  // One query however many accounts are out. Scheduled work is refused at 0 hours: a timed wake wouldn't come back anyway.
-  if (outOfHoursUsers.length) {
-    await env.DB.prepare("delete from cloud_wakes where user_id in (select value from json_each(?))").bind(JSON.stringify(outOfHoursUsers)).run();
+  // One query however many accounts are blocked. Scheduled work is refused while wakes are: a timed
+  // wake reaches only a sleeping computer, and these are stopped.
+  if (blockedUsers.length) {
+    await env.DB.prepare("delete from cloud_wakes where user_id in (select value from json_each(?))").bind(JSON.stringify(blockedUsers)).run();
   }
 }
 
@@ -244,8 +258,12 @@ async function warnHours(env: CloudEnv, account: AccountRow, state: CloudHoursSt
   await sendCloudEmail(env, { userId: account.user_id, subject: warning.subject, text: warning.text, percentUsed: percent });
 }
 
-/** Asks each awake computer to save and interrupt its work, then stops it; a sleeper just stops. */
-async function stopAtZero(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number): Promise<void> {
+/**
+ * Asks each awake computer to save and interrupt its work, then stops it; a
+ * sleeper just stops. For an account whose wakes are refused (0 hours, or
+ * disk the free plan doesn't cover); the short push-work wake runs out first.
+ */
+async function stopAll(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number, reason: "out_of_hours" | "over_plan_disk"): Promise<void> {
   await Promise.all(computers.map(async (computer) => {
     if (computer.cold_storage === 1) return;
     if (computer.free_wake_until != null && computer.free_wake_until > now) return;
@@ -259,18 +277,18 @@ async function stopAtZero(env: CloudEnv, provider: CloudProvider, computers: Tic
         const result = await provider.exec(computer.instance_id, PREPARE_STOP_COMMAND, PREPARE_STOP_TIMEOUT_MS);
         logCloud("cloud.prepare_stop_done", { instanceId: computer.instance_id, exitCode: result.exitCode });
       } catch (error) {
-        logCloud("cloud.prepare_stop_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+        reportCloudFailure("cloud.prepare_stop_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
       }
     }
-    await stopWithRetry(env, provider, computer, now);
+    await stopWithRetry(env, provider, computer, now, reason);
   }));
 }
 
-async function stopWithRetry(env: CloudEnv, provider: CloudProvider, computer: TickComputer, now: number): Promise<void> {
+async function stopWithRetry(env: CloudEnv, provider: CloudProvider, computer: TickComputer, now: number, reason: string): Promise<void> {
   for (let attempt = 0; attempt < STOP_RETRIES; attempt += 1) {
     try {
       const status = await provider.stopInstance(computer.instance_id);
-      const statements = statusChangeStatements(env, computer, status, now, "out_of_hours");
+      const statements = statusChangeStatements(env, computer, status, now, reason);
       if (statements.length) await env.DB.batch(statements);
       return;
     } catch (error) {
@@ -308,15 +326,27 @@ async function sleepUnseen(env: CloudEnv, provider: CloudProvider, computers: Ti
   }));
 }
 
-async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances: CloudInstance[], now: number): Promise<void> {
+async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances: CloudInstance[], computers: TickComputer[], now: number): Promise<void> {
   const last = await readTimeSetting(env, "owner_check_at");
   if (now - last < OWNER_CHECK_INTERVAL_MS) return;
   await writeSetting(env, "owner_check_at", String(now), now);
+  // This month's estimated cost, for the owner's hard limit (D1 only).
+  try {
+    await refreshCostEstimate(env, computers, now);
+  } catch (error) {
+    reportCloudFailure("cloud.cost_estimate_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
+  // Finished days of extra disk, every ten minutes, so a failed send is retried inside Stripe's dedupe window.
+  try {
+    await reportExtraDiskDays(env, now);
+  } catch (error) {
+    reportCloudFailure("cloud.disk_report_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
   let billing;
   try {
     billing = await provider.billing();
   } catch (error) {
-    logCloud("cloud.billing_read_failed", { code: error instanceof CloudProviderError ? error.code : "unknown" });
+    reportCloudFailure("cloud.billing_read_failed", { code: error instanceof CloudProviderError ? error.code : "unknown" });
     return;
   }
   const alerts: string[] = [];
@@ -336,7 +366,7 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
   await sendCloudEmail(env, { owner: true, subject: "ADE Cloud needs attention", text: alerts.join("\n") });
 }
 
-async function runDaily(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number): Promise<void> {
+async function runDaily(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number, waitUntil: CloudWaitUntil): Promise<void> {
   if (new Date(now).getUTCHours() < DAILY_AFTER_HOUR_UTC) return;
   const today = utcDay(now);
   const last = await readSetting(env, "last_daily_day");
@@ -350,11 +380,64 @@ async function runDaily(env: CloudEnv, provider: CloudProvider, computers: TickC
   const unexplained = await reconcileDays(env, provider, last, today, now);
   if (unexplained.length) {
     const lines = unexplained.map((entry) => `${entry.instanceId} on ${entry.day}: ${entry.minutes} minutes`);
-    logCloud("cloud.reconcile_unexplained", { count: unexplained.length });
+    // A billing mismatch: the provider counted awake time ADE didn't.
+    reportCloudFailure("cloud.reconcile_unexplained", { count: unexplained.length });
     await sendCloudEmail(env, { owner: true, subject: "ADE Cloud minutes the power log can't explain", text: lines.join("\n") });
   }
-  await sweepInactive(env, provider, computers, now);
+  const yesterday = utcDay(Date.parse(`${today}T00:00:00Z`) - 86_400_000);
+  // Each step stands alone: one failing must not cost the 30-day sweep or the day's mark.
+  const step = async (name: string, run: () => Promise<void>) => {
+    try {
+      await run();
+    } catch (error) {
+      reportCloudFailure(`cloud.daily_${name}_failed`, { message: error instanceof Error ? error.message : "unknown" });
+    }
+  };
+  await step("disk_baseline", () => writeDiskBaseline(env, computers, now));
+  let overLimit: ExtraDiskOverLimit[] = [];
+  await step("extra_disk_limits", async () => {
+    overLimit = await checkExtraDiskLimits(env, now);
+  });
+  await step("cost_report", () => runDailyCostReport(env, yesterday, overLimit));
+  await step("analytics", () => captureDailyAnalytics(env, waitUntil, computers, yesterday));
+  await sweepInactive(env, provider, computers, now, waitUntil);
   await writeSetting(env, "last_daily_day", today, now);
+}
+
+/** Today's starting disk for each account with computers, so a day with no change still has its row. */
+async function writeDiskBaseline(env: CloudEnv, computers: TickComputer[], now: number): Promise<void> {
+  const byUser = groupByUser(computers);
+  if (byUser.size === 0) return;
+  const accounts = await accountsOf(env, byUser);
+  const statements = accounts.filter((account) => account.deleted_at == null).map((account) => diskDayStatement(env, account, now));
+  if (statements.length) await env.DB.batch(statements);
+}
+
+/** One `ade_cloud_day` per account with power changes on `day`, counted from the power log. */
+async function captureDailyAnalytics(env: CloudEnv, waitUntil: CloudWaitUntil, computers: TickComputer[], day: string): Promise<void> {
+  if (!env.POSTHOG_PROJECT_TOKEN?.trim()) return;
+  const start = Date.parse(`${day}T00:00:00Z`);
+  const rows = await env.DB.prepare(`
+    select user_id, action, count(*) as n from cloud_power_log
+    where created_at >= ? and created_at < ? group by user_id, action
+  `).bind(start, start + 86_400_000).all<{ user_id: string; action: string; n: number }>();
+  const counts = new Map<string, { wakes: number; sleeps: number; stops: number; starts: number }>();
+  for (const row of rows.results ?? []) {
+    const entry = counts.get(row.user_id) ?? { wakes: 0, sleeps: 0, stops: 0, starts: 0 };
+    if (row.action === "wake") entry.wakes += row.n;
+    else if (row.action === "sleep") entry.sleeps += row.n;
+    else if (row.action === "stop") entry.stops += row.n;
+    else if (row.action === "start") entry.starts += row.n;
+    counts.set(row.user_id, entry);
+  }
+  if (counts.size === 0) return;
+  const accounts = await accountsOf(env, counts);
+  const owned = groupByUser(computers);
+  for (const account of accounts) {
+    const entry = counts.get(account.user_id);
+    if (!entry) continue;
+    captureCloudDay(env, waitUntil, account.user_id, day, planIdOf(account), { ...entry, computers: owned.get(account.user_id)?.length ?? 0 });
+  }
 }
 
 async function settleOpenStretches(env: CloudEnv, computers: TickComputer[], now: number): Promise<void> {
@@ -391,18 +474,19 @@ async function reconcileDays(env: CloudEnv, provider: CloudProvider, last: strin
     try {
       usage = await provider.usage({ from: day, to: day });
     } catch (error) {
-      logCloud("cloud.reconcile_read_failed", { day, code: error instanceof CloudProviderError ? error.code : "unknown" });
+      reportCloudFailure("cloud.reconcile_read_failed", { day, code: error instanceof CloudProviderError ? error.code : "unknown" });
       continue;
     }
     if (usage.instances.length === 0) continue;
     const ids = usage.instances.map((entry) => entry.id);
     const rows = await env.DB.prepare(`
-      select c.instance_id, c.user_id, c.multiplier_milli as computer_mult, d.metered_ms, d.metered_milli, d.multiplier_milli, d.free_ms, d.reconciled_at, a.period_start
+      select c.instance_id, c.user_id, c.multiplier_milli as computer_mult, c.type, c.cpu, c.memory_gb,
+        d.metered_ms, d.metered_milli, d.multiplier_milli, d.free_ms, d.reconciled_at, d.cost_micros, a.period_start
       from cloud_computers c
       left join cloud_computer_days d on d.instance_id = c.instance_id and d.day = ?
       left join cloud_accounts a on a.user_id = c.user_id
       where c.instance_id in (select value from json_each(?))
-    `).bind(day, JSON.stringify(ids)).all<ReconcileRow & { computer_mult: number }>();
+    `).bind(day, JSON.stringify(ids)).all<ReconcileRow & { computer_mult: number; type: string; cpu: number; memory_gb: number; cost_micros: number | null }>();
     const known = new Map((rows.results ?? []).map((row) => [row.instance_id, row]));
     const statements: D1PreparedStatement[] = [];
     for (const entry of usage.instances) {
@@ -418,6 +502,12 @@ async function reconcileDays(env: CloudEnv, provider: CloudProvider, last: strin
         ? Math.round((providerBillableMs * meteredMilli) / meteredMs)
         : hoursMilliFor(providerBillableMs, multiplier);
       const delta = providerMilli - meteredMilli;
+      // The provider charges every awake minute, free push-work time too, at the rate the day ran at.
+      const providerAwakeMs = entry.awakeMinutes * 60_000;
+      const meteredCost = row.cost_micros ?? 0;
+      const providerCost = meteredMs > 0 && meteredCost > 0
+        ? Math.round((providerAwakeMs * meteredCost) / meteredMs)
+        : computeCostMicrosFor(providerAwakeMs, { type: row.type, cpu: row.cpu, memoryGb: row.memory_gb });
       // A day that ended by the time the period began belongs to the one before.
       const inPeriod = row.period_start != null && Date.parse(`${day}T00:00:00Z`) + 86_400_000 > row.period_start;
       // First: it reads the mark the next statement sets, so a repeat of this day charges once.
@@ -428,11 +518,11 @@ async function reconcileDays(env: CloudEnv, provider: CloudProvider, last: strin
         `).bind(delta, now, row.user_id, entry.id, day));
       }
       statements.push(env.DB.prepare(`
-        insert into cloud_computer_days (instance_id, day, user_id, multiplier_milli, provider_minutes, corrected_milli, reconciled_at)
-        values (?, ?, ?, ?, ?, ?, ?)
+        insert into cloud_computer_days (instance_id, day, user_id, multiplier_milli, provider_minutes, corrected_milli, reconciled_at, cost_micros)
+        values (?, ?, ?, ?, ?, ?, ?, ?)
         on conflict (instance_id, day) do update set provider_minutes = excluded.provider_minutes,
-          corrected_milli = excluded.corrected_milli, reconciled_at = excluded.reconciled_at
-      `).bind(entry.id, day, row.user_id, multiplier, entry.awakeMinutes, inPeriod ? delta : 0, now));
+          corrected_milli = excluded.corrected_milli, reconciled_at = excluded.reconciled_at, cost_micros = excluded.cost_micros
+      `).bind(entry.id, day, row.user_id, multiplier, entry.awakeMinutes, inPeriod ? delta : 0, now, providerCost));
       const minutes = entry.awakeMinutes - Math.ceil((meteredMs + freeMs) / 60_000);
       if (minutes > UNEXPLAINED_MINUTES) unexplained.push({ instanceId: entry.id, day, minutes });
     }
@@ -442,7 +532,7 @@ async function reconcileDays(env: CloudEnv, provider: CloudProvider, last: strin
 }
 
 /** The 30-day rule: warned at 7 days and 1 day, then deleted, reading its history first. */
-async function sweepInactive(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number): Promise<void> {
+async function sweepInactive(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number, waitUntil: CloudWaitUntil): Promise<void> {
   const byUser = groupByUser(computers);
   if (byUser.size === 0) return;
   const accounts = await accountsOf(env, byUser);
@@ -473,7 +563,10 @@ async function sweepInactive(env: CloudEnv, provider: CloudProvider, computers: 
       if (computer.delete_warned_1d_at == null || now - computer.delete_warned_1d_at < 23 * 60 * 60_000) continue;
       if (deletions >= DELETION_BATCH) continue;
       deletions += 1;
-      await deleteInactive(env, provider, computer, now);
+      if (await deleteInactive(env, provider, computer, now)) {
+        const size = cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
+        captureCloudAction(env, waitUntil, account.user_id, { action: "delete", plan: planIdOf(account), origin: "system", tier: tierOf(size) }, computer.instance_id, now);
+      }
     }
   }
 }
@@ -488,26 +581,28 @@ async function warnDeletion(env: CloudEnv, computer: TickComputer, column: "dele
   });
 }
 
-async function deleteInactive(env: CloudEnv, provider: CloudProvider, computer: TickComputer, now: number): Promise<void> {
+/** True when the computer was deleted. */
+async function deleteInactive(env: CloudEnv, provider: CloudProvider, computer: TickComputer, now: number): Promise<boolean> {
   // The list and row are from the start of the tick: someone may have opened it since.
   try {
     const current = await provider.getInstance(computer.instance_id);
-    if (!isRestingStatus(current.status)) return;
+    if (!isRestingStatus(current.status)) return false;
   } catch (error) {
     if (!(error instanceof CloudProviderError && error.status === 404)) {
-      logCloud("cloud.delete_inactive_check_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
-      return;
+      reportCloudFailure("cloud.delete_inactive_check_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+      return false;
     }
   }
   const fresh = await env.DB.prepare("select awake_since, last_awake_at, deleted_at from cloud_computers where instance_id = ?")
     .bind(computer.instance_id).first<Pick<ComputerRow, "awake_since" | "last_awake_at" | "deleted_at">>();
-  if (!fresh || fresh.deleted_at != null || fresh.awake_since != null || fresh.last_awake_at !== computer.last_awake_at) return;
+  if (!fresh || fresh.deleted_at != null || fresh.awake_since != null || fresh.last_awake_at !== computer.last_awake_at) return false;
   try {
     await deleteComputer(env, provider, computer, { who: "system", reason: "inactive_30_days" }, now);
   } catch (error) {
     if (!(error instanceof CloudProviderError)) throw error;
     reportCloudFailure("cloud.delete_inactive_failed", { instanceId: computer.instance_id });
-    return;
+    return false;
   }
   logCloud("cloud.deleted_inactive", { instanceId: computer.instance_id });
+  return true;
 }

@@ -8,6 +8,7 @@ import {
 import { playableMediaDataUrl } from "../../lib/playableMedia";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { chatMachineMediaSentence, chatMachineReach, useChatMachineWake, type ChatMachineReach } from "./useChatMachineWake";
 
 export function isImageArtifact(artifact: ComputerUseArtifactView): boolean {
   return artifact.kind === "screenshot" || (artifact.mimeType?.startsWith("image/") ?? false);
@@ -62,8 +63,14 @@ function shortSourcePath(artifact: ComputerUseArtifactView): string | null {
 type ArtifactPreviewFailure = "offline" | "unsent" | "unplayable";
 
 type ArtifactPreviewProblem = {
-  reason: ArtifactPreviewFailure | null;
+  /**
+   * An offline paired machine that is an ADE Cloud computer reads `asleep`
+   * (`waking` while a wake from here runs), or `gone` once deleted.
+   */
+  reason: ArtifactPreviewFailure | ChatMachineReach | null;
   machineName: string;
+  /** Why the last wake failed, for `asleep`. */
+  wakeError?: string | null;
 };
 
 function artifactMediaNoun(artifact: ComputerUseArtifactView): string {
@@ -94,6 +101,10 @@ function artifactPreviewExplanation(
   switch (problem.reason) {
     case "offline":
       return `This ${noun} is on ${problem.machineName}, which is offline.`;
+    case "asleep":
+    case "waking":
+    case "gone":
+      return chatMachineMediaSentence(problem.reason, noun, problem.machineName, problem.wakeError);
     case "unsent":
       return `${problem.machineName} could not send this ${noun}.`;
     case "unplayable":
@@ -147,9 +158,12 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   onMediaError: () => void;
   /**
    * Loads again from the start. Null when another try cannot help: no stored
-   * bytes, a file at its source, or this computer's own read found nothing.
+   * bytes, a file at its source, this computer's own read found nothing, or
+   * the computer was deleted. On a sleeping cloud computer it wakes it first.
    */
   retry: (() => void) | null;
+  /** The retry's label: "Wake" on a sleeping cloud computer. */
+  retryLabel: "Retry" | "Wake";
 } {
   const scope = useChatRuntimeScope();
   const containerRef = useRef<E>(null);
@@ -320,27 +334,36 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
     setStreamRefused(false);
     setState(EMPTY_PREVIEW);
   }, []);
+  // Offline explains any failure on a paired machine, whatever broke first.
+  const offlineFailure = failed && !allowLocalArtifactProtocol && remoteOffline;
+  // Read only for a tile that failed offline: is the chat's machine a cloud computer asleep, or deleted?
+  const machine = useChatMachineWake();
+  const offlineReason = !offlineFailure ? null : chatMachineReach(machine) ?? "offline";
   const explanation = useMemo(() => artifactPreviewExplanation(artifact, {
-    // Offline explains any failure on a paired machine, whatever broke first.
-    reason: failed && !allowLocalArtifactProtocol && remoteOffline ? "offline" : failure,
+    reason: offlineReason ?? failure,
     machineName: scope.machineName,
-  }), [allowLocalArtifactProtocol, artifact, failed, failure, remoteOffline, scope.machineName]);
+    wakeError: machine.error,
+  }), [artifact, failure, machine.error, offlineReason, scope.machineName]);
+  const { wakeThen } = machine;
+  // The person's click wakes the computer; once it is connected, load again.
+  const wakeThenRetry = useCallback(() => void wakeThen(retry), [retry, wakeThen]);
 
-  return {
-    containerRef,
-    preview,
-    loading,
-    failed,
-    explanation,
-    onMediaError,
-    // Retry only where another try can differ: a paired machine that was
-    // slow, away or did not send, a read that threw, or a player that refused
-    // what arrived. This computer's own read finding nothing will again.
-    retry: failed
-      && !isBrokenArtifact(artifact)
-      && !externalArtifactUrl(artifact.uri)
-      && (failure !== null || readThrew || !allowLocalArtifactProtocol)
-      ? retry
-      : null,
-  };
+  // Retry only where another try can differ: a paired machine that was
+  // slow, away or did not send, a read that threw, or a player that refused
+  // what arrived. This computer's own read finding nothing will again. A
+  // sleeping cloud computer is woken first; a deleted or waking one offers
+  // nothing.
+  const action: { retry: (() => void) | null; retryLabel: "Retry" | "Wake" } = offlineReason === "asleep"
+    ? { retry: wakeThenRetry, retryLabel: "Wake" }
+    : {
+      retry: offlineReason !== "gone" && offlineReason !== "waking"
+        && failed
+        && !isBrokenArtifact(artifact)
+        && !externalArtifactUrl(artifact.uri)
+        && (failure !== null || readThrew || !allowLocalArtifactProtocol)
+        ? retry
+        : null,
+      retryLabel: "Retry",
+    };
+  return { containerRef, preview, loading, failed, explanation, onMediaError, ...action };
 }

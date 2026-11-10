@@ -96,18 +96,42 @@ const ALWAYS_WITHHELD_AGENT_SKILLS: readonly string[] = [
   "ade-agent37",
 ];
 
+/**
+ * Skills whose `ade` commands run only on a Mac: `ade apple` drives Xcode's
+ * simulators and answers `supported: false` on any other host. Every other
+ * bundled skill works on macOS, Windows and Linux (Android needs a machine
+ * with virtualization, which a Linux VM or a full cloud computer has).
+ */
+const MAC_ONLY_AGENT_SKILLS: readonly string[] = ["ade-apple", "ade-ios-simulator"];
+
+/**
+ * The bundled skills this host cannot use. The host is the process that builds
+ * the agent's skills: the brain that runs the chat, on the lane's own machine.
+ * The renderer bundles this file and has no `process`, so it withholds nothing.
+ */
+export function adeHostWithheldAgentSkills(
+  platform: string | null = typeof process !== "undefined" && typeof process.platform === "string" ? process.platform : null,
+): readonly string[] {
+  return platform && platform !== "darwin" ? MAC_ONLY_AGENT_SKILLS : [];
+}
+
 let adeCloudSkillVisible = false;
 let agentSkillAccessRefresh: (() => void) | null = null;
 let agentSkillRootFilter: ((roots: readonly string[]) => string[]) | null = null;
 
 /**
  * Bundled skills no agent may see right now: `ade-cloud` unless this account
- * is on ADE Cloud's access list. Every skill channel (prompt listing, the skill
- * roots, the `ade-*` line of guidance, `ade skill`) reads this one set.
+ * is on ADE Cloud's access list, and the skills this host cannot run
+ * ({@link adeHostWithheldAgentSkills}). Every skill channel (prompt listing,
+ * the skill roots, the `ade-*` line of guidance, `ade skill`) reads this one set.
  */
 export function adeWithheldAgentSkills(): readonly string[] {
   agentSkillAccessRefresh?.();
-  return adeCloudSkillVisible ? ALWAYS_WITHHELD_AGENT_SKILLS : [...ALWAYS_WITHHELD_AGENT_SKILLS, "ade-cloud"];
+  return [
+    ...ALWAYS_WITHHELD_AGENT_SKILLS,
+    ...(adeCloudSkillVisible ? [] : ["ade-cloud"]),
+    ...adeHostWithheldAgentSkills(),
+  ];
 }
 
 /** The account's ADE Cloud answer, from whoever just asked the server. */

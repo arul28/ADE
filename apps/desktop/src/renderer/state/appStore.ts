@@ -1515,6 +1515,11 @@ export type CrossMachineMachineLanes = {
   /** Complete call-routing target for this checkout, even without a project tab. */
   binding?: OpenProjectBinding | null;
   online: boolean;
+  /**
+   * An ADE Cloud computer that was deleted, while its connection target is
+   * still kept: the saved-chats read sets it. Its rows look deleted, not asleep.
+   */
+  computerGone?: boolean;
   lanes: LaneSummary[];
   sessions: TerminalSessionSummary[];
   /**
@@ -1712,7 +1717,8 @@ export type AppState = {
   /**
    * Chats whose send is waking their sleeping cloud computer: session id →
    * when the wake started (ISO). Display only. The chat pane shows its working
-   * indicator and the Work row reads "Waking" until the send settles. Only the
+   * indicator and the Work row reads "Waking" until the turn shows live or the
+   * send settles. Only the
    * root store holds entries (`markCloudWakeForSend` in `cloudSavedChatsSync.ts`).
    */
   cloudWakingSinceBySessionId: Readonly<Record<string, string>>;
@@ -1765,6 +1771,7 @@ export type AppState = {
     projectId?: string | null;
     binding?: OpenProjectBinding | null;
     online?: boolean;
+    computerGone?: boolean;
     lanes?: LaneSummary[];
     sessions?: TerminalSessionSummary[];
     prs?: PrSummary[];
@@ -2639,6 +2646,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const reconnected = previous?.online === false && online;
       const priorError = reconnected ? null : previous?.error ?? null;
       const priorFailedReads = reconnected ? 0 : previous?.failedReads ?? 0;
+      const computerGone = entry.computerGone !== undefined ? entry.computerGone : previous?.computerGone === true;
       const next: CrossMachineMachineLanes = {
         machineId,
         machineName: entry.machineName.trim() || previous?.machineName || machineId,
@@ -2646,6 +2654,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         projectId: entry.projectId !== undefined ? entry.projectId : previous?.projectId ?? null,
         binding,
         online,
+        ...(computerGone ? { computerGone: true } : {}),
         // Retention, stated explicitly rather than left to accident: a read that
         // returned nothing must not erase what the machine last reported.
         lanes: lanes ?? previous?.lanes ?? [],
@@ -2676,6 +2685,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.projectId === next.projectId
         && previous.binding === next.binding
         && previous.online === next.online
+        && (previous.computerGone === true) === (next.computerGone === true)
         && previous.lanes === next.lanes
         && previous.sessions === next.sessions
         && previous.prs === next.prs

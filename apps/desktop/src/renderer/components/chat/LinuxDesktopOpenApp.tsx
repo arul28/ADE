@@ -6,8 +6,14 @@ import { Banner } from "../ui/notice";
 import { INPUT_CLASS_NAME } from "../lanes/laneDialogTokens";
 import { MacDesktopRowAction } from "./macDesktopWindowList";
 
-/** One-click starts for what a Linux box usually has; the helper resolves each name. */
-const SUGGESTIONS = ["Chrome", "Firefox", "Terminal"] as const;
+/**
+ * One-click starts by kind, not by product: the helper resolves each name to
+ * whichever app of that kind the machine has (`launch.rs` `alias`), so a chip
+ * works on any Linux box that has one. An ADE cloud computer has all three
+ * (Chromium, xterm, Thunar). The helper cannot list installed apps, so a box
+ * with none of a kind answers with the helper's own one-sentence error.
+ */
+const SUGGESTIONS = ["Browser", "Terminal", "Files"] as const;
 
 /**
  * "Open an app" on a lane's Linux screen.
@@ -70,7 +76,7 @@ export function LinuxDesktopOpenApp({
           onKeyDown={(event) => {
             if (event.key === "Escape") onClose();
           }}
-          placeholder="firefox, /opt/app/run, https://example.com"
+          placeholder="chromium, /opt/app/run, https://example.com"
           aria-label="App, path or web address"
           className={cn(INPUT_CLASS_NAME, "min-w-0 flex-1")}
           disabled={pending != null}

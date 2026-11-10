@@ -9167,6 +9167,13 @@ function AgentChatMessageListMain({
   // The same indicator element, so a live turn that follows the wake takes it
   // over in place instead of a second one fading in.
   const wakingIndicator = !liveTurnIndicator && !sessionEnded && wakingSinceMs != null;
+  const workingActivity = wakingIndicator
+    ? "Waking the computer…"
+    : activeProviderRetryActivity || resolveWorkingIndicatorLabel(
+      latestActivity?.activity ?? null,
+      transcriptToolActivity.activeFileEntries,
+      transcriptToolActivity.activeEntries,
+    );
   const streamingIndicator = liveTurnIndicator || wakingIndicator ? (
     <motion.div
       className="w-fit max-w-[var(--chat-content-width,52rem)] pt-3 pb-2"
@@ -9176,17 +9183,7 @@ function AgentChatMessageListMain({
       transition={{ duration: 0.12, ease: "easeOut" }}
     >
       <WorkingIndicator
-        activity={
-          wakingIndicator
-            ? "Waking the computer…"
-            : activeProviderRetryActivity
-              ? activeProviderRetryActivity
-              : resolveWorkingIndicatorLabel(
-                latestActivity?.activity ?? null,
-                transcriptToolActivity.activeFileEntries,
-                transcriptToolActivity.activeEntries,
-              )
-        }
+        activity={workingActivity}
         startedAt={wakingIndicator ? wakingSinceMs : activeTurnStartedAt}
         toolEntries={wakingIndicator ? EMPTY_WORK_LOG_ENTRIES : transcriptToolActivity.activeEntries}
         replyWritesScene={activeTurnReplyWritesScene}

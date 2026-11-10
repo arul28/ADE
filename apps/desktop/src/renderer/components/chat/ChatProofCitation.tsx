@@ -4,11 +4,13 @@ import type { ComputerUseArtifactView } from "../../../shared/types";
 import type { ProofCompareBlock } from "../../../shared/proofCitation";
 import { proofRecordedBeforeRequestLine, readProofProvenance } from "../../../shared/proofProvenance";
 import { projectArtifactAbsolutePath } from "../../../shared/artifactStreamUrl";
+import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { ArtifactLightbox, ProofPreviewFailureNotice } from "./ChatComputerUsePanel";
 import { DemoChapters } from "./DemoChapters";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { threadMediaAttributes } from "./threadCommentAnchors";
+import { chatMachineMediaSentence, chatMachineReach, useChatMachineWake } from "./useChatMachineWake";
 import {
   externalArtifactUrl,
   isImageArtifact,
@@ -174,7 +176,7 @@ function CitedProofMedia({
 }) {
   const { allowLocalArtifactProtocol } = useContext(ProofCitationContext);
   const scope = useChatRuntimeScope();
-  const { containerRef, preview, loading, failed, explanation, onMediaError, retry } = useArtifactPreview<HTMLSpanElement>(
+  const { containerRef, preview, loading, failed, explanation, onMediaError, retry, retryLabel } = useArtifactPreview<HTMLSpanElement>(
     artifact,
     allowLocalArtifactProtocol,
   );
@@ -211,7 +213,7 @@ function CitedProofMedia({
           <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof" />
         </span>
       ) : failed ? (
-        <span className="block"><ProofPreviewFailureNotice failureText={failureText} onRetry={retry} /></span>
+        <span className="block"><ProofPreviewFailureNotice failureText={failureText} onRetry={retry} retryLabel={retryLabel} /></span>
       ) : preview && image ? (
         <button
           type="button"
@@ -285,6 +287,8 @@ export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
 }) {
   const state = useCitedProofArtifact(artifactId);
   const scope = useChatRuntimeScope();
+  // Read only once the record could not be read: a cloud computer asleep, or deleted.
+  const machine = useChatMachineWake();
   if (fallback != null && state.status !== "ready") return <>{fallback}</>;
   if (state.status === "loading") {
     return (
@@ -303,19 +307,27 @@ export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
     );
   }
   if (state.status === "unreadable") {
+    const cited = caption?.trim() ? ` It was cited as "${caption.trim()}".` : "";
+    const { retry } = state;
+    // A cloud computer asleep or deleted says so; anything else is a failed read.
+    const reach = chatMachineReach(machine);
+    const text = reach
+      ? `${chatMachineMediaSentence(reach, "proof", scope.machineName, machine.error)}${reach === "waking" ? "" : cited}`
+      : `Couldn't load this proof from ${scope.isRemote ? scope.machineName : "this computer"}.${cited}`;
+    // The person's click wakes the chat's own machine; once it is online, read again.
+    const action = reach === "asleep"
+      ? { label: "Wake", run: () => void machine.wakeThen(retry) }
+      : reach == null ? { label: "Retry", run: retry } : null;
     return (
       <CitationPlaceholder tone="warning">
-        <WarningCircle size={14} aria-hidden />
-        <span className="min-w-0">
-          {`Couldn't load this proof from ${scope.isRemote ? scope.machineName : "this computer"}.${caption?.trim() ? ` It was cited as "${caption.trim()}".` : ""}`}
-        </span>
-        <button
-          type="button"
-          onClick={state.retry}
-          className="ml-auto shrink-0 rounded-md border border-amber-200/[0.22] px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-amber-100/85 hover:bg-amber-200/[0.08] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-200/60"
-        >
-          Retry
-        </button>
+        {reach === "waking" ? <SpinnerGap size={14} className="animate-spin" aria-hidden /> : <WarningCircle size={14} aria-hidden />}
+        <span className="min-w-0">{text}</span>
+        {action ? (
+          // A button, not a notice: the citation sits inside a paragraph, where a block is invalid HTML.
+          <Button type="button" variant="outline" size="sm" casing="sentence" className="ml-auto shrink-0" onClick={action.run}>
+            {action.label}
+          </Button>
+        ) : null}
       </CitationPlaceholder>
     );
   }
