@@ -118,8 +118,24 @@ enum WorkChatAttachmentPreviewFiles {
   /// Launch-time sweep. Anything left behind by a previous process — a sheet
   /// that was on screen when the app was killed, a `.part` from an interrupted
   /// download — has no owner in this one.
+  ///
+  /// Runs in `ADEApp.init`, on the main thread, so it only renames the
+  /// directory there (one metadata write) and deletes the renamed copy in the
+  /// background: removing a cache of previewed videos file by file was part of
+  /// a multi-second freeze at launch (ADE-IOS-1B). A copy that outlives a
+  /// killed process is in the temporary directory, which iOS empties itself.
   static func sweepAtLaunch() {
-    try? FileManager.default.removeItem(at: directory)
+    let current = directory
+    let doomed = current.deletingLastPathComponent()
+      .appendingPathComponent("\(current.lastPathComponent).sweep-\(UUID().uuidString)", isDirectory: true)
+    do {
+      try FileManager.default.moveItem(at: current, to: doomed)
+    } catch {
+      return
+    }
+    DispatchQueue.global(qos: .utility).async {
+      try? FileManager.default.removeItem(at: doomed)
+    }
   }
 }
 

@@ -52,6 +52,12 @@ const MAX_SURVEYS_KEPT = 20;
 const MAX_QUESTIONS = 10;
 const MAX_CHOICES = 20;
 const FETCH_TIMEOUT_MS = 5_000;
+/**
+ * The PostHog feature flag that is on for everyone but ADE's own team (person
+ * property `is_internal`). An install cannot know that its account is a team
+ * account; PostHog does. Its only use; `docs/analytics/README.md` lists it.
+ */
+export const SURVEY_REAL_USER_FLAG = "surveys-real-users";
 const SURVEY_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SURVEY_NAME_KEY = /^\s*\[ade:([a-z]+)\]/i;
 /** `returning` is only true on the launch that ends the gap, so it goes first. */
@@ -395,7 +401,7 @@ export function defaultSurveyStateFile(productAnalyticsStateFile: string): strin
 
 export function createSurveyService(args: {
   stateFilePath: string;
-  analytics: Pick<ProductAnalyticsService, "getStatus" | "captureInternal" | "getInstalledAtMs">;
+  analytics: Pick<ProductAnalyticsService, "getStatus" | "captureInternal" | "getInstalledAtMs" | "getDistinctId">;
   logger: Pick<Logger, "debug" | "warn">;
   now?: () => number;
   fetchImpl?: typeof fetch;
@@ -520,6 +526,41 @@ export function createSurveyService(args: {
     return null;
   };
 
+  /**
+   * Whether PostHog says this person may see a survey: the real-user flag,
+   * asked with the id this install's events carry. Anything but a clear yes
+   * (offline, a refused request, no flag) is a no: a survey that cannot ask
+   * could not send its answer either, and a team account must never see one.
+   */
+  const isRealUser = async (): Promise<boolean> => {
+    const target = endpoint();
+    const distinctId = args.analytics.getDistinctId();
+    if (!target || !distinctId) return false;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    timeout.unref?.();
+    try {
+      const response = await fetchImpl(`${target.host}/flags/?v=2`, {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: target.token, distinct_id: distinctId, geoip_disable: true }),
+        signal: controller.signal,
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+      });
+      if (!response.ok) return false;
+      const body = await response.json() as { flags?: Record<string, { enabled?: unknown } | undefined> } | null;
+      return body?.flags?.[SURVEY_REAL_USER_FLAG]?.enabled === true;
+    } catch (error) {
+      args.logger.warn("product_surveys.flag_failed", {
+        errorKind: error instanceof Error ? error.name : "unknown",
+      });
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
   const refreshCache = (): Promise<void> => {
     if (refresh) return refresh;
     const target = endpoint();
@@ -556,6 +597,9 @@ export function createSurveyService(args: {
       nowMs: now(),
     });
     if (!survey || offeredThisLaunch) return null;
+    // Asked last, and only for an install that would otherwise see a survey:
+    // at most one request per launch, and none inside the cooldown.
+    if (!(await isRealUser()) || !analyticsOn() || offeredThisLaunch) return null;
     // A survey whose showing could not be saved would come back next launch.
     if (!update(() => undefined)) return null;
     offeredThisLaunch = true;
@@ -598,7 +642,7 @@ export function createSurveyService(args: {
       const { accepted } = args.analytics.captureInternal({
         event: "survey dismissed",
         surface: "desktop",
-        survey: { ...base, partiallyCompleted: input.partiallyCompleted === true },
+        survey: { ...base, partiallyCompleted: input.partiallyCompleted === true, shownForMs: input.shownForMs },
         dedupeKey: `survey-dismissed:${survey.id}`,
         minimumIntervalMs: SURVEY_GLOBAL_COOLDOWN_MS,
       });
@@ -612,7 +656,7 @@ export function createSurveyService(args: {
     const { accepted } = args.analytics.captureInternal({
       event: "survey sent",
       surface: "desktop",
-      survey: { ...base, submissionId, completed: true, responses },
+      survey: { ...base, submissionId, completed: true, responses, shownForMs: input.shownForMs },
       clientEventId: submissionId,
       dedupeKey: `survey-sent:${survey.id}`,
       minimumIntervalMs: SURVEY_GLOBAL_COOLDOWN_MS,

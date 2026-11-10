@@ -43,6 +43,7 @@ struct ADEApp: App {
     // moment the whole preview cache is provably unreferenced. Previews are
     // otherwise reclaimed when the last preview sheet tears down.
     WorkChatAttachmentPreviewFiles.sweepAtLaunch()
+    CrashReporting.breadcrumb("launch", message: "app init done")
   }
 
   var body: some Scene {
@@ -97,6 +98,11 @@ struct ADEApp: App {
         .task {
           guard !didBootstrapSync else { return }
           didBootstrapSync = true
+          // A hang report names what kept publishing (`ADEHangContext`).
+          CrashReporting.watchPublishes(of: syncService.objectWillChange, source: "sync")
+          CrashReporting.watchPublishes(of: machineFleet.objectWillChange, source: "fleet")
+          CrashReporting.watchPublishes(of: accountService.objectWillChange, source: "account")
+          CrashReporting.breadcrumb("launch", message: "sync bootstrap started")
           lastActivationSyncAt = Date()
           await PushNotificationService.shared.clearAppBadge()
           // App Clip → full app handoff: adopt clip-scanned pairing
@@ -106,6 +112,7 @@ struct ADEApp: App {
           // Fold the most recently opened chats from disk while the socket
           // comes up, so reopening any of them paints on the first frame.
           syncService.warmRecentChatThreads()
+          CrashReporting.breadcrumb("launch", message: "recent chats warmed")
           // Every other paired machine gets its light roster connection.
           machineFleet.attach(syncService)
           // The live state, not `scenePhase`: this task captured the phase it

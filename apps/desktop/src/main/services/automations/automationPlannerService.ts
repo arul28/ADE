@@ -469,8 +469,13 @@ async function runCodexExec(args: {
     outPath,
     "--sandbox",
     args.sandbox,
-    "--ask-for-approval",
-    args.askForApproval,
+    // `codex exec` has no `--ask-for-approval` (nor `--search`, below): the
+    // pinned 0.164.0 answers "unexpected argument" and exits, so every Codex
+    // planner run failed before it read the prompt. Both are config keys.
+    // The config refuses `untrusted` ("no longer supported"), and a run with
+    // nobody to ask treats it as `on-request` anyway.
+    "-c",
+    `approval_policy=${args.askForApproval === "untrusted" ? "on-request" : args.askForApproval}`,
     "--cd",
     args.cwd,
     "--skip-git-repo-check"
@@ -486,7 +491,7 @@ async function runCodexExec(args: {
     ...codexReasoningEffortFlags(resolvePlannerCodexReasoningEffort(args.model, args.reasoningEffort)),
   );
 
-  if (args.webSearch) cliArgs.push("--search");
+  if (args.webSearch) cliArgs.push("-c", "web_search=live");
   for (const dir of args.additionalWritableDirs) {
     const trimmed = dir.trim();
     if (trimmed) {

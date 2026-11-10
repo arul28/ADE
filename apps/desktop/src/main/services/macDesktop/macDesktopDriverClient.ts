@@ -156,6 +156,8 @@ const RESTART_KILL_GRACE_MS = 1_000;
 const MAX_STDERR_LINE_CHARS = 2_000;
 /** The last stderr lines of one helper run, kept for the crash-loop report. */
 const CRASH_REPORT_STDERR_LINES = 8;
+/** What the Windows driver writes before it exits because another host holds the lock (`host.cpp`). */
+const WINDOWS_HOST_LOCK_HELD_TEXT = "another screen host already owns this ADE home";
 const CRASH_REPORT_STDERR_LINE_CHARS = 300;
 
 /**
@@ -722,7 +724,11 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
         // With how the last run ended and what it last wrote to stderr: the
         // count alone said nothing about why. Paths and home folders are
         // taken out of the stderr lines before they leave the machine.
-        deps.logger.error("mac_desktop.driver_crash_loop", {
+        // A second ADE brain on this home (a dev brain beside the installed
+        // one) loses the Windows host lock every time: the other brain's
+        // driver is serving the screen, so this is a state, not a crash.
+        const hostOwnedElsewhere = stderrTail.some((line) => line.includes(WINDOWS_HOST_LOCK_HELD_TEXT));
+        deps.logger[hostOwnedElsewhere ? "warn" : "error"](hostOwnedElsewhere ? "desktop_driver.host_owned_elsewhere" : "mac_desktop.driver_crash_loop", {
           attempts: restartAttempts - 1,
           platform,
           lastExitCode: lastExit?.code ?? null,

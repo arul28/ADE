@@ -64,6 +64,7 @@ final class SSHPairingViewModel: ObservableObject {
 
   private func pair(input: SSHConnectionInput, fingerprint: String, retainCredential: Bool) async {
     state = .pairing
+    await DpopKeyService.shared.warmKey()
     do {
       guard let dpopPublicKey = DpopKeyService.shared.publicKeyX963Base64() else {
         throw SSHBootstrapError.invalidResponse

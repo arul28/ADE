@@ -13,8 +13,9 @@
  * goes back to one an earlier brain in the window already left (two installs
  * replacing each other, 2026-10-19). An update replacing the brain counts for
  * nothing. The report carries the service's state and logs
- * (`brainServiceDiagnostics.ts`) like every brain report, and the desktop
- * app's logs, which say whether the app stopped or replaced the brain.
+ * (`brainServiceDiagnostics.ts`) like every brain report, the desktop
+ * app's logs, which say whether the app stopped or replaced the brain, and the
+ * brain log on disk, which holds the last lines of the brains that died.
  *
  * Kept from spamming Sentry by construction:
  *   - a loop is at least `RESTART_LOOP_THRESHOLD` counted starts within
@@ -35,7 +36,7 @@ import path from "node:path";
 import { captureProblem, flushSentry, isSentryActive } from "../../../desktop/src/shared/sentry/capture";
 import { registerSentryDiagnosticAttachment, type DiagnosticEvent } from "../../../desktop/src/shared/sentry/diagnostics";
 import { isPidAlive } from "../serviceManager/common";
-import { desktopLogsAttachment } from "./brainServiceDiagnostics";
+import { brainLogAttachment, desktopLogsAttachment } from "./brainServiceDiagnostics";
 import { BRAIN_STARTS_FILE, readStartsFile, writeStartsFile, type BrainStart, type BrainStartsState } from "./brainStartsFile";
 
 const RESTART_LOOP_THRESHOLD = 3;
@@ -68,6 +69,7 @@ export function startBrainRestartLoopWatch(options: { runtimeDir: string; build:
   writeStartsFile(startsPath, state);
   if (loopFoundAtMs === null) return;
   registerSentryDiagnosticAttachment("desktop-logs", (event) => (isRestartLoopEvent(event) ? desktopLogsAttachment() : null));
+  registerSentryDiagnosticAttachment("brain-log", (event) => (isRestartLoopEvent(event) ? brainLogAttachment() : null));
   // This brain sends the report if it lives long enough; if it dies first,
   // the next one finds `loopFoundAt` and takes over.
   const delayMs = Math.max(0, Math.min(LOOP_QUIET_MS, loopFoundAtMs + LOOP_REPORT_MAX_DELAY_MS - nowMs));

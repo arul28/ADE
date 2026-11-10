@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
 import { GlassSignInCard } from "./GlassSignInCard";
 import { GateBackdrop } from "./GateBackdrop";
@@ -34,6 +34,37 @@ function WebLaunchGate({ children }: LaunchGateProps) {
 
 type GateStep = FirstRunStepId | "sign-in";
 
+type OnboardingFact =
+  | { action: "onboarding_welcome_shown" | "onboarding_sign_in_shown" | "onboarding_agents_shown" | "onboarding_projects_shown"; outcome: "opened" }
+  | { action: "onboarding_completed"; outcome: "completed" }
+  | { action: "onboarding_skipped"; outcome: "cancelled" };
+
+const STEP_SHOWN: Record<GateStep, OnboardingFact> = {
+  welcome: { action: "onboarding_welcome_shown", outcome: "opened" },
+  "sign-in": { action: "onboarding_sign_in_shown", outcome: "opened" },
+  agents: { action: "onboarding_agents_shown", outcome: "opened" },
+  projects: { action: "onboarding_projects_shown", outcome: "opened" },
+};
+
+/**
+ * One fact per first-run card, so the funnel says which card people leave on.
+ * Until 2026-11 only the sign-in card was reported (as the `onboarding`
+ * screen), and "left during onboarding" could not be split further. At most
+ * one of each a day per install; analytics never changes what the gate does.
+ */
+function captureOnboarding(fact: OnboardingFact): void {
+  try {
+    void window.ade?.analytics?.capture({
+      event: "ade_feature_used",
+      properties: { feature: "onboarding", ...fact, source: "renderer_route" },
+      dedupeKey: `onboarding:${fact.action}`,
+      minimumIntervalMs: 24 * 60 * 60_000,
+    }).catch(() => undefined);
+  } catch {
+    // Reporting must never block setup.
+  }
+}
+
 /** What the gate shows: the welcome before sign-in, then sign-in until signed in, then the rest of setup. */
 function gateStep(checking: boolean, firstRun: FirstRunPhase, signedIn: boolean): GateStep | null {
   if (checking) return null;
@@ -57,8 +88,22 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
   const keepSetupResult = useCallback((result: FirstRunResult) => {
     setupResultRef.current = result;
   }, []);
-  const steps = useFirstRunSteps({ onFinish: keepSetupResult });
+  const rawSteps = useFirstRunSteps({ onFinish: keepSetupResult });
+  // The same machine, with the two ways setup ends reported.
+  const steps = useMemo(() => ({
+    ...rawSteps,
+    skip: () => {
+      captureOnboarding({ action: "onboarding_skipped", outcome: "cancelled" });
+      rawSteps.skip();
+    },
+    finish: (result: FirstRunResult) => {
+      captureOnboarding({ action: "onboarding_completed", outcome: "completed" });
+      rawSteps.finish(result);
+    },
+  }), [rawSteps]);
   const firstRun = steps.phase;
+  /** Whether this launch showed a first-run card: a computer set up before reports no onboarding. */
+  const firstRunSeenRef = useRef(false);
   const firstRunRef = useRef(firstRun);
   firstRunRef.current = firstRun;
 
@@ -102,6 +147,13 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
   const checking = launchStateLoading || firstRun === "checking" || accountLoading;
   const step = gateStep(checking, firstRun, status.signedIn);
   const gateMode = accountGateMode(status);
+
+  useEffect(() => {
+    if (!step || resolved) return;
+    if (step !== "sign-in") firstRunSeenRef.current = true;
+    // Sign-in alone is a signed-out return, not first run.
+    if (step !== "sign-in" || firstRunSeenRef.current) captureOnboarding(STEP_SHOWN[step]);
+  }, [resolved, step]);
 
   useEffect(() => {
     if (step !== "sign-in" || resolved) return;

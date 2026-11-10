@@ -163,6 +163,7 @@ import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLock
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
 import { createProxyService, type ProxyService } from "../../../ade-cli/src/services/proxy/proxyService";
+import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { setHarnessProxyStarter } from "./services/chat/harnessLaunchPrepare";
 import {
   releaseLaneRuntimeResources,
@@ -3528,6 +3529,9 @@ app.whenReady().then(async () => {
   // which its "Go back" drives; the install hook below reads it then.
   let startupRecovery: StartupRecovery | null = null;
   const autoUpdateService = createAutoUpdateService({
+    // Windows prepare removes the brain's service: a 45 s lock wait and a row
+    // of PowerShell calls do not fit the 30 s install watchdog.
+    prepareWatchdogMs: process.platform === "win32" ? RUNTIME_SERVICE_START_WAIT_MS : undefined,
     logger: updateLogger,
     currentVersion: app.getVersion(),
     globalStatePath,

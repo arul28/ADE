@@ -202,6 +202,14 @@ type CreateAutoUpdateServiceArgs = {
   getDiskSpace?: (targetPath: string) => DiskSpaceInfo;
   platform?: NodeJS.Platform;
   installWatchdogMs?: number;
+  /**
+   * The limit for the prepare step alone; the install watchdog when not set.
+   * On Windows prepare removes the brain's service, which may wait 45 s for
+   * the service lock and then runs several PowerShell calls in a row: inside
+   * the 30 s watchdog a slow machine answered `prepare_timeout` for a step
+   * that was still working (1.2.127, 2026-11).
+   */
+  prepareWatchdogMs?: number;
   downloadStallMs?: number;
   downloadStallPollMs?: number;
   quitStagingSlowWarnMs?: number;
@@ -603,6 +611,7 @@ export function createAutoUpdateService({
   getDiskSpace = readDiskSpace,
   platform = process.platform,
   installWatchdogMs = DEFAULT_INSTALL_WATCHDOG_MS,
+  prepareWatchdogMs = installWatchdogMs,
   downloadStallMs = DEFAULT_DOWNLOAD_STALL_MS,
   downloadStallPollMs = DEFAULT_DOWNLOAD_STALL_POLL_MS,
   quitStagingSlowWarnMs = DEFAULT_QUIT_STAGING_SLOW_WARN_MS,
@@ -1771,17 +1780,18 @@ export function createAutoUpdateService({
     task: Promise<T>,
     phase: AutoUpdatePhase,
     timeoutMessage: string,
+    timeoutMs: number = installWatchdogMs,
   ): Promise<{ completed: true; value: T } | { completed: false }> {
     let timeout: ReturnType<typeof setTimeout> | null = null;
     const timeoutResult = new Promise<{ completed: false }>((resolve) => {
       timeout = setTimeout(() => {
         logger.warn("autoUpdate.install_step_timed_out", {
           phase,
-          installWatchdogMs,
+          installWatchdogMs: timeoutMs,
           message: timeoutMessage,
         });
         resolve({ completed: false });
-      }, installWatchdogMs);
+      }, timeoutMs);
     });
     const taskResult = task.then((value) => ({ completed: true as const, value }));
     try {
@@ -2387,6 +2397,7 @@ export function createAutoUpdateService({
           Promise.resolve(beforeQuitAndInstall?.(resumeChats, { closeAfterInstall: options.closeAfterInstall === true })),
           "install",
           "ADE could not prepare to quit for the update. Try again.",
+          prepareWatchdogMs,
         );
         if (!prepareResult.completed) {
           return await abortInstall("prepare_timeout", installReadySnapshot);

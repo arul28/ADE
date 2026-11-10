@@ -78,10 +78,13 @@ const CLAUDE_BY_LEVEL: Record<PermissionLevel, AgentChatClaudePermissionMode> = 
   "full-auto": "bypassPermissions",
 };
 
-const CODEX_BY_LEVEL: Record<PermissionLevel, { approvalPolicy: AgentChatCodexApprovalPolicy; sandbox: AgentChatCodexSandbox }> = {
+const CODEX_BY_LEVEL: Record<PermissionLevel, { approvalPolicy: AgentChatCodexApprovalPolicy; sandbox: AgentChatCodexSandbox } | null> = {
   "plan": { approvalPolicy: "untrusted", sandbox: "read-only" },
   "ask": { approvalPolicy: "on-request", sandbox: "workspace-write" },
-  "auto-edit": { approvalPolicy: "on-failure", sandbox: "workspace-write" },
+  // Codex removed `on-failure`, the policy this rung used: its app-server and
+  // CLI both refuse it (pinned 0.162.1 and 0.164.0). `ask` is the nearest lower
+  // rung, and on Codex it already lets the sandbox write in the workspace.
+  "auto-edit": null,
   "full-auto": { approvalPolicy: "never", sandbox: "danger-full-access" },
 };
 
@@ -264,10 +267,11 @@ export type ResolvedPermission = {
 export function resolvePermissionLevel(level: PermissionLevel, family?: PermissionLadderFamily): ResolvedPermission {
   const opencode = nearestSupported(OPENCODE_BY_LEVEL, level);
   const cursor = nearestSupported(CURSOR_BY_LEVEL, level);
+  const codex = nearestSupported(CODEX_BY_LEVEL, level);
 
   // Only the family being switched TO can be downgraded; the other tables are
   // filled in for whatever the surface reads.
-  const applied = family === "opencode" ? opencode : family === "cursor" ? cursor : { level };
+  const applied = family === "opencode" ? opencode : family === "cursor" ? cursor : family === "codex" ? codex : { level };
   const appliedLevel = applied.level;
   const downgraded = appliedLevel !== level;
 
@@ -275,8 +279,8 @@ export function resolvePermissionLevel(level: PermissionLevel, family?: Permissi
     level: appliedLevel,
     downgraded,
     claudePermissionMode: CLAUDE_BY_LEVEL[level],
-    codexApprovalPolicy: CODEX_BY_LEVEL[level].approvalPolicy,
-    codexSandbox: CODEX_BY_LEVEL[level].sandbox,
+    codexApprovalPolicy: codex.value.approvalPolicy,
+    codexSandbox: codex.value.sandbox,
     opencodePermissionMode: opencode.value,
     droidPermissionMode: DROID_BY_LEVEL[level],
     acpPermissionMode: ACP_BY_LEVEL[level],

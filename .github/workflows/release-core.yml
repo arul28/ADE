@@ -447,6 +447,9 @@ jobs:
       # electron-builder does not notarize DMGs by default either, and this
       # step cost 4-7 minutes per job.
       - name: Validate ${{ matrix.arch }} release artifacts
+        env:
+          # A CI launch is not a person; see the Windows lifecycle step.
+          DO_NOT_TRACK: "1"
         run: cd apps/desktop && npm run validate:mac:artifacts
 
       # Artifact size is unknowable before the build, so this is its own step
@@ -812,6 +815,11 @@ jobs:
 
       - name: Test installed signed Windows product lifecycle
         shell: pwsh
+        env:
+          # A CI launch is not a person: with this the app sends no product
+          # analytics and no Sentry events. Each beta's smoke install counted
+          # as a new Windows user who never got past the first screen.
+          DO_NOT_TRACK: "1"
         run: |
           $installers = @(Get-ChildItem "apps/desktop/release/ADE-[0-9]*-win-x64.exe" -File)
           if ($installers.Count -ne 1) { throw "Expected exactly one signed Windows installer, found $($installers.Count)." }
@@ -824,6 +832,7 @@ jobs:
       - name: Open the last stable release's database
         env:
           GH_TOKEN: ${{ github.token }}
+          DO_NOT_TRACK: "1"
         run: node apps/desktop/scripts/old-database-launch-check.mjs --app apps/desktop/release/win-unpacked
 
       - name: Upload validated Windows release artifacts
@@ -1359,6 +1368,8 @@ jobs:
           mv latest-mac-x64.yml latest-mac.yml
 
       - name: Validate x64 release on x64 hardware
+        env:
+          DO_NOT_TRACK: "1"
         run: cd apps/desktop && node scripts/validate-mac-artifacts.mjs --skip-dmg
 
       # The last stable release makes a project database; this build's own
@@ -1366,6 +1377,7 @@ jobs:
       - name: Open the last stable release's database
         env:
           GH_TOKEN: ${{ github.token }}
+          DO_NOT_TRACK: "1"
         run: node apps/desktop/scripts/old-database-launch-check.mjs --app apps/desktop/release/mac/ADE.app
 
   build-results:

@@ -117,12 +117,12 @@ export const IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS =
 export const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
 /**
  * `ai.getStatus`. A forced Settings refresh waits for every installed ACP
- * provider's auth probe (`acpAuthProbe.ts`, in parallel): up to 20 s of
+ * provider's auth probe (`acpAuthProbe.ts`, in parallel): up to 60 s of
  * handshake, 60 s of `session/new` and 15 s of `authenticate`. On the 30 s
  * default the refresh failed while a slow provider's probe was still running.
  * A plain status read never waits on a probe; this is only its ceiling.
  */
-export const AI_STATUS_TIMEOUT_MS = 120_000;
+export const AI_STATUS_TIMEOUT_MS = 150_000;
 export const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 export const LOCAL_RUNTIME_SYNC_TIMEOUT_MS = 30_000;
 

@@ -482,6 +482,18 @@ const MODEL_UNAVAILABLE = /model\b[^\n]{0,60}\b(?:not found|not available|unavai
 const SERVER_OVERLOADED = /overloaded|\b(?:500|502|503|529)\b|service unavailable|bad gateway|internal server error|server error|over capacity/i;
 const PROCESS_EXITED = /exited with (?:code|signal)|process exited|exited unexpectedly|terminated unexpectedly|was killed|\bSIG(?:KILL|TERM|SEGV|ABRT)\b|crashed/i;
 const TIMED_OUT = /timed? ?out|timeout|deadline exceeded|ETIMEDOUT/i;
+// Added from two weeks of real failed turns (Sentry Logs, 2026-11-09), where
+// 17 of 23 reported turns were `other`. Each line is a message the classifier
+// had no category for: a plan's usage limit (Codex writes "You’ve hit your
+// usage limit" with a typographic apostrophe), an account with no money left,
+// a local model server that is not running, a turn sent while one runs, and a
+// conversation or answer the model could not fit (OpenCode's compaction).
+const USAGE_LIMIT = /usage limit|limit (?:has been )?reached|hit your (?:\w+ )?limit/i;
+const OUT_OF_FUNDS = /insufficient (?:account )?(?:funds|credits?|balance)|out of credits|payment required|billing/i;
+const CANNOT_CONNECT = /connection ?refused|ECONNREFUSED|unable to connect|no models are currently loaded|is the computer able to access/i;
+const TURN_BUSY = /turn (?:is )?already active|already has an active (?:writer|run)|is still responding/i;
+const ANSWER_TOO_LONG = /output token limit|compaction (?:summary|produced)|still truncated|max_context|exceeds processor budget/i;
+const MODEL_REFUSED = /model unavailable|not in the catalog|model is at capacity|hosted outside/i;
 
 /**
  * A failed turn's `error_kind`, from the provider classifier's category and the
@@ -497,8 +509,12 @@ export function turnFailureKind(
   // words only refine its two catch-alls.
   if (fromCategory !== "network" && fromCategory !== "other") return fromCategory;
   const words = text ?? "";
-  if (CONTEXT_TOO_LONG.test(words)) return "context_too_long";
-  if (MODEL_UNAVAILABLE.test(words)) return "model_unavailable";
+  if (TURN_BUSY.test(words)) return "busy";
+  if (USAGE_LIMIT.test(words)) return "rate_limit";
+  if (OUT_OF_FUNDS.test(words)) return "budget";
+  if (CONTEXT_TOO_LONG.test(words) || ANSWER_TOO_LONG.test(words)) return "context_too_long";
+  if (MODEL_UNAVAILABLE.test(words) || MODEL_REFUSED.test(words)) return "model_unavailable";
+  if (CANNOT_CONNECT.test(words)) return "network";
   if (SERVER_OVERLOADED.test(words)) return "server_overloaded";
   if (PROCESS_EXITED.test(words)) return "process_exited";
   if (TIMED_OUT.test(words)) return "timeout";

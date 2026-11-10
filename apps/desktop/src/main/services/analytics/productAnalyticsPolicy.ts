@@ -169,7 +169,7 @@ const STRING_PROPERTIES = new Set([
   "escalation_reason", "install_source", "trigger", "from_version", "to_version", "user_action",
   "tool_error_kind", "crash_reason", "count_bucket",
   "action_domain", "error_code", "refusal_code", "brain_action", "expected_kind", "cause",
-  "kind", "severity", "emulator_count", "top_table",
+  "kind", "severity", "emulator_count", "top_table", "ram_gb_bucket",
 ]);
 const NUMBER_PROPERTIES = new Set([
   "sent_count", "dropped_count", "interaction_count", "session_count", "chat_session_count",
@@ -179,6 +179,7 @@ const NUMBER_PROPERTIES = new Set([
   "duration_ms", "provider_count", "model_count", "error_count", "bytes_freed", "files_compressed", "blocked_ms",
   "failing_minutes", "attempt",
   "time_since_install_seconds",
+  "available_pct", "ade_mb", "ade_pct_of_ram",
   ...JEV_DAILY_PROPERTIES,
 ]);
 const BOOLEAN_PROPERTIES = new Set([
@@ -457,6 +458,15 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "star_prompt_clicked",
   "star_prompt_dismissed",
   "repo_starred",
+  // First run on a new computer (feature "onboarding"): each card of the
+  // launch gate as it shows, and how setup ended. One event per card per
+  // install a day. Never what the person picked on a card.
+  "onboarding_welcome_shown",
+  "onboarding_sign_in_shown",
+  "onboarding_agents_shown",
+  "onboarding_projects_shown",
+  "onboarding_completed",
+  "onboarding_skipped",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -515,7 +525,8 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   // attached. Reusing it would also put a new high-volume emitter inside
   // `ade_error`'s 20/day cap and dilute the one signal that already works.
   // `brain_action` is the action's code identifier inside its domain, and
-  // `expected_kind` is the brain's own expected-failure mark (or `unexpected`):
+  // `expected_kind` is the brain's own expected-failure mark, `expected` for an
+  // answer known only by its text or code, or `unexpected`:
   // most brain errors carry no structured code, and without these two every
   // failure read as `unknown` with nothing to tell a bug from a user outcome.
   ade_brain_action_failed: new Set(["action_domain", "error_code", "brain_action", "expected_kind"]),
@@ -523,7 +534,12 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   // developer's brain ran beside the installed one, and which of ADE's own
   // tables took the most writes in the five minutes before. Group names and
   // buckets only: no process names, paths or sizes.
-  ade_resource_pressure: new Set(["kind", "severity", "emulator_count", "dev_brain_running", "top_table"]),
+  ade_resource_pressure: new Set([
+    "kind", "severity", "emulator_count", "dev_brain_running", "top_table",
+    // How much memory the machine has (a bucket), what share was available,
+    // and how much of it ADE's own processes held. Numbers and one closed enum.
+    "ram_gb_bucket", "available_pct", "ade_mb", "ade_pct_of_ram",
+  ]),
   // Survey properties are PostHog's `$survey_*` set, built from the survey
   // payload by `sanitizeSurveyEventProperties`, never from `properties`.
   "survey shown": new Set(),
@@ -607,6 +623,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "account_sign_in",
     // The desktop "Star ADE on GitHub" pill.
     "star_prompt",
+    // The first-run cards of the launch gate (actions "onboarding_*").
+    "onboarding",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -785,7 +803,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "lock-timeout", "filesystem",
   ]),
   action_domain: ADE_ACTION_DOMAIN_ALLOWLIST,
-  expected_kind: new Set<string>(["user", "environment", "network", "unexpected"]),
+  expected_kind: new Set<string>(["user", "environment", "network", "expected", "unexpected"]),
   // The account directory's own refusals, read off the one list that defines
   // them, plus the honest bucket for a refusal a newer directory names and this
   // build has never heard of. The brain's user-facing sentence is NOT a
@@ -795,6 +813,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   kind: new Set<string>(["memory", "swap", "wal", "cpu"]),
   severity: new Set<string>(["warn", "critical"]),
   emulator_count: new Set<string>(["0", "1", "2", "3_4", "5_plus"]),
+  ram_gb_bucket: new Set<string>(["le_8", "9_16", "17_32", "33_64", "gt_64"]),
 };
 
 export function safeProductAnalyticsString(value: ProductAnalyticsPropertyValue): string | null {
@@ -971,6 +990,12 @@ export function sanitizeSurveyEventProperties(
         : [];
     });
   properties.$survey_questions = questions;
+  // Measured by the window, so it does not depend on when main got each call:
+  // a "shown" and a "dismissed" one millisecond apart (2026-11-09) could not
+  // be told from a stalled main process delivering both at once.
+  if (typeof payload.shownForMs === "number" && Number.isFinite(payload.shownForMs) && payload.shownForMs >= 0) {
+    properties.shown_for_ms = Math.min(Math.round(payload.shownForMs), 24 * 60 * 60 * 1_000);
+  }
   if (event === "survey dismissed") {
     properties.$survey_partially_completed = payload.partiallyCompleted === true;
     return properties;

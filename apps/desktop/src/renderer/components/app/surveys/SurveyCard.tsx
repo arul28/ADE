@@ -49,6 +49,9 @@ export default function SurveyCard({
   const texts = useRef<Record<string, string>>({});
   const otherTexts = useRef<Record<string, string>>({});
   const shownRef = useRef(false);
+  const shownAtRef = useRef<number | null>(null);
+  const shownForMs = (): number | undefined =>
+    (shownAtRef.current == null ? undefined : Math.round(performance.now() - shownAtRef.current));
   const doneRef = useRef(false);
   const sendingRef = useRef(false);
   const question = survey.questions[step];
@@ -59,6 +62,7 @@ export default function SurveyCard({
   useEffect(() => {
     if (!onScreen || shownRef.current) return;
     shownRef.current = true;
+    shownAtRef.current = performance.now();
     void bridge?.record({ kind: "shown", surveyId: survey.id }).catch(() => undefined);
   }, [bridge, onScreen, survey.id]);
 
@@ -95,7 +99,7 @@ export default function SurveyCard({
   const dismiss = useCallback(() => {
     if (doneRef.current) return;
     const partiallyCompleted = step > 0 || Object.values(filled).some(Boolean);
-    void bridge?.record({ kind: "dismissed", surveyId: survey.id, partiallyCompleted }).catch(() => undefined);
+    void bridge?.record({ kind: "dismissed", surveyId: survey.id, partiallyCompleted, shownForMs: shownForMs() }).catch(() => undefined);
     finish();
   }, [bridge, filled, finish, step, survey.id]);
 
@@ -122,7 +126,7 @@ export default function SurveyCard({
     }
     Object.assign(answers, override);
     sendingRef.current = true;
-    const result = await bridge?.record({ kind: "sent", surveyId: survey.id, answers }).catch(() => null);
+    const result = await bridge?.record({ kind: "sent", surveyId: survey.id, answers, shownForMs: shownForMs() }).catch(() => null);
     sendingRef.current = false;
     // Thank the person only for an answer that left; otherwise keep the card so they can try again.
     if (!result?.accepted) {

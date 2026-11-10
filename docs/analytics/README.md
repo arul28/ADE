@@ -78,7 +78,12 @@ PostHog survey of type **API**, launched, and named with an ADE key prefix:
 
 At most one survey per install every 21 days, never in the first session or
 during onboarding, never the same survey twice, and nothing (not even the
-fetch) while analytics is off. Supported questions: open text, rating (1–5,
+fetch) while analytics is off. A survey appears only after ten minutes of use
+in that launch (time with the window focused), and never for ADE's own team:
+before it offers one, ADE asks PostHog for the feature flag
+`surveys-real-users` with the install's distinct id, and anything but a clear
+yes means no survey. `survey dismissed` and `survey sent` carry
+`shown_for_ms`, how long the card was on screen. Supported questions: open text, rating (1–5,
 1–7 or 0–10), single choice, multiple choice (with an optional "Other"), and
 link. Put the question you want to read at a glance first: dashboards show the
 first question's answer as `$survey_response`. Do not use PostHog targeting,
@@ -135,6 +140,10 @@ them in PostHog and update this list in the same branch.
   for `is_internal` people, so ADE's own accounts are never recorded. Its only
   use; do not repurpose it. The site's per-browser opt-out is
   `?ade_no_replay=1`.
+- **Feature flag `surveys-real-users`**: false for `is_internal` people, so
+  ADE's own accounts never see an in-app survey (`surveyService.ts`). Its only
+  use. It reads the person property, which the `Analytics reconcile` workflow
+  sets; an internal account whose person is not flagged yet still gets surveys.
 - **Dashboard "ADE · Agent turns (LLM analytics)"** is managed by
   `scripts/posthog/provision.mjs` like the others; PostHog's own LLM analytics
   and Error tracking pages read `$ai_generation` and `$exception` directly.
@@ -168,6 +177,10 @@ them in PostHog and update this list in the same branch.
     or repeat the Sentry and error-tracking sources.
   - The team instructions every scout reads say who is internal, which data
     breaks are known (the list below), and that ADE sends no autocapture.
+    Internal accounts are left out of usage counts only: an error on a team
+    machine is a real defect, reported like any other (the Sentry and error
+    tracking steering say the same), because the team's machines run the
+    newest builds and often hit a defect first.
     Each source (Sentry, error tracking, GitHub, Linear) has steering that
     keeps only fixable defects on current builds and skips issues labeled
     `posthog` or `auto-fix`. Change them in PostHog and here together.
@@ -198,7 +211,10 @@ them in PostHog and update this list in the same branch.
   desktop release after 1.2.129-beta.8; earlier it is always `other`.
   `ade_brain_action_failed` carries `brain_action` and `expected_kind` from
   1.2.129-beta.6; on older builds most of its `error_code` values are
-  `unknown`.
+  `unknown`. Up to and including 1.2.130-beta.2, `expected_kind: unexpected`
+  also holds answers that carry no mark (no GitHub sign-in, a lane whose
+  folder is gone); later builds send those as `expected`, so `unexpected`
+  steps down at that release.
 - **`metadata_regenerated`** is sent at most once per mode and outcome per
   install an hour from the first desktop release after 1.2.129-beta.8. Before,
   it was a quarter of the events of the installs that reached their daily

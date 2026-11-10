@@ -9899,8 +9899,17 @@ function codexSandboxPolicyType(sandbox: AgentChatCodexSandbox): string {
   }
 }
 
+/**
+ * The approval policy as the Codex app-server accepts it. Its protocol has no
+ * `on-failure` any more (`AskForApproval` is `untrusted`, `on-request`, `never`
+ * or a `granular` object; checked against the schema of the pinned 0.162.1 and
+ * 0.164.0), and it refuses the whole request: a chat on the "auto-edit" level
+ * failed every thread start and turn with "unknown variant `on-failure`"
+ * (Sentry Logs, 2026-11). `on-request` is what Codex itself moved that mode
+ * to: the sandbox still bounds the writes, and the model asks to go past it.
+ */
 function codexApprovalPolicyWireValue(approvalPolicy: AgentChatCodexApprovalPolicy): AgentChatCodexApprovalPolicy {
-  return approvalPolicy;
+  return approvalPolicy === "on-failure" ? "on-request" : approvalPolicy;
 }
 
 /** Spread-ready codex thread lifecycle policy args or empty object if null. */

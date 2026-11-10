@@ -168,8 +168,7 @@ export function withSavedChatReads(
 ): AgentChatApi {
   if (!bridge) return api;
   const locate = (sessionId: string, pin?: OpenProjectBinding | null) => savedChatLocation(pin, sessionId, machineOnline);
-  return {
-    ...api,
+  const savedReads: Pick<AgentChatApi, "getEventHistory" | "getEventHistoryPage" | "getSummary" | "send" | "delete"> = {
     getEventHistory: async (args, pin) => {
       const location = locate(args.sessionId, pin);
       if (!location) return api.getEventHistory(args, pin);
@@ -202,4 +201,18 @@ export function withSavedChatReads(
       return api.delete(args, pin);
     },
   };
+  // Not `{ ...api, ...savedReads }`: the web client's chat API is a Proxy with
+  // no own keys (`webclient/adapter/federated.ts`), so a spread copied nothing
+  // and every other method, `onEvent` first, was undefined there. The chat
+  // pane crashed on mount in the web client (ADE-WEB-7). The target is an
+  // empty object, not `api`: the desktop's API is frozen by the context
+  // bridge, and a Proxy may not answer a frozen target's property with
+  // another value.
+  return new Proxy({} as AgentChatApi, {
+    get: (_target, property) =>
+      (Object.hasOwn(savedReads, property)
+        ? savedReads[property as keyof typeof savedReads]
+        : Reflect.get(api, property)),
+    has: (_target, property) => Object.hasOwn(savedReads, property) || Reflect.has(api, property),
+  });
 }

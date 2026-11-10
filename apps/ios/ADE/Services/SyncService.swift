@@ -4055,6 +4055,7 @@ func syncRelayReauthorizationPayload(
   stillCurrent: () -> Bool = { true }
 ) async throws -> [String: Any] {
   let relaySession = try await AccountService.shared.freshRelaySession()
+  await DpopKeyService.shared.warmKey()
   guard !Task.isCancelled, stillCurrent() else { throw CancellationError() }
   guard let proof = DpopKeyService.shared.buildRelayReauthorizationProof(
     deviceId: deviceId,
@@ -8031,6 +8032,7 @@ final class SyncService: ObservableObject {
     let relaySession = try await AccountService.shared.freshRelaySession(
       expectedAuthorization: authorization
     )
+    await DpopKeyService.shared.warmKey()
     guard isCurrentCandidate() else {
       throw AccountPairingConnectionSupersededError()
     }
@@ -19870,6 +19872,11 @@ final class SyncService: ObservableObject {
     defer {
       if let dialKey, let dialToken { relayDialRegistry.release(dialKey, token: dialToken) }
     }
+    // The hello below signs with the device key; read it off the main thread.
+    await DpopKeyService.shared.warmKey()
+    guard dialAttemptIsCurrent(connectAttemptGeneration, fleetDial), !Task.isCancelled else {
+      throw CancellationError()
+    }
     // Direct routes send the hello with the upgrade request as well
     // (`X-ADE-Hello`): a host that reads it answers hello_ok as the first
     // frame after the 101, one round trip sooner. The same hello still goes
@@ -20758,6 +20765,14 @@ final class SyncService: ObservableObject {
     connectAttemptGeneration: UInt64,
     publishConnecting: Bool = true
   ) async throws {
+    // Every hello and pairing request on this socket signs with the device
+    // key; read it off the main thread before any of them needs it. The wait
+    // is a suspension, so a newer attempt may have started meanwhile: check
+    // before this one tears down a socket that is no longer its own.
+    await DpopKeyService.shared.warmKey()
+    guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+      throw CancellationError()
+    }
     teardownSocket(closeCode: .goingAway)
     let endpoint = syncParseRouteEndpoint(host)
     let socketHost = endpoint?.host ?? host.trimmingCharacters(in: .whitespacesAndNewlines)
