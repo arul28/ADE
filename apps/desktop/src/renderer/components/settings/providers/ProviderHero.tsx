@@ -77,10 +77,10 @@ const SOLID_DEPTH = 10;
  * viewer with its depth falling straight down (the integration pages); the
  * provider pages turn it a little.
  */
-export function SolidLogo({ spec, straight = false, floor = true }: {
+export function SolidLogo({ spec, straight = false, floor = false }: {
   spec: Extract<ProviderBrandLogo, { kind: "solid" }>;
   straight?: boolean;
-  /** The shadow it casts. Small logos in a tile or a card go without. */
+  /** The shadow it casts under it, for a hero-sized logo. Tiles and cards go without. */
   floor?: boolean;
 }) {
   const size = spec.size ?? 84;
@@ -136,7 +136,7 @@ function SolidLayer({ mark, part, style }: { mark: ReactNode; part?: "face" | "g
 
 function ProviderLogo3d({ descriptor }: { descriptor: ProviderDescriptor }) {
   const logo = providerBrand(descriptor.id).logo;
-  if (logo.kind === "solid") return <SolidLogo spec={logo} />;
+  if (logo.kind === "solid") return <SolidLogo spec={logo} floor />;
   return (
     <div className="ade-pv-logo3d" aria-hidden>
       <div className="ade-pv-logo3d-face" style={{ background: logo.background, color: logo.color }}>

@@ -157,7 +157,7 @@ export function McpServerRequestComposer({
       <div className="ade-icc-banner ade-mcpc-banner" style={brand?.banner}>
         <span className="ade-icc-logo">
           {brand ? (
-            <SolidLogo spec={{ ...brand.logo, size: 24 }} straight floor={false} />
+            <SolidLogo spec={{ ...brand.logo, size: 24 }} straight />
           ) : (
             <span className="ade-mcpc-tile" aria-hidden><Plugs size={17} weight="duotone" /></span>
           )}

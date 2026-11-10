@@ -106,7 +106,7 @@ export function McpCatalogueAddDialog({
     >
       <div className="ade-ix-dialog" style={integrationThemeVars(brand.accent)}>
         <div className="ade-ix-dialog-hero" style={brand.banner}>
-          <SolidLogo spec={{ ...brand.logo, size: 34 }} straight floor={false} />
+          <SolidLogo spec={{ ...brand.logo, size: 34 }} straight />
           <div className="ade-ix-dialog-id">
             <span className="ade-ix-dialog-name">{entry.name}</span>
             <span className="ade-ix-dialog-by">By {entry.publisher}</span>

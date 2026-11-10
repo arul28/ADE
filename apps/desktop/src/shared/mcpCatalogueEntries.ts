@@ -6,9 +6,10 @@ import type { McpCatalogueEntry } from "./mcpCatalogue";
  * unauthenticated request (a 401 sign-in challenge or an answer). Every
  * `oauth` server offers dynamic client registration, which ADE's sign-in needs.
  *
- * The entries from Zapier to OpenAI Docs were added 2026-11-09, each run
- * through ADE's own sign-in steps (probe, metadata with no redirects, a
- * resource that names the server, S256, and registering "ADE").
+ * The entries from Zapier to OpenAI Docs were added 2026-11-09. Each was
+ * probed live, and each `oauth` one also ran ADE's own sign-in steps (metadata
+ * with no redirects, a resource that names the server, S256, and registering
+ * "ADE").
  *
  * Left out on purpose: Slack, Asana, HubSpot, Box, DocuSign and Fireflies (no
  * dynamic registration and no key header), Vercel, Dropbox, Gamma, Ramp and

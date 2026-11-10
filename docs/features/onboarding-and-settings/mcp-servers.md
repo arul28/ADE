@@ -16,13 +16,15 @@ files on a computer.
 `apps/desktop/src/shared/mcpCatalogue.ts` (entries in `mcpCatalogueEntries.ts`)
 is ADE's list of known servers: the vendor's own URL or package, how it signs
 in (`oauth`, `header`, `env` or `none`), the key's label and where to make it,
-and the brand color and mark (Simple Icons, CC0). It ships with ADE and is
+and the brand color and mark (Simple Icons, CC0, else the vendor's own logo
+or svgl.app, reduced to one color). It ships with ADE and is
 read-only. Every entry was checked against the vendor's own docs and its
 npm/PyPI publisher, and every `oauth` server offers the dynamic client
-registration that ADE's sign-in needs. Vendors that need an approved client
-or refuse ADE's registration (Slack, Asana, Vercel, Dropbox, Ramp, hosted
-Figma and others) are left out; the header of `mcpCatalogueEntries.ts` keeps
-the full list and the reason for each.
+registration that ADE's sign-in needs. Vendors without that registration
+(Slack, Asana, HubSpot), that take only approved clients (Vercel, Dropbox,
+Ramp) or that refuse ADE's registration (hosted Figma, Calendly) are left out;
+the header of `mcpCatalogueEntries.ts` keeps the full list and the reason for
+each.
 
 The catalogue is a set of quick setups, not the list of servers ADE supports:
 any MCP server can be added by its command or URL, and Settings says so above
