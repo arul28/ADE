@@ -12524,7 +12524,7 @@ export function registerIpc({
   ipcMain.handle(IPC.providerLoginsCall, async (_event, arg: unknown): Promise<unknown> => {
     const request = arg && typeof arg === "object" ? arg as { action?: unknown; args?: unknown } : {};
     const action = typeof request.action === "string" ? request.action : "";
-    if (!["status", "captureNow", "allowKeychain", "use", "setCloud", "setCloudAll", "remove"].includes(action)) {
+    if (!["status", "captureNow", "allowKeychain", "use", "setCloud", "setCloudAll", "setCloudBalance", "remove"].includes(action)) {
       throw new Error(`provider_logins has no ${action || "?"} action.`);
     }
     const pool = localRuntimeConnectionPool;

@@ -1,8 +1,8 @@
 /**
  * The `provider_logins` actions: `status` (a read for anyone), `captureNow`
  * (the person's "look now"), `allowKeychain` (the person's one Keychain read
- * on a Mac, user-only and machine-scoped), and the person's four writes `use`, `setCloud`,
- * `setCloudAll` and `remove` (user-only: the desktop app, never the CLI, an
+ * on a Mac, user-only and machine-scoped), and the person's five writes `use`, `setCloud`,
+ * `setCloudAll`, `setCloudBalance` and `remove` (user-only: the desktop app, never the CLI, an
  * agent or an outside app; `actionPolicy.ts`). Each one runs on the brain the
  * call reaches; the writes are account-wide, so any brain of the person's
  * answers the same. None ever returns a token, a key, a file's content or a
@@ -37,7 +37,7 @@ function notThisRuntime(provider: ProviderLoginProvider | null): ProviderLoginSt
       cloudComputer: false,
       lastPassAt: null,
     },
-    cloud: { enabled: true },
+    cloud: { enabled: true, inUse: {}, claude: { smartBalance: false } },
     signIns: [],
     providers: PROVIDER_LOGIN_CARRY
       .filter((row) => !provider || row.provider === provider)
@@ -104,6 +104,12 @@ export function buildProviderLoginsDomainService() {
     },
     async setCloudAll(args?: unknown): Promise<ProviderLoginStatus> {
       return await requireSync().setCloudAll({ on: readOn(args) });
+    },
+    /** `{provider: "claude", on}`: Claude's smart balance on ADE Cloud (one switch for ADE Cloud). */
+    async setCloudBalance(args?: unknown): Promise<ProviderLoginStatus> {
+      const provider = readProvider(args);
+      if (provider !== "claude") throw new Error("provider_logins.setCloudBalance needs provider \"claude\".");
+      return await requireSync().setCloudBalance({ provider, on: readOn(args) });
     },
     async remove(args?: unknown): Promise<ProviderLoginStatus> {
       return await requireSync().remove({ key: readKey(args) });

@@ -4184,6 +4184,8 @@ declare global {
         use: (args: { provider: ProviderLoginProvider; key: string | null; slot?: string | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         setCloud: (args: { key: string; on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         setCloudAll: (args: { on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        /** Claude's smart balance on ADE Cloud: one switch for ADE Cloud, apart from each computer's own. */
+        setCloudBalance: (args: { provider: "claude"; on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         remove: (args: { key: string }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         /** A capture, an apply or a setting change on the bound or pinned brain. */
         onChanged: (cb: () => void) => () => void;

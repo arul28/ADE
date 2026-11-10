@@ -11443,6 +11443,8 @@ const adeBridge = {
       callProviderLogins<ProviderLoginSyncStatus>("setCloud", args, pin),
     setCloudAll: (args: { on: boolean }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
       callProviderLogins<ProviderLoginSyncStatus>("setCloudAll", args, pin),
+    setCloudBalance: (args: { provider: "claude"; on: boolean }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("setCloudBalance", args, pin),
     remove: (args: { key: string }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
       callProviderLogins<ProviderLoginSyncStatus>("remove", args, pin),
     onChanged: (cb: () => void): (() => void) =>

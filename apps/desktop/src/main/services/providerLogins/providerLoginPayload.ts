@@ -40,13 +40,21 @@ export type ProviderLoginPayload = {
    * the new copy still comes from the same sign-in (the write-back, step 3b).
    */
   lineage?: string[];
+  /**
+   * The family the origin's login file held when a cloud computer took the
+   * renewal over (step 3c). Kept for as long as cloud computers renew the
+   * sign-in, outside the lineage's window, so the origin writes back after a
+   * takeover of any length. The origin's claim back and its own next push
+   * clear it.
+   */
+  takenFrom?: string;
   contentHash: string;
   files: CarriedFile[];
   parts?: Record<string, unknown>;
 };
 
 /** What `status` may know about an item: everything but the login. */
-export type ProviderLoginPayloadMeta = Omit<ProviderLoginPayload, "files" | "parts" | "familyHash" | "contentHash" | "lineage">;
+export type ProviderLoginPayloadMeta = Omit<ProviderLoginPayload, "files" | "parts" | "familyHash" | "contentHash" | "lineage" | "takenFrom">;
 
 /** How many earlier family hashes a payload keeps: about 4 days of Grok renewals (one each ~6 h), 16 x 17 characters. */
 export const PROVIDER_LOGIN_LINEAGE_MAX = 16;
@@ -82,7 +90,7 @@ export function buildProviderLoginPayload(args: {
   provider: ProviderLoginProvider;
   login: ParsedLogin;
   machine: ProviderLoginMachine;
-  previous: ProviderLoginPayloadMeta & { familyHash: string; lineage?: string[] } | null;
+  previous: ProviderLoginPayloadMeta & { familyHash: string; lineage?: string[]; takenFrom?: string | null } | null;
   now: number;
   /**
    * This computer renewed the sign-in another computer made (a cloud
@@ -99,6 +107,9 @@ export function buildProviderLoginPayload(args: {
     ? [...new Set([previous.familyHash, ...(previous.lineage ?? [])])].filter((hash) => hash && hash !== familyHash).slice(0, PROVIDER_LOGIN_LINEAGE_MAX)
     : [];
   const origin = args.renewal && previous?.origin.machineKey ? previous.origin : args.machine;
+  // A cloud computer's renewal keeps the family the takeover started from (the
+  // first takeover push takes the previous family); any other push drops it.
+  const takenFrom = args.renewal?.cloud && previous ? previous.takenFrom || previous.familyHash : "";
   return {
     v: 1,
     provider: args.provider,
@@ -115,6 +126,7 @@ export function buildProviderLoginPayload(args: {
     expiresAt: args.login.expiresAt,
     familyHash,
     ...(lineage.length ? { lineage } : {}),
+    ...(takenFrom && takenFrom !== familyHash ? { takenFrom } : {}),
     contentHash: loginContentHash(args.login),
     files: args.login.files,
     ...(args.login.parts ? { parts: args.login.parts } : {}),
@@ -134,7 +146,7 @@ function stringOr(value: unknown, fallback: string): string {
  * that is not payload v1. The login itself is dropped here, before the
  * result reaches any caller.
  */
-export function readProviderLoginMeta(value: string | null): (ProviderLoginPayloadMeta & { familyHash: string; contentHash: string; lineage: string[] }) | null {
+export function readProviderLoginMeta(value: string | null): (ProviderLoginPayloadMeta & { familyHash: string; contentHash: string; lineage: string[]; takenFrom: string | null }) | null {
   if (!value) return null;
   let parsed: unknown;
   try {
@@ -170,8 +182,21 @@ export function readProviderLoginMeta(value: string | null): (ProviderLoginPaylo
     lineage: Array.isArray(parsed.lineage)
       ? parsed.lineage.filter((hash): hash is string => typeof hash === "string" && /^[0-9a-f]{16}$/.test(hash)).slice(0, PROVIDER_LOGIN_LINEAGE_MAX)
       : [],
+    takenFrom: typeof parsed.takenFrom === "string" && /^[0-9a-f]{16}$/.test(parsed.takenFrom) ? parsed.takenFrom : null,
     contentHash: stringOr(parsed.contentHash, ""),
   };
+}
+
+/** The same stored value without `takenFrom`: what the origin's claim back writes (step 3c). Null when there is nothing to drop. */
+export function withoutTakenFrom(value: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!isRecord(parsed) || parsed.takenFrom === undefined) return null;
+    const { takenFrom: _dropped, ...rest } = parsed;
+    return JSON.stringify(rest);
+  } catch {
+    return null;
+  }
 }
 
 /**

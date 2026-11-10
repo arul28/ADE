@@ -9,6 +9,8 @@
  */
 
 /** The providers ADE knows how to talk about here, carried or not. */
+import type { ClaudePassStatusEntry } from "../cloudSignIns";
+
 export const PROVIDER_LOGIN_PROVIDERS = [
   "claude",
   "codex",
@@ -216,6 +218,21 @@ export type ProviderLoginStatus = {
   cloud: {
     /** The one off switch for all of ADE Cloud's sign-ins. */
     enabled: boolean;
+    /**
+     * A copy of the account setting's picks: place ("codex", "pi:xai",
+     * "claude") → a sign-in's vault key, "key" for the saved ADE Cloud key, or
+     * a Claude pass key. A place with no entry uses the newest switched-on
+     * sign-in. Keys only, never a secret.
+     */
+    inUse: Record<string, string>;
+    claude: {
+      /**
+       * Claude's smart balance on ADE Cloud (`providerLogins.setCloudBalance`).
+       * One switch for ADE Cloud, off at the start; each own computer has its
+       * own switch, and nothing syncs between them.
+       */
+      smartBalance: boolean;
+    };
   };
   signIns: ProviderLoginSignIn[];
   providers: ProviderLoginProviderStatus[];
@@ -225,10 +242,10 @@ export type ProviderLoginStatus = {
 
 /**
  * Fields another package adds to the status (`registerProviderLoginStatusPart`).
- * P6 fills `claudePasses` and may narrow its type.
+ * P6 fills `claudePasses` (claudePassSync.ts).
  */
 export type ProviderLoginStatusParts = {
-  claudePasses?: unknown[];
+  claudePasses?: ClaudePassStatusEntry[];
 };
 
 /**

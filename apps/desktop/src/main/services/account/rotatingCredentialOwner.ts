@@ -153,6 +153,12 @@ export async function decideRotatingRenewal(args: {
    * default.
    */
   graceMs?: number;
+  /**
+   * What the claim writes, when it is not `currentValue` (default). The
+   * sign-in sync's claim back drops a field that only the old owner needed
+   * (step 3c). The check against the vault still compares `currentValue`.
+   */
+  claimValue?: string;
   logger?: Logger;
   logContext?: Record<string, unknown>;
 }): Promise<RotatingRenewalVerdict> {
@@ -215,7 +221,7 @@ export async function decideRotatingRenewal(args: {
   // The value moved under us: somebody published. Read it next time.
   if (latestValue !== args.currentValue) return { renew: false, reason: "claim_lost" };
   try {
-    const written = await vault.set(args.ref.scope, args.ref.kind, args.ref.key, args.currentValue, { refreshOwner: deviceId });
+    const written = await vault.set(args.ref.scope, args.ref.kind, args.ref.key, args.claimValue ?? args.currentValue, { refreshOwner: deviceId });
     if (!written.ok) {
       args.logger?.warn?.("account_vault.rotating_claim_failed", { ...args.logContext, error: describeVaultFailure(written) });
       return { renew: false, reason: "claim_failed" };

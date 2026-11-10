@@ -483,7 +483,7 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
     return { ...world, cloud };
   }
 
-  it("takes the renewal over on a cloud computer only past expiry + 60 s, and never holds a turn past 45 s", async () => {
+  it("takes the renewal over on a cloud computer only past expiry + 60 s, armed by a turn that came too early, and never holds a turn past 45 s", async () => {
     const { relay, expiresAt } = await originGoesOff();
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
@@ -504,8 +504,17 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
     expect(keyOf(relay.rows).refreshOwner).toBe("device-origin");
     expect(cloud.renewCalls).toEqual([]);
 
-    // Two minutes past expiry the next turn claims, waits the settle, takes the full copy and renews.
-    // The renewal hangs: the turn still goes at 45 s.
+    // That turn armed one takeover at expiry + 60 s: it claims then with no new turn, waits the settle,
+    // takes the full copy and renews. The renewal hangs.
+    await elapse(expiresAt + 59_000 - Date.now());
+    await cloud.vault.sync();
+    expect(keyOf(relay.rows).refreshOwner).toBe("device-origin");
+    await until(() => keyOf(relay.rows).refreshOwner === "device-cloud");
+    expect(Date.now()).toBeLessThan(expiresAt + 65_000);
+    await until(() => cloud.renewCalls.length > 0);
+    expect(cloud.renewCalls).toEqual(["codex"]);
+
+    // Two minutes past expiry a turn joins the running takeover: it still goes at 45 s.
     await elapse(expiresAt + 2 * 60_000 - Date.now());
     const turnStarted = Date.now();
     const late = await drive(providerLoginGate("codex")!);
@@ -554,8 +563,16 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
     expect(refreshIn(cloudA.codexPath)).toBe("");
   });
 
-  it("writes the newer copy back on the origin once, never echoes it, and claims the renewal back after the grace", async () => {
+  it("writes the newer copy back on the origin after a takeover of any length, never echoes it, and claims the renewal back after the grace", async () => {
     const { relay, origin, cloud } = await takenOver();
+    // The cloud computer renews 20 more times (each a new family): past the lineage's 16, the item still names the origin's family.
+    for (let renewal = 0; renewal < 20; renewal += 1) {
+      await elapse(3_000);
+      cloud.writeCodex(codexLogin(`renewed-${renewal}`, Date.now() + (241 + renewal) * HOUR, `refresh-cloud-${renewal}`));
+      await cloud.sync.pass();
+      await cloud.vault.sync();
+    }
+    expect((JSON.parse(keyOf(relay.rows).value!) as { lineage: string[] }).lineage).toHaveLength(16);
     const modeBefore = fs.statSync(origin.codexPath).mode & 0o777;
     // A second install with the origin's machine key (another device id) never writes it.
     const twin = await makeComputer("twin", { relay, device: "device-twin", machineKey: "machine-origin", cloud: false });
@@ -582,7 +599,8 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
     await origin.vault.sync();
     expect(keyOf(relay.rows).writerDeviceId).toBe("device-cloud");
 
-    // The cloud computer goes quiet. Ten minutes past the copy's expiry, the origin claims the renewal back.
+    // The cloud computer goes quiet. Ten minutes past the copy's expiry, the origin claims the renewal back,
+    // and the takeover's mark leaves the item.
     cloud.sync.stop();
     relay.down.add("device-cloud");
     const expiry = (JSON.parse(keyOf(relay.rows).value!) as { expiresAt: number }).expiresAt;
@@ -591,6 +609,7 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
     await elapse(1_000);
     await origin.vault.sync();
     expect(keyOf(relay.rows).refreshOwner).toBe("device-origin");
+    expect(JSON.parse(keyOf(relay.rows).value!)).not.toHaveProperty("takenFrom");
 
     // The cloud computer hears it: its copy is access-only again.
     relay.down.delete("device-cloud");

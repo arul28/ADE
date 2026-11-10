@@ -109,6 +109,7 @@ import {
   readProviderLoginMeta,
   readProviderLoginPayload,
   shortHash,
+  withoutTakenFrom,
   type ProviderLoginMachine,
 } from "./providerLoginPayload";
 import {
@@ -311,7 +312,8 @@ const LOCAL_STATE_RANK: ProviderLoginLocalState[] = [
   "from_account", "from_saved_key", "os_store", "not_signed_in", "not_checked",
 ];
 
-type CloudSetting = { enabled: boolean; inUse: Record<string, string>; off: string[] };
+/** `smartBalance` is read only for the status; its writes go through `setCloudBalance` (P6 reads it too). */
+type CloudSetting = { enabled: boolean; inUse: Record<string, string>; off: string[]; smartBalance: boolean };
 
 export function readCloudSetting(raw: unknown): CloudSetting {
   const record = isRecord(raw) ? raw : {};
@@ -323,6 +325,8 @@ export function readCloudSetting(raw: unknown): CloudSetting {
     enabled: record.enabled !== false,
     inUse,
     off: Array.isArray(record.off) ? record.off.filter((key): key is string => typeof key === "string") : [],
+    // Absent = false: the switch is off at the start.
+    smartBalance: isRecord(record.claude) && record.claude.smartBalance === true,
   };
 }
 
@@ -492,6 +496,21 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
 
   type PushDecision = { push: false; state: ProviderLoginLocalState; writeBack?: true } | { push: true };
 
+  /**
+   * The copy here is of the sign-in this item holds: its family, an earlier
+   * one the lineage lists, the family a takeover started from (`takenFrom`,
+   * never evicted: step 3c), or the very copy a write-back put here.
+   */
+  function ofSameSignIn(
+    meta: { familyHash: string; lineage: string[]; takenFrom: string | null },
+    login: LoginMemo,
+    state: ProviderLoginStateFile,
+  ): boolean {
+    if (meta.familyHash === login.familyHash || meta.lineage.includes(login.familyHash)) return true;
+    if (meta.takenFrom === login.familyHash) return true;
+    return state.writtenBack?.[login.key]?.contentHash === login.contentHash;
+  }
+
   /** `later` is a later expiry than `than`; false when either is unknown. */
   const laterExpiry = (later: number | null, than: number | null): boolean => later != null && than != null && later > than;
 
@@ -514,7 +533,14 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     // The copy the write-back wrote here: never pushed back (no echo). Once the file changes, the normal rules apply.
     const back = state.writtenBack?.[login.key];
     if (back) {
-      if (back.contentHash === login.contentHash) return { push: false, state: "written_back" };
+      if (back.contentHash === login.contentHash) {
+        // The cloud computer renewed it again since: write that copy back too (writeBack checks every limit).
+        const again = meta != null
+          && meta.contentHash !== (back.accountHash ?? back.contentHash)
+          && meta.origin.deviceId === machine.deviceId
+          && Boolean(row.refreshOwner) && row.refreshOwner !== machine.deviceId;
+        return again ? { push: false, state: "written_back", writeBack: true } : { push: false, state: "written_back" };
+      }
       delete state.writtenBack![login.key];
     }
     // What this computer last pushed, and the account still holds it. (A write that lost to a newer one is not "captured".)
@@ -528,7 +554,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       // same family, or an earlier one of the same sign-in) never goes over
       // that computer's copy, with two exceptions on the origin after a
       // cloud computer took the renewal over (design §3.4, step 3b).
-      const ofFamily = meta.familyHash === login.familyHash || meta.lineage.includes(login.familyHash);
+      const ofFamily = ofSameSignIn(meta, login, state);
       // The local file is the very copy this computer last put in the account: nothing new here.
       const unchanged = pushed?.pushedHash === login.contentHash;
       const originAfterTakeover = !deps.cloudComputer
@@ -615,7 +641,10 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       const machine = deps.machine();
       const accountUserId = deps.accountUserId();
       if (vault && machine && accountUserId) {
-        if (deps.cloudComputer) await runApply(vault, accountUserId, originId(machine.machineKey), machine.deviceId, providers, false);
+        if (deps.cloudComputer) {
+          await runApply(vault, accountUserId, originId(machine.machineKey), machine.deviceId, providers, false);
+          checkArmed();
+        }
         notifyProviderLoginPass({ accountUserId, cloudComputer: deps.cloudComputer, providers: providers ? [...providers] : null, captureOff: "all_off" });
       }
       return;
@@ -775,7 +804,10 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       }
     }
     if (accountChanged) notifyProviderLoginsChanged();
-    if (deps.cloudComputer) await runApply(vault, accountUserId, origin12, machine.deviceId, providers, true);
+    if (deps.cloudComputer) {
+      await runApply(vault, accountUserId, origin12, machine.deviceId, providers, true);
+      checkArmed();
+    }
     await planRenewals(vault, machine, origin12, state);
     notifyProviderLoginPass({
       accountUserId,
@@ -930,7 +962,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
         cloudComputer: deps.cloudComputer,
         lastPassAt: lastPassAt ? new Date(lastPassAt).toISOString() : null,
       },
-      cloud: { enabled: setting.enabled },
+      cloud: { enabled: setting.enabled, inUse: { ...setting.inUse }, claude: { smartBalance: setting.smartBalance } },
       signIns,
       providers,
       applied: deps.cloudComputer && !deps.staticOff ? appliedStatus(provider ?? null) : null,
@@ -987,7 +1019,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
    * own removal (`dropKey`). Fields this code does not know (P6:
    * `claude.smartBalance`) are kept as they are.
    */
-  async function saveSetting(next: CloudSetting, dropKey: string | null = null): Promise<ProviderLoginStatus> {
+  async function saveSetting(next: CloudSetting, dropKey: string | null = null, claude: Record<string, unknown> | null = null): Promise<ProviderLoginStatus> {
     const { vault, settings } = await writableStores();
     const live = liveSignInKeys(vault);
     const keep = (key: string) => key !== dropKey && (isClaudePassKey(key) || live.has(key));
@@ -995,7 +1027,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     const off = [...new Set(next.off.filter(keep))].sort();
     const raw = settings.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING);
     const unknownFields = isRecord(raw) ? raw : {};
-    if (!settings.set(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING, { ...unknownFields, v: 1, enabled: next.enabled, inUse, off })) {
+    const fields = { ...unknownFields, v: 1, enabled: next.enabled, inUse, off, ...(claude ? { claude } : {}) };
+    if (!settings.set(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING, fields)) {
       throw new Error("ADE couldn't save that to your account. Try again in a moment.");
     }
     return await afterWrite();
@@ -1053,6 +1086,19 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       const setting = cloudSetting();
       setting.enabled = args.on;
       return await saveSetting(setting);
+    },
+    /**
+     * Claude's smart balance on ADE Cloud: `claude.smartBalance` in the account
+     * setting, the other fields of `claude` kept. One switch for ADE Cloud,
+     * apart from each own computer's switch; nothing syncs between them.
+     * P6's reconcile reads it.
+     */
+    async setCloudBalance(args: { provider: "claude"; on: boolean }): Promise<ProviderLoginStatus> {
+      if (args.provider !== "claude") throw new Error("Only Claude has a smart balance on ADE Cloud.");
+      const { settings } = await writableStores();
+      const raw = settings.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING);
+      const claude = isRecord(raw) && isRecord(raw.claude) ? raw.claude : {};
+      return await saveSetting(cloudSetting(), null, { ...claude, smartBalance: args.on });
     },
     /** Remove one sign-in or Claude pass from the account (a tombstone every computer hears), and its setting entries. */
     async remove(args: { key: string }): Promise<ProviderLoginStatus> {
@@ -1505,7 +1551,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     const synced = await limit(deps.vault()?.sync?.({ maxAgeMs: GATE_MAX_AGE_MS }));
     const applied = synced === "timeout" ? "timeout" : await limit(pass([providerId as ProviderLoginProvider]));
     let outcome: ProviderLoginGateOutcome = synced === "timeout" || applied === "timeout" ? { result: "timeout" } : { result: "ok" };
-    const expiring = outcome.result === "ok" ? expiringCopy(providerId) : null;
+    // A takeover running here (armed, or a turn's that went on) holds the turn too: its CLI must not renew the same copy.
+    const expiring = outcome.result === "ok" ? expiringCopy(providerId) ?? takeoverCopy(providerId) : null;
     if (expiring) outcome = await shortWait(providerId as ProviderLoginProvider, expiring, started, limit, options);
     const waitedMs = now() - started;
     if (waitedMs >= 100 || outcome.result !== "ok") {
@@ -1525,6 +1572,14 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     for (const [place, entry] of Object.entries(appliedCache?.applied ?? {})) {
       if (entry.provider !== provider || !entry.accessOnly || entry.expiresAt == null) continue;
       if (entry.expiresAt - now() < SHORT_WAIT_LEFT_MS) return { place, entry };
+    }
+    return null;
+  }
+
+  /** The applied copy of this provider whose renewal a takeover here runs now, if any. */
+  function takeoverCopy(provider: string): { place: string; entry: AppliedEntry } | null {
+    for (const [place, entry] of Object.entries(appliedCache?.applied ?? {})) {
+      if (entry.provider === provider && takeovers.has(entry.source)) return { place, entry };
     }
     return null;
   }
@@ -1577,6 +1632,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     if (took === "renewed") return { result: "ok", renewedHere: true };
     if (took === "fresh") return { result: "ok" };
     ownerOff.set(expiring.place, { ownerLabel, at: now() });
+    // Too early to claim (the owner had until expiry + 60 s): one takeover at that moment, so the retry finds a fresh copy.
+    if (took !== "timeout") armTakeover(provider, expiring.place, key);
     return { result: "owner_off", provider, ownerLabel };
   }
 
@@ -1585,6 +1642,56 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
   type TakeoverResult = "renewed" | "fresh" | "none";
   /** One takeover per sign-in at a time; a second turn waits on the same one. */
   const takeovers = new Map<string, Promise<TakeoverResult>>();
+
+  /**
+   * The takeover armed by a turn that ended `owner_off` before the claim was
+   * allowed (step 3c): ONE unref timer per sign-in, at expiry + 60 s (and the
+   * last write + 60 s). Only a turn arms it ("no renewals for nobody"); it
+   * goes at stop, when the copy here is no longer the expiring one (a new
+   * copy, a sign-out, the sign-in switched off or not in use), and after it
+   * runs once.
+   */
+  const armed = new Map<string, { place: string; provider: ProviderLoginProvider; timer: ReturnType<typeof setTimeout> }>();
+
+  function armTakeover(provider: ProviderLoginProvider, place: string, key: string): void {
+    if (!deps.cloudComputer || !ticks.length || armed.has(key) || takeovers.has(key) || !TAKEOVER_HOW[provider]) return;
+    const vault = deps.vault();
+    const row = vault?.list(ACCOUNT_SCOPE_ALL).find((entry) => entry.kind === PROVIDER_LOGIN_VAULT_KIND && entry.key === key);
+    const meta = vault && row && !row.deleted ? metaFor(vault, row) : null;
+    if (!row || meta?.expiresAt == null) return;
+    const updatedAt = Date.parse(row.updatedAt);
+    const at = Math.max(meta.expiresAt, Number.isFinite(updatedAt) ? updatedAt : 0) + TAKEOVER_GRACE_MS + 1_000;
+    // Past that moment the turn already tried the claim; it failed for another reason, and nothing is armed.
+    if (at <= now()) return;
+    const timer = setTimeout(() => {
+      if (armed.get(key)?.timer !== timer) return;
+      armed.delete(key);
+      if (!ticks.length || !stillExpiring(place, key)) return;
+      void takeover(provider, place, key);
+    }, at - now());
+    timer.unref?.();
+    armed.set(key, { place, provider, timer });
+    deps.logger.info("provider_login.takeover_armed", { provider, inMs: at - now() });
+  }
+
+  function disarm(key: string, reason: string): void {
+    const entry = armed.get(key);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    armed.delete(key);
+    deps.logger.info("provider_login.takeover_disarmed", { provider: entry.provider, reason });
+  }
+
+  /** The copy applied at `place` is still `key`'s access-only copy, with less than 60 s left. */
+  function stillExpiring(place: string, key: string): boolean {
+    const entry = appliedCache?.applied[place];
+    return Boolean(entry && entry.source === key && entry.accessOnly && entry.expiresAt != null && entry.expiresAt - now() < SHORT_WAIT_LEFT_MS);
+  }
+
+  /** After each apply: an armed takeover whose copy changed (a new copy, a sign-out, switched off) goes. */
+  function checkArmed(): void {
+    for (const [key, entry] of [...armed]) if (!stillExpiring(entry.place, key)) disarm(key, "copy_changed");
+  }
 
   function takeover(provider: ProviderLoginProvider, place: string, key: string): Promise<TakeoverResult> {
     const running = takeovers.get(key);
@@ -1723,7 +1830,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     if (provider === "pi" && memo.slot === "anthropic") return refused("not_carried");
     if (!row.refreshOwner || row.refreshOwner === machine.deviceId) return refused("own_owner");
     if (!payload.renewedBy || payload.renewedAt == null || payload.renewedBy.machineKey === machine.machineKey) return refused("not_renewed_elsewhere");
-    if (payload.familyHash !== memo.familyHash && !payload.lineage.includes(memo.familyHash)) return refused("other_family");
+    if (!ofSameSignIn(payload, memo, state)) return refused("other_family");
     if (!sameAccount(payload.account, memo.account)) return refused("other_account");
     if (!laterExpiry(payload.expiresAt, memo.expiresAt)) return refused("not_newer");
     if (state.pushed[memo.key]?.pushedHash !== memo.contentHash) return refused("local_changed");
@@ -1735,7 +1842,10 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     const readBack = result.loginHashes[0] ?? payload.contentHash;
     const renewedBy = payload.renewedBy.label || "another computer";
     state.pushed[memo.key] = { pushedHash: readBack, familyHash: payload.familyHash, pushedAt: now(), absentSince: null, absentPasses: 0 };
-    state.writtenBack = { ...(state.writtenBack ?? {}), [memo.key]: { contentHash: readBack, familyHash: payload.familyHash, at: now(), renewedBy } };
+    state.writtenBack = {
+      ...(state.writtenBack ?? {}),
+      [memo.key]: { contentHash: readBack, familyHash: payload.familyHash, at: now(), renewedBy, accountHash: payload.contentHash },
+    };
     // The marks moved: the next pass reads the file again and finds this copy.
     bundleMemos.delete(candidate.bundleId);
     deps.logger.info("provider_login.written_back", { provider, slot: memo.slot, renewedByCloud: payload.renewedBy.cloud === true });
@@ -1871,12 +1981,15 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     if (!rotating || !value) return;
     claimBacks.add(key);
     const provider = meta.provider;
+    // The claim drops `takenFrom`: the takeover it marked ends here (step 3c).
+    const claimValue = withoutTakenFrom(value);
     void decideRotatingRenewal({
       vault: rotating,
       deviceId: machine.deviceId,
       ref: { scope: ACCOUNT_SCOPE_ALL, kind: PROVIDER_LOGIN_VAULT_KIND, key },
       expiresAtMs: meta.expiresAt,
       currentValue: value,
+      ...(claimValue ? { claimValue } : {}),
       nowMs: now(),
       logger: deps.logger,
       logContext: { provider },
@@ -2033,6 +2146,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
   function leaveTicks(): void {
     planGeneration += 1;
     ownerRenewal?.stop();
+    for (const key of [...armed.keys()]) disarm(key, "stopped");
     if (!ticks.length) return;
     for (const release of ticks.splice(0)) release();
     for (const timer of settleTimers.values()) clearTimeout(timer);

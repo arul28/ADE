@@ -1739,6 +1739,13 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { on: boolean }",
       example: "(desktop only) provider_logins.setCloudAll {\"on\":false}",
     },
+    setCloudBalance: {
+      description:
+        "Switch Claude's smart balance on or off for ADE Cloud. One switch for ADE Cloud, off at the start, apart from "
+        + "each computer's own switch. Only the ADE desktop app calls it.",
+      input: "object { provider: \"claude\", on: boolean }",
+      example: "(desktop only) provider_logins.setCloudBalance {\"provider\":\"claude\",\"on\":true}",
+    },
     remove: {
       description: "Remove one sign-in from the account; every computer hears it. Only the ADE desktop app calls it.",
       input: "object { key: string }",

@@ -51,7 +51,11 @@ export type ProviderLoginStateFile = {
   signedOut?: Record<string, number>;
 };
 
-export type WrittenBack = { contentHash: string; familyHash: string; at: number; renewedBy: string };
+/**
+ * One write-back: `contentHash` is the file here as read back, `accountHash`
+ * the account copy it came from (they can differ: Kimi's config part).
+ */
+export type WrittenBack = { contentHash: string; familyHash: string; at: number; renewedBy: string; accountHash?: string };
 
 export function emptyState(accountUserId: string | null): ProviderLoginStateFile {
   return { v: 1, accountUserId, bundles: {}, pushed: {} };

@@ -59,7 +59,7 @@ const CLOUD_SIGN_IN_WRITES = [
  * user-client checks alone would let them through; only the desktop's client
  * names reach a user-only action.
  */
-const PROVIDER_LOGIN_ACCOUNT_WRITES = ["use", "setCloud", "setCloudAll", "remove"] as const;
+const PROVIDER_LOGIN_ACCOUNT_WRITES = ["use", "setCloud", "setCloudAll", "setCloudBalance", "remove"] as const;
 
 const USER_SETTING_WRITES = {
   account_settings: { actions: ["set", "remove"], entryId: null },
@@ -71,7 +71,7 @@ const USER_SETTING_WRITES = {
     entryId: "agents.providers",
   },
   // Copying this computer's sign-ins into the account, and which ones ADE
-  // Cloud uses, are the person's calls (P5). The four account writes are also
+  // Cloud uses, are the person's calls (P5). The five account writes are also
   // user-only below: outside apps and agents read the status, never change it.
   provider_logins: { actions: ["captureNow", "allowKeychain", ...PROVIDER_LOGIN_ACCOUNT_WRITES], entryId: "agents.providers" },
   keybindings: { actions: ["set"], entryId: null },
