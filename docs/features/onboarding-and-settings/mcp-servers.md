@@ -20,7 +20,9 @@ and the brand color and mark (Simple Icons, CC0). It ships with ADE and is
 read-only. Every entry was checked against the vendor's own docs and its
 npm/PyPI publisher, and every `oauth` server offers the dynamic client
 registration that ADE's sign-in needs. Vendors that need an approved client
-(Slack, Canva, Asana, hosted Figma, Vercel) are left out.
+or refuse ADE's registration (Slack, Asana, Vercel, Dropbox, Ramp, hosted
+Figma and others) are left out; the header of `mcpCatalogueEntries.ts` keeps
+the full list and the reason for each.
 
 The catalogue is a set of quick setups, not the list of servers ADE supports:
 any MCP server can be added by its command or URL, and Settings says so above
