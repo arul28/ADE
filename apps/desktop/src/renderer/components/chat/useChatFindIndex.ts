@@ -33,6 +33,8 @@ const EMPTY_CHAT_FIND_MATCHES: ChatFindMatches = { entries: [], total: 0 };
 const INDEX_SLICE_MS = 3;
 /** Streaming re-counts at most this often. */
 const LIVE_RECOUNT_MS = 300;
+/** Time left before a live update may run again, when the last one ran at `lastAt`. */
+const liveWaitMs = (lastAt: number): number => Math.max(0, LIVE_RECOUNT_MS - (performance.now() - lastAt));
 
 export function useChatFindIndex({
   source,
@@ -54,14 +56,15 @@ export function useChatFindIndex({
   const indexTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastRecountAtRef = useRef(0);
   const lastFoldAtRef = useRef(0);
+  const indexDueAtRef = useRef(0);
 
   const publish = useCallback((next: ChatFindMatches) => {
     matchesRef.current = next;
     setMatches(next);
   }, []);
 
-  /** Count now with `query` (the field's latest value by default). */
-  const recountNow = useCallback((query: string = queryRef.current): ChatFindMatches => {
+  /** Count what is folded with `query` (the field's latest value by default). */
+  const recount = useCallback((query: string = queryRef.current): ChatFindMatches => {
     if (recountTimerRef.current) {
       clearTimeout(recountTimerRef.current);
       recountTimerRef.current = null;
@@ -72,18 +75,36 @@ export function useChatFindIndex({
     return next;
   }, [publish, queryRef]);
 
+  /**
+   * Count for something the reader did (new words, Enter). A streaming row
+   * that waits for its paced fold is folded first, so the count is of the text
+   * as it is now, not as it was up to LIVE_RECOUNT_MS ago.
+   */
+  const recountNow = useCallback((query?: string): ChatFindMatches => {
+    const index = indexRef.current;
+    if (index?.onlyRefoldsPending()) {
+      lastFoldAtRef.current = performance.now();
+      index.indexSome(INDEX_SLICE_MS);
+    }
+    return recount(query);
+  }, [recount]);
+
   const scheduleRecount = useCallback(() => {
     if (recountTimerRef.current) return;
-    const wait = Math.max(0, LIVE_RECOUNT_MS - (performance.now() - lastRecountAtRef.current));
     recountTimerRef.current = setTimeout(() => {
       recountTimerRef.current = null;
-      if (openRef.current) recountNow();
-    }, wait);
-  }, [recountNow]);
+      if (openRef.current) recount();
+    }, liveWaitMs(lastRecountAtRef.current));
+  }, [recount]);
 
   /** Fold rows in slices until the index is complete, recounting as it fills. */
   const runIndexing = useCallback((delayMs = 0) => {
-    if (indexTimerRef.current) return;
+    const dueAt = performance.now() + delayMs;
+    if (indexTimerRef.current) {
+      // A paced re-fold is waiting: rows that fold at once pull it forward.
+      if (dueAt >= indexDueAtRef.current) return;
+      clearTimeout(indexTimerRef.current);
+    }
     const slice = () => {
       indexTimerRef.current = null;
       const index = indexRef.current;
@@ -91,15 +112,17 @@ export function useChatFindIndex({
       lastFoldAtRef.current = performance.now();
       if (index.indexSome(INDEX_SLICE_MS)) {
         setIndexing(false);
-        recountNow();
+        recount();
         return;
       }
       setIndexing(true);
       scheduleRecount();
+      indexDueAtRef.current = performance.now();
       indexTimerRef.current = setTimeout(slice, 0);
     };
+    indexDueAtRef.current = dueAt;
     indexTimerRef.current = setTimeout(slice, delayMs);
-  }, [recountNow, scheduleRecount]);
+  }, [recount, scheduleRecount]);
 
   const sync = useCallback((first: boolean) => {
     const index = indexRef.current;
@@ -110,17 +133,16 @@ export function useChatFindIndex({
     // A streaming reply changes its row on every delta, and a fold parses the
     // whole reply. Its count shows at most every LIVE_RECOUNT_MS, so it folds at
     // that pace too, and the fold recounts. New rows (history paging in) fold at once.
-    let paced = false;
+    const paced = !first && index.onlyRefoldsPending();
     if (index.hasPending()) {
       // First sync: fold what fits in one slice now so a short chat answers
       // on the first keystroke, then finish in the background.
       if (first) index.indexSome(INDEX_SLICE_MS);
-      paced = !first && index.onlyRefoldsPending();
-      runIndexing(paced ? Math.max(0, LIVE_RECOUNT_MS - (performance.now() - lastFoldAtRef.current)) : 0);
+      runIndexing(paced ? liveWaitMs(lastFoldAtRef.current) : 0);
     }
-    if (first) recountNow();
+    if (first) recount();
     else if (!paced) scheduleRecount();
-  }, [recountNow, runIndexing, scheduleRecount, source]);
+  }, [recount, runIndexing, scheduleRecount, source]);
 
   const clearTimers = useCallback(() => {
     if (recountTimerRef.current) clearTimeout(recountTimerRef.current);
@@ -152,9 +174,13 @@ export function useChatFindIndex({
     partial: indexing || hasOlderHistory,
     /**
      * Read now, not from the last render's `partial`: rows are still being
-     * folded, so a count of 0 is not final yet.
+     * folded for the first time, so a count of 0 is not final yet. A streaming
+     * row that waits for its paced re-fold is counted already.
      */
-    rowsStillFolding: () => Boolean(indexRef.current?.hasPending()),
+    rowsStillFolding: () => {
+      const index = indexRef.current;
+      return Boolean(index?.hasPending() && !index.onlyRefoldsPending());
+    },
     recountNow,
   };
 }

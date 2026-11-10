@@ -76,10 +76,9 @@ let cachedChars = 0;
  * The text a markdown body shows: link labels without their URLs, code
  * without fences, no scene/diagram source, blocks separated by "\n" so
  * a match never runs from one paragraph into the next. Cached by source text:
- * a reply is parsed once, however many queries are typed. `remember: false`
- * is for text that is not asked for again (a reply that is streaming).
+ * a reply is parsed once, however many queries are typed.
  */
-function markdownDisplayedText(markdown: string, remember = true): string {
+function markdownDisplayedText(markdown: string): string {
   const cached = displayedTextCache.get(markdown);
   if (cached !== undefined) return cached;
   let text: string;
@@ -90,16 +89,22 @@ function markdownDisplayedText(markdown: string, remember = true): string {
   } catch {
     text = markdown;
   }
-  if (!remember) return text;
   displayedTextCache.set(markdown, text);
   cachedChars += markdown.length + text.length;
   while (displayedTextCache.size > MAX_CACHED_TEXTS || cachedChars > MAX_CACHED_CHARS) {
     const oldest = displayedTextCache.keys().next().value;
     if (oldest === undefined) break;
-    cachedChars -= oldest.length + (displayedTextCache.get(oldest)?.length ?? 0);
-    displayedTextCache.delete(oldest);
+    forgetDisplayedText(oldest);
   }
   return text;
+}
+
+/** Drop a cached text, if it is held. */
+function forgetDisplayedText(markdown: string): void {
+  const text = displayedTextCache.get(markdown);
+  if (text === undefined) return;
+  cachedChars -= markdown.length + text.length;
+  displayedTextCache.delete(markdown);
 }
 
 type RowSource = { text: string; markdown: boolean } | null;
@@ -198,11 +203,13 @@ export class ChatFindIndex {
       this.skipReady();
       if (this.cursor >= this.order.length) return true;
       const entry = this.order[this.cursor]!;
-      // A row folded before with other text is a reply that is streaming. Each
-      // of its texts is replaced by the next, so none goes in the cache: a long
-      // reply used to fill the cache with its own prefixes and evict the chat.
-      const streaming = this.folded.has(entry.key);
-      const shown = entry.markdown ? markdownDisplayedText(entry.text, !streaming) : entry.text;
+      // A row folded before had other text (most often a reply that is
+      // streaming). That text is not asked for again, so it leaves the cache:
+      // kept, the prefixes of one long reply would fill the cache and evict
+      // the rest of the chat.
+      const previous = this.folded.get(entry.key);
+      if (previous) forgetDisplayedText(previous.source);
+      const shown = entry.markdown ? markdownDisplayedText(entry.text) : entry.text;
       this.folded.set(entry.key, { source: entry.text, folded: foldFindCase(shown) });
       this.cursor += 1;
       if (performance.now() >= deadline) return this.cursor >= this.order.length;
