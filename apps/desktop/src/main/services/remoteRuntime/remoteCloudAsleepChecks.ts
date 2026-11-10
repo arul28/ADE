@@ -18,6 +18,8 @@ export type CloudAsleepCheckCallbacks = {
   linkIsDown(targetId: string): boolean;
   /** Close the link and show the machine as not connected, with no error. */
   rest(target: RemoteRuntimeTarget): void;
+  /** A machine started or ended a rest. Called once per change, never per question. */
+  restChanged?(targetId: string, resting: boolean): void;
 };
 
 export class CloudAsleepChecks {
@@ -48,7 +50,7 @@ export class CloudAsleepChecks {
 
   /** The machine answered, or a person is connecting it: it is not asleep, and an older question is out of date. */
   noteAlive(targetId: string): void {
-    this.restingTargetIds.delete(targetId);
+    this.endRest(targetId);
     this.aliveStampByTargetId.set(targetId, this.aliveStamp(targetId) + 1);
     const followUp = this.followUpsByTargetId.get(targetId);
     if (followUp) clearTimeout(followUp);
@@ -57,7 +59,7 @@ export class CloudAsleepChecks {
 
   /** A later question found the machine awake: the next dial may go out. */
   endRest(targetId: string): void {
-    this.restingTargetIds.delete(targetId);
+    if (this.restingTargetIds.delete(targetId)) this.callbacks.restChanged?.(targetId, false);
   }
 
   /** Asks about a resting machine again. False when the question fails or the machine is no longer a cloud computer. */
@@ -103,8 +105,10 @@ export class CloudAsleepChecks {
   }
 
   private rest(target: RemoteRuntimeTarget): void {
+    const started = !this.restingTargetIds.has(target.id);
     this.restingTargetIds.add(target.id);
     this.callbacks.rest(target);
+    if (started) this.callbacks.restChanged?.(target.id, true);
   }
 
   /** Asked again only while the link is still down and nothing reached the machine. */

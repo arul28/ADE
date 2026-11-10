@@ -1,5 +1,17 @@
-import type { CloudAccountState, CloudCatalog, CloudHoursState } from "../../../account-directory/src/cloud/contract";
+import type {
+  CloudAccountState,
+  CloudCatalog,
+  CloudDiskRefusalReason,
+  CloudHoursState,
+  CloudPaidPlanId,
+  CloudPlanChangeTiming,
+  CloudPlanFacts,
+  CloudPlanId,
+} from "../../../account-directory/src/cloud/contract";
+import { formatCloudCents, overPlanDiskSentence } from "../../../account-directory/src/cloud/contract";
 import type { CloudReadyMachineState } from "./cloudReady";
+
+export { formatCloudCents };
 
 /**
  * ADE Cloud: Linux machines ADE runs for the person, each with ADE's brain as
@@ -74,28 +86,68 @@ export function cloudKindLabel(kind: CloudMachineKind): string {
  */
 const CLOUD_CATALOG_FALLBACK: CloudCatalog = {
   sizes: [
-    { type: "default", cpu: 2, memoryGb: 4, multiplierMilli: 1000 },
-    { type: "default", cpu: 4, memoryGb: 8, multiplierMilli: 2000 },
-    { type: "default", cpu: 4, memoryGb: 16, multiplierMilli: 3300 },
-    { type: "default", cpu: 4, memoryGb: 32, multiplierMilli: 5800 },
-    { type: "vm", cpu: 2, memoryGb: 4, multiplierMilli: 2500 },
-    { type: "vm", cpu: 4, memoryGb: 8, multiplierMilli: 5000 },
-    { type: "vm", cpu: 4, memoryGb: 16, multiplierMilli: 8200 },
-    { type: "vm", cpu: 4, memoryGb: 32, multiplierMilli: 14500 },
+    { type: "default", cpu: 2, memoryGb: 4, multiplierMilli: 1000, tier: "small", label: "Small", diskMaxGb: 12 },
+    { type: "default", cpu: 4, memoryGb: 8, multiplierMilli: 2000, tier: "medium", label: "Medium", diskMaxGb: 20 },
+    { type: "default", cpu: 4, memoryGb: 16, multiplierMilli: 3300, tier: null, label: "Standard 4 CPU, 16 GB", diskMaxGb: 40 },
+    { type: "default", cpu: 4, memoryGb: 32, multiplierMilli: 5800, tier: null, label: "Standard 4 CPU, 32 GB", diskMaxGb: 80 },
+    { type: "vm", cpu: 2, memoryGb: 4, multiplierMilli: 2500, tier: null, label: "Full 2 CPU, 4 GB", diskMaxGb: 100 },
+    { type: "vm", cpu: 4, memoryGb: 8, multiplierMilli: 5000, tier: "large", label: "Large", diskMaxGb: 50 },
+    { type: "vm", cpu: 4, memoryGb: 16, multiplierMilli: 8000, tier: "xlarge", label: "X-Large", diskMaxGb: 100 },
+    { type: "vm", cpu: 4, memoryGb: 32, multiplierMilli: 14500, tier: null, label: "Full 4 CPU, 32 GB", diskMaxGb: 100 },
   ],
+  // Only what every server sells: Pro and extra disk are offered only when the server sends them.
   plans: {
-    free: { includedMilli: 50_000, computerLimit: 3, diskGb: 4 },
-    paid: { includedMilli: 500_000, computerLimit: 10, diskGb: 40 },
+    free: { includedMilli: 50_000, computerLimit: 3, diskGb: 12, priceUsd: 0 },
+    paid: { includedMilli: 500_000, computerLimit: 10, diskGb: 40, priceUsd: 5 },
   },
   diskStepGb: 4,
   paidPriceUsd: 5,
   extraHourCents: 1,
 };
 
-/** The sizes and plans the server answers with, or the fallback until the account has loaded. */
+/**
+ * The sizes and plans the server answers with, or the fallback until the
+ * account has loaded. Nothing is added that the server didn't send: a server
+ * before Pro has no `plus`, `pro` or extra-disk price, and its `paid` plan
+ * gets only its own price (`paidPriceUsd`) filled in.
+ */
 export function cloudCatalogOf(account: Pick<CloudAccountState, "catalog"> | null | undefined): CloudCatalog {
-  return account?.catalog ?? CLOUD_CATALOG_FALLBACK;
+  const catalog = account?.catalog;
+  if (!catalog) return CLOUD_CATALOG_FALLBACK;
+  return {
+    ...catalog,
+    plans: {
+      ...catalog.plans,
+      free: { ...catalog.plans.free, priceUsd: catalog.plans.free.priceUsd ?? 0 },
+      paid: { ...catalog.plans.paid, priceUsd: catalog.plans.paid.priceUsd ?? catalog.paidPriceUsd },
+    },
+  };
 }
+
+/** True when the server sells Plus and Pro (and so takes `{ plan }` at checkout). */
+export function cloudCatalogHasPro(catalog: CloudCatalog): catalog is CloudCatalog & { plans: { plus: CloudPlanFacts; pro: CloudPlanFacts } } {
+  return catalog.plans.plus != null && catalog.plans.pro != null;
+}
+
+/** Which plan the account has: `plus` for a paid account from a server that predates Pro. */
+export function cloudPlanIdOf(account: Pick<CloudAccountState, "plan" | "planId">): CloudPlanId {
+  if (account.planId === "free" || account.planId === "plus" || account.planId === "pro") return account.planId;
+  return account.plan === "paid" ? "plus" : "free";
+}
+
+/** The facts of the account's plan, from what the server sent: a server before Pro has only `free` and `paid`. */
+export function cloudPlanFactsOf(account: Pick<CloudAccountState, "plan" | "planId">, catalog: CloudCatalog): CloudPlanFacts {
+  const byId = account.planId === "plus" || account.planId === "pro" ? catalog.plans[account.planId] : undefined;
+  return byId ?? catalog.plans[account.plan];
+}
+
+/** "Free", "Plus" or "Pro"; a paid account on a server before Pro keeps its old name, "$5 plan". */
+export function cloudPlanLabelOf(account: Pick<CloudAccountState, "plan" | "planId">, catalog: CloudCatalog): string {
+  if (account.planId === "plus" || account.planId === "pro") return CLOUD_PLAN_LABELS[account.planId];
+  return account.plan === "paid" ? `$${catalog.paidPriceUsd} plan` : CLOUD_PLAN_LABELS.free;
+}
+
+export const CLOUD_PLAN_LABELS: Readonly<Record<CloudPlanId, string>> = { free: "Free", plus: "Plus", pro: "Pro" };
 
 /** Hours of a Small computer this size uses per hour awake. */
 export function cloudHoursRate(kind: CloudMachineKind, shape: CloudShapeId, catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK): number {
@@ -129,20 +181,43 @@ export function cloudShapeForResources(cpu: number, memoryBytes: number): CloudS
 /** The smallest full computer that runs the Android emulator. */
 const CLOUD_ANDROID_VM_SHAPE = cloudShapeById("4x8");
 
+/** The full computer a computer of this size moves to for Android: Medium, or its own size when bigger. */
+export function cloudAndroidVmShape(boxShape: CloudShape | null): CloudShape {
+  return boxShape && CLOUD_SHAPES.indexOf(boxShape) > CLOUD_SHAPES.indexOf(CLOUD_ANDROID_VM_SHAPE)
+    ? boxShape
+    : CLOUD_ANDROID_VM_SHAPE;
+}
+
+/**
+ * Whether this cloud computer runs the Android emulator: a full computer of
+ * Medium or bigger. A full computer whose size ADE can't tell counts as one
+ * that does, so nothing claims what ADE doesn't know.
+ */
+export function cloudMachineRunsAndroid(machine: Pick<CloudMachine, "type" | "shapeId">): boolean {
+  if (machine.type !== "vm") return false;
+  return machine.shapeId ? cloudShapeRunsAndroid(machine.shapeId) : true;
+}
+
+/**
+ * The first half of {@link cloudAndroidNeedsVmMessage}: that this computer
+ * can't run the emulator, that a full computer of Medium or bigger can, and
+ * what that uses in hours. `kind` is what this computer is now.
+ */
+export function cloudAndroidNeedsVmCost(boxShape: CloudShape | null, kind: CloudMachineKind = "box"): string {
+  const vmShape = cloudAndroidVmShape(boxShape);
+  const rate = cloudHoursRate("vm", vmShape.id);
+  const more = boxShape ? `, about ${(rate - cloudHoursRate(kind, boxShape.id)).toFixed(1).replace(/\.0$/, "")} more than this computer` : "";
+  return "This computer can't run the Android emulator. A full computer can, at Medium or bigger. "
+    + `A ${vmShape.label} full computer uses about ${rate} hours for each hour it's awake${more}.`;
+}
+
 /**
  * Why a computer can't run the Android emulator, in plain words for the
  * person: a full computer can, what that uses in hours, and what happens to
  * this one. The agent's next steps are in the `ade-android` and `ade-cloud` skills.
  */
 export function cloudAndroidNeedsVmMessage(boxShape: CloudShape | null): string {
-  // A computer bigger than Medium moves to a full computer of its own size.
-  const vmShape = boxShape && CLOUD_SHAPES.indexOf(boxShape) > CLOUD_SHAPES.indexOf(CLOUD_ANDROID_VM_SHAPE)
-    ? boxShape
-    : CLOUD_ANDROID_VM_SHAPE;
-  const rate = cloudHoursRate("vm", vmShape.id);
-  const more = boxShape ? `, about ${(rate - cloudHoursRate("box", boxShape.id)).toFixed(1).replace(/\.0$/, "")} more than this computer` : "";
-  return "This computer can't run the Android emulator. A full computer can, at Medium or bigger. "
-    + `A ${vmShape.label} full computer uses about ${rate} hours for each hour it's awake${more}. `
+  return `${cloudAndroidNeedsVmCost(boxShape)} `
     + "ADE can make it and continue this chat there, with its history and changes. "
     + "This computer stays, and you can delete it from the new chat.";
 }
@@ -332,15 +407,146 @@ export const CLOUD_BACKSTOP_SLEEP_MINUTES = 5;
 /** The chat whose agent made a machine (create, copy, move): only that chat's unattended agent may delete it. */
 export const CLOUD_MADE_BY_CHAT_METADATA = "ade_made_by_chat";
 
-/** Set by the computer's brain when its disk is full and can't grow: `free_limit` or `account_limit`. */
+/**
+ * Set by the computer's brain when its disk is full and can't grow:
+ * `free_limit` or `account_limit`. Builds before plans read only this one.
+ */
 export const CLOUD_DISK_FULL_METADATA = "ade_disk_full";
 export type CloudDiskFullReason = "free_limit" | "account_limit";
+/** The server's exact reason (`CloudDiskRefusalReason`), written next to `ade_disk_full` by newer computers. */
+export const CLOUD_DISK_FULL_REASON_METADATA = "ade_disk_full_reason";
 
-/** What a person reads on a computer whose disk is full and can't grow, or null. */
-export function cloudDiskFullMessage(reason: string | null | undefined, catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK): string | null {
-  if (reason === "free_limit") return `This computer's disk is full. Free computers stay at ${catalog.plans.free.diskGb} GB; a paid plan lets it grow.`;
-  if (reason === "account_limit") return `This computer's disk is full, and your computers have reached the ${catalog.plans.paid.diskGb} GB they share.`;
+/** The older key's value for an exact reason, so builds before plans still say something. */
+export function cloudDiskFullLegacyReason(reason: string): CloudDiskFullReason {
+  return reason === "plan_disk" ? "free_limit" : "account_limit";
+}
+
+/**
+ * What a person reads on a computer whose disk is full and can't grow, or
+ * null. The exact reason wins over the older one; a reason this build
+ * doesn't know still gets a plain sentence.
+ */
+export function cloudDiskFullMessage(
+  reason: string | null | undefined,
+  catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK,
+  exactReason?: string | null,
+): string | null {
+  const head = "This computer's disk is full.";
+  // A server before Pro keeps each free computer at its own few GB; a newer one shares the free disk.
+  const freeRule = cloudCatalogHasPro(catalog)
+    ? `${head} Free computers share ${catalog.plans.free.diskGb} GB of disk at one time. A paid plan gives more.`
+    : `${head} Free computers stay at ${catalog.plans.free.diskGb} GB each; a paid plan lets it grow.`;
+  const known: Partial<Record<CloudDiskRefusalReason | CloudDiskFullReason, string>> = {
+    plan_disk: freeRule,
+    needs_approval: `${head} Turn on extra disk in Settings to let it grow.`,
+    extra_off: `${head} Delete a computer you no longer use, or turn on extra disk in Settings.`,
+    monthly_limit: `${head} Extra disk reached the monthly limit you set. Raise it in Settings.`,
+    tier_limit: `${head} This size can't have a bigger disk. Move it to a bigger size.`,
+    unavailable: `${head} ADE Cloud can't grow it right now.`,
+    free_limit: freeRule,
+    account_limit: `${head} Your computers use all your plan's disk at one time.`,
+  };
+  for (const value of [exactReason, reason]) {
+    if (!value) continue;
+    return known[value as keyof typeof known] ?? `${head} It can't grow right now.`;
+  }
   return null;
+}
+
+
+/** Room beyond what is asked for, for the filesystem's share of a grown disk. */
+const CLOUD_DISK_GROW_MARGIN_MB = 256;
+
+/** What a disk grow would do under the plan rules; `settings` sends the person to turn on extra disk. */
+export type CloudDiskGrowPlan =
+  | { grow: false; sentence: string; settings?: boolean }
+  | { grow: true; sentence: string; toGb: number };
+
+/**
+ * Whether a computer's disk can grow by `shortMb` (to the smallest whole
+ * number of steps that frees it), and the sentence that says so, by the plan
+ * rules: the disk all the account's computers have at one time, the size's
+ * own disk cap, and extra disk on a paid plan. The server checks all of it
+ * again on the grow.
+ */
+export function cloudDiskGrowPlan(box: CloudMachine, account: CloudAccountState | null, shortMb: number): CloudDiskGrowPlan {
+  const catalog = cloudCatalogOf(account);
+  const resources = box.resources;
+  const currentGb = resources?.diskGb ?? null;
+  if (!resources || currentGb == null || currentGb <= 0) {
+    return { grow: false, sentence: "ADE Cloud didn't say how big this computer's disk is, so ADE can't offer a bigger one." };
+  }
+  const stepGb = catalog.diskStepGb;
+  const toGb = currentGb + stepGb * Math.max(1, Math.ceil((shortMb + CLOUD_DISK_GROW_MARGIN_MB) / (stepGb * 1024)));
+  const type = cloudInstanceType(cloudMachineKindOf(box.type));
+  const maxGb = catalog.sizes.find((size) => size.type === type && size.cpu === resources.cpu && size.memoryGb === resources.memoryGb)?.diskMaxGb;
+  if (maxGb != null && toGb > maxGb) {
+    return { grow: false, sentence: "This size can't have a disk that big. Move it to a bigger size." };
+  }
+  const growTo = `Grow this computer's disk from ${currentGb} GB to ${toGb} GB.`;
+  if (!account) return { grow: true, toGb, sentence: `${growTo} The computer restarts.` };
+  const free = account.rules === "free" || cloudPlanIdOf(account) === "free";
+  const limitGb = account.disk.limitGb;
+  if (limitGb == null) {
+    // An older server gives no account limit only on a free account, whose computers stay at their first disk.
+    return { grow: false, sentence: `Free computers stay at ${catalog.plans.free.diskGb} GB each; a paid plan lets it grow.` };
+  }
+  const afterGb = account.disk.usedGb - currentGb + toGb;
+  const pastGb = afterGb - limitGb;
+  if (pastGb <= 0) {
+    return { grow: true, toGb, sentence: `${growTo} Your computers then have ${afterGb} GB of your plan's ${limitGb} GB at one time. The computer restarts.` };
+  }
+  if (free) {
+    const upgrade = cloudCatalogHasPro(catalog) ? "get Plus" : "get a paid plan";
+    return { grow: false, sentence: `Free computers have ${catalog.plans.free.diskGb} GB of disk at one time. Delete a computer, or ${upgrade}.` };
+  }
+  const extra = account.extraDisk;
+  const extraPrice = catalog.extraDiskCentsPer10GbMonth;
+  if (!extra || extraPrice == null) {
+    // An older paid server: no extra disk to offer or price.
+    return {
+      grow: false,
+      sentence: `A ${toGb} GB disk would pass the ${limitGb} GB your computers have at one time. Delete a computer you no longer use, then try again.`,
+    };
+  }
+  if (extra.state === "on") {
+    const limitCents = extra.monthlyLimitCents;
+    if (limitCents == null) {
+      // The server asks before any extra disk while no monthly limit is set.
+      return {
+        grow: false,
+        settings: true,
+        sentence: `A ${toGb} GB disk goes ${pastGb} GB past your plan's ${limitGb} GB at one time. Set a monthly limit for extra disk in Settings, or delete a computer.`,
+      };
+    }
+    // The server's rule: the extra disk, kept for a full month, must cost no more than the limit.
+    if ((pastGb * extraPrice) / 10 > limitCents) {
+      return {
+        grow: false,
+        settings: true,
+        sentence: `A ${toGb} GB disk would pass the ${formatCloudCents(limitCents)} a month you set for extra disk. Raise the limit in Settings, or delete a computer you no longer use.`,
+      };
+    }
+    const monthCents = Math.ceil((pastGb / 10) * extraPrice);
+    return {
+      grow: true,
+      toGb,
+      sentence: `${growTo} That is ${pastGb} GB past your plan, about ${formatCloudCents(monthCents)} a month, inside your ${formatCloudCents(limitCents)} monthly limit. The computer restarts.`,
+    };
+  }
+  if (extra.state === "asked") {
+    return {
+      grow: false,
+      settings: true,
+      sentence: `A ${toGb} GB disk goes ${pastGb} GB past your plan's ${limitGb} GB at one time. Turn on extra disk in Settings or delete a computer.`,
+    };
+  }
+  // `off`: never decided; the server asks once, on the grow.
+  return {
+    grow: true,
+    toGb,
+    sentence: `${growTo} It goes ${pastGb} GB past your plan's ${limitGb} GB at one time. Extra disk costs ${formatCloudCents(extraPrice)} for each 10 GB a month. The computer restarts.`,
+  };
 }
 
 /**
@@ -402,7 +608,10 @@ export function cloudShapeWithin(shape: CloudShapeId, max: CloudShapeId): boolea
   return order.indexOf(shape) <= order.indexOf(max);
 }
 
-export type { CloudAccountState, CloudCatalog, CloudHoursState };
+export type { CloudAccountState, CloudCatalog, CloudHoursState, CloudPaidPlanId, CloudPlanChangeTiming };
+
+/** What opening checkout did: a browser page opened, or the plan changed without one. */
+export type CloudOpenCheckoutResult = { opened: boolean; change?: CloudPlanChangeTiming };
 
 /** The server's sentence for what needs hours at 0. The server enforces it; these two only stop a request that can't work. */
 export const CLOUD_OUT_OF_HOURS_MESSAGE = "You're out of ADE Cloud hours for this period.";
@@ -412,6 +621,17 @@ export const CLOUD_HOURS_UNKNOWN_MESSAGE =
 
 export function cloudOutOfHours(account: Pick<CloudAccountState, "hours"> | null | undefined): boolean {
   return account?.hours.state === "zero";
+}
+
+/**
+ * Why no computer can wake on an account on the free plan (a cancelled plan
+ * rolls to it) whose computers hold more disk than the plan has, or null. A
+ * failed payment (`past_due`) is not this: its computers keep working. The
+ * server refuses the wake (`over_plan_disk`) with the same sentence.
+ */
+export function cloudOverPlanDiskMessage(account: Pick<CloudAccountState, "plan" | "disk"> | null | undefined): string | null {
+  if (!account || account.plan !== "free" || account.disk.limitGb == null || account.disk.usedGb <= account.disk.limitGb) return null;
+  return overPlanDiskSentence(account.disk.usedGb, account.disk.limitGb);
 }
 
 /**
@@ -473,6 +693,10 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
       detail: "Your account follows the free plan until it's paid. Update your card to bring your plan back.",
     };
   }
+  const overPlanDisk = cloudOverPlanDiskMessage(account);
+  if (overPlanDisk) {
+    return { id: "cloud-over-plan-disk", tone: "warning", title: "Your computers can't wake", detail: overPlanDisk };
+  }
   if (account.hours.state === "zero") {
     return {
       id: "cloud-hours-zero",
@@ -480,7 +704,9 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
       title: "You're out of ADE Cloud hours",
       detail: account.extraHours.available
         ? `Your computers are stopped until ${resetDate}. Turn on extra hours to keep going sooner.`
-        : `Your computers are stopped until ${resetDate}. The paid plan has ${formatCloudHours(catalog.plans.paid.includedMilli)} hours a month.`,
+        : cloudCatalogHasPro(catalog)
+          ? `Your computers are stopped until ${resetDate}. Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} hours a month, and Pro ${formatCloudHours(catalog.plans.pro.includedMilli)}.`
+          : `Your computers are stopped until ${resetDate}. The paid plan has ${formatCloudHours(catalog.plans.paid.includedMilli)} hours a month.`,
     };
   }
   if (account.hours.state === "warn95" || account.hours.state === "warn80") {
@@ -525,6 +751,13 @@ export type CloudMachineActionArgs = {
   action: CloudMachineActionKind;
   /** The new size, for `resize`. */
   shape?: CloudShapeId;
+  /** For `resize`: the new disk in GB (a multiple of the catalog's step, never smaller). Keeps the size when `shape` is unset. */
+  disk?: number;
+  /**
+   * For a `resize` that grows the disk: the person confirmed the restart it
+   * takes. The server refuses a grow on a running computer without it.
+   */
+  computerIdle?: boolean;
   /** For `delete`: the box's ADE machine, removed from the account once the box is gone. */
   machineKey?: string | null;
   /** For `delete`: who asked, for the server's delete log (an agent's chat; a person's desktop leaves it unset). */
@@ -537,11 +770,18 @@ export type CloudMachineActionResult = {
   message: string;
   /**
    * What stops the action, so the card can offer the way out:
-   * plans and hours, or wait for a backup window.
+   * plans and hours (0 hours, or more disk than the free plan has), or wait
+   * for a backup window.
    */
-  blocker: "rate_limited" | "out_of_hours" | null;
+  blocker: "rate_limited" | "out_of_hours" | "over_plan_disk" | null;
   /** For `delete`: the box is gone but its account row could not be removed. */
   accountRowLeft?: boolean;
+  /**
+   * For a refused disk grow or resize: the server's reason
+   * (`CloudDiskRefusalReason`, or another string from a newer server).
+   * `message` always says it plainly.
+   */
+  diskRefusal?: { reason: string };
 };
 
 /** "Small · 2 CPU · 4 GB", with "Full computer" in front for a VM. */
@@ -550,7 +790,10 @@ export function describeCloudMachineSize(machine: Pick<CloudMachine, "type" | "r
   const size = machine.resources
     ? `${machine.resources.cpu} CPU · ${machine.resources.memoryGb} GB`
     : null;
-  return [machine.type === "vm" ? "Full computer" : null, shape?.label ?? null, size].filter(Boolean).join(" · ");
+  // Only when the provider says it: a grown disk is the one size a resize can't undo.
+  const diskGb = machine.resources?.diskGb;
+  const disk = typeof diskGb === "number" && Number.isFinite(diskGb) && diskGb > 0 ? `${diskGb} GB disk` : null;
+  return [machine.type === "vm" ? "Full computer" : null, shape?.label ?? null, size, disk].filter(Boolean).join(" · ");
 }
 
 /** The kind of machine this instance type is. */

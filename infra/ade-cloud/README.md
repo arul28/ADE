@@ -6,7 +6,14 @@ the ADE brain.
 
 - `template/Dockerfile`: `node:24-bookworm-slim`, git/gawk/tini, the Linux
   Desktop lane screen packages (xvfb, openbox, dbus, at-spi2-core, ffmpeg,
-  chromium), and the **released** ADE installed under `/opt/ade` with
+  chromium), one app for each of the lane screen's "Browser", "Terminal" and
+  "Files" buttons (chromium, xterm, thunar), fonts for pages and emoji
+  (fonts-liberation, fonts-noto-color-emoji; DejaVu comes with fontconfig) and
+  GTK's SVG icon loader (librsvg2-common). Those extras add about 30 MB
+  installed: xterm 2.7, thunar 14.7, fonts-liberation 2.0,
+  fonts-noto-color-emoji 10.5, librsvg2-common 0.1 (Debian 12 sizes, computed
+  from the package index with `--no-install-recommends`). Then the **released**
+  ADE installed under `/opt/ade` with
   `ade-app.dev/install.sh`. `ADE_HOME` is `/home/node/.ade`, on the box's
   persistent disk (ADE Cloud masks `/home/node` with it, so nothing of ADE's own
   is baked there).

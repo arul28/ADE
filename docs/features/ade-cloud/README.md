@@ -82,8 +82,9 @@ that stops (see Sleep and busy rules).
 ## Surfaces
 
 - **Settings:** Integrations › ADE Cloud (`CloudSection.tsx`), with Plan and
-  hours (`CloudPlanCard.tsx`: hours left, reset date, extra hours for paid
-  accounts, buy and manage, which open Stripe's pages in the browser), the
+  hours (`CloudPlanCard.tsx`: hours left, the plan, computers and disk at one
+  time, reset date, extra hours and extra disk for paid accounts, buy Plus or
+  Pro, move between them, and manage, which opens Stripe's portal), the
   80% / 95% / out-of-hours banners, and computers due for deletion, ending in
   "Powered by Agent 37". Settings entries are `integrations.ade-cloud*`.
 - **Add a computer and the chat picker:** New ADE Cloud computer (a size and a
@@ -95,15 +96,94 @@ that stops (see Sleep and busy rules).
 - **Bring your own provider:** `BringYourOwnCloudCard.tsx` is layout only and
   shows only when `BRING_YOUR_OWN_CLOUD_ENABLED` is on. Nothing is wired to it.
 
-## Hours and sizes
+## Plans, hours and sizes
 
-Hours are Small-computer hours: free 50 a month, paid 500. Hours, plan, disk and
-billing come from `GET /cloud/account` (`CloudAccountState`), read only while
-ADE Cloud is visible (`useCloudMachines`). At 0 hours the server refuses, and
-that sentence is what the person sees. The eight sizes are Small, Medium, Large
-and X-Large, standard or full computer (`CLOUD_SHAPES`, `CLOUD_HOURS_RATE` in
-`shared/adeCloud.ts`, matching the server's `plans.ts`). The server picks the
-disk and the image; a client never sends either.
+The rules are in [docs/plans/ade-cloud-plans-and-disk.md](../../plans/ade-cloud-plans-and-disk.md).
+The server's `plans.ts` holds them, and `GET /cloud/account` sends them in
+`catalog`, so no client keeps its own copy (`cloudCatalogOf` in
+`shared/adeCloud.ts` fills gaps from an older server).
+
+| Plan | Price | Hours a month | Disk at one time | Computers at one time |
+|---|---|---|---|---|
+| Free | $0 | 50 | 12 GB shared | 3 |
+| Plus | $5 | 500 | 40 GB | 10 |
+| Pro | $20 | 1,500 | 120 GB | 30 |
+
+Hours are Small-computer hours. Disk and computers are what the account has
+at one time, never a monthly amount. The account says `plan: "free" | "paid"`
+for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
+`past_due` account follows the free rules but keeps what it has.
+
+- **Sizes:** the main list is Small (standard 2/4, 1x, disk up to 12 GB),
+  Medium (standard 4/8, 2x, 20 GB), Large (full 4/8, 5x, 50 GB) and X-Large
+  (full 4/16, 8x, 100 GB). The other four shapes stay valid with the
+  provider's own disk limit (`catalog.sizes[].tier`, `label`, `diskMaxGb`).
+- **Changing plans:** Plus to Pro applies now, charges the difference for the
+  rest of the period, and keeps the hours used. Pro to Plus applies at the
+  period end (`billing.nextPlanId`); it is refused while the computers hold
+  more than Plus's disk, unless extra disk is on and a month of it fits the
+  limit. Both go through `POST /cloud/billing/checkout {plan}` on the
+  subscription itself: Stripe's portal can't switch a subscription with more
+  than one item.
+- **Not set up yet:** Pro and extra disk are offered only once their Stripe
+  prices are set. Until then `catalog.plans.plus`/`pro`,
+  `catalog.extraDiskCentsPer10GbMonth` and `account.extraDisk` are absent, a
+  checkout for Pro is a 400 and the extra-disk route is a 404.
+- **Extra disk** (Plus and Pro): disk past the plan's, $1 for each 10 GB a
+  month, counted by the day on the day's peak (`cloud_disk_days`, its own
+  Stripe meter). It starts undecided; the first grow past the plan is refused
+  with reason `needs_approval` and ADE asks once. On, a grow passes only
+  when a full 30-day month of the new extra disk fits the monthly limit the
+  person set (`POST /cloud/billing/extra-disk`), and what a period bills never
+  passes it. Each day's row records the bought plan's disk and whether the day
+  is billable (paid, in good standing, extra disk on) when it is written, and
+  is billed from the row alone, from the 10-minute owner check. A send that
+  fails is retried inside Stripe's one-day dedupe window; one never confirmed
+  goes to the owner (`cloud.disk_meter_unconfirmed`), never resent. The daily
+  run emails a person once when their extra disk, kept a month, passes the
+  limit (a lowered limit, a plan change), and lists them in the owner report.
+- **More disk than the free plan has:** an account on the free plan (a
+  cancelled plan rolls to it; `past_due` does not count) with more than 12 GB
+  keeps its computers but they stay stopped: a wake, a command, an update and
+  a new timed wake are refused with 402 `over_plan_disk`, except the short
+  "Push all work to GitHub" wake, which does not restart the 30-day delete
+  clock. Timed wakes already set are deleted, as at 0 hours. Deleting a computer always works,
+  and the 30-day delete of unused computers still runs. The owner report
+  lists these accounts.
+- **Refusals:** a create, copy, move or grow past a limit answers code
+  `disk_limit` (or `needs_paid_plan` on Free) with `reason`
+  (`CloudDiskRefusalReason`) and a plain `message`. A client that doesn't
+  know a reason shows the message.
+
+At 0 hours the server refuses, and that sentence is what the person sees.
+Hours, plan, disk and billing come from `GET /cloud/account`
+(`CloudAccountState`), read only while ADE Cloud is visible
+(`useCloudMachines`). The server picks the image and the first disk (4 GB; a
+move keeps the old computer's disk, and the old disk doesn't count twice). A
+disk only grows, through `resize` with `disk`: on its own near full, when the
+computer is idle (`ade-cli/src/services/power/cloudDiskGrow.ts`, which sends
+`origin: "auto"`), or from the Android pane. A first Android start needs
+about 7.2 GB free for the device's data, so on a cloud computer the brain
+refuses it up front (`ANDROID_LOW_DISK`, `androidDiskGuard.ts`), and the pane
+offers **Grow the disk** to the smallest 4 GB step that fits. The person
+confirms the restart, which is what the request's `computerIdle` says. The
+notice follows the plan rules (`AndroidCloudComputerNotice.tsx`): no button
+past the size's `diskMaxGb`, or past the free plan's disk at one time; on a
+paid plan it gives the extra disk and its monthly cost, sends a person whose
+extra disk is turned down to the plans card, and opens the plans card when
+the server answers `needs_approval`.
+
+## Owner cost protection
+
+The Worker estimates what ADE Cloud costs this month (`costReport.ts`, every
+10 minutes, from awake time and disk at the provider's prices) and keeps it in
+`cloud_settings.cost_mtd_micros`. When `cloud_settings.owner_cost_limit_usd`
+is set and reached, creates, copies, moves and grows are refused (`owner_limit`)
+and the owner gets one email a day; waking, sleeping and deleting still work.
+With no limit set nothing is enforced, and the daily run logs that once. The
+daily run also writes `cloud_account_days` (cost and income per account),
+raises alarms (a paid account that costs more than it pays, a free one past
+$3 a month, a day at twice the week's mean) and emails the owner the report.
 
 ## Stored data
 
@@ -111,7 +191,7 @@ Account vault items, scope `all`, kind `integration`: `cloud-budget` (agent
 limits only; the name is historical), `cloud-ready` (which projects keep a machine ready),
 `cloud-claude-token` and `cloud-key-<provider>` (sign-ins for new machines).
 Machine metadata keys are `ade_*` (`ade_machine_key`, `ade_request_id`,
-`ade_made_by_chat`, `ade_disk_full`, and the ready-machine keys in `cloudReady.ts`), plus `created_by: ade`.
+`ade_made_by_chat`, `ade_disk_full` and `ade_disk_full_reason`, and the ready-machine keys in `cloudReady.ts`), plus `created_by: ade`.
 
 ## The machine template
 
@@ -160,6 +240,41 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   and a failed redial, and is asked again 45 s and 90 s later: a computer closes
   its link up to a minute before its status says asleep. A person's write wakes it; the saved-connection
   maintenance asks again every 5 minutes and redials once it is awake.
+- A send from a saved chat wakes its computer, which takes 15–30 s. Until the
+  send settles, the chat pane shows its working indicator as "Waking the
+  computer…" and the Work row reads "Waking". The renderer decides this at send
+  time from the saved copy (`markCloudWakeForSend` in `cloudSavedChatsSync.ts`).
+  It is display only: the send goes to the same machine as before.
+- A sleeping computer that still exists looks connected in Work: its lanes are
+  not dimmed or marked offline (`machineIsCloudResting` in `crossMachineLanes.ts`).
+  Its rows stay `online: false` for every guard. A deleted computer's saved
+  chats keep the offline look.
+- In a chat on a sleeping computer, a proof says the computer is asleep and
+  offers **Wake**, and a code block's **Run** wakes it before it asks to run
+  (`useChatMachineWake.ts`). Both are the person's explicit connect of the
+  chat's own machine, which wakes it; the proof then loads again. A deleted
+  computer's proof says so, with no button. An unreachable machine that is
+  not a sleeping cloud computer still reads "offline".
+- Copy and move hold the computer awake only while they run: the copy's hold
+  on the source ends when the fork is running or failed, and the move's hold on
+  the new computer ends once its files and projects are in. The time-outs (20
+  and 45 minutes) only cover an ADE that quit mid-way.
+- After a move, a chat shows once, on the computer that still exists. The Work
+  list and the session router let a machine that lists a chat itself win over
+  a saved copy with the same id (`crossMachineLanes.ts`,
+  `useWorkMachineRouter.ts`). The saved-chats read gives each chat id one
+  computer: one that still exists beats a deleted one (no connection, or
+  missing from the cloud list while a surface keeps it current), then a
+  connected one, then the newer copy (`cloudSavedChatsSync.ts`). Every move
+  this desktop runs forgets its saved connection to the deleted source
+  (`forgetMachineConnections` in `cloudMachineCopy.ts`). Another desktop keeps
+  that connection; its chats there read as on a deleted computer.
+- When the remote connection service starts or ends a rest for a computer
+  (found asleep, or answering again), main sends `cloudStatusChanged` once per
+  change (`onCloudRestChanged` → `cloudRestChanged` in `cloudWakeHook.ts`). The
+  windows then read the machine list again. Without it, the tool gate
+  (`useCloudMachines`) kept an old "running" answer and the tool showed a
+  connection error.
 - A saved chat names its project by the id the brain routes by (the registry id,
   written in `bootstrap.ts`). Copies saved before that carry the project database
   id, which the brain does not know. So a pinned remote call also sends the pin's
@@ -176,9 +291,11 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   without ADE Cloud access.
 - `ade cloud prepare-stop --timeout 40` (the server runs it before a stop at 0 hours)
   interrupts running chat turns and agent CLIs and writes the saved chat copy.
-- Disk (`cloudDiskGrow.ts`): when idle and at 85% used, a paid computer grows 4 GB
-  through `POST /resize` with `computerIdle: true`. Refused at the plan or the 40 GB
-  shared limit, and full at 95%, the computer's card says so in a plain sentence.
+- Disk (`cloudDiskGrow.ts`): when idle and at 85% used, a computer grows 4 GB
+  through `POST /resize` with `computerIdle: true` and `origin: "auto"`. Refused
+  (the plan's disk at one time, extra disk, its monthly limit, or the size's limit)
+  and full at 95%, the computer writes the exact reason to `ade_disk_full_reason`
+  and the older `ade_disk_full`, and its card says so in a plain sentence.
 
 Waking: `WorkSidebar` wraps tool panels in `CloudToolGate`
 (`terminals/cloudToolGate.tsx`): a person's click on a tool that needs the computer

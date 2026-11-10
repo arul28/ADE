@@ -13,7 +13,8 @@ use crate::fail;
 use crate::launch;
 use crate::media::{self, MediaCtx, MediaState, Recorder, StreamServer};
 use crate::procs::{self, first_existing, which, Spawned};
-use crate::protocol::{code, internal, iso_now, now_ms, DResult, DriverError, Output, Req};
+use crate::protocol::{code, internal, iso_now, log, now_ms, DResult, DriverError, Output, Req};
+use crate::wallpaper;
 use crate::xconn::{WinInfo, XConn};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -349,7 +350,12 @@ impl Lane {
                 }
             }
             let x = XConn::connect(display_num, &cookie)?;
-            x.set_background(0x1f2228);
+            // ADE's wallpaper, painted once; the flat base colour first, so a
+            // screen whose picture fails is still dark rather than black.
+            x.set_background(wallpaper::BASE);
+            if let Err(e) = wallpaper::paint(&x) {
+                log(&format!("lane {lane_id}: wallpaper not painted: {}", e.message));
+            }
             if has_wm {
                 // Wait (briefly) for the manager to claim the screen, so the first
                 // window an agent opens is decorated and listed.

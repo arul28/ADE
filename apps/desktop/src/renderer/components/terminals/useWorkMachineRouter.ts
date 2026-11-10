@@ -9,6 +9,7 @@ import {
   type ChatMachineRouter,
   type LaneBindingSource,
 } from "../../lib/chatMachineRouting";
+import { claimSessionsLiveFirst } from "../../state/cloudRestingRows";
 import {
   useAppStore,
   useRootAppStore,
@@ -79,20 +80,20 @@ export function useWorkMachineRouter(
     // when a machine actually contributes sessions, and only when the memoized
     // router inputs change, so the local-only render path allocates nothing.
     let sessionBindingsById: Map<string, OpenProjectBinding> | null = null;
-    for (const machine of machines) {
-      if (!machine.binding) continue;
+    const boundMachines = machines.filter((machine) => machine.binding);
+    for (const machine of boundMachines) {
       additionalLaneSources.push({
-        bindingKey: machine.binding.key,
+        bindingKey: machine.binding!.key,
         laneIds: machine.lanes.map((lane) => lane.id),
       });
-      for (const session of machine.sessions) {
-        const sessionId = session.id?.trim();
-        if (!sessionId) continue;
-        sessionBindingsById ??= new Map();
-        if (!sessionBindingsById.has(sessionId)) {
-          sessionBindingsById.set(sessionId, machine.binding);
-        }
-      }
+    }
+    // A machine that lists the chat itself owns it over a saved copy (after a
+    // move, the new computer lists the old computer's chats), the same rule as
+    // the Work list's dedupe. No lane filter: the router follows the session.
+    for (const { entry, session } of claimSessionsLiveFirst(boundMachines)) {
+      const sessionId = session.id?.trim();
+      if (!sessionId) continue;
+      (sessionBindingsById ??= new Map()).set(sessionId, entry.binding!);
     }
     const router = createChatMachineRouter(buildChatMachineRoutingState({
       activeBinding: projectBinding ?? null,

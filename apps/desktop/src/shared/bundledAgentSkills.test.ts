@@ -21,7 +21,7 @@ import { describe, expect, it } from "vitest";
 
 import { BUNDLED_AGENT_SKILLS } from "../../scripts/bundled-agent-skills.mjs";
 import { adeBundledAgentSkills, adeDeprecatedAgentSkillAliases, adeOutsideClientAgentSkills, buildAdeBootstrapGuidance } from "./adeCliGuidance";
-import { setAdeCloudSkillVisible } from "./agentSkillRoots";
+import { adeHostWithheldAgentSkills, setAdeCloudSkillVisible } from "./agentSkillRoots";
 
 const agentSkillsRoot = fileURLToPath(new URL("../../resources/agent-skills", import.meta.url));
 
@@ -37,6 +37,17 @@ function readSkillDirectoriesOnDisk(): string[] {
 }
 
 const sorted = (names: readonly string[]): string[] => [...names].sort();
+
+/** Runs `run` as if this process were on `platform` (the host the guidance is built for). */
+function onPlatform<T>(platform: NodeJS.Platform, run: () => T): T {
+  const previous = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: platform, configurable: true });
+  try {
+    return run();
+  } finally {
+    if (previous) Object.defineProperty(process, "platform", previous);
+  }
+}
 
 describe("bundled agent skill rosters", () => {
   it("has a non-trivial directory to check against", () => {
@@ -78,16 +89,19 @@ describe("bundled agent skill rosters", () => {
     expect(missing).toEqual([]);
   });
 
-  it("names every skill in the bootstrap guidance the providers actually receive", () => {
+  it.each(["darwin", "linux", "win32"] as const)("names every skill in the bootstrap guidance the providers actually receive on %s", (platform) => {
     // The list is only worth keeping in sync because of what it renders into.
     // Deprecated aliases stay on disk so their old names resolve, but are not
     // advertised: one name per skill. Skills for apps outside ADE (served as
-    // ADE MCP prompts) are not either.
+    // ADE MCP prompts) are not either, and neither are the skills the host
+    // cannot run: `ade apple` works only on a Mac.
+    const hostWithheld = new Set(adeHostWithheldAgentSkills(platform));
+    expect(hostWithheld.has("ade-apple")).toBe(platform !== "darwin");
     setAdeCloudSkillVisible(true);
-    const bootstrap = buildAdeBootstrapGuidance([]);
+    const bootstrap = onPlatform(platform, () => buildAdeBootstrapGuidance([]));
     setAdeCloudSkillVisible(false);
     for (const skillName of readSkillDirectoriesOnDisk()) {
-      if (adeDeprecatedAgentSkillAliases.has(skillName) || adeOutsideClientAgentSkills.has(skillName)) {
+      if (adeDeprecatedAgentSkillAliases.has(skillName) || adeOutsideClientAgentSkills.has(skillName) || hostWithheld.has(skillName)) {
         expect(bootstrap).not.toContain(`\`${skillName}\``);
       } else {
         expect(bootstrap).toContain(`\`${skillName}\``);

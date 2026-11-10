@@ -103,6 +103,8 @@ import {
 import { adeActionAccess, isBackgroundAdeWrite, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import { findMachineProject } from "../../../shared/projectIdentity";
+// How long a woken machine gets to come back online before the call fails as usual.
+import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
@@ -149,10 +151,14 @@ type RemoteConnectionServiceOptions = {
    * a bounded lookup. Such a machine then takes the normal failure path.
    */
   asleepForUse?: (target: RemoteRuntimeTarget) => Promise<boolean | null> | null;
+  /**
+   * A cloud computer started or ended a rest (found asleep, or answering
+   * again). Once per change. The owner tells the windows, whose view of the
+   * computer is otherwise read only when a wake or a cloud action changes it.
+   */
+  onCloudRestChanged?: (targetId: string, resting: boolean) => void;
 };
 
-/** How long a woken machine gets to come back online before the call fails as usual. */
-const WOKEN_MACHINE_CONNECT_WAIT_MS = 45_000;
 const WOKEN_MACHINE_RETRY_MS = 1_500;
 /**
  * How often a cloud computer found asleep is asked about again, so one that
@@ -381,6 +387,7 @@ export class RemoteConnectionService {
       stillWanted: (target) => Boolean(this.registry.get(target.id)) && !this.isManuallyDisconnected(target),
       linkIsDown: (targetId) => this.statusById.get(targetId)?.state === "error",
       rest: (target) => this.restAsleep(target),
+      restChanged: (targetId, resting) => this.options.onCloudRestChanged?.(targetId, resting),
     },
     CLOUD_ASLEEP_FOLLOW_UP_MS,
   );

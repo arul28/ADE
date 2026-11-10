@@ -845,6 +845,7 @@
 .ade-ig-limit-row > div:first-child { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .ade-ig-limit-row b { font-size: 12.5px; font-weight: 500; }
 .ade-ig-limit-row small { font-size: 11.5px; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-ig-limit-controls { display: flex; gap: 6px; align-items: center; }
 
 /* ADE Cloud: a line inside the banner under the facts (a failure, what to do next). */
 .ade-ig-hero-foot {

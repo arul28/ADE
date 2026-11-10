@@ -1,5 +1,5 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
-import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
 import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
@@ -4760,9 +4760,16 @@ declare global {
         /** What unattended agents may do on ADE Cloud (account vault; no pin). */
         getAgentLimits?: () => Promise<CloudAgentLimits | null>;
         setAgentLimits?: (limits: Partial<CloudAgentLimits>) => Promise<CloudAgentLimits | null>;
-        /** The account's plan (no pin): extra hours for paid accounts, and Stripe's pages in the browser. */
+        /** The account's plan (no pin): extra hours and extra disk for paid accounts, and Stripe's pages in the browser. */
         setExtraHours?: (enabled: boolean) => Promise<CloudAccountState | null>;
-        openCheckout?: () => Promise<{ opened: boolean }>;
+        /** Extra disk on with a monthly limit in whole dollars (1 to 1,000), or off. */
+        setExtraDisk?: (choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }) => Promise<CloudAccountState | null>;
+        /**
+         * Checkout for Plus (the default) or Pro. A paid account asking for its
+         * other plan changes it in place: nothing opens and `change` says when
+         * it applies (`now` for Pro, `next_period` for Plus).
+         */
+        openCheckout?: (plan?: CloudPaidPlanId) => Promise<CloudOpenCheckoutResult>;
         openBillingPortal?: () => Promise<{ opened: boolean }>;
         /**
          * Copy (fork) or move (box ↔ VM) one box. Both answer at once and
