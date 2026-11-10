@@ -499,21 +499,28 @@ export function createSurveyService(args: {
   };
 
   /**
-   * One bounded request to PostHog, with no cookie and no referrer. Null when
-   * it could not be made (offline, blocked, timed out); that is logged as
-   * `failureEvent`.
+   * One request to PostHog, with no cookie and no referrer, and one time limit
+   * that covers the body too: a response whose JSON stalls must not hold the
+   * check open. `body` is the JSON of an OK response, else null. The whole
+   * result is null when the request could not be made or read (offline,
+   * blocked, timed out, not JSON); that is logged as `failureEvent`.
    */
-  const postHogRequest = async (url: string, init: RequestInit, failureEvent: string): Promise<Response | null> => {
+  const postHogJson = async (
+    url: string,
+    init: RequestInit,
+    failureEvent: string,
+  ): Promise<{ ok: boolean; status: number; body: unknown } | null> => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     timeout.unref?.();
     try {
-      return await fetchImpl(url, {
+      const response = await fetchImpl(url, {
         ...init,
         signal: controller.signal,
         credentials: "omit",
         referrerPolicy: "no-referrer",
       });
+      return { ok: response.ok, status: response.status, body: response.ok ? await response.json() : null };
     } catch (error) {
       args.logger.warn(failureEvent, { errorKind: error instanceof Error ? error.name : "unknown" });
       return null;
@@ -522,27 +529,17 @@ export function createSurveyService(args: {
     }
   };
 
-  /** A response's JSON, or null when the body is not JSON. */
-  const readJson = async (response: Response, failureEvent: string): Promise<unknown> => {
-    try {
-      return await response.json();
-    } catch (error) {
-      args.logger.warn(failureEvent, { errorKind: error instanceof Error ? error.name : "unknown" });
-      return null;
-    }
-  };
-
   const fetchSurveys = async (target: { token: string; host: string }): Promise<unknown> => {
     // PostHog's own SDK path first; the slashless spelling is its documented alias.
     for (const route of ["/api/surveys/", "/api/surveys"]) {
       // Offline or blocked: try again tomorrow with whatever was cached.
-      const response = await postHogRequest(
+      const response = await postHogJson(
         `${target.host}${route}?token=${encodeURIComponent(target.token)}`,
         { method: "GET", headers: { Accept: "application/json" } },
         "product_surveys.fetch_failed",
       );
       if (!response) continue;
-      if (response.ok) return await readJson(response, "product_surveys.fetch_failed");
+      if (response.ok) return response.body;
       if (response.status !== 404) return null;
     }
     return null;
@@ -560,7 +557,7 @@ export function createSurveyService(args: {
     const target = endpoint();
     const distinctId = args.analytics.getDistinctId();
     if (!target || !distinctId) return false;
-    const response = await postHogRequest(
+    const response = await postHogJson(
       `${target.host}/flags/?v=2`,
       {
         method: "POST",
@@ -574,8 +571,7 @@ export function createSurveyService(args: {
       args.logger.warn("product_surveys.flag_failed", { status: response.status });
       return false;
     }
-    const body = await readJson(response, "product_surveys.flag_failed") as
-      { flags?: Record<string, { enabled?: unknown } | undefined> } | null;
+    const body = response.body as { flags?: Record<string, { enabled?: unknown } | undefined> } | null;
     const flag = body?.flags?.[SURVEY_REAL_USER_FLAG];
     if (!flag) {
       args.logger.warn("product_surveys.flag_failed", { errorKind: "flag_missing" });
