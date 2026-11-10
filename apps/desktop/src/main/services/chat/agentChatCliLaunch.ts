@@ -12,6 +12,7 @@ import type {
 } from "../../../shared/types/chat";
 import type { createLaneService } from "../lanes/laneService";
 import type { createPtyService } from "../pty/ptyService";
+import { providerLoginGate } from "../providerLogins/providerLoginHooks";
 import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { resolveTrackedCliPreset } from "./harnessPresetLaunch";
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
@@ -85,6 +86,10 @@ export async function launchAgentChatCli(
   if (!isLaunchProfile(providerKey) || providerKey === "shell") {
     throw new Error(`agentChat.launchCli: unsupported provider '${providerKey}'.`);
   }
+  // On a cloud computer, the account's sign-in for this provider is written
+  // before the CLI starts (P5 §4.4). Null everywhere else: no await.
+  const loginGate = providerLoginGate(providerKey);
+  if (loginGate) await loginGate;
   const kickoffPrompt =
     typeof arg?.kickoffPrompt === "string" ? arg.kickoffPrompt : "";
   if (!kickoffPrompt.trim().length) {

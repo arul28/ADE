@@ -4263,10 +4263,13 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
 export function buildMachineAccountDomainServices(runtime: AccountDomainRuntime): {
   cloud: OpaqueService;
   account_vault: OpaqueService | null;
+  provider_logins: OpaqueService | null;
 } {
   return {
     cloud: buildCloudDomainService(runtime),
     account_vault: cloudOnlyVaultService(buildAccountVaultDomainService(runtime)),
+    // The brain's one sign-in sync, the same service a project runtime serves.
+    provider_logins: toService(buildProviderLoginsDomainService()),
   };
 }
 

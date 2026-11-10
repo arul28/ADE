@@ -747,7 +747,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   provider_logins: {
     read: ["status"],
-    write: ["captureNow"],
+    write: ["captureNow", "use", "setCloud", "setCloudAll", "remove"],
   },
 };
 

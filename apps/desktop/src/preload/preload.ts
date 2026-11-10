@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
+import type { ProviderLoginProvider, ProviderLoginStatus as ProviderLoginSyncStatus } from "../shared/types/providerLogins";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
 import type { NewLaneDefaults } from "../shared/laneStart";
@@ -2380,6 +2381,16 @@ function callPinnedOrBoundRuntimeActionOr<T>(
 }
 
 /**
+ * The account's provider sign-ins (P5): the pinned machine, else the tab's
+ * bound runtime, else this computer's brain with no project
+ * (`providerLogins.call`), so Settings works in a window with no project.
+ */
+function callProviderLogins<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr<T>(pin, "provider_logins", action, { args: { ...args } }, () =>
+    ipcRenderer.invoke(IPC.providerLoginsCall, { action, args: { ...args } }));
+}
+
+/**
  * The lane machine's dev servers. The runtime's list is the source; this
  * Electron process's own registry is added only when the lane is on this
  * computer, because it describes this computer's terminals. A runtime too old
@@ -2937,6 +2948,12 @@ const remoteAccountSettingsChangedFanout = createRemoteRuntimeFanout<Record<stri
   onSubscribe: () => ensureRemoteRuntimeEventPump(),
   extract: (payload) => payload.type === "account_settings_changed" ? {} : null,
 });
+const remoteProviderLoginsChangedFanout = createRemoteRuntimeFanout<Record<string, never>>({
+  eventType: "provider_logins_changed",
+  label: "provider sign-ins",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => payload.type === "provider_logins_changed" ? {} : null,
+});
 const remoteSessionChangedFanout = createRemoteRuntimeFanout<TerminalSessionChangedEvent>({
   eventType: "terminal_session_changed",
   label: "session",
@@ -3157,6 +3174,7 @@ const remoteWorkToolShowRequestFanout = createRemoteRuntimeFanout<WorkToolShowRe
 export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteAgentChatEventFanout,
   remoteAccountSettingsChangedFanout,
+  remoteProviderLoginsChangedFanout,
   remoteSessionChangedFanout,
   remoteLaneDeleteEventFanout,
   remoteLaneLifecycleEventFanout,
@@ -11401,6 +11419,22 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "proxy", "setDisabled", { args }, () =>
         ipcRenderer.invoke(IPC.proxySetDisabled, args),
       ),
+  },
+  providerLogins: {
+    status: (args: { provider?: ProviderLoginProvider | null } = {}, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("status", args, pin),
+    captureNow: (args: { provider?: ProviderLoginProvider | null } = {}, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("captureNow", args, pin),
+    use: (args: { provider: ProviderLoginProvider; key: string | null; slot?: string | null }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("use", args, pin),
+    setCloud: (args: { key: string; on: boolean }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("setCloud", args, pin),
+    setCloudAll: (args: { on: boolean }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("setCloudAll", args, pin),
+    remove: (args: { key: string }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("remove", args, pin),
+    onChanged: (cb: () => void): (() => void) =>
+      remoteProviderLoginsChangedFanout.subscribe(() => cb()),
   },
   providerInstances: {
     list: async (

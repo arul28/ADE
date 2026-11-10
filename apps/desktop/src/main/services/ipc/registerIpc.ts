@@ -12518,6 +12518,31 @@ export function registerIpc({
 
   registerCloudSavedChatsIpc({ logger: getCtx().logger });
 
+  // The account's provider sign-ins with no project bound: this computer's
+  // brain, through its machine route (`providerLogins.call`). The writes there
+  // are refused to anything but this desktop (user-only).
+  ipcMain.handle(IPC.providerLoginsCall, async (_event, arg: unknown): Promise<unknown> => {
+    const request = arg && typeof arg === "object" ? arg as { action?: unknown; args?: unknown } : {};
+    const action = typeof request.action === "string" ? request.action : "";
+    if (!["status", "captureNow", "use", "setCloud", "setCloudAll", "remove"].includes(action)) {
+      throw new Error(`provider_logins has no ${action || "?"} action.`);
+    }
+    const pool = localRuntimeConnectionPool;
+    if (!pool) {
+      throw new AdeExpectedError("ADE's background service isn't running on this computer yet. Try again in a moment.", "environment");
+    }
+    try {
+      const response = await pool.callSync<{ result?: unknown }>("providerLogins.call", {
+        action,
+        ...(request.args && typeof request.args === "object" ? { args: request.args } : {}),
+      }, { timeoutMs: localRuntimeActionTimeoutMs("provider_logins", action) });
+      return response?.result;
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      throw carryExpected(error, new Error(stripElectronErrorWrapper(error.message)));
+    }
+  });
+
   // the provider: the account-wide key and new machines made on it (no pin; see the module).
   registerCloudIpc({
     // Its items in this computer's brain, also with no project here: then the

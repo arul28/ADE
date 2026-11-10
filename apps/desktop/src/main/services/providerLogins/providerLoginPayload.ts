@@ -142,3 +142,30 @@ export function readProviderLoginMeta(value: string | null): (ProviderLoginPaylo
     contentHash: stringOr(parsed.contentHash, ""),
   };
 }
+
+/**
+ * The whole stored value, login included, for apply on a cloud computer
+ * (P5 step 2), or null for a value that is not payload v1. Only apply reads
+ * this; it never reaches a status, a log or an action result.
+ */
+export function readProviderLoginPayload(value: string | null): (ReturnType<typeof readProviderLoginMeta> & object & {
+  files: CarriedFile[];
+  parts: Record<string, unknown> | null;
+}) | null {
+  const meta = readProviderLoginMeta(value);
+  if (!meta || !value) return null;
+  const parsed = JSON.parse(value) as Record<string, unknown>;
+  const files: CarriedFile[] = [];
+  for (const entry of Array.isArray(parsed.files) ? parsed.files : []) {
+    if (!isRecord(entry)) return null;
+    if (typeof entry.root !== "string" || typeof entry.rel !== "string" || typeof entry.data !== "string") return null;
+    if (entry.enc !== "utf8" && entry.enc !== "base64") return null;
+    files.push({ root: entry.root as CarriedFile["root"], rel: entry.rel, enc: entry.enc, data: entry.data });
+  }
+  return { ...meta, files, parts: isRecord(parsed.parts) ? parsed.parts : null };
+}
+
+/** The bytes of one carried file. */
+export function carriedFileBytes(file: CarriedFile): Buffer {
+  return file.enc === "base64" ? Buffer.from(file.data, "base64") : Buffer.from(file.data, "utf8");
+}

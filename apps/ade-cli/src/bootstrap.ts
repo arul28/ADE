@@ -1,4 +1,5 @@
 import "./lib/packagedRuntimeFlag";
+import { registerProviderLoginRuntime } from "../../desktop/src/main/services/providerLogins/providerLoginHooks";
 import { assertLocalProjectDataAvailable, recordLocalProjectDatabaseIdentity } from "./services/projects/projectRegistry";
 import { assertProjectRootReadable } from "./services/projects/projectRootAccess";
 import {
@@ -3158,6 +3159,16 @@ export async function createAdeRuntime(args: {
     }
     applyFastModePolicyRef = () => agentChatService?.applyFastModePolicy();
     teardown.push(() => agentChatService?.forceDisposeAll?.());
+    // The brain's one sign-in sync (P5) reaches this runtime's chats and its
+    // clients through these: idle processes end on a changed sign-in, and
+    // Settings hears the change.
+    const chatServiceForLogins = agentChatService;
+    teardown.push(registerProviderLoginRuntime({
+      restartProviderRuntimesWhenIdle: (provider) => {
+        chatServiceForLogins?.restartProviderRuntimesWhenIdle(provider);
+      },
+      notifyChanged: () => pushEvent("runtime", { type: "provider_logins_changed" }),
+    }));
     if (resolvedArgs.chatRuntime === "agent" && agentChatService) {
       const settleNudgeSweep = createSettleNudgeSweep({
         sessionService,

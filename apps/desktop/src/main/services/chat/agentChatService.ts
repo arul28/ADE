@@ -6,6 +6,8 @@ import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { formatContinuityConversation } from "./continuityConversation";
 import { probeClaudeKeychainLogin } from "../ai/providerCredentialSources";
+import { providerLoginGeneration } from "../ai/providerLoginChanged";
+import { providerLoginGate } from "../providerLogins/providerLoginHooks";
 import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { claudeCompactionSettings, claudeCompactWindow, claudeEstimatedCompactAt, compactionIdleModeDefault, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { withClaudeSubagentCompactWindow } from "../../../shared/claudeBuiltinAgentPrompts";
@@ -1412,6 +1414,7 @@ import {
   acpInvocationKey,
   AcpModeUnsupportedError,
   buildAcpPromptBlocks,
+  acpSessionPool,
   createAcpRuntime,
   ensureQwenAdeSkillDefaultsFile,
   openAcpSession,
@@ -5439,6 +5442,12 @@ type ManagedChatSession = {
    * brain drops it and the host re-sends its servers, as after any restart.
    */
   pendingCallerMcpReplacement?: { servers: CallerMcpServers | null } | null;
+  /**
+   * The provider's sign-in changed (P5: applied on a cloud computer) while this
+   * chat was busy. Its process ends when the turn settles
+   * (`runLoginRestartIfIdle`); a running turn is never cut.
+   */
+  pendingLoginRestart?: boolean;
   /**
    * Something was built for this chat while its custom provider or stored key
    * could not be resolved, so it carries the harness's own sign-in. The next
@@ -22578,6 +22587,7 @@ export function createAgentChatService(args: {
     // later turn. The `done` event schedules it too, for a runtime still
     // mid-turn when the idle mark lands.
     if (managed.restartAfterTurn) runRestartAfterTurn(managed);
+    if (managed.pendingLoginRestart) setTimeout(() => runLoginRestartIfIdle(managed), 0);
   };
 
   const regenStaleStatusLine = createStatusLineStaleRegen({
@@ -25226,6 +25236,7 @@ export function createAgentChatService(args: {
       settleClaudeGoalOnTurnEnd(managed, event.status);
       if (event.status === "completed") maybeStartAutoTitleRefine(managed);
       if (managed.restartAfterTurn) runRestartAfterTurn(managed);
+      if (managed.pendingLoginRestart) setTimeout(() => runLoginRestartIfIdle(managed), 0);
       void refreshLinkedIssueSnapshots(managed.session.id).catch((error) => {
         warnLinkedIssueSnapshotFailure(managed.session.id, "all", error);
       });
@@ -36840,6 +36851,7 @@ export function createAgentChatService(args: {
       binarySource: executable.source,
       ...(args.acpSpawnOverride ? { spawnOverride: args.acpSpawnOverride } : {}),
       ...(args.acpSessionPool ? { pool: args.acpSessionPool } : {}),
+      loginGeneration: providerLoginGeneration(managed.session.provider),
       callbacks: {
         onEvents: (runtime, events) => {
           if (!runtime || managed.runtime !== runtime) return;
@@ -46073,6 +46085,8 @@ export function createAgentChatService(args: {
           env: Object.entries(processEnv).filter(([, value]) => value != null).sort(([a], [b]) => a.localeCompare(b)),
           optOutNotificationMethods,
           agentSkillRoots,
+          // A changed sign-in never shares a process started on the older one.
+          loginGeneration: providerLoginGeneration("codex"),
         })).digest("hex")
       : null;
     const host = codexAppServerPool.acquire({
@@ -56873,6 +56887,7 @@ export function createAgentChatService(args: {
     policy.chatMode,
     policy.approvalPolicy,
     policy.fullAuto ? "full-auto" : "guarded",
+    `g${providerLoginGeneration("cursor")}`,
   ].join(":");
 
   const cursorSdkStateKeyFor = (managed: ManagedChatSession): string => [
@@ -61426,6 +61441,7 @@ export function createAgentChatService(args: {
     managed.session.id,
     managed.session.laneId,
     managed.laneWorktreePath,
+    `g${providerLoginGeneration("droid")}`,
   ].join(":");
 
   /**
@@ -61474,7 +61490,8 @@ export function createAgentChatService(args: {
     if (managed.runtime) teardownRuntime(managed, managed.runtime.kind === "copilot" ? "restart" : "handle_close");
     const copilotDownload = chatPinnedToolDownload(managed, "copilot", "the Copilot runtime");
     if (copilotDownload) await copilotDownload;
-    const baseEnv = buildAgentRuntimeEnv(managed);
+    // The pool keys on the env: a changed sign-in gets a new worker.
+    const baseEnv = { ...buildAgentRuntimeEnv(managed), ADE_PROVIDER_LOGIN_GEN: String(providerLoginGeneration("copilot")) };
     const executable = resolveCopilotSdkRuntime({ env: baseEnv });
     if (executable.source === "fallback-command") throw pinnedToolNotReadyError("copilot", "the Copilot runtime");
     const home = copilotConfigHome({ env: baseEnv });
@@ -62674,6 +62691,12 @@ export function createAgentChatService(args: {
       optimisticDroidTurnStart,
       optimisticCodexTurnStart,
     } = prepared;
+
+    // On a cloud computer, the account's sign-in for this provider is pulled
+    // and written before the provider starts or resumes (P5 §4.4). Null
+    // everywhere else: no await, no cost.
+    const loginGate = providerLoginGate(managed.session.provider);
+    if (loginGate) await loginGate;
 
     // Both dispatch commit points cancel the pending auto-resume: this one and
     // the accepted branch of `enqueueSteerOrDrop`. Together they cover every
@@ -66438,6 +66461,50 @@ export function createAgentChatService(args: {
         });
       });
     }, 0);
+  };
+
+  /**
+   * A chat is busy for a login restart while a turn runs, its process has work
+   * in flight (background jobs, subagents), or it waits on the person.
+   */
+  const loginRestartBusy = (managed: ManagedChatSession): boolean =>
+    sessionTurnRunning(managed) || hasRuntimeActiveWorkload(managed.runtime) || hasLivePendingInput(managed);
+
+  /** End the chat's process on the old login once it is idle; the next message resumes the thread. */
+  const runLoginRestartIfIdle = (managed: ManagedChatSession): boolean => {
+    if (!managed.pendingLoginRestart) return false;
+    if (managed.deleted || !managed.runtime || serviceDisposed) {
+      managed.pendingLoginRestart = false;
+      return false;
+    }
+    if (loginRestartBusy(managed)) return false;
+    managed.pendingLoginRestart = false;
+    teardownRuntime(managed, "restart");
+    logger.info("agent_chat.login_restart", { sessionId: managed.session.id, provider: managed.session.provider });
+    return true;
+  };
+
+  /**
+   * The provider's sign-in changed (P5 §6): end each idle chat's process now
+   * and each busy one's after its turn, keeping every conversation; and end
+   * the provider's unused pooled processes. A running turn is never cut: it
+   * ends on the login it started with.
+   */
+  const restartProviderRuntimesWhenIdle = (provider: string): { restarted: number; deferred: number; pooledEnded: number } => {
+    const id = provider.trim().toLowerCase();
+    let restarted = 0;
+    let deferred = 0;
+    for (const managed of managedSessions.values()) {
+      if (managed.session.provider !== id || !managed.runtime || managed.deleted) continue;
+      managed.pendingLoginRestart = true;
+      if (runLoginRestartIfIdle(managed)) restarted += 1;
+      else if (managed.pendingLoginRestart) deferred += 1;
+    }
+    const pooledEnded = (args.acpSessionPool ?? acpSessionPool).disposeIdle(id, "provider login changed");
+    if (restarted || deferred || pooledEnded) {
+      logger.info("agent_chat.login_restart_requested", { provider: id, restarted, deferred, pooledEnded });
+    }
+    return { restarted, deferred, pooledEnded };
   };
 
   /**
@@ -78707,6 +78774,7 @@ export function createAgentChatService(args: {
     messageSubagent,
     controlSubagent,
     restartSession,
+    restartProviderRuntimesWhenIdle,
     mcpRegistryChatStatus,
     waitFor: chatWaitRegistry.waitFor,
     armWait: chatWaitRegistry.arm,

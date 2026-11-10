@@ -599,3 +599,108 @@ export const PROVIDER_LOGIN_CARRY: ReadonlyArray<CarryRow> = ROWS;
 export function carryRow(provider: ProviderLoginProvider): CarryRow {
   return ROWS.find((row) => row.provider === provider)!;
 }
+
+// ── apply: where a carried file goes on this computer (P5 step 2) ─────
+
+/**
+ * The folder a root token names on this computer, with the same locator
+ * capture uses, or null for a root no carried row writes.
+ */
+export function carryRootDir(root: CarryRoot, ctx: CarryContext): string | null {
+  const args = { env: ctx.env, homeDir: ctx.homeDir };
+  switch (root) {
+    case "codexHome": return codexConfigHome(args);
+    case "grokHome": return grokConfigHome(args);
+    case "kimiHome": return kimiCodeConfigHome(args);
+    case "factoryHome": return factoryConfigHome(args);
+    case "qwenHome": return qwenConfigHome(args);
+    case "piAgent": return piAgentDir(args);
+    case "cursorSdk": return path.join(ctx.homeDir, ".cursor", "sdk");
+    case "geminiHome": return ctx.env.GEMINI_HOME?.trim() ? path.resolve(ctx.env.GEMINI_HOME.trim()) : path.join(ctx.homeDir, ".gemini");
+    case "devinData": {
+      const credentials = devinCredentialFiles({ env: ctx.env, homeDir: ctx.homeDir, platform: ctx.platform });
+      return path.dirname(credentials.find(exists) ?? credentials[0]!);
+    }
+    default: return null;
+  }
+}
+
+/**
+ * The only files apply may write for each provider: root and relative path.
+ * A vault item comes from any computer of the account, so a name outside this
+ * list (a `..`, an absolute path, another provider's folder) is refused.
+ */
+const APPLY_FILES: Partial<Record<ProviderLoginProvider, { root: CarryRoot; rel: RegExp }[]>> = {
+  codex: [{ root: "codexHome", rel: /^auth\.json$/ }],
+  cursor: [{ root: "cursorSdk", rel: /^auth\.json$/ }],
+  grok: [{ root: "grokHome", rel: /^auth\.json$/ }],
+  droid: [{ root: "factoryHome", rel: /^auth\.v2\.(file|key)$/ }],
+  kimi: [{ root: "kimiHome", rel: /^credentials\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/ }, { root: "kimiHome", rel: /^device_id$/ }],
+  qwen: [{ root: "qwenHome", rel: /^settings\.json$/ }, { root: "qwenHome", rel: /^\.env$/ }],
+  devin: [{ root: "devinData", rel: /^credentials\.toml$/ }],
+  antigravity: [{ root: "geminiHome", rel: /^antigravity-acp\/acp_(business_)?token\.json$/ }],
+};
+
+export function isApplyFileAllowed(provider: ProviderLoginProvider, root: string, rel: string): boolean {
+  return (APPLY_FILES[provider] ?? []).some((entry) => entry.root === root && entry.rel.test(rel));
+}
+
+/**
+ * What a cloud computer that does not renew a sign-in writes: the login with
+ * its refresh token taken out, so the CLI there can never renew it and split
+ * the family. `renewalSafe: false` means no refresh field could be found (a
+ * full copy is written; the status says renewal safety is unknown).
+ */
+export function accessOnlyFile(provider: ProviderLoginProvider, rel: string, data: Buffer): { data: Buffer; renewalSafe: boolean } {
+  const asJson = (): Record<string, unknown> | null => {
+    try {
+      const parsed = JSON.parse(data.toString("utf8")) as unknown;
+      return isRecord(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+  const encode = (value: unknown) => Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+  if (provider === "codex" && rel === "auth.json") {
+    const parsed = asJson();
+    const tokens = parsed && isRecord(parsed.tokens) ? parsed.tokens : null;
+    // Keep the field, empty, so the file still reads as a ChatGPT login.
+    if (!parsed || !tokens || typeof tokens.refresh_token !== "string") return { data, renewalSafe: true };
+    return { data: encode({ ...parsed, tokens: { ...tokens, refresh_token: "" } }), renewalSafe: true };
+  }
+  if (provider === "kimi" && rel.startsWith("credentials/")) {
+    const parsed = asJson();
+    if (!parsed || !("refresh_token" in parsed)) return { data, renewalSafe: true };
+    const { refresh_token: _refresh, ...rest } = parsed;
+    return { data: encode(rest), renewalSafe: true };
+  }
+  if (provider === "grok" && rel === "auth.json") {
+    const parsed = asJson();
+    if (!parsed) return { data, renewalSafe: false };
+    let removed = false;
+    const next: Record<string, unknown> = {};
+    for (const [issuer, value] of Object.entries(parsed)) {
+      if (!isRecord(value)) {
+        next[issuer] = value;
+        continue;
+      }
+      const entry: Record<string, unknown> = {};
+      for (const [name, field] of Object.entries(value)) {
+        if (/refresh/i.test(name)) removed = true;
+        else entry[name] = field;
+      }
+      next[issuer] = entry;
+    }
+    return removed ? { data: encode(next), renewalSafe: true } : { data, renewalSafe: false };
+  }
+  // Droid's file is encrypted: it cannot be cut, so it goes whole.
+  if (provider === "droid") return { data, renewalSafe: false };
+  return { data, renewalSafe: true };
+}
+
+/** Pi's entry without its refresh token, for the same reason as `accessOnlyFile`. */
+export function accessOnlyPiEntry(entry: Record<string, unknown>): Record<string, unknown> {
+  if (entry.type !== "oauth" || !("refresh" in entry)) return entry;
+  const { refresh: _refresh, ...rest } = entry;
+  return rest;
+}

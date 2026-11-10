@@ -19,20 +19,41 @@ export async function installBrainProviderLoginSync(args: {
   staticOff: Extract<ProviderLoginCaptureOffReason, "embedded" | "dev_brain" | "sync_off"> | null;
   adeDir: string;
   secretsDir: string;
-  accountAuthService: Pick<AccountAuthService, "getStatus" | "getAccessToken" | "onSignedOut">;
+  accountAuthService: Pick<AccountAuthService, "getStatus" | "getAccessToken" | "onSignedIn" | "onSignedOut">;
   logger: Logger;
 }): Promise<void> {
   const [
     { createProviderLoginSync, installProviderLoginSync, providerLoginSync },
-    { cloudAccessDepsFor, readCloudAccessState },
+    { cloudAccessDepsFor, onCloudAccessAnswerChanged, readCloudAccessState },
     { getOrCreateLocalAccountMachineIdentity },
     { isCloudMachine },
+    { bootSignInEnv },
   ] = await Promise.all([
     import("../../../../desktop/src/main/services/providerLogins/providerLoginSync"),
     import("../../../../desktop/src/main/services/adeCloud/cloudAccess"),
     import("../../../../desktop/src/main/services/account/localMachineIdentity"),
     import("../power/cloudKeepAwake"),
+    import("../../../../desktop/src/main/services/providerLogins/providerLoginBoot"),
   ]);
+  // The name the machine directory and the Usage page show ("Mac Studio"), not
+  // the network hostname. Loaded lazily, as the brain loads the registry; the
+  // hostname stands in until it is known, and a failure never reaches a pass.
+  let displayName: (() => string) | null = null;
+  if (!args.staticOff) {
+    void import("../sync/deviceRegistryService")
+      .then((module) => {
+        displayName = module.resolveDeviceDisplayName;
+        displayName();
+      })
+      .catch(() => undefined);
+  }
+  const machineLabel = (): string => {
+    try {
+      return displayName?.().trim() || os.hostname();
+    } catch {
+      return os.hostname();
+    }
+  };
   const stores = args.staticOff ? null : (await import("./machineAccountStores")).getMachineAccountStores(args.logger);
   const accessDeps = cloudAccessDepsFor({
     account: () => args.accountAuthService,
@@ -51,14 +72,23 @@ export async function installBrainProviderLoginSync(args: {
     machine: () => {
       try {
         const identity = getOrCreateLocalAccountMachineIdentity({ secretsDir: args.secretsDir });
-        return { machineKey: identity.machineKey, deviceId: identity.deviceId, label: os.hostname(), platform: process.platform };
+        return { machineKey: identity.machineKey, deviceId: identity.deviceId, label: machineLabel(), platform: process.platform };
       } catch {
         return null;
       }
     },
     cloudAccess: () => readCloudAccessState(accessDeps),
+    onCloudAccessChanged: onCloudAccessAnswerChanged,
+    bootSignInEnv,
     cloudComputer: isCloudMachine(),
     logger: args.logger,
   }));
-  if (!args.staticOff) args.accountAuthService.onSignedOut?.(() => providerLoginSync()?.forgetAccount());
+  if (args.staticOff) return;
+  // Sign-in asks the ADE Cloud answer once; sign-out leaves the ticks at once.
+  args.accountAuthService.onSignedIn(() => void providerLoginSync()?.refreshAccess());
+  args.accountAuthService.onSignedOut?.(() => {
+    const sync = providerLoginSync();
+    sync?.forgetAccount();
+    void sync?.refreshAccess();
+  });
 }

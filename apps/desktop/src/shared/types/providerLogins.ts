@@ -74,6 +74,13 @@ export type ProviderLoginLocalState =
   | "other_owner_newer"
   /** A saved ADE Cloud key wrote this file; it stays a key. */
   | "from_saved_key"
+  /**
+   * The account service refused this sign-in (an older service that does not
+   * know sign-ins yet). ADE keeps it on this computer and tries again every hour.
+   */
+  | "account_refused"
+  /** On a cloud computer: the file is the account's sign-in that ADE wrote here. */
+  | "from_account"
   /** Not looked at: capture is off, or the provider is not carried. */
   | "not_checked";
 
@@ -117,6 +124,32 @@ export type ProviderLoginProviderStatus = {
   };
 };
 
+/**
+ * What a cloud computer did with one ADE Cloud place (a provider, or `pi:<sub>`):
+ * - `applied`: the account's sign-in is written here.
+ * - `own`: the sign-in in use was made on this computer; ADE left it as it is.
+ * - `key`: the saved ADE Cloud key is in use.
+ * - `none`: nothing is in use (none switched on, or the off switch for all).
+ * - `kept_local`: a sign-in made here is not in the account yet, so ADE did not overwrite it.
+ * - `failed`: ADE could not write it; the next pass tries again.
+ */
+export type ProviderLoginApplyState = "applied" | "own" | "key" | "none" | "kept_local" | "failed";
+
+export type ProviderLoginApplied = {
+  /** The provider, or `pi:<sub>` for one Pi sign-in. */
+  place: string;
+  provider: ProviderLoginProvider | null;
+  state: ProviderLoginApplyState;
+  /** The vault key in use, or "key" for the saved key; null when none. */
+  key: string | null;
+  /** The refresh token was taken out: this computer cannot renew it. */
+  accessOnly: boolean;
+  /** False when ADE could not take the refresh token out (Droid, an unknown Grok shape). */
+  renewalSafe: boolean;
+  appliedAt: string | null;
+  message: string;
+};
+
 export type ProviderLoginStatus = {
   thisComputer: {
     capture: "on" | "off";
@@ -133,4 +166,6 @@ export type ProviderLoginStatus = {
   };
   signIns: ProviderLoginSignIn[];
   providers: ProviderLoginProviderStatus[];
+  /** On a cloud computer, what it applied for each place; null on every other computer. */
+  applied: ProviderLoginApplied[] | null;
 };

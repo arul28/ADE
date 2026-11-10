@@ -1,8 +1,11 @@
 /**
- * The `provider_logins` actions (P5 step 1): `status` (a read for anyone)
- * and `captureNow` (the person's "look now"). Each one runs on the brain the
- * call reaches, so a caller pins the machine whose sign-ins it means.
- * Neither ever returns a token, a key, a file's content or a hash.
+ * The `provider_logins` actions: `status` (a read for anyone), `captureNow`
+ * (the person's "look now"), and the person's four writes `use`, `setCloud`,
+ * `setCloudAll` and `remove` (user-only: the desktop app, never the CLI, an
+ * agent or an outside app; `actionPolicy.ts`). Each one runs on the brain the
+ * call reaches; the writes are account-wide, so any brain of the person's
+ * answers the same. None ever returns a token, a key, a file's content or a
+ * hash.
  */
 
 import {
@@ -38,7 +41,26 @@ function notThisRuntime(provider: ProviderLoginProvider | null): ProviderLoginSt
     providers: PROVIDER_LOGIN_CARRY
       .filter((row) => !provider || row.provider === provider)
       .map((row) => ({ provider: row.provider, carry: row.carry, message: row.message, local: { state: "not_checked", key: null } })),
+    applied: null,
   };
+}
+
+function readKey(args: unknown, name = "key"): string {
+  const value = isRecord(args) ? args[name] : undefined;
+  if (typeof value !== "string" || !value.trim()) throw new Error(`provider_logins needs ${name}.`);
+  return value.trim();
+}
+
+function readOn(args: unknown): boolean {
+  const value = isRecord(args) ? args.on : undefined;
+  if (typeof value !== "boolean") throw new Error("provider_logins needs on (true or false).");
+  return value;
+}
+
+function requireSync() {
+  const sync = providerLoginSync();
+  if (!sync) throw new Error(PROVIDER_LOGIN_NOT_THIS_RUNTIME);
+  return sync;
 }
 
 export function buildProviderLoginsDomainService() {
@@ -52,6 +74,24 @@ export function buildProviderLoginsDomainService() {
       const provider = readProvider(args);
       const sync = providerLoginSync();
       return sync ? await sync.captureNow(provider) : notThisRuntime(provider);
+    },
+    /** `{provider, key}`: a vault key, "key" for the saved key, or null for the newest. Pi takes `slot` with null. */
+    async use(args?: unknown): Promise<ProviderLoginStatus> {
+      const provider = readProvider(args);
+      if (!provider) throw new Error("provider_logins.use needs provider.");
+      const raw = isRecord(args) ? args.key : undefined;
+      const key = raw === null || raw === undefined || raw === "" ? null : readKey(args);
+      const slot = isRecord(args) && typeof args.slot === "string" && args.slot.trim() ? args.slot.trim() : null;
+      return await requireSync().use({ provider, key, slot });
+    },
+    async setCloud(args?: unknown): Promise<ProviderLoginStatus> {
+      return await requireSync().setCloud({ key: readKey(args), on: readOn(args) });
+    },
+    async setCloudAll(args?: unknown): Promise<ProviderLoginStatus> {
+      return await requireSync().setCloudAll({ on: readOn(args) });
+    },
+    async remove(args?: unknown): Promise<ProviderLoginStatus> {
+      return await requireSync().remove({ key: readKey(args) });
     },
   };
 }

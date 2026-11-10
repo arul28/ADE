@@ -1714,6 +1714,28 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { provider?: string }",
       example: "ade actions run provider_logins.captureNow --text",
     },
+    use: {
+      description:
+        "Pick the sign-in ADE Cloud uses for a provider: a sign-in's key from status, \"key\" for the saved ADE Cloud key, "
+        + "or null for the newest switched-on sign-in. Only the ADE desktop app calls it; the CLI, agents and outside apps are refused.",
+      input: "object { provider: string, key: string | null, slot?: string }",
+      example: "(desktop only) provider_logins.use {\"provider\":\"codex\",\"key\":\"key\"}",
+    },
+    setCloud: {
+      description: "Switch one sign-in on or off for ADE Cloud. Only the ADE desktop app calls it.",
+      input: "object { key: string, on: boolean }",
+      example: "(desktop only) provider_logins.setCloud {\"key\":\"grok/3f9a0c11d2e4.base\",\"on\":false}",
+    },
+    setCloudAll: {
+      description: "The one off switch for all of ADE Cloud's sign-ins. Only the ADE desktop app calls it.",
+      input: "object { on: boolean }",
+      example: "(desktop only) provider_logins.setCloudAll {\"on\":false}",
+    },
+    remove: {
+      description: "Remove one sign-in from the account; every computer hears it. Only the ADE desktop app calls it.",
+      input: "object { key: string }",
+      example: "(desktop only) provider_logins.remove {\"key\":\"grok/3f9a0c11d2e4.base\"}",
+    },
   },
 };
 
