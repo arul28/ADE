@@ -53,6 +53,7 @@ export function useChatFindIndex({
   const recountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const indexTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastRecountAtRef = useRef(0);
+  const lastFoldAtRef = useRef(0);
 
   const publish = useCallback((next: ChatFindMatches) => {
     matchesRef.current = next;
@@ -81,12 +82,13 @@ export function useChatFindIndex({
   }, [recountNow]);
 
   /** Fold rows in slices until the index is complete, recounting as it fills. */
-  const runIndexing = useCallback(() => {
+  const runIndexing = useCallback((delayMs = 0) => {
     if (indexTimerRef.current) return;
     const slice = () => {
       indexTimerRef.current = null;
       const index = indexRef.current;
       if (!openRef.current || !index) return;
+      lastFoldAtRef.current = performance.now();
       if (index.indexSome(INDEX_SLICE_MS)) {
         setIndexing(false);
         recountNow();
@@ -96,7 +98,7 @@ export function useChatFindIndex({
       scheduleRecount();
       indexTimerRef.current = setTimeout(slice, 0);
     };
-    indexTimerRef.current = setTimeout(slice, 0);
+    indexTimerRef.current = setTimeout(slice, delayMs);
   }, [recountNow, scheduleRecount]);
 
   const sync = useCallback((first: boolean) => {
@@ -105,14 +107,19 @@ export function useChatFindIndex({
     const snapshot = source.get();
     setHasOlderHistory(snapshot.hasOlderHistory);
     if (!index.update(snapshot.rows, snapshot.excludedKeys)) return;
+    // A streaming reply changes its row on every delta, and a fold parses the
+    // whole reply. Its count shows at most every LIVE_RECOUNT_MS, so it folds at
+    // that pace too, and the fold recounts. New rows (history paging in) fold at once.
+    let paced = false;
     if (index.hasPending()) {
       // First sync: fold what fits in one slice now so a short chat answers
       // on the first keystroke, then finish in the background.
       if (first) index.indexSome(INDEX_SLICE_MS);
-      runIndexing();
+      paced = !first && index.onlyRefoldsPending();
+      runIndexing(paced ? Math.max(0, LIVE_RECOUNT_MS - (performance.now() - lastFoldAtRef.current)) : 0);
     }
     if (first) recountNow();
-    else scheduleRecount();
+    else if (!paced) scheduleRecount();
   }, [recountNow, runIndexing, scheduleRecount, source]);
 
   const clearTimers = useCallback(() => {

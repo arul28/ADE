@@ -931,10 +931,22 @@ chat, query `the`. The A/B streaming rows are `npm run bench:webclient
 | Find: first count after typing, 5,031-event chat, cold index | in-page timer | — | 114 ms | 200 ms |
 | Find: final count, same chat, cold index (3 ms slices + 300 ms recount) | same | — | 492 ms | 800 ms |
 | Find: next match to painted highlight, p50 / max of 20 | same | — | 4 / 7 ms | 8 / 33 ms |
+| Find open while a reply streams (a 50 KB reply as 1,000 deltas of 50 characters, one every 16 ms, query `the`): markdown parses of the streaming row / main-thread script time over the stream | Browser mock (Vite dev build) in headless Chrome 155 on the 5,103-event real chat, `Performance.getMetrics` over the stream, 2 rounds each, alternated with find closed; one-off harness, defined below. Mac Studio M4 Max, 2026-11-10, load average 4-12 | 281-485 parses / 12.6-13.4 s (find closed: 8.6-9.4 s); the find cache filled to its 16 M character limit and evicted the chat's own entries | 52 parses / 8.8-9.0 s, equal to find closed; no cache growth. An 8 KB reply (the longest real message found): 149 → 10 parses | not set yet; needs approval |
 
 Closed, find does no work: its layer is memoized on stable props and
 subscribes to rows only while open. Indexing parses markdown in 3 ms slices, so
 it never holds a 240 Hz frame.
+
+The streaming row: a reply that streams while find is open changes its row on
+every delta, and folding that row parses the whole reply so far. The row is
+folded at the count's own pace (at most every 300 ms), and its partial texts
+stay out of the find cache. To rebuild the measurement: load a real transcript
+into the first mock chat (`window.__adeMockEmitChatEvent`), open find with
+`setPendingChatFind`, emit `text` events with one `messageId` on a 16 ms timer
+in the page, and read `ScriptDuration` and `TaskDuration` before and after.
+With find open, paint and pre-paint still cost about 2.2 s more over that
+17.5 s stream than with find closed (the highlight repaint, at most every
+100 ms); that part is not changed.
 
 ### Desktop dev app
 
