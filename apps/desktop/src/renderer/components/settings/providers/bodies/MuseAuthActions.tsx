@@ -7,9 +7,11 @@
  * Settings page is showing (`useSettingsMachineScope().pin`): that machine's
  * cache and that machine's `~/.config/muse`.
  *
- * Sign-in runs the pinned `muse login` in an ADE terminal (the shared
- * `ProviderSignInModal`). An API key is the other path; it is saved through
- * the key panel below and handed to Muse as `META_API_KEY`, never on argv.
+ * Sign-in runs the pinned `muse login` headlessly in the shared sign-in sheet
+ * (`ProviderSignInSheet`); a machine whose ADE is too old for that gets the
+ * same sheet with the login in a terminal. An API key is the other path; it
+ * is saved through the key panel below and handed to Muse as `META_API_KEY`,
+ * never on argv.
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { DownloadSimple, SignIn } from "@phosphor-icons/react";
@@ -20,7 +22,7 @@ import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { useSettingsAction } from "../../useSettingsAction";
 import { usePolling } from "../../../../hooks/usePolling";
 import type { MuseBinaryStatus } from "../../../../../shared/museBinary";
-import { SettingsAgentCliSignIn } from "../AgentCliSignInSheet";
+import { SettingsAgentCliSignIn } from "../ProviderSignInSheet";
 import type { ProvidersViewContext } from "../types";
 
 /** How often the download's progress is re-read while it runs. */
@@ -127,7 +129,7 @@ export function MuseAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <button
         type="button"
-        onClick={() => ctx.actions.openSignInTerminal("muse")}
+        onClick={() => ctx.actions.openSignIn("muse")}
         style={outlineButton({ height: 28, padding: "0 12px", fontSize: 12 })}
       >
         <SignIn size={13} /> Sign in to Muse

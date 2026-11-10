@@ -93,6 +93,12 @@ export type DialogProps = {
   maxHeight?: number | string;
   /** Draw no header; `title` is still rendered for screen readers. */
   hideHeader?: boolean;
+  /**
+   * With `hideHeader`: the body draws the title itself, in a `DialogTitle`
+   * (a visible heading), so the dialog renders no hidden copy of it and the
+   * heading names the dialog.
+   */
+  titleInBody?: boolean;
   /** Hide the × close button. */
   hideClose?: boolean;
   closeLabel?: string;
@@ -190,6 +196,7 @@ export function Dialog({
   height,
   maxHeight,
   hideHeader = false,
+  titleInBody = false,
   hideClose = false,
   closeLabel = "Close",
   actions,
@@ -362,7 +369,7 @@ export function Dialog({
         >
           <PortalContainerContext.Provider value={panelEl}>
             {hideHeader ? (
-              <RadixDialog.Title className="ade-dialog-sr-only">{title}</RadixDialog.Title>
+              titleInBody ? null : <RadixDialog.Title className="ade-dialog-sr-only">{title}</RadixDialog.Title>
             ) : (
               <div
                 // Session replay shows the title and description (ADE's words,
@@ -484,3 +491,9 @@ export function Dialog({
     </RadixDialog.Root>
   );
 }
+
+/**
+ * The dialog's title, drawn by the body of a `Dialog` with `hideHeader` and
+ * `titleInBody`. It names the dialog (`aria-labelledby`).
+ */
+export const DialogTitle = RadixDialog.Title;

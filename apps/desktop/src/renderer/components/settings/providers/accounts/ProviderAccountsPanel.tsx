@@ -37,10 +37,10 @@ import {
 } from "../../../../../shared/types/providerInstances";
 import { accountLimitRow, accountSignedOut, providerOffersAutoStart } from "./accountPresentation";
 import { AccountCard, type CardState, type ClaudeAccountSettingPatch, type RowMenuAction } from "./AccountCard";
-import { useAccountSignInSheet } from "./AddProviderAccountSheet";
+import { useAccountSignInSheet } from "../ProviderSignInSheet";
 import { pinnedProviderInstances, useProviderInstances } from "./useProviderInstances";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
-import { invalidateAiDiscoveryCache } from "../../../../lib/aiDiscoveryCache";
+import { checkProviderSignIn } from "../../../../lib/providerSignInCheck";
 import { providerActionMessage } from "../providerErrorMessage";
 import { CompactionSettings } from "../CompactionSettings";
 
@@ -195,8 +195,9 @@ export function ProviderAccountsPanel({
     providerLabel,
     onChanged: (signedIn) => {
       void reload();
-      // A new login may be another account: pickers and cards read fresh.
-      if (signedIn) invalidateAiDiscoveryCache();
+      // A new login may be another account: the provider's own check on this
+      // machine, which also drops the caches the pickers and cards read.
+      if (signedIn) void checkProviderSignIn(provider, pin);
     },
   });
   const openSheet = signInSheet.open;

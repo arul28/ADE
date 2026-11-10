@@ -3,11 +3,15 @@
  * A hand-typed key is no longer a second surface here — every provider page
  * renders `ProviderApiKeysPanel`, and that panel is the one place a key is
  * entered, verified, replaced, or deleted.
+ *
+ * The flow is the page's (`loginWithCursor`, `cancelCursorLogin` on the
+ * page's pin); "Sign in" also opens the shared sign-in sheet, which shows it.
  */
-import React from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { CheckCircle } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT, SECTION_LABEL_STYLE, outlineButton } from "../../../lanes/laneDesignTokens";
-import { CopyableCommand } from "../providerUi";
+import { useSettingsMachineScope } from "../../SettingsMachineScope";
+import { CursorSignInSheetView, type CursorSignInOutcome } from "../ProviderSignInSheet";
 import type { ProvidersViewContext } from "../types";
 
 /** Cursor account OAuth (email in the detail page) is not the same as a
@@ -23,11 +27,45 @@ export function cursorOauthSignedIn(ctx: ProvidersViewContext): boolean {
 }
 
 export function CursorAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
+  const { pin, isThisMachine, machineName } = useSettingsMachineScope();
   const connection = ctx.status?.providerConnections?.cursor ?? null;
   const isVerifying = ctx.verifyingProvider === "cursor";
   const signedInEmail = (ctx.cursorAuth?.email ?? connection?.accountEmail)?.trim() || null;
   const oauthSignedIn = cursorOauthSignedIn(ctx);
   const loginUrl = ctx.cursorLoginUrl ?? ctx.cursorAuth?.loginUrl ?? null;
+  const loginWithCursor = ctx.actions.loginWithCursor;
+  const cancelCursorLogin = ctx.actions.cancelCursorLogin;
+  /** The sheet is up. `expected` is the account Cursor named before; `watching` is a sign-in this sheet did not start. */
+  const [sheet, setSheet] = useState<{ expected: string | null; watching: boolean } | null>(null);
+  const [outcome, setOutcome] = useState<CursorSignInOutcome | null>(null);
+  const attemptRef = useRef(0);
+
+  const start = useCallback((expected: string | null) => {
+    const attempt = ++attemptRef.current;
+    setOutcome(null);
+    setSheet({ expected, watching: false });
+    void loginWithCursor().then((result) => {
+      // A later attempt, or a closed sheet, owns what is on screen now.
+      if (attemptRef.current === attempt) setOutcome(result);
+    });
+  }, [loginWithCursor]);
+
+  // A sign-in this sheet only watches (one already running when the page
+  // opened) ends when the page's Cursor feed says so.
+  const shownOutcome: CursorSignInOutcome | null = outcome
+    ?? (sheet?.watching && !ctx.cursorLoginBusy && !isVerifying
+      ? oauthSignedIn
+        ? { ok: true, email: signedInEmail }
+        : { ok: false, error: "The sign-in ended without a Cursor login." }
+      : null);
+
+  const closeSheet = useCallback(() => {
+    attemptRef.current += 1;
+    // Closing mid-flow stops the sign-in on the page's machine.
+    if (ctx.cursorLoginBusy && !shownOutcome) void cancelCursorLogin();
+    setSheet(null);
+    setOutcome(null);
+  }, [cancelCursorLogin, ctx.cursorLoginBusy, shownOutcome]);
 
   return (
     <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -57,8 +95,8 @@ export function CursorAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
             type="button"
             aria-label="Sign in with Cursor"
             style={outlineButton({ height: 28 })}
-            disabled={ctx.cursorLoginBusy || isVerifying}
-            onClick={() => void ctx.actions.loginWithCursor()}
+            disabled={isVerifying}
+            onClick={() => (ctx.cursorLoginBusy ? setSheet({ expected: signedInEmail, watching: true }) : start(signedInEmail))}
           >
             {ctx.cursorLoginBusy ? "Signing in…" : "Sign in"}
           </button>
@@ -67,20 +105,24 @@ export function CursorAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
               type="button"
               aria-label="Cancel Cursor sign-in"
               style={outlineButton({ height: 28 })}
-              onClick={() => void ctx.actions.cancelCursorLogin()}
+              onClick={() => void cancelCursorLogin()}
             >
               Cancel
             </button>
           ) : null}
         </div>
       )}
-      {loginUrl && ctx.cursorLoginBusy ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-            If a browser did not open, copy this URL:
-          </div>
-          <CopyableCommand command={loginUrl} />
-        </div>
+      {sheet ? (
+        <CursorSignInSheetView
+          running={ctx.cursorLoginBusy}
+          verifying={isVerifying}
+          loginUrl={loginUrl}
+          outcome={shownOutcome}
+          expectedAccount={sheet.expected}
+          machine={{ pin, isThisMachine, machineName }}
+          onClose={closeSheet}
+          onTryAgain={() => start(sheet.expected)}
+        />
       ) : null}
     </section>
   );

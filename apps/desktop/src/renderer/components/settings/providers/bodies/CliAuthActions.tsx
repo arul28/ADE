@@ -4,7 +4,7 @@
  * Claude and Codex sign in through the same guided sheet the Accounts panel
  * uses, run on the Settings page's own machine: the provider's login command
  * for the default account, with its link and code shown in the sheet. Droid
- * and Copilot sign in through the agent CLI sheet (`AgentCliSignInSheet`),
+ * and Copilot sign in through the agent CLI sheet (`ProviderSignInSheet`),
  * the same flow without accounts; an older host shows the command to run.
  *
  * None of these offers an install: ADE runs its own pinned copy, and the
@@ -15,11 +15,10 @@ import React from "react";
 import { SignIn } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT, outlineButton } from "../../../lanes/laneDesignTokens";
 import { CopyableCommand } from "../providerUi";
-import { useAccountSignInSheet } from "../accounts/AddProviderAccountSheet";
+import { SettingsAgentCliSignIn, useAccountSignInSheet } from "../ProviderSignInSheet";
 import { useDefaultProviderInstance } from "../accounts/useProviderInstances";
 import type { ProviderInstanceProvider } from "../../../../../shared/types/providerInstances";
 import { cliTool } from "../cliTools";
-import { SettingsAgentCliSignIn } from "../AgentCliSignInSheet";
 import type { ProvidersViewContext } from "../types";
 
 /** The login command for a host with no account bridge. */

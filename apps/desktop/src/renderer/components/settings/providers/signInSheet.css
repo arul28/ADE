@@ -1,0 +1,436 @@
+/*
+ * The sign-in parts: one look for every provider's sign-in, in the Settings
+ * and first-setup sheet and in the chat card that takes the prompt box's
+ * place. Colours come from the theme and from `--sis-accent`, the provider's
+ * accent (`providerThemeVars`), so the same parts read on the dialog's card
+ * and on the chat card's dark plane.
+ */
+
+.ade-sis {
+  --sis-accent: var(--provider-accent, var(--color-accent));
+  --sis-rule: color-mix(in srgb, var(--color-fg) 9%, transparent);
+  --sis-soft: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  --sis-text-2: color-mix(in srgb, var(--color-fg) 72%, transparent);
+  --sis-text-3: color-mix(in srgb, var(--color-fg) 50%, transparent);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-family: var(--font-sans);
+  color: var(--color-fg);
+  /* The chat composer centers its text; the parts read left-aligned everywhere. */
+  text-align: left;
+}
+
+/*
+ * The sheet: the banner stays fixed at the top and spans the full width; only
+ * the body under it scrolls. Every box in the chain from the dialog panel
+ * (which has the max height) down to the body shrinks (min-height: 0).
+ */
+.ade-sis[data-sheet="true"] {
+  flex: 0 1 auto;
+  min-height: 0;
+}
+.ade-sis[data-sheet="true"] > .ade-sis-body {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 14px;
+}
+
+/* The chat card sits in the composer, which centers its text. */
+[data-sign-in-card] { text-align: left; }
+
+/* The chat card: the sheet body's rhythm (note, steps, status row). */
+.ade-sis[data-card="true"] { gap: 12px; }
+.ade-sis-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ade-sis-start-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ── The banner: the provider's art, its logo, "Sign in to …", the place. ── */
+.ade-sis-banner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 84px;
+  padding: 16px 14px 16px 20px;
+  color: #fff;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.ade-sis-banner[data-light="true"] { color: #10151c; }
+.ade-sis-banner-art {
+  position: absolute;
+  top: 50%;
+  right: 56px;
+  z-index: 0;
+  height: 150%;
+  max-width: 44%;
+  transform: translateY(-50%);
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+.ade-sis-banner-shade {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0.1) 70%, transparent);
+}
+.ade-sis-banner[data-light="true"] .ade-sis-banner-shade {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.3) 70%, transparent);
+}
+.ade-sis-logo {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  perspective: 240px;
+}
+.ade-sis-logo > .ade-pv-mark3d { width: 48px; height: 48px; }
+.ade-sis-logo-tile {
+  display: inline-grid;
+  place-items: center;
+  border-radius: 11px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 2px 0 rgba(0, 0, 0, 0.35);
+}
+/* The one success moment: the logo turns once. No loop, nothing while idle. */
+.ade-sis-logo[data-turn="true"] > * {
+  animation: ade-sis-logo-turn 760ms cubic-bezier(0.3, 0.7, 0.2, 1) 1 both;
+}
+@keyframes ade-sis-logo-turn {
+  from { transform: rotateY(0deg); }
+  to { transform: rotateY(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ade-sis-logo[data-turn="true"] > * { animation: none; }
+}
+.ade-sis-heading {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ade-sis-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 680;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+.ade-sis-place {
+  font-size: 12px;
+  font-weight: 550;
+  opacity: 0.8;
+}
+.ade-sis-close {
+  position: relative;
+  z-index: 1;
+  align-self: flex-start;
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.24);
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.85;
+}
+.ade-sis-banner[data-light="true"] .ade-sis-close { background: rgba(255, 255, 255, 0.6); }
+.ade-sis-close:hover { opacity: 1; background: rgba(0, 0, 0, 0.38); }
+.ade-sis-banner[data-light="true"] .ade-sis-close:hover { background: rgba(255, 255, 255, 0.9); }
+
+/* ── The body ── */
+.ade-sis-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 20px 6px;
+  min-width: 0;
+}
+.ade-sis[data-compact="true"] .ade-sis-body { gap: 10px; padding: 0; }
+
+.ade-sis-form { display: flex; flex-direction: column; gap: 10px; }
+.ade-sis-form-label { font-size: 12px; color: var(--sis-text-2); }
+
+/* The account note: which account to approve, before the person approves. */
+.ade-sis-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-warning) 8%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-warning) 22%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--sis-text-2);
+}
+.ade-sis-note > svg { flex: none; margin-top: 2px; color: var(--color-warning); }
+.ade-sis-note b { font-weight: 650; color: var(--color-fg); }
+
+/* ── Steps: 1 started, 2 approve, 3 check. ── */
+.ade-sis-steps {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ade-sis-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  column-gap: 11px;
+  padding-bottom: 12px;
+}
+.ade-sis-step:last-child { padding-bottom: 0; }
+/* The thread that joins one step's mark to the next. */
+.ade-sis-step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 10.5px;
+  top: 24px;
+  bottom: 2px;
+  width: 1px;
+  background: var(--sis-rule);
+}
+.ade-sis-step[data-state="done"]:not(:last-child)::before {
+  background: color-mix(in srgb, var(--sis-accent) 45%, transparent);
+}
+.ade-sis-step-mark {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--sis-text-3);
+  box-shadow: inset 0 0 0 1px var(--sis-rule);
+}
+.ade-sis-step[data-state="active"] .ade-sis-step-mark {
+  color: #fff;
+  background: color-mix(in srgb, var(--sis-accent) 82%, black 18%);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sis-accent) 18%, transparent);
+}
+.ade-sis-step[data-state="done"] .ade-sis-step-mark {
+  color: var(--sis-accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sis-accent) 55%, transparent);
+}
+.ade-sis-step[data-state="failed"] .ade-sis-step-mark {
+  color: var(--color-error);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-error) 55%, transparent);
+}
+.ade-sis-step-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 22px;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--sis-text-3);
+}
+.ade-sis-step[data-state="active"] .ade-sis-step-label { color: var(--color-fg); }
+.ade-sis-step[data-state="done"] .ade-sis-step-label { color: var(--sis-text-2); }
+.ade-sis-step-label > .ade-sis-step-hint { font-weight: 450; color: var(--sis-text-3); }
+.ade-sis-step-body {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 8px;
+}
+
+/* ── The code, the page, the QR ── */
+.ade-sis-code-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.ade-sis-code {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--sis-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sis-accent) 40%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  user-select: all;
+}
+.ade-sis-code > svg { color: var(--sis-text-3); }
+.ade-sis-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.ade-sis-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 14%, transparent);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ade-sis-button:hover:not(:disabled) { background: var(--sis-soft); }
+.ade-sis-button:disabled { opacity: 0.5; cursor: default; }
+.ade-sis-button:focus-visible { outline: 2px solid var(--sis-accent); outline-offset: 2px; }
+.ade-sis-button[data-primary="true"] {
+  color: #fff;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0) 55%),
+    color-mix(in srgb, var(--sis-accent) 78%, black 22%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+.ade-sis-button[data-primary="true"]:hover:not(:disabled) { filter: brightness(1.08); }
+.ade-sis-button[data-tone="crit"] { color: var(--color-error); }
+.ade-sis-hint { font-size: 11.5px; line-height: 1.5; color: var(--sis-text-3); overflow-wrap: anywhere; }
+.ade-sis-qr { display: flex; align-items: center; gap: 12px; line-height: 0; }
+.ade-sis-qr-note { font-size: 11.5px; line-height: 1.5; color: var(--sis-text-3); max-width: 220px; }
+
+/* ── The paste box ── */
+.ade-sis-paste { display: flex; flex-direction: column; gap: 6px; }
+.ade-sis-paste-label { font-size: 11.5px; font-weight: 550; color: var(--sis-text-2); }
+.ade-sis-paste-row { display: flex; gap: 8px; min-width: 0; }
+.ade-sis-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 12%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  outline: none;
+}
+.ade-sis-input:focus { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sis-accent) 70%, transparent), 0 0 0 3px color-mix(in srgb, var(--sis-accent) 16%, transparent); }
+
+/* ── The raw output ── */
+.ade-sis-output-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  color: var(--sis-text-3);
+  cursor: pointer;
+}
+.ade-sis-output-toggle > svg { transition: transform 120ms ease; }
+.ade-sis-output-toggle[aria-expanded="true"] > svg { transform: rotate(90deg); }
+.ade-sis-output {
+  margin: 6px 0 0;
+  max-height: 140px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--sis-soft);
+  box-shadow: inset 0 0 0 1px var(--sis-rule);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--sis-text-2);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── End states ── */
+.ade-sis-end {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.ade-sis-end > svg { flex: none; margin-top: 1px; }
+.ade-sis-end-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ade-sis-end-title { font-weight: 650; color: var(--color-fg); overflow-wrap: anywhere; }
+.ade-sis-end-detail { color: var(--sis-text-2); overflow-wrap: anywhere; }
+.ade-sis-end[data-tone="ok"] {
+  background: color-mix(in srgb, var(--color-success) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-success) 26%, transparent);
+}
+.ade-sis-end[data-tone="ok"] > svg { color: var(--color-success); }
+.ade-sis-end[data-tone="crit"] {
+  background: color-mix(in srgb, var(--color-error) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-error) 32%, transparent);
+}
+.ade-sis-end[data-tone="crit"] > svg,
+.ade-sis-end[data-tone="crit"] .ade-sis-end-title { color: var(--color-error); }
+.ade-sis-end[data-tone="neutral"] {
+  background: var(--sis-soft);
+  box-shadow: inset 0 0 0 1px var(--sis-rule);
+}
+.ade-sis-end[data-tone="neutral"] > svg { color: var(--sis-text-3); }
+.ade-sis-end .ade-sis-actions { margin-top: 6px; }
+
+/* The status line beside the footer buttons. */
+.ade-sis-footer-status { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; color: var(--sis-text-3); }
+
+/* A terminal-run sign-in (Qwen, or an older ADE): the terminal sits in step 2. */
+.ade-sis-terminal {
+  height: clamp(260px, 44vh, 420px);
+  min-height: 260px;
+  display: flex;
+  flex-direction: column;
+  border-radius: 9px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--sis-rule);
+}
+
+/*
+ * Words for screen readers only (the steps' "(done)" / "(now)"). Its own rule
+ * here, not the dialog's: the chat card imports this file but may load no
+ * dialog CSS.
+ */
+.ade-sis-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

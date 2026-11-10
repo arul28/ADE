@@ -20,7 +20,7 @@ import { listModelDescriptorsForProvider, providerTierIsPreview } from "../../..
 import { ACP_PROVIDER_METADATA } from "../../../../shared/acpProviderMetadata";
 import { SubsectionTitle } from "./providerUi";
 import { AntigravitySignIn } from "./bodies/AntigravitySignIn";
-import { SettingsAgentCliSignIn } from "./AgentCliSignInSheet";
+import { SettingsAgentCliSignIn } from "./ProviderSignInSheet";
 import { isAgentCliLoginProvider } from "../../../../shared/types/agentCliLogin";
 import type {
   AcpSettingsProviderId,
@@ -274,13 +274,13 @@ function AcpAuthActions({ ctx, id }: { ctx: ProvidersViewContext; id: AcpSetting
       <button
         type="button"
         style={outlineButton({ height: 28 })}
-        onClick={() => ctx.actions.openSignInTerminal(id)}
+        onClick={() => ctx.actions.openSignIn(id)}
       >
         Sign in
       </button>
       <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-        Opens a terminal on this machine and runs <code style={{ fontFamily: MONO_FONT }}>{spec.loginCommand}</code> with
-        ADE's copy (downloading it first if needed). It closes itself once you are signed in.
+        Runs <code style={{ fontFamily: MONO_FONT }}>{spec.loginCommand}</code> with ADE's copy in a terminal inside the
+        sign-in sheet (downloading it first if needed). The sheet closes once you are signed in.
       </div>
     </div>
   );

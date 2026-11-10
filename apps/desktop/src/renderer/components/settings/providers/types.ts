@@ -13,6 +13,7 @@
  */
 
 import type React from "react";
+import type { CursorSignInOutcome } from "./ProviderSignInSheet";
 import type {
   AcpProviderDiagnostics,
   AiApiKeyVerificationResult,
@@ -165,7 +166,8 @@ export type ProvidersActions = {
   deleteApiKey: (provider: string, options?: { alsoOpenCode?: boolean }) => Promise<void>;
   verifyApiKey: (provider: string) => Promise<void>;
 
-  loginWithCursor: () => Promise<void>;
+  /** Cursor's browser sign-in on the page's machine, then its key check. Never rejects. */
+  loginWithCursor: () => Promise<CursorSignInOutcome>;
   logoutCursor: () => Promise<void>;
   cancelCursorLogin: () => Promise<void>;
 
@@ -188,8 +190,12 @@ export type ProvidersActions = {
   loadAcpDiagnostics: (provider: AcpSettingsProviderId) => Promise<void>;
   /** Run the vendor's own `doctor` and fold the output into the diagnostics. */
   runAcpDoctor: (provider: AcpSettingsProviderId) => Promise<void>;
-  /** Open the embedded terminal that runs this provider's login command. */
-  openSignInTerminal: (provider: SettingsProviderId) => void;
+  /**
+   * Open the sign-in sheet for a provider whose login ADE runs: the CLI's own
+   * login run headlessly where the machine's ADE can, else its login command
+   * in a terminal inside the sheet. Nothing for a provider with neither.
+   */
+  openSignIn: (provider: SettingsProviderId) => void;
   /**
    * Run the provider's own sign-in check (up to 20 s) on the page's machine,
    * then read the status again. Never rejects: a failure is "unknown".

@@ -49,10 +49,10 @@ import { setUsageHeaderVisible, useUsageHeaderPreferences } from "../usage/usage
 import { availableProviderDescriptors, providerDescriptor, providerStatusFor } from "./providers/descriptors";
 import { useProviderAccountCounts } from "./providers/accounts/useProviderInstances";
 import { ProviderDetailPage } from "./providers/ProviderDetailPage";
-import { ProviderSignInModal } from "./providers/ProviderSignInModal";
+import { CliSignInSheet, TerminalSignInSheet, agentCliSignInSupported, type CursorSignInOutcome } from "./providers/ProviderSignInSheet";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { acpLoginCommand, acpProviderLabel } from "./providers/acpProviders";
-import type { TerminalToolType } from "../../../shared/types";
+import { isAgentCliLoginProvider, type AgentCliLoginProvider, type TerminalToolType } from "../../../shared/types";
 import type { AiProviderConnections } from "../../../shared/types/config";
 import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 
@@ -184,7 +184,9 @@ function ProviderCard({
     ? null
     : problem ?? (metaParts.length > 0 ? metaParts.join(" · ") : healthy ? descriptor.credentialLine?.(ctx) ?? "Signed in" : null);
 
-  const signInCommand = providerSignIn(descriptor.id)?.command ?? null;
+  // The providers whose login ADE runs open the sign-in sheet from the tile;
+  // the rest (accounts, keys, their own pages) open the provider's page.
+  const opensSheet = providerSignIn(descriptor.id) !== null || isAgentCliLoginProvider(descriptor.id);
   // A provider that is not set up is one whose pinned copy is not on this
   // machine yet: start (or retry) its download there and open the page,
   // which shows the progress.
@@ -198,7 +200,7 @@ function ProviderCard({
     ? {
       label: "Sign in",
       aria: `Sign in to ${descriptor.label}`,
-      run: () => (signInCommand ? ctx.actions.openSignInTerminal(descriptor.id) : onOpen()),
+      run: () => (opensSheet ? ctx.actions.openSignIn(descriptor.id) : onOpen()),
     }
     : status.state === "not-installed"
       ? { label: "Download", aria: `Download ${descriptor.label} for this machine`, run: startDownload }
@@ -403,7 +405,7 @@ export function ProvidersSection({
   // The machine whose providers this page shows. Every runtime call below
   // carries `pin` (null = the tab's binding); the page is
   // remounted per machine, so a pin never changes under a live closure.
-  const { pin } = useSettingsMachineScope();
+  const { pin, isThisMachine, machineName } = useSettingsMachineScope();
   // Claude and Codex can hold several local logins; the row says how many so
   // the count is visible without opening the page.
   const accountCounts = useProviderAccountCounts();
@@ -439,7 +441,10 @@ export function ProvidersSection({
   const [acpDiagnosticsBusy, setAcpDiagnosticsBusy] = useState<AcpSettingsProviderId | null>(null);
   const [acpDoctorBusy, setAcpDoctorBusy] = useState<AcpSettingsProviderId | null>(null);
   const [acpDiagnosticsError, setAcpDiagnosticsError] = useState<Partial<Record<AcpSettingsProviderId, string>>>({});
-  const [signInProvider, setSignInProvider] = useState<SettingsProviderId | null>(null);
+  /** The sign-in sheet the tiles and the terminal fallbacks open: the headless CLI login, or a terminal. */
+  const [signInRequest, setSignInRequest] = useState<
+    { kind: "cli"; provider: AgentCliLoginProvider; expectedAccount: string | null } | { kind: "terminal"; provider: SettingsProviderId } | null
+  >(null);
   const [signInChecks, setSignInChecks] = useState<Partial<Record<SettingsProviderId, AiProviderSignInCheck>>>({});
   const [signInCheckBusy, setSignInCheckBusy] = useState<SettingsProviderId | null>(null);
   // Which provider's page is open. Seeded and re-seeded from `?provider=`, but
@@ -863,7 +868,7 @@ export function ProvidersSection({
     }
   }, [pin, refreshStatus]);
 
-  const loginWithCursor = useCallback(async () => {
+  const loginWithCursor = useCallback(async (): Promise<CursorSignInOutcome> => {
     setError(null);
     setNotice(null);
     setCursorLoginBusy(true);
@@ -871,7 +876,7 @@ export function ProvidersSection({
       const result = await window.ade.ai.cursorAuthLogin(pin);
       if (!result.ok) {
         setError(result.error || "Cursor sign-in failed.");
-        return;
+        return { ok: false, error: result.error || "Cursor sign-in failed." };
       }
       setVerifyingProvider("cursor");
       invalidateAiDiscoveryCache();
@@ -893,11 +898,14 @@ export function ProvidersSection({
       if (verification.ok) {
         setNotice(result.email ? `Signed in as ${result.email}.` : "Cursor connection verified.");
         setCursorLoginUrl(null);
-      } else {
-        setError(verification.message || "Cursor verification failed.");
+        return { ok: true, email: result.email ?? null };
       }
+      setError(verification.message || "Cursor verification failed.");
+      return { ok: false, error: verification.message || "Cursor verification failed." };
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      return { ok: false, error: message };
     } finally {
       setCursorLoginBusy(false);
       setVerifyingProvider(null);
@@ -955,7 +963,12 @@ export function ProvidersSection({
 
   const handleSubscriptionConnected = useCallback(async (providerId: string, providerName: string) => {
     const before = status?.availableModelIds?.length ?? 0;
-    const next = await refreshStatus({ force: true, refreshOpenCodeInventory: true });
+    // OpenCode's own sign-in check asks its server for the provider list again
+    // on the page's machine (what the inventory refresh here did), drops the
+    // renderer's caches, and records the verdict; the read after it is fresh.
+    const check = await checkProviderSignIn("opencode", pin);
+    setSignInChecks((prev) => ({ ...prev, opencode: check }));
+    const next = await refreshStatus({ force: true });
     void loadAuthMethods();
     const after = next?.availableModelIds?.length ?? before;
     const modelCount =
@@ -966,7 +979,7 @@ export function ProvidersSection({
       title: `${providerName} connected`,
       message: `${modelCount} model${modelCount === 1 ? "" : "s"} added`,
     });
-  }, [status?.availableModelIds, refreshStatus, loadAuthMethods]);
+  }, [status?.availableModelIds, refreshStatus, loadAuthMethods, pin]);
 
   const saveCustomModelSlugs = useCallback(async () => {
     const slugs = customModelSlugs.split(",").map((s) => s.trim()).filter(Boolean);
@@ -1120,10 +1133,18 @@ export function ProvidersSection({
     }
   }, [pin]);
 
-  const openSignInTerminal = useCallback((provider: SettingsProviderId) => {
-    if (!providerSignIn(provider)) return;
-    setSignInProvider(provider);
-  }, []);
+  const openSignIn = useCallback((provider: SettingsProviderId) => {
+    if (isAgentCliLoginProvider(provider) && agentCliSignInSupported()) {
+      setSignInRequest({
+        kind: "cli",
+        provider,
+        // The account the machine named before this sign-in, if it names one.
+        expectedAccount: status?.providerConnections?.[provider]?.accountEmail ?? null,
+      });
+      return;
+    }
+    if (providerSignIn(provider)) setSignInRequest({ kind: "terminal", provider });
+  }, [status?.providerConnections]);
 
   // Runs only on a click (Re-check) or right after a sign-in, never on a
   // timer: the check can start the provider's CLI or agent.
@@ -1209,7 +1230,7 @@ export function ProvidersSection({
       setProviderDisabled,
       loadAcpDiagnostics,
       runAcpDoctor,
-      openSignInTerminal,
+      openSignIn,
       verifySignIn,
     },
   }), [
@@ -1225,7 +1246,7 @@ export function ProvidersSection({
     status, statusLoadError, storedProviders, updateLocalProviderDraft,
     verificationByProvider, verifyApiKey, verifyingProvider,
     disabledProviders, savingDisabledFor, setProviderDisabled, acpDiagnostics, acpDiagnosticsBusy,
-    acpDoctorBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor, openSignInTerminal,
+    acpDoctorBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor, openSignIn,
     signInChecks, signInCheckBusy, verifySignIn,
   ]);
 
@@ -1245,7 +1266,7 @@ export function ProvidersSection({
     void loadAcpDiagnostics(selectedAcpProvider);
   }, [acpDiagnostics, loadAcpDiagnostics, selectedAcpProvider]);
 
-  const signIn = signInProvider ? providerSignIn(signInProvider) : null;
+  const terminalSignIn = signInRequest?.kind === "terminal" ? providerSignIn(signInRequest.provider) : null;
 
   return (
     // The `ai-providers` anchor lives on the section below. This wrapper is
@@ -1300,28 +1321,48 @@ export function ProvidersSection({
 
       {selectedDescriptor ? null : <CustomProvidersSection status={status} storedProviders={storedProviders} />}
 
-      {signInProvider && signIn ? (
-        <ProviderSignInModal
-          runtimePin={pin}
-          providerId={signInProvider}
-          providerLabel={signIn.label}
-          command={signIn.command}
-          toolType={signIn.toolType}
+      {signInRequest?.kind === "cli" ? (
+        <CliSignInSheet
+          provider={signInRequest.provider}
+          providerLabel={providerDescriptor(signInRequest.provider)?.label ?? signInRequest.provider}
+          pin={pin}
+          isThisMachine={isThisMachine}
+          machineName={machineName}
+          expectedAccount={signInRequest.expectedAccount}
+          onClose={(changed, signedIn) => {
+            const provider = signInRequest.provider;
+            setSignInRequest(null);
+            if (!changed) return;
+            // The "login changed" path and the provider's own check, or only a fresh read.
+            void (signedIn ? verifySignIn(provider) : refreshStatus({ force: true, silent: true }));
+          }}
+        />
+      ) : null}
+
+      {signInRequest?.kind === "terminal" && terminalSignIn ? (
+        <TerminalSignInSheet
+          pin={pin}
+          isThisMachine={isThisMachine}
+          machineName={machineName}
+          providerId={signInRequest.provider}
+          providerLabel={terminalSignIn.label}
+          command={terminalSignIn.command}
+          toolType={terminalSignIn.toolType}
           onClose={() => {
-            setSignInProvider(null);
+            setSignInRequest(null);
             void refreshStatus({ force: true, silent: true });
           }}
           onSignedIn={() => {
-            setNotice(`Signed in to ${signIn.label}.`);
+            setNotice(`Signed in to ${terminalSignIn.label}.`);
             // The "login changed" path, then the provider's own check.
-            void verifySignIn(signInProvider);
+            void verifySignIn(signInRequest.provider);
           }}
           checkSignedIn={async () => {
-            // Polled while the dialog is open, so only the status read, which
+            // Polled while the sheet is open, so only the status read, which
             // reads the saved login off disk. `authAvailable` is the credential
             // the login just wrote: the moment worth closing on.
             const next = await window.ade.ai.getStatus({ force: true }, pin).catch(() => null);
-            const key = connectionKeyFor(signInProvider);
+            const key = connectionKeyFor(signInRequest.provider);
             return key !== null && next?.providerConnections?.[key]?.authAvailable === true;
           }}
         />
