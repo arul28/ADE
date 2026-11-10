@@ -488,6 +488,20 @@ describe("accept", () => {
 });
 
 describe("host read", () => {
+  // The host shows this name as the author of the guest's messages: it comes
+  // from Clerk at accept, cleaned, never from the guest's client.
+  it.each<[string, string | undefined, string | null]>([
+    ["a plain name", "Gus", "Gus"],
+    ["a name with a host name in it", "Gus visit.example.com", "Gus"],
+    ["no name", undefined, null],
+  ])("names the receiver for %s, and says when the share started", async (_label, firstName, expected) => {
+    net.users.get(GUEST)!.firstName = firstName;
+    const id = await invitedId();
+    expect((await hostRead()).grants).toEqual([expect.objectContaining({ id, receiverName: null, createdAt: NOW, acceptedAt: null })]);
+    expect((await send(GUEST, "POST", `/lane-shares/${id}/accept`)).status).toBe(200);
+    expect((await hostRead()).grants).toEqual([expect.objectContaining({ id, receiverName: expected, createdAt: NOW, acceptedAt: NOW })]);
+  });
+
   it("drops a grant at once when it is revoked, left, ended or moved", async () => {
     const id = await activeId({ endsAt: NOW + 2 * DAY });
     expect((await hostRead()).grants).toEqual([expect.objectContaining({ id, state: "active", receiverUserId: GUEST, laneId: LANE })]);

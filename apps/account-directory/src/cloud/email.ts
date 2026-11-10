@@ -150,7 +150,16 @@ const MAX_INVITE_SENDER_NAME = 60;
  * characters; nothing left is "An ADE user".
  */
 export function inviteSenderName(label: string | null | undefined): string {
-  if (!label) return INVITE_SENDER_FALLBACK;
+  return personName(label) ?? INVITE_SENDER_FALLBACK;
+}
+
+/**
+ * A person's Clerk name cleaned by the rule above, or null when nothing is
+ * left. Also the receiver's name in the host read (`receiverName`), which a
+ * host shows as the author of the guest's messages.
+ */
+export function personName(label: string | null | undefined): string | null {
+  if (!label) return null;
   const words = label
     .normalize("NFKC")
     .replace(/[\p{Cc}\p{Cf}\p{Co}\p{Cn}]/gu, " ")
@@ -164,7 +173,7 @@ export function inviteSenderName(label: string | null | undefined): string {
     .map((word) => word.replace(/[@<>"'`{}[\]|=&]/g, ""))
     .filter(Boolean);
   const name = words.join(" ").slice(0, MAX_INVITE_SENDER_NAME).trim();
-  return name || INVITE_SENDER_FALLBACK;
+  return name || null;
 }
 
 export type DirectEmailOutcome = "sent" | "not_configured" | "failed";

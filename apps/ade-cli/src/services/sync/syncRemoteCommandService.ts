@@ -32,6 +32,7 @@ import {
   isAgentChatDroidPermissionMode,
   isAgentChatTurnRecoveryAction,
   normalizeAgentChatSessionMetadataFields,
+  type AdeMessageAuthor,
 } from "../../../../desktop/src/shared/types/chat";
 import {
   legacyPermissionModeFromMusePermissionMode,
@@ -503,9 +504,9 @@ export function evaluateRemoteCommandPolicy(args: {
   descriptor: Pick<SyncRemoteCommandDescriptor, "scope" | "policy"> | null | undefined;
   /**
    * `laneShareGuest`: the host set it after a guest hello (lane sharing). A
-   * guest may run only the read commands in `LANE_SHARE_GUEST_COMMANDS`; every
-   * other command is refused here whatever its descriptor says. The lane check
-   * itself needs the host database and runs in the sync host.
+   * guest may run only the commands in `LANE_SHARE_GUEST_COMMANDS`; every
+   * other command is refused here whatever its descriptor says. The rights,
+   * lane and session checks need the host database and run in the sync host.
    */
   peer: { pairingRecord: SyncPairingRecord | null; laneShareGuest?: unknown };
   requestedProjectId: string | null;
@@ -533,7 +534,10 @@ export function evaluateRemoteCommandPolicy(args: {
       };
     }
   }
-  if (!policy.viewerAllowed && !(policy.controllerAllowed && isInteractiveControllerPeer(args.peer))) {
+  // A guest's listed command that a paired controller may run (starting a CLI
+  // session) passes here: the host's rights gate for the guest decides it.
+  const controllerOk = isInteractiveControllerPeer(args.peer) || Boolean(args.peer.laneShareGuest);
+  if (!policy.viewerAllowed && !(policy.controllerAllowed && controllerOk)) {
     return {
       code: "forbidden_command",
       message: `Remote command ${action} is not available to paired controller devices.`,
@@ -787,7 +791,29 @@ export type SyncRemoteCommandExecutionContext = {
    * behalf: `work.getSession` skips its resume-target hydration.
    */
   readOnly?: boolean;
+  /**
+   * Set only by the host, for a lane-sharing guest: the author it verified
+   * (user id from the account directory, name from the directory). `chat.send`,
+   * `chat.steer`, `chat.createDraft` and `chat.createThreadComment` stamp it;
+   * an author in the args is always removed. Absent: the host's own user.
+   */
+  author?: AdeMessageAuthor;
+  /**
+   * Set only by the host with `author`: text added to what the agent reads of
+   * a guest's `chat.send` or `chat.steer` (the commit trailer instruction).
+   * The chat shows the guest's own text.
+   */
+  agentNote?: string | null;
 };
+
+/** The text a guest's turn gives the agent, and the text the chat shows. */
+function withGuestAgentNote<T extends { text: string; displayText?: string }>(
+  turnArgs: T,
+  context: SyncRemoteCommandExecutionContext,
+): T {
+  if (!context.author || !context.agentNote || !turnArgs.text) return turnArgs;
+  return { ...turnArgs, text: `${turnArgs.text}${context.agentNote}`, displayText: turnArgs.displayText ?? turnArgs.text };
+}
 
 type RegisteredRemoteCommand = {
   descriptor: SyncRemoteCommandDescriptor;
@@ -5220,8 +5246,8 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("chat.listDrafts", { viewerAllowed: true }, async () =>
     listDrafts(requireService(args.db, "Database not available.")));
-  register("chat.createDraft", { viewerAllowed: true }, async (payload) =>
-    createDraft(requireService(args.db, "Database not available."), payload));
+  register("chat.createDraft", { viewerAllowed: true }, async (payload, context) =>
+    createDraft(requireService(args.db, "Database not available."), payload, ...(context.author ? [{ author: context.author }] : [])));
   register("chat.deleteDraft", { viewerAllowed: true }, async (payload) => {
     const id = typeof payload.id === "string" ? payload.id.trim() : "";
     if (!id) throw new Error("Missing draft id.");
@@ -5250,7 +5276,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").listThreadComments({
       sessionId: requireString(payload.sessionId, "chat.listThreadComments requires sessionId."),
     }));
-  register("chat.createThreadComment", { viewerAllowed: true }, async (payload) => {
+  register("chat.createThreadComment", { viewerAllowed: true }, async (payload, context) => {
     const anchor = normalizeThreadCommentAnchor(payload.anchor);
     if (!anchor) throw new Error("chat.createThreadComment requires the text or table row the comment is about.");
     return requireService(args.agentChatService, "Agent chat service not available.").createThreadComment({
@@ -5259,7 +5285,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       messageExcerpt: typeof payload.messageExcerpt === "string" ? payload.messageExcerpt : "",
       anchor,
       body: typeof payload.body === "string" ? payload.body : "",
-    });
+    }, ...(context.author ? [{ author: context.author }] : []));
   });
   register("chat.updateThreadComment", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").updateThreadComment({
@@ -5536,13 +5562,13 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireChatLaunchService().queueMessage(parseChatLaunchQueueMessageArgs(payload)));
   register("chat.completeLaunchClient", { viewerAllowed: true }, async (payload) =>
     requireChatLaunchService().completeClient(parseChatLaunchCompleteClientArgs(payload)));
-  register("chat.send", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const sendArgs = parseAgentChatSendArgs(payload);
+  register("chat.send", { viewerAllowed: true, queueable: true }, async (payload, context) => {
+    const sendArgs = withGuestAgentNote(parseAgentChatSendArgs(payload), context);
     // A phone or web message: no desktop is the one being talked from now.
     noteSessionInputOrigin(sendArgs.sessionId, null);
     const result = await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(
       sendArgs,
-      { awaitDispatch: false, routeActiveToSteer: true },
+      { awaitDispatch: false, routeActiveToSteer: true, ...(context.author ? { author: context.author } : {}) },
     );
     return isRecord(result) ? { ...result, ok: true } : { ok: true };
   });
@@ -5582,9 +5608,12 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.resolveUnprocessedMessage", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.")
       .resolveUnprocessedMessage(parseAgentChatResolveUnprocessedMessageArgs(payload)));
-  register("chat.steer", { viewerAllowed: true, queueable: false }, async (payload) => {
-    const result = await requireService(args.agentChatService, "Agent chat service not available.")
-      .steerUserMessage(parseAgentChatSteerArgs(payload));
+  register("chat.steer", { viewerAllowed: true, queueable: false }, async (payload, context) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const steerArgs = withGuestAgentNote(parseAgentChatSteerArgs(payload), context);
+    const result = context.author
+      ? await agentChatService.steerUserMessage(steerArgs, { author: context.author })
+      : await agentChatService.steerUserMessage(steerArgs);
     return isRecord(result) ? { ...result, ok: true } : { ok: true };
   });
   register("chat.cancelSteer", { viewerAllowed: true, queueable: false }, async (payload) => {

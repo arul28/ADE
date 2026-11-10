@@ -24659,8 +24659,12 @@ export function createAgentChatService(args: {
   const listThreadComments = (args: ChatThreadCommentListArgs): ChatThreadComment[] =>
     threadComments.list({ sessionId: assertThreadCommentSession(args?.sessionId) });
 
-  const createThreadComment = (args: ChatThreadCommentCreateArgs): ChatThreadComment =>
-    threadComments.create({ ...args, sessionId: assertThreadCommentSession(args?.sessionId) });
+  /** `options.author`: set only by the host for a lane-share guest; never from the caller's args. */
+  const createThreadComment = (
+    args: ChatThreadCommentCreateArgs,
+    options: { author?: AdeMessageAuthor | null } = {},
+  ): ChatThreadComment =>
+    threadComments.create({ ...args, sessionId: assertThreadCommentSession(args?.sessionId) }, options);
 
   const updateThreadComment = (args: ChatThreadCommentUpdateArgs): ChatThreadComment =>
     threadComments.update({ ...args, sessionId: assertThreadCommentSession(args?.sessionId) });
@@ -78697,7 +78701,8 @@ export function createAgentChatService(args: {
     terminateCodexBackgroundTerminal,
     runSessionTurn,
     steer: (steerArgs: AgentChatSteerArgs) => steer(withHostMessageAuthor(steerArgs)),
-    steerUserMessage: (steerArgs: AgentChatSteerArgs) => steerUserMessage(withHostMessageAuthor(steerArgs)),
+    steerUserMessage: (steerArgs: AgentChatSteerArgs, options?: { author?: AdeMessageAuthor | null }) =>
+      steerUserMessage(withHostMessageAuthor(steerArgs, options?.author)),
     cancelSteer,
     editSteer,
     moveSteer,

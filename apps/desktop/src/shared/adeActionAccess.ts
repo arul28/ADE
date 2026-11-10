@@ -59,6 +59,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: ["getStatus", "listActivity"],
     write: ["setEnabled", "setMachineIncluded", "createToken", "updateConnection", "removeConnection"],
   },
+  lane_share: {
+    read: ["list"],
+    write: ["create", "updateRights", "revoke", "resendInvite"],
+  },
   lane: {
     live: [
       "proxyAddRoute", "proxyRemoveRoute", "proxyStart", "proxyStop",

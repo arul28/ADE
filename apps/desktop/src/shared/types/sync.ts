@@ -1850,7 +1850,10 @@ export type SyncHelloErrorPayload =
        * Lane sharing: `lane_share_refused` means this account has no active
        * grant on this machine (never shared, pending, revoked, left or ended);
        * `lane_share_unavailable` means the host could not check its grant list
-       * right now and the guest may retry later.
+       * right now and the guest may retry later. `lane_share_paused` means the
+       * grant is active but the owner must act first: the lane is archived, or
+       * this computer has no rights set for the share (the owner sets them or
+       * revokes the share).
        */
       code:
         | "auth_failed"
@@ -1863,7 +1866,8 @@ export type SyncHelloErrorPayload =
         | "relay_account_required"
         | "connection_attempt_superseded"
         | "lane_share_refused"
-        | "lane_share_unavailable";
+        | "lane_share_unavailable"
+        | "lane_share_paused";
       message: string;
     })
   | (SyncHelloErrorHost & {

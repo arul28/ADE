@@ -3046,12 +3046,39 @@ describe("lane share guest command policy", () => {
       else expect([action, rejection?.code]).toEqual([action, "forbidden_command"]);
     }
     for (const action of Object.keys(LANE_SHARE_GUEST_COMMANDS)) {
-      expect([action, service.getDescriptor(action as never)?.policy]).toEqual([
-        action,
-        expect.objectContaining({ viewerAllowed: true }),
-      ]);
-      expect(service.getDescriptor(action as never)?.policy).not.toMatchObject({ requiresApproval: true });
+      const policy = service.getDescriptor(action as never)?.policy;
+      // A guest command is one a viewer or a paired controller may run; the
+      // host's rights gate decides it for the guest.
+      expect([action, Boolean(policy?.viewerAllowed || policy?.controllerAllowed)]).toEqual([action, true]);
+      expect(policy).not.toMatchObject({ requiresApproval: true });
+      expect(policy).not.toMatchObject({ localOnly: true });
     }
+  });
+
+  // The host sets the author of a guest's message and the commit note the
+  // agent reads; the chat shows the guest's own text. An author in the args
+  // is never the one that counts (the chat service strips it).
+  it.each<[string, string, Record<string, unknown>, string]>([
+    ["a sent message", "chat.send", { sessionId: "chat-1", text: "Fix the test." }, "sendMessage"],
+    ["a steer", "chat.steer", { sessionId: "chat-1", text: "Fix the test." }, "steerUserMessage"],
+  ])("gives %s the host's guest author and note", async (_label, action, args, method) => {
+    const call = vi.fn().mockResolvedValue({ steerId: "steer-1", queued: true });
+    const { service } = createService({ agentChatService: { [method]: call } });
+    const author = { kind: "guest" as const, userId: "user_guest", name: "Guest Person" };
+    await service.execute(makePayload(action, args), { author, agentNote: "\n\nCo-authored-by: Guest Person <guest-1@users.noreply.ade-app.dev>" });
+    expect(call).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Fix the test.\n\nCo-authored-by: Guest Person <guest-1@users.noreply.ade-app.dev>",
+        displayText: "Fix the test.",
+      }),
+      expect.objectContaining({ author }),
+    );
+    // The owner's own message: no author, no note.
+    call.mockClear();
+    await service.execute(makePayload(action, args));
+    expect(call.mock.calls[0]![0]).toMatchObject({ text: "Fix the test." });
+    expect(call.mock.calls[0]![0]).not.toHaveProperty("displayText");
+    expect(call.mock.calls[0]![1]?.author).toBeUndefined();
   });
 
   // A guest's read must not write on the host: `work.getSession` hydrates a

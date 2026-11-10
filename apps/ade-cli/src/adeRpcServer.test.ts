@@ -6285,20 +6285,23 @@ describe("adeRpcServer", () => {
     expect(deviceDeleteInstalled).toHaveBeenCalledTimes(1);
   });
 
-  it("user-only verbs go to the desktop's own client names and to no other caller", async () => {
+  // Lane sharing: making, changing and revoking a share is the owner's, at
+  // the desktop of this machine or a paired one, never an agent's or a brain's.
+  it.each<[string, string, string]>([
+    ["deleting a simulator", "ios_simulator", "deviceDeleteInstalled"],
+    ["making a lane share", "lane_share", "create"],
+    ["revoking a lane share", "lane_share", "revoke"],
+  ])("user-only verbs (%s) go to the desktop's own client names and to no other caller", async (_label, domain, action) => {
     const fixture = createRuntime();
-    const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
-    fixture.runtime.iosSimulatorService = { deviceDeleteInstalled };
+    const verb = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.iosSimulatorService = { deviceDeleteInstalled: verb };
+    fixture.runtime.syncService = { getLaneShareService: () => ({ create: verb, revoke: verb }) };
     const tryDelete = async (identity: Record<string, unknown> | undefined, params: Record<string, unknown>) => {
       const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
       await initialize(handler, identity, params);
-      deviceDeleteInstalled.mockClear();
-      const result = await callTool(handler, "run_ade_action", {
-        domain: "ios_simulator",
-        action: "deviceDeleteInstalled",
-        args: { udid: "SIM-1" },
-      });
-      return result?.isError !== true && deviceDeleteInstalled.mock.calls.length === 1;
+      verb.mockClear();
+      const result = await callTool(handler, "run_ade_action", { domain, action, args: { udid: "SIM-1" } });
+      return result?.isError !== true && verb.mock.calls.length === 1;
     };
 
     // The local picker and a paired or SSH remote runtime's picker.
@@ -6318,6 +6321,10 @@ describe("adeRpcServer", () => {
       { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" },
       { clientInfo: { name: "ade-desktop-local" } },
     )).toBe(false);
+    // Another machine's CTO or agent, over the paired channel.
+    for (const name of ["ade-cto-remote", "ade-agent-remote"]) {
+      expect(await tryDelete({ callerId: `${name}:1`, role: "cto" }, { clientInfo: { name } })).toBe(false);
+    }
   });
 
   it("denies work_tools reads to an agent-shaped caller with no resolvable lane", async () => {

@@ -3,6 +3,7 @@ import {
   readBoundedAccountDirectoryJson,
   resolveTrustedAccountDirectoryBaseUrl,
 } from "../../../../desktop/src/shared/accountDirectory";
+import { laneShareDisplayName } from "../../../../desktop/src/shared/laneShareRights";
 import type { LaneShareGuestGrant } from "./laneShareGuestPolicy";
 
 /**
@@ -59,10 +60,27 @@ export type LaneShareHostGrantRecord = {
   laneId: string;
   state: "pending" | "active";
   endsAt: number | null;
+  /**
+   * The receiver's name the directory read from Clerk at accept time, cleaned
+   * again here. The only name the host shows for a guest. Null when the
+   * directory has none (or is older than this field).
+   */
+  receiverName: string | null;
+  /** When the grant was made (directory clock). Null from a directory older than this field. */
+  createdAt: number | null;
+  acceptedAt: number | null;
 };
 
 export type LaneShareGrantSnapshot = {
   grants: readonly LaneShareHostGrantRecord[];
+  /** Grants of this machine that are final (revoked, left, expired, ended). Their local rights rows can go. */
+  closedIds?: readonly string[];
+  /**
+   * True when the directory's answer holds every grant of this machine (both
+   * lists together are under the directory's row limit). Only a complete
+   * answer may forget a local rights row whose grant it does not name.
+   */
+  complete?: boolean;
   /** Host clock when the answer arrived. */
   fetchedAtMs: number;
   /** Directory clock minus host clock, so `endsAt` is read on the directory's clock. */
@@ -103,7 +121,7 @@ export type LaneShareGrantSource = {
  */
 export function parseLaneShareRedeemResponse(value: unknown): {
   redemption: LaneShareTicketRedemption;
-  list: { serverTime: number; grants: LaneShareHostGrantRecord[] };
+  list: ReturnType<typeof parseLaneShareHostResponse>;
 } {
   const list = parseLaneShareHostResponse(value);
   const redeemed = (value as { redeemed?: unknown }).redeemed;
@@ -130,12 +148,18 @@ export function activeLaneShareGrantsFor(
       grant.state === "active"
       && grant.receiverUserId === userId
       && (grant.endsAt == null || grant.endsAt > serverNow))
-    .map((grant) => ({
-      grantId: grant.id,
-      laneId: grant.laneId,
-      // On the host clock, so each use can check it without the snapshot.
-      endsAtMs: grant.endsAt == null ? null : grant.endsAt - snapshot.serverOffsetMs,
-    }));
+    .map((grant) => {
+      // The share's start, on the host clock: when the owner made it, else when it was accepted.
+      const sharedAt = grant.createdAt ?? grant.acceptedAt;
+      return {
+        grantId: grant.id,
+        laneId: grant.laneId,
+        // On the host clock, so each use can check it without the snapshot.
+        endsAtMs: grant.endsAt == null ? null : grant.endsAt - snapshot.serverOffsetMs,
+        sharedAtMs: sharedAt == null ? null : sharedAt - snapshot.serverOffsetMs,
+        receiverName: grant.receiverName,
+      };
+    });
 }
 
 function parseGrant(value: unknown): LaneShareHostGrantRecord | null {
@@ -150,11 +174,37 @@ function parseGrant(value: unknown): LaneShareHostGrantRecord | null {
   const endsAt = typeof record.endsAt === "number" && Number.isFinite(record.endsAt) ? record.endsAt : null;
   if (!id || !laneId || !state) return null;
   if (record.endsAt != null && endsAt == null) return null;
-  return { id, laneId, state, receiverUserId, endsAt };
+  const time = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  return {
+    id,
+    laneId,
+    state,
+    receiverUserId,
+    endsAt,
+    receiverName: state === "active" && typeof record.receiverName === "string" ? laneShareDisplayName(record.receiverName) : null,
+    createdAt: time(record.createdAt),
+    acceptedAt: state === "active" ? time(record.acceptedAt) : null,
+  };
+}
+
+/** The ids of final grants in a host answer. Optional: a malformed entry is skipped, never fatal. */
+function parseClosedIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids: string[] = [];
+  for (const entry of value.slice(0, MAX_GRANTS)) {
+    const id = entry && typeof entry === "object" ? (entry as { id?: unknown }).id : null;
+    if (typeof id === "string" && GRANT_ID.test(id)) ids.push(id);
+  }
+  return ids;
 }
 
 /** The whole answer or nothing: one malformed grant rejects the list. */
-export function parseLaneShareHostResponse(value: unknown): { serverTime: number; grants: LaneShareHostGrantRecord[] } {
+export function parseLaneShareHostResponse(value: unknown): {
+  serverTime: number;
+  grants: LaneShareHostGrantRecord[];
+  closedIds: string[];
+  complete: boolean;
+} {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new LaneShareGrantError("invalid_response", "The grant list was not an object.");
   }
@@ -171,7 +221,97 @@ export function parseLaneShareHostResponse(value: unknown): { serverTime: number
     if (!grant) throw new LaneShareGrantError("invalid_response", "The grant list had a malformed grant.");
     grants.push(grant);
   }
-  return { serverTime: record.serverTime, grants };
+  // The directory sends at most MAX_GRANTS rows over both lists.
+  const listed = grants.length + (Array.isArray(record.closed) ? record.closed.length : 0);
+  return { serverTime: record.serverTime, grants, closedIds: parseClosedIds(record.closed), complete: listed < MAX_GRANTS };
+}
+
+/** How a machine reaches the account directory with its owner's account token. */
+export type LaneShareDirectoryAccess = {
+  /** The machine owner's account token; null when signed out. */
+  getAccessToken: (tokenOptions?: { forceRefresh?: boolean }) => Promise<string | null>;
+  /** The configured account-directory base URL (checked against the trusted list here). */
+  getDirectoryBaseUrl: () => string | null | undefined;
+  fetchImpl?: typeof fetch;
+};
+
+/** The trusted directory base URL, or a thrown `no_directory`. */
+export function resolveLaneShareDirectoryBase(access: Pick<LaneShareDirectoryAccess, "getDirectoryBaseUrl">): string {
+  let baseUrl: string | null = null;
+  try {
+    baseUrl = resolveTrustedAccountDirectoryBaseUrl(access.getDirectoryBaseUrl());
+  } catch {
+    baseUrl = null;
+  }
+  if (!baseUrl) throw new LaneShareGrantError("no_directory", "No trusted account directory is configured.");
+  return baseUrl;
+}
+
+/**
+ * One request to the directory with the owner's token (one retry after a 401
+ * with a refreshed token). Answers the status and the parsed JSON body
+ * (`undefined` when the body could not be read), so a caller can read an
+ * error's `{ error: { code, message } }`. Throws `LaneShareGrantError` only
+ * when it could not ask: signed out, no answer, a timeout.
+ */
+export async function sendLaneShareDirectoryRequest(
+  access: LaneShareDirectoryAccess,
+  baseUrl: string,
+  request: { method: "GET" | "POST" | "PATCH"; path: string; body?: Record<string, unknown> },
+): Promise<{ status: number; body: unknown }> {
+  let token: string | null;
+  try {
+    token = (await access.getAccessToken())?.trim() || null;
+  } catch {
+    token = null;
+  }
+  if (!token) throw new LaneShareGrantError("signed_out", "This machine is not signed in to an ADE account.");
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  timer.unref?.();
+  const correlationId = createAccountDirectoryCorrelationId();
+  const send = (accessToken: string): Promise<Response> =>
+    (access.fetchImpl ?? fetch)(`${baseUrl}${request.path}`, {
+      method: request.method,
+      headers: {
+        accept: "application/json",
+        ...(request.body ? { "content-type": "application/json" } : {}),
+        authorization: `Bearer ${accessToken}`,
+        "x-ade-correlation-id": correlationId,
+      },
+      ...(request.body ? { body: JSON.stringify(request.body) } : {}),
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      cache: "no-store",
+      redirect: "error",
+      signal: controller.signal,
+    });
+  try {
+    let response: Response;
+    try {
+      response = await send(token);
+      if (response.status === 401) {
+        await response.body?.cancel().catch(() => {});
+        const refreshed = (await access.getAccessToken({ forceRefresh: true }).catch(() => null))?.trim();
+        if (!refreshed) throw new LaneShareGrantError("signed_out", "The account session expired.");
+        response = await send(refreshed);
+      }
+    } catch (error) {
+      if (error instanceof LaneShareGrantError) throw error;
+      throw new LaneShareGrantError("unavailable", "The account directory could not be reached.");
+    }
+    let body: unknown;
+    try {
+      body = await readBoundedAccountDirectoryJson(response);
+    } catch {
+      body = undefined;
+      await response.body?.cancel().catch(() => {});
+    }
+    return { status: response.status, body };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function createLaneShareGrantService(options: {
@@ -190,87 +330,34 @@ export function createLaneShareGrantService(options: {
   const listeners = new Set<(snapshot: LaneShareGrantSnapshot) => void>();
 
   /**
-   * One POST to the directory with the owner's token (one retry after a 401
-   * with a refreshed token), answered as parsed JSON. `notFound` names the
-   * error a 404 means for this route.
+   * One POST to the directory with the owner's token, answered as parsed
+   * JSON. `notFound` names the error a 404 means for this route.
    */
   const post = async (path: string, body: Record<string, unknown>, notFound: LaneShareGrantError): Promise<unknown> => {
-    let baseUrl: string | null = null;
-    try {
-      baseUrl = resolveTrustedAccountDirectoryBaseUrl(options.getDirectoryBaseUrl());
-    } catch {
-      baseUrl = null;
-    }
-    if (!baseUrl) throw new LaneShareGrantError("no_directory", "No trusted account directory is configured.");
+    const baseUrl = resolveLaneShareDirectoryBase(options);
     const machineKey = options.getMachineKey().trim();
     if (!machineKey) throw new LaneShareGrantError("unknown_machine", "This machine has no machine key.");
-    let token: string | null;
-    try {
-      token = (await options.getAccessToken())?.trim() || null;
-    } catch {
-      token = null;
+    const answer = await sendLaneShareDirectoryRequest(options, baseUrl, { method: "POST", path, body: { ...body, machineKey } });
+    if (answer.status === 404) throw notFound;
+    if (answer.status === 401 || answer.status === 403) {
+      throw new LaneShareGrantError("signed_out", "The account directory refused this machine's session.");
     }
-    if (!token) throw new LaneShareGrantError("signed_out", "This machine is not signed in to an ADE account.");
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    timer.unref?.();
-    const correlationId = createAccountDirectoryCorrelationId();
-    const send = (accessToken: string): Promise<Response> =>
-      (options.fetchImpl ?? fetch)(`${baseUrl}${path}`, {
-        method: "POST",
-        headers: {
-          accept: "application/json",
-          "content-type": "application/json",
-          authorization: `Bearer ${accessToken}`,
-          "x-ade-correlation-id": correlationId,
-        },
-        body: JSON.stringify({ ...body, machineKey }),
-        credentials: "omit",
-        referrerPolicy: "no-referrer",
-        cache: "no-store",
-        redirect: "error",
-        signal: controller.signal,
-      });
-    try {
-      let response: Response;
-      try {
-        response = await send(token);
-        if (response.status === 401) {
-          await response.body?.cancel().catch(() => {});
-          const refreshed = (await options.getAccessToken({ forceRefresh: true }).catch(() => null))?.trim();
-          if (!refreshed) throw new LaneShareGrantError("signed_out", "The account session expired.");
-          response = await send(refreshed);
-        }
-      } catch (error) {
-        if (error instanceof LaneShareGrantError) throw error;
-        throw new LaneShareGrantError("unavailable", "The account directory could not be reached.");
-      }
-      if (response.status === 404) {
-        await response.body?.cancel().catch(() => {});
-        throw notFound;
-      }
-      if (response.status === 401 || response.status === 403) {
-        await response.body?.cancel().catch(() => {});
-        throw new LaneShareGrantError("signed_out", "The account directory refused this machine's session.");
-      }
-      if (!response.ok) {
-        await response.body?.cancel().catch(() => {});
-        throw new LaneShareGrantError("unavailable", `The account directory answered ${response.status}.`);
-      }
-      try {
-        return await readBoundedAccountDirectoryJson(response);
-      } catch {
-        throw new LaneShareGrantError("invalid_response", "The directory answer could not be read.");
-      }
-    } finally {
-      clearTimeout(timer);
+    if (answer.status < 200 || answer.status >= 300) {
+      throw new LaneShareGrantError("unavailable", `The account directory answered ${answer.status}.`);
     }
+    if (answer.body === undefined) throw new LaneShareGrantError("invalid_response", "The directory answer could not be read.");
+    return answer.body;
   };
 
-  const toSnapshot = (list: { serverTime: number; grants: LaneShareHostGrantRecord[] }): LaneShareGrantSnapshot => {
+  const toSnapshot = (list: ReturnType<typeof parseLaneShareHostResponse>): LaneShareGrantSnapshot => {
     const fetchedAtMs = now();
-    return { grants: list.grants, fetchedAtMs, serverOffsetMs: list.serverTime - fetchedAtMs };
+    return {
+      grants: list.grants,
+      closedIds: list.closedIds,
+      complete: list.complete,
+      fetchedAtMs,
+      serverOffsetMs: list.serverTime - fetchedAtMs,
+    };
   };
 
   const read = async (): Promise<LaneShareGrantSnapshot> => toSnapshot(parseLaneShareHostResponse(await post(

@@ -713,6 +713,34 @@ function buildRemoteMcpDomainService(runtime: AdeRuntime): OpaqueService | null 
   );
 }
 
+/**
+ * Lane sharing, the owner's side (lanes on THIS machine). A renderer call for
+ * a lane on another machine passes that machine's pin, so it runs there.
+ */
+function buildLaneShareDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const sync = runtime.syncService;
+  const service = typeof sync?.getLaneShareService === "function" ? sync.getLaneShareService() : null;
+  if (!service) return null;
+  return {
+    create: (args?: Record<string, unknown>) => service.create({
+      laneId: args?.laneId,
+      receiverEmail: args?.receiverEmail,
+      rights: args?.rights,
+      endsAt: args?.endsAt,
+      confirmHighRisk: args?.confirmHighRisk,
+    }),
+    list: () => service.list(),
+    updateRights: (args?: Record<string, unknown>) => service.updateRights({
+      grantId: args?.grantId,
+      rights: args?.rights,
+      endsAt: args?.endsAt,
+      confirmHighRisk: args?.confirmHighRisk,
+    }),
+    revoke: (args?: Record<string, unknown>) => service.revoke({ grantId: args?.grantId }),
+    resendInvite: (args?: Record<string, unknown>) => service.resendInvite({ grantId: args?.grantId }),
+  };
+}
+
 function buildKeepAwakeDomainService(runtime: AdeRuntime): OpaqueService | null {
   const service = runtime.keepAwakeService;
   if (!service) return null;
@@ -4487,6 +4515,7 @@ export function getAdeActionDomainServices(
     attention: toService(buildAttentionDomainService(runtime)),
     keep_awake: toService(buildKeepAwakeDomainService(runtime)),
     remote_mcp: toService(buildRemoteMcpDomainService(runtime)),
+    lane_share: toService(buildLaneShareDomainService(runtime)),
     lane: toService(buildLaneDomainService(runtime)),
     proxy: toService(buildProxyDomainService(runtime)),
     git: toService(runtime.gitService),

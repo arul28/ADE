@@ -108,6 +108,11 @@ import {
   type AccountAttestationConfig,
 } from "../account/sharedAccountAuthService";
 import { createLaneShareGrantService } from "./laneShareGrantService";
+import { createLaneShareHostService } from "./laneShareHostService";
+import { createLaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
+import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import { readGitOriginUrl } from "../../../../desktop/src/main/services/projects/recentProjectSummary";
+import type { LaneShareHostEvent } from "./syncHostService";
 import type { SyncTunnelClientService } from "./syncTunnelClientService";
 import {
   isLoopbackShadowedError,
@@ -245,6 +250,8 @@ type SyncServiceArgs = {
     | null;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   onRemoteFileWrite?: () => void;
+  /** Lane sharing events for the owner's app (a guest turn still running after a revoke). */
+  onLaneShareEvent?: (event: LaneShareHostEvent) => void;
   rosterProvider?: SyncRosterProvider;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
   remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
@@ -685,6 +692,28 @@ export function createSyncService(args: SyncServiceArgs) {
     getAccessToken: (tokenOptions) => requireSignedInAccountAccessToken(accountAuthService, tokenOptions),
     getDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [args.projectRoot] }),
     getMachineKey: () => cloudRelayStore.getMachineIdentity().machineKey,
+    logger: args.logger,
+  });
+  // The rights and counters of each share this machine serves: a local table
+  // of this project's database, never synced.
+  const laneShareRights = createLaneShareRightsStore({ db: args.db });
+  let laneShareRepoKey: { value: string | null } | null = null;
+  const laneShareService = createLaneShareHostService({
+    access: {
+      getAccessToken: (tokenOptions) => requireSignedInAccountAccessToken(accountAuthService, tokenOptions),
+      getDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [args.projectRoot] }),
+    },
+    getMachineKey: () => cloudRelayStore.getMachineIdentity().machineKey,
+    store: laneShareRights,
+    getHost: () => hostService,
+    getRepoKey: () => {
+      // Read once: the origin of a project does not change while it is open.
+      laneShareRepoKey ??= { value: accountRepoScopeKey(readGitOriginUrl(args.projectRoot)) };
+      return laneShareRepoKey.value;
+    },
+    getProjectLabel: () => path.basename(args.projectRoot) || null,
+    getLaneLabel: (laneId) => args.laneService.findLaneIdentity(laneId)?.name ?? null,
+    refreshGrants: () => laneShareGrants.refresh(),
     logger: args.logger,
   });
   const isRelayAccountSignedIn = (): boolean => {
@@ -1250,6 +1279,8 @@ export function createSyncService(args: SyncServiceArgs) {
       pinStore,
       accountAuthService,
       laneShareGrants,
+      laneShareRights,
+      onLaneShareEvent: args.onLaneShareEvent,
       getAccountAttestationConfig: args.getAccountAttestationConfig ?? (() =>
         getSharedAccountAttestationConfig({ projectRoots: () => [args.projectRoot] })),
       runtimeNameStore,
@@ -2363,6 +2394,11 @@ export function createSyncService(args: SyncServiceArgs) {
 
     getDeviceRegistryService() {
       return deviceRegistryService;
+    },
+
+    /** The owner's lane sharing actions for lanes on this machine (`lane_share` action domain). */
+    getLaneShareService() {
+      return laneShareService;
     },
 
     getRegisteredPeerCount(): number | null {

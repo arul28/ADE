@@ -265,6 +265,17 @@ export type LaneShareHostGrant = {
   preset: LaneSharePreset;
   risk: LaneShareRisk;
   version: number;
+  /**
+   * The receiver's name from Clerk, stored when it accepted and cleaned like
+   * the invite email's sender name. Null for a pending grant, a grant
+   * accepted before migration 0021, or an account with no name. The host
+   * uses it as the author name of the guest's messages; the guest never
+   * chooses it.
+   */
+  receiverName: string | null;
+  createdAt: number;
+  /** Null for a pending grant. */
+  acceptedAt: number | null;
 };
 
 /**

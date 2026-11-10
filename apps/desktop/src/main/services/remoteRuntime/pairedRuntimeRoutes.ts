@@ -371,6 +371,7 @@ const HELLO_CODE_FAILURES: Record<
   // so the record stays total.
   lane_share_refused: "authentication",
   lane_share_unavailable: "unreachable",
+  lane_share_paused: "authentication",
 };
 
 export function classifyPairedRuntimeFailure(

@@ -12,6 +12,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "attention",
   "keep_awake",
   "remote_mcp",
+  "lane_share",
   "lane",
   "proxy",
   "git",

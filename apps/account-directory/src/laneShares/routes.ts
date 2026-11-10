@@ -5,6 +5,7 @@ import { boundedDisplayText } from "../displayText";
 import { logLaneShare } from "../logging";
 import { readBoundedBody, sha256Hex, utcDayKey } from "../sinkUtils";
 import { trustedHttpsOrigin } from "../trustedOrigin";
+import { personName } from "../cloud/email";
 import { clerkAccount, normalizeEmail, type ClerkAccount, type ClerkAccountEnv } from "./clerkAccount";
 import {
   LANE_SHARE_CLOSED_VISIBLE_MS,
@@ -83,7 +84,7 @@ const LIVE_STATES = "('pending', 'active')";
 
 const COLUMNS = `id, giver_user_id, receiver_user_id, receiver_email, repo_key, machine_key, lane_id,
   giver_label, project_label, lane_label, preset, risk, state, closed_reason, invite_expires_at, ends_at,
-  version, invite_email_count, last_invite_email_at, created_at, updated_at, accepted_at, closed_at`;
+  version, invite_email_count, last_invite_email_at, created_at, updated_at, accepted_at, closed_at, receiver_label`;
 
 type ShareRow = {
   id: string;
@@ -109,6 +110,7 @@ type ShareRow = {
   updated_at: number;
   accepted_at: number | null;
   closed_at: number | null;
+  receiver_label: string | null;
 };
 
 const NOT_FOUND_MESSAGE = "That lane share was not found. If it was sent to you, sign in with the email address it went to.";
@@ -744,6 +746,9 @@ async function hostGrantList(env: LaneShareEnv, userId: string, machineKey: stri
         preset: row.preset,
         risk: row.risk,
         version: row.version,
+        receiverName: state === "active" ? personName(row.receiver_label) : null,
+        createdAt: row.created_at,
+        acceptedAt: state === "active" ? row.accepted_at : null,
       });
     } else {
       const closedAt = effectiveClosedAt(row, now);
@@ -943,10 +948,10 @@ async function handleAccept(env: LaneShareEnv, userId: string, id: string, now: 
   try {
     // One conditional write: of two accepts at once only one sees a pending, unclaimed row.
     const result = await env.DB.prepare(`
-      update lane_shares set state = 'active', receiver_user_id = ?, accepted_at = ?, updated_at = ?, version = version + 1
+      update lane_shares set state = 'active', receiver_user_id = ?, receiver_label = ?, accepted_at = ?, updated_at = ?, version = version + 1
       where id = ? and state = 'pending' and receiver_user_id is null and giver_user_id <> ?
         and invite_expires_at > ? and (ends_at is null or ends_at > ?)
-    `).bind(userId, now, now, id, userId, now, now).run();
+    `).bind(userId, boundedDisplayText(account.displayName, MAX_GIVER_LABEL), now, now, id, userId, now, now).run();
     changes = result.meta?.changes ?? 0;
   } catch (error) {
     if (!isUniqueViolation(error)) throw error;
