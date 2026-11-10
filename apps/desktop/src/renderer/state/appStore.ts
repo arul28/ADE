@@ -63,10 +63,19 @@ import {
   type AdeTheme,
 } from "../../shared/theme";
 import { applyAdeTheme } from "../theme/applyTheme";
-import { dueSlot, markSlotApplied, readAppearanceSchedule, type ScheduledLook } from "../theme/appearanceSchedule";
+import {
+  dueSlot,
+  lookFromState,
+  markSlotApplied,
+  readAppearanceSchedule,
+  type ActiveSlot,
+  type ScheduledLook,
+} from "../theme/appearanceSchedule";
+import { captureError } from "../../shared/sentry/capture";
 import {
   AppearanceStoreContext,
   USER_PREFERENCES_STORAGE_KEY,
+  patchStoredLook,
   coerceTheme,
   coerceThemeId,
   effectiveThemeId,
@@ -1353,6 +1362,7 @@ function readInitialUserPreferences(): PersistedUserPreferences {
 function withScheduledLook<T extends Pick<PersistedUserPreferences, "theme" | "themeId" | "customThemes" | "themeFollowsSystem" | "interfacePreferences">>(
   prefs: T,
   look: ScheduledLook,
+  systemColorScheme: ThemeId,
 ): T {
   const themeId = coerceThemeId(look.themeId);
   const interfacePreferences = normalizeInterfacePreferences({
@@ -1362,7 +1372,7 @@ function withScheduledLook<T extends Pick<PersistedUserPreferences, "theme" | "t
     scene: { ...look.scene, choiceMade: true },
   });
   const theme = baseModeForThemeId(
-    effectiveThemeId(themeId, look.followsSystem, readSystemColorScheme()),
+    effectiveThemeId(themeId, look.followsSystem, systemColorScheme),
     prefs.customThemes,
   );
   return { ...prefs, theme, themeId, themeFollowsSystem: look.followsSystem, interfacePreferences };
@@ -1377,11 +1387,12 @@ function withDueScheduledLook(prefs: PersistedUserPreferences): PersistedUserPre
   try {
     const due = dueSlot(readAppearanceSchedule(), Date.now());
     if (!due) return prefs;
-    const next = withScheduledLook(prefs, due.slot.look);
-    persistUserPreferences(next);
+    const next = withScheduledLook(prefs, due.slot.look, readSystemColorScheme());
+    persistUserPreferencesFrom(next);
     markSlotApplied(due);
     return next;
-  } catch {
+  } catch (error) {
+    captureError(error, { tags: { area: "appearance-schedule.launch" }, handled: true });
     return prefs;
   }
 }
@@ -3798,11 +3809,16 @@ const rootAppStore = createStore<AppState>()(createAppState);
 const AppStoreContext = AppearanceStoreContext as unknown as React.Context<AppStoreApi | null>;
 registerRootAppearanceStore(rootAppStore);
 
-/** Put a scheduled look on screen: theme, mode, background and fonts, saved like a choice made by hand. */
-export function applyScheduledLook(look: ScheduledLook): void {
+/**
+ * Put a scheduled look on screen: theme, mode, background and fonts. Only the
+ * look is saved, into the stored record, because another window may hold newer
+ * values of every other preference. `persist: false` only paints this window,
+ * for a slot another window already applied and saved.
+ */
+export function applyScheduledLook(look: ScheduledLook, options: { persist?: boolean } = {}): void {
   rootAppStore.setState((prev) => {
-    const next = withScheduledLook(prev, look);
-    persistUserPreferencesFrom(next);
+    const next = withScheduledLook(prev, look, prev.systemColorScheme);
+    if (options.persist !== false && !patchStoredLook(next)) persistUserPreferencesFrom(next);
     return {
       theme: next.theme,
       themeId: next.themeId,
@@ -3812,16 +3828,15 @@ export function applyScheduledLook(look: ScheduledLook): void {
   });
 }
 
+/** Put the slot in charge on screen and record it, so a change by hand afterwards holds until the next slot. */
+export function applyScheduleSlot(active: ActiveSlot): void {
+  applyScheduledLook(active.slot.look);
+  markSlotApplied(active);
+}
+
 /** The look on screen now, as a schedule slot stores it. */
 export function captureCurrentLook(): ScheduledLook {
-  const state = rootAppStore.getState();
-  return {
-    themeId: state.themeId,
-    followsSystem: state.themeFollowsSystem,
-    scene: state.interfacePreferences.scene,
-    sansFont: state.interfacePreferences.sansFont,
-    monoFont: state.interfacePreferences.monoFont,
-  };
+  return lookFromState(rootAppStore.getState());
 }
 
 /** `previous` when it is the same local binding as `next`, field for field. */

@@ -1,37 +1,40 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { applyScheduledLook } from "../../state/appStore";
-import {
-  activeSlotAt,
-  dueSlot,
-  markSlotApplied,
-  readAppearanceSchedule,
-  subscribeAppearanceSchedule,
-} from "../../theme/appearanceSchedule";
+import { applyScheduledLook, applyScheduleSlot } from "../../state/appStore";
+import { activeSlotAt, dueSlot, readAppearanceSchedule, subscribeAppearanceSchedule } from "../../theme/appearanceSchedule";
 
-const HOUR_MS = 60 * 60 * 1000;
+/** Until the next slot starts, or the next whole hour if that is sooner. */
+function nextCheckDelay(now: number, endsAt: number | null): number {
+  const nextHour = new Date(now);
+  nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0);
+  const until = Math.min(endsAt == null ? Infinity : Math.max(endsAt - now, 0), nextHour.getTime() - now);
+  return Math.max(until + 250, 1000);
+}
 
 /**
  * Runs the appearance schedule in this window: one timer to the next slot
- * start (capped at an hour, so a clock or time zone change is caught), and a
+ * start (and at each whole hour, so a clock or time zone change, or a start
+ * that falls in a skipped daylight-saving hour, is caught), and a
  * check whenever the window comes back into view, since timers drift while a
  * computer sleeps. A slot that began while ADE was closed is applied before
  * the first paint by `appStore`.
  *
  * Several windows run this. The first to see a slot begin applies it and
- * records it; the others then apply the same slot to themselves without
- * recording again. A window opened later keeps whatever look is saved, so a
- * change made by hand still holds until the next slot.
+ * records it; the others, once they see that slot's start pass, paint the
+ * same slot without saving it again. A window opened later keeps whatever look
+ * is saved, so a change made by hand still holds until the next slot.
  */
 export function AppearanceScheduleHost() {
   const schedule = useSyncExternalStore(subscribeAppearanceSchedule, readAppearanceSchedule);
   // Timing only depends on whether it is on and where the slots start.
   const timingKey = schedule.enabled ? schedule.slots.map((slot) => `${slot.id}@${slot.start}`).join(",") : "";
-  // The slot run this window last showed or deferred to; null until the first check.
-  const seenRunRef = useRef<string | null>(null);
+  // The slot in charge at this window's last check, and when it ends. Null
+  // until the first check, so a window that opens keeps the saved look; once
+  // the schedule is seen off, any slot that later takes charge counts as new.
+  const seenRef = useRef<{ slotId: string; endsAt: number } | null>(null);
 
   useEffect(() => {
     if (!timingKey) {
-      seenRunRef.current = null;
+      seenRef.current = { slotId: "", endsAt: 0 };
       return;
     }
     let timer: number | undefined;
@@ -41,19 +44,21 @@ export function AppearanceScheduleHost() {
       const current = readAppearanceSchedule();
       const active = activeSlotAt(current.slots, now);
       if (active && current.enabled) {
-        const run = `${active.slot.id}@${active.startedAt}`;
         const due = dueSlot(current, now);
         if (due) {
-          applyScheduledLook(due.slot.look);
-          markSlotApplied(due);
-        } else if (seenRunRef.current !== null && seenRunRef.current !== run) {
-          // Another window applied this slot first.
-          applyScheduledLook(active.slot.look);
+          applyScheduleSlot(due);
+        } else {
+          const seen = seenRef.current;
+          // Another window applied a slot that took charge since the last check: its
+          // start passed, or the schedule was turned on or changed there. Moving the
+          // time of the slot in charge is neither, so a change by hand survives it.
+          if (seen && (now >= seen.endsAt || seen.slotId !== active.slot.id)) {
+            applyScheduledLook(active.slot.look, { persist: false });
+          }
         }
-        seenRunRef.current = run;
+        seenRef.current = { slotId: active.slot.id, endsAt: active.endsAt };
       }
-      const wait = active ? Math.min(Math.max(active.endsAt - now + 250, 1000), HOUR_MS) : HOUR_MS;
-      timer = window.setTimeout(check, wait);
+      timer = window.setTimeout(check, nextCheckDelay(now, active?.endsAt ?? null));
     };
     const onVisible = () => {
       if (document.visibilityState === "visible") check();

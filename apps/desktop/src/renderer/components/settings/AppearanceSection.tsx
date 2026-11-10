@@ -51,7 +51,7 @@ import {
 } from "../../scene/useScene";
 import { addUserScene, removeUserScene, userSceneUrl } from "../../scene/userScenes";
 import { backdropThemeFromScene } from "../../scene/scenePalette";
-import { MiniChrome, UserSceneThumb } from "./appearanceArt";
+import { MiniChrome, SANS_FONT_LABELS, UserSceneThumb, gradientSceneBackground } from "./appearanceArt";
 import { AppearanceScheduleSettings } from "./AppearanceScheduleSettings";
 import "./AppearanceSection.css";
 import { AdeWordmark } from "../ui/AdeWordmark";
@@ -91,9 +91,9 @@ export const SHELL_GEOMETRY_LABEL: Record<ChatShellGeometry, string> = {
 };
 
 const SANS_SPECIMENS: { value: InterfaceSansFont; label: string; stack: string }[] = [
-  { value: "geist", label: "Geist", stack: '"Geist", system-ui, sans-serif' },
-  { value: "system", label: "System", stack: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
-  { value: "geist-mono", label: "Geist Mono", stack: '"Geist Mono", ui-monospace, monospace' },
+  { value: "geist", label: SANS_FONT_LABELS.geist, stack: '"Geist", system-ui, sans-serif' },
+  { value: "system", label: SANS_FONT_LABELS.system, stack: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
+  { value: "geist-mono", label: SANS_FONT_LABELS["geist-mono"], stack: '"Geist Mono", ui-monospace, monospace' },
 ];
 
 const MONO_SPECIMENS: { value: InterfaceMonoFont; label: string; stack: string }[] = [
@@ -408,9 +408,7 @@ function BackgroundPicker() {
         >
           <div
             className="ade-ap-scene-art"
-            style={{
-              background: `radial-gradient(120% 90% at 20% 15%, color-mix(in srgb, ${palette.accentDeep} 70%, transparent), transparent 62%), radial-gradient(110% 90% at 85% 85%, color-mix(in srgb, ${palette.accent} 55%, transparent), transparent 60%), ${palette.bg}`,
-            }}
+            style={{ background: gradientSceneBackground(palette) }}
           />
           <SceneLabel name="Gradient" sub="Animated, from the theme" active={scenePrefs.mode === "gradient"} />
         </button>

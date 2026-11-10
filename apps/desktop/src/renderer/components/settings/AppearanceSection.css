@@ -468,7 +468,7 @@
   background: var(--kit-panel-bg);
 }
 .ade-ap-shuffle-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.ade-ap-shuffle-now, .ade-ap-shuffle-all {
+.ade-ap-shuffle-now, .ade-ap-shuffle-all, .ade-ap-chipbtn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -482,9 +482,12 @@
   font-size: 12px;
   cursor: pointer;
 }
-.ade-ap-shuffle-now:hover, .ade-ap-shuffle-all:hover { background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
+.ade-ap-shuffle-now:hover, .ade-ap-shuffle-all:hover, .ade-ap-chipbtn:hover { background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
 .ade-ap-shuffle-all { height: 22px; font-size: 11px; margin-left: auto; }
 .ade-ap-shuffle-all + .ade-ap-shuffle-all { margin-left: 0; }
+.ade-ap-chipbtn[data-size="sm"] { height: 22px; font-size: 11px; }
+.ade-ap-chipbtn:disabled { opacity: 0.5; cursor: default; }
+.ade-ap-chipbtn:disabled:hover { background: transparent; }
 .ade-ap-shuffle-label { display: flex; align-items: center; gap: 8px; }
 .ade-ap-shuffle-label .kit-num { font-size: 11px; color: var(--color-muted-fg); }
 .ade-ap-shuffle-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 10px; }
@@ -610,8 +613,6 @@
   color: var(--color-muted-fg);
 }
 .ade-ap-sched-status b { color: var(--color-fg); font-weight: 500; }
-.ade-ap-sched-status[data-overridden] { color: var(--color-fg); }
-.ade-ap-sched-status .ade-ap-shuffle-all { margin-left: auto; }
 
 .ade-ap-sched-empty {
   padding: 16px;
@@ -628,8 +629,7 @@
   grid-template-columns: 112px minmax(0, 1fr);
   grid-template-rows: auto auto;
   align-items: start;
-  row-gap: 8px;
-  gap: 14px;
+  gap: 8px 14px;
   padding: 10px 12px 10px 10px;
   border-radius: var(--radius-lg);
   border: 1px solid var(--kit-panel-edge);
@@ -703,9 +703,6 @@
 .ade-ap-sched-art { grid-row: 1 / span 2; align-self: center; }
 .ade-ap-sched-actions { grid-column: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .ade-ap-sched-title .ade-ap-sched-remove { margin-left: auto; }
-.ade-ap-sched-actions .ade-ap-shuffle-all { margin-left: 0; }
-.ade-ap-sched-actions .ade-ap-shuffle-all:disabled { opacity: 0.5; cursor: default; }
-.ade-ap-sched-actions .ade-ap-shuffle-all:disabled:hover { background: transparent; }
 .ade-ap-sched-remove {
   display: grid;
   place-items: center;
@@ -721,7 +718,6 @@
 
 .ade-ap-sched-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ade-ap-sched-foot .ade-ap-rowhint { margin: 0; }
-.ade-ap-sched-foot .ade-ap-shuffle-now:disabled { opacity: 0.5; cursor: default; }
 
 /* Narrow: the buttons drop under the card. */
 @container apmain (max-width: 520px) {

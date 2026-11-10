@@ -1,4 +1,10 @@
 import { normalizeScenePreferences, type ScenePreferences } from "../scene/scenePreferences";
+import {
+  normalizeInterfacePreferences,
+  type InterfaceMonoFont,
+  type InterfacePreferences,
+  type InterfaceSansFont,
+} from "../state/appearanceStore";
 
 /**
  * Appearance schedule: whole looks (theme, mode, background, fonts) that take
@@ -22,8 +28,8 @@ export type ScheduledLook = {
   themeId: string;
   followsSystem: boolean;
   scene: ScenePreferences;
-  sansFont: string;
-  monoFont: string;
+  sansFont: InterfaceSansFont;
+  monoFont: InterfaceMonoFont;
 };
 
 export type ScheduleSlot = {
@@ -55,14 +61,38 @@ function normalizeLook(value: unknown): ScheduledLook | null {
   const raw = value as Record<string, unknown>;
   const themeId = typeof raw.themeId === "string" ? raw.themeId.trim() : "";
   if (!themeId) return null;
-  return {
-    themeId,
-    followsSystem: raw.followsSystem === true,
-    // The scene keeps its own revision; a stale one reads as this client's default.
-    scene: normalizeScenePreferences(raw.scene),
-    sansFont: typeof raw.sansFont === "string" ? raw.sansFont : "geist",
-    monoFont: typeof raw.monoFont === "string" ? raw.monoFont : "jetbrains",
-  };
+  // Fonts read like the interface preferences they become; the scene keeps its
+  // own revision, and a stale one reads as this client's default.
+  const { sansFont, monoFont } = normalizeInterfacePreferences(raw);
+  return { themeId, followsSystem: raw.followsSystem === true, scene: normalizeScenePreferences(raw.scene), sansFont, monoFont };
+}
+
+/** The look a set of appearance preferences puts on screen. */
+export function lookFromState(state: {
+  themeId: string;
+  themeFollowsSystem: boolean;
+  interfacePreferences: Pick<InterfacePreferences, "scene" | "sansFont" | "monoFont">;
+}): ScheduledLook {
+  const { scene, sansFont, monoFont } = state.interfacePreferences;
+  return { themeId: state.themeId, followsSystem: state.themeFollowsSystem, scene, sansFont, monoFont };
+}
+
+/** Two looks are the same on screen. Shuffle's pool and similar fine print do not count. */
+export function sameLook(a: ScheduledLook, b: ScheduledLook): boolean {
+  const sa = a.scene;
+  const sb = b.scene;
+  return (
+    a.themeId === b.themeId &&
+    a.followsSystem === b.followsSystem &&
+    a.sansFont === b.sansFont &&
+    a.monoFont === b.monoFont &&
+    sa.mode === sb.mode &&
+    (sa.mode !== "image" || sa.imageId === sb.imageId) &&
+    sa.showImage === sb.showImage &&
+    sa.texture === sb.texture &&
+    sa.dim === sb.dim &&
+    sa.matchTheme === sb.matchTheme
+  );
 }
 
 export function normalizeAppearanceSchedule(value: unknown): AppearanceSchedule {
@@ -148,6 +178,37 @@ export function dueSlot(schedule: AppearanceSchedule, now: number): ActiveSlot |
   return active;
 }
 
+function sameList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+/** `sameLook`, and every setting a slot saves the same too, the shuffle's included. */
+export function sameSavedLook(a: ScheduledLook, b: ScheduledLook): boolean {
+  return (
+    sameLook(a, b) &&
+    a.scene.shuffleEvery === b.scene.shuffleEvery &&
+    sameList(a.scene.shuffleExclude, b.scene.shuffleExclude) &&
+    sameList(a.scene.shuffleInclude, b.scene.shuffleInclude)
+  );
+}
+
+/**
+ * `schedule` with slot `id` starting at `start`. Moving a time is not a new
+ * start: when the slot on screen stays in charge, it stays applied, so a
+ * change made by hand still holds.
+ */
+export function withSlotStart(schedule: AppearanceSchedule, id: string, start: number, now: number): AppearanceSchedule {
+  const before = activeSlotAt(schedule.slots, now);
+  const held = before != null && dueSlot(schedule, now) == null;
+  const slots = schedule.slots
+    .map((slot) => (slot.id === id ? { ...slot, start } : slot))
+    .sort((a, b) => a.start - b.start);
+  const after = activeSlotAt(slots, now);
+  const lastApplied =
+    held && after && after.slot.id === before.slot.id ? { slotId: after.slot.id, at: after.startedAt } : schedule.lastApplied;
+  return { ...schedule, slots, lastApplied };
+}
+
 /** "08:00" for 480. */
 export function formatSlotTime(minutes: number): string {
   const h = Math.floor(minutes / 60);
@@ -194,13 +255,17 @@ const listeners = new Set<() => void>();
 let cachedRaw: string | null | undefined;
 let cached: AppearanceSchedule = EMPTY_APPEARANCE_SCHEDULE;
 
-export function readAppearanceSchedule(): AppearanceSchedule {
-  let raw: string | null = null;
+function readRaw(): string | null {
   try {
-    raw = window.localStorage.getItem(APPEARANCE_SCHEDULE_STORAGE_KEY);
+    return window.localStorage.getItem(APPEARANCE_SCHEDULE_STORAGE_KEY);
   } catch {
     // Unreadable storage reads as no schedule.
+    return null;
   }
+}
+
+export function readAppearanceSchedule(): AppearanceSchedule {
+  const raw = readRaw();
   if (raw !== cachedRaw) {
     cachedRaw = raw;
     try {
@@ -216,9 +281,10 @@ export function writeAppearanceSchedule(next: AppearanceSchedule): void {
   const normalized = normalizeAppearanceSchedule(next);
   try {
     window.localStorage.setItem(APPEARANCE_SCHEDULE_STORAGE_KEY, JSON.stringify(normalized));
-  } catch {
-    // Kept for this page only.
-    cachedRaw = undefined;
+  } catch (error) {
+    // Kept for this window: reads keep the copy while storage still holds the old raw value.
+    console.warn("[appearance-schedule] could not save the schedule", error);
+    cachedRaw = readRaw();
     cached = normalized;
   }
   for (const listener of listeners) listener();

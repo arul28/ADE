@@ -664,6 +664,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Background",
   },
   {
+    id: "appearance.schedule",
+    label: "Schedule",
+    keywords: ["schedule", "time of day", "day", "night", "automatic", "dark at night", "light during the day", "switch"],
+    tab: "appearance",
+    anchor: "schedule",
+    scope: "machine",
+    web: "browser",
+    group: "Background",
+  },
+  {
     id: "appearance.chat-font-size",
     label: "Chat font size",
     keywords: ["text size", "typography", "zoom", "bigger", "smaller"],

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { ArrowCounterClockwise, Eye, FloppyDisk, Moon, MoonStars, Plus, Shuffle, Sun, SunHorizon, X } from "@phosphor-icons/react";
-import { applyScheduledLook, captureCurrentLook, useAppStore, type ThemeId } from "../../state/appStore";
+import { applyScheduledLook, applyScheduleSlot, captureCurrentLook, useAppStore, type ThemeId } from "../../state/appStore";
+import { effectiveThemeId } from "../../state/appearanceStore";
 import {
   ADE_THEME_FAMILIES,
   resolveTheme,
   resolveThemeById,
   themeFamilyForId,
-  themeIdForMode,
   type AdeTheme,
   type ResolvedAdeThemePalette,
 } from "../../../shared/theme";
@@ -17,21 +17,25 @@ import {
   activeSlotAt,
   formatSlotClock,
   formatSlotTime,
-  markSlotApplied,
+  lookFromState,
   newSlotId,
   parseSlotTime,
   readAppearanceSchedule,
+  sameLook,
+  sameSavedLook,
   slotDayPart,
   slotLabel,
   subscribeAppearanceSchedule,
   updateAppearanceSchedule,
+  withSlotStart,
   type ScheduleSlot,
   type ScheduledLook,
 } from "../../theme/appearanceSchedule";
 import { BUNDLED_SCENES, findBundledScene } from "../../scene/sceneLibrary";
 import { useUserScenes } from "../../scene/useScene";
 import { SettingsToggle } from "./primitives";
-import { MiniChrome, UserSceneThumb } from "./appearanceArt";
+import { Banner } from "../ui/notice";
+import { MiniChrome, SANS_FONT_LABELS, UserSceneThumb, gradientSceneBackground } from "./appearanceArt";
 
 /**
  * Appearance › Schedule. A day cut into slots, each a whole look. The bar
@@ -42,15 +46,14 @@ import { MiniChrome, UserSceneThumb } from "./appearanceArt";
  */
 
 const DAY_PART_ICON = { Morning: SunHorizon, Day: Sun, Evening: MoonStars, Night: Moon } as const;
-const SANS_LABEL: Record<string, string> = { geist: "Geist", system: "System font", "geist-mono": "Geist Mono" };
 
+/** The time, ticking at each new minute: slot starts fall on whole minutes. */
 function useNow(): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    // The bar's "now" line and the active card only need minute precision.
-    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
-  }, []);
+    const timer = window.setTimeout(() => setNow(Date.now()), 60_000 - (now % 60_000) + 50);
+    return () => window.clearTimeout(timer);
+  }, [now]);
   return now;
 }
 
@@ -59,30 +62,8 @@ function minutesOfDay(at: number): number {
   return date.getHours() * 60 + date.getMinutes();
 }
 
-function paintedThemeId(look: ScheduledLook, systemColorScheme: ThemeId): string {
-  return look.followsSystem ? themeIdForMode(look.themeId, systemColorScheme) : look.themeId;
-}
-
 function lookPalette(look: ScheduledLook, customThemes: AdeTheme[], systemColorScheme: ThemeId): ResolvedAdeThemePalette {
-  return resolveTheme(resolveThemeById(paintedThemeId(look, systemColorScheme), customThemes)).palette;
-}
-
-/** Two looks are the same on screen. Shuffle's pool and similar fine print do not count. */
-function sameLook(a: ScheduledLook, b: ScheduledLook): boolean {
-  const sa = a.scene;
-  const sb = b.scene;
-  return (
-    a.themeId === b.themeId &&
-    a.followsSystem === b.followsSystem &&
-    a.sansFont === b.sansFont &&
-    a.monoFont === b.monoFont &&
-    sa.mode === sb.mode &&
-    (sa.mode !== "image" || sa.imageId === sb.imageId) &&
-    sa.showImage === sb.showImage &&
-    sa.texture === sb.texture &&
-    sa.dim === sb.dim &&
-    sa.matchTheme === sb.matchTheme
-  );
+  return resolveTheme(resolveThemeById(effectiveThemeId(look.themeId, look.followsSystem, systemColorScheme), customThemes)).palette;
 }
 
 /** The first whole hour at or after `from` that no slot starts at. */
@@ -119,13 +100,7 @@ export function AppearanceScheduleSettings() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const onScreen = useMemo<ScheduledLook>(
-    () => ({
-      themeId,
-      followsSystem,
-      scene: interfacePreferences.scene,
-      sansFont: interfacePreferences.sansFont,
-      monoFont: interfacePreferences.monoFont,
-    }),
+    () => lookFromState({ themeId, themeFollowsSystem: followsSystem, interfacePreferences }),
     [themeId, followsSystem, interfacePreferences],
   );
 
@@ -165,17 +140,23 @@ export function AppearanceScheduleSettings() {
     if (selectedId === id) setSelectedId(null);
   };
 
+  /** The slot in charge this moment; the rendered `active` can be a tick behind. */
+  const activeNow = () => {
+    const current = readAppearanceSchedule();
+    return current.enabled ? activeSlotAt(current.slots, Date.now()) : null;
+  };
+
   /** Show a slot now. Like a change by hand, it holds until the next slot starts. */
   const showSlot = (slot: ScheduleSlot) => {
-    applyScheduledLook(slot.look);
+    const inCharge = activeNow();
     // The slot in charge shown again counts as applied, so the "by hand" note clears.
-    if (active && active.slot.id === slot.id) markSlotApplied(active);
+    if (inCharge && inCharge.slot.id === slot.id) applyScheduleSlot(inCharge);
+    else applyScheduledLook(slot.look);
   };
 
   const backToSchedule = () => {
-    if (!active) return;
-    applyScheduledLook(active.slot.look);
-    markSlotApplied(active);
+    const inCharge = activeNow();
+    if (inCharge) applyScheduleSlot(inCharge);
   };
 
   return (
@@ -206,18 +187,26 @@ export function AppearanceScheduleSettings() {
             />
           ) : null}
 
-          {active ? (
-            <div className="ade-ap-sched-status" data-overridden={overridden || undefined} role="status">
-              {overridden ? (
-                <>
-                  <span>
-                    Changed by hand. <b>{slotLabel(active.next)}</b> takes over at {formatSlotClock(active.next.start)}.
-                  </span>
-                  <button type="button" className="ade-ap-shuffle-all" onClick={backToSchedule}>
-                    <ArrowCounterClockwise size={11} weight="bold" /> Back to {slotLabel(active.slot)}
-                  </button>
-                </>
-              ) : slots.length === 1 ? (
+          {active && overridden ? (
+            <Banner
+              layout="inline"
+              model={{
+                id: "appearance-schedule-overridden",
+                tone: "info",
+                title: "Changed by hand",
+                detail: `${slotLabel(active.next)} takes over at ${formatSlotClock(active.next.start)}.`,
+                actions: [
+                  {
+                    label: `Back to ${slotLabel(active.slot)}`,
+                    icon: <ArrowCounterClockwise size={12} weight="bold" />,
+                    onClick: backToSchedule,
+                  },
+                ],
+              }}
+            />
+          ) : active ? (
+            <div className="ade-ap-sched-status" role="status">
+              {slots.length === 1 ? (
                 <span>One look all day. Add another time to switch.</span>
               ) : (
                 <span>
@@ -239,13 +228,14 @@ export function AppearanceScheduleSettings() {
                   single={slots.length === 1}
                   isActive={active?.slot.id === slot.id}
                   selected={selectedId === slot.id}
-                  matchesScreen={sameLook(slot.look, onScreen)}
+                  showsScreen={sameLook(slot.look, onScreen)}
+                  holdsScreen={sameSavedLook(slot.look, onScreen)}
                   takenStarts={slots.filter((other) => other.id !== slot.id).map((other) => other.start)}
                   customThemes={customThemes}
                   systemColorScheme={systemColorScheme}
                   userScenes={userScenes}
                   onSelect={() => setSelectedId(slot.id)}
-                  onStart={(start) => patchSlot(slot.id, { start })}
+                  onStart={(start) => updateAppearanceSchedule((prev) => withSlotStart(prev, slot.id, start, Date.now()))}
                   onRename={(name) => patchSlot(slot.id, { name })}
                   onSave={() => patchSlot(slot.id, { look: captureCurrentLook() })}
                   onShow={() => showSlot(slot)}
@@ -258,7 +248,7 @@ export function AppearanceScheduleSettings() {
           <div className="ade-ap-sched-foot">
             <button
               type="button"
-              className="ade-ap-shuffle-now"
+              className="ade-ap-chipbtn"
               onClick={addSlot}
               disabled={slots.length >= MAX_SCHEDULE_SLOTS}
               title={slots.length >= MAX_SCHEDULE_SLOTS ? `Up to ${MAX_SCHEDULE_SLOTS} times` : "Add a time that switches to the look on screen now"}
@@ -358,7 +348,8 @@ function SlotCard({
   single,
   isActive,
   selected,
-  matchesScreen,
+  showsScreen,
+  holdsScreen,
   takenStarts,
   customThemes,
   systemColorScheme,
@@ -375,7 +366,10 @@ function SlotCard({
   single: boolean;
   isActive: boolean;
   selected: boolean;
-  matchesScreen: boolean;
+  /** The look on screen is this one. */
+  showsScreen: boolean;
+  /** …and every setting saved with it, the shuffle's included. */
+  holdsScreen: boolean;
   takenStarts: number[];
   customThemes: AdeTheme[];
   systemColorScheme: ThemeId;
@@ -400,7 +394,7 @@ function SlotCard({
   const [nameDraft, setNameDraft] = useState(slot.name);
   useEffect(() => setNameDraft(slot.name), [slot.name]);
   const look = slot.look;
-  const theme = resolveThemeById(paintedThemeId(look, systemColorScheme), customThemes);
+  const theme = resolveThemeById(effectiveThemeId(look.themeId, look.followsSystem, systemColorScheme), customThemes);
   const family = themeFamilyForId(look.themeId);
   // A theme deleted since it was saved paints as the default.
   const themeMissing = !family && !customThemes.some((custom) => custom.id === look.themeId);
@@ -499,36 +493,36 @@ function SlotCard({
           </span>
         </div>
         {clash ? <div className="ade-ap-sched-error" role="alert">Another look already starts then. Pick another time.</div> : null}
-        <div className="ade-ap-sched-summary" title={`${themeLabel} · ${background} · ${SANS_LABEL[look.sansFont] ?? look.sansFont}`}>
+        <div className="ade-ap-sched-summary" title={`${themeLabel} · ${background} · ${SANS_FONT_LABELS[look.sansFont]}`}>
           {themeMissing ? <span className="ade-ap-sched-missing">Theme removed, uses ADE</span> : <span>{themeLabel}</span>}
           <span aria-hidden>·</span>
           <span>{background}</span>
           <span aria-hidden>·</span>
-          <span>{SANS_LABEL[look.sansFont] ?? look.sansFont}</span>
+          <span>{SANS_FONT_LABELS[look.sansFont]}</span>
         </div>
       </div>
 
       <div className="ade-ap-sched-actions">
         <button
           type="button"
-          className="ade-ap-shuffle-all"
+          className="ade-ap-chipbtn" data-size="sm"
           onClick={(event) => {
             event.stopPropagation();
             onSave();
           }}
-          disabled={matchesScreen}
-          title={matchesScreen ? "This is the look on screen" : "Replace this look with what is on screen now"}
+          disabled={holdsScreen}
+          title={holdsScreen ? "This is the look on screen" : "Replace this look with what is on screen now"}
         >
-          <FloppyDisk size={11} weight="bold" /> {matchesScreen ? "Matches screen" : "Save screen here"}
+          <FloppyDisk size={11} weight="bold" /> {holdsScreen ? "Matches screen" : "Save screen here"}
         </button>
         <button
           type="button"
-          className="ade-ap-shuffle-all"
+          className="ade-ap-chipbtn" data-size="sm"
           onClick={(event) => {
             event.stopPropagation();
             onShow();
           }}
-          disabled={matchesScreen}
+          disabled={showsScreen}
           title={isActive ? "Show this look again" : "Show this look now. It holds until the next time starts."}
         >
           <Eye size={11} weight="bold" /> Show now
@@ -558,9 +552,7 @@ function LookBackdrop({ look, palette }: { look: ScheduledLook; palette: Resolve
     return (
       <div
         className="ade-ap-sched-art-bg"
-        style={{
-          background: `radial-gradient(120% 90% at 20% 15%, color-mix(in srgb, ${palette.accentDeep} 70%, transparent), transparent 62%), radial-gradient(110% 90% at 85% 85%, color-mix(in srgb, ${palette.accent} 55%, transparent), transparent 60%), ${palette.bg}`,
-        }}
+        style={{ background: gradientSceneBackground(palette) }}
       />
     );
   }

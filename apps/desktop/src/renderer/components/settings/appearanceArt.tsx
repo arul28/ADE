@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
 import type { ResolvedAdeThemePalette } from "../../../shared/theme";
 import { userSceneUrl } from "../../scene/userScenes";
+import type { InterfaceSansFont } from "../../state/appearanceStore";
+
+export const SANS_FONT_LABELS: Record<InterfaceSansFont, string> = { geist: "Geist", system: "System", "geist-mono": "Geist Mono" };
+
+/** The Gradient background drawn small, in a given palette. */
+export function gradientSceneBackground(palette: ResolvedAdeThemePalette): string {
+  return `radial-gradient(120% 90% at 20% 15%, color-mix(in srgb, ${palette.accentDeep} 70%, transparent), transparent 62%), radial-gradient(110% 90% at 85% 85%, color-mix(in srgb, ${palette.accent} 55%, transparent), transparent 60%), ${palette.bg}`;
+}
 
 /** A tiny ADE window in a given palette: top bar, sidebar, a card and a composer. */
 export function MiniChrome({ palette }: { palette: ResolvedAdeThemePalette }) {
