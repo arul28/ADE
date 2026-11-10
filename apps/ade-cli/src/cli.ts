@@ -413,7 +413,10 @@ import { markActiveHostProjectOpen } from "./services/projects/projectCatalog";
 import {
   decodeProjectIconUpload,
   importProjectIconBytes,
-  resolveRemoteProjectIcon,
+  resolveProjectIconOverridePath,
+  resolveProjectIconPath,
+  resolveRemoteProjectIconForRecord,
+  type RemoteProjectIconRecordMode,
 } from "./services/projects/projectIconResolver";
 import type { ProjectRecord } from "./services/projects/projectRegistry";
 import {
@@ -1190,7 +1193,7 @@ export type CliPlan =
   | { kind: "pty-host-worker" }
   | { kind: "usage-ledger-worker" }
   | { kind: "sdk-worker"; worker: SdkWorkerName }
-  | { kind: "project-icon-worker"; rootPath: string }
+  | { kind: "project-icon-worker"; rootPath: string; recordMode?: Exclude<RemoteProjectIconRecordMode, "off"> }
   | { kind: "init"; targetPath: string | null }
   | { kind: "cursor-cloud"; rest: string[] }
   | { kind: "deeplink"; rest: string[] }
@@ -23317,9 +23320,16 @@ function buildCliPlan(
   if (sdkWorker) return { kind: "sdk-worker", worker: sdkWorker };
   if (primary === "__ade-project-icon-worker") {
     const primaryIndex = args.indexOf(primary);
+    const rest = args.slice(primaryIndex + 1).filter((arg) => arg !== "--");
+    // The positional after the root says what the shared project record asks
+    // of this resolve (`multiProjectRpcServer` passes it).
+    const recordMode = rest[1] === "record:detected"
+      ? "detected" as const
+      : rest[1] === "record:migrate" ? "migrate" as const : null;
     return {
       kind: "project-icon-worker",
-      rootPath: args.slice(primaryIndex + 1).find((arg) => arg !== "--") ?? "",
+      rootPath: rest[0] ?? "",
+      ...(recordMode ? { recordMode } : {}),
     };
   }
   if (primary === "desktop") {
@@ -28838,6 +28848,20 @@ async function runServe(
     headlessProjectLogger.info("sync.host_left_to_service_brain", { servicePid: serviceBrainPid });
   }
   const syncEnabled = syncRequested && syncCapableHome && serviceBrainPid == null;
+  // A repository's name and icon, shared by every machine of the account.
+  // With sync off they stay in each project's `.ade/project-record.json`.
+  const [{ createMachineProjectRecords }, { getMachineAccountStores }, projectRecordIcons] = await Promise.all([
+    import("./services/projects/projectRecords"),
+    import("./services/account/machineAccountStores"),
+    import("../../desktop/src/main/services/projects/projectRecordHost"),
+  ]);
+  let projectRecordAccountStores: ReturnType<typeof getMachineAccountStores> | null = null;
+  const machineAccountStoresForRecords = () => (projectRecordAccountStores ??= getMachineAccountStores(headlessProjectLogger));
+  const projectRecords = createMachineProjectRecords({
+    accountStore: () => (syncEnabled ? machineAccountStoresForRecords().settings : null),
+    isSignedIn: () => machineAccountStoresForRecords().accountUserId() !== null,
+    logger: headlessProjectLogger,
+  });
   const localDeviceIdPath = path.join(layout.secretsDir, "sync-device-id");
   // `--profile` was read at the top of the function, before the identity notes.
   const projectRegistry = new ProjectRegistry(layout);
@@ -28879,15 +28903,27 @@ async function runServe(
       );
     }
   }
+  // The phone's icon follows the shared record like the desktop's tab does.
+  const mobileProjectIconDataUrl = (record: ProjectRecord): string | null => {
+    const decision = projectRecords.iconDecision(record);
+    if (decision.use === "record") return decision.icon.dataUrl;
+    if (decision.use === "detected") {
+      const detected = resolveProjectIconPath(record.rootPath, { iconPathOverride: undefined });
+      return detected ? resolveMobileProjectIconDataUrl(record.rootPath, { resolvedSourcePath: detected }) : null;
+    }
+    return resolveMobileProjectIconDataUrl(record.rootPath);
+  };
   const toMobileProjectSummary = (
     record: ProjectRecord,
     overrides: Partial<SyncMobileProjectSummary> = {},
-  ): SyncMobileProjectSummary =>
-    headlessMobileProjectSummary(
-      record,
-      resolveMobileProjectIconDataUrl(record.rootPath),
+  ): SyncMobileProjectSummary => {
+    const sharedName = projectRecords.name(record);
+    return headlessMobileProjectSummary(
+      sharedName ? { ...record, displayName: sharedName } : record,
+      mobileProjectIconDataUrl(record),
       overrides,
     );
+  };
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
   const keepAwakeServiceModule = !embedded && servesMachineEndpoint
     ? await import("./services/power/brainKeepAwakeService")
@@ -29196,11 +29232,17 @@ async function runServe(
         rootPath: record.rootPath,
       };
     }
+    if (projectRecords.isShared(record)) {
+      // The shared copy for every machine of the account; the phone's icon
+      // stays set here even when that copy cannot be made.
+      const overridePath = resolveProjectIconOverridePath(record.rootPath);
+      projectRecords.writeIcon(record, overridePath ? projectRecordIcons.encodeProjectRecordIcon(overridePath) : null);
+    }
     return {
       ok: true,
       projectId: record.projectId,
       rootPath: record.rootPath,
-      iconDataUrl: resolveMobileProjectIconDataUrl(record.rootPath),
+      iconDataUrl: mobileProjectIconDataUrl(record),
     };
   };
   const machineProjectCatalogProvider: SyncProjectCatalogProvider = {
@@ -30122,6 +30164,7 @@ async function runServe(
       providerStatus,
       keepAwakeService,
       machineAccountDomains,
+      projectRecords,
       productAnalyticsService: brainProductAnalytics,
       accountAuthService: brainAccountAuthService,
       getAccountDirectoryHealth,
@@ -40189,7 +40232,7 @@ async function runParsedCli(
     };
   if (plan.kind === "project-icon-worker") {
     return {
-      output: `${JSON.stringify(resolveRemoteProjectIcon(plan.rootPath))}\n`,
+      output: `${JSON.stringify(resolveRemoteProjectIconForRecord(plan.rootPath, plan.recordMode ?? "off"))}\n`,
       exitCode: 0,
     };
   }

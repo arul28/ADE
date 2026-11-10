@@ -60,12 +60,21 @@ import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { peekSharedUsageTrackingService } from "../../desktop/src/main/services/usage/sharedUsageTracking";
 import { readProjectFolderPresence, readProjectFolderStates } from "./services/projects/projectFolderPresence";
 import {
+  clearProjectIconOverride,
   decodeProjectIconUpload,
   importProjectIconBytes,
   REMOTE_ICON_MAX_DATA_URL_BYTES,
   removeProjectIconOverride,
   resolveRemoteProjectIcon,
+  type RemoteProjectIconRecordMode,
 } from "./services/projects/projectIconResolver";
+import type { MachineProjectRecords } from "./services/projects/projectRecords";
+import type { ProjectRecordIconDecision } from "../../desktop/src/main/services/projects/projectRecordHost";
+import {
+  PROJECT_RECORD_ICON_MAX_VALUE_BYTES,
+  projectRecordIconValue,
+  type ProjectRecordIconValue,
+} from "../../desktop/src/shared/projectRecord";
 import {
   ProjectRegistry,
   SYSTEM_PROJECT_REGISTRATION,
@@ -390,6 +399,11 @@ export type MultiProjectRpcHandlerOptions = {
    * `accountVault.call`. Without it, those methods answer unavailable.
    */
   machineAccountDomains?: MachineAccountDomains;
+  /**
+   * The shared project record (a repository's name and icon on every machine
+   * of the account). Without it, names and icons come from this machine only.
+   */
+  projectRecords?: MachineProjectRecords | null;
   accountAuthService?: AccountAuthService;
   productAnalyticsService?: AccountAnalyticsIdentity & {
     /** Present on the real service; records the account sign-in funnel. */
@@ -895,15 +909,29 @@ const ICON_WRITE_RESOLVE_BUDGET_MS = 8_000;
  */
 let machineUpdateAndRestartInFlight: Promise<unknown> | null = null;
 
+/**
+ * What the shared project record asks of one icon resolve (see
+ * `RemoteProjectIconRecordMode`), and where a `migrate` answer's shrunk copy
+ * of this machine's own icon goes.
+ */
+type ProjectIconRecordRequest = {
+  mode: RemoteProjectIconRecordMode;
+  /** `undefined`: this machine has no custom icon; `null`: it has one that does not fit the record. */
+  onRecordValue?: (value: ProjectRecordIconValue | null | undefined) => void;
+};
+
 type ProjectIconResolver = (
   rootPath: string,
   timeoutMs: number,
+  record?: ProjectIconRecordRequest,
 ) => ResolvedProjectIcon | Promise<ResolvedProjectIcon>;
 
-function projectIconWorkerInvocation(rootPath: string): {
+function projectIconWorkerInvocation(rootPath: string, mode: RemoteProjectIconRecordMode): {
   command: string;
   args: string[];
 } {
+  // A positional after the root, so an older argument parser still reads the root.
+  const modeArgs = mode === "off" ? [] : [`record:${mode}`];
   const entryPath = process.argv[1] ?? "";
   const isCliScript = /(^|[/\\])cli\.(?:ts|js|cjs)$/i.test(entryPath)
     && fs.existsSync(entryPath);
@@ -915,13 +943,14 @@ function projectIconWorkerInvocation(rootPath: string): {
           entryPath,
           "__ade-project-icon-worker",
           rootPath,
+          ...modeArgs,
         ],
       }
     : {
         // Node SEA executables re-enter the bundled CLI directly. Its SEA
         // banner restores the synthetic cli.cjs argv entry before parsing.
         command: process.execPath,
-        args: ["__ade-project-icon-worker", rootPath],
+        args: ["__ade-project-icon-worker", rootPath, ...modeArgs],
       };
 }
 
@@ -938,11 +967,14 @@ function isResolvedProjectIcon(value: unknown): value is ResolvedProjectIcon {
 // responsive; the caller's deadline is enforced by `resolveIconBeforeDeadline`,
 // and a worker that hangs is killed at `timeoutMs`. `null` when the worker
 // failed or ran out of time, which is not an answer worth keeping.
+type ProjectIconWorkerAnswer = { icon: ResolvedProjectIcon; recordValue: ProjectRecordIconValue | null | undefined };
+
 function runProjectIconWorker(
   rootPath: string,
   timeoutMs: number,
-): Promise<ResolvedProjectIcon | null> {
-  const invocation = projectIconWorkerInvocation(rootPath);
+  mode: RemoteProjectIconRecordMode,
+): Promise<ProjectIconWorkerAnswer | null> {
+  const invocation = projectIconWorkerInvocation(rootPath, mode);
   return new Promise((resolve) => {
     execFile(
       invocation.command,
@@ -950,7 +982,7 @@ function runProjectIconWorker(
       {
         timeout: Math.max(1, Math.floor(timeoutMs)),
         killSignal: "SIGKILL",
-        maxBuffer: REMOTE_ICON_MAX_DATA_URL_BYTES + 16 * 1024,
+        maxBuffer: REMOTE_ICON_MAX_DATA_URL_BYTES + PROJECT_RECORD_ICON_MAX_VALUE_BYTES + 16 * 1024,
         encoding: "utf8",
         windowsHide: true,
       },
@@ -960,8 +992,23 @@ function runProjectIconWorker(
           return;
         }
         try {
-          const icon = JSON.parse(stdout.trim()) as unknown;
-          resolve(isResolvedProjectIcon(icon) ? icon : null);
+          const parsed = JSON.parse(stdout.trim()) as unknown;
+          if (!isResolvedProjectIcon(parsed)) {
+            resolve(null);
+            return;
+          }
+          // Only the icon goes to callers; the record copy is for this brain.
+          const recordValue = (parsed as { recordValue?: unknown }).recordValue;
+          const decoded = recordValue === undefined
+            ? undefined
+            : recordValue && typeof recordValue === "object"
+                && typeof (recordValue as { dataUrl?: unknown }).dataUrl === "string"
+              ? projectRecordIconValue((recordValue as { dataUrl: string }).dataUrl)
+              : null;
+          resolve({
+            icon: { dataUrl: parsed.dataUrl, sourcePath: parsed.sourcePath, mimeType: parsed.mimeType },
+            recordValue: decoded,
+          });
         } catch {
           resolve(null);
         }
@@ -996,8 +1043,15 @@ const PROJECT_ICON_WORKER_TIMEOUT_MS = 15_000;
 /** How long a failed worker's "no icon" stands before a list re-checks it in the background. */
 const PROJECT_ICON_FAILURE_TTL_MS = 60_000;
 const PROJECT_ICON_ANSWERS_MAX = 256;
+// Keyed by record mode and root: an answer made while the record had no icon
+// keeps this machine's override, which a `detected` answer must not reuse.
 const projectIconAnswers = new Map<string, { signature: string; icon: ResolvedProjectIcon; expiresAtMs: number }>();
 const projectIconResolves = new Map<string, Promise<ResolvedProjectIcon | null>>();
+const RECORD_MODES: readonly RemoteProjectIconRecordMode[] = ["off", "detected", "migrate"];
+
+function projectIconAnswerKey(rootPath: string, mode: RemoteProjectIconRecordMode): string {
+  return mode === "off" ? rootPath : `${mode}\u0000${rootPath}`;
+}
 
 function statStamp(entry: string): Promise<string> {
   return fs.promises.stat(entry).then((stat) => `${stat.mtimeMs}:${stat.size}`, () => "-");
@@ -1020,32 +1074,43 @@ async function projectIconSignature(rootPath: string, sourcePath: string | null)
  * the signature from before the change, so its answer is never trusted later.
  */
 function forgetProjectIconAnswer(rootPath: string): void {
-  projectIconAnswers.delete(rootPath);
-  projectIconResolves.delete(rootPath);
+  for (const mode of RECORD_MODES) {
+    projectIconAnswers.delete(projectIconAnswerKey(rootPath, mode));
+    projectIconResolves.delete(projectIconAnswerKey(rootPath, mode));
+  }
 }
 
 async function resolveRemoteProjectIconInWorker(
   rootPath: string,
   timeoutMs: number,
+  record: ProjectIconRecordRequest = { mode: "off" },
 ): Promise<ResolvedProjectIcon> {
   if (timeoutMs <= 0) return EMPTY_PROJECT_ICON;
-  const kept = projectIconAnswers.get(rootPath);
+  const kept = projectIconAnswers.get(projectIconAnswerKey(rootPath, record.mode));
   if (kept && kept.signature === await projectIconSignature(rootPath, kept.icon.sourcePath)) {
-    if (kept.expiresAtMs <= Date.now()) void startProjectIconResolve(rootPath, timeoutMs);
+    if (kept.expiresAtMs <= Date.now()) void startProjectIconResolve(rootPath, timeoutMs, record);
     return kept.icon;
   }
-  return (await startProjectIconResolve(rootPath, timeoutMs)) ?? EMPTY_PROJECT_ICON;
+  return (await startProjectIconResolve(rootPath, timeoutMs, record)) ?? EMPTY_PROJECT_ICON;
 }
 
 /** One worker per project at a time: two lists at once (a desktop and a phone connecting) share it. */
-function startProjectIconResolve(rootPath: string, timeoutMs: number): Promise<ResolvedProjectIcon | null> {
-  const existing = projectIconResolves.get(rootPath);
+function startProjectIconResolve(
+  rootPath: string,
+  timeoutMs: number,
+  record: ProjectIconRecordRequest,
+): Promise<ResolvedProjectIcon | null> {
+  const key = projectIconAnswerKey(rootPath, record.mode);
+  const existing = projectIconResolves.get(key);
   if (existing) return existing;
   const self: { promise: Promise<ResolvedProjectIcon | null> | null } = { promise: null };
   const resolving = (async () => {
     // Taken before the worker reads, so a change while it runs is not hidden.
     const folders = await projectIconSignature(rootPath, null);
-    const icon = await runProjectIconWorker(rootPath, Math.max(timeoutMs, PROJECT_ICON_WORKER_TIMEOUT_MS));
+    const answer = await runProjectIconWorker(rootPath, Math.max(timeoutMs, PROJECT_ICON_WORKER_TIMEOUT_MS), record.mode);
+    const icon = answer?.icon ?? null;
+    // A fresh answer only, so a kept one never retries an upload.
+    if (answer && record.mode === "migrate") record.onRecordValue?.(answer.recordValue);
     // A worker that failed (it crashed, ran out of time, or printed more than
     // it may) is kept as "no icon" for a minute. Not keeping it made every
     // list wait out its whole budget for a worker that fails again: measured
@@ -1053,9 +1118,9 @@ function startProjectIconResolve(rootPath: string, timeoutMs: number): Promise<R
     const kept = icon ?? EMPTY_PROJECT_ICON;
     const signature = icon?.sourcePath ? `${folders}|${await statStamp(icon.sourcePath)}` : folders;
     // A resolve that an icon write superseded keeps its answer to itself.
-    if (projectIconResolves.get(rootPath) !== self.promise) return icon;
-    projectIconAnswers.delete(rootPath);
-    projectIconAnswers.set(rootPath, {
+    if (projectIconResolves.get(key) !== self.promise) return icon;
+    projectIconAnswers.delete(key);
+    projectIconAnswers.set(key, {
       signature,
       icon: kept,
       expiresAtMs: Date.now() + (icon ? PROJECT_ICON_ANSWER_TTL_MS : PROJECT_ICON_FAILURE_TTL_MS),
@@ -1067,9 +1132,9 @@ function startProjectIconResolve(rootPath: string, timeoutMs: number): Promise<R
     return icon;
   })();
   self.promise = resolving;
-  projectIconResolves.set(rootPath, resolving);
+  projectIconResolves.set(key, resolving);
   void resolving.finally(() => {
-    if (projectIconResolves.get(rootPath) === resolving) projectIconResolves.delete(rootPath);
+    if (projectIconResolves.get(key) === resolving) projectIconResolves.delete(key);
   });
   return resolving;
 }
@@ -1078,12 +1143,13 @@ async function resolveIconBeforeDeadline(
   resolveIcon: ProjectIconResolver,
   rootPath: string,
   timeoutMs: number,
+  record?: ProjectIconRecordRequest,
 ): Promise<ResolvedProjectIcon> {
   if (timeoutMs <= 0) return EMPTY_PROJECT_ICON;
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
     return await Promise.race([
-      Promise.resolve().then(() => resolveIcon(rootPath, timeoutMs)),
+      Promise.resolve().then(() => (record ? resolveIcon(rootPath, timeoutMs, record) : resolveIcon(rootPath, timeoutMs))),
       new Promise<ResolvedProjectIcon>((resolve) => {
         timer = setTimeout(() => resolve(EMPTY_PROJECT_ICON), timeoutMs);
       }),
@@ -1100,26 +1166,47 @@ async function resolveIconBeforeDeadline(
 // add/create/clone (which feed the desktop's cached connection.projects), so a
 // freshly registered project opens with its icon instead of a blank folder.
 // Best-effort: a failed resolve degrades to a null icon and never throws.
-async function decorateProjectWithIcon<T extends { rootPath: string }>(
+async function decorateProjectWithIcon<T extends { rootPath: string; gitOriginUrl?: string | null; displayName?: string }>(
   record: T,
+  projectRecords: MachineProjectRecords | null = null,
 ): Promise<T & { icon: ResolvedProjectIcon }> {
+  const decision = projectRecords?.iconDecision(record) ?? null;
+  const name = projectRecords?.name(record) ?? null;
+  const named = name && typeof record.displayName === "string" ? { ...record, displayName: name } : record;
+  if (decision?.use === "record") return { ...named, icon: decision.icon };
   return {
-    ...record,
+    ...named,
     icon: await resolveIconBeforeDeadline(
       resolveRemoteProjectIconInWorker,
       record.rootPath,
       LIST_ICON_RESOLVE_BUDGET_MS,
+      projectIconRecordRequest(record, decision, projectRecords),
     ),
   };
+}
+
+/** The worker mode for a project whose record did not settle its icon. */
+function projectIconRecordRequest(
+  project: { rootPath: string; gitOriginUrl?: string | null },
+  decision: ProjectRecordIconDecision | null,
+  projectRecords: MachineProjectRecords | null,
+): ProjectIconRecordRequest | undefined {
+  if (!decision || !projectRecords) return undefined;
+  if (decision.use === "detected") return { mode: "detected" };
+  if (decision.use === "local" && decision.migrate) {
+    return { mode: "migrate", onRecordValue: (value) => projectRecords.completeMigration(project, value) };
+  }
+  return undefined;
 }
 
 // Decorate a full project list with icons under the connect-path budget above.
 // Icons are resolved for the most-recently-opened projects first (those most
 // likely to be open as tabs) while the returned array stays in registry order.
-export async function decorateProjectListWithIcons<T extends { rootPath: string; lastOpenedAt: number }>(
+export async function decorateProjectListWithIcons<T extends { rootPath: string; lastOpenedAt: number; gitOriginUrl?: string | null }>(
   records: readonly T[],
   resolveIcon: ProjectIconResolver = resolveRemoteProjectIconInWorker,
   resolveBudgetMs = LIST_ICON_RESOLVE_BUDGET_MS,
+  projectRecords: MachineProjectRecords | null = null,
 ): Promise<Array<T & { icon: ResolvedProjectIcon }>> {
   const icons = new Map<number, ResolvedProjectIcon>();
   let count = 0;
@@ -1130,7 +1217,23 @@ export async function decorateProjectListWithIcons<T extends { rootPath: string;
     .sort((a, b) =>
       b.record.lastOpenedAt - a.record.lastOpenedAt || a.index - b.index
     );
+  // The record's own icons first: each is a small data URL already in
+  // memory, so it costs no worker, no file read and none of the time budget.
+  const decisions = new Map<number, ProjectRecordIconDecision>();
+  if (projectRecords) {
+    for (const { record, index } of byRecency) {
+      const decision = projectRecords.iconDecision(record);
+      decisions.set(index, decision);
+      if (decision.use !== "record" || !decision.icon.dataUrl) continue;
+      const iconBytes = Buffer.byteLength(decision.icon.dataUrl, "utf8");
+      if (bytes + iconBytes > LIST_ICON_BYTE_BUDGET) continue;
+      bytes += iconBytes;
+      icons.set(index, decision.icon);
+    }
+  }
   for (const { record, index } of byRecency) {
+    // A record icon past the byte budget stays empty: the local file is not the answer.
+    if (icons.has(index) || decisions.get(index)?.use === "record") continue;
     const elapsedMs = Date.now() - startedAt;
     if (
       count >= LIST_ICON_COUNT_BUDGET
@@ -1141,6 +1244,7 @@ export async function decorateProjectListWithIcons<T extends { rootPath: string;
       resolveIcon,
       record.rootPath,
       resolveBudgetMs - elapsedMs,
+      projectIconRecordRequest(record, decisions.get(index) ?? null, projectRecords),
     );
     count += 1;
     const iconBytes = icon.dataUrl
@@ -1439,6 +1543,7 @@ export function createMultiProjectRpcRequestHandler(
   setNotifier: (notify: JsonRpcNotifier | null) => void;
 } {
   const projectRegistry = options.projectRegistry ?? new ProjectRegistry();
+  const projectRecords = options.projectRecords ?? null;
   const registerAccountConfigRoot = options.registerAccountConfigRoot
     ?? registerAccountConfigProjectRoot;
   const registerAccountProjects = (): void => {
@@ -3347,6 +3452,7 @@ export function createMultiProjectRpcRequestHandler(
       }
       return await decorateProjectWithIcon(
         await cloneRepositoryForRemoteAgent(projectRegistry, readOptionalString(params.originUrl), cloneIntoFolder),
+        projectRecords,
       );
     }
 
@@ -3560,12 +3666,15 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "projects.list") {
       const records = projectRegistry.list();
       const [decorated, presence] = await Promise.all([
-        decorateProjectListWithIcons(records),
+        decorateProjectListWithIcons(records, undefined, undefined, projectRecords),
         readProjectFolderPresence(records),
       ]);
       // Additive: older callers ignore `exists`, and an unknown answer is left out.
-      return decorated.map((record, index) =>
-        presence[index] === undefined ? record : { ...record, exists: presence[index] });
+      return decorated.map((record, index) => {
+        const sharedName = projectRecords?.name(record) ?? null;
+        const named = sharedName ? { ...record, displayName: sharedName } : record;
+        return presence[index] === undefined ? named : { ...named, exists: presence[index] };
+      });
     }
 
     if (method === "projects.add") {
@@ -3583,7 +3692,7 @@ export function createMultiProjectRpcRequestHandler(
       // held every project open for up to its 750 ms budget. Every other
       // caller, and every older client, still gets the icon.
       if (params.withoutIcon === true) return { ...added, icon: EMPTY_PROJECT_ICON };
-      return await decorateProjectWithIcon(added);
+      return await decorateProjectWithIcon(added, projectRecords);
     }
 
     if (method === "projects.setCatalogVisibility") {
@@ -3601,7 +3710,7 @@ export function createMultiProjectRpcRequestHandler(
         registration.catalogVisibility,
         registration.registrationSource,
       );
-      return project ? await decorateProjectWithIcon(project) : null;
+      return project ? await decorateProjectWithIcon(project, projectRecords) : null;
     }
 
     if (method === "projects.remove") {
@@ -3666,6 +3775,19 @@ export function createMultiProjectRpcRequestHandler(
           `Could not set the project icon: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
+      if (projectRecords?.isShared(project)) {
+        // The worker shrinks the new icon for the shared record (off this
+        // event loop); every machine of the account shows it next.
+        let shared = false;
+        const icon = await resolveIconBeforeDeadline(
+          resolveRemoteProjectIconInWorker,
+          project.rootPath,
+          ICON_WRITE_RESOLVE_BUDGET_MS,
+          { mode: "migrate", onRecordValue: (value) => { shared = projectRecords.writeIcon(project, value ?? null); } },
+        );
+        const decision = projectRecords.iconDecision(project);
+        return shared && decision.use === "record" ? decision.icon : icon;
+      }
       // Resolve through the same worker path `projects.list` uses, so the
       // caller gets exactly the icon every other device will see.
       return await resolveIconBeforeDeadline(
@@ -3678,6 +3800,19 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "projects.removeIcon") {
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.removeIcon");
       assertProjectFolderPresent(project.rootPath);
+      if (projectRecords?.isShared(project)) {
+        // Every machine goes back to the icon it detects and drops its own
+        // override; the "no icon" value stops one bringing its old one back.
+        projectRecords.writeNoIcon(project);
+        clearProjectIconOverride(project.rootPath);
+        forgetProjectIconAnswer(project.rootPath);
+        return await resolveIconBeforeDeadline(
+          resolveRemoteProjectIconInWorker,
+          project.rootPath,
+          ICON_WRITE_RESOLVE_BUDGET_MS,
+          { mode: "detected" },
+        );
+      }
       removeProjectIconOverride(project.rootPath);
       forgetProjectIconAnswer(project.rootPath);
       return await resolveIconBeforeDeadline(
@@ -3747,6 +3882,7 @@ export function createMultiProjectRpcRequestHandler(
           result.rootPath,
           readProjectRegistrationIntent(params),
         ),
+        projectRecords,
       );
     }
 
@@ -3758,6 +3894,7 @@ export function createMultiProjectRpcRequestHandler(
           result.rootPath,
           readProjectRegistrationIntent(params),
         ),
+        projectRecords,
       );
     }
 

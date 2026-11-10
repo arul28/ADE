@@ -1054,7 +1054,17 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   project's `.ade/project-icons` folder, and both methods answer with the icon
   the host now resolves. Older hosts advertise `machineProjects.setIcon:
   false`, so the desktop asks the user to update that machine instead of
-  calling. It also serves
+  calling. A project with a git origin takes its name and icon from the
+  shared project record first (`shared/projectRecord.ts`: rows `project.icon`
+  and `project.name` in the account settings store under `repo:<origin>`,
+  or `.ade/project-record.json` on a brain with sync off), so every machine of
+  the account shows the same ones; a record icon is already a small data URL
+  and costs no worker. `projects.setIcon` writes the record too, and
+  `projects.removeIcon` writes its "no custom icon" value, after which every
+  machine drops its own override and shows the detected icon. A record write
+  the store cannot take (signed out, brain down) stays pending in
+  `.ade/project-record.json`; that machine shows it, and the next record read
+  or write that reaches the store sends it first. It also serves
   `machine.updateAndRestart` (cto role, runtime endpoint only) and hosts the
   `ProjectlessSyncControls` fallback for `sync.*` on a machine with no project —
   see [sync and multi-device](../sync-and-multi-device/README.md#sync-on-a-machine-with-no-project).

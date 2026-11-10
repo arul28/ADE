@@ -37,9 +37,12 @@ import { cloneTargetFor, projectMenuSections } from "../projects/projectMenuEntr
 import { ProjectIconDialog, type ProjectIconDialogTarget } from "../projects/ProjectIconDialog";
 import {
   getProjectIconFromCache,
+  publishProjectIcon,
   setProjectIconCache,
   subscribeProjectIcon,
 } from "../../lib/projectIconCache";
+import { useProjectRecords } from "../../lib/useProjectRecords";
+import { projectRecordScope } from "../../../shared/projectRecord";
 
 import { useAppStore } from "../../state/appStore";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
@@ -1182,6 +1185,46 @@ export function TopBar({
     tabGroupsRef.current = tabGroups;
   }, [tabGroups]);
 
+  // The shared project record: one name and one icon per repository on every
+  // machine of the account. Names show here; when another machine changes a
+  // repository's icon, its tabs ask for the icon again.
+  const recordScopes = useMemo(
+    () => tabGroups.flatMap((group) => {
+      const scope = projectRecordScope(group.origin ?? null);
+      return scope ? [scope] : [];
+    }),
+    [tabGroups],
+  );
+  const refreshRecordIcon = useCallback((scope: string) => {
+    const targets = new Set<string>();
+    for (const group of tabGroupsRef.current) {
+      if (projectRecordScope(group.origin ?? null) !== scope) continue;
+      for (const machine of group.machines) {
+        if (machine.isLocal) {
+          void window.ade.project
+            .resolveIcon(machine.rootPath)
+            .then((icon) => publishProjectIcon(machine.rootPath, icon))
+            .catch(() => {});
+        } else if (machine.binding?.kind === "remote") {
+          targets.add(machine.binding.targetId);
+        }
+      }
+    }
+    // Only a machine already connected is asked: this must never wake one.
+    for (const targetId of targets) {
+      const state = remoteSnapshotRef.current?.connections.find((entry) => entry.target.id === targetId)?.state;
+      if (state === "connected") void window.ade.remoteRuntime.listProjects(targetId).catch(() => {});
+    }
+  }, []);
+  const recordNames = useProjectRecords(recordScopes, refreshRecordIcon);
+  const recordNameFor = useCallback(
+    (group: ProjectTabGroup): string | null => {
+      const scope = projectRecordScope(group.origin ?? null);
+      return scope ? recordNames.get(scope) ?? null : null;
+    },
+    [recordNames],
+  );
+
   useEffect(() => {
     remoteSnapshotRef.current = remoteSnapshot;
   }, [remoteSnapshot]);
@@ -2237,7 +2280,7 @@ export function TopBar({
                         }
                       />
                       <span className="min-w-0 flex-1 truncate text-center text-[12px]">
-                        {remoteTab.displayName}
+                        {recordNameFor(group) ?? remoteTab.displayName}
                       </span>
                       {remoteTabConnecting ? (
                         <CircleNotch
@@ -2385,7 +2428,7 @@ export function TopBar({
                         isMissing && "line-through",
                       )}
                     >
-                      {rp.displayName}
+                      {recordNameFor(group) ?? rp.displayName}
                     </span>
                     {isMissing ? (
                       <span className="inline-flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">

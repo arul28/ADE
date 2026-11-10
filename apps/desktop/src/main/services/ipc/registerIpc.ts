@@ -962,6 +962,7 @@ import {
   getOpenAccountContexts,
 } from "../account/accountMigrationRunner";
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
+import { createDesktopProjectRecords } from "../projects/desktopProjectRecords";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
 import { captureAutomationTestAnalytics, captureMcpServerSignInAnalytics, capturePresetAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
@@ -4468,6 +4469,35 @@ export function registerIpc({
     return resolveWithinAllowedProjectRoots(getAllowedProjectRoots(), normalized);
   };
 
+  // A repository's icon is shared by every machine of the account (the
+  // project record); this machine's own files are the fallback.
+  const desktopProjectRecords = createDesktopProjectRecords({
+    accountSettings: {
+      get: (scope, key) => accountSettingsSyncService.get(scope, key),
+      set: (scope, key, value) => accountSettingsSyncService.set(scope, key, value),
+    },
+    readOriginUrl: readGitOriginUrl,
+    isSignedIn: () => resolveCurrentAttentionAccountOwnerId() !== null,
+    encoder: { nativeImage },
+    logger: { warn: (event, data) => getCtx().logger.warn(event, data) },
+  });
+  /** The icon from this machine's files, as the project tab shows it. */
+  const resolveLocalProjectTabIcon = (root: string, options: { ignoreOverride: boolean }): ProjectIcon => {
+    // `undefined` as the override skips this machine's own setting.
+    const resolveOptions = options.ignoreOverride ? { iconPathOverride: undefined } : {};
+    const sourcePath = resolveProjectIconPath(root, resolveOptions);
+    if (!sourcePath) return { dataUrl: null, sourcePath: null, mimeType: null };
+    const image = nativeImage.createFromPath(sourcePath);
+    if (!image.isEmpty()) {
+      return {
+        dataUrl: image.resize({ width: 64, height: 64, quality: "best" }).toDataURL(),
+        sourcePath,
+        mimeType: "image/png",
+      };
+    }
+    return resolveProjectIcon(root, resolveOptions);
+  };
+
   ipcMain.handle(
     IPC.projectResolveIcon,
     async (_event, args: { rootPath: string }): Promise<ProjectIcon> => {
@@ -4483,17 +4513,10 @@ export function registerIpc({
       } catch {
         return { dataUrl: null, sourcePath: null, mimeType: null };
       }
-      const sourcePath = resolveProjectIconPath(validatedRoot);
-      if (!sourcePath) return { dataUrl: null, sourcePath: null, mimeType: null };
-      const image = nativeImage.createFromPath(sourcePath);
-      if (!image.isEmpty()) {
-        return {
-          dataUrl: image.resize({ width: 64, height: 64, quality: "best" }).toDataURL(),
-          sourcePath,
-          mimeType: "image/png",
-        };
-      }
-      return resolveProjectIcon(validatedRoot);
+      return await desktopProjectRecords.resolveIcon(
+        validatedRoot,
+        (options) => resolveLocalProjectTabIcon(validatedRoot, options),
+      );
     },
   );
 
@@ -4523,14 +4546,18 @@ export function registerIpc({
 
       const selectedPath = result.filePaths[0];
       if (!selectedPath) return null;
+      let icon: ProjectIcon;
       try {
-        return setProjectIconOverrideFromSelection(validatedRoot, selectedPath);
+        icon = setProjectIconOverrideFromSelection(validatedRoot, selectedPath);
       } catch (error) {
         // Surface validation/import failures so the renderer can display a
         // meaningful error instead of a silently rejected promise.
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`Failed to set project icon: ${message}`);
       }
+      // The icon is set here either way; the shared copy is best effort.
+      await desktopProjectRecords.shareLocalIcon(validatedRoot);
+      return icon;
     },
   );
 
@@ -4545,7 +4572,11 @@ export function registerIpc({
       } catch {
         return { dataUrl: null, sourcePath: null, mimeType: null };
       }
-      return removeProjectIconOverride(validatedRoot);
+      return await desktopProjectRecords.removeIcon(
+        validatedRoot,
+        () => removeProjectIconOverride(validatedRoot),
+        (options) => resolveLocalProjectTabIcon(validatedRoot, options),
+      );
     },
   );
 

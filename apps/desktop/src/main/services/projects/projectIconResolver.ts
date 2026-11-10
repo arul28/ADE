@@ -428,9 +428,14 @@ function fileSignature(absPath: string | null): { mtimeMs: number; size: number 
 }
 
 function projectIconResultCacheKey(root: string, options: { iconPathOverride?: string | null }): string {
-  const overrideKey = Object.prototype.hasOwnProperty.call(options, "iconPathOverride")
-    ? `override:${options.iconPathOverride ?? "null"}`
-    : "auto";
+  // An override given as `undefined` means "ignore the project's own
+  // override and detect", which must not share an entry with `null` ("no
+  // icon at all").
+  const overrideKey = !Object.prototype.hasOwnProperty.call(options, "iconPathOverride")
+    ? "auto"
+    : options.iconPathOverride === undefined
+      ? "detected"
+      : `override:${options.iconPathOverride ?? "null"}`;
   return `${root}\0${overrideKey}`;
 }
 
@@ -837,7 +842,8 @@ function mimeTypeForIconPath(filePath: string): string | null {
   }
 }
 
-function writeProjectIconPathOverride(projectRoot: string, iconPath: string | null): void {
+/** `undefined` deletes the setting, so the project's icon is detected again. */
+function writeProjectIconPathOverride(projectRoot: string, iconPath: string | null | undefined): void {
   ensureSharedAdeProjectScaffold(projectRoot);
   const localConfigPath = path.join(projectRoot, ".ade", "local.yaml");
   let config: Record<string, unknown> = {};
@@ -857,12 +863,13 @@ function writeProjectIconPathOverride(projectRoot: string, iconPath: string | nu
     ? { ...(config.project as Record<string, unknown>) }
     : {};
   const previousIconPath = typeof project.iconPath === "string" ? project.iconPath : null;
-  project.iconPath = iconPath;
+  if (iconPath === undefined) delete project.iconPath;
+  else project.iconPath = iconPath;
   config.project = project;
   config.version = typeof config.version === "number" ? config.version : 1;
 
   writeFileAtomic(localConfigPath, YAML.stringify(config, { indent: 2 }), { mode: 0o600 });
-  removeReplacedImportedIcon(projectRoot, previousIconPath, iconPath);
+  removeReplacedImportedIcon(projectRoot, previousIconPath, iconPath ?? null);
 }
 
 /**
@@ -1040,6 +1047,29 @@ export async function readProjectIconForUpload(filePath: string): Promise<Remote
     );
   }
   return { fileName: path.basename(filePath), mimeType, dataBase64: data.toString("base64") };
+}
+
+/**
+ * The file this machine's own icon setting (`.ade/local.yaml`
+ * `project.iconPath`) points at, or null when there is no such setting or its
+ * file is gone. A detected icon is never returned.
+ */
+export function resolveProjectIconOverridePath(projectRoot: string): string | null {
+  const root = canonicalProjectRoot(projectRoot);
+  return resolveConfiguredProjectIconPath(root, readProjectIconOverride(createProjectTreeScan(root)));
+}
+
+/**
+ * Drops this machine's own icon setting, so the icon is detected from the
+ * project files again. Writes nothing when there is no setting. True when it
+ * changed the file.
+ */
+export function clearProjectIconOverride(projectRoot: string): boolean {
+  const root = canonicalProjectRoot(projectRoot);
+  if (readProjectIconOverride(createProjectTreeScan(root)) === undefined) return false;
+  writeProjectIconPathOverride(root, undefined);
+  clearProjectIconResultCache(root);
+  return true;
 }
 
 export function removeProjectIconOverride(projectRoot: string): ProjectIcon {
