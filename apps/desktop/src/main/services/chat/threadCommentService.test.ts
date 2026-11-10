@@ -84,6 +84,30 @@ describe("createThreadCommentService", () => {
     expect(media).toMatchObject({ prefix: "", suffix: "", headers: [], cells: [media.quote] });
   });
 
+  // Lane sharing: the host stamps the author; a caller's value never lands,
+  // and a stored comment without one (every older comment) reads as the host.
+  it.each([
+    ["a caller-sent author", { author: { kind: "guest", userId: "user_forged", name: "Forged" } }, undefined, undefined],
+    ["the host's author", {}, { author: { kind: "guest" as const, userId: "user_guest", name: null } }, { kind: "guest", userId: "user_guest", name: null }],
+  ] as const)("keeps only the host's author over %s", (_label, clientFields, options, expected) => {
+    const service = makeService();
+    const created = service.create({
+      sessionId: "s1",
+      messageKey: "message:1",
+      messageExcerpt: "reply",
+      anchor: anchor("step"),
+      body: "note",
+      ...clientFields,
+    } as Parameters<typeof service.create>[0], options);
+    expect(created.author).toEqual(expected);
+    const reopened = createThreadCommentService({
+      chatSessionsDir: root!,
+      logger: { warn: vi.fn() },
+      onChanged: vi.fn(),
+    });
+    expect(reopened.list({ sessionId: "s1" })[0]?.author).toEqual(expected);
+  });
+
   it("takes only included comments and restore puts them back ahead of later ones", () => {
     const service = makeService();
     const takenComment = service.create({

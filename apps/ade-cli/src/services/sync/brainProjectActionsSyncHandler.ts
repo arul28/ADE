@@ -1769,6 +1769,14 @@ export function createBrainProjectActionsSyncHandler(
             if (auth?.kind === "account") {
               return await authenticateAccountHello(auth);
             }
+            if (auth?.kind === "guest") {
+              // Lane sharing is served only by a project sync host: a shared
+              // lane lives in a project, and this ingress has none open.
+              return authFail(
+                "The computer that shared this lane has no project open right now. Try again later.",
+                "lane_share_unavailable",
+              );
+            }
             if (!auth || auth.kind !== "bootstrap" || !safeStringEquals(bootstrapToken, auth.token)) return true;
             if (transportOrigin === "relay-bridge") {
               authFailure.code = "relay_account_required";

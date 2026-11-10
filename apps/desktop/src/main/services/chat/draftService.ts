@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import { parseMessageAuthor } from "../../../shared/messageAuthor";
 import {
   MAX_DRAFT_ATTACHMENTS,
   MAX_DRAFT_GRACE_SECONDS,
   MAX_DRAFT_SCHEDULE_LEAD_MS,
   MAX_DRAFTS,
   MAX_SCHEDULED_DRAFTS,
+  type AdeMessageAuthor,
   type AgentChatFileRef,
   type DraftDeliveryPolicy,
   type DraftEntry,
@@ -71,13 +73,15 @@ type DraftRow = {
   last_error: string | null;
   move_away_held_at: string | null;
   armed_by_site_id: string | null;
+  author_json: string | null;
 };
 
 const DRAFT_COLUMNS = `
   id, text, attachments_json, attachment_origin_site_id, provider, model_id, model, created_at,
   updated_at, kind, status, scheduled_at, delivery_policy, grace_seconds, target_kind,
   target_session_id, target_lane_id, target_machine_key, origin_session_id, permission_mode,
-  thinking, scheduled_by, scheduled_by_session_id, fired_at, last_error, move_away_held_at, armed_by_site_id
+  thinking, scheduled_by, scheduled_by_session_id, fired_at, last_error, move_away_held_at, armed_by_site_id,
+  author_json
 `;
 
 function optionalString(value: unknown): string | null {
@@ -217,7 +221,17 @@ function fromRow(row: DraftRow, localSiteId: string | null): DraftEntry {
     firedAt: row.fired_at,
     lastError: row.last_error,
     moveAwayHeldAt: row.move_away_held_at,
+    author: parseStoredAuthor(row.author_json),
   };
+}
+
+function parseStoredAuthor(value: string | null): AdeMessageAuthor | null {
+  if (!value) return null;
+  try {
+    return parseMessageAuthor(JSON.parse(value));
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -467,7 +481,13 @@ export function draftLaunchModel(input: {
 export function createDraft(
   db: DraftDb,
   value: unknown,
+  /**
+   * Host-only. `value` comes from a caller and its `author` is never read;
+   * the host passes the author it verified here (lane sharing).
+   */
+  options: { author?: AdeMessageAuthor | null } = {},
 ): DraftEntry {
+  const author = options.author ? parseMessageAuthor(options.author) : null;
   const args = objectRecord(value);
   const text = typeof args.text === "string" ? args.text : "";
   const attachments = normalizeAttachments(args.attachments);
@@ -519,6 +539,7 @@ export function createDraft(
     firedAt: null,
     lastError: null,
     moveAwayHeldAt: null,
+    author,
   };
   db.run(
     `
@@ -526,9 +547,9 @@ export function createDraft(
         id, text, attachments_json, attachment_origin_site_id, provider, model_id, model, created_at,
         updated_at, kind, status, scheduled_at, delivery_policy, grace_seconds, target_kind,
         target_session_id, target_lane_id, target_machine_key, origin_session_id, permission_mode,
-        thinking, scheduled_by, scheduled_by_session_id, fired_at, last_error, armed_by_site_id
+        thinking, scheduled_by, scheduled_by_session_id, fired_at, last_error, armed_by_site_id, author_json
       )
-      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       entry.id,
@@ -558,6 +579,7 @@ export function createDraft(
       null,
       // The runtime that arms a send owns its delivery when it names no machine.
       schedule ? currentSiteId(db) : null,
+      author ? JSON.stringify(author) : null,
     ],
   );
 

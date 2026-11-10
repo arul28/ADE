@@ -12,8 +12,10 @@ import {
 } from "../../../../desktop/src/shared/chatAttachmentLimits";
 import {
   createSyncRemoteCommandService,
+  evaluateRemoteCommandPolicy,
   SyncRemoteCommandResultTooLargeError,
 } from "./syncRemoteCommandService";
+import { isLaneShareGuestCommand, LANE_SHARE_GUEST_COMMANDS } from "./laneShareGuestPolicy";
 import {
   ATTACHMENT_UPLOAD_PATH,
   createAttachmentUploadRegistry,
@@ -3020,6 +3022,36 @@ describe("mobile lifecycle command contract", () => {
       override: "clear",
     }))).resolves.toEqual({ ok: true, sessionId: "session-1", settleOverride: null });
     expect(setSettleOverride).toHaveBeenCalledWith("session-1", null);
+  });
+});
+
+describe("lane share guest command policy", () => {
+  // Default refuse: a guest may run only the listed reads, whatever a
+  // command's descriptor allows a paired device, and every listed read must
+  // be one this registry serves to a viewer with no approval.
+  it("refuses every registered command a guest is not listed for", () => {
+    const { service } = createService();
+    const guest = { pairingRecord: null, laneShareGuest: { guest: true } };
+    const actions = service.getSupportedActions();
+    expect(actions.length).toBeGreaterThan(50);
+    for (const action of actions) {
+      const rejection = evaluateRemoteCommandPolicy({
+        action,
+        descriptor: service.getDescriptor(action),
+        peer: guest,
+        requestedProjectId: "project-1",
+        hostProjectId: "project-1",
+      });
+      if (isLaneShareGuestCommand(action)) expect([action, rejection]).toEqual([action, null]);
+      else expect([action, rejection?.code]).toEqual([action, "forbidden_command"]);
+    }
+    for (const action of Object.keys(LANE_SHARE_GUEST_COMMANDS)) {
+      expect([action, service.getDescriptor(action as never)?.policy]).toEqual([
+        action,
+        expect.objectContaining({ viewerAllowed: true }),
+      ]);
+      expect(service.getDescriptor(action as never)?.policy).not.toMatchObject({ requiresApproval: true });
+    }
   });
 });
 

@@ -903,6 +903,15 @@ calls `POST /lane-shares/host` on every guest connection.
   when the send fails, the invite still succeeds and says `emailSent: false`.
 - The host read lists every live grant of the machine. A host drops any cached
   grant that is not in the list, so a revoke counts at the next connection.
+- `POST /lane-shares/:id/connect` gives the receiver of an ACTIVE grant the
+  ADE Relay address the host machine published (`wss://…/connect/<machineKey>`)
+  and whether the host reported in recently. Nobody else may read it, not even
+  the giver (404); a closed grant answers 410. LAN and tailnet addresses are
+  never given out. The relay address only admits a socket: the host checks the
+  guest's account and the grant on every connection. A guest keeps the
+  address after a revoke, so a revoked guest can still reach the host's
+  sign-in step (and use one of the relay's 16 sockets for that machine) until
+  the host refuses it.
 - Clerk `user.deleted` closes every live grant given by or to the account.
 - The cron writes the clock-derived states, deletes rows closed 90 days ago,
   and drops budget rows older than a week.

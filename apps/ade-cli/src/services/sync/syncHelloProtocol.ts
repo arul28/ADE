@@ -99,6 +99,15 @@ export function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
       || !toOptionalString(normalizedAuth.deviceId)
       || !toOptionalString(normalizedAuth.sealed)
     ) return null;
+  } else if (normalizedAuth.kind === "guest") {
+    // Lane sharing. Only the fields a guest hello defines survive: anything
+    // else the client adds (a claimed role, grants, a lane) is dropped here.
+    const deviceId = toOptionalString(normalizedAuth.deviceId);
+    const accountToken = toOptionalString(normalizedAuth.accountToken);
+    if (!deviceId || !accountToken || accountToken.length > MAX_RELAY_ACCOUNT_TOKEN_CHARS) return null;
+    const dpop = normalizedAuth.dpop;
+    if (dpop != null && (typeof dpop !== "object" || Array.isArray(dpop))) return null;
+    normalizedAuth = { kind: "guest", deviceId, accountToken, dpop: dpop ?? null };
   } else {
     return null;
   }

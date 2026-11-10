@@ -25,6 +25,7 @@
  *   POST   /lane-shares/:id/leave       { grant: LaneShareReceiverView } receiver, or the invited address (decline)
  *   POST   /lane-shares/:id/move        { grant: LaneShareGiverView, moved } giver: the lane moved to another of
  *                                       its machines; every live grant of that lane follows (`moved` = how many)
+ *   POST   /lane-shares/:id/connect     LaneShareConnectResponse     receiver of an ACTIVE grant: how to reach the host
  *
  * Browsers may call every route except `/lane-shares/host` from the hosted
  * web client's exact origin (`WEB_CLIENT_ORIGIN`). Native callers send no
@@ -39,7 +40,7 @@ export const LANE_SHARE_PATHS = {
 } as const;
 
 /** `/lane-shares/:id` and its actions. */
-export const laneSharePath = (id: string, action?: "accept" | "revoke" | "leave" | "move"): string =>
+export const laneSharePath = (id: string, action?: "accept" | "revoke" | "leave" | "move" | "connect"): string =>
   `${LANE_SHARE_PATHS.root}/${encodeURIComponent(id)}${action ? `/${action}` : ""}`;
 
 /** The link in the invite email. An address only: it gives no access. */
@@ -155,8 +156,9 @@ export type LaneShareGiverView = LaneShareCommon & {
 };
 
 /**
- * What the receiver (or the invited address) sees. No machine key: how a
- * guest reaches the host is the guest connection's business (package 4b).
+ * What the receiver (or the invited address) sees. No machine key: the
+ * receiver of an active grant asks `POST /lane-shares/:id/connect` for the
+ * host's relay address when it connects.
  */
 export type LaneShareReceiverView = LaneShareCommon & {
   giverUserId: string;
@@ -167,6 +169,25 @@ export type LaneShareReceiverView = LaneShareCommon & {
 export type LaneShareOpenResponse =
   | { role: "giver"; grant: LaneShareGiverView }
   | { role: "receiver" | "invitee"; grant: LaneShareReceiverView };
+
+/**
+ * How the receiver of an ACTIVE grant reaches the host machine. Only the
+ * receiver may read it, and only while the grant is active. `relayUrl` is the
+ * ADE Relay address the host machine published (`wss://<relay>/connect/<key>`).
+ * It admits a socket to the relay and nothing more: the host checks the
+ * guest's account and this grant on every connection, so a guest that keeps
+ * the address after a revoke is refused at the host. LAN and tailnet
+ * addresses are never given out; a guest connection is relay-only.
+ */
+export type LaneShareConnectResponse = {
+  grantId: string;
+  laneId: string;
+  repoKey: string;
+  /** Null when the host machine published no relay address (relay off, or the machine was removed). */
+  relayUrl: string | null;
+  /** The host machine reported in within the directory's online window. */
+  hostOnline: boolean;
+};
 
 export type LaneShareReceivedResponse = {
   grants: LaneShareReceiverView[];

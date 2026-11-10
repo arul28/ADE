@@ -1,4 +1,5 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
+import { isLaneShareGuestCommand } from "./laneShareGuestPolicy";
 import { fallbackUnprojectedChatSession } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
 import { readGithubContributionCalendar } from "../../../../desktop/src/main/services/usage/githubActivityStats";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
@@ -500,12 +501,21 @@ export type RemoteCommandRejection = { code: string; message: string };
 export function evaluateRemoteCommandPolicy(args: {
   action: string;
   descriptor: Pick<SyncRemoteCommandDescriptor, "scope" | "policy"> | null | undefined;
-  peer: { pairingRecord: SyncPairingRecord | null };
+  /**
+   * `laneShareGuest`: the host set it after a guest hello (lane sharing). A
+   * guest may run only the read commands in `LANE_SHARE_GUEST_COMMANDS`; every
+   * other command is refused here whatever its descriptor says. The lane check
+   * itself needs the host database and runs in the sync host.
+   */
+  peer: { pairingRecord: SyncPairingRecord | null; laneShareGuest?: unknown };
   requestedProjectId: string | null;
   hostProjectId: string | null;
 }): RemoteCommandRejection | null {
   const { action, descriptor } = args;
   const policy = descriptor?.policy ?? null;
+  if (args.peer.laneShareGuest && !isLaneShareGuestCommand(action)) {
+    return { code: "forbidden_command", message: "This is not available on a shared lane." };
+  }
   if (!policy) {
     return { code: "unsupported_command", message: `Unsupported remote command: ${action}.` };
   }

@@ -8,6 +8,7 @@
 
 import { cut } from "./cutText";
 import { isSessionMetaOnly } from "./sessionMetaEvents";
+import type { AdeMessageAuthor } from "./types/chat";
 
 /** The comment actions, in every list that must name them (policy, access table, RPC guard, mobile). */
 export const THREAD_COMMENT_ACTION_NAMES = [
@@ -78,6 +79,8 @@ export type ChatThreadComment = {
   includeInNextSend: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Set only by the host (lane sharing). Absent: the host's own user. */
+  author?: AdeMessageAuthor;
 };
 
 export type ChatThreadCommentCreateArgs = {

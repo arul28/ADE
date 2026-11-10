@@ -98,14 +98,16 @@ import type { ModelPickerStore } from "../modelPickerStore";
 import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import type { JevService } from "../../../../desktop/src/main/services/jev/jevService";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
-import type { AccountAuthService } from "../account/accountAuthService";
+import { requireSignedInAccountAccessToken, type AccountAuthService } from "../account/accountAuthService";
 import type { AccountSettingsStore } from "../account/accountSettingsStore";
 import type { ProxyService } from "../proxy/proxyService";
 import {
   getSharedAccountAttestationConfig,
   getSharedAccountAuthService,
+  getSharedAccountDirectoryBaseUrl,
   type AccountAttestationConfig,
 } from "../account/sharedAccountAuthService";
+import { createLaneShareGrantService } from "./laneShareGrantService";
 import type { SyncTunnelClientService } from "./syncTunnelClientService";
 import {
   isLoopbackShadowedError,
@@ -676,6 +678,15 @@ export function createSyncService(args: SyncServiceArgs) {
     projectRoots: () => [args.projectRoot],
     logger: args.logger,
   });
+  // Lane sharing: this machine's grants, read with the owner's own token. One
+  // instance per sync service, so a hosted-project switch keeps the last good
+  // list. It sends nothing until a guest connects.
+  const laneShareGrants = createLaneShareGrantService({
+    getAccessToken: (tokenOptions) => requireSignedInAccountAccessToken(accountAuthService, tokenOptions),
+    getDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [args.projectRoot] }),
+    getMachineKey: () => cloudRelayStore.getMachineIdentity().machineKey,
+    logger: args.logger,
+  });
   const isRelayAccountSignedIn = (): boolean => {
     const status = accountAuthService.getStatus();
     return status.signedIn && Boolean(status.userId?.trim());
@@ -1238,6 +1249,7 @@ export function createSyncService(args: SyncServiceArgs) {
       computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
       pinStore,
       accountAuthService,
+      laneShareGrants,
       getAccountAttestationConfig: args.getAccountAttestationConfig ?? (() =>
         getSharedAccountAttestationConfig({ projectRoots: () => [args.projectRoot] })),
       runtimeNameStore,

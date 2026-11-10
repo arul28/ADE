@@ -1362,7 +1362,22 @@ export type AgentChatBoardMoveMetadata = {
   moveId: string;
 };
 
+/**
+ * Who wrote a person-side message, draft or thread comment (lane sharing).
+ * The host sets it from what it verified; a client value is always stripped
+ * (`messageAuthor.ts`). Absent means the host's own user: every row written
+ * before lane sharing reads that way. `name` is null when the host cannot
+ * know it without trusting the client.
+ */
+export type AdeMessageAuthor = {
+  kind: "host" | "guest";
+  userId: string;
+  name: string | null;
+};
+
 export type AgentChatEventMetadata = Record<string, unknown> & {
+  /** Set only by the host; see `AdeMessageAuthor`. Absent: the host's own user. */
+  author?: AdeMessageAuthor;
   /** Identifies the outside app that sent this person-side message through ADE MCP. */
   remoteMcp?: { connectionId: string; label: string };
   /** Marks a synthetic unattended turn started by ADE's durable scheduler. */
@@ -6730,6 +6745,8 @@ export type DraftScheduledBy = "user" | "agent";
 export type DraftEntry = {
   id: string;
   text: string;
+  /** Set only by the host (lane sharing). Absent or null: the host's own user. */
+  author?: AdeMessageAuthor | null;
   /** Absent when talking to a pre-attachment ADE runtime. */
   attachments?: AgentChatFileRef[];
   /** Includes images that exist only on the originating ADE runtime. */

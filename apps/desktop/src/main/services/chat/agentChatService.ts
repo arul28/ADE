@@ -805,6 +805,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
+import { withHostMessageAuthor } from "../../../shared/messageAuthor";
 import {
   applyClaudePlanModeTransition as applyClaudePlanModeTransitionShared,
   isSessionInPlanMode,
@@ -923,6 +924,7 @@ import {
   moveProviderThread,
 } from "./providerThreadMove";
 import type {
+  AdeMessageAuthor,
   AgentChatContinueUsageLimitOnAlternateResult,
   AgentChatSwitchAccountArgs,
   AgentChatSwitchAccountResult,
@@ -63340,6 +63342,12 @@ export function createAgentChatService(args: {
   };
 
   type SendMessageOptions = {
+    /**
+     * Lane sharing: the author the HOST verified (a guest's account). Read
+     * only by the public `sendMessage`, which strips any `metadata.author` the
+     * caller sent before it sets this one.
+     */
+    author?: AdeMessageAuthor | null;
     awaitDispatch?: boolean;
     awaitBackendDispatch?: boolean;
     onBackendDispatched?: () => void;
@@ -63444,6 +63452,7 @@ export function createAgentChatService(args: {
   async function sendMessage(
     args: AgentChatSendArgs,
     options: {
+      author?: AdeMessageAuthor | null;
       awaitDispatch?: boolean;
       awaitBackendDispatch?: boolean;
       onBackendDispatched?: () => void;
@@ -63457,6 +63466,7 @@ export function createAgentChatService(args: {
   async function sendMessage(
     args: AgentChatSendArgs,
     options?: {
+      author?: AdeMessageAuthor | null;
       awaitDispatch?: boolean;
       awaitBackendDispatch?: boolean;
       onBackendDispatched?: () => void;
@@ -78648,7 +78658,13 @@ export function createAgentChatService(args: {
       return result;
     },
     emitAdeCard,
-    sendMessage,
+    // Every public send strips a caller's `metadata.author`: only the host
+    // sets one (`withHostMessageAuthor`). Internal sends keep what they carry.
+    sendMessage: ((sendArgs: AgentChatSendArgs, options?: SendMessageOptions) =>
+      sendMessage(
+        withHostMessageAuthor(sendArgs, options?.author),
+        options as SendMessageOptions & { routeActiveToSteer: true },
+      )) as typeof sendMessage,
     getClaudePluginUi,
     actOnClaudePluginUi: claudePluginUi.act,
     listThreadComments,
@@ -78656,7 +78672,8 @@ export function createAgentChatService(args: {
     updateThreadComment,
     deleteThreadComment,
     listMentionSuggestions,
-    messageSession,
+    messageSession: (messageArgs: AgentChatMessageSessionArgs, options?: { trustedSpawnCompletion?: boolean }) =>
+      messageSession(withHostMessageAuthor(messageArgs), options),
     createScheduledWork,
     listInterruptedChats,
     armUpdateResume,
@@ -78679,8 +78696,8 @@ export function createAgentChatService(args: {
     resetCodexMemory,
     terminateCodexBackgroundTerminal,
     runSessionTurn,
-    steer,
-    steerUserMessage,
+    steer: (steerArgs: AgentChatSteerArgs) => steer(withHostMessageAuthor(steerArgs)),
+    steerUserMessage: (steerArgs: AgentChatSteerArgs) => steerUserMessage(withHostMessageAuthor(steerArgs)),
     cancelSteer,
     editSteer,
     moveSteer,

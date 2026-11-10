@@ -1649,7 +1649,31 @@ export type SyncHelloAuth =
       v: 1;
       deviceId: string;
       sealed: string;
+    }
+  | {
+      /**
+       * Another ADE account reaching a lane the host's owner shared with it
+       * (lane sharing). Relay only. The host verifies `accountToken` with the
+       * same Clerk check as an account hello, takes the user id from the
+       * token, and accepts only when the host's fresh grant list has an
+       * active grant for that user. It never writes a pairing record: the
+       * guest proves its account on every connection. `dpop` binds the token
+       * to a key this connection holds, which later Relay refreshes must sign.
+       */
+      kind: "guest";
+      deviceId: string;
+      accountToken: string;
+      dpop?: SyncDpopProof | null;
     };
+
+/**
+ * What the host tells a guest about its own access, in `hello_ok`. The host
+ * decided it from its grant list; a client never claims a role.
+ */
+export type SyncLaneShareGuestInfo = {
+  userId: string;
+  grants: Array<{ grantId: string; laneId: string }>;
+};
 
 export type SyncAccountChallengePayload = {
   v: 1;
@@ -1734,6 +1758,8 @@ export type SyncHelloOkPayload = {
     deviceId: string;
     secret: string;
   };
+  /** Set only on a guest connection (lane sharing): the lanes this guest may read. */
+  laneShareGuest?: SyncLaneShareGuestInfo;
   /**
    * Project-host readiness on this connection. Absent on older hosts.
    * Socket-up (`hello_ok`) is not the same as a usable project host.
@@ -1814,6 +1840,11 @@ export type SyncHelloErrorPayload =
        * (`host_update_required` — update it there), or whose account session
        * moved under the handshake (`account_session_changed` — sign in, then
        * retry). None of those is a reason to destroy a saved pairing.
+       *
+       * Lane sharing: `lane_share_refused` means this account has no active
+       * grant on this machine (never shared, pending, revoked, left or ended);
+       * `lane_share_unavailable` means the host could not check its grant list
+       * right now and the guest may retry later.
        */
       code:
         | "auth_failed"
@@ -1824,7 +1855,9 @@ export type SyncHelloErrorPayload =
         | "account_session_changed"
         | "invalid_hello"
         | "relay_account_required"
-        | "connection_attempt_superseded";
+        | "connection_attempt_superseded"
+        | "lane_share_refused"
+        | "lane_share_unavailable";
       message: string;
     })
   | (SyncHelloErrorHost & {

@@ -3,6 +3,8 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import { writeFileAtomic } from "../state/durableFile";
+import { parseMessageAuthor } from "../../../shared/messageAuthor";
+import type { AdeMessageAuthor } from "../../../shared/types/chat";
 import {
   MAX_THREAD_COMMENTS_PER_SESSION,
   MAX_THREAD_COMMENT_BODY_CHARS,
@@ -54,7 +56,14 @@ function normalizeStoredComment(entry: unknown, sessionId: string): ChatThreadCo
     includeInNextSend: value.includeInNextSend !== false,
     createdAt: at,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : at,
+    ...withStoredAuthor(value.author),
   };
+}
+
+/** Old comments have no author and read as the host's own user. */
+function withStoredAuthor(value: unknown): { author?: AdeMessageAuthor } {
+  const author = parseMessageAuthor(value);
+  return author ? { author } : {};
 }
 
 export function createThreadCommentService({
@@ -161,7 +170,14 @@ export function createThreadCommentService({
 
   const list = ({ sessionId }: { sessionId: string }): ChatThreadComment[] => read(sessionId);
 
-  const create = (args: ChatThreadCommentCreateArgs): ChatThreadComment => {
+  /**
+   * `args` comes from a caller and its `author` is never read. The host
+   * passes the author it verified in `options` (lane sharing).
+   */
+  const create = (
+    args: ChatThreadCommentCreateArgs,
+    options: { author?: AdeMessageAuthor | null } = {},
+  ): ChatThreadComment => {
     const anchor = normalizeThreadCommentAnchor(args.anchor);
     if (!anchor) throw new Error("A comment needs the text, table row, image or video it is about.");
     const messageKey = typeof args.messageKey === "string" ? args.messageKey.trim() : "";
@@ -183,6 +199,7 @@ export function createThreadCommentService({
       includeInNextSend: true,
       createdAt: at,
       updatedAt: at,
+      ...withStoredAuthor(options.author),
     };
     write(args.sessionId, [...current, comment]);
     return comment;

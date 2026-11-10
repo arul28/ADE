@@ -4336,6 +4336,10 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // delivers a send that names no machine, so two synced machines holding the
   // same row cannot both fire it.
   safeAddColumn(db, "alter table prompt_stashes add column armed_by_site_id text");
+  // Lane sharing: who wrote the draft, as `AdeMessageAuthor` JSON. Set only by
+  // the host; null on every older row, which reads as the host's own user. A
+  // nullable column, so an older peer defers it like the columns above.
+  safeAddColumn(db, "alter table prompt_stashes add column author_json text");
   db.run("create index if not exists idx_prompt_stashes_created on prompt_stashes(created_at)");
   db.run("create index if not exists idx_prompt_stashes_scheduled on prompt_stashes(scheduled_at)");
 

@@ -21,6 +21,7 @@ import {
   LANE_SHARE_RISKS,
   laneShareInviteLink,
   type LaneShareClosedReason,
+  type LaneShareConnectResponse,
   type LaneShareEmailNotSentReason,
   type LaneShareGiverView,
   type LaneShareHostResponse,
@@ -121,9 +122,10 @@ type Route =
   | { kind: "received" }
   | { kind: "host" }
   | { kind: "grant"; id: string }
-  | { kind: "action"; id: string; action: "accept" | "revoke" | "leave" | "move" };
+  | { kind: "action"; id: string; action: LaneShareAction };
 
-const ACTIONS = new Set(["accept", "revoke", "leave", "move"]);
+type LaneShareAction = "accept" | "revoke" | "leave" | "move" | "connect";
+const ACTIONS = new Set<string>(["accept", "revoke", "leave", "move", "connect"]);
 
 function matchRoute(path: string): Route | null {
   if (path === PREFIX) return { kind: "invite" };
@@ -133,7 +135,7 @@ function matchRoute(path: string): Route | null {
   const [id, action, ...rest] = path.slice(PREFIX.length + 1).split("/");
   if (!id || rest.length) return null;
   if (action === undefined) return { kind: "grant", id };
-  return ACTIONS.has(action) ? { kind: "action", id, action: action as "accept" | "revoke" | "leave" | "move" } : null;
+  return ACTIONS.has(action) ? { kind: "action", id, action: action as LaneShareAction } : null;
 }
 
 function methodsFor(route: Route): string[] {
@@ -226,6 +228,7 @@ async function routeRequest(request: Request, env: LaneShareEnv, route: Route | 
       if (route.action === "accept") return handleAccept(env, userId, route.id, now);
       if (route.action === "revoke") return handleRevoke(env, userId, route.id, now);
       if (route.action === "leave") return handleLeave(env, userId, route.id, now);
+      if (route.action === "connect") return handleConnect(env, userId, route.id, now);
       return handleMove(request, env, userId, route.id, now);
   }
 }
@@ -674,6 +677,66 @@ async function handleHostRead(request: Request, env: LaneShareEnv, userId: strin
       response.closed.push({ id: row.id, receiverUserId: row.receiver_user_id, laneId: row.lane_id, state, closedAt, version: row.version });
     }
   }
+  return json(response);
+}
+
+/** Same window as the machine list's online state (`DEFAULT_ONLINE_WINDOW_MS` in directory.ts). */
+const HOST_ONLINE_WINDOW_MS = 150_000;
+
+/**
+ * The relay address a host machine published for itself: a `wss:` URL whose
+ * path ends in `/connect/<machineKey>` (`ws:` only on this computer, for a
+ * local relay). Anything else is not handed to a guest.
+ */
+function publishedRelayUrl(endpointsJson: string | null, machineKey: string): string | null {
+  if (!endpointsJson) return null;
+  let endpoints: unknown;
+  try {
+    endpoints = JSON.parse(endpointsJson);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(endpoints)) return null;
+  for (const endpoint of endpoints) {
+    if (!endpoint || typeof endpoint !== "object") continue;
+    const { kind, url } = endpoint as { kind?: unknown; url?: unknown };
+    if (kind !== "relay" || typeof url !== "string") continue;
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      continue;
+    }
+    const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+    if (parsed.protocol !== "wss:" && !(parsed.protocol === "ws:" && local)) continue;
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) continue;
+    const tail = parsed.pathname.split("/").slice(-2);
+    if (tail[0] !== "connect" || decodeURIComponent(tail[1] ?? "") !== machineKey) continue;
+    return parsed.toString();
+  }
+  return null;
+}
+
+/**
+ * The receiver of an ACTIVE grant asks how to reach the host. Everyone else,
+ * the giver included, gets the same 404 as an unknown id; a closed grant
+ * answers 410. The relay address only admits a socket: the host still checks
+ * the account and the grant (`POST /lane-shares/host`) on every connection.
+ */
+async function handleConnect(env: LaneShareEnv, userId: string, id: string, now: number): Promise<Response> {
+  const row = await loadRow(env, id);
+  if (!row || row.receiver_user_id !== userId) return notFound();
+  if (effectiveState(row, now) !== "active") return shareClosed();
+  const machine = await env.DB.prepare(
+    "select reachable_endpoints, last_seen_at from machines where user_id = ? and machine_key = ?",
+  ).bind(row.giver_user_id, row.machine_key).first<{ reachable_endpoints: string | null; last_seen_at: number | null }>();
+  const response: LaneShareConnectResponse = {
+    grantId: row.id,
+    laneId: row.lane_id,
+    repoKey: row.repo_key,
+    relayUrl: machine ? publishedRelayUrl(machine.reachable_endpoints, row.machine_key) : null,
+    hostOnline: Boolean(machine?.last_seen_at != null && now - machine.last_seen_at <= HOST_ONLINE_WINDOW_MS),
+  };
   return json(response);
 }
 

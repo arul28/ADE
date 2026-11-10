@@ -136,6 +136,23 @@ describe("draftService", () => {
     );
   });
 
+  // Lane sharing: only the host names a draft's author. A value in the
+  // caller's draft is dropped; a row from before lane sharing reads as the host.
+  it.each([
+    ["a caller-sent author", { author: { kind: "guest", userId: "user_forged", name: "Forged" } }, {}, null],
+    ["the host's author", { author: { kind: "host", userId: "user_forged", name: null } }, { author: { kind: "guest" as const, userId: "user_guest", name: null } }, { kind: "guest", userId: "user_guest", name: null }],
+  ] as const)("persists only the host's author, ignoring %s", (_label, clientFields, options, expected) => {
+    const created = createDraft(db, { text: "draft", ...clientFields }, options);
+    expect(created.author ?? null).toEqual(expected);
+    expect(getDraft(db, created.id)?.author ?? null).toEqual(expected);
+  });
+
+  it("reads a row written before lane sharing as the host's own draft", () => {
+    insertSyncedDrafts(db, { id: "legacy-draft", createdAt: "2026-01-01T00:00:00.000Z" });
+    db.run("update prompt_stashes set author_json = ? where id = ?", ["{not json", "legacy-draft"]);
+    expect(listDrafts(db).find((draft) => draft.id === "legacy-draft")?.author).toBeNull();
+  });
+
   it("rejects empty, excessively large, and malformed stashes", () => {
     expect(() => createDraft(db, { text: " \n\t " })).toThrow("cannot be empty");
     expect(() => createDraft(db, {

@@ -458,6 +458,54 @@ describe("host read", () => {
   });
 });
 
+describe("connect", () => {
+  const relayUrl = `wss://relay.test/connect/${MACHINE}`;
+  const publish = (endpoints: unknown, lastSeenAt: number | null = NOW) => {
+    data.exec(
+      "update machines set reachable_endpoints = ?, last_seen_at = ? where user_id = ? and machine_key = ?",
+      JSON.stringify(endpoints), lastSeenAt, GIVER, MACHINE,
+    );
+  };
+
+  it("gives only the receiver of an active grant the host's relay address, never its LAN address", async () => {
+    publish([{ kind: "lan", host: "192.168.1.5", port: 8787 }, { kind: "relay", url: relayUrl }]);
+    const id = await activeId();
+    const response = await send(GUEST, "POST", `/lane-shares/${id}/connect`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ grantId: id, laneId: LANE, repoKey: "repo:github.com/acme/widgets", relayUrl, hostOnline: true });
+  });
+
+  it.each<[string, string, (id: string) => Promise<unknown>, number]>([
+    ["the giver", GIVER, async () => {}, 404],
+    ["another account", OTHER, async () => {}, 404],
+    ["the receiver after a revoke", GUEST, (id) => send(GIVER, "POST", `/lane-shares/${id}/revoke`), 410],
+    ["the receiver after leaving", GUEST, (id) => send(GUEST, "POST", `/lane-shares/${id}/leave`), 410],
+    ["the receiver after the end date", GUEST, async () => { clock = NOW + 2 * HOUR; }, 410],
+  ])("refuses %s", async (_label, caller, before, status) => {
+    publish([{ kind: "relay", url: relayUrl }]);
+    const id = await activeId({ endsAt: NOW + HOUR });
+    await before(id);
+    expect((await send(caller, "POST", `/lane-shares/${id}/connect`)).status).toBe(status);
+  });
+
+  it("refuses an invite that was not accepted yet, even for the invited address", async () => {
+    const id = await invitedId();
+    expect((await send(GUEST, "POST", `/lane-shares/${id}/connect`)).status).toBe(404);
+  });
+
+  it.each<[string, unknown, number | null, string | null, boolean]>([
+    ["a relay address for another machine", [{ kind: "relay", url: "wss://relay.test/connect/machine-other-0003" }], NOW, null, true],
+    ["a plain ws relay on another host", [{ kind: "relay", url: `ws://relay.test/connect/${MACHINE}` }], NOW, null, true],
+    ["no relay address at all", [{ kind: "tailnet", host: "studio.tailnet.ts.net" }], NOW, null, true],
+    ["a machine that went quiet", [{ kind: "relay", url: relayUrl }], NOW - 10 * 60_000, relayUrl, false],
+  ])("reports %s", async (_label, endpoints, lastSeenAt, expectedUrl, online) => {
+    publish(endpoints, lastSeenAt);
+    const id = await activeId();
+    const body = (await (await send(GUEST, "POST", `/lane-shares/${id}/connect`)).json()) as { relayUrl: string | null; hostOnline: boolean };
+    expect(body).toMatchObject({ relayUrl: expectedUrl, hostOnline: online });
+  });
+});
+
 describe("origins", () => {
   it.each<[string, string, string, Record<string, string>, number]>([
     ["a preflight from the web client", "OPTIONS", "/lane-shares/given", { origin: WEB, "access-control-request-method": "GET", "access-control-request-headers": "authorization" }, 204],

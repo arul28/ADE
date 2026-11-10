@@ -78,6 +78,7 @@ import type {
   SyncFileRequest,
   SyncFileResponsePayload,
   SyncHelloPayload,
+  SyncHelloAuth,
   SyncHelloErrorPayload,
   SyncInvalidationBatchPayload,
   SyncMobileProjectSummary,
@@ -174,7 +175,11 @@ import { reportHelloRejected, reportPeerAccepted } from "./syncHelloTelemetry";
 import type { AccountAuthService } from "../account/accountAuthService";
 import type { AccountSettingsStore } from "../account/accountSettingsStore";
 import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
-import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
+import {
+  AccountAttestationError,
+  verifyClerkAccountAttestation,
+  verifyClerkGuestAccountToken,
+} from "../account/accountAttestationVerifier";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
 import type { CloudAgentsService } from "../../../../desktop/src/main/services/chat/cloudAgentsService";
@@ -235,8 +240,28 @@ import {
 } from "./syncDpop";
 import {
   authenticateSyncAccountHello,
+  SYNC_ACCOUNT_SESSION_CHANGED_MESSAGE,
   SYNC_REPAIR_REQUIRED_MESSAGE,
 } from "./syncAccountHelloAuth";
+import {
+  evaluateLaneShareGuestCommand,
+  filterLaneShareGuestCommandResult,
+  LANE_SHARE_GUEST_COMMANDS,
+  LANE_SHARE_GUEST_INBOUND,
+  laneShareGuestMayReceive,
+  laneShareGuestMaySeeSession,
+  type LaneShareGuestGrant,
+  type LaneShareGuestRole,
+} from "./laneShareGuestPolicy";
+import {
+  activeLaneShareGrantsFor,
+  LANE_SHARE_GRANT_HELLO_REUSE_MS,
+  LANE_SHARE_GRANT_MAX_AGE_MS,
+  LANE_SHARE_GRANT_REFRESH_MS,
+  LaneShareGrantError,
+  type LaneShareGrantSnapshot,
+  type LaneShareGrantSource,
+} from "./laneShareGrantService";
 import {
   createRelayAuthorizationLifecycle,
   SYNC_RELAY_AUTHORIZATION_CLOSE_CODE,
@@ -297,6 +322,7 @@ import {
   isRosterSyncPeer,
   parseHelloPayload,
   parsePairingRequestPayload,
+  SYNC_PEER_ROLE_ROSTER,
 } from "./syncHelloProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createTailnetHttpsServe } from "./tailnetHttpsServe";
@@ -589,7 +615,8 @@ export function isSyncHostRecoveryPairingRecord(
   return record?.syncHostRecoveryGranted === true;
 }
 
-type SyncHostAuthKind = "bootstrap" | "paired" | "account" | null;
+/** `guest`: another account reaching a shared lane (lane sharing); never record-backed. */
+type SyncHostAuthKind = "bootstrap" | "paired" | "account" | "guest" | null;
 
 function isRecordBackedSyncAuthKind(kind: SyncHostAuthKind): kind is "paired" | "account" {
   return kind === "paired" || kind === "account";
@@ -1026,6 +1053,13 @@ type PeerState = {
   inFlightOperationControllers: Set<AbortController>;
   /** Local consent for this browser/phone; never mutates machine-wide consent. */
   productAnalyticsEnabled: boolean;
+  /**
+   * Set only by the host after a guest hello (lane sharing). Null for every
+   * other peer. While set, the default-refuse gates in this file apply: the
+   * inbound gate in `handleMessage`/`handleImmediateControlEnvelope`, the
+   * command gate in `handleCommand`, and the outbound gate in `send*`.
+   */
+  laneShareGuest: LaneShareGuestRole | null;
 };
 
 type PendingChangesetBatch = {
@@ -1295,6 +1329,11 @@ type SyncHostServiceArgs = {
   getAccountAttestationConfig?: () => AccountAttestationConfig;
   /** Test seam for controlling an in-flight account attestation. */
   verifyAccountAttestation?: typeof verifyClerkAccountAttestation;
+  /**
+   * This machine's lane-share grants (lane sharing, read from the account
+   * directory). Absent: every guest hello is refused.
+   */
+  laneShareGrants?: LaneShareGrantSource | null;
   /** Test seam for account-session lease reconciliation. */
   accountLeasePollMs?: number;
   runtimeNameStore?: SyncRuntimeNameStore;
@@ -2871,6 +2910,519 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     lifecycle.initialize(initial);
     peer.relayAuthorization = lifecycle;
   };
+  // ---------------------------------------------------------------------------
+  // Lane sharing: guests (package 4b, read only).
+  //
+  // A guest is another ADE account the owner of this machine shared one lane
+  // with. It proves its account on every connection (the same Clerk check as
+  // an account hello, relay only) and the host accepts it only when its own
+  // fresh grant list (`args.laneShareGrants`) holds an active grant for that
+  // account. A guest never gets a pairing record, so it cannot reconnect on
+  // any other path. Every gate below is default refuse:
+  //   - inbound: `admitLaneShareGuestEnvelope` (queued) and the top of
+  //     `handleImmediateControlEnvelope` (unqueued);
+  //   - commands: `handleLaneShareGuestCommand`, before the command cache;
+  //   - outbound: `laneShareGuestMayReceiveEnvelope` in `send`,
+  //     `sendRequired` and `sendAndWait`.
+  // ---------------------------------------------------------------------------
+  // Guests get their own replay cache: a guest names its own device id in its
+  // proofs, and that id must never touch the owner's devices' nonces.
+  const laneShareGuestDpopNonceCache = createSyncDpopNonceCache();
+  let laneShareRefreshTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** The lane of a session on THIS host's database. Never from the client. */
+  function resolveSessionLaneId(sessionId: string): string | null {
+    return toOptionalString(args.sessionService.get(sessionId)?.laneId) ?? null;
+  }
+
+  function connectedLaneShareGuests(): PeerState[] {
+    return [...peers].filter((peer) =>
+      peer.laneShareGuest != null
+      && peer.authenticated
+      && peer.ws.readyState === WebSocket.OPEN);
+  }
+
+  /**
+   * Guest sockets, so the send path checks a socket in O(1) and every other
+   * peer pays one map lookup. Removed only when the socket closes.
+   */
+  const laneShareGuestPeersBySocket = new Map<WebSocket, PeerState>();
+
+  /** Default refuse for everything that leaves this host toward a guest. */
+  function laneShareGuestMayReceiveEnvelope(ws: WebSocket, type: string, payload: unknown): boolean {
+    const role = laneShareGuestPeersBySocket.get(ws)?.laneShareGuest;
+    if (!role) return true;
+    const allowed = laneShareGuestMayReceive(role, type, payload, resolveSessionLaneId);
+    if (!allowed) {
+      args.logger.debug("sync_host.lane_share_guest_outbound_blocked", { type, guestUserId: role.userId });
+    }
+    return allowed;
+  }
+
+  /**
+   * Ends a guest connection. The role stays on the peer, so the outbound gate
+   * keeps refusing anything still in flight toward this socket. A running
+   * turn on the host is not touched.
+   */
+  function closeLaneShareGuest(peer: PeerState, reason: string): void {
+    peer.relayAuthorization?.dispose();
+    peer.relayAuthorization = null;
+    peer.authenticated = false;
+    args.logger.info("sync_host.lane_share_guest_closed", {
+      reason,
+      guestUserId: peer.laneShareGuest?.userId ?? null,
+    });
+    try {
+      peer.ws.close(4003, reason);
+    } catch {
+      // ignore close failures
+    }
+  }
+
+  function dropLaneShareGuestSubscriptionsOutsideGrants(peer: PeerState, role: LaneShareGuestRole): void {
+    for (const sessionId of [...peer.subscribedChatSessionIds]) {
+      if (laneShareGuestMaySeeSession(role, sessionId, resolveSessionLaneId)) continue;
+      peer.subscribedChatSessionIds.delete(sessionId);
+      peer.hydratingChatSessionIds.delete(sessionId);
+      peer.chatSubscriptionBindings.delete(sessionId);
+      peer.chatTranscriptOffsets.delete(sessionId);
+      peer.chatTranscriptScanOffsets.delete(sessionId);
+      peer.chatEventIdsSent.delete(sessionId);
+      peer.resolvedChatTranscriptPaths.delete(sessionId);
+      peer.projectChatTranscriptPaths.delete(sessionId);
+      discardChatEventCoalescer(peer, sessionId);
+    }
+    for (const sessionId of [...peer.subscribedSessionIds]) {
+      if (laneShareGuestMaySeeSession(role, sessionId, resolveSessionLaneId)) continue;
+      clearTerminalSnapshotBarrier(peer, sessionId);
+      peer.subscribedSessionIds.delete(sessionId);
+    }
+  }
+
+  /** Each good grant read: drop removed grants from every guest; close a guest left with none. */
+  function applyLaneShareGrantSnapshot(snapshot: LaneShareGrantSnapshot): void {
+    const nowMs = Date.now();
+    for (const peer of connectedLaneShareGuests()) {
+      const role = peer.laneShareGuest!;
+      const next = activeLaneShareGrantsFor(snapshot, role.userId, nowMs);
+      if (next.length === 0) {
+        closeLaneShareGuest(peer, "Lane share ended");
+        continue;
+      }
+      const same = next.length === role.grants.length
+        && next.every((grant, index) =>
+          grant.grantId === role.grants[index]?.grantId && grant.laneId === role.grants[index]?.laneId);
+      if (same) continue;
+      role.grants = next;
+      role.sessionLanes.clear();
+      dropLaneShareGuestSubscriptionsOutsideGrants(peer, role);
+    }
+    syncLaneShareRefreshTimer();
+  }
+
+  /** A failed read closes every guest once the last good list is older than the bound. */
+  function enforceLaneShareGrantAge(): void {
+    const current = args.laneShareGrants?.current() ?? null;
+    if (current && Date.now() - current.fetchedAtMs <= LANE_SHARE_GRANT_MAX_AGE_MS) return;
+    for (const peer of connectedLaneShareGuests()) {
+      closeLaneShareGuest(peer, "This machine could not check its shared lanes");
+    }
+    syncLaneShareRefreshTimer();
+  }
+
+  async function refreshLaneShareGrants(): Promise<void> {
+    if (!args.laneShareGrants) {
+      enforceLaneShareGrantAge();
+      return;
+    }
+    try {
+      // A good read reaches every guest through the subscription below.
+      await args.laneShareGrants.refresh();
+    } catch {
+      enforceLaneShareGrantAge();
+    }
+  }
+
+  /** Armed only while a guest is connected: no guest, no timer, no request. */
+  function syncLaneShareRefreshTimer(): void {
+    const needed = !disposed && connectedLaneShareGuests().length > 0;
+    if (needed && !laneShareRefreshTimer) {
+      laneShareRefreshTimer = setInterval(() => {
+        void refreshLaneShareGrants();
+      }, LANE_SHARE_GRANT_REFRESH_MS);
+      laneShareRefreshTimer.unref?.();
+    } else if (!needed && laneShareRefreshTimer) {
+      clearInterval(laneShareRefreshTimer);
+      laneShareRefreshTimer = null;
+    }
+  }
+
+  const unsubscribeLaneShareGrants = args.laneShareGrants?.subscribe(applyLaneShareGrantSnapshot) ?? null;
+
+  /** Relay refreshes for a guest: same lifecycle as an owner peer, with the guest as the account. */
+  function installLaneShareGuestRelayAuthorization(
+    peer: PeerState,
+    role: LaneShareGuestRole,
+    initial: RelayAuthorizationSnapshot,
+  ): void {
+    peer.relayAuthorization?.dispose();
+    peer.relayAuthorization = null;
+    const lifecycle = createRelayAuthorizationLifecycle({
+      capable: Boolean(peer.metadata?.capabilities?.includes(SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY)),
+      // The guest signs with the device id it sent; the peer's own id is namespaced.
+      deviceId: () => role.clientDeviceId,
+      pinnedPublicKey: () => role.dpopPublicKey,
+      // The host must still be signed in, as the same owner, and the guest
+      // must still hold a grant on this host's last good list.
+      captureHostAuthorization: async () => {
+        const host = await captureAccountAuthorization();
+        if (!host || host.userId === role.userId) return null;
+        const snapshot = args.laneShareGrants?.current() ?? null;
+        if (!snapshot || Date.now() - snapshot.fetchedAtMs > LANE_SHARE_GRANT_MAX_AGE_MS) return null;
+        if (activeLaneShareGrantsFor(snapshot, role.userId, Date.now()).length === 0) return null;
+        return { userId: role.userId, generation: host.generation };
+      },
+      verifyAccountToken: async (token, expectedUserId) => {
+        const config = args.getAccountAttestationConfig?.();
+        if (!config) throw new AccountAttestationError("configuration_error", "Relay account attestation is unavailable.");
+        const verified = await verifyClerkGuestAccountToken({ token, config });
+        if (verified.userId !== expectedUserId) {
+          throw new AccountAttestationError("account_mismatch", "The Relay account token belongs to a different ADE account.");
+        }
+        return verified;
+      },
+      sendResult: (payload, requestId) => {
+        sendRequired(peer, "relay_reauthorize_result", payload, requestId);
+      },
+      close: (reason) => closeLaneShareGuest(peer, reason),
+      logger: args.logger,
+    });
+    lifecycle.initialize(initial);
+    peer.relayAuthorization = lifecycle;
+  }
+
+  /**
+   * The guest hello. Order: relay only, device id, grant source, host signed
+   * in, Clerk config, the guest's token (any account but the owner's), a
+   * DPoP proof, a fresh grant list with an active grant for that account, and
+   * the host account unchanged across all of it. Nothing the client sends
+   * decides a role or a lane.
+   */
+  async function handleLaneShareGuestHello(
+    peer: PeerState,
+    envelope: ParsedSyncEnvelope,
+    hello: SyncHelloPayload,
+    auth: Extract<SyncHelloAuth, { kind: "guest" }>,
+    lifecycleGeneration: number,
+    negotiatedCompression: SyncApplicationCompressionCodec | null,
+  ): Promise<void> {
+    const refuse = (
+      code: Exclude<SyncHelloErrorPayload["code"], "protocol_version_mismatch">,
+      message: string,
+      logReason: string,
+    ): void => {
+      args.logger.warn("sync_host.lane_share_guest_refused", {
+        reason: logReason,
+        transportOrigin: peer.transportOrigin,
+        remoteAddress: peer.remoteAddress,
+      });
+      reportHelloRejected(
+        { logger: args.logger, hello, transportOrigin: peer.transportOrigin, hostDeviceId: () => readBrainMetadata().deviceId },
+        code,
+      );
+      send(peer.ws, "hello_error", { code, message } satisfies SyncHelloErrorPayload, envelope.requestId);
+      try {
+        peer.ws.close(4003, "Authentication failed");
+      } catch {
+        // ignore close failures
+      }
+    };
+    const unavailable = "This computer could not check its shared lanes right now. Try again in a moment.";
+    const noGrant = "This lane is not shared with your ADE account, or the share has ended.";
+    if (peer.transportOrigin !== "relay-bridge") {
+      refuse("lane_share_refused", "A shared lane is reachable only through ADE Relay.", "not_relay");
+      return;
+    }
+    if (auth.deviceId !== hello.peer.deviceId) {
+      refuse("invalid_hello", "Invalid hello payload.", "device_mismatch");
+      return;
+    }
+    const grantSource = args.laneShareGrants;
+    if (!grantSource) {
+      refuse("lane_share_unavailable", unavailable, "no_grant_source");
+      return;
+    }
+    const before = await captureAccountAuthorization();
+    if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
+    if (!before) {
+      refuse("lane_share_unavailable", unavailable, "host_signed_out");
+      return;
+    }
+    const config = args.getAccountAttestationConfig?.() ?? null;
+    if (!config) {
+      refuse("lane_share_unavailable", unavailable, "no_attestation_config");
+      return;
+    }
+    let verified: { userId: string; expiresAtMs: number };
+    try {
+      verified = await verifyClerkGuestAccountToken({ token: auth.accountToken, config });
+    } catch (error) {
+      if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
+      const code = error instanceof AccountAttestationError ? error.code : "verification_failed";
+      if (code === "verification_unavailable" || code === "configuration_error") {
+        refuse("lane_share_unavailable", unavailable, code);
+      } else {
+        refuse("auth_failed", "Your ADE sign-in on this device is not valid. Sign in again, then retry.", code);
+      }
+      return;
+    }
+    if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
+    if (verified.userId === before.userId) {
+      refuse("lane_share_refused", "This is your own computer. Connect with your account instead.", "owner_as_guest");
+      return;
+    }
+    let dpopPublicKey: string | null = null;
+    const dpopFailure = evaluatePairedHelloDpop({
+      storedPublicKey: null,
+      deviceId: auth.deviceId,
+      secret: auth.accountToken,
+      proof: auth.dpop ?? null,
+      requireDpop: true,
+      nonceCache: laneShareGuestDpopNonceCache,
+      adoptPublicKey: (publicKey) => {
+        dpopPublicKey = publicKey;
+      },
+    });
+    if (dpopFailure || !dpopPublicKey) {
+      refuse("auth_failed", syncDpopFailureMessage(dpopFailure ?? "dpop_required"), `dpop_${dpopFailure ?? "missing"}`);
+      return;
+    }
+    let grants: LaneShareGuestGrant[];
+    try {
+      const readStartedAtMs = Date.now();
+      let snapshot = await grantSource.refresh({ maxAgeMs: LANE_SHARE_GRANT_HELLO_REUSE_MS });
+      grants = activeLaneShareGrantsFor(snapshot, verified.userId, Date.now());
+      // A reused list may only admit, never refuse: a grant accepted a moment
+      // ago is not in it yet, so a refusal is always decided on a new read.
+      if (grants.length === 0 && snapshot.fetchedAtMs < readStartedAtMs) {
+        snapshot = await grantSource.refresh();
+        grants = activeLaneShareGrantsFor(snapshot, verified.userId, Date.now());
+      }
+    } catch (error) {
+      if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
+      const code = error instanceof LaneShareGrantError ? error.code : "unavailable";
+      // A machine the directory does not list for this account has no grants.
+      if (code === "unknown_machine") refuse("lane_share_refused", noGrant, code);
+      else refuse("lane_share_unavailable", unavailable, `grants_${code}`);
+      return;
+    }
+    if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
+    if (grants.length === 0) {
+      refuse("lane_share_refused", noGrant, "no_active_grant");
+      return;
+    }
+    const after = await captureAccountAuthorization();
+    if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
+    if (!after || after.userId !== before.userId || after.generation !== before.generation) {
+      refuse("account_session_changed", SYNC_ACCOUNT_SESSION_CHANGED_MESSAGE, "host_account_changed");
+      return;
+    }
+
+    const role: LaneShareGuestRole = {
+      guest: true,
+      userId: verified.userId,
+      clientDeviceId: auth.deviceId,
+      dpopPublicKey,
+      grants,
+      sessionLanes: new Map(),
+    };
+    // A device id the client chose must never key anything shared with the
+    // owner's devices (presence, arbitration, the command cache, terminal
+    // input dedupe), so a guest's peer id is derived and namespaced.
+    const guestDeviceId = `guest:${createHash("sha256")
+      .update(verified.userId, "utf8")
+      .update("\0")
+      .update(auth.deviceId, "utf8")
+      .digest("hex")
+      .slice(0, 32)}`;
+    const {
+      connectionAttempt: _connectionAttempt,
+      dbVersionBySite: _dbVersionBySite,
+      connectionPurpose: _connectionPurpose,
+      ...clientPeer
+    } = hello.peer;
+    peer.laneShareGuest = role;
+    laneShareGuestPeersBySocket.set(peer.ws, peer);
+    peer.authenticated = true;
+    peer.helloAcceptedAtMs = Date.now();
+    peer.adoptChallenge = null;
+    clearPeerAuthTimeout(peer);
+    // `roster`: never a replica. No changeset, cursor row or handoff.
+    peer.metadata = { ...clientPeer, deviceId: guestDeviceId, syncRole: SYNC_PEER_ROLE_ROSTER };
+    peer.authKind = "guest";
+    peer.pairedDeviceId = null;
+    peer.pairingRecord = null;
+    peer.pendingPairingCommitDeviceId = null;
+    peer.pendingPairingCommitSecret = null;
+    peer.lastKnownServerDbVersion = args.db.sync.getDbVersion();
+    installLaneShareGuestRelayAuthorization(peer, role, {
+      ownerUserId: verified.userId,
+      expiresAtMs: verified.expiresAtMs,
+      challenge: randomBytes(24).toString("base64url"),
+    });
+    const supported = new Set<string>(remoteCommandService.getSupportedActions());
+    const guestActions = Object.keys(LANE_SHARE_GUEST_COMMANDS)
+      .filter((action) => supported.has(action)) as SyncCommandPayload["action"][];
+    const guestActionSet = new Set<string>(guestActions);
+    const brain = readBrainMetadata();
+    const { hostHealth: _hostHealth, ...helloOk } = buildSyncHostHelloOkPayload({
+      peer: peer.metadata,
+      // Only what names the computer. No site id, database version or app version.
+      brain: {
+        deviceId: brain.deviceId,
+        deviceName: brain.deviceName,
+        platform: brain.platform,
+        deviceType: brain.deviceType,
+        siteId: "",
+        dbVersion: 0,
+      },
+      serverDbVersion: 0,
+      heartbeatIntervalMs,
+      pollIntervalMs,
+      compression: negotiatedCompression,
+      chunkedEnvelopes: hello.peer.capabilities?.includes(SYNC_CHUNKED_ENVELOPES_CAPABILITY) === true,
+      projectCatalog: { projects: [] },
+      projectCatalogEnabled: false,
+      projectActionsEnabled: false,
+      crossProjectChatEnabled: false,
+      rosterEnabled: false,
+      remoteCommandSupportedActions: guestActions,
+      remoteCommandDescriptors: remoteCommandService.getDescriptors().filter((entry) => guestActionSet.has(entry.action)),
+      localCommandDescriptors: [],
+      compressionThresholdBytes,
+      relayAuthorization: peer.relayAuthorization?.metadata() ?? null,
+      connectionTransport: "relay",
+      runtimeChannelEnabled: false,
+      omitProjectCatalog: true,
+      pipelinedHelloAccepted: 0,
+    });
+    const helloOkSent = send(peer.ws, "hello_ok", {
+      ...helloOk,
+      laneShareGuest: { userId: role.userId, grants: role.grants.map((grant) => ({ ...grant })) },
+    }, envelope.requestId);
+    if (helloOkSent) {
+      reportPeerAccepted({
+        logger: args.logger,
+        hello,
+        transportOrigin: peer.transportOrigin,
+        hostDeviceId: () => brain.deviceId,
+      });
+      args.logger.info("sync_host.lane_share_guest_accepted", {
+        guestUserId: role.userId,
+        grantCount: role.grants.length,
+      });
+    }
+    peer.negotiatedCompression = negotiatedCompression;
+    syncLaneShareRefreshTimer();
+  }
+
+  /**
+   * Queued inbound gate for a guest. Unlisted types are refused; a type that
+   * names a session needs that session to be in a granted lane on this host.
+   * A refused envelope gets no reply, so a guest cannot tell whether a
+   * session of another lane exists.
+   */
+  function admitLaneShareGuestEnvelope(peer: PeerState, role: LaneShareGuestRole, envelope: ParsedSyncEnvelope): boolean {
+    const rule = LANE_SHARE_GUEST_INBOUND.get(envelope.type);
+    const payload = safeObjectValue(envelope.payload);
+    let admitted = false;
+    if (rule === "none" || rule === "command") {
+      admitted = true;
+    } else if (rule === "session") {
+      // Only the active project's chats: never a personal or another project's chat.
+      const projectScoped = envelope.type.startsWith("chat_")
+        ? payload?.chatScope == null && requestedProjectChatScope(payload as ChatScopeRequest | null) === "project"
+        : true;
+      admitted = projectScoped && laneShareGuestMaySeeSession(role, payload?.sessionId, resolveSessionLaneId);
+    }
+    if (!admitted) {
+      args.logger.warn("sync_host.lane_share_guest_refused_envelope", {
+        type: envelope.type,
+        guestUserId: role.userId,
+      });
+    }
+    return admitted;
+  }
+
+  /** The whole command path for a guest. Never the command cache, never another project. */
+  async function handleLaneShareGuestCommand(
+    peer: PeerState,
+    role: LaneShareGuestRole,
+    requestId: string | null,
+    payload: SyncCommandPayload,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const commandId = toOptionalString(payload.commandId) ?? requestId ?? `cmd-${Date.now()}`;
+    const action = typeof payload.action === "string" ? payload.action : "";
+    const reply = (result: SyncCommandResultPayload, ack: SyncCommandAckPayload): void => {
+      sendRequired(peer, "command_ack", ack, requestId, { action });
+      sendRequired(peer, "command_result", result, requestId, { action });
+    };
+    const reject = (message: string, code = "forbidden_command"): void => {
+      args.logger.warn("sync_host.lane_share_guest_refused_command", { action, code, guestUserId: role.userId });
+      reply(
+        { commandId, ok: false, error: { code, message } },
+        { commandId, accepted: false, status: "rejected", message },
+      );
+    };
+    const requestedProjectId = toOptionalString(payload.projectId);
+    const hostProjectId = toOptionalString(args.projectId);
+    if (requestedProjectId && !projectIdMatchesHost(requestedProjectId, hostProjectId, hostProjectIdAliases)) {
+      reject("This is not available on a shared lane.");
+      return;
+    }
+    const policyRejection = evaluateRemoteCommandPolicy({
+      action,
+      descriptor: remoteCommandService.getDescriptor(action as SyncCommandPayload["action"]),
+      peer,
+      requestedProjectId: hostProjectId,
+      hostProjectId,
+    });
+    if (policyRejection) {
+      reject(policyRejection.message, policyRejection.code);
+      return;
+    }
+    const rawArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
+      ? payload.args as Record<string, unknown>
+      : {};
+    const gate = evaluateLaneShareGuestCommand({ action, args: rawArgs, role, resolveSessionLaneId });
+    if (!gate.ok) {
+      reject(gate.refusal.message, gate.refusal.code);
+      return;
+    }
+    sendRequired(peer, "command_ack", {
+      commandId,
+      accepted: true,
+      status: "accepted",
+      message: `Executing ${action}.`,
+    } satisfies SyncCommandAckPayload, requestId, { action });
+    try {
+      const created = await remoteCommandService.execute({
+        ...payload,
+        action,
+        args: gate.args,
+        ...(hostProjectId ? { projectId: hostProjectId } : {}),
+      }, { signal });
+      sendRequired(peer, "command_result", {
+        commandId,
+        ok: true,
+        result: filterLaneShareGuestCommandResult(action, created, role),
+      } satisfies SyncCommandResultPayload, requestId, { action });
+    } catch (error) {
+      sendRequired(peer, "command_result", commandErrorResult(commandId, error), requestId, { action });
+    }
+  }
+
   const mobileCommandResultCache = new Map<string, CachedMobileCommand>();
   let commandReplayCount = 0;
   let commandConflictCount = 0;
@@ -3985,6 +4537,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // connection until that client explicitly reasserts consent, so an
       // opted-out reconnect cannot leak an exportable first mutation.
       productAnalyticsEnabled: false,
+      laneShareGuest: null,
     };
     peers.add(peer);
     // A new socket may become a receivable peer at its hello; wake the pump so
@@ -4104,6 +4657,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         broadcastBrainStatus();
       }
       peers.delete(peer);
+      // The grant refresh runs only while a guest is connected.
+      if (peer.laneShareGuest) {
+        laneShareGuestPeersBySocket.delete(peer.ws);
+        syncLaneShareRefreshTimer();
+      }
       // Every Mac Desktop viewer this socket owned is gone. The release stops
       // the encoder when the set empties, same as a closing chat.
       macDesktopSyncStream?.releaseConnection(peer.macDesktopConnectionId);
@@ -5040,6 +5598,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   function send<TPayload>(target: WebSocket | PeerState, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): boolean {
     const ws = target instanceof WebSocket ? target : target.ws;
     if (ws.readyState !== WebSocket.OPEN) return false;
+    if (!laneShareGuestMayReceiveEnvelope(ws, type, payload)) return false;
     // Drop sends to backpressured peers as the default — most envelopes are
     // either replayable (chat events / changesets re-derived from db state) or
     // tolerable to lose (acks, status pings). Routes that *must* deliver under
@@ -5064,6 +5623,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   ): boolean {
     const ws = peer.ws;
     if (ws.readyState !== WebSocket.OPEN) return false;
+    if (!laneShareGuestMayReceiveEnvelope(ws, type, payload)) return false;
     const frames = encodeFramesFor(peer, type, payload, requestId);
     const frameBytes = frames.reduce((sum, frame) => sum + syncFrameByteLength(frame), 0);
     const bufferedAmount = ws.bufferedAmount;
@@ -5168,6 +5728,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   ): Promise<void> {
     if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
       return Promise.reject(new Error("Cannot send on closed WebSocket."));
+    }
+    if (!laneShareGuestMayReceiveEnvelope(ws, type, payload)) {
+      return Promise.reject(new Error(`${type} is not sent to a lane-share guest.`));
     }
     const frames = encodeFramesFor(ws, type, payload, requestId);
     const frameBytes = frames.reduce((sum, frame) => sum + syncFrameByteLength(frame), 0);
@@ -6396,6 +6959,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const currentDbVersion = args.db.sync.getDbVersion();
     const nowMs = Date.now();
       if (!peer.authenticated || !peer.metadata || peer.ws.readyState !== WebSocket.OPEN) return;
+      // A guest is a roster peer already; this is the second lock.
+      if (peer.laneShareGuest) return;
       // A paired desktop runtime connection shares this authenticated socket
       // only for rpc/fwd envelopes. The authoritative pairing record remains
       // the gate so a phone/browser cannot suppress its normal CRDT stream by
@@ -7063,6 +7628,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     payload: SyncCommandPayload,
     signal: AbortSignal,
   ): Promise<void> {
+    // Before the command cache and lane presence: a guest has its own path.
+    if (peer.laneShareGuest) {
+      await handleLaneShareGuestCommand(peer, peer.laneShareGuest, requestId, payload, signal);
+      return;
+    }
     const commandId = toOptionalString(payload.commandId) ?? requestId ?? `cmd-${Date.now()}`;
     const requestedProjectId = toOptionalString(payload.projectId);
     const hostProjectId = toOptionalString(args.projectId);
@@ -7479,6 +8049,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   function handleImmediateControlEnvelope(peer: PeerState, envelope: ParsedSyncEnvelope): boolean {
     if (!peer.authenticated) return false;
+    if (peer.laneShareGuest && envelope.type !== "relay_reauthorize") {
+      // Changeset acks and terminal input never come from a guest: drop them
+      // here. Everything else takes the queued path and its guest gate.
+      if (envelope.type === "changeset_ack" || envelope.type === "terminal_input") {
+        args.logger.warn("sync_host.lane_share_guest_refused_envelope", {
+          type: envelope.type,
+          guestUserId: peer.laneShareGuest.userId,
+        });
+        return true;
+      }
+      return false;
+    }
     if (envelope.type === "changeset_ack") {
       // An ack only moves this peer's changeset cursor, so it does not wait in
       // the request queue: there it waited behind any slow command before it
@@ -8092,6 +8674,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         hello.auth = opened.auth;
         sealedAdoption = opened.adoption;
       }
+      // Lane sharing: its own path end to end. It shares no state with the
+      // owner's auth kinds below (no pairing record, no arbitration).
+      if (hello.auth?.kind === "guest") {
+        await handleLaneShareGuestHello(peer, envelope, hello, hello.auth, lifecycleGeneration, negotiatedCompression);
+        return;
+      }
       let authenticatedPairingRecord: SyncPairingRecord | null = null;
       let accountPairing: { deviceId: string; secret: string } | null = null;
       let relayAccountOwnerUserId: string | null = null;
@@ -8602,6 +9190,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (peer.changesetBatchesSent === 0) pumpPeerAfterAck(peer);
       return;
     }
+
+    // Lane sharing: default refuse for every envelope type below this line.
+    if (peer.laneShareGuest && !admitLaneShareGuestEnvelope(peer, peer.laneShareGuest, envelope)) return;
 
     if (envelope.type === "pairing_commit") {
       const payload = safeObjectValue(envelope.payload);
@@ -10082,6 +10673,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
     },
 
+    /** Read this machine's lane-share grants now and apply them to connected guests. */
+    refreshLaneShareGrants,
+
     async dispose(): Promise<void> {
       if (disposed) return;
       disposed = true;
@@ -10098,6 +10692,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       chatEventSubscription?.();
       sessionChangeSubscription?.();
       chatLaunchSubscription?.();
+      unsubscribeLaneShareGrants?.();
+      if (laneShareRefreshTimer) clearInterval(laneShareRefreshTimer);
+      laneShareRefreshTimer = null;
       if (pollTimer) clearTimeout(pollTimer);
       pollTimer = null;
       clearInterval(heartbeatTimer);
@@ -10185,7 +10782,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             transportOrigin: peer.transportOrigin,
             metadata: peer.metadata,
             negotiatedCompression: peer.negotiatedCompression,
-            authKind: peer.authKind,
+            // A guest is a roster peer and was closed above, never handed off.
+            authKind: peer.authKind === "guest" ? null : peer.authKind,
             pairedDeviceId: peer.pairedDeviceId,
             connectedAt: peer.connectedAt,
             relayAccountExpiresAtMs: relayAuthorizationSnapshot?.expiresAtMs ?? null,
