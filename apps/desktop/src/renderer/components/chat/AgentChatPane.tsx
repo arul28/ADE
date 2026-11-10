@@ -238,7 +238,7 @@ import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import { noteFastModeAllowedFromHost, useFastModeEnabled } from "../../lib/fastModePolicy";
 import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
-import { savedChatAwareAgentChatApi } from "../../state/cloudSavedChatsSync";
+import { markCloudWakeForSend, savedChatAwareAgentChatApi } from "../../state/cloudSavedChatsSync";
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
@@ -5362,6 +5362,11 @@ export function AgentChatPane({
   const chatSelectionTransitioning = composerSessionId !== renderedSessionId;
   const renderedSessionIdRef = useRef<string | null>(renderedSessionId);
   renderedSessionIdRef.current = renderedSessionId;
+  // Set while a send wakes this chat's sleeping cloud computer (15–30 s), so
+  // the transcript shows the working indicator before any turn event arrives.
+  const cloudWakingSince = useRootAppStore((s) => (
+    renderedSessionId ? s.cloudWakingSinceBySessionId[renderedSessionId] ?? null : null
+  ));
   // A chat opened the instant a new-lane launch was sent: its session id is
   // reserved, but until the brain reports `sessionCreated` there is no summary
   // or transcript to read. The pane renders the launch instead (prompt bubble,
@@ -15214,6 +15219,9 @@ export function AgentChatPane({
     submitInFlightRef.current = true;
     setBusy(true);
     setError(null);
+    // A send to a saved chat wakes its sleeping cloud computer first. The pane
+    // and the Work row say so until this submit settles (display only).
+    const endCloudWake = selectedSessionId ? markCloudWakeForSend(selectedSessionId, chatRuntimePinRef.current) : null;
     if (!deferComposerClear) {
       setDraft("");
       draftsPerSessionRef.current.delete(selectedSessionId);
@@ -15507,6 +15515,7 @@ export function AgentChatPane({
       setAppControlContextItems(keepEmptyArray);
       setBuiltInBrowserContextItems(keepEmptyArray);
     } catch (submitError) {
+      endCloudWake?.();
       const message = submitError instanceof Error ? submitError.message : String(submitError);
       if (handedOff && isRuntimeTransportTimeoutError(submitError)) {
         // The call gave up, not the send: the chat's machine usually still
@@ -15575,6 +15584,7 @@ export function AgentChatPane({
         void refreshAvailableModels().catch(() => {});
       }
     } finally {
+      endCloudWake?.();
       submitInFlightRef.current = false;
       setBusy(false);
     }
@@ -19548,6 +19558,7 @@ export function AgentChatPane({
                           ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
                           : turnActive && selectedSession?.status !== "ended"}
                         sessionTurnActive={turnActive}
+                        wakingSinceMs={!subagentView && cloudWakingSince ? Date.parse(cloudWakingSince) : null}
                         usageLimitResumeActive={usageLimitResume != null}
                         // Only a limit ADE is waiting out reads "Paused"; one with no
                         // reset or with auto-resume off reads "Usage limit".

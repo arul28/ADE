@@ -1709,6 +1709,13 @@ export type AppState = {
    * own subscription or fetch.
    */
   crossMachineLanesByMachineId: Record<string, CrossMachineMachineLanes>;
+  /**
+   * Chats whose send is waking their sleeping cloud computer: session id →
+   * when the wake started (ISO). Display only. The chat pane shows its working
+   * indicator and the Work row reads "Waking" until the send settles. Only the
+   * root store holds entries (`markCloudWakeForSend` in `cloudSavedChatsSync.ts`).
+   */
+  cloudWakingSinceBySessionId: Readonly<Record<string, string>>;
 
   setProject: (project: ProjectInfo | null) => void;
   setOpenRemoteProjectTabs: (
@@ -1774,6 +1781,8 @@ export type AppState = {
    * unreachable long enough that its last-known work is no longer worth showing.
    */
   dropCrossMachineLanes: (machineIds: readonly string[]) => void;
+  /** `since` starts the chat's waking mark; null ends it. */
+  setCloudSessionWaking: (sessionId: string, since: string | null) => void;
   setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
   clearLaneInspectorTab: (laneId: string) => void;
   focusSession: (sessionId: string | null) => void;
@@ -2298,6 +2307,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   crossMachineLaneScopeKey: null,
   crossMachineLaneIntendedMachineIds: null,
   crossMachineLanesByMachineId: {},
+  cloudWakingSinceBySessionId: {},
 
   setProject: (incomingProject) =>
     set((prev) => {
@@ -2737,6 +2747,16 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               : {}),
           }
         : {};
+    }),
+
+  setCloudSessionWaking: (sessionId, since) =>
+    set((prev) => {
+      const current = prev.cloudWakingSinceBySessionId[sessionId];
+      if (since ? current === since : current === undefined) return {};
+      const next = { ...prev.cloudWakingSinceBySessionId };
+      if (since) next[sessionId] = since;
+      else delete next[sessionId];
+      return { cloudWakingSinceBySessionId: next };
     }),
 
   setLaneInspectorTab: (laneId, tab) =>

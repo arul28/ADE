@@ -16,6 +16,7 @@ import {
   isSavedChatsMachineId,
   replaceSavedChatLocations,
   savedChatLane,
+  savedChatLocation,
   savedChatSession,
   withSavedChatReads,
   type SavedChatLocation,
@@ -176,6 +177,41 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
   }
 }
 
+const machineOnline = (machineId: string): boolean =>
+  rootAppStoreApi.getState().crossMachineLanesByMachineId[machineId]?.online === true;
+
+/** Sends in flight per chat that wake its computer; the mark ends with the last one. */
+const wakeHolds = new Map<string, number>();
+
+/**
+ * Marks the chat as waking its computer when this send wakes one: the chat is
+ * a saved copy, and its computer is not connected and still exists. Returns
+ * the function that ends the mark (a second call does nothing), or null when
+ * the send wakes nothing. Display only: the send goes out unchanged.
+ */
+export function markCloudWakeForSend(
+  sessionId: string,
+  pin: OpenProjectBinding | null | undefined,
+): (() => void) | null {
+  const location = savedChatLocation(pin, sessionId, machineOnline);
+  if (!location || location.computerGone) return null;
+  const holds = wakeHolds.get(sessionId) ?? 0;
+  wakeHolds.set(sessionId, holds + 1);
+  if (holds === 0) rootAppStoreApi.getState().setCloudSessionWaking(sessionId, new Date().toISOString());
+  let ended = false;
+  return () => {
+    if (ended) return;
+    ended = true;
+    const left = (wakeHolds.get(sessionId) ?? 1) - 1;
+    if (left > 0) {
+      wakeHolds.set(sessionId, left);
+      return;
+    }
+    wakeHolds.delete(sessionId);
+    rootAppStoreApi.getState().setCloudSessionWaking(sessionId, null);
+  };
+}
+
 const wrappedApis = new WeakMap<object, AgentChatApi>();
 
 /**
@@ -186,11 +222,7 @@ export function savedChatAwareAgentChatApi(api: AgentChatApi): AgentChatApi {
   if (!api) return api;
   const cached = wrappedApis.get(api);
   if (cached) return cached;
-  const wrapped = withSavedChatReads(
-    api,
-    window.ade?.cloud?.savedChats,
-    (machineId) => rootAppStoreApi.getState().crossMachineLanesByMachineId[machineId]?.online === true,
-  );
+  const wrapped = withSavedChatReads(api, window.ade?.cloud?.savedChats, machineOnline);
   wrappedApis.set(api, wrapped);
   return wrapped;
 }

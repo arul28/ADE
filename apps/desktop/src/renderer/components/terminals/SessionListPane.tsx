@@ -1217,6 +1217,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   // one subscription each for the whole list.
   const laneToolUse = useLaneWorkToolUse();
   const deleteProgressByLaneId = useAppStore((state) => state.laneDeleteProgressByLaneId);
+  // Chats whose send is waking their cloud computer; their rows read "Waking".
+  const cloudWakingSinceBySessionId = useRootAppStore((state) => state.cloudWakingSinceBySessionId);
   const keybindings = useAppStore((state) => state.keybindings);
   const commandPaletteBinding = useMemo(
     () => getEffectiveBinding(keybindings, "commandPalette.open", "Mod+K"),
@@ -2627,6 +2629,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       <SessionCard
         key={session.id}
         session={session}
+        wakingSince={cloudWakingSinceBySessionId[session.id] ?? null}
         lane={sessionLane}
         liveChildrenCount={foreignRow ? 0 : liveChildrenByParentId.get(session.id) ?? 0}
         subagentBusy={busySubagentParentIds.has(session.id)}

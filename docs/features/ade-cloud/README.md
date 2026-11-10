@@ -160,6 +160,11 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   and a failed redial, and is asked again 45 s and 90 s later: a computer closes
   its link up to a minute before its status says asleep. A person's write wakes it; the saved-connection
   maintenance asks again every 5 minutes and redials once it is awake.
+- A send from a saved chat wakes its computer, which takes 15–30 s. Until the
+  send settles, the chat pane shows its working indicator as "Waking the
+  computer…" and the Work row reads "Waking". The renderer decides this at send
+  time from the saved copy (`markCloudWakeForSend` in `cloudSavedChatsSync.ts`).
+  It is display only: the send goes to the same machine as before.
 - A saved chat names its project by the id the brain routes by (the registry id,
   written in `bootstrap.ts`). Copies saved before that carry the project database
   id, which the brain does not know. So a pinned remote call also sends the pin's
