@@ -58,6 +58,8 @@ const USER_SETTING_WRITES = {
     ],
     entryId: "agents.providers",
   },
+  // Copying this computer's sign-ins into the account is the person's call (P5).
+  provider_logins: { actions: ["captureNow"], entryId: "agents.providers" },
   keybindings: { actions: ["set"], entryId: null },
   project_config: { actions: ["setPrTranscriptGists"], entryId: "lanes-git.pr-chat-transcripts" },
   keep_awake: { actions: ["setLevel", "migrateLegacyPreference", "fixSystemSleep"], entryId: "general.keep-awake" },
@@ -193,6 +195,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // (`ownerOnlyProjectConfigChange`).
   account_settings: { only: USER_SETTING_WRITES.account_settings.actions },
   provider_instances: { only: USER_SETTING_WRITES.provider_instances.actions },
+  provider_logins: { only: USER_SETTING_WRITES.provider_logins.actions },
   keybindings: { only: USER_SETTING_WRITES.keybindings.actions },
   project_config: { only: USER_SETTING_WRITES.project_config.actions },
   /*
@@ -1553,6 +1556,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "loginCommand",
     "refresh",
   ],
+  /*
+   * The sign-ins the account keeps for ADE Cloud (P5). `status` returns no
+   * token, key, file content or hash, so agents and other machines may read
+   * it. `captureNow` is the person's.
+   */
+  provider_logins: ["status", "captureNow"],
 };
 
 /* ──────────────────────────────────────────────────────────────────────────

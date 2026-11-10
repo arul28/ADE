@@ -1699,6 +1699,22 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run provider_instances.refresh --input-json '{\"provider\":\"claude\"}' --text",
     },
   },
+  provider_logins: {
+    status: {
+      description:
+        "The provider sign-ins your ADE account keeps for ADE Cloud, and this computer's part: whether it copies its "
+        + "sign-ins (and why not), and what it found for each provider. Never a token, a key or a file's content.",
+      input: "object { provider?: string }",
+      example: "ade actions run provider_logins.status --input-json '{\"provider\":\"grok\"}' --text",
+    },
+    captureNow: {
+      description:
+        "Look at this computer's login files now and copy any changed sign-in into the account, behind the same rules as "
+        + "the background pass (an account with ADE Cloud, sync on, switched on). The user's action; agents are refused.",
+      input: "object { provider?: string }",
+      example: "ade actions run provider_logins.captureNow --text",
+    },
+  },
 };
 
 export function getAdeActionInputContract(

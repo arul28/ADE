@@ -138,6 +138,15 @@ export async function cloudAccessEnabled(deps: CloudAccessDeps): Promise<boolean
 }
 
 /**
+ * The account's ADE Cloud answer as one word, from the same cached ask as
+ * `cloudAccessEnabled`: `ready`, `no_access`, `signed_out`, or `unreadable`
+ * (the server could not be asked and no earlier yes is cached).
+ */
+export async function readCloudAccessState(deps: CloudAccessDeps): Promise<CloudAccess["state"]> {
+  return (await readCloudAccess(deps)).state;
+}
+
+/**
  * Hands the skill roots the account this process serves, so a chat launched
  * after the answer went stale (or the account changed) asks again on its own.
  * Installed once by whatever owns the account here: the brain, the desktop main.

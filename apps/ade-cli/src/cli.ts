@@ -979,6 +979,7 @@ export type FormatterId =
   | "search-status"
   | "external-sessions"
   | "provider-accounts"
+  | "provider-logins"
   | "proxy-status"
   | "harness-env"
   | "harness-routes"
@@ -4569,6 +4570,11 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade providers accounts remove --instance you@example.com --text
                                                     Sign an account out and forget it
     $ ade providers accounts refresh --text         Re-read each config home and record who is signed in
+    $ ade providers accounts list --synced --text   Sign-ins your account keeps for ADE Cloud, and
+                                                    whether this computer copies its own (and why not)
+    $ ade providers accounts list --synced --provider grok --text
+    $ ade providers accounts refresh --synced --text
+                                                    Look at this computer's login files now (yours only)
     $ ade providers actions --text                  List raw provider-account service actions
 
   OpenCode logins (on this machine):
@@ -21180,6 +21186,28 @@ function buildProvidersPlan(args: string[]): CliPlan {
   }
   const sub = firstPositional(args) ?? "list";
   const provider = readValue(args, ["--provider"])?.trim().toLowerCase() ?? null;
+  // The sign-ins the account keeps for ADE Cloud (provider_logins), on the same verbs.
+  if (readFlag(args, ["--synced"])) {
+    if (sub === "list" || sub === "ls") {
+      return {
+        kind: "execute",
+        label: "providers accounts list --synced",
+        formatter: "provider-logins",
+        steps: [actionStep("result", "provider_logins", "status", provider ? { provider } : {})],
+      };
+    }
+    if (sub === "refresh") {
+      return {
+        kind: "execute",
+        label: "providers accounts refresh --synced",
+        // Only the user copies sign-ins into the account; an agent's shell is held to agent.
+        connectRole: "cto",
+        formatter: "provider-logins",
+        steps: [actionStep("result", "provider_logins", "captureNow", provider ? { provider } : {})],
+      };
+    }
+    throw new CliUsageError("--synced works with `providers accounts list` and `providers accounts refresh` for now.");
+  }
   if (sub === "list" || sub === "ls") {
     return {
       kind: "execute",
@@ -28853,6 +28881,19 @@ async function runServe(
   const personalChatScope = createPersonalChatScope(
     runtimeProfile ? { runtimeProfile } : undefined,
   );
+  // Off the boot path: the first pass waits for the vault's first tick anyway.
+  void import("./services/account/brainProviderLoginSync").then(({ installBrainProviderLoginSync }) => installBrainProviderLoginSync({
+    // Fixed for this process: an embedded runtime, a development build and a
+    // brain with sync off never open a store for it. Every other gate (an
+    // account with ADE Cloud, its switch, a synced vault) is checked on each pass.
+    staticOff: embedded ? "embedded" : !brainReportsAsRelease(process.env) ? "dev_brain" : !syncEnabled ? "sync_off" : null,
+    adeDir: layout.adeDir,
+    secretsDir: layout.secretsDir,
+    accountAuthService: brainAccountAuthService,
+    logger: headlessProjectLogger,
+  })).catch((error: unknown) => {
+    headlessProjectLogger.warn("provider_login.install_failed", { name: error instanceof Error ? error.name : "unknown" });
+  });
   // Both profiles get it. An embedded runtime is exactly the case that needs
   // it most: the embedder's first screen asks "which CLIs do you have", and
   // without this it would have to write that detection itself.
@@ -36759,6 +36800,44 @@ function formatProjectSecrets(value: unknown): string {
  * var with its value — because that string is the entire point of the command:
  * ADE cannot sign the account in, so the user runs it themselves.
  */
+/** `providers accounts list --synced`: the account's sign-ins and this computer's part. Never a value. */
+function formatProviderLogins(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const here = isRecord(record.thisComputer) ? record.thisComputer : {};
+  const cloud = isRecord(record.cloud) ? record.cloud : {};
+  const lines = [
+    renderKeyValues("Sign-ins for ADE Cloud", [
+      ["this computer", here.label],
+      ["copies sign-ins", here.capture === "on" ? "yes" : `no (${asString(here.reason) ?? "unknown"})`],
+      ["why", here.message],
+      ["cloud computer", here.cloudComputer === true ? "yes" : "no"],
+      ["ADE Cloud sign-ins", cloud.enabled === false ? "switched off" : "on"],
+      ["last pass", here.lastPassAt],
+    ]),
+  ];
+  const signIns = Array.isArray(record.signIns) ? record.signIns.filter(isRecord) : [];
+  lines.push("", signIns.length ? "In your account:" : "In your account: none.");
+  for (const signIn of signIns) {
+    const origin = isRecord(signIn.origin) ? signIn.origin : {};
+    const account = isRecord(signIn.account) ? (asString(signIn.account.email) ?? asString(signIn.account.id)) : null;
+    const flags = [
+      signIn.inUseOnCloud === true ? "in use on ADE Cloud" : null,
+      signIn.onForCloud === false ? "off for ADE Cloud" : null,
+      origin.thisComputer === true ? "this computer" : null,
+    ].filter(Boolean).join(", ");
+    lines.push(`  ${cell(signIn.provider, 12)} ${cell(account ?? `Sign-in from ${asString(origin.label) ?? "a computer"}`, 40)} `
+      + `${cell(signIn.class, 9)} ${cell(asString(signIn.renewedAt) ?? asString(signIn.capturedAt) ?? "", 24)} ${flags}`);
+    lines.push(`    key ${cell(signIn.key, 64)}`);
+  }
+  const providers = Array.isArray(record.providers) ? record.providers.filter(isRecord) : [];
+  if (providers.length) lines.push("", "Providers on this computer:");
+  for (const entry of providers) {
+    const local = isRecord(entry.local) ? entry.local : {};
+    lines.push(`  ${cell(entry.provider, 12)} ${cell(entry.carry, 9)} ${cell(local.state, 22)} ${cell(entry.message, 140)}`);
+  }
+  return lines.join("\n");
+}
+
 function formatProviderAccounts(value: unknown): string {
   const record = isRecord(value) ? value : {};
 
@@ -37759,6 +37838,8 @@ function formatTextOutput(
       return formatExternalSessions(value);
     case "provider-accounts":
       return formatProviderAccounts(value);
+    case "provider-logins":
+      return formatProviderLogins(value);
     case "proxy-status":
       return formatProxyStatus(value);
     case "sync-status":

@@ -21,6 +21,7 @@ import { invalidateCachedClaudeCredentials } from "./providerCredentialSources";
 import { clearProviderAccountCache } from "../usage/providerAccountIdentity";
 
 let generation = 0;
+const loginChangedListeners = new Set<(provider: string) => void>();
 const providerGenerations = new Map<string, number>();
 
 const RUNTIME_HEALTH_PROVIDERS: ReadonlySet<string> = new Set<ProviderRuntimeHealthProvider>([
@@ -83,7 +84,26 @@ export function noteProviderLoginChanged(provider: string, options?: { refreshMo
   }
   if (options?.refreshModels === false) {
     generation += 1;
-    return;
+  } else {
+    noteProviderModelsChanged(id);
   }
-  noteProviderModelsChanged(id);
+  for (const listener of loginChangedListeners) {
+    try {
+      listener(id);
+    } catch {
+      // A listener's failure is its own; the caches above are already reset.
+    }
+  }
+}
+
+/**
+ * Hear every login change on this machine, after the caches are reset. The
+ * sign-in sync uses it to look at that provider's login file soon, instead of
+ * on its next tick. Returns the unsubscribe.
+ */
+export function onProviderLoginChanged(listener: (provider: string) => void): () => void {
+  loginChangedListeners.add(listener);
+  return () => {
+    loginChangedListeners.delete(listener);
+  };
 }

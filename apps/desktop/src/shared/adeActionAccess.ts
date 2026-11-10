@@ -744,6 +744,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "loginSubmitCode", "loginCancel", "setSettings", "loginCommand", "refresh",
     ],
   },
+  provider_logins: {
+    read: ["status"],
+    write: ["captureNow"],
+  },
 };
 
 const accessByAction = new Map<string, AdeActionAccess>();
