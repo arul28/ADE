@@ -13434,7 +13434,10 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
     spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
   });
 
-  function createTerminalHost(projectRoot: string) {
+  function createTerminalHost(
+    projectRoot: string,
+    overrides: Partial<Parameters<typeof createSyncHostService>[0]> = {},
+  ) {
     const transcriptPath = path.join(projectRoot, "transcripts", "session-1.log");
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
     fs.writeFileSync(transcriptPath, TRANSCRIPT_CONTENT);
@@ -13511,6 +13514,7 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
         readScreenSnapshot,
         enrichSessions: (rows: unknown[]) => rows,
       },
+      ...overrides,
     } as unknown as Parameters<typeof createSyncHostService>[0]);
     return {
       host,
@@ -14592,6 +14596,215 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       try { replacement?.ws.close(); } catch { /* ignore */ }
       await host.dispose();
       cleanup();
+    }
+  });
+
+  it("streams a terminal of another open project and refuses its input under a different project", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const otherPty = {
+      readTranscriptSnapshot: vi.fn(async (args: { maxBytes: number }) => ({
+        data: "other-output",
+        startOffset: 0,
+        endOffset: 12,
+      })),
+      readTranscriptTail: vi.fn(async () => "other-tail"),
+      readTranscriptRange: vi.fn(async (args: { startOffset: number; endOffset: number }) => ({
+        data: "",
+        startOffset: args.startOffset,
+        endOffset: args.endOffset,
+      })),
+      getTranscriptWindow: vi.fn(() => ({ startOffset: 0, endOffset: 12, retainedBytes: 12 })),
+      resizeBySessionId: vi.fn().mockReturnValue(true),
+      restoreDesktopSizeBySessionId: vi.fn().mockReturnValue(true),
+      hasLivePty: vi.fn().mockReturnValue(true),
+      writeBySessionId: vi.fn().mockReturnValue(true),
+      readScreenSnapshot: vi.fn(() => null),
+    };
+    const otherRuntime = {
+      ptyService: otherPty,
+      sessionService: {
+        get: vi.fn((id: string) => (id === "other-session"
+          ? { id, laneId: "lane-2", transcriptPath: "", status: "running", runtimeState: "running" }
+          : null)),
+      },
+      eventBuffer: { subscribe: vi.fn(() => () => {}) },
+    };
+    const getIfBooted = vi.fn((projectId: string) => (
+      projectId === "project-2" ? Promise.resolve({ runtime: otherRuntime }) : null
+    ));
+    const {
+      host,
+      readTranscriptSnapshot,
+      writeBySessionId,
+    } = createTerminalHost(projectRoot, { projectScopes: { getIfBooted } });
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-routed-terminal",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "routed-subscribe",
+        projectId: "project-2",
+        payload: { sessionId: "other-session", maxBytes: 32_000 },
+      }));
+      const snapshot = await nextResponse(client.envelopes, "terminal_snapshot", "routed-subscribe");
+      expect(snapshot.payload).toMatchObject({ sessionId: "other-session" });
+      expect((snapshot.payload as { error?: unknown }).error).toBeUndefined();
+      expect(getIfBooted).toHaveBeenCalledWith("project-2");
+      expect(otherPty.readTranscriptSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: "other-session" }),
+      );
+      expect(readTranscriptSnapshot).not.toHaveBeenCalled();
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId: "routed-input",
+        projectId: "project-2",
+        payload: { sessionId: "other-session", data: "ls\r", inputId: "routed-1" },
+      }));
+      await expect(waitForEnvelope(client.envelopes, "terminal_input_ack", "routed-input"))
+        .resolves.toMatchObject({ payload: { ok: true, duplicate: false, inputId: "routed-1" } });
+      expect(otherPty.writeBySessionId).toHaveBeenCalledWith("other-session", "ls\r");
+      expect(writeBySessionId).not.toHaveBeenCalled();
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId: "wrong-routed-input",
+        projectId: "project-3",
+        payload: { sessionId: "other-session", data: "rm\r", inputId: "routed-2" },
+      }));
+      await expect(waitForEnvelope(client.envelopes, "terminal_input_ack", "wrong-routed-input"))
+        .resolves.toMatchObject({
+          payload: { ok: false, error: { code: "project_mismatch", retryable: false } },
+        });
+      expect(otherPty.writeBySessionId).toHaveBeenCalledTimes(1);
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it.each([
+    { booted: false, code: "project_not_open" },
+    { booted: true, code: "session_not_found" },
+  ])("refuses a terminal subscribe to another project with $code and streams nothing", async ({ booted, code }) => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const otherPty = {
+      readTranscriptSnapshot: vi.fn(async () => ({ data: "other-output", startOffset: 0, endOffset: 12 })),
+      getTranscriptWindow: vi.fn(() => ({ startOffset: 0, endOffset: 12, retainedBytes: 12 })),
+      readTranscriptRange: vi.fn(),
+      readTranscriptTail: vi.fn(),
+      resizeBySessionId: vi.fn().mockReturnValue(true),
+      restoreDesktopSizeBySessionId: vi.fn().mockReturnValue(true),
+      hasLivePty: vi.fn().mockReturnValue(true),
+      writeBySessionId: vi.fn().mockReturnValue(true),
+      readScreenSnapshot: vi.fn(() => null),
+    };
+    const eventSubscribe = vi.fn(() => () => {});
+    const otherRuntime = {
+      ptyService: otherPty,
+      sessionService: { get: vi.fn(() => null) },
+      eventBuffer: { subscribe: eventSubscribe },
+    };
+    const getIfBooted = vi.fn(() => (booted ? Promise.resolve({ runtime: otherRuntime }) : null));
+    const { host, writeBySessionId } = createTerminalHost(projectRoot, { projectScopes: { getIfBooted } });
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        `ios-refused-terminal-${code}`,
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "refused-subscribe",
+        projectId: "project-2",
+        payload: { sessionId: "other-session", maxBytes: 32_000 },
+      }));
+      const refusal = await nextResponse(client.envelopes, "terminal_snapshot", "refused-subscribe");
+      expect(refusal.payload).toMatchObject({ sessionId: "other-session", error: { code } });
+      expect(otherPty.readTranscriptSnapshot).not.toHaveBeenCalled();
+      expect(eventSubscribe).not.toHaveBeenCalled();
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId: "refused-input",
+        projectId: "project-2",
+        payload: { sessionId: "other-session", data: "x", inputId: "refused-1" },
+      }));
+      await expect(waitForEnvelope(client.envelopes, "terminal_input_ack", "refused-input"))
+        .resolves.toMatchObject({ payload: { ok: false, error: { code: "not_subscribed" } } });
+      expect(otherPty.writeBySessionId).not.toHaveBeenCalled();
+      expect(writeBySessionId).not.toHaveBeenCalled();
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("treats input resent to a second host that shares the ledger as a duplicate", async () => {
+    const first = createTempProjectRoot();
+    const second = createTempProjectRoot();
+    const sharedLedger = createTerminalInputDedupeLedger();
+    const projectScopes = { getIfBooted: vi.fn(() => null), terminalInputDedupeLedger: sharedLedger };
+    const hostA = createTerminalHost(first.projectRoot, { projectScopes });
+    const hostB = createTerminalHost(second.projectRoot, { projectScopes });
+    let clientA: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    let clientB: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      clientA = await connectTerminalPeer(
+        await hostA.host.waitUntilListening(),
+        hostA.host.getBootstrapToken(),
+        "ios-shared-ledger",
+      );
+      clientA.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "ledger-sub-a",
+        payload: { sessionId: "session-1" },
+      }));
+      await nextResponse(clientA.envelopes, "terminal_snapshot", "ledger-sub-a");
+      clientA.ws.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId: "ledger-input-a",
+        payload: { sessionId: "session-1", inputId: "dup-1", data: "echo once\r" },
+      }));
+      await expect(waitForEnvelope(clientA.envelopes, "terminal_input_ack", "ledger-input-a"))
+        .resolves.toMatchObject({ payload: { ok: true, duplicate: false } });
+      expect(hostA.writeBySessionId).toHaveBeenCalledTimes(1);
+      expect(hostA.writeBySessionId).toHaveBeenCalledWith("session-1", "echo once\r");
+
+      clientB = await connectTerminalPeer(
+        await hostB.host.waitUntilListening(),
+        hostB.host.getBootstrapToken(),
+        "ios-shared-ledger",
+      );
+      clientB.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "ledger-sub-b",
+        payload: { sessionId: "session-1" },
+      }));
+      await nextResponse(clientB.envelopes, "terminal_snapshot", "ledger-sub-b");
+      clientB.ws.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId: "ledger-input-b",
+        payload: { sessionId: "session-1", inputId: "dup-1", data: "echo once\r" },
+      }));
+      await expect(waitForEnvelope(clientB.envelopes, "terminal_input_ack", "ledger-input-b"))
+        .resolves.toMatchObject({ payload: { ok: true, duplicate: true } });
+      expect(hostB.writeBySessionId).not.toHaveBeenCalled();
+      expect(hostA.writeBySessionId).toHaveBeenCalledTimes(1);
+    } finally {
+      try { clientA?.ws.close(); } catch { /* ignore */ }
+      try { clientB?.ws.close(); } catch { /* ignore */ }
+      await hostA.host.dispose();
+      await hostB.host.dispose();
+      first.cleanup();
+      second.cleanup();
     }
   });
 

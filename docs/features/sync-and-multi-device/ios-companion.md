@@ -2737,6 +2737,8 @@ screen through the same `TerminalStreamTransport` contract as `SyncService`:
   stack work as they do on the focused connection.
 - A new roster socket subscribes every open terminal again from its last
   offset, then sends the last size again.
+- If that resubscribe (or one after a byte gap) fails, the screen shows the
+  error and Retry. It does not show a frozen terminal as live.
 - Resume (`work.resumeCliSession`) goes to the session's machine as a routed
   command with the same project scope.
 
