@@ -88,6 +88,8 @@ export type AppliedStateFile = {
   applied: Record<string, AppliedEntry>;
   /** Env names this brain set from a saved key, with the short hash of the value it set. */
   env: Record<string, string>;
+  /** When a chat on this cloud computer showed the first cloud chat line (step 3d); one time per account. */
+  firstChatAt?: string;
 };
 
 export function emptyAppliedState(accountUserId: string | null): AppliedStateFile {
@@ -112,6 +114,7 @@ export function readAppliedState(adeDir: string): AppliedStateFile | null {
     accountUserId: typeof parsed.accountUserId === "string" ? parsed.accountUserId : null,
     applied: isRecord(parsed.applied) ? parsed.applied as Record<string, AppliedEntry> : {},
     env: isRecord(parsed.env) ? parsed.env as Record<string, string> : {},
+    ...(typeof parsed.firstChatAt === "string" ? { firstChatAt: parsed.firstChatAt } : {}),
   };
 }
 

@@ -10,6 +10,7 @@
 
 /** The providers ADE knows how to talk about here, carried or not. */
 import type { ClaudePassStatusEntry } from "../cloudSignIns";
+import type { AgentChatProviderLoginNotice } from "./chat";
 
 export const PROVIDER_LOGIN_PROVIDERS = [
   "claude",
@@ -194,15 +195,36 @@ export type ProviderLoginApplied = {
  * send a new one in the short wait, and this computer could not take the
  * renewal over in time (step 3b: the last resort).
  */
-export type ProviderLoginGateOutcome =
+export type ProviderLoginGateOutcome = (
   /** `renewedHere`: this cloud computer took the renewal over and renewed the sign-in for this turn (step 3b). */
   | { result: "ok"; renewedHere?: boolean }
   | { result: "timeout" }
-  | { result: "owner_off"; provider: ProviderLoginProvider; ownerLabel: string };
+  | { result: "owner_off"; provider: ProviderLoginProvider; ownerLabel: string }
+) & {
+  /**
+   * The lines for the chat of this turn, in order (step 3d): the `owner_off`
+   * warning, and the first cloud chat line. A terminal logs them only.
+   */
+  notices?: ProviderLoginChatNotice[];
+};
+
+/** One line the gate gives the chat that waits on it; words and data only, never a secret. */
+export type ProviderLoginChatNotice = {
+  severity: "info" | "warning";
+  status?: string;
+  message: string;
+  providerLogin: AgentChatProviderLoginNotice;
+};
 
 /** What a caller of the gate may pass: `onWait` hears the line to show while the turn waits (step 3b). */
 export type ProviderLoginGateOptions = {
-  onWait?: (message: string) => void;
+  /** `providerLogin`: what the line is about, when it is more than words (`renewing`: this computer renews it). */
+  onWait?: (message: string, providerLogin?: AgentChatProviderLoginNotice) => void;
+  /**
+   * The caller shows the first cloud chat line (a chat turn, not a terminal):
+   * only then does the gate give it and set the mark that it was shown.
+   */
+  firstCloudChat?: boolean;
 };
 
 export type ProviderLoginStatus = {

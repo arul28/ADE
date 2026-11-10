@@ -90,6 +90,15 @@ export type ProviderLoginRestartOptions = {
    * processes.
    */
   instanceIds?: readonly string[];
+  /**
+   * ADE Cloud's pick for this provider changed (not a renewal of the same
+   * sign-in): each open chat of the provider says "Switched to <to.label>."
+   * one time (step 3d). `key`: a vault key name or `"key"`, never a token.
+   */
+  switched?: {
+    from: { key: string | null; label: string } | null;
+    to: { key: string; label: string };
+  };
 };
 
 export type ProviderLoginRuntimeHooks = {

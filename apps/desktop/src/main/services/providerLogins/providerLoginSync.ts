@@ -40,6 +40,7 @@ import {
   type ProviderLoginApplied,
   type ProviderLoginApplyState,
   type ProviderLoginCaptureOffReason,
+  type ProviderLoginChatNotice,
   type ProviderLoginGateOptions,
   type ProviderLoginGateOutcome,
   type ProviderLoginLocalState,
@@ -96,6 +97,7 @@ import {
   notifyProviderLoginsChanged,
   readProviderLoginStatusParts,
   restartProviderRuntimesWhenIdle,
+  type ProviderLoginRestartOptions,
 } from "./providerLoginHooks";
 import { takeCloudSignInEnv } from "./providerLoginBoot";
 import {
@@ -1191,9 +1193,19 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     return present > 0;
   }
 
-  function afterApplyChange(provider: string): void {
+  function afterApplyChange(provider: string, switched?: ProviderLoginRestartOptions["switched"]): void {
     noteProviderLoginChanged(provider);
-    restartProviderRuntimesWhenIdle(provider);
+    restartProviderRuntimesWhenIdle(provider, switched ? { switched } : undefined);
+  }
+
+  /** The words for a pick in "Switched to <label>." (step 3d): the account's email, else the computer the sign-in came from. */
+  function pickLabel(vault: ProviderLoginVault, key: string): string {
+    if (key === "key") return "your saved key";
+    const row = vault.list(ACCOUNT_SCOPE_ALL).find((entry) => entry.kind === PROVIDER_LOGIN_VAULT_KIND && entry.key === key);
+    const meta = row && !row.deleted ? metaFor(vault, row) : null;
+    const email = meta?.account?.email?.trim();
+    if (email) return email;
+    return meta?.origin.label ? `Sign-in from ${meta.origin.label}` : "an earlier sign-in";
   }
 
   async function loadApplied(accountUserId: string): Promise<AppliedStateFile> {
@@ -1407,12 +1419,19 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     const setting = cloudSetting();
     const wants = desiredPlaces(vault, setting, origin12, deviceId);
     const changed = new Set<string>();
+    // ADE Cloud's pick changed for a provider (not a renewal, not the first pick here): its open chats say so (step 3d).
+    const switches = new Map<string, NonNullable<ProviderLoginRestartOptions["switched"]>>();
+    const noteSwitch = (provider: string, before: string | null, after: string): void => {
+      if (!before || before === after || switches.has(provider)) return;
+      switches.set(provider, { from: { key: before, label: pickLabel(vault, before) }, to: { key: after, label: pickLabel(vault, after) } });
+    };
     const places = new Set([...wants.keys(), ...Object.keys(state.applied)]);
     for (const place of places) {
       const provider = (place.startsWith("pi:") ? "pi" : place) as ProviderLoginProvider;
       if (providers && !providers.has(provider)) continue;
       const want = wants.get(place) ?? null;
       const have = state.applied[place] ?? null;
+      const pickedBefore = applyStates.get(place)?.key ?? (have ? (have.source.startsWith("key:") ? "key" : have.source) : null);
       const fileLess = want?.kind === "key" && want.provider !== "codex";
       if (!want || fileLess) {
         applyStates.set(place, { state: want ? "key" : "none", key: want ? "key" : null });
@@ -1421,6 +1440,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
         delete state.applied[place];
         localStates.get(provider)?.delete(`applied:${place}`);
         changed.add(provider);
+        if (want) noteSwitch(provider, pickedBefore, "key");
         deps.logger.info("provider_login.removed", { provider, place, reason: want ? "key_in_use" : "not_in_use" });
         continue;
       }
@@ -1472,6 +1492,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       // Until the next pass reads the file back, the status says whose it is.
       if (want.kind === "signin") setLocal(provider, `applied:${place}`, "from_account", null);
       changed.add(provider);
+      noteSwitch(provider, pickedBefore, want.kind === "key" ? "key" : want.key);
       deps.logger.info("provider_login.applied", {
         provider,
         place,
@@ -1516,7 +1537,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
         deps.logger.warn("provider_login.applied_write_failed", { code: (error as NodeJS.ErrnoException)?.code ?? null });
       }
     }
-    for (const provider of changed) afterApplyChange(provider);
+    for (const provider of changed) afterApplyChange(provider, switches.get(provider));
     if (changed.size) notifyProviderLoginsChanged();
   }
 
@@ -1554,6 +1575,20 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     // A takeover running here (armed, or a turn's that went on) holds the turn too: its CLI must not renew the same copy.
     const expiring = outcome.result === "ok" ? expiringCopy(providerId) ?? takeoverCopy(providerId) : null;
     if (expiring) outcome = await shortWait(providerId as ProviderLoginProvider, expiring, started, limit, options);
+    // The lines for the chat of this turn (step 3d); a terminal logs them only.
+    const notices: ProviderLoginChatNotice[] = [];
+    const first = options.firstCloudChat ? firstCloudChatNotice(providerId) : null;
+    if (first) notices.push(first);
+    if (outcome.result === "owner_off") {
+      const { provider: offProvider, ownerLabel } = outcome;
+      notices.push({
+        severity: "warning",
+        status: "provider_login_owner_off",
+        message: `${ownerLabel} didn't renew the ${PROVIDER_NAMES[offProvider] ?? offProvider} sign-in in time.`,
+        providerLogin: { kind: "owner_off", provider: offProvider, ownerLabel },
+      });
+    }
+    if (notices.length) outcome = { ...outcome, notices };
     const waitedMs = now() - started;
     if (waitedMs >= 100 || outcome.result !== "ok") {
       deps.logger.info("provider_login.gate", {
@@ -1565,6 +1600,37 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       });
     }
     return outcome;
+  }
+
+  /**
+   * The first cloud chat line (step 3d): one time per cloud computer and
+   * account (the mark is in the applied state file), on a turn of a provider
+   * whose sign-in this computer took from the account.
+   */
+  function firstCloudChatNotice(provider: string): ProviderLoginChatNotice | null {
+    const state = appliedCache;
+    const vault = deps.vault();
+    if (!deps.cloudComputer || !state || state.firstChatAt || !vault) return null;
+    const fromAccount = Object.values(state.applied).filter((entry) => !entry.source.startsWith("key:") && (entry.files.length || entry.pi || entry.qwen));
+    if (!fromAccount.some((entry) => entry.provider === provider)) return null;
+    const origins = [...new Set(fromAccount.map((entry) => {
+      const row = vault.list(ACCOUNT_SCOPE_ALL).find((candidate) => candidate.kind === PROVIDER_LOGIN_VAULT_KIND && candidate.key === entry.source);
+      return row && !row.deleted ? metaFor(vault, row)?.origin.label ?? "" : "";
+    }).filter(Boolean))];
+    if (!origins.length) return null;
+    state.firstChatAt = new Date(now()).toISOString();
+    try {
+      writeAppliedState(deps.adeDir, state);
+    } catch (error) {
+      deps.logger.warn("provider_login.applied_write_failed", { code: (error as NodeJS.ErrnoException)?.code ?? null });
+    }
+    const from = origins.length === 1 ? origins[0] : origins.length === 2 ? `${origins[0]} and ${origins[1]}` : `${origins.length} computers`;
+    return {
+      severity: "info",
+      status: "provider_login_first_cloud_chat",
+      message: `ADE Cloud uses your sign-ins from ${from}.`,
+      providerLogin: { kind: "first_cloud_chat", origins },
+    };
   }
 
   /** The applied copy of this provider that renews elsewhere and has less than 60 s left, if any. */
@@ -1603,8 +1669,17 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     const recent = ownerOff.get(expiring.place);
     if (!running && recent && now() - recent.at < GATE_MAX_AGE_MS) return { result: "owner_off", provider, ownerLabel: recent.ownerLabel };
     const ownerLabel = ownerLabelOf(key);
+    // One line per turn, and a true one: this computer's while it renews (or is
+    // about to: the owner's time is over), else the owner's (step 3d).
+    const claimFrom = TAKEOVER_HOW[provider] ? claimAt(key) : null;
+    const renewingHere = Boolean(running) || (claimFrom != null && claimFrom <= now());
+    const name = PROVIDER_NAMES[provider] ?? provider;
     try {
-      options.onWait?.(`Getting a fresh ${PROVIDER_NAMES[provider] ?? provider} sign-in from ${ownerLabel}…`);
+      if (renewingHere) {
+        options.onWait?.(`This cloud computer is renewing the ${name} sign-in…`, { kind: "renewing", provider, byLabel: deps.machine()?.label || "this cloud computer" });
+      } else {
+        options.onWait?.(`Getting a fresh ${name} sign-in from ${ownerLabel}…`);
+      }
     } catch {
       // The line is for the person; a caller's failure never holds the turn.
     }
@@ -1655,12 +1730,9 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
 
   function armTakeover(provider: ProviderLoginProvider, place: string, key: string): void {
     if (!deps.cloudComputer || !ticks.length || armed.has(key) || takeovers.has(key) || !TAKEOVER_HOW[provider]) return;
-    const vault = deps.vault();
-    const row = vault?.list(ACCOUNT_SCOPE_ALL).find((entry) => entry.kind === PROVIDER_LOGIN_VAULT_KIND && entry.key === key);
-    const meta = vault && row && !row.deleted ? metaFor(vault, row) : null;
-    if (!row || meta?.expiresAt == null) return;
-    const updatedAt = Date.parse(row.updatedAt);
-    const at = Math.max(meta.expiresAt, Number.isFinite(updatedAt) ? updatedAt : 0) + TAKEOVER_GRACE_MS + 1_000;
+    const claimFrom = claimAt(key);
+    if (claimFrom == null) return;
+    const at = claimFrom + 1_000;
     // Past that moment the turn already tried the claim; it failed for another reason, and nothing is armed.
     if (at <= now()) return;
     const timer = setTimeout(() => {
@@ -1672,6 +1744,16 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     timer.unref?.();
     armed.set(key, { place, provider, timer });
     deps.logger.info("provider_login.takeover_armed", { provider, inMs: at - now() });
+  }
+
+  /** When a cloud computer may claim the renewal of `key`: past expiry + 60 s and the last write + 60 s. Null when not known. */
+  function claimAt(key: string): number | null {
+    const vault = deps.vault();
+    const row = vault?.list(ACCOUNT_SCOPE_ALL).find((entry) => entry.kind === PROVIDER_LOGIN_VAULT_KIND && entry.key === key);
+    const meta = vault && row && !row.deleted ? metaFor(vault, row) : null;
+    if (!row || meta?.expiresAt == null) return null;
+    const updatedAt = Date.parse(row.updatedAt);
+    return Math.max(meta.expiresAt, Number.isFinite(updatedAt) ? updatedAt : 0) + TAKEOVER_GRACE_MS;
   }
 
   function disarm(key: string, reason: string): void {

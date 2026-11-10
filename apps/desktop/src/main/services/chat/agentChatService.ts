@@ -7,7 +7,7 @@ import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler
 import { formatContinuityConversation } from "./continuityConversation";
 import { probeClaudeKeychainLogin } from "../ai/providerCredentialSources";
 import { providerLoginGeneration } from "../ai/providerLoginChanged";
-import { providerLoginGate } from "../providerLogins/providerLoginHooks";
+import { providerLoginGate, type ProviderLoginRestartOptions } from "../providerLogins/providerLoginHooks";
 import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { claudeCompactionSettings, claudeCompactWindow, claudeEstimatedCompactAt, compactionIdleModeDefault, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { withClaudeSubagentCompactWindow } from "../../../shared/claudeBuiltinAgentPrompts";
@@ -23982,11 +23982,13 @@ export function createAgentChatService(args: {
       await autoResume.cancelForSession(normalizedSessionId, "account_switch");
       setUsageLimitResume(managed, null);
       if (to.provider === "claude") dismissClaudeSessionQuota(managed);
+      const accountLabel = (instance: ProviderInstance): string => instance.account?.email?.trim() || instance.label || instance.id;
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
         severity: "info",
-        message: `Switched to ${to.account?.email?.trim() || to.label || to.id}.`,
+        message: `Switched to ${accountLabel(to)}.`,
+        providerLogin: { kind: "switched", place: "chat", provider: to.provider, from: { instanceId: from.id, label: accountLabel(from) }, to: { instanceId: to.id, label: accountLabel(to) } },
       });
       onAccountSwitched?.({ provider: to.provider });
       return { ok: true, instanceId: to.id };
@@ -62714,11 +62716,19 @@ export function createAgentChatService(args: {
     // On a cloud computer, the account's sign-in for this provider is pulled
     // and written before the provider starts or resumes (P5 §4.4). Null
     // everywhere else: no await, no cost. While the turn waits for a fresh
-    // copy (P5 §5.3), the chat says so.
+    // copy (P5 §5.3), the chat says so. One set of lines per turn: a message
+    // into a running turn adds none.
+    const loginLines = !sessionTurnRunning(managed);
     const loginGate = providerLoginGate(managed.session.provider, {
-      onWait: (message) => emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message }),
+      firstCloudChat: loginLines,
+      onWait: (message, providerLogin) => {
+        if (loginLines) emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message, ...(providerLogin ? { providerLogin } : {}) });
+      },
     });
-    if (loginGate) await loginGate;
+    const loginOutcome = loginGate ? await loginGate : null;
+    for (const notice of loginLines ? loginOutcome?.notices ?? [] : []) {
+      emitChatEvent(managed, { type: "system_notice", noticeKind: notice.severity, severity: notice.severity, status: notice.status, message: notice.message, providerLogin: notice.providerLogin });
+    }
 
     // Both dispatch commit points cancel the pending auto-resume: this one and
     // the accepted branch of `enqueueSteerOrDrop`. Together they cover every
@@ -66552,7 +66562,7 @@ export function createAgentChatService(args: {
    */
   const restartProviderRuntimesWhenIdle = (
     provider: string,
-    options?: { instanceIds?: readonly string[] },
+    options?: ProviderLoginRestartOptions,
   ): { restarted: number; deferred: number; pooledEnded: number } => {
     const id = provider.trim().toLowerCase();
     const onlyAccounts = options?.instanceIds ? new Set(options.instanceIds) : null;
@@ -66564,6 +66574,9 @@ export function createAgentChatService(args: {
         const instanceId = resolvedInstanceIdOf(managed);
         if (!instanceId || !onlyAccounts.has(instanceId)) continue;
       }
+      // ADE Cloud's pick changed (P5 step 3d): the chat says so one time, with the old pick for "Change back".
+      const switched = options?.switched;
+      if (switched) emitChatEvent(managed, { type: "system_notice", noticeKind: "info", severity: "info", message: `Switched to ${switched.to.label}.`, providerLogin: { kind: "switched", place: "ade_cloud", provider: id, from: switched.from, to: switched.to } });
       managed.pendingLoginRestart = true;
       if (runLoginRestartIfIdle(managed)) restarted += 1;
       else if (managed.pendingLoginRestart) deferred += 1;
