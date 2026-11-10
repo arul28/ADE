@@ -260,6 +260,14 @@ describe("ProjectRegistry", () => {
 
     expect(isDisallowedProjectRoot(homeDir)).toBe(true);
     expect(() => registry.add(homeDir)).toThrow(/Refusing to register/);
+
+    // A Windows profile seen from WSL looks like a project with a `.ade` folder.
+    const otherInstall = path.join(path.dirname(homeDir), `${path.basename(homeDir)}-windows-profile`);
+    fs.mkdirSync(path.join(otherInstall, ".ade"), { recursive: true });
+    fs.writeFileSync(path.join(otherInstall, ".ade", "projects.json"), "{}\n");
+    expect(() => registry.add(otherInstall)).toThrow(/Refusing to register/);
+    expect(fs.readdirSync(path.join(otherInstall, ".ade"))).toEqual(["projects.json"]);
+    fs.rmSync(otherInstall, { recursive: true, force: true });
   });
 
   // Two brains with different device ids writing one project database corrupt

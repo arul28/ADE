@@ -419,6 +419,7 @@ import type { ProjectRecord } from "./services/projects/projectRegistry";
 import {
   findAdeManagedWorktreeRoot,
   findLinkedLaneWorktreeRoot,
+  isOtherAdeInstallHome,
   normalizeProjectRootPath,
   realpathIfExists,
 } from "./services/projects/projectRoots";
@@ -23762,7 +23763,8 @@ function findProjectRoots(startDir: string): {
 
   let cursor = canonicalStart;
   while (true) {
-    if (fs.existsSync(path.join(cursor, ".ade"))) {
+    // A repo under a Windows profile from WSL must not resolve to the profile.
+    if (fs.existsSync(path.join(cursor, ".ade")) && !isOtherAdeInstallHome(cursor)) {
       return { projectRoot: cursor, workspaceRoot: cursor };
     }
     const parent = path.dirname(cursor);
